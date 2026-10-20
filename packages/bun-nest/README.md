@@ -131,7 +131,7 @@ const app = await NestFactory.create(AppModule, new BunHttpAdapter());
 await app.listen(3000); // binds 127.0.0.1 unless a hostname is given
 
 // ...later
-await app.close(); // force-closes the Bun server, keep-alive connections included
+await app.close(); // lets in-flight requests finish (at most 10 s), then stops the server
 ```
 
 `app.listen(0)` asks the OS for a free port; `app.getUrl()` reports it. See
@@ -157,6 +157,7 @@ class under a second name. Its constructor is
 | `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Upper bound on the router's matched-pipeline cache before FIFO eviction. `0` disables it. The cache is keyed by resolved path, so size it above the number of distinct paths in flight, or use `0`. |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag`, so a matching `If-None-Match` is answered `304`: `true`/`"strong"`, `"weak"`, or a function returning the tag. A controller overrules it for its own response with `@Res({ passthrough: true }) res` and `res.setEtag(false)` (or `res.etag = "weak"`); see bun-common's `setEtag`. |
 | `logger` | NestJS `Logger` | `new Logger()` | Logger for adapter diagnostics: bind failures and unhandled errors. |
+| `closeDrainTimeout` | `number` (ms) | `10_000` | The longest `close()` (and `app.close()`) waits for in-flight requests before cutting them. `0` waits for nothing; `forceCloseConnections: true` skips the wait whatever it says. A negative or non-finite value throws a `RangeError` at construction. See [`listen()` and `close()`](#listen-and-close). |
 | `server` | `BunServeNormalOptions` | `{}` | Base `Bun.serve` options (TLS, `idleTimeout`, `maxRequestBodySize`, …). `port`, `hostname`, `fetch`, `websocket`, `error` and `development` are set by the adapter and override these. `routes` serves constants (a health check, `robots.txt`) natively, ahead of Nest: every method, no middleware, guards or interceptors; see bun-common's [Native static routes](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#native-static-routes-serverroutes). |
 | `websocket` | `Partial<WebsocketOptions>` | bound to this adapter | Overrides for the built-in WebSocket adapter. See [the `websocket` option](#the-websocket-option). |
 
@@ -186,7 +187,7 @@ NestJS calls most of these for you. The ones you are likely to call directly:
 | Member | Description |
 |---|---|
 | `listen(port, hostname?, callback?)` | Binds `Bun.serve`. See [`listen()` and `close()`](#listen-and-close). |
-| `close()` | Stops the server with `stop(true)` and emits `close`. Routes and handlers stay registered. |
+| `close()` | Drains in-flight requests (at most `closeDrainTimeout`, 10 s; none with `forceCloseConnections`), stops the server and emits `close`. Routes and handlers stay registered. See [`listen()` and `close()`](#listen-and-close). |
 | `fetch(input, init?)` | Runs a request through the adapter without a socket. See [Testing with `fetch()`](#testing-with-fetch). |
 | `use`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, `search`, `query`, `propfind`, `proppatch`, `mkcol`, `copy`, `move`, `lock`, `unlock` | Register raw router middleware and routes beside Nest's controllers. `use` also mounts a `BunRouter`: see [Mounting a bun-common router](#mounting-a-bun-common-router). |
 | `enableCors(options, prefix?)` | See [CORS](#cors). |
@@ -770,13 +771,21 @@ it.
   `app.listen(3000)` is reachable from the local machine only. Pass
   `app.listen(3000, "0.0.0.0")` to listen on every interface. Any hostname
   `Bun.serve` accepts is bound as given.
-- **Port.** It must be an integer from `0` to `65535`, otherwise `listen`
-  throws a `RangeError`. `0` picks a free port.
+- **Port.** It must be an integer from `0` to `65535`; `0` picks a free port.
+  Any other number is a `RangeError`, reported as a bind failure is (below),
+  so `app.listen(70000)` rejects with it.
+- **Socket path.** A string that is not a port number is a unix socket path,
+  as with `node:http`: `app.listen("/run/app.sock")` listens there (a
+  hostname is ignored), `adapter.address()` returns the path and
+  `app.getUrl()` gives `http+unix://%2Frun%2Fapp.sock`. Bun removes the
+  socket file when the server stops; a file already at the path is
+  `EADDRINUSE`, as on Node.
 - **Already listening.** On the same address (or port `0`), `listen` resolves
   the running server. On a different address, it stops that server and binds
   the new one.
 - **Busy port.** A bind failure (`EADDRINUSE`, an unresolvable hostname, a
-  privileged port) is logged. The adapter never binds somewhere else.
+  privileged port, a socket path in a missing directory) is logged. The
+  adapter never binds somewhere else.
   - If no `error` listener is attached to the HTTP server, `listen` rejects.
   - If one is attached, as `app.listen()` attaches one, the listener receives
     the error, the callback is not called, and `listen` resolves `undefined`.
@@ -784,10 +793,32 @@ it.
     `@nestjs/platform-express`.
 - **Emits** `listening` with the server on `adapter.eventEmitter`.
 
-`close()` stops the server with `stop(true)`, force-closing keep-alive
-connections so the port is released at once, and emits `close`. Routes and
-error and not-found handlers stay registered, so a closed adapter can listen
-again or be driven through `fetch()`.
+`close()` drains, as `@nestjs/platform-express` 12 does: it stops accepting
+connections (idle keep-alive connections close at once), lets the requests in
+flight finish, then stops the server and emits `close`.
+
+- **A cap, 10 s by default.** Express waits for in-flight requests
+  indefinitely, so an open `@Sse()` stream holds its `app.close()` forever;
+  here whatever is still open after the adapter's `closeDrainTimeout` option
+  (milliseconds, default `10_000`) is cut (a stream, a hung handler), and
+  `close()` resolves. `new BunHttpAdapter(0, { closeDrainTimeout: 0 })` waits
+  for nothing.
+- **`forceCloseConnections: true`** (a `NestFactory.create` option) skips the
+  wait: in-flight requests are cut at once.
+- **WebSockets** are not waited for; they are closed when the server stops.
+- **Nothing of the closed server outlives `close()`**: it always ends by
+  force-closing what is left, so a server bound on the same port next is never
+  answered by the old one.
+
+**`return503OnClosing: true`** (a `NestFactory.create` option, Nest 12) answers
+every request `503 Service Unavailable` with `Connection: close` once
+`app.close()` has begun, while the shutdown hooks run and during the drain,
+as Express does. Nest 12 calls the adapter's `beforeClose()` first, which
+sets this state; Nest 11 has neither the option nor the call. Without the
+option no shutdown check runs on any request.
+
+Routes and error and not-found handlers stay registered, so a closed adapter
+can listen again (no longer answering `503`) or be driven through `fetch()`.
 
 See
 [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/http-adapter-options.ts).

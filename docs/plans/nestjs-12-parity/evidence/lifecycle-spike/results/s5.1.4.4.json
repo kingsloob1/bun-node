@@ -1,0 +1,14 @@
+{
+ "bun": "6bb5dc1956505dd1113455f58d4757c924f3ad54",
+ "url": "unix:///tmp/pr6b-sock-WKqYRZ/a.sock",
+ "protocol": "http",
+ "address": "/tmp/pr6b-sock-WKqYRZ/a.sock",
+ "fileExists": true,
+ "body": "ok /x localhost",
+ "pending": 0,
+ "secondOnSamePath": "Error: EADDRINUSE: address already in use, listen '/tmp/pr6b-sock-WKqYRZ/a.sock'",
+ "fileExistsAfterStop": false,
+ "onExistingRegularFile": "Error: EADDRINUSE: address already in use, listen '/tmp/pr6b-sock-WKqYRZ/stale.sock'",
+ "missingDir": "Error: ENOENT: no such file or directory, listen '/tmp/pr6b-sock-WKqYRZ/nope/x.sock'",
+ "unixPlusHostname": "TypeError [ERR_INVALID_ARG_TYPE]: Cannot specify both hostname and unix"
+}

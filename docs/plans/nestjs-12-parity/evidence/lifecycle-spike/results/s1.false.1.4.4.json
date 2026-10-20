@@ -1,0 +1,16 @@
+{
+ "bun": "6bb5dc1956505dd1113455f58d4757c924f3ad54",
+ "mode": "false",
+ "reusePort": true,
+ "idleFirst": "HTTP/1.1 200 OK | connection=- | body=\"A\"",
+ "pendingAtStop": 1,
+ "idleClosedAfterStop20ms": true,
+ "rebind": "ok",
+ "stopResolvedMs": 350,
+ "busyInflight": "HTTP/1.1 200 OK | connection=- | body=\"A\"",
+ "busyClosedAfterResponse": true,
+ "idleSecond": "<closed before send>",
+ "busySecond": "<closed before send>",
+ "freshConn": "HTTP/1.1 200 OK | connection=- | body=\"B\"",
+ "stopResolved": true
+}
