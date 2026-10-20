@@ -11,6 +11,7 @@ import type {
   matchedRoute,
   NextFunction,
 } from "./index";
+import type { ParamsDictionary } from "./types/routeParams";
 import { EventEmitter } from "node:events";
 import { BunRequest } from "./BunRequest";
 import { BunResponse } from "./BunResponse";
@@ -109,10 +110,11 @@ export interface WebSocketClientData<TCustom = unknown> {
    */
   route?: string;
   /**
-   * Route params of the matched {@link route}, e.g. `{ id: "42" }`. A copy,
-   * so it is safe to mutate. Absent alongside {@link route}.
+   * Route params of the matched {@link route}, e.g. `{ id: "42" }` (a
+   * wildcard's is a `string[]`, as on `req.params`). A copy, arrays
+   * included, so it is safe to mutate. Absent alongside {@link route}.
    */
-  params?: Record<string, string>;
+  params?: ParamsDictionary;
   /**
    * The port of the server that accepted the upgrade — the real bound port,
    * never `0`, even for a server started on port `0`. Lets a handler tell a
@@ -1072,10 +1074,14 @@ export class BunWebSocket<
             requestUrl: req.originalUrl,
           })
           .find((entry) => entry.callback === wsRouteHandler);
-        // Copied: matched layers are cached and shared across requests.
-        const params = {
-          ...((layer?.matched.params ?? {}) as Record<string, string>),
-        };
+        // Copied, a wildcard's array included: matched layers are cached and
+        // shared across requests (and their arrays frozen).
+        const params: ParamsDictionary = {};
+        const matched = (layer?.matched.params ?? {}) as ParamsDictionary;
+        for (const key of Object.keys(matched)) {
+          const value = matched[key];
+          params[key] = Array.isArray(value) ? [...value] : value;
+        }
         // Whichever server built `req` — shared, standalone or extra-port.
         const port = acceptingPort(req);
 

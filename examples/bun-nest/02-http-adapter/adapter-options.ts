@@ -127,7 +127,8 @@ const adapter = new BunHttpAdapter(
       parseBody: { maxContentLength: "16kb" },
       parseCookies: true,
     },
-    // Forwarded to the BunRouter underneath.
+    // Forwarded to the BunRouter underneath. `caseSensitive: false` is the
+    // default, as on platform-express; `true` opts in to exact case.
     router: { caseSensitive: false },
     // Size of the router's matched-pipeline cache.
     routeCacheMax: 10_000,

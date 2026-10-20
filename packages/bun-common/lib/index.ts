@@ -387,7 +387,12 @@ export type {
   BunResponseTransformContext,
 } from "./BunResponse";
 export type { ServeStaticPrecompressedOptions } from "./types/general";
-export type { ExtractRouteParams } from "./types/routeParams";
+export type { ExtractRouteParams, ParamsDictionary } from "./types/routeParams";
+export {
+  assertExpressPath,
+  type AssertExpressPathOptions,
+  PathSyntaxError,
+} from "./utils/expressPath";
 export type {
   EmptyShape,
   MergeShape,

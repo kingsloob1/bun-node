@@ -28,6 +28,7 @@
 import type {
   BunWebSocketHandlerType,
   JsonValue,
+  ParamsDictionary,
   RouterMiddlewareHandler,
   WebSocketClient,
   WebSocketClientData,
@@ -82,8 +83,8 @@ interface ReportedData {
   custom: unknown;
   /** `ws.data.route`, or `null`. */
   route: string | null;
-  /** `ws.data.params`, or `null`. */
-  params: Record<string, string> | null;
+  /** `ws.data.params` (a wildcard's value a `string[]`), or `null`. */
+  params: ParamsDictionary | null;
   /** `ws.data.port`, or `null`. */
   port: number | null;
 }
@@ -1088,7 +1089,12 @@ await checkRejects(
 
   router.ws("/rooms/:id", {
     open(ws) {
-      ws.sendText(`room ${ws.data.params?.id} via ${ws.data.route}`);
+      // `ws.data.params` is untyped: a `string` per key, a `string[]` for a
+      // wildcard. `:id` is a plain param.
+      const id = ws.data.params?.id;
+      ws.sendText(
+        `room ${typeof id === "string" ? id : "?"} via ${ws.data.route}`,
+      );
     },
     message() {},
   });

@@ -17,7 +17,13 @@ import type {
   RouterErrorMiddlewareHandler,
   RouterHandler,
 } from "./types/general";
+import type { ParamsDictionary } from "./types/routeParams";
 import type { EmptyShape, MountedHandler } from "./types/routeTyping";
+import type {
+  CaptureKind,
+  PathSyntaxError,
+  RoutePathPlan,
+} from "./utils/expressPath";
 import path, { join } from "node:path";
 import process from "node:process";
 import { Router } from "@routejs/router";
@@ -28,6 +34,11 @@ import {
   toFetchResponse,
 } from "./BunResponse";
 import { resolveLogger } from "./logging";
+import {
+  CAPTURE_OPTIONAL_WILDCARD,
+  CAPTURE_PARAM,
+  compileRoutePath,
+} from "./utils/expressPath";
 import { SOCKET_FREE } from "./utils/general";
 import {
   isArray,
@@ -215,60 +226,157 @@ const RouteModule = require(routeModulePath) as {
 export const RouteClass = RouteModule.default;
 
 /**
- * Matches Express 5 catch-all path syntax — `{*name}`, `*name` (at the start
- * of the path or after a `/`), and the bare `{*}` form. Used to normalise
- * those into the routejs-compatible `*` wildcard.
+ * The path routejs is given for a route whose regex is compiled here
+ * ({@link compileRoutePath}'s Express mode): routejs throws on syntax it does
+ * not know (a quoted name), so it compiles this and the regex is replaced.
  */
-const EXPRESS5_CATCHALL_RE =
-  /\{\*[a-z_$][\w$]*\}|(?<=^|\/)\*[a-z_$][\w$]*|\{\*\}/gi;
+const EXPRESS_MODE_PLACEHOLDER = "/";
 
 /**
- * Express 5 changed catch-all paths from a bare `*` to named wildcards
- * (`*name`, `{*name}`). routejs still expects the bare `*`, so we collapse
- * the Express 5 variants to `*` before registration. Non-catch-all paths
- * (`/users/:id`, `/api/v1`, …) pass through unchanged.
+ * Whether a `use()` prefix gets its own plan. `"/"` and `""` stay routejs's,
+ * which matches every path, as Express's `use("/")` does (its router's
+ * `slash` shortcut; path-to-regexp itself would match `/` alone).
  */
-function normalizeCatchAllPath(path: string): string {
-  return path.replace(EXPRESS5_CATCHALL_RE, "*");
+function hasGroupPlan(group: string | null | undefined): group is string {
+  return group != null && group !== "" && group !== "/";
 }
 
 /**
- * A bare regexp group — `(\d+)` not attached to a preceding `:param`.
- * routejs assigns these a numeric param key from the *same* counter it uses
- * for wildcards, so a path containing one makes "nth numeric key" and "nth
- * wildcard" disagree.
+ * Joins a mount path and a sub-router's path, as Express matches a mounted
+ * router (against what the mount leaves): a path starting with `{` is
+ * appended as it is (`/api` + `{/*rest}` is `/api{/*rest}`, where
+ * `path.join` would insert a `/` and make the group's slash mandatory).
  */
-const BARE_REGEX_GROUP_RE = /(?:^|[^\w$)])\(/;
+function joinMountPath(mount: string, sub: string): string {
+  if (sub.startsWith("{")) {
+    return mount.replace(/\/+$/, "") + sub;
+  }
+  return join(mount, sub);
+}
 
 /**
- * Extracts the names of Express 5 named wildcards (`*name`, `{*name}`), in the
- * order they appear, so matches can expose `req.params.name` the way Express 5
- * does — routejs only ever produces the positional numeric key.
- *
- * Returns `undefined` when the path has no named wildcards, or when it also
- * contains a bare regexp group. In that second case routejs's numeric counter
- * covers both wildcards and groups, so the nth numeric key is not reliably the
- * nth wildcard; rather than risk binding a name to the wrong capture, the
- * positional keys are left as the only output.
+ * The path routejs compiles for a route path or group: as written when there
+ * is no plan or it is routejs's (named wildcards bridged), a placeholder when
+ * the regex is compiled here.
  */
-function extractWildcardNames(
-  path: string,
-): (string | undefined)[] | undefined {
-  const matches = path.match(EXPRESS5_CATCHALL_RE);
-  if (!matches) {
-    return undefined;
+function routejsSource(
+  source: string | null | undefined,
+  plan: RoutePathPlan | undefined,
+): string | null | undefined {
+  if (plan === undefined) {
+    return source;
   }
+  return plan.mode === "routejs" ? plan.path : EXPRESS_MODE_PLACEHOLDER;
+}
 
-  const names = matches.map((token) => {
-    const name = token.replace(/^\{?\*/, "").replace(/\}$/, "");
-    return name || undefined;
-  });
-
-  if (!names.some((name) => name !== undefined)) {
-    return undefined;
+/**
+ * The {@link PathSyntaxError} to throw in place of routejs's rejection of a
+ * routejs-mode `source` (routejs throws `"<path> invalid regular
+ * expression"`), or `undefined` when `error` is about something else.
+ */
+function rejectedPath(
+  error: unknown,
+  source: string | null | undefined,
+  plan: RoutePathPlan | undefined,
+): PathSyntaxError | undefined {
+  if (
+    plan?.mode === "routejs" &&
+    error instanceof TypeError &&
+    error.message === `${source} invalid regular expression`
+  ) {
+    return plan.error;
   }
+  return undefined;
+}
 
-  return BARE_REGEX_GROUP_RE.test(path) ? undefined : names;
+/**
+ * routejs's prefix regex for a route handler's mount `group`, with the case
+ * setting applied; routejs's rejection of a routejs-mode group surfaces as
+ * the plan's {@link PathSyntaxError}, as the route's own path does.
+ */
+function routejsPrefix(
+  group: string | null | undefined,
+  plan: RoutePathPlan | undefined,
+  caseSensitive: boolean,
+): RegExp {
+  let regexp: RegExp;
+  try {
+    regexp = new RouteClass({ group, callbacks: [], caseSensitive }).pathRegexp;
+  } catch (error) {
+    throw rejectedPath(error, group, plan) ?? error;
+  }
+  return withCaseSensitivity(regexp, caseSensitive);
+}
+
+/**
+ * Installs what a plan decided on a freshly built routejs `Route`: for an
+ * Express-mode path, its regex, capture keys and kinds, and path-to-regexp's
+ * path builder; for a routejs path with named wildcards, the published keys
+ * and kinds, and a builder that takes them. Nothing for a plain routejs path.
+ */
+function applyPlan(
+  route: RouteWithGroup,
+  plan: RoutePathPlan | undefined,
+): void {
+  if (plan === undefined) {
+    return;
+  }
+  if (plan.mode === "express") {
+    route.pathRegexp = plan.compiled.regexp;
+    route.params = plan.compiled.names;
+    route.paramKinds = plan.compiled.kinds;
+    route.compilePathRegexpToPath = plan.toPath;
+    return;
+  }
+  if (plan.remap === undefined) {
+    return;
+  }
+  const routejsKeys = route.params as (string | number)[];
+  const { names, kinds } = plan.remap(routejsKeys);
+  route.params = names as string[];
+  route.paramKinds = kinds;
+  const routejsBuild = route.compilePathRegexpToPath;
+  if (routejsBuild !== undefined) {
+    // routejs's builder knows its own numbered keys; translate the
+    // published ones (a wildcard's array joined, raw, as routejs builds).
+    route.compilePathRegexpToPath = (params = {}) => {
+      const given = params as Record<string, unknown>;
+      const mapped: Record<string, unknown> = {};
+      for (const key of Object.keys(given)) {
+        if (!isNumeric(key)) {
+          mapped[key] = given[key];
+        }
+      }
+      for (let i = 0; i < routejsKeys.length; i++) {
+        const key = routejsKeys[i];
+        if (typeof key !== "number") {
+          continue;
+        }
+        const value = given[names[i]];
+        if (value !== undefined) {
+          mapped[key] = Array.isArray(value) ? value.join("/") : value;
+        }
+      }
+      return routejsBuild(mapped);
+    };
+  }
+}
+
+/**
+ * `value` split on `/`, each segment decoded: a wildcard's `string[]`,
+ * **frozen**. The matched params are cached with the pipeline and bound to
+ * every request with the same signature by reference, so a handler's
+ * `req.params.rest.shift()` would otherwise change the next request's value;
+ * frozen, the mutation throws instead. Built on a cache miss only, so a hit
+ * pays nothing. Typed `string[]`, as Express types it; copy it
+ * (`[...req.params.rest]`) to change it.
+ */
+function decodeWildcard(value: string): string[] {
+  const segments = value.split("/");
+  for (let i = 0; i < segments.length; i++) {
+    segments[i] = decodeParam(segments[i]);
+  }
+  return Object.freeze(segments) as string[];
 }
 
 /**
@@ -295,11 +403,24 @@ type RouteWithGroup = Route & {
   routerGroupId?: number;
   isEndpoint?: boolean;
   /**
-   * Names of the Express 5 named wildcards in this path, positionally. Set
-   * only when the names can be mapped to routejs's numeric keys unambiguously
-   * (see {@link extractWildcardNames}).
+   * What the matcher does with each capture ({@link CaptureKind}, by index):
+   * a plain parameter, a wildcard (split on `/`, each segment decoded, a
+   * `string[]`), or a bridged `{*name}` (the same, absent when empty).
+   * `undefined` when every capture is a plain parameter.
    */
-  wildcardNames?: (string | undefined)[];
+  paramKinds?: CaptureKind[];
+  /**
+   * Builds the route's path from params, for `route(name, params)`: routejs's
+   * builder, or path-to-regexp 8's `compile` for an Express-mode path.
+   */
+  compilePathRegexpToPath?: (params?: object) => string;
+  /**
+   * How many distinct params the route publishes: `params.length` counts a
+   * name once per alternative of an Express-mode alternation
+   * (`/:file{.:ext}` is `[file, ext, file]`), which would rank it as three
+   * params under `routeSpecificity`. Set at registration.
+   */
+  paramCount?: number;
   /**
    * Prefix regex of the route's mount (its `group`), whose match on a request
    * path is `req.baseUrl`. `null` for a route outside any mount.
@@ -394,8 +515,10 @@ function matchBaseUrl(route: RouteWithGroup, requestPath: string): string {
     return "";
   }
   const matched = regexp.exec(requestPath)?.[0] ?? "";
-  // Express strips the trailing slash: a router mounted at `/` has baseUrl "".
-  return matched.endsWith("/") ? matched.replace(/\/+$/, "") : matched;
+  // Express strips one trailing slash (its router's `removed`): a router
+  // mounted at `/` has baseUrl "", and `/a/*rest` matching `/a/b//` has
+  // `/a/b/`.
+  return matched.endsWith("/") ? matched.slice(0, -1) : matched;
 }
 
 /**
@@ -1259,19 +1382,6 @@ export class BunRouter<
     const flattenSource = this.#pendingFlattenSource;
     this.#pendingFlattenSource = undefined;
 
-    // Express 5 catch-all syntax (`*name` / `{*name}`) → routejs's `*`.
-    // Idempotent — non-catch-all paths pass through unchanged. The names are
-    // captured first so matches can expose them as Express 5 does.
-    let wildcardNames: (string | undefined)[] | undefined;
-    if (option.path != null) {
-      wildcardNames = extractWildcardNames(option.path);
-      option.path = normalizeCatchAllPath(option.path);
-    }
-    if (option.group != null) {
-      wildcardNames ??= extractWildcardNames(option.group);
-      option.group = normalizeCatchAllPath(option.group);
-    }
-
     const routes = this.routes();
     if (option.name) {
       if (routes.some((route) => route.name === option.name)) {
@@ -1284,18 +1394,53 @@ export class BunRouter<
     // the same way: the router's settings, unless the route brings its own.
     const caseSensitive =
       option.caseSensitive ?? this.localOptions?.caseSensitive ?? false;
-    const route = new RouteClass({
-      ...option,
-      host: option.host ?? this.localOptions?.host,
-      caseSensitive,
-    }) as RouteWithGroup;
-    // A route without a `path` is middleware, which routejs compiles as a
-    // *prefix* regex — rebuilt from the exact one's `source` with no flags, so
-    // the `i` it was compiled with is lost and `use("/Admin")` would refuse
-    // `/admin/x` however `caseSensitive` is set. Express 5 applies the setting
-    // to `use()` prefixes and routes alike, so restore it.
-    if (option.path == null) {
+
+    // Each path is decided once (`compileRoutePath`): path-to-regexp 8's
+    // semantics, compiled here (Express mode); routejs's syntax, compiled by
+    // routejs with named wildcards bridged; or a `PathSyntaxError` now, as
+    // Express throws at registration. The path (a route) is compiled whole,
+    // the group (a mount) as a prefix.
+    const pathPlan: RoutePathPlan | undefined = option.path
+      ? compileRoutePath(option.path, { end: true, sensitive: caseSensitive })
+      : undefined;
+    const groupPlan: RoutePathPlan | undefined = hasGroupPlan(option.group)
+      ? compileRoutePath(option.group, { end: false, sensitive: caseSensitive })
+      : undefined;
+    const routejsPath = routejsSource(option.path, pathPlan);
+    const routejsGroup = routejsSource(option.group, groupPlan);
+
+    let route: RouteWithGroup;
+    try {
+      route = new RouteClass({
+        ...option,
+        path: routejsPath,
+        group: routejsGroup,
+        host: option.host ?? this.localOptions?.host,
+        caseSensitive,
+      }) as RouteWithGroup;
+    } catch (error) {
+      // routejs's own rejection of a routejs-mode path, as path-to-regexp's.
+      throw (
+        rejectedPath(error, routejsPath, pathPlan) ??
+        rejectedPath(error, routejsGroup, groupPlan) ??
+        error
+      );
+    }
+    // The paths as written: what a flatten re-joins, and what `route.path`
+    // reads (a comparator, `matched.path`).
+    route.path = (option.path ?? null) as string;
+    route.group = option.group as string;
+
+    if (option.path) {
+      applyPlan(route, pathPlan);
+    } else {
+      // A route without a `path` is middleware, compiled as a *prefix* of its
+      // group. routejs rebuilds its prefix regex from the exact one's
+      // `source` with no flags, so the `i` is lost and `use("/Admin")` would
+      // refuse `/admin/x` however `caseSensitive` is set. Express 5 applies
+      // the setting to `use()` prefixes and routes alike, so restore it.
       route.pathRegexp = withCaseSensitivity(route.pathRegexp, caseSensitive);
+      applyPlan(route, groupPlan);
     }
     // `req.baseUrl` comes from the route's mount prefix. Middleware already
     // compiled `group` as a prefix regex; a route handler compiled its full
@@ -1305,21 +1450,16 @@ export class BunRouter<
         ? null
         : option.path == null
           ? route.pathRegexp
-          : withCaseSensitivity(
-              new RouteClass({
-                group: option.group,
-                callbacks: [],
-                caseSensitive,
-              }).pathRegexp,
-              caseSensitive,
-            );
+          : groupPlan?.mode === "express"
+            ? groupPlan.compiled.regexp
+            : routejsPrefix(routejsGroup, groupPlan, caseSensitive);
+    route.paramCount = new Set(route.params ?? []).size;
     // Stamp the active mount's group id (0 = this router's own routes) so
     // `next('router')` can later identify and skip a whole mounted sub-router.
     route.routerGroupId = this.#activeRouterGroupId;
     // Mark verb/`all` endpoints so specificity ordering and param-binding
     // treat them as route handlers, not `use` middleware.
     route.isEndpoint = isEndpoint;
-    route.wildcardNames = wildcardNames;
     // Whether an adapter routes an undecodable body here: the route's own
     // marker, else what the innermost router that decided said (the source
     // route carries it across a flatten), else this router's option.
@@ -1363,11 +1503,13 @@ export class BunRouter<
       method: option?.method || route.method,
       path: option?.group
         ? route.path
-          ? join(option.group, route.path)
+          ? joinMountPath(option.group, route.path)
           : null
         : route.path,
       callbacks: route.callbacks,
-      group: option.group ? join(option.group, route.group ?? "") : route.group,
+      group: option.group
+        ? joinMountPath(option.group, route.group ?? "")
+        : route.group,
       name: route.name,
     };
   }
@@ -5136,10 +5278,11 @@ export class BunRouter<
    * routejs's order; every rejection path returns the same `false`, so the
    * reordering is observationally identical while skipping work sooner.
    *
-   * Two deliberate departures from routejs, both following Express 5: a
+   * Three deliberate departures from routejs, all following Express 5: a
    * captured value that is not valid percent-encoding throws
    * {@link ParamDecodeFailure} (routejs throws a bare `URIError` out of the
-   * whole request), and host-pattern captures are merged into `params`.
+   * whole request), host-pattern captures are merged into `params`, and a
+   * wildcard capture is a `string[]`, split on `/` and decoded per segment.
    */
   private matchRoute(
     route: Route,
@@ -5184,7 +5327,7 @@ export class BunRouter<
 
     // 3. Host — only routes that declare one pay for this.
     let subdomains: Record<string, string> = {};
-    const params: Record<string, string> = {};
+    const params: Record<string, string | string[]> = {};
     const hostRegexp = route.hostRegexp;
     if (hostRegexp) {
       const hostMatch = hostRegexp.exec(hostSource.requestHost);
@@ -5211,28 +5354,20 @@ export class BunRouter<
 
     const paramNames = route.params;
     if (pathMatch.length > 1 && paramNames && paramNames.length > 0) {
-      // Names of this route's Express 5 named wildcards, positionally.
-      const wildcardNames = (route as RouteWithGroup).wildcardNames;
-      let wildcardOrdinal = 0;
-
+      // A wildcard capture is split on `/` and decoded per segment, as
+      // Express 5 publishes it (`string[]`); a route without one skips this.
+      const kinds = (route as RouteWithGroup).paramKinds;
       for (let i = 1; i < pathMatch.length; i++) {
         const name = paramNames[i - 1];
         const value = pathMatch[i];
         if (name === undefined || value === undefined) {
           continue;
         }
-
-        const decoded = decodeParam(value);
-        params[name] = decoded;
-
-        // routejs keys wildcards positionally (`"0"`, `"1"`, …). Express 5
-        // exposes `*name` as `req.params.name`, so publish that alias too,
-        // keeping the positional key for backwards compatibility.
-        if (wildcardNames !== undefined && isNumeric(name)) {
-          const wildcardName = wildcardNames[wildcardOrdinal++];
-          if (wildcardName !== undefined) {
-            params[wildcardName] = decoded;
-          }
+        const kind = kinds === undefined ? CAPTURE_PARAM : kinds[i - 1];
+        if (kind === CAPTURE_PARAM) {
+          params[name] = decodeParam(value);
+        } else if (kind !== CAPTURE_OPTIONAL_WILDCARD || value !== "") {
+          params[name] = decodeWildcard(value);
         }
       }
     }
@@ -5276,7 +5411,8 @@ export class BunRouter<
             ? 0
             : 1,
         // Fewer path params means a more specific (more static) path.
-        ({ route }) => (route.params || []).length,
+        ({ route }) =>
+          (route as RouteWithGroup).paramCount ?? (route.params || []).length,
         // More named params wins over numeric/anonymous ones.
         ({ matched }) =>
           keys(matched.params || {}).filter((key) => !isNumeric(key)).length,
@@ -5728,7 +5864,7 @@ export class BunRouter<
         // therefore shared by every request with the same signature: replace
         // `req.params` wholesale, never mutate it in place.
         if (layer.routeIndex !== state.paramsBoundToRoute) {
-          request.params = layer.matched.params as Record<string, string>;
+          request.params = layer.matched.params as ParamsDictionary;
           // Express sets `req.route` on entering a route. `req.subdomains` is
           // left alone: it is the request's subdomain list (a `string[]`),
           // while a `domain()` pattern's captures are already in `params`.

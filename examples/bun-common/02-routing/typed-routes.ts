@@ -101,14 +101,19 @@ function json(body: JsonValue, method = "POST"): RequestInit {
 step("Params from the path");
 
 router.get("/files/:bucket/:version?/*key", (req, res) => {
-  // { bucket: string; version?: string; 0: string; key: string }
+  // { bucket: string; version?: string; key: string[] } — a named wildcard is
+  // the array of segments it matched, with no positional key.
   const bucket: string = req.params.bucket;
   const version: string | undefined = req.params.version;
+  const key: string[] = req.params.key;
+  // @ts-expect-error a named wildcard publishes no `params[0]`
+  const positional: unknown = req.params[0];
   res.json({
     bucket,
     version: version ?? null,
-    key: req.params.key,
-    positional: req.params[0],
+    key,
+    joined: key.join("/"),
+    positional: positional ?? null,
   });
 });
 
@@ -117,8 +122,7 @@ await call("/files/photos/v2/2024/beach.jpg");
 // The same extraction, as a type of its own.
 const example: ExtractRouteParams<"/files/:bucket/:version?/*key"> = {
   bucket: "photos",
-  0: "a/b.jpg",
-  key: "a/b.jpg",
+  key: ["a", "b.jpg"],
 };
 show("ExtractRouteParams value", example);
 

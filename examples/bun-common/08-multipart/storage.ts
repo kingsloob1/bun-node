@@ -143,8 +143,17 @@ let sequence = 0;
 const perUserOptions = transformUploadOptions({
   storageType: "disk",
   // Called per file with the raw record and the request.
-  dest: (file, req) =>
-    join(root, "users", req.params.userId ?? "anon", file.fieldname),
+  // An untyped `req.params` value is a `string`, or a `string[]` for a
+  // wildcard; this route's `:userId` is a string.
+  dest: (file, req) => {
+    const { userId } = req.params;
+    return join(
+      root,
+      "users",
+      typeof userId === "string" ? userId : "anon",
+      file.fieldname,
+    );
+  },
   // `file` is the raw part, whose `filename` is undefined when the client
   // sent none — the `?? ""` keeps such a file extensionless.
   filename: (file) =>

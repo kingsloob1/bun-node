@@ -2,7 +2,10 @@
  * Compile-time assertions that the Nest adapter's verb methods narrow their
  * handlers the same way bun-common's do. Checked by `bun check`, not `bun test`.
  */
-import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
+import type {
+  ParamsDictionary,
+  StandardSchemaV1,
+} from "@kingsleyweb/bun-common";
 import { validate } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 
@@ -41,7 +44,7 @@ adapter.post(
 // regression: a dynamic path still registers, untyped params
 declare const dynamicPath: string;
 adapter.get(dynamicPath, (_req) => {
-  type _ = Expect<Equal<typeof _req.params, Record<string, string>>>;
+  type _ = Expect<Equal<typeof _req.params, ParamsDictionary>>;
 });
 
 export {};

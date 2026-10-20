@@ -18,15 +18,9 @@ import type {
 } from "@nestjs/common";
 import { Buffer } from "node:buffer";
 import { connect } from "node:net";
-import {
-  Logger,
-  RequestMethod,
-  VERSION_NEUTRAL,
-  VersioningType,
-} from "@nestjs/common";
-import { ApplicationConfig, NestFactory } from "@nestjs/core";
+import { Logger } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
-import { RouteInfoPathExtractor } from "@nestjs/core/middleware/route-info-path-extractor.js";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
 import { expressReference } from "../expressCompat/reference";
@@ -49,24 +43,6 @@ export const NEST_12 =
 export const EXPRESS_HONOURS_EXACT_MARKER = /endsWith\(["']\$["']\)/.test(
   ExpressAdapter.prototype.createMiddlewareFactory.toString(),
 );
-
-/**
- * Whether the core resolves `VERSION_NEUTRAL` in a middleware route
- * (`forRoutes({ path, version: VERSION_NEUTRAL })` under URI versioning) to
- * the unversioned path, as it does from 12.1.3 (nestjs/nest #17947). Before,
- * it builds `/vSymbol(VERSION_NEUTRAL)/ver`, which Express's path-to-regexp
- * rejects at boot. Asked of the core's own `RouteInfoPathExtractor`.
- */
-export const CORE_RESOLVES_NEUTRAL_MIDDLEWARE = (() => {
-  const config = new ApplicationConfig();
-  config.enableVersioning({ type: VersioningType.URI });
-  const paths = new RouteInfoPathExtractor(config).extractPathsFrom({
-    path: "ver",
-    method: RequestMethod.ALL,
-    version: VERSION_NEUTRAL,
-  });
-  return !paths.some((path) => path.includes("Symbol("));
-})();
 
 /** `BunHttpAdapter`'s constructor options. */
 export type BunHttpAdapterOptions = ConstructorParameters<

@@ -30,6 +30,10 @@ function buildTable(): Route[] {
   router.get("/user/me", handler);
   router.get("/assets/*", handler);
   router.get("/files/*splat", handler);
+  router.get("/opt{/*tail}", handler);
+  router.get("/star/{*rest}", handler);
+  router.get("/br/:x?/{*rest}", handler);
+  router.get("/mid/*a/b", handler);
   router.get("/a/:b?", handler);
   router.get("/x/:y(\\d+)", handler);
   router.get("/u-:id", handler);
@@ -74,6 +78,11 @@ const PIECES = [
   "css",
   "app.css",
   "files",
+  "opt",
+  "optx",
+  "star",
+  "br",
+  "mid",
   "a",
   "b",
   "x",
@@ -193,6 +202,57 @@ describe("RouteTree: exactly what each route's regex matches", () => {
   });
 });
 
+describe("RouteTree: shapes walked without running the regex", () => {
+  /** A regex that counts its `exec` calls. */
+  class CountingRegExp extends RegExp {
+    static calls = 0;
+    override exec(input: string): RegExpExecArray | null {
+      CountingRegExp.calls++;
+      return super.exec(input);
+    }
+  }
+
+  // Each shape on its own, with the path that reaches it: none may fall back
+  // to a regex leaf, which `exec`s for every path through its node.
+  const SHAPES: [string, string][] = [
+    ["/", "/"],
+    ["/files/*path", "/files/a/b"],
+    ["/x/{*path}", "/x/a"],
+    ["/files{/*path}", "/files/a"],
+    ["/assets/*", "/assets/a"],
+    ["/users/:id", "/users/1"],
+  ];
+  for (const [path, request] of SHAPES) {
+    it(`${path} is walked`, () => {
+      const router = new BunRouter();
+      router.get(path, handler);
+      const routes = (router as unknown as { routes: () => Route[] }).routes();
+      const route = routes[0];
+      route.pathRegexp = new CountingRegExp(
+        route.pathRegexp.source,
+        route.pathRegexp.flags,
+      );
+      CountingRegExp.calls = 0;
+      const found = new RouteTree().match(routes, request);
+      expect(found.indices).toEqual([0]);
+      expect(CountingRegExp.calls).toBe(0);
+    });
+  }
+
+  it("negative control: a shape outside the grammar is run as a regex", () => {
+    const router = new BunRouter();
+    router.get("/opt{/:x}/y", handler);
+    const routes = (router as unknown as { routes: () => Route[] }).routes();
+    routes[0].pathRegexp = new CountingRegExp(
+      routes[0].pathRegexp.source,
+      routes[0].pathRegexp.flags,
+    );
+    CountingRegExp.calls = 0;
+    expect(new RouteTree().match(routes, "/opt/1/y").indices).toEqual([0]);
+    expect(CountingRegExp.calls).toBe(1);
+  });
+});
+
 describe("routing through the tree", () => {
   it("runs matching layers in registration order, with params and wildcards", async () => {
     const router = new BunRouter();
@@ -214,9 +274,10 @@ describe("routing through the tree", () => {
     });
     expect(await (await router.fetch("/EN/home/")).text()).toBe("ok");
     expect(seen).toEqual(["global", "lang:EN", "static"]);
+    // Express 5: split on `/`, each segment decoded, the trailing slash an
+    // empty last segment.
     expect(await (await router.fetch("/files/a/b%20c/")).json()).toEqual({
-      "0": "a/b c/",
-      splat: "a/b c/",
+      splat: ["a", "b c", ""],
     });
   });
 });

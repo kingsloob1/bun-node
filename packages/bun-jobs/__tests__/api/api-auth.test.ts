@@ -727,7 +727,9 @@ describe("authorizeHandler through router.fetch", () => {
       "/queues/:queue/jobs/retry",
       authorizeHandler(config, "jobs.retry", {
         route: { method: "POST", path: "/queues/:queue/jobs/retry" },
-        target: (req) => ({ queue: req.params.queue, jobIds: ["a"] }),
+        // `req` is untyped here: Express 5's `ParamsDictionary`, a wildcard's
+        // value a `string[]`.
+        target: (req) => ({ queue: String(req.params.queue), jobIds: ["a"] }),
       }),
       (_req, res) => res.json({ ok: true }),
     );
