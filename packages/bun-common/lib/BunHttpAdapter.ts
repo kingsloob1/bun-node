@@ -1380,8 +1380,8 @@ export class BunHttpAdapter<
   /**
    * Redirects to `url` with `statusCode` (`302` when it is `0`), as
    * `@nestjs/platform-express`'s adapter does: `res.redirect(statusCode,
-   * url)`. `Location` is URL-encoded and the body is Express's short
-   * "Redirecting to" text or HTML, chosen by `Accept` (see
+   * url)`. `Location` is URL-encoded and the body is Express 5.3.0's
+   * "Redirecting to" text or HTML document, chosen by `Accept` (see
    * `BunResponse.redirect`).
    */
   public redirect(response: BunResponse, statusCode: number, url: string) {
