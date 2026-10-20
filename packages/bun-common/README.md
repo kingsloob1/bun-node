@@ -169,8 +169,50 @@ and a `QUERY` route answers `QUERY` only (no `HEAD` or `GET` fallback). Nest
 | `domain(host, routerOrCallbackOrHandlers)` | routes for a host pattern |
 | `ws(path, handler, customDataFn?)` | a WebSocket upgrade route (see [WebSockets](#websockets)) |
 
-Express 5 catch-all syntax works: `*name`, `{*name}` and `{*}`. A named
-wildcard is exposed as both the positional key and the name.
+#### Path syntax
+
+Paths follow **Express 5's syntax**, path-to-regexp 8, the grammar it uses:
+
+| Pattern | Matches | `req.params` |
+|---|---|---|
+| `/users/:id` | `/users/42` | `{ id: "42" }` |
+| `/files/*path` | `/files/a/b.txt`, not `/files/` | `{ path: ["a", "b.txt"] }` |
+| `/files{/*path}` | `/files` and `/files/a/b.txt` | `{}` and `{ path: ["a", "b.txt"] }` |
+| `/opt{/:x}` | `/opt` and `/opt/1` | `{}` and `{ x: "1" }` |
+| `/:a-:b` | `/x-y-z` | `{ a: "x-y", b: "z" }` (greedy first, as Express) |
+| `/:"user id"` | `/7` | `{ "user id": "7" }` |
+| `/*` | anything | `{ "0": "…" }` |
+
+- **A named wildcard is a `string[]`**: the matched path split on `/`, then
+  each segment decoded, so `a%2Fb/c` gives `["a/b", "c"]` and `a//b` gives
+  `["a", "", "b"]`. It sets **no positional key**; a bare `*` (or `{*}`) still
+  sets `"0"` as a string. An optional wildcard that matched nothing leaves its
+  key absent. The array is frozen, because matched params are cached and
+  shared by every request with the same path: replace `req.params` (or the
+  key), never mutate it in place.
+- A malformed `%` sequence in a path segment is a `URIError` with
+  `status: 400`, passed to the error handlers as Express does; with none,
+  the adapters answer **400**.
+- Trailing slashes in a route path are ignored (`/users/` registers
+  `/users`), and a request's trailing slash still matches.
+- **Older routejs forms keep working**: `:x?`, `:x(\d+)` and `+`, mixed with a
+  named wildcard too (`/files/:bucket/:version?/*key`, where `key` is a
+  `string[]`).
+- **A malformed path throws at registration**, as Express does: a
+  `PathSyntaxError` (a `TypeError`; its class name, `constructor.name`, is
+  `"PathError"`, as in path-to-regexp) with path-to-regexp's message. That covers characters with
+  no meaning (`/hello!`, `/a/[id]`), a `:` or `*` without a valid name
+  (`/t/12:30`, `/:1`), an unclosed `{` or a stray `}`, and paths that mix
+  `{…}` or a quoted name with the routejs forms. `assertExpressPath(path)`
+  runs the same check without registering anything.
+- `router.route(name, params)` builds a URL from a named route. For an
+  Express 5 path each value is percent-encoded (`encodeURIComponent`), a
+  wildcard's array is joined with `/`, a missing optional group is dropped and
+  a missing required parameter throws. A routejs-form path is built raw, as
+  before.
+
+Matching ignores case unless `caseSensitive: true` (see
+[Router options](#router-options)).
 
 #### Pipeline semantics
 
@@ -368,8 +410,13 @@ The verb methods of `BunRouter` and `BunHttpAdapter` carry generated
 overloads that narrow the handler's request:
 
 - **`req.params` from the path literal.** `get("/home/:name/:id?", h)` gives
-  `{ name: string; id?: string }`. `ExtractRouteParams<"/a/:b">` exposes the
-  same computation.
+  `{ name: string; id?: string }`; `*name` a `string[]` (no positional key),
+  `{*name}` and `{/*name}` an optional `string[]`, `{/:x}` an optional
+  `string`, and a quoted `:"a b"` or `*"a b"` its name.
+  `ExtractRouteParams<"/a/:b">` exposes the same computation. A path that is
+  not a literal falls back to `ParamsDictionary` (`string | string[]` values,
+  Express 5's own type), so code reading `req.params.x` there narrows it, or
+  passes a type argument or a `params` schema.
 - **`req.query` / `req.body` / `req.params` from a validator** placed
   **immediately before** the handler in the same call. One
   `validate({ params, query, body })` covers every target.
