@@ -45,7 +45,7 @@ import {
 } from "@kingsleyweb/bun-common";
 import { connect, upgradeHead } from "../09-websocket/helpers/client";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
-import { step, title, waitFor } from "../shared/console";
+import { show, step, title, waitFor } from "../shared/console";
 
 /** A listening adapter, and what the tour needs to reach into it. */
 interface Served<T> {
@@ -839,11 +839,13 @@ const loose = await serve({}, (adapter) => {
   check("maxPayloadLength: a message within it is delivered", delivered);
   client.socket.send("x".repeat(4096));
   const closed = await client.waitClosed().catch(() => undefined);
-  // Bun drops the connection without a close frame, so the client sees 1006
-  // rather than 1009 ("message too big").
+  // Bun 1.4.4-canary.1+6bb5dc195 closes with 1009 ("Message Too Big",
+  // RFC 6455 §7.4.1) and a close frame; earlier builds (5f5799ed1 among
+  // them) dropped the connection without one, which the client sees as 1006.
+  show("maxPayloadLength: close code", closed?.code);
   check(
-    "maxPayloadLength: a larger message drops the connection (1006)",
-    closed?.code === 1006,
+    "maxPayloadLength: a larger message closes the connection (1009, or 1006 on older Bun)",
+    closed?.code === 1009 || closed?.code === 1006,
     closed,
   );
 }
