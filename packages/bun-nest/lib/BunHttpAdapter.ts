@@ -408,17 +408,116 @@ function buildCannotRoute(
 }
 
 /**
+ * `page` with the headers a response had set before it, as `finalhandler`
+ * writes its page on that response: `responseHeaders` less the ones it
+ * removes and `Content-Length` (the page's own), with `page`'s set over them.
+ */
+function withResponseHeaders(
+  page: Response,
+  responseHeaders: Record<string, string | string[] | number | undefined>,
+): Response {
+  const headers = new Headers();
+  for (const name in responseHeaders) {
+    const value = responseHeaders[name];
+    if (
+      value === undefined ||
+      name === "content-length" ||
+      FINALHANDLER_REMOVED_HEADERS.includes(name)
+    ) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const one of value) {
+        headers.append(name, String(one));
+      }
+    } else {
+      headers.append(name, String(value));
+    }
+  }
+  page.headers.forEach((value, name) => {
+    headers.set(name, value);
+  });
+  return new Response(page.body, {
+    status: page.status,
+    statusText: page.statusText,
+    headers,
+  });
+}
+
+/** `value` as an `Error`: itself when it is one, else wrapped. */
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/**
+ * The body {@link BunHttpAdapter.reply} streams for a `StreamableFile` whose
+ * first chunk (`first`) has been read: that chunk, then the rest of `chunks`.
+ * A failure along the way goes to the file's `errorHandler` and ends the
+ * body; a body cancelled by the client returns the iterator, which destroys
+ * the source.
+ */
+async function* streamFileFrom(
+  first: IteratorResult<unknown>,
+  chunks: AsyncIterator<unknown>,
+  file: StreamableFile,
+  response: BunResponse,
+): AsyncGenerator<unknown, void, undefined> {
+  let finished = first.done === true;
+  try {
+    if (!finished) {
+      yield first.value;
+    }
+    while (!finished) {
+      let next: IteratorResult<unknown>;
+      try {
+        next = await chunks.next();
+      } catch (error) {
+        finished = true;
+        file.errorHandler(asError(error), response);
+        return;
+      }
+      if (next.done) {
+        finished = true;
+        return;
+      }
+      yield next.value;
+    }
+  } finally {
+    if (!finished) {
+      await chunks.return?.();
+    }
+  }
+}
+
+/**
+ * The key the response a request was answering rides on, on a carried error
+ * (see {@link carryRequest}). A symbol, so an error's own `res` or `response`
+ * property (a client library's, say) is never mistaken for it.
+ */
+const CARRIED_RESPONSE = Symbol("bun-nest.carriedResponse");
+
+/**
  * `error` with the request riding on it, for `handleRequestError`, which
  * needs it to run the error handlers; a thrown primitive is wrapped to carry
  * it. A pipeline parked past the request timeout is passed on as is: it is
  * answered as a timed-out response wait always was, without the request.
+ *
+ * `res`, when given, is the response the pipeline was building, which rides
+ * along too: the error handlers then answer on it, as Express's error
+ * middleware gets the same `res` (so the headers set before the error, a
+ * security hook's or CORS's, reach the error's answer).
  */
-function carryRequest(error: unknown, req: BunRequest): unknown {
+function carryRequest(
+  error: unknown,
+  req: BunRequest,
+  res?: BunResponse,
+): unknown {
   if (isRequestTimeoutError(error)) {
     return error;
   }
   const carrier: object = isObject(error) ? error : new Error(String(error));
   defineHidden(carrier, "req", req);
+  defineHidden(carrier, CARRIED_RESPONSE, res);
   return carrier;
 }
 
@@ -442,6 +541,14 @@ export class BunHttpAdapter<
    * they say otherwise, whenever they are replaced.
    */
   #rawBodyNeedsBuffer = false;
+
+  /**
+   * Set once a security hook is registered (`app.enableCsrfProtection()` or
+   * `app.useSecurityHeaders()`, through {@link registerSecurityHook}): the
+   * hook must run before the body is read, so the request options defer it
+   * (`deferBody`) unless they say otherwise, whenever they are replaced.
+   */
+  #securityHookDefersBody = false;
 
   public _logger!: Logger;
   private _websocketAdapter!: BunNestWebsocketAdapter<customWebsocketDataType>;
@@ -766,14 +873,14 @@ export class BunHttpAdapter<
         this.#serveHooks.lateError(options, error);
       });
     } catch (error) {
-      throw carryRequest(error, req);
+      throw carryRequest(error, req, res);
     }
     return routed.then(
       (outcome) =>
         outcome.stream ??
         this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
       (error: unknown) => {
-        throw carryRequest(error, req);
+        throw carryRequest(error, req, res);
       },
     );
   }
@@ -796,7 +903,8 @@ export class BunHttpAdapter<
       );
     },
     stream: (_options, stream) => stream,
-    error: (options, error) => carryRequest(error, options.request),
+    error: (options, error) =>
+      carryRequest(error, options.request, options.response),
     lateError: (options, error) => {
       // Headers are gone, so nothing but the stream's end can answer it,
       // as Express's finalhandler does once headers were sent.
@@ -1077,6 +1185,9 @@ export class BunHttpAdapter<
     validateParseBodyOption(merged.parseBody);
     if (this.#rawBodyNeedsBuffer && merged.retainBuffer === undefined) {
       merged.retainBuffer = true;
+    }
+    if (this.#securityHookDefersBody && merged.deferBody === undefined) {
+      merged.deferBody = true;
     }
     this.#requestOpts = merged;
   }
@@ -1480,8 +1591,13 @@ export class BunHttpAdapter<
    * a socket-free one cannot be handled differently.
    *
    * Runs the {@link setErrorHandler} handlers as Express runs error
-   * middleware: in registration order, as `(err, req, res, next)`, against a
-   * fresh response. Only `next` moves on, and a return value is ignored:
+   * middleware: in registration order, as `(err, req, res, next)`, against
+   * the response the request was answering when the error was raised, as
+   * Express hands error middleware the same `res`: the status and headers
+   * middleware or the handler set before the error (a security hook's
+   * headers, CORS's) are still on it, and an exception filter sees it as they
+   * left it. An error raised before there was one (while the request was
+   * built) gets a fresh response. Only `next` moves on, and a return value is ignored:
    * `next(err)` hands `err` to the next handler (once none is left, it is
    * answered as below); `next()`, `next("route")` or `next("router")` leaves
    * error mode, and with nothing registered after these handlers that is
@@ -1496,22 +1612,34 @@ export class BunHttpAdapter<
    * With no handler registered, or when the error carries no request (it was
    * thrown before one was built, or by response finalisation such as a
    * timeout), it answers as Express's `finalhandler` does — what an Express
-   * app with no error middleware sends; see {@link finalErrorResponse}. A
+   * app with no error middleware sends; see {@link finalErrorResponse}; it
+   * too keeps the headers already set on the request's response. A
    * handler that throws is answered the same way, for the error it threw. It
    * therefore always resolves. Mirrors bun-common's `handleRequestError`.
    */
   protected async handleRequestError(error: unknown): Promise<Response> {
     const req = get(error, "req", undefined) as BunRequest | undefined;
+    // `req` rides only on an object, and the response with it.
+    const carried = req
+      ? (Reflect.get(error as object, CARRIED_RESPONSE) as
+          | BunResponse
+          | undefined)
+      : undefined;
+    // One already sent is past answering on: its error handlers ran in the
+    // pipeline. A fresh response then, as before one existed.
+    const usable = carried && !carried.headersSent ? carried : undefined;
     if (!req || !this._errorHandlers.length) {
-      return this.finalErrorResponse(error, req);
+      return this.finalErrorResponse(error, req, usable);
     }
 
     let currentError: unknown = error;
     try {
-      const response = new BunResponse(req, {
-        etag: this.etagEnabled,
-        views: this.views,
-      });
+      const response =
+        usable ??
+        new BunResponse(req, {
+          etag: this.etagEnabled,
+          views: this.views,
+        });
       for (const handler of this._errorHandlers) {
         const nextInvoked = Promise.withResolvers<undefined>();
         let nextCalled = false;
@@ -1555,6 +1683,7 @@ export class BunHttpAdapter<
               status: 404,
             }),
             req,
+            response,
           );
         }
 
@@ -1563,7 +1692,7 @@ export class BunHttpAdapter<
 
       if (!response.headersSent) {
         // Every handler passed the error on.
-        return this.finalErrorResponse(currentError, req);
+        return this.finalErrorResponse(currentError, req, response);
       }
 
       return await response.getNativeResponse(1000);
@@ -1581,8 +1710,24 @@ export class BunHttpAdapter<
    * at `warn` for a 4xx and `error` otherwise, the message naming the method,
    * path and status,
    * except under `NODE_ENV=test`, as Express's default error logging does.
+   *
+   * With `res`, the response the request was answering, the page keeps the
+   * headers already set on it, as `finalhandler` writes its page on the same
+   * response: less `Content-Encoding`, `Content-Language`, `Content-Range`
+   * (which finalhandler removes) and `Content-Length`, with the page's own
+   * headers set over them.
    */
-  protected finalErrorResponse(error: unknown, req?: BunRequest): Response {
+  protected finalErrorResponse(
+    error: unknown,
+    req?: BunRequest,
+    res?: BunResponse,
+  ): Response {
+    const page = this.#finalErrorPage(error, req);
+    return res ? withResponseHeaders(page, res.getHeaders()) : page;
+  }
+
+  /** bun-common's `finalErrorResponse` for `error`, logged; see {@link finalErrorResponse}. */
+  #finalErrorPage(error: unknown, req: BunRequest | undefined): Response {
     return finalErrorResponse(error, {
       method: req?.method,
       path: req?.path,
@@ -1630,30 +1775,57 @@ export class BunHttpAdapter<
     }
 
     if (body instanceof StreamableFile) {
-      // As @nestjs/platform-express: the file's type, disposition and length
-      // fill in whichever of those headers the handler did not set itself.
-      const { type, disposition, length } = body.getHeaders();
-      if (!response.getHeader("Content-Type") && type !== undefined) {
-        response.setHeader("Content-Type", type);
-      }
-      if (
-        !response.getHeader("Content-Disposition") &&
-        disposition !== undefined
-      ) {
-        response.setHeader("Content-Disposition", disposition);
-      }
-      if (!response.getHeader("Content-Length") && length !== undefined) {
-        response.setHeader("Content-Length", String(length));
-      }
-
-      const stream = body.getStream();
-      stream.once("error", (error: Error) => {
-        body.errorLogger(error);
-      });
-      return response.send(stream);
+      return this.#replyStreamableFile(response, body);
     }
 
     return response.send(body);
+  }
+
+  /**
+   * Sends a `StreamableFile`, as `@nestjs/platform-express` does: its type,
+   * disposition and length fill in whichever of those headers the handler did
+   * not set, and a source that fails goes to the file's `errorHandler`
+   * (`StreamableFile.setErrorHandler()`), with this response.
+   *
+   * The response is held back until the source yields its first chunk, as
+   * Express writes the status line on the first chunk piped. So a source that
+   * fails before that (a file that cannot be opened) is answered by the
+   * handler, whose default answers `400` with the error's message; and one
+   * that had already failed when the handler returned is handed to it at once,
+   * without the file's headers (nestjs/nest 1933cc9ed, platform-express
+   * 12.2.0). After the first chunk, a failure is still handed to the handler,
+   * whose default ends the response, as Express's `res.end()` does.
+   */
+  #replyStreamableFile(
+    response: BunResponse,
+    file: StreamableFile,
+  ): BunResponse | Promise<BunResponse | void> | void {
+    const stream = file.getStream();
+    const failed: unknown = stream.errored;
+    if (failed) {
+      return file.errorHandler(asError(failed), response);
+    }
+    // As @nestjs/platform-express: the file's type, disposition and length
+    // fill in whichever of those headers the handler did not set itself.
+    const { type, disposition, length } = file.getHeaders();
+    if (!response.getHeader("Content-Type") && type !== undefined) {
+      response.setHeader("Content-Type", type);
+    }
+    if (
+      !response.getHeader("Content-Disposition") &&
+      disposition !== undefined
+    ) {
+      response.setHeader("Content-Disposition", disposition);
+    }
+    if (!response.getHeader("Content-Length") && length !== undefined) {
+      response.setHeader("Content-Length", String(length));
+    }
+
+    const chunks = stream[Symbol.asyncIterator]() as AsyncIterator<unknown>;
+    return chunks.next().then(
+      (first) => response.send(streamFileFrom(first, chunks, file, response)),
+      (error: unknown) => file.errorHandler(asError(error), response),
+    );
   }
 
   public status(response: BunResponse, statusCode: number) {
@@ -1738,6 +1910,53 @@ export class BunHttpAdapter<
    */
   public isRouteOrderSensitive(): boolean {
     return true;
+  }
+
+  /**
+   * Installs the request hook behind Nest 12's `app.enableCsrfProtection()`
+   * and `app.useSecurityHeaders()`, as `AbstractHttpAdapter`'s default does
+   * for Express: a middleware at this point of the chain (so before Nest's
+   * body parsers and middleware, which `app.init()` registers later) that
+   * calls `hook(req, res)` and hands an error it returns to `next(err)`, the
+   * exception layer. That layer answers on the same response, so a `403`
+   * carries the headers the hook set (see {@link handleRequestError}).
+   *
+   * One difference from that default, so the hook runs before the body is
+   * read, as on Express (where the body is read by a body-parser middleware
+   * registered after it): from here on the request options defer the body
+   * (`deferBody: true`), unless they set `deferBody` themselves. A rejected
+   * request is then refused before its body is read, so a malformed or
+   * oversized body gets the `403`, not a `400` or `413`; an accepted one is
+   * read by the first body parser, or just before its route handler, as
+   * before. An application with neither feature keeps reading bodies while
+   * the request is built.
+   *
+   * Declared without `override`, since Nest 11's `AbstractHttpAdapter` has
+   * no such member (Nest 11 has neither feature, and never calls it). The
+   * hook's type is Nest 12's `SecurityRequestHook`, written structurally.
+   */
+  public registerSecurityHook(
+    /** Nest's hook: sets the security headers, returns the error that rejects the request. */
+    hook: (
+      request: BunRequest,
+      response: {
+        setHeader: (name: string, value: string) => unknown;
+        removeHeader: (name: string) => unknown;
+      },
+    ) => Error | undefined,
+  ): this {
+    if (!this.#securityHookDefersBody) {
+      this.#securityHookDefersBody = true;
+      this.requestOpts = this.#requestOpts;
+    }
+    return this.use((req, res, next) => {
+      const error = hook(req, res);
+      if (error) {
+        next(error);
+      } else {
+        next();
+      }
+    });
   }
 
   // `prefix` is accepted for `AbstractHttpAdapter` signature parity; these
