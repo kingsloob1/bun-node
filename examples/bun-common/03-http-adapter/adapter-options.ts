@@ -216,6 +216,9 @@ step("server.routes: native static routes, served by Bun ahead of the router");
 
 const helloFile = join(import.meta.dir, "fixtures", "public", "hello.txt");
 const native = new BunHttpAdapter(0, {
+  // The router ignores case by default, like Express; this adapter opts back
+  // in, so `/Health` below shows Bun's native match deferring to the router.
+  router: { caseSensitive: true },
   server: {
     routes: {
       "/health": new Response("ok", {
@@ -285,7 +288,7 @@ checkEqual("…and no middleware ran for any of them", nativeTrail, []);
 
 // The caveats: Bun's matching, not the router's.
 checkEqual(
-  "GET /Health: case-sensitive, so the router answers",
+  "GET /Health: Bun's native match is case-sensitive, so the router answers (here with caseSensitive: true)",
   (await served("/Health")).body,
   "the router's /Health",
 );
@@ -310,5 +313,23 @@ checkEqual(
   "the router's /health",
 );
 await native.close();
+
+/* ------------------------------------------------------------------ */
+step("router.caseSensitive: false by default, as in Express");
+
+const caseless = new BunHttpAdapter();
+caseless.get("/health", (_req, res) => res.send("the router's /health"));
+await caseless.listen(0);
+checkEqual(
+  "GET /Health with the default router: case is ignored, so /health answers",
+  await (await fetch(`${caseless.url}/Health`)).text(),
+  "the router's /health",
+);
+checkEqual(
+  "…and the same through adapter.fetch()",
+  await (await caseless.fetch("/HEALTH")).text(),
+  "the router's /health",
+);
+await caseless.close();
 
 summary();
