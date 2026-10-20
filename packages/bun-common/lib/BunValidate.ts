@@ -8,6 +8,14 @@ import type { JsonValue } from "./utils/native";
 /** The request members `BunValidate` can validate. */
 export type ValidationTarget = "params" | "query" | "body" | "headers";
 
+/** Every target, in the order they are validated and reported. */
+const VALIDATION_TARGETS: readonly ValidationTarget[] = [
+  "headers",
+  "params",
+  "query",
+  "body",
+];
+
 /** Schemas to apply, keyed by target. Every one is optional. */
 export interface ValidationSchemas {
   /** Validates `req.params` — the values matched out of the path. */
@@ -202,12 +210,16 @@ export interface BunValidateOptions<
   H extends ValidationHooks<S> = ValidationHooks<S>,
   R extends boolean = true,
 > {
-  /** Schemas to apply, keyed by request target. */
+  /**
+   * Schemas to apply, keyed by request target. A key that is not a target
+   * throws a `TypeError` here, rather than being ignored at runtime.
+   */
   schemas: S;
   /**
    * What to do when validation fails. Defaults to `"next"`, which hands a
    * {@link ValidationError} to the Express-style error pipeline so the
-   * application controls the response shape.
+   * application controls the response shape. An explicit `undefined` keeps
+   * the default, as for every option here.
    */
   onFailure?: ValidationFailureMode;
   /** Status used by `"respond"`, and reported on the error. Defaults to 400. */
@@ -421,16 +433,29 @@ export class BunValidate<
    *   {@link BunValidateOptions}.
    */
   constructor(options: BunValidateOptions<S, H, R>) {
+    // A key the request has no target for would be ignored at runtime, and a
+    // type cannot catch it once `S` is inferred, so it fails here.
+    for (const key of Object.keys(options.schemas)) {
+      if (!VALIDATION_TARGETS.includes(key as ValidationTarget)) {
+        throw new TypeError(
+          `validate(): unknown target "${key}"; the targets are ${VALIDATION_TARGETS.join(", ")}`,
+        );
+      }
+    }
+
+    // `??`, not a spread under the defaults: an option given as `undefined`
+    // keeps its default rather than replacing it.
     this.#options = {
-      onFailure: "next",
-      status: 400,
-      abortEarly: false,
       ...options,
+      onFailure: options.onFailure ?? "next",
+      status: options.status ?? 400,
+      abortEarly: options.abortEarly ?? false,
       replace: options.replace ?? true,
     };
 
-    const order: ValidationTarget[] = ["headers", "params", "query", "body"];
-    this.#targets = order.filter((target) => !!options.schemas[target]);
+    this.#targets = VALIDATION_TARGETS.filter(
+      (target) => !!options.schemas[target],
+    );
   }
 
   /** The schemas this instance validates against. */

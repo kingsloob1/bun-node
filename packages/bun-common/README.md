@@ -1331,6 +1331,10 @@ On success the parsed output **replaces** `req.params`, `req.query` and
 `req.body`, so `z.coerce.number()` gives the handler a `number`. Headers are
 checked but never replaced.
 
+Any other key in `schemas` (`cookies`, a typo) throws a `TypeError` when the
+middleware is built, rather than being ignored. An option given as
+`undefined` keeps its default.
+
 | Option | Default | Meaning |
 |---|---|---|
 | `onFailure` | `"next"` | `"next"` passes a `ValidationError` to the error pipeline, `"throw"` throws it, and `"respond"` answers at once. |

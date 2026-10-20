@@ -407,6 +407,78 @@ describe("BunValidate: failure handling", () => {
   });
 });
 
+describe("BunValidate: options given as undefined, and unknown targets", () => {
+  it("keeps every default when an option is given as undefined", async () => {
+    const router = new BunRouter();
+    router.get(
+      "/u",
+      validate(
+        { query: PageQuery, body: TitleBody },
+        {
+          onFailure: "respond",
+          status: undefined,
+          abortEarly: undefined,
+        },
+      ),
+      (_req, res) => res.send("unreachable"),
+    );
+    const response = await router.fetch("/u?page=abc", {
+      method: "GET",
+    });
+    // Before: `status: undefined` replaced the 400, and a failed request was
+    // answered 200 with the issues body.
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { issues: { target: string }[] };
+    // `abortEarly: undefined` keeps `false`: both targets are reported.
+    expect(body.issues.map((issue) => issue.target)).toEqual(["query", "body"]);
+  });
+
+  it("keeps onFailure's default, next, when it is given as undefined", async () => {
+    const router = new BunRouter();
+    let seen: unknown;
+    router.get(
+      "/n",
+      validate({ query: PageQuery }, { onFailure: undefined }),
+      (_req, res) => res.send("unreachable"),
+    );
+    router.use(((error, _req, res, _next) => {
+      seen = error;
+      void res.status(418).end();
+    }) satisfies RouterErrorMiddlewareHandler);
+    expect((await router.fetch("/n?page=abc")).status).toBe(418);
+    expect(seen).toBeInstanceOf(ValidationError);
+  });
+
+  it("throws a TypeError for a schema key that is not a target", () => {
+    // A known target beside it compiled, and the unknown one was ignored at
+    // runtime, so a failing value reached the handler.
+    const schemas = { query: PageQuery, cookies: TitleBody };
+    expect(() => validate(schemas as never)).toThrow(
+      new TypeError(
+        'validate(): unknown target "cookies"; the targets are headers, params, query, body',
+      ),
+    );
+    expect(() => new BunValidate({ schemas: schemas as never })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      BunValidate.middleware({ schemas: { cookie: PageQuery } as never }),
+    ).toThrow('unknown target "cookie"');
+  });
+
+  it("accepts every known target, and a target given as undefined", () => {
+    expect(() =>
+      validate({
+        headers: TitleBody,
+        params: NumericIdParams,
+        query: PageQuery,
+        body: TitleBody,
+      }),
+    ).not.toThrow();
+    expect(() => validate({ query: PageQuery, body: undefined })).not.toThrow();
+  });
+});
+
 describe("BunValidate: async schemas", () => {
   it("awaits a schema that validates asynchronously", async () => {
     const AsyncSchema: StandardSchemaV1<unknown, { page: number }> = {
