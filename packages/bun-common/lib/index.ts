@@ -324,6 +324,7 @@ export {
   markSocketFree,
   normalizeEtagOption,
   type SendFileCallOptions,
+  SocketFreeExchange,
   toFetchResponse,
   type UpgradeToWebsocketOptions,
 } from "./BunResponse";
@@ -414,6 +415,7 @@ export {
   type FetchInput,
   isRequestTimeoutError,
   type matchedRoute,
+  openSocketFree,
   type PipelineOptions,
   type PipelineServeOutcome,
   RequestPipelineOptions,

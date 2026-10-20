@@ -30,7 +30,7 @@ import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
 import {
   BunResponse as BunResponseClass,
-  markSocketFree,
+  SocketFreeExchange,
   toFetchResponse,
 } from "./BunResponse";
 import { resolveLogger } from "./logging";
@@ -39,6 +39,7 @@ import {
   CAPTURE_PARAM,
   compileRoutePath,
 } from "./utils/expressPath";
+import { SOCKET_FREE } from "./utils/general";
 import {
   isArray,
   isError,
@@ -671,6 +672,49 @@ export function toNativeRequest(
   );
   return new Request(url, options);
 }
+
+/**
+ * Opens the {@link SocketFreeExchange} a socket-free `fetch()` serves
+ * through, over the native request {@link toNativeRequest} builds from
+ * `input`: the caller's own `Request`, not rebuilt, or one built from a path
+ * or `RequestInit`. The handler's `req.signal` is the exchange's, so the
+ * caller leaving (a cancelled streamed body, an abort of the caller's own
+ * signal) aborts it as a served disconnect does; `req.request.signal` stays
+ * the caller's.
+ *
+ * Serve the exchange's `request`, racing each step that waits with
+ * {@link SocketFreeExchange.race} and handing the caller
+ * {@link SocketFreeExchange.deliver}'s response; reject first with
+ * {@link SocketFreeExchange.preflight} when it says to.
+ *
+ * Exported only so bun-nest's adapter serves `fetch()` through the same
+ * path; not part of the supported API, and it may change without notice.
+ *
+ * @internal
+ */
+export function openSocketFree(
+  input: FetchInput,
+  init?: RequestInit,
+  origin: string = FETCH_DEFAULT_ORIGIN,
+): SocketFreeExchange {
+  const request = toNativeRequest(input, init, origin);
+  if (isRequestLike(input)) {
+    return new SocketFreeExchange(request, undefined, true);
+  }
+  // The signal the request was built with, read from its `RequestInit`
+  // rather than from the request, whose signal Bun creates on first read:
+  // `init`'s wins over the init form's, as in `toNativeRequest`'s spread.
+  const caller =
+    init !== undefined && "signal" in init
+      ? init.signal
+      : typeof input === "object" && "url" in input
+        ? (input as RequestInit).signal
+        : undefined;
+  return new SocketFreeExchange(request, caller, false);
+}
+
+/** A step's result that came after the caller left, with nothing to release. */
+function ignoreLate(): void {}
 
 /**
  * `url` without its fragment, as an HTTP client puts it on the wire: a client
@@ -5099,6 +5143,15 @@ export class BunRouter<
    * see {@link routesUndecodableBody}). Responses render through
    * {@link views}.
    *
+   * The caller leaving is a disconnect, as served (see
+   * {@link openSocketFree}): an abort of the request's signal rejects this
+   * with its reason, and so does the read in progress on a streamed body;
+   * cancelling a streamed body aborts `req.signal`, so `res`, `req` and
+   * `req.socket` emit `close`. A signal passed in a `RequestInit` that is
+   * aborted already rejects at once, without routing; a `Request`'s own is
+   * read only once the pipeline waits on a layer (see
+   * {@link SocketFreeExchange.race}).
+   *
    * @example
    * ```ts
    * await router.fetch("/users/42");                       // GET
@@ -5110,24 +5163,32 @@ export class BunRouter<
    *   carrying a `url`.
    * @param init  Extra `RequestInit` applied when `input` is a path or URL.
    */
-  async fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+  fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
     const host = this.localOptions?.host;
-    const nativeRequest = markSocketFree(
-      toNativeRequest(
-        input,
-        init,
-        // A host *pattern* is not an origin; only a literal hostname is.
-        host && LITERAL_HOST_RE.test(host) ? `http://${host}` : undefined,
-      ),
+    const exchange = openSocketFree(
+      input,
+      init,
+      // A host *pattern* is not an origin; only a literal hostname is.
+      host && LITERAL_HOST_RE.test(host) ? `http://${host}` : undefined,
     );
+    return exchange.preflight() ?? this.#fetchExchange(exchange);
+  }
 
-    const created = BunRequestClass.init(nativeRequest, FETCH_STUB_SERVER, {
+  /**
+   * {@link fetch}'s routing of the exchange's request. Each step that waits
+   * is raced against the caller's signal; a step that does not is not
+   * awaited, so a request routed synchronously never reads that signal.
+   */
+  async #fetchExchange(exchange: SocketFreeExchange): Promise<Response> {
+    const created = BunRequestClass.init(exchange.request, FETCH_STUB_SERVER, {
       parseBody: true,
       parseCookies: true,
       parseQuery: true,
     });
     const request =
-      created instanceof BunRequestClass ? created : await created;
+      created instanceof BunRequestClass
+        ? created
+        : await exchange.race(created, ignoreLate);
     const response = new BunResponseClass(request, { views: this.views });
 
     const pipelineOptions: PipelineOptions = {
@@ -5143,37 +5204,51 @@ export class BunRouter<
       });
     };
     // An overridden `handle` is run through the override.
-    const routed: PipelineServeOutcome =
+    const serving: PipelineServeOutcome | Promise<PipelineServeOutcome> =
       this.handle === BunRouter.prototype.handle
-        ? await this.serveRequest<PipelineServeOutcome>(pipelineOptions, {
+        ? this.serveRequest<PipelineServeOutcome>(pipelineOptions, {
             respond: (_options, routeUsed) => ({ routeUsed }),
             stream: (_options, stream) => ({ stream }),
             error: (_options, error) => error,
             lateError: (_options, error) => onLateError(error),
           })
-        : await awaitPipelineOrStream(
+        : awaitPipelineOrStream(
             this.handle(pipelineOptions),
             response,
             onLateError,
           );
+    const routed =
+      serving instanceof Promise
+        ? await exchange.race(serving, (late) => {
+            if (late.stream !== undefined) {
+              exchange.discard(late.stream);
+            }
+          })
+        : serving;
     if (routed.stream !== undefined) {
-      return toFetchResponse(routed.stream, request.method);
+      return exchange.deliver(toFetchResponse(routed.stream, request.method));
     }
     const handled = routed.routeUsed;
 
     if (handled) {
-      return toFetchResponse(
-        response.settledResponse ?? (await response.getNativeResponse(0)),
-        request.method,
+      return exchange.deliver(
+        toFetchResponse(
+          response.settledResponse ?? (await response.getNativeResponse(0)),
+          request.method,
+        ),
       );
     }
     if (response.settledResponse) {
-      return toFetchResponse(response.settledResponse, request.method);
+      return exchange.deliver(
+        toFetchResponse(response.settledResponse, request.method),
+      );
     }
 
     // Nothing matched, exactly as the adapter reports when no route claims a
     // request and no not-found handler is registered.
-    return new Response(null, { status: 404, statusText: "Not Found" });
+    return exchange.deliver(
+      new Response(null, { status: 404, statusText: "Not Found" }),
+    );
   }
 
   clearRouteCache() {
@@ -5895,6 +5970,15 @@ export class BunRouter<
       pipeline.reject = reject;
     });
     state.async = pipeline;
+    // A socket-free `fetch()`'s exchange learns of it, so that the caller
+    // leaving rejects it (see `SocketFreeExchange.park`). A served request
+    // pays this property read, only when its pipeline waits.
+    const exchange = (
+      state.options.request.request as Request & { [SOCKET_FREE]?: unknown }
+    )[SOCKET_FREE];
+    if (exchange instanceof SocketFreeExchange) {
+      exchange.park(pipeline);
+    }
     const { response } = state.options;
     response.whenResponded((native) => {
       const serve = state.serve;

@@ -1,3 +1,5 @@
+import type { BunRequest } from "../lib/BunRequest";
+import type { BunResponse } from "../lib/BunResponse";
 import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import { describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
@@ -889,5 +891,403 @@ describe("fetch: a bare path starting with // is a path, not a host", () => {
     const res = await adapter.fetch("//x/y");
     expect(await res.text()).toBe("path://x/y");
     expect((await adapter.fetch("//")).status).toBe(200);
+  });
+});
+
+/**
+ * The caller leaving, socket-free as served. A served client leaves by
+ * cancelling a body still being produced, or by aborting its own `fetch()`;
+ * the handler's `req.signal` then aborts with Bun's `AbortError` ("The
+ * connection was closed."), `res`, `req` and `req.socket` emit `close`, and
+ * the caller's promise (or the read in progress on its body) rejects with its
+ * abort reason. Each case runs served first, as the reference, then through
+ * `router.fetch()` and `adapter.fetch()` (a path with a `RequestInit`, and a
+ * `Request`), and asserts both the same outcome and what the served one is.
+ * Every wait is on an event.
+ */
+describe("fetch: the caller leaving is a disconnect, as served", () => {
+  /** What one request's handler saw of its client; each promise settles on its event. */
+  interface Seen {
+    /** The handler's `req.signal`. */
+    signal: AbortSignal;
+    /** The native request's own signal, `req.request.signal`. */
+    requestSignal: AbortSignal;
+    /** `req.signal`'s `abort` (at once if it was aborted already). */
+    aborted: Promise<void>;
+    /** `res` `'close'`. */
+    resClose: Promise<void>;
+    /** `req` `'close'`. */
+    reqClose: Promise<void>;
+    /** `req.socket` `'close'`. */
+    socketClose: Promise<void>;
+    /** The names of the `res` `'error'` events so far. */
+    resErrors: string[];
+    /** The source stream of `/stream` being cancelled. */
+    sourceCancelled: Promise<void>;
+    /** Settles {@link sourceCancelled}; called by that stream's `cancel`. */
+    cancelSource: () => void;
+  }
+
+  /** Requests that reached a handler and are not yet taken, oldest first. */
+  const arrived: Seen[] = [];
+  /** Waiters for the next arrival. */
+  const waiting: ((seen: Seen) => void)[] = [];
+
+  /** The next request to reach a handler. */
+  function nextArrival(): Promise<Seen> {
+    const seen = arrived.shift();
+    return seen
+      ? Promise.resolve(seen)
+      : new Promise((resolve) => waiting.push(resolve));
+  }
+
+  /** Records `req`/`res` as {@link Seen}, and announces its arrival. */
+  function observe(req: BunRequest, res: BunResponse): Seen {
+    const on = (subscribe: (fire: () => void) => void): Promise<void> =>
+      new Promise((resolve) => subscribe(() => resolve()));
+    const source = Promise.withResolvers<void>();
+    const signal = req.signal;
+    const seen: Seen = {
+      signal,
+      requestSignal: req.request.signal,
+      aborted: signal.aborted
+        ? Promise.resolve()
+        : on((fire) => signal.addEventListener("abort", fire, { once: true })),
+      resClose: on((fire) => res.once("close", fire)),
+      reqClose: on((fire) => req.once("close", fire)),
+      socketClose: on((fire) => req.socket.once("close", fire)),
+      resErrors: [],
+      sourceCancelled: source.promise,
+      cancelSource: source.resolve,
+    };
+    res.on("error", (error) => seen.resErrors.push((error as Error).name));
+    const waiter = waiting.shift();
+    if (waiter) {
+      waiter(seen);
+    } else {
+      arrived.push(seen);
+    }
+    return seen;
+  }
+
+  /** Releases each `/hold` handler waiting. */
+  const holds: (() => void)[] = [];
+
+  /** The app, the same served and socket-free. */
+  function build(app: BunRouter): void {
+    // A `write()` stream.
+    app.get("/write", (req, res) => {
+      observe(req, res);
+      res.write("a");
+    });
+    // An SSE-like stream: its headers, a first comment, then silence.
+    app.get("/sse", (req, res) => {
+      observe(req, res);
+      res.setHeader("Content-Type", "text/event-stream");
+      res.flushHeaders();
+      res.write(": ok\n\n");
+    });
+    // A stream passed to `send()`.
+    app.get("/stream", (req, res) => {
+      const seen = observe(req, res);
+      res.send(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => controller.enqueue(new Uint8Array([97])),
+          cancel: () => seen.cancelSource(),
+        }),
+      );
+    });
+    app.get("/buffered", (req, res) => {
+      observe(req, res);
+      res.send("hello");
+    });
+    // Answers only once its client has left.
+    app.get("/pending", async (req, res) => {
+      const seen = observe(req, res);
+      await seen.aborted;
+      void res.status(204).end();
+    });
+    app.get("/ping", (_req, res) => {
+      res.send("pong");
+    });
+    // Waits until the test releases it, reading nothing of its client.
+    app.get("/hold", async (_req, res) => {
+      const held = Promise.withResolvers<void>();
+      holds.push(held.resolve);
+      await held.promise;
+      void res.status(204).end();
+    });
+  }
+
+  /** How a case reaches the app. */
+  type Client = (path: string, init?: RequestInit) => Promise<Response>;
+
+  /** Each mode, served first: a fresh app per mode, closed by the caller. */
+  async function modes(): Promise<{
+    clients: [name: string, client: Client][];
+    close: () => Promise<void>;
+  }> {
+    const served = new BunHttpAdapter(0);
+    build(served);
+    const server = await served.listen(0);
+    const router = new BunRouter();
+    build(router);
+    const offline = new BunHttpAdapter(0);
+    build(offline);
+    return {
+      clients: [
+        [
+          "served",
+          (path, init) => fetch(`http://127.0.0.1:${server.port}${path}`, init),
+        ],
+        ["router.fetch()", (path, init) => router.fetch(path, init)],
+        ["adapter.fetch(path)", (path, init) => offline.fetch(path, init)],
+        [
+          "adapter.fetch(Request)",
+          (path, init) =>
+            offline.fetch(new Request(`http://localhost${path}`, init)),
+        ],
+      ],
+      close: () => served.close(),
+    };
+  }
+
+  /** `reason` as `name: message`, for comparing modes. */
+  const describeReason = (reason: unknown): string =>
+    `${(reason as Error).name}: ${(reason as Error).message}`;
+
+  /** What a served disconnect aborts the request's signal with, in Bun. */
+  const DISCONNECTED = "AbortError: The connection was closed.";
+
+  it("cancelling a streamed body aborts req.signal and closes res, req and req.socket", async () => {
+    const { clients, close } = await modes();
+    try {
+      for (const path of ["/write", "/sse", "/stream"]) {
+        const outcomes: Record<string, unknown> = {};
+        for (const [name, client] of clients) {
+          const arrival = nextArrival();
+          const response = await client(path);
+          const seen = await arrival;
+          const reader = response.body!.getReader();
+          await reader.read();
+          await reader.cancel();
+          await Promise.all([
+            seen.aborted,
+            seen.resClose,
+            seen.reqClose,
+            seen.socketClose,
+            path === "/stream" ? seen.sourceCancelled : undefined,
+          ]);
+          outcomes[name] = {
+            reason: describeReason(seen.signal.reason),
+            resErrors: seen.resErrors,
+          };
+        }
+        const served = outcomes.served;
+        expect(served).toEqual({
+          reason: DISCONNECTED,
+          // Bun cancels the body's source with the same reason, which a
+          // `write()` stream reports as a stream error.
+          resErrors: path === "/stream" ? [] : ["AbortError"],
+        });
+        expect(outcomes).toEqual({
+          served,
+          "router.fetch()": served,
+          "adapter.fetch(path)": served,
+          "adapter.fetch(Request)": served,
+        });
+      }
+    } finally {
+      await close();
+    }
+  });
+
+  it("cancelling a buffered body leaves req.signal alone, as served", async () => {
+    const { clients, close } = await modes();
+    try {
+      for (const [, client] of clients) {
+        const arrival = nextArrival();
+        const response = await client("/buffered");
+        const seen = await arrival;
+        await response.body!.cancel();
+        // A request after it has gone the whole way through: a disconnect
+        // would have aborted the signal by then (served, at once).
+        expect(await (await client("/ping")).text()).toBe("pong");
+        expect(seen.signal.aborted).toBe(false);
+      }
+    } finally {
+      await close();
+    }
+  });
+
+  it("a RequestInit signal aborted before the call rejects with its reason, and nothing is handled", async () => {
+    const { clients, close } = await modes();
+    try {
+      // A `Request`'s own signal is read later: the next case.
+      for (const [name, client] of clients) {
+        if (name === "adapter.fetch(Request)") {
+          continue;
+        }
+        const reason = new Error("left before asking");
+        const handledBefore = arrived.length + waiting.length;
+        const rejected = await client("/pending", {
+          signal: AbortSignal.abort(reason),
+        }).catch((error: unknown) => error);
+        expect(rejected).toBe(reason);
+        expect(
+          await client("/ping", { signal: AbortSignal.abort() }).catch(
+            (error: unknown) => (error as Error).name,
+          ),
+        ).toBe("AbortError");
+        // Nothing reached a handler: no arrival was recorded.
+        expect(await (await client("/ping")).text()).toBe("pong");
+        expect(arrived.length + waiting.length).toBe(handledBefore);
+      }
+    } finally {
+      await close();
+    }
+  });
+
+  /**
+   * A `Request`'s own signal is created by Bun on its first read (~200 ns, a
+   * sixth of a socket-free request), so `fetch()` reads it only once the
+   * router's pipeline waits on a layer or the handler reads `req.signal`.
+   * One aborted before
+   * the call is therefore honoured there, not before handling: a handler
+   * that waits gets a disconnect and the caller a rejection, while one that
+   * answers synchronously is answered. `req.request.signal` stays the
+   * caller's own.
+   */
+  it("a Request's own signal aborted before the call is read once the pipeline waits", async () => {
+    const router = new BunRouter();
+    build(router);
+    const reason = new Error("left before asking");
+    const signal = AbortSignal.abort(reason);
+
+    const arrival = nextArrival();
+    const pending = router.fetch(
+      new Request("http://localhost/pending", { signal }),
+    );
+    const seen = await arrival;
+    expect(await pending.catch((error: unknown) => error)).toBe(reason);
+    await seen.aborted;
+    expect(describeReason(seen.signal.reason)).toBe(DISCONNECTED);
+    expect(seen.requestSignal).toBe(signal);
+
+    // Answered synchronously, the signal is never read.
+    const answered = await router.fetch(
+      new Request("http://localhost/ping", { signal }),
+    );
+    expect(await answered.text()).toBe("pong");
+  });
+
+  it("an abort while the response is pending rejects with its reason when nothing reads req.signal", async () => {
+    const { clients, close } = await modes();
+    try {
+      const outcomes: Record<string, unknown> = {};
+      for (const [name, client] of clients) {
+        const controller = new AbortController();
+        const reason = new Error("left while held");
+        const pending = client("/hold", { signal: controller.signal });
+        // Aborted in a later task than the call, as a caller giving up.
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        controller.abort(reason);
+        outcomes[name] =
+          (await pending.catch((error: unknown) => error)) === reason;
+        for (const release of holds.splice(0)) {
+          release();
+        }
+      }
+      expect(outcomes).toEqual({
+        served: true,
+        "router.fetch()": true,
+        "adapter.fetch(path)": true,
+        "adapter.fetch(Request)": true,
+      });
+    } finally {
+      for (const release of holds.splice(0)) {
+        release();
+      }
+      await close();
+    }
+  });
+
+  it("an abort while the response is pending rejects with its reason, and the handler sees a disconnect", async () => {
+    const { clients, close } = await modes();
+    try {
+      const outcomes: Record<string, unknown> = {};
+      for (const [name, client] of clients) {
+        const controller = new AbortController();
+        const arrival = nextArrival();
+        const pending = client("/pending", { signal: controller.signal });
+        const seen = await arrival;
+        const reason = new Error("left while waiting");
+        controller.abort(reason);
+        const rejected = await pending.catch((error: unknown) => error);
+        await Promise.all([
+          seen.aborted,
+          seen.resClose,
+          seen.reqClose,
+          seen.socketClose,
+        ]);
+        outcomes[name] = {
+          rejectedWithReason: rejected === reason,
+          handlerSaw: describeReason(seen.signal.reason),
+        };
+      }
+      const served = { rejectedWithReason: true, handlerSaw: DISCONNECTED };
+      expect(outcomes).toEqual({
+        served,
+        "router.fetch()": served,
+        "adapter.fetch(path)": served,
+        "adapter.fetch(Request)": served,
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("an abort after a stream started errors the read in progress, and the handler sees a disconnect", async () => {
+    const { clients, close } = await modes();
+    try {
+      for (const path of ["/write", "/sse"]) {
+        const outcomes: Record<string, unknown> = {};
+        for (const [name, client] of clients) {
+          const controller = new AbortController();
+          const arrival = nextArrival();
+          const response = await client(path, { signal: controller.signal });
+          const seen = await arrival;
+          const reader = response.body!.getReader();
+          await reader.read();
+          const reading = reader.read();
+          const reason = new Error("left mid-stream");
+          controller.abort(reason);
+          const failed = await reading.catch((error: unknown) => error);
+          await Promise.all([
+            seen.aborted,
+            seen.resClose,
+            seen.reqClose,
+            seen.socketClose,
+          ]);
+          outcomes[name] = {
+            readRejectedWithReason: failed === reason,
+            handlerSaw: describeReason(seen.signal.reason),
+          };
+        }
+        const served = {
+          readRejectedWithReason: true,
+          handlerSaw: DISCONNECTED,
+        };
+        expect(outcomes).toEqual({
+          served,
+          "router.fetch()": served,
+          "adapter.fetch(path)": served,
+          "adapter.fetch(Request)": served,
+        });
+      }
+    } finally {
+      await close();
+    }
   });
 });
