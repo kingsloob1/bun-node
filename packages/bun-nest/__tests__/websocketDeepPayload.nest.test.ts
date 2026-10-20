@@ -11,6 +11,15 @@
  * The server runs as a child process (`fixtures/ws-deep-payload/server.ts`),
  * so "the process exited" is observed as such rather than as a test runner's
  * unhandled error.
+ *
+ * **What it waits on.** Making `JSON.stringify` overflow costs about 1.5 s
+ * of CPU in Bun 1.4 (oven-sh/bun#45791; measured 2026-10-17: 28,000 levels
+ * stringify in 1 ms, 32,000 in 0.8 s, and 200,000 throw after 1.4–1.6 s),
+ * and several suites side by side make that several seconds. So the test waits for the server's own signal that the reply
+ * failed, the `RangeError` on its stderr (logged by the guard, or printed as
+ * the process dies without one), not for a fixed time, and then for a short
+ * grace in which a rethrown error would end the process. The deadlines are
+ * only there to fail a hang with a message saying which step hung.
  */
 import type { Subprocess } from "bun";
 import { join } from "node:path";
@@ -22,6 +31,33 @@ const EVENT = MessageEventTypes.EVENT;
 
 let child: Subprocess<"ignore", "pipe", "pipe">;
 let base = "";
+/** The child's stderr so far, collected from spawn on. */
+let stderr = "";
+/** Resolves once the child's stderr has been read to its end. */
+let stderrDone: Promise<void>;
+
+/** A deadline for a step that is only slow, never stuck: CPU-bound work under load. */
+const STEP_MS = 30_000;
+
+/** Resolves once the child's stderr contains `text`; rejects after `ms`, quoting it. */
+async function stderrContains(text: string, ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!stderr.includes(text)) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `no ${text} on the server's stderr within ${ms} ms; it has: ${stderr || "(nothing)"}`,
+      );
+    }
+    if (child.exitCode !== null) {
+      await stderrDone;
+      if (stderr.includes(text)) return;
+      throw new Error(
+        `the server exited (${child.exitCode}) without logging ${text}: ${stderr || "(nothing)"}`,
+      );
+    }
+    await Bun.sleep(10);
+  }
+}
 
 /** Reads `stream` until a line `PORT <n>` arrives, and returns `n`. */
 async function readPort(stream: ReadableStream<Uint8Array>): Promise<number> {
@@ -52,6 +88,12 @@ beforeAll(async () => {
       stderr: "pipe",
     },
   );
+  stderrDone = (async () => {
+    const decoder = new TextDecoder();
+    for await (const chunk of child.stderr) {
+      stderr += decoder.decode(chunk, { stream: true });
+    }
+  })();
   base = `ws://127.0.0.1:${await readPort(child.stdout)}`;
 });
 
@@ -61,27 +103,41 @@ afterAll(async () => {
 });
 
 describe("a WebSocket reply that cannot be serialised", () => {
-  it("is dropped and logged, and the server keeps answering on the same connection", async () => {
-    const client = await connectWs(`${base}/`);
-    const depth = 200_000;
-    // Written as text: the client's own JSON.stringify would overflow too.
-    client.send(
-      `{"type":${EVENT},"namespace":"/","data":["echo",${"[".repeat(depth)}${"]".repeat(depth)}]}`,
-    );
-    // Long enough for the reply to fail, and for a rethrown error to end
-    // the process before the next message.
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    client.send({ type: EVENT, namespace: "/", data: ["echo", { ok: true }] });
-    const reply = await client.waitFor((m) => m?.data?.[0] === "echo", 3000);
+  it(
+    "is dropped and logged, and the server keeps answering on the same connection",
+    async () => {
+      const client = await connectWs(`${base}/`);
+      const depth = 200_000;
+      // Written as text: the client's own JSON.stringify would overflow too.
+      client.send(
+        `{"type":${EVENT},"namespace":"/","data":["echo",${"[".repeat(depth)}${"]".repeat(depth)}]}`,
+      );
+      // The reply has failed once the RangeError is on stderr; then a grace in
+      // which a rethrown error would end the process before the next message.
+      await stderrContains("RangeError", STEP_MS);
+      await Bun.sleep(300);
+      expect(child.exitCode).toBeNull();
+      client.send({
+        type: EVENT,
+        namespace: "/",
+        data: ["echo", { ok: true }],
+      });
+      const reply = await client.waitFor(
+        (m) => m?.data?.[0] === "echo",
+        STEP_MS,
+      );
 
-    expect(reply.data[1]).toEqual({ ok: true });
-    expect(client.received).toHaveLength(1);
-    expect(child.exitCode).toBeNull();
-    await client.close();
+      expect(reply.data[1]).toEqual({ ok: true });
+      expect(client.received).toHaveLength(1);
+      expect(child.exitCode).toBeNull();
+      await client.close();
 
-    child.kill();
-    await child.exited;
-    // Logged through Nest's logger, which the app left on for errors.
-    expect(await new Response(child.stderr).text()).toContain("RangeError");
-  });
+      child.kill();
+      await child.exited;
+      await stderrDone;
+      // Logged through Nest's logger, which the app left on for errors.
+      expect(stderr).toContain("RangeError");
+    },
+    3 * STEP_MS,
+  );
 });

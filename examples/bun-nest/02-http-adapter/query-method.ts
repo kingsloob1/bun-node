@@ -50,6 +50,7 @@ import type {
   PipeTransform,
 } from "@nestjs/common";
 import type { Observable } from "rxjs";
+import { dirname, join } from "node:path";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import * as common from "@nestjs/common";
 import {
@@ -77,10 +78,32 @@ import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import "reflect-metadata";
 
-/** The installed `@nestjs/common`'s version, which decides what runs below. */
-const NEST_VERSION = (
-  (await import("@nestjs/common/package.json")) as { version: string }
-).version;
+/**
+ * The installed `@nestjs/common`'s version, read from its `package.json` on
+ * disk: Nest 12's `exports` map has no `./package.json`, so importing it
+ * resolves under Bun alone, never under TypeScript or Node.
+ * @returns The version string, such as "12.1.3".
+ */
+async function nestCommonVersion(): Promise<string> {
+  let dir = dirname(Bun.resolveSync("@nestjs/common", import.meta.dir));
+  for (;;) {
+    const file = Bun.file(join(dir, "package.json"));
+    if (await file.exists()) {
+      const pkg = (await file.json()) as { name?: string; version: string };
+      if (pkg.name === "@nestjs/common") return pkg.version;
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      throw new Error("@nestjs/common's package.json was not found");
+    dir = parent;
+  }
+}
+
+/**
+ * The installed `@nestjs/common`'s version: for the skip line and the check
+ * that the capability below arrives with 11.2.0. It gates nothing.
+ */
+const NEST_VERSION = await nestCommonVersion();
 
 /**
  * Whether this Nest has HTTP `QUERY`: the gate for every `@QueryMethod()`

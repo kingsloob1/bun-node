@@ -54,10 +54,10 @@ import {
 } from "@nestjs/common";
 import * as nestCommon from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { ExpressAdapter } from "@nestjs/platform-express";
 import cookieParser from "cookie-parser";
 import { interval, map, take } from "rxjs";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
+import { expressReference } from "./reference";
 import "reflect-metadata";
 
 /** The fixture directory: `views/` (EJS templates) and `public/` (static files). */
@@ -714,7 +714,7 @@ export async function boot(
 ): Promise<Booted> {
   const adapter =
     side === "express"
-      ? new ExpressAdapter()
+      ? expressReference()
       : new BunHttpAdapter(0, bunCookieAdapterOptions());
   const app = await NestFactory.create(module, adapter, {
     logger: false,

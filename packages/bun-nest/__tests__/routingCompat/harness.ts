@@ -29,6 +29,7 @@ import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
 import { RouteInfoPathExtractor } from "@nestjs/core/middleware/route-info-path-extractor.js";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
+import { expressReference } from "../expressCompat/reference";
 import "reflect-metadata";
 
 /**
@@ -158,9 +159,13 @@ export interface Booted {
  */
 export async function boot(side: Side, group: Group): Promise<Booted> {
   const logger = new CaptureLogger();
+  // `expressReference()`: platform-express 12.0.0-12.0.1 mount the prefix's
+  // not-found router at "api", which Express 5 never matches; the reference
+  // carries 12.0.2's fix there, so the comparison tests our adapter, not that
+  // bug (see `expressCompat/reference.ts`).
   const adapter =
     side === "express"
-      ? new ExpressAdapter()
+      ? expressReference()
       : new BunHttpAdapter(0, group.bunOptions);
   const booted: Booted = { side, logs: logger.lines };
   if (adapter instanceof BunHttpAdapter) booted.adapter = adapter;

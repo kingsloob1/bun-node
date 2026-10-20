@@ -451,10 +451,14 @@ as columns of `scripts/nest-matrix.ts` (§9.3):
 
 | Column | When |
 |---|---|
-| 12-latest | every gate. From PR-3 of the plan on it is develop's lock, the repo itself; until then the lock is 11.1.27 and 12.1.3 is a column |
+| 12-latest (12.1.3) | every gate: it is develop's lock, the repo itself |
 | 11-latest (11.2.7) | every PR touching bun-nest or bun-common |
 | 11.1.20 and 12.0.0 (the floors) | once per merge window |
 | a new Nest release | when it ships, before the lock moves |
+
+A bun-jobs PR that changes `createJobsApi`'s options or `JobsApi`'s shape also
+runs bun-nest's suite and the 11.2.7 copy (bun-nest's `BunJobsApiModule` is
+written in those types).
 
 ```bash
 bun scripts/nest-matrix.ts --prepare 11.2.7      # direct: copy, pin, install, assert
@@ -470,8 +474,19 @@ majors. `--run` runs bun-nest's suite, a bare `bun --check` in bun-nest,
 (its consumer pinned to the column's Nest, its work in
 `<base>/cc-<version>/`), one line per check with counts, full output in
 `<copy>/matrix-logs/`. `--dry-run` prints the plan, `--list` the copies.
-**One column at a time**, several as `--run 12.1.3 11.2.7`: bun-nest's suite
-binds the fixed port 10000, so two runs at once fail a `beforeAll` (measured).
+Several versions in one `--run` (`--run 12.1.3 11.2.7`) run in turn.
+**Separate `--run`s may run at once**, as wrapped jobs (the wrapper decides
+how many). bun-nest's suite binds only port 0 since PR-2 (measured
+2026-10-17: two suites side by side were clean in 4 of 4 rounds; with the old
+fixed port 10000 put back, 2 of 2 rounds failed a `beforeAll` on
+`EADDRINUSE`). Its two WebSocket serialisation tests make `JSON.stringify`
+overflow, about 1.5 s of CPU in Bun (oven-sh/bun#45791), and used to race
+fixed deadlines (3 s, and bun:test's 5 s); since PR-3 the deep-payload test
+waits for the server's `RangeError` and the adapter test has a 30 s
+deadline. Three and four suites side by side, 25 suites at loads up to 64,
+then had no timeout, where three had one in 2 of 2 rounds before. One test
+is still load-sensitive there: `sse.nest.test.ts`'s idle-timeout control
+failed 2 of those 25 suites with `ECONNRESET`.
 
 ### The compute-provider template
 
