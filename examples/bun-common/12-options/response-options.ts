@@ -17,9 +17,14 @@
  *   adapters, `router.fetch()` and a `BunWebSocket` dedicated server pass
  *   their application's one (`adapter.views` / `router.views`).
  *   `05-response/views.ts` covers views in full.
- * - `redirect()` is Express 5's (a body chosen by `Accept`, `Vary`,
- *   `Content-Length`, an encoded `Location`), and `clearCookie()` always
- *   expires the cookie at the epoch, dropping a `maxAge` or `expires`.
+ * - `redirect()` is Express 5.3.0's (a body chosen by `Accept` — for
+ *   `text/html` a small `<!DOCTYPE html>` document, the URL HTML-escaped —
+ *   `Vary`, `Content-Length`, an encoded `Location`), and `clearCookie()`
+ *   always expires the cookie at the epoch, dropping a `maxAge` or `expires`.
+ * - `Content-Disposition` (`attachment()`, `download()`, `sendFile()`'s
+ *   `download`) is Express 5.3.0's, `content-disposition` 2.x: the basename,
+ *   bare when it is a token, quoted when it is not, and a `?` fallback plus
+ *   `filename*` for a name outside printable US-ASCII.
  * - The files `sendFile()` serves are written to a temporary directory and
  *   removed at the end. `sendFile(path)` resolves `path` under `root`.
  * - `res.cookie()`'s `maxAge` is milliseconds; the header gets seconds.
@@ -940,15 +945,15 @@ checkEqual(
   ],
 );
 checkEqual(
-  "Accept: text/html — the same in a <p>, the URL HTML-escaped",
+  "Accept: text/html — a small HTML document, the URL HTML-escaped",
   (await redirectFor("text/html", "/a?x=1&y=<2>")).slice(1),
   [
     "/a?x=1&y=%3C2%3E",
     "text/html; charset=utf-8",
-    String("<p>Found. Redirecting to /a?x=1&amp;y=%3C2%3E</p>".length),
+    "110",
     "Accept",
     "kept",
-    "<p>Found. Redirecting to /a?x=1&amp;y=%3C2%3E</p>",
+    "<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to /a?x=1&amp;y=%3C2%3E</p></body>",
   ],
 );
 checkEqual(
@@ -1309,9 +1314,31 @@ await asDownload.sendFile("report.csv", {
   filename: "sales.csv",
 });
 checkEqual(
-  "download + filename",
+  "download + filename: a token, unquoted",
   asDownload.get("Content-Disposition"),
-  'attachment; filename="sales.csv"',
+  "attachment; filename=sales.csv",
+);
+const nestedName = await makeRes();
+await nestedName.sendFile("report.csv", {
+  root: dir,
+  download: true,
+  filename: "exports/2031/Q1 sales.csv",
+});
+checkEqual(
+  "download + filename: the basename, quoted when it is not a token",
+  nestedName.get("Content-Disposition"),
+  'attachment; filename="Q1 sales.csv"',
+);
+const emptyName = await makeRes();
+await emptyName.sendFile("report.csv", {
+  root: dir,
+  download: true,
+  filename: "",
+});
+checkEqual(
+  'download + filename: "" names the file served',
+  emptyName.get("Content-Disposition"),
+  "attachment; filename=report.csv",
 );
 const missing = await makeRes();
 await missing.sendFile("nope.csv", { root: dir });
@@ -1333,7 +1360,14 @@ await downloaded.download("report.csv", "renamed.csv", { root: dir }, () => {
 checkEqual(
   "download(path, filename, options, cb)",
   [downloaded.get("Content-Disposition"), callbackRan],
-  ['attachment; filename="renamed.csv"', true],
+  ["attachment; filename=renamed.csv", true],
+);
+const downloadedUnnamed = await makeRes();
+await downloadedUnnamed.download("report.csv", "", { root: dir });
+checkEqual(
+  'download(path, ""): the file\'s own name',
+  downloadedUnnamed.get("Content-Disposition"),
+  "attachment; filename=report.csv",
 );
 const attached = await makeRes();
 attached.attachment();
@@ -1350,9 +1384,29 @@ checkEqual(
   "text/csv",
 );
 checkEqual(
-  "…and the basename as the filename",
+  "…and the basename as the filename, a token unquoted",
   attachedFile.getHeader("Content-Disposition"),
-  'attachment; filename="report.csv"',
+  "attachment; filename=report.csv",
+);
+const attachedSpaced = await makeRes();
+attachedSpaced.attachment("/exports/Q1 report.csv");
+checkEqual(
+  "attachment(name): a name that is not a token is quoted",
+  attachedSpaced.getHeader("Content-Disposition"),
+  'attachment; filename="Q1 report.csv"',
+);
+const attachedAccented = await makeRes();
+attachedAccented.attachment("naïve résumé.pdf");
+checkEqual(
+  "attachment(name): a non-ASCII name gets a ? fallback plus filename*",
+  [
+    attachedAccented.getHeader("Content-Disposition"),
+    attachedAccented.get("Content-Type"),
+  ],
+  [
+    "attachment; filename=\"na?ve r?sum?.pdf\"; filename*=UTF-8''na%C3%AFve%20r%C3%A9sum%C3%A9.pdf",
+    "application/pdf",
+  ],
 );
 await rm(dir, { recursive: true, force: true });
 

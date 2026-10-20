@@ -818,6 +818,12 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+- bun-common copies **Express 5.3.0**'s `res.redirect` body and
+  `Content-Disposition`: an HTML redirect is a small `<!DOCTYPE html>`
+  document, and a download's filename is bare when it is a token
+  (`filename=report.csv`). On Express 5.2.1, which Nest 11 and Nest 12.0–12.1.3
+  install, Express answers `<p>Found. Redirecting to …</p>` and always quotes
+  the filename; Nest 12.2.0's Express 5.3.0 answers as bun-common does.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.

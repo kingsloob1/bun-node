@@ -43,7 +43,7 @@ export const EXPRESS_VERSION = packageVersion(
  * that makes bun-common copy a newer one (Express 5.3.0: an HTML document
  * around the redirect body, and a filename quoted only where it must be).
  */
-export const BUN_COMMON_COPIES_EXPRESS = "5.2";
+export const BUN_COMMON_COPIES_EXPRESS = "5.3";
 
 /** `[major, minor]` of a version string. */
 function minorOf(version: string): [number, number] {

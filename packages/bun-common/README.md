@@ -1197,21 +1197,32 @@ Example:
 | `immutable` | `false` | Adds `immutable` to `Cache-Control`. |
 | `lastModified` | `true` | `Last-Modified` from the file's mtime. |
 | `headers` | none | Extra headers, applied first, so they win over the defaults. |
-| `download`, `filename` | `false`, the basename | Adds `Content-Disposition: attachment`. |
+| `download`, `filename` | `false`, the basename | Adds `Content-Disposition: attachment`, naming the basename of `filename` (the file's when it is unset or empty) as `res.attachment` does. |
 
 Conditional requests are honoured: a failed precondition answers 412 and a
 fresh one 304. A missing file or a directory is answered with its status and
 an empty body. `res.download(path, filename?, options?, cb?)` is `sendFile`
 with `download: true`.
 
+`Content-Disposition`, from `res.attachment(filename?)` and `res.download`,
+is Express 5.3.0's (`content-disposition` 2.x): the basename of the name,
+bare when it is a token (`attachment; filename=report.csv`), quoted when it
+is not (`attachment; filename="Q1 report.csv"`), and for a name that is not
+printable US-ASCII an ASCII fallback plus `filename*`
+(`attachment; filename="caf?.txt"; filename*=UTF-8''caf%C3%A9.txt`).
+Express 5.2 quoted every name.
+
 #### Redirects, views and format
 
-- `res.redirect([status,] url)` is Express 5's: `Location` is URL-encoded
-  (`"back"` is literal), the status defaults to `302`, and the body is
-  `Found. Redirecting to <url>` as `text/plain`, `<p>…</p>` as `text/html`, or
-  empty, by `Accept`, with `Vary: Accept` and `Content-Length` (no body for
-  `HEAD`, no `ETag`). Headers set earlier are kept. `redirect(url, status)` is
-  accepted too; `redirect(url, init)` with a `ResponseInit` is Bun's
+- `res.redirect([status,] url)` is Express 5.3.0's: `Location` is
+  URL-encoded (`"back"` is literal), the status defaults to `302`, and the
+  body is `Found. Redirecting to <url>` as `text/plain`, a small HTML document
+  as `text/html`
+  (`<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to <url></p></body>`,
+  the URL escaped; Express 5.2 sent only the `<p>`), or empty, by `Accept`,
+  with `Vary: Accept` and `Content-Length` (no body for `HEAD`, no `ETag`).
+  Headers set earlier are kept. `redirect(url, status)` is accepted too;
+  `redirect(url, init)` with a `ResponseInit` is Bun's
   `Response.redirect(url, init)`.
 - `res.render(view, locals?, callback?)` is Express's, through the response's
   `views` (a `BunViews`, the constructor's `views` option). Both adapters,

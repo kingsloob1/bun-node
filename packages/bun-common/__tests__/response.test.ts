@@ -619,8 +619,9 @@ describe("BunResponse: sendFile", () => {
   it("download() sets Content-Disposition: attachment", async () => {
     const res = await makeResponse();
     await res.download(import.meta.path, "renamed.ts", { root: "/" });
-    expect(res.getHeader("Content-Disposition")).toContain("attachment");
-    expect(res.getHeader("Content-Disposition")).toContain("renamed.ts");
+    expect(res.getHeader("Content-Disposition")).toBe(
+      "attachment; filename=renamed.ts",
+    );
   });
 });
 
@@ -1005,14 +1006,14 @@ describe("BunResponse: Express parity", () => {
     const res = await makeResponse();
     expect(res.attachment("/var/data/report.csv")).toBe(res);
     expect(res.getHeader("Content-Disposition")).toBe(
-      'attachment; filename="report.csv"',
+      "attachment; filename=report.csv",
     );
     expect(res.getHeader("Content-Type")).toBe("text/csv");
 
     const unicode = await makeResponse();
     unicode.attachment("résumé€.pdf");
     expect(unicode.getHeader("Content-Disposition")).toBe(
-      `attachment; filename="résumé?.pdf"; filename*=UTF-8''r%C3%A9sum%C3%A9%E2%82%AC.pdf`,
+      `attachment; filename="r?sum??.pdf"; filename*=UTF-8''r%C3%A9sum%C3%A9%E2%82%AC.pdf`,
     );
   });
 
@@ -1398,7 +1399,7 @@ describe("BunResponse: sendFile follows Express / send", () => {
     const res = await makeResponse();
     await res.download(join(dir, "report.csv"));
     expect(res.getHeader("Content-Disposition")).toBe(
-      'attachment; filename="report.csv"',
+      "attachment; filename=report.csv",
     );
   });
 });
