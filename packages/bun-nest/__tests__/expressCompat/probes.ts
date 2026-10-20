@@ -129,6 +129,11 @@ export const GROUPS: ProbeGroup[] = [
       { name: "return array", path: "/arr" },
       { name: "return Buffer", path: "/buf" },
       { name: "error-shaped body, text/plain", path: "/err-body" },
+      { name: "error-shaped body, +json", path: "/err-body-json" },
+      {
+        name: "custom HttpException body, text/plain",
+        path: "/err-exc-text",
+      },
       // StreamableFile and SSE.
       { name: "StreamableFile with options", path: "/file" },
       { name: "StreamableFile from a Readable", path: "/file-plain" },
@@ -829,6 +834,27 @@ const EXPRESS_HONOURS_EXACT_MARKER = /endsWith\(["']\$["']\)/.test(
   ExpressAdapter.prototype.createMiddlewareFactory.toString(),
 );
 
+/**
+ * Whether the installed `@nestjs/platform-express` judges a reply's
+ * Content-Type JSON by `isJsonContentType` (12: a `+json` type counts), not
+ * by `startsWith("application/json")` (11). No capability exposes it, so its
+ * `reply` is read. bun-nest follows 12; on 11 one probe differs.
+ */
+const EXPRESS_REPLY_KEEPS_PLUS_JSON = /isJsonContentType\(/.test(
+  ExpressAdapter.prototype.reply.toString(),
+);
+
+/**
+ * Whether the installed `@nestjs/platform-express` also treats an object
+ * body replied with a status of 400 or more as an error body, `statusCode`
+ * of its own or not (12.2.0: `isObject(body) && !isNil(statusCode)`), as
+ * bun-nest does on every version. Read from its `reply`, as above.
+ */
+const EXPRESS_REPLY_CHECKS_REPLY_STATUS =
+  /isObject\(body\)\s*&&\s*!isNil\(statusCode\)/.test(
+    ExpressAdapter.prototype.reply.toString(),
+  );
+
 export const TEXT_DEFAULT =
   "a string body defaults to text/plain here, text/html on Express";
 export const TEXT_CHARSET =
@@ -983,6 +1009,24 @@ export const KNOWN: Record<string, KnownDifference> = {
     fields: ["content-type"],
     reason: TEXT_DEFAULT,
   },
+  ...(EXPRESS_REPLY_CHECKS_REPLY_STATUS
+    ? {}
+    : {
+        "compat/custom HttpException body, text/plain": {
+          fields: ["content-type"],
+          reason:
+            "an object body replied with a status of 400 or more is sent as JSON, as Nest 12.2's reply does; before 12.2 only a body with its own `statusCode` is",
+        },
+      }),
+  ...(EXPRESS_REPLY_KEEPS_PLUS_JSON
+    ? {}
+    : {
+        "compat/error-shaped body, +json": {
+          fields: ["content-type"],
+          reason:
+            "an error-shaped body keeps a `+json` type, as Nest 12's reply does; Nest 11's forces `application/json`",
+        },
+      }),
   ...(EXPRESS_HONOURS_EXACT_MARKER
     ? {}
     : {
@@ -1017,11 +1061,6 @@ export const KNOWN: Record<string, KnownDifference> = {
     fields: ["content-type"],
     reason: TEXT_DEFAULT,
   },
-  "compat/res.type(problem+json).json(object)": {
-    fields: ["content-type"],
-    reason:
-      "bun-common's `res.json()` replaces a Content-Type set before it; Express's keeps it",
-  },
   "compat/StreamableFile, source fails first": {
     fields: ["content-type"],
     reason: TEXT_CHARSET,
@@ -1029,11 +1068,6 @@ export const KNOWN: Record<string, KnownDifference> = {
   "compat/StreamableFile, source fails, custom handler": {
     fields: ["content-type"],
     reason: TEXT_CHARSET,
-  },
-  "errors/next({statusCode, message})": {
-    fields: ["status", ...BODY_CHANGES],
-    reason:
-      "bun-common's router wraps a non-Error `next(value)` in `new Error(String(value))`, so Nest 12 never sees the plain object (G20, owed to bun-common)",
   },
   "body-limit/over the limit → 413": {
     fields: BODY_CHANGES,

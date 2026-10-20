@@ -864,13 +864,10 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
-- `next(value)` with a value that is not an `Error` (a plain
-  `{ statusCode, message }` object, which Nest 12 answers with its status on
-  Express) reaches Nest as `new Error(String(value))`, a `500`. Throwing the
-  object instead keeps it.
-- `res.json()` replaces a `Content-Type` set before it
-  (`res.type("application/problem+json").json(body)` is sent as
-  `application/json`); Express keeps it.
+- An error-shaped body (`statusCode` 400 or more) returned under a
+  `Content-Type` that is not JSON is sent as JSON with Nest's warning, by Nest
+  12's rule: a `+json` type counts as JSON. Nest 11 on Express also forces a
+  `+json` type (`application/vnd.api+json`) to `application/json`.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.

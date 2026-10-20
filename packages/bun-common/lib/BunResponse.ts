@@ -426,6 +426,136 @@ const TEXT_CONTENT_TYPE = "text/plain;charset=utf-8";
 /** The `Content-Type` of a JSON body: what `Response.json` sets. */
 const JSON_CONTENT_TYPE = "application/json;charset=utf-8";
 
+/*
+ * `withUtf8Charset` ports Express 5.3's `setCharset(type, "utf-8")` over
+ * `content-type` 2.0.0's `parse` and `format`
+ * (https://github.com/jshttp/content-type, MIT, Copyright (c) 2015 Douglas
+ * Christopher Wilson): the type lowercased, every parameter kept in order
+ * (the first of a repeated name wins), `charset` replaced where it stands or
+ * appended, each written back as `; name=value`, quoted when not a token.
+ * Where `content-type` throws, it answers `undefined`.
+ */
+
+/** A token (RFC 9110 §5.6.2): a parameter name, or a value written bare. */
+const CT_TOKEN_REGEXP = /^[!#$%&'*+.^`|~\w-]+$/;
+/** A value that can be written quoted. */
+const CT_TEXT_REGEXP = /^[\t\u0020-\u007E\u0080-\u00FF]*$/;
+/** `type/subtype`, each a token. */
+const CT_TYPE_REGEXP = /^[!#$%&'*+.^`|~\w-]+\/[!#$%&'*+.^`|~\w-]+$/;
+
+/** The index of the first character at or after `index` that is not SP/HTAB. */
+function skipOws(header: string, index: number): number {
+  while (index < header.length) {
+    const code = header.charCodeAt(index);
+    if (code !== 32 && code !== 9) {
+      break;
+    }
+    index++;
+  }
+  return index;
+}
+
+/** `end` moved back over trailing SP/HTAB, not before `start`. */
+function trimOwsEnd(header: string, start: number, end: number): number {
+  while (end > start) {
+    const code = header.charCodeAt(end - 1);
+    if (code !== 32 && code !== 9) {
+      break;
+    }
+    end--;
+  }
+  return end;
+}
+
+/** The index of the next `;` at or after `index`, or the header's end. */
+function skipToSemicolon(header: string, index: number): number {
+  const semi = header.indexOf(";", index);
+  return semi === -1 ? header.length : semi;
+}
+
+/**
+ * `header` with its charset set to `utf-8`, as Express's `res.send` sets it on
+ * a string body's existing `Content-Type`; `undefined` for a type or parameter
+ * `content-type` cannot write (where Express throws). Express's `res.set`
+ * expands a bare `json` into a full type before that, which bun-common's does
+ * not, so the caller falls back to JSON's own type rather than fail.
+ */
+function withUtf8Charset(header: string): string | undefined {
+  const typeStart = skipOws(header, 0);
+  let index = skipToSemicolon(header, typeStart);
+  const type = header
+    .slice(typeStart, trimOwsEnd(header, typeStart, index))
+    .toLowerCase();
+  const parameters = new Map<string, string>();
+  while (index < header.length) {
+    index = skipOws(header, index + 1);
+    const keyStart = index;
+    const semi = skipToSemicolon(header, index);
+    const eq = header.indexOf("=", index);
+    if (eq === -1 || eq > semi) {
+      // A parameter without `=` is skipped.
+      index = semi;
+      continue;
+    }
+    const key = header
+      .slice(keyStart, trimOwsEnd(header, keyStart, eq))
+      .toLowerCase();
+    index = skipOws(header, eq + 1);
+    if (index < header.length && header.charCodeAt(index) === 34) {
+      // A quoted value: `\x` is `x`; the value ends at the closing quote,
+      // and anything after it up to the next `;` is ignored. One never closed
+      // runs to the end and is dropped.
+      index++;
+      let value = "";
+      let closed = false;
+      while (index < header.length) {
+        const code = header.charCodeAt(index++);
+        if (code === 34) {
+          index = skipToSemicolon(header, index);
+          closed = true;
+          break;
+        }
+        if (code === 92 && index < header.length) {
+          value += header[index++];
+          continue;
+        }
+        value += String.fromCharCode(code);
+      }
+      if (closed && !parameters.has(key)) {
+        parameters.set(key, value);
+      }
+      continue;
+    }
+    const valueStart = index;
+    index = skipToSemicolon(header, index);
+    if (!parameters.has(key)) {
+      parameters.set(
+        key,
+        header.slice(valueStart, trimOwsEnd(header, valueStart, index)),
+      );
+    }
+  }
+  parameters.set("charset", "utf-8");
+
+  if (!type || !CT_TYPE_REGEXP.test(type)) {
+    return undefined;
+  }
+  let result = type;
+  for (const [name, value] of parameters) {
+    if (!CT_TOKEN_REGEXP.test(name)) {
+      return undefined;
+    }
+    if (CT_TOKEN_REGEXP.test(value)) {
+      result += `; ${name}=${value}`;
+    } else if (CT_TEXT_REGEXP.test(value)) {
+      result += `; ${name}="${value.replace(/[\\"]/g, "\\$&")}"`;
+    } else {
+      return undefined;
+    }
+  }
+  return result;
+}
+
 /** A shared, never-written `Headers` that header reads see before any exist. */
 const NO_HEADERS = new Headers();
 
@@ -1929,8 +2059,13 @@ export class BunResponse<
   }
 
   /**
-   * Sends `body` serialised as `application/json;charset=utf-8` (with no
-   * header set, through `Response.json`, without a `Headers` object). Goes through the same path
+   * Sends `body` serialised as JSON, as `application/json;charset=utf-8`
+   * (with no header set, through `Response.json`, without a `Headers`
+   * object). A `Content-Type` set earlier is kept with its charset made
+   * `utf-8` (`application/vnd.api+json; charset=utf-8`), as in Express; one
+   * that is not a valid `type/subtype` is replaced by JSON's (Express throws,
+   * or has already expanded a bare `json` in `res.set`).
+   * Goes through the same path
    * as a string `send()`: the automatic `ETag` (when enabled) is computed over
    * the serialisation, then freshness turns a matching conditional request
    * into a 304 — as Express's `res.json` does via `res.send`.
@@ -1946,8 +2081,21 @@ export class BunResponse<
       return this.#respondWithJson(body);
     }
     this.options.headers = this.headersObj;
-    this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
+    this.#setJsonContentType();
     return this.#respondWithText(JSON.stringify(body));
+  }
+
+  /**
+   * The `Content-Type` of a JSON body sent with headers: JSON's own, or the
+   * one set earlier with its charset made `utf-8`, as Express's `res.json`
+   * keeps it (and its `res.send` sets the charset of a string body's type).
+   */
+  #setJsonContentType(): void {
+    const type = this.headersObj.get("Content-Type");
+    this.headersObj.set(
+      "Content-Type",
+      (type && withUtf8Charset(type)) ?? JSON_CONTENT_TYPE,
+    );
   }
 
   /**
@@ -2346,7 +2494,7 @@ export class BunResponse<
       if (this.#canSkipHeaders()) {
         return this.#respondWithJson(body);
       }
-      this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
+      this.#setJsonContentType();
       return this.#respondWithText(JSON.stringify(body));
     }
 

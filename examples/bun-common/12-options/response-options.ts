@@ -24,7 +24,10 @@
  *   removed at the end. `sendFile(path)` resolves `path` under `root`.
  * - `res.cookie()`'s `maxAge` is milliseconds; the header gets seconds.
  * - A text body is `text/plain;charset=utf-8` and JSON is
- *   `application/json;charset=utf-8`. With no header set, `send(text)` and
+ *   `application/json;charset=utf-8`. A type set before `json()` or
+ *   `send(object)` is kept, with its charset made `utf-8`, as Express does:
+ *   `type("application/problem+json").json(body)` is sent as
+ *   `application/problem+json; charset=utf-8`. With no header set, `send(text)` and
  *   `json(value)` build the Response without a Headers object — text then has
  *   no `Content-Type` on the Response itself, which Bun writes on the wire
  *   and `fetch()` adds (see [docs/bun-bugs](../../../docs/bun-bugs/README.md)).
@@ -492,6 +495,28 @@ checkEqual(
   ["application/json;charset=utf-8", { ok: true }, { ok: true }],
 );
 
+// A type set before json() is kept, its charset made utf-8, as Express's
+// `res.send` does (content-type's format: `; charset=utf-8`, with the space).
+const problemRes = await makeRes();
+problemRes
+  .status(422)
+  .type("application/problem+json")
+  .json({ title: "Unprocessable", status: 422 });
+const problemNative = await native(problemRes);
+checkEqual(
+  "type(application/problem+json).json(): the type kept, charset utf-8",
+  [
+    problemNative.status,
+    problemNative.headers.get("Content-Type"),
+    await problemNative.json(),
+  ],
+  [
+    422,
+    "application/problem+json; charset=utf-8",
+    { title: "Unprocessable", status: 422 },
+  ],
+);
+
 const statusOnly = await makeRes();
 statusOnly.status(404).sendStatus(404);
 const statusOnlyNative = await native(statusOnly);
@@ -845,8 +870,10 @@ checkEqual("a full media type key", await formatted("text/html", true), [
   "Accept",
   true,
 ]);
+// format() sets `application/json; charset=utf-8` before calling `json`, and
+// json() keeps a type set before it, as Express does.
 checkEqual("an extension key", await formatted("application/json", true), [
-  "application/json;charset=utf-8",
+  "application/json; charset=utf-8",
   '{"as":"json"}',
   "Accept",
   true,

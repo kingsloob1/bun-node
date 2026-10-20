@@ -299,6 +299,58 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
     expect(response.headers.get("location")).toBe("/new");
   });
 
+  describe("reply() with an error-shaped body, as platform-express 12", () => {
+    /** Replies `body` under `type`, recording the adapter's warnings. */
+    async function replied(type: string, body: object, statusCode?: number) {
+      const adapter = new BunHttpAdapter();
+      const warn = spyOn(adapter.logger, "warn").mockImplementation(() => {});
+      adapter.get("/r", (_req, res) => {
+        res.setHeader("Content-Type", type);
+        return adapter.reply(res, body, statusCode);
+      });
+      const response = await adapter.fetch("/r");
+      return {
+        type: response.headers.get("content-type"),
+        body: (await response.json()) as unknown,
+        warnings: warn.mock.calls.map((call) => call[0]),
+      };
+    }
+
+    const MISMATCH =
+      "Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses";
+
+    it("sends it as JSON under a type that is not JSON, with Nest's warning", async () => {
+      const result = await replied("text/plain", {
+        statusCode: 400,
+        message: "x",
+      });
+      expect(result.type).toBe("application/json; charset=utf-8");
+      expect(result.body).toEqual({ statusCode: 400, message: "x" });
+      expect(result.warnings).toEqual([MISMATCH]);
+    });
+
+    it("keeps a +json type", async () => {
+      const result = await replied("application/vnd.api+json", {
+        statusCode: 404,
+      });
+      expect(result.type).toBe("application/vnd.api+json; charset=utf-8");
+      expect(result.warnings).toEqual([]);
+    });
+
+    it("sends any object replied with a status of 400 or more as JSON (Nest 12.2)", async () => {
+      const result = await replied("text/plain", { error: "x" }, 404);
+      expect(result.type).toBe("application/json; charset=utf-8");
+      expect(result.body).toEqual({ error: "x" });
+      expect(result.warnings).toEqual([MISMATCH]);
+    });
+
+    it("leaves a body below 400 alone", async () => {
+      const result = await replied("text/plain", { statusCode: 200 });
+      expect(result.type).toBe("text/plain; charset=utf-8");
+      expect(result.warnings).toEqual([]);
+    });
+  });
+
   it("reply() streams a StreamableFile with its headers", async () => {
     const adapter = new BunHttpAdapter();
     adapter.get("/file", (_req, res) => {
