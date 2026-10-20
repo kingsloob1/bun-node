@@ -1,6 +1,13 @@
 export {
+  type BunBeforeWriteBody,
+  type BunBeforeWriteContext,
+  type BunBeforeWriteErrorContext,
+  type BunBeforeWriteHook,
+  type BunBeforeWriteResponseContext,
   BunHttpAdapter,
   BunNestHttpAdapter,
+  type BunRequestHook,
+  type BunResponseHook,
   type ListenCallback,
   type MiddlewareFactoryRespType,
   type RenderOptions,

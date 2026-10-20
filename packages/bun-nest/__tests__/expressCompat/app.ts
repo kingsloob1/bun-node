@@ -98,6 +98,7 @@ interface CompatResponse {
   json: (body: unknown) => unknown;
   send: (body?: unknown) => unknown;
   end: (body?: unknown) => unknown;
+  write: (chunk: string) => unknown;
   setHeader: (name: string, value: string) => unknown;
   type: (type: string) => CompatResponse;
   render: (
@@ -380,6 +381,33 @@ export class ResponseController {
     source.destroy(new Error("failed early"));
     await new Promise((resolve) => setImmediate(resolve));
     return new StreamableFile(source);
+  }
+
+  // `reply()` applies any non-nil status (nestjs/nest e03cf5c86): Express 5's
+  // `res.status` throws on these, and Nest's exception layer answers 500.
+  @Get("status-zero")
+  statusZero() {
+    throw new HttpException("zero", 0);
+  }
+
+  @Get("status-nan")
+  statusNan() {
+    throw new HttpException("nan", Number.NaN);
+  }
+
+  // `isHeadersSent` after `write()` (the b59196c98 probe): the filter must
+  // see the stream as sent and end it, not hang.
+  @Get("write-then-throw")
+  async writeThenThrow(@Res() res: CompatResponse) {
+    res.write("partial");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    throw new Error("after write");
+  }
+
+  @Get("write-then-throw-sync")
+  writeThenThrowSync(@Res() res: CompatResponse) {
+    res.write("partial");
+    throw new Error("after write");
   }
 
   @Sse("sse")
@@ -791,6 +819,44 @@ export class VersionedController {
 
 @Module({ controllers: [VersionedController] })
 export class VersionedModule {}
+
+/** Tags of the `StreamableFile` sources {@link DisconnectController} saw closed. */
+export const CLOSED_SOURCES = new Set<string>();
+
+/** An endless source, recording its tag in {@link CLOSED_SOURCES} once it closes. */
+function endlessSource(tag: string): Readable {
+  let i = 0;
+  const source = new Readable({
+    read() {
+      setTimeout(() => this.push(`chunk${i++}\n`), 20);
+    },
+  });
+  source.once("close", () => CLOSED_SOURCES.add(tag));
+  return source;
+}
+
+/**
+ * Endless `StreamableFile`s, for whether a source is destroyed when the
+ * client leaves (nestjs/nest #17973): `late` returns it 300 ms after the
+ * request arrived, `now` at once.
+ */
+@Controller("disconnect")
+export class DisconnectController {
+  @Get("late/:tag")
+  async late(@nestCommon.Param("tag") tag: string) {
+    const source = endlessSource(tag);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return new StreamableFile(source);
+  }
+
+  @Get("now/:tag")
+  now(@nestCommon.Param("tag") tag: string) {
+    return new StreamableFile(endlessSource(tag));
+  }
+}
+
+@Module({ controllers: [DisconnectController] })
+export class DisconnectModule {}
 
 /** What a booted application exposes to a test. */
 export interface Booted {

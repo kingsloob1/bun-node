@@ -18,8 +18,15 @@
  */
 import type { Booted, Side } from "./expressCompat/app";
 import type { ProbeGroup } from "./expressCompat/probes";
+import { ExpressAdapter } from "@nestjs/platform-express";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootBoth, comparable as fields, observe } from "./expressCompat/app";
+import {
+  bootBoth,
+  CLOSED_SOURCES,
+  DisconnectModule,
+  comparable as fields,
+  observe,
+} from "./expressCompat/app";
 import { GROUPS, KNOWN } from "./expressCompat/probes";
 
 function describeGroup(group: ProbeGroup) {
@@ -78,3 +85,74 @@ function describeGroup(group: ProbeGroup) {
 for (const group of GROUPS) {
   describeGroup(group);
 }
+
+/**
+ * Whether the reference destroys a `StreamableFile`'s source when the client
+ * leaves: platform-express 12.1.3's `reply()` does (`finished(response, …)`,
+ * nestjs/nest #17973); earlier ones leave it open, even mid-stream on 11.
+ * Read from the reference's own `reply()`, never from a version.
+ */
+const REFERENCE_DESTROYS_SOURCE = ExpressAdapter.prototype.reply
+  .toString()
+  .includes("finished(");
+
+/** Waits up to `ms` for `tag`'s source to close; whether it did. */
+async function sourceClosed(tag: string, ms = 2000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (!CLOSED_SOURCES.has(tag) && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  return CLOSED_SOURCES.has(tag);
+}
+
+// Not a request/response comparison: whether a `StreamableFile`'s source is
+// destroyed when the client leaves, as platform-express 12.1.3 destroys it
+// (nestjs/nest #17973). bun-nest destroys it on every Nest; Express is
+// measured too, and held to the same where its `reply()` has the fix.
+describe("bun-nest vs platform-express: StreamableFile, client gone", () => {
+  let apps: Record<Side, Booted> | undefined;
+
+  beforeAll(async () => {
+    apps = await bootBoth(DisconnectModule);
+  });
+
+  afterAll(async () => {
+    await apps?.express.app.close();
+    await apps?.bun.app.close();
+  });
+
+  it("destroys a source returned after the client left", async () => {
+    const closed: Record<string, boolean> = {};
+    for (const side of ["express", "bun"] as const) {
+      const tag = `${side}-late`;
+      const aborter = new AbortController();
+      const pending = fetch(`${apps![side].base}/disconnect/late/${tag}`, {
+        signal: aborter.signal,
+      }).catch(() => undefined);
+      await Bun.sleep(80);
+      aborter.abort();
+      await pending;
+      closed[side] = await sourceClosed(tag);
+    }
+    expect(closed.bun).toBe(true);
+    expect(closed.express).toBe(REFERENCE_DESTROYS_SOURCE);
+  });
+
+  it("destroys a source whose client leaves mid-stream", async () => {
+    const closed: Record<string, boolean> = {};
+    for (const side of ["express", "bun"] as const) {
+      const tag = `${side}-now`;
+      const aborter = new AbortController();
+      const res = await fetch(`${apps![side].base}/disconnect/now/${tag}`, {
+        signal: aborter.signal,
+      });
+      await res.body!.getReader().read();
+      aborter.abort();
+      closed[side] = await sourceClosed(tag);
+    }
+    expect(closed.bun).toBe(true);
+    if (REFERENCE_DESTROYS_SOURCE) {
+      expect(closed.express).toBe(true);
+    }
+  });
+});

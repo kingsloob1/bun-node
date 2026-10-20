@@ -24,7 +24,12 @@
         "MULTER_MODULE_OPTIONS"
       ],
       "types": [
+        "BunBeforeWriteBody",
+        "BunBeforeWriteContext",
+        "BunBeforeWriteHook",
         "BunNestWebSocketClient",
+        "BunRequestHook",
+        "BunResponseHook",
         "MulterModuleAsyncOptions",
         "MulterModuleOptions",
         "MulterOptionsFactory",
