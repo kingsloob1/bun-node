@@ -327,6 +327,12 @@ export class ResponseController {
     return { statusCode: 400, message: "x" };
   }
 
+  @Get("err-body-json")
+  @Header("Content-Type", "application/vnd.api+json")
+  errBodyJson() {
+    return { statusCode: 404, message: "x" };
+  }
+
   @Get("file")
   file() {
     return new StreamableFile(Buffer.from("streamed"), {

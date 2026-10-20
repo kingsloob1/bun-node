@@ -516,6 +516,33 @@ async function* streamFileFrom(
 const CARRIED_RESPONSE = Symbol("bun-nest.carriedResponse");
 
 /**
+ * Whether `contentType` is JSON as Nest 12's `ExpressAdapter.reply` judges
+ * it: the media type before any `;`, trimmed and lower-cased, starts with
+ * `application/json` or ends with `+json`.
+ */
+function isJsonContentType(contentType: string): boolean {
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  return (
+    mediaType.startsWith("application/json") || mediaType.endsWith("+json")
+  );
+}
+
+/**
+ * Whether `body` carries a `statusCode` of 400 or more, as Nest's errors do:
+ * Nest's `body?.statusCode >= 400`, a numeric string counting as its number.
+ */
+function isErrorShapedBody(body: unknown): boolean {
+  if (typeof body !== "object" || body === null) {
+    return false;
+  }
+  const { statusCode } = body as { statusCode?: unknown };
+  return (
+    (typeof statusCode === "number" || typeof statusCode === "string") &&
+    Number(statusCode) >= 400
+  );
+}
+
+/**
  * `error` with the request riding on it, for `handleRequestError`, which
  * needs it to run the error handlers; a thrown primitive is wrapped to carry
  * it. A pipeline parked past the request timeout is passed on as is: it is
@@ -1900,6 +1927,22 @@ export class BunHttpAdapter<
 
     if (body instanceof StreamableFile) {
       return this.#replyStreamableFile(response, body);
+    }
+
+    // As @nestjs/platform-express 12: an error-shaped body (`statusCode` 400
+    // or more) under a Content-Type that is not JSON is sent as JSON, with
+    // Nest's warning. (Nest 11 tests `startsWith("application/json")`, so it
+    // also forces a `+json` type; this follows 12, the lock.)
+    const contentType = response.getHeader("Content-Type");
+    if (
+      typeof contentType === "string" &&
+      !isJsonContentType(contentType) &&
+      isErrorShapedBody(body)
+    ) {
+      this.logger.warn(
+        "Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses",
+      );
+      response.setHeader("Content-Type", "application/json");
     }
 
     return response.send(body);

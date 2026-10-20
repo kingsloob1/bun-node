@@ -2,6 +2,7 @@ import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import net from "node:net";
 import { describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { BunRouter } from "../lib/BunRouter";
 import { createTestLogger } from "../lib/logging";
 
 /**
@@ -349,5 +350,117 @@ describe("Express parity: a layer ends with next() or a complete response", () =
     } finally {
       await adapter.close();
     }
+  });
+});
+
+describe("Express parity: next(err) with a value that is not an Error", () => {
+  /** Routes `GET /` to `next(value)` and records what the error handler got. */
+  async function errorFor(value: unknown): Promise<unknown> {
+    const router = new BunRouter();
+    let seen: unknown;
+    // `NextFunction` types `err` as `string | Error`; Express (and the
+    // pipeline) take anything, and a plain object is what this checks.
+    router.get("/", (_req, _res, next) => next(value as Error));
+    router.use(((err, _req, res, _next) => {
+      seen = err;
+      void res.status(418).end();
+    }) satisfies RouterErrorMiddlewareHandler);
+    expect((await router.fetch("/")).status).toBe(418);
+    return seen;
+  }
+
+  it("hands an object to the error handlers as given, as Express does", async () => {
+    const conflict = { status: 409, code: "X", message: "conflict" };
+    expect(await errorFor(conflict)).toBe(conflict);
+    const list = [1, 2];
+    expect(await errorFor(list)).toBe(list);
+  });
+
+  it("still wraps a primitive in an Error", async () => {
+    const error = await errorFor("boom");
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("boom");
+  });
+
+  it("re-throws an unhandled object unchanged, as a thrown one is", async () => {
+    const router = new BunRouter();
+    const conflict = { status: 409, code: "X" };
+    router.get("/", (_req, _res, next) => next(conflict as unknown as Error));
+    let caught: unknown;
+    try {
+      await router.fetch("/");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(conflict);
+  });
+});
+
+describe("Express parity: res.json() keeps a Content-Type set before it", () => {
+  /** The `Content-Type` of `res.set("Content-Type", type)` then `send(body)`. */
+  async function typeFor(
+    type: string,
+    send: "json" | "send" = "json",
+  ): Promise<string | null> {
+    const router = new BunRouter();
+    router.get("/", (_req, res) => {
+      res.set("Content-Type", type);
+      if (send === "json") {
+        res.json({ a: 1 });
+      } else {
+        res.send({ a: 1 });
+      }
+    });
+    const response = await router.fetch("/");
+    expect(await response.json()).toEqual({ a: 1 });
+    return response.headers.get("Content-Type");
+  }
+
+  it("keeps the type, with its charset made utf-8, for json() and send(object)", async () => {
+    for (const send of ["json", "send"] as const) {
+      expect(await typeFor("application/vnd.api+json", send)).toBe(
+        "application/vnd.api+json; charset=utf-8",
+      );
+      expect(await typeFor("application/x-ndjson; charset=latin1", send)).toBe(
+        "application/x-ndjson; charset=utf-8",
+      );
+    }
+  });
+
+  // Each expected value is what Express 5.3.0 (content-type 2.0.0) answered.
+  it("formats the type as content-type 2 does", async () => {
+    expect(await typeFor("TEXT/Plain ; Charset=latin1 ; a=b")).toBe(
+      "text/plain; charset=utf-8; a=b",
+    );
+    expect(await typeFor('application/x; a="q\\"x"; b=c d')).toBe(
+      'application/x; a="q\\"x"; b="c d"; charset=utf-8',
+    );
+    expect(await typeFor("application/x; foo; charset=x; charset=y")).toBe(
+      "application/x; charset=utf-8",
+    );
+    expect(await typeFor('application/x;a="un;closed')).toBe(
+      "application/x; charset=utf-8",
+    );
+    expect(await typeFor("  application/hal+json  ")).toBe(
+      "application/hal+json; charset=utf-8",
+    );
+  });
+
+  it("falls back to JSON's own type for one that is not type/subtype", async () => {
+    expect(await typeFor("json")).toBe("application/json;charset=utf-8");
+    expect(await typeFor("application/x;=v")).toBe(
+      "application/json;charset=utf-8",
+    );
+  });
+
+  it("sends JSON's own type when none was set", async () => {
+    const router = new BunRouter();
+    router.get("/", (_req, res) => {
+      res.set("X-A", "1");
+      res.json({ a: 1 });
+    });
+    expect((await router.fetch("/")).headers.get("Content-Type")).toBe(
+      "application/json;charset=utf-8",
+    );
   });
 });

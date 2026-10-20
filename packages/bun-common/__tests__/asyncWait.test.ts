@@ -2,7 +2,11 @@ import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import { describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunResponse } from "../lib/BunResponse";
-import { BunRouter, isRequestTimeoutError } from "../lib/BunRouter";
+import {
+  BunRouter,
+  createRequestTimeoutError,
+  isRequestTimeoutError,
+} from "../lib/BunRouter";
 import { createTestLogger } from "../lib/logging";
 import { makeRequest } from "./helpers";
 
@@ -310,6 +314,14 @@ describe("serveRequest: one wait for an asynchronous pipeline", () => {
       error = caught;
     }
     expect(isRequestTimeoutError(error)).toBe(true);
+  });
+
+  it("createRequestTimeoutError() makes the same error, and only it is recognised", () => {
+    const error = createRequestTimeoutError();
+    expect(error.message).toBe("Request Timedout");
+    expect(isRequestTimeoutError(error)).toBe(true);
+    expect(isRequestTimeoutError(new Error("Request Timedout"))).toBe(false);
+    expect(isRequestTimeoutError("Request Timedout")).toBe(false);
   });
 
   it("dispatch() resolves the bare outcome, not { routeUsed }", async () => {
