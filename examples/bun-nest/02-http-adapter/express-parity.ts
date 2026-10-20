@@ -194,10 +194,14 @@ class AsyncController {
     return [...(req.seenBy ?? []), "async controller"].join(",");
   }
 
-  /** Three events 100ms apart: the first must not wait for the last. */
+  /**
+   * Three events 400ms apart, the last at about 1200ms: the first must not
+   * wait for the last. The gap is wide so a loaded machine cannot blur the
+   * two (at 100ms apart the check failed once at a load of about 40).
+   */
   @Sse("ticks")
   ticks(): Observable<MessageEvent> {
-    return interval(100).pipe(
+    return interval(400).pipe(
       take(3),
       map((n) => ({ data: { tick: n } })),
     );
@@ -391,7 +395,9 @@ async function firstEvent(response: Response, startedAt: number) {
   }
   const after = performance.now() - startedAt;
   await reader.cancel();
-  return { tick0: received.includes('"tick":0'), early: after < 250 };
+  // Before the last event is emitted (~1200ms), with 400ms of slack after the
+  // first (~400ms); a stream held back to the end arrives at ~1200ms.
+  return { tick0: received.includes('"tick":0'), early: after < 800 };
 }
 const sseServedAt = performance.now();
 const sseServed = await firstEvent(
@@ -404,7 +410,7 @@ const sseOffline = await firstEvent(
   sseOfflineAt,
 );
 checkEqual(
-  "@Sse(): the first event arrives before the last is emitted (~300ms), both ways",
+  "@Sse(): the first event arrives before the last is emitted (~1200ms), both ways",
   [sseServed, sseOffline],
   [
     { tick0: true, early: true },
