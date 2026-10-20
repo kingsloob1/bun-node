@@ -880,8 +880,10 @@ step("request and response helpers");
     [201, "created"],
   );
 
-  adapter.get("/end", (_req, res) => {
-    adapter.end(res, "bye");
+  // end() returns a promise when the response is a stream; awaiting it is
+  // harmless otherwise.
+  adapter.get("/end", async (_req, res) => {
+    await adapter.end(res, "bye");
   });
   checkEqual(
     "end(res, message)",
@@ -889,9 +891,9 @@ step("request and response helpers");
     "bye",
   );
 
-  adapter.get("/redirect", (_req, res) => {
+  adapter.get("/redirect", async (_req, res) => {
     adapter.redirect(res, 301, "/elsewhere");
-    adapter.end(res);
+    await adapter.end(res);
   });
   const moved = await adapter.fetch("/redirect");
   checkEqual(
@@ -908,9 +910,9 @@ step("request and response helpers");
     ],
   );
 
-  adapter.get("/redirect-default", (_req, res) => {
+  adapter.get("/redirect-default", async (_req, res) => {
     adapter.redirect(res, 0, "/elsewhere");
-    adapter.end(res);
+    await adapter.end(res);
   });
   checkEqual(
     "redirect() defaults to 302",
