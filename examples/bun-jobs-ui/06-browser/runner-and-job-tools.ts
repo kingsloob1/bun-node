@@ -532,7 +532,7 @@ async function serveHost(
   api.websocket?.attach(app);
   app.use(ui.basePath, ui.router);
   await app.listen(0);
-  const origin = app.url!.replace(/\/$/, "");
+  const origin = app.url.replace(/\/$/, "");
   // Build the bundle before the browser asks.
   await (await fetch(`${origin}${ui.basePath}`)).arrayBuffer();
   return {
@@ -1467,7 +1467,7 @@ try {
   /** Every stored run id, newest first, as the API lists them. */
   const storedIds = storedRuns.map((one) => one.runId);
   /** The oldest run of all: the last record, `PAGED_RECORDS` deep. */
-  const oldestRun = pagedRuns[0]!;
+  const oldestRun = pagedRuns[0];
   checkEqual(
     `the API lists ${PAGED_RECORDS} records — ${PAGED_FINISHED} finished, one still in flight ${PAGED_HELD_AT} down`,
     [
@@ -1568,7 +1568,7 @@ try {
     const settled =
       number === 1
         ? `ids.length === ${rows}`
-        : `ids.length === ${rows} && ids[0] !== ${JSON.stringify(pages[number - 2]![0])}`;
+        : `ids.length === ${rows} && ids[0] !== ${JSON.stringify(pages[number - 2][0])}`;
     pages.push(
       (await view.evaluate<string[] | null>(historyRows(settled))) ?? [],
     );
@@ -1691,7 +1691,7 @@ try {
   step("A Log button writes ?logs= into the page it was pressed on");
 
   /** A finished run on page 2 — row 1 there is the run still in flight. */
-  const onPage2 = pages[1]![1]!;
+  const onPage2 = pages[1][1];
   await openRunner(
     capped,
     PAGED,
@@ -1700,7 +1700,7 @@ try {
   check(
     `page 2 is on screen, holding run ${onPage2}`,
     (await view.evaluate<string[] | null>(
-      historyRows(`ids[0] === ${JSON.stringify(pages[1]![0])}`),
+      historyRows(`ids[0] === ${JSON.stringify(pages[1][0])}`),
     )) !== null,
   );
   check(
@@ -1748,7 +1748,7 @@ try {
   const masked = (text: string | null, runId: string): string | null =>
     text === null ? null : text.replace(runId, "<runId>");
   /** A run on the last page, which page 1 does not hold. */
-  const furtherBack = pages[lastPage - 1]![0]!;
+  const furtherBack = pages[lastPage - 1][0];
   /** A run id no run ever had. */
   const neverRan = "no-such-run-42";
   await openRunner(capped, PAGED, `?history=${PAGED_PAGE}&logs=${furtherBack}`);
@@ -1791,7 +1791,7 @@ try {
   step("Next moves with a log open, instead of snapping back to its page");
 
   /** The newest run, on page 1. */
-  const onPage1 = pages[0]![0]!;
+  const onPage1 = pages[0][0];
   await openRunner(capped, PAGED, `?history=${PAGED_PAGE}&logs=${onPage1}`);
   check(
     `page 1, with run ${onPage1}'s log open and nothing reported missing`,
@@ -1884,7 +1884,7 @@ try {
       await view.evaluate<string[] | null>(urlParams("params.length === 0")),
     ],
     [
-      [...pages[0]!, ...pages[1]!],
+      [...pages[0], ...pages[1]],
       `1–${HISTORY_CAP} of ${PAGED_RECORDS}`,
       HISTORY_CAP,
       "1",
@@ -1972,7 +1972,7 @@ try {
   // reads.
   const shifted = await view.evaluate<string[] | null>(
     historyRows(
-      `ids.length === ${PAGED_PAGE} && ids[0] === ${JSON.stringify(pages[0]!.at(-1))}`,
+      `ids.length === ${PAGED_PAGE} && ids[0] === ${JSON.stringify(pages[0].at(-1))}`,
       30_000,
     ),
   );
@@ -1998,7 +1998,7 @@ try {
       [`history=${PAGED_PAGE}`, `offset=${PAGED_PAGE}`].sort(),
       "2",
       `${PAGED_PAGE + 1}–${2 * PAGED_PAGE} of ${PAGED_RECORDS + 1}`,
-      [pages[0]!.at(-1)!, ...pages[1]!.slice(0, -1)],
+      [pages[0].at(-1)!, ...pages[1].slice(0, -1)],
       [wire(PAGED_PAGE)],
     ],
   );
@@ -2052,7 +2052,7 @@ try {
   check(
     "they came by several reads, each after the first asking since= the last seq it held",
     liveReads.length >= 3 &&
-      !liveReads[0]!.query.includes("since=") &&
+      !liveReads[0].query.includes("since=") &&
       liveReads.slice(1).every((one) => one.query.includes("since=")),
     liveReads,
   );

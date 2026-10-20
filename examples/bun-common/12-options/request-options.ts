@@ -758,7 +758,7 @@ const streamed = await BunRequest.init(
     headers: { "Content-Type": "application/octet-stream" },
     body: stream,
     duplex: "half",
-  } as RequestInit),
+  }),
   FETCH_STUB_SERVER,
   { parseBody: { maxContentLength: "2kb" } },
 );
@@ -1331,6 +1331,7 @@ await checkRejects(
   "…and a misspelt coding is a RangeError",
   () =>
     make("http://localhost/", encodedInit(zippedJson, "gzip"), {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- needed: the misspelt "gzpi" is a TS2322 without it, and the runtime RangeError is the point
       parseBody: { encodings: ["gzpi" as never] },
     }),
   { name: "RangeError", message: /gzpi/ },

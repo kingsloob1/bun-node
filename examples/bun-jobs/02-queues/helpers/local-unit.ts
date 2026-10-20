@@ -29,7 +29,7 @@ const [mode, dir] = process.argv.slice(2);
 if (dir === undefined) {
   throw new Error("usage: local-unit.ts <mode> <report-dir>");
 }
-if (!["work", "hold", "hold-spawner"].includes(mode!)) {
+if (!["work", "hold", "hold-spawner"].includes(mode)) {
   throw new Error(`unknown mode ${mode}`);
 }
 if (mode !== "work") {

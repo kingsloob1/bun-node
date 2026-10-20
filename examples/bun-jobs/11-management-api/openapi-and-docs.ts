@@ -50,7 +50,7 @@ show("paths documented", Object.keys(openapi.paths as object).length);
 show("routes registered", api.routes.length);
 
 const paths = openapi.paths as Record<string, Record<string, any>>;
-const getJob = paths["/queues/{queue}/jobs/{id}"]!.get;
+const getJob = paths["/queues/{queue}/jobs/{id}"].get;
 show("one operation", {
   operationId: getJob.operationId,
   summary: getJob.summary,
@@ -140,7 +140,7 @@ const csp = Object.fromEntries(
     .split("; ")
     .map((directive) => {
       const [name, ...values] = directive.split(" ");
-      return [name!, values.join(" ")];
+      return [name, values.join(" ")];
     }),
 );
 show("default-src", csp["default-src"]);

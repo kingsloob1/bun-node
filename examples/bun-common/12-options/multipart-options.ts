@@ -30,7 +30,6 @@
 import type {
   CustomUploadOptions,
   DiskStorageFile,
-  MemoryStorageFile,
   MultiPartFileRecord,
   MultiPartOptions,
   RawMultiPartFields,
@@ -197,7 +196,7 @@ const disk = transformUploadOptions({
 check("disk: a DiskStorage", disk.storage instanceof DiskStorage);
 checkEqual(
   "…constructed with the upload options, dest included",
-  (disk.storage as DiskStorage).options?.dest,
+  disk.storage.options?.dest,
   join(scratch, "d"),
 );
 const diskEverything = transformUploadOptions({
@@ -209,9 +208,9 @@ const diskEverything = transformUploadOptions({
 checkEqual(
   "disk: filename, removeAfter and a function dest reach the DiskStorage",
   [
-    typeof (diskEverything.storage as DiskStorage).options?.dest,
-    (diskEverything.storage as DiskStorage).options?.filename,
-    (diskEverything.storage as DiskStorage).options?.removeAfter,
+    typeof diskEverything.storage.options?.dest,
+    diskEverything.storage.options?.filename,
+    diskEverything.storage.options?.removeAfter,
   ],
   ["function", "fixed.txt", true],
 );
@@ -221,7 +220,7 @@ const keepingMemory = transformUploadOptions({
 });
 checkEqual(
   "memory: removeAfter reaches the MemoryStorage",
-  (keepingMemory.storage as MemoryStorage).options,
+  keepingMemory.storage.options,
   { removeAfter: false },
 );
 const spy = new SpyStorage();
@@ -322,7 +321,7 @@ const single = await handleMultipartSingleFile(
   "avatar",
   memory,
 );
-const avatar = single.file as MemoryStorageFile | undefined;
+const avatar = single.file;
 checkEqual(
   "the stored file",
   [
@@ -590,7 +589,7 @@ const releasing = await handleMultipartAnyFiles(
   memory,
 );
 const [firstReleased] = releasing.files;
-await releasing.removeFile(firstReleased!);
+await releasing.removeFile(firstReleased);
 checkEqual(
   "removeFile(file): that file's buffer is dropped",
   releasing.files.map((file) => "buffer" in file),

@@ -399,7 +399,7 @@ const listeners = [...MEDIA, "emails"].map((queue) => {
     logger,
     subscribe: true,
   });
-  listener.on("summon", (event) => heard[queue]!.push(event));
+  listener.on("summon", (event) => heard[queue].push(event));
   return listener;
 });
 await Promise.all(listeners.map(async (listener) => await listener.connect()));
@@ -482,12 +482,12 @@ checkEqual(
   [[...MEDIA], MEDIA.map((queue) => BACKLOG[queue]), BACKLOG.renders],
 );
 
-const unit = units[0]!;
+const unit = units[0];
 /** Whether every job added to `queue` has completed. */
 const allDone = async (queue: string) =>
   (
     await Promise.all(
-      added[queue]!.map(async (id) => await unitJobs.queue(queue).getJob(id)),
+      added[queue].map(async (id) => await unitJobs.queue(queue).getJob(id)),
     )
   ).every((job) => job?.state === "completed");
 await waitFor(
@@ -517,7 +517,7 @@ checkEqual(
 const unitIds = unit.ids();
 const attribution = [];
 for (const queue of MEDIA) {
-  for (const id of added[queue]!) {
+  for (const id of added[queue]) {
     const job = await unitJobs.queue(queue).getJob(id);
     attribution.push({
       queue,
@@ -659,10 +659,7 @@ checkEqual(
     localIds.map((id) => UUID_V7.test(id ?? "")),
     new Set(localIds).size,
     Object.fromEntries(
-      MEDIA.map((queue) => [
-        queue,
-        heard[queue]!.map((event) => event.eventId),
-      ]),
+      MEDIA.map((queue) => [queue, heard[queue].map((event) => event.eventId)]),
     ),
   ],
   [
@@ -963,7 +960,7 @@ checkEqual(
   (await partialJobs.queue("thumbs").getJob(waitingJob.id))?.state,
   "waiting",
 );
-const partialUnit = partialUnits[0]!;
+const partialUnit = partialUnits[0];
 partialUnit.child.kill("SIGTERM");
 check("the partial unit closes on SIGTERM", (await partialUnit.exited()) === 0);
 
@@ -1449,13 +1446,13 @@ await waitFor(
       await Promise.all(
         MEDIA.map(
           async (queue) =>
-            (await optionJobs.queue(queue).getJob(optionAdded[queue]!))?.state,
+            (await optionJobs.queue(queue).getJob(optionAdded[queue]))?.state,
         ),
       )
     ).every((state) => state === "completed"),
   WAIT,
 );
-const optionChild = optionSpawn.started[0]!;
+const optionChild = optionSpawn.started[0];
 const optionCode = await optionChild.exited();
 const optionStopped = optionChild.find("Summoned worker stopped")?.fields;
 checkEqual(
@@ -1978,8 +1975,8 @@ await waitFor(
   },
   WAIT,
 );
-narrowUnits[0]!.child.kill("SIGTERM");
-await narrowUnits[0]!.exited();
+narrowUnits[0].child.kill("SIGTERM");
+await narrowUnits[0].exited();
 
 /** One `authorize` call, as the host saw it. */
 interface Asked {
@@ -2195,7 +2192,7 @@ try {
     "event",
     (candidate) =>
       candidate.event.type === "summon" &&
-      (candidate.event.payload as SummonEventPayload).id ===
+      candidate.event.payload.id ===
         (started.action === "summoned" ? started.id : undefined),
   );
   show("the summon event on queue/renders", frame.event.payload);

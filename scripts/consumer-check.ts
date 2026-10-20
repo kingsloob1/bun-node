@@ -186,7 +186,7 @@ function pack(packageDir: string, dest: string): string {
     throw new Error(
       `expected one tarball from ${packageDir}, got ${created.join(", ")}`,
     );
-  return join(dest, created[0]!);
+  return join(dest, created[0]);
 }
 
 /** A file-safe id for a spelling. */
@@ -339,7 +339,7 @@ export function bareSpecifiers(text: string): string[] {
 /** The package name a specifier refers to (`@a/b/c` → `@a/b`, `x/y` → `x`). */
 function packageOf(specifier: string): string {
   const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
 /** Recursively lists files under `dir` ending in `suffix`. */
@@ -420,7 +420,7 @@ async function pool<T>(
     Array.from({ length: limit }, async () => {
       while (next < tasks.length) {
         const i = next++;
-        results[i] = await tasks[i]!();
+        results[i] = await tasks[i]();
       }
     }),
   );

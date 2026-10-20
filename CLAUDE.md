@@ -47,7 +47,11 @@ here runs (see [Typechecking](#typechecking)). The root `package.json` has
 `scripts/typecheck.ts` refuses an older Bun. Every 1.4.4 canary reports
 `Bun.version` "1.4.4", so the floor cannot tell them apart: the lint and
 format setup was verified on **1.4.4-canary.1+5f5799ed1** (`bun --revision`),
-and the plan's figures are as old as that build. **A later canary can change
+and the plan's figures are as old as that build. The machine moved to
+**1.4.4-canary.1+6bb5dc195** on 2026-10-20 (the user's decision): `bun lint`
+gave the same findings, rule by rule, in all 12 linted directories,
+`bun fmt --check` flagged the same 92 files, and `scripts/typecheck.ts` stayed
+clean (measured against the old binary on develop f325f269). **A later canary can change
 rule or format output**: a new finding or a reformatted file after
 `bun upgrade --canary` is the canary's, and goes to the bun-lint-fmt plan's
 lead with both revisions rather than being fixed in passing. Using the
@@ -425,8 +429,9 @@ never the test suite's, so the two can never disturb each other.
 XML benchmark's comparators, `fast-xml-parser` and `htmlparser2`. Before this
 package existed nothing declared them, and its typecheck passed only where an
 old install had left them in the root `node_modules`. Run
-`bun install --frozen-lockfile` in each of the three bench directories, and in
-`templates/compute-provider/` (below), before `scripts/typecheck.ts`, or their
+`bun install --frozen-lockfile` in each of the three bench directories, in
+`templates/compute-provider/` (below) and in `tools/vscode-bun-lint/` (the
+editor extension, for `@types/vscode`), before `scripts/typecheck.ts`, or their
 projects fail on missing modules. **Frozen, not plain**: a plain `bun install`
 re-resolves against the registry and rewrites the lock, so the gate checks
 whatever was published that day. Measured 2026-10-17: on Bun 1.4.4-canary a
@@ -446,10 +451,14 @@ as columns of `scripts/nest-matrix.ts` (§9.3):
 
 | Column | When |
 |---|---|
-| 12-latest | every gate. From PR-3 of the plan on it is develop's lock, the repo itself; until then the lock is 11.1.27 and 12.1.3 is a column |
+| 12-latest (12.1.3) | every gate: it is develop's lock, the repo itself |
 | 11-latest (11.2.7) | every PR touching bun-nest or bun-common |
 | 11.1.20 and 12.0.0 (the floors) | once per merge window |
 | a new Nest release | when it ships, before the lock moves |
+
+A bun-jobs PR that changes `createJobsApi`'s options or `JobsApi`'s shape also
+runs bun-nest's suite and the 11.2.7 copy (bun-nest's `BunJobsApiModule` is
+written in those types).
 
 ```bash
 bun scripts/nest-matrix.ts --prepare 11.2.7      # direct: copy, pin, install, assert
@@ -465,8 +474,19 @@ majors. `--run` runs bun-nest's suite, a bare `bun --check` in bun-nest,
 (its consumer pinned to the column's Nest, its work in
 `<base>/cc-<version>/`), one line per check with counts, full output in
 `<copy>/matrix-logs/`. `--dry-run` prints the plan, `--list` the copies.
-**One column at a time**, several as `--run 12.1.3 11.2.7`: bun-nest's suite
-binds the fixed port 10000, so two runs at once fail a `beforeAll` (measured).
+Several versions in one `--run` (`--run 12.1.3 11.2.7`) run in turn.
+**Separate `--run`s may run at once**, as wrapped jobs (the wrapper decides
+how many). bun-nest's suite binds only port 0 since PR-2 (measured
+2026-10-17: two suites side by side were clean in 4 of 4 rounds; with the old
+fixed port 10000 put back, 2 of 2 rounds failed a `beforeAll` on
+`EADDRINUSE`). Its two WebSocket serialisation tests make `JSON.stringify`
+overflow, about 1.5 s of CPU in Bun (oven-sh/bun#45791), and used to race
+fixed deadlines (3 s, and bun:test's 5 s); since PR-3 the deep-payload test
+waits for the server's `RangeError` and the adapter test has a 30 s
+deadline. Three and four suites side by side, 25 suites at loads up to 64,
+then had no timeout, where three had one in 2 of 2 rounds before. One test
+is still load-sensitive there: `sse.nest.test.ts`'s idle-timeout control
+failed 2 of those 25 suites with `ECONNRESET`.
 
 ### The compute-provider template
 
@@ -568,8 +588,10 @@ the only projects. There are also `packages/bun-common/bench`,
 `packages/bun-common/playground`, `packages/bun-jobs/bench` and the standalone
 `benchmarks/`, each a nested project with its own config because it resolves
 third-party comparators from its own `node_modules`; the examples; the
-compute-provider template (`templates/tsconfig.json`); and the root `scripts/`
-(`scripts/tsconfig.json`).
+compute-provider template (`templates/tsconfig.json`); the root `scripts/`
+(`scripts/tsconfig.json`); and the VS Code extension for `bun lint` and
+`bun fmt` (`tools/vscode-bun-lint/`, opt-in until PR E of
+`docs/plans/bun-lint-fmt/`; its README says how to install it).
 
 The root `scripts/` were the last files no project claimed. The root
 `tsconfig.json` includes nothing, so an editor put them in an inferred project,

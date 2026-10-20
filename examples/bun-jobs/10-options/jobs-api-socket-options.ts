@@ -543,7 +543,7 @@ checkEqual(
       string,
       { "x-bun-jobs-limits"?: { maxChannelsPerFrame: number } }
     >
-  ).connection!["x-bun-jobs-limits"]!.maxChannelsPerFrame,
+  ).connection["x-bun-jobs-limits"]!.maxChannelsPerFrame,
   MAX_CHANNELS_PER_FRAME,
 );
 checkEqual("maxChannelsPerFrame is 256", MAX_CHANNELS_PER_FRAME, 256);
@@ -1558,7 +1558,7 @@ checkEqual("and none of it was", behind.all("event").length, 0);
 
 // The socket drains: one gap, covering the replay as well as the live events.
 behindView.stalled = false;
-slowHandler.drain?.(behindView.socket);
+await slowHandler.drain?.(behindView.socket);
 const lagGap = await behind.next("gap");
 checkEqual("a slow-consumer gap", lagGap.reason, "slow-consumer");
 check(
@@ -1935,7 +1935,7 @@ interface SocketDocument {
 }
 
 const document = defaults.api.asyncapi() as unknown as SocketDocument;
-const connection = document.channels.connection!;
+const connection = document.channels.connection;
 checkEqual(
   "x-bun-jobs-limits: every bound a connection is held to",
   connection["x-bun-jobs-limits"],
@@ -1984,8 +1984,8 @@ checkEqual(
 
 // The job channel lists only what can reach one job: the queue-level events
 // never do.
-const jobMessages = Object.keys(document.channels.job!.messages);
-const queueMessages = Object.keys(document.channels.queue!.messages);
+const jobMessages = Object.keys(document.channels.job.messages);
+const queueMessages = Object.keys(document.channels.queue.messages);
 checkEqual(
   "the job channel has its own message list, without the queue-level events",
   queueMessages.filter((name) => !jobMessages.includes(name)).sort(),
@@ -2026,7 +2026,7 @@ const documented = createJobsApi({
   },
 });
 const securedDocument = documented.asyncapi() as unknown as SocketDocument;
-const securedServer = securedDocument.servers.api!;
+const securedServer = securedDocument.servers.api;
 checkEqual(
   "servers.api.security lists only the single-scheme requirements",
   securedServer.security,

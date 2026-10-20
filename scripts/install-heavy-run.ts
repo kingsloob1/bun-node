@@ -132,7 +132,7 @@ ${PREVIOUS_WRAPPER}. --dry-run prints the plan and writes nothing.`;
 export function parseArgs(argv: string[]): InstallOptions | { error: string } {
   const options: InstallOptions = {};
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--dir") {
       const value = argv[++i];

@@ -23,6 +23,7 @@ import { NestFactory } from "@nestjs/core";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
+import { expressReference } from "../expressCompat/reference";
 import "reflect-metadata";
 
 /**
@@ -134,9 +135,13 @@ export interface Booted {
  */
 export async function boot(side: Side, group: Group): Promise<Booted> {
   const logger = new CaptureLogger();
+  // `expressReference()`: platform-express 12.0.0-12.0.1 mount the prefix's
+  // not-found router at "api", which Express 5 never matches; the reference
+  // carries 12.0.2's fix there, so the comparison tests our adapter, not that
+  // bug (see `expressCompat/reference.ts`).
   const adapter =
     side === "express"
-      ? new ExpressAdapter()
+      ? expressReference()
       : new BunHttpAdapter(0, group.bunOptions);
   const booted: Booted = { side, logs: logger.lines };
   if (adapter instanceof BunHttpAdapter) booted.adapter = adapter;
@@ -267,7 +272,7 @@ export function rawRequest(base: string, probe: Probe): Promise<Response> {
       const all = Buffer.concat(chunks);
       const split = all.indexOf("\r\n\r\n");
       const lines = all.subarray(0, split).toString("latin1").split("\r\n");
-      const status = Number(lines[0]!.split(" ")[1]);
+      const status = Number(lines[0].split(" ")[1]);
       const h = new Headers();
       for (const line of lines.slice(1)) {
         const i = line.indexOf(":");

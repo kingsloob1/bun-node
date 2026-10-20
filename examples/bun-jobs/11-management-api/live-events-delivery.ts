@@ -584,8 +584,8 @@ checkEqual(
 );
 
 // Followed from here on: the child's worker's first start is heard.
-child.stdin.write("run\n");
-child.stdin.flush();
+await child.stdin.write("run\n");
+await child.stdin.flush();
 /** Whether a frame is a worker `state` event on `imports`. */
 const onImports = (frame: Frame<"event">) => isStateOn(frame, "imports");
 const importsFirst = await onWorkers.next("event", onImports);
@@ -631,8 +631,8 @@ checkEqual(
   [],
 );
 
-child.stdin.write("exit\n");
-child.stdin.flush();
+await child.stdin.write("exit\n");
+await child.stdin.flush();
 checkEqual("the other process exited cleanly", await child.exited, 0);
 
 /* ------------------------------------------------------------------ */

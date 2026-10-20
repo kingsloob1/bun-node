@@ -19,8 +19,9 @@
  * `--run` runs, in each copy, bun-nest's suite, a bare `bun --check` in
  * bun-nest, `examples/bun-nest`'s `run-all.ts`, bun-jobs-ui's Nest test and
  * consumer-check, printing one line per check with what ran, and exits 1 on
- * any failure. It is a heavy run: through the wrapper, in the background,
- * one invocation at a time (bun-nest's suite binds the fixed port 10000).
+ * any failure. It is a heavy run: through the wrapper, in the background.
+ * Separate invocations may run at once (bun-nest's suite binds only port 0);
+ * the wrapper decides how many.
  *
  * The base is `$HOME/bun-node-nest-matrix` (`--dir` or `NEST_MATRIX_DIR`
  * override it). It must have **no dot segment**: Express's `send` refuses
@@ -127,7 +128,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   };
   let target: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     const [name, inline] =
       arg.startsWith("--") && arg.includes("=")
         ? [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)]
@@ -247,8 +248,8 @@ Prepare directly (it installs). Run through the heavy-run wrapper:
   HEAVY_TICKET=<session>-nest-matrix /tmp/claude-1000/bun-node-heavy-run.sh \\
     nice -n 10 timeout 1800 bun scripts/nest-matrix.ts --run 11.2.7 > <log> 2>&1
 
-Run one invocation at a time (several versions in one --run run in turn):
-bun-nest's suite binds the fixed port 10000, so two suites at once collide.
+Several versions in one --run run in turn. Separate invocations may run at
+once (bun-nest's suite binds only port 0); the wrapper decides how many.
 
 Exit: 0 every check passed, 1 a check or assertion failed, 2 bad usage.`;
 

@@ -106,7 +106,7 @@ async function get(
     status: response.status,
     type: response.headers.get("content-type"),
     text,
-    json: () => JSON.parse(text) as any,
+    json: () => JSON.parse(text),
   };
 }
 
@@ -230,15 +230,15 @@ function parse(text: string) {
   for (const line of text.split("\n")) {
     const type = /^# TYPE (\S+) (\S+)$/.exec(line);
     if (type) {
-      families.push(type[1]!);
-      types[type[1]!] = type[2]!;
+      families.push(type[1]);
+      types[type[1]] = type[2]!;
       continue;
     }
     const sample = /^(\w+)\{ns="([^"]*)"(?:,queue="([^"]*)")?\} (\S+)$/.exec(
       line,
     );
     if (sample) {
-      namespaces.add(sample[2]!);
+      namespaces.add(sample[2]);
       samples[`${sample[1]}{${sample[3] ?? ""}}`] = Number(sample[4]);
     }
   }

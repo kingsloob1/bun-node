@@ -829,16 +829,16 @@ describe("heavy-run.sh: history and keys", () => {
         env: { HEAVY_EXCLUSIVE: "1" },
       });
       expect((await failing.done).code).toBe(4);
-      expect(history(box)[2]!.slice(1, 2)).toEqual([
+      expect(history(box)[2].slice(1, 2)).toEqual([
         "examples/bun-jobs: bash ./run.sh 4 [exclusive]",
       ]);
-      expect(history(box)[2]![3]).toBe("4");
+      expect(history(box)[2][3]).toBe("4");
 
       // Outside a repository, the directory's own name stands in.
       const plain = join(box.dir, "plain-dir");
       mkdirSync(plain);
       await box.run(["true"], { cwd: plain }).done;
-      expect(history(box)[3]![1]).toBe("plain-dir: true");
+      expect(history(box)[3][1]).toBe("plain-dir: true");
     },
   );
 
@@ -1180,7 +1180,7 @@ describe("heavy-run.sh: adaptive mode (HEAVY_MODE=auto, the default)", () => {
       expect(results.map((r) => r.code)).toEqual([0, 0]);
 
       const of = (marker: string) =>
-        box.lines().find((line) => line[1]!.endsWith(marker))!;
+        box.lines().find((line) => line[1].endsWith(marker))!;
       const burnt = of("burn.sh burn 2");
       expect(burnt).toHaveLength(10);
       const [cpu, cores, loadStart, loadEnd] = burnt.slice(4, 8).map(Number);
@@ -1193,7 +1193,7 @@ describe("heavy-run.sh: adaptive mode (HEAVY_MODE=auto, the default)", () => {
       // lower, so it is checked against the job's own wall time, not 2.
       const job = box.jobs().get("burn")!;
       const wall = (job.end! - job.start) / 1000;
-      expect(Math.abs(cores! - cpu! / wall)).toBeLessThan(0.25);
+      expect(Math.abs(cores - cpu / wall)).toBeLessThan(0.25);
       expect(loadStart).toBeGreaterThanOrEqual(0);
       expect(loadEnd).toBeGreaterThanOrEqual(0);
       expect(burnt.slice(8)).toEqual([job.slot, "auto"]);
@@ -1250,10 +1250,10 @@ describe("heavy-run.sh: adaptive mode (HEAVY_MODE=auto, the default)", () => {
     expect(result.stderr).toContain("auto → slot (no history)");
     expect(box.jobs().get("fresh")!.slot).toBe("1");
     const [line] = box.lines();
-    expect(line!.slice(8)).toEqual(["1", "auto"]);
+    expect(line.slice(8)).toEqual(["1", "auto"]);
     // A job of a few milliseconds counts as lasting a second, so its cores
     // are no more than its CPU seconds, not a few ticks over a few ms.
-    expect(Number(line![5])).toBeLessThanOrEqual(Number(line![4]) + 0.01);
+    expect(Number(line[5])).toBeLessThanOrEqual(Number(line[4]) + 0.01);
   });
 
   scenario(
@@ -1346,7 +1346,7 @@ describe("heavy-run.sh: adaptive mode (HEAVY_MODE=auto, the default)", () => {
       box.finish("mid-done");
       const results = await Promise.all([first.done, second.done]);
       expect(results.map((r) => r.code)).toEqual([0, 0]);
-      expect(results[1]!.stderr).toContain("load 1.0 + 0.0 starting + 4.0");
+      expect(results[1].stderr).toContain("load 1.0 + 0.0 starting + 4.0");
       expect(box.starts("mid")).toBe(2);
       await release1();
       await release2();

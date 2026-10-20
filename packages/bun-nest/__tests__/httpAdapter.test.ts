@@ -9,6 +9,7 @@ import {
   BunRouter,
   finalErrorResponse,
   mergeBunRequestOptions,
+  RouteClass,
   signCookie,
 } from "@kingsleyweb/bun-common";
 import {
@@ -193,12 +194,12 @@ describe("Http Adapter Routing - Complex Paths", () => {
     expect(response.body).toEqual({ message: "File: image.jpg" });
   });
 
-  it("gET /api/v1/files/:filename - Invalid filename", async () => {
+  it("gET /api/v1/files/:filename - Invalid filename with a nested path", async () => {
     const response = await request(app).get("/api/v1/files/men/image.jpg");
     expect(response.status).toBe(404);
   });
 
-  it("gET /api/v1/files/:filename - Invalid filename", async () => {
+  it("gET /api/v1/files/:filename - Invalid filename with an unlisted extension", async () => {
     const response = await request(app).get("/api/v1/files/image.pdf");
     expect(response.status).toBe(404);
   });
@@ -1459,6 +1460,64 @@ describe("BunHttpAdapter.setNotFoundHandler: scoped to the global prefix on Nest
     adapter.setNotFoundHandler(notFound("root"), "");
     expect((await answer(adapter, "/anything")).by).toBe("root");
     expect((await answer(adapter, "/")).by).toBe("root");
+  });
+
+  it("matches a plain prefix exactly as the routejs prefix regex it skips would", async () => {
+    // A plain prefix is compared without the regex; this pins the two
+    // together, the regex built here as bun-common compiles a `use()` group.
+    const prefix = "/Api.v-1_x~y/v2";
+    const regexp = new RegExp(
+      (
+        new RouteClass({ group: prefix, callbacks: [] }) as unknown as {
+          pathRegexp: RegExp;
+        }
+      ).pathRegexp.source,
+      "i",
+    );
+    const adapter = new BunHttpAdapter();
+    adapter.setNotFoundHandler(notFound("api"), prefix);
+    const paths = [
+      "/Api.v-1_x~y/v2",
+      "/api.v-1_x~y/v2",
+      "/API.V-1_X~Y/V2/",
+      "/api.v-1_x~y/v2/x",
+      "/api.v-1_x~y/v2//x",
+      "/api.v-1_x~y/v2?q=1",
+      "/api.v-1_x~y/v2x",
+      "/api.v-1_x~y/v",
+      "/api.v-1_x~y",
+      "/apixv-1_x~y/v2",
+      "/api.v-1_x~y/v2%2Fx",
+      "/%41pi.v-1_x~y/v2",
+      "/",
+    ];
+    for (const path of paths) {
+      const expected =
+        NEST_12 && !regexp.test(path.split("?")[0]) ? "html" : "api";
+      expect([path, (await answer(adapter, path)).by]).toEqual([
+        path,
+        expected,
+      ]);
+    }
+  });
+
+  it("answers each combination of handlers in turn, and sees a handler added after a miss", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.setNotFoundHandler(notFound("root"));
+    const by = async (path: string) => (await answer(adapter, path)).by;
+    // Unscoped only (every handler, on Nest 11): no path read.
+    expect(await by("/api/x")).toBe("root");
+    adapter.setNotFoundHandler(notFound("api"), "api");
+    // Alternating, so a remembered list is reused and never answers for
+    // another combination.
+    for (let round = 0; round < 3; round++) {
+      expect(await by("/api/x")).toBe(NEST_12 ? "api" : "root");
+      expect(await by("/elsewhere")).toBe("root");
+    }
+    adapter.setNotFoundHandler(notFound("admin"), "admin");
+    expect(await by("/admin/x")).toBe(NEST_12 ? "admin" : "root");
+    expect(await by("/api/x")).toBe(NEST_12 ? "api" : "root");
+    expect(await by("/elsewhere")).toBe("root");
   });
 });
 

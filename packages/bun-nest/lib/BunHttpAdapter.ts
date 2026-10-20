@@ -174,7 +174,7 @@ interface NotFoundEntry {
    * match on whole segments, case-insensitive, its parameters matching any
    * segment (see {@link prefixMatcher}). `undefined` with no prefix.
    */
-  matcher: RegExp | undefined;
+  matcher: ((pathname: string) => boolean) | undefined;
 }
 
 /**
@@ -197,18 +197,60 @@ function normalizePrefix(prefix: unknown): string | undefined {
   );
 }
 
+/** A prefix routejs compiles to a literal: segments of `[\w.~-]` only. */
+const PLAIN_PREFIX = /^(?:\/[\w.~-]+)+$/;
+
 /**
  * A normalised prefix compiled as Express's `use(prefix, router)` matches
  * it: at the prefix or below it, on whole segments (`/apiary` is not under
  * `/api`), case-insensitively, a `:param` matching any one segment
  * (`/:tenant` covers `/t1/x`), a `{…}` group optional. Compiled by
  * bun-common's router itself, as it compiles a `use()` prefix, so the two
- * cannot disagree.
+ * cannot disagree; `i` is added if the compiled regex lacks it.
+ *
+ * A prefix of plain segments (`/api/v1`: letters, digits, `_ . ~ -`) is
+ * matched without the regex, by {@link isUnderAsciiPrefix}: it compiles to
+ * the literal `^\/api\/v1\/?(?=\/|$)`, which that comparison is.
  */
-function prefixMatcher(prefix: string): RegExp {
+function prefixMatcher(prefix: string): (pathname: string) => boolean {
+  if (PLAIN_PREFIX.test(prefix)) {
+    const lower = prefix.toLowerCase();
+    return (pathname) => isUnderAsciiPrefix(pathname, lower);
+  }
   const router = new BunRouter({ caseSensitive: false });
   router.use(prefix, (_req, _res, next) => next());
-  return router.routes()[0]!.pathRegexp;
+  const compiled = router.routes()[0]!.pathRegexp;
+  const regexp = compiled.flags.includes("i")
+    ? compiled
+    : new RegExp(compiled.source, `${compiled.flags}i`);
+  return (pathname) => regexp.test(pathname);
+}
+
+/**
+ * Whether `pathname` is `lower` (an ASCII prefix, lower-cased) or below it on
+ * whole segments, ASCII letters compared case-insensitively: what the
+ * prefix's `i` regex `^<prefix>\/?(?=\/|$)` matches. A non-ASCII character
+ * never folds to an ASCII letter under a non-Unicode `i` regex, so ASCII
+ * folding is the whole of it.
+ */
+function isUnderAsciiPrefix(pathname: string, lower: string): boolean {
+  const length = lower.length;
+  if (
+    pathname.length < length ||
+    (pathname.length > length && pathname.charCodeAt(length) !== 47) // "/"
+  ) {
+    return false;
+  }
+  for (let i = 0; i < length; i++) {
+    let code = pathname.charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      code |= 32; // A-Z to a-z
+    }
+    if (code !== lower.charCodeAt(i)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -218,7 +260,24 @@ function prefixMatcher(prefix: string): RegExp {
  * prefix.
  */
 function isUnderLiteralPrefix(pathname: string, prefix: string): boolean {
-  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+  return (
+    pathname.startsWith(prefix) &&
+    (pathname.length === prefix.length ||
+      pathname.charCodeAt(prefix.length) === 47) // "/"
+  );
+}
+
+/**
+ * The path of a request URL as `url.split(/[?#]/)[0]` reads it, up to the
+ * first `?` or `#`, without the regex or the array.
+ */
+function pathOfUrl(url: string): string {
+  let end = url.indexOf("?");
+  const hash = url.indexOf("#");
+  if (hash !== -1 && (end === -1 || hash < end)) {
+    end = hash;
+  }
+  return end === -1 ? url : url.slice(0, end);
 }
 
 /** The five characters `escape-html` replaces, and their entities. */
@@ -232,11 +291,30 @@ const HTML_ESCAPES: Record<string, string> = {
 
 /** `escape-html`'s escaping, which `finalhandler` applies to its page. */
 function escapeHtml(text: string): string {
-  return text.replace(/["&'<>]/g, (char) => HTML_ESCAPES[char]!);
+  return text.replace(/["&'<>]/g, (char) => HTML_ESCAPES[char]);
 }
 
-/** bun-common's 404 page split around its message, read once (see below). */
-let notFoundPage: Promise<[before: string, after: string]> | undefined;
+/**
+ * bun-common's 404 page, read once (see {@link cannotRouteResponse}): its HTML
+ * split around its message, its status and its headers.
+ */
+interface NotFoundPage {
+  /** The HTML before `<pre>`. */
+  before: string;
+  /** The HTML after `</pre>`. */
+  after: string;
+  /** Its status, `404`. */
+  status: number;
+  /** Its status text, `Not Found`. */
+  statusText: string;
+  /** Its headers, as `Headers.forEach` lists them. */
+  headers: [name: string, value: string][];
+}
+
+/** {@link NotFoundPage} while it is read, the first time a page is built. */
+let notFoundPageRead: Promise<NotFoundPage> | undefined;
+/** {@link NotFoundPage} once read: later pages are built synchronously. */
+let notFoundPage: NotFoundPage | undefined;
 
 /** The headers `finalhandler` removes from a response before its page. */
 const FINALHANDLER_REMOVED_HEADERS = [
@@ -258,41 +336,73 @@ const FINALHANDLER_REMOVED_HEADERS = [
  * less `Content-Encoding`, `Content-Language` and `Content-Range`, and sets
  * its own over them.
  */
-async function cannotRouteResponse(
+function cannotRouteResponse(
   method: string,
   pathname: string,
   responseHeaders: Record<string, string | string[] | number | undefined>,
-): Promise<Response> {
+): Response | Promise<Response> {
+  if (notFoundPage) {
+    return buildCannotRoute(notFoundPage, method, pathname, responseHeaders);
+  }
+  notFoundPageRead ??= readNotFoundPage();
+  return notFoundPageRead.then((page) =>
+    buildCannotRoute(page, method, pathname, responseHeaders),
+  );
+}
+
+/**
+ * Reads bun-common's 404 once: a `GET` 404 from {@link finalErrorResponse}
+ * is the same every time, so its parts are kept rather than rebuilt per miss.
+ */
+async function readNotFoundPage(): Promise<NotFoundPage> {
   const base = finalErrorResponse({ status: 404 }, { method: "GET" });
-  notFoundPage ??= base
-    .clone()
-    .text()
-    .then((html) => {
-      const [before = "", after = ""] = html.split(
-        `<pre>${base.statusText}</pre>`,
-      );
-      return [before, after];
-    });
-  const [before, after] = await notFoundPage;
+  const headers: [string, string][] = [];
+  base.headers.forEach((value, name) => {
+    headers.push([name, value]);
+  });
+  const html = await base.text();
+  const [before = "", after = ""] = html.split(`<pre>${base.statusText}</pre>`);
+  notFoundPage = {
+    before,
+    after,
+    status: base.status,
+    statusText: base.statusText,
+    headers,
+  };
+  return notFoundPage;
+}
+
+/** One {@link cannotRouteResponse} page, from the page read once. */
+function buildCannotRoute(
+  page: NotFoundPage,
+  method: string,
+  pathname: string,
+  responseHeaders: Record<string, string | string[] | number | undefined>,
+): Response {
   const message = escapeHtml(`Cannot ${method} ${encodeUrl(pathname)}`);
   // A HEAD request too: the transport drops the body (Bun on the wire,
   // `toFetchResponse` for `fetch()`) and keeps its length, as finalhandler
   // sends `Content-Length` without the body.
   const headers = new Headers();
-  for (const [name, value] of Object.entries(responseHeaders)) {
+  for (const name in responseHeaders) {
+    const value = responseHeaders[name];
     if (value === undefined || FINALHANDLER_REMOVED_HEADERS.includes(name)) {
       continue;
     }
-    for (const one of Array.isArray(value) ? value : [value]) {
-      headers.append(name, String(one));
+    if (Array.isArray(value)) {
+      for (const one of value) {
+        headers.append(name, String(one));
+      }
+    } else {
+      headers.append(name, String(value));
     }
   }
-  base.headers.forEach((value, name) => {
+  for (const [name, value] of page.headers) {
     headers.set(name, value);
-  });
-  return new Response(`${before}<pre>${message}</pre>${after}`, {
-    status: base.status,
-    statusText: base.statusText,
+  }
+  return new Response(`${page.before}<pre>${message}</pre>${page.after}`, {
+    status: page.status,
+    statusText: page.statusText,
     headers,
   });
 }
@@ -351,6 +461,20 @@ export class BunHttpAdapter<
 
   /** Nest's not-found handlers, each with its prefix; see {@link setNotFoundHandler}. */
   private _notFoundHandlers: NotFoundEntry[] = [];
+  /**
+   * Every not-found handler, in order, while none is scoped to a prefix
+   * (always on Nest 11; on Nest 12 without a global prefix): a miss then
+   * runs them all, with no path to read. `undefined` once one is scoped.
+   * Rebuilt by {@link setNotFoundHandler}.
+   */
+  #unscopedNotFoundHandlers: RouterMiddlewareHandler[] | undefined;
+  /**
+   * The handler lists a miss has selected while some handler is scoped,
+   * keyed by the bit mask of the entries selected, so a miss allocates no
+   * list once its combination has been seen. Cleared by
+   * {@link setNotFoundHandler}.
+   */
+  #scopedNotFoundSets = new Map<number, RouterMiddlewareHandler[]>();
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
   /**
    * Whether not-found handlers are scoped to their global prefix, as
@@ -583,6 +707,7 @@ export class BunHttpAdapter<
         this.#routeRequest(req, nativeRequest, server),
       );
     } catch (error) {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever was thrown, unchanged, so the error handler sees the value a route threw
       return Promise.reject(error);
     }
   }
@@ -699,7 +824,13 @@ export class BunHttpAdapter<
           statusText: "Not Found",
         });
       }
-      const pathname = req.originalUrl.split(/[?#]/)[0] ?? req.path;
+      const unscoped = this.#unscopedNotFoundHandlers;
+      if (unscoped) {
+        return this.#runNotFoundHandlers(req, res, unscoped).then(() =>
+          this.#produceResponse(res, nativeRequest, server),
+        );
+      }
+      const pathname = pathOfUrl(req.originalUrl);
       const handlers = this.#notFoundHandlersFor(pathname);
       if (!handlers.length) {
         // Outside every application's prefix (Nest 12): no Nest handler
@@ -720,22 +851,50 @@ export class BunHttpAdapter<
    * matches (case-insensitively, `:param` segments included); an unscoped
    * one answers unless `pathname` is under some application's prefix as
    * written (several applications on one adapter). On Nest 11 every handler
-   * is unscoped, so every one applies.
+   * is unscoped, so every one applies (and {@link #respond} never asks).
+   *
+   * Plain loops and a remembered list per combination: a miss allocates
+   * nothing once its combination has been seen.
    */
   #notFoundHandlersFor(pathname: string): RouterMiddlewareHandler[] {
     const entries = this._notFoundHandlers;
-    const underSomePrefix = entries.some(
-      (entry) =>
+    let underSomePrefix = false;
+    for (const entry of entries) {
+      if (
         entry.prefix !== undefined &&
-        isUnderLiteralPrefix(pathname, entry.prefix),
-    );
-    return entries
-      .filter((entry) =>
-        entry.matcher === undefined
-          ? !underSomePrefix
-          : entry.matcher.test(pathname),
-      )
-      .map((entry) => entry.handler);
+        isUnderLiteralPrefix(pathname, entry.prefix)
+      ) {
+        underSomePrefix = true;
+        break;
+      }
+    }
+    // Past what a 31-bit mask holds, the list is built each time.
+    const built: RouterMiddlewareHandler[] | undefined =
+      entries.length > 31 ? [] : undefined;
+    let mask = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (
+        entry.matcher === undefined ? !underSomePrefix : entry.matcher(pathname)
+      ) {
+        if (built) {
+          built.push(entry.handler);
+        } else {
+          mask |= 1 << i;
+        }
+      }
+    }
+    if (built) {
+      return built;
+    }
+    let handlers = this.#scopedNotFoundSets.get(mask);
+    if (!handlers) {
+      handlers = entries
+        .filter((_, i) => mask & (1 << i))
+        .map((entry) => entry.handler);
+      this.#scopedNotFoundSets.set(mask, handlers);
+    }
+    return handlers;
   }
 
   /** Runs the not-found handlers, as when no route answered the request. */
@@ -831,8 +990,7 @@ export class BunHttpAdapter<
         // stub otherwise, which reports no peer and refuses upgrades.
         // The stub is not a real server (only `requestIP`/`upgrade` exist),
         // which is exactly what this method touches.
-        this.getBunServer() ??
-          (FETCH_STUB_SERVER as BunWebSocketServerType<customWebsocketDataType>),
+        this.getBunServer() ?? FETCH_STUB_SERVER,
       );
     } catch (error) {
       // The same final error handling `Bun.serve`'s `error` callback runs.
@@ -1403,7 +1561,7 @@ export class BunHttpAdapter<
       (url) => !!url,
     );
 
-    return url as URL;
+    return url;
   }
 
   public reply(
@@ -1580,6 +1738,13 @@ export class BunHttpAdapter<
       prefix: scoped,
       matcher: scoped === undefined ? undefined : prefixMatcher(scoped),
     });
+    // The per-miss work, decided here once (see `#respond`).
+    this.#unscopedNotFoundHandlers = this._notFoundHandlers.every(
+      (entry) => entry.prefix === undefined,
+    )
+      ? this._notFoundHandlers.map((entry) => entry.handler)
+      : undefined;
+    this.#scopedNotFoundSets.clear();
     if (!scoped) {
       return;
     }
@@ -3868,7 +4033,7 @@ export class BunHttpAdapter<
 
       // `AbstractHttpAdapter` declares the route returns `Function`; what it
       // really returns is `next()`'s result, which NestJS ignores.
-      return next() as unknown as Function;
+      return next() as Function;
     };
 
     if (

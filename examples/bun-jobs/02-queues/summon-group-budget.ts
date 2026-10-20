@@ -314,7 +314,7 @@ for (const queue of MEDIA_QUEUES) {
   mediaEvents[queue] = [];
   media
     .summonController(queue)
-    .on("summon", (event) => mediaEvents[queue]!.push(event));
+    .on("summon", (event) => mediaEvents[queue].push(event));
   await media.queue(queue).add("work", { queue });
 }
 
@@ -391,7 +391,7 @@ checkEqual(
 step("2. What reports the group: the summon events and onSummonFailed");
 
 /** The attempt events (an id) of the queues that summoned. */
-const attemptEvents = [...mediaEvents.renders!, ...mediaEvents.thumbs!].filter(
+const attemptEvents = [...mediaEvents.renders, ...mediaEvents.thumbs].filter(
   (event) => event.id !== "",
 );
 show("renders' and thumbs' attempt events", attemptEvents);
@@ -403,7 +403,7 @@ check(
 );
 checkEqual(
   "the group's budget-exhausted: one summon event on previews, with an empty id, the group and an eventId (a UUIDv7)",
-  mediaEvents.previews!.map(markEventId),
+  mediaEvents.previews.map(markEventId),
   [
     {
       id: "",
@@ -443,10 +443,7 @@ await again(media, "previews");
 await hooksRan();
 checkEqual(
   "once per window: a second refused check on previews emits and tells nothing more",
-  [
-    mediaEvents.previews!.length,
-    toldFor("previews", "budget-exhausted").length,
-  ],
+  [mediaEvents.previews.length, toldFor("previews", "budget-exhausted").length],
   [1, 1],
 );
 

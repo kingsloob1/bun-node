@@ -35,8 +35,11 @@
  *
  * `--root <dir>` measures another checkout (a worktree, a Nest matrix copy):
  * bun-common, bun-nest and the Nest packages are all loaded from that tree, so
- * one copy of this script benchmarks any revision. See `README.md`, "Router
- * regression guard", for the tolerance and how it was calibrated.
+ * one copy of this script benchmarks any revision. `--roots base=<dir>,pr=<dir>`
+ * is the PR gate: an A/B of two checkouts in one session, every cell
+ * alternating between them, judged against the first (`AB_TOLERANCE`, on
+ * the best of the rounds and the median of the per-round ratios together). See `README.md`, "Router regression guard",
+ * for both tolerances and how they were calibrated.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -312,20 +315,70 @@ const DEFAULT_BASELINE = new URL("baselines/router.json", import.meta.url)
  */
 export const TOLERANCE = 0.15;
 
+/**
+ * The exit status, for `--compare` and the A/B alike, when no cell regressed
+ * but some ran with other router options than the run they are judged against
+ * (a changed default, say). Those cells are judged as usual, so a speed
+ * regression on them is still exit 1; this one says the baseline is due a
+ * `--save-baseline` in the same PR, not that the code needs a fix. 2 is a
+ * usage error.
+ */
+export const EXIT_OPTIONS_CHANGED = 3;
+
+/**
+ * The exit status when the session was too noisy to judge and no cell of ours
+ * regressed: `--compare`'s **drift** (the rival's cells moved past
+ * `TOLERANCE` against the baseline) or the A/B's **noise** (a rival cell, the
+ * same code on both sides, moved past `AB_TOLERANCE`). Re-run on a quiet
+ * machine rather than look for a regression. A slower or missing cell, or a
+ * problem, still wins with exit 1.
+ */
+export const EXIT_TOO_NOISY = 4;
+
+/**
+ * How far a cell of an A/B side may fall behind the base side (the first of
+ * `--roots`) before it counts as a regression, per level. A cell fails when
+ * both of two estimates grew past it: its best of the rounds against the
+ * base's, and the median, over the rounds, of each round's side / base ratio.
+ * Noise moves one of them at a time (a lucky best, a busy round); a change in
+ * the code moves both.
+ *
+ * Far tighter than {@link TOLERANCE}, because both sides run in the same
+ * session, alternating per cell, so a round's two figures were measured a few
+ * seconds apart and drift cancels in their ratio. Calibrated to measured
+ * same-build A/Bs (one checkout given twice): over 368 cells on one Bun build
+ * nothing moved more than 4.7% either way, and the 404 negative control moved
+ * its three cells 7.6-8.1%. README, "The PR gate", has the figures. The same
+ * figure on every level: four runs did not separate them.
+ */
+export const AB_TOLERANCE: Record<Level, number> = {
+  match: 0.05,
+  route: 0.05,
+  fetch: 0.05,
+  served: 0.05,
+};
+
 function printHelp(): void {
   console.log(`
 Router regression guard (Bun ${Bun.version})
 
 Usage: bun router-guard.ts [options]
 
-  --compare             Fail (exit 1) if a figure regressed against the baseline
+  --compare             Fail (exit 1) if a figure regressed against the baseline;
+                        exit ${EXIT_OPTIONS_CHANGED} if nothing did but some cells ran with other router
+                        options than it recorded (re-record it with --save-baseline);
+                        exit ${EXIT_TOO_NOISY} if the machine drifted too far to judge
   --save-baseline       Record this run as the baseline
   --baseline <file>     Baseline file           (default: baselines/router.json)
   --verify              Check every scenario's responses; time nothing
   --root <dir>          Checkout to measure     (default: this script's repo)
-  --roots a=<dir>,b=<dir>
-                        A/B: the same cells on each checkout, alternating per
-                        cell (A B, then B A), and a table of the deltas
+  --roots base=<dir>,pr=<dir>
+                        A/B, the PR gate: the same cells on each checkout,
+                        alternating per cell (A B, then B A). The first root is
+                        the base; a side fails (exit 1) when both a cell's best and
+                        its median per-round ratio to the base grew past ${(AB_TOLERANCE.fetch * 100).toFixed(0)}%;
+                        exit ${EXIT_OPTIONS_CHANGED} when none did but router options differ, exit ${EXIT_TOO_NOISY}
+                        when the rival's cells moved past it (too noisy)
   --rounds <n>          Rounds, interleaved     (default: 5)
   --targets <list>      bun-common,bun-nest,hono (default: all)
   --scenarios <list>    Scenario ids or 'all'   (default: all)
@@ -338,8 +391,9 @@ Usage: bun router-guard.ts [options]
   --max-wait <s>        ...for at most this long (default: 300)
   --json <file>         Write every round's figures to a file
   --label <text>        A name for the run, shown in the table and the JSON
-  --from <file>         Judge a run saved with --json instead of measuring
-                        (with --compare; its first root is the run judged)
+  --from <file>         Judge a run saved with --json instead of measuring:
+                        an A/B file is judged as an A/B (its first root the
+                        base); a single run with --compare
   -h, --help            This text
 
 Scenarios:
@@ -995,6 +1049,12 @@ interface ChildResult {
   levels: Partial<Record<Level, LevelFigures>>;
   /** The router options it ran with. */
   options?: RouterOptions;
+  /**
+   * The child's `Bun.revision`. The parent spawns `process.execPath`, so a Bun
+   * upgraded mid-run puts the later cells on another build than the earlier
+   * ones (seen 2026-10-20); the parent refuses such a run.
+   */
+  bunRevision?: string;
 }
 
 async function runChild(target: TargetId, scenarioId: string): Promise<void> {
@@ -1009,6 +1069,7 @@ async function runChild(target: TargetId, scenarioId: string): Promise<void> {
     problems: [],
     levels: {},
     options: built.options,
+    bunRevision: Bun.revision,
   };
   const method = scenario.method ?? "GET";
 
@@ -1116,6 +1177,11 @@ export interface BaselineEntry {
 /** The committed baseline, with what is needed to know when it applies. */
 export interface Baseline {
   recordedAt: string;
+  /**
+   * Where the figures came from: `--save-baseline` writes its own; a baseline
+   * taken from another run (an A/B side) says which. Absent in older files.
+   */
+  source?: string;
   /** `Bun.version`. */
   bun: string;
   /** `Bun.revision`. */
@@ -1246,10 +1312,55 @@ function toBaseline(cells: Cell[], root: string): Baseline {
   };
 }
 
+/** The router options compared between a run and its baseline. */
+const OPTION_KEYS = [
+  "routeCacheMax",
+  "caseSensitive",
+  "routeSpecificity",
+] as const satisfies readonly (keyof RouterOptions)[];
+
+/**
+ * The router options a cell of `run` ran with: its own, else its target's;
+ * `undefined` where none were recorded (Hono, a file from before them).
+ */
+function cellOptions(run: Baseline, key: string): RouterOptions | undefined {
+  const entry = run.entries[key];
+  return entry && (entry.options ?? run.routerOptions?.[entry.target]);
+}
+
+/**
+ * Each option that differs, as `caseSensitive true → false`; none when either
+ * side is unknown, so a file without options is judged as before.
+ */
+function optionChanges(was?: RouterOptions, now?: RouterOptions): string[] {
+  if (!was || !now) return [];
+  return OPTION_KEYS.filter((k) => was[k] !== now[k]).map(
+    (k) => `${k} ${String(was[k])} → ${String(now[k])}`,
+  );
+}
+
+/**
+ * A cell that ran with other router options than the run it is judged
+ * against. It is still judged: a changed default (`caseSensitive` off, say)
+ * can cost speed, and that is exactly what the gate is for.
+ */
+interface OptionsChanged {
+  key: string;
+  target: TargetId;
+  /** Each differing option, `caseSensitive true → false`. */
+  changes: string[];
+  /** The baseline's figure. */
+  was: string;
+  /** This run's figure, with its delta(s). */
+  now: string;
+  /** Whether it was also judged slower past the tolerance. */
+  slower: boolean;
+}
+
 /** One way a run differs from its baseline. */
 interface Regression {
   key: string;
-  kind: "slower" | "overtaken" | "missing" | "drift";
+  kind: "slower" | "overtaken" | "missing" | "drift" | "noise";
   was: string;
   now: string;
 }
@@ -1263,14 +1374,21 @@ function ns(value: number): string {
 /**
  * Compares a run with a baseline. Only cells the baseline has are checked, so
  * a new scenario fails nothing before a baseline records it; a cell the
- * baseline has and this run attempted but could not measure is a failure.
+ * baseline has and this run attempted but could not measure is a failure. A
+ * cell that ran with other router options than the baseline's is reported in
+ * `optionsChanged` and judged as usual.
  */
 function compare(
   baseline: Baseline,
   current: Baseline,
   attempted: Set<string>,
-): { regressions: Regression[]; drifts: LevelDrift[] } {
+): {
+  regressions: Regression[];
+  optionsChanged: OptionsChanged[];
+  drifts: LevelDrift[];
+} {
   const regressions: Regression[] = [];
+  const optionsChanged: OptionsChanged[] = [];
   const drifts = machineDrift(baseline, current);
   const driftOf = new Map(drifts.map((d) => [d.level, d.drift]));
   for (const { level, drift, rivals } of drifts) {
@@ -1302,12 +1420,30 @@ function compare(
     if (RIVALS.has(was.target)) continue;
     const drift = driftOf.get(was.level) ?? 1;
     const grew = now.nsPerOp / was.nsPerOp / drift - 1;
+    const changes = optionChanges(
+      cellOptions(baseline, key),
+      cellOptions(current, key),
+    );
+    const figures = `${ns(now.nsPerOp)} (${pct(now.nsPerOp / was.nsPerOp - 1)}, ${pct(grew)} net of drift)`;
+    const optionsNote = changes.length
+      ? `; router options changed: ${changes.join(", ")}`
+      : "";
+    if (changes.length) {
+      optionsChanged.push({
+        key,
+        target: was.target,
+        changes,
+        was: ns(was.nsPerOp),
+        now: figures,
+        slower: grew > TOLERANCE,
+      });
+    }
     if (grew > TOLERANCE) {
       regressions.push({
         key,
         kind: "slower",
         was: ns(was.nsPerOp),
-        now: `${ns(now.nsPerOp)} (${pct(now.nsPerOp / was.nsPerOp - 1)}, ${pct(grew)} net of drift)`,
+        now: `${figures}${optionsNote}`,
       });
     }
     // The self-normalising check: a busy machine slows the rival too.
@@ -1321,11 +1457,11 @@ function compare(
         key,
         kind: "overtaken",
         was: `ahead of ${was.rival.contender} (${ns(was.rival.nsPerOp)})`,
-        now: `behind it: ${ns(now.nsPerOp)} vs ${ns(now.rival.nsPerOp)}`,
+        now: `behind it: ${ns(now.nsPerOp)} vs ${ns(now.rival.nsPerOp)}${optionsNote}`,
       });
     }
   }
-  return { regressions, drifts };
+  return { regressions, optionsChanged, drifts };
 }
 
 /** One level's drift: how the rival cells it was taken from moved. */
@@ -1398,10 +1534,14 @@ function printTable(
     const delta = was
       ? `${((entry.nsPerOp / was.nsPerOp - 1) * 100).toFixed(1)}%`
       : "";
+    const changed =
+      base &&
+      optionChanges(cellOptions(base, key), cellOptions(current, key)).length;
     console.log(
       `${key.padEnd(42)} ${ns(entry.nsPerOp).padStart(9)} ${`${(entry.spread * 100).toFixed(1)}%`.padStart(7)}` +
         `${base ? `${(was ? ns(was.nsPerOp) : "-").padStart(10)} ${delta.padStart(7)}` : ""}` +
-        ` ${(entry.rival ? ns(entry.rival.nsPerOp) : "").padStart(9)}`,
+        ` ${(entry.rival ? ns(entry.rival.nsPerOp) : "").padStart(9)}` +
+        `${changed ? "  options changed" : ""}`,
     );
   }
 }
@@ -1422,32 +1562,300 @@ async function loadSaved(file: string): Promise<{
   };
 }
 
-/** The A/B table: each root's median, its spread, and the delta from the first. */
-function printAB(measured: (Baseline & { label: string })[]): void {
+/** One cell of an A/B side, against the base side. */
+interface ABCell {
+  key: string;
+  level: Level;
+  /** Best over the rounds, side / base - 1. */
+  best: number;
+  /**
+   * Median over the rounds of each round's side / base - 1. Round `r` of both
+   * sides ran back to back, so drift cancels in the ratio, where best-vs-best
+   * compares figures from different minutes.
+   */
+  paired: number;
+  /** Whether the rounds could be paired (equal counts); else `paired` is `best`. */
+  pairedRounds: boolean;
+  /**
+   * The judged figure: the move `best` and `paired` agree on, the one nearer
+   * zero when they point the same way, else 0. Noise moves one of them at a
+   * time; a real change moves both.
+   */
+  agreed: number;
+}
+
+/** The move two estimates agree on: the smaller when both point one way, else 0. */
+function agreedMove(a: number, b: number): number {
+  if (a > 0 && b > 0) return Math.min(a, b);
+  if (a < 0 && b < 0) return Math.max(a, b);
+  return 0;
+}
+
+/** An A/B side judged against the base side. */
+interface ABVerdict {
+  /** The side judged. */
+  label: string;
+  cells: ABCell[];
+  regressions: Regression[];
+  optionsChanged: OptionsChanged[];
+}
+
+/**
+ * Judges `side` against `base`, both measured in one A/B session. A cell of
+ * ours fails as **slower** when both its best-of-rounds and the median of its
+ * per-round ratios to the base grew past its level's {@link AB_TOLERANCE}
+ * (`agreed`); a cell the base has and the side
+ * lacks fails as **missing**; a cell whose router options differ is reported
+ * in `optionsChanged` and judged as usual. Hono's code is the same on both sides
+ * (this directory's copy), so its cells are an A = A pair inside every A/B: one
+ * that moved past the tolerance either way fails the run as **noise**, as
+ * `--compare`'s drift does, since our cells were measured no better.
+ */
+function judgeAB(
+  base: Baseline,
+  side: Baseline & { label: string },
+): ABVerdict {
+  const cells: ABCell[] = [];
+  const regressions: Regression[] = [];
+  const optionsChanged: OptionsChanged[] = [];
+  for (const [key, was] of Object.entries(base.entries)) {
+    const now = side.entries[key];
+    if (!now) {
+      regressions.push({
+        key,
+        kind: "missing",
+        was: ns(was.nsPerOp),
+        now: "not measured",
+      });
+      continue;
+    }
+    const best = now.nsPerOp / was.nsPerOp - 1;
+    const pairedRounds =
+      was.rounds.length > 0 && was.rounds.length === now.rounds.length;
+    const paired = pairedRounds
+      ? median(was.rounds.map((w, r) => now.rounds[r]! / w)) - 1
+      : best;
+    const agreed = agreedMove(paired, best);
+    cells.push({ key, level: was.level, best, paired, pairedRounds, agreed });
+    const tolerance = AB_TOLERANCE[was.level];
+    const figures = `${ns(now.nsPerOp)} (${pct(best)} best, ${pct(paired)} paired)`;
+    if (RIVALS.has(was.target)) {
+      if (Math.abs(agreed) > tolerance) {
+        regressions.push({
+          key,
+          kind: "noise",
+          was: ns(was.nsPerOp),
+          now: `${figures}: the same code on both sides moved past ${pct(tolerance)}; too noisy a session to judge, re-run on a quiet machine`,
+        });
+      }
+      continue;
+    }
+    const changes = optionChanges(
+      cellOptions(base, key),
+      cellOptions(side, key),
+    );
+    if (changes.length) {
+      optionsChanged.push({
+        key,
+        target: was.target,
+        changes,
+        was: ns(was.nsPerOp),
+        now: `${figures}, ${pct(agreed)} agreed`,
+        slower: agreed > tolerance,
+      });
+    }
+    if (agreed > tolerance) {
+      regressions.push({
+        key,
+        kind: "slower",
+        was: ns(was.nsPerOp),
+        now: `${figures}${changes.length ? `; router options changed: ${changes.join(", ")}` : ""}`,
+      });
+    }
+  }
+  return { label: side.label, cells, regressions, optionsChanged };
+}
+
+/**
+ * The A/B table: the base's best and spread, then for each other side its
+ * best, spread, best-vs-best delta and paired delta, flagged when judged.
+ */
+function printAB(
+  measured: (Baseline & { label: string })[],
+  verdicts: ABVerdict[],
+): void {
   const [first, ...rest] = measured;
-  for (const run of measured) {
+  for (const [i, run] of measured.entries()) {
     console.log(
-      `\n${run.label}: ${run.gitSha.slice(0, 8)}${run.gitDirty ? " (dirty)" : ""}, Nest ${run.nest}, Bun ${run.bun}`,
+      `${i ? "" : "\n"}${i ? "side" : "base"} ${run.label}: ${run.gitSha.slice(0, 8)}${run.gitDirty ? " (dirty)" : ""}, Nest ${run.nest}, Bun ${run.bun}`,
     );
   }
   console.log(
     `\n${"cell".padEnd(42)} ${first!.label.padStart(9)} ${"spread".padStart(7)}${rest
       .map(
         (r) =>
-          ` ${r.label.padStart(9)} ${"spread".padStart(7)} ${"delta".padStart(7)}`,
+          ` ${r.label.padStart(9)} ${"spread".padStart(7)} ${"best".padStart(7)} ${"paired".padStart(7)}`,
       )
       .join("")}`,
   );
+  const flagOf = new Map<string, string>();
+  const addFlag = (k: string, flag: string): void => {
+    flagOf.set(k, flagOf.has(k) ? `${flagOf.get(k)} + ${flag}` : flag);
+  };
+  for (const v of verdicts) {
+    for (const c of v.optionsChanged) addFlag(`${v.label} ${c.key}`, "options");
+    for (const r of v.regressions) addFlag(`${v.label} ${r.key}`, r.kind);
+  }
   for (const [key, entry] of Object.entries(first!.entries)) {
     let line = `${key.padEnd(42)} ${ns(entry.nsPerOp).padStart(9)} ${`${(entry.spread * 100).toFixed(1)}%`.padStart(7)}`;
-    for (const run of rest) {
+    const flags: string[] = [];
+    for (const [i, run] of rest.entries()) {
       const other = run.entries[key];
-      line += other
-        ? ` ${ns(other.nsPerOp).padStart(9)} ${`${(other.spread * 100).toFixed(1)}%`.padStart(7)} ${`${((other.nsPerOp / entry.nsPerOp - 1) * 100).toFixed(1)}%`.padStart(7)}`
-        : ` ${"-".padStart(9)}`;
+      const cell = verdicts[i]!.cells.find((c) => c.key === key);
+      line +=
+        other && cell
+          ? ` ${ns(other.nsPerOp).padStart(9)} ${`${(other.spread * 100).toFixed(1)}%`.padStart(7)} ${pct(cell.best).padStart(7)} ${`${pct(cell.paired)}${cell.pairedRounds ? "" : "*"}`.padStart(7)}`
+          : ` ${"-".padStart(9)}`;
+      const flag = flagOf.get(`${run.label} ${key}`);
+      if (flag) flags.push(rest.length > 1 ? `${run.label}: ${flag}` : flag);
     }
-    console.log(line);
+    console.log(`${line}${flags.length ? `  ${flags.join(", ")}` : ""}`);
   }
+}
+
+/**
+ * Prints each side's verdict against the base and returns the exit status:
+ * 1 when a cell of ours is slower or missing, or the run had problems (router
+ * options changed or not); else {@link EXIT_TOO_NOISY} when a rival cell
+ * moved past the tolerance; else {@link EXIT_OPTIONS_CHANGED} when some cell
+ * ran with other router options than the base; else 0.
+ */
+function reportAB(
+  measured: (Baseline & { label: string })[],
+  problems: string[],
+): number {
+  const [base, ...sides] = measured;
+  const verdicts = sides.map((side) => judgeAB(base!, side));
+  printAB(measured, verdicts);
+  const tolerances = [...new Set(Object.values(AB_TOLERANCE))];
+  const tol =
+    tolerances.length === 1
+      ? pct(tolerances[0]!).slice(1)
+      : Object.entries(AB_TOLERANCE)
+          .map(([level, t]) => `${level} ${pct(t).slice(1)}`)
+          .join(", ");
+  console.log(
+    `\nA/B verdict, base ${base!.label} (the first of --roots); a cell fails when its best and the median of its per-round ratios to the base both grew past ${tol}:`,
+  );
+  let slower = 0;
+  let noisy = 0;
+  let optionsChanged = 0;
+  for (const v of verdicts) {
+    const ours = v.cells.filter(
+      (c) => !RIVALS.has(base!.entries[c.key]!.target),
+    );
+    const worst = ours.reduce<ABCell | undefined>(
+      (w, c) => (w && w.agreed >= c.agreed ? w : c),
+      undefined,
+    );
+    const noise = v.cells
+      .filter((c) => RIVALS.has(base!.entries[c.key]!.target))
+      .reduce((m, c) => Math.max(m, Math.abs(c.agreed)), 0);
+    const noiseNote =
+      v.cells.length > ours.length
+        ? `; the rival's cells (the same code on both sides) moved at most ${pct(noise).slice(1)}`
+        : "";
+    for (const c of v.optionsChanged) {
+      console.log(
+        `  OPTS  ${v.label} ${c.key.padEnd(42)} ${c.changes.join(", ")}  ${c.was}  ->  ${c.now}; judged: ${c.slower ? `SLOWER past ${tol}` : "within the tolerance"}`,
+      );
+    }
+    for (const r of v.regressions) {
+      console.log(
+        `  FAIL  ${v.label} ${r.key.padEnd(42)} ${r.kind.padEnd(7)} ${r.was}  ->  ${r.now}`,
+      );
+    }
+    if (v.regressions.length === 0) {
+      console.log(
+        `  ok    ${v.label}: no cell of ${ours.length} grew past the tolerance` +
+          `${worst ? ` (worst ${worst.key}, ${pct(worst.agreed)} agreed)` : ""}${noiseNote}.`,
+      );
+    } else {
+      console.log(
+        `  ${v.label}: ${v.regressions.length} failing cell(s) against ${base!.label}${noiseNote}.`,
+      );
+    }
+    slower += v.regressions.filter((r) => r.kind !== "noise").length;
+    noisy += v.regressions.filter((r) => r.kind === "noise").length;
+    optionsChanged += v.optionsChanged.length;
+  }
+  return verdictOf({
+    slower,
+    problems: problems.length,
+    noisy,
+    optionsChanged,
+    tolerance: tol,
+    against: "the base",
+  });
+}
+
+/** What a run's verdict is made of, for {@link verdictOf}. */
+interface VerdictInput {
+  /** Cells of ours slower, overtaken or missing. */
+  slower: number;
+  /** Problems: wrong answers, a child on another Bun build. */
+  problems: number;
+  /** Signs the session was too noisy to judge: rival noise or drift. */
+  noisy: number;
+  /** Cells that ran with other router options (judged too). */
+  optionsChanged: number;
+  /** The tolerance, for the message. */
+  tolerance: string;
+  /** The tolerance the rival's cells moved past, when it reads otherwise. */
+  rivalTolerance?: string;
+  /** What the run was judged against, for the message. */
+  against: string;
+}
+
+/**
+ * Prints the verdict line and returns the exit status, the same for the A/B
+ * and `--compare`: 1 for a regression or problem, whether or not options
+ * changed (both reasons are named); {@link EXIT_TOO_NOISY} when the only
+ * failure is noise or drift; {@link EXIT_OPTIONS_CHANGED} when router
+ * options changed and every cell, those included, passed; else 0.
+ */
+function verdictOf(v: VerdictInput): number {
+  const options = v.optionsChanged
+    ? `router options changed in ${v.optionsChanged} cell(s) (judged too)`
+    : "";
+  if (v.slower || v.problems) {
+    const reasons = [
+      v.slower
+        ? `${v.slower} cell(s) slower past ${v.tolerance} or missing`
+        : "",
+      v.problems ? `${v.problems} problem(s) above` : "",
+      v.noisy ? `${v.noisy} sign(s) of a noisy session` : "",
+      options,
+    ].filter(Boolean);
+    console.log(`\nverdict: regression (exit 1): ${reasons.join("; ")}.`);
+    return 1;
+  }
+  if (v.noisy) {
+    console.log(
+      `\nverdict: too noisy to judge (exit ${EXIT_TOO_NOISY}): the rival's cells, whose code did not change, moved past ` +
+        `${v.rivalTolerance ?? v.tolerance}, and no cell of ours did${options ? `; ${options}` : ""}. Re-run on a quiet machine.`,
+    );
+    return EXIT_TOO_NOISY;
+  }
+  if (v.optionsChanged) {
+    console.log(
+      `\nverdict: options changed (exit ${EXIT_OPTIONS_CHANGED}): ${options}, and no cell grew past ${v.tolerance} against ${v.against}. ` +
+        `If the change is deliberate, re-record the baseline with --save-baseline in the same PR.`,
+    );
+    return EXIT_OPTIONS_CHANGED;
+  }
+  console.log(`\nverdict: pass (exit 0).`);
+  return 0;
 }
 
 async function runCell(
@@ -1541,7 +1949,7 @@ async function measure(): Promise<{
   const rounds = values.verify ? 1 : config.rounds;
 
   console.log(
-    `router-guard: ${plan.length} cells x ${rounds} round(s) x ${runs.length} root(s), load ${(await loadAvg()).toFixed(2)}`,
+    `router-guard: ${plan.length} cells x ${rounds} round(s) x ${runs.length} root(s), Bun ${Bun.version} (${Bun.revision.slice(0, 9)}), load ${(await loadAvg()).toFixed(2)}`,
   );
   for (const run of runs) console.log(`  ${run.label}: ${run.dir}`);
   const roundLoads: number[] = [];
@@ -1564,6 +1972,12 @@ async function measure(): Promise<{
           continue;
         }
         problems.push(...result.problems.map((p) => `${where}: ${p}`));
+        if (result.bunRevision && result.bunRevision !== Bun.revision) {
+          problems.push(
+            `${where}: ran on Bun ${result.bunRevision.slice(0, 9)}, but the run started on ${Bun.revision.slice(0, 9)}: ` +
+              `Bun changed mid-run, so its figures mix two builds; re-run`,
+          );
+        }
         for (const [level, figures] of Object.entries(result.levels) as [
           Level,
           LevelFigures,
@@ -1627,8 +2041,7 @@ async function main(): Promise<void> {
     await Bun.write(values.json, `${JSON.stringify(measured, null, 2)}\n`);
   }
   if (measured.length > 1) {
-    printAB(measured);
-    process.exit(problems.length ? 1 : 0);
+    process.exit(reportAB(measured, problems));
   }
 
   const current = measured[0]!;
@@ -1638,12 +2051,15 @@ async function main(): Promise<void> {
     : undefined;
   printTable(current, values.label, values.compare ? base : undefined);
 
-  let failed = problems.length > 0;
   if (values["save-baseline"]) {
-    if (failed) {
+    if (problems.length) {
       console.log(`\nNot recording a baseline from a run with problems.`);
     } else {
-      const { label: _label, ...record } = current;
+      const { label, recordedAt, ...rest } = current;
+      const source =
+        `--save-baseline${values.label ? ` (${label})` : ""}, ${current.gitSha.slice(0, 8)}` +
+        `${current.gitDirty ? " (dirty)" : ""}, Bun ${Bun.version}+${Bun.revision.slice(0, 9)}`;
+      const record: Baseline = { recordedAt, source, ...rest };
       await Bun.write(config.baseline, `${JSON.stringify(record, null, 2)}\n`);
       console.log(
         `\nRecorded ${Object.keys(current.entries).length} cells to ${config.baseline}.`,
@@ -1657,9 +2073,14 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
-    const { regressions, drifts } = compare(base, current, attempted);
+    const { regressions, optionsChanged, drifts } = compare(
+      base,
+      current,
+      attempted,
+    );
     console.log(
-      `\nCompared against ${base.gitSha.slice(0, 8)}, recorded ${base.recordedAt.slice(0, 10)} on ${base.cpu}, Bun ${base.bun}.`,
+      `\nCompared against ${base.gitSha.slice(0, 8)}, recorded ${base.recordedAt.slice(0, 10)} on ${base.cpu}, Bun ${base.bun}+${base.bunRevision.slice(0, 9)}` +
+        `${base.source ? ` (${base.source})` : ""}.`,
     );
     for (const d of drifts) {
       console.log(
@@ -1668,9 +2089,27 @@ async function main(): Promise<void> {
           : `  ${d.level.padEnd(6)} no rival cells measured: no drift correction`,
       );
     }
+    // Per target, each distinct set of differing options and how many cells
+    // it covers; then every such cell, with its figures and its judgement.
+    const byTarget = Map.groupBy(
+      optionsChanged,
+      (c) =>
+        `${c.target}: router options differ from the baseline: ${c.changes.join(", ")}`,
+    );
+    for (const [line, cells] of byTarget) {
+      console.log(
+        `  OPTS  ${line} (${cells.length} cell${cells.length === 1 ? "" : "s"})`,
+      );
+    }
+    const tolerance = `${(TOLERANCE * 100).toFixed(0)}% net of drift`;
+    for (const c of optionsChanged) {
+      console.log(
+        `  OPTS  ${c.key.padEnd(42)} options changed  ${c.was}  ->  ${c.now}; judged: ${c.slower ? `SLOWER past ${tolerance}` : "within the tolerance"}`,
+      );
+    }
     if (regressions.length === 0) {
       console.log(
-        `  ok    no cell grew more than ${(TOLERANCE * 100).toFixed(0)}% net of drift, and every lead held.`,
+        `  ok    no cell grew more than ${tolerance}, and every lead held.`,
       );
     } else {
       for (const r of regressions) {
@@ -1679,13 +2118,23 @@ async function main(): Promise<void> {
         );
       }
       console.log(
-        `\n${regressions.length} regression(s). A baseline only means anything on the machine ` +
+        `\n${regressions.length} failure(s). A baseline only means anything on the machine ` +
           `that recorded it: on different hardware, re-record rather than chase it.`,
       );
-      failed = true;
     }
+    process.exit(
+      verdictOf({
+        slower: regressions.filter((r) => r.kind !== "drift").length,
+        problems: problems.length,
+        noisy: regressions.filter((r) => r.kind === "drift").length,
+        optionsChanged: optionsChanged.length,
+        tolerance,
+        rivalTolerance: `${(TOLERANCE * 100).toFixed(0)}%`,
+        against: "the baseline",
+      }),
+    );
   }
-  process.exit(failed ? 1 : 0);
+  process.exit(problems.length ? 1 : 0);
 }
 
 /**

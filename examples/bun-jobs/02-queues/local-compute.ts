@@ -324,7 +324,7 @@ check(
     startedEvent.kind === "local" &&
     startedEvent.reason === "add" &&
     emailHandles.length === 1 &&
-    emailHandles[0]!.startsWith(`local-${process.pid}-`),
+    emailHandles[0].startsWith(`local-${process.pid}-`),
   emailEvents,
 );
 const [emailUnit] = await reportsIn(emailsDir, 1);
@@ -341,8 +341,8 @@ const ranBy = await Promise.all(
 );
 checkEqual(
   "all three ran in the unit, a process of its own",
-  [ranBy, emailUnit!.pid !== process.pid],
-  [[emailUnit!.pid, emailUnit!.pid, emailUnit!.pid], true],
+  [ranBy, emailUnit.pid !== process.pid],
+  [[emailUnit.pid, emailUnit.pid, emailUnit.pid], true],
 );
 await waitFor(
   "the unit to exit once idle",
@@ -352,11 +352,8 @@ await waitFor(
 );
 checkEqual(
   "idle, runSummoned exits 0 on its own: status() says exited, and the pid is gone",
-  [
-    await statusOf(emailsCompute, emailHandles),
-    await allGone([emailUnit!.pid]),
-  ],
-  [[{ handle: emailHandles[0]!, state: "exited", exitCode: 0 }], true],
+  [await statusOf(emailsCompute, emailHandles), await allGone([emailUnit.pid])],
+  [[{ handle: emailHandles[0], state: "exited", exitCode: 0 }], true],
 );
 const printed = unitLines
   .filter((line) => line.message.startsWith("processed "))
@@ -364,13 +361,13 @@ const printed = unitLines
 checkEqual(
   "output: { logger } logged each line it printed, at info, bound with its handle",
   printed,
-  added.map(() => ["info", emailHandles[0]!, "stdout"]),
+  added.map(() => ["info", emailHandles[0], "stdout"]),
 );
 
 /* ------------------------------------------------------------------ */
 step("The unit's environment: the allowlist, passEnv and env, nothing else");
 
-const unitVars = emailUnit!.env;
+const unitVars = emailUnit.env;
 const allowed = new Set([
   ...CHILD_BASE_ENV,
   "LOCAL_EXAMPLE_PASSED",
@@ -440,11 +437,11 @@ checkEqual("validate() warns that it is full", capacity, {
   detail: "2 of 2 units running",
 });
 const cappedUnits = await reportsIn(cappedDir, 2);
-await capped.summon.cancel!([cappedHandles[0]!], callContext());
+await capped.summon.cancel!([cappedHandles[0]], callContext());
 const again = await capped.summon.summon(summonRequest(1), callContext());
 checkEqual(
   "cancel() frees a slot: the first unit exited 0 on its stop signal, and the next summon starts one",
-  [(await statusOf(capped, [cappedHandles[0]!]))[0]?.state, again.status],
+  [(await statusOf(capped, [cappedHandles[0]]))[0]?.state, again.status],
   ["exited", "started"],
 );
 const allCapped = [
@@ -778,21 +775,21 @@ if (!made) {
   const inCgroup = await bounded.summon.summon(summonRequest(1), callContext());
   const [cgroupHandle] = inCgroup.status === "started" ? inCgroup.handles : [];
   const [bounding] = await reportsIn(cgroupDir, 1);
-  const leaf = join(mine, cgroupHandle!);
+  const leaf = join(mine, cgroupHandle);
   const cgroupOf = (pid: number) =>
     readFileSync(`/proc/${pid}/cgroup`, "utf8").trim();
   const expected = `0::${leaf.slice("/sys/fs/cgroup".length)}`;
-  show("the unit's cgroup", cgroupOf(bounding!.pid));
+  show("the unit's cgroup", cgroupOf(bounding.pid));
   checkEqual(
     "the unit runs in a cgroup of its own, named after its handle, and its sleep with it",
-    [cgroupOf(bounding!.pid), cgroupOf(bounding!.child!)],
+    [cgroupOf(bounding.pid), cgroupOf(bounding.child!)],
     [expected, expected],
   );
-  await bounded.summon.cancel!([cgroupHandle!], callContext());
+  await bounded.summon.cancel!([cgroupHandle], callContext());
   await waitFor("its cgroup to be removed", () => !existsSync(leaf), WAIT);
   checkEqual(
     "cancelled: the unit and its sleep are gone, and so is its cgroup",
-    [await allGone([bounding!.pid, bounding!.child!]), existsSync(leaf)],
+    [await allGone([bounding.pid, bounding.child!]), existsSync(leaf)],
     [true, false],
   );
   checkEqual(

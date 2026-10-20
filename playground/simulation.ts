@@ -52,7 +52,7 @@ function between(min: number, max: number): number {
 
 /** A random element. */
 function pick<T>(items: readonly T[]): T {
-  return items[Math.floor(Math.random() * items.length)]!;
+  return items[Math.floor(Math.random() * items.length)];
 }
 
 const PEOPLE = ["ada", "grace", "alan", "barbara", "edsger", "margaret"];

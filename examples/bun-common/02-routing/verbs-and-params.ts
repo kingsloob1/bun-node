@@ -119,6 +119,7 @@ const webdav = new BunRouter();
 for (const verb of VERBS) {
   // `webdav[verb]` is a union of overloaded methods, which cannot be called
   // directly — but it assigns, uncast, to the signature every verb shares.
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- a false positive on a union-keyed element access (oven-sh/bun#45784); typescript-eslint does not report it
   const register: RouterVerbMethod<BunRouter> = webdav[verb];
   register.call(webdav, "/doc", (_req, res) => {
     res.send(verb);
@@ -165,7 +166,7 @@ search.query("/search/:index", (req, res) => {
   res.json({
     method: req.method,
     index,
-    body: req.body as unknown,
+    body: req.body,
     query: req.query,
   });
 });
@@ -395,8 +396,8 @@ pages.get("/page", (_req, res) => {
   res.set("X-Page", "1").send("the page body");
 });
 // A HEAD handler registered ahead of the GET route takes HEAD itself.
-pages.head("/report", (_req, res) => {
-  res.set("X-Which", "head").end();
+pages.head("/report", async (_req, res) => {
+  await res.set("X-Which", "head").end();
 });
 pages.get("/report", (_req, res) => {
   res.set("X-Which", "get").send("the report");

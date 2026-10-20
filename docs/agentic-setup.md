@@ -265,7 +265,8 @@ short:
 
 - `bun scripts/typecheck.ts` — every project, with `bun check`, and all must
   pass (Bun ≥ 1.4.4 for development, which until it is stable is the canary:
-  `bun upgrade --canary`, verified on 1.4.4-canary.1+5f5799ed1; the packages'
+  `bun upgrade --canary`, verified on 1.4.4-canary.1+5f5799ed1 and, from
+  2026-10-20, 6bb5dc195; the packages'
   users need 1.4.2; the user's decisions of 2026-10-10 and 2026-10-17). A new
   lint finding or reformatted file after a `bun upgrade --canary` is the
   canary's: report it to the bun-lint-fmt lead with both `bun --revision`s
@@ -273,8 +274,8 @@ short:
   in its directory, not `bun check -p`: `bun check` runs the nearest
   `package.json`'s `check` script, and the root's runs the whole repo. In a
   fresh worktree, first `bun install --frozen-lockfile` in
-  `packages/bun-common/bench`, `packages/bun-jobs/bench`, `benchmarks/` and
-  `templates/compute-provider/`: without them those projects fail on missing
+  `packages/bun-common/bench`, `packages/bun-jobs/bench`, `benchmarks/`,
+  `templates/compute-provider/` and `tools/vscode-bun-lint/`: without them those projects fail on missing
   modules, and that noise hides real errors in the same projects. Frozen,
   because a plain install re-resolves and rewrites the lock, so the gate would
   check whatever the registry served that day (`CLAUDE.md`, "Dev workflow").

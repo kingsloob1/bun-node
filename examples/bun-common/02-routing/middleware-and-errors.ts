@@ -411,7 +411,7 @@ function rawGet(port: number, path: string): Promise<string> {
       resolve(data);
     };
     socket.on("data", (chunk) => {
-      data += chunk;
+      data += chunk.toString();
     });
     socket.on("close", done);
     socket.on("error", done);

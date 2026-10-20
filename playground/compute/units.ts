@@ -419,7 +419,7 @@ export class UnitBoard {
     );
     let excess = this.#units.length - KEEP;
     for (let index = 0; index < this.#units.length && excess > 0; ) {
-      if (ended.has(this.#units[index]!.handle)) {
+      if (ended.has(this.#units[index].handle)) {
         this.#units.splice(index, 1);
         excess--;
       } else {

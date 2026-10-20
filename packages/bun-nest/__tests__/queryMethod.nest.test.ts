@@ -249,7 +249,7 @@ describe.skipIf(!HAS_QUERY)(
         });
       }
       expect(answers[1]).toEqual(answers[0]);
-      return answers[0]!;
+      return answers[0];
     }
 
     it("routes QUERY /items to @QueryMethod(), with its body", async () => {

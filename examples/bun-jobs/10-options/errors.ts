@@ -232,7 +232,7 @@ const closingApp = new BunHttpAdapter();
 closingApp.use(closingApi.basePath, closingApi.router);
 
 const closing = closingJobs.close();
-const summonRefused = await refusal(BUILDERS["summonController()"]!);
+const summonRefused = await refusal(BUILDERS["summonController()"]);
 checkJobsError(
   "JobsClosedError",
   summonRefused as Error | undefined,
@@ -253,14 +253,14 @@ checkEqual(
 );
 await waitFor(
   "worker() to be refused while the held job runs",
-  async () => (await refusedAs(BUILDERS["worker()"]!)) !== "built",
+  async () => (await refusedAs(BUILDERS["worker()"])) !== "built",
 );
 checkEqual(
   "while the held job runs: worker() and runner() refused, queue() still builds",
   [
-    await refusedAs(BUILDERS["worker()"]!),
-    await refusedAs(BUILDERS["runner()"]!),
-    await refusedAs(BUILDERS["queue()"]!),
+    await refusedAs(BUILDERS["worker()"]),
+    await refusedAs(BUILDERS["runner()"]),
+    await refusedAs(BUILDERS["queue()"]),
   ],
   ["JOBS_CLOSED worker()", "JOBS_CLOSED runner()", "built"],
 );

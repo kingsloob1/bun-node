@@ -262,7 +262,7 @@ async function serveHost(
   api.websocket?.attach(app);
   app.use(ui.basePath, ui.router);
   await app.listen(0);
-  const origin = app.url!.replace(/\/$/, "");
+  const origin = app.url.replace(/\/$/, "");
   // Build the bundle before the browser asks.
   await (await fetch(`${origin}${ui.basePath}`)).arrayBuffer();
   return {
@@ -661,7 +661,7 @@ function mainSettled(screen: OverviewView): boolean {
     settled(screen, "Workers", 1) &&
     screen.band !== null &&
     screen.band.groups.length === 2 &&
-    screen.band.groups[1]!.cells.length === ADDED.length
+    screen.band.groups[1].cells.length === ADDED.length
   );
 }
 
@@ -750,7 +750,7 @@ try {
     [[["from", "to"], HOUR]],
   );
 
-  const runners = screen.cards.Runners!;
+  const runners = screen.cards.Runners;
   checkEqual(
     `the Runners row for ${RUNNER}: 3 started, 2 succeeded, 1 failed, 0 / 0, 0 running`,
     runners.rows.map((row) => row.cells.slice(0, 6)),
@@ -765,7 +765,7 @@ try {
     ],
     [1, [[RUNNER]]],
   );
-  const workers = screen.cards.Workers!;
+  const workers = screen.cards.Workers;
   checkEqual(
     `the Workers row for ${ORDERS_KEY}: queue orders, 4 completed, 2 failed`,
     workers.rows.map((row) => row.cells.slice(0, 4)),
@@ -806,8 +806,8 @@ try {
   );
   check(
     "the Queues table has a Throughput column, one sparkline per queue",
-    screen.cards.Queues!.headers.includes("Throughput") &&
-      screen.cards.Queues!.sparklines.includes(
+    screen.cards.Queues.headers.includes("Throughput") &&
+      screen.cards.Queues.sparklines.includes(
         "orders: 4 completed, 2 failed, in 1-minute buckets",
       ),
     screen.cards.Queues,
@@ -893,7 +893,7 @@ try {
     ],
     [RETENTION_CAPTION],
   );
-  const clampedRead = sent(main, from, "/analytics/jobs")[0]!;
+  const clampedRead = sent(main, from, "/analytics/jobs")[0];
   const clamped = await replay<{
     range: { resolution: number; clamped: boolean; reason: string };
   }>(main, clampedRead);
@@ -1123,7 +1123,7 @@ try {
   // The page's own request, replayed: its `from` is a whole minute inside
   // the day, so the answer stays unclamped for up to a minute after it was
   // sent, which a replay made now is well within.
-  const dayRead = sent(main, from, "/analytics/jobs")[0]!;
+  const dayRead = sent(main, from, "/analytics/jobs")[0];
   const day = await replay<{ range: { clamped: boolean; reason?: string } }>(
     main,
     dayRead,
@@ -1242,7 +1242,7 @@ try {
       (one.cards.Queues?.text.includes("not kept") ?? false),
   );
   for (const name of ["Jobs", "Runners", "Workers"]) {
-    const card = screen.cards[name]!;
+    const card = screen.cards[name];
     check(
       `${name}: "No numbers are kept for this range", with the oldest figure kept, no Retry, no alert`,
       card.notRetained!.startsWith("No numbers are kept for this range") &&
@@ -1254,8 +1254,8 @@ try {
   }
   check(
     'the queue sparkline cells read "not kept"',
-    screen.cards.Queues!.text.includes("not kept") &&
-      !screen.cards.Queues!.text.includes("unavailable"),
+    screen.cards.Queues.text.includes("not kept") &&
+      !screen.cards.Queues.text.includes("unavailable"),
     screen.cards.Queues?.text,
   );
   // Only the reads over that day: the page left behind may still have had a
@@ -1310,7 +1310,7 @@ try {
     ],
     [DRIVER_CAPTION],
   );
-  const minuteRead = sent(minute, from, "/analytics/jobs")[0]!;
+  const minuteRead = sent(minute, from, "/analytics/jobs")[0];
   const minuteAnswer = await replay<{
     range: { resolution: number; reason: string };
   }>(minute, minuteRead);
@@ -1349,11 +1349,11 @@ try {
   checkEqual(
     `one page of ${MAX_SERIES} on screen, busiest first; "Worker keys" counts all ${FLEET_KEYS}`,
     [
-      screen.cards.Workers!.rows.length,
-      screen.cards.Workers!.rows[0]?.cells.slice(0, 3),
-      screen.cards.Workers!.figures["Worker keys"],
-      screen.cards.Runners!.rows.length,
-      screen.cards.Runners!.rows[0]?.cells.slice(0, 2),
+      screen.cards.Workers.rows.length,
+      screen.cards.Workers.rows[0]?.cells.slice(0, 3),
+      screen.cards.Workers.figures["Worker keys"],
+      screen.cards.Runners.rows.length,
+      screen.cards.Runners.rows[0]?.cells.slice(0, 2),
     ],
     [
       MAX_SERIES,
@@ -1375,9 +1375,9 @@ try {
     ],
     [
       1,
-      [screen.cards.Workers!.rows.map((row) => row.id)],
+      [screen.cards.Workers.rows.map((row) => row.id)],
       1,
-      [screen.cards.Runners!.rows.map((row) => row.id)],
+      [screen.cards.Runners.rows.map((row) => row.id)],
     ],
   );
 
@@ -1445,7 +1445,7 @@ try {
     "the Workers section to draw the third page and its sparklines",
     (one) =>
       workersDrawn(one) &&
-      one.cards.Workers!.rows[0]?.id !== screen.cards.Workers!.rows[0]?.id,
+      one.cards.Workers.rows[0]?.id !== screen.cards.Workers.rows[0]?.id,
   );
   const jumped = await view.evaluate<PagerView | null>(
     pagerWhen("Worker pages", 'pager.pageControl.value === "3"'),
@@ -1458,9 +1458,9 @@ try {
   checkEqual(
     `${MAX_SERIES} rows again, none of them the first page's`,
     [
-      thirdPage.cards.Workers!.rows.length,
-      thirdPage.cards.Workers!.rows.filter((row) =>
-        screen.cards.Workers!.rows.some((first) => first.id === row.id),
+      thirdPage.cards.Workers.rows.length,
+      thirdPage.cards.Workers.rows.filter((row) =>
+        screen.cards.Workers.rows.some((first) => first.id === row.id),
       ),
     ],
     [MAX_SERIES, []],
@@ -1474,7 +1474,7 @@ try {
       jumpWorkers.rollups.length,
       jumpWorkers.batches.map((one) => one.query.getAll("keys")),
     ],
-    [0, [thirdPage.cards.Workers!.rows.map((row) => row.id)]],
+    [0, [thirdPage.cards.Workers.rows.map((row) => row.id)]],
   );
 
   // The last page, from the same control: Next has nowhere left to go.
@@ -1848,8 +1848,8 @@ try {
   );
   check(
     "the Queues table has no Throughput column",
-    !screen.cards.Queues!.headers.includes("Throughput"),
-    screen.cards.Queues!.headers,
+    !screen.cards.Queues.headers.includes("Throughput"),
+    screen.cards.Queues.headers,
   );
   checkEqual(
     "the band keeps the added group alone, with no resolution to name",

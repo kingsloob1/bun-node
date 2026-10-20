@@ -146,7 +146,7 @@ let metaReads = 0;
 
 /** Reads `url` (path and query) from the API itself, past the garbling. */
 async function readRaw(url: string): Promise<Record<string, unknown>> {
-  const response = await fetch(new URL(url, app.url!), {
+  const response = await fetch(new URL(url, app.url), {
     headers: { [RAW_READ]: "1" },
   });
   return (await response.json()) as Record<string, unknown>;
@@ -207,7 +207,7 @@ app.use(api.basePath, api.router);
 api.websocket?.attach(app);
 app.use(ui.basePath, ui.router);
 await app.listen(0);
-const origin = app.url!.replace(/\/$/, "");
+const origin = app.url.replace(/\/$/, "");
 const base = `${origin}${ui.basePath}`;
 
 const mail = jobs.queue(QUEUE);

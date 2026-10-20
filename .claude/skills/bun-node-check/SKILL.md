@@ -12,7 +12,7 @@ description: >-
 Run the full quality gate for the affected package(s) of this Bun monorepo.
 Everything runs with **Bun** (`bun` / `bunx`). Source ships as raw `.ts`.
 Developing needs **Bun ≥ 1.4.4**, the canary until it is stable
-(`bun upgrade --canary`; verified on 1.4.4-canary.1+5f5799ed1, `bun --revision`).
+(`bun upgrade --canary`; verified on 1.4.4-canary.1+5f5799ed1 and 6bb5dc195, `bun --revision`).
 
 ## Steps
 
@@ -20,7 +20,8 @@ Developing needs **Bun ≥ 1.4.4**, the canary until it is stable
    Covers every project in the repo (the packages, their nested bench /
    playground / app projects, `benchmarks/`, the examples and the root
    `scripts/`); must end with "no type errors". Run `bun install
-   --frozen-lockfile` in the three bench directories and the template first. It
+   --frozen-lockfile` in the three bench directories, the template and
+   `tools/vscode-bun-lint/` first. It
    already filters the known `TS2742`/`TS2883` `eslint.legacy.config.mjs` noise.
 
 Then, for **each affected package** (`packages/bun-common`, `packages/bun-nest`,

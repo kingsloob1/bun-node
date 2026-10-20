@@ -360,7 +360,7 @@ const retriedEvents = (): QueueEventOf<"retried">[] =>
     (e): e is QueueEventOf<"retried"> =>
       e.kind === "queue" &&
       e.type === "retried" &&
-      (e as QueueEventOf<"retried">).payload.ids.includes(doomed.id),
+      e.payload.ids.includes(doomed.id),
   );
 checkEqual(
   "retry() of a dead job answers true",

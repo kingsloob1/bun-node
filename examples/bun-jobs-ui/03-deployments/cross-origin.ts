@@ -55,8 +55,8 @@ const uiServer = new BunHttpAdapter();
 await apiServer.listen(0);
 await uiServer.listen(0);
 
-const apiOrigin = apiServer.url!.replace(/\/$/, "");
-const uiOrigin = uiServer.url!.replace(/\/$/, "");
+const apiOrigin = apiServer.url.replace(/\/$/, "");
+const uiOrigin = uiServer.url.replace(/\/$/, "");
 /** An origin the API has never heard of. */
 const evilOrigin = "https://evil.example";
 show("the API's origin", apiOrigin);

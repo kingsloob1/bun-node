@@ -37,7 +37,8 @@ for (const [service, jobs] of [
   ["billing", billing],
   ["accounts", accounts],
 ] as const) {
-  jobs
+  // `void` rather than `await`: `run()` settles only once the worker stops.
+  void jobs
     .worker<{ template: string }>(
       "emails",
       async (job) => {

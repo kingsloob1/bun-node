@@ -1094,7 +1094,7 @@ checkEqual("with the action, the route pattern and the target", once.calls[0], {
 // `mutation` is derived from the action, so a hook can trust it.
 once.calls.length = 0;
 await once.call("POST", "/queues/mail/jobs/7/retry");
-checkEqual("a mutation says so", once.calls[0]!.mutation, true);
+checkEqual("a mutation says so", once.calls[0].mutation, true);
 
 /* ------------------------------------------------------------------ */
 step("A failed check asks authorize first, against the target the path names");
@@ -1177,7 +1177,7 @@ const over = await capped.call("POST", "/queues/mail/jobs/lookup", {
 checkEqual("BULK_LIMIT names the cap", over.body.context, { max: 1 });
 check(
   "and authorize saw no ids",
-  capped.calls[0]!.jobIds === undefined,
+  capped.calls[0].jobIds === undefined,
   capped.calls[0],
 );
 
@@ -1234,7 +1234,7 @@ const oversized = `{"ids":["${"x".repeat(BODY_CAP + 1 - '{"ids":[""]}'.length)}"
 /** A response's status, media type (without parameters) and body text. */
 const answerOf = async (response: Response) => ({
   status: response.status,
-  type: (response.headers.get("content-type") ?? "").split(";")[0]!.trim(),
+  type: (response.headers.get("content-type") ?? "").split(";")[0].trim(),
   text: await response.text(),
 });
 /** The `code` of a JSON body, or the start of a body that is not JSON. */
@@ -1452,7 +1452,7 @@ for (const [name, policy] of Object.entries(policies)) {
 
 // Only an invalid *path* leaves authorize nothing to target: a runner name
 // over MAX_NAME_LENGTH is refused by the path's own schema.
-const badPath = matrixHosts[1]!;
+const badPath = matrixHosts[1];
 const beforeBadPath = badPath.calls.length;
 const badPathAnswer = await badPath.call(
   "PUT",
@@ -2437,7 +2437,7 @@ checkEqual(
 );
 checkEqual(
   "the first is the request itself: meta.read on GET /meta/permissions",
-  [spied[0]!.action, routeOf(spied[0]!)],
+  [spied[0].action, routeOf(spied[0])],
   ["meta.read", "GET /meta/permissions"],
 );
 checkEqual(
