@@ -26,8 +26,9 @@ Underneath, routing is
   `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required;
   `@nestjs/websockets` (the same range) is needed only for gateways. One
   build serves both majors, and both are tested: the repo runs on Nest 12
-  (12.2.0), and its suites, examples and consumer type checks also run on the latest
-  11 and on the floors, 11.1.20 and 12.0.0. The floor is 11.1.20 because
+  (12.2.0), and its suites, examples and consumer type checks also run on
+  the latest 11 and on the floors, 11.1.20 and 12.0.0 (see
+  [Compatibility](#compatibility-nest-11-and-12)). The floor is 11.1.20 because
   older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
   `isAckHandledManually`) arrived in 11.1.7, the CORS delegate types this
   adapter implements in 11.1.14, and before 11.1.20 an `@Sse()` observable
@@ -39,6 +40,9 @@ Underneath, routing is
 
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [NestJS 12](#nestjs-12)
+  - [Upgrading from Nest 11](#upgrading-from-nest-11)
+  - [Compatibility: Nest 11 and 12](#compatibility-nest-11-and-12)
 - [`BunHttpAdapter`](#bunhttpadapter)
   - [Adapter options](#adapter-options)
   - [Adapter methods and properties](#adapter-methods-and-properties)
@@ -61,6 +65,7 @@ Underneath, routing is
 - [File upload interceptors](#file-upload-interceptors)
   - [Interceptors](#interceptors)
   - [Upload options and storages](#upload-options-and-storages)
+  - [Module-level options (`MulterModule`)](#module-level-options-multermodule)
   - [Limits and where multipart is parsed](#limits-and-where-multipart-is-parsed)
   - [Upload errors](#upload-errors)
 - [`BunWebSocketAdapter`](#bunwebsocketadapter)
@@ -71,6 +76,7 @@ Underneath, routing is
   - [Replies: `WsResponse`, Promises and Observables](#replies-wsresponse-promises-and-observables)
   - [Acknowledgements](#acknowledgements)
   - [Exceptions](#exceptions)
+  - [Flow control](#flow-control)
   - [The `websocket` option](#the-websocket-option)
     - [Headers and data on the 101](#headers-and-data-on-the-101)
   - [Authentication on upgrade](#authentication-on-upgrade)
@@ -137,6 +143,135 @@ await app.close(); // lets in-flight requests finish (at most 10 s), then stops 
 
 `app.listen(0)` asks the OS for a free port; `app.getUrl()` reports it. See
 [`01-quick-start/index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/01-quick-start/index.ts).
+
+## NestJS 12
+
+One build runs on Nest 11 (from 11.1.20) and Nest 12. Your code never names
+the major. Where a Nest release changed what an adapter must do, the adapter
+checks the installed `@nestjs/core` or `@nestjs/common` for the method, export
+or enum member that release added, never a version string, and answers as
+`@nestjs/platform-express` does on that release.
+
+### Upgrading from Nest 11
+
+What changes for an application on this adapter when it moves to Nest 12:
+
+- **Unknown paths outside the global prefix get Express's HTML 404.** With
+  `app.setGlobalPrefix("api")`, Nest 12's not-found handler answers only at
+  or under `/api`, and on the paths of the routes excluded from the prefix.
+  `GET /nope` gets the bare `Cannot GET /nope` page (`text/html`), not Nest's
+  JSON 404, because platform-express 12 answers so. Without a global prefix,
+  nothing changes. See [Error handling](#error-handling).
+- **The adapter maps errors raised outside a route.** Nest 12 moved this
+  mapping from its core into each adapter, as `mapException`. An unparsable
+  JSON body (`SyntaxError`) and an undecodable path parameter (`URIError`)
+  stay a `400` with Nest's JSON body, as on 11. Any other error passes
+  through unchanged.
+- **WebSocket exceptions keep this adapter's packet format.** Nest 12's
+  exception filter writes platform-ws's `{ event, data }` frame to a native
+  socket. For this adapter's own clients, the frame goes through the
+  client's `emit` instead, so a thrown `WsException` still arrives as
+  `EVENT ["exception", …]`. See [Exceptions](#exceptions).
+- **`handleDisconnect(client, reason)` receives the close code**, as on
+  platform-ws (`4001` after `socket.close(4001, "bye")`), although Nest types
+  it `string`. Nest 11 calls `handleDisconnect(client)`. See
+  [Standalone and custom adapters](#standalone-and-custom-adapters).
+- **`routeResolutionStrategy` and `routeConflictPolicy` work as on Express.**
+  `isRouteOrderSensitive()` returns `true`, as platform-express's does. So
+  under `"specificity"`, Nest sorts the routes and the router keeps that
+  order, and conflicts give the same warnings and `RouteConflictException`.
+  Use Nest's option rather than `router: { routeSpecificity: true }`, which
+  ranks differently
+  ([known differences](#known-differences-from-nestjsplatform-express)).
+- **A falsy status is applied.** On Nest 12, `0` or `NaN` reaches Express 5's
+  `res.status` check and Nest answers `500`; Nest 11 skips it. See
+  [Responses](#responses-redirect-streamablefile-render).
+- **`MEDIA_TYPE` versioning finds the version in any parameter of any media
+  range**, and from 12.2.0 unquotes a quoted version. See
+  [Versioning](#versioning).
+- **`MulterModule`'s `limits` merge key by key** with an interceptor's, where
+  Nest 11 replaces them whole. See
+  [Module-level options](#module-level-options-multermodule).
+- **New on Nest 12:** `return503OnClosing` (see
+  [`listen()` and `close()`](#listen-and-close)) and, from 12.1,
+  `app.useSecurityHeaders()` and `app.enableCsrfProtection()` (see
+  [Security headers and CSRF protection](#security-headers-and-csrf-protection)).
+- **From Nest 12.2.0**, `exclude()` matches as the router does
+  ([Nest middleware](#nest-middleware)), a route's `dest` replaces the
+  module's storage ([Module-level options](#module-level-options-multermodule)),
+  files are removed when a pipe rejects the request
+  ([Interceptors](#interceptors)), and a WebSocket exception whose `cause`
+  cannot be serialised is sent again without it ([Exceptions](#exceptions)).
+
+Two features arrived in **11.2.0**, not 12, and work on 11.2 and 12 alike:
+
+- **`QUERY`**: `@QueryMethod()` and
+  `forRoutes({ method: RequestMethod.QUERY })` (see
+  [`query`](#adapter-methods-and-properties)).
+- **`@SseSignal()`**: an `@Sse()` handler's `AbortSignal` aborts when the
+  client goes, during async setup or mid-stream, served or through
+  `adapter.fetch()`, as on Express.
+
+Routing follows Express 5 on both majors, so the
+[path rules](#routing-and-typed-routes) hold on 11 too: a path Express
+rejects (`:id?`, `:id(\d+)`) fails `app.init()`, named wildcards are
+`string[]`, routing is case-insensitive by default, and `@HostParam()` keeps
+the `Host` header's case.
+
+### Compatibility: Nest 11 and 12
+
+The peers are `^11.1.20 || ^12.0.0`. `scripts/nest-matrix.ts` runs each
+column below in a copy of the repo pinned to that Nest: bun-nest's suite
+(the Express, routing and platform-ws differentials included), `bun --check`,
+the `examples/bun-nest` programs, bun-jobs-ui's Nest test and the consumer
+type check.
+
+| Nest | Express | Tested |
+|---|---|---|
+| 12.2.0 (the repo's lock) | 5.3.0 | every gate |
+| 11.2.7 (11-latest) | 5.2.1 | every PR touching bun-nest or bun-common |
+| 11.1.20 (the floor) | 5.2.1 | once per merge window |
+| 12.0.0 (12's floor) | 5.2.1 | once per merge window |
+| 12.1.3 (the lock before 12.2.0) | 5.2.1 | an extra column |
+
+The floor is 11.1.20: older 11 releases lack `@Ack()` (11.1.7) and the CORS
+delegate types (11.1.14), and before 11.1.20 an `@Sse()` observable that
+errors before its first event answers `200`, not `500`.
+
+What differs by release, and what the adapter reads to tell:
+
+| Behaviour | 11.1 | 11.2 | 12.0–12.1 | 12.2 | Read from |
+|---|---|---|---|---|---|
+| `QUERY`, `@QueryMethod()` | no | yes | yes | yes | `RequestMethod.QUERY` |
+| `@SseSignal()` | no | yes | yes | yes | — |
+| 404 outside the prefix | Nest's JSON | Nest's JSON | HTML | HTML | `mapException` (1) |
+| Errors outside a route mapped by | the core | the core | the adapter | the adapter | — |
+| A falsy status | skipped | skipped | applied | applied | `mapException` (1) |
+| `MEDIA_TYPE` version | 1st parameter | 1st parameter | any parameter | any, unquoted | (1), `isRejectedByPipes` (2) |
+| `MulterModule` `limits` | replaced | replaced | merged | merged | `mapException` (1) |
+| A route's `dest` | module wins | module wins | module wins | route wins | `isRejectedByPipes` (2) |
+| Files removed on a pipe's rejection | no | no | no | yes | `isRejectedByPipes` (2) |
+| `exclude()` matching | Nest's | Nest's | Nest's | the router's | — |
+| A middleware matched twice runs | twice | twice | twice | once | the core's `registerHandler` (3) |
+| WS exception frame | ours | ours | ours | ours | `emitMessage` on Nest's filter |
+| `handleDisconnect` 2nd argument | none | none | close code | close code | — |
+| Express's redirect page, filenames | 5.2.1's | 5.2.1's | 5.2.1's | 5.3.0's | — |
+
+1. `AbstractHttpAdapter.prototype.mapException` in `@nestjs/core`, added in
+   12.0.0.
+2. `isRejectedByPipes` in `@nestjs/core/internal`, added in 12.2.0.
+3. Asked of the core's own `MiddlewareModule.prototype.registerHandler` when
+   the adapter loads, with stand-ins: one middleware at two paths, one
+   request through both.
+
+A dash means the adapter reads nothing: the core calls what it needs
+(`getRouteMatchingOptions()` for `exclude()`), and an older core never calls
+it. "Nest's" exclusion matching is the core's own (path-to-regexp's
+defaults), on both adapters alike. The last row is bun-common's answer on
+every release, which Express matches from 5.3.0 (Nest 12.2.0); the
+difference is listed under
+[known differences](#known-differences-from-nestjsplatform-express), with
+the rows that are known on some releases only.
 
 ## `BunHttpAdapter`
 
@@ -325,7 +460,7 @@ See
 | `@Res()` | You send the response. With `{ passthrough: true }` you may set headers or cookies and still return a value. |
 | `@HttpCode`, `@Header` | As on Express. |
 | `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
-| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. If the client leaves before the file is read to the end, even before the handler returned it, its source is destroyed, as on Express 12, so an abandoned download holds no file descriptor. |
+| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. If the client leaves before the file is read to the end, even before the handler returned it, its source is destroyed, as on platform-express 12, so an abandoned download holds no file descriptor. |
 | A status | On Nest 12, any status Nest passes is applied, `0` included, and checked as Express 5's `res.status` checks it: a non-integer or a code outside 100–999 fails, and Nest answers `500`. On Nest 11 a falsy status (`0`, `NaN`) is skipped, as its platform-express skips it. |
 | `@Render(view)` | As on Express (`res.render(view, result)`): renders `view` with the view engine (see [Views](#views-render-and-resrender)), the handler's return value being the locals. The status is the route's (`@HttpCode()`). A missing view or a throwing template answers Nest's `500`. |
 
@@ -911,9 +1046,11 @@ See
 
 ### Known differences from `@nestjs/platform-express`
 
-Measured by `__tests__/expressCompat.nest.test.ts`, which boots one Nest
-application on both adapters and compares every response; everything not
-listed here answers the same status, headers and body.
+Measured by two differentials, `__tests__/expressCompat.nest.test.ts` and
+the routing one, `__tests__/routingCompat.nest.test.ts`. Each boots one Nest
+application on both adapters and compares every response, on every Nest
+version [tested](#compatibility-nest-11-and-12). Everything not listed here
+answers the same status, headers and body.
 
 - A string, number or boolean response body defaults to `text/plain` (Express:
   `text/html`), and a type set before a string body gets no `; charset=utf-8`.
@@ -946,7 +1083,11 @@ listed here answers the same status, headers and body.
   `app.engine("tsx", fn)`.
 - Static files: `Vary: Accept-Encoding` is added; a directory redirect's HTML
   links its target; an unsatisfiable range is a `416` with an empty body (on
-  Express it reaches Nest's exception filter as JSON).
+  Express it reaches Nest's exception filter as JSON). Bun's `206` repeats
+  `Accept-Ranges`, and a dotfile served with `dotfiles: "allow"` is named in
+  `Content-Disposition`.
+- A `StreamableFile` over a stream of known length is sent with
+  `Content-Length`, not chunked.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
@@ -978,6 +1119,19 @@ listed here answers the same status, headers and body.
   (`filename=report.csv`). On Express 5.2.1, which Nest 11 and Nest 12.0–12.1.3
   install, Express answers `<p>Found. Redirecting to …</p>` and always quotes
   the filename; Nest 12.2.0's Express 5.3.0 answers as bun-common does.
+- On Nest 11, and on 12 before 12.1.3, `forRoutes("*")` with a global
+  prefix also runs on the bare prefix (`GET /api`), where Express does not.
+  Nest marks that route exact (`/api$`), which this adapter honours on every
+  version and platform-express only from 12.1.3 (nestjs/nest #17942). On
+  `GET /api/` both run it once, on every version.
+- `router: { routeSpecificity: true }` is bun-common's ranking, not Nest
+  12's `routeResolutionStrategy: "specificity"`: it also ranks a route's own
+  method above `@All()`, and re-ranks the routes by path itself, where
+  Nest's sorter ranks path segments only. Under Nest 12, use Nest's option.
+- On Nest 12.0.0 and 12.0.1, platform-express mounts its not-found handler
+  at `api`, without the leading slash, so a miss under the prefix gets the
+  HTML page there. This adapter answers Nest's JSON 404 under the prefix, as
+  12.0.2 and later do.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.
