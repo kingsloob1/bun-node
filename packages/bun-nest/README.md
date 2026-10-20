@@ -48,6 +48,7 @@ Underneath, routing is
   - [Responses: `@Redirect`, `StreamableFile`, `@Render`](#responses-redirect-streamablefile-render)
   - [Versioning](#versioning)
   - [CORS](#cors)
+  - [Security headers and CSRF protection](#security-headers-and-csrf-protection)
   - [Static assets](#static-assets)
   - [Body parsing and raw bodies](#body-parsing-and-raw-bodies)
   - [Per-route parsing with `requestParsing()`](#per-route-parsing-with-requestparsing)
@@ -311,7 +312,7 @@ See
 | `@Res()` | You send the response. With `{ passthrough: true }` you may set headers or cookies and still return a value. |
 | `@HttpCode`, `@Header` | As on Express. |
 | `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
-| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A stream error goes to the file's `errorLogger`. |
+| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. |
 | `@Render(view)` | As on Express (`res.render(view, result)`): renders `view` with the view engine (see [Views](#views-render-and-resrender)), the handler's return value being the locals. The status is the route's (`@HttpCode()`). A missing view or a throwing template answers Nest's `500`. |
 
 ```ts
@@ -440,6 +441,25 @@ app.enableCors({
 
 See
 [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts).
+
+### Security headers and CSRF protection
+
+Nest 12.1's `app.useSecurityHeaders()` and `app.enableCsrfProtection()` work
+as on `@nestjs/platform-express` (call them before `app.init()`/`listen()`).
+Their hook runs as a middleware at the point it is enabled, before Nest's body
+parsers, guards and routes, for every request, matched or not.
+
+- A refused request's `403` goes through Nest's exception filters, on the
+  request's response, so it carries the security headers and any header an
+  earlier middleware set.
+- With either feature on, request bodies are read when first needed (the
+  `deferBody` request option turns on), so a refused request is answered
+  before its body is read: a malformed or oversized body gets the `403`, not
+  a `400` or `413`. An allowed body is read by the body parser as before. Set
+  `request: { deferBody: false }` to keep reading bodies up front. Without
+  either feature, nothing changes.
+- `X-Powered-By` is never sent, so `useSecurityHeaders()`'s
+  `disable("x-powered-by")` changes nothing and logs nothing.
 
 ### Static assets
 
@@ -666,12 +686,17 @@ Errors reach one of three layers, depending on where they are raised.
    README says which route decides. Error handlers run as Express error
    middleware: `(err, req, res, next)` in registration order, where
    `next(err)` passes the error to the next handler, `next()` ends error
-   handling with a `404`, and a return value is ignored.
+   handling with a `404`, and a return value is ignored. As on Express, `res`
+   is the response the request was answering, so headers set before the
+   error (CORS, security headers, a middleware's own) stay on the answer; an
+   error raised before routing gets a fresh one.
 3. **Nothing handled it.** With no error handler, when the error carries no
    request (thrown before one was built, or while finalising the response),
    or when a handler itself throws, the adapter answers as Express's
    `finalhandler` would. The status comes from `err.status` or `err.statusCode`
-   when that is 400–599, otherwise `500`. The error is logged through the
+   when that is 400–599, otherwise `500`. As finalhandler, the page keeps the
+   headers already set on the request's response, less `Content-Encoding`,
+   `Content-Language` and `Content-Range`. The error is logged through the
    Nest logger, except under `NODE_ENV=test`.
 
 A request no route matched runs the `setNotFoundHandler` handlers in
@@ -808,6 +833,13 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+- `next(value)` with a value that is not an `Error` (a plain
+  `{ statusCode, message }` object, which Nest 12 answers with its status on
+  Express) reaches Nest as `new Error(String(value))`, a `500`. Throwing the
+  object instead keeps it.
+- `res.json()` replaces a `Content-Type` set before it
+  (`res.type("application/problem+json").json(body)` is sent as
+  `application/json`); Express keeps it.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.

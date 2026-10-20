@@ -4,6 +4,7 @@ import { Buffer } from "node:buffer";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import {
   BunRouter,
@@ -11,6 +12,7 @@ import {
   mergeBunRequestOptions,
   RouteClass,
   signCookie,
+  waitUntil,
 } from "@kingsleyweb/bun-common";
 import {
   BadRequestException,
@@ -329,6 +331,160 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
 
     const response = await adapter.fetch("/file");
     expect(response.headers.get("content-type")).toStartWith("text/plain");
+  });
+
+  it("reply() hands a source that already failed to the file's errorHandler, without the file's headers", async () => {
+    const adapter = new BunHttpAdapter();
+    const failure = new Error("ENOENT");
+    const calls: unknown[][] = [];
+    adapter.get("/file", async (_req, res) => {
+      const source = new PassThrough();
+      source.on("error", () => {});
+      source.destroy(failure);
+      await new Promise((resolve) => setImmediate(resolve));
+      const file = new StreamableFile(source, { type: "text/csv" });
+      const handle = file.errorHandler;
+      file.setErrorHandler((err, response) => {
+        calls.push([err, response]);
+        handle(err, response);
+      });
+      return adapter.reply(res, file);
+    });
+
+    const response = await adapter.fetch("/file");
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("ENOENT");
+    expect(response.headers.get("content-type")).not.toStartWith("text/csv");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe(failure);
+  });
+
+  it("reply() answers a source failing before its first chunk with the errorHandler's 400, or a custom handler's answer", async () => {
+    const adapter = new BunHttpAdapter();
+    const failing = () =>
+      new Readable({
+        read() {
+          this.destroy(new Error("source failed"));
+        },
+      });
+    adapter.get("/default", (_req, res) => {
+      return adapter.reply(res, new StreamableFile(failing()));
+    });
+    adapter.get("/custom", (_req, res) => {
+      const file = new StreamableFile(failing()).setErrorHandler(
+        (err, response) => {
+          response.statusCode = 503;
+          response.send(`custom: ${err.message}`);
+        },
+      );
+      return adapter.reply(res, file);
+    });
+
+    const plain = await adapter.fetch("/default");
+    expect(plain.status).toBe(400);
+    expect(await plain.text()).toBe("source failed");
+    const custom = await adapter.fetch("/custom");
+    expect(custom.status).toBe(503);
+    expect(await custom.text()).toBe("custom: source failed");
+  });
+
+  it("reply() hands a failure after the first chunk to the errorHandler, which ends the response", async () => {
+    const adapter = new BunHttpAdapter();
+    const seen: string[] = [];
+    adapter.get("/file", (_req, res) => {
+      let sent = false;
+      const source = new Readable({
+        read() {
+          if (sent) {
+            this.destroy(new Error("mid-stream"));
+          } else {
+            sent = true;
+            this.push("first");
+          }
+        },
+      });
+      const file = new StreamableFile(source);
+      const handle = file.errorHandler;
+      file.setErrorHandler((err, response) => {
+        seen.push(`${err.message} headersSent=${response.headersSent}`);
+        handle(err, response);
+      });
+      return adapter.reply(res, file);
+    });
+
+    const response = await adapter.fetch("/file");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("first");
+    expect(seen).toEqual(["mid-stream headersSent=true"]);
+  });
+
+  it("reply() streams an empty source, and destroys the source when the client cancels", async () => {
+    const adapter = new BunHttpAdapter();
+    let source: Readable | undefined;
+    adapter.get("/empty", (_req, res) => {
+      return adapter.reply(res, new StreamableFile(Readable.from([])));
+    });
+    adapter.get("/endless", (_req, res) => {
+      source = new Readable({
+        read() {
+          this.push("x".repeat(1024));
+        },
+      });
+      return adapter.reply(res, new StreamableFile(source));
+    });
+
+    const empty = await adapter.fetch("/empty");
+    expect(empty.status).toBe(200);
+    expect(await empty.text()).toBe("");
+
+    const endless = await adapter.fetch("/endless");
+    const reader = endless.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await waitUntil(
+      () => source?.destroyed === true,
+      (destroyed) => destroyed,
+    );
+    expect(source?.destroyed).toBe(true);
+  });
+
+  it("the error handlers answer on the request's response: headers set before the error stay", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.use((_req, res, next) => {
+      res.setHeader("x-before", "set");
+      next(new Error("refused"));
+    });
+    adapter.get("/x", (_req, res) => res.send("routed"));
+    adapter.setErrorHandler((error, _req, res, _next) => {
+      res.status(403).json({ error: (error as Error).message });
+    });
+
+    const response = await adapter.fetch("/x");
+    expect(response.status).toBe(403);
+    expect(response.headers.get("x-before")).toBe("set");
+    expect(await response.json()).toEqual({ error: "refused" });
+  });
+
+  it("an error every handler passes on gets finalhandler's page, keeping the response's headers as finalhandler does", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.use((_req, res, next) => {
+      res.setHeader("x-before", "set");
+      res.setHeader("content-language", "fr");
+      res.setHeader("content-type", "application/json");
+      next(Object.assign(new Error("teapot"), { status: 418 }));
+    });
+    adapter.setErrorHandler((error, _req, _res, next) => {
+      next(error as Error);
+    });
+
+    const response = await adapter.fetch("/x");
+    expect(response.status).toBe(418);
+    expect(response.headers.get("x-before")).toBe("set");
+    expect(response.headers.get("content-language")).toBeNull();
+    expect(response.headers.get("content-type")).toBe(
+      "text/html; charset=utf-8",
+    );
+    expect(await response.text()).toContain("I&#39;m a Teapot");
   });
 
   it("fetch() applies setErrorHandler() handlers", async () => {

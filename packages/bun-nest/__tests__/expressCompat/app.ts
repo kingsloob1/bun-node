@@ -53,7 +53,8 @@ import {
   VERSION_NEUTRAL,
 } from "@nestjs/common";
 import * as nestCommon from "@nestjs/common";
-import { NestFactory } from "@nestjs/core";
+import { NestApplication, NestFactory } from "@nestjs/core";
+import { ExpressAdapter } from "@nestjs/platform-express";
 import cookieParser from "cookie-parser";
 import { interval, map, take } from "rxjs";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
@@ -345,6 +346,30 @@ export class ResponseController {
     return new StreamableFile(new Uint8Array([104, 105]));
   }
 
+  @Get("file-fails")
+  fileFails() {
+    return new StreamableFile(failingSource());
+  }
+
+  @Get("file-fails-custom")
+  fileFailsCustom() {
+    return new StreamableFile(failingSource()).setErrorHandler((err, res) => {
+      res.statusCode = 503;
+      res.send(`custom: ${err.message}`);
+    });
+  }
+
+  @Get("file-failed")
+  async fileFailed() {
+    const source = new Readable({ read() {} });
+    // Failed while the handler still awaited (an interceptor, say): its
+    // `error` event is gone by the time `reply()` runs.
+    source.on("error", () => {});
+    source.destroy(new Error("failed early"));
+    await new Promise((resolve) => setImmediate(resolve));
+    return new StreamableFile(source);
+  }
+
   @Sse("sse")
   sse(): Observable<MessageEvent> {
     return interval(5).pipe(
@@ -413,6 +438,12 @@ export class ResponseController {
   @Get("res-type")
   resType(@Res() res: CompatResponse) {
     res.type("html").send("<b>hi</b>");
+  }
+
+  @Get("res-type-problem-json")
+  resTypeProblemJson(@Res() res: CompatResponse) {
+    res.type("application/problem+json");
+    res.json({ title: "Forbidden" });
   }
 
   @Get("res-type-json")
@@ -567,6 +598,88 @@ export class CompatModule {
 
 @Module({ controllers: [ViewsController] })
 export class ViewsModule {}
+
+/** A source that fails before its first chunk: a file that cannot be opened. */
+export function failingSource(): Readable {
+  return new Readable({
+    read() {
+      this.destroy(new Error("source failed"));
+    },
+  });
+}
+
+/**
+ * Whether the installed `@nestjs/platform-express` answers a `StreamableFile`
+ * whose source had already failed when `reply()` ran (12.2.0, nestjs/nest
+ * 1933cc9ed: `if (errored) return body.errorHandler(...)`). Before it,
+ * Express never answers that request. No capability exposes it, so `reply`
+ * is read.
+ */
+export const EXPRESS_REPORTS_FAILED_SOURCE = /\berrored\b/.test(
+  ExpressAdapter.prototype.reply.toString(),
+);
+
+/** Whether this Nest has the HTTP security features (12.1.0+). */
+export const HAS_SECURITY_HOOK =
+  typeof Reflect.get(NestApplication.prototype, "enableCsrfProtection") ===
+  "function";
+
+/** The security features' application methods, where this Nest has them. */
+interface SecurityApp {
+  useSecurityHeaders: () => unknown;
+  enableCsrfProtection: (options?: { exclude?: string[] }) => unknown;
+}
+
+/** The plain `{ statusCode, message }` Nest 12 answers as an HTTP error. */
+const CONFLICT = { statusCode: 409, message: "conflict" };
+
+/**
+ * Middleware raising errors the routes never see, for the exception layer
+ * the adapter runs (`setErrorHandler`): each sets `X-Before` first, which
+ * the answer must still carry, as Express's error middleware gets the same
+ * response.
+ */
+function failingMiddleware(
+  req: CompatRequest,
+  res: { setHeader: (name: string, value: string) => void },
+  next: (error?: unknown) => void,
+) {
+  const path = req.originalUrl ?? "";
+  if (!path.startsWith("/mw-")) {
+    next();
+    return;
+  }
+  res.setHeader("x-before", "set");
+  if (path === "/mw-http-exception") {
+    next(new ForbiddenException("refused in middleware"));
+  } else if (path === "/mw-plain-object") {
+    next({ ...CONFLICT });
+  } else if (path === "/mw-throws-plain-object") {
+    // eslint-disable-next-line no-throw-literal, @typescript-eslint/only-throw-error -- a plain object on purpose: Nest 12 answers it with its statusCode
+    throw { ...CONFLICT };
+  } else if (path === "/mw-error") {
+    next(new Error("plain middleware error"));
+  } else {
+    next();
+  }
+}
+
+/** {@link SmallModule}'s routes behind {@link failingMiddleware}. */
+export const configureFailingMiddleware: Configure = (app) => {
+  app.use(failingMiddleware);
+};
+
+/**
+ * Nest 12's security headers and CSRF protection on {@link SmallModule}
+ * (`webhooks` excluded), with an `X-Before` middleware ahead of them, so the
+ * `403` must carry both.
+ */
+export const configureSecurity: Configure = (app) => {
+  app.use(markResponse);
+  const secure = app as unknown as SecurityApp;
+  secure.useSecurityHeaders();
+  secure.enableCsrfProtection({ exclude: ["health"] });
+};
 
 @Controller()
 export class SmallController {

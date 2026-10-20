@@ -10,7 +10,11 @@ import { ExpressAdapter } from "@nestjs/platform-express";
 import {
   CompatModule,
   configureCompat,
+  configureFailingMiddleware,
+  configureSecurity,
+  EXPRESS_REPORTS_FAILED_SOURCE,
   HAS_QUERY_METHOD,
+  HAS_SECURITY_HOOK,
   markResponse,
   QueryModule,
   signCookie,
@@ -46,6 +50,21 @@ function withOrigin(method = "GET"): RequestInit {
   return { method, headers: { origin: "https://a.test" } };
 }
 const json = { headers: { accept: "application/json" } };
+
+/** A browser's cross-site request headers, which CSRF protection refuses. */
+const crossSite = {
+  origin: "http://evil.test",
+  "sec-fetch-site": "cross-site",
+};
+
+/** A cross-site `POST` of `body` as JSON. */
+function crossSitePost(body: string): RequestInit {
+  return {
+    method: "POST",
+    headers: { ...crossSite, "content-type": "application/json" },
+    body,
+  };
+}
 
 /** `n` bytes of JSON: `{"pad":"xxx…"}`. */
 function jsonOfSize(n: number): string {
@@ -110,6 +129,20 @@ export const GROUPS: ProbeGroup[] = [
       { name: "StreamableFile with options", path: "/file" },
       { name: "StreamableFile from a Readable", path: "/file-plain" },
       { name: "StreamableFile from bytes", path: "/file-bytes" },
+      { name: "StreamableFile, source fails first", path: "/file-fails" },
+      {
+        name: "StreamableFile, source fails, custom handler",
+        path: "/file-fails-custom",
+      },
+      // Express answers it only from platform-express 12.2.0 (it hangs before).
+      ...(EXPRESS_REPORTS_FAILED_SOURCE
+        ? [
+            {
+              name: "StreamableFile, source failed before reply",
+              path: "/file-failed",
+            },
+          ]
+        : []),
       { name: "@Sse", path: "/sse" },
       // Exceptions.
       { name: "HttpException", path: "/http-exc" },
@@ -185,6 +218,10 @@ export const GROUPS: ProbeGroup[] = [
       { name: "res.cookie / clearCookie", path: "/res-cookie" },
       { name: "res.type(html)", path: "/res-type" },
       { name: "res.type(json).send(string)", path: "/res-type-json" },
+      {
+        name: "res.type(problem+json).json(object)",
+        path: "/res-type-problem-json",
+      },
       { name: "res.send(object)", path: "/res-send-obj" },
       { name: "res.status().send(string)", path: "/res-send-num" },
       { name: "res.sendFile(abs)", path: "/res-sendfile" },
@@ -698,6 +735,73 @@ export const GROUPS: ProbeGroup[] = [
       { name: "QUERY, a miss", path: "/nope", init: { method: "QUERY" } },
     ],
   },
+  {
+    name: "errors",
+    module: SmallModule,
+    configure: configureFailingMiddleware,
+    probes: [
+      { name: "next(HttpException)", path: "/mw-http-exception" },
+      { name: "next(plain Error)", path: "/mw-error" },
+      { name: "next({statusCode, message})", path: "/mw-plain-object" },
+      {
+        name: "throw {statusCode, message}",
+        path: "/mw-throws-plain-object",
+      },
+      { name: "a route after the middleware", path: "/hello" },
+    ],
+  },
+  {
+    name: "security",
+    module: SmallModule,
+    configure: configureSecurity,
+    skip: HAS_SECURITY_HOOK
+      ? undefined
+      : "Nest below 12.1 has no useSecurityHeaders()/enableCsrfProtection()",
+    probes: [
+      { name: "GET, the headers", path: "/hello" },
+      {
+        name: "cross-site POST, 403",
+        path: "/echo",
+        init: crossSitePost('{"a":1}'),
+      },
+      {
+        name: "cross-site POST, malformed JSON: 403, body unread",
+        path: "/echo",
+        init: crossSitePost("{not json"),
+      },
+      {
+        name: "cross-site POST to no route",
+        path: "/nope",
+        init: { method: "POST", headers: crossSite },
+      },
+      {
+        name: "cross-site POST to an excluded route",
+        path: "/health",
+        init: { method: "POST", headers: crossSite },
+      },
+      {
+        name: "same-origin POST, parsed",
+        path: "/echo",
+        init: {
+          method: "POST",
+          headers: {
+            "sec-fetch-site": "same-origin",
+            "content-type": "application/json",
+          },
+          body: '{"a":1}',
+        },
+      },
+      {
+        name: "POST without browser headers, malformed JSON",
+        path: "/echo",
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{not json",
+        },
+      },
+    ],
+  },
 ];
 
 /** What a known difference covers: the fields that differ, and why. */
@@ -907,6 +1011,24 @@ export const KNOWN: Record<string, KnownDifference> = {
   "version-media/media none": {
     fields: ["content-type"],
     reason: TEXT_DEFAULT,
+  },
+  "compat/res.type(problem+json).json(object)": {
+    fields: ["content-type"],
+    reason:
+      "bun-common's `res.json()` replaces a Content-Type set before it; Express's keeps it",
+  },
+  "compat/StreamableFile, source fails first": {
+    fields: ["content-type"],
+    reason: TEXT_CHARSET,
+  },
+  "compat/StreamableFile, source fails, custom handler": {
+    fields: ["content-type"],
+    reason: TEXT_CHARSET,
+  },
+  "errors/next({statusCode, message})": {
+    fields: ["status", ...BODY_CHANGES],
+    reason:
+      "bun-common's router wraps a non-Error `next(value)` in `new Error(String(value))`, so Nest 12 never sees the plain object (G20, owed to bun-common)",
   },
   "body-limit/over the limit → 413": {
     fields: BODY_CHANGES,
