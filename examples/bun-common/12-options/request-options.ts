@@ -16,7 +16,9 @@
  *   scheduled, and a promise otherwise.
  * - `parseQuery`, like `parseBody`, is `boolean | options`: an object turns
  *   parsing on with picoquery's own options plus `decode` and
- *   `decodeURIComponent`. `parseCookies` is `boolean | { secret, decode }`.
+ *   `decodeURIComponent`. `parseCookies` is `boolean | { secret, decode }`;
+ *   with `false`, `req.cookies` and `req.signedCookies` are `undefined` (typed
+ *   `| undefined`), as Express leaves them without cookie-parser.
  * - `parseQueryOpts`, `cookieParseOptions` and `cookieSecret` are deprecated:
  *   still honoured where the object form leaves the field out, and the
  *   object form wins.
@@ -548,16 +550,15 @@ checkEqual(
   { secret: secretWins.secret, signed: secretWins.signedCookies },
   { secret: "a different secret", signed: { session: false } },
 );
+const cookiesOff = await make(
+  "http://localhost/",
+  { headers: { Cookie: cookieHeader } },
+  { parseCookies: false },
+);
 checkEqual(
-  "parseCookies: false leaves cookies empty",
-  (
-    await make(
-      "http://localhost/",
-      { headers: { Cookie: cookieHeader } },
-      { parseCookies: false },
-    )
-  ).cookies,
-  {},
+  "parseCookies: false leaves cookies and signedCookies undefined (Express without cookie-parser)",
+  [cookiesOff.cookies, cookiesOff.signedCookies],
+  [undefined, undefined],
 );
 
 withCookies.secret = SECRET;
@@ -578,7 +579,7 @@ checkEqual(
 );
 checkEqual(
   "…and removes verified ones from cookies",
-  Object.keys(withCookies.cookies).sort(),
+  Object.keys(withCookies.cookies ?? {}).sort(),
   ["prefs", "theme"],
 );
 

@@ -13,6 +13,8 @@
  *   `parseCookies` (`false`, `true` or `{ secret, decode }`) and `parseBody`
  *   (`false`, `true` or a `ParseBodyConfig`). Only that request
  *   changes; the adapter's options and other requests never do.
+ *   `parseCookies: false` leaves `req.cookies` and `req.signedCookies`
+ *   `undefined`, as Express does without cookie-parser.
  * - A body over the route's cap, or with an encoding it refuses, goes to
  *   `next(err)` as a 413, 415 or 400, so error handlers see it. A wrongly
  *   typed option is a `TypeError` when the middleware is created.
@@ -113,9 +115,9 @@ checkEqual(
   {},
 );
 checkEqual(
-  "parseCookies: false: no cookies",
+  "parseCookies: false: cookies left unparsed, undefined (Express without cookie-parser)",
   (await look("/no-cookies", "a=1")).cookies,
-  {},
+  undefined,
 );
 checkEqual(
   "default: a cookie value is percent-decoded",

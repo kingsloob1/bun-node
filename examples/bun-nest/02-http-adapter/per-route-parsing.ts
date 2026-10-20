@@ -139,9 +139,9 @@ step("Query and cookies, per route");
 
 const headers = { Cookie: "session=abc" };
 checkEqual(
-  "GET /webhooks: no query, no cookies",
+  "GET /webhooks: no query, and req.cookies undefined (so absent from the JSON)",
   await (await raised.adapter.fetch("/webhooks?a=1", { headers })).json(),
-  { query: {}, cookies: {} },
+  { query: {} },
 );
 checkEqual(
   "GET /flat?a[b]=1: kept flat",
