@@ -50,6 +50,7 @@ Applications listen on port `0`.
 | File | Shows |
 |---|---|
 | [`interceptors.ts`](./03-file-uploads/interceptors.ts) | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `@UploadedFile(s)`, memory and disk storage, upload errors, `detectFileType: false` in the adapter's multipart opts leaving `validatedMimeType` unset |
+| [`removal-errors.ts`](./03-file-uploads/removal-errors.ts) | a `"custom"` storage whose `removeFile` rejects, behind `FileInterceptor`, asserted: the handler's status and body arrive before the removal settles; the failure logged through `app.useLogger()` as `error("Removing an upload's stored files failed", <stack>)` with the context `BunFileInterceptor`; no `unhandledRejection`, and later requests still served, over the socket and through `adapter.fetch()`. See the package README's [File upload interceptors](../../packages/bun-nest/README.md#file-upload-interceptors) |
 
 ### 04 — WebSockets
 
