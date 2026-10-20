@@ -886,6 +886,50 @@ describe("SQL driver: allowPublicKeyRetrieval in a connection URL", () => {
   });
 });
 
+describe("SQL driver: the client refusing to fetch MySQL's key", () => {
+  // No server: whether a real one asks for its key depends on its password
+  // cache (below), so the mapping is pinned with a client that refuses every
+  // query the way Bun's does.
+  it("is a ConfigError saying what to change, not the client's own wording", async () => {
+    const refusal = Object.assign(
+      new Error(
+        "The server requested RSA public key retrieval to complete authentication, which is not allowed over an insecure connection",
+      ),
+      { code: "ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED" },
+    );
+    /** Any query, as the refusing client answers it. */
+    const refuse = () => Promise.reject(refusal);
+    /** A `Bun.SQL` stand-in whose every query is refused. */
+    const sql = Object.assign(() => refuse(), {
+      unsafe: refuse,
+      begin: refuse,
+      reserve: refuse,
+      close: async () => {},
+    });
+    const driver = new SqlDriver({
+      sql: sql as unknown as SQL,
+      adapter: "mysql",
+      tablePrefix: "bun_jobs_test_",
+    });
+    try {
+      const failure = await driver.connect().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(ConfigError);
+      const message = String((failure as Error).message);
+      expect(message).toContain("?allowPublicKeyRetrieval=true");
+      expect(message).toMatch(/TLS/);
+      expect((failure as ConfigError).context).toMatchObject({
+        adapter: "mysql",
+        code: "ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED",
+      });
+    } finally {
+      await driver.close();
+    }
+  });
+});
+
 describe.skipIf(!MYSQL)("SQL driver: mysql authentication without TLS", () => {
   /** The configured URL without the parameter, and its parts as fields. */
   const bare = MYSQL
@@ -906,16 +950,28 @@ describe.skipIf(!MYSQL)("SQL driver: mysql authentication without TLS", () => {
   });
 
   it("says what to change when the URL lacks it, rather than failing opaquely", async () => {
+    // Whether the server asks for its key at all depends on its password
+    // cache: after any full login for this user (the test above, or another
+    // file's), caching_sha2_password's fast path lets a client in without
+    // the key, and Bun takes that path from 1.4.4-canary.1+6bb5dc195 on. The
+    // test user may not flush the cache, and a parallel test can warm it at
+    // any moment. So the driver either connects, or refuses with the
+    // ConfigError that says what to change: never the client's own error.
+    // The refusal itself is pinned without a server, above.
     const driver = new SqlDriver({ url: bare, tablePrefix: "bun_jobs_test_" });
     try {
       const failure = await driver.connect().then(
         () => null,
         (error: unknown) => error,
       );
-      expect(failure).toBeInstanceOf(ConfigError);
-      const message = String((failure as Error).message);
-      expect(message).toContain("?allowPublicKeyRetrieval=true");
-      expect(message).toMatch(/TLS/);
+      if (failure !== null) {
+        expect(failure).toBeInstanceOf(ConfigError);
+        const message = String((failure as Error).message);
+        expect(message).toContain("?allowPublicKeyRetrieval=true");
+        expect(message).toMatch(/TLS/);
+      } else {
+        expect(await driver.ping()).toBe(true);
+      }
     } finally {
       await driver.close();
     }
