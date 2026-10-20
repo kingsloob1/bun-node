@@ -822,7 +822,7 @@ step("request and response helpers");
     "not called";
   let appendReturned: typeof adapter | undefined;
 
-  adapter.get("/helpers", (req, res) => {
+  adapter.get("/helpers", async (req, res) => {
     const seen = {
       hostname: adapter.getRequestHostname(req),
       method: adapter.getRequestMethod(req),
@@ -833,7 +833,12 @@ step("request and response helpers");
     adapter.setHeader(res, "x-one", "1");
     appendReturned = adapter.appendHeader(res, "x-many", "a");
     adapter.appendHeader(res, "x-many", "b");
-    adapter.reply(res, { ...seen, header: adapter.getHeader(res, "x-one") });
+    // reply() returns a promise for a StreamableFile; awaiting it is harmless
+    // for any other body.
+    await adapter.reply(res, {
+      ...seen,
+      header: adapter.getHeader(res, "x-one"),
+    });
     sentAfterReply = adapter.isHeadersSent(res);
     endAfterSent = adapter.end(res, "ignored");
   });
@@ -861,8 +866,8 @@ step("request and response helpers");
     undefined,
   );
 
-  adapter.get("/reply-status", (_req, res) => {
-    adapter.reply(res, "created", 201);
+  adapter.get("/reply-status", async (_req, res) => {
+    await adapter.reply(res, "created", 201);
   });
   const created = await adapter.fetch("/reply-status");
   checkEqual(

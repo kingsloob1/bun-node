@@ -48,11 +48,13 @@ Underneath, routing is
   - [Responses: `@Redirect`, `StreamableFile`, `@Render`](#responses-redirect-streamablefile-render)
   - [Versioning](#versioning)
   - [CORS](#cors)
+  - [Security headers and CSRF protection](#security-headers-and-csrf-protection)
   - [Static assets](#static-assets)
   - [Body parsing and raw bodies](#body-parsing-and-raw-bodies)
   - [Per-route parsing with `requestParsing()`](#per-route-parsing-with-requestparsing)
   - [Response compression](#response-compression)
   - [Error handling](#error-handling)
+  - [Instrumentation hooks and response checks](#instrumentation-hooks-and-response-checks)
   - [Testing with `fetch()`](#testing-with-fetch)
   - [`listen()` and `close()`](#listen-and-close)
   - [Known differences from `@nestjs/platform-express`](#known-differences-from-nestjsplatform-express)
@@ -130,7 +132,7 @@ const app = await NestFactory.create(AppModule, new BunHttpAdapter());
 await app.listen(3000); // binds 127.0.0.1 unless a hostname is given
 
 // ...later
-await app.close(); // force-closes the Bun server, keep-alive connections included
+await app.close(); // lets in-flight requests finish (at most 10 s), then stops the server
 ```
 
 `app.listen(0)` asks the OS for a free port; `app.getUrl()` reports it. See
@@ -156,6 +158,7 @@ class under a second name. Its constructor is
 | `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Upper bound on the router's matched-pipeline cache before FIFO eviction. `0` disables it. The cache is keyed by resolved path, so size it above the number of distinct paths in flight, or use `0`. |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag`, so a matching `If-None-Match` is answered `304`: `true`/`"strong"`, `"weak"`, or a function returning the tag. A controller overrules it for its own response with `@Res({ passthrough: true }) res` and `res.setEtag(false)` (or `res.etag = "weak"`); see bun-common's `setEtag`. |
 | `logger` | NestJS `Logger` | `new Logger()` | Logger for adapter diagnostics: bind failures and unhandled errors. |
+| `closeDrainTimeout` | `number` (ms) | `10_000` | The longest `close()` (and `app.close()`) waits for in-flight requests before cutting them. `0` waits for nothing; `forceCloseConnections: true` skips the wait whatever it says. A negative or non-finite value throws a `RangeError` at construction. See [`listen()` and `close()`](#listen-and-close). |
 | `server` | `BunServeNormalOptions` | `{}` | Base `Bun.serve` options (TLS, `idleTimeout`, `maxRequestBodySize`, …). `port`, `hostname`, `fetch`, `websocket`, `error` and `development` are set by the adapter and override these. `routes` serves constants (a health check, `robots.txt`) natively, ahead of Nest: every method, no middleware, guards or interceptors; see bun-common's [Native static routes](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#native-static-routes-serverroutes). |
 | `websocket` | `Partial<WebsocketOptions>` | bound to this adapter | Overrides for the built-in WebSocket adapter. See [the `websocket` option](#the-websocket-option). |
 
@@ -185,13 +188,14 @@ NestJS calls most of these for you. The ones you are likely to call directly:
 | Member | Description |
 |---|---|
 | `listen(port, hostname?, callback?)` | Binds `Bun.serve`. See [`listen()` and `close()`](#listen-and-close). |
-| `close()` | Stops the server with `stop(true)` and emits `close`. Routes and handlers stay registered. |
+| `close()` | Drains in-flight requests (at most `closeDrainTimeout`, 10 s; none with `forceCloseConnections`), stops the server and emits `close`. Routes and handlers stay registered. See [`listen()` and `close()`](#listen-and-close). |
 | `fetch(input, init?)` | Runs a request through the adapter without a socket. See [Testing with `fetch()`](#testing-with-fetch). |
 | `use`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, `search`, `query`, `propfind`, `proppatch`, `mkcol`, `copy`, `move`, `lock`, `unlock` | Register raw router middleware and routes beside Nest's controllers. `use` also mounts a `BunRouter`: see [Mounting a bun-common router](#mounting-a-bun-common-router). |
 | `enableCors(options, prefix?)` | See [CORS](#cors). |
 | `useStaticAssets(path, options)` | See [Static assets](#static-assets). |
 | `useBodyParser(type, rawBody, options)`, `registerParserMiddleware(prefix?, rawBody?)` | See [Body parsing and raw bodies](#body-parsing-and-raw-bodies). |
 | `setErrorHandler(handler)`, `setNotFoundHandler(handler)` | See [Error handling](#error-handling). |
+| `setOnRequestHook(hook)`, `setOnResponseHook(hook)`, `addBeforeWriteHook(hook)` | See [Instrumentation hooks and response checks](#instrumentation-hooks-and-response-checks). |
 | `setLogger(logger)`, `logger` | Replace or read the NestJS logger. |
 | `setRequestOpts(opts)`, `requestOpts` | Replace or read the `request` option. Setting it merges over the defaults, not over the options set before. |
 | `setTimeout(ms, callback)` | Sets `requestTimeout`, then calls `callback` with the server once one is listening. |
@@ -321,7 +325,8 @@ See
 | `@Res()` | You send the response. With `{ passthrough: true }` you may set headers or cookies and still return a value. |
 | `@HttpCode`, `@Header` | As on Express. |
 | `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
-| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A stream error goes to the file's `errorLogger`. |
+| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. If the client leaves before the file is read to the end, even before the handler returned it, its source is destroyed, as on Express 12, so an abandoned download holds no file descriptor. |
+| A status | On Nest 12, any status Nest passes is applied, `0` included, and checked as Express 5's `res.status` checks it: a non-integer or a code outside 100–999 fails, and Nest answers `500`. On Nest 11 a falsy status (`0`, `NaN`) is skipped, as its platform-express skips it. |
 | `@Render(view)` | As on Express (`res.render(view, result)`): renders `view` with the view engine (see [Views](#views-render-and-resrender)), the handler's return value being the locals. The status is the route's (`@HttpCode()`). A missing view or a throwing template answers Nest's `500`. |
 
 ```ts
@@ -404,7 +409,7 @@ the next candidate route gets it. A request no route accepts ends as Nest's
 |---|---|
 | `VersioningType.URI` | From the path (`/v2/...`); Nest builds the routes, no filter is applied. |
 | `VersioningType.HEADER` | From the `header` option's request header. |
-| `VersioningType.MEDIA_TYPE` | From the `Accept` header's parameter after `;`, split on `key` (`Accept: application/json;v=2` with `key: "v="`). |
+| `VersioningType.MEDIA_TYPE` | From the `Accept` header, as the installed Nest's platform-express reads it. On Nest 12: the first parameter, in any media range, that starts with `key` (`Accept: text/html, application/json;charset=utf-8;v=2` with `key: "v="` is version `2`). On Nest 11: the first parameter only, split on `key`. A quoted value (`v="2"`) is unquoted from Nest 12.2.0, as its platform-express does (separators inside quotes ignored); before 12.2.0 it is taken as written, quotes included. |
 | `VersioningType.CUSTOM` | From `extractor(req)`, a string or an array of strings. |
 
 A handler whose version is `VERSION_NEUTRAL` always matches. For `HEADER` and
@@ -450,6 +455,25 @@ app.enableCors({
 
 See
 [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts).
+
+### Security headers and CSRF protection
+
+Nest 12.1's `app.useSecurityHeaders()` and `app.enableCsrfProtection()` work
+as on `@nestjs/platform-express` (call them before `app.init()`/`listen()`).
+Their hook runs as a middleware at the point it is enabled, before Nest's body
+parsers, guards and routes, for every request, matched or not.
+
+- A refused request's `403` goes through Nest's exception filters, on the
+  request's response, so it carries the security headers and any header an
+  earlier middleware set.
+- With either feature on, request bodies are read when first needed (the
+  `deferBody` request option turns on), so a refused request is answered
+  before its body is read: a malformed or oversized body gets the `403`, not
+  a `400` or `413`. An allowed body is read by the body parser as before. Set
+  `request: { deferBody: false }` to keep reading bodies up front. Without
+  either feature, nothing changes.
+- `X-Powered-By` is never sent, so `useSecurityHeaders()`'s
+  `disable("x-powered-by")` changes nothing and logs nothing.
 
 ### Static assets
 
@@ -676,12 +700,17 @@ Errors reach one of three layers, depending on where they are raised.
    README says which route decides. Error handlers run as Express error
    middleware: `(err, req, res, next)` in registration order, where
    `next(err)` passes the error to the next handler, `next()` ends error
-   handling with a `404`, and a return value is ignored.
+   handling with a `404`, and a return value is ignored. As on Express, `res`
+   is the response the request was answering, so headers set before the
+   error (CORS, security headers, a middleware's own) stay on the answer; an
+   error raised before routing gets a fresh one.
 3. **Nothing handled it.** With no error handler, when the error carries no
    request (thrown before one was built, or while finalising the response),
    or when a handler itself throws, the adapter answers as Express's
    `finalhandler` would. The status comes from `err.status` or `err.statusCode`
-   when that is 400–599, otherwise `500`. The error is logged through the
+   when that is 400–599, otherwise `500`. As finalhandler, the page keeps the
+   headers already set on the request's response, less `Content-Encoding`,
+   `Content-Language` and `Content-Range`. The error is logged through the
    Nest logger, except under `NODE_ENV=test`.
 
 A request no route matched runs the `setNotFoundHandler` handlers in
@@ -710,6 +739,79 @@ adapter.setErrorHandler(((err, _req, res, _next) => {
 See
 [`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts),
 [`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/undecodable-bodies.ts).
+
+### Instrumentation hooks and response checks
+
+Three hooks on the adapter, each costing one field read per request while
+none is set.
+
+| Hook | When | Can change the response |
+|---|---|---|
+| `setOnRequestHook((req, res, done) => …)` | First for every request, before middleware, body parsing and routes (as platform-express) | Yes: it can answer the request itself, or `done(error)` |
+| `setOnResponseHook((req, res) => …)` | After the response is sent (for a `write()` stream, after it ends), as platform-express's `res.on("finish")` | No |
+| `addBeforeWriteHook((context) => …)` | After the response is produced, before anything of it is written | Yes: it can refuse it |
+
+`setOnRequestHook` and `setOnResponseHook` are platform-express's, with the
+same rules: the request continues on `done()`, not when a returned promise
+resolves; only the first completion counts, and a later error is logged; a
+throw or rejection before `done()` is `done(error)`, which goes to Nest's
+exception layer. A response hook's errors are only logged. Each replaces the
+hook set before, and runs with the adapter as `this`. The response hook sees
+every response the request ends with, those of the adapter's error handling
+(an error from middleware or body parsing, a refused response) included,
+except a page `finalhandler` answers when no Nest error handler is
+registered.
+
+`addBeforeWriteHook` is bun-nest's own, made for response validation: it sees
+what an interceptor's `map()` cannot, such as a redirect, a `StreamableFile`, a
+plain `@Res()` response, a not-found answer and the headers the adapter adds.
+The hook gets a context with:
+
+- `phase`: `"response"`, or `"error"` for a response the error handling
+  produced;
+- `status` and `headers`: the native `Response`'s, exactly what will be
+  written. The headers are live; changing them is unsupported;
+- `body`: the body by kind (`empty`, `json`, `text`, `binary`, `blob`,
+  `form`, `response`, `streamable-file` or `stream`), with the value of a
+  buffered body. A stream is never read;
+- `request`, and `response`, the Nest-facing `BunResponse`. In phase
+  `"error"` it is `undefined`: the context's type is a union on `phase`
+  (`BunBeforeWriteResponseContext | BunBeforeWriteErrorContext`), so a check
+  on `phase === "response"` narrows it to the response.
+
+Return to let the response go. Throw, or reject, to refuse it: the response is
+discarded (a `StreamableFile`'s source destroyed) and the error goes to Nest's
+exception layer, so the client gets a `500`, or the status of an
+`HttpException`. None of the refused response's own headers (`Location`,
+`Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) reach that answer; its
+request-wide ones (CORS, `Vary`, a security hook's) do. A returned promise holds
+the response, unwritten, until it settles; past the adapter's
+`requestTimeout`, when one is set, the hold fails as a stuck handler does. A
+throw in phase `"error"` is logged and the response sent, so a check cannot
+loop. A `write()` stream is checked as it opens, before its first byte; its
+chunks are not. `HEAD` is checked as the GET it reuses. Hooks run in
+registration order, and the first refusal wins. `addBeforeWriteHook` returns a
+function that removes the hook.
+
+```ts
+const adapter = new BunHttpAdapter();
+
+adapter.setOnRequestHook((req, _res, done) => {
+  metrics.started(req.method, req.path);
+  done();
+});
+adapter.setOnResponseHook((_req, res) => metrics.finished(res.statusCode));
+
+// Returns a function that removes the hook.
+adapter.addBeforeWriteHook(({ phase, status, headers }) => {
+  if (phase === "response" && status === 302 && !headers.get("location")?.startsWith("/app")) {
+    throw new Error("redirect outside /app");
+  }
+});
+
+const app = await NestFactory.create(AppModule, adapter);
+await app.listen(3000);
+```
 
 ### Testing with `fetch()`
 
@@ -755,13 +857,21 @@ it.
   `app.listen(3000)` is reachable from the local machine only. Pass
   `app.listen(3000, "0.0.0.0")` to listen on every interface. Any hostname
   `Bun.serve` accepts is bound as given.
-- **Port.** It must be an integer from `0` to `65535`, otherwise `listen`
-  throws a `RangeError`. `0` picks a free port.
+- **Port.** It must be an integer from `0` to `65535`; `0` picks a free port.
+  Any other number is a `RangeError`, reported as a bind failure is (below),
+  so `app.listen(70000)` rejects with it.
+- **Socket path.** A string that is not a port number is a unix socket path,
+  as with `node:http`: `app.listen("/run/app.sock")` listens there (a
+  hostname is ignored), `adapter.address()` returns the path and
+  `app.getUrl()` gives `http+unix://%2Frun%2Fapp.sock`. Bun removes the
+  socket file when the server stops; a file already at the path is
+  `EADDRINUSE`, as on Node.
 - **Already listening.** On the same address (or port `0`), `listen` resolves
   the running server. On a different address, it stops that server and binds
   the new one.
 - **Busy port.** A bind failure (`EADDRINUSE`, an unresolvable hostname, a
-  privileged port) is logged. The adapter never binds somewhere else.
+  privileged port, a socket path in a missing directory) is logged. The
+  adapter never binds somewhere else.
   - If no `error` listener is attached to the HTTP server, `listen` rejects.
   - If one is attached, as `app.listen()` attaches one, the listener receives
     the error, the callback is not called, and `listen` resolves `undefined`.
@@ -769,10 +879,32 @@ it.
     `@nestjs/platform-express`.
 - **Emits** `listening` with the server on `adapter.eventEmitter`.
 
-`close()` stops the server with `stop(true)`, force-closing keep-alive
-connections so the port is released at once, and emits `close`. Routes and
-error and not-found handlers stay registered, so a closed adapter can listen
-again or be driven through `fetch()`.
+`close()` drains, as `@nestjs/platform-express` 12 does: it stops accepting
+connections (idle keep-alive connections close at once), lets the requests in
+flight finish, then stops the server and emits `close`.
+
+- **A cap, 10 s by default.** Express waits for in-flight requests
+  indefinitely, so an open `@Sse()` stream holds its `app.close()` forever;
+  here whatever is still open after the adapter's `closeDrainTimeout` option
+  (milliseconds, default `10_000`) is cut (a stream, a hung handler), and
+  `close()` resolves. `new BunHttpAdapter(0, { closeDrainTimeout: 0 })` waits
+  for nothing.
+- **`forceCloseConnections: true`** (a `NestFactory.create` option) skips the
+  wait: in-flight requests are cut at once.
+- **WebSockets** are not waited for; they are closed when the server stops.
+- **Nothing of the closed server outlives `close()`**: it always ends by
+  force-closing what is left, so a server bound on the same port next is never
+  answered by the old one.
+
+**`return503OnClosing: true`** (a `NestFactory.create` option, Nest 12) answers
+every request `503 Service Unavailable` with `Connection: close` once
+`app.close()` has begun, while the shutdown hooks run and during the drain,
+as Express does. Nest 12 calls the adapter's `beforeClose()` first, which
+sets this state; Nest 11 has neither the option nor the call. Without the
+option no shutdown check runs on any request.
+
+Routes and error and not-found handlers stay registered, so a closed adapter
+can listen again (no longer answering `503`) or be driven through `fetch()`.
 
 See
 [`http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/http-adapter-options.ts).
@@ -818,6 +950,20 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+- An error-shaped body (`statusCode` 400 or more) returned under a
+  `Content-Type` that is not JSON is sent as JSON with Nest's warning, by Nest
+  12's rule: a `+json` type counts as JSON. Nest 11 on Express also forces a
+  `+json` type (`application/vnd.api+json`) to `application/json`.
+- A status from 600 to 999 is accepted by Express; Bun's `Response` takes 200
+  to 599, so Nest's `500` answers it here.
+- A handler that writes and then throws in the same tick: the stream ends
+  before its first flush, so it carries a `Content-Length` rather than being
+  chunked.
+- On Nest 11, a `StreamableFile`'s source is destroyed when the client leaves,
+  and the request and response hooks follow platform-express 12.1.3's rules
+  (a rejection before `done()` is `done(error)`, `done` counts once, a
+  response hook's error is logged), where platform-express 11 leaves the
+  source open and those rejections and errors unhandled.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.
@@ -835,6 +981,19 @@ listed here answers the same status, headers and body.
   package installed, the application's copy is not the one read: its
   WebSocket exceptions then reach clients as platform-ws's `{ event, data }`
   frame.
+
+Against `@nestjs/platform-ws`, measured by `__tests__/wsCompat.nest.test.ts`
+(the same gateways on both adapters, compared on what happened, not on the
+frames, whose formats differ by design):
+
+- A plain (non-`WsResponse`) return value is sent only as the ack of a packet
+  that asked for one, as on `@nestjs/platform-socket.io`; platform-ws sends it
+  as a frame of its own.
+- A handler's result stream that errors (under Nest, an exception filter that
+  threw) is answered with an `ERROR` packet carrying its message; platform-ws
+  logs it and sends nothing.
+- Not ported yet (a follow-up): platform-ws 12.2.0 answers a plain HTTP
+  request to a gateway's dedicated port with `426 Upgrade Required`.
 
 See the last section of
 [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts),
@@ -883,6 +1042,12 @@ export class AvatarsController {
   response; if it fails (a custom storage's `removeFile` rejects), the error
   is logged through a Nest `Logger` named `BunFileInterceptor` rather than
   left as an unhandled rejection, which would end a Bun process.
+- On Nest 12.2.0 and later, when a pipe rejects the request (a
+  `ParseFilePipe`, any pipe on the route), the stored files are removed with
+  `force` once the response has been sent, disk files included, as
+  platform-express 12.2.0 does. A handler that throws leaves them where they
+  are, as on Express. Earlier Nest versions keep them in both cases, as
+  platform-express does there.
 
 An uploaded file is a bun-common `StorageFile`:
 
@@ -904,7 +1069,7 @@ The options are bun-common's `UploadOptions`, a union keyed by `storageType`:
 |---|---|---|
 | `"memory"` (the default) | `removeAfter` (default `true`) | Files held in a `Buffer`. |
 | `"disk"` | `dest` (default: the OS temp directory), `filename` (default: 32 random hex characters plus the original extension), `removeAfter` (default `false`) | Files written to disk. `dest` and `filename` are strings or `(file, req) => string \| Promise<string>`. The directory is created when missing. A fixed `filename` makes each upload overwrite the last. |
-| `"custom"` | `storage` (required) | Any `Storage`: `handleFile(file, req)` and `removeFile(file, force?)`. A `DiskStorage` or `MemoryStorage` instance works too. |
+| `"custom"` | `storage` (required) | Any `Storage`: `handleFile(file, req)` and `removeFile(file, force?)`. A `DiskStorage` or `MemoryStorage` instance works too. Name `storageType: "custom"` explicitly: a `storage` without it throws at bootstrap. |
 
 Options every storage type accepts:
 
@@ -933,6 +1098,54 @@ export const documents = FileFieldsInterceptor([{ name: "cover", maxCount: 1 }, 
   storage: new DiskStorage({ dest: "./docs", filename: (file) => file.filename, removeAfter: false }),
 });
 ```
+
+### Module-level options (`MulterModule`)
+
+`MulterModule.register(options)` (or `registerAsync({ useFactory, inject })`,
+`{ useClass }`, `{ useExisting }`) gives every upload interceptor of the
+importing module default options, as platform-express's `MulterModule` does.
+It provides the same `MULTER_MODULE_OPTIONS` token, so platform-express's own
+`MulterModule` works with these interceptors too.
+
+```ts
+import { FilesInterceptor, MulterModule, UploadedFiles } from "@kingsleyweb/bun-nest";
+import { Controller, Module, Post, UseInterceptors } from "@nestjs/common";
+
+@Controller("uploads")
+export class UploadsController {
+  @Post()
+  // `files: 1` from the module, `fileSize` from the route.
+  @UseInterceptors(FilesInterceptor("f", 5, { limits: { fileSize: 1000 } }))
+  upload(@UploadedFiles() files: unknown[]) {
+    return { count: files.length };
+  }
+}
+
+@Module({
+  imports: [MulterModule.register({ limits: { files: 1 } })],
+  controllers: [UploadsController],
+})
+export class UploadsModule {}
+```
+
+Each interceptor merges the module's options under its own
+(`mergeUploadOptions`, platform-express's `mergeMulterOptions`):
+
+- The interceptor's keys win.
+- On Nest 12, `limits` is merged key by key, so a route's `fileSize` keeps the
+  module's `files`. On Nest 11 the route's `limits` replaces the module's
+  whole, as platform-express 11 does. (platform-express merges key by key from
+  12.0.4, this package from 12.0.0.)
+- On Nest 12.2.0 and later, a route's `dest` given without a `storage` or
+  `storageType` replaces the module's storage, so the route's files go to disk
+  at that `dest`. Before 12.2.0 the module's storage wins, as multer prefers
+  `storage` to `dest`.
+- With no `storageType` on either side it is `"disk"` when there is a `dest`
+  and `"memory"` otherwise, so multer-style options such as `{ limits }` or
+  `{ dest }` work as they are. A `storage` needs an explicit
+  `storageType: "custom"`: a multer storage engine (`multer.diskStorage()`)
+  cannot run here, so options that leave a `storage` without a `storageType`
+  throw a `TypeError` when the interceptor is built, at bootstrap.
 
 ### Limits and where multipart is parsed
 
@@ -965,7 +1178,8 @@ exception filter is needed:
 |---|---|---|
 | an `HttpException` (e.g. from a custom storage) | kept as it is | its own |
 | `UploadError` `LIMIT_FILE_SIZE` | `PayloadTooLargeException`, bare message | `413` |
-| `UploadError` `LIMIT_PART_COUNT`, `LIMIT_FILE_COUNT`, `LIMIT_FIELD_KEY`, `LIMIT_FIELD_VALUE`, `LIMIT_FIELD_COUNT`, `LIMIT_UNEXPECTED_FILE`, `MISSING_FIELD_NAME` | `BadRequestException` | `400` |
+| `UploadError` `LIMIT_PART_COUNT`, `LIMIT_FILE_COUNT`, `LIMIT_FIELD_KEY`, `LIMIT_FIELD_VALUE`, `LIMIT_FIELD_COUNT`, `LIMIT_FIELD_NESTING`, `LIMIT_FIELD_ARRAY_INDEX`, `INVALID_FIELD_NAME`, `LIMIT_UNEXPECTED_FILE`, `MISSING_FIELD_NAME` | `BadRequestException` | `400` |
+| `UploadError` with a code not listed here | returned unchanged, as platform-express leaves a code it does not list | `500` |
 | `UploadError` `FILTER_REJECTED` (a `filter` returned a string) | `BadRequestException` | `400` |
 | any other error with `statusCode` `413` (bun-common's `PayloadTooLargeError`) | `PayloadTooLargeException` | `413` |
 | busboy's `Multipart: Boundary not found` | `BadRequestException`, message as it is | `400` |
@@ -975,6 +1189,9 @@ exception filter is needed:
 - Inside Nest, only a file over `limits.fileSize` is `413`. Every count limit
   is `400`. That is platform-express's mapping. bun-common's standalone
   `UploadError.status` uses `413` for every size and count limit.
+- `LIMIT_FIELD_NESTING`, `LIMIT_FIELD_ARRAY_INDEX` and `INVALID_FIELD_NAME`
+  are multer 2.4's field-name codes. They are `400` on every Nest version, as
+  on platform-express 12. platform-express 11.2.7 answers the last two `500`.
 - For an `UploadError`, the response body is an `UploadExceptionBody`:
   `{ statusCode, message, code, field }`. multer's own message for the code
   gets ` - <field>` appended on a `400` (`"Unexpected field - avatar"`), as
@@ -1122,7 +1339,9 @@ Every frame is JSON text; a binary frame holding the same JSON also works.
   whose `data` is not an array goes, as raw data, to handlers subscribed to
   `"events"`.
 - **Handler errors.** An error the adapter catches from a handler's result
-  stream is sent as an `ERROR` packet.
+  stream is sent as an `ERROR` packet. (Under Nest that is an exception
+  filter that threw; `@nestjs/platform-ws` logs it instead, see
+  [Known differences](#known-differences-from-nestjsplatform-express).)
 
 `MessageEventTypes` and the packet types (`MessagePacket<T>`,
 `MessageEventType`, `MessageBinaryEventType`, …) are exported for typed
@@ -1173,7 +1392,45 @@ replace that.
 
 A reply that cannot be serialised (a cycle, a `BigInt`, a payload nested too
 deep for `JSON.stringify`) is logged through Nest's `Logger` and not sent, as
-on `@nestjs/platform-ws`; the connection stays open.
+on `@nestjs/platform-ws`; the connection stays open. An exception whose
+`cause` cannot be serialised (it echoes the client's message) is sent again
+without it on Nest 12.2 and later, as on platform-ws.
+
+### Flow control
+
+As `@nestjs/platform-ws` 12.2.0 (nestjs/nest 0bd0810ed, db4e586c5), on every
+Nest version, per connection:
+
+- **At most `maxConcurrentMessages` messages are handled at once** (default
+  `1000`, per gateway the client is bound to). Later ones wait, in order, for
+  a slot. A message holds its slot until every result of its handlers has
+  completed or errored, so a handler returning an Observable that never
+  completes holds one for as long as the client stays. `Infinity` lifts the
+  limit.
+- **Reading from a client pauses** while its messages wait for a slot or
+  while more than 1 MB is queued for it, and resumes once it has caught up.
+  So a client that sends faster than it reads its replies is read more
+  slowly as well. Pausing stops the next read only: the messages of a read
+  already made are still handled, up to the bound, as on platform-ws. (This needs `ServerWebSocket.pause()`/`resume()`, in the
+  Bun 1.4.4 runtime; without them the other two rules still hold.)
+- **A client with more than `maxSendBufferSize` bytes queued for it is
+  disconnected** (`terminate()`, with a warning; default 128 MB, `0` lifts
+  it). What can still queue up while a client is paused is what is already on
+  its way: an Observable's values, what exception filters send. The adapter
+  raises Bun's own `backpressureLimit` (16 MB by default, past which Bun drops
+  what is sent) to `maxSendBufferSize`, so replies are queued up to the cap,
+  never dropped. A `wsOptions.backpressureLimit` you set wins; a reply Bun
+  then drops disconnects the client the same way, so none is lost silently.
+- When a client disconnects, its waiting messages are dropped and the results
+  still running (an Observable) are unsubscribed from. What it sent after the
+  server began closing it is not handled.
+
+```ts
+export const adapter = new BunHttpAdapter(0, {
+  websocket: { maxConcurrentMessages: 100, maxSendBufferSize: 16 * 1024 * 1024 },
+});
+// or: new BunWebSocketAdapter({ httpAdapter, maxConcurrentMessages: 100 })
+```
 
 ### The `websocket` option
 
@@ -1183,7 +1440,9 @@ that bind the built-in adapter to the HTTP adapter:
 
 | Field | Description |
 |---|---|
-| `wsOptions` | Bun `WebSocketHandler` settings: `idleTimeout` (default `30` seconds), `maxPayloadLength` (default 1 MB), `perMessageDeflate` (default on), `backpressureLimit`, `closeOnBackpressureLimit`, `sendPings`, `publishToSelf`. The lifecycle callbacks are supplied by the adapter. |
+| `wsOptions` | Bun `WebSocketHandler` settings: `idleTimeout` (default `30` seconds), `maxPayloadLength` (default 1 MB), `perMessageDeflate` (default on), `backpressureLimit` (default `maxSendBufferSize`), `closeOnBackpressureLimit`, `sendPings`, `publishToSelf`. The lifecycle callbacks are supplied by the adapter. |
+| `maxConcurrentMessages` | Messages of one client handled at once, per gateway; later ones wait. Default `1000`; `Infinity` lifts it. See [Flow control](#flow-control). |
+| `maxSendBufferSize` | Bytes queued for a client before it is disconnected. Default 128 MB; `0` lifts it. See [Flow control](#flow-control). |
 | `onUpgrade` | `(req, res) => WebSocketUpgradeResult \| void`, may be async, run on every gateway upgrade. Its `custom` becomes `client.data.custom`, its `headers` go out on the `101`, and its `data` replaces `client.data` (`route`, `params` and `port` filled in from the match where left out). The adapter's first generic types `custom`: `new BunHttpAdapter<Session>()`. |
 | `customDataToWsClientFn` | **Deprecated.** `(req, res) => Custom \| Promise<Custom>`, treated as `onUpgrade` returning `{ custom }`. Beside `onUpgrade` it is ignored, with one warning. |
 | `router` | The `BunRouter` upgrade routes are registered on. Defaults to the HTTP adapter's. |
@@ -1338,7 +1597,17 @@ and
 
 `close(server)` mirrors `@nestjs/platform-ws`:
 
-- Gateways bound to that server stop receiving connections.
+- Gateways bound to that server stop receiving connections, and their routes
+  are unregistered: an upgrade request to a gateway's path is no longer
+  upgraded (it goes on to whatever else matches, or a `404`). A path a
+  gateway on another open server still uses stays, and so does any other
+  handler on the same path.
+- `dispose()`, which `app.close()` calls after `close()`, unregisters every
+  gateway route left, as `@nestjs/platform-ws` 12 removes its `upgrade`
+  listener. So a server that outlives the application (one the adapter does
+  not own, or the HTTP adapter listening again) never upgrades to a gateway
+  that is gone. A new application on the same server registers its gateways
+  again.
 - A server the adapter owns (a gateway port's, or its own under
   `newInstance: true`) is stopped, force-closing its connections.
 - The HTTP adapter's shared server is **not** stopped; that is `app.close()`'s
@@ -1449,7 +1718,7 @@ Everything below is exported from the package root; see
 | Group | Exports |
 |---|---|
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
-| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions` |
+| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
 | Packets | types `MessageFormat`, `MessagePacket`, `MessagePacketMap`, `MessageConnectType`, `MessageDisConnectType`, `MessageEventType`, `MessageAckType`, `MessageErrorType`, `MessageBinaryEventType`, `MessageBinaryAckType` |
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |

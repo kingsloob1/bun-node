@@ -4,13 +4,21 @@
  * Bun application; the test compares what comes back.
  */
 import type { NestApplicationOptions } from "@nestjs/common";
-import type { Configure } from "./app";
+import type { Configure, Side } from "./app";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { RequestMethod, VersioningType } from "@nestjs/common";
+import { AbstractHttpAdapter } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import {
   CompatModule,
   configureCompat,
+  configureFailingMiddleware,
+  configureSecurity,
+  EXPRESS_REPORTS_FAILED_SOURCE,
   HAS_QUERY_METHOD,
+  HAS_SECURITY_HOOK,
   markResponse,
   QueryModule,
   signCookie,
@@ -21,6 +29,7 @@ import {
   WildcardMiddlewareModule,
 } from "./app";
 import { EXPRESS_OLDER_THAN_BUN_COMMON, OLDER_EXPRESS } from "./expressVersion";
+import { UPLOAD_GROUPS, UPLOAD_KNOWN } from "./uploads";
 
 /** One request: a name, a path and its `RequestInit`. */
 export interface Probe {
@@ -32,7 +41,10 @@ export interface Probe {
 /** An application to boot on both sides, and the requests to send it. */
 export interface ProbeGroup {
   name: string;
-  module: new () => object;
+  /** The application, or one per side when the two need different code (uploads). */
+  module: (new () => object) | Record<Side, new () => object>;
+  /** Removes what the group's application left behind, after both sides close. */
+  cleanup?: () => void;
   configure?: Configure;
   options?: NestApplicationOptions;
   probes: Probe[];
@@ -42,11 +54,45 @@ export interface ProbeGroup {
 
 const html = { headers: { accept: "text/html" } };
 
+/**
+ * Why `version-media-params` is skipped on the installed Nest, if it is: on
+ * Nest 12 before platform-express 12.1.2, which still read the first
+ * parameter only (bun-nest reads any on every Nest 12; nothing in
+ * `@nestjs/core` tells 12.1.2 apart). Read from the reference's capability,
+ * the `getMediaTypeVersion` helper 12.1.2 added, never from a version.
+ */
+const MEDIA_PARAMS_SKIP =
+  typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
+    .mapException === "function" &&
+  !existsSync(
+    join(
+      dirname(fileURLToPath(import.meta.resolve("@nestjs/platform-express"))),
+      "adapters/utils/get-media-type-version.util.js",
+    ),
+  )
+    ? "platform-express before 12.1.2 reads the first Accept parameter only"
+    : undefined;
+
 /** A cross-origin request's init: `Origin` set, for CORS to answer. */
 function withOrigin(method = "GET"): RequestInit {
   return { method, headers: { origin: "https://a.test" } };
 }
 const json = { headers: { accept: "application/json" } };
+
+/** A browser's cross-site request headers, which CSRF protection refuses. */
+const crossSite = {
+  origin: "http://evil.test",
+  "sec-fetch-site": "cross-site",
+};
+
+/** A cross-site `POST` of `body` as JSON. */
+function crossSitePost(body: string): RequestInit {
+  return {
+    method: "POST",
+    headers: { ...crossSite, "content-type": "application/json" },
+    body,
+  };
+}
 
 /** `n` bytes of JSON: `{"pad":"xxx…"}`. */
 function jsonOfSize(n: number): string {
@@ -107,10 +153,33 @@ export const GROUPS: ProbeGroup[] = [
       { name: "return array", path: "/arr" },
       { name: "return Buffer", path: "/buf" },
       { name: "error-shaped body, text/plain", path: "/err-body" },
+      { name: "error-shaped body, +json", path: "/err-body-json" },
+      {
+        name: "custom HttpException body, text/plain",
+        path: "/err-exc-text",
+      },
       // StreamableFile and SSE.
       { name: "StreamableFile with options", path: "/file" },
       { name: "StreamableFile from a Readable", path: "/file-plain" },
       { name: "StreamableFile from bytes", path: "/file-bytes" },
+      { name: "StreamableFile, source fails first", path: "/file-fails" },
+      {
+        name: "StreamableFile, source fails, custom handler",
+        path: "/file-fails-custom",
+      },
+      // Express answers it only from platform-express 12.2.0 (it hangs before).
+      ...(EXPRESS_REPORTS_FAILED_SOURCE
+        ? [
+            {
+              name: "StreamableFile, source failed before reply",
+              path: "/file-failed",
+            },
+          ]
+        : []),
+      { name: "exception with status 0", path: "/status-zero" },
+      { name: "exception with status NaN", path: "/status-nan" },
+      { name: "write() then throw", path: "/write-then-throw" },
+      { name: "write() then throw, sync", path: "/write-then-throw-sync" },
       { name: "@Sse", path: "/sse" },
       // Exceptions.
       { name: "HttpException", path: "/http-exc" },
@@ -186,6 +255,10 @@ export const GROUPS: ProbeGroup[] = [
       { name: "res.cookie / clearCookie", path: "/res-cookie" },
       { name: "res.type(html)", path: "/res-type" },
       { name: "res.type(json).send(string)", path: "/res-type-json" },
+      {
+        name: "res.type(problem+json).json(object)",
+        path: "/res-type-problem-json",
+      },
       { name: "res.send(object)", path: "/res-send-obj" },
       { name: "res.status().send(string)", path: "/res-send-num" },
       { name: "res.sendFile(abs)", path: "/res-sendfile" },
@@ -623,6 +696,59 @@ export const GROUPS: ProbeGroup[] = [
     ],
   },
   {
+    // Nest 12's platform-express reads the version from any parameter of
+    // any media range (12.1.2 on); Nest 11's from the first parameter only,
+    // which bun-nest keeps on 11, so these compare on both majors.
+    name: "version-media-params",
+    module: VersionedModule,
+    configure: (app) => {
+      app.enableVersioning({ type: VersioningType.MEDIA_TYPE, key: "v=" });
+    },
+    probes: [
+      {
+        name: "after another parameter",
+        path: "/ver",
+        init: { headers: { accept: "application/json;charset=utf-8;v=2" } },
+      },
+      {
+        name: "in a later media range",
+        path: "/ver",
+        init: { headers: { accept: "text/html, application/json;v=1" } },
+      },
+      {
+        name: "with a space before it",
+        path: "/ver",
+        init: { headers: { accept: "application/json; v=3" } },
+      },
+      {
+        name: "unknown version in a later range",
+        path: "/ver",
+        init: { headers: { accept: "text/html, application/json;v=9" } },
+      },
+      {
+        name: "quoted value",
+        path: "/ver",
+        init: { headers: { accept: 'application/json;v="2"' } },
+      },
+      {
+        name: "quoted value with an escape",
+        path: "/ver",
+        init: { headers: { accept: 'application/json;v="\\1"' } },
+      },
+      {
+        name: "quoted value holding a separator",
+        path: "/ver",
+        init: { headers: { accept: 'application/json;x="a;v=9";v=3' } },
+      },
+      {
+        name: "parameters but no version",
+        path: "/ver",
+        init: { headers: { accept: "application/json;charset=utf-8" } },
+      },
+    ],
+    skip: MEDIA_PARAMS_SKIP,
+  },
+  {
     name: "raw-body",
     module: SmallModule,
     options: { rawBody: true },
@@ -699,6 +825,74 @@ export const GROUPS: ProbeGroup[] = [
       { name: "QUERY, a miss", path: "/nope", init: { method: "QUERY" } },
     ],
   },
+  {
+    name: "errors",
+    module: SmallModule,
+    configure: configureFailingMiddleware,
+    probes: [
+      { name: "next(HttpException)", path: "/mw-http-exception" },
+      { name: "next(plain Error)", path: "/mw-error" },
+      { name: "next({statusCode, message})", path: "/mw-plain-object" },
+      {
+        name: "throw {statusCode, message}",
+        path: "/mw-throws-plain-object",
+      },
+      { name: "a route after the middleware", path: "/hello" },
+    ],
+  },
+  {
+    name: "security",
+    module: SmallModule,
+    configure: configureSecurity,
+    skip: HAS_SECURITY_HOOK
+      ? undefined
+      : "Nest below 12.1 has no useSecurityHeaders()/enableCsrfProtection()",
+    probes: [
+      { name: "GET, the headers", path: "/hello" },
+      {
+        name: "cross-site POST, 403",
+        path: "/echo",
+        init: crossSitePost('{"a":1}'),
+      },
+      {
+        name: "cross-site POST, malformed JSON: 403, body unread",
+        path: "/echo",
+        init: crossSitePost("{not json"),
+      },
+      {
+        name: "cross-site POST to no route",
+        path: "/nope",
+        init: { method: "POST", headers: crossSite },
+      },
+      {
+        name: "cross-site POST to an excluded route",
+        path: "/health",
+        init: { method: "POST", headers: crossSite },
+      },
+      {
+        name: "same-origin POST, parsed",
+        path: "/echo",
+        init: {
+          method: "POST",
+          headers: {
+            "sec-fetch-site": "same-origin",
+            "content-type": "application/json",
+          },
+          body: '{"a":1}',
+        },
+      },
+      {
+        name: "POST without browser headers, malformed JSON",
+        path: "/echo",
+        init: {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{not json",
+        },
+      },
+    ],
+  },
+  ...UPLOAD_GROUPS,
 ];
 
 /** What a known difference covers: the fields that differ, and why. */
@@ -720,6 +914,27 @@ export interface KnownDifference {
 const EXPRESS_HONOURS_EXACT_MARKER = /endsWith\(["']\$["']\)/.test(
   ExpressAdapter.prototype.createMiddlewareFactory.toString(),
 );
+
+/**
+ * Whether the installed `@nestjs/platform-express` judges a reply's
+ * Content-Type JSON by `isJsonContentType` (12: a `+json` type counts), not
+ * by `startsWith("application/json")` (11). No capability exposes it, so its
+ * `reply` is read. bun-nest follows 12; on 11 one probe differs.
+ */
+const EXPRESS_REPLY_KEEPS_PLUS_JSON = /isJsonContentType\(/.test(
+  ExpressAdapter.prototype.reply.toString(),
+);
+
+/**
+ * Whether the installed `@nestjs/platform-express` also treats an object
+ * body replied with a status of 400 or more as an error body, `statusCode`
+ * of its own or not (12.2.0: `isObject(body) && !isNil(statusCode)`), as
+ * bun-nest does on every version. Read from its `reply`, as above.
+ */
+const EXPRESS_REPLY_CHECKS_REPLY_STATUS =
+  /isObject\(body\)\s*&&\s*!isNil\(statusCode\)/.test(
+    ExpressAdapter.prototype.reply.toString(),
+  );
 
 export const TEXT_DEFAULT =
   "a string body defaults to text/plain here, text/html on Express";
@@ -894,6 +1109,24 @@ export const KNOWN: Record<string, KnownDifference> = {
     fields: ["content-type"],
     reason: TEXT_DEFAULT,
   },
+  ...(EXPRESS_REPLY_CHECKS_REPLY_STATUS
+    ? {}
+    : {
+        "compat/custom HttpException body, text/plain": {
+          fields: ["content-type"],
+          reason:
+            "an object body replied with a status of 400 or more is sent as JSON, as Nest 12.2's reply does; before 12.2 only a body with its own `statusCode` is",
+        },
+      }),
+  ...(EXPRESS_REPLY_KEEPS_PLUS_JSON
+    ? {}
+    : {
+        "compat/error-shaped body, +json": {
+          fields: ["content-type"],
+          reason:
+            "an error-shaped body keeps a `+json` type, as Nest 12's reply does; Nest 11's forces `application/json`",
+        },
+      }),
   ...(EXPRESS_HONOURS_EXACT_MARKER
     ? {}
     : {
@@ -928,8 +1161,66 @@ export const KNOWN: Record<string, KnownDifference> = {
     fields: ["content-type"],
     reason: TEXT_DEFAULT,
   },
+  "compat/StreamableFile, source fails first": {
+    fields: ["content-type"],
+    reason: TEXT_CHARSET,
+  },
+  "compat/StreamableFile, source fails, custom handler": {
+    fields: ["content-type"],
+    reason: TEXT_CHARSET,
+  },
+  // Probed on platform-express 12.2.0 only (it hangs before). It answers
+  // with the file's default `errorHandler` before applying the file's
+  // headers, both adapters alike, so the string body takes each one's
+  // default type.
+  ...(EXPRESS_REPORTS_FAILED_SOURCE
+    ? {
+        "compat/StreamableFile, source failed before reply": {
+          fields: ["content-type"],
+          reason: TEXT_DEFAULT,
+        },
+      }
+    : {}),
+  "compat/write() then throw, sync": {
+    fields: ["content-length"],
+    reason:
+      "a stream ended before its first flush goes out with a Content-Length, not chunked (as an SSE stream that completes at once)",
+  },
+  "version-media-params/after another parameter": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/in a later media range": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/with a space before it": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/unknown version in a later range": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/quoted value": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/quoted value with an escape": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/quoted value holding a separator": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/parameters but no version": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
   "body-limit/over the limit → 413": {
     fields: BODY_CHANGES,
     reason: "the 413's message names the limit and the size received",
   },
+  ...UPLOAD_KNOWN,
 };

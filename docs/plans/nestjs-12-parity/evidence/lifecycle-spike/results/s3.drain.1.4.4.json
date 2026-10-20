@@ -1,0 +1,1 @@
+{"bun":"6bb5dc1956505dd1113455f58d4757c924f3ad54","design":"drain","before":{"pendingRequests":2,"pendingWebSockets":1},"drainedPending":1,"closeMs":1009,"slow":"A slow","sseAfterClose":"<ended (error) after 1 buffered chunks>","wsAfterClose":"<ws closed>","after":{"pendingRequests":0,"pendingWebSockets":0,"wsClosed":true},"freshAfter":"B"}

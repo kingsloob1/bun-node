@@ -410,6 +410,7 @@ export {
   awaitPipelineOrStream,
   BunRouter,
   type CachedRouteMatch,
+  createRequestTimeoutError,
   DEFAULT_ROUTE_CACHE_MAX,
   FETCH_STUB_SERVER,
   type FetchInput,

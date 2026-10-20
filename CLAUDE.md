@@ -1215,12 +1215,22 @@ cannot succeed — a stub server reports both honestly rather than pretending.
   `makeExecutionContext`, `makeCallHandler`). Don't stand up servers by hand.
 - Always listen on port `0` (OS-assigned). A bare `Bun.serve({ fetch })` with
   no port defaults to 3000 and will collide with anything already on 3000.
-- **Port-release pitfall:** `BunHttpAdapter.close()` must use
-  `server.stop(true)` (force-close), never `stop(false)`. A graceful stop
-  leaves keep-alive connections alive — and with `SO_REUSEPORT` a freshly
-  bound server on the same port receives requests served by the *stale*
-  server, producing baffling wrong/empty responses. `getPort` in `native.ts`
-  also locks recently-handed-out ports for ~1s for the same reason.
+- **Port-release pitfall:** Both adapters' `close()` must end with
+  `server.stop(true)` (force-close) before it resolves, never with
+  `stop(false)` alone. A graceful stop leaves long-lived traffic on the old
+  server: an SSE stream keeps flowing and a WebSocket keeps answering from it
+  after `close()`, even with a new server bound on the same port (measured).
+  bun-nest's drains first (`stop(false)`, then waits for `pendingRequests` to
+  reach 0, at most `closeDrainTimeout`); bun-common's force-closes at once.
+  Keep-alive connections are not the reason: on Bun 1.4.2, 1.4.3 and
+  1.4.4-canary 6bb5dc195, `stop(false)` closes an idle keep-alive connection
+  at once, closes a busy one after its response, and stops listening. 20 of
+  20 fresh connections (with `SO_REUSEPORT`) and a warmed fetch pool reached
+  the new server. `getPort` in `native.ts` locks recently handed-out ports
+  for ~1 s for another reason, and still needs it: its probe server frees the
+  port at once, so without the lock two callers get the same port before
+  either binds it. Evidence:
+  `docs/plans/nestjs-12-parity/evidence/lifecycle-spike/`.
 - Writing tests has repeatedly surfaced real bugs here — keep test coverage
   thorough, and keep every existing test green.
 - **Inline 4-arg error handlers need a hint.** TypeScript overload

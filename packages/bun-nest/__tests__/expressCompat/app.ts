@@ -53,7 +53,8 @@ import {
   VERSION_NEUTRAL,
 } from "@nestjs/common";
 import * as nestCommon from "@nestjs/common";
-import { NestFactory } from "@nestjs/core";
+import { NestApplication, NestFactory } from "@nestjs/core";
+import { ExpressAdapter } from "@nestjs/platform-express";
 import cookieParser from "cookie-parser";
 import { interval, map, take } from "rxjs";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
@@ -97,6 +98,7 @@ interface CompatResponse {
   json: (body: unknown) => unknown;
   send: (body?: unknown) => unknown;
   end: (body?: unknown) => unknown;
+  write: (chunk: string) => unknown;
   setHeader: (name: string, value: string) => unknown;
   type: (type: string) => CompatResponse;
   render: (
@@ -326,6 +328,18 @@ export class ResponseController {
     return { statusCode: 400, message: "x" };
   }
 
+  @Get("err-body-json")
+  @Header("Content-Type", "application/vnd.api+json")
+  errBodyJson() {
+    return { statusCode: 404, message: "x" };
+  }
+
+  @Get("err-exc-text")
+  @Header("Content-Type", "text/plain")
+  errExcText() {
+    throw new HttpException({ error: "x" }, 404);
+  }
+
   @Get("file")
   file() {
     return new StreamableFile(Buffer.from("streamed"), {
@@ -343,6 +357,57 @@ export class ResponseController {
   @Get("file-bytes")
   fileBytes() {
     return new StreamableFile(new Uint8Array([104, 105]));
+  }
+
+  @Get("file-fails")
+  fileFails() {
+    return new StreamableFile(failingSource());
+  }
+
+  @Get("file-fails-custom")
+  fileFailsCustom() {
+    return new StreamableFile(failingSource()).setErrorHandler((err, res) => {
+      res.statusCode = 503;
+      res.send(`custom: ${err.message}`);
+    });
+  }
+
+  @Get("file-failed")
+  async fileFailed() {
+    const source = new Readable({ read() {} });
+    // Failed while the handler still awaited (an interceptor, say): its
+    // `error` event is gone by the time `reply()` runs.
+    source.on("error", () => {});
+    source.destroy(new Error("failed early"));
+    await new Promise((resolve) => setImmediate(resolve));
+    return new StreamableFile(source);
+  }
+
+  // `reply()` applies any non-nil status (nestjs/nest e03cf5c86): Express 5's
+  // `res.status` throws on these, and Nest's exception layer answers 500.
+  @Get("status-zero")
+  statusZero() {
+    throw new HttpException("zero", 0);
+  }
+
+  @Get("status-nan")
+  statusNan() {
+    throw new HttpException("nan", Number.NaN);
+  }
+
+  // `isHeadersSent` after `write()` (the b59196c98 probe): the filter must
+  // see the stream as sent and end it, not hang.
+  @Get("write-then-throw")
+  async writeThenThrow(@Res() res: CompatResponse) {
+    res.write("partial");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    throw new Error("after write");
+  }
+
+  @Get("write-then-throw-sync")
+  writeThenThrowSync(@Res() res: CompatResponse) {
+    res.write("partial");
+    throw new Error("after write");
   }
 
   @Sse("sse")
@@ -413,6 +478,12 @@ export class ResponseController {
   @Get("res-type")
   resType(@Res() res: CompatResponse) {
     res.type("html").send("<b>hi</b>");
+  }
+
+  @Get("res-type-problem-json")
+  resTypeProblemJson(@Res() res: CompatResponse) {
+    res.type("application/problem+json");
+    res.json({ title: "Forbidden" });
   }
 
   @Get("res-type-json")
@@ -568,6 +639,88 @@ export class CompatModule {
 @Module({ controllers: [ViewsController] })
 export class ViewsModule {}
 
+/** A source that fails before its first chunk: a file that cannot be opened. */
+export function failingSource(): Readable {
+  return new Readable({
+    read() {
+      this.destroy(new Error("source failed"));
+    },
+  });
+}
+
+/**
+ * Whether the installed `@nestjs/platform-express` answers a `StreamableFile`
+ * whose source had already failed when `reply()` ran (12.2.0, nestjs/nest
+ * 1933cc9ed: `if (errored) return body.errorHandler(...)`). Before it,
+ * Express never answers that request. No capability exposes it, so `reply`
+ * is read.
+ */
+export const EXPRESS_REPORTS_FAILED_SOURCE = /\berrored\b/.test(
+  ExpressAdapter.prototype.reply.toString(),
+);
+
+/** Whether this Nest has the HTTP security features (12.1.0+). */
+export const HAS_SECURITY_HOOK =
+  typeof Reflect.get(NestApplication.prototype, "enableCsrfProtection") ===
+  "function";
+
+/** The security features' application methods, where this Nest has them. */
+interface SecurityApp {
+  useSecurityHeaders: () => unknown;
+  enableCsrfProtection: (options?: { exclude?: string[] }) => unknown;
+}
+
+/** The plain `{ statusCode, message }` Nest 12 answers as an HTTP error. */
+const CONFLICT = { statusCode: 409, message: "conflict" };
+
+/**
+ * Middleware raising errors the routes never see, for the exception layer
+ * the adapter runs (`setErrorHandler`): each sets `X-Before` first, which
+ * the answer must still carry, as Express's error middleware gets the same
+ * response.
+ */
+function failingMiddleware(
+  req: CompatRequest,
+  res: { setHeader: (name: string, value: string) => void },
+  next: (error?: unknown) => void,
+) {
+  const path = req.originalUrl ?? "";
+  if (!path.startsWith("/mw-")) {
+    next();
+    return;
+  }
+  res.setHeader("x-before", "set");
+  if (path === "/mw-http-exception") {
+    next(new ForbiddenException("refused in middleware"));
+  } else if (path === "/mw-plain-object") {
+    next({ ...CONFLICT });
+  } else if (path === "/mw-throws-plain-object") {
+    // eslint-disable-next-line no-throw-literal, @typescript-eslint/only-throw-error -- a plain object on purpose: Nest 12 answers it with its statusCode
+    throw { ...CONFLICT };
+  } else if (path === "/mw-error") {
+    next(new Error("plain middleware error"));
+  } else {
+    next();
+  }
+}
+
+/** {@link SmallModule}'s routes behind {@link failingMiddleware}. */
+export const configureFailingMiddleware: Configure = (app) => {
+  app.use(failingMiddleware);
+};
+
+/**
+ * Nest 12's security headers and CSRF protection on {@link SmallModule}
+ * (`webhooks` excluded), with an `X-Before` middleware ahead of them, so the
+ * `403` must carry both.
+ */
+export const configureSecurity: Configure = (app) => {
+  app.use(markResponse);
+  const secure = app as unknown as SecurityApp;
+  secure.useSecurityHeaders();
+  secure.enableCsrfProtection({ exclude: ["health"] });
+};
+
 @Controller()
 export class SmallController {
   @Get("hello")
@@ -667,6 +820,44 @@ export class VersionedController {
 @Module({ controllers: [VersionedController] })
 export class VersionedModule {}
 
+/** Tags of the `StreamableFile` sources {@link DisconnectController} saw closed. */
+export const CLOSED_SOURCES = new Set<string>();
+
+/** An endless source, recording its tag in {@link CLOSED_SOURCES} once it closes. */
+function endlessSource(tag: string): Readable {
+  let i = 0;
+  const source = new Readable({
+    read() {
+      setTimeout(() => this.push(`chunk${i++}\n`), 20);
+    },
+  });
+  source.once("close", () => CLOSED_SOURCES.add(tag));
+  return source;
+}
+
+/**
+ * Endless `StreamableFile`s, for whether a source is destroyed when the
+ * client leaves (nestjs/nest #17973): `late` returns it 300 ms after the
+ * request arrived, `now` at once.
+ */
+@Controller("disconnect")
+export class DisconnectController {
+  @Get("late/:tag")
+  async late(@nestCommon.Param("tag") tag: string) {
+    const source = endlessSource(tag);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return new StreamableFile(source);
+  }
+
+  @Get("now/:tag")
+  now(@nestCommon.Param("tag") tag: string) {
+    return new StreamableFile(endlessSource(tag));
+  }
+}
+
+@Module({ controllers: [DisconnectController] })
+export class DisconnectModule {}
+
 /** What a booted application exposes to a test. */
 export interface Booted {
   /** Which adapter it runs on. */
@@ -730,15 +921,20 @@ export async function boot(
   return { side, app, base: `http://127.0.0.1:${port}` };
 }
 
-/** Boots `module` on both adapters with the same configuration. */
+/**
+ * Boots `module` on both adapters with the same configuration; given one
+ * module per side, each side boots its own.
+ */
 export async function bootBoth(
-  module: new () => object,
+  module: (new () => object) | Record<Side, new () => object>,
   configure?: Configure,
   options?: NestApplicationOptions,
 ): Promise<Record<Side, Booted>> {
+  const pick = (side: Side) =>
+    typeof module === "function" ? module : module[side];
   const [express, bun] = await Promise.all([
-    boot("express", module, configure, options),
-    boot("bun", module, configure, options),
+    boot("express", pick("express"), configure, options),
+    boot("bun", pick("bun"), configure, options),
   ]);
   return { express, bun };
 }

@@ -1,6 +1,13 @@
 export {
+  type BunBeforeWriteBody,
+  type BunBeforeWriteContext,
+  type BunBeforeWriteErrorContext,
+  type BunBeforeWriteHook,
+  type BunBeforeWriteResponseContext,
   BunHttpAdapter,
   BunNestHttpAdapter,
+  type BunRequestHook,
+  type BunResponseHook,
   type ListenCallback,
   type MiddlewareFactoryRespType,
   type RenderOptions,
@@ -47,10 +54,18 @@ export {
   FileInterceptor,
   FilesInterceptor,
   getMultipartRequest,
+  mergeUploadOptions,
   NoFilesInterceptor,
   transformUploadException,
   type UploadExceptionBody,
 } from "./interceptors";
+export {
+  MULTER_MODULE_OPTIONS,
+  MulterModule,
+  type MulterModuleAsyncOptions,
+  type MulterModuleOptions,
+  type MulterOptionsFactory,
+} from "./MulterModule";
 // bun-common's per-route parsing middleware, for `consumer.apply(...)`.
 export {
   requestParsing,

@@ -599,7 +599,9 @@ Both kinds of handler run in registration order and are kept across
 response, and ignore return values:
 
 - `next(err)` passes `err` to the next error handler. When none is left, the
-  error gets the final response described below.
+  error gets the final response described below. An object, an `Error` or not,
+  is passed as given, as in Express; a string or number is wrapped in an
+  `Error`.
 - `next()`, `next("route")` or `next("router")` ends error mode, and with
   nothing after it the answer is Express's 404.
 - A handler that responds ends the chain.
@@ -1136,7 +1138,7 @@ Example:
 |---|---|
 | `status(code)`, `statusText(text)`, `sendStatus(code)` | Set the status; `sendStatus` also sends the reason phrase as text. |
 | `send(body)` | Accepts a string (`text/plain;charset=utf-8` unless a type is set), a plain object or array (JSON), a `Buffer` / typed array / `ArrayBuffer` (`application/octet-stream`), a `Blob` or `BunFile`, `FormData`, `URLSearchParams`, a `ReadableStream`, a Node `Readable`, an async iterable or `async function*`, or a `Response` / `BunResponse` (passed through). A number or boolean is sent as a string, where Express 5 sends JSON. |
-| `json(body)` | `application/json;charset=utf-8`. Use `json<Dto>(body)` to check the body's shape. |
+| `json(body)` | `application/json;charset=utf-8`, or a type set earlier, kept with its charset made `utf-8` (`application/vnd.api+json; charset=utf-8`), as Express does; the same for `send(object)`. Use `json<Dto>(body)` to check the body's shape. |
 | `jsonp(body)` | Wraps the body in `?callback=` as `text/javascript`, with Express's sanitising and `nosniff`. |
 | `type(t)` / `contentType(t)`, `attachment(filename?)`, `location(url)`, `links(map)`, `vary(fields)` | Header helpers with Express semantics. |
 | `setEtag(option?)`, `etag` | How **this** response is tagged with an `ETag`, overruling the adapter's `etag` option for it alone: `false` (none), `true`/`"strong"`, `"weak"`, or a function `(body) => string \| undefined` that gets a text body as a string and a binary one as bytes. `setEtag()` alone means `true`; `res.etag` reads it back or sets it. A tag set by hand (`res.set("ETag", …)`) always wins, a matching `If-None-Match` (weak or strong) becomes a 304, and `sendFile` uses its weak size-and-mtime tag whenever this is not `false`. |
@@ -1725,6 +1727,24 @@ The instance emits `connect`, `open`, `message`, `disconnect`, `close`,
 `ping`, `pong` and `drain`. `port`, `getServer()` and `setRouteHandler()` are
 also available. A bare `BunRouter.ws()` needs a `BunWebSocket` attached
 through the `bunWebsocket` option or `setBunWebSocket()`.
+
+`removeRouteHandler(path, handler?)` undoes `ws()` / `setRouteHandler()`: it
+removes `handler`, or every handler of `path` when none is given, and returns
+whether anything was removed. `path` is the pattern as registered
+(`/chat/:room`). Once a path has no handler left, an upgrade request to it is
+no longer upgraded and goes on to the next matching route, or a 404; the
+upgrade route stays in the router, standing aside, and registering the path
+again revives it, with that call's options. A path has one upgrade route
+however often it is registered, and a live one keeps the options it was first
+registered with. Sockets already open stay open — closing them is yours —
+and their later events reach only the handlers still registered (the
+instance's own events are still emitted).
+
+```ts
+const echo = { message: (ws, msg) => ws.send(msg) };
+app.ws("/echo", echo);
+app.webSocketAdapter.removeRouteHandler("/echo", echo); // true
+```
 
 Lifecycle dispatch is resolved per event, not frozen at `listen()`. Attaching
 another `BunWebSocket` to the same router — `setBunWebSocket()`, or simply

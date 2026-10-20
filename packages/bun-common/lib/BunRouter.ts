@@ -42,7 +42,6 @@ import {
 import { SOCKET_FREE } from "./utils/general";
 import {
   isArray,
-  isError,
   isFunction,
   isNull,
   isNumeric,
@@ -932,8 +931,11 @@ const requestTimeoutErrors = new WeakSet<object>();
 /**
  * The error a parked pipeline fails with when its `timeout` runs out — the
  * same `Request Timedout` the adapters' response wait has always raised.
+ * Exported so code that holds a response on the router's behalf (bun-nest's
+ * before-write hook) can time out the same way: {@link isRequestTimeoutError}
+ * recognises every error this returns, and nothing else.
  */
-function createRequestTimeoutError(): Error {
+export function createRequestTimeoutError(): Error {
   const error = new Error("Request Timedout");
   requestTimeoutErrors.add(error);
   return error;
@@ -6331,10 +6333,12 @@ export class BunRouter<
       return false;
     }
 
-    // 5. next(err) — an explicit error; hand off to error handlers.
+    // 5. next(err) — an explicit error; hand off to error handlers. An object
+    //    is the error as given, as in Express (and as a thrown one is); only a
+    //    primitive is wrapped in an `Error`.
     if (nextError) {
       state.hasError = true;
-      state.currentError = isError(nextArg)
+      state.currentError = isObject(nextArg)
         ? nextArg
         : new Error(String(nextArg));
       return false;

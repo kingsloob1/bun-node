@@ -1,0 +1,1 @@
+{"bun":"6bb5dc1956505dd1113455f58d4757c924f3ad54","design":"graceful","before":{"pendingRequests":2,"pendingWebSockets":1},"closeMs":0,"slow":"A slow","sseAfterClose":"<still flowing: 15 chunks in 600 ms after close()>","wsAfterClose":"A:ping","after":{"pendingRequests":1,"pendingWebSockets":1,"wsClosed":false},"freshAfter":"B"}

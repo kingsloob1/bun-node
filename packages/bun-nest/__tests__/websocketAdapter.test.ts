@@ -259,6 +259,79 @@ describe("BunWebSocketAdapter: per-gateway routes and close()", () => {
   });
 });
 
+describe("BunWebSocketAdapter: close() and dispose() unregister gateway routes", () => {
+  /** The status of a WebSocket upgrade request to `url` (`101` when upgraded). */
+  const upgradeStatus = async (url: string) =>
+    (
+      await fetch(url, {
+        headers: {
+          upgrade: "websocket",
+          connection: "Upgrade",
+          "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "sec-websocket-version": "13",
+        },
+      })
+    ).status;
+
+  /** A listening HTTP adapter and its built-in WebSocket adapter. */
+  const listen = async () => {
+    const http = new BunHttpAdapter();
+    listening.push(http);
+    await http.listen(0);
+    return { http, adapter: http.webSocketAdapter };
+  };
+
+  it("close(server) unregisters the routes created for that server", async () => {
+    const { http, adapter } = await listen();
+    const server = adapter.create(0, { path: "/x", transport: [] });
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+
+    adapter.close(server);
+
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+  });
+
+  it("dispose() unregisters a route NestJS never calls close() for", async () => {
+    const http = new BunHttpAdapter();
+    const adapter = http.webSocketAdapter;
+    // Created before the server listens: `create()` returns no server.
+    const server = adapter.create(0, { path: "/x", transport: [] });
+    expect(server).toBeUndefined();
+    listening.push(http);
+    await http.listen(0);
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+
+    adapter.dispose();
+
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+  });
+
+  it("keeps a path another open server's gateway still uses", async () => {
+    const { http, adapter } = await listen();
+    const shared = adapter.create(0, { path: "/x", transport: [] });
+    const dedicated = adapter.create(await getPort(), {
+      path: "/x",
+      transport: [],
+    });
+
+    adapter.close(dedicated);
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+
+    adapter.close(shared);
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+  });
+
+  it("serves a path again once create() registers it after close()", async () => {
+    const { http, adapter } = await listen();
+    adapter.close(adapter.create(0, { path: "/x", transport: [] }));
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+
+    adapter.create(0, { path: "/x", transport: [] });
+
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+  });
+});
+
 /** A fake client that records everything sent to it. */
 function makeFakeClient() {
   const sent: string[] = [];
@@ -1210,5 +1283,281 @@ describe("BunWebSocketAdapter: Nest's WsException frames", () => {
       expect(emitted).toEqual([["exception", payload]]);
       expect(sent).toEqual([]);
     }
+  });
+});
+
+describe("BunWebSocketAdapter: flow control (platform-ws 12.2.0's options)", () => {
+  /** Reads the protected limits an adapter runs with. */
+  class LimitsProbe extends BunWebSocketAdapter {
+    limits() {
+      return {
+        maxConcurrentMessages: this.maxConcurrentMessages,
+        maxSendBufferSize: this.maxSendBufferSize,
+      };
+    }
+  }
+
+  /** The adapter's own logger: where the flow control warns. */
+  function spyWarnings() {
+    return spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+  }
+
+  /**
+   * A stand-in for Bun's `ServerWebSocket` with what the flow control reads:
+   * `readyState`, `getBufferedAmount()`, `pause()`/`resume()`, `terminate()`,
+   * and a `send` answering Bun's status (bytes sent, `-1` queued, `0` dropped).
+   */
+  function flowClient(status = 1) {
+    const calls: string[] = [];
+    const state = { buffered: 0, status, readyState: 1 };
+    const client = {
+      get readyState() {
+        return state.readyState;
+      },
+      getBufferedAmount: () => state.buffered,
+      send: (_frame: string) => state.status,
+      pause: () => calls.push("pause"),
+      resume: () => calls.push("resume"),
+      terminate: () => {
+        calls.push("terminate");
+        state.readyState = 3;
+      },
+    } as unknown as WebSocketClient;
+    return { client, calls, state };
+  }
+
+  const event = (name: string, data: unknown) =>
+    JSON.stringify({
+      type: MessageEventTypes.EVENT,
+      namespace: "/",
+      data: [name, data],
+    });
+
+  it("defaults to platform-ws's: 1000 messages at once, 128 MB queued", () => {
+    const adapter = new LimitsProbe({ httpAdapter: new BunHttpAdapter() });
+    expect(adapter.limits()).toEqual({
+      maxConcurrentMessages: 1000,
+      maxSendBufferSize: 128 * 1024 * 1024,
+    });
+  });
+
+  it("reads them top-level, in localOptions, and from BunHttpAdapter's websocket option", () => {
+    const httpAdapter = new BunHttpAdapter();
+    expect(
+      new LimitsProbe({
+        httpAdapter,
+        maxConcurrentMessages: 5,
+        localOptions: {
+          newInstance: false,
+          getServer: () => httpAdapter.getBunServer(),
+          maxConcurrentMessages: 7,
+          maxSendBufferSize: 9,
+        },
+      }).limits(),
+    ).toEqual({ maxConcurrentMessages: 5, maxSendBufferSize: 9 });
+    const viaHttp = new BunHttpAdapter(0, {
+      websocket: { maxConcurrentMessages: Infinity, maxSendBufferSize: 0 },
+    });
+    // The HTTP adapter builds its own adapter, so read its limits through the probe's method.
+    expect(
+      LimitsProbe.prototype.limits.call(
+        viaHttp.webSocketAdapter as unknown as LimitsProbe,
+      ),
+    ).toEqual({ maxConcurrentMessages: Infinity, maxSendBufferSize: 0 });
+  });
+
+  it("refuses a bound that would never handle a message, and a negative cap", () => {
+    const httpAdapter = new BunHttpAdapter();
+    for (const maxConcurrentMessages of [0, -1, Number.NaN]) {
+      expect(
+        () => new BunWebSocketAdapter({ httpAdapter, maxConcurrentMessages }),
+      ).toThrow("maxConcurrentMessages must be at least 1");
+    }
+    expect(
+      () => new BunWebSocketAdapter({ httpAdapter, maxSendBufferSize: -1 }),
+    ).toThrow("maxSendBufferSize must be 0 or more");
+  });
+
+  it("raises Bun's backpressureLimit to maxSendBufferSize, unless wsOptions sets one or the cap is lifted", () => {
+    const httpAdapter = new BunHttpAdapter();
+    expect(
+      new BunWebSocketAdapter({ httpAdapter }).wsHandler.backpressureLimit,
+    ).toBe(128 * 1024 * 1024);
+    expect(
+      new BunWebSocketAdapter({ httpAdapter, maxSendBufferSize: 1024 })
+        .wsHandler.backpressureLimit,
+    ).toBe(1024);
+    expect(
+      new BunWebSocketAdapter({
+        httpAdapter,
+        localOptions: {
+          newInstance: false,
+          getServer: () => httpAdapter.getBunServer(),
+          wsOptions: { backpressureLimit: 64 },
+        },
+      }).wsHandler.backpressureLimit,
+    ).toBe(64);
+    expect(
+      new BunWebSocketAdapter({ httpAdapter, maxSendBufferSize: 0 }).wsHandler
+        .backpressureLimit,
+    ).toBeUndefined();
+  });
+
+  it("holds later messages for a free slot, pausing the client meanwhile, and resumes it", async () => {
+    const adapter = new BunWebSocketAdapter({
+      httpAdapter: new BunHttpAdapter(),
+      maxConcurrentMessages: 1,
+    });
+    const { client, calls } = flowClient();
+    const started: unknown[] = [];
+    let release!: () => void;
+    adapter.bindMessageHandlers(
+      client,
+      [
+        wsHandler("work", (id: unknown) => {
+          started.push(id);
+          return id === 1
+            ? new Promise((resolve) => {
+                release = () => resolve(undefined);
+              })
+            : undefined;
+        }),
+      ],
+      // Nest's own: it waits for the Promise, so the slot is held until then.
+      nestTransform,
+    );
+    adapter.emit("message", client, event("work", 1));
+    adapter.emit("message", client, event("work", 2));
+    adapter.emit("message", client, event("work", 3));
+    expect(started).toEqual([1]);
+    expect(calls).toEqual(["pause"]);
+    release();
+    await Bun.sleep(1);
+    expect(started).toEqual([1, 2, 3]);
+    expect(calls).toEqual(["pause", "resume"]);
+  });
+
+  it("pauses a client with more than 1 MB queued, and resumes it on Bun's drain", async () => {
+    const adapter = new BunWebSocketAdapter({
+      httpAdapter: new BunHttpAdapter(),
+    });
+    const { client, calls, state } = flowClient(-1);
+    adapter.bindMessageHandlers(
+      client,
+      [wsHandler("big", () => ({ event: "big", data: "x" }))],
+      transform,
+    );
+    state.buffered = 1024 * 1024 + 1;
+    adapter.emit("message", client, event("big", null));
+    expect(calls).toEqual(["pause"]);
+    state.buffered = 0;
+    // Bun's `drain`: the adapter's handler returns a promise of the route hooks.
+    await adapter.wsHandler.drain?.(client);
+    expect(calls).toEqual(["pause", "resume"]);
+  });
+
+  it("disconnects a client over maxSendBufferSize, once, and handles nothing more from it", () => {
+    const warnings = spyWarnings();
+    try {
+      const adapter = new BunWebSocketAdapter({
+        httpAdapter: new BunHttpAdapter(),
+        maxSendBufferSize: 100,
+      });
+      const { client, calls, state } = flowClient();
+      const ran: unknown[] = [];
+      adapter.bindMessageHandlers(
+        client,
+        [wsHandler("work", (id: unknown) => void ran.push(id))],
+        transform,
+      );
+      state.buffered = 101;
+      adapter.emit("message", client, event("work", 1));
+      adapter.emit("message", client, event("work", 2));
+      expect(ran).toEqual([]);
+      expect(calls).toEqual(["terminate"]);
+      expect(warnings).toHaveBeenCalledTimes(1);
+      expect(String(warnings.mock.calls[0]?.[0])).toContain(
+        '"maxSendBufferSize" (100)',
+      );
+    } finally {
+      warnings.mockRestore();
+    }
+  });
+
+  it("disconnects a client whose reply Bun dropped, so none is lost silently; not with the cap lifted", () => {
+    const warnings = spyWarnings();
+    try {
+      for (const [maxSendBufferSize, expected] of [
+        [undefined, ["terminate"]],
+        [0, []],
+      ] as const) {
+        const adapter = new BunWebSocketAdapter({
+          httpAdapter: new BunHttpAdapter(),
+          maxSendBufferSize,
+        });
+        const { client, calls } = flowClient(0);
+        adapter.bindMessageHandlers(
+          client,
+          [wsHandler("big", () => ({ event: "big", data: "x" }))],
+          transform,
+        );
+        adapter.emit("message", client, event("big", null));
+        expect(calls).toEqual([...expected]);
+      }
+      expect(warnings).toHaveBeenCalledTimes(1);
+      expect(String(warnings.mock.calls[0]?.[0])).toContain(
+        '"backpressureLimit"',
+      );
+    } finally {
+      warnings.mockRestore();
+    }
+  });
+
+  it("under Nest (with a transform), a result stream that errors is an ERROR packet too", async () => {
+    const adapter = new BunWebSocketAdapter({
+      httpAdapter: new BunHttpAdapter(),
+    });
+    const { client, parsed } = makeFakeClient();
+    adapter.bindMessageHandlers(
+      client,
+      [wsHandler("bad", () => Promise.reject(new Error("filter threw")))],
+      nestTransform,
+    );
+    adapter.emit("message", client, event("bad", null));
+    await Bun.sleep(5);
+    expect(parsed()).toEqual([
+      { type: MessageEventTypes.ERROR, namespace: "/", data: "filter threw" },
+    ]);
+  });
+
+  it("without Nest (no transform), a handler error is still an ERROR packet", async () => {
+    const adapter = new BunWebSocketAdapter({
+      httpAdapter: new BunHttpAdapter(),
+    });
+    const { client, parsed } = makeFakeClient();
+    adapter.bindMessageHandlers(client, [
+      wsHandler("bad", () => Promise.reject(new Error("rejected"))),
+    ]);
+    adapter.emit("message", client, event("bad", null));
+    await Bun.sleep(5);
+    expect(parsed()).toEqual([
+      { type: MessageEventTypes.ERROR, namespace: "/", data: "rejected" },
+    ]);
+  });
+
+  it("drops what a client sent once the server began closing it", () => {
+    const adapter = new BunWebSocketAdapter({
+      httpAdapter: new BunHttpAdapter(),
+    });
+    const { client, state } = flowClient();
+    const ran: unknown[] = [];
+    adapter.bindMessageHandlers(
+      client,
+      [wsHandler("work", (id: unknown) => void ran.push(id))],
+      transform,
+    );
+    state.readyState = 2;
+    adapter.emit("message", client, event("work", 1));
+    expect(ran).toEqual([]);
   });
 });

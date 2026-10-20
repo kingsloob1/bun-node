@@ -4,6 +4,7 @@ import type {
   BodyParserOptions,
   BodyParserType,
   BunRequestOptions,
+  BunResponseTransform,
   BunRouterOptions,
   BunServeNormalOptions,
   BunServeOptions,
@@ -38,13 +39,14 @@ import type {
   CorsOptionsDelegate,
 } from "@nestjs/common/interfaces/external/cors-options.interface.js";
 import type { AddressInfo } from "node:net";
+import type { Readable } from "node:stream";
 import type {
   BunWebSocketAdapterOptions,
   WebSocketClientData,
 } from "./BunWebSocketAdapter";
 import { EventEmitter } from "node:events";
+import { createRequire } from "node:module";
 import { promisify } from "node:util";
-import { isPromise } from "node:util/types";
 import {
   assertExpressPath,
   awaitPipelineOrStream,
@@ -53,6 +55,7 @@ import {
   BunRouter,
   BunViews,
   cors,
+  createRequestTimeoutError,
   createServeStaticHandler,
   defineHidden,
   each,
@@ -60,6 +63,8 @@ import {
   FETCH_STUB_SERVER,
   finalErrorResponse,
   get,
+  isAsyncIterable,
+  isBinaryBody,
   isFunction,
   isNull,
   isObject,
@@ -456,19 +461,530 @@ function buildCannotRoute(
   });
 }
 
+/** `close()`'s default drain cap, in milliseconds. */
+const DEFAULT_CLOSE_DRAIN_TIMEOUT = 10_000;
+
+/**
+ * The `closeDrainTimeout` adapter option, checked: `undefined` is the
+ * default; anything but a finite number of milliseconds `>= 0` throws.
+ */
+function validateCloseDrainTimeout(value: unknown): number {
+  if (value === undefined) {
+    return DEFAULT_CLOSE_DRAIN_TIMEOUT;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `closeDrainTimeout must be a finite number of milliseconds >= 0, got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `page` with the headers a response had set before it, as `finalhandler`
+ * writes its page on that response: `responseHeaders` less the ones it
+ * removes and `Content-Length` (the page's own), with `page`'s set over them.
+ */
+function withResponseHeaders(
+  page: Response,
+  responseHeaders: Record<string, string | string[] | number | undefined>,
+): Response {
+  const headers = new Headers();
+  for (const name in responseHeaders) {
+    const value = responseHeaders[name];
+    if (
+      value === undefined ||
+      name === "content-length" ||
+      FINALHANDLER_REMOVED_HEADERS.includes(name)
+    ) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const one of value) {
+        headers.append(name, String(one));
+      }
+    } else {
+      headers.append(name, String(value));
+    }
+  }
+  page.headers.forEach((value, name) => {
+    headers.set(name, value);
+  });
+  return new Response(page.body, {
+    status: page.status,
+    statusText: page.statusText,
+    headers,
+  });
+}
+
+/** `value` as an `Error`: itself when it is one, else wrapped. */
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/**
+ * The body {@link BunHttpAdapter.reply} streams for a `StreamableFile` whose
+ * first chunk (`first`) has been read: that chunk, then the rest of `chunks`.
+ * A failure along the way goes to the file's `errorHandler` and ends the
+ * body; a body cancelled by the client returns the iterator, which destroys
+ * the source.
+ */
+async function* streamFileFrom(
+  first: IteratorResult<unknown>,
+  chunks: AsyncIterator<unknown>,
+  file: StreamableFile,
+  response: BunResponse,
+): AsyncGenerator<unknown, void, undefined> {
+  let finished = first.done === true;
+  try {
+    if (!finished) {
+      yield first.value;
+    }
+    while (!finished) {
+      let next: IteratorResult<unknown>;
+      try {
+        next = await chunks.next();
+      } catch (error) {
+        finished = true;
+        file.errorHandler(asError(error), response);
+        return;
+      }
+      if (next.done) {
+        finished = true;
+        return;
+      }
+      yield next.value;
+    }
+  } finally {
+    if (!finished) {
+      await chunks.return?.();
+    }
+  }
+}
+
+/**
+ * The key the response a request was answering rides on, on a carried error
+ * (see {@link carryRequest}). A symbol, so an error's own `res` or `response`
+ * property (a client library's, say) is never mistaken for it.
+ */
+const CARRIED_RESPONSE = Symbol("bun-nest.carriedResponse");
+
+/** Marks a response the response hook already waits on, so it runs once. */
+const RESPONSE_HOOK_WATCHED = Symbol("bun-nest.responseHookWatched");
+
+/**
+ * Whether `name` (lower-case) is a header a refused response set for itself,
+ * which the error answering it must not carry: `Location`, `Set-Cookie`,
+ * `Content-*`, `ETag`, `Last-Modified` (bun-validate §4.4.2).
+ */
+function isRefusedResponseOwnHeader(name: string): boolean {
+  return (
+    name === "location" ||
+    name === "set-cookie" ||
+    name === "etag" ||
+    name === "last-modified" ||
+    name.startsWith("content-")
+  );
+}
+
+/**
+ * Whether `contentType` is JSON as Nest 12's `ExpressAdapter.reply` judges
+ * it: the media type before any `;`, trimmed and lower-cased, starts with
+ * `application/json` or ends with `+json`.
+ */
+function isJsonContentType(contentType: string): boolean {
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  return (
+    mediaType.startsWith("application/json") || mediaType.endsWith("+json")
+  );
+}
+
+/**
+ * Whether `body` carries a `statusCode` of 400 or more, as Nest's errors do:
+ * Nest's `body?.statusCode >= 400`, a numeric string counting as its number.
+ */
+function isErrorShapedBody(body: unknown): boolean {
+  if (typeof body !== "object" || body === null) {
+    return false;
+  }
+  const { statusCode } = body as { statusCode?: unknown };
+  return (
+    (typeof statusCode === "number" || typeof statusCode === "string") &&
+    Number(statusCode) >= 400
+  );
+}
+
 /**
  * `error` with the request riding on it, for `handleRequestError`, which
  * needs it to run the error handlers; a thrown primitive is wrapped to carry
  * it. A pipeline parked past the request timeout is passed on as is: it is
  * answered as a timed-out response wait always was, without the request.
+ *
+ * `res`, when given, is the response the pipeline was building, which rides
+ * along too: the error handlers then answer on it, as Express's error
+ * middleware gets the same `res` (so the headers set before the error, a
+ * security hook's or CORS's, reach the error's answer).
  */
-function carryRequest(error: unknown, req: BunRequest): unknown {
+function carryRequest(
+  error: unknown,
+  req: BunRequest,
+  res?: BunResponse,
+): unknown {
   if (isRequestTimeoutError(error)) {
     return error;
   }
   const carrier: object = isObject(error) ? error : new Error(String(error));
   defineHidden(carrier, "req", req);
+  defineHidden(carrier, CARRIED_RESPONSE, res);
   return carrier;
+}
+
+/**
+ * A request hook for {@link BunHttpAdapter.setOnRequestHook}, as
+ * `@nestjs/platform-express` calls one: `(req, res, done)`, with the adapter
+ * as `this`. `done()` continues the request; `done(error)` sends `error` to
+ * the error handling. Its return value is ignored, except that a rejected
+ * promise counts as `done(error)`.
+ */
+export type BunRequestHook = (
+  req: BunRequest,
+  res: BunResponse,
+  done: (error?: unknown) => void,
+) => unknown;
+
+/**
+ * A response hook for {@link BunHttpAdapter.setOnResponseHook}: `(req, res)`,
+ * with the adapter as `this`, run after the response is sent. Its return
+ * value is ignored, except that a rejected promise is logged.
+ */
+export type BunResponseHook = (req: BunRequest, res: BunResponse) => unknown;
+
+/**
+ * The body of a response a {@link BunBeforeWriteHook} is checking, by kind
+ * (the names bun-validate's response checks use). Only buffered kinds carry
+ * their value; a stream is never read, since reading it would consume it.
+ * For a `HEAD` request it is the kind of the GET response the route
+ * produced, whose body Bun then drops.
+ */
+export type BunBeforeWriteBody =
+  /** No body: `null`/`undefined`, a 204/205/304 (a freshness 304 too), a failed `sendFile`. */
+  | { kind: "empty" }
+  /** `json(value)` or `send(object | array)`: the raw value, not its text. */
+  | { kind: "json"; value: unknown }
+  /** `send(string)` (a number or boolean as its string), a redirect's generated text, a rendered view. */
+  | { kind: "text"; value: string }
+  /** `Buffer`, a typed array, `DataView`, `ArrayBuffer`. */
+  | { kind: "binary"; value: ArrayBufferView | ArrayBufferLike }
+  /** A `Blob` or `BunFile` (`sendFile`, `download`, a range of one); `arrayBuffer()` reads it again without touching what is sent. */
+  | { kind: "blob"; value: Blob }
+  /** `FormData` or `URLSearchParams`. */
+  | { kind: "form"; value: FormData | URLSearchParams }
+  /** A native `Response` sent as the body, or one the adapter answered with itself; `clone()` it to read. */
+  | { kind: "response"; value: Response }
+  /** A `StreamableFile` a route returned: its headers are in the context; its bytes are not read. */
+  | { kind: "streamable-file"; file: StreamableFile }
+  /** A `ReadableStream`, Node `Readable`, async iterable, or a `write()`/`flushHeaders()` stream. */
+  | { kind: "stream" };
+
+/** What every {@link BunBeforeWriteContext} carries. */
+interface BunBeforeWriteContextBase {
+  /** The request being answered. */
+  readonly request: BunRequest;
+  /**
+   * The status that will be written: the native `Response`'s, so final (a
+   * redirect's 3xx, a freshness 304, a `StreamableFile`'s 200).
+   */
+  readonly status: number;
+  /**
+   * The headers exactly as they will be written: the native `Response`'s
+   * own `Headers`, live. Changing them is unsupported (a redirect's are
+   * immutable, and what a change reaches is not defined): this is a check,
+   * and a frozen copy for every response would cost more than the check.
+   */
+  readonly headers: Headers;
+  /** The body, by kind; worked out on first read, so a hook that ignores it pays nothing. */
+  readonly body: BunBeforeWriteBody;
+}
+
+/** A response a route, middleware or not-found handler produced. */
+export interface BunBeforeWriteResponseContext extends BunBeforeWriteContextBase {
+  /** A response the request's own handlers produced: a throw refuses it. */
+  readonly phase: "response";
+  /** The Nest-facing response (`statusCode`, `getHeaders()`, `getBody()`). */
+  readonly response: BunResponse;
+}
+
+/** A response the adapter's error handling produced. */
+export interface BunBeforeWriteErrorContext extends BunBeforeWriteContextBase {
+  /** A response the error handling produced: a throw is logged, never applied. */
+  readonly phase: "error";
+  /** None: the error handling answers on a response of its own. */
+  readonly response: undefined;
+}
+
+/** What a {@link BunBeforeWriteHook} is given; tell the two apart by `phase`. */
+export type BunBeforeWriteContext =
+  | BunBeforeWriteResponseContext
+  | BunBeforeWriteErrorContext;
+
+/**
+ * A hook registered with {@link BunHttpAdapter.addBeforeWriteHook}: it sees a
+ * response before anything of it is written. Returning passes it; throwing,
+ * or returning a promise that rejects, refuses it with that error. A
+ * promise holds the response, unwritten, until it settles.
+ */
+export type BunBeforeWriteHook = (
+  context: BunBeforeWriteContext,
+) => void | PromiseLike<void>;
+
+/** The before-write state, created with the first hook (see `addBeforeWriteHook`). */
+interface BeforeWriteState {
+  /** The `StreamableFile` each response was given by `reply()`. */
+  files: WeakMap<BunResponse, StreamableFile>;
+  /** The `Blob`/`BunFile` each response was built from (`sendFile`), from a response transform. */
+  blobs: WeakMap<BunResponse, Blob>;
+  /** The transform that fills {@link blobs}; one object for every response. */
+  capture: BunResponseTransform;
+}
+
+/** The body kind with no value, shared. */
+const EMPTY_BODY: BunBeforeWriteBody = { kind: "empty" };
+/** The stream kind, shared. */
+const STREAM_BODY: BunBeforeWriteBody = { kind: "stream" };
+
+/** The kind of `sent`, a body passed to `send`/`json`/`end` (see `BunResponse.getBody`). */
+function bodyOfSent(sent: unknown, native: Response): BunBeforeWriteBody {
+  if (typeof sent === "string") {
+    return { kind: "text", value: sent };
+  }
+  if (typeof sent === "number" || typeof sent === "boolean") {
+    return { kind: "text", value: String(sent) };
+  }
+  if (isBinaryBody(sent)) {
+    return { kind: "binary", value: sent };
+  }
+  if (sent instanceof Blob) {
+    return { kind: "blob", value: sent };
+  }
+  if (sent instanceof FormData || sent instanceof URLSearchParams) {
+    return { kind: "form", value: sent };
+  }
+  if (sent instanceof Response) {
+    return { kind: "response", value: sent };
+  }
+  if (sent instanceof BunResponse) {
+    return { kind: "response", value: native };
+  }
+  if (
+    typeof sent === "function" ||
+    sent instanceof ReadableStream ||
+    isAsyncIterable(sent) ||
+    typeof (sent as { pipe?: unknown }).pipe === "function"
+  ) {
+    return STREAM_BODY;
+  }
+  return { kind: "json", value: sent };
+}
+
+/** One check of one native response; see `addBeforeWriteHook`. */
+class BeforeWriteContext {
+  /** The body kind, once read. */
+  #body: BunBeforeWriteBody | undefined = undefined;
+
+  constructor(
+    /** The request being answered. */
+    readonly request: BunRequest,
+    /** The Nest-facing response, in phase `"response"`. */
+    readonly response: BunResponse | undefined,
+    /** Whose response it is; see {@link BunBeforeWriteContext}. */
+    readonly phase: "response" | "error",
+    /** The native response that will be written. */
+    readonly native: Response,
+    /** Whether it is a stream opened with `write()`/`flushHeaders()`. */
+    readonly streamed: boolean,
+    /** Where `reply()` and the capture transform recorded bodies. */
+    readonly state: BeforeWriteState,
+  ) {}
+
+  /** The native response's status. */
+  get status(): number {
+    return this.native.status;
+  }
+
+  /** The native response's headers, live. */
+  get headers(): Headers {
+    return this.native.headers;
+  }
+
+  /** The body by kind, worked out once. */
+  get body(): BunBeforeWriteBody {
+    return (this.#body ??= this.#bodyKind());
+  }
+
+  #bodyKind(): BunBeforeWriteBody {
+    const { response: res, native } = this;
+    if (res === undefined || res.settledResponse !== native) {
+      // A response the adapter built itself (a not-found page, an error).
+      return native.body === null
+        ? EMPTY_BODY
+        : { kind: "response", value: native };
+    }
+    const file = this.state.files.get(res);
+    if (file !== undefined) {
+      return { kind: "streamable-file", file };
+    }
+    if (this.streamed) {
+      return STREAM_BODY;
+    }
+    const status = native.status;
+    if (status === 204 || status === 205 || status === 304) {
+      return EMPTY_BODY;
+    }
+    const sent = res.getBody();
+    if (sent === undefined || sent === null) {
+      const blob = this.state.blobs.get(res);
+      return blob === undefined ? EMPTY_BODY : { kind: "blob", value: blob };
+    }
+    return bodyOfSent(sent, native);
+  }
+}
+
+/** Whether `value` is a promise or another thenable. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+/** `require` from this file, for the one optional capability probe below. */
+const requireFromHere = createRequire(import.meta.url);
+
+/**
+ * Whether the installed Nest is 12.2.0 or later, whose platform-express
+ * unquotes a quoted media-type version (`v="2"`, nestjs/nest c8923bd7c):
+ * read from a core capability of that release, `isRejectedByPipes` in
+ * `@nestjs/core/internal` (`acb98de89`), never a version string. Nest 11 has
+ * no such file and 12.0–12.1 no such export, so a failed lookup is the answer.
+ */
+function coreUnquotesMediaTypeVersion(): boolean {
+  try {
+    const internal = requireFromHere("@nestjs/core/internal") as {
+      isRejectedByPipes?: unknown;
+    };
+    return typeof internal.isRejectedByPipes === "function";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `value` split at `separator` outside quoted strings, as platform-express
+ * 12.2.0's `splitOutsideQuotes`: a backslash inside quotes escapes the next
+ * character, and an unterminated quote runs to the end.
+ */
+function splitOutsideQuotes(value: string, separator: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    const character = value[i];
+    if (quoted && character === "\\") {
+      i++;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === separator && !quoted) {
+      parts.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(value.slice(start));
+  return parts;
+}
+
+/**
+ * The version an `Accept` header carries for media-type versioning, as
+ * `@nestjs/platform-express` 12's `getMediaTypeVersion`: the rest of the
+ * first parameter, in any media range of the list, that starts with `key`
+ * (`2` for `text/html, application/json;charset=utf-8;v=2` with `v=`);
+ * `undefined` when none does. With `unquote` (12.2.0 on), separators inside
+ * quoted strings are ignored and a quoted value is unescaped (`v="2"` is
+ * `2`); without it (12.1.x) the value is taken as written.
+ */
+function mediaTypeVersion(
+  accept: string | string[] | undefined,
+  key: string,
+  unquote: boolean,
+): string | undefined {
+  if (accept === undefined) {
+    return undefined;
+  }
+  const split = unquote
+    ? splitOutsideQuotes
+    : (value: string, separator: string) => value.split(separator);
+  const values = typeof accept === "string" ? [accept] : accept;
+  for (const value of values) {
+    for (const mediaRange of split(value, ",")) {
+      const parameters = split(mediaRange, ";");
+      for (let i = 1; i < parameters.length; i++) {
+        const parameter = parameters[i].trim();
+        if (parameter.startsWith(key)) {
+          const version = parameter.slice(key.length);
+          return unquote &&
+            version.length >= 2 &&
+            version.startsWith('"') &&
+            version.endsWith('"')
+            ? version.slice(1, -1).replace(/\\([\s\S])/g, "$1")
+            : version;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * `code`, if Express 5's `res.status` accepts it: an integer from 100 to 999.
+ * Otherwise throws what it throws, with its message — a `TypeError` for a
+ * non-integer (`NaN` included), a `RangeError` outside the range — so a
+ * status of `0` fails as on `@nestjs/platform-express` rather than being
+ * dropped.
+ */
+function assertExpressStatusCode(code: number): number {
+  if (!Number.isInteger(code)) {
+    throw new TypeError(
+      `Invalid status code: ${JSON.stringify(code)}. Status code must be an integer.`,
+    );
+  }
+  if (code < 100 || code > 999) {
+    throw new RangeError(
+      `Invalid status code: ${JSON.stringify(code)}. Status code must be greater than 99 and less than 1000.`,
+    );
+  }
+  return code;
+}
+
+/**
+ * Destroys a `StreamableFile`'s source if the client leaves before it has
+ * been read to the end — also when it left before `reply()` ran — as
+ * `@nestjs/platform-express` 12 does with `finished(response, …)`
+ * (nestjs/nest #17973). Bun destroys a source it is reading when the client
+ * aborts, but one handed over after the abort is never read, and would hold
+ * its file descriptor for good. The listener goes when the source closes.
+ */
+function destroyWhenClientLeaves(signal: AbortSignal, stream: Readable): void {
+  if (signal.aborted) {
+    stream.destroy();
+    return;
+  }
+  const onAbort = () => {
+    if (!stream.readableEnded) {
+      stream.destroy();
+    }
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  stream.once("close", () => signal.removeEventListener("abort", onAbort));
 }
 
 export class BunHttpAdapter<
@@ -492,6 +1008,14 @@ export class BunHttpAdapter<
    */
   #rawBodyNeedsBuffer = false;
 
+  /**
+   * Set once a security hook is registered (`app.enableCsrfProtection()` or
+   * `app.useSecurityHeaders()`, through {@link registerSecurityHook}): the
+   * hook must run before the body is read, so the request options defer it
+   * (`deferBody`) unless they say otherwise, whenever they are replaced.
+   */
+  #securityHookDefersBody = false;
+
   public _logger!: Logger;
   private _websocketAdapter!: BunNestWebsocketAdapter<customWebsocketDataType>;
   private _serverInstance:
@@ -500,7 +1024,37 @@ export class BunHttpAdapter<
 
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
+  /**
+   * The unix socket path the server listens on, when `listen()` was given
+   * one; `undefined` while it listens on a TCP port (or not at all).
+   */
+  private _listeningSocketPath: string | undefined = undefined;
   protected isServerListening = false;
+
+  /**
+   * Whether the application is shutting down: set by {@link beforeClose}
+   * (which Nest 12 calls before the shutdown hooks run) and by {@link close},
+   * cleared by a successful {@link listen}. While it is set, the
+   * `return503OnClosing` middleware answers every request `503`.
+   */
+  #isShuttingDown = false;
+
+  /**
+   * The `forceCloseConnections` application option, read in
+   * {@link initHttpServer}: `close()` then cuts in-flight requests at once
+   * instead of draining them. Default `false`.
+   */
+  #forceCloseConnections = false;
+
+  /** Whether the `return503OnClosing` middleware is registered (once per adapter). */
+  #closingGuardRegistered = false;
+
+  /**
+   * The longest {@link close} waits for in-flight requests to finish before
+   * cutting them, in milliseconds: the constructor's `closeDrainTimeout`
+   * option, default `10_000`.
+   */
+  readonly #closeDrainTimeout: number;
   private serverOptions:
     | BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
@@ -531,6 +1085,13 @@ export class BunHttpAdapter<
    * installed `@nestjs/core` (see {@link setNotFoundHandler}).
    */
   readonly #scopeNotFoundToPrefix = coreScopesNotFoundToPrefix();
+  /**
+   * Whether {@link reply} applies any non-nil status, checked as Express 5's
+   * `res.status` checks it, as `@nestjs/platform-express` does from Nest 12
+   * (e03cf5c86, in 12.0.0, with the capability {@link #scopeNotFoundToPrefix}
+   * reads). On Nest 11 a falsy status (`0`, `NaN`) is skipped, as there.
+   */
+  readonly #replyAppliesEveryStatus = coreScopesNotFoundToPrefix();
   /**
    * Body parsers already registered, keyed by path prefix and parser kind
    * (`"*"` for the untyped `registerParserMiddleware`), so each kind is added
@@ -625,6 +1186,15 @@ export class BunHttpAdapter<
        */
       routeCacheMax?: number;
       /**
+       * The longest `close()` (and so `app.close()`) waits for in-flight
+       * requests to finish before cutting them, in milliseconds. Defaults to
+       * `10_000`. `0` waits for nothing: in-flight requests are cut at once,
+       * as with the `forceCloseConnections` application option, which skips
+       * the wait whatever this says. A negative or non-finite value throws a
+       * `RangeError` here, at construction.
+       */
+      closeDrainTimeout?: number;
+      /**
        * Base `Bun.serve` options merged into the server created in `listen()`
        * (TLS, `maxRequestBodySize`, etc.). `port`/`hostname`/`fetch`/`websocket`
        * are managed by the adapter and override anything set here.
@@ -657,6 +1227,11 @@ export class BunHttpAdapter<
 
     // Merged over the defaults, not in place of them.
     this.requestOpts = options?.request ?? {};
+
+    // Checked here, so a bad value fails at startup, not on the first close.
+    this.#closeDrainTimeout = validateCloseDrainTimeout(
+      options?.closeDrainTimeout,
+    );
 
     // Checked here, so a bad value fails at startup, not on every request.
     this.etagEnabled = normalizeEtagOption(options?.etag);
@@ -810,6 +1385,43 @@ export class BunHttpAdapter<
       this.requestTimeout,
     );
 
+    // The instrumentation hooks (`setOnRequestHook`, `setOnResponseHook`)
+    // and the before-write hooks: one field read each when none is set.
+    const beforeWrite = this.#beforeWriteState;
+    if (this.#beforeWriteHooks !== undefined && beforeWrite !== undefined) {
+      res.addResponseTransform(beforeWrite.capture);
+    }
+    if (this.#onResponseHook !== undefined) {
+      this.#runResponseHookOnFinish(this.#onResponseHook, req, res);
+    }
+    const onRequestHook = this.#onRequestHook;
+    if (onRequestHook !== undefined) {
+      return this.#runRequestHook(onRequestHook, req, res).then(
+        (answered) =>
+          answered
+            ? this.#produceResponse(res, nativeRequest, server)
+            : this.#dispatch(options, nativeRequest, server),
+        (error: unknown) => {
+          throw carryRequest(error, req, res);
+        },
+      );
+    }
+    return this.#dispatch(options, nativeRequest, server);
+  }
+
+  /**
+   * Runs a request whose {@link BunResponse} exists through the router: the
+   * rest of {@link #routeRequest}, after the instrumentation hooks.
+   */
+  #dispatch(
+    options: RequestPipelineOptions,
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Response | undefined | Promise<Response | undefined> {
+    const router = this.instance;
+    const req = options.request;
+    const res = options.response as BunResponse<customWebsocketDataType>;
+
     // A handler that opens a long-lived stream and awaits its end — NestJS's
     // `@Sse()` resolves only once the observable completes or the client
     // leaves — would otherwise hold the headers back until then. On Node they
@@ -825,14 +1437,19 @@ export class BunHttpAdapter<
         this.#serveHooks.lateError(options, error);
       });
     } catch (error) {
-      throw carryRequest(error, req);
+      throw carryRequest(error, req, res);
     }
     return routed.then(
-      (outcome) =>
-        outcome.stream ??
-        this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
+      (outcome) => {
+        const produced =
+          outcome.stream ??
+          this.#respond(req, res, outcome.routeUsed, nativeRequest, server);
+        return this.#beforeWriteHooks === undefined
+          ? produced
+          : this.#beforeWrite(res, produced, outcome.stream !== undefined);
+      },
       (error: unknown) => {
-        throw carryRequest(error, req);
+        throw carryRequest(error, req, res);
       },
     );
   }
@@ -846,16 +1463,30 @@ export class BunHttpAdapter<
   readonly #serveHooks: ServeHooks<Response | undefined> = {
     respond: (options, routeUsed) => {
       const req = options.request;
-      return this.#respond(
+      const res = options.response as BunResponse<customWebsocketDataType>;
+      const produced = this.#respond(
         req,
-        options.response as BunResponse<customWebsocketDataType>,
+        res,
         routeUsed,
         req.request,
         req.server as BunWebSocketServerType<customWebsocketDataType>,
       );
+      return this.#beforeWriteHooks === undefined
+        ? produced
+        : this.#beforeWrite(res, produced, false);
     },
-    stream: (_options, stream) => stream,
-    error: (options, error) => carryRequest(error, options.request),
+    // A promise (a held or refused check) settles the request as the router
+    // resolves its result with it; never a throw, inside `write()`.
+    stream: (options, stream) =>
+      this.#beforeWriteHooks === undefined
+        ? stream
+        : (this.#checkBeforeWrite(
+            options.response,
+            stream,
+            true,
+          ) as unknown as Response),
+    error: (options, error) =>
+      carryRequest(error, options.request, options.response),
     lateError: (options, error) => {
       // Headers are gone, so nothing but the stream's end can answer it,
       // as Express's finalhandler does once headers were sent.
@@ -1014,6 +1645,414 @@ export class BunHttpAdapter<
     return res.settledResponse ?? res.getNativeResponse(this.requestTimeout);
   }
 
+  /** The hook {@link setOnRequestHook} registered, if any. */
+  #onRequestHook: BunRequestHook | undefined = undefined;
+  /** The hook {@link setOnResponseHook} registered, if any. */
+  #onResponseHook: BunResponseHook | undefined = undefined;
+
+  /**
+   * Registers a hook run first for every HTTP request, before any middleware,
+   * body parser or route, as `@nestjs/platform-express`'s `setOnRequestHook`
+   * (the instrumentation hook tooling such as `@nestjs/observe` uses). Call
+   * `done()` to continue the request, or `done(error)` to send `error` to the
+   * error handling (Nest's exception layer); resolving a returned promise
+   * does not continue it. Only the first completion counts: a later `done`,
+   * or a throw or rejection after it, is logged. A throw or rejection before
+   * it is `done(error)`. A hook that answers the request itself
+   * (`res.send()`) without calling `done` ends it there. Replaces any hook
+   * registered before; `this` is the adapter. Costs one field read per
+   * request while none is set.
+   */
+  public override setOnRequestHook(onRequestHook: BunRequestHook): void {
+    this.#onRequestHook = onRequestHook;
+  }
+
+  /**
+   * Registers a hook run **after** each HTTP response has been sent, as
+   * `@nestjs/platform-express`'s `setOnResponseHook` (`res.on('finish')`):
+   * it reads the outcome (`res.statusCode`, headers) and cannot change it.
+   * It runs on the next turn of the event loop after the response is
+   * committed — for a stream opened with `write()`, after it ends — and a
+   * throw or rejection is logged. A response the adapter's own error
+   * handling produces on a fresh response (an error from middleware or body
+   * parsing, outside Nest's route exception zone) does not reach it; an
+   * exception thrown by a route, answered by Nest's filters, does. Replaces
+   * any hook registered before; `this` is the adapter. Costs one field read
+   * per request while none is set. It is not a place to check a response
+   * before it goes out: nothing it does reaches the client.
+   */
+  public override setOnResponseHook(onResponseHook: BunResponseHook): void {
+    this.#onResponseHook = onResponseHook;
+  }
+
+  /** The hooks {@link addBeforeWriteHook} registered, in order; `undefined` while there are none. */
+  #beforeWriteHooks: BunBeforeWriteHook[] | undefined = undefined;
+  /** Their bookkeeping, created with the first hook and kept after. */
+  #beforeWriteState: BeforeWriteState | undefined = undefined;
+
+  /**
+   * Registers a hook that sees every HTTP response **before anything of it
+   * is written** — its final status, its headers exactly as they will be
+   * written, and its body (the value of a buffered one, the kind of a
+   * stream, `StreamableFile` or `Blob`; see {@link BunBeforeWriteBody}) —
+   * and may refuse it. Not Nest's `setOnResponseHook`, which runs after the
+   * send. Made for response validation (bun-validate): it covers what an
+   * interceptor's `map()` cannot see — redirects, `StreamableFile`, plain
+   * `@Res()`, `@Render`, not-found answers and headers the adapter adds.
+   *
+   * - **When:** once the native `Response` exists and before it is handed to
+   *   `Bun.serve` (or resolved by {@link fetch}): Bun writes nothing before
+   *   that. A stream opened with `write()`/`flushHeaders()` is checked as it
+   *   opens, before its first byte; its chunks are not seen. Not for a
+   *   WebSocket upgrade, or the payload guard's 413.
+   * - **Pass:** return (a warning mode logs first).
+   * - **Refuse:** throw, or return a promise that rejects. The response is
+   *   discarded — its body cancelled, so a `StreamableFile`'s source is
+   *   destroyed — and the error goes to the error handling as a route's own
+   *   error does: Nest's exception layer, so a 500 for a plain `Error`, the
+   *   status of an `HttpException`. The answer is built afresh, so none of
+   *   the refused response's own headers (`Location`, `Set-Cookie`,
+   *   `Content-*`, `ETag`, `Last-Modified`) reach it.
+   * - **Async:** a promise holds the response, unwritten, until it settles;
+   *   a hook returning nothing creates no promise. While the adapter's
+   *   `requestTimeout` is set, a hold that outlasts it is refused with
+   *   `Request Timedout`, answered as a timed-out handler is.
+   * - **Phase `"error"`:** a response the error handling produced (a
+   *   refusal's own 500 among them) is seen too, and a throw there is
+   *   logged, never applied, so a check cannot loop.
+   * - **`HEAD`:** checked as the GET it reuses — the GET's status, headers
+   *   and body kind; Bun then drops the body.
+   *
+   * Hooks run in registration order; the first to refuse wins and the rest
+   * do not run. Returns a function that removes this hook. With no hook
+   * registered the response path is unchanged: one field read.
+   *
+   * @example
+   * ```ts
+   * adapter.addBeforeWriteHook(({ phase, status, headers }) => {
+   *   if (phase === "response" && status === 200 && !headers.has("x-trace")) {
+   *     throw new Error("missing x-trace");
+   *   }
+   * });
+   * ```
+   */
+  public addBeforeWriteHook(hook: BunBeforeWriteHook): () => void {
+    this.#beforeWriteState ??= {
+      files: new WeakMap(),
+      blobs: new WeakMap(),
+      capture: {
+        transform: (native, { res, body }) => {
+          if (body instanceof Blob) {
+            this.#beforeWriteState?.blobs.set(res, body);
+          }
+          return native;
+        },
+      },
+    };
+    // Copied on write: a check in flight keeps the list it started with.
+    this.#beforeWriteHooks = [...(this.#beforeWriteHooks ?? []), hook];
+    let removed = false;
+    return () => {
+      const hooks = this.#beforeWriteHooks;
+      if (removed || hooks === undefined) {
+        return;
+      }
+      removed = true;
+      const index = hooks.indexOf(hook);
+      if (index !== -1) {
+        const rest = hooks.filter((_, i) => i !== index);
+        this.#beforeWriteHooks = rest.length ? rest : undefined;
+      }
+    };
+  }
+
+  /**
+   * {@link #checkBeforeWrite} over what the pipeline produced: a native
+   * response, a promise of one, or `undefined` (a WebSocket upgrade).
+   */
+  #beforeWrite(
+    res: BunResponse,
+    produced: Response | undefined | Promise<Response | undefined>,
+    streamed: boolean,
+  ): Response | undefined | Promise<Response | undefined> {
+    if (produced === undefined) {
+      return undefined;
+    }
+    if (produced instanceof Response) {
+      return this.#checkBeforeWrite(res, produced, streamed);
+    }
+    return produced.then((native) =>
+      native === undefined
+        ? undefined
+        : this.#checkBeforeWrite(res, native, streamed),
+    );
+  }
+
+  /**
+   * Runs the before-write hooks on `native`, `res`'s response: `native`
+   * when they pass (synchronously while every hook does), a rejection when
+   * one refuses. Never throws, so a stream opening inside `write()` cannot
+   * be broken by it.
+   */
+  #checkBeforeWrite(
+    res: BunResponse,
+    native: Response,
+    streamed: boolean,
+  ): Response | Promise<Response> {
+    const hooks = this.#beforeWriteHooks;
+    const state = this.#beforeWriteState;
+    if (hooks === undefined || state === undefined) {
+      return native;
+    }
+    const context = new BeforeWriteContext(
+      res.req,
+      res,
+      "response",
+      native,
+      streamed,
+      state,
+    ) as unknown as BunBeforeWriteContext;
+    for (let i = 0; i < hooks.length; i++) {
+      let verdict: void | PromiseLike<void>;
+      try {
+        verdict = hooks[i](context);
+      } catch (error) {
+        return this.#refuseBeforeWrite(res, native, error);
+      }
+      if (isThenable(verdict)) {
+        return this.#holdBeforeWrite(hooks, i, verdict, context).then(
+          () => native,
+          (error: unknown) => this.#refuseBeforeWrite(res, native, error),
+        );
+      }
+    }
+    return native;
+  }
+
+  /**
+   * Waits for `verdict`, the promise hook `index` returned, then runs the
+   * hooks after it, awaiting each promise; rejects with the first refusal,
+   * or with `Request Timedout` once the adapter's `requestTimeout` passes.
+   */
+  #holdBeforeWrite(
+    hooks: BunBeforeWriteHook[],
+    index: number,
+    verdict: PromiseLike<void>,
+    context: BunBeforeWriteContext,
+  ): Promise<void> {
+    const rest = async () => {
+      await verdict;
+      for (let i = index + 1; i < hooks.length; i++) {
+        const next = hooks[i](context);
+        if (isThenable(next)) {
+          await next;
+        }
+      }
+    };
+    const timeout = this.requestTimeout;
+    if (!(timeout > 0)) {
+      return rest();
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(createRequestTimeoutError()), timeout);
+    });
+    return Promise.race([rest(), expired]).finally(() => clearTimeout(timer));
+  }
+
+  /**
+   * Discards a refused response — its body cancelled (which destroys a
+   * piped source), a `StreamableFile`'s source destroyed, an open stream
+   * destroyed — and rejects with `error` for the error handling: with the
+   * request, unless it is a hold's timeout, which is answered as a timed-out
+   * handler is, without it.
+   */
+  #refuseBeforeWrite(
+    res: BunResponse,
+    native: Response,
+    error: unknown,
+  ): Promise<never> {
+    native.body?.cancel().catch(() => undefined);
+    this.#beforeWriteState?.files.get(res)?.getStream().destroy();
+    if (res.isStreamOpen) {
+      res.destroy();
+    }
+    // A hold's timeout (bun-common's `createRequestTimeoutError()`) is
+    // answered as the router's own: without the request.
+    if (isRequestTimeoutError(error)) {
+      return Promise.reject(error);
+    }
+    // The error is answered on a fresh response carrying the refused one's
+    // request-wide headers (CORS, `Vary`, a security hook's), never its own.
+    const fresh = new BunResponse(res.req, {
+      etag: this.etagEnabled,
+      views: this.views,
+    });
+    const headers = res.getHeaders();
+    for (const name in headers) {
+      const value = headers[name];
+      if (value !== undefined && !isRefusedResponseOwnHeader(name)) {
+        fresh.setHeader(name, value);
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever the hook threw, unchanged, so Nest's filters see the hook's own value
+    return Promise.reject(carryRequest(error, res.req, fresh));
+  }
+
+  /**
+   * {@link handleRequestError}, then the before-write hooks in phase
+   * `"error"`, whose refusals are logged and never applied: what
+   * `Bun.serve`'s `error` callback and {@link fetch} answer an error with.
+   */
+  async #answerError(error: unknown): Promise<Response> {
+    if (this.#onResponseHook !== undefined) {
+      this.#watchErrorResponse(this.#onResponseHook, error);
+    }
+    const response = await this.handleRequestError(error);
+    const hooks = this.#beforeWriteHooks;
+    const state = this.#beforeWriteState;
+    const req = get(error, "req", undefined) as BunRequest | undefined;
+    if (hooks === undefined || state === undefined || req === undefined) {
+      return response;
+    }
+    const context = new BeforeWriteContext(
+      req,
+      undefined,
+      "error",
+      response,
+      false,
+      state,
+    ) as unknown as BunBeforeWriteContext;
+    try {
+      for (let i = 0; i < hooks.length; i++) {
+        const verdict = hooks[i](context);
+        if (isThenable(verdict)) {
+          await this.#holdBeforeWrite(hooks, i, verdict, context);
+          break;
+        }
+      }
+    } catch (refusal) {
+      this.logger.error(
+        "A before-write hook refused an error response; it is sent unchanged",
+        refusal instanceof Error ? refusal.stack : String(refusal),
+      );
+    }
+    return response;
+  }
+
+  /**
+   * Runs the request hook, resolving `false` once it calls `done()` (route
+   * the request), `true` if it answered the request itself without calling
+   * `done`, and rejecting with the error of `done(error)`, a throw or a
+   * rejection, as platform-express's once-guarded `runRequestHook`.
+   */
+  #runRequestHook(
+    hook: BunRequestHook,
+    req: BunRequest,
+    res: BunResponse<customWebsocketDataType>,
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
+      let completed = false;
+      const done = (error?: unknown) => {
+        if (completed) {
+          if (error !== undefined && error !== null) {
+            this.logger.error(
+              "Request hook failed after it completed",
+              error instanceof Error ? error.stack : String(error),
+            );
+          }
+          return;
+        }
+        completed = true;
+        if (error !== undefined && error !== null) {
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on what `done(error)` was given, unchanged, as Express's `next(err)` does
+          reject(error);
+        } else {
+          resolve(false);
+        }
+      };
+      // A hook that sends a response without calling `done` ends the request.
+      res.whenResponded(() => {
+        if (!completed) {
+          completed = true;
+          resolve(true);
+        }
+      });
+      try {
+        // Not awaited: a rejection shares the once-guard with `done`.
+        const result = hook.call(this, req, res, done);
+        if (isThenable(result)) {
+          result.then(undefined, (error: unknown) => {
+            done(error ?? new Error("Request hook failed"));
+          });
+        }
+      } catch (error) {
+        done(error ?? new Error("Request hook failed"));
+      }
+    });
+  }
+
+  /**
+   * Makes the response {@link handleRequestError} will answer `error` on one
+   * the response hook watches: the carried response when it can still be
+   * answered on (and is watched already), else a fresh one, carried in its
+   * place, so a response the error handling produces reaches the hook as
+   * one a route produced does.
+   */
+  #watchErrorResponse(hook: BunResponseHook, error: unknown): void {
+    const req = get(error, "req", undefined) as BunRequest | undefined;
+    if (req === undefined || !isObject(error)) {
+      return;
+    }
+    const carried = Reflect.get(error, CARRIED_RESPONSE) as
+      | BunResponse<customWebsocketDataType>
+      | undefined;
+    if (carried !== undefined && !carried.headersSent) {
+      this.#runResponseHookOnFinish(hook, req, carried);
+      return;
+    }
+    const fresh = new BunResponse<customWebsocketDataType>(req, {
+      etag: this.etagEnabled,
+      views: this.views,
+    });
+    this.#runResponseHookOnFinish(hook, req, fresh);
+    defineHidden(error, CARRIED_RESPONSE, fresh);
+  }
+
+  /**
+   * Runs the response hook once `res` has finished (its response produced;
+   * a `write()` stream ended), on the next turn of the event loop so the
+   * response is out first, logging a throw or rejection.
+   */
+  #runResponseHookOnFinish(
+    hook: BunResponseHook,
+    req: BunRequest,
+    res: BunResponse<customWebsocketDataType>,
+  ): void {
+    const fail = (error: unknown) => {
+      this.logger.error(
+        "Response hook failed",
+        error instanceof Error ? error.stack : String(error),
+      );
+    };
+    if (Reflect.has(res, RESPONSE_HOOK_WATCHED)) {
+      return;
+    }
+    defineHidden(res, RESPONSE_HOOK_WATCHED, true);
+    res.once("finish", () => {
+      setImmediate(() => {
+        try {
+          const result = hook.call(this, req, res);
+          if (isThenable(result)) {
+            result.then(undefined, fail);
+          }
+        } catch (error) {
+          fail(error);
+        }
+      });
+    });
+  }
+
   /**
    * Runs a request through the adapter without binding a socket, resolving
    * the `Response` the server would have sent.
@@ -1096,10 +2135,7 @@ export class BunHttpAdapter<
       }
       // The same final error handling `Bun.serve`'s `error` callback runs.
       return exchange.deliver(
-        toFetchResponse(
-          await this.handleRequestError(error),
-          nativeRequest.method,
-        ),
+        toFetchResponse(await this.#answerError(error), nativeRequest.method),
       );
     }
 
@@ -1136,6 +2172,9 @@ export class BunHttpAdapter<
     validateParseBodyOption(merged.parseBody);
     if (this.#rawBodyNeedsBuffer && merged.retainBuffer === undefined) {
       merged.retainBuffer = true;
+    }
+    if (this.#securityHookDefersBody && merged.deferBody === undefined) {
+      merged.deferBody = true;
     }
     this.#requestOpts = merged;
   }
@@ -1181,7 +2220,8 @@ export class BunHttpAdapter<
         | undefined;
     }
 
-    if (address) {
+    // On a unix socket Bun's `address` is the path, a string: see `address()`.
+    if (isObject(address)) {
       return address;
     }
 
@@ -1192,11 +2232,24 @@ export class BunHttpAdapter<
     };
   }
 
-  address() {
+  /**
+   * The listening address, as `net.Server.address()` gives it: the socket
+   * path while listening on a unix socket, `{ address, family, port }`
+   * otherwise. Nest's `app.listen()` and `app.getUrl()` read it.
+   */
+  address(): AddressInfo | string {
+    if (this._listeningSocketPath !== undefined && this.isServerListening) {
+      return this._listeningSocketPath;
+    }
     return this.serverAddress;
   }
 
   get url() {
+    // A unix socket's URL (`unix:///path`) has no origin; requests to it are
+    // addressed to `localhost`, as Bun's `fetch(url, { unix })` sends them.
+    if (this._listeningSocketPath !== undefined && this.isServerListening) {
+      return "http://localhost";
+    }
     return (
       this.server?.url?.origin ||
       `http://${this.listeningHost}:${this.listeningPort}`
@@ -1422,12 +2475,20 @@ export class BunHttpAdapter<
    * Binds `Bun.serve` on `port` (at 127.0.0.1) and resolves the server, after
    * calling `callback` with it. NestJS's `app.listen()` uses this form.
    *
-   * A bind failure (a busy port, say) rejects — unless an `error` listener is
-   * attached to the HTTP server, as `app.listen()` attaches one. Then, as with
+   * A string that is not a port number is a unix socket path, as with
+   * `node:http`'s `listen(path)`: the server listens there (`hostname` is
+   * ignored), {@link address} returns the path, and Nest's `app.getUrl()`
+   * gives `http+unix://<encoded path>`. Bun removes the socket file when the
+   * server stops; an existing file at the path is `EADDRINUSE`, as on Node.
+   *
+   * A bind failure (a busy port or socket path, say) or a port outside
+   * 0–65535 rejects — unless an `error` listener is attached to the HTTP
+   * server, as `app.listen()` attaches one. Then, as with
    * `@nestjs/platform-express` (whose `listen` hands off to `node:http`,
-   * which reports the failure only through `error`), the listener receives
+   * which reports a bind failure only through `error`), the listener receives
    * the error, the callback is not called, and this resolves `undefined`:
-   * rejecting too would leave a rejection `app.listen()` never observes.
+   * rejecting too would leave a rejection `app.listen()` never observes. So
+   * `app.listen()` rejects with the error either way.
    */
   public async listen(
     port: string | number,
@@ -1454,22 +2515,38 @@ export class BunHttpAdapter<
         ? callback
         : () => undefined;
 
+    // A string that is not a port number names a unix socket, as `node:http`
+    // reads `listen(path)` (its `isPipeName`: `Number(port) >= 0` fails). A
+    // hostname is then ignored, as there.
+    const socketPath =
+      isString(port) && !(Number(port) >= 0) ? port : undefined;
+
     // Anything `Bun.serve` accepts — an IP literal, `"localhost"`, a name —
     // is bound as given; only an absent hostname defaults to 127.0.0.1.
     const host = isString(hostname) && hostname ? hostname : "127.0.0.1";
 
-    const portNumber = Number(port);
+    const portNumber = socketPath === undefined ? Number(port) : 0;
     if (!Number.isInteger(portNumber) || portNumber < 0 || portNumber > 65535) {
-      throw new RangeError(
-        `listen(): port must be an integer from 0 to 65535, got ${port}`,
+      // `node:http` throws this before binding, which `app.listen()` turns
+      // into its rejection. Thrown from this async method, it would be a
+      // rejection nobody observes, and `app.listen()` would never settle; so
+      // it takes the bind-failure path below.
+      return this.#reportListenError(
+        new RangeError(
+          `listen(): port must be an integer from 0 to 65535, got ${port}`,
+        ),
       );
     }
 
     if (this._serverInstance && this.isServerListening) {
       // Port `0` asks for "any port", which the running server satisfies.
       const sameAddress =
-        this._listeningHost === host &&
-        (portNumber === 0 || Number(this._serverInstance.port) === portNumber);
+        socketPath !== undefined
+          ? this._listeningSocketPath === socketPath
+          : this._listeningSocketPath === undefined &&
+            this._listeningHost === host &&
+            (portNumber === 0 ||
+              Number(this._serverInstance.port) === portNumber);
 
       if (sameAddress) {
         await done(this._serverInstance);
@@ -1479,6 +2556,7 @@ export class BunHttpAdapter<
       // A different address: move there.
       await this._serverInstance.stop(true);
       this._serverInstance = undefined;
+      this._listeningSocketPath = undefined;
       this.isServerListening = false;
     }
 
@@ -1489,8 +2567,15 @@ export class BunHttpAdapter<
         routesType
       >({
         ...(this.serverOptions || {}),
-        port: portNumber,
-        hostname: host,
+        // `Bun.serve` refuses a hostname beside `unix`. Typed as the TCP
+        // shape: the `server` option's type is, and `unix` is the one key
+        // this adds to it.
+        ...((socketPath !== undefined
+          ? { unix: socketPath }
+          : { port: portNumber, hostname: host }) as {
+          port: number;
+          hostname: string;
+        }),
         development: Bun.env.NODE_ENV !== "production",
         fetch: (nativeRequest: Request, server) => {
           // The synchronous path, unless a subclass replaced the handler.
@@ -1501,7 +2586,7 @@ export class BunHttpAdapter<
         },
         websocket: this.buildServerWebSocketHandler(),
         error: (err) => {
-          return this.handleRequestError(err);
+          return this.#answerError(err);
         },
       });
     } catch (error) {
@@ -1510,22 +2595,23 @@ export class BunHttpAdapter<
       // somewhere else. NestJS's `app.listen()` listens for the HTTP server's
       // `error` event and rejects with it; a direct caller gets the rejection.
       this.logger.error(
-        `Error while binding to ${host}:${portNumber}`,
+        `Error while binding to ${socketPath ?? `${host}:${portNumber}`}`,
         error instanceof Error ? error.stack : String(error),
       );
-      if (this.eventEmitter.listenerCount("error") > 0) {
-        this.eventEmitter.emit("error", error);
-        return undefined;
-      }
-      throw error;
+      return this.#reportListenError(error);
     }
 
     this._serverInstance = httpServer;
-    this._listeningHost = host;
-    this._listeningPort = httpServer.port ?? portNumber;
+    this._listeningSocketPath = socketPath;
+    if (socketPath === undefined) {
+      this._listeningHost = host;
+      this._listeningPort = httpServer.port ?? portNumber;
+    }
     await this.getListenAddress();
 
     this.isServerListening = true;
+    // Listening again after a close: no longer shutting down.
+    this.#isShuttingDown = false;
     this.eventEmitter.emit("listening", this._serverInstance);
 
     await done(this._serverInstance);
@@ -1534,13 +2620,32 @@ export class BunHttpAdapter<
   }
 
   /**
+   * How {@link listen} reports a failure to listen: to the HTTP server's
+   * `error` listeners when it has any, resolving `undefined` (`app.listen()`
+   * attaches one and rejects with what it receives, as `node:http` reports a
+   * bind failure only through `error`); otherwise as `listen()`'s rejection.
+   */
+  #reportListenError(error: unknown): undefined {
+    if (this.eventEmitter.listenerCount("error") > 0) {
+      this.eventEmitter.emit("error", error);
+      return undefined;
+    }
+    throw error;
+  }
+
+  /**
    * The adapter's final error handling — the one implementation behind both
    * `Bun.serve`'s `error` callback and {@link fetch}, so a served request and
    * a socket-free one cannot be handled differently.
    *
    * Runs the {@link setErrorHandler} handlers as Express runs error
-   * middleware: in registration order, as `(err, req, res, next)`, against a
-   * fresh response. Only `next` moves on, and a return value is ignored:
+   * middleware: in registration order, as `(err, req, res, next)`, against
+   * the response the request was answering when the error was raised, as
+   * Express hands error middleware the same `res`: the status and headers
+   * middleware or the handler set before the error (a security hook's
+   * headers, CORS's) are still on it, and an exception filter sees it as they
+   * left it. An error raised before there was one (while the request was
+   * built) gets a fresh response. Only `next` moves on, and a return value is ignored:
    * `next(err)` hands `err` to the next handler (once none is left, it is
    * answered as below); `next()`, `next("route")` or `next("router")` leaves
    * error mode, and with nothing registered after these handlers that is
@@ -1555,22 +2660,34 @@ export class BunHttpAdapter<
    * With no handler registered, or when the error carries no request (it was
    * thrown before one was built, or by response finalisation such as a
    * timeout), it answers as Express's `finalhandler` does — what an Express
-   * app with no error middleware sends; see {@link finalErrorResponse}. A
+   * app with no error middleware sends; see {@link finalErrorResponse}; it
+   * too keeps the headers already set on the request's response. A
    * handler that throws is answered the same way, for the error it threw. It
    * therefore always resolves. Mirrors bun-common's `handleRequestError`.
    */
   protected async handleRequestError(error: unknown): Promise<Response> {
     const req = get(error, "req", undefined) as BunRequest | undefined;
+    // `req` rides only on an object, and the response with it.
+    const carried = req
+      ? (Reflect.get(error as object, CARRIED_RESPONSE) as
+          | BunResponse
+          | undefined)
+      : undefined;
+    // One already sent is past answering on: its error handlers ran in the
+    // pipeline. A fresh response then, as before one existed.
+    const usable = carried && !carried.headersSent ? carried : undefined;
     if (!req || !this._errorHandlers.length) {
-      return this.finalErrorResponse(error, req);
+      return this.finalErrorResponse(error, req, usable);
     }
 
     let currentError: unknown = error;
     try {
-      const response = new BunResponse(req, {
-        etag: this.etagEnabled,
-        views: this.views,
-      });
+      const response =
+        usable ??
+        new BunResponse(req, {
+          etag: this.etagEnabled,
+          views: this.views,
+        });
       for (const handler of this._errorHandlers) {
         const nextInvoked = Promise.withResolvers<undefined>();
         let nextCalled = false;
@@ -1614,6 +2731,7 @@ export class BunHttpAdapter<
               status: 404,
             }),
             req,
+            response,
           );
         }
 
@@ -1622,7 +2740,7 @@ export class BunHttpAdapter<
 
       if (!response.headersSent) {
         // Every handler passed the error on.
-        return this.finalErrorResponse(currentError, req);
+        return this.finalErrorResponse(currentError, req, response);
       }
 
       return await response.getNativeResponse(1000);
@@ -1640,8 +2758,24 @@ export class BunHttpAdapter<
    * at `warn` for a 4xx and `error` otherwise, the message naming the method,
    * path and status,
    * except under `NODE_ENV=test`, as Express's default error logging does.
+   *
+   * With `res`, the response the request was answering, the page keeps the
+   * headers already set on it, as `finalhandler` writes its page on the same
+   * response: less `Content-Encoding`, `Content-Language`, `Content-Range`
+   * (which finalhandler removes) and `Content-Length`, with the page's own
+   * headers set over them.
    */
-  protected finalErrorResponse(error: unknown, req?: BunRequest): Response {
+  protected finalErrorResponse(
+    error: unknown,
+    req?: BunRequest,
+    res?: BunResponse,
+  ): Response {
+    const page = this.#finalErrorPage(error, req);
+    return res ? withResponseHeaders(page, res.getHeaders()) : page;
+  }
+
+  /** bun-common's `finalErrorResponse` for `error`, logged; see {@link finalErrorResponse}. */
+  #finalErrorPage(error: unknown, req: BunRequest | undefined): Response {
     return finalErrorResponse(error, {
       method: req?.method,
       path: req?.path,
@@ -1681,45 +2815,122 @@ export class BunHttpAdapter<
      * NestJS `StreamableFile`, which is streamed with its headers.
      */
     body: Parameters<BunResponse["send"]>[0] | StreamableFile,
-    /** Optional status code applied before sending. */
+    /**
+     * The status to apply before sending. On Nest 12 any non-nil value is
+     * applied, as `@nestjs/platform-express` 12 does (`!isNil`, nestjs/nest
+     * e03cf5c86), and checked as Express 5's `res.status` checks it: a
+     * non-integer throws a `TypeError`, one outside 100–999 a `RangeError`,
+     * which Nest's exception layer answers with a 500. On Nest 11 a falsy
+     * one (`0`, `NaN`) is skipped, as its platform-express skips it.
+     * `undefined`/`null` keep the status already set.
+     */
     statusCode?: number,
   ) {
-    if (statusCode) {
+    if (this.#replyAppliesEveryStatus) {
+      if (statusCode !== undefined && statusCode !== null) {
+        response = response.status(assertExpressStatusCode(statusCode));
+      }
+    } else if (statusCode) {
       response = response.status(statusCode);
     }
 
     if (body instanceof StreamableFile) {
-      // As @nestjs/platform-express: the file's type, disposition and length
-      // fill in whichever of those headers the handler did not set itself.
-      const { type, disposition, length } = body.getHeaders();
-      if (!response.getHeader("Content-Type") && type !== undefined) {
-        response.setHeader("Content-Type", type);
-      }
-      if (
-        !response.getHeader("Content-Disposition") &&
-        disposition !== undefined
-      ) {
-        response.setHeader("Content-Disposition", disposition);
-      }
-      if (!response.getHeader("Content-Length") && length !== undefined) {
-        response.setHeader("Content-Length", String(length));
-      }
+      return this.#replyStreamableFile(response, body);
+    }
 
-      const stream = body.getStream();
-      stream.once("error", (error: Error) => {
-        body.errorLogger(error);
-      });
-      return response.send(stream);
+    // As @nestjs/platform-express 12.2: an error body under a Content-Type
+    // that is not JSON is sent as JSON, with Nest's warning. An error body
+    // has a `statusCode` of 400 or more, or is any object replied with such
+    // a status (`new HttpException({ ... }, 404)`; from 12.2). Nest 11 tests
+    // `startsWith("application/json")`, so it also forces a `+json` type;
+    // this follows 12.2, the lock, on every version.
+    const contentType = response.getHeader("Content-Type");
+    if (
+      typeof contentType === "string" &&
+      !isJsonContentType(contentType) &&
+      (isErrorShapedBody(body) ||
+        (typeof body === "object" &&
+          body !== null &&
+          statusCode !== undefined &&
+          statusCode >= 400))
+    ) {
+      this.logger.warn(
+        "Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses",
+      );
+      response.setHeader("Content-Type", "application/json");
     }
 
     return response.send(body);
+  }
+
+  /**
+   * Sends a `StreamableFile`, as `@nestjs/platform-express` does: its type,
+   * disposition and length fill in whichever of those headers the handler did
+   * not set, and a source that fails goes to the file's `errorHandler`
+   * (`StreamableFile.setErrorHandler()`), with this response.
+   *
+   * The response is held back until the source yields its first chunk, as
+   * Express writes the status line on the first chunk piped. So a source that
+   * fails before that (a file that cannot be opened) is answered by the
+   * handler, whose default answers `400` with the error's message; and one
+   * that had already failed when the handler returned is handed to it at once,
+   * without the file's headers (nestjs/nest 1933cc9ed, platform-express
+   * 12.2.0). After the first chunk, a failure is still handed to the handler,
+   * whose default ends the response, as Express's `res.end()` does.
+   */
+  #replyStreamableFile(
+    response: BunResponse,
+    file: StreamableFile,
+  ): BunResponse | Promise<BunResponse | void> | void {
+    const stream = file.getStream();
+    const failed: unknown = stream.errored;
+    if (failed) {
+      return file.errorHandler(asError(failed), response);
+    }
+    destroyWhenClientLeaves(response.req.request.signal, stream);
+    const beforeWrite = this.#beforeWriteState;
+    if (this.#beforeWriteHooks !== undefined && beforeWrite !== undefined) {
+      beforeWrite.files.set(response, file);
+    }
+    // As @nestjs/platform-express: the file's type, disposition and length
+    // fill in whichever of those headers the handler did not set itself.
+    const { type, disposition, length } = file.getHeaders();
+    if (!response.getHeader("Content-Type") && type !== undefined) {
+      response.setHeader("Content-Type", type);
+    }
+    if (
+      !response.getHeader("Content-Disposition") &&
+      disposition !== undefined
+    ) {
+      response.setHeader("Content-Disposition", disposition);
+    }
+    if (!response.getHeader("Content-Length") && length !== undefined) {
+      response.setHeader("Content-Length", String(length));
+    }
+
+    const chunks = stream[Symbol.asyncIterator]() as AsyncIterator<unknown>;
+    return chunks.next().then(
+      (first) => response.send(streamFileFrom(first, chunks, file, response)),
+      (error: unknown) => file.errorHandler(asError(error), response),
+    );
   }
 
   public status(response: BunResponse, statusCode: number) {
     return response.status(statusCode);
   }
 
+  /**
+   * Ends the response, as `@nestjs/platform-express`'s `response.end(message)`:
+   * an open stream (`write()`, `flushHeaders()`) is ended, with `message` as
+   * its last chunk; a response not yet sent is sent with `message` as its
+   * body; one already sent is left alone. Nest's exception filters call it
+   * when {@link isHeadersSent} is true, so a handler that wrote and then
+   * threw ends its stream rather than hanging.
+   */
   public end(response: BunResponse, message?: string) {
+    if (response.isStreamOpen) {
+      return response.end(message);
+    }
     return response.headersSent ? undefined : response.send(message);
   }
 
@@ -1754,13 +2965,15 @@ export class BunHttpAdapter<
     return response.redirect(statusCode || 302, url);
   }
 
+  /**
+   * Whether the response has been committed — a body produced, a stream
+   * opened (`write()`, `flushHeaders()`) or a WebSocket upgrade accepted —
+   * as `@nestjs/platform-express`'s `response.headersSent`. Nest's exception
+   * filters read it to choose between replying and ending. It reads state
+   * only: it neither waits for nor produces the native response.
+   */
   public isHeadersSent(response: BunResponse) {
-    const nativeResp = Bun.peek(response.getNativeResponse());
-    if (isPromise(nativeResp)) {
-      return false;
-    }
-
-    return !!nativeResp;
+    return response.headersSent;
   }
 
   public setHeader(response: BunResponse, name: string, value: string) {
@@ -1827,6 +3040,53 @@ export class BunHttpAdapter<
       caseSensitive: this.#routerCaseSensitive,
       ignoreTrailingSlash: true,
     };
+  }
+
+  /**
+   * Installs the request hook behind Nest 12's `app.enableCsrfProtection()`
+   * and `app.useSecurityHeaders()`, as `AbstractHttpAdapter`'s default does
+   * for Express: a middleware at this point of the chain (so before Nest's
+   * body parsers and middleware, which `app.init()` registers later) that
+   * calls `hook(req, res)` and hands an error it returns to `next(err)`, the
+   * exception layer. That layer answers on the same response, so a `403`
+   * carries the headers the hook set (see {@link handleRequestError}).
+   *
+   * One difference from that default, so the hook runs before the body is
+   * read, as on Express (where the body is read by a body-parser middleware
+   * registered after it): from here on the request options defer the body
+   * (`deferBody: true`), unless they set `deferBody` themselves. A rejected
+   * request is then refused before its body is read, so a malformed or
+   * oversized body gets the `403`, not a `400` or `413`; an accepted one is
+   * read by the first body parser, or just before its route handler, as
+   * before. An application with neither feature keeps reading bodies while
+   * the request is built.
+   *
+   * Declared without `override`, since Nest 11's `AbstractHttpAdapter` has
+   * no such member (Nest 11 has neither feature, and never calls it). The
+   * hook's type is Nest 12's `SecurityRequestHook`, written structurally.
+   */
+  public registerSecurityHook(
+    /** Nest's hook: sets the security headers, returns the error that rejects the request. */
+    hook: (
+      request: BunRequest,
+      response: {
+        setHeader: (name: string, value: string) => unknown;
+        removeHeader: (name: string) => unknown;
+      },
+    ) => Error | undefined,
+  ): this {
+    if (!this.#securityHookDefersBody) {
+      this.#securityHookDefersBody = true;
+      this.requestOpts = this.#requestOpts;
+    }
+    return this.use((req, res, next) => {
+      const error = hook(req, res);
+      if (error) {
+        next(error);
+      } else {
+        next();
+      }
+    });
   }
 
   // `prefix` is accepted for `AbstractHttpAdapter` signature parity; these
@@ -2019,12 +3279,40 @@ export class BunHttpAdapter<
     return this;
   }
 
+  /**
+   * Puts the adapter into its "shutting down" state, as
+   * `@nestjs/platform-express` 12 does: from now on, with the
+   * `return503OnClosing` application option, every request is answered `503
+   * Service Unavailable` with `Connection: close`. Nest 12's `app.close()`
+   * calls it before any shutdown hook runs, while the server still accepts
+   * requests; Nest 11 never calls it ({@link close} sets the same state).
+   * Declared without `override`: Nest 11's `AbstractHttpAdapter` has no such
+   * member.
+   */
+  public beforeClose(): void {
+    this.#isShuttingDown = true;
+  }
+
+  /**
+   * Stops the server, as `@nestjs/platform-express` 12 does: it stops
+   * accepting connections and lets the requests in flight finish, then
+   * resolves. Unlike Express, which waits for them indefinitely (an open
+   * `@Sse()` stream holds `app.close()` forever), the wait is capped by the
+   * constructor's `closeDrainTimeout` option (10 s by default; `0` waits for
+   * nothing); whatever is still open then — a stream, a hung handler — is
+   * cut. With the `forceCloseConnections` application option nothing waits:
+   * in-flight requests are cut at once.
+   *
+   * WebSocket connections are not waited for; they are closed when the
+   * server stops. Nothing of the stopped server outlives the returned
+   * promise, so a server bound on the same port next can never be answered
+   * by this one (the port-release rule in CLAUDE.md).
+   */
   public async close() {
+    this.#isShuttingDown = true;
     try {
       if (this._serverInstance && this.isServerListening) {
-        // Force-close active (keep-alive) connections so the port is fully
-        // released; a graceful stop can leave the listener lingering.
-        await this._serverInstance.stop(true);
+        await this.#stopServer(this._serverInstance);
       }
     } catch (err) {
       this.logger.error(
@@ -2034,10 +3322,38 @@ export class BunHttpAdapter<
     }
     this.eventEmitter.emit("close");
     this._serverInstance = undefined;
+    this._listeningSocketPath = undefined;
     this.isServerListening = false;
     // Error and not-found handlers are configuration, like routes: they stay,
     // so a closed adapter that listens again (or is driven through `fetch()`)
     // behaves exactly as before.
+  }
+
+  /**
+   * {@link close}'s stop: drain, then force. `stop(false)` stops accepting:
+   * Bun closes the listener and every idle keep-alive connection at once, and
+   * each busy connection as soon as its response completes (measured on Bun
+   * 1.4.2 to 1.4.4). The wait is on `pendingRequests`, not on that call's
+   * promise, which also waits for every WebSocket. `stop(true)` then always
+   * runs: a graceful stop alone leaves a long-lived response (an SSE stream)
+   * and WebSockets served by this server after `close()` resolves, even
+   * once another server is bound on the same port (measured, PR-6b's spike).
+   */
+  async #stopServer(
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Promise<void> {
+    if (
+      !this.#forceCloseConnections &&
+      this.#closeDrainTimeout > 0 &&
+      server.pendingRequests > 0
+    ) {
+      server.stop(false).catch(() => undefined);
+      const deadline = Date.now() + this.#closeDrainTimeout;
+      while (server.pendingRequests > 0 && Date.now() < deadline) {
+        await Bun.sleep(10);
+      }
+    }
+    await server.stop(true);
   }
 
   public getType(): string {
@@ -2194,11 +3510,47 @@ export class BunHttpAdapter<
     this.defineHttpServer();
   }
 
-  // `options` is accepted for `AbstractHttpAdapter` signature parity; the Bun
-  // server is configured via the constructor's `server` option / setListenOptions.
-  public async initHttpServer(_options?: NestApplicationOptions) {
+  /**
+   * Called by Nest once, synchronously, as the application is constructed.
+   * Of `options` it honours, as `@nestjs/platform-express` does,
+   * `forceCloseConnections` (see {@link close}) and `return503OnClosing`
+   * (see {@link beforeClose}); the Bun server itself is configured through
+   * the constructor's `server` option and {@link setListenOptions}.
+   */
+  public async initHttpServer(options?: NestApplicationOptions) {
+    // Before the first `await`: Nest does not await this, and the 503 guard
+    // must be registered ahead of every route, as Express's is.
+    this.#applyApplicationOptions(options);
     await this.init();
     return this.httpServer;
+  }
+
+  /**
+   * Applies {@link initHttpServer}'s lifecycle options. `return503OnClosing`
+   * is read by name: Nest 11's `NestApplicationOptions` has no such key.
+   */
+  #applyApplicationOptions(options: NestApplicationOptions | undefined): void {
+    if (options?.forceCloseConnections) {
+      this.#forceCloseConnections = true;
+    }
+    const return503OnClosing =
+      Reflect.get(options ?? {}, "return503OnClosing") === true;
+    if (return503OnClosing && !this.#closingGuardRegistered) {
+      this.#closingGuardRegistered = true;
+      // A middleware only when asked for, as Express registers it: the
+      // default request path carries no shutdown check at all.
+      this.instance.use((_req, res, next) => {
+        if (this.#isShuttingDown) {
+          // Express's answer, its `text/html` included (a string body is
+          // `text/plain` here otherwise).
+          res.set("Connection", "close");
+          res.set("Content-Type", "text/html; charset=utf-8");
+          res.status(503).send("Service Unavailable");
+          return;
+        }
+        next();
+      });
+    }
   }
 
   /**
@@ -4233,6 +5585,14 @@ export class BunHttpAdapter<
 
     // Media Type (Accept Header) Versioning Handler
     if (versioningOptions.type === VersioningType.MEDIA_TYPE) {
+      // Read once per route, not per request. Nest 12's platform-express
+      // finds the version in any parameter of any media range (12.1.2 on);
+      // Nest 11's reads the first parameter of the header only. Nest 12 is
+      // told apart by a capability (see `coreScopesNotFoundToPrefix`).
+      const mediaVersionFromAnyParameter = coreScopesNotFoundToPrefix();
+      // 12.2.0 on: a quoted version is unquoted (see `mediaTypeVersion`).
+      const mediaVersionUnquoted =
+        mediaVersionFromAnyParameter && coreUnquotesMediaTypeVersion();
       const handlerForMediaTypeVersioning: VersionedRoute = (
         req,
         res,
@@ -4244,6 +5604,29 @@ export class BunHttpAdapter<
           req.getHeader(MEDIA_TYPE_HEADER.toLowerCase()) ||
           undefined;
 
+        if (mediaVersionFromAnyParameter) {
+          // Nest 12: any parameter of any media range, as
+          // `@nestjs/platform-express` 12.1.3's `getMediaTypeVersion`.
+          const headerVersion = mediaTypeVersion(
+            acceptHeaderValue,
+            versioningOptions.key,
+            mediaVersionUnquoted,
+          );
+          if (isUndefined(headerVersion)) {
+            if (Array.isArray(version) && version.includes(VERSION_NEUTRAL)) {
+              return handler(req, res, next);
+            }
+          } else if (Array.isArray(version)) {
+            if (version.includes(headerVersion)) {
+              return handler(req, res, next);
+            }
+          } else if (isString(version) && version === headerVersion) {
+            return handler(req, res, next);
+          }
+          return callNextHandler(req, res, next);
+        }
+
+        // Nest 11: the first parameter only, as its platform-express reads it.
         const acceptHeaderVersionParameter = acceptHeaderValue
           ? acceptHeaderValue.split(";")[1]
           : undefined;
