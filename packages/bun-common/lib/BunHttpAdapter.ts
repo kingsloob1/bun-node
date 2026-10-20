@@ -430,6 +430,7 @@ export class BunHttpAdapter<
         this.#routeRequest(req, nativeRequest, server),
       );
     } catch (error) {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever was thrown, unchanged, so the error handler sees the value a route threw
       return Promise.reject(error);
     }
   }
@@ -637,10 +638,7 @@ export class BunHttpAdapter<
         nativeRequest,
         // A live server when one exists, so `requestIP`/`upgrade` behave; a
         // stub otherwise, which reports no peer and refuses upgrades.
-        this.getBunServer() ??
-          (FETCH_STUB_SERVER as BunServer<
-            WebSocketClientData<customWebsocketDataType>
-          >),
+        this.getBunServer() ?? FETCH_STUB_SERVER,
       );
     } catch (error) {
       return toFetchResponse(
@@ -1328,7 +1326,7 @@ export class BunHttpAdapter<
       (url) => !!url,
     );
 
-    return url as URL;
+    return url;
   }
 
   public reply(

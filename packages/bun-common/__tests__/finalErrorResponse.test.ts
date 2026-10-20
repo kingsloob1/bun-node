@@ -128,7 +128,7 @@ describe("finalErrorResponse", () => {
       err,
       { status: 422, method: "PUT", path: "/items/1" },
     ]);
-    expect(calls[0]![1]).toBe(err);
+    expect(calls[0][1]).toBe(err);
   });
 
   it("calls log with no method or path when none were given", () => {

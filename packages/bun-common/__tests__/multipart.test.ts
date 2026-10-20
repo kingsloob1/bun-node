@@ -705,7 +705,7 @@ describe("multipart: storage", () => {
     expect(file.type).toBe("disk");
     expect(await Bun.file(file.path).exists()).toBe(true);
 
-    await (options.storage as DiskStorage).removeFile(file, true);
+    await options.storage.removeFile(file, true);
     expect(await Bun.file(file.path).exists()).toBe(false);
   });
 
@@ -1134,8 +1134,8 @@ describe("multipart: a file part without a filename", () => {
         transformUploadOptions({ storageType: "memory", detectFileType }),
       );
       expect(files).toHaveLength(1);
-      expect(files[0]!.originalFilename).toBe("");
-      expect(files[0]!.size).toBe(5);
+      expect(files[0].originalFilename).toBe("");
+      expect(files[0].size).toBe(5);
     });
 
     it(`writes it to disk under a random name (detectFileType: ${detectFileType})`, async () => {
