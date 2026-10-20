@@ -1206,7 +1206,7 @@ function resolveBodyParseConfig(
   // The object form, as an adapter's options carry it to every request: one
   // resolved config per object, shared while the object reads the same.
   if (isObject(parseBody) && !isArray(parseBody) && !isArray(legacyAllowed)) {
-    const config = parseBody as ParseBodyConfig;
+    const config = parseBody;
     const cached = RESOLVED_BODY_CONFIGS.get(config);
     if (cached && matchesSnapshot(cached.snapshot, config)) {
       return cached.config;
@@ -1241,7 +1241,7 @@ function parseBodySnapshot(config: ParseBodyConfig): unknown[] {
   ];
   if (isObject(contentTypes)) {
     for (const kind of VALID_PARSER_KINDS) {
-      const entry = (contentTypes as ParseBodyContentTypesMap)[kind];
+      const entry = contentTypes[kind];
       snapshot.push(entry);
       if (isObject(entry)) {
         const typeConfig = entry as ParseBodyContentTypeConfig;
@@ -1280,7 +1280,7 @@ function matchesSnapshot(
   let at = 7;
   if (isObject(contentTypes)) {
     for (const kind of VALID_PARSER_KINDS) {
-      const entry = (contentTypes as ParseBodyContentTypesMap)[kind];
+      const entry = contentTypes[kind];
       if (!Object.is(snapshot[at++], entry)) {
         return false;
       }
@@ -1321,7 +1321,7 @@ function buildBodyParseConfig(
     return resolved;
   }
 
-  const config = parseBody as ParseBodyConfig;
+  const config = parseBody;
 
   // Object form: body-size caps apply. Store the explicit config-level cap
   // (if any); when unset, the per-kind defaults are used at resolve time.
@@ -1529,7 +1529,7 @@ export class BunRequest<
    * header never pays for it.
    */
   get headersObj(): InstanceType<typeof Headers> {
-    return (this.#headersObj ??= this.request.headers as Headers);
+    return (this.#headersObj ??= this.request.headers);
   }
 
   set headersObj(value: InstanceType<typeof Headers>) {
@@ -3553,7 +3553,7 @@ export class BunRequest<
           merged[key] = value;
         }
       }
-      options = merged as MultiPartOptions;
+      options = merged;
     }
 
     const contentTypeHeader = this.getHeader("Content-Type");
@@ -3615,6 +3615,7 @@ export class BunRequest<
         this.#multipartOptions = parseOptions;
         this.#parsedMultipartResp = undefined;
         this.#multipartFailure = { error };
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the parse rejects with the failure exactly as busboy, a storage or an inflator raised it
         reject(error);
       };
 
@@ -3712,6 +3713,7 @@ export class BunRequest<
             try {
               storeFile(name, info, file as Buffer, undefined);
             } catch (error) {
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the storage's error, unchanged, as the parse rejects with it
               const failed = Promise.reject(error);
               failed.catch(() => {});
               filePromises.push(failed);
@@ -4468,10 +4470,8 @@ export class BunRequest<
 
     const sentSecret = !isUndefined(opts?.secret) ? opts?.secret : "";
 
-    let reqSecret = this.secret;
-    if (!reqSecret && sentSecret) {
+    if (!this.secret && sentSecret) {
       this.secret = isArray(sentSecret) ? sentSecret[0] : sentSecret;
-      reqSecret = this.secret;
     }
 
     // `Headers#get` ignores case, so one lookup covers `Cookie` too.
@@ -4504,7 +4504,7 @@ export class BunRequest<
     const cookies = parseCookie(
       cookieStr,
       this.#configuredCookieParseOptions(),
-    ) as Record<string, string>;
+    );
     let signedCookiesObj: Record<string, JsonValue> = {};
 
     if (secrets.length) {
@@ -4778,6 +4778,7 @@ export class BunRequest<
                     : {}),
               );
             } catch (error) {
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the multipart parser's error, unchanged, as the asynchronous parse rejects with it
               return Promise.reject(error);
             }
             return parsed instanceof Promise ? parsed : undefined;
@@ -5329,8 +5330,8 @@ export class BunRequest<
           "cache-control": this.headersObj.get("cache-control") ?? undefined,
         },
         {
-          etag: (res.get("ETag", "") || "") as string | string[],
-          "last-modified": res.get("Last-Modified", "") as string | string[],
+          etag: res.get("ETag", "") || "",
+          "last-modified": res.get("Last-Modified", ""),
         },
       );
     }

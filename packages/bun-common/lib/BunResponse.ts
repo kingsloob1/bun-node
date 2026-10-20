@@ -1822,9 +1822,7 @@ export class BunResponse<
       // SharedArrayBuffer) go to the socket verbatim — Bun writes the bytes
       // and sets Content-Length itself.
       if (this.#etagEnabled && !this.hasHeader("ETag")) {
-        const tag = this.#etagFor(
-          body as string | ArrayBufferView | ArrayBufferLike,
-        );
+        const tag = this.#etagFor(body);
         if (tag !== undefined) {
           this.setHeader("ETag", tag);
         }
@@ -2032,7 +2030,8 @@ export class BunResponse<
    * `flushHeaders()`; it adds no header of its own.
    */
   flushHeaders(): boolean {
-    this.initLongLivedConnection();
+    // Not awaited: the stream opens synchronously; the promise only reports it.
+    void this.initLongLivedConnection();
     return true;
   }
 
@@ -2309,11 +2308,13 @@ export class BunResponse<
     }
 
     if (!this._isLongLived) {
-      this.initLongLivedConnection();
+      // Not awaited: the stream opens synchronously; the promise only reports it.
+      void this.initLongLivedConnection();
     }
 
     if (this._isLongLived) {
-      this.getWritable()?.write(chunk);
+      // Not awaited: the write is synchronous, and the promise only reports it.
+      void this.getWritable()?.write(chunk);
     }
 
     return true;
@@ -2393,7 +2394,7 @@ export class BunResponse<
     } else {
       address = first;
       if (isObject(second)) {
-        this.response = Response.redirect(first, second as ResponseInit);
+        this.response = Response.redirect(first, second);
         return this;
       }
       if (typeof second === "number" && Number.isFinite(second)) {

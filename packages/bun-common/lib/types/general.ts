@@ -415,7 +415,7 @@ export interface SendFileOptions {
  * returns, so callers can neither rely on nor be constrained by it.
  */
 export type NextFunction<R = unknown> = (
-  type?: string | Error | undefined,
+  type?: string | Error,
 ) => R | Promise<R>;
 
 /** A request-only handler — e.g. `(req) => res.json(...)` shorthands. */

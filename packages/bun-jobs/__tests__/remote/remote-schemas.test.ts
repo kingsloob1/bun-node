@@ -476,8 +476,8 @@ function refuses(
 }
 
 describe("negative cases", () => {
-  const invoke = ENVELOPES.invoke!;
-  const job = (invoke.jobs as Record<string, unknown>[])[0]!;
+  const invoke = ENVELOPES.invoke;
+  const job = (invoke.jobs as Record<string, unknown>[])[0];
   const withJob = (patch: Record<string, unknown>) => ({
     ...invoke,
     jobs: [{ ...job, ...patch }],
@@ -576,9 +576,9 @@ describe("negative cases", () => {
   });
 
   it("a completed result that says it failed, and a failure with no error", () => {
-    const result = MESSAGES.result!;
+    const result = MESSAGES.result;
     refuses(parseRemoteMessage, { ...result, status: "failed" }, "status");
-    const { error: _error, ...noError } = MESSAGES.fail!;
+    const { error: _error, ...noError } = MESSAGES.fail;
     refuses(parseRemoteMessage, noError, "error");
     refuses(
       parseRemoteMessage,
@@ -588,11 +588,11 @@ describe("negative cases", () => {
   });
 
   it("an outcome without its fence", () => {
-    const { fence: _fence, ...noFence } = MESSAGES.result!;
+    const { fence: _fence, ...noFence } = MESSAGES.result;
     refuses(parseRemoteMessage, noFence, "fence");
     // A rejection may lack one (the plan's example does): the remote may
     // refuse before reading it.
-    expect("fence" in MESSAGES.rejected!).toBe(false);
+    expect("fence" in MESSAGES.rejected).toBe(false);
     expect(parseRemoteMessage(MESSAGES.rejected).ok).toBe(true);
   });
 
@@ -620,7 +620,7 @@ describe("negative cases", () => {
 
   it("a hello from a role that does not exist, or without its timestamp", () => {
     refuses(parseRemoteMessage, { ...MESSAGES.hello, role: "admin" }, "role");
-    const { t: _t, ...noT } = MESSAGES.hello!;
+    const { t: _t, ...noT } = MESSAGES.hello;
     refuses(parseRemoteMessage, noT, "t");
   });
 
@@ -640,7 +640,7 @@ describe("negative cases", () => {
   });
 
   it("an attempt state that does not exist, or a retained outcome that is not one", () => {
-    const entry = (ENVELOPES["status-result"]!.jobs as unknown[])[0] as Record<
+    const entry = (ENVELOPES["status-result"].jobs as unknown[])[0] as Record<
       string,
       unknown
     >;
@@ -704,7 +704,7 @@ describe("negative cases", () => {
       parseRemoteMessage,
       {
         ...MESSAGES.problem,
-        problem: { ...(MESSAGES.problem!.problem as object), status: 42 },
+        problem: { ...(MESSAGES.problem.problem as object), status: 42 },
       },
       "problem.status",
     );
@@ -714,8 +714,8 @@ describe("negative cases", () => {
 describe("cancel and status name the queue", () => {
   it("a ref, a cancel answer or a status answer without its queue is refused", () => {
     const { queue: _queue, ...bare } = (
-      ENVELOPES.cancel!.jobs as Record<string, unknown>[]
-    )[0]!;
+      ENVELOPES.cancel.jobs as Record<string, unknown>[]
+    )[0];
     refuses(
       parseRemoteRequest,
       { ...ENVELOPES.cancel, jobs: [bare] },

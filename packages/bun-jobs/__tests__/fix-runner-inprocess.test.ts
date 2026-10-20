@@ -135,7 +135,7 @@ describe("in-process console patch lifetime", () => {
       console.warn = saved;
     }
     expect(printed).toEqual([["HOST idle", hostObject], ["RUN line"]]);
-    expect(printed[0]![1]).toBe(hostObject);
+    expect(printed[0][1]).toBe(hostObject);
     expect(sunk).toEqual(["RUN line\n"]);
 
     // What is captured, through a real runner whose patch stays installed:

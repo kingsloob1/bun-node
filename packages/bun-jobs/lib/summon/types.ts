@@ -1309,7 +1309,7 @@ export interface SummonEventPayload {
  * The events a `SummonController` emits, locally. A type alias, not an
  * interface: an event map must be assignable to a string-keyed record.
  */
-// eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- see above
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- an event map: an interface lacks the implicit index signature the Record<string, …> constraint needs
 export type SummonControllerEvents = {
   /** An attempt changed state: started, registered, lost, failed, … */
   summon: (event: SummonEventPayload) => void;

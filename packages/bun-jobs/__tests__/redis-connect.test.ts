@@ -341,7 +341,11 @@ describe.skipIf(!URL)("redis connect: a drop after connecting recovers", () => {
     await producer.add("before", { n: 1 });
     await waitFor(
       () => processed.includes("before") && completed.includes("before"),
-      { timeout: 5_000, message: () => `before: ${processed} / ${completed}` },
+      {
+        timeout: 5_000,
+        message: () =>
+          `before: ${processed.join(",")} / ${completed.join(",")}`,
+      },
     );
 
     const accepted = proxy.accepted;
@@ -354,13 +358,13 @@ describe.skipIf(!URL)("redis connect: a drop after connecting recovers", () => {
     await producer.add("after", { n: 3 });
     await waitFor(
       () => processed.includes("during") && processed.includes("after"),
-      { timeout: 10_000, message: () => `processed: ${processed}` },
+      { timeout: 10_000, message: () => `processed: ${processed.join(",")}` },
     );
     // Events too: Bun reconnects the pub/sub connection but does not
     // resubscribe it; the driver does, so the producer still hears them.
     await waitFor(() => completed.includes("after"), {
       timeout: 5_000,
-      message: () => `completed: ${completed}`,
+      message: () => `completed: ${completed.join(",")}`,
     });
     expect(completed.filter((name) => name === "after")).toHaveLength(1);
     // The recovery went through the proxy again: new connections were made.
@@ -384,12 +388,12 @@ describe.skipIf(!URL)("redis connect: a drop after connecting recovers", () => {
     await producer.add("after", { n: 2 });
     await waitFor(() => processed.includes("after"), {
       timeout: 10_000,
-      message: () => `processed: ${processed}`,
+      message: () => `processed: ${processed.join(",")}`,
     });
     await waitFor(() => completed.includes("after"), {
       timeout: 5_000,
       message: () =>
-        `completed: ${completed}; heard directly: ${heardDirectly}`,
+        `completed: ${completed.join(",")}; heard directly: ${heardDirectly.join(",")}`,
     });
   }, 30_000);
 

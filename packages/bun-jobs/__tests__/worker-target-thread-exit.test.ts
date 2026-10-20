@@ -195,13 +195,13 @@ async function expectStoppedBy(
   if (warned.length > 0) {
     expect(warned.length).toBe(1);
     // The warning was true when it was logged: the thread closed after it.
-    expect(spin.closes[0]!.warnedBefore).toBe(1);
+    expect(spin.closes[0].warnedBefore).toBe(1);
     return;
   }
   // The thread's last side effect came before the close resolved...
   expect(Number(last.value)).toBeLessThanOrEqual(closedAt);
   // ...and so did its `close` event, the only certain sign it had stopped.
-  expect(spin.closes[0]!.at).toBeLessThanOrEqual(closedAt);
+  expect(spin.closes[0].at).toBeLessThanOrEqual(closedAt);
 }
 
 describe("a worker-thread target's close waits for the thread to stop", () => {
@@ -277,7 +277,7 @@ async function standIn(closeAfter: number | false): Promise<{
   );
   const job = attempt();
   const run = target.run(job).catch((error: unknown) => error);
-  const fake = FakeWorker.instances[0]!;
+  const fake = FakeWorker.instances[0];
   await waitFor(() => fake.received.some((message) => message.t === "start"));
   cleanups.push(() => fake.exit());
   return {
@@ -315,8 +315,8 @@ describe("a worker-thread target's close, with a stand-in Worker", () => {
 
     const warned = overruns(events);
     expect(warned.length).toBe(1);
-    expect(warned[0]!.message).toContain(runId);
-    expect(warned[0]!.fields.runIds).toEqual([runId]);
+    expect(warned[0].message).toContain(runId);
+    expect(warned[0].fields.runIds).toEqual([runId]);
 
     // Asked again, forced or not: the same wait, and no second warning.
     expect(target.close({ force: true })).toBe(forced);

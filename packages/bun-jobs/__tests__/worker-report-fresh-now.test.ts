@@ -140,9 +140,9 @@ describe("BunQueueWorker: a heartbeat record is stamped when it is written", () 
       // The delay really ran ahead of this write.
       expect(slowed.delayed()).toBeGreaterThan(0);
       // Its own lifetime from the moment it landed, not what was left of it.
-      expect(first!.record.expiresAt - first!.at).toBeGreaterThan(2 * interval);
-      expect(first!.listed).toBe(true);
-      expect(isWorkerStale(first!.record, first!.at)).toBe(false);
+      expect(first.record.expiresAt - first.at).toBeGreaterThan(2 * interval);
+      expect(first.listed).toBe(true);
+      expect(isWorkerStale(first.record, first.at)).toBe(false);
     }, 15_000);
 
     it(`negative control: with ${label} instant, the same checks pass`, async () => {
@@ -155,9 +155,9 @@ describe("BunQueueWorker: a heartbeat record is stamped when it is written", () 
       });
       const [first] = slowed.landings;
       expect(slowed.delayed()).toBe(0);
-      expect(first!.record.expiresAt - first!.at).toBeGreaterThan(2 * interval);
-      expect(first!.listed).toBe(true);
-      expect(isWorkerStale(first!.record, first!.at)).toBe(false);
+      expect(first.record.expiresAt - first.at).toBeGreaterThan(2 * interval);
+      expect(first.listed).toBe(true);
+      expect(isWorkerStale(first.record, first.at)).toBe(false);
     }, 15_000);
   }
 

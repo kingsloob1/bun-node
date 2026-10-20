@@ -138,12 +138,12 @@ for (const backend of BACKENDS) {
 
         expect(platform.calls).toHaveLength(1);
         expect(platform.spawned).toHaveLength(1);
-        expect(await platform.spawned[0]!.exited).toBe(0);
-        const lines = await workerLines(platform.spawned[0]!);
+        expect(await platform.spawned[0].exited).toBe(0);
+        const lines = await workerLines(platform.spawned[0]);
         expect(
           lines.find((line) => line.event === "record")?.summon,
         ).toMatchObject({
-          id: platform.calls[0]!.id,
+          id: platform.calls[0].id,
           kind: "fake",
           mode: "exit-on-idle",
         });
@@ -189,7 +189,7 @@ for (const backend of BACKENDS) {
         await Bun.sleep(250);
         expect((await controller.check()).action).toBe("summoned");
         expect(platform.calls).toHaveLength(2);
-        expect(platform.calls[1]!.id).not.toBe(platform.calls[0]!.id);
+        expect(platform.calls[1].id).not.toBe(platform.calls[0].id);
       });
 
       it("records a throwing platform as failed and a declining one as unavailable", async () => {
@@ -218,9 +218,9 @@ for (const backend of BACKENDS) {
         );
         const job = await queue.add("job", {}, { removeOnComplete: false });
         await checkUntil(() => platform.calls.length === 2, 30_000);
-        expect(await platform.spawned[0]!.exited).toBe(1);
+        expect(await platform.spawned[0].exited).toBe(1);
         expect(
-          platform.calls[1]!.demand.active + platform.calls[1]!.demand.waiting,
+          platform.calls[1].demand.active + platform.calls[1].demand.waiting,
         ).toBe(1);
         await waitFor(
           async () => (await queue.getJob(job.id))?.state === "completed",
@@ -239,7 +239,7 @@ for (const backend of BACKENDS) {
           events.some((event) => event.outcome === "registered"),
         );
         await platform.settled();
-        const lines = await workerLines(platform.spawned[0]!);
+        const lines = await workerLines(platform.spawned[0]);
         expect(
           lines.find((line) => line.event === "record")?.summon,
         ).toBeNull();

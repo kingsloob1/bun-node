@@ -319,7 +319,7 @@ export function durationBin(ms: number): number {
   if (!Number.isFinite(ms) || ms < 1) {
     return 0;
   }
-  if (ms >= DURATION_HISTOGRAM_BOUNDS[DURATION_HISTOGRAM_BOUNDS.length - 1]!) {
+  if (ms >= DURATION_HISTOGRAM_BOUNDS[DURATION_HISTOGRAM_BOUNDS.length - 1]) {
     return last;
   }
 
@@ -382,7 +382,7 @@ export function addDuration(stats: DurationStats, ms: number): void {
   stats.maxMs = stats.count === 0 ? value : Math.max(stats.maxMs, value);
   stats.count++;
   stats.sumMs += value;
-  stats.histogram[durationBin(value)]!++;
+  stats.histogram[durationBin(value)]++;
 }
 
 /**
@@ -1457,6 +1457,7 @@ export class PendingBuffer<TEntry> {
       // caller's to hear about: swallowed, a write failing the same way every
       // second would look, from outside, like a queue with nothing to count.
       if (result.error !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows the stored value unchanged; callers match on its class or name
         throw result.error;
       }
     })().finally(() => {

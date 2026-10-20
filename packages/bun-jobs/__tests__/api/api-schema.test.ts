@@ -61,7 +61,7 @@ describe("schema builder", () => {
       additionalProperties: false,
     });
     expect(Object.isFrozen(schema.json)).toBe(true);
-    expect(Object.isFrozen(schema.json.properties!.tags!.items)).toBe(true);
+    expect(Object.isFrozen(schema.json.properties!.tags.items)).toBe(true);
   });
 
   it("implements Standard Schema V1", () => {
@@ -84,10 +84,10 @@ describe("schema builder", () => {
     expect(emitted.properties!.first).toEqual({
       $ref: "#/components/schemas/Item",
     });
-    expect(emitted.properties!.rest!.items).toEqual({
+    expect(emitted.properties!.rest.items).toEqual({
       $ref: "#/components/schemas/Item",
     });
-    expect(emitted.properties!.maybe!.anyOf![0]).toEqual({
+    expect(emitted.properties!.maybe.anyOf![0]).toEqual({
       $ref: "#/components/schemas/Item",
     });
     expect([...components.keys()]).toEqual(["Item"]);
@@ -131,7 +131,7 @@ describe("schema builder", () => {
 
     // The cycle is in the node itself, so validation follows it as deep as
     // the value goes, with paths the whole way down.
-    expect(Tree.json.properties!.children!.items).toBe(Tree.json);
+    expect(Tree.json.properties!.children.items).toBe(Tree.json);
     expect(Object.isFrozen(Tree.json)).toBe(true);
     const tree = {
       label: "a",
@@ -154,7 +154,7 @@ describe("schema builder", () => {
     });
     expect([...components.keys()].sort()).toEqual(["Leaf", "Tree"]);
     const emitted = components.get("Tree")!;
-    expect(emitted.properties!.children!.items).toEqual({
+    expect(emitted.properties!.children.items).toEqual({
       $ref: "#/components/schemas/Tree",
     });
     expect(emitted.properties!.leaf).toEqual({
@@ -313,10 +313,10 @@ describe("validation", () => {
     const fromJson = {
       ...Frozen.json,
       properties: {
-        page: { ...Frozen.json.properties!.page!, default: { size: 5 } },
+        page: { ...Frozen.json.properties!.page, default: { size: 5 } },
       },
     };
-    const first = valueOf(validateJson(fromJson, {} as unknown) as never) as {
+    const first = valueOf(validateJson(fromJson, {}) as never) as {
       page: { size: number };
     };
     first.page.size = 99;

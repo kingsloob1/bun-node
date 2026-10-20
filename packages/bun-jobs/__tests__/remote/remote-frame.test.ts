@@ -66,7 +66,7 @@ function encode(
   }> = {},
 ): Promise<string> {
   return encodeTextFrame(message, {
-    key: KEY!,
+    key: KEY,
     sid: SID,
     dir: "e",
     seq: 1,
@@ -77,7 +77,7 @@ function encode(
 
 /** Decodes as the gateway would, for the executor's frames in the test session. */
 function decode(line: string, over: Partial<DecodeTextFrameOptions> = {}) {
-  return decodeTextFrame(line, { keys: [KEY!], sid: SID, dir: "e", ...over });
+  return decodeTextFrame(line, { keys: [KEY], sid: SID, dir: "e", ...over });
 }
 
 /**
@@ -86,7 +86,7 @@ function decode(line: string, over: Partial<DecodeTextFrameOptions> = {}) {
  */
 function rawFrame(json: string, seq: number, sid: string): string {
   const input = frameMacInput(sid, "e", String(seq), "0", json);
-  const mac = toBase64Url(nodeHmacSha256(KEY!, input) as Uint8Array);
+  const mac = toBase64Url(nodeHmacSha256(KEY, input) as Uint8Array);
   return `BJ1 ${seq} 0 ${mac} ${json}`;
 }
 
@@ -99,10 +99,10 @@ function fields(line: string): [string, string, string, string, string] {
     at.push(from);
   }
   return [
-    line.slice(0, at[0]! - 1),
-    line.slice(at[0], at[1]! - 1),
-    line.slice(at[1], at[2]! - 1),
-    line.slice(at[2], at[3]! - 1),
+    line.slice(0, at[0] - 1),
+    line.slice(at[0], at[1] - 1),
+    line.slice(at[1], at[2] - 1),
+    line.slice(at[2], at[3] - 1),
     line.slice(at[3]),
   ];
 }
@@ -202,9 +202,9 @@ describe("round trips", () => {
   it("verifies under a rotated key and says which", async () => {
     const [oldKey, newKey] = keysOf(["old-frame-key", "new-frame-key"]);
     const line = await encode(ACCEPTED, { key: newKey });
-    const result = await decode(line, { keys: [oldKey!, newKey!] });
+    const result = await decode(line, { keys: [oldKey, newKey] });
     expect(result.ok && result.frame.keyIndex).toBe(1);
-    expect((await decode(line, { keys: [oldKey!] })).ok).toBe(false);
+    expect((await decode(line, { keys: [oldKey] })).ok).toBe(false);
   });
 });
 
@@ -369,7 +369,7 @@ describe("malformed frames are refused before the MAC is computed", () => {
   it("the MAC's unused low bits must be zero: one spelling per MAC", async () => {
     const line = await encode(ACCEPTED);
     const mac = fields(line)[3];
-    const last = mac[42]!;
+    const last = mac[42];
     const alphabet =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     const value = alphabet.indexOf(last);

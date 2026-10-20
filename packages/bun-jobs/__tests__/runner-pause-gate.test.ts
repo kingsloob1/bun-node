@@ -440,7 +440,7 @@ function gateSuite(
       expect([...dequeued].sort()).toEqual(
         forced.map((trigger) => trigger.id).sort(),
       );
-      expect([...(await queuedMarkers(owners[0]!))].sort()).toEqual([
+      expect([...(await queuedMarkers(owners[0]))].sort()).toEqual([
         "f1",
         "f2",
       ]);

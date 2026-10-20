@@ -34,6 +34,9 @@ import { BunJobs, BunQueue, jobsFromContext, MemoryDriver } from "../lib/index";
  * suppresses only the line after it, so a call prettier wraps would put the
  * error out of its reach and turn a live control into an unused-directive
  * error instead. Each `Equal` gets its own alias for the same reason.
+ *
+ * The calls are type checks and are never run, so a call whose promise is
+ * not needed is marked `void` rather than awaited.
  */
 
 /** Resolves to `true` only when `A` and `B` are the same type. */
@@ -121,13 +124,13 @@ export async function typedRegistryChecks(): Promise<void> {
   const _wrongResult: Job<{ month: string }, number> = report;
 
   // @ts-expect-error a name the map does not declare
-  jobs.now("nope");
+  void jobs.now("nope");
 
   // @ts-expect-error month is a string
-  jobs.now("send-report", { month: 8 });
+  void jobs.now("send-report", { month: 8 });
 
   // @ts-expect-error the payload has no `year`
-  jobs.now("send-report", { year: "2026" });
+  void jobs.now("send-report", { year: "2026" });
 
   /* --- schedule / run / process -------------------------------------- */
 
@@ -217,13 +220,13 @@ export async function typedRegistryChecks(): Promise<void> {
   type _AddTyped = Expect<AddTyped>;
 
   // @ts-expect-error a name the map does not declare
-  registry.add("nope", { month: "x" });
+  void registry.add("nope", { month: "x" });
 
   // @ts-expect-error month is a string
-  registry.add("send-report", { month: 8 });
+  void registry.add("send-report", { month: 8 });
 
   // @ts-expect-error an unregistered payload must name its type
-  registry.add("scratch", { note: "one off" });
+  void registry.add("scratch", { note: "one off" });
 
   // The escape hatch: the name and its payload type, both explicit.
   const _scratch = await registry.add<"scratch", { note: string }>("scratch", {
@@ -243,7 +246,7 @@ export async function typedRegistryChecks(): Promise<void> {
   await mail.add("welcome", { to: "ops" });
 
   // @ts-expect-error the named payload is still checked
-  mail.add("welcome", { to: 7 });
+  void mail.add("welcome", { to: 7 });
 }
 
 /** A typed context on the default registry queue, for the checks below. */
@@ -258,10 +261,10 @@ export async function requiredDataChecks(): Promise<void> {
   /* --- r1: now() requires a payload unless leaving it out is valid --- */
 
   // @ts-expect-error send-report's payload is required
-  jobs.now("send-report");
+  void jobs.now("send-report");
 
   // @ts-expect-error nor may it be passed as undefined to reach the options
-  jobs.now("resize-image", undefined, { priority: 1 });
+  void jobs.now("resize-image", undefined, { priority: 1 });
 
   // A job declared with no payload needs none, with or without options.
   const _reindex = await jobs.now("reindex");
@@ -287,7 +290,7 @@ export async function requiredDataChecks(): Promise<void> {
   await registry.add("reindex", undefined, { priority: 2 });
 
   // @ts-expect-error send-report's payload is required here too
-  registry.add("send-report");
+  void registry.add("send-report");
 }
 
 export async function registryQueueChecks(): Promise<void> {
@@ -363,16 +366,16 @@ export async function registryQueueChecks(): Promise<void> {
   }
 
   // @ts-expect-error a declared name cannot take another payload through it
-  registry.add<"send-report", Note>("send-report", { note: "x" });
+  void registry.add<"send-report", Note>("send-report", { note: "x" });
 
   // @ts-expect-error nor can a plain string, which could be a declared name
-  registry.add<string, Note>("send-report", { note: "x" });
+  void registry.add<string, Note>("send-report", { note: "x" });
 
   // @ts-expect-error the payload type is required, not left to default
-  registry.add<"audit">("audit", { note: "x" });
+  void registry.add<"audit">("audit", { note: "x" });
 
   // @ts-expect-error and the payload it names is checked
-  registry.add<"audit", Note>("audit", { note: 1 });
+  void registry.add<"audit", Note>("audit", { note: 1 });
 
   const _audit = await registry.add<"audit", Note, number>("audit", {
     note: "x",
@@ -418,16 +421,16 @@ export async function unionNameChecks(): Promise<void> {
   type _MixedData = Expect<MixedData>;
 
   // @ts-expect-error send-report's payload is not a valid reindex payload
-  jobs.now(mixed, { month: "x" });
+  void jobs.now(mixed, { month: "x" });
 
   // @ts-expect-error nor is leaving it out valid for send-report
-  jobs.now(mixed);
+  void jobs.now(mixed);
 
   // @ts-expect-error the registry queue's add refuses it as well
-  registry.add(mixed, { month: "x" });
+  void registry.add(mixed, { month: "x" });
 
   // @ts-expect-error one shape is not enough when the other differs
-  jobs.now(shapes, { month: "x" });
+  void jobs.now(shapes, { month: "x" });
 
   // @ts-expect-error schedule and create use the same payload rule
   jobs.create(mixed, { month: "x" });
@@ -583,7 +586,7 @@ export async function updateDisplayChecks(): Promise<void> {
   await shapes.update("id", { data: { id: "x", width: 1 } });
 
   // @ts-expect-error one name's payload alone may be the other name's job
-  shapes.update("id", { data: { id: "x" } });
+  void shapes.update("id", { data: { id: "x" } });
 
   // `void` cannot be flattened into an object without dropping it, so it
   // stays beside the flattened object half.
@@ -594,7 +597,7 @@ export async function updateDisplayChecks(): Promise<void> {
   const withVoid = new BunJobs<ShapesAndVoid>({ namespace: "s" }).queue("jobs");
 
   // @ts-expect-error no object is also void
-  withVoid.update("id", { data: { id: "x", width: 1 } });
+  void withVoid.update("id", { data: { id: "x", width: 1 } });
 }
 
 export async function correlatedVerbChecks(): Promise<void> {
@@ -622,28 +625,28 @@ export async function correlatedVerbChecks(): Promise<void> {
   type _BulkTyped = Expect<BulkTyped>;
 
   // @ts-expect-error excess properties are still caught per entry
-  registry.addBulk([{ name: "reindex", extra: 1 }]);
+  void registry.addBulk([{ name: "reindex", extra: 1 }]);
 
   // @ts-expect-error reindex carries no month
-  registry.addBulk([{ name: "reindex", data: { month: "x" } }]);
+  void registry.addBulk([{ name: "reindex", data: { month: "x" } }]);
 
   // @ts-expect-error send-report's payload is required in bulk too
-  registry.addBulk([{ name: "send-report" }]);
+  void registry.addBulk([{ name: "send-report" }]);
 
   // @ts-expect-error a name the map does not declare
-  registry.addBulk([{ name: "nope", data: 1 }]);
+  void registry.addBulk([{ name: "nope", data: 1 }]);
 
   // @ts-expect-error a union name's payload must suit every member
-  registry.addBulk([{ name: mixed, data: { month: "x" } }]);
+  void registry.addBulk([{ name: mixed, data: { month: "x" } }]);
 
   // A union name whose members share a shape takes that shape.
   await registry.addBulk([{ name: same, data: { userId: "u1" } }]);
 
   // @ts-expect-error and still checks it
-  registry.addBulk([{ name: same, data: { userId: 1 } }]);
+  void registry.addBulk([{ name: same, data: { userId: 1 } }]);
 
   // @ts-expect-error each entry is checked on its own, not against the first
-  registry.addBulk([{ name: "reindex" }, { name: "send-report" }]);
+  void registry.addBulk([{ name: "reindex" }, { name: "send-report" }]);
 
   // An entry's type, spelled out, discriminates the same way.
   // (Asserted, not annotated: an annotation would narrow it to reindex's.)
@@ -695,20 +698,23 @@ export async function correlatedVerbChecks(): Promise<void> {
   type _UnionTop = Expect<UnionTop>;
 
   // @ts-expect-error the top of the flow is checked
-  registry.addFlow({ name: "send-report", data: { month: 8 } });
+  void registry.addFlow({ name: "send-report", data: { month: 8 } });
 
   // @ts-expect-error and must be a declared name
-  registry.addFlow({ name: "nope", data: 1 });
+  void registry.addFlow({ name: "nope", data: 1 });
 
   const wrongChild = { name: "reindex", data: { month: "x" } } as const;
 
   // @ts-expect-error a child on the registry queue is checked too
-  registry.addFlow({ name: "reindex", children: [wrongChild] });
+  void registry.addFlow({ name: "reindex", children: [wrongChild] });
 
-  // @ts-expect-error an undeclared child needs a queue of its own
-  registry.addFlow({ name: "reindex", children: [{ name: "nope", data: 1 }] });
+  void registry.addFlow({
+    name: "reindex",
+    // @ts-expect-error an undeclared child needs a queue of its own
+    children: [{ name: "nope", data: 1 }],
+  });
 
-  registry.addFlow({
+  void registry.addFlow({
     name: "reindex",
     children: [
       {
@@ -720,7 +726,7 @@ export async function correlatedVerbChecks(): Promise<void> {
   });
 
   // @ts-expect-error a union-named node's payload must suit every member
-  registry.addFlow({ name: mixed, data: { month: "x" } });
+  void registry.addFlow({ name: mixed, data: { month: "x" } });
 
   // Below a node on another queue nothing is checked: it inherits that queue.
   await registry.addFlow({
@@ -742,17 +748,17 @@ export async function correlatedVerbChecks(): Promise<void> {
   type _UpdateTyped = Expect<UpdateTyped>;
 
   // @ts-expect-error valid for send-report, but the job might be reindex
-  registry.update("id", { data: { month: "x" } });
+  void registry.update("id", { data: { month: "x" } });
 
   // @ts-expect-error nor may reindex's void stand in for send-report's month
-  registry.update("id", { data: undefined as void });
+  void registry.update("id", { data: undefined as void });
 
   // A map whose payloads all agree can write one.
   const uniform = new BunJobs<Uniform>({ namespace: "u" }).queue("jobs");
   await uniform.update("id", { data: { id: "x" } });
 
   // @ts-expect-error and the shape they agree on is still checked
-  uniform.update("id", { data: { id: 1 } });
+  void uniform.update("id", { data: { id: 1 } });
 
   // With the job in hand, narrowing its name says which payload it takes:
   // `updateData` on the narrowed job is checked against that name's.
@@ -788,7 +794,7 @@ export async function correlatedVerbChecks(): Promise<void> {
   });
 
   // @ts-expect-error unnarrowed, the payload could be reindex's void
-  registry.retryAll("dead", { filter: (job) => job.data.month === "x" });
+  void registry.retryAll("dead", { filter: (job) => job.data.month === "x" });
 
   // `name` narrows the job `filter` is handed, with no check of its own.
   await registry.retryAll("dead", {
@@ -800,7 +806,7 @@ export async function correlatedVerbChecks(): Promise<void> {
     },
   });
 
-  registry.retryAll("dead", {
+  void registry.retryAll("dead", {
     name: "reindex",
     // @ts-expect-error reindex's payload has no month
     filter: (job) => job.data.month === "x",
@@ -828,7 +834,7 @@ export async function correlatedVerbChecks(): Promise<void> {
     },
   });
 
-  registry.retryAll("dead", {
+  void registry.retryAll("dead", {
     name: someName,
     // @ts-expect-error a plain string does not narrow to send-report's payload
     filter: (job) => job.data.month === "x",
@@ -1020,7 +1026,7 @@ export async function backCompatChecks(): Promise<void> {
   type _DirectLoose = Expect<DirectLoose>;
 
   // @ts-expect-error the escape hatch exists only on a registry-bound queue
-  direct.add<"x", { a: number }>("x", { a: 1 });
+  void direct.add<"x", { a: number }>("x", { a: 1 });
 
   /* --- the untyped context is exactly what it was ---------------------- */
 

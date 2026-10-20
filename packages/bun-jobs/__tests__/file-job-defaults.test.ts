@@ -227,7 +227,7 @@ describe("file driver: rewritePendingOptions", () => {
     const heldDir = join(root, q.ns, "queues", q.queue, "held");
     await mkdir(heldDir, { recursive: true });
     const hold = join(heldDir, `${Date.now()}.waiting.${marker}`);
-    await rename(join(dir, marker!), hold);
+    await rename(join(dir, marker), hold);
 
     const walking = driver.rewritePendingOptions(q, request({ attempts: 7 }));
     await Bun.sleep(40);

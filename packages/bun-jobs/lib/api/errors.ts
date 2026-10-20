@@ -546,7 +546,7 @@ function classify(error: unknown): Classified {
   return {
     status,
     code: FOREIGN_CODES[status] ?? `HTTP_${status}`,
-    detail: exposed ? (error as Error).message : undefined,
+    detail: exposed ? error.message : undefined,
   };
 }
 

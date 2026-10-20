@@ -324,6 +324,7 @@ verbRouter[dynamicVerb]("/doc", (_req, res) => {
 
 // ...and the union assigns to the shared untyped signature, without a cast,
 // which holds even should the overload lists ever diverge per verb.
+// eslint-disable-next-line @typescript-eslint/unbound-method -- oven-sh/bun#45784: a union-keyed method; it lands on a `this: BunRouter` signature and is called with .call below
 const registerOnRouter: RouterVerbMethod<BunRouter> = verbRouter[dynamicVerb];
 const _returnedRouter = registerOnRouter.call(
   verbRouter,
@@ -337,10 +338,12 @@ const _returnedRouter = registerOnRouter.call(
 );
 type _returnsRouter = Expect<Equal<typeof _returnedRouter, BunRouter>>;
 // `all` shares the signature too.
+// eslint-disable-next-line @typescript-eslint/unbound-method -- a type assertion: the method lands on a `this: BunRouter` signature, never called detached
 export const registerAll: RouterVerbMethod<BunRouter> = verbRouter.all;
 
 declare const verbAdapter: BunHttpAdapter;
 const registerOnAdapter: RouterVerbMethod<BunHttpAdapter> =
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- oven-sh/bun#45784: a union-keyed method; it lands on a `this: BunHttpAdapter` signature and is called with .call below
   verbAdapter[dynamicVerb];
 const _returnedAdapter = registerOnAdapter.call(verbAdapter, "/doc", () => {});
 type _returnsAdapter = Expect<Equal<typeof _returnedAdapter, BunHttpAdapter>>;
@@ -359,4 +362,5 @@ registerOnRouter("/doc", () => {});
 // @ts-expect-error negative control: `this` must be the router it came from
 registerOnAdapter.call(verbRouter, "/doc", () => {});
 // @ts-expect-error negative control: a non-verb key's method is not a verb method
+// eslint-disable-next-line @typescript-eslint/unbound-method -- a negative type control, never called
 export const notAVerbMethod: RouterVerbMethod<BunRouter> = verbRouter.routes;

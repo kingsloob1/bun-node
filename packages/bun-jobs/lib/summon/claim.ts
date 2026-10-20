@@ -418,7 +418,7 @@ export async function markSummonClaimExit(
     if (index === -1) {
       return "not-held";
     }
-    const existing = claim.holders[index]!.exit;
+    const existing = claim.holders[index].exit;
     if (
       existing !== undefined &&
       (!replace || (existing.code === 1 && exit.code === 0))

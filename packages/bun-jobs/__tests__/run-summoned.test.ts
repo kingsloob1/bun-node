@@ -111,7 +111,7 @@ function start(env: Record<string, string>, args: string[] = []): Fixture {
   });
   const lines: Line[] = [];
   const waiters: {
-    match: (line: Line) => boolean;
+    matches: (line: Line) => boolean;
     resolve: (line: Line) => void;
   }[] = [];
 
@@ -133,7 +133,7 @@ function start(env: Record<string, string>, args: string[] = []): Fixture {
         const line = JSON.parse(text) as Line;
         lines.push(line);
         for (const waiter of [...waiters]) {
-          if (waiter.match(line)) {
+          if (waiter.matches(line)) {
             waiters.splice(waiters.indexOf(waiter), 1);
             waiter.resolve(line);
           }
@@ -160,7 +160,7 @@ function start(env: Record<string, string>, args: string[] = []): Fixture {
           );
         }, timeout);
         waiters.push({
-          match,
+          matches: match,
           resolve: (line) => {
             clearTimeout(timer);
             resolve(line);

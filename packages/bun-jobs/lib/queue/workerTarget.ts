@@ -17,6 +17,7 @@ import type {
   ContainerTarget,
   ResolvedContainerTarget,
 } from "./container/target";
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- JobDefinition is used by a JSDoc {@link} below
 import type { JobDefinition, JobDefinitions } from "./definitions";
 import type { Job } from "./Job";
 import type { JobProcessor, ProcessorContext } from "./types";
@@ -355,7 +356,7 @@ interface ProcessorDefinition {
    * then checked both ways, so a handler typed for its own data fits, and an
    * inline one is still handed a `Job` rather than `never`.
    */
-  // eslint-disable-next-line @typescript-eslint/method-signature-style
+  // eslint-disable-next-line @typescript-eslint/method-signature-style -- the method form keeps the parameter bivariant, so a handler typed for its own data fits
   handler(job: Job<unknown, unknown>, ctx: ProcessorContext): unknown;
 }
 
@@ -402,6 +403,7 @@ export function defineProcessors(
     // cannot know; it hands every one the job it was given.
     byName.set(
       definition.name,
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- a (job, context) function; this dispatch never bound `this`, and binding it now would change behaviour
       definition.handler as JobProcessor<unknown, unknown>,
     );
   }
@@ -458,7 +460,7 @@ function describe(value: unknown): string {
     return `"${value}"`;
   }
   if (value && typeof value === "object" && "kind" in value) {
-    return `{ kind: ${describe((value as { kind: unknown }).kind)} }`;
+    return `{ kind: ${describe(value.kind)} }`;
   }
   return String(value);
 }

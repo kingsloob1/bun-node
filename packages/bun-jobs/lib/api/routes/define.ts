@@ -540,6 +540,7 @@ export function registerRoutes(
     handlers.push(respond(def, services));
 
     const verb = def.method.toLowerCase() as Lowercase<RouteMethod>;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- oven-sh/bun#45784: a union-keyed method, bound by .call below
     const register = router[verb] as unknown as (
       path: string,
       ...callbacks: RouterHandler[]

@@ -181,7 +181,7 @@ export async function closeDuringStart(
 
     /** Holds the first call to `name` that `when` accepts, until the gate opens. */
     const hold = (name: string, when: (args: unknown[]) => boolean) => {
-      const real = calls[name]!.bind(driver);
+      const real = calls[name].bind(driver);
       let first = true;
       calls[name] = async (...args: unknown[]) => {
         if (first && when(args)) {
@@ -213,7 +213,7 @@ export async function closeDuringStart(
     });
 
     for (const name of methodNames(driver)) {
-      const real = calls[name]!.bind(driver);
+      const real = calls[name].bind(driver);
       calls[name] = (...args: unknown[]) => {
         if (closeCalled && RUNNING_CALLS.has(name)) {
           callsAfterClose.push(name);
@@ -288,7 +288,7 @@ export async function closeDuringStart(
 }
 
 if (import.meta.main) {
-  const options = JSON.parse(process.argv[2]!) as CloseDuringStartOptions;
+  const options = JSON.parse(process.argv[2]) as CloseDuringStartOptions;
   const observed = await closeDuringStart(options);
   // eslint-disable-next-line no-console -- the parent reads this line.
   console.log(

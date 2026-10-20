@@ -248,8 +248,8 @@ describe("queue job defaults: precedence", () => {
     });
 
     expect(job.opts.attempts).toBe(3);
-    expect(child!.job.opts.attempts).toBe(8);
-    expect(child!.job.maxAttempts).toBe(8);
+    expect(child.job.opts.attempts).toBe(8);
+    expect(child.job.maxAttempts).toBe(8);
   });
 
   it("reaches debounced and throttled adds", async () => {
@@ -340,12 +340,12 @@ describe("queue job defaults: the producer's cache", () => {
         // The first occurrence has the override; the series does not.
         expect(first.opts).toMatchObject({ attempts: 4, timeout: 70 });
         const [series] = await driver.listRepeats(queue.ref);
-        expect(series!.opts).toMatchObject({
+        expect(series.opts).toMatchObject({
           attempts: 1,
           timeout: 50,
           priority: 2,
         });
-        expect(optsOf(series!).explicit).toBe(JOB_OPTION_BITS.priority);
+        expect(optsOf(series).explicit).toBe(JOB_OPTION_BITS.priority);
 
         let completed = 0;
         const worker = new BunQueueWorker(
@@ -470,7 +470,7 @@ describe("queue job defaults: the producer's cache", () => {
     const queue = makeQueue(driver, namespace);
     await queue.add("fragile", {}, { repeat: { every: 60_000 } });
     const [before] = await queue.listRepeatables();
-    await driver.removeJob(queue.ref, before!.nextJobId!);
+    await driver.removeJob(queue.ref, before.nextJobId!);
     await queue.setJobDefaults({ attempts: 11 });
 
     const worker = new BunQueueWorker("jdef", async () => null, {
@@ -505,9 +505,9 @@ describe("queue job defaults: the producer's cache", () => {
     await queue.add("legacy", {}, { repeat: { every: 60_000 } });
     const [series] = await driver.listRepeats(queue.ref);
     // As an older version stored it: no mask.
-    const { explicit: _explicit, ...unmarked } = optsOf(series!);
-    await driver.upsertRepeat(queue.ref, { ...series!, opts: unmarked });
-    await driver.removeJob(queue.ref, series!.nextJobId!);
+    const { explicit: _explicit, ...unmarked } = optsOf(series);
+    await driver.upsertRepeat(queue.ref, { ...series, opts: unmarked });
+    await driver.removeJob(queue.ref, series.nextJobId!);
     await queue.setJobDefaults({ attempts: 11 });
 
     const worker = new BunQueueWorker("jdef", async () => null, {
@@ -614,7 +614,7 @@ describe("queue job defaults: apply", () => {
 
   for (const make of [
     { name: "memory", driver: async () => new MemoryDriver() },
-    { name: "file", driver: async () => await backends[1]!.make() },
+    { name: "file", driver: async () => await backends[1].make() },
   ]) {
     it(`rewrites pending jobs, keeping what their add passed (${make.name})`, async () => {
       const { queue, driver, defaulted, explicit, delayed } = await seeded(

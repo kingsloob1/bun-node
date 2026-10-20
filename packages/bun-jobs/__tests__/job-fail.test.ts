@@ -236,7 +236,7 @@ describe("failing a job from outside its processor", () => {
       data: { v: 0 },
       children: [{ name: "child", data: { v: 1 }, queue: "kids" }],
     });
-    const child = flow.children[0]!.job;
+    const child = flow.children[0].job;
     expect((await queue.getJob(flow.job.id))?.state).toBe("waiting-children");
 
     expect(await child.fail("child gave up")).toBe(true);

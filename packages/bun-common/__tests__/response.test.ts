@@ -274,7 +274,7 @@ describe("BunResponse: send with Bun-native body types", () => {
     const res = await makeResponse();
     res.write(Buffer.from([104, 105]));
     res.write(new Uint8Array([33]));
-    res.write(new Uint8Array([63]).buffer as ArrayBuffer);
+    res.write(new Uint8Array([63]).buffer);
 
     const native = await res.getNativeResponse(1000);
     const reader = (
@@ -1061,6 +1061,7 @@ describe("BunResponse: Express parity", () => {
     const res = await makeResponse();
     res.write("a");
     // `Reflect.apply`: plain JS can pass what the types rule out.
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Reflect.apply calls it with `res` as `this`
     const error = thrownBy(() => Reflect.apply(res.end, res, [{ a: 1 }]));
     expect(error).toBeInstanceOf(TypeError);
     expect(error).toMatchObject({ code: "ERR_INVALID_ARG_TYPE" });
@@ -1076,6 +1077,7 @@ describe("BunResponse: Express parity", () => {
 
   it("end(object) without a stream throws too, sending nothing", async () => {
     const res = await makeResponse();
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Reflect.apply calls it with `res` as `this`
     const error = thrownBy(() => Reflect.apply(res.end, res, [{ a: 1 }]));
     expect(error).toMatchObject({ code: "ERR_INVALID_ARG_TYPE" });
     expect(res.headersSent).toBe(false);
@@ -1083,12 +1085,14 @@ describe("BunResponse: Express parity", () => {
 
   it("write() rejects a non-chunk as Node: ERR_INVALID_ARG_TYPE, null ERR_STREAM_NULL_VALUES", async () => {
     const res = await makeResponse();
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Reflect.apply calls it with `res` as `this`
     const number = thrownBy(() => Reflect.apply(res.write, res, [123]));
     expect(number).toBeInstanceOf(TypeError);
     expect(number).toMatchObject({ code: "ERR_INVALID_ARG_TYPE" });
     expect((number as TypeError).message).toContain(
       "Received type number (123)",
     );
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Reflect.apply calls it with `res` as `this`
     const nullChunk = thrownBy(() => Reflect.apply(res.write, res, [null]));
     expect(nullChunk).toMatchObject({ code: "ERR_STREAM_NULL_VALUES" });
     expect(res.isLongLived).toBe(false);

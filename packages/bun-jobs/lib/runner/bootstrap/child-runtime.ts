@@ -514,6 +514,7 @@ function isolatedJob(
         try {
           resolve(readReply(operation, reply));
         } catch (error) {
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the reason passes through exactly as it was given
           reject(error);
         }
       });

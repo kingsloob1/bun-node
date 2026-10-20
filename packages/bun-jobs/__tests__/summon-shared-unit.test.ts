@@ -172,8 +172,8 @@ describe("one queue after the #home/#queues split (A7 back-compat)", () => {
     const [request] = calls;
     // attemptId(namespace, "emails", SNAP_EPOCH, 2): the queue, never a
     // group key, and the marker's own queue-state entry.
-    expect(request!.id).toBe("sm_irzjyqfpbqk7cg5wcvap7o47bj");
-    expect([...request!.argv]).toEqual([
+    expect(request.id).toBe("sm_irzjyqfpbqk7cg5wcvap7o47bj");
+    expect([...request.argv]).toEqual([
       "--bun-jobs-summon-id=sm_irzjyqfpbqk7cg5wcvap7o47bj",
       "--bun-jobs-summon-kind=fake",
       "--bun-jobs-summon-mode=exit-on-idle",
@@ -182,10 +182,10 @@ describe("one queue after the #home/#queues split (A7 back-compat)", () => {
       "--bun-jobs-summon-max-lifetime-ms=3600000",
       "--bun-jobs-summon-grace-ms=10000",
     ]);
-    expect(request!.queue).toBe("emails");
-    expect(request!.queues).toEqual(["emails"]);
-    expect("group" in request!).toBe(false);
-    expect("demands" in request!).toBe(false);
+    expect(request.queue).toBe("emails");
+    expect(request.queues).toEqual(["emails"]);
+    expect("group" in request).toBe(false);
+    expect("demands" in request).toBe(false);
     const stored = await driver.getQueueState!(
       { ns: namespace, queue: "emails" },
       SUMMON_MARKER,
@@ -543,7 +543,7 @@ describe("shared unit: the group's entry is its marker", () => {
     // The group-entry convention: the limits, here the group's defaults.
     expect(after.value.limits).toEqual({ perHour: 30, perDay: 300 });
     // The attempt id is the group's: attemptId(ns, "group:media", epoch, v).
-    expect(calls[0]!.id).toBe(
+    expect(calls[0].id).toBe(
       attemptId(
         namespace,
         "group:media",
@@ -551,7 +551,7 @@ describe("shared unit: the group's entry is its marker", () => {
         before.version + 1,
       ),
     );
-    expect(after.value.pending[0].id).toBe(calls[0]!.id);
+    expect(after.value.pending[0].id).toBe(calls[0].id);
     // No marker on a member queue, and no pseudo-queue made a queue.
     expect(
       await driver.getQueueState!(
@@ -976,8 +976,8 @@ describe("shared unit: combined demand (§4.4)", () => {
     );
     expect(await controller.check()).toMatchObject({ action: "summoned" });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.count).toBe(3);
-    expect(calls[0]!.target).toBe(3);
+    expect(calls[0].count).toBe(3);
+    expect(calls[0].target).toBe(3);
     // The rest are on their way: nothing more for either queue.
     expect(await controller.check()).toMatchObject({
       action: "skipped",
@@ -1104,23 +1104,23 @@ describe("shared unit: combined demand (§4.4)", () => {
     );
     expect(await controller.check()).toMatchObject({ action: "summoned" });
     const [request] = calls;
-    expect(request!.queue).toBe("renders");
-    expect(request!.queues).toEqual(["renders", "thumbs", "__proto__"]);
-    expect(request!.group).toBe("media");
-    expect(request!.argv).toContain("--bun-jobs-summon-group=media");
-    expect(request!.argv).toContain("--bun-jobs-summon-queue=__proto__");
+    expect(request.queue).toBe("renders");
+    expect(request.queues).toEqual(["renders", "thumbs", "__proto__"]);
+    expect(request.group).toBe("media");
+    expect(request.argv).toContain("--bun-jobs-summon-group=media");
+    expect(request.argv).toContain("--bun-jobs-summon-queue=__proto__");
     // renders has nothing; thumbs is the first of the starved.
-    expect(request!.demand.waiting).toBe(2);
-    const demands = request!.demands!;
+    expect(request.demand.waiting).toBe(2);
+    const demands = request.demands!;
     expect(Object.getPrototypeOf(demands)).toBeNull();
     expect(Object.isFrozen(demands)).toBe(true);
     expect(Object.keys(demands)).toEqual(["renders", "thumbs", "__proto__"]);
     expect(Object.hasOwn(demands, "__proto__")).toBe(true);
     // A queue named like the prototype key, read as the own key it is.
     const proto = "__proto__";
-    expect(demands[proto]!.waiting).toBe(1);
-    expect(demands.renders!.waiting).toBe(0);
-    expect(demands.thumbs!.waiting).toBe(2);
+    expect(demands[proto].waiting).toBe(1);
+    expect(demands.renders.waiting).toBe(0);
+    expect(demands.thumbs.waiting).toBe(2);
     // Its share is an own key of the stored entry, not a prototype.
     const shares = (await groupEntry(driver, namespace))!.value.queues;
     expect(Object.hasOwn(shares, proto)).toBe(true);
@@ -1174,8 +1174,8 @@ describe("shared unit: combined demand (§4.4)", () => {
     await seed(driver, namespace, "thumbs", 1);
     expect(await controller.check()).toMatchObject({ action: "summoned" });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.count).toBe(1);
-    expect(calls[0]!.demand.waiting).toBe(1);
+    expect(calls[0].count).toBe(1);
+    expect(calls[0].demand.waiting).toBe(1);
   });
 });
 
@@ -1226,9 +1226,9 @@ describe("shared unit: triggers and events (§4.6)", () => {
     await waitUntil(() => calls.length > 0, 5_000);
     await Bun.sleep(200);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.reason).toBe("add");
+    expect(calls[0].reason).toBe("add");
     // An add on a queue the unit does not serve triggers nothing.
-    await queues[3]!.add("c", {});
+    await queues[3].add("c", {});
     await Bun.sleep(200);
     expect(calls).toHaveLength(1);
     await controller.close();
@@ -1308,15 +1308,15 @@ describe("shared unit: triggers and events (§4.6)", () => {
       controller[ATTACH_QUEUE](queue);
     }
     const before = reads;
-    await queues[0]!.add("a", {});
+    await queues[0].add("a", {});
     await Bun.sleep(200);
     // renders is served: its add returned at once, and no check ran.
     expect(reads).toBe(before);
     // thumbs is not: its add runs a check, which summons for it.
-    await queues[1]!.add("a", {});
+    await queues[1].add("a", {});
     await waitUntil(() => calls.length > 0, 5_000);
-    expect(calls[0]!.reason).toBe("add");
-    expect(calls[0]!.demand.waiting).toBe(1);
+    expect(calls[0].reason).toBe("add");
+    expect(calls[0].demand.waiting).toBe(1);
   });
 
   it("hooks a queue of its own name only in its own namespace", async () => {
@@ -1386,7 +1386,7 @@ describe("shared unit: triggers and events (§4.6)", () => {
         await Bun.sleep(300);
         expect(calls).toHaveLength(events ? 1 : 0);
         if (events) {
-          expect(calls[0]!.reason).toBe("event");
+          expect(calls[0].reason).toBe("event");
         }
         await controller.close();
         expect(unsubscribed.sort()).toEqual(
@@ -1443,7 +1443,7 @@ describe("shared unit: triggers and events (§4.6)", () => {
     ]);
     for (const one of published) {
       expect(one.payload).toMatchObject({
-        id: events[0]!.id,
+        id: events[0].id,
         outcome: "failed",
         group: "media",
       });
@@ -1522,7 +1522,7 @@ describe("shared unit: triggers and events (§4.6)", () => {
       "thumbs",
     ]);
     for (const copy of copies) {
-      expect(copy.payload).toEqual(exhausted[0]!);
+      expect(copy.payload).toEqual(exhausted[0]);
     }
   });
 
@@ -1564,9 +1564,9 @@ describe("shared unit: triggers and events (§4.6)", () => {
     await controller.close();
     expect(events).toHaveLength(2);
     const [first, second] = events;
-    expect(first!.eventId).toBeString();
-    expect(second!.eventId).toBeString();
-    expect(first!.eventId).not.toBe(second!.eventId);
+    expect(first.eventId).toBeString();
+    expect(second.eventId).toBeString();
+    expect(first.eventId).not.toBe(second.eventId);
     // Three copies of each, one per queue, all with the local event's id.
     expect(published).toHaveLength(6);
     for (const event of events) {
@@ -1741,14 +1741,14 @@ describe("shared unit: scale-down (B8)", () => {
     expect(releases).toHaveLength(1);
     // A group-keyed provider sees one unit: the same queues and group on
     // both calls.
-    expect({ queues: calls[0]!.queues, group: calls[0]!.group }).toEqual({
-      queues: releases[0]!.queues,
-      group: releases[0]!.group,
+    expect({ queues: calls[0].queues, group: calls[0].group }).toEqual({
+      queues: releases[0].queues,
+      group: releases[0].group,
     });
-    expect(releases[0]!.group).toBe("media");
+    expect(releases[0].group).toBe("media");
     // The worker reads it from argv, so it can find the unit's state in the
     // group's entry rather than the queue's `__win:summon`.
-    expect(calls[0]!.argv).toContain("--bun-jobs-summon-group=media");
+    expect(calls[0].argv).toContain("--bun-jobs-summon-group=media");
   });
 
   it("names no group on a per-queue controller's summon or release, even in a group", async () => {
@@ -1772,9 +1772,9 @@ describe("shared unit: scale-down (B8)", () => {
     await summonThenRelease(controller, renders);
     expect(calls).toHaveLength(1);
     expect(releases).toHaveLength(1);
-    expect("group" in calls[0]!).toBe(false);
-    expect("group" in releases[0]!).toBe(false);
-    expect(calls[0]!.argv.some((arg) => arg.includes("summon-group"))).toBe(
+    expect("group" in calls[0]).toBe(false);
+    expect("group" in releases[0]).toBe(false);
+    expect(calls[0].argv.some((arg) => arg.includes("summon-group"))).toBe(
       false,
     );
   });

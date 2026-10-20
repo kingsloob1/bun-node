@@ -1347,7 +1347,8 @@ describe("native: behaviour matches the documentation", () => {
   it("Semaphore keeps its peak at the limit through a lowering under load", async () => {
     const semaphore = new Semaphore(4);
     let active = 0;
-    let overLimit = false;
+    // Read only after the reset below, once the earlier holders have drained.
+    let overLimit: boolean;
 
     const task = () =>
       semaphore.runExclusive(async () => {

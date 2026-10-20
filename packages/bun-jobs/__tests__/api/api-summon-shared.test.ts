@@ -140,8 +140,8 @@ describe("the API over a shared unit", () => {
       local: true,
       kind: "fake",
     });
-    expect(Object.hasOwn(emails!, "queues")).toBe(false);
-    expect(Object.hasOwn(emails!, "group")).toBe(false);
+    expect(Object.hasOwn(emails, "queues")).toBe(false);
+    expect(Object.hasOwn(emails, "group")).toBe(false);
   });
 
   it("answers GET /queues/{member}/summon with the unit's status and its queues", async () => {
@@ -870,7 +870,7 @@ describe("coverage is best effort, and the list never reads it (review round)", 
     const reads = claimReads(jobs, () => true);
     const status = await jobs.summonController("thumbs").status();
     expect(status.pending).toHaveLength(1);
-    expect(Object.hasOwn(status.pending[0]!, "coverage")).toBe(false);
+    expect(Object.hasOwn(status.pending[0], "coverage")).toBe(false);
     expect(reads.count()).toBeGreaterThan(0);
     const h = harness({ jobs });
     const one = await h.call("GET", "/queues/thumbs/summon");
@@ -880,7 +880,7 @@ describe("coverage is best effort, and the list never reads it (review round)", 
     // Once the reads work again, coverage is back.
     reads.restore();
     expect(
-      (await jobs.summonController("thumbs").status()).pending[0]!.coverage,
+      (await jobs.summonController("thumbs").status()).pending[0].coverage,
     ).toBeDefined();
   });
 

@@ -193,7 +193,7 @@ describe("RouteTree over random tables", () => {
   const viaRegex = (routes: Route[], path: string) =>
     matching(routes, path).map((index) => [
       index,
-      [...(routes[index].pathRegexp as RegExp).exec(path)!],
+      [...routes[index].pathRegexp.exec(path)!],
     ]);
   const viaTree = (tree: RouteTree, routes: Route[], path: string) => {
     const found = tree.match(routes, path);

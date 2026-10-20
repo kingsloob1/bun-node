@@ -41,7 +41,7 @@ describe("redactingLogger", () => {
       error,
       short: "short stays",
     });
-    const event = events[0]!;
+    const event = events[0];
     const text = JSON.stringify({
       message: event.message,
       fields: event.fields,
@@ -72,10 +72,10 @@ describe("redactingLogger", () => {
         region: "eu-west-1",
       },
     );
-    expect(events[0]!.message).toBe(
+    expect(events[0].message).toBe(
       "GET https://[REDACTED]@db.example/x with Authorization: Bearer [REDACTED]",
     );
-    expect(events[0]!.fields).toEqual({
+    expect(events[0].fields).toEqual({
       apiToken: "[REDACTED]",
       region: "eu-west-1",
     });
@@ -99,7 +99,7 @@ describe("redactingLogger", () => {
       ...Object.fromEntries(masked.map((key) => [key, "v"])),
       ...Object.fromEntries(kept.map((key) => [key, "v"])),
     });
-    const fields = events[0]!.fields;
+    const fields = events[0].fields;
     for (const key of masked) {
       expect({ key, value: fields[key] }).toEqual({ key, value: "[REDACTED]" });
     }
@@ -138,8 +138,8 @@ describe("redactingLogger", () => {
     log.debug("dropped");
     log.info(new Error(SECRET));
     expect(events).toHaveLength(1);
-    expect(events[0]!.bindings).toEqual({ key: "[REDACTED]" });
-    expect(events[0]!.message).toBe("[REDACTED]");
+    expect(events[0].bindings).toEqual({ key: "[REDACTED]" });
+    expect(events[0].message).toBe("[REDACTED]");
     expect(log.isLevelEnabled("debug")).toBe(false);
   });
 
@@ -149,7 +149,7 @@ describe("redactingLogger", () => {
     log.info(
       "clone https://ghp_abcdef0123456789@github.com/x and report to https://0123abcd@o1.ingest.sentry.io/42",
     );
-    expect(events[0]!.message).toBe(
+    expect(events[0].message).toBe(
       "clone https://[REDACTED]@github.com/x and report to https://[REDACTED]@o1.ingest.sentry.io/42",
     );
   });
@@ -173,7 +173,7 @@ describe("redactingLogger", () => {
       settings: new Settings(),
       at: new Date(0),
     });
-    const fields = events[0]!.fields;
+    const fields = events[0].fields;
     expect(fields.url).toBe("https://[REDACTED]@db.example/x");
     expect(fields.headers).toEqual({
       authorization: "[REDACTED]",
@@ -197,7 +197,7 @@ describe("redactingLogger", () => {
       status: 403,
     });
     log.error("call failed", { error });
-    const logged = events[0]!.error as Error & Record<string, unknown>;
+    const logged = events[0].error as Error & Record<string, unknown>;
     expect(logged.apiKey).toBe("[REDACTED]");
     expect(logged.status).toBe(403);
     expect(logged.message).toBe("refused");
@@ -211,7 +211,7 @@ describe("redactingLogger", () => {
       deep = { next: deep };
     }
     log.info("deep", { deep });
-    const text = JSON.stringify(events[0]!.fields);
+    const text = JSON.stringify(events[0].fields);
     expect(text).not.toContain("the bottom");
     expect(text).toContain("[REDACTED]");
   });
@@ -242,16 +242,13 @@ describe("redactingLogger", () => {
       pair: [shared, shared],
     });
     // Serialisable: every cycle is cut, a shared (acyclic) object is not.
-    const size = JSON.stringify(events[0]!.fields).length;
-    expect((events[0]!.fields.plain as Record<string, unknown>).self).toBe(
+    const size = JSON.stringify(events[0].fields).length;
+    expect((events[0].fields.plain as Record<string, unknown>).self).toBe(
       "[Circular]",
     );
-    expect(events[0]!.fields.pair).toEqual([
-      { region: "eu" },
-      { region: "eu" },
-    ]);
+    expect(events[0].fields.pair).toEqual([{ region: "eu" }, { region: "eu" }]);
     expect(size).toBeLessThan(2_000);
-    expect(JSON.stringify(events[0]!.fields)).not.toMatch(/"t"|"p"/);
+    expect(JSON.stringify(events[0].fields)).not.toMatch(/"t"|"p"/);
   });
 
   it("never throws: a throwing getter, a revoked proxy (round 4 #4)", () => {
@@ -281,7 +278,7 @@ describe("redactingLogger", () => {
     expect(() =>
       log.info("odd", { instance, plain, proxy, list: [proxy] }),
     ).not.toThrow();
-    const fields = events[0]!.fields as Record<string, unknown> & {
+    const fields = events[0].fields as Record<string, unknown> & {
       instance: Record<string, unknown>;
       plain: Record<string, unknown>;
     };
@@ -305,7 +302,7 @@ describe("redactingLogger", () => {
       get: () => "getter-secret",
     });
     log.error("failed", { error });
-    const logged = events[0]!.error as Error & Record<string, unknown>;
+    const logged = events[0].error as Error & Record<string, unknown>;
     expect(logged.detail).toBe("with [REDACTED]");
     expect(logged.secret).toBe("[REDACTED]");
   });
@@ -313,7 +310,7 @@ describe("redactingLogger", () => {
   it("fails without the wrapper (the control)", () => {
     const { logger, events } = createTestLogger();
     logger.info(`calling with ${SECRET}`);
-    expect(events[0]!.message).toContain(SECRET);
+    expect(events[0].message).toContain(SECRET);
   });
 });
 
@@ -427,10 +424,10 @@ describe("a provider's call context, through a controller", () => {
     );
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain(PASSWORD);
-    expect(logged[0]!.message).toBe("starting with token [REDACTED]");
-    expect(logged[0]!.fields.db).toBe("postgres://[REDACTED]@db/x");
+    expect(logged[0].message).toBe("starting with token [REDACTED]");
+    expect(logged[0].fields.db).toBe("postgres://[REDACTED]@db/x");
     // Bound to the attempt, as before.
-    expect(logged[0]!.bindings.attempt).toBe(logged[0]!.fields.id);
+    expect(logged[0].bindings.attempt).toBe(logged[0].fields.id);
   });
 
   it("redacts a thrown provider error, its message and its cause, from the controller's own logs (round 4 #6)", async () => {

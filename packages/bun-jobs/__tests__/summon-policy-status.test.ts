@@ -541,13 +541,13 @@ describe("status().policy", () => {
     mutable.maxWorkers = 99;
     mutable.env.push("LEAKED");
     mutable.explicit.length = 0;
-    mutable.triggers[0]!.on = false;
+    mutable.triggers[0].on = false;
     mutable.backoff.initial = 1;
     const again = (await summon.status()).policy!;
     expect(again.maxWorkers).toBe(2);
     expect(again.env).toEqual(["A"]);
     expect(again.explicit).toEqual(["maxWorkers", "env"]);
-    expect(again.triggers[0]!.on).toBe(true);
+    expect(again.triggers[0].on).toBe(true);
     expect(again.backoff.initial).toBe(30_000);
   });
 });

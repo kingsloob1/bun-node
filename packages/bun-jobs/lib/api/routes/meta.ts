@@ -641,7 +641,7 @@ export function previewRoute(
           !namesParam(route.path, ":queue") &&
           !namesParam(route.path, ":runner"),
       );
-  const chosen = preferred ?? candidates[0]!;
+  const chosen = preferred ?? candidates[0];
   return {
     method: chosen.method,
     // `api.routes` holds full paths; `ctx.route.path` is the pattern under
@@ -711,7 +711,7 @@ export async function evaluatePermissions(
       return [action, (await decide(config, req, context)).allow] as const;
     }),
   );
-  return Object.fromEntries(answers) as Partial<Record<JobsApiAction, boolean>>;
+  return Object.fromEntries(answers);
 }
 
 /** `/meta` and `/meta/permissions`, routed in every mode. */

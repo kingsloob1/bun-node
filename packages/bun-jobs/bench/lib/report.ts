@@ -99,7 +99,7 @@ export function throughputTable(
 
     if (m.skipped ?? m.failed) {
       console.log(
-        cell(marked, columns[0]!) +
+        cell(marked, columns[0]) +
           (m.failed ? `FAILED: ${m.failed}` : `skipped: ${m.skipped}`),
       );
       continue;
@@ -113,11 +113,11 @@ export function throughputTable(
         : "—";
 
     console.log(
-      cell(marked, columns[0]!) +
-        cell(int(m.opsPerSec ?? 0), columns[1]!) +
-        cell(int(m.count), columns[2]!) +
-        cell(ms(m.elapsedMs), columns[3]!) +
-        cell(relative, columns[4]!),
+      cell(marked, columns[0]) +
+        cell(int(m.opsPerSec ?? 0), columns[1]) +
+        cell(int(m.count), columns[2]) +
+        cell(ms(m.elapsedMs), columns[3]) +
+        cell(relative, columns[4]),
     );
   }
 }
@@ -148,7 +148,7 @@ export function latencyTable(
 
     if (m.skipped ?? m.failed) {
       console.log(
-        cell(marked, columns[0]!) +
+        cell(marked, columns[0]) +
           (m.failed ? `FAILED: ${m.failed}` : `skipped: ${m.skipped}`),
       );
       continue;
@@ -156,12 +156,12 @@ export function latencyTable(
 
     const l = m.latency!;
     console.log(
-      cell(marked, columns[0]!) +
-        cell(ms(l.p50), columns[1]!) +
-        cell(ms(l.p90), columns[2]!) +
-        cell(ms(l.p99), columns[3]!) +
-        cell(ms(l.max), columns[4]!) +
-        cell(int(m.count), columns[5]!),
+      cell(marked, columns[0]) +
+        cell(ms(l.p50), columns[1]) +
+        cell(ms(l.p90), columns[2]) +
+        cell(ms(l.p99), columns[3]) +
+        cell(ms(l.max), columns[4]) +
+        cell(int(m.count), columns[5]),
     );
   }
 }
@@ -191,7 +191,7 @@ export function driftTable(
 
     if (m.skipped ?? m.failed) {
       console.log(
-        cell(marked, columns[0]!) +
+        cell(marked, columns[0]) +
           (m.failed ? `FAILED: ${m.failed}` : `skipped: ${m.skipped}`),
       );
       continue;
@@ -199,11 +199,11 @@ export function driftTable(
 
     const d = m.drift!;
     console.log(
-      cell(marked, columns[0]!) +
-        cell(ms(d.mean), columns[1]!) +
-        cell(ms(d.p99), columns[2]!) +
-        cell(ms(d.max), columns[3]!) +
-        cell(int(d.fires), columns[4]!),
+      cell(marked, columns[0]) +
+        cell(ms(d.mean), columns[1]) +
+        cell(ms(d.p99), columns[2]) +
+        cell(ms(d.max), columns[3]) +
+        cell(int(d.fires), columns[4]),
     );
   }
 }
@@ -268,7 +268,7 @@ export function exclusivityTable(
 
     if (m.skipped ?? m.failed) {
       console.log(
-        cell(marked, columns[0]!) +
+        cell(marked, columns[0]) +
           (m.failed ? `FAILED: ${m.failed}` : `skipped: ${m.skipped}`),
       );
       continue;
@@ -283,12 +283,12 @@ export function exclusivityTable(
           : `${e.perOccurrence.toFixed(1)}x duplicated`;
 
     console.log(
-      cell(marked, columns[0]!) +
-        cell(int(e.instances), columns[1]!) +
-        cell(int(e.occurrences), columns[2]!) +
-        cell(int(e.runs), columns[3]!) +
-        cell(e.perOccurrence.toFixed(2), columns[4]!) +
-        cell(verdict, columns[5]!),
+      cell(marked, columns[0]) +
+        cell(int(e.instances), columns[1]) +
+        cell(int(e.occurrences), columns[2]) +
+        cell(int(e.runs), columns[3]) +
+        cell(e.perOccurrence.toFixed(2), columns[4]) +
+        cell(verdict, columns[5]),
     );
   }
 }

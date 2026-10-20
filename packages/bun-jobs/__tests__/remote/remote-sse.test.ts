@@ -363,7 +363,7 @@ describe("text frames carried as SSE events (the http-stream mapping)", () => {
     let stream = ": open\n\n";
     for (const [index, message] of messages.entries()) {
       const line = await encodeTextFrame(message, {
-        key: key!,
+        key,
         sid,
         dir: "e",
         seq: index + 1,
@@ -384,13 +384,13 @@ describe("text frames carried as SSE events (the http-stream mapping)", () => {
       }
       expect(item.id).toBe(String(index + 1));
       const decoded = await decodeTextFrame(item.data, {
-        keys: [key!],
+        keys: [key],
         sid,
         dir: "e",
         mac: nodeHmacSha256,
       });
-      expect(decoded.ok && decoded.frame.message).toEqual(messages[index]!);
-      expect(item.event).toBe(messages[index]!.op);
+      expect(decoded.ok && decoded.frame.message).toEqual(messages[index]);
+      expect(item.event).toBe(messages[index].op);
     }
   });
 });

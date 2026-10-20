@@ -501,8 +501,8 @@ async function expectStoredOld(
   const state = await driver.getState(ns, key);
   expect(state.executionMode).toBe("spawn");
   expect(state[RUNNER_CONFIG_STATE.executionMode]).toBe("worker");
-  expect(JSON.parse(state[RUNNER_CONFIG_STATE.allowed]!)).toEqual([...allowed]);
-  expect(JSON.parse(state[RUNNER_CONFIG_STATE.code]!).executionMode).toBe(
+  expect(JSON.parse(state[RUNNER_CONFIG_STATE.allowed])).toEqual([...allowed]);
+  expect(JSON.parse(state[RUNNER_CONFIG_STATE.code]).executionMode).toBe(
     "worker",
   );
   const history = await driver.listHistory(ns, key);
@@ -877,10 +877,10 @@ for (const { name, available, backend } of backends) {
         // is a controller's and stays as it was stored.
         const state = await driver.getState(ns, runnerKey(id));
         expect(state.executionMode).toBe("worker-thread");
-        expect(JSON.parse(state[RUNNER_CONFIG_STATE.code]!).executionMode).toBe(
+        expect(JSON.parse(state[RUNNER_CONFIG_STATE.code]).executionMode).toBe(
           "in-process",
         );
-        expect(JSON.parse(state[RUNNER_CONFIG_STATE.allowed]!)).toEqual([
+        expect(JSON.parse(state[RUNNER_CONFIG_STATE.allowed])).toEqual([
           "child-process",
           "worker-thread",
           "in-process",

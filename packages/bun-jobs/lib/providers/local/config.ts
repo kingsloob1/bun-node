@@ -299,10 +299,7 @@ function validate(input: unknown): StandardSchemaV1.Result<LocalComputeConfig> {
         path: ["env"],
       });
     } else {
-      env = Object.freeze(Object.fromEntries(entries)) as Record<
-        string,
-        string | undefined
-      >;
+      env = Object.freeze(Object.fromEntries(entries));
     }
   } else if (given.env !== undefined) {
     issues.push({

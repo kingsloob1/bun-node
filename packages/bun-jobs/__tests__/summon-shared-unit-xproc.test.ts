@@ -267,7 +267,7 @@ for (const backend of BACKENDS) {
             budget: { day: number };
             queues: Record<string, { day: number }>;
           };
-          expect(entry.pending.map((one) => one.id)).toEqual([calls[0]!.call!]);
+          expect(entry.pending.map((one) => one.id)).toEqual([calls[0].call!]);
           expect(entry.budget.day).toBe(1);
           for (const queue of QUEUES) {
             expect(entry.queues[queue]?.day).toBe(1);
@@ -283,10 +283,10 @@ for (const backend of BACKENDS) {
         const unit = spawnUnit(
           UNIT,
           { SUMMON_TEST_DRIVER: JSON.stringify(backend.config) },
-          call.argv!,
+          call.argv,
         );
         units.push(unit);
-        const { controller, events } = shared(namespace!, {
+        const { controller, events } = shared(namespace, {
           summoner: async () => {
             throw new Error("summoned again");
           },
@@ -304,7 +304,7 @@ for (const backend of BACKENDS) {
         expect(registered.detail).toBeUndefined();
         expect(registered.group).toBe("media");
         // B2: each queue counts the unit once, and its record says so.
-        expect(await holders(namespace!, call.call!)).toEqual({
+        expect(await holders(namespace, call.call!)).toEqual({
           renders: 1,
           thumbs: 1,
           previews: 1,
@@ -312,13 +312,13 @@ for (const backend of BACKENDS) {
         for (const queue of QUEUES) {
           const records = await listWorkerRecords(
             driver,
-            { ns: namespace!, queue },
+            { ns: namespace, queue },
             Date.now(),
           );
           expect(records.map((one) => one.summon?.group)).toEqual(["media"]);
           const claims = await readSummonClaims(
             driver,
-            { ns: namespace!, queue },
+            { ns: namespace, queue },
             [call.call!],
           );
           expect(claims.get(call.call!)?.holders).toHaveLength(1);
@@ -470,14 +470,14 @@ for (const backend of BACKENDS) {
             "the registration",
           );
           const id = events.find((event) => event.outcome === "started")!.id;
-          expect(platform.calls[0]!.count).toBe(count);
+          expect(platform.calls[0].count).toBe(count);
           // Per queue, never more summoned records than places asked for.
           await waitUntil(
             async () => {
               const now = await holders(namespace, id);
               for (const queue of QUEUES) {
-                most[queue] = Math.max(most[queue] ?? 0, now[queue]!);
-                expect(now[queue]!).toBeLessThanOrEqual(count);
+                most[queue] = Math.max(most[queue] ?? 0, now[queue]);
+                expect(now[queue]).toBeLessThanOrEqual(count);
               }
               return platform.spawned.length === count * 2;
             },

@@ -31,7 +31,7 @@ function client(adapter: SqlAdapter, url: string): SQL {
     url: url.replace(/[?&]allowPublicKeyRetrieval=true/, ""),
     adapter,
     allowPublicKeyRetrieval: true,
-  } as ConstructorParameters<typeof SQL>[0]);
+  });
 }
 
 for (const [adapter, url] of SERVERS) {

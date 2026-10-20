@@ -1183,7 +1183,7 @@ export class RedisDriver implements JobsDriver {
       this.keys.runner(ns, this.#runnerId(key)).state,
     );
 
-    return (state as Record<string, string> | null) ?? {};
+    return state ?? {};
   }
 
   async setState(
@@ -1629,7 +1629,7 @@ export class RedisDriver implements JobsDriver {
     // One job is not a batch, and the singular path already reports precisely
     // what happened to it.
     if (jobs.length === 1) {
-      return [await this.addJob(q, jobs[0]!)];
+      return [await this.addJob(q, jobs[0])];
     }
 
     await this.connect();
@@ -2040,7 +2040,7 @@ export class RedisDriver implements JobsDriver {
     let last: { state: JobState; key: [number, string] } | undefined;
 
     for (let index = from; index < states.length; index++) {
-      const state = states[index]!;
+      const state = states[index];
       let cursor = after;
       after = null;
 
@@ -2215,10 +2215,10 @@ export class RedisDriver implements JobsDriver {
     let stale = false;
 
     if (kind === "failed" && !inScript) {
-      const [state, recorded] = (await this.#client.hmget(childHash, [
+      const [state, recorded] = await this.#client.hmget(childHash, [
         "state",
         "flowRecorded",
-      ])) as (string | null)[];
+      ]);
       stale = state != null && (recorded === "1" || state !== "dead");
     }
 
@@ -2549,10 +2549,10 @@ export class RedisDriver implements JobsDriver {
         const examined = Number(values[0] ?? 0);
 
         for (let index = 1; index < values.length; index += stride) {
-          const id = values[index]!;
+          const id = values[index];
 
           if (filter) {
-            const name = this.#decodeName(values[index + 1]!);
+            const name = this.#decodeName(values[index + 1]);
             if (name === null || !matchesFilter(filter, id, name)) {
               continue;
             }
@@ -2773,7 +2773,7 @@ export class RedisDriver implements JobsDriver {
     );
 
     return Object.fromEntries(
-      names.map((queue, index) => [queue, counts[index]!]),
+      names.map((queue, index) => [queue, counts[index]]),
     );
   }
 
@@ -4171,7 +4171,7 @@ export class RedisDriver implements JobsDriver {
     await Promise.all(
       [...byKey].map(async ([key, rows]) => {
         const args = [
-          String(this.#metricsExpireAt(rows[0]!.interval, rows[0]!.at)),
+          String(this.#metricsExpireAt(rows[0].interval, rows[0].at)),
         ];
 
         for (const row of rows) {
@@ -4295,7 +4295,7 @@ export class RedisDriver implements JobsDriver {
     await Promise.all(
       [...byKey].map(async ([key, rows]) => {
         const args = [
-          String(this.#metricsExpireAt(rows[0]!.interval, rows[0]!.at)),
+          String(this.#metricsExpireAt(rows[0].interval, rows[0].at)),
         ];
 
         for (const row of rows) {

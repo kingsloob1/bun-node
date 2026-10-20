@@ -152,10 +152,10 @@ for (const backend of backends) {
 
         const jobs = await everyJob(queue);
         expect(jobs).toHaveLength(1);
-        expect(jobs[0]!.data).toEqual({ version: 3 });
-        expect(jobs[0]!.state).toBe("delayed");
-        expect(jobs[0]!.runAt).toBeGreaterThanOrEqual(beforeThird + 5_000);
-        expect(jobs[0]!.runAt).toBeGreaterThan(first.runAt);
+        expect(jobs[0].data).toEqual({ version: 3 });
+        expect(jobs[0].state).toBe("delayed");
+        expect(jobs[0].runAt).toBeGreaterThanOrEqual(beforeThird + 5_000);
+        expect(jobs[0].runAt).toBeGreaterThan(first.runAt);
       });
 
       it("adds a new job once the debounced one has started", async () => {

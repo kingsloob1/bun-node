@@ -160,7 +160,7 @@ describe("group.circuit", () => {
     const fly = recorder("fly");
     const other = controller("other", { summoner: fly.summoner, group });
 
-    expect(await built[0]!.check()).toMatchObject({
+    expect(await built[0].check()).toMatchObject({
       action: "summoned",
       outcome: "failed",
     });
@@ -178,7 +178,7 @@ describe("group.circuit", () => {
     expect(stored?.circuits?.ecs).toMatchObject({
       failures: 5,
       openUntil: expect.any(Number),
-      openedBy: { queue: "q1", id: ecs.calls[0]!.id, detail: "InvalidToken" },
+      openedBy: { queue: "q1", id: ecs.calls[0].id, detail: "InvalidToken" },
     });
     expect(stored?.circuits?.fly).toBeUndefined();
 
@@ -193,7 +193,7 @@ describe("group.circuit", () => {
         kind: "ecs",
         namespace,
         queue: "q1",
-        id: ecs.calls[0]!.id,
+        id: ecs.calls[0].id,
         detail: "InvalidToken",
         at: expect.any(Number),
         until: expect.any(Number),
@@ -204,18 +204,18 @@ describe("group.circuit", () => {
         namespace,
         queue: "q1",
         group: "media",
-        id: ecs.calls[0]!.id,
+        id: ecs.calls[0].id,
         detail: "InvalidToken",
         at: expect.any(Number),
-        until: stored!.circuits!.ecs!.openUntil,
+        until: stored!.circuits!.ecs.openUntil,
       },
     ]);
 
-    const status = await built[3]!.status();
+    const status = await built[3].status();
     expect(status.group!.circuit).toEqual({
       failures: 5,
-      openUntil: stored!.circuits!.ecs!.openUntil,
-      openedBy: { queue: "q1", id: ecs.calls[0]!.id, detail: "InvalidToken" },
+      openUntil: stored!.circuits!.ecs.openUntil,
+      openedBy: { queue: "q1", id: ecs.calls[0].id, detail: "InvalidToken" },
     });
     // q4's own circuit never saw a failure.
     expect(status.failures).toBe(0);
@@ -235,7 +235,7 @@ describe("group.circuit", () => {
     }
     expect(ecs.calls).toHaveLength(4);
     expect((await entry("media"))?.circuits).toBeUndefined();
-    expect((await built[0]!.status()).group!.circuit).toBeUndefined();
+    expect((await built[0].status()).group!.circuit).toBeUndefined();
   });
 
   it("opens by count at the group's threshold, the queues' own circuits still closed", async () => {
@@ -254,15 +254,15 @@ describe("group.circuit", () => {
     for (const one of built.slice(0, 3)) {
       expect(await one.check()).toMatchObject({ outcome: "failed" });
     }
-    expect(await built[3]!.check()).toMatchObject({
+    expect(await built[3].check()).toMatchObject({
       reason: "circuit-open",
     });
     expect(down.calls).toHaveLength(3);
-    const circuit = (await entry("media"))!.circuits!.ecs!;
+    const circuit = (await entry("media"))!.circuits!.ecs;
     expect(circuit.failures).toBe(3);
     expect(circuit.openUntil! - Date.now()).toBeGreaterThan(50_000);
     expect(circuit.openUntil! - Date.now()).toBeLessThanOrEqual(60_000);
-    expect((await built[0]!.status()).circuitOpenUntil).toBeUndefined();
+    expect((await built[0].status()).circuitOpenUntil).toBeUndefined();
   });
 
   it("restarts its count on a registration on any queue of the group", async () => {
@@ -279,11 +279,11 @@ describe("group.circuit", () => {
       controller(queue, { summoner: flaky.summoner, group }),
     );
     // q1 summons; q2 and q3 fail: the group counts two.
-    expect(await one!.check()).toMatchObject({ outcome: "started" });
+    expect(await one.check()).toMatchObject({ outcome: "started" });
     fail = true;
-    await two!.check();
-    await three!.check();
-    expect((await entry("media"))!.circuits!.ecs!.failures).toBe(2);
+    await two.check();
+    await three.check();
+    expect((await entry("media"))!.circuits!.ecs.failures).toBe(2);
 
     // q1's worker registers: its next check says so, and the group's count
     // starts again — so the next failure does not open the circuit.
@@ -302,14 +302,14 @@ describe("group.circuit", () => {
         startedAt: now,
         heartbeatAt: now,
         expiresAt: now + 60_000,
-        summon: { id: flaky.calls[0]!.id, kind: "ecs" },
+        summon: { id: flaky.calls[0].id, kind: "ecs" },
       },
     );
-    await one!.check();
-    expect((await entry("media"))!.circuits!.ecs!.failures).toBe(0);
+    await one.check();
+    expect((await entry("media"))!.circuits!.ecs.failures).toBe(0);
     // Past q2's 1 ms backoff from its failure.
     await Bun.sleep(5);
-    await two!.check();
+    await two.check();
     expect((await entry("media"))!.circuits!.ecs).toEqual({ failures: 1 });
   });
 

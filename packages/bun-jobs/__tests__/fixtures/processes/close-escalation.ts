@@ -102,7 +102,7 @@ const WATCH_MS = 5_000;
 /** The graceful close's `timeout` in the `drain` shape; no other timer uses it. */
 const GRACE_MS = 43_217;
 
-const scenario = JSON.parse(process.argv[2]!) as CloseEscalationScenario;
+const scenario = JSON.parse(process.argv[2]) as CloseEscalationScenario;
 
 /** A process's `ps` status, or `""` when it is gone. */
 function stat(pid: number): string {

@@ -59,24 +59,24 @@ export function codeBlocks(file: string, markdown: string): CodeBlock[] {
   const lines = markdown.split("\n");
   const blocks: CodeBlock[] = [];
   for (let index = 0; index < lines.length; index++) {
-    const open = /^(\s*)(`{3,})(\S*)/.exec(lines[index]!);
+    const open = /^(\s*)(`{3,})(\S*)/.exec(lines[index]);
     if (open === null) {
       continue;
     }
-    const fence = open[2]!;
+    const fence = open[2];
     const body: string[] = [];
     let end = index + 1;
     for (; end < lines.length; end++) {
-      if (lines[end]!.trimStart().startsWith(fence)) {
+      if (lines[end].trimStart().startsWith(fence)) {
         break;
       }
-      body.push(lines[end]!);
+      body.push(lines[end]);
     }
     // The marker is among the HTML comments just above the fence (an
     // `<!-- eslint-skip -->` must be the one right above it).
     let marker: RegExpExecArray | null = null;
     for (let above = index - 1; above >= 0 && marker === null; above--) {
-      const text = lines[above]!.trim();
+      const text = lines[above].trim();
       if (text !== "" && !/^<!--.*-->$/.test(text)) {
         break;
       }
@@ -85,9 +85,9 @@ export function codeBlocks(file: string, markdown: string): CodeBlock[] {
     blocks.push({
       file,
       line: index + 1,
-      lang: open[3]!,
+      lang: open[3],
       code: body.join("\n"),
-      ...(marker === null ? {} : { excerptOf: marker[1]! }),
+      ...(marker === null ? {} : { excerptOf: marker[1] }),
     });
     index = end;
   }
@@ -113,14 +113,14 @@ export function isExcerptOf(excerpt: string, source: string): boolean {
     return false;
   }
   for (let start = 0; start + wanted.length <= lines.length; start++) {
-    const first = lines[start]!;
+    const first = lines[start];
     // The indentation removed from the excerpt: whitespace only.
-    const prefix = first.slice(0, first.length - wanted[0]!.length);
-    if (!first.endsWith(wanted[0]!) || prefix.trim() !== "") {
+    const prefix = first.slice(0, first.length - wanted[0].length);
+    if (!first.endsWith(wanted[0]) || prefix.trim() !== "") {
       continue;
     }
     const matches = wanted.every((line, offset) => {
-      const actual = lines[start + offset]!;
+      const actual = lines[start + offset];
       return line === "" ? actual.trim() === "" : actual === prefix + line;
     });
     if (matches) {
@@ -272,7 +272,7 @@ export function anchorsOf(markdown: string): Set<string> {
       continue;
     }
     // A closing run of `#`s is not part of the text.
-    const base = slug(heading[1]!.replace(/\s#+\s*$/, ""));
+    const base = slug(heading[1].replace(/\s#+\s*$/, ""));
     const seen = counts.get(base) ?? 0;
     counts.set(base, seen + 1);
     anchors.add(seen === 0 ? base : `${base}-${seen}`);
@@ -302,7 +302,7 @@ export function linksOf(markdown: string): MarkdownLink[] {
     }
     const prose = text.replace(/`[^`]*`/g, "");
     for (const match of prose.matchAll(/\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
-      links.push({ line: index + 1, target: match[1]! });
+      links.push({ line: index + 1, target: match[1] });
     }
   });
   return links;
@@ -349,7 +349,7 @@ export function checkLinks(
     const github = GITHUB.exec(link.target);
     if (github !== null) {
       report.checked++;
-      const path = decodeURIComponent(github[1]!.replace(/\/$/, ""));
+      const path = decodeURIComponent(github[1].replace(/\/$/, ""));
       if (existsSync(join(REPO, path))) {
         continue;
       }

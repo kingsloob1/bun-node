@@ -527,9 +527,9 @@ for (const backend of backends) {
 
         const series = await jobs.queue("images").listRepeatables();
         expect(series.map((record) => record.name)).toEqual(["resize"]);
-        expect(
-          await jobs.queue("images").removeRepeatable(series[0]!.key),
-        ).toBe(true);
+        expect(await jobs.queue("images").removeRepeatable(series[0].key)).toBe(
+          true,
+        );
         expect(await jobs.queue("images").listRepeatables()).toEqual([]);
 
         // Removing it took its pending occurrence; let one already claimed

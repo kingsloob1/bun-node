@@ -371,7 +371,7 @@ describe.skipIf(!ENABLED)(
       if (process.getuid?.() === 0) {
         args.unshift("--no-sandbox");
       }
-      chrome = Bun.spawn([CHROME as string, ...args], {
+      chrome = Bun.spawn([CHROME, ...args], {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "pipe",

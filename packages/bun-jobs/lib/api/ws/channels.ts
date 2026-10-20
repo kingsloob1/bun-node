@@ -283,14 +283,14 @@ export function parseChannel(
 
   if (
     parts.length === 1 &&
-    ["all", "queues", "workers", "runners"].includes(parts[0]!)
+    ["all", "queues", "workers", "runners"].includes(parts[0])
   ) {
     kind = parts[0] as ChannelKind;
   } else if (
     parts[0] === "queue" &&
     (parts.length === 2 || parts.length === 3 || parts.length === 4)
   ) {
-    queue = segment(parts[1]!, "queue name");
+    queue = segment(parts[1], "queue name");
     if (queue === undefined) {
       return invalid(`"${raw}" names an invalid queue`);
     }
@@ -306,14 +306,14 @@ export function parseChannel(
         return invalid(`"${raw}" is not a channel`);
       }
       try {
-        jobId = decodeJobId(parts[3]!);
+        jobId = decodeJobId(parts[3]);
       } catch {
         return invalid(`"${raw}" has a malformed job id encoding`);
       }
       kind = "job";
     }
   } else if (parts[0] === "runner" && parts.length === 2) {
-    runner = segment(parts[1]!, "runner id");
+    runner = segment(parts[1], "runner id");
     if (runner === undefined) {
       return invalid(`"${raw}" names an invalid runner`);
     }

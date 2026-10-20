@@ -231,14 +231,11 @@ describe.skipIf(!URL)("Redis queue job defaults", () => {
     );
     expect(result).toMatchObject({ examined: 1, rewritten: 1, next: null });
 
-    const fields = (await raw.hgetall(jobKey(q, "job"))) as Record<
-      string,
-      string
-    >;
+    const fields = await raw.hgetall(jobKey(q, "job"));
     expect(fields.blob).toBe(before!);
     expect(fields[`${OPTION_FIELD_PREFIX}attempts`]).toBe("4");
     expect(fields[MAX_ATTEMPTS_FIELD]).toBe("4");
-    expect(JSON.parse(fields[`${OPTION_FIELD_PREFIX}backoff`]!)).toEqual(
+    expect(JSON.parse(fields[`${OPTION_FIELD_PREFIX}backoff`])).toEqual(
       backoff,
     );
     expect(fields[`${OPTION_FIELD_PREFIX}timeout`]).toBe("900");

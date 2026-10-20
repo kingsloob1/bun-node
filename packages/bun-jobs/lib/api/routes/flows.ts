@@ -2,11 +2,7 @@ import type { BunRequest } from "@kingsleyweb/bun-common";
 import type { BunQueue } from "../../queue/BunQueue";
 import type { FlowNode, FlowResult } from "../../queue/types";
 import type { ResolvedJobsApiConfig } from "../config";
-import type {
-  AddFlowJobOptions,
-  AddFlowNodeBody,
-  ProblemIssueDto,
-} from "../contract/types";
+import type { AddFlowNodeBody, ProblemIssueDto } from "../contract/types";
 import type { AddFlowResultOut } from "../schemas/jobs";
 import type { AnyRouteDef, RouteServices } from "./define";
 import { assertJobId } from "../../queue/options";
@@ -109,7 +105,7 @@ async function authorizeQueues(
     if (decision.allow) {
       return;
     }
-    const queue = queues[index]!;
+    const queue = queues[index];
     throw decision.status === 401
       ? new ApiError(
           "UNAUTHORIZED",
@@ -198,7 +194,7 @@ function nameNotAddable(
 
 /** A flow body's job as `addFlow` takes it: `runAt` as epoch ms, the top job without `queue`. */
 function toFlowNode(node: AddFlowNodeBody, top: boolean): FlowNode {
-  const { runAt, ...rest } = (node.opts ?? {}) as AddFlowJobOptions;
+  const { runAt, ...rest } = node.opts ?? {};
   return {
     name: node.name,
     data: node.data,

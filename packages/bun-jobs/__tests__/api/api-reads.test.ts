@@ -71,7 +71,7 @@ function without(driver: JobsDriver, methods: readonly string[]): JobsDriver {
         ? false
         : Reflect.has(target, key);
     },
-  }) as JobsDriver;
+  });
 }
 
 /** A driver with some optional methods added, as a newer one would have them. */
@@ -94,7 +94,7 @@ function withMethods(
         (typeof key === "string" && added.has(key)) || Reflect.has(target, key)
       );
     },
-  }) as JobsDriver;
+  });
 }
 
 /** A driver declaring extra capabilities, as a newer one would. */
@@ -111,7 +111,7 @@ function withCapabilities(
       const value = Reflect.get(target, key, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     },
-  }) as JobsDriver;
+  });
 }
 
 /** Starts a worker on a queue, closed after the test. */
@@ -632,7 +632,7 @@ describe("pruning the read routes", () => {
     }
     // And the answers themselves, so a mapping that made every flag `false`
     // (or named no route) could not pass the loop above vacuously.
-    expect(Object.values(seen.both!).every(Boolean)).toBe(true);
+    expect(Object.values(seen.both).every(Boolean)).toBe(true);
     expect(seen.jobs).toMatchObject({
       addedByState: true,
       jobAttribution: true,
@@ -1001,17 +1001,17 @@ describe("stacktrace", () => {
       };
     };
     const { schemas } = doc.components;
-    expect(schemas.Job!.properties.stacktrace!.description).toContain(
+    expect(schemas.Job.properties.stacktrace.description).toContain(
       "`serialize.exposeStacks`",
     );
-    expect(schemas.Error!.properties.stack!.description).toContain(
+    expect(schemas.Error.properties.stack.description).toContain(
       "`serialize.exposeStacks`",
     );
     for (const [path, method] of [
       ["/queues/{queue}/jobs", "get"],
       ["/queues/{queue}/jobs/{id}", "get"],
     ] as const) {
-      expect(doc.paths[path]![method]!.description).toContain(
+      expect(doc.paths[path][method].description).toContain(
         "`stack` only with `serialize.exposeStacks`",
       );
     }

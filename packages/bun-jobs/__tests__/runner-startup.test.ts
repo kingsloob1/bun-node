@@ -31,7 +31,7 @@ async function bundleChild(entry: string): Promise<string> {
   });
 
   expect(result.success).toBe(true);
-  return await result.outputs[0]!.text();
+  return await result.outputs[0].text();
 }
 
 /** Anything here means the HTTP layer came along for the ride. */

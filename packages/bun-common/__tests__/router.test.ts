@@ -525,7 +525,7 @@ describe("BunRouter: direct route matching (no routejs LRU)", () => {
     const router = new BunRouter();
     let captured: string | undefined;
     router.get("/user/:name", (req, res) => {
-      captured = req.params.name as string;
+      captured = req.params.name;
       res.send("ok");
     });
 
@@ -1830,7 +1830,8 @@ describe("BunRouter: params are bound per route, not per callback", () => {
         next();
       },
       (req, res) => {
-        seen.push(req.params.id as string);
+        // The second callback's params are untyped: ParamsDictionary.
+        seen.push(String(req.params.id));
         res.send("ok");
       },
     );

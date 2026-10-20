@@ -141,6 +141,7 @@ function decodeParam(value: string): string {
     return decodeURIComponent(value);
   } catch (error) {
     if (error instanceof URIError) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- an internal signal, not an Error (no stack captured): the matcher's caller catches it by class and it never leaves the router
       throw new ParamDecodeFailure(value);
     }
     throw error;
@@ -969,6 +970,7 @@ export function awaitPipelineOrStream(
         }
         done = true;
         unsubscribe?.();
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the pipeline's error passes through exactly as it was raised
         reject(error);
       },
     );
@@ -1482,7 +1484,7 @@ export class BunRouter<
         // correctly.
         this.#pendingEndpoint = isEndpointRoute(route);
         // …and its undecodable-body setting and mount depth.
-        this.#pendingFlattenSource = route as RouteWithGroup;
+        this.#pendingFlattenSource = route;
         this.setRoute(opts);
       });
     } else if (Array.isArray(option.callbacks)) {
@@ -1490,7 +1492,7 @@ export class BunRouter<
         if (route instanceof RouteClass) {
           const opts = this.getFormattedSetRouteOption(option, route);
           this.#pendingEndpoint = isEndpointRoute(route);
-          this.#pendingFlattenSource = route as RouteWithGroup;
+          this.#pendingFlattenSource = route;
           this.setRoute(opts);
         } else if (Array.isArray(route) || route instanceof Router) {
           this.mergeRoute({
@@ -5304,7 +5306,7 @@ export class BunRouter<
       callbacks: route.callbacks,
       params,
       subdomains,
-    } as matchedRoute;
+    };
   }
 
   /**
@@ -5495,7 +5497,7 @@ export class BunRouter<
           callbacks: route.callbacks,
           params: {},
           subdomains: {},
-        } as matchedRoute;
+        };
       }
 
       if (matched === false) {
@@ -5638,6 +5640,7 @@ export class BunRouter<
    *   logged, since the status line has already gone out;
    * - an unhandled error is re-thrown for the adapter's final error handler.
    */
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises -- overrides @routejs/router's `handle(): void` with the awaitable pipeline; its callers here await it
   override async handle(
     options: PipelineOptions,
   ): Promise<matchedRoute | true | undefined> {
@@ -5685,7 +5688,7 @@ export class BunRouter<
     options: PipelineOptions,
     hooks: ServeHooks<R>,
   ): R | Promise<R> {
-    const state = this.#startPipeline(options, hooks as ServeHooks<unknown>);
+    const state = this.#startPipeline(options, hooks);
     let result: RunResult;
     try {
       result = this.#run(state);
@@ -6286,6 +6289,7 @@ export class BunRouter<
   /** Re-throws a pipeline error, wrapping a primitive in an `Error`. */
   private throwError(errorThrown: unknown): never {
     if (errorThrown instanceof Error || isObject(errorThrown)) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows an object unchanged, Error or not; error handlers and the adapter match on its class and fields
       throw errorThrown;
     } else if (isString(errorThrown) || isNumeric(errorThrown)) {
       throw new Error(String(errorThrown));

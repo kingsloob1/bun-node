@@ -137,7 +137,7 @@ export function resolveSummonProvenance(
   }
 
   // Checked just above: absent, or a non-negative whole number.
-  const deadline = deadlineAt as number | undefined;
+  const deadline = deadlineAt;
   const kind = optionalText(given, "kind");
   const handle = optionalText(given, "handle");
   const group = optionalText(given, "group");

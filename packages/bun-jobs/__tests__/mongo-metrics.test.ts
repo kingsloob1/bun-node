@@ -124,11 +124,11 @@ async function metricDocuments(
 ): Promise<Record<string, unknown>[]> {
   const client = await connect();
   try {
-    return (await client
+    return await client
       .db()
       .collection(`${prefix}metrics`)
       .find(filter)
-      .toArray()) as unknown as Record<string, unknown>[];
+      .toArray();
   } finally {
     await client.close();
   }
@@ -194,10 +194,10 @@ describe.skipIf(!URL)("MongoDB driver: analytics storage", () => {
       // than only what `connect()` happens to create.
       const planned = await driver.syncSchema({ dryRun: true });
       expect(planned).toHaveLength(1);
-      expect(planned[0]!.kind).toBe("create-index");
-      expect(planned[0]!.table).toBe(`${prefix}metrics`);
-      expect(planned[0]!.target).toBe("interval_1_at_1");
-      expect(planned[0]!.applied).toBe(false);
+      expect(planned[0].kind).toBe("create-index");
+      expect(planned[0].table).toBe(`${prefix}metrics`);
+      expect(planned[0].target).toBe("interval_1_at_1");
+      expect(planned[0].applied).toBe(false);
 
       await driver.syncSchema();
       expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
@@ -236,8 +236,8 @@ describe.skipIf(!URL)("MongoDB driver: analytics storage", () => {
       });
 
       expect(bucket).toHaveLength(1);
-      expect(bucket[0]!.completed).toBe(5);
-      expect(bucket[0]!.failed).toBe(0);
+      expect(bucket[0].completed).toBe(5);
+      expect(bucket[0].failed).toBe(0);
     }
 
     // The namespace roll-up is one document too, and it is a document like
@@ -250,7 +250,7 @@ describe.skipIf(!URL)("MongoDB driver: analytics storage", () => {
       at: minute,
     });
     expect(roll).toHaveLength(1);
-    expect(roll[0]!.completed).toBe(5);
+    expect(roll[0].completed).toBe(5);
 
     // And the two agree with what either driver reads back.
     expect(
@@ -302,7 +302,7 @@ describe.skipIf(!URL)("MongoDB driver: analytics storage", () => {
     // One array of 25 numbers, exactly as `durationBin` indexes it — not a
     // subdocument of bins, which would be a second indexing of the same
     // histogram and an atomic increment per bin.
-    const histogram = document!.histogram as number[];
+    const histogram = document.histogram as number[];
     expect(Array.isArray(histogram)).toBe(true);
     expect(histogram).toHaveLength(DURATION_HISTOGRAM_SIZE);
     expect(histogram[durationBin(5)]).toBe(2);
@@ -310,11 +310,11 @@ describe.skipIf(!URL)("MongoDB driver: analytics storage", () => {
     expect(histogram.reduce((sum, count) => sum + count, 0)).toBe(3);
 
     // The mergeable figures merged; no `hist.<bin>` layout anywhere near it.
-    expect(document!.count).toBe(3);
-    expect(document!.sumMs).toBe(910);
-    expect(document!.minMs).toBe(5);
-    expect(document!.maxMs).toBe(900);
-    expect(Object.keys(document!)).not.toContain("hist");
+    expect(document.count).toBe(3);
+    expect(document.sumMs).toBe(910);
+    expect(document.minMs).toBe(5);
+    expect(document.maxMs).toBe(900);
+    expect(Object.keys(document)).not.toContain("hist");
   }, 45_000);
 
   it("prunes by range once a minute, over every namespace rather than the batch's", async () => {

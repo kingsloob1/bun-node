@@ -88,14 +88,14 @@ describe("flow healing: one worker per queue (C12)", () => {
     const walking = workers.filter(({ walks }) => walks() > 0);
     expect(walking).toHaveLength(1);
 
-    const holder = walking[0]!;
+    const holder = walking[0];
     await holder.instance.close({ force: true });
     const others = workers.filter((one) => one !== holder);
     const before = others.map(({ walks }) => walks());
 
     // The lease lasts two stalled intervals (100ms); another takes it after.
     await waitFor(
-      () => others.some(({ walks }, index) => walks() > before[index]!),
+      () => others.some(({ walks }, index) => walks() > before[index]),
       { timeout: 2_000, message: "no worker took the lease over" },
     );
   });

@@ -461,7 +461,7 @@ export function createJobsApiWebSocket(
         ...(typeof req.server?.port === "number"
           ? { port: req.server.port }
           : {}),
-      } as WebSocketClientData<JobsApiSocketData>,
+      },
       negotiate,
     );
   };

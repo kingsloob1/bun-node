@@ -116,7 +116,7 @@ if (hostMode === "summoning" || hostMode === "listen-summoning") {
   let n = 2;
   setInterval(() => {
     n++;
-    void units[0]!.summon.summon(request(n), context).then((answer) => {
+    void units[0].summon.summon(request(n), context).then((answer) => {
       process.stdout.write(
         `${JSON.stringify({ status: answer.status, at: Date.now() })}\n`,
       );

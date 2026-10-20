@@ -262,7 +262,7 @@ describe("the controller's ctx.fetch seam", () => {
       cooldown: 0,
       logger: noopLogger,
       ...(probe === undefined ? {} : { [PROVIDER_FETCH_PROBE]: probe }),
-    } as ConstructorParameters<typeof SummonController>[0]);
+    });
     try {
       await queue.add("a", {});
       expect((await controller.check()).action).toBe("summoned");
