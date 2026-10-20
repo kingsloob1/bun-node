@@ -23,8 +23,9 @@
  *   view settings; any other is ignored, with one warning.
  * - The Nest-shaped helpers (`reply`, `status`, `end`, `render`, `redirect`,
  *   `setHeader`, …) take the response as their first argument and behave as
- *   platform-express's: `redirect(res, status, url)` is Express's
- *   `res.redirect`, with an encoded `Location` and a "Redirecting to" body,
+ *   platform-express's: `redirect(res, status, url)` is Express 5.3.0's
+ *   `res.redirect`, with an encoded `Location` and a "Redirecting to" body
+ *   (for `Accept: text/html`, a small `<!DOCTYPE html>` document),
  *   and `render(res, view, locals)` is `res.render(view, locals)` through
  *   `views`. The status is the response's own: a `status` key is only a
  *   local.
@@ -1135,11 +1136,16 @@ const movedHtml = await helpers.fetch("/redirect", {
   headers: { Accept: "text/html" },
 });
 checkEqual(
-  "…as HTML when Accept asks for it",
-  [movedHtml.headers.get("Content-Type"), await movedHtml.text()],
+  "…as an HTML document when Accept asks for it, titled with the status text",
+  [
+    movedHtml.headers.get("Content-Type"),
+    movedHtml.headers.get("Content-Length"),
+    await movedHtml.text(),
+  ],
   [
     "text/html; charset=utf-8",
-    "<p>Moved Permanently. Redirecting to /elsewhere</p>",
+    "124",
+    "<!DOCTYPE html><head><title>Moved Permanently</title></head><body><p>Moved Permanently. Redirecting to /elsewhere</p></body>",
   ],
 );
 const found = await helpers.fetch("/redirect-default");
