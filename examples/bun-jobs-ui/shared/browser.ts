@@ -139,7 +139,23 @@ export async function openView(
 ): Promise<Bun.WebView> {
   try {
     const view = new Bun.WebView({
-      backend: { type: "chrome", url: false, path: chromePath },
+      backend: {
+        type: "chrome",
+        url: false,
+        path: chromePath,
+        // Keeps headless Chrome off the desktop's display. Its GPU process
+        // connects to `DISPLAY` / `WAYLAND_DISPLAY` even under `--headless`,
+        // and on 2026-10-20, with the GNOME compositor hung, that connection
+        // never answered: the page rendered no frames, so
+        // requestAnimationFrame and IntersectionObserver never fired,
+        // `06-browser/overview-range.ts` failed and `api-docs.ts` hung for
+        // 300 s. `Bun.WebView` cannot unset Chrome's environment (it has no
+        // `env` option, and spawns Chrome with the environment Bun started
+        // with, so deleting from `process.env` does not reach it); with GL
+        // disabled Chrome composites in software and never opens the display
+        // (measured against a display server that accepts and never replies).
+        argv: ["--use-gl=disabled"],
+      },
       // A profile this process owns and removes: see `profileDirectory`.
       dataStore: { directory: profileDirectory() },
       width: 1280,
