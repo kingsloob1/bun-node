@@ -54,6 +54,7 @@ Underneath, routing is
   - [Per-route parsing with `requestParsing()`](#per-route-parsing-with-requestparsing)
   - [Response compression](#response-compression)
   - [Error handling](#error-handling)
+  - [Instrumentation hooks and response checks](#instrumentation-hooks-and-response-checks)
   - [Testing with `fetch()`](#testing-with-fetch)
   - [`listen()` and `close()`](#listen-and-close)
   - [Known differences from `@nestjs/platform-express`](#known-differences-from-nestjsplatform-express)
@@ -194,6 +195,7 @@ NestJS calls most of these for you. The ones you are likely to call directly:
 | `useStaticAssets(path, options)` | See [Static assets](#static-assets). |
 | `useBodyParser(type, rawBody, options)`, `registerParserMiddleware(prefix?, rawBody?)` | See [Body parsing and raw bodies](#body-parsing-and-raw-bodies). |
 | `setErrorHandler(handler)`, `setNotFoundHandler(handler)` | See [Error handling](#error-handling). |
+| `setOnRequestHook(hook)`, `setOnResponseHook(hook)`, `addBeforeWriteHook(hook)` | See [Instrumentation hooks and response checks](#instrumentation-hooks-and-response-checks). |
 | `setLogger(logger)`, `logger` | Replace or read the NestJS logger. |
 | `setRequestOpts(opts)`, `requestOpts` | Replace or read the `request` option. Setting it merges over the defaults, not over the options set before. |
 | `setTimeout(ms, callback)` | Sets `requestTimeout`, then calls `callback` with the server once one is listening. |
@@ -313,7 +315,8 @@ See
 | `@Res()` | You send the response. With `{ passthrough: true }` you may set headers or cookies and still return a value. |
 | `@HttpCode`, `@Header` | As on Express. |
 | `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
-| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. |
+| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. If the client leaves before the file is read to the end, even before the handler returned it, its source is destroyed, as on Express 12, so an abandoned download holds no file descriptor. |
+| A status | On Nest 12, any status Nest passes is applied, `0` included, and checked as Express 5's `res.status` checks it: a non-integer or a code outside 100–999 fails, and Nest answers `500`. On Nest 11 a falsy status (`0`, `NaN`) is skipped, as its platform-express skips it. |
 | `@Render(view)` | As on Express (`res.render(view, result)`): renders `view` with the view engine (see [Views](#views-render-and-resrender)), the handler's return value being the locals. The status is the route's (`@HttpCode()`). A missing view or a throwing template answers Nest's `500`. |
 
 ```ts
@@ -396,7 +399,7 @@ the next candidate route gets it. A request no route accepts ends as Nest's
 |---|---|
 | `VersioningType.URI` | From the path (`/v2/...`); Nest builds the routes, no filter is applied. |
 | `VersioningType.HEADER` | From the `header` option's request header. |
-| `VersioningType.MEDIA_TYPE` | From the `Accept` header's parameter after `;`, split on `key` (`Accept: application/json;v=2` with `key: "v="`). |
+| `VersioningType.MEDIA_TYPE` | From the `Accept` header, as the installed Nest's platform-express reads it. On Nest 12: the first parameter, in any media range, that starts with `key` (`Accept: text/html, application/json;charset=utf-8;v=2` with `key: "v="` is version `2`). On Nest 11: the first parameter only, split on `key`. A quoted value (`v="2"`) is unquoted from Nest 12.2.0, as its platform-express does (separators inside quotes ignored); before 12.2.0 it is taken as written, quotes included. |
 | `VersioningType.CUSTOM` | From `extractor(req)`, a string or an array of strings. |
 
 A handler whose version is `VERSION_NEUTRAL` always matches. For `HEADER` and
@@ -727,6 +730,79 @@ See
 [`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts),
 [`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/undecodable-bodies.ts).
 
+### Instrumentation hooks and response checks
+
+Three hooks on the adapter, each costing one field read per request while
+none is set.
+
+| Hook | When | Can change the response |
+|---|---|---|
+| `setOnRequestHook((req, res, done) => …)` | First for every request, before middleware, body parsing and routes (as platform-express) | Yes: it can answer the request itself, or `done(error)` |
+| `setOnResponseHook((req, res) => …)` | After the response is sent (for a `write()` stream, after it ends), as platform-express's `res.on("finish")` | No |
+| `addBeforeWriteHook((context) => …)` | After the response is produced, before anything of it is written | Yes: it can refuse it |
+
+`setOnRequestHook` and `setOnResponseHook` are platform-express's, with the
+same rules: the request continues on `done()`, not when a returned promise
+resolves; only the first completion counts, and a later error is logged; a
+throw or rejection before `done()` is `done(error)`, which goes to Nest's
+exception layer. A response hook's errors are only logged. Each replaces the
+hook set before, and runs with the adapter as `this`. The response hook sees
+every response the request ends with, those of the adapter's error handling
+(an error from middleware or body parsing, a refused response) included,
+except a page `finalhandler` answers when no Nest error handler is
+registered.
+
+`addBeforeWriteHook` is bun-nest's own, made for response validation: it sees
+what an interceptor's `map()` cannot, such as a redirect, a `StreamableFile`, a
+plain `@Res()` response, a not-found answer and the headers the adapter adds.
+The hook gets a context with:
+
+- `phase`: `"response"`, or `"error"` for a response the error handling
+  produced;
+- `status` and `headers`: the native `Response`'s, exactly what will be
+  written. The headers are live; changing them is unsupported;
+- `body`: the body by kind (`empty`, `json`, `text`, `binary`, `blob`,
+  `form`, `response`, `streamable-file` or `stream`), with the value of a
+  buffered body. A stream is never read;
+- `request`, and `response`, the Nest-facing `BunResponse`. In phase
+  `"error"` it is `undefined`: the context's type is a union on `phase`
+  (`BunBeforeWriteResponseContext | BunBeforeWriteErrorContext`), so a check
+  on `phase === "response"` narrows it to the response.
+
+Return to let the response go. Throw, or reject, to refuse it: the response is
+discarded (a `StreamableFile`'s source destroyed) and the error goes to Nest's
+exception layer, so the client gets a `500`, or the status of an
+`HttpException`. None of the refused response's own headers (`Location`,
+`Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) reach that answer; its
+request-wide ones (CORS, `Vary`, a security hook's) do. A returned promise holds
+the response, unwritten, until it settles; past the adapter's
+`requestTimeout`, when one is set, the hold fails as a stuck handler does. A
+throw in phase `"error"` is logged and the response sent, so a check cannot
+loop. A `write()` stream is checked as it opens, before its first byte; its
+chunks are not. `HEAD` is checked as the GET it reuses. Hooks run in
+registration order, and the first refusal wins. `addBeforeWriteHook` returns a
+function that removes the hook.
+
+```ts
+const adapter = new BunHttpAdapter();
+
+adapter.setOnRequestHook((req, _res, done) => {
+  metrics.started(req.method, req.path);
+  done();
+});
+adapter.setOnResponseHook((_req, res) => metrics.finished(res.statusCode));
+
+// Returns a function that removes the hook.
+adapter.addBeforeWriteHook(({ phase, status, headers }) => {
+  if (phase === "response" && status === 302 && !headers.get("location")?.startsWith("/app")) {
+    throw new Error("redirect outside /app");
+  }
+});
+
+const app = await NestFactory.create(AppModule, adapter);
+await app.listen(3000);
+```
+
 ### Testing with `fetch()`
 
 After `app.init()`, `adapter.fetch()` runs a request through the whole adapter
@@ -868,6 +944,16 @@ listed here answers the same status, headers and body.
   `Content-Type` that is not JSON is sent as JSON with Nest's warning, by Nest
   12's rule: a `+json` type counts as JSON. Nest 11 on Express also forces a
   `+json` type (`application/vnd.api+json`) to `application/json`.
+- A status from 600 to 999 is accepted by Express; Bun's `Response` takes 200
+  to 599, so Nest's `500` answers it here.
+- A handler that writes and then throws in the same tick: the stream ends
+  before its first flush, so it carries a `Content-Length` rather than being
+  chunked.
+- On Nest 11, a `StreamableFile`'s source is destroyed when the client leaves,
+  and the request and response hooks follow platform-express 12.1.3's rules
+  (a rejection before `done()` is `done(error)`, `done` counts once, a
+  response hook's error is logged), where platform-express 11 leaves the
+  source open and those rejections and errors unhandled.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.
@@ -1557,7 +1643,7 @@ Everything below is exported from the package root; see
 | Group | Exports |
 |---|---|
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
-| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions` |
+| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
 | Packets | types `MessageFormat`, `MessagePacket`, `MessagePacketMap`, `MessageConnectType`, `MessageDisConnectType`, `MessageEventType`, `MessageAckType`, `MessageErrorType`, `MessageBinaryEventType`, `MessageBinaryAckType` |
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |

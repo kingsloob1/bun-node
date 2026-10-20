@@ -5,7 +5,11 @@
  */
 import type { NestApplicationOptions } from "@nestjs/common";
 import type { Configure, Side } from "./app";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { RequestMethod, VersioningType } from "@nestjs/common";
+import { AbstractHttpAdapter } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import {
   CompatModule,
@@ -48,6 +52,25 @@ export interface ProbeGroup {
 }
 
 const html = { headers: { accept: "text/html" } };
+
+/**
+ * Why `version-media-params` is skipped on the installed Nest, if it is: on
+ * Nest 12 before platform-express 12.1.2, which still read the first
+ * parameter only (bun-nest reads any on every Nest 12; nothing in
+ * `@nestjs/core` tells 12.1.2 apart). Read from the reference's capability,
+ * the `getMediaTypeVersion` helper 12.1.2 added, never from a version.
+ */
+const MEDIA_PARAMS_SKIP =
+  typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
+    .mapException === "function" &&
+  !existsSync(
+    join(
+      dirname(fileURLToPath(import.meta.resolve("@nestjs/platform-express"))),
+      "adapters/utils/get-media-type-version.util.js",
+    ),
+  )
+    ? "platform-express before 12.1.2 reads the first Accept parameter only"
+    : undefined;
 
 /** A cross-origin request's init: `Origin` set, for CORS to answer. */
 function withOrigin(method = "GET"): RequestInit {
@@ -152,6 +175,10 @@ export const GROUPS: ProbeGroup[] = [
             },
           ]
         : []),
+      { name: "exception with status 0", path: "/status-zero" },
+      { name: "exception with status NaN", path: "/status-nan" },
+      { name: "write() then throw", path: "/write-then-throw" },
+      { name: "write() then throw, sync", path: "/write-then-throw-sync" },
       { name: "@Sse", path: "/sse" },
       // Exceptions.
       { name: "HttpException", path: "/http-exc" },
@@ -668,6 +695,59 @@ export const GROUPS: ProbeGroup[] = [
     ],
   },
   {
+    // Nest 12's platform-express reads the version from any parameter of
+    // any media range (12.1.2 on); Nest 11's from the first parameter only,
+    // which bun-nest keeps on 11, so these compare on both majors.
+    name: "version-media-params",
+    module: VersionedModule,
+    configure: (app) => {
+      app.enableVersioning({ type: VersioningType.MEDIA_TYPE, key: "v=" });
+    },
+    probes: [
+      {
+        name: "after another parameter",
+        path: "/ver",
+        init: { headers: { accept: "application/json;charset=utf-8;v=2" } },
+      },
+      {
+        name: "in a later media range",
+        path: "/ver",
+        init: { headers: { accept: "text/html, application/json;v=1" } },
+      },
+      {
+        name: "with a space before it",
+        path: "/ver",
+        init: { headers: { accept: "application/json; v=3" } },
+      },
+      {
+        name: "unknown version in a later range",
+        path: "/ver",
+        init: { headers: { accept: "text/html, application/json;v=9" } },
+      },
+      {
+        name: "quoted value",
+        path: "/ver",
+        init: { headers: { accept: 'application/json;v="2"' } },
+      },
+      {
+        name: "quoted value with an escape",
+        path: "/ver",
+        init: { headers: { accept: 'application/json;v="\\1"' } },
+      },
+      {
+        name: "quoted value holding a separator",
+        path: "/ver",
+        init: { headers: { accept: 'application/json;x="a;v=9";v=3' } },
+      },
+      {
+        name: "parameters but no version",
+        path: "/ver",
+        init: { headers: { accept: "application/json;charset=utf-8" } },
+      },
+    ],
+    skip: MEDIA_PARAMS_SKIP,
+  },
+  {
     name: "raw-body",
     module: SmallModule,
     options: { rawBody: true },
@@ -1068,6 +1148,43 @@ export const KNOWN: Record<string, KnownDifference> = {
   "compat/StreamableFile, source fails, custom handler": {
     fields: ["content-type"],
     reason: TEXT_CHARSET,
+  },
+  "compat/write() then throw, sync": {
+    fields: ["content-length"],
+    reason:
+      "a stream ended before its first flush goes out with a Content-Length, not chunked (as an SSE stream that completes at once)",
+  },
+  "version-media-params/after another parameter": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/in a later media range": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/with a space before it": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/unknown version in a later range": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/quoted value": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/quoted value with an escape": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/quoted value holding a separator": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
+  },
+  "version-media-params/parameters but no version": {
+    fields: ["content-type"],
+    reason: TEXT_DEFAULT,
   },
   "body-limit/over the limit → 413": {
     fields: BODY_CHANGES,
