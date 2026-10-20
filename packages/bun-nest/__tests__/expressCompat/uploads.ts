@@ -73,6 +73,19 @@ const EXPRESS_MAPS_ARRAY_INDEX = Object.hasOwn(
   "LIMIT_FIELD_ARRAY_INDEX",
 );
 
+/**
+ * Whether the multer platform-express runs has field-name limits at all
+ * (multer 2.2+: `fieldNestingDepth`, `fieldArrayIndexLimit`). 11.1.20 pins
+ * multer 2.1.1, which has neither and accepts any field name. Read from
+ * that multer's `MulterError` (a message for the code), never a version.
+ */
+const EXPRESS_MULTER_LIMITS_FIELD_NAMES = (() => {
+  const multer = createRequire(requireHere.resolve("@nestjs/platform-express"))(
+    "multer",
+  ) as { MulterError: new (code: string) => Error };
+  return Boolean(new multer.MulterError("LIMIT_FIELD_NESTING").message);
+})();
+
 /** Whether the installed Express sets default field-name limits (12.2.0's `applyDefaultLimits`). */
 const EXPRESS_DEFAULT_FIELD_LIMITS =
   expressMulter.constants.DEFAULT_FIELD_NAME_LIMITS !== undefined;
@@ -420,6 +433,15 @@ export const UPLOAD_GROUPS: ProbeGroup[] = [
  * other, so a column where both agree carries no entry.
  */
 export const UPLOAD_KNOWN: Record<string, KnownDifference> = {
+  ...(EXPRESS_MULTER_LIMITS_FIELD_NAMES
+    ? {}
+    : {
+        "uploads-field-names/nesting deeper than fieldNestingDepth": {
+          fields: ["status", "body", "content-length", "etag"],
+          reason:
+            "platform-express's multer before 2.2 has no field-name limits and accepts the field; bun-common enforces multer 2.4's on every Nest",
+        },
+      }),
   ...(EXPRESS_MERGES_LIMITS === BUN_MERGES_LIMITS
     ? {}
     : {
@@ -434,8 +456,9 @@ export const UPLOAD_KNOWN: Record<string, KnownDifference> = {
     : {
         "uploads-field-names/array index over fieldArrayIndexLimit": {
           fields: ["status", "body", "content-length", "etag"],
-          reason:
-            "platform-express before 12 does not list LIMIT_FIELD_ARRAY_INDEX, so it answers 500; bun-nest answers 400 on every Nest",
+          reason: EXPRESS_MULTER_LIMITS_FIELD_NAMES
+            ? "platform-express before 12 does not list LIMIT_FIELD_ARRAY_INDEX, so it answers 500; bun-nest answers 400 on every Nest"
+            : "platform-express's multer before 2.2 has no field-name limits and accepts the field; bun-nest answers 400 on every Nest",
         },
       }),
   ...(EXPRESS_DEFAULT_FIELD_LIMITS

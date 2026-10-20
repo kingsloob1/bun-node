@@ -18,6 +18,9 @@
  *
  * - `KNOWN`: differences by design (socket.io-shaped acks), each still
  *   checked to differ, so a change that removes one fails until it goes.
+ * - `REFERENCE_CATCHES_RESULT_ERRORS`: on a platform-ws that leaves an
+ *   errored result stream uncaught (11.1.20, 12.0.0), the cases that error
+ *   one are `KNOWN` rows of their own, which capture the uncaught error.
  * - `since122`: behaviour platform-ws gained in 12.2.0. Where the installed
  *   platform-ws has it (`referenceHasFlowControl()`), ours is compared with
  *   it; on an older one, with the answer 12.2.0 gave, recorded.
@@ -47,8 +50,10 @@ import {
 } from "./wsCompat/gateways";
 import {
   boot,
+  captureUnhandled,
   connect,
   connectRaw,
+  referenceCatchesResultErrors,
   referenceHasFlowControl,
   SIDES,
   until,
@@ -99,6 +104,13 @@ const CORE_SENDS_EXCEPTIONS_TO_NATIVE =
 const CORE_RETRIES_WITHOUT_CAUSE =
   typeof (BaseWsExceptionFilter.prototype as unknown as Record<string, unknown>)
     .emitErrorPayload === "function";
+
+/**
+ * Whether platform-ws catches and logs an errored result stream, keeping the
+ * connection answered (11.2.7, 12.1.3); before it the error is uncaught, an
+ * RxJS rethrow from a timer. Measured on a probe adapter.
+ */
+const REFERENCE_CATCHES_RESULT_ERRORS = referenceCatchesResultErrors();
 
 /** Whether the installed `WebSocketsController` has `name`: a capability, never a version. */
 function hasControllerMethod(name: string): boolean {
@@ -162,6 +174,45 @@ async function plainReply(
     (f) => f.kind === "raw" || f.kind === "ack",
   );
   return frame.kind === "ack" ? frame.data[0] : frame.data;
+}
+
+/** An error as one line: `Name: message`. */
+function describeError(error: unknown): string {
+  return error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : String(error);
+}
+
+/**
+ * For a platform-ws that leaves an errored result stream uncaught: sends what
+ * errors it (`send`) and returns the errors RxJS reported unhandled, captured
+ * rather than rethrown, and on our side what came back before the sentinel.
+ * The reference's connection answers nothing more after the error, so its
+ * side waits for the uncaught error instead of a sentinel.
+ */
+async function uncaught(
+  client: Client,
+  booted: Booted,
+  send: () => void,
+  ms = 5000,
+): Promise<unknown> {
+  const capture = captureUnhandled();
+  try {
+    send();
+    if (booted.side === "ws") {
+      const seen = await until(
+        () => capture.seen,
+        (errors) => errors.length > 0,
+        ms,
+        "the uncaught error",
+      );
+      return { uncaught: seen.map(describeError) };
+    }
+    const before = await untilSentinel(client, ms);
+    return { uncaught: capture.seen.map(describeError), before };
+  } finally {
+    capture.restore();
+  }
 }
 
 /** A JSON array nested `depth` deep: `JSON.parse` reads it, `JSON.stringify` overflows on it. */
@@ -350,6 +401,7 @@ const CASES: Case[] = [
   {
     name: "a filter that throws",
     path: "/main",
+    when: REFERENCE_CATCHES_RESULT_ERRORS,
     known:
       "ours answers an errored result stream with an ERROR packet; platform-ws logs it and sends nothing",
     observe: async (client, booted) => {
@@ -365,8 +417,20 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "a filter that throws, on a platform-ws that leaves it uncaught",
+    path: "/main",
+    when: !REFERENCE_CATCHES_RESULT_ERRORS,
+    known:
+      "ours answers an errored result stream with an ERROR packet; this platform-ws leaves the error uncaught, which RxJS rethrows",
+    observe: async (client, booted) =>
+      uncaught(client, booted, () => client.send("rethrow", null)),
+  },
+  {
     name: "a WsException whose cause cannot be serialised",
     path: "/main",
+    // Where Nest 11 only emits it locally, nothing is serialised; otherwise
+    // the reference must catch the failed send for an answer to compare.
+    when: !CORE_SENDS_EXCEPTIONS_TO_NATIVE || REFERENCE_CATCHES_RESULT_ERRORS,
     // Before 12.2.0's retry without the cause, the failed send errors the
     // result stream: ours answers that with an ERROR packet, platform-ws
     // logs it.
@@ -379,6 +443,21 @@ const CASES: Case[] = [
       client.sendJson("deep", deepJson(200_000));
       return { before: await untilSentinel(client, SLOW_MS) };
     },
+  },
+  {
+    name: "a WsException whose cause cannot be serialised, on a platform-ws that leaves it uncaught",
+    path: "/main",
+    when: CORE_SENDS_EXCEPTIONS_TO_NATIVE && !REFERENCE_CATCHES_RESULT_ERRORS,
+    known:
+      "the unsendable exception errors the stream: an ERROR packet on ours; this platform-ws leaves the RangeError uncaught, which RxJS rethrows",
+    timeout: SLOW_MS * 2,
+    observe: async (client, booted) =>
+      uncaught(
+        client,
+        booted,
+        () => client.sendJson("deep", deepJson(200_000)),
+        SLOW_MS,
+      ),
   },
   {
     name: "handleDisconnect gets the close code as its reason",

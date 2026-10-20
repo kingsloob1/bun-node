@@ -1878,8 +1878,9 @@ export class BunHttpAdapter<
       res.destroy();
     }
     // A hold's timeout (bun-common's `createRequestTimeoutError()`) is
-    // answered as the router's own: without the request.
-    if (isRequestTimeoutError(error)) {
+    // answered as the router's own: without the request. Every error the
+    // check recognises is an `Error`; `instanceof` only says so to the types.
+    if (error instanceof Error && isRequestTimeoutError(error)) {
       return Promise.reject(error);
     }
     // The error is answered on a fresh response carrying the refused one's

@@ -18,13 +18,16 @@ import type {
   Provider,
   Type,
 } from "@nestjs/common";
+import type { Observable } from "rxjs";
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
+import { EventEmitter } from "node:events";
 import net from "node:net";
 import { Injectable, Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { WsAdapter } from "@nestjs/platform-ws";
+import { config, throwError } from "rxjs";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
 import { MessageEventTypes } from "../../lib/BunWebSocketAdapter";
 
@@ -604,4 +607,102 @@ export function referenceHasFlowControl(): boolean {
     typeof probe.maxConcurrentMessages === "number" &&
     typeof probe.maxSendBufferSize === "number"
   );
+}
+
+/** The parts of platform-ws's `WsAdapter` {@link referenceCatchesResultErrors} drives. */
+interface ResultErrorProbe {
+  /** The adapter's logger: only `error` is called on this path. */
+  logger: { error: (error: unknown) => void };
+  /** Subscribes `client`'s messages to `handlers`, as Nest calls it per connection. */
+  bindMessageHandlers: (
+    client: EventEmitter,
+    handlers: { message: string; callback: () => Observable<unknown> }[],
+    transform: (result: Observable<unknown>) => Observable<unknown>,
+  ) => void;
+}
+
+/**
+ * Whether the installed platform-ws catches a message's errored result
+ * stream (an exception filter that rethrows; an exception it cannot
+ * serialise) and logs it (in 11.2.7 and 12.1.3; not in 11.1.20 or 12.0.0).
+ * Without it the error escapes the connection's subscriber, which RxJS
+ * rethrows from a timer, an uncaught error: there is no answer to compare,
+ * and the client's later messages go unanswered.
+ *
+ * Measured, never a version string: a probe adapter is given a fake client
+ * and one handler whose result errors. A catching adapter logs it at once;
+ * an older one leaves it to RxJS, whose `onUnhandledError` swallows that one
+ * error (and passes anything else on) until it arrives.
+ */
+export function referenceCatchesResultErrors(): boolean {
+  const adapter = new WsAdapter({}) as unknown as ResultErrorProbe;
+  const probeError = new Error("probe: an errored result stream");
+  let caught = false;
+  adapter.logger = {
+    error: (error) => {
+      caught ||= error === probeError;
+    },
+  };
+  const previous = config.onUnhandledError;
+  const restore = () => {
+    if (config.onUnhandledError === swallow) {
+      config.onUnhandledError = previous;
+    }
+  };
+  function swallow(error: unknown): void {
+    restore();
+    if (error === probeError) {
+      return;
+    }
+    if (previous) {
+      previous(error);
+      return;
+    }
+    throw error;
+  }
+  config.onUnhandledError = swallow;
+  const client = Object.assign(new EventEmitter(), {
+    readyState: 1,
+    send: () => undefined,
+  });
+  adapter.bindMessageHandlers(
+    client,
+    [{ message: "probe", callback: () => throwError(() => probeError) }],
+    (result) => result,
+  );
+  client.emit("message", { data: JSON.stringify({ event: "probe" }) });
+  client.emit("close");
+  if (caught) {
+    restore();
+  }
+  return caught;
+}
+
+/** What {@link captureUnhandled} returns. */
+export interface UnhandledCapture {
+  /** Every error RxJS reported unhandled since the capture began, in order. */
+  seen: unknown[];
+  /** Restores the RxJS handler the capture replaced. */
+  restore: () => void;
+}
+
+/**
+ * Collects the errors RxJS reports unhandled (an errored stream with no
+ * error callback) instead of letting it rethrow them, until `restore()`.
+ */
+export function captureUnhandled(): UnhandledCapture {
+  const seen: unknown[] = [];
+  const previous = config.onUnhandledError;
+  const capture = (error: unknown) => {
+    seen.push(error);
+  };
+  config.onUnhandledError = capture;
+  return {
+    seen,
+    restore: () => {
+      if (config.onUnhandledError === capture) {
+        config.onUnhandledError = previous;
+      }
+    },
+  };
 }

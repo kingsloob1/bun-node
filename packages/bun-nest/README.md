@@ -955,6 +955,9 @@ listed here answers the same status, headers and body.
   defaults). platform-express 11 sets none, and multer's are `Infinity`, so
   on Nest 11 bun-nest refuses a name nested deeper than 32 or indexed past
   1000 that Express accepts. Pass `Infinity` in `limits` to accept it.
+  platform-express 11.1.20 runs multer 2.1.1, which has no field-name
+  limits at all, so there Express also accepts what an explicit
+  `fieldNestingDepth` or `fieldArrayIndexLimit` makes bun-nest refuse.
 - An error-shaped body (`statusCode` 400 or more) returned under a
   `Content-Type` that is not JSON is sent as JSON with Nest's warning, by Nest
   12's rule: a `+json` type counts as JSON. Nest 11 on Express also forces a

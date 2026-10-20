@@ -21,6 +21,7 @@ import {
   Param,
   Post,
 } from "@nestjs/common";
+import { NestApplication } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { bootBoth, observe } from "./expressCompat/app";
@@ -78,6 +79,18 @@ const OLD_REFERENCE_HOOKS =
   "runRequestHook" in ExpressAdapter.prototype
     ? undefined
     : "platform-express before 12.1.3 does not guard its hooks";
+
+/**
+ * Whether Nest's core passes `app.use()` functions through
+ * `instrument.instanceDecorator` (its `applyFunctionDecoratorIfRegistered`:
+ * in 12.0.0 and 11.2.7, not in 11.1.20). Without it, core decorates only
+ * providers and global enhancers, so `app.use()` middleware reaches either
+ * adapter undecorated: both sides then answer as if no decorator were set,
+ * and the cases assert that instead. Read off the prototype, never a version.
+ */
+const CORE_DECORATES_USE =
+  typeof (NestApplication.prototype as unknown as Record<string, unknown>)
+    .applyFunctionDecoratorIfRegistered === "function";
 
 let booted: Record<Side, Booted> | undefined;
 
@@ -398,7 +411,7 @@ describe("instrument.instanceDecorator over app.use(), against platform-express"
     expect(answers.bun).toEqual(answers.express);
     expect(answers.bun).toEqual({ status: 418, body: '{"caught":"boom"}' });
     expect(calls.bun).toEqual(calls.express);
-    expect(calls.bun).toEqual(["len3", "len4"]);
+    expect(calls.bun).toEqual(CORE_DECORATES_USE ? ["len3", "len4"] : []);
   });
 
   it("a wrapper that drops the arity turns it into plain middleware, as on Express", async () => {
@@ -410,9 +423,11 @@ describe("instrument.instanceDecorator over app.use(), against platform-express"
     });
     const failed = await both("/i/boom");
     expect(failed.bun).toEqual(failed.express);
-    // The error skips the 0-arity wrapper and reaches Nest's handler.
-    expect(failed.bun.status).toBe(500);
+    // The error skips the 0-arity wrapper and reaches Nest's handler; on a
+    // core that leaves `app.use()` undecorated, the error middleware answers.
+    expect(failed.bun.status).toBe(CORE_DECORATES_USE ? 500 : 418);
     expect(calls.bun).toEqual(calls.express);
+    expect(calls.bun.length > 0).toBe(CORE_DECORATES_USE);
     const fine = await both("/i/2");
     expect(fine.bun).toEqual(fine.express);
   });
