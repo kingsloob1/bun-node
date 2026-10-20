@@ -77,10 +77,11 @@ export const uploadFieldsToMap = (uploadFields: UploadField[]) => {
  * Accepts files only on the fields in `fieldsMap`, each up to its `maxCount` —
  * multer's `fields()`. Answers `files` keyed by field name.
  *
- * @throws {UploadError} `LIMIT_UNEXPECTED_FILE` (`field` naming it) for a file
- *   on a field not in the map (`Field <name> doesn't accept files`) or more
- *   files on a field than its `maxCount` (`Field <name> accepts max <n>
- *   files`); `FILTER_REJECTED` when the `filter` answers a string.
+ * @throws {UploadError} `LIMIT_UNEXPECTED_FILE`, with multer's message
+ *   (`Unexpected file field`) and `field` naming the file's field as multer
+ *   does, for a file on a field not in the map or more files on a field than
+ *   its `maxCount` (multer raises the same code for both); `FILTER_REJECTED`
+ *   when the `filter` answers a string.
  */
 export const handleMultipartFileFields = async <
   TFile extends StorageFile = StorageFile,
@@ -120,17 +121,12 @@ export const handleMultipartFileFields = async <
     for (const fileFieldName of keys(files)) {
       const fieldOptions = fieldsMap.get(fileFieldName);
 
-      if (fieldOptions == null) {
+      if (
+        fieldOptions == null ||
+        files[fileFieldName].length > fieldOptions.maxCount
+      ) {
         throw new UploadError("LIMIT_UNEXPECTED_FILE", {
           field: fileFieldName,
-          message: `Field ${fileFieldName} doesn't accept files`,
-        });
-      }
-
-      if (files[fileFieldName].length > fieldOptions.maxCount) {
-        throw new UploadError("LIMIT_UNEXPECTED_FILE", {
-          field: fileFieldName,
-          message: `Field ${fileFieldName} accepts max ${fieldOptions.maxCount} files`,
         });
       }
     }
@@ -157,10 +153,10 @@ export const handleMultipartFileFields = async <
 /**
  * Accepts up to `maxCount` files, all on `fieldname` — multer's `array()`.
  *
- * @throws {UploadError} `LIMIT_UNEXPECTED_FILE` for a file on another field
- *   (`Only Field <fieldname> accept files`, `field` naming the foreign field)
- *   or more than `maxCount` files (`Field <fieldname> accepts max <n> files`,
- *   `field` = `fieldname`); `FILTER_REJECTED` when the `filter` answers a
+ * @throws {UploadError} `LIMIT_UNEXPECTED_FILE`, with multer's message
+ *   (`Unexpected file field`), for a file on another field (`field` naming
+ *   that field) or more than `maxCount` files (`field` = `fieldname`), as
+ *   multer reports both; `FILTER_REJECTED` when the `filter` answers a
  *   string.
  */
 export const handleMultipartMultipleFiles = async <
@@ -203,18 +199,12 @@ export const handleMultipartMultipleFiles = async <
 
     // Handle validation checks to see if foreign file was uploaded
     if (foreignField !== undefined) {
-      throw new UploadError("LIMIT_UNEXPECTED_FILE", {
-        field: foreignField,
-        message: `Only Field ${fieldname} accept files`,
-      });
+      throw new UploadError("LIMIT_UNEXPECTED_FILE", { field: foreignField });
     }
 
     // Handle validation checks
     if (files.length > maxCount) {
-      throw new UploadError("LIMIT_UNEXPECTED_FILE", {
-        field: fieldname,
-        message: `Field ${fieldname} accepts max ${maxCount} files`,
-      });
+      throw new UploadError("LIMIT_UNEXPECTED_FILE", { field: fieldname });
     }
 
     body = merge(body, multiPartResp.fields);
@@ -239,10 +229,10 @@ export const handleMultipartMultipleFiles = async <
  * Accepts at most one file, on `fieldname` — multer's `single()`.
  *
  * Like multer, the upload is rejected with an {@link UploadError}
- * `LIMIT_UNEXPECTED_FILE` (message `Only Field <fieldname> accept one file`)
- * when a file arrives on any other field **or** more than one file arrives on
+ * `LIMIT_UNEXPECTED_FILE` (multer's message, `Unexpected file field`) when a
+ * file arrives on any other field **or** more than one file arrives on
  * `fieldname`; `field` names the foreign field, or `fieldname` for a second
- * file. Both are checked before anything is stored, so a rejected upload
+ * file, as multer's does. Both are checked before anything is stored, so a rejected upload
  * leaves nothing behind. No file at all is not an error: `file` is
  * `undefined`. A `filter` answering a string rejects with `FILTER_REJECTED`.
  */
@@ -277,7 +267,6 @@ export const handleMultipartSingleFile = async <
     if (foreign || count > 1) {
       throw new UploadError("LIMIT_UNEXPECTED_FILE", {
         field: foreign?.fieldname ?? fieldname,
-        message: `Only Field ${fieldname} accept one file`,
       });
     }
 
@@ -313,8 +302,9 @@ export const handleMultipartSingleFile = async <
  * always empty and `expandedFiles` always `undefined`; both stay for symmetry
  * with the other handlers.
  *
- * @throws {UploadError} `LIMIT_UNEXPECTED_FILE` (`File upload is not
- *   accepted`, `field` naming the first file's field) when any file arrives.
+ * @throws {UploadError} `LIMIT_UNEXPECTED_FILE`, with multer's message
+ *   (`Unexpected file field`) and `field` naming the first file's field, as
+ *   multer's `none()` does, when any file arrives.
  */
 export const handleNoFiles = async <TFile extends StorageFile = StorageFile>(
   req: BunRequest,
@@ -335,7 +325,6 @@ export const handleNoFiles = async <TFile extends StorageFile = StorageFile>(
     if (firstFile) {
       throw new UploadError("LIMIT_UNEXPECTED_FILE", {
         field: firstFile.fieldname,
-        message: `File upload is not accepted`,
       });
     }
 

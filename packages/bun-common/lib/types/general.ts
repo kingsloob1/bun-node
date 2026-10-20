@@ -42,7 +42,37 @@ export interface FileTypeResult {
   readonly mime: string;
 }
 
-export type MultiPartOptions = BusboyConfig & {
+/**
+ * busboy's `limits`, plus multer 2.4's two field-name limits, which
+ * bun-common checks itself (busboy never reads them).
+ */
+export type MultiPartLimits = NonNullable<BusboyConfig["limits"]> & {
+  /**
+   * The deepest a field name may nest: `a[b][c]` has 2 levels (one per `[`;
+   * with the default inflator a `.` counts too, as it nests there). A deeper
+   * name refuses the upload with `UploadError` `LIMIT_FIELD_NESTING`.
+   * Defaults to **32** (platform-express 12.2's default; multer's is
+   * `Infinity`); `Infinity` turns the check off.
+   */
+  fieldNestingDepth?: number;
+  /**
+   * The largest array index a field name may hold: `a[3]` uses index 3. A
+   * larger one refuses the upload with `UploadError`
+   * `LIMIT_FIELD_ARRAY_INDEX`, so `arr[4294967294]` cannot build a
+   * 4294967295-long array. Defaults to **1000** (platform-express 12.2's
+   * default; multer's is `Infinity`); `Infinity` turns the check off.
+   */
+  fieldArrayIndexLimit?: number;
+};
+
+export type MultiPartOptions = Omit<BusboyConfig, "limits"> & {
+  /**
+   * busboy's limits (`fieldNameSize`, `fieldSize`, `fields`, `fileSize`,
+   * `files`, `parts`, `headerPairs`) and multer's field-name limits
+   * (`fieldNestingDepth`, `fieldArrayIndexLimit`). Each one exceeded refuses
+   * the upload with an `UploadError`.
+   */
+  limits?: MultiPartLimits;
   /**
    * Whether field values are inflated: a value that parses as JSON (or as a
    * urlencoded string) is replaced by the parsed value. Defaults to `true`;
@@ -145,10 +175,17 @@ export interface BunRequestInterface<
    * router mounted at `/users/:id`). `""` outside any mount.
    */
   baseUrl: string;
-  /** Parsed cookies. A `j:`-prefixed value is JSON-decoded, as cookie-parser does. */
-  cookies: Record<string, JsonValue>;
-  /** Cookies whose signature verified against `secret`, decoded like `cookies`. */
-  signedCookies: Record<string, JsonValue>;
+  /**
+   * Parsed cookies. A `j:`-prefixed value is JSON-decoded, as cookie-parser
+   * does. `undefined` when cookie parsing is off (`parseCookies: false`) and
+   * nothing assigned it, as in Express without cookie-parser.
+   */
+  cookies: Record<string, JsonValue> | undefined;
+  /**
+   * Cookies whose signature verified against `secret`, decoded like
+   * `cookies`; `undefined` when cookie parsing is off, as `cookies` is.
+   */
+  signedCookies: Record<string, JsonValue> | undefined;
   hostname: string;
   ip: string;
   ips: string[];

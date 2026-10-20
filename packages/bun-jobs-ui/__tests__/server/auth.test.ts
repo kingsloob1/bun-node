@@ -159,7 +159,7 @@ describe("authorize", () => {
 
   it("sees what the host's request carries (cookies, headers)", async () => {
     const ui = fixtureUi({
-      authorize: (req) => req.cookies.session === "ok",
+      authorize: (req) => req.cookies?.session === "ok",
     });
     expect((await ui.router.fetch("/")).status).toBe(403);
     const allowed = await ui.router.fetch("/", {

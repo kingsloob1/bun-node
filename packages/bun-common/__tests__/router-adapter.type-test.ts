@@ -262,10 +262,13 @@ type _stub = Expect<Equal<typeof FETCH_STUB_SERVER, Server<unknown>>>;
 
 type _baseUrl = Expect<Equal<BunRequestInterface["baseUrl"], string>>;
 type _cookies = Expect<
-  Equal<BunRequestInterface["cookies"], Record<string, JsonValue>>
+  Equal<BunRequestInterface["cookies"], Record<string, JsonValue> | undefined>
 >;
 type _signed = Expect<
-  Equal<BunRequestInterface["signedCookies"], Record<string, JsonValue>>
+  Equal<
+    BunRequestInterface["signedCookies"],
+    Record<string, JsonValue> | undefined
+  >
 >;
 // Unvalidated client input stays `unknown`.
 type _field = Expect<Equal<MultiPartFieldRecord["value"], unknown>>;

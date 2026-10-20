@@ -356,14 +356,29 @@ describe("requestParsing: query and cookies", () => {
     expect(await secure.json()).toEqual({ signed: { sid: "abc" } });
   });
 
-  it("parseCookies: false empties the cookies for its route", async () => {
+  it("parseCookies: false leaves the cookies undefined for its route", async () => {
     const adapter = new BunHttpAdapter(0);
     adapter.use("/nocookies", requestParsing({ parseCookies: false }));
-    adapter.get("/nocookies", (req, res) => res.json(req.cookies));
+    adapter.get("/nocookies", (req, res) => {
+      const { cookies, signedCookies } = req;
+      res.json({
+        cookies: cookies === undefined ? "undefined" : cookies,
+        signed: signedCookies === undefined ? "undefined" : signedCookies,
+      });
+    });
+    adapter.get("/cookies", (req, res) => res.json(req.cookies));
     const response = await adapter.fetch("/nocookies", {
       headers: { cookie: "a=1" },
     });
-    expect(await response.json()).toEqual({});
+    expect(await response.json()).toEqual({
+      cookies: "undefined",
+      signed: "undefined",
+    });
+    // Other routes keep the adapter's parse.
+    const other = await adapter.fetch("/cookies", {
+      headers: { cookie: "a=1" },
+    });
+    expect(await other.json()).toEqual({ a: "1" });
   });
 
   it("applies the cookie parser's options", async () => {

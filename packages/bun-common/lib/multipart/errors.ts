@@ -12,7 +12,17 @@
  *   or more files on a field than its `maxCount` (multer uses this code for
  *   both).
  * - `MISSING_FIELD_NAME` — a part arrived without a field name.
+ * - `LIMIT_FIELD_NESTING` — a field name nests deeper than
+ *   `limits.fieldNestingDepth` (multer 2.4; bun-common defaults it to 32).
+ * - `LIMIT_FIELD_ARRAY_INDEX` — a field name holds an array index above
+ *   `limits.fieldArrayIndexLimit` (multer 2.4; bun-common defaults it to
+ *   1000).
+ * - `INVALID_FIELD_NAME` — a field name the field inflator could not place
+ *   (it threw), where multer's `append-field` throwing raises it.
  * - `FILTER_REJECTED` — bun-common only: an upload `filter` answered a string.
+ *
+ * The three field-name codes carry the offending name as `field` and are
+ * `400`s, as platform-express maps them.
  */
 export type UploadErrorCode =
   | "LIMIT_PART_COUNT"
@@ -23,9 +33,15 @@ export type UploadErrorCode =
   | "LIMIT_FIELD_COUNT"
   | "LIMIT_UNEXPECTED_FILE"
   | "MISSING_FIELD_NAME"
+  | "LIMIT_FIELD_NESTING"
+  | "LIMIT_FIELD_ARRAY_INDEX"
+  | "INVALID_FIELD_NAME"
   | "FILTER_REJECTED";
 
-/** Multer's message for each code, used when no more specific one is given. */
+/**
+ * Multer's message for each code (multer 2.4.0's `multer-error.js`, word for
+ * word), used when no more specific one is given.
+ */
 export const UPLOAD_ERROR_MESSAGES: Readonly<Record<UploadErrorCode, string>> =
   {
     LIMIT_PART_COUNT: "Too many parts",
@@ -34,8 +50,11 @@ export const UPLOAD_ERROR_MESSAGES: Readonly<Record<UploadErrorCode, string>> =
     LIMIT_FIELD_KEY: "Field name too long",
     LIMIT_FIELD_VALUE: "Field value too long",
     LIMIT_FIELD_COUNT: "Too many fields",
-    LIMIT_UNEXPECTED_FILE: "Unexpected field",
+    LIMIT_UNEXPECTED_FILE: "Unexpected file field",
     MISSING_FIELD_NAME: "Field name missing",
+    LIMIT_FIELD_NESTING: "Field name nesting too deep",
+    LIMIT_FIELD_ARRAY_INDEX: "Field name array index too large",
+    INVALID_FIELD_NAME: "Invalid field name",
     FILTER_REJECTED: "File rejected by the upload filter",
   };
 

@@ -1061,8 +1061,10 @@ describe("BunRequest: cookie value types", () => {
       headers: { Cookie: `prefs=${prefs}; theme=dark` },
     });
 
-    // Compile-time: the public types are JsonValue, not string.
-    const cookies: Record<string, JsonValue> = req.cookies;
+    // Compile-time: the public types are JsonValue, not string; `undefined`
+    // only when cookie parsing is off, so it is narrowed first.
+    expect(req.cookies).toBeDefined();
+    const cookies: Record<string, JsonValue> = req.cookies!;
     const signed: Record<string, JsonValue> = req.parseCookies({
       secret: "k",
     }).signedCookies;
@@ -1073,5 +1075,25 @@ describe("BunRequest: cookie value types", () => {
     expect(cookies.theme).toBe("dark");
     expect(signed).toEqual({});
     expect<unknown>(notString).toBe(req.cookies);
+  });
+});
+
+describe("BunRequest: quoted cookie values, as cookie-parser", () => {
+  it("unquotes plain, signed and j: values before decoding them", async () => {
+    const signed = `s:${signCookie("user-42", "k")}`;
+    const req = await makeRequest({
+      headers: {
+        Cookie: `q="quoted"; empty=""; lone="; half="a; sid="${signed}"; prefs="j:{"lang":"en"}"`,
+      },
+      options: { parseCookies: { secret: "k" } },
+    });
+    expect(req.cookies).toEqual({
+      q: "quoted",
+      empty: "",
+      lone: "",
+      half: '"a',
+      prefs: { lang: "en" },
+    });
+    expect(req.signedCookies).toEqual({ sid: "user-42" });
   });
 });

@@ -1053,7 +1053,11 @@ An uploaded file is a bun-common `StorageFile`:
 
 ### Upload options and storages
 
-The options are bun-common's `UploadOptions`, a union keyed by `storageType`:
+The options are bun-common's `UploadOptions`, a union keyed by `storageType`.
+`storageType` may be left out, as in multer: `{ dest }` alone is disk storage
+at `dest` (exactly `"disk"`), and anything else (`{ limits }`) is memory. A
+multer storage engine (`storage` without `storageType`) throws a `TypeError`;
+wrap your own `Storage` with `storageType: "custom"`.
 
 | `storageType` | Extra options | Description |
 |---|---|---|
@@ -1184,10 +1188,14 @@ exception filter is needed:
   on platform-express 12. platform-express 11.2.7 answers the last two `500`.
 - For an `UploadError`, the response body is an `UploadExceptionBody`:
   `{ statusCode, message, code, field }`. multer's own message for the code
-  gets ` - <field>` appended on a `400` (`"Unexpected field - avatar"`), as
-  platform-express words it. `LIMIT_FILE_SIZE` keeps the bare message, and a
-  more specific message (`"Field photos accepts max 5 files"`) is kept as it
-  is. The original error is the exception's `cause`.
+  gets ` - <field>` appended on a `400` (`"Unexpected file field - avatar"`), as
+  platform-express words it. Every unexpected file — a foreign field, one
+  file over a field's `maxCount`, any file on `NoFilesInterceptor` — is
+  `LIMIT_UNEXPECTED_FILE` with that message and the field multer names, so
+  it answers `"Unexpected file field - <field>"` as on Express.
+  `LIMIT_FILE_SIZE` keeps the bare message, and a message that is not the
+  code's default (a `filter`'s string, `FILTER_REJECTED`) is kept as it is.
+  The original error is the exception's `cause`.
 
 ## `BunWebSocketAdapter`
 

@@ -22,7 +22,9 @@ export interface RequestParsingOptions {
   parseQuery?: ParseQueryOption;
   /**
    * Cookie parsing for the route: `false` leaves `req.cookies` and
-   * `req.signedCookies` empty, `true` parses them again with no secret and the
+   * `req.signedCookies` `undefined`, as the request option `parseCookies:
+   * false` does (and Express without cookie-parser), so Nest's `@Cookies()`
+   * parses the header itself; `true` parses them again with no secret and the
    * standard decoding, a {@link ParseCookiesConfig} object parses them again
    * with its `secret` (`req.secret` becomes the first) and `decode`.
    */
@@ -127,11 +129,11 @@ function applyQuery(req: BunRequest, parseQuery: ParseQueryOption): void {
   req.parseQuery();
 }
 
-/** Sets and re-runs (or empties) the cookie parse for one request. */
+/** Sets and re-runs (or clears, to `undefined`) the cookie parse for one request. */
 function applyCookies(req: BunRequest, parseCookies: ParseCookiesOption): void {
   if (parseCookies === false) {
-    req.cookies = {};
-    req.signedCookies = {};
+    req.cookies = undefined;
+    req.signedCookies = undefined;
     return;
   }
   // `true` means no secret and the standard decoding, for this route.

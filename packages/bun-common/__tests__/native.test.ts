@@ -476,6 +476,39 @@ describe("native: cookies", () => {
     ).toEqual({ a: "%zz", b: "1" });
   });
 
+  it("unquotes a value as the cookie package (0.7.2) does", () => {
+    // Expected values measured from `cookie.parse` 0.7.2, cookie-parser's.
+    const cases: [header: string, expected: Record<string, string>][] = [
+      ['q="quoted"', { q: "quoted" }],
+      ['a="', { a: "" }],
+      ['a=""', { a: "" }],
+      ['a="a', { a: '"a' }],
+      ['a=a"', { a: 'a"' }],
+      ['a= "x" ', { a: "x" }],
+      ['a=\t"x"\t', { a: "x" }],
+      ['a=""x""', { a: '"x"' }],
+      // Unquoted first, then percent-decoded.
+      ['a="%22x%22"', { a: '"x"' }],
+      ['a="x%20y"', { a: "x y" }],
+      // A value percent-decoding cannot read is kept, quotes off.
+      ['a="%E0%A4%A"', { a: "%E0%A4%A" }],
+      ['a="x"; b="y"; c=z; a="second"', { a: "x", b: "y", c: "z" }],
+      // A `;` ends the pair even inside quotes.
+      ['a="b;c"', { a: '"b' }],
+      ['a="s:v.sig"', { a: "s:v.sig" }],
+      ['a="j:{"x":1}"', { a: 'j:{"x":1}' }],
+    ];
+    for (const [header, expected] of cases) {
+      expect([header, parseCookie(header)]).toEqual([header, expected]);
+    }
+    // With a decoder too, which is handed the unquoted value.
+    expect(parseCookie('a="', { decode: (value) => `<${value}>` })).toEqual({
+      a: "<>",
+    });
+    // Without a quote, the native parse answers as before.
+    expect(parseCookie("a=1; b=%22x%22")).toEqual({ a: "1", b: '"x"' });
+  });
+
   it("serialises cookies via Bun's native Cookie", () => {
     // Bun.Cookie applies `Path=/` and `SameSite=Lax` defaults.
     const serialized = serializeCookie("token", "abc", {
