@@ -79,7 +79,7 @@ export function requestParsing(options: RequestParsingOptions): RouterHandler {
   validateParseBodyOption(parseBody);
 
   return (req, _res, next) => {
-    const request = req as BunRequest;
+    const request = req;
     if (retainBuffer !== undefined) {
       request.setRetainBuffer(retainBuffer);
     }

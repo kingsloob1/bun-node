@@ -102,18 +102,17 @@ export function toBase64Url(bytes: Uint8Array): string {
   let out = "";
   let index = 0;
   for (; index + 2 < bytes.length; index += 3) {
-    const n =
-      (bytes[index]! << 16) | (bytes[index + 1]! << 8) | bytes[index + 2]!;
+    const n = (bytes[index] << 16) | (bytes[index + 1] << 8) | bytes[index + 2];
     out +=
-      B64[n >> 18]! + B64[(n >> 12) & 63]! + B64[(n >> 6) & 63]! + B64[n & 63]!;
+      B64[n >> 18] + B64[(n >> 12) & 63] + B64[(n >> 6) & 63] + B64[n & 63];
   }
   const rest = bytes.length - index;
   if (rest === 1) {
-    const n = bytes[index]! << 16;
-    out += B64[n >> 18]! + B64[(n >> 12) & 63]!;
+    const n = bytes[index] << 16;
+    out += B64[n >> 18] + B64[(n >> 12) & 63];
   } else if (rest === 2) {
-    const n = (bytes[index]! << 16) | (bytes[index + 1]! << 8);
-    out += B64[n >> 18]! + B64[(n >> 12) & 63]! + B64[(n >> 6) & 63]!;
+    const n = (bytes[index] << 16) | (bytes[index + 1] << 8);
+    out += B64[n >> 18] + B64[(n >> 12) & 63] + B64[(n >> 6) & 63];
   }
   return out;
 }
@@ -137,7 +136,7 @@ export function macFromBase64Url(text: string): Uint8Array | undefined {
   let at = 0;
   for (let index = 0; index < text.length; index++) {
     const code = text.charCodeAt(index);
-    const value = code < 128 ? B64_VALUE[code]! : -1;
+    const value = code < 128 ? B64_VALUE[code] : -1;
     if (value < 0) {
       return undefined;
     }
@@ -472,7 +471,7 @@ export async function decodeTextFrame(
   const hmac = options.mac ?? subtleHmacSha256;
   let keyIndex = -1;
   for (let index = 0; index < keys.length && keyIndex < 0; index++) {
-    if (constantTimeEqual(await hmac(keys[index]!, input), mac)) {
+    if (constantTimeEqual(await hmac(keys[index], input), mac)) {
       keyIndex = index;
     }
   }

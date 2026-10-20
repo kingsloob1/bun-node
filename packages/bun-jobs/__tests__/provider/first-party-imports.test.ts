@@ -46,9 +46,9 @@ function importsOf(source: string): ImportSpec[] {
       before.lastIndexOf("export"),
     );
     const typeOnly = /^(?:import|export)\s+type\b/.test(source.slice(opener));
-    const known = found.get(match[1]!);
-    found.set(match[1]!, {
-      specifier: match[1]!,
+    const known = found.get(match[1]);
+    found.set(match[1], {
+      specifier: match[1],
       typeOnly: known === undefined ? typeOnly : known.typeOnly && typeOnly,
     });
   }
@@ -88,7 +88,7 @@ function violations(file: string, source: string): string[] {
     ? join(
         LIB,
         "providers",
-        moduleOf(relative(join(LIB, "providers"), absolute)).split(sep)[0]!,
+        moduleOf(relative(join(LIB, "providers"), absolute)).split(sep)[0],
       )
     : join(LIB, "remote", "adapters");
 

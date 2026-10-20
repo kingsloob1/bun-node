@@ -140,7 +140,7 @@ async function connect(
   });
   try {
     await until(() => served.opened.length > before);
-    return served.opened[served.opened.length - 1] as WebSocketClientData;
+    return served.opened[served.opened.length - 1];
   } finally {
     client.close();
   }

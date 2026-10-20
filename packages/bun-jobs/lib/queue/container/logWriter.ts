@@ -85,7 +85,7 @@ export class AttemptLogWriter {
     let size = 0;
     let count = 0;
     while (count < this.#queued.length) {
-      const next = this.#queued[count]!.length + 1;
+      const next = this.#queued[count].length + 1;
       if (count > 0 && size + next > LOG_BATCH_CHARS) {
         break;
       }

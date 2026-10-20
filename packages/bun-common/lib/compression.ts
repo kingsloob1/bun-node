@@ -1160,8 +1160,7 @@ function resolveConfig(options: CompressionOptions): CompressionConfig {
     encodings,
     provided: [...encodings, "identity"],
     enforce:
-      enforceEncoding === "identity" ||
-      encodings.includes(enforceEncoding as CompressionEncoding)
+      enforceEncoding === "identity" || encodings.includes(enforceEncoding)
         ? enforceEncoding
         : undefined,
     codecOptions: resolveCodecOptions(options),

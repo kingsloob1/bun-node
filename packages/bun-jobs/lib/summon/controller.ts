@@ -1145,7 +1145,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
           ref: summonGroupRef(this.namespace),
           name: summonGroupStateName(this.#group!.name),
         }
-      : { ref: this.#queues[0]!, name: SUMMON_MARKER };
+      : { ref: this.#queues[0], name: SUMMON_MARKER };
     this.#logger = createJobsLogger(
       options.logger,
       {
@@ -2058,6 +2058,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       return { action: "skipped", reason: "inert" };
     }
     if (this.#adoptError !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows the stored value unchanged; callers match on its class or name
       throw this.#adoptError;
     }
     // A late provider whose config has become ready is adopted now, before
@@ -2320,7 +2321,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
       this.#queueNeed(reading, marker.pending, partly.get(reading.queue)),
     );
     // The demand a result reports: the first queue's, until one is starved.
-    let { demand } = readings[0]!;
+    let { demand } = readings[0];
     // Scale style: whether the summoned count could go to zero, on every
     // queue the unit serves (see `#queueNeed`).
     const idle = needs.every((need) => need.idle);
@@ -2636,7 +2637,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
               id,
               count,
               error: outcome.reason,
-              ...(this.#shared ? { queue: this.#queues[index]!.queue } : {}),
+              ...(this.#shared ? { queue: this.#queues[index].queue } : {}),
             },
           );
         }
@@ -2867,6 +2868,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
     if (fatal !== undefined) {
       this.#pending = undefined;
       this.#adoptError = fatal;
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows the stored value unchanged; callers match on its class or name
       throw fatal;
     }
     const facet = pending.settled();
@@ -3879,7 +3881,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         recorded = true;
         break;
       }
-      const pending = marker.pending[index]!;
+      const pending = marker.pending[index];
       opened = undefined;
       newlyOpened = false;
       const openAtRead = circuitOpen(marker, now);
@@ -4298,7 +4300,7 @@ export class SummonController extends TypedEmitterBase<SummonControllerEvents> {
         new Map(
           this.#queues.map((ref, index) => [
             ref.queue,
-            perQueue[index]!.get(id),
+            perQueue[index].get(id),
           ]),
         ),
       );

@@ -79,7 +79,7 @@ describe("partitionFiles", () => {
   test("K = 1 is one shard holding every file", () => {
     const result = partitionFiles(FILES, 5, 1);
     expect(result.length).toBe(1);
-    expect([...result[0]!].sort()).toEqual([...FILES].sort());
+    expect([...result[0]].sort()).toEqual([...FILES].sort());
   });
 
   test("no files, no shards", () => {

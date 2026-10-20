@@ -379,14 +379,14 @@ describe("BunRunnerManager.controller(): errors", () => {
 
   it("rejects without a driver when the runner is not registered", async () => {
     const manager = new BunRunnerManager({ namespace: testNamespace() });
-    expect(manager.controller("nope")).rejects.toBeInstanceOf(
+    await expect(manager.controller("nope")).rejects.toBeInstanceOf(
       RunnerNotFoundError,
     );
   });
 
   it("rejects an unusable id with ConfigError", async () => {
     const { observer } = cluster();
-    expect(observer.controller("not:valid")).rejects.toBeInstanceOf(
+    await expect(observer.controller("not:valid")).rejects.toBeInstanceOf(
       ConfigError,
     );
   });
@@ -409,7 +409,7 @@ describe("BunRunnerManager.controller(): errors", () => {
       () => remote.stats(),
       () => remote.info(),
     ]) {
-      expect(call()).rejects.toBeInstanceOf(RunnerNotFoundError);
+      await expect(call()).rejects.toBeInstanceOf(RunnerNotFoundError);
     }
 
     await Bun.sleep(10);
@@ -421,7 +421,7 @@ describe("BunRunnerManager.controller(): errors", () => {
     await addRunner(owner).start();
 
     const remote = await observer.controller("reports");
-    expect(remote.updateSchedule("not a cron")).rejects.toBeInstanceOf(
+    await expect(remote.updateSchedule("not a cron")).rejects.toBeInstanceOf(
       ConfigError,
     );
     expect((await remote.info()).schedule).toBeNull();

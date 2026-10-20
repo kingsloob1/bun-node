@@ -55,7 +55,7 @@ function specifiersOf(source: string): string[] {
     /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
   ]) {
     for (const match of source.matchAll(pattern)) {
-      found.add(match[1]!);
+      found.add(match[1]);
     }
   }
   return [...found];

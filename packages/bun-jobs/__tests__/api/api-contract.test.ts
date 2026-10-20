@@ -62,7 +62,7 @@ function specifiersOf(source: string): string[] {
   ];
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) {
-      found.add(match[1]!);
+      found.add(match[1]);
     }
   }
   return [...found];
@@ -156,7 +156,7 @@ describe("the contract's import graph", () => {
     // Type-only imports are erased: the one runtime edge is the constants.
     expect([...new Set(resolved)]).toEqual(["./constants"]);
 
-    const bundle = await result.outputs[0]!.text();
+    const bundle = await result.outputs[0].text();
     expect(bundle).not.toMatch(/\b(?:require|import)\s*\(/);
     expect(bundle).not.toMatch(/from\s*["']/);
 
@@ -756,7 +756,7 @@ describe("one definition of each constant", () => {
     // quantile read to a factor of 2, so it is the property to assert rather
     // than the literal list alone.
     for (let index = 1; index < bounds.length; index++) {
-      expect({ index, ratio: bounds[index]! / bounds[index - 1]! }).toEqual({
+      expect({ index, ratio: bounds[index] / bounds[index - 1] }).toEqual({
         index,
         ratio: 2,
       });
@@ -767,7 +767,7 @@ describe("one definition of each constant", () => {
       index === 7 ? value + 1 : value,
     );
     expect(nudged).not.toEqual(bounds);
-    expect(nudged[7]! / nudged[6]!).not.toBe(2);
+    expect(nudged[7] / nudged[6]).not.toBe(2);
   });
 
   it("adds no action for analytics: the action list is exactly what shipped", () => {

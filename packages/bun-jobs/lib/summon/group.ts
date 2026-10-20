@@ -517,7 +517,7 @@ function circuitStates(
       failures: fields.failures,
       ...(fields.openUntil === undefined
         ? {}
-        : { openUntil: fields.openUntil as number }),
+        : { openUntil: fields.openUntil }),
       ...(openedBy === undefined ? {} : { openedBy }),
     });
   }
@@ -585,7 +585,7 @@ export function sharedMembers(value: unknown): string[] | undefined {
   ) {
     return undefined;
   }
-  return [...(value as string[])];
+  return [...value];
 }
 
 /** A shared unit's marker as read, with the version to write it back at. */

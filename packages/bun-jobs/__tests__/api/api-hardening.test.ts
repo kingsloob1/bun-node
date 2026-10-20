@@ -40,7 +40,7 @@ describe("component names", () => {
       summary: id,
       tags: ["Jobs"],
       responses: { 200: schema },
-      handler: () => ({ body: {} }) as never,
+      handler: () => ({ body: {} }),
     });
 
   it("refuses two different schemas under one component name", () => {
@@ -89,7 +89,7 @@ describe("the validator's edges", () => {
     const result = validateJson(integer, 2 ** 53 + 2) as {
       issues: { message: string }[];
     };
-    expect(result.issues[0]!.message).toBe("Expected integer, received number");
+    expect(result.issues[0].message).toBe("Expected integer, received number");
 
     // A coerced query value is held to the same rule.
     const query = s.query(s.object({ n: s.integer() }));
@@ -145,11 +145,11 @@ describe("the generated document", () => {
       >
     >;
     // A mutation with no body schema still reads (and caps) a body.
-    const pause = paths["/queues/{queue}/pause"]!.post!.responses;
-    expect(pause["413"]!["x-bun-jobs-codes"]).toEqual(["PAYLOAD_TOO_LARGE"]);
-    expect(pause["400"]!["x-bun-jobs-codes"]).toContain("INVALID_JSON");
+    const pause = paths["/queues/{queue}/pause"].post.responses;
+    expect(pause["413"]["x-bun-jobs-codes"]).toEqual(["PAYLOAD_TOO_LARGE"]);
+    expect(pause["400"]["x-bun-jobs-codes"]).toContain("INVALID_JSON");
     // A read with no body documents neither.
-    const meta = paths["/meta"]!.get!.responses;
+    const meta = paths["/meta"].get.responses;
     expect(meta["413"]).toBeUndefined();
   });
 

@@ -478,10 +478,10 @@ export class SpawnExecutor implements Executor {
     };
 
     if (this.options.stdout === "pipe") {
-      forward(child.stdout as ReadableStream<Uint8Array>, "stdout");
+      forward(child.stdout, "stdout");
     }
     if (this.options.stderr === "pipe") {
-      forward(child.stderr as ReadableStream<Uint8Array>, "stderr");
+      forward(child.stderr, "stderr");
     }
   }
 }

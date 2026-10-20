@@ -365,7 +365,7 @@ if (slowDriver !== undefined) {
 report("starting", { queues });
 const result =
   env.SINGLE === "1"
-    ? await runSummoned(workers[0]!, options)
+    ? await runSummoned(workers[0], options)
     : await runSummoned(workers, options);
 report("result", { result });
 if (env.REPORT_WAITING === "1") {

@@ -179,7 +179,7 @@ export async function readBounded(
     return empty();
   }
   if (chunks.length === 1) {
-    return chunks[0]!;
+    return chunks[0];
   }
   const out = new Uint8Array(length);
   let offset = 0;

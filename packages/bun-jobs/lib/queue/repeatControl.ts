@@ -105,7 +105,7 @@ export async function findRepeat(
 
   // Then the spelling the caller originally supplied, for a key containing
   // `|`, whose prefix stays visible when listed.
-  return await driver.getRepeat(q, stored[1]!);
+  return await driver.getRepeat(q, stored[1]);
 }
 
 /**

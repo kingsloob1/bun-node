@@ -75,7 +75,7 @@ describe("Express 5 use: error-handler detection", () => {
     router.use(
       (_err: unknown, _req: unknown, _res: unknown, next: NextFunction) => {
         order.push("errorHandler");
-        (next as NextFunction)();
+        next();
       },
     );
     router.get("/x", async (_req, res) => {

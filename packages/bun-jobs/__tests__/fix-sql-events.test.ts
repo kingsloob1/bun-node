@@ -48,7 +48,7 @@ async function open(engine: { adapter: SqlAdapter; url?: string }): Promise<{
         url: engine.url.replace(/[?&]allowPublicKeyRetrieval=true/, ""),
         adapter: engine.adapter,
         allowPublicKeyRetrieval: true,
-      } as ConstructorParameters<typeof SQL>[0]),
+      }),
       url: engine.url,
       tablePrefix: "bun_jobs_test_",
     };
@@ -173,7 +173,7 @@ for (const engine of ENGINES) {
 
         // The last listener of a channel going stops its dispatch; the
         // others carry on.
-        await stops[0]!();
+        await stops[0]();
         await publisher.publish(event(ns, "q0", 200));
         await publisher.publish(event(ns, "q1", 201));
         await waitFor(() => got.get("q1")?.at(-1) === 201, { timeout: 5_000 });

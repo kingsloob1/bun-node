@@ -35,9 +35,7 @@ users.get("/posts/:postId", (_req) => {
 });
 
 users.get("/files/*rest", (_req) => {
-  type _p = Expect<
-    Equal<typeof _req.params, { id: string; 0: string; rest: string }>
-  >;
+  type _p = Expect<Equal<typeof _req.params, { id: string; rest: string[] }>>;
 });
 
 const adapter = new BunHttpAdapter(0);

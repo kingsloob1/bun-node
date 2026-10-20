@@ -304,6 +304,7 @@ export const ServerMessageSchema = s.union(
 );
 
 /** Message schemas whose inferred type differs from the declared interface. */
+/* eslint-disable @typescript-eslint/no-duplicate-type-constituents -- each branch is `never` when its schema matches, so the repeats are the guard itself; --fix would delete it */
 type ProtocolMismatch =
   | (Equivalent<
       Infer<typeof SubscribeMessageSchema>,
@@ -353,6 +354,7 @@ type ProtocolMismatch =
     > extends true
       ? never
       : "error");
+/* eslint-enable @typescript-eslint/no-duplicate-type-constituents */
 
 /**
  * Compile-time guard that each schema and its interface agree, so the types a

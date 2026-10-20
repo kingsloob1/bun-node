@@ -84,16 +84,10 @@ export function routeUpgradeHook<TCustom>(
     | undefined,
 ): WebSocketUpgradeHook<TCustom> | undefined {
   if (isFunction(fnOrOptions)) {
-    return toUpgradeHook(
-      fnOrOptions as WebSocketCustomDataFn<TCustom>,
-      "custom",
-    );
+    return toUpgradeHook(fnOrOptions, "custom");
   }
   if (isObject(fnOrOptions)) {
-    return toUpgradeHook(
-      (fnOrOptions as WebSocketRouteOptions<TCustom>).onUpgrade,
-      "hook",
-    );
+    return toUpgradeHook(fnOrOptions.onUpgrade, "hook");
   }
   return undefined;
 }

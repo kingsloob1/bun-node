@@ -112,7 +112,7 @@ describe("known-answer vectors", () => {
         secret: SECRET,
         now: T0,
       }),
-    ).toBe(`t=1790000000,v1=${vectors[0]!.hex}`);
+    ).toBe(`t=1790000000,v1=${vectors[0].hex}`);
   });
 
   it("one flipped body byte gives another signature (the control)", async () => {
@@ -121,7 +121,7 @@ describe("known-answer vectors", () => {
       secret: SECRET,
       now: T0,
     });
-    expect(header).not.toContain(vectors[0]!.hex);
+    expect(header).not.toContain(vectors[0].hex);
   });
 
   it("signs a string, its bytes and its ArrayBuffer identically", async () => {
@@ -130,7 +130,7 @@ describe("known-answer vectors", () => {
     )!;
     const bytes = new TextEncoder().encode(unicode.body!);
     const signed = await Promise.all([
-      signEnvelope(unicode.body!, {
+      signEnvelope(unicode.body, {
         direction: "request",
         secret: SECRET,
         now: T0,
@@ -381,7 +381,7 @@ describe("tampering", () => {
       secret: SECRET,
       now: T0,
     });
-    const v1 = header.split(",")[1]!;
+    const v1 = header.split(",")[1];
     const malformed = [
       null,
       undefined,
@@ -833,10 +833,12 @@ describe("the nonce cache", () => {
 
     it("forgets the oldest past max, and only then", () => {
       const cache = createRemoteNonceCache({ max: 2 });
-      cache.remember("a", 1_000, 0);
-      cache.remember("b", 1_000, 0);
+      // The in-memory cache answers synchronously: `void` discards the Promise
+      // its interface allows.
+      void cache.remember("a", 1_000, 0);
+      void cache.remember("b", 1_000, 0);
       expect(cache.remember("a", 1_000, 0)).toBe(false);
-      cache.remember("c", 1_000, 0);
+      void cache.remember("c", 1_000, 0);
       expect(cache.remember("b", 1_000, 0)).toBe(false);
       // "a" went to make room for "c".
       expect(cache.remember("a", 1_000, 0)).toBe(true);
@@ -844,10 +846,12 @@ describe("the nonce cache", () => {
 
     it("drops expired nonces from the front as it goes", () => {
       const cache = createRemoteNonceCache({ max: 2 });
-      cache.remember("a", 10, 0);
-      cache.remember("b", 1_000, 0);
+      // The in-memory cache answers synchronously: `void` discards the Promise
+      // its interface allows.
+      void cache.remember("a", 10, 0);
+      void cache.remember("b", 1_000, 0);
       // "a" has expired, so "c" takes its place and "b" stays.
-      cache.remember("c", 1_000, 20);
+      void cache.remember("c", 1_000, 20);
       expect(cache.remember("b", 1_000, 20)).toBe(false);
       expect(cache.remember("c", 1_000, 20)).toBe(false);
     });

@@ -307,7 +307,7 @@ describe("redaction: the default rules", () => {
     // The expression the linear scan replaced, and its rewrite. A replacement
     // holding `$` templates checks the scan uses it as it is.
     const replacement = "[$1$&]";
-    const expression = /\b([a-z][a-z\d+.\-]*:\/\/[^\s:/@]*:)[^\s@/]+@/gi;
+    const expression = /\b([a-z][a-z\d+.-]*:\/\/[^\s:/@]*:)[^\s@/]+@/gi;
     const reference = (text: string) =>
       text.replace(expression, `$1${replacement.replaceAll("$", "$$$$")}@`);
     const scan = urlPasswordStep(replacement);
@@ -460,7 +460,7 @@ describe("redaction: before the caps", () => {
     expect(stdout.map((entry) => entry.text)).toEqual([`token=${R} ok`]);
     // Cut first, it would have been 40 bytes of `token=xxxx…`, flagged, and
     // redacted to nothing useful — or, worse, cut and then left unredacted.
-    expect(stdout[0]!.truncated).toBeUndefined();
+    expect(stdout[0].truncated).toBeUndefined();
   });
 
   it("cuts after redaction, so a cut can never expose half a secret", async () => {
@@ -529,7 +529,7 @@ describe("redaction: before the caps", () => {
     capture.output("stdout", "token=abc\n");
     await capture.close();
 
-    const page = await driver.getRunLog!(
+    const page = await driver.getRunLog(
       namespace,
       runnerKey("unit"),
       "run-redact-fails",

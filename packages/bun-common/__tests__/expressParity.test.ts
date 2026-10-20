@@ -26,7 +26,7 @@ function raw(port: number, head: string, waitMs = 2000): Promise<string> {
       resolve(`TIMEOUT ${data}`);
     }, waitMs);
     socket.on("data", (chunk) => {
-      data += chunk;
+      data += chunk.toString();
     });
     const done = () => {
       clearTimeout(timer);
@@ -69,7 +69,7 @@ describe("Express parity: HEAD on a GET route", () => {
   it("prefers a HEAD handler registered first, and keeps registration order", async () => {
     const adapter = new BunHttpAdapter(0);
     adapter.head("/h", (_req, res) => {
-      res.set("x-which", "head").end();
+      void res.set("x-which", "head").end();
     });
     adapter.get("/h", (_req, res) => {
       res.set("x-which", "get").send("get");

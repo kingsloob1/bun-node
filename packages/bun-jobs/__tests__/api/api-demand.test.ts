@@ -174,13 +174,13 @@ function parseExposition(text: string): {
   const samples: Sample[] = [];
   let current: string | undefined;
   for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]!;
+    const line = lines[index];
     const help = /^# HELP ([a-z_:][\w:]*) .+$/i.exec(line);
     if (help) {
       const type = lines[index + 1];
       expect(type).toBe(`# TYPE ${help[1]} gauge`);
       expect(families).not.toContain(help[1]);
-      families.push(help[1]!);
+      families.push(help[1]);
       current = help[1];
       index++;
       continue;
@@ -189,10 +189,10 @@ function parseExposition(text: string): {
     expect(sample).not.toBeNull();
     expect(sample![1]).toBe(current!);
     const labels: Record<string, string> = {};
-    for (const pair of sample![2]!.matchAll(/(\w+)="((?:[^"\\]|\\.)*)"/g)) {
-      labels[pair[1]!] = pair[2]!;
+    for (const pair of sample![2].matchAll(/(\w+)="((?:[^"\\]|\\.)*)"/g)) {
+      labels[pair[1]] = pair[2]!;
     }
-    samples.push({ name: sample![1]!, labels, value: Number(sample![3]) });
+    samples.push({ name: sample![1], labels, value: Number(sample![3]) });
   }
   return { families, samples };
 }
@@ -216,8 +216,8 @@ function truncatedOf(
     (sample) => sample.name === "bunjobs_demand_truncated",
   );
   expect(samples).toHaveLength(1);
-  expect(Object.keys(samples[0]!.labels)).toEqual(["ns"]);
-  return samples[0]!.value;
+  expect(Object.keys(samples[0].labels)).toEqual(["ns"]);
+  return samples[0].value;
 }
 
 /** A memory driver whose `countDemand` is hidden: a driver of somebody else's. */
@@ -230,7 +230,7 @@ function withoutCountDemand(): JobsDriver {
       const value = Reflect.get(target, key, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     },
-  }) as JobsDriver;
+  });
 }
 
 describe("GET /queues/{queue}/demand: the JSON body", () => {
@@ -773,8 +773,8 @@ describe("the fallback, and features.demand", () => {
     const document = h.api.openapi() as unknown as {
       paths: Record<string, Record<string, any>>;
     };
-    const one = document.paths["/queues/{queue}/demand"]!.get;
-    const many = document.paths["/demand"]!.get;
+    const one = document.paths["/queues/{queue}/demand"].get;
+    const many = document.paths["/demand"].get;
     expect(one.operationId).toBe("getQueueDemand");
     expect(one["x-bun-jobs-action"]).toBe("queues.read");
     expect(one["x-bun-jobs-requires"]).toEqual([]);
@@ -800,7 +800,7 @@ describe("the fallback, and features.demand", () => {
     // Control: a JSON-only route documents JSON alone.
     expect(
       Object.keys(
-        document.paths["/queues/{queue}/counts"]!.get.responses["200"].content,
+        document.paths["/queues/{queue}/counts"].get.responses["200"].content,
       ),
     ).toEqual(["application/json"]);
   });

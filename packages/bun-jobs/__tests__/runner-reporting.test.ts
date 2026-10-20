@@ -49,7 +49,7 @@ describe("BunRunner: reporting", () => {
     runner.logger.info("hello");
 
     expect(replacement.events).toHaveLength(1);
-    expect(replacement.events[0]!.bindings).toMatchObject({
+    expect(replacement.events[0].bindings).toMatchObject({
       namespace,
       runnerId: "reporting",
     });

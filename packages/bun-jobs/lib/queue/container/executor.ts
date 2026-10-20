@@ -208,7 +208,12 @@ export class ContainerExecutor {
         return "too-large";
       }
       try {
-        proc.stdin.write(`${json}\n`);
+        // Under backpressure the write returns a promise: a broken pipe
+        // surfaces on it or on the flush, and the child's exit says what
+        // happened, so neither may reject unhandled.
+        void Promise.resolve(proc.stdin.write(`${json}\n`)).catch(
+          () => undefined,
+        );
         void Promise.resolve(proc.stdin.flush()).catch(() => undefined);
         return "sent";
       } catch {

@@ -326,7 +326,7 @@ describe("a request's Headers are built on first read", () => {
     /** Opens the entry point `Bun.serve` calls. */
     class Served extends BunHttpAdapter {
       serve(request: Request) {
-        return this.handleNativeRequest(request, testServer as never);
+        return this.handleNativeRequest(request, testServer);
       }
     }
     const app = new Served(0);
@@ -516,7 +516,7 @@ describe("a request's Headers are built on first read", () => {
     /** Opens the entry point `Bun.serve` calls. */
     class Served extends BunHttpAdapter {
       serve(request: Request) {
-        return this.handleNativeRequest(request, testServer as never);
+        return this.handleNativeRequest(request, testServer);
       }
     }
     const app = new Served(0);

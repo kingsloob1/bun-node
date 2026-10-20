@@ -84,7 +84,7 @@ export function createDriver(
       });
     default:
       throw new ConfigError("Unrecognised driver config", {
-        config: config as unknown,
+        config,
       });
   }
 }
@@ -115,7 +115,7 @@ export function resolveDriver(
   }
 
   if ("type" in driver && typeof driver.type === "string") {
-    const config = driver as DriverConfig;
+    const config = driver;
     return {
       driver: createDriver(
         metrics === undefined || config.metrics !== undefined
@@ -127,5 +127,5 @@ export function resolveDriver(
     };
   }
 
-  return { driver: driver as JobsDriver, owned: false };
+  return { driver, owned: false };
 }

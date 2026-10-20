@@ -30,7 +30,7 @@ afterEach(async () => {
 
 /** A driver whose client counts `evalsha`/`eval` calls, and its namespace. */
 function setup(prefix: string) {
-  const real = new BunRedis(URL!);
+  const real = new BunRedis(URL);
   const counter = { scripts: 0 };
   const client = new Proxy(real, {
     get(target, property, receiver) {

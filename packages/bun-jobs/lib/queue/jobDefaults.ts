@@ -788,7 +788,7 @@ export function sameOptionValue(a: unknown, b: unknown): boolean {
 
 /** A deep copy of a JSON option value. */
 function copyValue<T>(value: T): T {
-  return isRecord(value) ? (structuredClone(value) as T) : value;
+  return isRecord(value) ? structuredClone(value) : value;
 }
 
 /**

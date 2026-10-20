@@ -35,7 +35,7 @@ const eventsHandler: RouterMiddlewareHandler = (req, res) => {
 
   req.on("close", () => {
     clearInterval(interval);
-    res.end();
+    void res.end();
     console.log("Connection is Closed");
   });
 };
@@ -71,7 +71,7 @@ const serverInstance = Bun.serve<WebSocketClientData<unknown>>({
         err = new Error(String(e));
       }
 
-      set(err as unknown as Record<string, unknown>, "req", req);
+      set(err as Record<string, unknown>, "req", req);
       throw err;
     }
 

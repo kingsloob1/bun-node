@@ -59,7 +59,7 @@ export function parseDuration(input: string): number | null {
 
   PART.lastIndex = 0;
   for (let part = PART.exec(text); part !== null; part = PART.exec(text)) {
-    const unit = UNITS.find(([pattern]) => pattern.test(part![2]!));
+    const unit = UNITS.find(([pattern]) => pattern.test(part[2]));
 
     if (!unit) {
       return null;
@@ -251,11 +251,11 @@ function intervalFromWords(phrase: string[]): number | null {
     UNIT_WORDS.find(([pattern]) => pattern.test(word))?.[1];
 
   if (meaningful.length === 1) {
-    return ADVERBS[first!.toLowerCase()] ?? unitOf(first!) ?? null;
+    return ADVERBS[first.toLowerCase()] ?? unitOf(first) ?? null;
   }
 
-  if (meaningful.length === 2 && first!.toLowerCase() === "other") {
-    const unit = unitOf(second!);
+  if (meaningful.length === 2 && first.toLowerCase() === "other") {
+    const unit = unitOf(second);
     return unit === undefined ? null : unit * 2;
   }
 

@@ -222,7 +222,7 @@ describe("processEvery: reading the interval", () => {
     await waitFor(() => waits.length > 0, { timeout: 3_000 });
     // The memory driver wakes waiters directly, so it waits by `maxBlock`.
     expect(driver.capabilities.blockingWait).toBe(true);
-    expect(waits[0]!.ms).toBe(5_000);
+    expect(waits[0].ms).toBe(5_000);
   });
 
   it("refuses a runtime interval on a worker that is not a positive number", () => {

@@ -108,10 +108,10 @@ describe("nextBackoff", () => {
 
     expect(nextBackoff(4, job, error, strategies, warnings().warn)).toBe(280);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.attempt).toBe(4);
-    expect(calls[0]!.job.id).toBe("backoff-job");
-    expect(calls[0]!.error).toBe(error);
-    expect(calls[0]!.options).toEqual({ type: "ramp", delay: 70 });
+    expect(calls[0].attempt).toBe(4);
+    expect(calls[0].job.id).toBe("backoff-job");
+    expect(calls[0].error).toBe(error);
+    expect(calls[0].options).toEqual({ type: "ramp", delay: 70 });
   });
 
   it("caps a named strategy at the job's max", () => {
@@ -156,7 +156,7 @@ describe("nextBackoff", () => {
       expect(delay).toBeGreaterThanOrEqual(900);
       expect(delay).toBeLessThanOrEqual(1_100);
       expect(seen).toHaveLength(1);
-      expect(seen[0]!.fields.strategy).toBe(type);
+      expect(seen[0].fields.strategy).toBe(type);
     }
   });
 
@@ -292,7 +292,7 @@ describe("backoff on a worker", () => {
     });
 
     // Linear, first retry: one delay from the failure.
-    expect(scheduled[0]!).toBeGreaterThanOrEqual(before + 60_000);
-    expect(scheduled[0]!).toBeLessThan(Date.now() + 60_000 + 1);
+    expect(scheduled[0]).toBeGreaterThanOrEqual(before + 60_000);
+    expect(scheduled[0]).toBeLessThan(Date.now() + 60_000 + 1);
   }, 15_000);
 });

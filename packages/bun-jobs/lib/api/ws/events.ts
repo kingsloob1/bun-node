@@ -350,11 +350,13 @@ type WorkerMismatch = {
  * added to or removed from a payload in `shared/events.ts` fails this line,
  * naming the event.
  */
+/* eslint-disable @typescript-eslint/no-duplicate-type-constituents -- each *Mismatch is `never` when its schema matches, so the repeats are the guard itself; --fix would delete it */
 const _payloadSchemasMatch: [
   QueueMismatch | RunnerMismatch | WorkerMismatch,
 ] extends [never]
   ? true
   : QueueMismatch | RunnerMismatch | WorkerMismatch = true;
+/* eslint-enable @typescript-eslint/no-duplicate-type-constituents */
 
 /** One line per queue event, for the documents. */
 const QUEUE_EVENT_SUMMARIES: Record<QueueEventName, string> = {
@@ -429,7 +431,7 @@ export type { ErrorWire, EventWire } from "../contract/ws";
 
 /** `repeatScheduled` → `RepeatScheduled`. */
 function pascal(name: string): string {
-  return `${name[0]!.toUpperCase()}${name.slice(1)}`;
+  return `${name[0].toUpperCase()}${name.slice(1)}`;
 }
 
 /** One event as the socket describes it. */

@@ -325,8 +325,8 @@ describe("a shared unit's status carries each attempt's coverage", () => {
     expect(await controller.check()).toMatchObject({ action: "summoned" });
     const before = await controller.status();
     expect(before.pending).toHaveLength(1);
-    const id = before.pending[0]!.id;
-    expect({ ...before.pending[0]!.coverage }).toEqual({
+    const id = before.pending[0].id;
+    expect({ ...before.pending[0].coverage }).toEqual({
       renders: "pending",
       thumbs: "pending",
       previews: "pending",
@@ -335,7 +335,7 @@ describe("a shared unit's status carries each attempt's coverage", () => {
     const { worker, release } = summoned(driver, namespace, "renders", id);
     await listed(driver, namespace, "renders", worker);
     const running = await controller.status();
-    expect({ ...running.pending[0]!.coverage }).toEqual({
+    expect({ ...running.pending[0].coverage }).toEqual({
       renders: "registered",
       thumbs: "pending",
       previews: "pending",
@@ -354,7 +354,7 @@ describe("a shared unit's status carries each attempt's coverage", () => {
       ).some((one) => one.id === worker.id),
     ).toBe(false);
     const after = await controller.status();
-    expect(after.pending[0]!.coverage!.renders).toBe("registered");
+    expect(after.pending[0].coverage!.renders).toBe("registered");
   });
 
   it("never stores coverage, and decorates copies of the marker's attempts", async () => {
@@ -369,7 +369,7 @@ describe("a shared unit's status carries each attempt's coverage", () => {
     );
     expect(await controller.check()).toMatchObject({ action: "summoned" });
     const status = await controller.status();
-    expect(status.pending[0]!.coverage).toBeDefined();
+    expect(status.pending[0].coverage).toBeDefined();
     // More work: the next check claims a second attempt, writing the marker
     // back with the first one in it.
     await seed(driver, namespace, ["renders", "renders"]);
@@ -393,7 +393,7 @@ describe("a shared unit's status carries each attempt's coverage", () => {
     await controller.check();
     const status = await controller.status();
     expect(status.pending).toHaveLength(1);
-    expect(Object.hasOwn(status.pending[0]!, "coverage")).toBe(false);
+    expect(Object.hasOwn(status.pending[0], "coverage")).toBe(false);
   });
 
   it("covers a member named __proto__ as an own key", async () => {
@@ -403,7 +403,7 @@ describe("a shared unit's status carries each attempt's coverage", () => {
       shared(driver, namespace, { queues: ["renders", "__proto__"] }),
     );
     await controller.check();
-    const coverage = (await controller.status()).pending[0]!.coverage!;
+    const coverage = (await controller.status()).pending[0].coverage!;
     expect(Object.hasOwn(coverage, "__proto__")).toBe(true);
     expect(Object.keys(coverage)).toEqual(["renders", "__proto__"]);
   });
@@ -551,7 +551,7 @@ describe("reading a unit from storage: which unit, and whether it is current", (
     members,
     ...(at === undefined ? {} : { lastAttemptAt: at }),
     status: {
-      queue: members[0]!,
+      queue: members[0],
       queues: members,
       local: false,
       inert: false,
@@ -751,7 +751,7 @@ describe("a failed coverage read is logged at most once a minute", () => {
       warn(new Error("three"));
       const warned = events.filter((event) => event.level === "warn");
       expect(warned).toHaveLength(2);
-      expect(warned[0]!.fields).toMatchObject({ group: "media" });
+      expect(warned[0].fields).toMatchObject({ group: "media" });
     } finally {
       setSystemTime();
     }

@@ -39,6 +39,12 @@
  *   `@nestjs/platform-express`: here a small `{{name}}` engine registered for
  *   `.html` with `adapter.engine()`, the handler's return value being the
  *   template's locals. `views.ts` covers views in full.
+ * - Paths have Express 5's syntax, as on `@nestjs/platform-express`: `{…}`
+ *   makes a part optional (`archive/:year{/:month}`), a named wildcard
+ *   (`files/*path`) is an array of segments, and the routejs forms Express 5
+ *   dropped (`:month?`, `:year(\\d{4})`) fail the boot. A constraint a regexp
+ *   used to express is a pipe: here `FourDigitYearPipe` answers 400 for
+ *   anything but four digits.
  */
 import type {
   BunRequest,
@@ -46,14 +52,16 @@ import type {
   JsonValue,
   ViewEngine,
 } from "@kingsleyweb/bun-common";
-import type { MessageEvent } from "@nestjs/common";
+import type { MessageEvent, PipeTransform } from "@nestjs/common";
 import { Buffer } from "node:buffer";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PathSyntaxError } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import {
   All,
+  BadRequestException,
   Body,
   Controller,
   Copy,
@@ -64,6 +72,7 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  Injectable,
   Ip,
   Lock,
   Mkcol,
@@ -218,6 +227,20 @@ class VerbsController {
   }
 }
 
+/**
+ * Four digits, as a number, or a 400: the constraint `:year(\\d{4})` used to
+ * express, which Express 5's paths no longer can.
+ */
+@Injectable()
+class FourDigitYearPipe implements PipeTransform<string, number> {
+  transform(value: string): number {
+    if (!/^\d{4}$/.test(value)) {
+      throw new BadRequestException(`year must be four digits, got ${value}`);
+    }
+    return Number(value);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /** Every way a handler reads the request. */
 @Controller("inputs")
@@ -232,14 +255,18 @@ class InputsController {
     return { all, userId, postId, postIdType: typeof postId };
   }
 
-  /** An optional param, a regexp-constrained param and a named wildcard. */
-  @Get("archive/:year(\\d{4})/:month?")
-  archive(@Param() params: Record<string, string>) {
-    return { params };
+  /** An optional `{…}` group, and a param a pipe constrains. */
+  @Get("archive/:year{/:month}")
+  archive(
+    @Param() params: Record<string, string>,
+    @Param("year", FourDigitYearPipe) year: number,
+  ) {
+    return { params, year, yearType: typeof year };
   }
 
+  /** A named wildcard: the array of segments it matched. */
   @Get("files/*path")
-  files(@Param("path") path: string) {
+  files(@Param("path") path: string[]) {
     return { path };
   }
 
@@ -510,10 +537,38 @@ for (const method of ["GET", "DELETE", "PATCH"]) {
 step("Reading the request: @Param, @Query, @Body, @Headers, @Req, @Ip");
 
 show("@Param", await call("/inputs/users/7/posts/42"));
-show("optional param absent", await call("/inputs/archive/2026"));
-show("optional param present", await call("/inputs/archive/2026/09"));
-show("regexp constraint fails", (await call("/inputs/archive/26/09")).status);
-show("named wildcard", await call("/inputs/files/docs/guides/intro.md"));
+checkEqual(
+  "{/:month} left out: month is absent, the pipe made year a number",
+  await call("/inputs/archive/2026"),
+  {
+    status: 200,
+    body: { params: { year: "2026" }, year: 2026, yearType: "number" },
+  },
+);
+checkEqual("{/:month} given", await call("/inputs/archive/2026/09"), {
+  status: 200,
+  body: {
+    params: { year: "2026", month: "09" },
+    year: 2026,
+    yearType: "number",
+  },
+});
+checkEqual(
+  "the four-digit pipe rejects 26, 12345 and abc with a 400",
+  await Promise.all(
+    [
+      "/inputs/archive/26/09",
+      "/inputs/archive/12345",
+      "/inputs/archive/abc",
+    ].map(async (path) => (await call(path)).status),
+  ),
+  [400, 400, 400],
+);
+checkEqual(
+  "a named wildcard is an array of segments",
+  await call("/inputs/files/docs/guides/intro.md"),
+  { status: 200, body: { path: ["docs", "guides", "intro.md"] } },
+);
 show(
   "@Query (nested and repeated keys)",
   await call("/inputs/search?tag=bun&tag=nest&filter[price][lt]=10&page=2"),
@@ -877,6 +932,39 @@ for (const watched of [quietSse, quietSent]) {
   await watched.cancel().catch(() => {});
 }
 await quietApp.close();
+
+/* ------------------------------------------------------------------ */
+step("A path Express 5 cannot register fails the boot");
+
+/** The route this example used to declare, before Express 5's paths. */
+@Controller("legacy")
+class LegacyPathController {
+  @Get("archive/:year(\\d{4})/:month?")
+  archive() {
+    return "never registered";
+  }
+}
+
+@Module({ controllers: [LegacyPathController] })
+class LegacyPathModule {}
+
+const legacyApp = await NestFactory.create(
+  LegacyPathModule,
+  new BunHttpAdapter(),
+  { logger: false, abortOnError: false },
+);
+const bootError = await legacyApp.init().then(
+  () => undefined,
+  (error: unknown) => error,
+);
+checkEqual(
+  ":year(\\d{4})/:month? fails app.init() with a PathSyntaxError",
+  bootError instanceof PathSyntaxError
+    ? { isTypeError: bootError instanceof TypeError, reason: bootError.reason }
+    : String(bootError),
+  { isTypeError: true, reason: "Unexpected ( at index 21" },
+);
+await legacyApp.close();
 
 /* ------------------------------------------------------------------ */
 step("Close");

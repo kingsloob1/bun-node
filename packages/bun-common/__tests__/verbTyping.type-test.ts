@@ -7,6 +7,7 @@
  * `bun test` — run `bun run check` in the package.
  */
 import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
+import type { ParamsDictionary } from "../lib/types/routeParams";
 import type { ResolvedHandler } from "../lib/types/routeTyping";
 import type { StandardSchemaV1 } from "../lib/types/standardSchema";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
@@ -38,7 +39,7 @@ adapter.get("/user/:id", (_req) => {
 });
 
 adapter.get("/assets/*splat", (_req) => {
-  type _ = Expect<Equal<typeof _req.params, { 0: string; splat: string }>>;
+  type _ = Expect<Equal<typeof _req.params, { splat: string[] }>>;
 });
 
 /* --- a validator supplies query/body ------------------------------- */
@@ -115,7 +116,7 @@ router.use(((_err, _req, res, _next) => {
 // A non-literal path degrades rather than failing.
 declare const dynamicPath: string;
 adapter.get(dynamicPath, (_req) => {
-  type _ = Expect<Equal<typeof _req.params, Record<string, string>>>;
+  type _ = Expect<Equal<typeof _req.params, ParamsDictionary>>;
 });
 
 // More handlers than the typed overloads cover: still compiles, untyped.

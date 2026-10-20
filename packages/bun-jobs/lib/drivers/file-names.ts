@@ -157,7 +157,7 @@ export function decodeName(encoded: string): string | null {
   };
 
   while (index < encoded.length) {
-    const char = encoded[index]!;
+    const char = encoded[index];
 
     if (NAME_LITERAL.test(char)) {
       units.push(char.charCodeAt(0));
@@ -282,13 +282,13 @@ export function decodeSegment(encoded: string): string | null {
   let index = 0;
 
   while (index < encoded.length) {
-    const char = encoded[index]!;
+    const char = encoded[index];
 
     if (/^[a-z0-9_.-]$/.test(char)) {
       bytes.push(char.charCodeAt(0));
       index++;
     } else if (char === "^" && /^[a-z]$/.test(encoded[index + 1] ?? "")) {
-      bytes.push(encoded[index + 1]!.toUpperCase().charCodeAt(0));
+      bytes.push(encoded[index + 1].toUpperCase().charCodeAt(0));
       index += 2;
     } else if (
       char === "~" &&

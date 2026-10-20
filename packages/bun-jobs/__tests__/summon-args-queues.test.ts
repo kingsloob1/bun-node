@@ -211,7 +211,7 @@ describe("wireRequest: the 8 KiB argument limit (Q10)", () => {
     try {
       wireRequest(
         { id: PINNED_ID, count: 1, target: 1 },
-        { ...ONE, queue: queues[0]!, queues, group: "big" },
+        { ...ONE, queue: queues[0], queues, group: "big" },
       );
     } catch (error) {
       thrown = error;
@@ -229,7 +229,7 @@ describe("wireRequest: the 8 KiB argument limit (Q10)", () => {
     const base = (queues: string[]) =>
       wireRequest(
         { id: PINNED_ID, count: 1, target: 1 },
-        { ...ONE, queue: queues[0]!, queues, group: "g" },
+        { ...ONE, queue: queues[0], queues, group: "g" },
       ).argv;
     // The most full-length queues that leave room for one more, short one.
     const each = `${SUMMON_ARGS.queue}=`.length + 200 + 1;
@@ -252,7 +252,7 @@ describe("wireRequest: the 8 KiB argument limit (Q10)", () => {
     const withGroup = (group: string) =>
       wireRequest(
         { id: PINNED_ID, count: 1, target: 1 },
-        { ...ONE, queue: queues[0]!, queues, group },
+        { ...ONE, queue: queues[0], queues, group },
       );
     const fixed = bytes(withGroup("g").argv) - 1;
     const room = 8192 - fixed;
@@ -302,7 +302,7 @@ describe("wireRequest: the 8 KiB argument limit (Q10)", () => {
       const queues = names(45, 200);
       wireRequest(
         { id: PINNED_ID, count: 1, target: 1 },
-        { ...ONE, queue: queues[0]!, queues },
+        { ...ONE, queue: queues[0], queues },
       );
     } catch (error) {
       plain = error;
@@ -655,7 +655,7 @@ describe("a single-queue controller's requests", () => {
     const { controller, queue, calls } = await controlled("launch");
     await queue.add("a", {});
     expect(await controller.check()).toMatchObject({ action: "summoned" });
-    const request = calls[0]!;
+    const request = calls[0];
     expect(request.queue).toBe("work");
     expect(request.queues).toEqual(["work"]);
     expect("group" in request).toBe(false);

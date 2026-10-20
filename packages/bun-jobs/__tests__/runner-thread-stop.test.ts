@@ -176,7 +176,7 @@ async function expectStoppedBy(
   const warned = overrunWarnings(spin.events);
   if (warned.length > 0) {
     expect(warned).toHaveLength(1);
-    expect(warned[0]!.fields.runId).toBe(spin.runId);
+    expect(warned[0].fields.runId).toBe(spin.runId);
     return;
   }
   const lastStamp = Number(last.value);
@@ -295,7 +295,7 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
     if (outcome.outcome !== "started") {
       throw new Error(`expected a run, got ${outcome.outcome}`);
     }
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     await waitFor(() => fake.received.some((message) => message.t === "start"));
 
     const startedAt = Date.now();
@@ -317,8 +317,8 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
 
     const warnings = overrunWarnings(events);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]!.fields.runId).toBe(outcome.runId);
-    expect(warnings[0]!.fields).toMatchObject({
+    expect(warnings[0].fields.runId).toBe(outcome.runId);
+    expect(warnings[0].fields).toMatchObject({
       runId: outcome.runId,
       reapMs: RUN_THREAD_REAP,
     });
@@ -339,7 +339,7 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
     });
     await runner.start();
     await runner.trigger();
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     await waitFor(() => fake.received.some((message) => message.t === "start"));
 
     let closedAt = 0;
@@ -351,7 +351,7 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
 
     expect(fake.closed).toBe(true);
     expect(stoppedAt).toBeGreaterThanOrEqual(closedAt);
-    expect(driver.finals[0]!.at).toBeGreaterThanOrEqual(closedAt);
+    expect(driver.finals[0].at).toBeGreaterThanOrEqual(closedAt);
     expect(stoppedAt - closedAt).toBeLessThan(RUN_THREAD_REAP);
     expect(overrunWarnings(events)).toEqual([]);
   });
@@ -369,7 +369,7 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
     if (outcome.outcome !== "started") {
       throw new Error(`expected a run, got ${outcome.outcome}`);
     }
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     await waitFor(() => fake.received.some((message) => message.t === "start"));
 
     let closedAt = 0;
@@ -384,8 +384,8 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
 
     await killing;
     expect(fake.closed).toBe(true);
-    expect(driver.finals[0]!.at).toBeGreaterThanOrEqual(closedAt);
-    expect(seen[0]!.at).toBeGreaterThanOrEqual(closedAt);
+    expect(driver.finals[0].at).toBeGreaterThanOrEqual(closedAt);
+    expect(seen[0].at).toBeGreaterThanOrEqual(closedAt);
     expect(overrunWarnings(events)).toEqual([]);
   });
 
@@ -402,14 +402,14 @@ describe("BunRunner worker-thread: the wait is capped (stand-in Worker)", () => 
     if (outcome.outcome !== "started") {
       throw new Error(`expected a run, got ${outcome.outcome}`);
     }
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     await waitFor(() => fake.received.some((message) => message.t === "start"));
 
     const reportedAt = now();
     fake.emit({ t: "done", runId: outcome.runId, result: "ok" });
     await waitFor(() => seen.length === 1, { timeout: 1_000 });
     expect(fake.closed).toBe(false);
-    expect(seen[0]!.at - reportedAt).toBeLessThan(RUN_THREAD_REAP / 2);
+    expect(seen[0].at - reportedAt).toBeLessThan(RUN_THREAD_REAP / 2);
     expect(driver.finals[0]?.status).toBe("success");
 
     // stop() still waits for the thread, capped, and says so once.

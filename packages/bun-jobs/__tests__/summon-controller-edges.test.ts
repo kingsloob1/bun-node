@@ -152,7 +152,7 @@ describe("the demand cap (§6.4 D3)", () => {
     });
     const result = await summon.check();
     expect(result).toMatchObject({ action: "summoned" });
-    expect(calls[0]!.count).toBe(50);
+    expect(calls[0].count).toBe(50);
     // Counted to 50 × 500 = 25,000 (capped past it), enough to want all 50.
     expect(result.demand).toMatchObject({ waiting: 25_000, capped: true });
   });
@@ -174,7 +174,7 @@ describe("the demand cap (§6.4 D3)", () => {
         event.level === "warn" && event.message.includes("approximate"),
     );
     expect(warns).toHaveLength(1);
-    expect(warns[0]!.message).toContain("sql");
+    expect(warns[0].message).toContain("sql");
   });
 });
 
@@ -264,7 +264,7 @@ describe("the onAdd hook is private (not the public `added` event)", () => {
     queue.removeAllListeners();
     await queue.add("a", {});
     await waitFor(() => calls.length === 1, { timeout: 5_000 });
-    expect(calls[0]!.reason).toBe("add");
+    expect(calls[0].reason).toBe("add");
   });
 });
 
@@ -305,7 +305,7 @@ for (const backend of BACKENDS) {
         expect(await summon.check()).toMatchObject({ outcome: "failed" });
         let status = await summon.status();
         expect(status.pending).toHaveLength(1);
-        const until = status.pending[0]!.until;
+        const until = status.pending[0].until;
         expect(status.failures).toBe(0);
         expect(status.backoffUntil).toBeUndefined();
         expect(status.last).toMatchObject({

@@ -126,7 +126,7 @@ export class WorkerStateConflictError extends JobsError {
     /** What to do instead, e.g. `"start it first"`. */
     instead: string,
   ) {
-    const first = workers[0]!;
+    const first = workers[0];
     super(
       `Worker "${first.id}" cannot be ${action}d while it is ${first.state}${
         workers.length > 1 ? ` (and ${workers.length - 1} more)` : ""

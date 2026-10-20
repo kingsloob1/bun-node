@@ -180,7 +180,7 @@ const V1 = /^[\da-f]{64}$/i;
 /** The keys of a secret, as bytes, after checking it is usable. Internal; the frame codec shares it. */
 export function keysOf(secret: RemoteSecret): Uint8Array[] {
   const list: readonly unknown[] =
-    typeof secret === "string" ? [secret] : (secret as readonly unknown[]);
+    typeof secret === "string" ? [secret] : secret;
   if (!Array.isArray(list) || list.length === 0) {
     throw new ConfigError(
       "A remote secret must be a non-empty string or a non-empty list of them",
@@ -335,7 +335,7 @@ export async function signEnvelopeWith(
       );
     }
   }
-  const signature = await mac(key!, payloadOf(t, label, signed));
+  const signature = await mac(key, payloadOf(t, label, signed));
   return `t=${t},v1=${toHex(signature)}`;
 }
 
@@ -400,7 +400,7 @@ export async function verifyEnvelopeWith(
   /** The MAC under the first key: the nonce, whichever key verified. */
   let nonce = "";
   for (let index = 0; index < keys.length && keyIndex < 0; index++) {
-    const expected = await mac(keys[index]!, payload);
+    const expected = await mac(keys[index], payload);
     if (index === 0) {
       nonce = toHex(expected);
     }

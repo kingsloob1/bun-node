@@ -460,6 +460,7 @@ for (const { name, config, available } of BACKENDS) {
 
         it("releases its limiter charge once per attempt", async () => {
           const released: string[] = [];
+          // eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
           const original = QueueLimiter.prototype.release;
           const spy = spyOn(
             QueueLimiter.prototype,

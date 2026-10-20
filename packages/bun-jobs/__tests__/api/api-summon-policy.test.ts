@@ -244,7 +244,7 @@ describe("GET /queues/{queue}/summon: policy", () => {
     expect(list.status).toBe(200);
     const items = list.body.controllers as Record<string, unknown>[];
     expect(items.map((item) => item.queue)).toEqual(["work"]);
-    expect(Object.hasOwn(items[0]!, "policy")).toBe(false);
+    expect(Object.hasOwn(items[0], "policy")).toBe(false);
     expect(list.text).not.toContain('"policy"');
   });
 });

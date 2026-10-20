@@ -84,7 +84,7 @@ describe("the README's management API tables", () => {
     const documented = tableAfter("### Routes")
       .map(
         ([method, path, action, mutation]) =>
-          `${method} ${code(path!)} ${code(action!)} ${mutation}`,
+          `${method} ${code(path)} ${code(action)} ${mutation}`,
       )
       .sort();
     expect(documented).toEqual(registered);
@@ -92,7 +92,7 @@ describe("the README's management API tables", () => {
 
   it("lists every action, with its kind and whether it is off by default", () => {
     const documented = tableAfter("### Authorization")
-      .map(([action, kind, note]) => `${code(action!)} ${kind} ${note ?? ""}`)
+      .map(([action, kind, note]) => `${code(action)} ${kind} ${note ?? ""}`)
       .sort();
     const actual = JOBS_API_ACTIONS.map(
       (action) =>
@@ -111,7 +111,7 @@ describe("the README's management API tables", () => {
         [b, bStatus],
       ])
       .filter(([name]) => name)
-      .map(([name, status]) => `${code(name!)} ${status}`)
+      .map(([name, status]) => `${code(name)} ${status}`)
       .sort();
     const actual = Object.entries(API_ERROR_STATUS)
       .map(([name, status]) => `${name} ${status}`)
@@ -121,7 +121,7 @@ describe("the README's management API tables", () => {
 
   it("lists every feature flag", () => {
     const documented = tableAfter("### Features that need driver support")
-      .map(([feature]) => code(feature!))
+      .map(([feature]) => code(feature))
       .sort();
     expect(documented).toEqual(
       Object.keys(FEATURE_ROUTES)
@@ -133,7 +133,7 @@ describe("the README's management API tables", () => {
   it("documents no flag still waived as undocumented (delete the waiver once it is)", () => {
     const documented = new Set(
       tableAfter("### Features that need driver support").map(([feature]) =>
-        code(feature!),
+        code(feature),
       ),
     );
     for (const feature of UNDOCUMENTED_FEATURES) {

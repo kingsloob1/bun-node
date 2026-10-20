@@ -227,7 +227,7 @@ describe("BunResponse: lazily-held state", () => {
     a.write("one");
     expect(a.isStreamOpen).toBe(true);
     expect(b.isStreamOpen).toBe(false);
-    a.end("two");
+    await a.end("two");
     const native = await a.getNativeResponse(0);
     expect(await native.text()).toBe("onetwo");
     expect(a.writableEnded).toBe(true);

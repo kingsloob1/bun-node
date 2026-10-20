@@ -60,12 +60,12 @@ describe("jobs.queue(name, options) on an existing queue", () => {
     expect(second).toBe(first);
     const warnings = ignoredWarnings(events);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]!.fields).toEqual({
+    expect(warnings[0].fields).toEqual({
       queue: "mail",
       ignoredOptions: ["defaultJobOptions"],
     });
-    expect(warnings[0]!.message).toContain('"mail"');
-    expect(warnings[0]!.message).toContain("defaultJobOptions");
+    expect(warnings[0].message).toContain('"mail"');
+    expect(warnings[0].message).toContain("defaultJobOptions");
   });
 
   it("names every differing key, sorted, and none that match", () => {

@@ -333,10 +333,10 @@ function duePush(heap: DueEntry[], entry: DueEntry): void {
 
   while (at > 0) {
     const parent = (at - 1) >> 1;
-    if (!dueBefore(heap[at]!, heap[parent]!)) {
+    if (!dueBefore(heap[at], heap[parent])) {
       break;
     }
-    [heap[at], heap[parent]] = [heap[parent]!, heap[at]!];
+    [heap[at], heap[parent]] = [heap[parent], heap[at]];
     at = parent;
   }
 }
@@ -356,16 +356,16 @@ function duePop(heap: DueEntry[]): void {
     const right = left + 1;
     let first = at;
 
-    if (left < heap.length && dueBefore(heap[left]!, heap[first]!)) {
+    if (left < heap.length && dueBefore(heap[left], heap[first])) {
       first = left;
     }
-    if (right < heap.length && dueBefore(heap[right]!, heap[first]!)) {
+    if (right < heap.length && dueBefore(heap[right], heap[first])) {
       first = right;
     }
     if (first === at) {
       return;
     }
-    [heap[at], heap[first]] = [heap[first]!, heap[at]!];
+    [heap[at], heap[first]] = [heap[first], heap[at]];
     at = first;
   }
 }
@@ -1226,7 +1226,7 @@ export class MemoryDriver implements JobsDriver {
     // a job's state is the one it is filtered on right up to its write, and
     // `moved` is always 0 here.
     for (let index = from; index < states.length; index++) {
-      const state = states[index]!;
+      const state = states[index];
       const floor = after;
       after = null;
 
@@ -2958,7 +2958,7 @@ export class MemoryDriver implements JobsDriver {
     // the end and the splice moves nothing.
     while (low < high) {
       const middle = (low + high) >>> 1;
-      const other = index.ids[middle]!;
+      const other = index.ids[middle];
 
       if (
         this.#finishedBefore(
@@ -2993,7 +2993,7 @@ export class MemoryDriver implements JobsDriver {
 
     while (low < high) {
       const middle = (low + high) >>> 1;
-      if ((index.keys.get(index.ids[middle]!) ?? key) < key) {
+      if ((index.keys.get(index.ids[middle]) ?? key) < key) {
         low = middle + 1;
       } else {
         high = middle;
@@ -3006,7 +3006,7 @@ export class MemoryDriver implements JobsDriver {
         at = scan;
         break;
       }
-      if (index.keys.get(index.ids[scan]!) !== key) {
+      if (index.keys.get(index.ids[scan]) !== key) {
         break;
       }
     }
@@ -3040,7 +3040,7 @@ export class MemoryDriver implements JobsDriver {
       excludeNames && excludeNames.length > 0 ? new Set(excludeNames) : null;
 
     for (let at = queue.waitingFrom; at < queue.waiting.length; at++) {
-      const job = queue.jobs.get(queue.waiting[at]!);
+      const job = queue.jobs.get(queue.waiting[at]);
 
       if (
         job &&
@@ -3065,7 +3065,7 @@ export class MemoryDriver implements JobsDriver {
 
     while (low < high) {
       const middle = (low + high) >>> 1;
-      const other = queue.jobs.get(queue.waiting[middle]!);
+      const other = queue.jobs.get(queue.waiting[middle]);
 
       if (other && this.#compareWaiting(queue, other, job) <= 0) {
         low = middle + 1;

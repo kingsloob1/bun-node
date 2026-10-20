@@ -72,7 +72,7 @@ export const DEFAULT_REDACT_KEYS = [
  * A key and the separator after it. The lookbehind is what keeps this linear:
  * a key can only start where a token starts.
  */
-const KEY_AND_SEPARATOR = /(?<![\w.\-])(["']?)([\w.\-]+)\1(\s*[:=]\s*)/g;
+const KEY_AND_SEPARATOR = /(?<![\w.-])(["']?)([\w.-]+)\1(\s*[:=]\s*)/g;
 
 /**
  * The value after a sensitive key: a quoted string (an unterminated one runs
@@ -99,7 +99,7 @@ function patternStep(
 }
 
 /** A character a URL scheme may hold after its first (RFC 3986). */
-const SCHEME_CHAR = /[a-z\d+.\-]/i;
+const SCHEME_CHAR = /[a-z\d+.-]/i;
 
 /** A scheme's first character. */
 const SCHEME_START = /[a-z]/i;
@@ -143,14 +143,14 @@ export function urlPasswordStep(
       // character is walked at most once. A `SCHEME_CHAR` that took `/` or
       // `:` would make it quadratic again.
       let runStart = from;
-      while (runStart > 0 && SCHEME_CHAR.test(text[runStart - 1]!)) {
+      while (runStart > 0 && SCHEME_CHAR.test(text[runStart - 1])) {
         runStart -= 1;
       }
       let schemeStart = -1;
       for (let at = runStart; at < from; at++) {
         if (
-          SCHEME_START.test(text[at]!) &&
-          (at === 0 || !WORD_CHAR.test(text[at - 1]!))
+          SCHEME_START.test(text[at]) &&
+          (at === 0 || !WORD_CHAR.test(text[at - 1]))
         ) {
           schemeStart = at;
           break;
@@ -267,7 +267,7 @@ export function createRedactor(
       // Only the key and separator were consumed, so a key that is not
       // sensitive leaves its value to be scanned: `Error: password=x` still
       // finds `password`.
-      if (!isSensitive(match[2]!)) {
+      if (!isSensitive(match[2])) {
         continue;
       }
 

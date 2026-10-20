@@ -23,6 +23,7 @@ import type {
   RouterMiddlewareHandler,
   ServeHooks,
   ServeStaticOptions,
+  SocketFreeExchange,
   UnmountedRouter,
   ValidatorMiddleware,
   ViewEngine,
@@ -45,6 +46,7 @@ import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
 import {
+  assertExpressPath,
   awaitPipelineOrStream,
   BunRequest,
   BunResponse,
@@ -64,15 +66,13 @@ import {
   isRequestTimeoutError,
   isString,
   isUndefined,
-  markSocketFree,
   mergeBunRequestOptions,
   normalizeEtagOption,
   omit,
+  openSocketFree,
   RequestPipelineOptions,
-  RouteClass,
   set,
   toFetchResponse,
-  toNativeRequest,
   validateParseBodyOption,
   waitUntil,
 } from "@kingsleyweb/bun-common";
@@ -86,6 +86,8 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
+import { MiddlewareModule } from "@nestjs/core/middleware/middleware-module.js";
+import { LegacyRouteConverter } from "@nestjs/core/router/legacy-route-converter.js";
 import { BunNestWebsocketAdapter } from "./BunWebSocketAdapter";
 
 export type VersionedRoute = (
@@ -148,6 +150,54 @@ function coreScopesNotFoundToPrefix(): boolean {
 }
 
 /**
+ * Whether the installed `@nestjs/core` runs a middleware once per request
+ * when several of its paths match it (12.2.0: `registerHandler` guards it
+ * per request), so an adapter need not keep two of them apart. Asked of the
+ * core's own `MiddlewareModule.prototype.registerHandler`, never a version
+ * string: with stand-ins, it registers one middleware at two paths, and the
+ * same request is sent through both. Asked when this module loads; the
+ * answer arrives a few microtasks later, long before a request can, and
+ * until then (or when the probe throws) it reads as `false`.
+ */
+let coreRunsMiddlewareOnce = false;
+
+/** Asks the core the question behind {@link coreRunsMiddlewareOnce}. */
+async function askCoreRunsMiddlewareOnce(): Promise<boolean> {
+  const registerHandler = (
+    MiddlewareModule.prototype as unknown as Record<
+      string,
+      (...args: unknown[]) => Promise<void>
+    >
+  ).registerHandler;
+  const registered: RouterHandler[] = [];
+  let runs = 0;
+  await registerHandler.call(
+    { routeInfoPathExtractor: { extractPathsFrom: () => ["/a", "/b"] } },
+    {
+      createMiddlewareFactory: () => (_path: string, h: RouterHandler) =>
+        registered.push(h),
+    },
+    { path: "a", method: RequestMethod.ALL },
+    (_req: unknown, _res: unknown, next: () => void) => {
+      runs++;
+      next();
+    },
+  );
+  const req = {};
+  for (const h of registered) {
+    await h(req as never, {} as never, () => {});
+  }
+  return registered.length === 2 && runs === 1;
+}
+
+askCoreRunsMiddlewareOnce().then(
+  (once) => {
+    coreRunsMiddlewareOnce = once;
+  },
+  () => {},
+);
+
+/**
  * `RequestMethod.QUERY` when the installed `@nestjs/common` has it (11.2.0
  * and 12), else `undefined`: read from the enum object, never from a version
  * string, and never named in a type, which Nest 11.1's declarations lack.
@@ -203,23 +253,25 @@ const PLAIN_PREFIX = /^(?:\/[\w.~-]+)+$/;
  * A normalised prefix compiled as Express's `use(prefix, router)` matches
  * it: at the prefix or below it, on whole segments (`/apiary` is not under
  * `/api`), case-insensitively, a `:param` matching any one segment
- * (`/:tenant` covers `/t1/x`). Compiled by the same routejs `Route` that
- * bun-common's router compiles a `use()` group with; the prefix regex it
- * builds carries no flags, so `i` is added here.
+ * (`/:tenant` covers `/t1/x`), a `{…}` group optional. Compiled by
+ * bun-common's router itself, as it compiles a `use()` prefix, so the two
+ * cannot disagree; `i` is added if the compiled regex lacks it.
  *
  * A prefix of plain segments (`/api/v1`: letters, digits, `_ . ~ -`) is
- * matched without the regex, by {@link isUnderAsciiPrefix}: routejs compiles
- * it to the literal `^\/api\/v1\/?(?=\/|$)`, which that comparison is.
+ * matched without the regex, by {@link isUnderAsciiPrefix}: it compiles to
+ * the literal `^\/api\/v1\/?(?=\/|$)`, which that comparison is.
  */
 function prefixMatcher(prefix: string): (pathname: string) => boolean {
   if (PLAIN_PREFIX.test(prefix)) {
     const lower = prefix.toLowerCase();
     return (pathname) => isUnderAsciiPrefix(pathname, lower);
   }
-  const route = new RouteClass({ group: prefix, callbacks: [] }) as unknown as {
-    pathRegexp: RegExp;
-  };
-  const regexp = new RegExp(route.pathRegexp.source, "i");
+  const router = new BunRouter({ caseSensitive: false });
+  router.use(prefix, (_req, _res, next) => next());
+  const compiled = router.routes()[0]!.pathRegexp;
+  const regexp = compiled.flags.includes("i")
+    ? compiled
+    : new RegExp(compiled.source, `${compiled.flags}i`);
   return (pathname) => regexp.test(pathname);
 }
 
@@ -498,8 +550,8 @@ export class BunHttpAdapter<
   protected etagEnabled: EtagOption = false;
   /**
    * Whether the router this adapter created matches paths case-sensitively:
-   * its `caseSensitive` option as the router resolves it (`true` by
-   * default here, `false` when the option is given unset). Fixed when the
+   * its `caseSensitive` option as the router resolves it (`false` by
+   * default, as Express; `false` too when the option is given unset). Fixed when the
    * router is created, as the router's own setting is; reported by
    * {@link getRouteMatchingOptions}.
    */
@@ -548,7 +600,9 @@ export class BunHttpAdapter<
       logger?: Logger;
       /**
        * Options for the underlying {@link BunRouter} (e.g. `caseSensitive`,
-       * `debug`). Defaults to `{ caseSensitive: true, debug: false }`.
+       * `debug`). Defaults to `{ caseSensitive: false, debug: false }`:
+       * paths match case-insensitively, as on `@nestjs/platform-express`
+       * (Express's default). `{ caseSensitive: true }` opts in to exact case.
        */
       router?: BunRouterOptions;
       /**
@@ -582,7 +636,7 @@ export class BunHttpAdapter<
     },
   ) {
     const routerOptions: BunRouterOptions = {
-      caseSensitive: true,
+      caseSensitive: false,
       debug: false,
       ...(options?.router ?? {}),
       ...(options?.routeCacheMax !== undefined
@@ -976,40 +1030,89 @@ export class BunHttpAdapter<
    * {@link handleRequestError}), such as `415` for a refused
    * `Content-Encoding` or `500` for a plain throw.
    *
+   * The caller leaving is a disconnect, as served (see bun-common's
+   * `openSocketFree`): an abort of the request's signal rejects this with
+   * its reason, and so does the read in progress on a streamed body (an
+   * `@Sse()` stream among them); cancelling a streamed body aborts
+   * `req.signal`, so `res`, `req` and `req.socket` emit `close` — what Nest's
+   * SSE teardown and `@SseSignal()` listen to. A signal passed in a
+   * `RequestInit` that is aborted already rejects at once, without handling;
+   * a `Request`'s own is read only once the router's pipeline waits on a
+   * layer (a Nest handler always does).
+   *
    * @example
    * ```ts
    * const res = await adapter.fetch("/users/42");
    * expect(res.status).toBe(200);
    * ```
    */
-  public async fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
-    const nativeRequest = markSocketFree(
-      toNativeRequest(input, init, this.isListening ? this.url : undefined),
+  public fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+    const exchange = openSocketFree(
+      input,
+      init,
+      this.isListening ? this.url : undefined,
     );
+    return exchange.preflight() ?? this.#fetchExchange(exchange);
+  }
 
+  /**
+   * {@link fetch}'s handling of the exchange's request: through
+   * {@link serveNativeRequest}, as `Bun.serve`'s `fetch` handler calls it
+   * (or an overriding {@link handleNativeRequest}), racing the caller's
+   * signal only when it returns a promise.
+   */
+  async #fetchExchange(exchange: SocketFreeExchange): Promise<Response> {
+    const nativeRequest = exchange.request;
+    // A live server when one exists, so `requestIP`/`upgrade` behave; a stub
+    // otherwise, which reports no peer and refuses upgrades. The stub is not
+    // a real server (only `requestIP`/`upgrade` exist), which is exactly what
+    // this method touches.
+    const server = this.getBunServer() ?? FETCH_STUB_SERVER;
     let response: Response | undefined;
     try {
-      response = await this.handleNativeRequest(
-        nativeRequest,
-        // A live server when one exists, so `requestIP`/`upgrade` behave; a
-        // stub otherwise, which reports no peer and refuses upgrades.
-        // The stub is not a real server (only `requestIP`/`upgrade` exist),
-        // which is exactly what this method touches.
-        this.getBunServer() ?? FETCH_STUB_SERVER,
-      );
+      const handled =
+        this.handleNativeRequest ===
+        BunHttpAdapter.prototype.handleNativeRequest
+          ? this.serveNativeRequest(nativeRequest, server)
+          : this.handleNativeRequest(nativeRequest, server);
+      response =
+        handled instanceof Promise
+          ? await exchange.race(
+              handled,
+              (late) => {
+                if (late !== undefined) {
+                  exchange.discard(late);
+                }
+              },
+              // Handled as `Bun.serve`'s `error` callback would, for nobody.
+              (error) => {
+                this.handleRequestError(error).catch(() => undefined);
+              },
+            )
+          : handled;
     } catch (error) {
+      if (exchange.callerGone) {
+        throw error;
+      }
       // The same final error handling `Bun.serve`'s `error` callback runs.
-      return toFetchResponse(
-        await this.handleRequestError(error),
-        nativeRequest.method,
+      return exchange.deliver(
+        toFetchResponse(
+          await this.handleRequestError(error),
+          nativeRequest.method,
+        ),
       );
     }
 
     // A served HEAD response carries no body: Bun drops it on the wire.
-    return toFetchResponse(
-      response ??
-        new Response(null, { status: 101, statusText: "Switching Protocols" }),
-      nativeRequest.method,
+    return exchange.deliver(
+      toFetchResponse(
+        response ??
+          new Response(null, {
+            status: 101,
+            statusText: "Switching Protocols",
+          }),
+        nativeRequest.method,
+      ),
     );
   }
 
@@ -1700,7 +1803,8 @@ export class BunHttpAdapter<
    * How the router matches request paths, so that Nest matches the routes
    * excluded with `MiddlewareConsumer.exclude()` (and `enableCsrfProtection`'s
    * `exclude`) the same way: `caseSensitive` is the router's own setting
-   * (`true` unless `router.caseSensitive` says otherwise), and
+   * (`false`, as Express's default, unless `router.caseSensitive` is
+   * `true`), and
    * `ignoreTrailingSlash` is always `true`, since a route serves its path with
    * one trailing slash too (`/users/login/` by the `users/login` route), as
    * Express's non-strict routing does. `@nestjs/platform-express` 12.2.0
@@ -1811,12 +1915,47 @@ export class BunHttpAdapter<
   }
 
   /**
+   * Converts and checks a route path before Nest registers it, as
+   * `@nestjs/platform-express`'s `normalizePath` does: a legacy path (`/*`,
+   * `/(.*)`, a mid-path `*`) is converted to path-to-regexp 8 syntax by
+   * Nest's `LegacyRouteConverter`, which warns, and the result must be a path
+   * Express accepts. Anything else (`:id?`, `:id(\d+)`, an unclosed `{`)
+   * throws path-to-regexp's `TypeError` at boot, with the converter's error
+   * logged, exactly as on Express. The router itself still takes routejs
+   * paths registered on it directly (`adapter.get("/a/:b?", …)`).
+   *
+   * @throws PathSyntaxError (a `TypeError`) for a path Express rejects.
+   */
+  public override normalizePath(path: string): string {
+    try {
+      const converted = LegacyRouteConverter.tryConvert(path);
+      assertExpressPath(converted);
+      return converted;
+    } catch (error) {
+      if (error instanceof TypeError) {
+        LegacyRouteConverter.printError(path);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * The request's host name without its port — Express's `req.hostname`,
    * which `@nestjs/platform-express` returns and Nest matches
-   * `@Controller({ host })` against.
+   * `@Controller({ host })` against: the `Host` header as sent (its case
+   * kept), the port stripped (an IPv6 literal keeps its brackets,
+   * `[::1]:3000` is `[::1]`). `X-Forwarded-Host` is not read, as Express
+   * reads it only with `trust proxy` set. Without a `Host` header, the
+   * request URL's host name.
    */
   public getRequestHostname(request: BunRequest): string {
-    return request.hostname || "127.0.0.1";
+    const host = request.headersObj.get("host");
+    if (!host) {
+      return request.hostname || "127.0.0.1";
+    }
+    const offset = host.startsWith("[") ? host.indexOf("]") + 1 : 0;
+    const colon = host.indexOf(":", offset);
+    return colon === -1 ? host : host.slice(0, colon);
   }
 
   public getRequestMethod(request: BunRequest): string {
@@ -3956,6 +4095,23 @@ export class BunHttpAdapter<
     requestMethod: RequestMethod,
   ): MiddlewareFactoryRespType<this> {
     return (path, callback) => {
+      // As `@nestjs/platform-express` does: the core's exact-match marker
+      // (`$`) stripped, a legacy path converted (and warned about), and the
+      // result checked as Express checks a path it registers — a path it
+      // cannot convert fails at boot, with the converter's error logged.
+      const exact = path.endsWith("$");
+      let converted: string;
+      try {
+        converted = LegacyRouteConverter.tryConvert(
+          exact ? path.slice(0, -1) : path,
+        );
+        assertExpressPath(converted, { loosen: true });
+      } catch (error) {
+        if (error instanceof TypeError) {
+          LegacyRouteConverter.printError(path);
+        }
+        throw error;
+      }
       // NestJS middleware must behave like middleware — not a route handler.
       // `useMethod` registers it method-scoped but with `isEndpoint` false,
       // so it keeps registration order and is excluded from route
@@ -3963,11 +4119,11 @@ export class BunHttpAdapter<
       const method = this.getRequestMethodStr(requestMethod);
       // NestJS's `Function` is its `(req, res, next)` middleware.
       const middleware = callback as RouterHandler;
-      if (path.endsWith("$")) {
-        this.useExactMiddleware(method, path.slice(0, -1), middleware);
+      if (exact) {
+        this.useExactMiddleware(method, converted, middleware);
         return this;
       }
-      this.instance.useMethod(method, path, middleware);
+      this.instance.useMethod(method, converted, middleware);
       return this;
     };
   }
@@ -3979,10 +4135,13 @@ export class BunHttpAdapter<
    *
    * For the core's exact-match marker: for a wildcard `forRoutes('*')` under
    * a global prefix it registers `/<prefix>$` beside `/<prefix>/{*path}`,
-   * the `$` meaning "exactly this path". As `@nestjs/platform-express` 12.1.3
-   * (nestjs/nest #17942), the `$` is stripped and a request ending in `/` is
-   * skipped, since the wildcard entry beside it already matches `/api/` and
-   * the middleware must not run twice.
+   * the `$` meaning "exactly this path". As `@nestjs/platform-express`
+   * (12.1.3, nestjs/nest #17942), the `$` is stripped, and the route serves
+   * its path with a trailing slash too, as every route does. Where the core
+   * runs a middleware once per request (12.2.0), that is all, as on
+   * platform-express 12.2.0. On an earlier core a request ending in `/` is
+   * skipped, as platform-express 12.1.3 skips it, since the wildcard entry
+   * beside it may match `/api/` too and the middleware must not run twice.
    */
   private useExactMiddleware(
     method: string,
@@ -3991,7 +4150,9 @@ export class BunHttpAdapter<
   ): void {
     const normalized = method.toUpperCase();
     const handler: RouterHandler = (req, res, next) =>
-      req.path.endsWith("/") ? next() : middleware(req, res, next);
+      !coreRunsMiddlewareOnce && req.path.endsWith("/")
+        ? next()
+        : middleware(req, res, next);
     // `setRoute` with a `path` compiles an exact match; it is not an endpoint
     // (`useMethod` and `use` register through it the same way, with `group`).
     this.instance.setRoute({

@@ -5,7 +5,10 @@
  * a router that declared its mount must be mounted exactly there. Checked by
  * `bun check`, not `bun test`; runtime coverage is in `httpAdapter.test.ts`.
  */
-import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
+import type {
+  ParamsDictionary,
+  StandardSchemaV1,
+} from "@kingsleyweb/bun-common";
 import { BunRouter, validate } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 
@@ -40,7 +43,7 @@ type _chain = Expect<Equal<typeof _chained, typeof adapter>>;
 
 // Inline middleware is still contextually typed (no implicit `any`).
 adapter.use("/mw", (req, _res, next) => {
-  type _p = Expect<Equal<typeof req.params, Record<string, string>>>;
+  type _p = Expect<Equal<typeof req.params, ParamsDictionary>>;
   next();
 });
 

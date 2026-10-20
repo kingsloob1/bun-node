@@ -20,7 +20,10 @@
  * - `INestApplication` types `enableCors` but not `useStaticAssets`, so the
  *   latter is called on the adapter.
  * - After `app.init()`, `adapter.fetch()` runs a request through the whole
- *   adapter pipeline without binding a port.
+ *   adapter pipeline without binding a port. The caller leaving is honoured
+ *   there as served: a `Request` whose own signal aborts while a controller
+ *   is still working rejects the call with the abort's reason. The
+ *   bun-common examples' `02-routing/fetch-aborts.ts` has the rest.
  */
 import type { BunRequest, DefaultRequestBody } from "@kingsleyweb/bun-common";
 import type { RawBodyRequest } from "@nestjs/common";
@@ -43,11 +46,18 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import "reflect-metadata";
 
 /** The secret a payment provider signs its webhooks with. */
 const WEBHOOK_SECRET = "whsec_example";
+
+/** Settles when the next `GET /slow` reaches its controller method. */
+const slowStarted = Promise.withResolvers<void>();
+
+/** Releases each `GET /slow` still waiting. */
+const slowReleases: (() => void)[] = [];
 
 @Controller()
 class AppController {
@@ -83,6 +93,14 @@ class AppController {
   whoami(@Ip() ip: string) {
     return { ip };
   }
+
+  /** Answers only once the example releases it, reading nothing of its client. */
+  @Get("slow")
+  async slow() {
+    slowStarted.resolve();
+    await new Promise<void>((resolve) => slowReleases.push(resolve));
+    return { done: true };
+  }
 }
 
 @Module({ controllers: [AppController] })
@@ -109,7 +127,8 @@ const adapter = new BunHttpAdapter(
       parseBody: { maxContentLength: "16kb" },
       parseCookies: true,
     },
-    // Forwarded to the BunRouter underneath.
+    // Forwarded to the BunRouter underneath. `caseSensitive: false` is the
+    // default, as on platform-express; `true` opts in to exact case.
     router: { caseSensitive: false },
     // Size of the router's matched-pipeline cache.
     routeCacheMax: 10_000,
@@ -370,6 +389,48 @@ show(
   await (await offline.fetch("/whoami")).json(),
 );
 show("GET /nope", (await offline.fetch("/nope")).status);
+
+// The caller leaving while a controller is still working. Only the
+// `Request`'s own signal says so, and the call rejects with its reason, as a
+// served `fetch()` does. Raced against a deadline, so a call that never
+// settles is reported rather than waited on.
+{
+  const leaving = new AbortController();
+  const reason = new Error("left while the controller worked");
+  const pending = offline
+    .fetch(new Request("http://localhost/slow", { signal: leaving.signal }))
+    .then(
+      () => "resolved",
+      (error: unknown) => error,
+    );
+  /** The latest deadline's timer, cleared once its race is decided. */
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  /** Answers `"timed out"` after `ms`, unless its timer is cleared. */
+  const deadline = (ms: number) =>
+    new Promise<string>((resolve) => {
+      timer = setTimeout(resolve, ms, "timed out");
+    });
+  checkEqual(
+    "adapter.fetch(new Request(url, { signal })): the controller started",
+    await Promise.race([
+      slowStarted.promise.then(() => "started"),
+      deadline(3000),
+    ]),
+    "started",
+  );
+  clearTimeout(timer);
+  leaving.abort(reason);
+  const outcome = await Promise.race([pending, deadline(3000)]);
+  clearTimeout(timer);
+  check(
+    "adapter.fetch(new Request(url, { signal })): aborted while the controller works, rejected with the abort's reason",
+    outcome === reason,
+    outcome instanceof Error ? `${outcome.name}: ${outcome.message}` : outcome,
+  );
+  for (const release of slowReleases.splice(0)) {
+    release();
+  }
+}
 await offlineApp.close();
 
 /* ------------------------------------------------------------------ */
@@ -386,3 +447,5 @@ try {
 }
 
 await rm(scratch, { recursive: true, force: true });
+
+summary();

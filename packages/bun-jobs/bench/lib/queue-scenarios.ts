@@ -71,9 +71,9 @@ class Arrivals {
       return;
     }
 
-    if (this.seen[seq]! > 0) {
+    if (this.seen[seq] > 0) {
       this.duplicates++;
-      this.seen[seq]!++;
+      this.seen[seq]++;
       return;
     }
 
@@ -382,7 +382,7 @@ export async function runQueueScenario(
           handles.push(await makeHandle(0));
         }
 
-        const producer = handles[0]!;
+        const producer = handles[0];
         await producer.reset();
         await seed(producer, payloads(config.jobs));
 

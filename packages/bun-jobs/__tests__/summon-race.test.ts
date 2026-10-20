@@ -164,10 +164,10 @@ for (const backend of BACKENDS) {
       const plain = records.filter((record) => record.summon === null);
       expect(summoned).toHaveLength(1);
       expect(plain).toHaveLength(1);
-      expect(summoned[0]!.summon).toMatchObject({ id, kind: "fake" });
-      expect(summoned[0]!.held).toMatchObject({ id });
+      expect(summoned[0].summon).toMatchObject({ id, kind: "fake" });
+      expect(summoned[0].held).toMatchObject({ id });
       // The loser runs as an ordinary worker, and says so everywhere.
-      expect(plain[0]!.held).toBeNull();
+      expect(plain[0].held).toBeNull();
       // The job was processed once, by one of them.
       expect(
         lines.flat().filter((line) => line.event === "processed"),
@@ -201,10 +201,10 @@ for (const backend of BACKENDS) {
       });
       perTest.unshift(async () => await controller.close());
       expect(await controller.check()).toMatchObject({ action: "summoned" });
-      const args = argv[0]!;
+      const args = argv[0];
       const id = args
         .find((arg) => arg.startsWith(`${SUMMON_ARGS.id}=`))!
-        .split("=")[1]!;
+        .split("=")[1];
 
       const started: SpawnedProcess[] = [];
       perTest.unshift(async () => {

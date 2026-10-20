@@ -217,7 +217,7 @@ describe("the duration histogram", () => {
 
     // The last bin is the overflow, and nothing is above it.
     const last =
-      DURATION_HISTOGRAM_BOUNDS[DURATION_HISTOGRAM_BOUNDS.length - 1]!;
+      DURATION_HISTOGRAM_BOUNDS[DURATION_HISTOGRAM_BOUNDS.length - 1];
     expect(durationBin(last)).toBe(DURATION_HISTOGRAM_SIZE - 1);
     expect(durationBin(last * 1_000)).toBe(DURATION_HISTOGRAM_SIZE - 1);
     expect(durationBin(Number.POSITIVE_INFINITY)).toBe(0);
@@ -323,10 +323,10 @@ describe("the duration histogram", () => {
     const merged = mergeDurationBuckets(rows, { from: 0, to: 60_000 });
 
     expect(merged).toHaveLength(1);
-    expect(merged[0]!.at).toBe(0);
-    expect(merged[0]!.count).toBe(2);
-    expect(readDurations(merged[0]!).meanMs).toBe(10);
-    expect(readDurations(merged[0]!).minMs).toBe(5);
+    expect(merged[0].at).toBe(0);
+    expect(merged[0].count).toBe(2);
+    expect(readDurations(merged[0]).meanMs).toBe(10);
+    expect(readDurations(merged[0]).minMs).toBe(5);
   });
 
   it("reports nothing about a bucket that counted nothing", () => {
@@ -370,7 +370,7 @@ describe("busyness", () => {
     );
 
     expect(merged).toHaveLength(1);
-    expect(readBusyness(merged[0]!)).toEqual({
+    expect(readBusyness(merged[0])).toEqual({
       samples: 4,
       activeMean: 2,
       activeMax: 4,
@@ -651,15 +651,15 @@ describe("MetricsBuffer", () => {
     // 500 jobs in one second are one row for the queue and one for the
     // namespace — not 500, and not one per shard.
     expect(batches[0]).toHaveLength(3);
-    expect(batches[0]![0]).toEqual({
+    expect(batches[0][0]).toEqual({
       ns: "ns",
       entity: "queue-a",
       at: 61_000,
       interval: 1_000,
       counts: { completed: 500, failed: 0 },
     });
-    expect(batches[0]![1]!.counts).toEqual({ completed: 500, failed: 2 });
-    expect(batches[0]![1]!.entity).toBe("");
+    expect(batches[0][1].counts).toEqual({ completed: 500, failed: 2 });
+    expect(batches[0][1].entity).toBe("");
   });
 
   it("counts nothing for a delta of nothing", async () => {
@@ -685,7 +685,7 @@ describe("MetricsBuffer", () => {
     await buffer.close();
 
     expect(batches[0]).toHaveLength(1);
-    expect(batches[0]![0]!.entity).toBe("queue-a");
+    expect(batches[0][0].entity).toBe("queue-a");
   });
 
   it("puts back only the rows a write did not land, and forgets a purged namespace", async () => {
@@ -700,8 +700,8 @@ describe("MetricsBuffer", () => {
     await buffer.flush();
     await buffer.flush();
 
-    expect(batches[0]!.map((row) => row.ns)).toEqual(["a", "a", "b", "b"]);
-    expect(batches[1]!.map((row) => row.ns)).toEqual(["b", "b"]);
+    expect(batches[0].map((row) => row.ns)).toEqual(["a", "a", "b", "b"]);
+    expect(batches[1].map((row) => row.ns)).toEqual(["b", "b"]);
 
     buffer.count("b", "q", 0, { completed: 1 });
     buffer.forget("b");

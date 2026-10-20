@@ -167,7 +167,7 @@ function without(driver: JobsDriver, methods: readonly string[]): JobsDriver {
         ? false
         : Reflect.has(target, key);
     },
-  }) as JobsDriver;
+  });
 }
 
 /** Waits until a queue reports a live worker with that id. */
@@ -1125,7 +1125,7 @@ describe("the documents", () => {
     // The pattern the route enforces itself, documented on the parameter —
     // the rule `:queue` already follows.
     const patternOf = (path: string, method: string, name: string) =>
-      doc.paths[path]![method].parameters.find(
+      doc.paths[path][method].parameters.find(
         (param: any) => param.name === name,
       ).schema.pattern;
     expect(patternOf("/queues/{queue}/workers/{worker}", "get", "worker")).toBe(
@@ -1164,7 +1164,7 @@ describe("the documents", () => {
 
     // The statuses the design fixed: 200 and 202 on a control route, 200 on a
     // config one, and every error code it can answer with.
-    const pause = doc.paths["/queues/{queue}/workers/{worker}/pause"]!.post;
+    const pause = doc.paths["/queues/{queue}/workers/{worker}/pause"].post;
     expect(Object.keys(pause.responses)).toContain("202");
     expect(
       Object.values(pause.responses).flatMap(
@@ -1182,7 +1182,7 @@ describe("the documents", () => {
     );
     expect(
       Object.values(
-        doc.paths["/queues/{queue}/worker-configs/{key}"]!.put.responses,
+        doc.paths["/queues/{queue}/worker-configs/{key}"].put.responses,
       ).flatMap((response: any) => response["x-bun-jobs-codes"] ?? []),
     ).toContain("CONTROL_CONTENDED");
   });
@@ -1190,7 +1190,7 @@ describe("the documents", () => {
   it("carries the CSRF header on a worker mutation, exactly as a queue mutation does", () => {
     const doc = openapi({ csrf: { header: "x-csrf" } });
     const headerOf = (path: string, method: string) =>
-      doc.paths[path]![method].parameters.find(
+      doc.paths[path][method].parameters.find(
         (param: any) => param.in === "header",
       );
     expect(headerOf("/queues/{queue}/workers/{worker}/stop", "post")).toEqual(

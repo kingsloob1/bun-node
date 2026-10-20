@@ -237,7 +237,7 @@ export function parseReference(markdown: string): ParsedReference {
     if (entry !== null) {
       section = [];
       heading = undefined;
-      sections.set(entry[1]!, section);
+      sections.set(entry[1], section);
       continue;
     }
     if (line.startsWith("## ")) {
@@ -247,7 +247,7 @@ export function parseReference(markdown: string): ParsedReference {
     }
     const name = /^### `([^`]+)`/.exec(line);
     if (name !== null && section !== undefined) {
-      heading = { name: name[1]!, bullets: [] };
+      heading = { name: name[1], bullets: [] };
       section.push(heading);
       continue;
     }
@@ -257,7 +257,7 @@ export function parseReference(markdown: string): ParsedReference {
     }
     const bullet = /^- `([^`]+)`/.exec(line);
     if (bullet !== null && heading !== undefined) {
-      heading.bullets.push(bullet[1]!);
+      heading.bullets.push(bullet[1]);
     }
   }
   return sections;

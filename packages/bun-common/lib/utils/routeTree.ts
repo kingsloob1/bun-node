@@ -10,14 +10,21 @@ import type { Route } from "@routejs/router";
  * and whole-segment parameters —
  *
  * ```
- * ^ ( \/literal | \/([^\/]+?) )* ( \/(.*) )? \/?$          a route
- * ^ ( \/literal | \/([^\/]+?) )*            \/?(?=\/|$)    a `use()` prefix
+ * ^ ( \/literal | \/([^\/]+?) )* ( \/REST | (?:\/([^]+))? )? \/?$   a route
+ * ^ ( \/literal | \/([^\/]+?) )*                            \/?(?=\/|$)   a `use()` prefix
+ * ^ \/ \/?$                                                                the route `/`
+ *
+ * REST: (.*)  ([^]+)  (?:([^]+))?
  * ```
  *
  * — is walked character by character: literals compared in place (ASCII
  * case folded for an `i` regex: without the `u` flag no non-ASCII character
  * folds to an ASCII letter, so the fold is exact), a parameter taken up to
- * the next `/`, a trailing `(.*)` taking the rest. Any other source (an
+ * the next `/`, a trailing rest taking what is left: routejs's bare `*`
+ * (`(.*)`), and the wildcards of Express 5 paths, `*name` (`([^]+)`, one
+ * character or more), `{*name}` after a `/` (`(?:([^]+))?`) and `{/*name}` (`(?:\/([^]+))?`, whose `/` is
+ * optional too). `/` is Express's `^\/\/?$`, which also answers `//`. Any
+ * other source (an
  * optional or regex-constrained parameter, a parameter inside a segment, an
  * escape, a non-ASCII literal) is a **regex leaf**: hung at the node of its
  * fixed literal prefix and run with `exec` only for a path that reaches it.
@@ -31,7 +38,35 @@ import type { Route } from "@routejs/router";
 type Part =
   | { kind: "literal"; text: string }
   | { kind: "param" }
-  | { kind: "rest" };
+  | { kind: "rest"; rest: RestKind };
+
+/**
+ * How a trailing rest takes the remainder `r` of the path (after the `/`
+ * before it, except {@link REST_SLASH_OPTIONAL}, which starts at that `/`).
+ */
+const RestKinds = {
+  /** `(.*)`: all of `r`, empty included, unless it holds a line terminator. */
+  Dot: 0,
+  /** `([^]+)`: all of `r`, which must not be empty. */
+  Plus: 1,
+  /** `(?:([^]+))?`: all of `r`, no capture when it is empty. */
+  OptionalPlus: 2,
+  /**
+   * `(?:\/([^]+))?`: nothing (no capture) when `r` is `""` or `"/"`, else
+   * `r` must start with `/` and the capture is what follows it.
+   */
+  SlashOptional: 4,
+} as const;
+type RestKind = (typeof RestKinds)[keyof typeof RestKinds];
+
+/** The sources of the rests that follow a `\/`, longest first. */
+const RESTS: readonly (readonly [string, RestKind])[] = [
+  ["(?:([^]+))?", RestKinds.OptionalPlus],
+  ["([^]+)", RestKinds.Plus],
+  ["(.*)", RestKinds.Dot],
+];
+/** {@link RestKinds.SlashOptional}'s source, which carries its own `\/`. */
+const REST_SLASH_OPTIONAL = "(?:\\/([^]+))?";
 
 /** A source in the tree's grammar. */
 interface CompiledSource {
@@ -48,7 +83,6 @@ const SOURCE_LITERAL = /^(?:\\[.+*?=^!:${}()[\]|\\-]|[\w\-~%@&,;'"])+/;
 const ROUTE_END = "\\/?$";
 const PREFIX_END = "\\/?(?=\\/|$)";
 const PARAM = "([^\\/]+?)";
-const REST = "(.*)";
 
 /** Compiles a route regex in the tree's grammar, or `undefined` for a leaf. */
 function compileSource(regexp: RegExp): CompiledSource | undefined {
@@ -72,21 +106,34 @@ function compileSource(regexp: RegExp): CompiledSource | undefined {
     return undefined;
   }
   const parts: Part[] = [];
+  // Express's `/`: one literal "/" whose segment is empty.
+  if (source === "\\/" && !prefix) {
+    return {
+      parts: [{ kind: "literal", text: "" }],
+      prefix,
+      insensitive: flags === "i",
+    };
+  }
   while (source.length > 0) {
+    if (source === REST_SLASH_OPTIONAL && !prefix) {
+      parts.push({ kind: "rest", rest: RestKinds.SlashOptional });
+      break;
+    }
     if (!source.startsWith("\\/")) {
       return undefined;
     }
     source = source.slice(2);
+    const rest = RESTS.find(([text]) => source.startsWith(text));
     if (source.startsWith(PARAM)) {
       parts.push({ kind: "param" });
       source = source.slice(PARAM.length);
-    } else if (source.startsWith(REST)) {
-      source = source.slice(REST.length);
+    } else if (rest !== undefined) {
+      source = source.slice(rest[0].length);
       // Only at the very end of a whole-path route.
       if (prefix || source.length > 0) {
         return undefined;
       }
-      parts.push({ kind: "rest" });
+      parts.push({ kind: "rest", rest: rest[1] });
     } else {
       const literal = SOURCE_LITERAL.exec(source);
       if (literal === null) {
@@ -99,7 +146,11 @@ function compileSource(regexp: RegExp): CompiledSource | undefined {
       source = source.slice(literal[0].length);
     }
     // Every part fills a whole segment.
-    if (source.length > 0 && !source.startsWith("\\/")) {
+    if (
+      source.length > 0 &&
+      !source.startsWith("\\/") &&
+      source !== REST_SLASH_OPTIONAL
+    ) {
       return undefined;
     }
   }
@@ -160,8 +211,10 @@ interface TreeNode {
   ends: number[];
   /** `use()` prefixes that end here (a `/` or the end must follow). */
   prefixes: number[];
-  /** Routes whose `(.*)` takes the rest of the path from here. */
+  /** Routes whose trailing rest takes the rest of the path from here. */
   rests: number[];
+  /** Each of {@link rests}' {@link RestKind}, by position. */
+  restKinds: RestKind[];
   /** Routes outside the grammar, run with `exec` from here. */
   leaves: number[];
 }
@@ -174,6 +227,7 @@ function createNode(label: string): TreeNode {
     ends: [],
     prefixes: [],
     rests: [],
+    restKinds: [],
     leaves: [],
   };
 }
@@ -207,6 +261,7 @@ function descend(node: TreeNode, text: string): TreeNode {
       tail.ends = child.ends;
       tail.prefixes = child.prefixes;
       tail.rests = child.rests;
+      tail.restKinds = child.restKinds;
       tail.leaves = child.leaves;
       child.label = child.label.slice(0, common);
       child.children = [];
@@ -215,6 +270,7 @@ function descend(node: TreeNode, text: string): TreeNode {
       child.ends = [];
       child.prefixes = [];
       child.rests = [];
+      child.restKinds = [];
       child.leaves = [];
     }
     current = child;
@@ -288,12 +344,19 @@ export class RouteTree {
           pending += `/${insensitive ? part.text.toLowerCase() : part.text}`;
           continue;
         }
-        node = descend(node, `${pending}/`);
+        // `{/*name}` hangs before its optional `/`, every other part after it.
+        node = descend(
+          node,
+          part.kind === "rest" && part.rest === RestKinds.SlashOptional
+            ? pending
+            : `${pending}/`,
+        );
         pending = "";
         if (part.kind === "param") {
           node = node.param ??= createNode("");
         } else {
           node.rests.push(index);
+          node.restKinds.push(part.rest);
           added = true;
         }
       }
@@ -336,14 +399,45 @@ export class RouteTree {
   }
 }
 
-/** `[first, ...params, last?]`, without a spread. */
-function captureList(first: string, params: string[], last?: string): string[] {
+/** {@link restCapture}'s answer when the rest does not match. */
+const NO_REST = null;
+
+/**
+ * What a rest of `kind` captures of `path` from `at` (`undefined`: it
+ * matches, with no capture), or {@link NO_REST}.
+ */
+function restCapture(
+  kind: RestKind,
+  path: string,
+  at: number,
+): string | undefined | typeof NO_REST {
+  switch (kind) {
+    case RestKinds.Dot: {
+      const rest = path.slice(at);
+      // `.` stops at a line terminator, and `$` then fails.
+      return LINE_TERMINATOR.test(rest) ? NO_REST : rest;
+    }
+    case RestKinds.Plus:
+      return at < path.length ? path.slice(at) : NO_REST;
+    case RestKinds.OptionalPlus:
+      return at < path.length ? path.slice(at) : undefined;
+    case RestKinds.SlashOptional:
+      if (at === path.length) {
+        return undefined;
+      }
+      if (path.charCodeAt(at) !== 47) {
+        return NO_REST;
+      }
+      // `{/*name}` needs a character after its `/`; a lone `/` is `\/?$`'s.
+      return at + 1 === path.length ? undefined : path.slice(at + 1);
+  }
+}
+
+/** `[first, ...params]`, without a spread. */
+function captureList(first: string, params: string[]): string[] {
   const list = [first];
   for (let i = 0; i < params.length; i++) {
     list.push(params[i]);
-  }
-  if (last !== undefined) {
-    list.push(last);
   }
   return list;
 }
@@ -399,18 +493,22 @@ function walk(
     }
   }
   if (node.rests.length > 0) {
-    const rest = path.slice(at);
-    // `.` stops at a line terminator, and `$` then fails.
-    if (!LINE_TERMINATOR.test(rest)) {
-      for (const index of node.rests) {
-        found.indices.push(index);
-        found.captures.push(captureList(path, params, rest));
+    const rests = node.rests;
+    const kinds = node.restKinds;
+    for (let r = 0; r < rests.length; r++) {
+      const rest = restCapture(kinds[r], path, at);
+      if (rest !== NO_REST) {
+        // Pushed even when `undefined`, as `exec` reports an unmatched group.
+        const captures: (string | undefined)[] = captureList(path, params);
+        captures.push(rest);
+        found.indices.push(rests[r]);
+        found.captures.push(captures);
       }
     }
   }
   if (node.leaves.length > 0) {
     for (const index of node.leaves) {
-      const result = (routes[index].pathRegexp as RegExp).exec(path);
+      const result = routes[index].pathRegexp.exec(path);
       if (result !== null) {
         found.indices.push(index);
         found.captures.push(result);

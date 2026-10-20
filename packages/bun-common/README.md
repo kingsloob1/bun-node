@@ -169,8 +169,54 @@ and a `QUERY` route answers `QUERY` only (no `HEAD` or `GET` fallback). Nest
 | `domain(host, routerOrCallbackOrHandlers)` | routes for a host pattern |
 | `ws(path, handler, customDataFn?)` | a WebSocket upgrade route (see [WebSockets](#websockets)) |
 
-Express 5 catch-all syntax works: `*name`, `{*name}` and `{*}`. A named
-wildcard is exposed as both the positional key and the name.
+#### Path syntax
+
+Paths follow **Express 5's syntax**, path-to-regexp 8, the grammar it uses:
+
+| Pattern | Matches | `req.params` |
+|---|---|---|
+| `/users/:id` | `/users/42` | `{ id: "42" }` |
+| `/files/*path` | `/files/a/b.txt`, not `/files/` | `{ path: ["a", "b.txt"] }` |
+| `/files{/*path}` | `/files` and `/files/a/b.txt` | `{}` and `{ path: ["a", "b.txt"] }` |
+| `/opt{/:x}` | `/opt` and `/opt/1` | `{}` and `{ x: "1" }` |
+| `/:a-:b` | `/x-y-z` | `{ a: "x-y", b: "z" }` (greedy first, as Express) |
+| `/:"user id"` | `/7` | `{ "user id": "7" }` |
+
+- **A named wildcard is a `string[]`**: the matched path split on `/`, then
+  each segment decoded, so `a%2Fb/c` gives `["a/b", "c"]` and `a//b` gives
+  `["a", "", "b"]`. It sets **no positional key**; a bare `*` (or `{*}`) still
+  sets `"0"` as a string. An optional wildcard that matched nothing leaves its
+  key absent. The array is frozen, because matched params are cached and
+  shared by every request with the same path: replace `req.params` (or the
+  key), never mutate it in place.
+- A malformed `%` sequence in a path segment is a `URIError` with
+  `status: 400`, passed to the error handlers as Express does; with none,
+  the adapters answer **400**.
+- Trailing slashes in a route path are ignored (`/users/` registers
+  `/users`), and a request's trailing slash still matches.
+- **Older routejs forms keep working on a `BunRouter`**: `:x?`, `:x(\d+)`,
+  `+`, `(…)?` groups (`/reports(/archived)?`) and a bare `*` (`/assets/*`,
+  which sets `{ "0": "css/site.css" }`; Express 5 itself rejects a bare `*`),
+  mixed with a named wildcard too (`/files/:bucket/:version?/*key`, where
+  `key` is a `string[]`). **bun-nest's adapter is stricter**: it validates
+  Nest route paths as Express 5 does, so a routejs-only form such as
+  `:year(\d{4})/:month?` fails `app.init()` with a `PathSyntaxError` (see
+  bun-nest's README).
+- **A malformed path throws at registration**, as Express does: a
+  `PathSyntaxError` (a `TypeError`; its class name, `constructor.name`, is
+  `"PathError"`, as in path-to-regexp) with path-to-regexp's message. That covers characters with
+  no meaning (`/hello!`, `/a/[id]`), a `:` or `*` without a valid name
+  (`/t/12:30`, `/:1`), an unclosed `{` or a stray `}`, and paths that mix
+  `{…}` or a quoted name with the routejs forms. `assertExpressPath(path)`
+  runs the same check without registering anything.
+- `router.route(name, params)` builds a URL from a named route. For an
+  Express 5 path each value is percent-encoded (`encodeURIComponent`), a
+  wildcard's array is joined with `/`, a missing optional group is dropped and
+  a missing required parameter throws. A routejs-form path is built raw, as
+  before.
+
+Matching ignores case unless `caseSensitive: true` (see
+[Router options](#router-options)).
 
 #### Pipeline semantics
 
@@ -368,8 +414,13 @@ The verb methods of `BunRouter` and `BunHttpAdapter` carry generated
 overloads that narrow the handler's request:
 
 - **`req.params` from the path literal.** `get("/home/:name/:id?", h)` gives
-  `{ name: string; id?: string }`. `ExtractRouteParams<"/a/:b">` exposes the
-  same computation.
+  `{ name: string; id?: string }`; `*name` a `string[]` (no positional key),
+  `{*name}` and `{/*name}` an optional `string[]`, `{/:x}` an optional
+  `string`, and a quoted `:"a b"` or `*"a b"` its name.
+  `ExtractRouteParams<"/a/:b">` exposes the same computation. A path that is
+  not a literal falls back to `ParamsDictionary` (`string | string[]` values,
+  Express 5's own type), so code reading `req.params.x` there narrows it, or
+  passes a type argument or a `params` schema.
 - **`req.query` / `req.body` / `req.params` from a validator** placed
   **immediately before** the handler in the same call. One
   `validate({ params, query, body })` covers every target.
@@ -600,6 +651,25 @@ rejects for a pipeline error: it resolves the final error response instead.
 Without a socket there is no peer, so `requestIP()` is `null` and a WebSocket
 upgrade cannot succeed. A bare `BunRouter.fetch()` always parses with
 `parseBody: true`; use the adapter to test request options.
+
+The caller leaving is a disconnect, as it is served. Aborting the caller's
+signal rejects `fetch()` with its reason and fails the read in progress on a
+streamed body. Cancelling a streamed body (`res.write()`, or a stream or
+`Response` passed to `send()`) aborts `req.signal` with Bun's `AbortError`,
+"The connection was closed.", so `res`, `req` and `req.socket` emit `close`.
+Code that cleans up on `req.signal` or those events is therefore tested as it
+runs. Cancelling a buffered body leaves the signal alone, as served.
+
+`req.signal` is the one to read: `req.request.signal` is the caller's own,
+which a cancelled body does not abort. A signal passed in a `RequestInit`
+that is aborted already rejects at once, without routing, and is honoured at
+every step. A `Request`'s own signal is read only once the router's pipeline
+waits on a layer (a handler, middleware or `next()` that has not finished),
+or the handler reads `req.signal`, because Bun creates it on first read at
+about a sixth of the cost of the whole call. So a `Request` whose signal was
+aborted before the call is answered if its handler answers synchronously, and
+an abort while only the request body is being read, or only an adapter's
+not-found handler is running, takes effect once that step ends.
 
 A body that cannot be parsed — declared JSON that does not, or a
 `Content-Encoding` that cannot be decoded — is treated differently by the two.

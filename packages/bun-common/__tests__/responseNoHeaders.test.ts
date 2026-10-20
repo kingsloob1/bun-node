@@ -27,7 +27,7 @@ function raw(
     const socket = net.connect(port, "127.0.0.1");
     let data = "";
     socket.on("data", (chunk) => {
-      data += chunk;
+      data += chunk.toString();
     });
     socket.on("error", reject);
     socket.on("end", () => {
@@ -315,7 +315,7 @@ describe("BunResponse: response listeners", () => {
     const res = await makeResponse();
     let called = 0;
     res.whenResponded(() => called++);
-    expect(res.getNativeResponse(5)).rejects.toThrow("Request Timedout");
+    await expect(res.getNativeResponse(5)).rejects.toThrow("Request Timedout");
     await Bun.sleep(15);
     res.send("x");
     expect(called).toBe(1);

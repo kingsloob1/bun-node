@@ -158,8 +158,8 @@ describe("flows", () => {
 
     const [orders, refunds] = flow.children;
     expect(seen).toEqual({
-      [`fetch:${orders!.job.id}`]: { rows: 3 },
-      [`fetch:${refunds!.job.id}`]: { rows: 1 },
+      [`fetch:${orders.job.id}`]: { rows: 3 },
+      [`fetch:${refunds.job.id}`]: { rows: 1 },
     });
   });
 
@@ -191,7 +191,7 @@ describe("flows", () => {
     });
     start();
 
-    const middle = flow.children[0]!;
+    const middle = flow.children[0];
     await waitFor(
       async () => (await stateOf("reports", flow.job.id)) === "dead",
       { timeout: 5_000 },
@@ -206,7 +206,7 @@ describe("flows", () => {
     );
     expect(buriedMiddle?.failedReason?.name).toBe("ChildFailedError");
     expect(buriedMiddle?.failedReason?.message).toContain(
-      `fetch:${middle.children[0]!.job.id}`,
+      `fetch:${middle.children[0].job.id}`,
     );
 
     const top = await driver.getJob(
@@ -249,7 +249,7 @@ describe("flows", () => {
       { timeout: 5_000 },
     );
 
-    const key = `fetch:${flow.children[0]!.job.id}`;
+    const key = `fetch:${flow.children[0].job.id}`;
     expect(Object.keys(failures ?? {})).toEqual([key]);
     expect(failures?.[key]?.message).toBe("optional source down");
   });
@@ -289,7 +289,7 @@ describe("flows", () => {
     await Bun.sleep(200);
     expect(await stateOf("reports", flow.job.id)).toBe("waiting-children");
 
-    expect(await other("fetch").retry(flow.children[0]!.job.id)).toBe(true);
+    expect(await other("fetch").retry(flow.children[0].job.id)).toBe(true);
 
     await waitFor(
       async () => (await stateOf("reports", flow.job.id)) === "completed",
@@ -311,7 +311,7 @@ describe("flows", () => {
         data: {},
         children: [{ name: "flaky", data: {}, queue: "fetch" }],
       });
-      const child = flow.children[0]!.job;
+      const child = flow.children[0].job;
       await driver.buryJob(
         { ns: namespace, queue: "fetch" },
         child.id,
@@ -402,22 +402,22 @@ describe("flows", () => {
     // The sibling completes against a buried parent: its result is kept there,
     // and its own retention then removes it.
     await waitFor(
-      async () => (await stateOf("fetch", slow!.job.id)) === undefined,
+      async () => (await stateOf("fetch", slow.job.id)) === undefined,
       { timeout: 5_000, message: "the sibling was never released" },
     );
     expect(await stateOf("reports", flow.job.id)).toBe("dead");
 
     // Retry the parent first, then the failed child.
     expect(await queue.retry(flow.job.id)).toBe(true);
-    expect(await other("fetch").retry(bad!.job.id)).toBe(true);
+    expect(await other("fetch").retry(bad.job.id)).toBe(true);
 
     await waitFor(
       async () => (await stateOf("reports", flow.job.id)) === "completed",
       { timeout: 5_000, message: "the retried flow never completed" },
     );
     expect(seen).toEqual({
-      [`fetch:${bad!.job.id}`]: "fixed",
-      [`fetch:${slow!.job.id}`]: "slow-ok",
+      [`fetch:${bad.job.id}`]: "fixed",
+      [`fetch:${slow.job.id}`]: "slow-ok",
     });
   });
 
@@ -446,7 +446,7 @@ describe("flows", () => {
         },
       ],
     });
-    const child = flow.children[0]!;
+    const child = flow.children[0];
     start();
 
     await waitFor(
@@ -532,7 +532,7 @@ describe("flows", () => {
         { name: "c", data: {}, queue: "fetch", opts: { jobId: "shared" } },
       ],
     });
-    expect(distinct.children[0]!.job.id).toBe("shared");
+    expect(distinct.children[0].job.id).toBe("shared");
   });
 
   it("delivers a child that finished before its parent was added, without waiting for maintenance", async () => {
@@ -546,7 +546,7 @@ describe("flows", () => {
     driver.addJob = async (ref, record) => {
       order.push(`${ref.queue}:${record.state}`);
       if (record.state === "waiting-children") {
-        const childId = record.flow!.children[0]!.id;
+        const childId = record.flow!.children[0].id;
         await waitFor(
           async () =>
             (await driver.getJob({ ns: namespace, queue: "fetch" }, childId))
@@ -581,12 +581,12 @@ describe("flows", () => {
       { timeout: 5_000, message: "the early result was never delivered" },
     );
     expect((await env.queue.getJob(flow.job.id))?.returnValue).toEqual({
-      [`fetch:${flow.children[0]!.job.id}`]: "early",
+      [`fetch:${flow.children[0].job.id}`]: "early",
     });
     // Kept until delivered, then marked.
     const child = await driver.getJob(
       { ns: env.namespace, queue: "fetch" },
-      flow.children[0]!.job.id,
+      flow.children[0].job.id,
     );
     expect(child?.flow?.recorded).toBe(true);
   });
@@ -645,12 +645,12 @@ describe("flows", () => {
 
     const parent = await queue.getJob(flow.job.id);
     expect(parent?.returnValue).toEqual({
-      [`fetch:${flow.children[0]!.job.id}`]: "value",
+      [`fetch:${flow.children[0].job.id}`]: "value",
     });
     // Once the parent has it, the child's own retention applies.
     await waitFor(
       async () =>
-        (await stateOf("fetch", flow.children[0]!.job.id)) === undefined,
+        (await stateOf("fetch", flow.children[0].job.id)) === undefined,
       { timeout: 5_000 },
     );
   });
@@ -682,7 +682,7 @@ describe("flows", () => {
       children: [{ name: "broken", data: {} }],
     });
     start();
-    const worker = workers.reports!;
+    const worker = workers.reports;
     worker.on("dead", (job) => localEvents.push(`dead:${job.name}`));
     worker.on("failed", (job) => localEvents.push(`failed:${job.name}`));
 
@@ -762,7 +762,7 @@ describe("flows", () => {
     );
     await waitFor(
       async () =>
-        (await stateOf("reports", nested.children[0]!.job.id)) === undefined,
+        (await stateOf("reports", nested.children[0].job.id)) === undefined,
       { timeout: 5_000, message: "the nested parent's retention never ran" },
     );
     expect(await stateOf("reports", nested.job.id)).toBe("dead");
@@ -927,7 +927,7 @@ describe("flows: healing", () => {
     );
     await waitFor(
       async () =>
-        (await stateOf("fetch", flow.children[0]!.job.id)) === undefined,
+        (await stateOf("fetch", flow.children[0].job.id)) === undefined,
       { timeout: 5_000, message: "the child's retention never ran" },
     );
     expect(calls).toBeGreaterThan(1);
@@ -1202,8 +1202,8 @@ for (const backend of backends) {
           { timeout: 15_000 },
         );
         expect((await queue.getJob(flow.job.id))?.returnValue).toEqual({
-          [`fetch:${flow.children[0]!.job.id}`]: 2,
-          [`fetch:${flow.children[1]!.job.id}`]: 4,
+          [`fetch:${flow.children[0].job.id}`]: 2,
+          [`fetch:${flow.children[1].job.id}`]: 4,
         });
       },
       BACKEND_TEST_TIMEOUT,
@@ -1239,7 +1239,7 @@ for (const backend of backends) {
           async () => (await stateOf("reports", flow.job.id)) === "dead",
           { timeout: 15_000 },
         );
-        expect(await stateOf("reports", flow.children[0]!.job.id)).toBe("dead");
+        expect(await stateOf("reports", flow.children[0].job.id)).toBe("dead");
       },
       BACKEND_TEST_TIMEOUT,
     );
@@ -1303,8 +1303,8 @@ for (const backend of backends) {
             return JSON.stringify({
               order,
               parent: await read(parentRef, flow.job.id),
-              bad: await read(childRef, bad!.job.id),
-              good: await read(childRef, good!.job.id),
+              bad: await read(childRef, bad.job.id),
+              good: await read(childRef, good.job.id),
             });
           };
 
@@ -1313,13 +1313,13 @@ for (const backend of backends) {
             { timeout: 15_000, message: explain },
           );
           await waitFor(
-            async () => (await stateOf("fetch", good!.job.id)) === "completed",
+            async () => (await stateOf("fetch", good.job.id)) === "completed",
             { timeout: 15_000, message: explain },
           );
           // The failure that buried it has been delivered in full.
           await waitFor(
             async () =>
-              (await driver.getJob(childRef, bad!.job.id))?.flow?.recorded ===
+              (await driver.getJob(childRef, bad.job.id))?.flow?.recorded ===
               true,
             { timeout: 15_000, message: explain },
           );
@@ -1327,15 +1327,15 @@ for (const backend of backends) {
           if (order === "parent first") {
             // Back to back, as a person retrying both would.
             expect(await queue.retry(flow.job.id)).toBe(true);
-            expect(await other("fetch").retry(bad!.job.id)).toBe(true);
+            expect(await other("fetch").retry(bad.job.id)).toBe(true);
           } else {
-            expect(await other("fetch").retry(bad!.job.id)).toBe(true);
+            expect(await other("fetch").retry(bad.job.id)).toBe(true);
             await waitFor(
               async () =>
                 Object.hasOwn(
                   (await driver.getJob(parentRef, flow.job.id))?.flow?.values ??
                     {},
-                  `fetch:${bad!.job.id}`,
+                  `fetch:${bad.job.id}`,
                 ),
               { timeout: 15_000, message: explain },
             );
@@ -1348,8 +1348,8 @@ for (const backend of backends) {
             { timeout: 15_000, message: explain },
           );
           expect((await queue.getJob(flow.job.id))?.returnValue).toEqual({
-            [`fetch:${bad!.job.id}`]: "bad",
-            [`fetch:${good!.job.id}`]: "good",
+            [`fetch:${bad.job.id}`]: "bad",
+            [`fetch:${good.job.id}`]: "good",
           });
         },
         BACKEND_TEST_TIMEOUT,
@@ -1427,7 +1427,7 @@ for (const backend of backends) {
           ],
         });
         const [bad, good] = flow.children;
-        badId = bad!.job.id;
+        badId = bad.job.id;
         start();
 
         await waitFor(
@@ -1435,7 +1435,7 @@ for (const backend of backends) {
           { timeout: 15_000 },
         );
         await waitFor(
-          async () => (await stateOf("fetch", good!.job.id)) === "completed",
+          async () => (await stateOf("fetch", good.job.id)) === "completed",
           { timeout: 15_000 },
         );
         await waitFor(() => deferred.length > 0, { timeout: 15_000 });
@@ -1446,14 +1446,14 @@ for (const backend of backends) {
         expect(await stateOf("reports", flow.job.id)).toBe("waiting-children");
 
         await release();
-        expect(await other("fetch").retry(bad!.job.id)).toBe(true);
+        expect(await other("fetch").retry(bad.job.id)).toBe(true);
         await waitFor(
           async () => (await stateOf("reports", flow.job.id)) === "completed",
           { timeout: 15_000 },
         );
         expect((await queue.getJob(flow.job.id))?.returnValue).toEqual({
-          [`fetch:${bad!.job.id}`]: "bad",
-          [`fetch:${good!.job.id}`]: "good",
+          [`fetch:${bad.job.id}`]: "bad",
+          [`fetch:${good.job.id}`]: "good",
         });
       },
       BACKEND_TEST_TIMEOUT,
@@ -1501,7 +1501,7 @@ for (const backend of backends) {
           { timeout: 15_000 },
         );
         expect((await queue.getJob(flow.job.id))?.returnValue).toEqual({
-          [`fetch:${flow.children[0]!.job.id}`]: "healed",
+          [`fetch:${flow.children[0].job.id}`]: "healed",
         });
       },
       BACKEND_TEST_TIMEOUT,

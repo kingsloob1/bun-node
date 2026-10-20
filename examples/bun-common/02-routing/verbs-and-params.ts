@@ -20,14 +20,28 @@
  *   wins. `toFetchResponse()` is what `fetch()` applies to match the wire;
  *   the Bun behaviours behind it are in
  *   [docs/bun-bugs](../../../docs/bun-bugs/README.md).
- * - Param values are percent-decoded; `*name` publishes both `params.name`
- *   and the positional key `params[0]`.
+ * - Param values are percent-decoded. Paths have Express 5's syntax
+ *   (path-to-regexp 8): a named wildcard (`*name`, `{*name}`) is an array of
+ *   the segments it matched, each decoded, under its name only, with no
+ *   positional key, and one that matched nothing leaves its key absent; a
+ *   bare `*` keeps `params[0]`, a string. `{…}` makes a part of the path
+ *   optional (`/archive/:year{/:month}`), and `:from-:to` splits with the
+ *   first param taking all it can.
+ * - A path Express could not register throws a `PathSyntaxError` (a
+ *   `TypeError`, its class named `PathError` as path-to-regexp's) when it is
+ *   registered, not on the first request. The routejs forms Express 5 dropped (`:page?`, `:id(\\d+)`, a
+ *   bare `*`, `(/archived)?`) still work on a `BunRouter`.
  * - `query()` registers the HTTP `QUERY` method (Express 5's `app.query`): a
  *   safe request that carries a body. The body is parsed as for `POST`,
  *   `req.query` is still the URL's query string, and a `QUERY` route answers
  *   `QUERY` only — no `GET` or `HEAD` fallback either way.
  */
-import type { RouterVerb, RouterVerbMethod } from "@kingsleyweb/bun-common";
+import type {
+  JsonValue,
+  RouterHandler,
+  RouterVerb,
+  RouterVerbMethod,
+} from "@kingsleyweb/bun-common";
 import {
   BunHttpAdapter,
   BunRequest,
@@ -35,6 +49,7 @@ import {
   BunRouter,
   FETCH_STUB_SERVER,
   markSocketFree,
+  PathSyntaxError,
   toFetchResponse,
 } from "@kingsleyweb/bun-common";
 import { check, checkEqual, summary } from "../shared/check";
@@ -332,6 +347,120 @@ for (const path of [
   show(path, await response.json());
 }
 show("note", "paths match case-insensitively: /USERS/7 reached /users/:id");
+
+/* ------------------------------------------------------------------ */
+step("Path syntax: wildcard arrays, {…} groups, malformed paths");
+
+const syntax = new BunRouter();
+/** Answers the route's `req.params`. */
+const echoParams: RouterHandler = (req, res) => {
+  res.json(req.params);
+};
+syntax.get("/assets/*file", echoParams);
+syntax.get("/docs{/*page}", echoParams);
+syntax.get("/archive/:year{/:month}", echoParams);
+syntax.get("/range/:from-:to", echoParams);
+syntax.get("/raw/*", echoParams);
+
+/** The params `path` produced, or its status when nothing answered 200. */
+async function paramsAt(path: string): Promise<JsonValue | number> {
+  const response = await syntax.fetch(path);
+  return response.status === 200
+    ? ((await response.json()) as JsonValue)
+    : response.status;
+}
+
+checkEqual(
+  "*name is an array of segments, under its name only",
+  await paramsAt("/assets/css/site/app.css"),
+  { file: ["css", "site", "app.css"] },
+);
+checkEqual(
+  "…each segment decoded after the split (%2F stays inside one)",
+  await paramsAt("/assets/a%2Fb/c.txt"),
+  { file: ["a/b", "c.txt"] },
+);
+checkEqual(
+  "…and it needs at least one: /assets/ is 404",
+  await paramsAt("/assets/"),
+  404,
+);
+checkEqual(
+  "an optional wildcard {/*name} that matched",
+  await paramsAt("/docs/guide/routing"),
+  { page: ["guide", "routing"] },
+);
+checkEqual(
+  "…and one that matched nothing: the key is absent",
+  await paramsAt("/docs"),
+  {},
+);
+checkEqual(
+  "a {…} group, left out: its param is absent",
+  await paramsAt("/archive/2026"),
+  { year: "2026" },
+);
+checkEqual("…and given", await paramsAt("/archive/2026/09"), {
+  year: "2026",
+  month: "09",
+});
+checkEqual(
+  ":from-:to splits with the first param taking all it can",
+  await paramsAt("/range/1-2-3"),
+  { from: "1-2", to: "3" },
+);
+checkEqual(
+  "a bare * keeps its positional key, a string",
+  await paramsAt("/raw/a/b"),
+  { 0: "a/b" },
+);
+
+/** What registering `path` throws, or `"registered"`. */
+function register(path: string): JsonValue {
+  try {
+    new BunRouter().get(path, echoParams);
+    return "registered";
+  } catch (error) {
+    return error instanceof PathSyntaxError
+      ? {
+          class: "PathSyntaxError",
+          // The class is named as path-to-regexp's, so a log printing
+          // the class of an error says what Express would.
+          className: error.constructor.name,
+          isTypeError: error instanceof TypeError,
+          reason: error.reason,
+          originalPath: error.originalPath,
+        }
+      : String(error);
+  }
+}
+
+checkEqual(
+  "an unclosed { throws PathSyntaxError at registration",
+  register("/broken/{open"),
+  {
+    class: "PathSyntaxError",
+    className: "PathError",
+    isTypeError: true,
+    reason: "Unexpected end at index 13, expected }",
+    originalPath: "/broken/{open",
+  },
+);
+checkEqual(
+  "…so does a param with no name",
+  (register("/users/:") as { reason?: string }).reason,
+  "Missing parameter name at index 8",
+);
+checkEqual(
+  "…and a path mixing {…} with routejs's :name?",
+  (register("/a/:id?/{x}") as { class?: string }).class,
+  "PathSyntaxError",
+);
+checkEqual(
+  "the routejs forms on their own still register",
+  ["/s/:page?", "/n/:id(\\d+)", "/w/*", "/reports(/archived)?"].map(register),
+  ["registered", "registered", "registered", "registered"],
+);
 
 /* ------------------------------------------------------------------ */
 step("Which route runs when several match");

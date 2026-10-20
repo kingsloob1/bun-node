@@ -77,7 +77,7 @@ describe("/meta/permissions: what it costs", () => {
       expect(calls).toHaveLength(n + 1);
       // The request's own call comes first, for its own route, and is not
       // reused for the map's `meta.read`: that entry previews `GET /meta`.
-      expect(routeOf(calls[0]!)).toBe("GET /meta/permissions");
+      expect(routeOf(calls[0])).toBe("GET /meta/permissions");
       expect(calls.slice(1).map((call): string => call.action)).toEqual(
         Object.keys(res.body.actions),
       );
@@ -151,7 +151,7 @@ describe("/meta/permissions: each preview is shaped like the real request", () =
         }
         expect(call.transport).toBe("http");
         // Always one of the action's own registered patterns.
-        expect(patterns.get(action)).toContain(routeOf(call)!);
+        expect(patterns.get(action)).toContain(routeOf(call));
       }
     }
 

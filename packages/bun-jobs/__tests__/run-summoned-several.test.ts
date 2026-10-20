@@ -111,7 +111,7 @@ function start(env: Record<string, string>, args: string[]): Fixture {
   });
   const lines: Line[] = [];
   const waiters: {
-    match: (line: Line) => boolean;
+    matches: (line: Line) => boolean;
     resolve: (line: Line) => void;
   }[] = [];
   void (async () => {
@@ -130,7 +130,7 @@ function start(env: Record<string, string>, args: string[]): Fixture {
         const line = JSON.parse(text) as Line;
         lines.push(line);
         for (const waiter of [...waiters]) {
-          if (waiter.match(line)) {
+          if (waiter.matches(line)) {
             waiters.splice(waiters.indexOf(waiter), 1);
             waiter.resolve(line);
           }
@@ -155,7 +155,7 @@ function start(env: Record<string, string>, args: string[]): Fixture {
           );
         }, timeout);
         waiters.push({
-          match,
+          matches: match,
           resolve: (line) => {
             clearTimeout(timer);
             resolve(line);
@@ -396,7 +396,7 @@ describe("runSummoned(workers[]), in a real process", () => {
     );
     // One decision for the unit, not one per worker.
     expect(closing).toHaveLength(1);
-    expect(closing[0]!.message).toBe("Summoned worker closing gracefully");
+    expect(closing[0].message).toBe("Summoned worker closing gracefully");
     expect(stopped(fixture)).toMatchObject({
       reason: "signal",
       signal: "SIGTERM",
@@ -995,7 +995,7 @@ for (const backend of BACKENDS) {
               await readSummonClaims(store, { ns: namespace, queue }, [id])
             ).get(id);
             expect(claim?.holders, queue).toHaveLength(1);
-            expect(claim!.holders[0]!.exit, queue).toMatchObject({
+            expect(claim!.holders[0].exit, queue).toMatchObject({
               reason: "idle",
               code: 0,
             });

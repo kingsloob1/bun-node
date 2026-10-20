@@ -37,7 +37,7 @@ function logged(
 ): LogEvent {
   const { logger, events } = createTestLogger();
   redactingLogger(logger, secrets).info("m", fields);
-  return events[0]!;
+  return events[0];
 }
 
 /** A DOMException `AbortSignal.timeout(0)` aborts with, once it has. */
@@ -146,7 +146,7 @@ describe("B1: a redacted error stays readable, a DOMException's included", () =>
     });
     expect(lines).toHaveLength(1);
     expect(lines[0]).not.toContain(SECRET);
-    expect(JSON.parse(lines[0]!).err).toMatchObject({
+    expect(JSON.parse(lines[0]).err).toMatchObject({
       name: "TimeoutError",
       message: "gave up on [REDACTED]",
     });
@@ -259,7 +259,7 @@ describe("minor: more shapes and patterns", () => {
   it("a String object is its text, a Symbol its description, a Blob or File a placeholder", () => {
     const event = logged({
       // A boxed string, as `Object(text)` makes one.
-      boxed: new Object(`x ${SECRET}`) as object,
+      boxed: new Object(`x ${SECRET}`),
       symbol: Symbol(SECRET),
       blob: new Blob(["hello"]),
       file: new File(["abc"], "f.txt"),

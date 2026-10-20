@@ -602,8 +602,8 @@ for (const engine of ENGINES) {
               values,
             )) as { type: string; key: string; Extra: string | null }[];
             plan = JSON.stringify(row);
-            expect(row!.key).toBe("PRIMARY");
-            expect(row!.type).toBe("range");
+            expect(row.key).toBe("PRIMARY");
+            expect(row.type).toBe("range");
           }
         }
         expect(plan).not.toMatch(/\bSort\b|filesort|TEMP B-TREE/i);

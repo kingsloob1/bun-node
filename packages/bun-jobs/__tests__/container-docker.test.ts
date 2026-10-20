@@ -117,7 +117,7 @@ afterAll(() => {
     )
       .map((line) => line.split(" "))
       .filter(([, key]) => key !== undefined && keys.has(key))
-      .map(([id]) => id!);
+      .map(([id]) => id);
     if (ids.length > 0) {
       docker(["rm", "--force", ...ids]);
     }
@@ -403,7 +403,7 @@ describe.skipIf(skipReason !== undefined)(
         // `-t 30`: without a SIGTERM handler, Bun as PID 1 would sit out all
         // 30 s and be killed (137).
         const started = performance.now();
-        expect(docker(["stop", "-t", "30", id!]).code).toBe(0);
+        expect(docker(["stop", "-t", "30", id]).code).toBe(0);
         const outcome = await handle.done;
         expect(performance.now() - started).toBeLessThan(25_000);
         expect(outcome.exitCode).toBe(143);

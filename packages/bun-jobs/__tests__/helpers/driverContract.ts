@@ -521,7 +521,7 @@ export function driverContract(
         expect(await driver.countQueuedTriggers(ns, key)).toBe(3);
 
         // A peek then a pop see the same trigger, whole.
-        expect(await driver.popQueuedTrigger(ns, key)).toEqual(head!);
+        expect(await driver.popQueuedTrigger(ns, key)).toEqual(head);
 
         // The next head, unforced; absent `force` still reads as absent.
         const next = await driver.peekQueuedTrigger(ns, key);
@@ -583,7 +583,7 @@ export function driverContract(
 
           const head = await driver.peekQueuedTrigger(ns, key);
           expect(await driver.popQueuedTriggerIf(ns, key, "first")).toEqual(
-            head!,
+            head,
           );
           expect(await driver.countQueuedTriggers(ns, key)).toBe(1);
           expect((await driver.peekQueuedTrigger(ns, key))?.id).toBe("second");
@@ -1341,7 +1341,7 @@ export function driverContract(
         ).jobs;
 
         expect(minutes).toEqual([{ at: minute, completed: 3, failed: 0 }]);
-        expect(minutes[0]!.completed).toBe(
+        expect(minutes[0].completed).toBe(
           seconds.reduce((sum, bucket) => sum + bucket.completed, 0),
         );
       });
@@ -1584,7 +1584,7 @@ export function driverContract(
         // makes it mergeable across writers without an atomic per-bin write.
         const expected = emptyHistogram();
         for (const ms of taken) {
-          expected[durationBin(ms)]!++;
+          expected[durationBin(ms)]++;
         }
         expect(bucket?.histogram).toEqual(expected);
 
@@ -1637,7 +1637,7 @@ export function driverContract(
         });
 
         expect(read.busyness).toHaveLength(1);
-        const bucket = read.busyness![0]!;
+        const bucket = read.busyness![0];
         expect(bucket.at).toBe(minute);
         expect(bucket.samples).toBe(2);
         expect(bucket.activeSum).toBe(8);
@@ -1894,25 +1894,25 @@ export function driverContract(
         const range = twoMinutes(first);
         const [a, b, c] = ["a", "b", "c"].map((id) => runnerKey(id));
 
-        await g.countRunnerRun(ns1, a!, first + 1_000, { started: 2 });
-        await g.countRunnerRun(ns1, a!, second + 1_000, {
+        await g.countRunnerRun(ns1, a, first + 1_000, { started: 2 });
+        await g.countRunnerRun(ns1, a, second + 1_000, {
           started: 1,
           succeeded: 2,
         });
-        await g.countRunnerRun(ns1, b!, second + 5_000, {
+        await g.countRunnerRun(ns1, b, second + 5_000, {
           failed: 1,
           timeout: 1,
         });
-        await g.countRunnerRun(ns1, c!, first + 9_000, { skipped: 3 });
+        await g.countRunnerRun(ns1, c, first + 9_000, { skipped: 3 });
         // Outside the range on both sides: counted, never totalled.
-        await g.countRunnerRun(ns1, a!, first - MINUTE_BUCKET_MS, {
+        await g.countRunnerRun(ns1, a, first - MINUTE_BUCKET_MS, {
           started: 50,
         });
-        await g.countRunnerRun(ns1, a!, second + MINUTE_BUCKET_MS, {
+        await g.countRunnerRun(ns1, a, second + MINUTE_BUCKET_MS, {
           started: 70,
         });
         // The same runner in another namespace.
-        await g.countRunnerRun(elsewhere, a!, first + 1_000, { started: 9 });
+        await g.countRunnerRun(elsewhere, a, first + 1_000, { started: 9 });
         await g.flushMetrics();
 
         const rows = byRunner(await g.getRunnerMetricsTotals(ns1, range));
@@ -2113,24 +2113,24 @@ export function driverContract(
 
         const histogram = emptyHistogram();
         for (const [, ms] of taken) {
-          histogram[durationBin(ms)]!++;
+          histogram[durationBin(ms)]++;
         }
         // Count and sum add, the extremes are the extremes of both minutes,
         // and the histogram is bin-for-bin the sum.
-        expect(rows[0]!.durations).toEqual({
+        expect(rows[0].durations).toEqual({
           count: 4,
           sumMs: 5 + 900 + 3 + 40,
           minMs: 3,
           maxMs: 900,
           histogram,
         });
-        expect(rows[0]!.durations).toEqual(
+        expect(rows[0].durations).toEqual(
           totalDurationStats(
             (await g.getRunnerMetrics(ns1, timed, range)).durations ?? [],
           ),
         );
         // Asked for and recorded, so present on every row — empty here.
-        expect(rows[1]!.durations).toEqual(emptyDurationStats());
+        expect(rows[1].durations).toEqual(emptyDurationStats());
 
         // Not asked for, not answered.
         const plain = await g.getRunnerMetricsTotals(ns1, twoMinutes(first));
@@ -2170,19 +2170,19 @@ export function driverContract(
 
         const [busy, idle, silent] = rows;
         // Merged across both minutes: the later sample's concurrency.
-        expect(busy!.busyness).toEqual({
+        expect(busy.busyness).toEqual({
           samples: 2,
           activeSum: 4,
           activeMax: 3,
           concurrency: 8,
           lastAt: second + 10_000,
         });
-        expect(busy!.jobs).toEqual({ completed: 2, failed: 0 });
+        expect(busy.jobs).toEqual({ completed: 2, failed: 0 });
         // Reporting but idle: a row, with no jobs.
-        expect(idle!.jobs).toEqual({ completed: 0, failed: 0 });
-        expect(idle!.busyness?.samples).toBe(1);
+        expect(idle.jobs).toEqual({ completed: 0, failed: 0 });
+        expect(idle.busyness?.samples).toBe(1);
         // Counting but never sampled: present, `samples: 0`.
-        expect(silent!.busyness).toEqual(emptyBusynessStats());
+        expect(silent.busyness).toEqual(emptyBusynessStats());
 
         for (const row of rows) {
           expect(row).toEqual({
@@ -2214,18 +2214,18 @@ export function driverContract(
           runnerKey(id),
         );
 
-        await g.countRunnerRun(ns1, a!, first, { started: 1 });
-        await g.countRunnerRun(ns1, a!, second, {
+        await g.countRunnerRun(ns1, a, first, { started: 1 });
+        await g.countRunnerRun(ns1, a, second, {
           succeeded: 1,
           durationMs: 20,
         });
-        await g.countRunnerRun(ns1, b!, second, {
+        await g.countRunnerRun(ns1, b, second, {
           failed: 1,
           durationMs: 7,
         });
-        await g.countRunnerRun(ns1, c!, first, { started: 1 });
+        await g.countRunnerRun(ns1, c, first, { started: 1 });
         // Only outside the range: nothing to answer inside it.
-        await g.countRunnerRun(ns1, quiet!, first - MINUTE_BUCKET_MS, {
+        await g.countRunnerRun(ns1, quiet, first - MINUTE_BUCKET_MS, {
           started: 1,
         });
         await g.flushMetrics();
@@ -2240,7 +2240,7 @@ export function driverContract(
           const batch = byRunner(
             await g.getRunnerMetricsMany(
               ns1,
-              [a!, b!, a!, quiet!, runnerKey("never")],
+              [a, b, a, quiet, runnerKey("never")],
               query,
             ),
           );
@@ -2254,7 +2254,7 @@ export function driverContract(
           }
 
           if (query.durations && durations) {
-            expect(batch[0]!.durations).toHaveLength(1);
+            expect(batch[0].durations).toHaveLength(1);
           } else if (!query.durations) {
             expect(batch.every((entry) => entry.durations === undefined)).toBe(
               true,
@@ -2322,7 +2322,7 @@ export function driverContract(
               )),
             });
           }
-          expect(batch[1]!.jobs).toEqual([
+          expect(batch[1].jobs).toEqual([
             { at: first, completed: 1, failed: 0 },
             { at: second, completed: 0, failed: 1 },
           ]);
@@ -2483,7 +2483,7 @@ export function driverContract(
 
         // A duplicate is ignored, not overwritten, and comes back with what is
         // actually stored rather than what was offered.
-        expect(results[1]!.job.data).toEqual({ stored: true });
+        expect(results[1].job.data).toEqual({ stored: true });
 
         // The ones it claimed to add are really there.
         expect((await driver.getJob(q, "batch-new-1"))?.id).toBe("batch-new-1");
@@ -4307,7 +4307,7 @@ export function driverContract(
             ];
 
         expect(
-          claimed.filter((job) => job !== null).map((job) => job!.id),
+          claimed.filter((job) => job !== null).map((job) => job.id),
         ).toEqual(["xm-1", "xm-5"]);
 
         await driver.drainQueue(xq, true);
@@ -6859,7 +6859,7 @@ export function driverContract(
           expect(found[2]?.data).toEqual({ n: 1 });
           // A repeated id is its own answer, not the same object twice.
           expect(found[0]).not.toBe(found[3]);
-          expect(found[0]).toEqual(found[3]!);
+          expect(found[0]).toEqual(found[3]);
 
           expect(await getMany(driver, target, [])).toEqual([]);
           expect(await getMany(driver, target, ["x", "y"])).toEqual([

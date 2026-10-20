@@ -832,8 +832,11 @@ checkEqual("…is on disk", await Bun.file(randomName.path).text(), "abc");
 const destSaw: string[] = [];
 const functional = new DiskStorage({
   dest: (file, request) => {
-    destSaw.push(`${file.fieldname}:${request.params.userId}`);
-    return join(scratch, "users", request.params.userId ?? "", "deep");
+    // An untyped `params` value is a `string`, or a `string[]` for a wildcard.
+    const { userId } = request.params;
+    const user = typeof userId === "string" ? userId : "";
+    destSaw.push(`${file.fieldname}:${user}`);
+    return join(scratch, "users", user, "deep");
   },
   filename: (file) => `renamed-${file.filename}`,
 });

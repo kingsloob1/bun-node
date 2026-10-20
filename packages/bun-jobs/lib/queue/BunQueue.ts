@@ -278,7 +278,7 @@ export function splitDefinitionDefaults(defaults: JobOptions): {
     }
   }
 
-  return { definition: definition as JobOptions, rest: rest as JobOptions };
+  return { definition, rest };
 }
 
 /** Set by `BunQueue`'s static block: its private add, reachable from {@link addDefinedJob}. */
@@ -1365,7 +1365,7 @@ export class BunQueue<
       this.ref.queue,
     );
 
-    return counts[this.ref.queue]!;
+    return counts[this.ref.queue];
   }
 
   /** How many jobs are in each state, or in one state. */
@@ -1598,7 +1598,7 @@ export class BunQueue<
     const read = this.#storedDefaults(queue);
     const override = read instanceof Promise ? await read : read;
     const base = this.#buildRecord(
-      node.name as TName,
+      node.name,
       node.data as TData,
       { ...node.opts, jobId: id },
       undefined,

@@ -13,7 +13,7 @@ const apiHandler: RouterMiddlewareHandler = (req, res) => {
   res.send("happy Guy");
 
   req.on("close", () => {
-    res.end();
+    void res.end();
     console.log("Connection is Closed");
   });
 };
@@ -60,7 +60,7 @@ httpAdapter.setNotFoundHandler((req, res) => {
   return res.status(404).end(errText);
 });
 
-httpAdapter.listen(port, hostname, () => {
+void httpAdapter.listen(port, hostname, () => {
   console.log(
     `API server running at http://${httpAdapter.serverAddress.address}:${httpAdapter.serverAddress.port}`,
   );

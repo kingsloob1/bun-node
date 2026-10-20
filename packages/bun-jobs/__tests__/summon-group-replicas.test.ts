@@ -130,9 +130,7 @@ async function race(
           summonGroupRef(namespace),
           summonGroupStateName("media"),
         );
-        return isSummonGroupEntry(stored?.value)
-          ? (stored.value as SummonGroupEntry)
-          : undefined;
+        return isSummonGroupEntry(stored?.value) ? stored.value : undefined;
       }),
     );
     return { lines: runs.flatMap((run) => run.lines), entries };

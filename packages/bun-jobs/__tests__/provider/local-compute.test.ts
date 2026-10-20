@@ -503,10 +503,10 @@ describe("localCompute: a unit", () => {
     });
     const done = await statusUntil(
       local.summon,
-      handle!,
+      handle,
       (unit) => unit.state !== "running",
     );
-    expect(done).toEqual({ handle: handle!, state: "exited", exitCode: 0 });
+    expect(done).toEqual({ handle, state: "exited", exitCode: 0 });
   });
 
   it("gets the allowlist from the live environment, never a deleted or unlisted variable", async () => {
@@ -658,11 +658,11 @@ describe("localCompute: a unit", () => {
     const [handle] = handlesOf(await summon(local.summon));
     const crashed = await statusUntil(
       local.summon,
-      handle!,
+      handle,
       (unit) => unit.state !== "running" && unit.detail !== `exit 3`,
     );
     expect(crashed).toEqual({
-      handle: handle!,
+      handle,
       state: "failed",
       exitCode: 3,
       detail: "fatal: cannot open libvk.so.1",
@@ -682,7 +682,7 @@ describe("localCompute: a unit", () => {
       await summon(local.summon, request({ maxLifetimeMs: lifetime })),
     );
     const expected: UnitStatus = {
-      handle: handle!,
+      handle,
       state: "failed",
       exitCode: 137,
       detail: "SIGKILL",
@@ -690,13 +690,13 @@ describe("localCompute: a unit", () => {
     expect(
       await statusUntil(
         local.summon,
-        handle!,
+        handle,
         (unit) => unit.state !== "running",
       ),
     ).toEqual(expected);
     // Past the lifetime: still the unit's own death, not the backstop's.
     await Bun.sleep(Math.max(0, summonedAt + lifetime + 500 - Date.now()));
-    expect((await local.summon.status!([handle!], context()))[0]).toEqual(
+    expect((await local.summon.status!([handle], context()))[0]).toEqual(
       expected,
     );
   });
@@ -728,13 +728,14 @@ describe("localCompute: cancel", () => {
     const [handle] = handlesOf(await summon(local.summon));
     const { pid } = await report(file);
     expect(alive(pid)).toBe(true);
-    await local.summon.cancel!([handle!], context());
+    await local.summon.cancel!([handle], context());
     expect(alive(pid)).toBe(false);
     expect(readFileSync(`${file}.log`, "utf8")).toContain("signal SIGTERM");
     // It handled the signal and exited 0.
-    expect((await local.summon.status!([handle!], context()))[0]).toMatchObject(
-      { state: "exited", exitCode: 0 },
-    );
+    expect((await local.summon.status!([handle], context()))[0]).toMatchObject({
+      state: "exited",
+      exitCode: 0,
+    });
   });
 
   it("kills a unit that ignores the stop signal after the grace: 137, cancelled", async () => {
@@ -745,12 +746,12 @@ describe("localCompute: cancel", () => {
     const [handle] = handlesOf(await summon(local.summon));
     const { pid } = await report(file);
     const before = Date.now();
-    await local.summon.cancel!([handle!], context());
+    await local.summon.cancel!([handle], context());
     expect(Date.now() - before).toBeGreaterThanOrEqual(290);
     expect(alive(pid)).toBe(false);
     expect(readFileSync(`${file}.log`, "utf8")).toContain("ignored SIGTERM");
-    expect((await local.summon.status!([handle!], context()))[0]).toEqual({
-      handle: handle!,
+    expect((await local.summon.status!([handle], context()))[0]).toEqual({
+      handle,
       state: "exited",
       exitCode: 137,
       detail: "cancelled",
@@ -764,7 +765,7 @@ describe("localCompute: cancel", () => {
     });
     const [handle] = handlesOf(await summon(local.summon));
     await report(file);
-    await local.summon.cancel!([handle!], context());
+    await local.summon.cancel!([handle], context());
     expect(readFileSync(`${file}.log`, "utf8")).toContain("signal SIGINT");
   });
 
@@ -776,7 +777,7 @@ describe("localCompute: cancel", () => {
     const [handle] = handlesOf(await summon(local.summon));
     const { pid } = await report(file);
     const abort = new AbortController();
-    const cancelling = local.summon.cancel!([handle!], context(abort.signal));
+    const cancelling = local.summon.cancel!([handle], context(abort.signal));
     abort.abort();
     await cancelling;
     // The escalation goes on without the call.
@@ -791,7 +792,7 @@ describe("localCompute: what a unit starts", () => {
     const [handle] = handlesOf(await summon(local.summon));
     const child = await childPid(file);
     expect(alive(child)).toBe(true);
-    await local.summon.cancel!([handle!], context());
+    await local.summon.cancel!([handle], context());
     expect(await gone(child)).toBe(true);
   });
 
@@ -812,7 +813,7 @@ describe("localCompute: what a unit starts", () => {
     expect(
       await statusUntil(
         local.summon,
-        handle!,
+        handle,
         (unit) => unit.state !== "running",
       ),
     ).toMatchObject({ state: "failed", exitCode: 137, detail: "max-lifetime" });
@@ -826,7 +827,7 @@ describe("localCompute: what a unit starts", () => {
     const [handle] = handlesOf(await summon(local.summon));
     const child = await childPid(file);
     const before = Date.now();
-    await local.summon.cancel!([handle!], context());
+    await local.summon.cancel!([handle], context());
     expect(readFileSync(`${file}.log`, "utf8")).toContain("signal SIGTERM");
     // Not left until the grace ran out, and not left at all.
     expect(await gone(child, 5_000)).toBe(true);
@@ -853,19 +854,16 @@ describe("localCompute: what a unit starts", () => {
       await summon(local.summon, request({ maxLifetimeMs: 2_000 })),
     );
     const { pid } = await report(file);
-    await statusUntil(
-      local.summon,
-      handle!,
-      (unit) => unit.state !== "running",
-    );
+    await statusUntil(local.summon, handle, (unit) => unit.state !== "running");
     const sent: [number, unknown][] = [];
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
     const original = process.kill;
-    process.kill = ((target: number, signal?: string | number) => {
+    process.kill = (target: number, signal?: string | number) => {
       sent.push([target, signal]);
       return original.call(process, target, signal);
-    }) as typeof process.kill;
+    };
     try {
-      await local.summon.cancel!([handle!], context());
+      await local.summon.cancel!([handle], context());
       // Past the lifetime and its grace (500 ms): the timers went with the
       // unit.
       await Bun.sleep(Math.max(0, startedAt + 2_000 + 500 + 500 - Date.now()));
@@ -893,7 +891,7 @@ describe("localCompute: capacity and dedupe", () => {
       status: "unavailable",
       reason: "max-units: 2 of 2 running",
     });
-    await local.summon.cancel!([first[0]!], context());
+    await local.summon.cancel!([first[0]], context());
     expect(handlesOf(await summon(local.summon))).toHaveLength(1);
     const checks = await local.validate();
     expect(checks.find((check) => check.id === "capacity")).toEqual({
@@ -987,11 +985,11 @@ describe("localCompute: lifetime", () => {
     expect(
       await statusUntil(
         local.summon,
-        handle!,
+        handle,
         (unit) => unit.state !== "running",
       ),
     ).toEqual({
-      handle: handle!,
+      handle,
       state: "failed",
       exitCode: 137,
       detail: "max-lifetime",
@@ -1007,11 +1005,7 @@ describe("localCompute: output", () => {
       cwd: dir,
     });
     const [handle] = handlesOf(await summon(local.summon));
-    await statusUntil(
-      local.summon,
-      handle!,
-      (unit) => unit.state !== "running",
-    );
+    await statusUntil(local.summon, handle, (unit) => unit.state !== "running");
     const by = Date.now() + 10_000;
     let text = "";
     while (Date.now() < by) {
@@ -1205,7 +1199,7 @@ describe("localCompute: cgroup", () => {
       expect(
         await statusUntil(
           local.summon,
-          handle!,
+          handle,
           (unit) => unit.state !== "running",
         ),
       ).toMatchObject({ state: "exited", exitCode: 0 });
@@ -1222,13 +1216,13 @@ describe("localCompute: cgroup", () => {
       const child = await childPid(file);
       await statusUntil(
         local.summon,
-        handle!,
+        handle,
         (unit) => unit.state !== "running",
       );
       const own = /^cgroup (.+)$/m.exec(
         readFileSync(`${file}.log`, "utf8"),
-      )![1]!;
-      expect(own).toBe(join(testCgroup(), handle!));
+      )![1];
+      expect(own).toBe(join(testCgroup(), handle));
       // Its cgroup was killed with it, the inner one included.
       expect(await gone(child)).toBe(true);
       const by = Date.now() + 10_000;
@@ -1374,7 +1368,7 @@ describe("localCompute: cgroup", () => {
       expect(
         await statusUntil(
           local.summon,
-          handle!,
+          handle,
           (unit) => unit.state !== "running",
         ),
       ).toMatchObject({ state: "failed", exitCode: 137 });
@@ -1596,11 +1590,7 @@ describe("localCompute: no unit outlives its host", () => {
     const file = join(await tmp(), "r.json");
     const local = unitProvider("exit", file);
     const [handle] = handlesOf(await summon(local.summon));
-    await statusUntil(
-      local.summon,
-      handle!,
-      (unit) => unit.state !== "running",
-    );
+    await statusUntil(local.summon, handle, (unit) => unit.state !== "running");
     const by = Date.now() + 5_000;
     while (liveUnits().count > 0 && Date.now() < by) {
       await Bun.sleep(20);

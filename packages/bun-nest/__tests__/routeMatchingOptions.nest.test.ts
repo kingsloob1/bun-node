@@ -2,7 +2,7 @@
  * `BunHttpAdapter.getRouteMatchingOptions()`: what it reports is how the
  * router really matches, and the core asks for it only where it reads it
  * (Nest 12.2.0). What the core then does with it, on both adapters, is the
- * routing differential's `mw-exclude-matching` groups
+ * routing differential's `mw-exclude-matching` group
  * (`routingCompat/probes.ts`).
  *
  * `reflect-metadata` is imported last per the import-sort rule. No top-level
@@ -25,7 +25,7 @@ async function serves(adapter: BunHttpAdapter, path: string) {
 
 describe("BunHttpAdapter.getRouteMatchingOptions()", () => {
   const cases: [string, BunRouterOptions | undefined, boolean][] = [
-    ["the default router", undefined, true],
+    ["the default router", undefined, false],
     ["router.caseSensitive: false", { caseSensitive: false }, false],
     ["router.caseSensitive: true", { caseSensitive: true }, true],
     // Given but unset, the router falls back to its own default, `false`.

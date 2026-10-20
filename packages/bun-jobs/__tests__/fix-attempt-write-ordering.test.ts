@@ -351,7 +351,7 @@ describe("attempt write ordering: a chatty child's log", () => {
     expect(kinds.at(-1)).toBe("complete");
     // Concurrent, not chained: 50 writes of `SLOW_WRITE_MS` each would take
     // 4 seconds one at a time, and they are independent of one another.
-    const first = driver.writes[0]!.at;
+    const first = driver.writes[0].at;
     const last = driver.writes.at(-1)!.at;
     expect(last - first).toBeLessThan(lines * SLOW_WRITE_MS * 0.5);
   }, 30_000);
