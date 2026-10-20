@@ -410,7 +410,7 @@ function walk(
   }
   if (node.leaves.length > 0) {
     for (const index of node.leaves) {
-      const result = (routes[index].pathRegexp as RegExp).exec(path);
+      const result = routes[index].pathRegexp.exec(path);
       if (result !== null) {
         found.indices.push(index);
         found.captures.push(result);

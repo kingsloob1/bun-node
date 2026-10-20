@@ -19,7 +19,8 @@ async function openClient(url: string) {
   };
   await new Promise<void>((resolve, reject) => {
     client.onopen = () => resolve();
-    client.onerror = (event) => reject(event);
+    client.onerror = (event) =>
+      reject(new Error(`WebSocket ${url} failed to open`, { cause: event }));
   });
   return { client, received };
 }

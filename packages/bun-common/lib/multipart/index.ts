@@ -313,7 +313,7 @@ export function getBusBoyConfig(
     "dest",
     "filename",
     "removeAfter",
-  ]) as BusboyConfig;
+  ]);
 }
 
 export interface UploadField {

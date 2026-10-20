@@ -146,11 +146,11 @@ try {
               children: [],
               text: "",
             };
-            stack[stack.length - 1]!.children.push(n);
+            stack[stack.length - 1].children.push(n);
             stack.push(n);
           },
           ontext(t) {
-            stack[stack.length - 1]!.text += t;
+            stack[stack.length - 1].text += t;
           },
           onclosetag() {
             stack.pop();
@@ -160,7 +160,7 @@ try {
       );
       p.write(xml);
       p.end();
-      return toObject(sentinel.children[0]!);
+      return toObject(sentinel.children[0]);
     },
   });
 } catch {
@@ -190,18 +190,18 @@ parsers.push({
           children: [],
           text: "",
         };
-        stack[stack.length - 1]!.children.push(n);
+        stack[stack.length - 1].children.push(n);
         stack.push(n);
         el.onEndTag(() => {
           stack.pop();
         });
       },
       text(t) {
-        stack[stack.length - 1]!.text += t.text;
+        stack[stack.length - 1].text += t.text;
       },
     });
     rw.transform(xml);
-    return toObject(sentinel.children[0]!);
+    return toObject(sentinel.children[0]);
   },
 });
 
@@ -210,7 +210,7 @@ function bench(fn: () => void, minMs = 600, warmup = 30) {
   for (let i = 0; i < warmup; i++) fn();
   let iters = 0;
   const start = performance.now();
-  let elapsed = 0;
+  let elapsed: number;
   do {
     for (let i = 0; i < 5; i++) fn();
     iters += 5;

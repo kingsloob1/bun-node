@@ -359,7 +359,7 @@ export function toStandardSchema<TInput, TOutput>(
       version: 1,
       vendor: options?.vendor ?? "custom",
       validate,
-      types: undefined as unknown as StandardSchemaV1.Types<TInput, TOutput>,
+      types: undefined,
     },
   };
 }
@@ -467,7 +467,7 @@ export class BunValidate<
       const issues: ValidationIssue[] = [];
 
       for (const target of targets) {
-        const schema = schemas[target] as StandardSchemaV1 | undefined;
+        const schema = schemas[target];
         if (!schema) {
           continue;
         }
@@ -528,7 +528,7 @@ export class BunValidate<
       return next(error);
     };
 
-    return handler as ValidatorMiddleware<ValidatedShapeFor<S, H, R>>;
+    return handler;
   }
 
   /** Shorthand for `new BunValidate(options).middleware()`. */

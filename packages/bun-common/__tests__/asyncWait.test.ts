@@ -93,9 +93,9 @@ describe("serveRequest: one wait for an asynchronous pipeline", () => {
         hooks,
       );
     };
-    expect(run("/sync")).rejects.toThrow("carried: sync");
-    expect(run("/async")).rejects.toThrow("carried: async");
-    expect(run("/ok")).rejects.toThrow("respond failed");
+    await expect(run("/sync")).rejects.toThrow("carried: sync");
+    await expect(run("/async")).rejects.toThrow("carried: async");
+    await expect(run("/ok")).rejects.toThrow("respond failed");
   });
 
   it("resolves { routeUsed } after async middleware and an async handler", async () => {
@@ -253,7 +253,7 @@ describe("serveRequest: one wait for an asynchronous pipeline", () => {
       throw new Error("unhandled");
     });
     const { result } = await serve(router);
-    expect(result).rejects.toThrow("unhandled");
+    await expect(result).rejects.toThrow("unhandled");
   });
 
   it("keeps waiting when the promise resolves without finishing, until a later next()", async () => {

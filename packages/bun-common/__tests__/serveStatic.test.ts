@@ -446,7 +446,7 @@ describe("useStaticAssets: range requests", () => {
 describe("useStaticAssets: traversal containment", () => {
   /** Sends a raw request line so `..` survives client-side normalisation. */
   function raw(port: number, target: string): Promise<string> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let buffer = "";
       Bun.connect({
         hostname: "127.0.0.1",
@@ -462,7 +462,7 @@ describe("useStaticAssets: traversal containment", () => {
           close: () => resolve(buffer),
           error: () => resolve(buffer),
         },
-      });
+      }).catch(reject);
     });
   }
 
@@ -476,7 +476,7 @@ describe("useStaticAssets: traversal containment", () => {
     adapter.useStaticAssets(root, { prefix: "/static" });
     await adapter.listen(0);
     started.push(adapter);
-    const port = adapter.listeningPort as number;
+    const port = adapter.listeningPort;
 
     for (const target of [
       "/static/../../../../etc/passwd",
