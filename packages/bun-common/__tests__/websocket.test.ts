@@ -204,7 +204,9 @@ describe("BunWebSocket: route handlers on a live server", () => {
         },
         message: (socket, message) => {
           messages.push(String(message));
-          socket.send(`room ${socket.data.params?.id}: ${String(message)}`);
+          socket.send(
+            `room ${String(socket.data.params?.id)}: ${String(message)}`,
+          );
         },
       },
       undefined,
