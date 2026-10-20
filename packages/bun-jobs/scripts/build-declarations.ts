@@ -171,7 +171,7 @@ async function outDirOf(): Promise<string> {
   const match = /"outDir"\s*:\s*"([^"]+)"/.exec(text);
   if (!match)
     throw new Error(`${BUILD_CONFIG} must set compilerOptions.outDir`);
-  return resolve(PACKAGE_ROOT, match[1]);
+  return resolve(PACKAGE_ROOT, match[1]!);
 }
 
 /**
@@ -248,7 +248,7 @@ export function typesTarget(
           prefix.length,
           subpath.length - suffix.length,
         );
-        target = typesOf(exportsMap[key])?.replaceAll("*", match);
+        target = typesOf(exportsMap[key]!)?.replaceAll("*", match);
         break;
       }
     }
@@ -402,7 +402,7 @@ export function checkImports(
       // Anything else must be installed for every consumer, or they get TS2307.
       const name = spec.startsWith("@")
         ? spec.split("/").slice(0, 2).join("/")
-        : spec.split("/")[0];
+        : spec.split("/")[0]!;
       if (name === manifest.name) {
         // A self-reference: follow it, so a root cannot reach a peer through one.
         const target = typesTarget(manifest, `.${spec.slice(name.length)}`);
