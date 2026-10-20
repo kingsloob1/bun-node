@@ -40,7 +40,15 @@ declare const typed: BunRequest<
 type _params = Expect<Equal<typeof typed.params, { id: string }>>;
 type _query = Expect<Equal<typeof typed.query, { page: number }>>;
 type _body = Expect<Equal<typeof typed.body, { name: string }>>;
-type _cookies = Expect<Equal<typeof req.cookies, Record<string, JsonValue>>>;
+// `undefined` with `parseCookies: false`, as Express's without cookie-parser.
+type _cookies = Expect<
+  Equal<typeof req.cookies, Record<string, JsonValue> | undefined>
+>;
+type _signedCookies = Expect<
+  Equal<typeof req.signedCookies, Record<string, JsonValue> | undefined>
+>;
+req.cookies = undefined;
+req.signedCookies = { session: "id" };
 type _server = Expect<Equal<typeof req.server, BunServer | undefined>>;
 
 async function _ready() {

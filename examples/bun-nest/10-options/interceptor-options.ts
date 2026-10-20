@@ -11,7 +11,11 @@
  * - The interceptors answer a bad upload — including every count limit and
  *   an over-long field — with a `BadRequestException` (400), and only a file
  *   over `limits.fileSize` with a `PayloadTooLargeException` (413), exactly
- *   as `@nestjs/platform-express` does. A global filter here only reshapes every
+ *   as `@nestjs/platform-express` does. Every unexpected file — a foreign
+ *   field, one over `maxCount`, an undeclared field, any file for
+ *   `NoFilesInterceptor` — reads "Unexpected file field - <field>" (multer
+ *   2.4), and a field name over multer 2.4's `limits.fieldNestingDepth`
+ *   (default 32) is a 400 too. A global filter here only reshapes every
  *   error to `{ status, message }` — anything that is not an `HttpException`
  *   stays a 500 — so each check can name the error it expects.
  * - Two applications share one module. The first uses a default adapter, which
@@ -489,7 +493,7 @@ step("FileInterceptor(fieldname, options?)");
     "a file in another field is refused",
     "/single",
     form([["picture", text("a.txt")]]),
-    /^Only Field avatar accept one file$/,
+    /^Unexpected file field - picture$/,
   );
 
   await post("/single", form([["avatar", text("release.txt")]]));
@@ -519,7 +523,7 @@ await checkRefused(
     ["docs", text("1.txt")],
     ["docs", text("2.txt")],
   ]),
-  /^Field docs accepts max 1 files$/,
+  /^Unexpected file field - docs$/,
 );
 checkEqual(
   "maxCount 3: three files",
@@ -539,13 +543,13 @@ await checkRefused(
   "maxCount 3: four files are refused",
   "/files-three",
   form(Array.from({ length: 4 }, (_, i) => ["docs", text(`${i}.txt`)])),
-  /^Field docs accepts max 3 files$/,
+  /^Unexpected file field - docs$/,
 );
 await checkRefused(
   "a file in another field is refused",
   "/files-three",
   form([["other", text("x.txt")]]),
-  /^Only Field docs accept files$/,
+  /^Unexpected file field - other$/,
 );
 
 /* ------------------------------------------------------------------ */
@@ -571,7 +575,7 @@ await checkRefused(
     ["avatar", text("a.png")],
     ["avatar", text("b.png")],
   ]),
-  /^Field avatar accepts max 1 files$/,
+  /^Unexpected file field - avatar$/,
 );
 await checkRefused(
   "a field's maxCount is enforced",
@@ -581,13 +585,13 @@ await checkRefused(
     ["documents", text("2.txt")],
     ["documents", text("3.txt")],
   ]),
-  /^Field documents accepts max 2 files$/,
+  /^Unexpected file field - documents$/,
 );
 await checkRefused(
   "an undeclared field is refused",
   "/fields",
   form([["cover", text("c.png")]]),
-  /^Field cover doesn't accept files$/,
+  /^Unexpected file field - cover$/,
 );
 
 /* ------------------------------------------------------------------ */
@@ -624,7 +628,7 @@ await checkRefused(
   "any file is refused",
   "/none",
   form([["attachment", text("x.txt")]]),
-  /^File upload is not accepted$/,
+  /^Unexpected file field - attachment$/,
 );
 
 /* ------------------------------------------------------------------ */
@@ -785,6 +789,18 @@ step("busboy options, with the interceptor parsing the body");
       parsedByInterceptor.url,
     ),
     { status: 413, body: { status: 413, message: "File too large" } },
+  );
+  const tooDeep = `a${"[b]".repeat(33)}`;
+  checkEqual(
+    "limits.fieldNestingDepth (default 32): a name 33 deep is a 400, multer 2.4's message and the field",
+    await post("/inflated", form([[tooDeep, "x"]]), parsedByInterceptor.url),
+    {
+      status: 400,
+      body: {
+        status: 400,
+        message: `Field name nesting too deep - ${tooDeep}`,
+      },
+    },
   );
 
   const fields = () => {
@@ -949,7 +965,7 @@ step("transformUploadException(error): how upload errors are answered");
   checkEqual(
     "…with multer's message and the field, as platform-express",
     unexpected.message,
-    "Unexpected field - picture",
+    "Unexpected file field - picture",
   );
 
   const typeError = new TypeError("not an upload error");

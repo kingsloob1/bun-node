@@ -240,6 +240,7 @@ export {
   type CustomStorageFile,
   type CustomUploadOptions,
   DEFAULT_UPLOAD_OPTIONS,
+  type DestUploadOptions,
   type DiskStorageFile,
   type DiskUploadOptions,
   filterUpload,
@@ -265,6 +266,10 @@ export {
   type UploadErrorCode,
   type UploadErrorOptions,
 } from "./multipart/errors";
+export {
+  DEFAULT_FIELD_NAME_LIMITS,
+  type FieldNameLimits,
+} from "./multipart/fieldNames";
 export {
   BunWebSocket,
   type BunWebSocketCreateServerOptions,
@@ -454,6 +459,7 @@ export {
   type FileTypeResult,
   type MultiPartFieldRecord,
   type MultiPartFileRecord,
+  type MultiPartLimits,
   type MultiPartOptions,
   type NextFunction,
   type RequestStorageFile,

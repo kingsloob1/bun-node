@@ -37,6 +37,7 @@ import { parse as parseQueryString } from "picoquery";
 import typeIs from "type-is";
 import { parseBufferedMultipart } from "./multipart/buffered";
 import { UploadError } from "./multipart/errors";
+import { checkFieldName, resolveFieldNameLimits } from "./multipart/fieldNames";
 import { SOCKET_FREE, streamToBuffer } from "./utils/general";
 import {
   cloneDeep,
@@ -1678,9 +1679,9 @@ export class BunRequest<
   public secret: string | string[] | undefined = undefined;
   // `cookies`/`signedCookies`/`params`/`query` are lazily allocated — a
   // routing-only request that never reads them pays no allocation.
-  /** Backing field for `cookies`; `undefined` until parsed or assigned. */
+  /** Backing field for `cookies`; `undefined` until parsed or assigned (and so for good with `parseCookies: false`). */
   #cookies: Record<string, JsonValue> | undefined = undefined;
-  /** Backing field for `signedCookies`; `undefined` until parsed or assigned. */
+  /** Backing field for `signedCookies`; `undefined` until parsed or assigned (and so for good with `parseCookies: false`). */
   #signedCookies: Record<string, JsonValue> | undefined = undefined;
   /** Backing field for `url`; computed from the request on first read. */
   #url: string | undefined = undefined;
@@ -2040,9 +2041,12 @@ export class BunRequest<
       /**
        * Parse the `Cookie` header into `req.cookies` and
        * `req.signedCookies`. `true` (the default) parses with the standard
-       * decoding and no secret; `false` parses nothing; a
-       * {@link ParseCookiesConfig} object parses with its `secret` (signed
-       * cookies, as `cookieParser(secret)`) and `decode`.
+       * decoding and no secret; `false` parses nothing and leaves both
+       * `undefined` until something assigns them (or `parseCookies()` is
+       * called), as Express does without cookie-parser, so Nest's
+       * `@Cookies()` parses the header itself; a {@link ParseCookiesConfig}
+       * object parses with its `secret` (signed cookies, as
+       * `cookieParser(secret)`) and `decode`.
        */
       parseCookies?: ParseCookiesOption;
       /**
@@ -2740,7 +2744,11 @@ export class BunRequest<
       );
     }
     if (scheduled & INIT_COOKIES) {
-      tasks.push({ cookies: this.cookies, signedCookies: this.signedCookies });
+      // Scheduled only with parsing on, which always leaves both objects.
+      tasks.push({
+        cookies: this.cookies ?? {},
+        signedCookies: this.signedCookies ?? {},
+      });
     }
     return await Promise.allSettled(tasks);
   }
@@ -2990,18 +2998,26 @@ export class BunRequest<
   }
 
   /**
-   * Parsed cookies — lazily allocated on first access. A value is the raw
-   * string, or the parsed JSON of a `j:` cookie (an object, array, number,
-   * boolean or `null`), so it is typed `JsonValue`.
+   * Parsed cookies, as cookie-parser's `req.cookies`: parsed on first access.
+   * A value is the raw string (one pair of surrounding quotes removed, as the
+   * `cookie` package does), or the parsed JSON of a `j:` cookie (an object,
+   * array, number, boolean or `null`), so it is typed `JsonValue`.
+   *
+   * Always an object while the `parseCookies` request option is on (the
+   * default), `{}` without a `Cookie` header. With `parseCookies: false` it
+   * is **`undefined`** until something assigns it or `parseCookies()` is
+   * called — as `req.cookies` is in Express without cookie-parser — so code
+   * that falls back to the header when it is not an object (Nest 12's
+   * `@Cookies()`) does so.
    */
-  get cookies(): Record<string, JsonValue> {
+  get cookies(): Record<string, JsonValue> | undefined {
     if (this.#scheduled & COOKIES_PENDING) {
       this.#parsePendingCookies();
     }
-    return (this.#cookies ??= {});
+    return this.#cookies;
   }
 
-  set cookies(value: Record<string, JsonValue>) {
+  set cookies(value: Record<string, JsonValue> | undefined) {
     // The parse the options asked for happens first, as it did while the
     // request was built: an assignment replaces its result, not the reverse.
     if (this.#scheduled & COOKIES_PENDING) {
@@ -3025,17 +3041,20 @@ export class BunRequest<
   }
 
   /**
-   * Signed cookies — lazily allocated on first access. A verified cookie's
-   * value (parsed JSON for a `j:` one), or `false` when no secret verifies it.
+   * Signed cookies, as cookie-parser's `req.signedCookies`: parsed on first
+   * access. A verified cookie's value (parsed JSON for a `j:` one), or
+   * `false` when no secret verifies it; `{}` without a secret. Like
+   * {@link cookies}, an object while `parseCookies` is on and `undefined`
+   * with `parseCookies: false` until something assigns it.
    */
-  get signedCookies(): Record<string, JsonValue> {
+  get signedCookies(): Record<string, JsonValue> | undefined {
     if (this.#scheduled & COOKIES_PENDING) {
       this.#parsePendingCookies();
     }
-    return (this.#signedCookies ??= {});
+    return this.#signedCookies;
   }
 
-  set signedCookies(value: Record<string, JsonValue>) {
+  set signedCookies(value: Record<string, JsonValue> | undefined) {
     if (this.#scheduled & COOKIES_PENDING) {
       this.#parsePendingCookies();
     }
@@ -3419,6 +3438,7 @@ export class BunRequest<
       limits && Object.hasOwn(limits, "fieldNameSize")
         ? limits.fieldNameSize
         : undefined;
+    const fieldNameLimits = resolveFieldNameLimits(limits);
 
     const files = new Map<MultiPartFileRecord, Set<string>>();
     const fieldNameAndValue = new Map<string, string[]>();
@@ -3428,6 +3448,14 @@ export class BunRequest<
       const name = part.name as string;
       if (fieldNameSize !== undefined && name.length > fieldNameSize) {
         throw new UploadError("LIMIT_FIELD_KEY", { field: undefined });
+      }
+      // multer's field-name limits, next: on every field, and on a file
+      // whose name the default inflator nests (no custom inflator here).
+      if (typeof name === "string" && (part.kind === "field" || inflate)) {
+        const refusal = checkFieldName(name, fieldNameLimits, inflate);
+        if (refusal) {
+          throw refusal;
+        }
       }
       if (part.kind === "field") {
         const value = part.value as string;
@@ -3537,7 +3565,22 @@ export class BunRequest<
    * `LIMIT_FIELD_VALUE` (`fieldSize`, `field` naming the field). The refusal
    * is remembered: calling again with the same options rejects the same way.
    *
-   * @throws {UploadError} when a busboy limit is exceeded.
+   * multer 2.4's field-name limits are checked the same way, each name right
+   * after `fieldNameSize`: `LIMIT_FIELD_NESTING` for a name nesting deeper
+   * than `limits.fieldNestingDepth` and `LIMIT_FIELD_ARRAY_INDEX` for an
+   * array index above `limits.fieldArrayIndexLimit`, both `400`s with the
+   * name as `field`. Unset, they default to 32 and 1000
+   * (`DEFAULT_FIELD_NAME_LIMITS`, platform-express 12.2's), so
+   * `arr[4294967294]` is refused rather than built; `Infinity` turns either
+   * off. Every field's name is checked, and a file's when the default
+   * inflator nests it (see `checkFieldName` in `multipart/fieldNames.ts`). A
+   * custom `fieldInflator` that throws refuses with `INVALID_FIELD_NAME`
+   * (`cause` the thrown error), as multer does when `append-field` throws.
+   *
+   * @throws {UploadError} when a busboy or field-name limit is exceeded, or a
+   *   custom `fieldInflator` throws.
+   * @throws {TypeError} for a field-name limit that is not a non-negative
+   *   integer or `Infinity`.
    */
   public async getMultiParts(
     options: MultiPartOptions & { inflate: false },
@@ -3676,6 +3719,28 @@ export class BunRequest<
             : undefined;
         const nameTooLong = (name: string) =>
           fieldNameSize !== undefined && name.length > fieldNameSize;
+        // multer 2.4's field-name limits, with bun-common's defaults.
+        const fieldNameLimits = resolveFieldNameLimits(limits);
+        /**
+         * Refuses a name over the field-name limits; `defaultInflator` says
+         * the default inflator nests it (see `checkFieldName`).
+         */
+        const refuseFieldName = (
+          name: string,
+          defaultInflator: boolean,
+        ): void => {
+          if (settled || typeof name !== "string") {
+            return;
+          }
+          const refusal = checkFieldName(
+            name,
+            fieldNameLimits,
+            defaultInflator,
+          );
+          if (refusal) {
+            fail(refusal);
+          }
+        };
 
         /**
          * Records one file: under the paths its inflated value puts it at,
@@ -3724,6 +3789,11 @@ export class BunRequest<
           stream?.on("limit", () => abort("LIMIT_FILE_SIZE", name));
           if (nameTooLong(name)) {
             abort("LIMIT_FIELD_KEY");
+          }
+          // multer never nests a file's name, so checks none; the default
+          // file inflator does, so its names are checked as a field's are.
+          if (inflateFile) {
+            refuseFieldName(name, true);
           }
           if (settled) {
             stream?.resume();
@@ -3782,6 +3852,8 @@ export class BunRequest<
             abort("LIMIT_FIELD_KEY");
             return;
           }
+          // Then the field-name limits, before anything places the name.
+          refuseFieldName(name, inflateField !== undefined);
           if (settled) {
             return;
           }
@@ -3840,9 +3912,27 @@ export class BunRequest<
                 : [[fieldName, values[0]]];
 
             for (const [name, value] of entries) {
-              const parsedData = inflateField
-                ? inflateField(name, value)
-                : await fieldInflator!(name, value, undefined);
+              let parsedData: Record<string, unknown>;
+              if (inflateField) {
+                parsedData = inflateField(name, value);
+              } else {
+                try {
+                  parsedData = await fieldInflator!(name, value, undefined);
+                } catch (error) {
+                  // multer's INVALID_FIELD_NAME: `append-field`, its
+                  // inflator, threw placing the name.
+                  fail(
+                    new UploadError("INVALID_FIELD_NAME", {
+                      field: fieldName,
+                      cause: error,
+                    }),
+                  );
+                  return;
+                }
+                if (settled) {
+                  return;
+                }
+              }
               // Direct property access: a key may contain brackets, which a
               // path-aware `get()` would read as nesting and find nothing.
               for (const key of Object.keys(parsedData)) {
@@ -3872,7 +3962,7 @@ export class BunRequest<
               onField(part.name as string, part.value as string, part.info);
             }
           }
-          void onClose();
+          onClose().catch(fail);
         } else {
           const bb = busboy({ ...busBoyOpts, headers: this.headers });
           bb.on("partsLimit", () => abort("LIMIT_PART_COUNT"));
@@ -3880,7 +3970,7 @@ export class BunRequest<
           bb.on("fieldsLimit", () => abort("LIMIT_FIELD_COUNT"));
           bb.on("file", onFile);
           bb.on("field", onField);
-          bb.on("close", () => void onClose());
+          bb.on("close", () => void onClose().catch(fail));
           bb.on("error", (error) => fail(error));
           // One write rather than piping a `Readable` over the buffer: the
           // stream machinery cost more than busboy's own parse.

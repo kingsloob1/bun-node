@@ -278,6 +278,9 @@ describe("multipart: UploadError", () => {
     const badRequest: UploadErrorCode[] = [
       "LIMIT_UNEXPECTED_FILE",
       "MISSING_FIELD_NAME",
+      "LIMIT_FIELD_NESTING",
+      "LIMIT_FIELD_ARRAY_INDEX",
+      "INVALID_FIELD_NAME",
       "FILTER_REJECTED",
     ];
 
@@ -297,9 +300,19 @@ describe("multipart: UploadError", () => {
     expect(error.field).toBe("avatar");
     expect(error.expose).toBe(true);
     expect(error.message).toBe("File too large");
+    // multer 2.4.0's messages, word for word.
     expect(UPLOAD_ERROR_MESSAGES.LIMIT_UNEXPECTED_FILE).toBe(
-      "Unexpected field",
+      "Unexpected file field",
     );
+    expect([
+      UPLOAD_ERROR_MESSAGES.LIMIT_FIELD_NESTING,
+      UPLOAD_ERROR_MESSAGES.LIMIT_FIELD_ARRAY_INDEX,
+      UPLOAD_ERROR_MESSAGES.INVALID_FIELD_NAME,
+    ]).toEqual([
+      "Field name nesting too deep",
+      "Field name array index too large",
+      "Invalid field name",
+    ]);
 
     const cause = new Error("disk full");
     const custom = new UploadError("FILTER_REJECTED", {
@@ -324,7 +337,7 @@ describe("multipart: UploadError", () => {
       "LIMIT_UNEXPECTED_FILE",
       "cover",
       400,
-      "Only Field avatar accept one file",
+      "Unexpected file field",
     ]);
   });
 
@@ -357,7 +370,7 @@ describe("multipart: UploadError", () => {
     expect([foreign.code, foreign.field, foreign.message]).toEqual([
       "LIMIT_UNEXPECTED_FILE",
       "cover",
-      "Only Field photos accept files",
+      "Unexpected file field",
     ]);
 
     const tooMany = await uploadRejection(async () =>
@@ -375,7 +388,7 @@ describe("multipart: UploadError", () => {
     expect([tooMany.code, tooMany.field, tooMany.message]).toEqual([
       "LIMIT_UNEXPECTED_FILE",
       "photos",
-      "Field photos accepts max 2 files",
+      "Unexpected file field",
     ]);
   });
 
@@ -394,7 +407,7 @@ describe("multipart: UploadError", () => {
     expect([unmapped.code, unmapped.field, unmapped.message]).toEqual([
       "LIMIT_UNEXPECTED_FILE",
       "resume",
-      "Field resume doesn't accept files",
+      "Unexpected file field",
     ]);
 
     const overCount = await uploadRejection(async () =>
@@ -410,7 +423,7 @@ describe("multipart: UploadError", () => {
     expect([overCount.code, overCount.field, overCount.message]).toEqual([
       "LIMIT_UNEXPECTED_FILE",
       "avatar",
-      "Field avatar accepts max 1 files",
+      "Unexpected file field",
     ]);
   });
 
@@ -424,7 +437,7 @@ describe("multipart: UploadError", () => {
     expect([error.code, error.field, error.message]).toEqual([
       "LIMIT_UNEXPECTED_FILE",
       "doc",
-      "File upload is not accepted",
+      "Unexpected file field",
     ]);
   });
 
@@ -584,7 +597,7 @@ describe("multipart: handleMultipartSingleFile", () => {
         "avatar",
         transformUploadOptions({ storageType: "disk", dest }),
       ),
-    ).rejects.toThrow("Only Field avatar accept one file");
+    ).rejects.toThrow("Unexpected file field");
     expect(await readdir(dest)).toEqual([]);
   });
 
@@ -601,7 +614,7 @@ describe("multipart: handleMultipartSingleFile", () => {
         "avatar",
         transformUploadOptions({ storageType: "disk", dest }),
       ),
-    ).rejects.toThrow("Only Field avatar accept one file");
+    ).rejects.toThrow("Unexpected file field");
     expect(await readdir(dest)).toEqual([]);
   });
 
@@ -633,7 +646,7 @@ describe("multipart: handleMultipartMultipleFiles", () => {
         1,
         transformUploadOptions({ storageType: "memory" }),
       ),
-    ).rejects.toThrow("max");
+    ).rejects.toThrow("Unexpected file field");
   });
 });
 
@@ -671,7 +684,7 @@ describe("multipart: handleNoFiles", () => {
     });
     await expect(
       handleNoFiles(req, transformUploadOptions({ storageType: "memory" })),
-    ).rejects.toThrow("not accepted");
+    ).rejects.toThrow("Unexpected file field");
   });
 });
 

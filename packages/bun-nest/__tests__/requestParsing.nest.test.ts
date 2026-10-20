@@ -48,7 +48,9 @@ class UploadController {
 
   @Get("cookies")
   cookies(@Req() req: { cookies: unknown }) {
-    return req.cookies;
+    // `parseCookies: false` leaves it undefined, as Express without
+    // cookie-parser, so Nest 12's `@Cookies()` parses the header itself.
+    return { cookies: req.cookies === undefined ? "undefined" : req.cookies };
   }
 }
 
@@ -115,6 +117,6 @@ describe("bun-nest: requestParsing middleware", () => {
     const cookies = await adapter.fetch("/cookies", {
       headers: { cookie: "a=1" },
     });
-    expect(await cookies.json()).toEqual({});
+    expect(await cookies.json()).toEqual({ cookies: "undefined" });
   });
 });
