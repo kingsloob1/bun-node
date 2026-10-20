@@ -1750,6 +1750,10 @@ describe("BunRouter: route(name, params)", () => {
       "/files/a%2Fb/c%20d/%25/",
     );
     expect(router.route("user", { id: "a b" })).toBe("/u/a%20b");
+    // Lenient, as on Express: a number, bigint or boolean is stringified.
+    expect(router.route("user", { id: 5 })).toBe("/u/5");
+    expect(router.route("user", { id: 10n })).toBe("/u/10");
+    expect(router.route("user", { id: true })).toBe("/u/true");
   });
 
   it("negative control: a routejs-mode path stays raw", () => {
@@ -1973,7 +1977,7 @@ describe("BunRouter: group() and domain() call forms", () => {
       next();
     });
     plain.get("/items/:id", (req: BunRequest, res: BunResponse) => {
-      res.send(`id=${req.params.id}`);
+      res.send(`id=${String(req.params.id)}`);
     });
     router.group("/plain", plain);
 

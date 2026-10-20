@@ -211,9 +211,9 @@ Paths follow **Express 5's syntax**, path-to-regexp 8, the grammar it uses:
   runs the same check without registering anything.
 - `router.route(name, params)` builds a URL from a named route. For an
   Express 5 path each value is percent-encoded (`encodeURIComponent`), a
-  wildcard's array is joined with `/`, a missing optional group is dropped and
-  a missing required parameter throws. A routejs-form path is built raw, as
-  before.
+  wildcard's array is joined with `/`, a number, bigint or boolean is
+  stringified, a missing optional group is dropped and a missing required
+  parameter throws. A routejs-form path is built raw, as before.
 
 Matching ignores case unless `caseSensitive: true` (see
 [Router options](#router-options)).
