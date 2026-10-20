@@ -940,6 +940,11 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+- Multipart field names are limited on every Nest version
+  (`fieldNestingDepth: 32`, `fieldArrayIndexLimit: 1000`, Nest 12.2's
+  defaults). platform-express 11 sets none, and multer's are `Infinity`, so
+  on Nest 11 bun-nest refuses a name nested deeper than 32 or indexed past
+  1000 that Express accepts. Pass `Infinity` in `limits` to accept it.
 - An error-shaped body (`statusCode` 400 or more) returned under a
   `Content-Type` that is not JSON is sent as JSON with Nest's warning, by Nest
   12's rule: a `+json` type counts as JSON. Nest 11 on Express also forces a
@@ -1053,7 +1058,11 @@ An uploaded file is a bun-common `StorageFile`:
 
 ### Upload options and storages
 
-The options are bun-common's `UploadOptions`, a union keyed by `storageType`:
+The options are bun-common's `UploadOptions`, a union keyed by `storageType`.
+`storageType` may be left out, as in multer: `{ dest }` alone is disk storage
+at `dest` (exactly `"disk"`), and anything else (`{ limits }`) is memory. A
+multer storage engine (`storage` without `storageType`) throws a `TypeError`;
+wrap your own `Storage` with `storageType: "custom"`.
 
 | `storageType` | Extra options | Description |
 |---|---|---|
@@ -1066,7 +1075,7 @@ Options every storage type accepts:
 | Option | Default | Description |
 |---|---|---|
 | `filter` | none | `(req, file) => boolean \| string` (or a Promise). `true` keeps the file, `false` silently drops it (and removes it from storage), a string rejects the upload with that message (`FILTER_REJECTED`). A thrown error is passed on unchanged. |
-| `limits` | busboy's | busboy limits: `fileSize`, `files`, `fields`, `parts`, `fieldNameSize`, `fieldSize`, `headerPairs`. |
+| `limits` | busboy's, plus `fieldNestingDepth: 32`, `fieldArrayIndexLimit: 1000` | busboy limits: `fileSize`, `files`, `fields`, `parts`, `fieldNameSize`, `fieldSize`, `headerPairs`; and multer 2.4's field-name limits, `fieldNestingDepth` (`a[b][c]` is 2) and `fieldArrayIndexLimit` (the largest `[n]`), defaulting to Nest 12.2's values on every Nest version. Over either is a `400` (`LIMIT_FIELD_NESTING`, `LIMIT_FIELD_ARRAY_INDEX`); `Infinity` turns a check off. |
 | `inflate` | `true` | Replace a field value that parses as JSON (or urlencoded) with the parsed value; `false` keeps raw strings. |
 | `fieldInflator`, `fileInflator` | none | Custom inflation of a field value or a file's bytes. |
 | `detectFileType` | `true` | Sniff each file's bytes for `validatedMimeType`; `false` skips it (`undefined`). The body is parsed while the request is built, so set it in the adapter's `parseBody.contentTypes.multipart.opts` too, or the interceptor parses it again (see bun-common's README). |
@@ -1184,10 +1193,14 @@ exception filter is needed:
   on platform-express 12. platform-express 11.2.7 answers the last two `500`.
 - For an `UploadError`, the response body is an `UploadExceptionBody`:
   `{ statusCode, message, code, field }`. multer's own message for the code
-  gets ` - <field>` appended on a `400` (`"Unexpected field - avatar"`), as
-  platform-express words it. `LIMIT_FILE_SIZE` keeps the bare message, and a
-  more specific message (`"Field photos accepts max 5 files"`) is kept as it
-  is. The original error is the exception's `cause`.
+  gets ` - <field>` appended on a `400` (`"Unexpected file field - avatar"`), as
+  platform-express words it. Every unexpected file — a foreign field, one
+  file over a field's `maxCount`, any file on `NoFilesInterceptor` — is
+  `LIMIT_UNEXPECTED_FILE` with that message and the field multer names, so
+  it answers `"Unexpected file field - <field>"` as on Express.
+  `LIMIT_FILE_SIZE` keeps the bare message, and a message that is not the
+  code's default (a `filter`'s string, `FILTER_REJECTED`) is kept as it is.
+  The original error is the exception's `cause`.
 
 ## `BunWebSocketAdapter`
 

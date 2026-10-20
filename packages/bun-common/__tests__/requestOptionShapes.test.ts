@@ -103,13 +103,50 @@ describe("parseCookies: boolean | ParseCookiesConfig", () => {
     expect(req.secret).toBeUndefined();
   });
 
-  it("false parses nothing", () => {
+  it("false parses nothing and leaves both undefined, as Express without cookie-parser", () => {
     const req = build(
       "http://h/",
       { parseBody: false, parseCookies: false },
       "a=1",
     );
-    expect(req.cookies).toEqual({});
+    expect(req.cookies).toBeUndefined();
+    expect(req.signedCookies).toBeUndefined();
+    // Read twice: nothing allocates one on access.
+    expect(req.cookies).toBeUndefined();
+  });
+
+  it("false still keeps what is assigned, and an explicit parseCookies() fills both", () => {
+    const assigned = build(
+      "http://h/",
+      { parseBody: false, parseCookies: false },
+      "a=1",
+    );
+    assigned.cookies = { mine: "1" };
+    expect(assigned.cookies).toEqual({ mine: "1" });
+    expect(assigned.signedCookies).toBeUndefined();
+
+    const parsed = build(
+      "http://h/",
+      { parseBody: false, parseCookies: false },
+      "a=1",
+    );
+    parsed.parseCookies();
+    expect(parsed.cookies).toEqual({ a: "1" });
+    expect(parsed.signedCookies).toEqual({});
+  });
+
+  it("true (the default) and unset leave objects, {} without a Cookie header", () => {
+    for (const parseCookies of [true, undefined]) {
+      const none = build("http://h/", { parseBody: false, parseCookies });
+      expect(none.cookies).toEqual({});
+      expect(none.signedCookies).toEqual({});
+      const some = build(
+        "http://h/",
+        { parseBody: false, parseCookies },
+        "a=1",
+      );
+      expect(some.cookies).toEqual({ a: "1" });
+    }
   });
 
   it("still honours the deprecated cookieSecret and cookieParseOptions", () => {

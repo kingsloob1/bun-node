@@ -3,7 +3,6 @@ import { createRequire } from "node:module";
 import {
   MemoryStorage,
   PayloadTooLargeError,
-  UPLOAD_ERROR_MESSAGES,
   UploadError,
 } from "@kingsleyweb/bun-common";
 import {
@@ -214,7 +213,7 @@ describe("upload errors map to HTTP exceptions (as platform-express)", () => {
     expect(transformUploadException(forbidden)).toBe(forbidden);
   });
 
-  it("answers an unexpected field with its message as it is, the field, and the code", async () => {
+  it("answers an unexpected field with multer's message and the field, and the code", async () => {
     const req = await makeMultipartRequest((fd) => {
       fd.set("picture", new Blob(["x"]), "x.txt");
     });
@@ -229,12 +228,12 @@ describe("upload errors map to HTTP exceptions (as platform-express)", () => {
     expect(cause).toBeInstanceOf(UploadError);
     expect((error as BadRequestException).getResponse()).toEqual({
       statusCode: 400,
-      // bun-common's own message already names the field; only multer's
-      // default messages get ` - <field>` (see the per-code 400 tests).
-      message: (cause as UploadError).message,
+      // multer 2.4's message, with ` - <field>` as platform-express adds it.
+      message: "Unexpected file field - picture",
       code: "LIMIT_UNEXPECTED_FILE",
       field: "picture",
     });
+    expect((cause as UploadError).message).toBe("Unexpected file field");
   });
 
   it("rejects a count limit hit while intercepting with a 400, as platform-express", async () => {
@@ -281,18 +280,25 @@ describe("upload errors map to HTTP exceptions (as platform-express)", () => {
     ["LIMIT_FIELD_KEY", "Field name too long"],
     ["LIMIT_FIELD_VALUE", "Field value too long"],
     ["LIMIT_FIELD_COUNT", "Too many fields"],
-    ["LIMIT_UNEXPECTED_FILE", "Unexpected field"],
+    ["LIMIT_UNEXPECTED_FILE", "Unexpected file field"],
     ["MISSING_FIELD_NAME", "Field name missing"],
+    ["LIMIT_FIELD_NESTING", "Field name nesting too deep"],
+    ["LIMIT_FIELD_ARRAY_INDEX", "Field name array index too large"],
+    ["INVALID_FIELD_NAME", "Invalid field name"],
   ] as const)(
     "maps %s to 400 BadRequestException, as platform-express",
     (code, message) => {
       const error = new UploadError(code);
-      // bun-common's own status is unchanged; only the Nest mapping differs.
-      expect(error.status).toBe(
-        code.startsWith("LIMIT_") && code !== "LIMIT_UNEXPECTED_FILE"
-          ? 413
-          : 400,
-      );
+      // bun-common's own status is unchanged (413 for its size and count
+      // limits); only the Nest mapping differs.
+      const standalone413: readonly string[] = [
+        "LIMIT_PART_COUNT",
+        "LIMIT_FILE_COUNT",
+        "LIMIT_FIELD_KEY",
+        "LIMIT_FIELD_VALUE",
+        "LIMIT_FIELD_COUNT",
+      ];
+      expect(error.status).toBe(standalone413.includes(code) ? 413 : 400);
 
       const mapped = transformUploadException(error);
       expect(mapped).toBeInstanceOf(BadRequestException);
@@ -389,13 +395,6 @@ const NEST_12 =
 
 /** Nest 12.2.0 or later, by the capability the interceptors read (`isRejectedByPipes`). */
 const NEST_12_2 = nestIsRejectedByPipes() !== undefined;
-
-/**
- * Whether bun-common raises multer 2.4's field-name codes (PR-7 of the Nest
- * 12 parity plan). Until it does, the tests that need bun-common to enforce
- * `fieldNestingDepth`/`fieldArrayIndexLimit` are skipped, visibly.
- */
-const HAS_FIELD_NAME_CODES = "LIMIT_FIELD_NESTING" in UPLOAD_ERROR_MESSAGES;
 
 /** multer 2.4.0's messages for its field-name codes (`lib/multer-error.js`). */
 const FIELD_NAME_CODES = [
@@ -561,7 +560,7 @@ describe("multer 2.4's field-name codes map as platform-express maps them (#1785
     },
   );
 
-  it.skipIf(!HAS_FIELD_NAME_CODES).each(FIELD_NAME_CODES)(
+  it.each(FIELD_NAME_CODES)(
     "renders %s as multer's message - field",
     (code, message) => {
       const mapped = transformUploadException(
@@ -585,31 +584,28 @@ describe("multer 2.4's field-name codes map as platform-express maps them (#1785
     expect(transformUploadException(error as unknown)).toBe(error);
   });
 
-  it.skipIf(!HAS_FIELD_NAME_CODES)(
-    "rejects a field nested deeper than limits.fieldNestingDepth, and an array index over fieldArrayIndexLimit",
-    async () => {
-      const Interceptor = AnyFilesInterceptor({
-        limits: { fieldNestingDepth: 1, fieldArrayIndexLimit: 2 } as never,
+  it("rejects a field nested deeper than limits.fieldNestingDepth, and an array index over fieldArrayIndexLimit", async () => {
+    const Interceptor = AnyFilesInterceptor({
+      limits: { fieldNestingDepth: 1, fieldArrayIndexLimit: 2 },
+    });
+    for (const [name, message] of [
+      ["a[b][c]", "Field name nesting too deep - a[b][c]"],
+      ["arr[5]", "Field name array index too large - arr[5]"],
+    ] as const) {
+      const req = await makeMultipartRequest((fd) => fd.set(name, "1"));
+      const error = await Promise.resolve(
+        new Interceptor().intercept(
+          makeExecutionContext(req),
+          makeCallHandler(),
+        ),
+      ).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        statusCode: 400,
+        message,
       });
-      for (const [name, message] of [
-        ["a[b][c]", "Field name nesting too deep - a[b][c]"],
-        ["arr[5]", "Field name array index too large - arr[5]"],
-      ] as const) {
-        const req = await makeMultipartRequest((fd) => fd.set(name, "1"));
-        const error = await Promise.resolve(
-          new Interceptor().intercept(
-            makeExecutionContext(req),
-            makeCallHandler(),
-          ),
-        ).catch((caught: unknown) => caught);
-        expect(error).toBeInstanceOf(BadRequestException);
-        expect((error as BadRequestException).getResponse()).toMatchObject({
-          statusCode: 400,
-          message,
-        });
-      }
-    },
-  );
+    }
+  });
 });
 
 describe("files removed when a pipe rejects the request (Nest 12.2.0+, acb98de89)", () => {

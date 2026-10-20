@@ -191,7 +191,11 @@ step("constructor: request");
   checkEqual("a body within parseBody.maxContentLength is parsed", small.body, {
     a: 1,
   });
-  checkEqual("parseCookies: false leaves cookies unparsed", small.cookies, {});
+  checkEqual(
+    "parseCookies: false leaves req.cookies undefined (answered as null)",
+    small.cookies,
+    null,
+  );
 
   const big = await adapter.fetch("/echo", postJson({ text: "x".repeat(200) }));
   checkEqual("a body over maxContentLength is answered 413", big.status, 413);

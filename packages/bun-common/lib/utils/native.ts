@@ -1249,8 +1249,13 @@ export interface CookieSerializeOptions {
 }
 
 /**
- * Parses a `Cookie` header into a key/value record using Bun's native
- * `CookieMap`.
+ * Parses a `Cookie` header into a key/value record, as the `cookie` package's
+ * `parse` (0.7, cookie-parser's): `name=value` pairs split on `;`, the first
+ * occurrence of a name kept, and a value both starting and ending with `"`
+ * unquoted — one character off each end, so `"x"` is `x`, `""` and a lone `"`
+ * are `""`, and `"a` / `a"` stay as sent. A header with no `"` goes to Bun's
+ * native `CookieMap`, which answers the same for it; one with a quote is
+ * parsed here, since `CookieMap` keeps the quotes.
  */
 export function parseCookie(
   str: string,
@@ -1265,6 +1270,10 @@ export function parseCookie(
     return parseCookieWithDecoder(str, decode);
   }
 
+  if (str.includes('"')) {
+    return parseCookieWithDecoder(str, decodeCookieValue);
+  }
+
   try {
     return new Bun.CookieMap(str).toJSON();
   } catch {
@@ -1273,10 +1282,38 @@ export function parseCookie(
 }
 
 /**
- * The `cookie` package's parse with a custom `decode`: `name=value` pairs
- * split on `;`, names and values trimmed, one pair of surrounding quotes
- * stripped from a value, the first occurrence of a name kept, and a value the
- * decoder throws on kept raw. A pair without `=` is skipped.
+ * The `cookie` package's default `decode`: percent-decoding, only for a value
+ * holding a `%` (a value it throws on is kept raw by the caller).
+ */
+function decodeCookieValue(value: string): string {
+  return value.includes("%") ? decodeURIComponent(value) : value;
+}
+
+/** Whether `code` is one of the blanks the `cookie` package trims (space, tab). */
+function isCookieBlank(code: number): boolean {
+  return code === 0x20 || code === 0x09;
+}
+
+/** `value` without leading and trailing spaces and tabs, as the `cookie` package trims. */
+function trimCookieBlanks(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && isCookieBlank(value.charCodeAt(start))) {
+    start++;
+  }
+  while (end > start && isCookieBlank(value.charCodeAt(end - 1))) {
+    end--;
+  }
+  return start === 0 && end === value.length ? value : value.slice(start, end);
+}
+
+/**
+ * The `cookie` package's parse with a given `decode`: `name=value` pairs
+ * split on `;`, names and values trimmed of spaces and tabs, a value both
+ * starting and ending with `"` unquoted (one character off each end, so a
+ * lone `"` becomes `""`), the first occurrence of a name kept, and a value the
+ * decoder throws on kept raw. A pair without `=`, or with an empty name, is
+ * skipped (the latter as `CookieMap` does).
  */
 function parseCookieWithDecoder(
   str: string,
@@ -1288,13 +1325,13 @@ function parseCookieWithDecoder(
     if (eq === -1) {
       continue;
     }
-    const name = pair.slice(0, eq).trim();
+    const name = trimCookieBlanks(pair.slice(0, eq));
     if (!name || Object.hasOwn(out, name)) {
       continue;
     }
-    let value = pair.slice(eq + 1).trim();
-    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1);
+    let value = trimCookieBlanks(pair.slice(eq + 1));
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value.length >= 2 ? value.slice(1, -1) : "";
     }
     try {
       out[name] = decode(value);

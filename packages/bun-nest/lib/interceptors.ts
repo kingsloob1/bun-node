@@ -116,10 +116,10 @@ export interface UploadExceptionBody {
   statusCode: 400 | 413;
   /**
    * The error's message. multer's own message for its code (`"Unexpected
-   * field"`, …) is followed by `" - <field>"` when it concerns a field, as
-   * platform-express words it — except `LIMIT_FILE_SIZE`, which
-   * platform-express answers with the bare message. A more specific message
-   * is kept as it is.
+   * file field"`, …) is followed by `" - <field>"` when it concerns a field,
+   * as platform-express words it — except `LIMIT_FILE_SIZE`, which
+   * platform-express answers with the bare message. A message that is not
+   * the code's default (a `filter`'s string) is kept as it is.
    */
   message: string;
   /** Why the upload was refused. */
@@ -153,7 +153,7 @@ export interface UploadExceptionBody {
  * For an `UploadError`, multer's own message for the code gets ` - <field>`
  * appended on a `400`, as platform-express does (the only messages it ever
  * sees); `LIMIT_FILE_SIZE` keeps the bare message, as platform-express does,
- * and a message bun-common made more specific is kept. The body is
+ * and a message that is not the code's default (a `filter`'s string) is kept. The body is
  * {@link UploadExceptionBody} and the error is kept as `cause`.
  */
 export function transformUploadException(
