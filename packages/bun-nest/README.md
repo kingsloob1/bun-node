@@ -243,12 +243,16 @@ Route paths have Express 5's syntax and semantics (path-to-regexp 8), as on
 (`archive/:year{/:month}`), and a path Express cannot register fails the
 boot. Every controller and middleware path goes through `normalizePath`,
 which converts a legacy path with Nest's `LegacyRouteConverter` (`users/*`
-becomes `users/{*path}`, with Nest's warning) and throws path-to-regexp's
-`TypeError` for one it cannot convert (`:id?`, `:id(\d+)`), exactly as
-Express's adapter does. `getRequestHostname` (what `@Controller({ host })`
-matches) is the `Host` header as sent, without its port.
+becomes `users/{*path}`, with Nest's warning) and throws a `PathSyntaxError`
+(a `TypeError` carrying path-to-regexp's message, as Express's adapter
+throws) for one it cannot convert. **That makes the adapter stricter than a
+bare bun-common `BunRouter`**, which still accepts routejs-only forms: a
+route such as `archive/:year(\d{4})/:month?` fails `app.init()` here. Write
+it `archive/:year{/:month}` and validate the year with a pipe.
+`getRequestHostname` (what `@Controller({ host })` matches) is the `Host`
+header as sent, without its port.
 
-Routing, matching and validation behave exactly as in bun-common. See its
+Matching and validation otherwise behave exactly as in bun-common. See its
 [README](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md)
 for route patterns, `routeSpecificity`, sub-routers and validators.
 Demonstrated in
