@@ -440,6 +440,29 @@ type WsEventName<T> = keyof BunWebSocketEvents<T>;
 /** The listener signature for a given {@link BunWebSocket} event. */
 type WsListener<T, E extends WsEventName<T>> = BunWebSocketEvents<T>[E];
 
+/**
+ * The upgrade layer {@link BunWebSocket.setRouteHandler} registered for one
+ * route pattern, and the per-route settings it reads at upgrade time.
+ */
+interface WebSocketUpgradeRoute<TCustom> {
+  /**
+   * The router the layer is registered on. A pattern registered again after
+   * the instance's `router` was replaced gets a layer on the new router.
+   */
+  readonly router: BunRouter;
+  /**
+   * The route's own upgrade hook, else `undefined` for the instance-wide one.
+   * Replaced when the pattern is registered again after all its handlers
+   * were removed.
+   */
+  hook: WebSocketUpgradeHook<TCustom> | undefined;
+  /**
+   * Whose router-wide upgrade defaults apply; `undefined` means the
+   * instance's router at upgrade time. Replaced like {@link hook}.
+   */
+  defaultsFrom: WebSocketUpgradeDefaults | undefined;
+}
+
 export class BunWebSocket<
   TCustom = unknown,
 > implements BunWebSocketEventHandlersType<TCustom> {
@@ -466,11 +489,22 @@ export class BunWebSocket<
   /** The aggregate handler Bun calls: emits events, then runs route handlers. */
   private _wsHandler!: BunWebSocketHandlerType<TCustom>;
 
-  /** Handlers registered with {@link setRouteHandler}, by route pattern. */
+  /**
+   * Handlers registered with {@link setRouteHandler}, by route pattern. A
+   * pattern with none left (see {@link removeRouteHandler}) has no entry, and
+   * its upgrade layer stands aside.
+   */
   private _routeHandlers = new Map<
     string,
     BunWebSocketHandlerType<TCustom>[]
   >();
+
+  /**
+   * The upgrade layer {@link setRouteHandler} registered for each route
+   * pattern, so registering a pattern again reuses it instead of stacking
+   * another on the router.
+   */
+  private _upgradeRoutes = new Map<string, WebSocketUpgradeRoute<TCustom>>();
 
   /**
    * The instance-wide upgrade hook — `onUpgrade`, else the deprecated
@@ -993,6 +1027,14 @@ export class BunWebSocket<
    *   `res.webSocketUpgradeHeaders`, then the hook's `headers`, merged per
    *   header name (later wins). None at all sends Bun's default `101`.
    *
+   * A pattern has one upgrade route however often it is registered: another
+   * handler for a live pattern joins the ones it has (the same handler twice
+   * is kept once) and the pattern keeps the `fnOrOptions` and `defaultsFrom`
+   * it was first registered with. Once {@link removeRouteHandler} has
+   * removed every handler, registering the pattern again revives that same
+   * route — in its original place in the router's order — with this call's
+   * options.
+   *
    * @param path Route pattern, e.g. `/rooms/:id`; also the key connections
    *   are dispatched by (`ws.data.route`).
    * @param handler The route's lifecycle handlers.
@@ -1018,6 +1060,10 @@ export class BunWebSocket<
       return false;
     }
 
+    // Read before the handler is added: whether the pattern is live, or new
+    // or removed (see `removeRouteHandler`) and so takes this call's options.
+    const wasLive = this._routeHandlers.has(path);
+
     // Set the path and handler
     {
       let handlersArr = this._routeHandlers.get(path) || [];
@@ -1034,12 +1080,42 @@ export class BunWebSocket<
 
     const routeHook = routeUpgradeHook(fnOrOptions);
 
+    // One upgrade layer per pattern. Each call used to register another, and
+    // only the first could ever answer (it upgrades, ending the pipeline), so
+    // the rest were dead weight that a remove/re-add cycle would pile up.
+    const registered = this._upgradeRoutes.get(path);
+    if (registered && registered.router === this.router) {
+      // A live pattern keeps the options it was registered with, as the
+      // first layer always did; a removed one is registered afresh.
+      if (!wasLive) {
+        registered.hook = routeHook;
+        registered.defaultsFrom = defaultsFrom;
+      }
+      return true;
+    }
+
+    const upgradeRoute: WebSocketUpgradeRoute<TCustom> = {
+      router: this.router,
+      hook: routeHook,
+      defaultsFrom,
+    };
+    this._upgradeRoutes.set(path, upgradeRoute);
+
     // Register upgrade endpoint for route
     const wsRouteHandler = async (
       req: BunRequest,
       res: BunResponse,
       next: NextFunction,
     ) => {
+      // Every handler removed: `@routejs/router` cannot drop the layer, so it
+      // stands aside and the request goes on to whatever matches next (or a
+      // 404). One `Map` lookup, paid by every request reaching this layer
+      // (plain HTTP to the path included), ahead of the header reads.
+      if (!this._routeHandlers.has(path)) {
+        next();
+        return;
+      }
+
       const connectionHeader = String(
         req.headersObj.get("connection")?.toLowerCase() || "",
       );
@@ -1058,7 +1134,7 @@ export class BunWebSocket<
       ) {
         // The route's own hook, else the instance-wide one — read now, so a
         // hook is never captured before the instance finished configuring.
-        const hook = routeHook ?? this._onUpgrade;
+        const hook = upgradeRoute.hook ?? this._onUpgrade;
         const result: WebSocketUpgradeResult<TCustom> | undefined = hook
           ? ((await hook(req, res)) ?? undefined)
           : undefined;
@@ -1085,7 +1161,7 @@ export class BunWebSocket<
         // Whichever server built `req` — shared, standalone or extra-port.
         const port = acceptingPort(req);
 
-        const defaults = defaultsFrom ?? this.router;
+        const defaults = upgradeRoute.defaultsFrom ?? this.router;
         const responseData = res.webSocketUpgradeData as
           | Partial<WebSocketClientData<TCustom>>
           | undefined;
@@ -1153,6 +1229,55 @@ export class BunWebSocket<
       callbacks: [wsRouteHandler],
     });
 
+    return true;
+  }
+
+  /**
+   * Unregisters a WebSocket route's handler — the counterpart of
+   * {@link setRouteHandler} (and so of `router.ws()`). With every handler of
+   * `path` gone, an upgrade request to it is no longer upgraded: it goes on
+   * to whatever route matches next, or a 404. The upgrade route itself stays
+   * in the router, standing aside, because a router route cannot be removed;
+   * registering `path` again revives it.
+   *
+   * Sockets already open on `path` are left open — closing them is the
+   * caller's. Their later events (`message`, `close`, ...) reach only the
+   * handlers still registered for `path`, so none once all are removed; the
+   * instance's own events (`on("message")`, ...) are still emitted.
+   *
+   * @param path The route pattern exactly as it was registered, e.g.
+   *   `/rooms/:id` (not a concrete path such as `/rooms/42`).
+   * @param handler The handler object to remove, compared by identity.
+   *   Omitted (or `undefined`), every handler of `path` is removed.
+   * @returns `true` when a handler was removed; `false` when `path` has no
+   *   handlers, or `handler` is not one of them.
+   */
+  public removeRouteHandler(
+    path: string,
+    handler?: BunWebSocketHandlerType<TCustom>,
+  ): boolean {
+    const handlersArr = this._routeHandlers.get(path);
+    if (!handlersArr) {
+      return false;
+    }
+
+    if (handler === undefined) {
+      this._routeHandlers.delete(path);
+      return true;
+    }
+
+    // A new array rather than a splice, so a dispatch reading the old one is
+    // never disturbed mid-way.
+    const remaining = handlersArr.filter((entry) => entry !== handler);
+    if (remaining.length === handlersArr.length) {
+      return false;
+    }
+
+    if (remaining.length === 0) {
+      this._routeHandlers.delete(path);
+    } else {
+      this._routeHandlers.set(path, remaining);
+    }
     return true;
   }
 }

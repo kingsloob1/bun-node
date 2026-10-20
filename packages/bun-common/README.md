@@ -1726,6 +1726,24 @@ The instance emits `connect`, `open`, `message`, `disconnect`, `close`,
 also available. A bare `BunRouter.ws()` needs a `BunWebSocket` attached
 through the `bunWebsocket` option or `setBunWebSocket()`.
 
+`removeRouteHandler(path, handler?)` undoes `ws()` / `setRouteHandler()`: it
+removes `handler`, or every handler of `path` when none is given, and returns
+whether anything was removed. `path` is the pattern as registered
+(`/chat/:room`). Once a path has no handler left, an upgrade request to it is
+no longer upgraded and goes on to the next matching route, or a 404; the
+upgrade route stays in the router, standing aside, and registering the path
+again revives it, with that call's options. A path has one upgrade route
+however often it is registered, and a live one keeps the options it was first
+registered with. Sockets already open stay open — closing them is yours —
+and their later events reach only the handlers still registered (the
+instance's own events are still emitted).
+
+```ts
+const echo = { message: (ws, msg) => ws.send(msg) };
+app.ws("/echo", echo);
+app.webSocketAdapter.removeRouteHandler("/echo", echo); // true
+```
+
 Lifecycle dispatch is resolved per event, not frozen at `listen()`. Attaching
 another `BunWebSocket` to the same router — `setBunWebSocket()`, or simply
 constructing one with `router:`, which calls it — takes over `open`, `message`,

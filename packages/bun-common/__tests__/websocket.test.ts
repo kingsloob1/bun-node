@@ -1,4 +1,5 @@
 import type {
+  BunWebSocketHandlerType,
   BunWebSocketServerType,
   WebSocketClientData,
 } from "../lib/BunWebSocket";
@@ -829,6 +830,268 @@ describe("BunWebSocket: an instance attached after listen()", () => {
       expect(opened[0]?.port).toBe(server.port);
     } finally {
       await adapter.close();
+    }
+  });
+});
+
+/**
+ * Sends a raw WebSocket upgrade request for `path` and resolves the status
+ * code and head of the answer — a `101` included, which `fetch` cannot see.
+ */
+async function rawUpgrade(port: number, path: string) {
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  let head = "";
+  const socket = await Bun.connect({
+    hostname: "127.0.0.1",
+    port,
+    socket: {
+      data(_socket, chunk) {
+        head += chunk.toString();
+        if (head.includes("\r\n\r\n")) {
+          resolve(head);
+        }
+      },
+      error(_socket, error) {
+        reject(error);
+      },
+      close() {
+        resolve(head);
+      },
+    },
+  });
+  socket.write(
+    `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+      "Connection: Upgrade\r\nUpgrade: websocket\r\n" +
+      "Sec-WebSocket-Version: 13\r\n" +
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+  );
+  try {
+    const text = await promise;
+    return { status: Number(/^HTTP\/1\.1 (\d{3})/.exec(text)?.[1]), text };
+  } finally {
+    socket.end();
+  }
+}
+
+describe("BunWebSocket: removeRouteHandler", () => {
+  it("stops upgrading a removed route: a 404, or the next route on the path", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      logger: createTestLogger().logger,
+    });
+    adapter.ws("/live", { message: () => {} });
+    adapter.ws("/feed", { message: () => {} });
+    // A plain route on the same path, registered after the upgrade route.
+    adapter.get("/feed", (_req, res) => {
+      res.send("plain feed");
+    });
+    try {
+      const server = await adapter.listen(0);
+      const port = Number(server.port);
+      expect((await rawUpgrade(port, "/live")).status).toBe(101);
+      expect((await rawUpgrade(port, "/feed")).status).toBe(101);
+
+      const ws = adapter.webSocketAdapter;
+      expect(ws.removeRouteHandler("/live")).toBe(true);
+      expect(ws.removeRouteHandler("/feed")).toBe(true);
+
+      expect((await rawUpgrade(port, "/live")).status).toBe(404);
+      // The upgrade layer stands aside, so the GET route answers instead.
+      const feed = await rawUpgrade(port, "/feed");
+      expect(feed.status).toBe(200);
+      expect(feed.text).toContain("plain feed");
+      // and a plain request to the path is untouched.
+      const plain = await fetch(`http://127.0.0.1:${port}/feed`);
+      expect(await plain.text()).toBe("plain feed");
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("keeps a route upgrading until its last handler is removed", async () => {
+    const ws = new BunWebSocket({
+      newInstance: true,
+      router: new BunRouter(),
+      listen: { port: 0 },
+    });
+    const calls: string[] = [];
+    const first: BunWebSocketHandlerType = {
+      open: () => {
+        calls.push("first open");
+      },
+      message: () => {},
+    };
+    const second: BunWebSocketHandlerType = {
+      open: () => {
+        calls.push("second open");
+      },
+      message: () => {},
+    };
+    await ws.setRouteHandler("/duo", first, undefined);
+    await ws.setRouteHandler("/duo", second, undefined);
+    try {
+      const port = Number(ws.port);
+      expect(ws.removeRouteHandler("/duo", first)).toBe(true);
+      // Already gone, a handler never registered, a path never registered.
+      expect(ws.removeRouteHandler("/duo", first)).toBe(false);
+      expect(ws.removeRouteHandler("/duo", { message: () => {} })).toBe(false);
+      expect(ws.removeRouteHandler("/nowhere")).toBe(false);
+      expect(ws.removeRouteHandler("/nowhere", second)).toBe(false);
+
+      const { client } = await openClient(`ws://127.0.0.1:${port}/duo`);
+      await until(() => calls.length > 0);
+      client.close();
+      expect(calls).toEqual(["second open"]);
+
+      expect(ws.removeRouteHandler("/duo", second)).toBe(true);
+      expect((await rawUpgrade(port, "/duo")).status).toBe(404);
+      expect(ws.removeRouteHandler("/duo")).toBe(false);
+    } finally {
+      ws.killServer(ws.getServer());
+    }
+  });
+
+  it("upgrades again once re-registered, on the one upgrade route, with the new options", async () => {
+    const router = new BunRouter();
+    const ws = new BunWebSocket({
+      newInstance: true,
+      router,
+      listen: { port: 0 },
+    });
+    const calls: string[] = [];
+    const customs: unknown[] = [];
+    const handler: BunWebSocketHandlerType = {
+      open: (socket) => {
+        calls.push("open");
+        customs.push(socket.data.custom);
+      },
+      message: (socket, message) => {
+        calls.push(`message ${String(message)}`);
+        socket.send("ack");
+      },
+      close: () => {
+        calls.push("close");
+      },
+    };
+    const layerCount = () =>
+      router.getMatchedLayers({
+        requestHost: "localhost",
+        requestMethod: "GET",
+        requestUrl: "/again",
+      }).length;
+
+    await ws.setRouteHandler("/again", handler, {
+      onUpgrade: () => ({ custom: "before" }),
+    });
+    const layers = layerCount();
+    try {
+      const port = Number(ws.port);
+      expect(ws.removeRouteHandler("/again", handler)).toBe(true);
+      expect((await rawUpgrade(port, "/again")).status).toBe(404);
+
+      await ws.setRouteHandler("/again", handler, {
+        onUpgrade: () => ({ custom: "after" }),
+      });
+      // The route is revived, not stacked.
+      expect(layerCount()).toBe(layers);
+
+      const { client, received } = await openClient(
+        `ws://127.0.0.1:${port}/again`,
+      );
+      client.send("hi");
+      await until(() => received.length > 0);
+      client.close();
+      await until(() => calls.includes("close"));
+
+      // One invocation per event, and the re-registration's hook.
+      expect(calls).toEqual(["open", "message hi", "close"]);
+      expect(customs).toEqual(["after"]);
+    } finally {
+      ws.killServer(ws.getServer());
+    }
+  });
+
+  it("keeps a live pattern's first options when another handler joins it", async () => {
+    const router = new BunRouter();
+    const ws = new BunWebSocket({
+      newInstance: true,
+      router,
+      listen: { port: 0 },
+    });
+    const customs: unknown[] = [];
+    const record: BunWebSocketHandlerType = {
+      open: (socket) => {
+        customs.push(socket.data.custom);
+      },
+      message: () => {},
+    };
+    await ws.setRouteHandler("/kept", record, {
+      onUpgrade: () => ({ custom: "first" }),
+    });
+    await ws.setRouteHandler(
+      "/kept",
+      { message: () => {} },
+      {
+        onUpgrade: () => ({ custom: "second" }),
+      },
+    );
+    try {
+      const { client } = await openClient(`ws://127.0.0.1:${ws.port}/kept`);
+      await until(() => customs.length > 0);
+      client.close();
+      expect(customs).toEqual(["first"]);
+    } finally {
+      ws.killServer(ws.getServer());
+    }
+  });
+
+  it("leaves an open socket open: its events reach no removed handler, and nothing throws", async () => {
+    const ws = new BunWebSocket({
+      newInstance: true,
+      router: new BunRouter(),
+      listen: { port: 0 },
+    });
+    const handlerCalls: string[] = [];
+    const emitted: string[] = [];
+    ws.on("message", (socket, message) => {
+      emitted.push(`message ${String(message)}`);
+      socket.send(`instance:${String(message)}`);
+    });
+    ws.on("close", () => {
+      emitted.push("close");
+    });
+    await ws.setRouteHandler(
+      "/open",
+      {
+        message: (_socket, message) => {
+          handlerCalls.push(`message ${String(message)}`);
+        },
+        close: () => {
+          handlerCalls.push("close");
+        },
+      },
+      undefined,
+    );
+    try {
+      const { client, received } = await openClient(
+        `ws://127.0.0.1:${ws.port}/open`,
+      );
+      client.send("one");
+      await until(() => received.length === 1);
+
+      expect(ws.removeRouteHandler("/open")).toBe(true);
+
+      client.send("two");
+      await until(() => received.length === 2);
+      expect(client.readyState).toBe(WebSocket.OPEN);
+      client.close();
+      await until(() => emitted.includes("close"));
+
+      expect(received).toEqual(["instance:one", "instance:two"]);
+      expect(emitted).toEqual(["message one", "message two", "close"]);
+      // Only the event before the removal reached the route's handler.
+      expect(handlerCalls).toEqual(["message one"]);
+    } finally {
+      ws.killServer(ws.getServer());
     }
   });
 });
