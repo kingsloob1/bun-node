@@ -486,21 +486,22 @@ describe("BunHttpAdapter: handlers, helpers and instance", () => {
     expect([boom.status, await boom.text()]).toEqual([502, "custom error"]);
   });
 
-  it("matches case-sensitively by default, as the router option documents", async () => {
+  it("ignores case by default, as a bare BunRouter and Express do", async () => {
     for (const adapter of [
       new BunHttpAdapter(0),
       new BunHttpAdapter(0, { router: { debug: false } }),
     ]) {
       adapter.get("/Users", (_req, res) => res.send("hit"));
-      expect((await adapter.fetch("/users")).status).toBe(404);
+      expect((await adapter.fetch("/users")).status).toBe(200);
       expect((await adapter.fetch("/Users")).status).toBe(200);
     }
 
-    const insensitive = new BunHttpAdapter(0, {
-      router: { caseSensitive: false },
+    const sensitive = new BunHttpAdapter(0, {
+      router: { caseSensitive: true },
     });
-    insensitive.get("/Users", (_req, res) => res.send("hit"));
-    expect((await insensitive.fetch("/users")).status).toBe(200);
+    sensitive.get("/Users", (_req, res) => res.send("hit"));
+    expect((await sensitive.fetch("/users")).status).toBe(404);
+    expect((await sensitive.fetch("/Users")).status).toBe(200);
   });
 
   it("enableCors() and registerParserMiddleware() apply after setInstance()", async () => {

@@ -299,11 +299,10 @@ export class BunHttpAdapter<
       logger?: LoggerLike;
       /**
        * Options for the underlying {@link BunRouter} (e.g. `caseSensitive`,
-       * `debug`). Merged over the defaults `{ caseSensitive: true, debug: false }`,
-       * so matching is case-sensitive unless `caseSensitive: false` is given —
-       * `/Users` does not match `/users` — even when only `debug` is set.
-       * Unlike a bare `BunRouter` (and Express), which default to
-       * case-insensitive.
+       * `debug`). Merged over the defaults `{ caseSensitive: false, debug: false }`,
+       * so matching ignores case — `/Users` matches `/users` — as a bare
+       * `BunRouter`, bun-nest's adapter and Express do, unless
+       * `caseSensitive: true` is given.
        */
       router?: BunRouterOptions;
       /**
@@ -354,7 +353,7 @@ export class BunHttpAdapter<
     super({
       // The documented defaults, with `router` merged over them — the same
       // shape as bun-nest's adapter, so a partial `router` keeps the rest.
-      caseSensitive: true,
+      caseSensitive: false,
       debug: false,
       ...options?.router,
       ...(options?.routeCacheMax !== undefined
