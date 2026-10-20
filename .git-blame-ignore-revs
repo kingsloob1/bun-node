@@ -6,5 +6,4 @@
 # `git blame` fail (`fatal: invalid object name`), hence the comment below.
 
 # The one-time `bun fmt` reformat of docs/plans/bun-lint-fmt (PR E):
-# FILL AT LANDING: replace this line with the reformat commit's full hash
-# (`git rev-parse <commit>`), after the branch's last rebase and re-signing.
+879310e090a8ea248aae46fab8f799958ec94963
