@@ -18,7 +18,8 @@
  *   getServer }`; the `webSocketAdapter` setter.
  * - **Methods** — `create`, `bindClientConnect`, `bindMessageHandlers` (with
  *   and without `transform`), `bindClientDisconnect`, `close`, `dispose`,
- *   `getServer`, `router`, `wsHandler`.
+ *   `getServer`, `router`, `wsHandler`; the gateway routes `close()` and
+ *   `dispose()` unregister, and a path two servers' gateways share.
  * - **Packets** — `CONNECT`, `DISCONNECT`, `EVENT` (with and without an ack
  *   `id`), `ACK`, `ERROR`, `BINARY_EVENT`, `BINARY_ACK`, malformed and
  *   unroutable frames, and handler errors.
@@ -78,6 +79,7 @@ import {
   eventName,
   eventPayload,
   tryConnect,
+  upgradeHead,
 } from "../04-websockets/fixtures/ws-client";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { step, title, waitFor } from "../shared/console";
@@ -162,6 +164,12 @@ async function refused(url: string): Promise<boolean> {
   const client = await tryConnect(url, { timeout: 2_000 });
   await client?.close();
   return client === undefined;
+}
+
+/** The status code the server answers an upgrade request to `url` with: `101` when upgraded. */
+async function upgradeStatus(url: string): Promise<number> {
+  const { statusLine } = await upgradeHead(url);
+  return Number(statusLine.split(" ")[1]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -982,24 +990,89 @@ checkEqual(
   (await fetch(`http://127.0.0.1:${wire.listeningPort}/nope`)).status,
   404,
 );
-const afterClose = await connect(wireUrl("/a"));
-await Bun.sleep(50);
-checkEqual("… and detaches the gateways bound to it", connections.length, 4);
-await afterClose.close();
-check(
-  "dispose() is a no-op",
-  (() => {
-    adapter.dispose();
-    return true;
-  })(),
+checkEqual(
+  "… and unregisters the gateway routes created for it: an upgrade to /a or /b is a 404",
+  [await upgradeStatus(wireUrl("/a")), await upgradeStatus(wireUrl("/b"))],
+  [404, 404],
 );
+check("… so a client can no longer connect", await refused(wireUrl("/a")));
 await wire.close();
+
+// `early`'s gateway was created before its server listened, so `create()`
+// returned no server, and NestJS never calls `close()` for one of those.
+await early.listen(0);
+const earlyUrl = `ws://127.0.0.1:${early.listeningPort}/`;
+checkEqual(
+  "a gateway created before listen() is upgraded to once the server listens",
+  await upgradeStatus(earlyUrl),
+  101,
+);
+early.webSocketAdapter.dispose();
+checkEqual(
+  "dispose() unregisters the routes close() was not called for: a 404",
+  await upgradeStatus(earlyUrl),
+  404,
+);
+await early.close();
 
 standalone.close(undefined);
 check(
   "close(undefined) stops a newInstance adapter's own server",
   await refused(`ws://127.0.0.1:${standalonePort}/`),
 );
+
+/* ------------------------------------------------------------------ */
+step("close(): a path two servers' gateways share");
+
+const host = new BunHttpAdapter();
+await host.listen(0);
+const hostAdapter = host.webSocketAdapter;
+const feedPort = await getPort();
+const hostFeed = `ws://127.0.0.1:${host.listeningPort}/feed`;
+const portFeed = `ws://127.0.0.1:${feedPort}/feed`;
+/** Which gateway heard each connection: the HTTP server's or the port's. */
+const feedSeen: string[] = [];
+
+const onHost = hostAdapter.create(0, { path: "/feed", transport: [] });
+hostAdapter.bindClientConnect(onHost, () => feedSeen.push("host"));
+const onFeedPort = hostAdapter.create(feedPort, {
+  path: "/feed",
+  transport: [],
+});
+hostAdapter.bindClientConnect(onFeedPort, () => feedSeen.push("port"));
+
+await (await connect(hostFeed)).close();
+await (await connect(portFeed)).close();
+await waitFor("both gateways' connections", () => feedSeen.length === 2);
+checkEqual(
+  "two gateways on /feed, one on the HTTP server and one on a gateway port, each hear their own",
+  feedSeen.toSorted(),
+  ["host", "port"],
+);
+
+hostAdapter.close(onFeedPort);
+check(
+  "close(gateway port's server) stops that server",
+  await refused(portFeed),
+);
+const stillServed = await upgradeStatus(hostFeed);
+checkEqual(
+  "… but /feed stays registered while the HTTP server's gateway uses it: still a 101",
+  stillServed,
+  101,
+);
+if (stillServed === 101) {
+  await waitFor("the HTTP server's gateway", () => feedSeen.length === 3);
+}
+checkEqual("… and that gateway hears the connection", feedSeen[2], "host");
+
+hostAdapter.close(onHost);
+checkEqual(
+  "closing the HTTP server's gateway too unregisters /feed: a 404",
+  await upgradeStatus(hostFeed),
+  404,
+);
+await host.close();
 
 /* ------------------------------------------------------------------ */
 step("NestJS: gateways on the adapter");
