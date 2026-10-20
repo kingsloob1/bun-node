@@ -150,8 +150,8 @@ describe("BunJobs builds a shared unit from the summon option", () => {
     await seed(driver, namespace, "thumbs");
     expect(await unit.check()).toMatchObject({ action: "summoned" });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.queues).toEqual([...MEDIA]);
-    expect(calls[0]!.group).toBe("media");
+    expect(calls[0].queues).toEqual([...MEDIA]);
+    expect(calls[0].group).toBe("media");
     expect(other.calls).toHaveLength(0);
   });
 
@@ -174,8 +174,8 @@ describe("BunJobs builds a shared unit from the summon option", () => {
     expect(await unit.check()).toMatchObject({ action: "summoned" });
     // A shared unit names its group even for one queue: its state is the
     // group's entry, and its release names the group too.
-    expect(calls[0]!.argv).toContain("--bun-jobs-summon-group=media");
-    expect(calls[0]!.group).toBe("media");
+    expect(calls[0].argv).toContain("--bun-jobs-summon-group=media");
+    expect(calls[0].group).toBe("media");
     expect((await unit.status()).group?.budget.hour).toBe(1);
   });
 
@@ -201,7 +201,7 @@ describe("BunJobs builds a shared unit from the summon option", () => {
     expect(await jobs.summonController("renders").check()).toMatchObject({
       action: "summoned",
     });
-    expect(calls[0]!.count).toBe(2);
+    expect(calls[0].count).toBe(2);
   });
 
   it("refuses a shared unit's override of anything but jobsPerWorker and maxWorkers, saying where", async () => {
@@ -309,7 +309,7 @@ describe("BunJobs builds a shared unit from the summon option", () => {
       });
       await jobs.queue(queue).add("a", {});
       await waitFor(() => calls.length === 1, { timeout: 5_000 });
-      expect(calls[0]!.queues).toEqual([...MEDIA]);
+      expect(calls[0].queues).toEqual([...MEDIA]);
     });
   }
 
@@ -623,7 +623,7 @@ describe("overlaps: who else summons for these queues (§4.9, Q9)", () => {
           )
           .map((event) => ({
             message: event.message,
-            fields: event.fields as Record<string, unknown> | undefined,
+            fields: event.fields,
           })),
     };
   }
@@ -643,7 +643,7 @@ describe("overlaps: who else summons for these queues (§4.9, Q9)", () => {
       one.message.includes('summon group "other"'),
     );
     expect(overlapWarnings).toHaveLength(1);
-    expect(overlapWarnings[0]!.fields).toMatchObject({
+    expect(overlapWarnings[0].fields).toMatchObject({
       queue: "thumbs",
       overlapGroup: "other",
     });
@@ -672,7 +672,7 @@ describe("overlaps: who else summons for these queues (§4.9, Q9)", () => {
       one.message.includes("summoned worker naming no summon group"),
     );
     expect(groupless).toHaveLength(1);
-    expect(groupless[0]!.fields).toMatchObject({ queue: "thumbs" });
+    expect(groupless[0].fields).toMatchObject({ queue: "thumbs" });
   });
 
   it("warns of a worker with no group from a shared unit of one queue too (Q9)", async () => {
@@ -690,10 +690,10 @@ describe("overlaps: who else summons for these queues (§4.9, Q9)", () => {
     expect((await controller.status()).overlaps).toBeUndefined();
     // Once per queue, with the exact text the examples assert.
     expect(warnings()).toHaveLength(1);
-    expect(warnings()[0]!.message).toBe(
+    expect(warnings()[0].message).toBe(
       `queue "renders" has a summoned worker naming no summon group while group "media"'s shared unit serves the queue: a per-queue controller's unit, a unit from a build older than the group, or one an older bun-jobs summoned while this group served a single queue. Keep one summoning controller per queue`,
     );
-    expect(warnings()[0]!.fields).toMatchObject({
+    expect(warnings()[0].fields).toMatchObject({
       queue: "renders",
       id: "sm_perqueue",
     });

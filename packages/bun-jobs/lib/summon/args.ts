@@ -187,7 +187,7 @@ export function parseSummonArgs(
     ...(namespace === undefined ? {} : { namespace }),
     ...(queues.length === 0
       ? {}
-      : { queue: queues[0]!, queues: Object.freeze(queues) }),
+      : { queue: queues[0], queues: Object.freeze(queues) }),
     ...(graceMs === undefined ? {} : { graceMs }),
   };
 }

@@ -365,8 +365,8 @@ describe("queue limits: a commit that loses every race", () => {
     const stored = (await driver.getQueueState(ref, LIMITER_STATE))?.value as {
       holders: Record<string, { total: number; names: Record<string, number> }>;
     };
-    expect(stored.holders.first!.total).toBe(2);
-    expect(stored.holders.first!.names).toEqual({});
+    expect(stored.holders.first.total).toBe(2);
+    expect(stored.holders.first.names).toEqual({});
 
     // Another worker can run the capped name again.
     const next = await second.reserve(6, Date.now());

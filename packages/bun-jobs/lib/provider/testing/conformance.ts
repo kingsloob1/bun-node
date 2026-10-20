@@ -3,7 +3,6 @@ import type { Summoner } from "../../summon/types";
 import type { ProviderCallContext } from "../context";
 import type {
   ComputeProvider,
-  ProviderApiVersions,
   ProviderCheck,
   ProviderIdentity,
 } from "../define";
@@ -189,7 +188,7 @@ function seed(
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         return value;
       }
-      const key = segments[depth]!;
+      const key = segments[depth];
       const record = value as Record<string, unknown>;
       if (!(key in record)) {
         return value;
@@ -472,7 +471,7 @@ export async function runProviderConformance<TInput, TConfig>(
     return buildReport(
       `${identity.name}@${identity.version}`,
       {
-        declared: { ...identity.apiVersion } as ProviderApiVersions,
+        declared: { ...identity.apiVersion },
         host: { ...COMPUTE_PROVIDER_API },
       },
       CHECKS.map(([id]) => checks.get(id)!),
@@ -481,7 +480,7 @@ export async function runProviderConformance<TInput, TConfig>(
 
   // Identity, and configuring the provider.
   const identity: ProviderIdentity = unconfigured
-    ? (unconfigured.definition as unknown as ProviderIdentity)
+    ? unconfigured.definition
     : (provider as Summoner).provider;
   let summoner: Summoner;
   let fresh: () => Summoner = () => summoner;
@@ -600,13 +599,7 @@ export async function runProviderConformance<TInput, TConfig>(
     if (definition.validate !== undefined) {
       const validateFn = definition.validate;
       const config = summoner.config;
-      validate = async (context) =>
-        await (
-          validateFn as (
-            config: unknown,
-            context: ProviderCallContext,
-          ) => Promise<readonly ProviderCheck[]>
-        )(config, context);
+      validate = async (context) => await validateFn(config, context);
     }
   } else {
     summoner = provider as Summoner;
@@ -763,7 +756,7 @@ export async function runProviderConformance<TInput, TConfig>(
         ? "the fake received no request"
         : unrouted.length === 0
           ? undefined
-          : `${unrouted.length} of ${requests.length} platform requests did not go through ctx.fetch (first: ${unrouted[0]!.method} ${unrouted[0]!.path})`,
+          : `${unrouted.length} of ${requests.length} platform requests did not go through ctx.fetch (first: ${unrouted[0].method} ${unrouted[0].path})`,
     );
   if (run.selfHosted) {
     await stopUnits(run);
@@ -879,7 +872,7 @@ function givenSecrets(
     }
   };
   seeded?.canaries.forEach((canary, index) => {
-    add(canary, seeded.seededPaths[index]!);
+    add(canary, seeded.seededPaths[index]);
   });
   providerSecrets(summoner).forEach((value, index) => {
     add(value, paths?.[index] ?? `#${index + 1}`);

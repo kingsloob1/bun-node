@@ -100,7 +100,7 @@ export class LineReader {
   /** The current line's bytes, as one array. */
   #concat(): Uint8Array {
     if (this.#parts.length === 1) {
-      return this.#parts[0]!;
+      return this.#parts[0];
     }
     const out = new Uint8Array(this.#size);
     let offset = 0;

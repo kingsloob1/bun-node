@@ -172,7 +172,7 @@ function recordingClient(real: SQL): {
       const value = Reflect.get(target, property, receiver) as unknown;
       return typeof value === "function" ? value.bind(target) : value;
     },
-  }) as SQL;
+  });
 
   return { sql, statements, calls };
 }
@@ -434,12 +434,10 @@ function engineCases(
 
       for (const writer of writers) {
         for (let count = 0; count < 5; count++) {
-          await writer.countWorkerJobs!(q, "w-1", at, { completed: 1 });
+          await writer.countWorkerJobs(q, "w-1", at, { completed: 1 });
         }
       }
-      await Promise.all(
-        writers.map(async (each) => await each.flushMetrics!()),
-      );
+      await Promise.all(writers.map(async (each) => await each.flushMetrics()));
 
       const rows = (await client.unsafe(
         `SELECT entity, interval_ms, bucket, completed FROM ${prefix}worker_metrics
@@ -473,7 +471,7 @@ function engineCases(
       // The reads agree with the rows.
       expect(
         (
-          await writers[0]!.getWorkerMetrics!(q, "w-1", {
+          await writers[0].getWorkerMetrics(q, "w-1", {
             from: bucketStart(at, MINUTE_BUCKET_MS),
             to: bucketStart(at, MINUTE_BUCKET_MS),
             interval: MINUTE_BUCKET_MS,
@@ -497,9 +495,9 @@ function engineCases(
 
       // Forty workers, two widths each, plus the roll-up: 82 rows.
       for (let worker = 0; worker < 40; worker++) {
-        await driver.countWorkerJobs!(q, `w-${worker}`, at, { completed: 1 });
+        await driver.countWorkerJobs(q, `w-${worker}`, at, { completed: 1 });
       }
-      await driver.flushMetrics!();
+      await driver.flushMetrics();
 
       const table = `${prefix}worker_metrics`;
       expect(countStatements(recorder.statements, "INSERT INTO", table)).toBe(
@@ -518,11 +516,11 @@ function engineCases(
       // more workers is 502 further rows, which is three statements.
       recorder.statements.length = 0;
       for (let worker = 0; worker < 250; worker++) {
-        await driver.countWorkerJobs!(q, `b-${worker}`, at + 1_000, {
+        await driver.countWorkerJobs(q, `b-${worker}`, at + 1_000, {
           completed: 1,
         });
       }
-      await driver.flushMetrics!();
+      await driver.flushMetrics();
 
       expect(countStatements(recorder.statements, "INSERT INTO", table)).toBe(
         3,
@@ -548,11 +546,11 @@ function engineCases(
       // writers — or a writer and the minute sweep's DELETE — each held what
       // the other wanted next: a deadlock (1213), reproduced on MySQL and
       // MariaDB with two connections.
-      await driver.countWorkerJobs!(q, "w-b", first, { completed: 1 });
-      await driver.countWorkerJobs!(q, "w-a", next, { completed: 1 });
-      await driver.countWorkerJobs!(q, "w-a", first, { completed: 1 });
+      await driver.countWorkerJobs(q, "w-b", first, { completed: 1 });
+      await driver.countWorkerJobs(q, "w-a", next, { completed: 1 });
+      await driver.countWorkerJobs(q, "w-a", first, { completed: 1 });
       recorder.calls.length = 0;
-      await driver.flushMetrics!();
+      await driver.flushMetrics();
 
       const table = `${prefix}worker_metrics`;
       const inserts = recorder.calls.filter((call) =>
@@ -562,7 +560,7 @@ function engineCases(
 
       // Every tuple binds its key first — ns, entity, interval, bucket — and
       // every tuple binds the same number of values.
-      const { params } = inserts[0]!;
+      const { params } = inserts[0];
       const rows = 8;
       expect(params.length % rows).toBe(0);
       const width = params.length / rows;
@@ -612,8 +610,8 @@ function engineCases(
 
       // The first flush spends the clock's first tick, so the ancient buckets
       // below are certain to be stored before a sweep can reach them.
-      await driver.countWorkerJobs!(q, "w-warm", minute, { completed: 1 });
-      await driver.flushMetrics!();
+      await driver.countWorkerJobs(q, "w-warm", minute, { completed: 1 });
+      await driver.flushMetrics();
 
       const table = `${prefix}worker_metrics`;
       // Two widths on this table — six deletes across the three — and every
@@ -630,8 +628,8 @@ function engineCases(
 
       // A second flush straight after is not due, so it sweeps nothing.
       recorder.statements.length = 0;
-      await driver.countWorkerJobs!(q, "w-warm", minute, { completed: 1 });
-      await driver.flushMetrics!();
+      await driver.countWorkerJobs(q, "w-warm", minute, { completed: 1 });
+      await driver.flushMetrics();
       expect(countStatements(recorder.statements, "DELETE FROM", table)).toBe(
         0,
       );
@@ -639,9 +637,9 @@ function engineCases(
       // Two ancient buckets, one of which nothing ever writes to again.
       const ancient = bucketStart(now - 25 * 60 * 60_000, MINUTE_BUCKET_MS);
       for (const key of ["w-kept", "w-gone"]) {
-        await driver.countWorkerJobs!(q, key, ancient, { completed: 1 });
+        await driver.countWorkerJobs(q, key, ancient, { completed: 1 });
       }
-      await driver.flushMetrics!();
+      await driver.flushMetrics();
 
       const range = {
         from: ancient,
@@ -649,20 +647,20 @@ function engineCases(
         interval: MINUTE_BUCKET_MS,
       };
       expect(
-        (await driver.getWorkerMetrics!(q, "w-gone", range)).jobs,
+        (await driver.getWorkerMetrics(q, "w-gone", range)).jobs,
       ).toHaveLength(1);
 
       // A count far enough ahead that the sweep is due again. `w-gone` has had
       // no write since, so a prune driven by an entity's own writes would
       // never reach it.
       const ahead = bucketStart(now + 10 * MINUTE_BUCKET_MS, MINUTE_BUCKET_MS);
-      await driver.countWorkerJobs!(q, "w-kept", ahead, { completed: 1 });
-      await driver.flushMetrics!();
+      await driver.countWorkerJobs(q, "w-kept", ahead, { completed: 1 });
+      await driver.flushMetrics();
 
-      expect((await driver.getWorkerMetrics!(q, "w-kept", range)).jobs).toEqual(
+      expect((await driver.getWorkerMetrics(q, "w-kept", range)).jobs).toEqual(
         [],
       );
-      expect((await driver.getWorkerMetrics!(q, "w-gone", range)).jobs).toEqual(
+      expect((await driver.getWorkerMetrics(q, "w-gone", range)).jobs).toEqual(
         [],
       );
       // The sweep is this namespace's, so it cannot reach another session's
@@ -684,20 +682,20 @@ function engineCases(
 
       // Two writers, the same bucket, the same bin — and, for one of them, a
       // second run far enough away to land in another.
-      await first.countRunnerRun!(ns, runner, at, {
+      await first.countRunnerRun(ns, runner, at, {
         succeeded: 1,
         durationMs: 900,
       });
-      await second.countRunnerRun!(ns, runner, at, {
+      await second.countRunnerRun(ns, runner, at, {
         succeeded: 1,
         durationMs: 900,
       });
-      await second.countRunnerRun!(ns, runner, at, {
+      await second.countRunnerRun(ns, runner, at, {
         succeeded: 1,
         durationMs: 5,
       });
-      await first.flushMetrics!();
-      await second.flushMetrics!();
+      await first.flushMetrics();
+      await second.flushMetrics();
 
       const minute = bucketStart(at, MINUTE_BUCKET_MS);
       const rows = (await client.unsafe(
@@ -712,9 +710,9 @@ function engineCases(
 
       // One row, shared by both writers.
       expect(rows).toHaveLength(1);
-      const row = rows[0]!;
-      expect(Number(row[DURATION_BIN_COLUMNS[durationBin(900)]!])).toBe(2);
-      expect(Number(row[DURATION_BIN_COLUMNS[durationBin(5)]!])).toBe(1);
+      const row = rows[0];
+      expect(Number(row[DURATION_BIN_COLUMNS[durationBin(900)]])).toBe(2);
+      expect(Number(row[DURATION_BIN_COLUMNS[durationBin(5)]])).toBe(1);
       expect(Number(row.dur_count)).toBe(3);
       expect(Number(row.dur_sum_ms)).toBe(1_805);
       // The extremes are guarded by the count: a row the outcome counters
@@ -723,7 +721,7 @@ function engineCases(
       expect(Number(row.dur_min_ms)).toBe(5);
       expect(Number(row.dur_max_ms)).toBe(900);
 
-      const read = await first.getRunnerMetrics!(ns, runner, {
+      const read = await first.getRunnerMetrics(ns, runner, {
         from: minute,
         to: minute,
         interval: MINUTE_BUCKET_MS,
@@ -743,18 +741,18 @@ function engineCases(
       // Written in the wrong order on purpose: a rolling redeploy has two
       // incarnations under one key, and the earlier heartbeat must not become
       // "the concurrency as of the last sample".
-      await late.sampleWorkerBusyness!(q, "w", minute + 20_000, {
+      await late.sampleWorkerBusyness(q, "w", minute + 20_000, {
         active: 6,
         concurrency: 9,
       });
-      await late.flushMetrics!();
-      await early.sampleWorkerBusyness!(q, "w", minute + 10_000, {
+      await late.flushMetrics();
+      await early.sampleWorkerBusyness(q, "w", minute + 10_000, {
         active: 2,
         concurrency: 5,
       });
-      await early.flushMetrics!();
+      await early.flushMetrics();
 
-      const read = await early.getWorkerMetrics!(q, "w", {
+      const read = await early.getWorkerMetrics(q, "w", {
         from: minute,
         to: minute,
         interval: MINUTE_BUCKET_MS,
@@ -784,7 +782,7 @@ function engineCases(
       const q: QueueRef = { ns, queue: "orders" };
       const minute = lastMinute();
 
-      expect(driver.getMetricsSupport!()).toEqual({
+      expect(driver.getMetricsSupport()).toEqual({
         resolutions: [60],
         retentionMs: { 60: 24 * 60 * 60_000 },
         recording: {
@@ -796,9 +794,9 @@ function engineCases(
         },
       });
 
-      await driver.countWorkerJobs!(q, "w", minute, { completed: 1 });
-      await driver.countRunnerRun!(ns, "nightly", minute, { started: 1 });
-      await driver.flushMetrics!();
+      await driver.countWorkerJobs(q, "w", minute, { completed: 1 });
+      await driver.countRunnerRun(ns, "nightly", minute, { started: 1 });
+      await driver.flushMetrics();
 
       // A worker count that was turned off is not written at all.
       const [workers] = (await client.unsafe(
@@ -817,7 +815,7 @@ function engineCases(
       expect(Number(runners?.total)).toBe(0);
       expect(
         (
-          await driver.getRunnerMetrics!(ns, "nightly", {
+          await driver.getRunnerMetrics(ns, "nightly", {
             from: minute,
             to: minute,
             interval: MINUTE_BUCKET_MS,
@@ -827,7 +825,7 @@ function engineCases(
 
       // And a kind that is not recorded is absent from the roll-up rather
       // than answering zeros.
-      const roll = await driver.getNamespaceMetrics!(ns, {
+      const roll = await driver.getNamespaceMetrics(ns, {
         from: minute,
         to: minute,
         interval: MINUTE_BUCKET_MS,
@@ -866,17 +864,14 @@ function engineCases(
       const ns = testNamespace("mx-upgrade");
 
       // `createSchema` is `IF NOT EXISTS`, so connecting is what adds them.
-      await driver.countWorkerJobs!(
-        { ns, queue: "orders" },
-        "w",
-        lastMinute(),
-        { completed: 1 },
-      );
-      await driver.flushMetrics!();
+      await driver.countWorkerJobs({ ns, queue: "orders" }, "w", lastMinute(), {
+        completed: 1,
+      });
+      await driver.flushMetrics();
 
       expect(
         (
-          await driver.getWorkerMetrics!({ ns, queue: "orders" }, "w", {
+          await driver.getWorkerMetrics({ ns, queue: "orders" }, "w", {
             from: lastMinute(),
             to: lastMinute(),
             interval: MINUTE_BUCKET_MS,

@@ -406,13 +406,11 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
 
       const warned = warnings(events);
       expect(warned).toHaveLength(1);
-      expect(warned[0]!.message).toContain(
+      expect(warned[0].message).toContain(
         `${tables.kv}: kv_key (${legacy}, expected ${binary})`,
       );
-      expect(warned[0]!.message).toContain(
-        "syncSchema({ alterColumns: true })",
-      );
-      expect(warned[0]!.fields).toEqual({
+      expect(warned[0].message).toContain("syncSchema({ alterColumns: true })");
+      expect(warned[0].fields).toEqual({
         columns: [
           {
             table: tables.kv,
@@ -423,14 +421,14 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
         ],
         fix: "syncSchema({ alterColumns: true })",
       });
-      expect(warned[0]!.bindings).toMatchObject({ driver: "sql", adapter });
+      expect(warned[0].bindings).toMatchObject({ driver: "sql", adapter });
 
       // The same columns a sync would rewrite, and marked as such.
       const planned = await driver.syncSchema({ dryRun: true });
       expect(planned.map((c) => [c.kind, c.table, c.target])).toEqual([
         ["alter-column", tables.kv, "kv_key"],
       ]);
-      expect(planned[0]!.collation).toEqual({
+      expect(planned[0].collation).toEqual({
         found: legacy,
         expected: binary,
       });
@@ -455,7 +453,7 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
       const warned = warnings(events);
       expect(warned).toHaveLength(1);
       const columns = (
-        warned[0]!.fields as { columns: { table: string; column: string }[] }
+        warned[0].fields as { columns: { table: string; column: string }[] }
       ).columns;
       const planned = (await driver.syncSchema({ dryRun: true })).filter(
         (change) => change.collation,
@@ -466,7 +464,7 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
       );
       expect(new Set(columns.map((c) => c.table)).size).toBeGreaterThan(3);
       for (const table of new Set(columns.map((c) => c.table))) {
-        expect(warned[0]!.message).toContain(`${table}: `);
+        expect(warned[0].message).toContain(`${table}: `);
       }
     }, 60_000);
 
@@ -509,7 +507,7 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
       expect(planned.map((c) => [c.kind, c.target])).toEqual([
         ["alter-column", "processed_on"],
       ]);
-      expect(planned[0]!.collation).toBeUndefined();
+      expect(planned[0].collation).toBeUndefined();
     }, 45_000);
 
     it("still warns with syncSchema: true, which leaves collations alone", async () => {
@@ -523,7 +521,7 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
 
       const warned = warnings(events);
       expect(warned).toHaveLength(1);
-      expect(warned[0]!.message).toContain(`${tables.kv}: kv_key`);
+      expect(warned[0].message).toContain(`${tables.kv}: kv_key`);
     }, 45_000);
 
     it("gives no warning when the connect's own sync repairs it", async () => {
@@ -564,7 +562,7 @@ for (const { adapter, url, binary, legacy } of MYSQL_FAMILY) {
 
       const warned = warnings(events);
       expect(warned).toHaveLength(1);
-      expect(warned[0]!.message).toContain(`${tables.kv}: ns (${legacy}`);
+      expect(warned[0].message).toContain(`${tables.kv}: ns (${legacy}`);
     }, 45_000);
 
     it("warns with a dry-run sync on connect, which applies nothing", async () => {

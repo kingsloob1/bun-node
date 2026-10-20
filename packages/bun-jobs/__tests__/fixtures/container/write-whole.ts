@@ -19,7 +19,7 @@ try {
     .split("\n")
     .find((line) => line.startsWith("flags:"))!;
   nonBlocking = String(
-    (Number.parseInt(flags.split(/\s+/)[1]!, 8) & 0o4000) !== 0,
+    (Number.parseInt(flags.split(/\s+/)[1], 8) & 0o4000) !== 0,
   );
 } catch {
   // No /proc: not Linux.

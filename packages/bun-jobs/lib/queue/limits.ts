@@ -380,7 +380,7 @@ export class QueueLimiter {
       holder.total += grant;
 
       if (limits.rate && windowStart !== undefined) {
-        state.windows[""]!.count += grant;
+        state.windows[""].count += grant;
       }
 
       // Every open limited name is counted as if the whole grant were its.

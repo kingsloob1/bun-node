@@ -58,7 +58,7 @@ describe("the committed vectors file", () => {
   });
 
   it("a file with one byte changed is not (the control)", async () => {
-    const at = committedText.indexOf(committed.accept[2]!.mac) + 7;
+    const at = committedText.indexOf(committed.accept[2].mac) + 7;
     const flipped =
       committedText.slice(0, at) +
       String.fromCharCode(committedText.charCodeAt(at) ^ 1) +
@@ -118,7 +118,7 @@ describe("every MAC, recomputed without the codec", () => {
       7: "ec822dd914b20239eaa97dbaefebfbdbbf34d0ad0db77303bac57be382ee0ef2",
     };
     for (const [index, hex] of Object.entries(openssl)) {
-      expect(committed.accept[Number(index)]!.macHex).toBe(hex);
+      expect(committed.accept[Number(index)].macHex).toBe(hex);
     }
   });
 
@@ -164,7 +164,7 @@ describe("the codec against the vectors", () => {
       }
 
       it("one flipped byte in an accepted frame is refused (the control)", async () => {
-        const vector = committed.accept[3]!;
+        const vector = committed.accept[3];
         const at = vector.frame.length - 5;
         const flipped =
           vector.frame.slice(0, at) +

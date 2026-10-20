@@ -277,8 +277,8 @@ describe("queue.listWorkers", () => {
         active: 0,
         paused: false,
       } satisfies Partial<WorkerInfo>);
-      expect(listed!.expiresAt).toBe(listed!.heartbeatAt + 30_000);
-      expect(listed!.startedAt).toBeLessThanOrEqual(listed!.heartbeatAt);
+      expect(listed.expiresAt).toBe(listed.heartbeatAt + 30_000);
+      expect(listed.startedAt).toBeLessThanOrEqual(listed.heartbeatAt);
 
       await queue.add("slow", {});
       await waitFor(() => worker.activeCount === 1);
@@ -311,14 +311,14 @@ describe("queue.listWorkers", () => {
     startWorker(queue, async () => undefined, { reportInterval: 40 });
 
     await waitFor(async () => (await queue.listWorkers()).length === 1);
-    const first = (await queue.listWorkers())[0]!;
+    const first = (await queue.listWorkers())[0];
 
     await waitFor(
       async () =>
         ((await queue.listWorkers())[0]?.heartbeatAt ?? 0) > first.heartbeatAt,
       { timeout: 2_000 },
     );
-    const later = (await queue.listWorkers())[0]!;
+    const later = (await queue.listWorkers())[0];
     expect(later.startedAt).toBe(first.startedAt);
     expect(later.expiresAt).toBe(later.heartbeatAt + 120);
   });
@@ -462,14 +462,13 @@ describe("queue.getThroughput", () => {
     expect(throughput.interval).toBe(THROUGHPUT_BUCKET_MS);
     expect(throughput.buckets).toHaveLength(5);
     expect(throughput.to).toBe(throughput.buckets.at(-1)!.at);
-    expect(throughput.from).toBe(throughput.buckets[0]!.at);
+    expect(throughput.from).toBe(throughput.buckets[0].at);
     expect(throughput.to - throughput.from).toBe(4 * THROUGHPUT_BUCKET_MS);
     expect(
       throughput.buckets.every(
         (bucket, index) =>
           index === 0 ||
-          bucket.at - throughput.buckets[index - 1]!.at ===
-            THROUGHPUT_BUCKET_MS,
+          bucket.at - throughput.buckets[index - 1].at === THROUGHPUT_BUCKET_MS,
       ),
     ).toBe(true);
     expect(throughput.completed).toBe(3);
@@ -503,7 +502,7 @@ describe("queue.getThroughput", () => {
 
     const { buckets, completed } = await queue.getThroughput({ minutes: 3 });
     expect(buckets.map((bucket) => bucket.completed)).toEqual([1, 0, 0]);
-    expect(buckets[0]!.at).toBe(current - 2 * THROUGHPUT_BUCKET_MS);
+    expect(buckets[0].at).toBe(current - 2 * THROUGHPUT_BUCKET_MS);
     expect(completed).toBe(1);
   });
 
@@ -631,9 +630,9 @@ describe("BunJobs aggregates", () => {
         "mail",
       ]);
       expect(summaries[0]).toMatchObject({ total: 1, paused: true });
-      expect(summaries[0]!.counts.waiting).toBe(1);
+      expect(summaries[0].counts.waiting).toBe(1);
       expect(summaries[1]).toMatchObject({ total: 2, paused: false });
-      expect(summaries[1]!.counts).toMatchObject({ waiting: 1, delayed: 1 });
+      expect(summaries[1].counts).toMatchObject({ waiting: 1, delayed: 1 });
     });
   }
 

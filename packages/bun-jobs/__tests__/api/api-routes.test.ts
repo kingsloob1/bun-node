@@ -312,8 +312,8 @@ describe("the per-route pipeline", () => {
       (event) => event.message === "jobs api response did not match its schema",
     );
     expect(logged).toHaveLength(1);
-    expect(logged[0]!.level).toBe("error");
-    expect(logged[0]!.fields).toMatchObject({
+    expect(logged[0].level).toBe("error");
+    expect(logged[0].fields).toMatchObject({
       operationId: "getWrongBody",
       status: 200,
       mismatch: "ok: Expected boolean, received string",
@@ -488,10 +488,10 @@ describe("pruning", () => {
   it("applies every condition in the one predicate", () => {
     const config = resolveConfig(apiConfig({ mode: "jobs", readOnly: true }));
     const [retry, runner, logs] = testRoutes();
-    expect(isRouteEnabled(retry!, config)).toBe(false);
-    expect(isRouteEnabled(runner!, config)).toBe(false);
-    expect(isRouteEnabled(logs!, config)).toBe(true);
-    expect(isRouteEnabled({ ...logs!, enabledWhen: () => false }, config)).toBe(
+    expect(isRouteEnabled(retry, config)).toBe(false);
+    expect(isRouteEnabled(runner, config)).toBe(false);
+    expect(isRouteEnabled(logs, config)).toBe(true);
+    expect(isRouteEnabled({ ...logs, enabledWhen: () => false }, config)).toBe(
       false,
     );
   });

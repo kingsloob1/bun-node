@@ -65,7 +65,7 @@ function without(driver: JobsDriver, methods: readonly string[]): JobsDriver {
         ? false
         : Reflect.has(target, key);
     },
-  }) as JobsDriver;
+  });
 }
 
 /** A harness with `nightly` registered in this process, over `driver`. */
@@ -182,8 +182,8 @@ async function runForReal(
 
   await jobs.driver.connect();
   const settled = new Promise<RunRecord>((resolve) => {
-    runner.once("finished", (record) => resolve(record as RunRecord));
-    runner.once("failed", (record) => resolve(record as RunRecord));
+    runner.once("finished", (record) => resolve(record));
+    runner.once("failed", (record) => resolve(record));
   });
   await runner.start();
   await runner.trigger({ args });
@@ -644,7 +644,7 @@ describe("authorization", () => {
     );
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ runner: RUNNER, mutation: false });
-    expect(asked[0]!.route).toMatchObject({
+    expect(asked[0].route).toMatchObject({
       method: "GET",
       path: "/runners/:runner/runs/:runId/logs",
     });

@@ -1,5 +1,4 @@
 import type { CommandStartedEvent, Document, MongoClient } from "mongodb";
-import type { MongoClientLike } from "../lib/drivers/mongo/mongo-driver";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
 import { MINUTE_BUCKET_MS } from "../lib/api/contract/constants";
@@ -113,7 +112,7 @@ async function makeRecorder(name: string): Promise<Recorder> {
 
   const driver = new MongoDriver({
     url: URL,
-    client: shared as unknown as MongoClientLike,
+    client: shared,
     collectionPrefix: prefix,
   });
   drivers.push(driver);
@@ -379,10 +378,10 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
         completed: 1,
       });
     }
-    await driver.countRunnerRun(ns, runners[0]!, first - MINUTE_BUCKET_MS, {
+    await driver.countRunnerRun(ns, runners[0], first - MINUTE_BUCKET_MS, {
       started: 1,
     });
-    await driver.countRunnerRun(ns, runners[0]!, second + MINUTE_BUCKET_MS, {
+    await driver.countRunnerRun(ns, runners[0], second + MINUTE_BUCKET_MS, {
       started: 1,
     });
     await driver.flushMetrics();
@@ -390,7 +389,7 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
     /** Asserts one recorded read's plan, and how many documents it touched. */
     const expectIndexed = async (docs: number): Promise<PlanEvidence> => {
       const [event] = reads();
-      const plan = await explain(event!);
+      const plan = await explain(event);
       expect(plan.stages).not.toContain("COLLSCAN");
       expect(plan.stages).toContain("IXSCAN");
       expect(plan.indexes).toEqual([READ_INDEX_NAME]);
@@ -401,7 +400,7 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
     // Runner totals with durations: 6 `runs` + 3 `durations` documents.
     reset();
     await driver.getRunnerMetricsTotals(ns, { ...range, durations: true });
-    expect(reads()[0]!.command.hint).toEqual(READ_INDEX);
+    expect(reads()[0].command.hint).toEqual(READ_INDEX);
     const runnerTotals = await expectIndexed(9);
     // Keys include the scan's seeks between bounds, so they are not 9 — but
     // nowhere near the 80 noise buckets and the roll-up's that the prune
@@ -416,7 +415,7 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
     // A batch of two runners: their 4 `runs` documents.
     reset();
     await driver.getRunnerMetricsMany(ns, runners.slice(0, 2), range);
-    expect(reads()[0]!.command.hint).toEqual(READ_INDEX);
+    expect(reads()[0].command.hint).toEqual(READ_INDEX);
     await expectIndexed(4);
   });
 
@@ -443,7 +442,7 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
 
     reset();
     await driver.getRunnerMetricsTotals(ns, { ...range, durations: true });
-    const totals = await explain(reads()[0]!);
+    const totals = await explain(reads()[0]);
     expect(totals.indexes).toEqual([READ_INDEX_NAME]);
     expect(totals.docsExamined).toBe(10);
 
@@ -453,7 +452,7 @@ describe.skipIf(!URL)("MongoDB driver: grouped analytics reads", () => {
       [runnerKey("r-0"), runnerKey("r-1")],
       range,
     );
-    expect((await explain(reads()[0]!)).indexes).toEqual([READ_INDEX_NAME]);
+    expect((await explain(reads()[0])).indexes).toEqual([READ_INDEX_NAME]);
   });
 
   it("never reads the namespace roll-up as an entity, though its buckets are there", async () => {

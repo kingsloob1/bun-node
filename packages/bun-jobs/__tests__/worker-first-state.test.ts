@@ -50,7 +50,7 @@ async function listen(driver: JobsDriver, ns: string): Promise<StatePayload[]> {
   await driver.connect();
   const unsubscribe = await driver.subscribe(ns, "worker", "mail", (event) => {
     if (event.type === "state") {
-      seen.push(event.payload as StatePayload);
+      seen.push(event.payload);
     }
   });
   cleanups.push(async () => await unsubscribe());
@@ -114,7 +114,7 @@ describe.each(DRIVERS)("a worker's first start (%s)", (_name, makeDriver) => {
       key: worker.key,
       state: "running",
     });
-    expect(Object.hasOwn(seen[0]!, "previous")).toBe(false);
+    expect(Object.hasOwn(seen[0], "previous")).toBe(false);
 
     // A second run() joins the first: nothing is announced again.
     void worker.run();
@@ -185,7 +185,7 @@ describe("a worker's first start, stopped against its key", () => {
       state: "stopped",
       reason: "stopped persistently",
     });
-    expect(Object.hasOwn(seen[0]!, "previous")).toBe(false);
+    expect(Object.hasOwn(seen[0], "previous")).toBe(false);
 
     // Started remotely, it is a transition.
     const remote = new WorkerController({

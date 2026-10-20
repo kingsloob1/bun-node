@@ -129,7 +129,7 @@ describe("BunQueueWorker: idle pass (C8)", () => {
     // plus the poll interval's worth of slack for the claim.
     await waitFor(() => ran.length === 1, { timeout: 3_000 });
     expect(ran[0]?.at).toBeGreaterThanOrEqual(dueAt);
-    expect(ran[0]!.at - dueAt).toBeLessThan(1_000 + 1_000);
+    expect(ran[0].at - dueAt).toBeLessThan(1_000 + 1_000);
   });
 
   it("does not hold back a delayed job this process schedules through the same driver", async () => {
@@ -158,9 +158,9 @@ describe("BunQueueWorker: idle pass (C8)", () => {
     const [first, second] = ran;
     // It ran as soon as the first job let go of the only slot (~300ms), not at
     // the sweep a second after the start.
-    expect(second!.n).toBe(2);
-    expect(second!.at - first!.at).toBeLessThan(600);
-    expect(second!.at - startedAt).toBeLessThan(800);
+    expect(second.n).toBe(2);
+    expect(second.at - first.at).toBeLessThan(600);
+    expect(second.at - startedAt).toBeLessThan(800);
   });
 
   it("falls back to nextDelayedAt for a driver that answers promoteDelayed with a count", async () => {

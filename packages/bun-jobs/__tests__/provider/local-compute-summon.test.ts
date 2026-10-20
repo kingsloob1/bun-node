@@ -51,7 +51,7 @@ function processed(file: string): { id: string; pid: number }[] {
     .filter((line) => line.startsWith("processed "))
     .map((line) => {
       const [, id, pid] = line.split(" ");
-      return { id: id!, pid: Number(pid) };
+      return { id, pid: Number(pid) };
     });
 }
 
@@ -168,11 +168,11 @@ describe("localCompute: a real summon on SQLite", () => {
         now: Date.now,
       });
       expect(unit).toEqual({
-        handle: handles[0]!,
+        handle: handles[0],
         state: "exited",
         exitCode: 0,
       });
-      expect(alive(pid!)).toBe(false);
+      expect(alive(pid)).toBe(false);
 
       // Nothing is left: no demand, no attempt in flight, no unit running.
       expect((await controller.check()).action).toBe("none");
@@ -214,7 +214,7 @@ describe("localCompute: a real summon on SQLite", () => {
       await queue.add("send", { to: "b@example.test" });
       expect(await until(() => processed(log).length >= 2)).toBe(true);
       const [pid] = [...new Set(processed(log).map((line) => line.pid))];
-      expect(await until(() => !alive(pid!))).toBe(true);
+      expect(await until(() => !alive(pid))).toBe(true);
       expect(await until(() => liveUnits().count === 0, 5_000)).toBe(true);
     } finally {
       await jobs.close();

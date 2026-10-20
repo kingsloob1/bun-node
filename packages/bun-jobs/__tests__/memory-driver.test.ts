@@ -218,7 +218,7 @@ describe("memory driver: the active index", () => {
       await driver.completeJob(
         q,
         "complete",
-        tokens.complete!,
+        tokens.complete,
         null,
         false,
         now,
@@ -228,7 +228,7 @@ describe("memory driver: the active index", () => {
       await driver.completeJob(
         q,
         "complete-removed",
-        tokens["complete-removed"]!,
+        tokens["complete-removed"],
         null,
         true,
         now,
@@ -242,7 +242,7 @@ describe("memory driver: the active index", () => {
       await driver.failJob(
         q,
         "retry",
-        tokens.retry!,
+        tokens.retry,
         error,
         { retry: true, runAt: now + 1_000 },
         now,
@@ -253,7 +253,7 @@ describe("memory driver: the active index", () => {
       await driver.failJob(
         q,
         "dead",
-        tokens.dead!,
+        tokens.dead,
         error,
         { retry: false, retention: false },
         now,
@@ -264,7 +264,7 @@ describe("memory driver: the active index", () => {
       await driver.failJob(
         q,
         "dead-removed",
-        tokens["dead-removed"]!,
+        tokens["dead-removed"],
         error,
         { retry: false, retention: true },
         now,
@@ -279,7 +279,7 @@ describe("memory driver: the active index", () => {
         q,
         "bury",
         error,
-        { retention: false, keepStacktraces: 5, token: tokens.bury! },
+        { retention: false, keepStacktraces: 5, token: tokens.bury },
         now,
       );
     });
@@ -288,7 +288,7 @@ describe("memory driver: the active index", () => {
         q,
         "bury-removed",
         error,
-        { retention: true, keepStacktraces: 5, token: tokens["bury-removed"]! },
+        { retention: true, keepStacktraces: 5, token: tokens["bury-removed"] },
         now,
       );
     });

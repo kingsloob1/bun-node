@@ -67,7 +67,7 @@ function makeDriver(options: Partial<RedisDriverOptions> = {}): RedisDriver {
 
 /** A raw client, to look at what the driver stored. */
 async function rawClient(): Promise<RedisClient> {
-  const client = new (await import("bun")).RedisClient(URL!);
+  const client = new (await import("bun")).RedisClient(URL);
   await client.connect();
   clients.push(client);
   return client;
@@ -300,7 +300,7 @@ describe.skipIf(!URL)("Redis grouped reads: the metrics index", () => {
     await driver.flushMetrics();
 
     expect(await expireTime(client, key)).toBe(set);
-    expect(await indexOf(client, key)).toEqual([["r", score!]]);
+    expect(await indexOf(client, key)).toEqual([["r", score]]);
   });
 
   it("ages out a member once every bucket it could have written has expired", async () => {

@@ -147,7 +147,7 @@ describe("summon groups: the expansion", () => {
 
     const emails = await jobs.summonController("emails").status();
     const images = await jobs.summonController("images").status();
-    expect(emails.pending.map((one) => one.id)).toEqual([calls[0]!.id]);
+    expect(emails.pending.map((one) => one.id)).toEqual([calls[0].id]);
     expect(emails.budget?.hour).toBe(1);
     expect(images.pending).toEqual([]);
     expect(images.budget?.hour).toBe(0);
@@ -652,7 +652,7 @@ for (const backend of BACKENDS) {
         const thumb = await jobs.queue("images").add("thumbnail", {});
         expect(await images.check()).toMatchObject({ action: "summoned" });
         expect(calls.map((call) => call.queue)).toEqual(["emails", "images"]);
-        expect(calls[0]!.id).not.toBe(calls[1]!.id);
+        expect(calls[0].id).not.toBe(calls[1].id);
 
         const completed = async (queue: string, id: string): Promise<boolean> =>
           (await jobs.queue(queue).getJob(id))?.state === "completed";
@@ -696,11 +696,11 @@ for (const backend of BACKENDS) {
         const emailsStatus = await emails.status();
         const imagesStatus = await images.status();
         expect(emailsStatus.last).toMatchObject({
-          id: calls[0]!.id,
+          id: calls[0].id,
           outcome: "registered",
         });
         expect(imagesStatus.last).toMatchObject({
-          id: calls[1]!.id,
+          id: calls[1].id,
           outcome: "registered",
         });
         expect(emailsStatus.pending).toEqual([]);

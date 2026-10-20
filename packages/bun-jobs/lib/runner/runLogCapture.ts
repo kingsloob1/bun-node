@@ -152,7 +152,7 @@ export function cutToBytes(
   let end = Math.max(0, maxBytes);
   // 0b10xxxxxx marks a continuation byte: back up until the cut is the start
   // of a character.
-  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) {
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) {
     end--;
   }
 

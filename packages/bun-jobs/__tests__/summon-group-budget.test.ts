@@ -303,7 +303,7 @@ describe("one budget for several queues", () => {
     }
     // The group's budget-exhausted: once per controller per window, naming
     // the group, and onSummonFailed with the group's usage and limits.
-    expect(built[3]!.events).toEqual([
+    expect(built[3].events).toEqual([
       {
         id: "",
         outcome: "budget-exhausted",
@@ -325,11 +325,11 @@ describe("one budget for several queues", () => {
       at: expect.any(Number),
       budget: { hour: 3, perHour: 3, day: 3, perDay: 10 },
     });
-    await built[3]!.controller.check();
-    expect(built[3]!.events).toHaveLength(1);
+    await built[3].controller.check();
+    expect(built[3].events).toHaveLength(1);
 
     // Status shows the group, and the queues' own budgets as off (A5).
-    const status = await built[0]!.controller.status();
+    const status = await built[0].controller.status();
     expect(status.group).toEqual({
       name: "media",
       budget: {
@@ -870,13 +870,11 @@ describe("a single queue is unchanged (back-compat)", () => {
           !arg.startsWith(`${SUMMON_ARGS.id}=`) &&
           !arg.startsWith(`${SUMMON_ARGS.queue}=`),
       );
-    expect(strip(calls[1]!)).toEqual(strip(calls[0]!));
+    expect(strip(calls[1])).toEqual(strip(calls[0]));
     expect(
-      calls[1]!.argv.some((arg) => arg.startsWith("--bun-jobs-summon-group")),
+      calls[1].argv.some((arg) => arg.startsWith("--bun-jobs-summon-group")),
     ).toBe(false);
-    expect(Object.keys(calls[1]!).sort()).toEqual(
-      Object.keys(calls[0]!).sort(),
-    );
+    expect(Object.keys(calls[1]).sort()).toEqual(Object.keys(calls[0]).sort());
   });
 });
 

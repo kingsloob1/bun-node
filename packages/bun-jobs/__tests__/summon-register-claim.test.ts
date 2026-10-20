@@ -509,7 +509,7 @@ for (const backend of BACKENDS) {
         const summon = controller({ summoner, bootBudget: 300 });
         await queue.add("a", {});
         expect(await summon.check()).toMatchObject({ action: "summoned" });
-        const id = calls[0]!.id;
+        const id = calls[0].id;
 
         // It claimed, drained the backlog, marked its exit and closed: no
         // live record carries the id.
@@ -552,7 +552,7 @@ for (const backend of BACKENDS) {
         );
         await queue.add("a", {});
         expect(await summon.check()).toMatchObject({ action: "summoned" });
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         expect(await claimSummonAttempt(driver, ref, id, claimant("w1"))).toBe(
           true,
         );
@@ -585,7 +585,7 @@ for (const backend of BACKENDS) {
         });
         await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         expect(await readClaim(driver, ref, id)).toBeUndefined();
 
         expect(await summon.check()).toMatchObject({ reason: "pending" });
@@ -593,7 +593,7 @@ for (const backend of BACKENDS) {
         await ageMarker(driver, ref);
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
-        expect(events[1]!.detail).toBeUndefined();
+        expect(events[1].detail).toBeUndefined();
         expect((await summon.status()).failures).toBe(1);
       });
 
@@ -607,7 +607,7 @@ for (const backend of BACKENDS) {
           const summon = controller({ summoner });
           const job = await queue.add("a", {});
           await summon.check();
-          const id = calls[0]!.id;
+          const id = calls[0].id;
 
           const summoned = summonedWorker(driver, namespace, id);
           await runUntilDone(summoned, queue, job.id, id);
@@ -615,7 +615,7 @@ for (const backend of BACKENDS) {
           expect(
             (await queue.listWorkers()).some((one) => one.summon?.id === id),
           ).toBe(false);
-          const holder = (await readClaim(driver, ref, id))!.holders[0]!;
+          const holder = (await readClaim(driver, ref, id))!.holders[0];
           expect(holder.worker).toBe(summoned.id);
           expect(holder.exit).toMatchObject({ reason: "closed", code: 0 });
           expect(holder.exit!.forced).toBe(force ? true : undefined);
@@ -633,7 +633,7 @@ for (const backend of BACKENDS) {
         const summon = controller({ summoner });
         const job = await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
 
         const summoned = summonedWorker(driver, namespace, id);
         await runUntilDone(summoned, queue, job.id, id);
@@ -643,7 +643,7 @@ for (const backend of BACKENDS) {
 
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
-        expect(events[1]!.detail).toBe("died");
+        expect(events[1].detail).toBe("died");
         expect((await summon.status()).failures).toBe(1);
       });
 
@@ -727,7 +727,7 @@ for (const backend of BACKENDS) {
           );
         expect(marks).toHaveLength(1);
         const holder = (await readClaim(driver, ref, "sm_escalated"))!
-          .holders[0]!;
+          .holders[0];
         expect(holder.exit).toMatchObject({
           reason: "closed",
           code: 0,
@@ -755,7 +755,7 @@ for (const backend of BACKENDS) {
         const summon = controller({ summoner });
         await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
 
         const summoned = new BunQueueWorker("work", async () => {}, {
           namespace,
@@ -774,7 +774,7 @@ for (const backend of BACKENDS) {
           logger: noopLogger,
         });
         expect(result).toMatchObject({ reason: "idle", code: 0, completed: 1 });
-        const holder = (await readClaim(driver, ref, id))!.holders[0]!;
+        const holder = (await readClaim(driver, ref, id))!.holders[0];
         expect(holder.exit).toMatchObject({ reason: "idle", code: 0 });
 
         await summon.check();
@@ -788,7 +788,7 @@ for (const backend of BACKENDS) {
         const summon = controller({ summoner, backoff: { initial: 5_000 } });
         const job = await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
 
         const summoned = summonedWorker(driver, namespace, id);
         await runUntilDone(summoned, queue, job.id, id);
@@ -798,7 +798,7 @@ for (const backend of BACKENDS) {
         ).toBe("written");
         await summoned.close();
         expect(
-          (await readClaim(driver, ref, id))!.holders[0]!.exit,
+          (await readClaim(driver, ref, id))!.holders[0].exit,
         ).toMatchObject({ reason: "error", code: 1 });
         // Not even a replacing write turns a failure into a success.
         expect(
@@ -807,7 +807,7 @@ for (const backend of BACKENDS) {
 
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
-        expect(events[1]!.detail).toBe("exited-with-error");
+        expect(events[1].detail).toBe("exited-with-error");
         const status = await summon.status();
         expect(status.failures).toBe(1);
         expect(status.last).toMatchObject({ detail: "exited-with-error" });
@@ -824,7 +824,7 @@ for (const backend of BACKENDS) {
             const summon = controller({ summoner });
             await queue.add("a", {});
             await summon.check();
-            const id = calls[0]!.id;
+            const id = calls[0].id;
             expect(
               await claimSummonAttempt(driver, ref, id, claimant("w1")),
             ).toBe(true);
@@ -853,7 +853,7 @@ for (const backend of BACKENDS) {
               "started",
               marked ? "lost" : "registered",
             ]);
-            expect(events[1]!.detail).toBe(
+            expect(events[1].detail).toBe(
               marked ? "exited-with-error" : undefined,
             );
             expect((await summon.status()).failures).toBe(marked ? 1 : 0);
@@ -880,7 +880,7 @@ for (const backend of BACKENDS) {
             await claimSummonAttempt(
               driver,
               ref,
-              calls[round]!.id,
+              calls[round].id,
               claimant(`w${round}`, true),
             ),
           ).toBe(true);
@@ -894,8 +894,8 @@ for (const backend of BACKENDS) {
           "started",
           "lost",
         ]);
-        expect(events[1]!.detail).toBe("died");
-        expect(events[3]!.detail).toBe("died");
+        expect(events[1].detail).toBe("died");
+        expect(events[3].detail).toBe("died");
         expect(await summon.check()).toMatchObject({
           action: "skipped",
           reason: "circuit-open",
@@ -916,7 +916,7 @@ for (const backend of BACKENDS) {
 
         expect(await summon.check()).toMatchObject({ action: "summoned" });
         for (let round = 0; round < 3; round++) {
-          const id = calls[round]!.id;
+          const id = calls[round].id;
           const holder = claimant(`w${round}`, true);
           expect(await claimSummonAttempt(driver, ref, id, holder)).toBe(true);
           expect(
@@ -954,7 +954,7 @@ for (const backend of BACKENDS) {
         await summon.check();
         // Claimed a moment ago; its first record may still be on its way.
         expect(
-          await claimSummonAttempt(driver, ref, calls[0]!.id, claimant("w1")),
+          await claimSummonAttempt(driver, ref, calls[0].id, claimant("w1")),
         ).toBe(true);
         expect(await summon.check()).toMatchObject({ reason: "pending" });
         expect(outcomes(events)).toEqual(["started"]);
@@ -978,8 +978,8 @@ for (const backend of BACKENDS) {
           { name: "c", data: {} },
         ]);
         expect(await summon.check()).toMatchObject({ action: "summoned" });
-        expect(calls[0]!.count).toBe(3);
-        const id = calls[0]!.id;
+        expect(calls[0].count).toBe(3);
+        const id = calls[0].id;
 
         // Two of three ran and left cleanly: still pending, one on its way.
         for (const worker of ["w1", "w2"]) {
@@ -1037,8 +1037,8 @@ for (const backend of BACKENDS) {
               { name: "b", data: {} },
             ]);
             await summon.check();
-            expect(calls[0]!.count).toBe(2);
-            const id = calls[0]!.id;
+            expect(calls[0].count).toBe(2);
+            const id = calls[0].id;
             for (const worker of [
               "clean",
               second === "dead" ? "dead" : "clean2",
@@ -1105,7 +1105,7 @@ for (const backend of BACKENDS) {
           { name: "b", data: {} },
         ]);
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         for (const worker of ["dead1", "dead2"]) {
           expect(
             await claimSummonAttempt(driver, ref, id, claimant(worker, true)),
@@ -1115,7 +1115,7 @@ for (const backend of BACKENDS) {
         await ageMarker(driver, ref);
         await summon.check();
         expect(outcomes(events)).toEqual(["started", "lost"]);
-        expect(events[1]!.detail).toBe("died");
+        expect(events[1].detail).toBe("died");
         expect((await summon.status()).failures).toBe(1);
       });
 
@@ -1177,7 +1177,7 @@ for (const backend of BACKENDS) {
                     (event) => event.id === id && event.outcome === "lost",
                   );
                 expect(lost()).toHaveLength(1);
-                expect(lost()[0]!.detail).toBe("died");
+                expect(lost()[0].detail).toBe("died");
                 // Visible where status is read, and emitted once only.
                 expect((await summon.status()).last).toMatchObject({
                   id,
@@ -1222,7 +1222,7 @@ for (const backend of BACKENDS) {
         });
         await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
           true,
         );
@@ -1243,7 +1243,7 @@ for (const backend of BACKENDS) {
         const lost = () =>
           events.filter((event) => event.id === id && event.outcome === "lost");
         expect(lost()).toHaveLength(1);
-        expect(lost()[0]!.detail).toBe("exited-with-error");
+        expect(lost()[0].detail).toBe("exited-with-error");
         const status = await summon.status();
         expect(status.failures).toBe(1);
         expect(status.last).toMatchObject({
@@ -1293,7 +1293,7 @@ for (const backend of BACKENDS) {
         const two = controller(policy, gated);
         await queue.add("a", {});
         await one.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
           true,
         );
@@ -1335,7 +1335,7 @@ for (const backend of BACKENDS) {
         perTest.push(async () => hold.resolve());
         await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         const summoned = summonedWorker(
           driver,
           namespace,
@@ -1398,7 +1398,7 @@ for (const backend of BACKENDS) {
         });
         await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         // Its worker is live, and the attempt is still pending: counted twice.
         await liveRecord(driver, ref, "elsewhere");
         await queue.add("b", {});
@@ -1420,7 +1420,7 @@ for (const backend of BACKENDS) {
             const summon = controller({ summoner });
             await queue.add("a", {});
             await summon.check();
-            const id = calls[0]!.id;
+            const id = calls[0].id;
             // Claimed long ago by its own clock; its reports stalled (a
             // CPU-bound job), so its record lapsed.
             expect(
@@ -1432,7 +1432,7 @@ for (const backend of BACKENDS) {
             await summon.check();
             if (aged) {
               expect(outcomes(events)).toEqual(["started", "lost"]);
-              expect(events[1]!.detail).toBe("died");
+              expect(events[1].detail).toBe("died");
             } else {
               expect(outcomes(events)).toEqual(["started"]);
               expect((await summon.status()).failures).toBe(0);
@@ -1451,7 +1451,7 @@ for (const backend of BACKENDS) {
         const summon = controller({ summoner });
         await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
           true,
         );
@@ -1495,7 +1495,7 @@ for (const backend of BACKENDS) {
             const summon = controller({ summoner });
             await queue.add("a", {});
             await summon.check();
-            const id = calls[0]!.id;
+            const id = calls[0].id;
             expect(
               await claimSummonAttempt(driver, ref, id, claimant("w")),
             ).toBe(true);
@@ -1510,7 +1510,7 @@ for (const backend of BACKENDS) {
             expect(await watchedIds(driver, ref)).toEqual([id]);
             const marker = (await driver.getQueueState!(ref, SUMMON_MARKER))!
               .value as SummonMarker;
-            expect(marker.watching![0]!.extendedUntil).toBeGreaterThan(
+            expect(marker.watching![0].extendedUntil).toBeGreaterThan(
               Date.now() + 50_000,
             );
             const lost = () =>
@@ -1533,7 +1533,7 @@ for (const backend of BACKENDS) {
               expect((await summon.status()).failures).toBe(0);
             } else {
               expect(lost()).toHaveLength(1);
-              expect(lost()[0]!.detail).toBe("died");
+              expect(lost()[0].detail).toBe("died");
               expect((await summon.status()).failures).toBe(1);
             }
           },
@@ -1774,7 +1774,7 @@ for (const backend of BACKENDS) {
         const summon = controller({ summoner }, counted.driver);
         await queue.add("a", {});
         await summon.check();
-        const id = calls[0]!.id;
+        const id = calls[0].id;
         expect(await claimSummonAttempt(driver, ref, id, claimant("w"))).toBe(
           true,
         );
@@ -1841,7 +1841,7 @@ for (const backend of BACKENDS) {
             );
             if (extra === 1) {
               expect(warns).toHaveLength(1);
-              expect(warns[0]!.fields).toMatchObject({
+              expect(warns[0].fields).toMatchObject({
                 ids: ["sm_watched_0"],
                 limit: 8,
               });
@@ -2004,8 +2004,8 @@ for (const backend of BACKENDS.filter((one) =>
         });
         // The slow poll: no check until the worker has come and gone.
         await platform.settled();
-        const lines = await workerLines(platform.spawned[0]!);
-        const id = platform.calls[0]!.id;
+        const lines = await workerLines(platform.spawned[0]);
+        const id = platform.calls[0].id;
         const recordLeft = (await queue.listWorkers()).some(
           (one) => one.summon?.id === id,
         );
@@ -2263,7 +2263,7 @@ for (const backend of BACKENDS.filter((one) =>
           },
           { timeout: 60_000, interval: 100 },
         );
-        const lost = lateLosses(events)[0]!;
+        const lost = lateLosses(events)[0];
         expect(lost.detail).toBe("died");
         expect((await controller.status()).failures).toBeGreaterThanOrEqual(1);
       }, 90_000);
@@ -2275,17 +2275,17 @@ for (const backend of BACKENDS.filter((one) =>
         expect(await controller.check()).toMatchObject({
           action: "summoned",
         });
-        const id = platform.calls[0]!.id;
+        const id = platform.calls[0].id;
         await waitFor(
           async () =>
             ((await readClaim(driver, ref, id))?.holders.length ?? 0) > 0,
           { timeout: 20_000, interval: 20 },
         );
         await waitFor(() => platform.spawned.length > 0);
-        platform.spawned[0]!.proc.kill("SIGKILL");
+        platform.spawned[0].proc.kill("SIGKILL");
         await platform.settled();
         expect(
-          (await readClaim(driver, ref, id))!.holders[0]!.exit,
+          (await readClaim(driver, ref, id))!.holders[0].exit,
         ).toBeUndefined();
         // Its record outlives it by up to a record lifetime; a check before
         // that lapses sees it running, which is a registration.
@@ -2305,7 +2305,7 @@ for (const backend of BACKENDS.filter((one) =>
           { timeout: 20_000, interval: 250 },
         );
         expect(outcomes(events)).toEqual(["started", "lost"]);
-        expect(events[1]!.detail).toBe("died");
+        expect(events[1].detail).toBe("died");
         expect((await controller.status()).failures).toBe(1);
       });
     },

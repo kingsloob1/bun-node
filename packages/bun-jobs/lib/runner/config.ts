@@ -380,9 +380,7 @@ export function readStoredRunnerConfig(
 export function overriddenKeys(
   override: StoredRunnerOverride,
 ): RunnerConfigKey[] {
-  return RUNNER_CONFIG_KEYS.filter(
-    (key) => override[key] !== undefined,
-  ) as RunnerConfigKey[];
+  return RUNNER_CONFIG_KEYS.filter((key) => override[key] !== undefined);
 }
 
 /**

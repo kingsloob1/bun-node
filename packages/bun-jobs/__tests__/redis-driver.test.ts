@@ -306,7 +306,7 @@ describe.skipIf(!URL)("Redis driver: excluding names", () => {
       ? cursors[1]
       : Object.values(cursors)[0];
     expect(stored).toBeString();
-    const member = stored!.slice(stored!.indexOf(" ") + 1);
+    const member = stored.slice(stored.indexOf(" ") + 1);
     expect(member).toEndWith(
       `:c${EXCLUDE_HEAD_WINDOW + EXCLUDE_SCAN_LIMIT - 1}`,
     );
@@ -392,7 +392,7 @@ describe.skipIf(!URL)("Redis driver: queue state", () => {
     await driver.setQueueState(q, "a", { n: 1 }, 1);
     await driver.setQueueState(q, "c", null, 1);
 
-    const raw = new BunRedis(URL!);
+    const raw = new BunRedis(URL);
     await raw.connect();
     expect(
       await raw.send("ZRANGE", [keys.stateNames, "-", "+", "BYLEX"]),
@@ -671,7 +671,7 @@ describe.skipIf(!URL)("Redis driver: scripts", () => {
     // SCRIPT FLUSH is exactly the condition EVALSHA reports as NOSCRIPT, and
     // the driver's answer is to send the source again.
     const { RedisClient } = await import("bun");
-    const admin = new RedisClient(URL!);
+    const admin = new RedisClient(URL);
     await admin.connect();
     await admin.send("SCRIPT", ["FLUSH"]);
     admin.close();

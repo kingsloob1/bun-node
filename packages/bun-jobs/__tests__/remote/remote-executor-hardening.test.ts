@@ -70,13 +70,13 @@ describe("S1: the default store's capacity", () => {
       await batch(executor, 100);
     }
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]![0]).toContain("evicted");
-    expect(warnings[0]![1]).toMatchObject({ capacity: 10_000 });
+    expect(warnings[0][0]).toContain("evicted");
+    expect(warnings[0][1]).toMatchObject({ capacity: 10_000 });
     // The consequence it warns of: the first attempt, redelivered, runs again.
     const before = runs;
     await read(
       await executor(
-        await signedPost(URL, invoke([{ ...first!, delivery: 2 }])),
+        await signedPost(URL, invoke([{ ...first, delivery: 2 }])),
       ),
     );
     expect(runs).toBe(before + 1);
@@ -110,7 +110,7 @@ describe("S1: the default store's capacity", () => {
     expect(warnings).toEqual([]);
     await read(
       await executor(
-        await signedPost(URL, invoke([{ ...first!, delivery: 2 }])),
+        await signedPost(URL, invoke([{ ...first, delivery: 2 }])),
       ),
     );
     expect(runs).toBe(24_000);
@@ -123,17 +123,19 @@ describe("S1: the default store's capacity", () => {
       onEvict: (count) => reports.push(count),
     });
     const record = { kind: "fence", fence: "t:1" } as const;
-    store.set("a", record, 100, 0);
-    store.set("b", record, 100, 0);
-    store.set("c", record, 100, 0); // evicts "a", unexpired: reported at once
-    store.set("d", record, 100, 0); // evicts "b": inside the burst, held back
+    // The in-memory store answers synchronously: `void` discards the Promise
+    // its interface allows.
+    void store.set("a", record, 100, 0);
+    void store.set("b", record, 100, 0);
+    void store.set("c", record, 100, 0); // evicts "a", unexpired: reported at once
+    void store.set("d", record, 100, 0); // evicts "b": inside the burst, held back
     expect(reports).toEqual([1]);
     // A minute on, everything held has expired: dropping it is not an eviction.
     const later = 60_001;
-    store.set("e", record, later + 5_000, later);
-    store.set("f", record, later + 5_000, later);
+    void store.set("e", record, later + 5_000, later);
+    void store.set("f", record, later + 5_000, later);
     expect(reports).toEqual([1]);
-    store.set("g", record, later + 5_000, later); // evicts "e": a new burst
+    void store.set("g", record, later + 5_000, later); // evicts "e": a new burst
     expect(reports).toEqual([1, 2]); // "b", then "e"
   });
 

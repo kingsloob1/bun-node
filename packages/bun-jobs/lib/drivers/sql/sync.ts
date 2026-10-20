@@ -99,7 +99,7 @@ function hasPredicate(definition: string): boolean {
  */
 function collatedPhrases(definition: string): string[] {
   return [...definition.matchAll(/(\w+)\s+COLLATE\s+("[^"]+"|[\w.-]+)/gi)]
-    .map((match) => `${match[1]} collate ${match[2]!.replace(/"/g, "")}`)
+    .map((match) => `${match[1]} collate ${match[2].replace(/"/g, "")}`)
     .map((phrase) => phrase.toLowerCase())
     .sort();
 }

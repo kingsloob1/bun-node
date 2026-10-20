@@ -131,6 +131,7 @@ describe("the heartbeat's rssBytes and heartbeatRttMs", () => {
     // reports, both records carry that one number. A live reading would drift
     // between the two reports and prove nothing either way.
     const stubbed = 123_456_789;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
     realRss = process.memoryUsage.rss;
     process.memoryUsage.rss = () => stubbed;
 
@@ -146,7 +147,7 @@ describe("the heartbeat's rssBytes and heartbeatRttMs", () => {
 
     expect(both.map((info) => info.rssBytes)).toEqual([stubbed, stubbed]);
     // Which is exactly why a workers table must never sum the column.
-    expect(both[0]!.rssBytes).toBe(both[1]!.rssBytes);
+    expect(both[0].rssBytes).toBe(both[1].rssBytes);
   });
 
   it("reads a record written without them: absent, not zero", async () => {
@@ -170,13 +171,13 @@ describe("the heartbeat's rssBytes and heartbeatRttMs", () => {
     await driver.registerWorker({ ns, queue: "mail" }, older);
 
     const [read] = await records(driver, ns, "mail");
-    expect(read!.rssBytes).toBeUndefined();
-    expect(read!.heartbeatRttMs).toBeUndefined();
-    expect("rssBytes" in read!).toBe(false);
-    expect("heartbeatRttMs" in read!).toBe(false);
+    expect(read.rssBytes).toBeUndefined();
+    expect(read.heartbeatRttMs).toBeUndefined();
+    expect("rssBytes" in read).toBe(false);
+    expect("heartbeatRttMs" in read).toBe(false);
 
     // And the DTO leaves them out rather than defaulting them to `0`.
-    const dto = toWorkerDto(read!, { exposeHosts: true }, now);
+    const dto = toWorkerDto(read, { exposeHosts: true }, now);
     expect("rssBytes" in dto).toBe(false);
     expect("heartbeatRttMs" in dto).toBe(false);
   });

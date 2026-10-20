@@ -1,4 +1,5 @@
 import type { JobRecord, QueueRef } from "../lib/drivers/driver";
+import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
 import {
   decodeName,
@@ -45,7 +46,6 @@ describe("file driver: records written before flows", () => {
       await driver.addJob(q, legacy as JobRecord);
 
       const { readFile } = await import("node:fs/promises");
-      const { join } = await import("node:path");
       const onDisk = JSON.parse(
         await readFile(
           join(tmp.path, q.ns, "queues", q.queue, "jobs", "old.json"),
@@ -102,7 +102,6 @@ describe("file driver: filesystem specifics", () => {
     // Simulate a crash between the record write and the marker write by
     // deleting the record out from under the index.
     const { rm } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     await rm(join(tmp.path, q.ns, "queues", q.queue, "jobs", "ghost.json"));
 
     // The claim must skip and clean up rather than hand out a broken job.
@@ -218,15 +217,11 @@ describe("file driver: promotion racing a claim", () => {
     );
 
     const { readdir, rename } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const index = join(tmp.path, q.ns, "queues", q.queue, "index");
 
     // Step one of a promotion, and only step one.
     const [marker] = await readdir(join(index, "failed"));
-    await rename(
-      join(index, "failed", marker!),
-      join(index, "waiting", marker!),
-    );
+    await rename(join(index, "failed", marker), join(index, "waiting", marker));
 
     // The claim heals it forward rather than skipping it: the record's time
     // has come, so the only thing between it and `waiting` was a write this
@@ -267,7 +262,6 @@ describe("file driver: a job changed or logged across a crash", () => {
     const now = Date.now();
 
     const { readdir } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const logs = join(tmp.path, q.ns, "queues", q.queue, "logs");
     const remaining = async () =>
       await readdir(logs).catch(() => [] as string[]);
@@ -349,14 +343,13 @@ describe("file driver: a job changed or logged across a crash", () => {
     await driver.addJob(q, makeJob({ id: "orphan", runAt: now }));
 
     const { mkdir, readdir, rename } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const dir = join(tmp.path, q.ns, "queues", q.queue);
     const [marker] = await readdir(join(dir, "index", "waiting"));
 
     // A hold taken two seconds ago by a process that never came back.
     await mkdir(join(dir, "held"), { recursive: true });
     await rename(
-      join(dir, "index", "waiting", marker!),
+      join(dir, "index", "waiting", marker),
       join(dir, "held", `${Date.now() - 2_000}.waiting.${marker}`),
     );
     expect((await driver.countJobs(q)).waiting).toBe(0);
@@ -392,13 +385,12 @@ describe("file driver: a job changed or logged across a crash", () => {
     await driver.addJob(q, makeJob({ id: "half", runAt: now }));
 
     const { readdir, rename } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const index = join(tmp.path, q.ns, "queues", q.queue, "index");
     const [marker] = await readdir(join(index, "waiting"));
 
     // Step one of a claim with a 1s lock, and only step one.
     await rename(
-      join(index, "waiting", marker!),
+      join(index, "waiting", marker),
       join(index, "active", `${String(now + 1_000).padStart(13, "0")}-half`),
     );
 
@@ -472,7 +464,6 @@ describe("file driver: removal and writes racing a patch", () => {
     id: string,
   ) {
     const { readdir } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const entries = await readdir(join(root, q.ns, "queues", q.queue), {
       recursive: true,
     });
@@ -547,7 +538,6 @@ describe("file driver: removal and writes racing a patch", () => {
     state: JobRecord["state"] = "waiting",
   ) {
     const { mkdir, readdir, rename } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const dir = join(root, q.ns, "queues", q.queue);
     const waiting = join(dir, "index", state);
     const marker = (await readdir(waiting)).find((name) => name.includes(id));
@@ -1091,7 +1081,6 @@ describe("file driver: listing queue state after a crash", () => {
       await driver.setQueueState(q, "debounce:y.tmp", {}, null);
 
       const { writeFile } = await import("node:fs/promises");
-      const { join } = await import("node:path");
       const dir = join(tmp.path, q.ns, "queues", q.queue, "state");
       const gone = encodeName("debounce:gone");
 
@@ -1303,8 +1292,8 @@ describe("file driver: names on a case-insensitive filesystem", () => {
       ["résumé", "resume"],
       ["é", "é"],
     ]) {
-      const a = encodeSegment(left!);
-      const b = encodeSegment(right!);
+      const a = encodeSegment(left);
+      const b = encodeSegment(right);
 
       for (const [fold, apply] of FOLDS) {
         if (apply(a) === apply(b)) {
@@ -1312,8 +1301,8 @@ describe("file driver: names on a case-insensitive filesystem", () => {
         }
       }
 
-      expect(decodeSegment(a)).toBe(left!);
-      expect(decodeSegment(b)).toBe(right!);
+      expect(decodeSegment(a)).toBe(left);
+      expect(decodeSegment(b)).toBe(right);
     }
 
     expect(encodeSegment("Mail")).toBe("^mail");
@@ -1545,7 +1534,6 @@ describe("file driver: read API files", () => {
 
     // Nothing is written per job: counting is in memory until a flush.
     const { readdir, readFile, writeFile } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     const dir = join(tmp.path, q.ns, "queues", q.queue, "throughput");
     expect(await readdir(dir).catch(() => [])).toEqual([]);
 
@@ -1612,7 +1600,6 @@ describe("file driver: read API files", () => {
       });
 
       const { readdir, writeFile } = await import("node:fs/promises");
-      const { join } = await import("node:path");
       const dir = join(tmp.path, q.ns, "queues", q.queue, "workers");
       const live = JSON.stringify({ ...worker, id: "x", expiresAt: now + 1e9 });
       await writeFile(join(dir, `${encodeName("x")}.json.1.tmp`), live);

@@ -75,7 +75,7 @@ function derivingProvider(options: {
     }),
     secrets: ["apiToken", "derived"],
     describe: (config) => ({ region: config.region }),
-    validate: base.definition.validate as never,
+    validate: base.definition.validate,
     summon: (config, context) => {
       const facet = base.definition.summon!(config, context);
       return {

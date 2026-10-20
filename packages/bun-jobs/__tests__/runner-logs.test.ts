@@ -160,7 +160,7 @@ describe("run-log capture: the spawned realms", () => {
     const record = await runOnce(runner, { char: "あ", count: 100 });
     const page = await readLog(driver, runner.namespace, record.runId);
 
-    const line = page.lines[0]!;
+    const line = page.lines[0];
     expect(line.truncated).toBe(true);
     expect(line.text).not.toContain("�");
     // 63 bytes, not 64: the 22nd character would have straddled the cap, and a
@@ -352,8 +352,8 @@ describe("run-log capture: the run record", () => {
       1,
     );
 
-    expect(stored!.logLines).toBe(4);
-    expect(stored!.logsDropped).toBe(6);
+    expect(stored.logLines).toBe(4);
+    expect(stored.logsDropped).toBe(6);
   });
 });
 

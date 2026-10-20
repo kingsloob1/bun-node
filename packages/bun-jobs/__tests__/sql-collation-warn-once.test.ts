@@ -65,7 +65,7 @@ function isCollationWarning(text: string): boolean {
 /** The guard key a driver checks under, read as a runner reads it. */
 async function keyOf(driver: SqlDriver): Promise<string> {
   const [key] = await collationKeysForRuns(driver, undefined, noopLogger);
-  return key!;
+  return key;
 }
 
 /** Every table name under `prefix`, in the order a guard key lists them. */
@@ -238,11 +238,11 @@ describe("collation warning: a childDriver whose server stalls", () => {
       // The check really is stalled on this server, not failed elsewhere.
       expect(sockets.accepted).toBeGreaterThanOrEqual(1);
       // The first run waits out the bound (2 s from `start()`), once.
-      expect(dispatch[0]!).toBeGreaterThan(1_000);
-      expect(dispatch[0]!).toBeLessThan(3_500);
+      expect(dispatch[0]).toBeGreaterThan(1_000);
+      expect(dispatch[0]).toBeLessThan(3_500);
       // Every later run finds "no keys" settled and does not wait again.
-      expect(dispatch[1]!).toBeLessThan(500);
-      expect(dispatch[2]!).toBeLessThan(500);
+      expect(dispatch[1]).toBeLessThan(500);
+      expect(dispatch[2]).toBeLessThan(500);
 
       const stopping = performance.now();
       await runner.stop();
@@ -485,8 +485,8 @@ for (const { adapter, url, legacy } of MYSQL_FAMILY) {
 
       const warned = warnings(events);
       expect(warned).toHaveLength(2);
-      expect(warned[0]!.message).toContain(`${one}kv: kv_key`);
-      expect(warned[1]!.message).toContain(`${two}kv: kv_key`);
+      expect(warned[0].message).toContain(`${one}kv: kv_key`);
+      expect(warned[1].message).toContain(`${two}kv: kv_key`);
     }, 60_000);
 
     /** A runner over `driver`, with its logger's events, stopped after the case. */
@@ -555,9 +555,9 @@ for (const { adapter, url, legacy } of MYSQL_FAMILY) {
 
         const warned = warnings(events);
         expect(warned).toHaveLength(1);
-        expect(warned[0]!.message).toContain(`${prefix}kv: kv_key`);
+        expect(warned[0].message).toContain(`${prefix}kv: kv_key`);
         // Through the runner's own logger, bindings and all.
-        expect(warned[0]!.bindings).toMatchObject({
+        expect(warned[0].bindings).toMatchObject({
           runnerId: "collation",
           driver: "sql",
           adapter,
@@ -593,8 +593,8 @@ for (const { adapter, url, legacy } of MYSQL_FAMILY) {
 
       const warned = warnings(events);
       expect(warned).toHaveLength(1);
-      expect(warned[0]!.message).toContain(`${child}kv: kv_key`);
-      expect(warned[0]!.message).not.toContain(own);
+      expect(warned[0].message).toContain(`${child}kv: kv_key`);
+      expect(warned[0].message).not.toContain(own);
 
       // Read-only: the check at start created nothing in the child's schema
       // beyond what `drifted` made, and changed no collation.

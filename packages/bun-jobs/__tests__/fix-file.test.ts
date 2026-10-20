@@ -300,7 +300,7 @@ describe("file driver: removeOnComplete: true", () => {
     const buckets = await driver.getThroughput(q, {
       from: now - 60_000,
       to: now + 60_000,
-    } as never);
+    });
     const completed = (buckets as { completed: number }[]).reduce(
       (sum, bucket) => sum + bucket.completed,
       0,
@@ -351,7 +351,7 @@ describe("file driver: addJobs", () => {
       ["y", true],
       ["x", false],
     ]);
-    expect(results[2]!.job.data).toEqual({ n: 1 });
+    expect(results[2].job.data).toEqual({ n: 1 });
     expect((await driver.getJob(q, "x"))?.data).toEqual({ n: 1 });
     expect((await driver.countJobs(q)).waiting).toBe(2);
   });
@@ -408,7 +408,7 @@ describe("file driver: picking by marker name", () => {
       offset: 0,
       limit: 50,
     } as never);
-    const keptFinishes = (kept as JobRecord[])
+    const keptFinishes = kept
       .map((job) => (job.finishedOn ?? 0) - base - 1_000)
       .toSorted((a, b) => a - b);
     // The last completion's retention left the four newest; one written
@@ -443,10 +443,10 @@ describe("file driver: picking by marker name", () => {
       );
     }
 
-    const kept = (await driver.listJobs(q, ["completed"], {
+    const kept = await driver.listJobs(q, ["completed"], {
       offset: 0,
       limit: 100,
-    } as never)) as JobRecord[];
+    } as never);
     const keptFinishes = kept
       .map((job) => (job.finishedOn ?? 0) - base - 1_000)
       .toSorted((a, b) => a - b);
@@ -551,7 +551,7 @@ describe("file driver: pruneExpired's not-due memory", () => {
         failures: {},
         recorded: false,
       },
-    } as Partial<JobRecord>);
+    });
     await driver.addJob(q, child);
     await driver.claimJob(q, claimAt(base));
     await driver.completeJob(q, "child", "t", null, { ttl: 1 }, base + 1_000);

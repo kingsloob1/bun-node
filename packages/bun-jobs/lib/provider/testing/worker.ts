@@ -152,7 +152,7 @@ async function main(): Promise<never> {
   // One worker runs alone, exactly as the single-queue recipe does.
   const result =
     workers.length === 1
-      ? await runSummoned(workers[0]!, options)
+      ? await runSummoned(workers[0], options)
       : await runSummoned(workers, options);
   run.done = true;
   await Promise.all(watching);

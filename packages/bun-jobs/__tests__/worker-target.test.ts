@@ -1,5 +1,4 @@
 import type {
-  BunQueueWorkerOptions,
   Job,
   ProcessorContext,
   WorkerInfo,
@@ -213,8 +212,8 @@ for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
         { timeout: 20_000, message: `the ${mode} flow never completed` },
       );
 
-      const ok = flow.children[0]!.job.id;
-      const bad = flow.children[1]!.job.id;
+      const ok = flow.children[0].job.id;
+      const bad = flow.children[1].job.id;
       const stored = await queue.getJob(flow.job.id);
 
       expect(stored?.returnValue).toEqual({
@@ -498,7 +497,7 @@ for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
         { timeout: 20_000, message: `the ${mode} flow never completed` },
       );
 
-      const child = flow.children[0]!.job.id;
+      const child = flow.children[0].job.id;
       expect((await queue.getJob(child))?.attemptsMade).toBe(1);
       expect((await queue.getJob(flow.job.id))?.returnValue).toEqual({
         [`isolated:${child}`]: {
@@ -619,7 +618,7 @@ function thrownBy(
       driver: new MemoryDriver(),
       logger: noopLogger,
       ...options,
-    } as BunQueueWorkerOptions);
+    });
     closers.push(() => worker.close({ force: true }));
   } catch (error) {
     return error;
@@ -815,13 +814,13 @@ describe("target: a custom factory", () => {
     );
 
     expect(contexts).toHaveLength(1);
-    expect(contexts[0]!.namespace).toBe(namespace);
-    expect(contexts[0]!.queue).toBe("custom");
-    expect(contexts[0]!.workerId).toBe(worker.id);
-    expect(typeof contexts[0]!.logger.info).toBe("function");
-    expect(contexts[0]!.processor).toEqual({ kind: "function", fn: processor });
+    expect(contexts[0].namespace).toBe(namespace);
+    expect(contexts[0].queue).toBe("custom");
+    expect(contexts[0].workerId).toBe(worker.id);
+    expect(typeof contexts[0].logger.info).toBe("function");
+    expect(contexts[0].processor).toEqual({ kind: "function", fn: processor });
     // No driver, deliberately: every write goes through `attempt.job`.
-    expect(Object.keys(contexts[0]!).sort()).toEqual([
+    expect(Object.keys(contexts[0]).sort()).toEqual([
       "logger",
       "namespace",
       "processor",
@@ -841,9 +840,9 @@ describe("target: a custom factory", () => {
     expect(stored?.progress).toBe(10);
     expect((await queue.getJobLogs(job.id)).logs).toEqual(["ran echo"]);
     expect(attempts).toHaveLength(1);
-    expect(attempts[0]!.record.id).toBe(job.id);
-    expect(attempts[0]!.job.id).toBe(job.id);
-    expect(attempts[0]!.context.workerId).toBe(worker.id);
+    expect(attempts[0].record.id).toBe(job.id);
+    expect(attempts[0].job.id).toBe(job.id);
+    expect(attempts[0].context.workerId).toBe(worker.id);
     // One factory call for the worker's life, not one per attempt.
     expect(contexts).toHaveLength(1);
   }, 20_000);
@@ -1153,7 +1152,8 @@ function reporting(
   void worker.run();
   return {
     worker,
-    async record(): Promise<WorkerInfo> {
+    /** The record, once the worker's first report has landed. */
+    record: async (): Promise<WorkerInfo> => {
       let found: WorkerInfo | undefined;
       await waitFor(
         async () => {
@@ -1255,9 +1255,9 @@ describe("target: the heartbeat record", () => {
     );
     const [read] = await driver.listWorkers({ ns, queue: "old" }, now);
 
-    expect("target" in read!).toBe(false);
+    expect("target" in read).toBe(false);
     // Absent is "too old to say", never "in-process".
-    const dto = toWorkerDto(read!, {
+    const dto = toWorkerDto(read, {
       exposeHosts: true,
       exposeProcessorFiles: true,
     });

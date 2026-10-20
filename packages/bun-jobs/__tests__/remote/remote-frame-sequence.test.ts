@@ -137,7 +137,7 @@ describe("the codec and the window together: a stream of frames", () => {
     const out: string[] = [];
     for (let seq = 1; seq <= n; seq++) {
       const message = { op: "progress", job: "j", pseq: seq, progress: seq };
-      const options = { key: key!, sid, seq, ack: 1, mac: nodeHmacSha256 };
+      const options = { key, sid, seq, ack: 1, mac: nodeHmacSha256 };
       out.push(await encodeTextFrame(message, { ...options, dir: "e" }));
     }
     return out;
@@ -149,7 +149,7 @@ describe("the codec and the window together: a stream of frames", () => {
     const out: string[] = [];
     for (const line of lines) {
       const decoded = await decodeTextFrame(line, {
-        keys: [key!],
+        keys: [key],
         sid,
         dir: "e",
         mac: nodeHmacSha256,
@@ -165,7 +165,7 @@ describe("the codec and the window together: a stream of frames", () => {
 
   it("a resumed replay: duplicates dropped, then the new frames delivered", async () => {
     const [f1, f2, f3, f4] = await frames(4);
-    expect(await receive([f1!, f2!, f1!, f2!, f3!, f4!])).toEqual([
+    expect(await receive([f1, f2, f1, f2, f3, f4])).toEqual([
       "1:deliver",
       "2:deliver",
       "1:duplicate",
@@ -177,14 +177,14 @@ describe("the codec and the window together: a stream of frames", () => {
 
   it("a withheld frame: the next is a gap", async () => {
     const [f1, , f3] = await frames(3);
-    expect(await receive([f1!, f3!])).toEqual(["1:deliver", "3:gap"]);
+    expect(await receive([f1, f3])).toEqual(["1:deliver", "3:gap"]);
   });
 
   it("a forged frame never reaches the window, so it cannot move it", async () => {
     const [f1, f2] = await frames(2);
-    const forged = f2!.replace('"progress":2', '"progress":100');
-    expect(forged).not.toBe(f2!);
-    expect(await receive([f1!, forged, f2!])).toEqual([
+    const forged = f2.replace('"progress":2', '"progress":100');
+    expect(forged).not.toBe(f2);
+    expect(await receive([f1, forged, f2])).toEqual([
       "1:deliver",
       "mac",
       "2:deliver",

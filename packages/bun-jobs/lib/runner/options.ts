@@ -218,9 +218,7 @@ export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
   // an explicit `childDriver` wins and a config-shaped `driver` stands in.
   const childDriver: DriverConfig | undefined =
     options.childDriver ??
-    (options.driver && "type" in options.driver
-      ? (options.driver as DriverConfig)
-      : undefined);
+    (options.driver && "type" in options.driver ? options.driver : undefined);
 
   const lockTtl = options.lockTtl ?? DEFAULT_LOCK_TTL;
   const captureLogs = resolveCaptureLogs(options.captureLogs);

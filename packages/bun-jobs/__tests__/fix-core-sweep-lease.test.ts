@@ -253,9 +253,9 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
 
     // And it is the same worker for all of them within a cadence group.
     const minute = workers.filter(({ counts }) => counts.prune > 0);
-    expect(minute[0]!.counts.repeats).toBeGreaterThan(0);
-    expect(minute[0]!.counts.windows).toBeGreaterThan(0);
-    expect(minute[0]!.counts.controls).toBeGreaterThan(0);
+    expect(minute[0].counts.repeats).toBeGreaterThan(0);
+    expect(minute[0].counts.windows).toBeGreaterThan(0);
+    expect(minute[0].counts.controls).toBeGreaterThan(0);
   });
 
   it("still promotes and redelivers on every worker", async () => {
@@ -274,7 +274,7 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
           return (...args: unknown[]) => {
             if (prop === "promoteDelayed") {
               promotions++;
-              seen.add(view as object);
+              seen.add(view);
             }
             return (value as (...a: unknown[]) => unknown).apply(target, args);
           };
@@ -367,7 +367,7 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
       message: "no worker took over from the parked holder",
     });
 
-    const entry = await inner.getQueueState!(
+    const entry = await inner.getQueueState(
       { ns, queue: "q" },
       STALLED_SWEEP_LEASE,
     );
@@ -389,7 +389,7 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
       message: "the only worker never pruned",
     });
 
-    const held = await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE);
+    const held = await inner.getQueueState(ref, MINUTE_SWEEP_LEASE);
     expect((held?.value as { holder?: string }).holder).toBe(only.instance.id);
 
     // Two minutes: the same two lifetimes the stalled lease takes, at the
@@ -401,8 +401,7 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
 
     await only.instance.stop();
     await waitFor(
-      async () =>
-        (await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE)) === null,
+      async () => (await inner.getQueueState(ref, MINUTE_SWEEP_LEASE)) === null,
       { timeout: 2_000, message: "the parked holder kept the minute lease" },
     );
   });
@@ -452,12 +451,12 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
     expect(workers.filter(({ counts }) => counts.stalled > 0)).toHaveLength(1);
 
     const ref = { ns, queue: "q" };
-    const held = await inner.getQueueState!(ref, STALLED_SWEEP_LEASE);
+    const held = await inner.getQueueState(ref, STALLED_SWEEP_LEASE);
     expect(held).not.toBeNull();
     expect(workers.map(({ instance }) => instance.id)).toContain(
       (held!.value as { holder: string }).holder,
     );
-    expect(await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE)).toBeNull();
+    expect(await inner.getQueueState(ref, MINUTE_SWEEP_LEASE)).toBeNull();
   });
 
   it("takes the stalled lease, and never the minute one, as the only worker", async () => {
@@ -473,13 +472,13 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
     });
 
     const ref = { ns, queue: "q" };
-    const held = await inner.getQueueState!(ref, STALLED_SWEEP_LEASE);
+    const held = await inner.getQueueState(ref, STALLED_SWEEP_LEASE);
     expect((held?.value as { holder?: string } | undefined)?.holder).toBe(
       only.instance.id,
     );
     // It holds the lease it sweeps under, and nothing at all for the timer it
     // never armed.
-    expect(await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE)).toBeNull();
+    expect(await inner.getQueueState(ref, MINUTE_SWEEP_LEASE)).toBeNull();
     expect(housekeeping(only.counts)).toBe(0);
   });
 
@@ -514,7 +513,7 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
     const ref = { ns, queue: "q" };
     expect(
       (
-        (await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE))?.value as {
+        (await inner.getQueueState(ref, MINUTE_SWEEP_LEASE))?.value as {
           holder?: string;
         }
       )?.holder,
@@ -541,7 +540,7 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
       async () =>
         idler.counts.stalled > before &&
         (
-          (await inner.getQueueState!(ref, STALLED_SWEEP_LEASE))?.value as {
+          (await inner.getQueueState(ref, STALLED_SWEEP_LEASE))?.value as {
             holder?: string;
           }
         )?.holder === idler.instance.id,
@@ -626,7 +625,7 @@ describe("a lone maintenance: false worker recovers a stalled job", () => {
     expect(await stalled).toEqual([added.id]);
 
     // And it ran under the lease, held by this worker — not around it.
-    const held = await driver.getQueueState!(queue.ref, STALLED_SWEEP_LEASE);
+    const held = await driver.getQueueState(queue.ref, STALLED_SWEEP_LEASE);
     expect((held?.value as { holder?: string } | undefined)?.holder).toBe(
       only.id,
     );
@@ -668,7 +667,7 @@ describe("the maintenance lease settles on the fastest sweeper", () => {
     inner: MemoryDriver,
     ns: string,
   ): Promise<LeaseValue | null> {
-    const entry = await inner.getQueueState!(
+    const entry = await inner.getQueueState(
       { ns, queue: "q" },
       STALLED_SWEEP_LEASE,
     );
@@ -701,7 +700,7 @@ describe("the maintenance lease settles on the fastest sweeper", () => {
   function widestGap(at: number[]): number {
     let widest = 0;
     for (let i = 1; i < at.length; i++) {
-      widest = Math.max(widest, at[i]! - at[i - 1]!);
+      widest = Math.max(widest, at[i] - at[i - 1]);
     }
     return widest;
   }
@@ -777,7 +776,7 @@ describe("the maintenance lease settles on the fastest sweeper", () => {
 
     const sweeping = workers.filter(({ counts }) => counts.stalled > 0);
     expect(sweeping).toHaveLength(1);
-    expect(sweeping[0]!.instance.id).toBe(holders[0]!);
+    expect(sweeping[0].instance.id).toBe(holders[0]);
     expect((await lease(inner, ns))!.cadence).toBe(cadence);
   }, 20_000);
 

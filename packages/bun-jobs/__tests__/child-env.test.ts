@@ -425,10 +425,10 @@ describe("child-process environment: what was withheld, at debug", () => {
     const lines = withheld(events);
 
     expect(lines).toHaveLength(1);
-    expect(lines[0]!.message).toBe(
+    expect(lines[0].message).toBe(
       `child env allowlist withheld ${expected} host variables (pass them with passEnv, or env: "inherit")`,
     );
-    expect(lines[0]!.fields).toMatchObject({ withheld: expected });
+    expect(lines[0].fields).toMatchObject({ withheld: expected });
     // A count only: neither the secret's name nor its value is anywhere in
     // the record, nor in anything else logged.
     const all = JSON.stringify(events);
@@ -471,7 +471,7 @@ describe("child-process environment: what was withheld, at debug", () => {
     );
     const lines = withheld(logs.events);
     expect(lines).toHaveLength(1);
-    expect(lines[0]!.message).toMatch(
+    expect(lines[0].message).toMatch(
       /^child env allowlist withheld \d+ host variables? \(pass them with passEnv, or env: "inherit"\)$/,
     );
     const all = JSON.stringify(logs.events);

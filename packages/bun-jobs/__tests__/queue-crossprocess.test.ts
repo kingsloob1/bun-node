@@ -81,8 +81,8 @@ async function untilClaiming(
         const missing = expected.filter((id) => !seen.has(id));
         const exited = await Promise.all(
           missing
-            .filter((id) => consumers[id]!.proc.exitCode !== null)
-            .map(async (id) => `${id}: ${await consumers[id]!.errors}`),
+            .filter((id) => consumers[id].proc.exitCode !== null)
+            .map(async (id) => `${id}: ${await consumers[id].errors}`),
         );
         return [
           `consumers never started claiming: ${missing.join(", ")}`,
@@ -168,7 +168,7 @@ for (const { name: backendName, config, available } of READY) {
           SHARE_WITH: "2",
         }),
       );
-      await untilClaiming(readyLog, { c1: consumers[0]!, c2: consumers[1]! });
+      await untilClaiming(readyLog, { c1: consumers[0], c2: consumers[1] });
 
       // Two producers, each adding its own half.
       await Promise.all(

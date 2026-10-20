@@ -55,8 +55,6 @@ function definition(
     apiVersion: { core: "0.1", summon: "0.1" },
     summon: () => facet(),
     ...overrides,
-  } as ComputeProviderDefinition<unknown> & {
-    summon: (config: unknown, context: ProviderSetupContext) => SummonFacet;
   };
 }
 
@@ -188,11 +186,9 @@ describe("defineComputeProvider: the definition", () => {
         }),
       ),
     ).toThrow(/Standard Schema/);
-    expect(() =>
-      defineComputeProvider(
-        definition({ secrets: [""] as unknown as string[] }),
-      ),
-    ).toThrow(/secrets/);
+    expect(() => defineComputeProvider(definition({ secrets: [""] }))).toThrow(
+      /secrets/,
+    );
   });
 });
 
@@ -257,7 +253,7 @@ describe("configuring a provider", () => {
       acme({
         region: 1,
         apiToken: "leaked-secret-value",
-      } as unknown as AcmeConfig);
+      });
     } catch (error) {
       caught = error;
     }

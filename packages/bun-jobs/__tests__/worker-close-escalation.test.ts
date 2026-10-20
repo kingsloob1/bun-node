@@ -156,6 +156,7 @@ function countLimiterCloses(): Map<QueueLimiter, number> {
     QueueLimiter.prototype,
     "close",
   )!;
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
   const close = QueueLimiter.prototype.close;
   QueueLimiter.prototype.close = async function (this: QueueLimiter) {
     counts.set(this, (counts.get(this) ?? 0) + 1);
@@ -298,14 +299,14 @@ for (const backend of BACKENDS) {
         const graceful = set.worker.close({ timeout: GRACE_MS });
         await timers.graceArmed;
         // The graceful close is waiting on an attempt that ignores it.
-        expect(set.signals[0]!.aborted).toBe(false);
+        expect(set.signals[0].aborted).toBe(false);
 
         const forced = set.worker.close({ force: true });
         expect(await within(forced, PROMPT_MS)).not.toBe("pending");
         expect(await within(graceful, PROMPT_MS)).not.toBe("pending");
 
         expect(set.signals).toHaveLength(1);
-        expect(set.signals[0]!.aborted).toBe(true);
+        expect(set.signals[0].aborted).toBe(true);
         expect(set.worker.isRunning).toBe(false);
         // The graceful wait's timer went with it; nothing of the worker's
         // is still armed.
@@ -321,7 +322,7 @@ for (const backend of BACKENDS) {
         const set = setup(backend.config);
         await running(set);
         let aborts = 0;
-        set.signals[0]!.addEventListener("abort", () => {
+        set.signals[0].addEventListener("abort", () => {
           aborts += 1;
         });
 
@@ -347,7 +348,7 @@ for (const backend of BACKENDS) {
         const set = setup(backend.config);
         await running(set);
         let aborts = 0;
-        set.signals[0]!.addEventListener("abort", () => {
+        set.signals[0].addEventListener("abort", () => {
           aborts += 1;
         });
 
@@ -379,11 +380,11 @@ for (const backend of BACKENDS) {
         // It aborts nothing, and waits with the first call for the drain.
         const both = Promise.all([graceful, again]);
         expect(await within(both, 200)).toBe("pending");
-        expect(set.signals[0]!.aborted).toBe(false);
+        expect(set.signals[0].aborted).toBe(false);
 
         set.release();
         expect(await within(both, PROMPT_MS)).not.toBe("pending");
-        expect(set.signals[0]!.aborted).toBe(false);
+        expect(set.signals[0].aborted).toBe(false);
         expect([...timers.intervals.values()]).toEqual([]);
         expect(set.events).toEqual({ closing: 1, closed: 1 });
         expect(set.driverCloses()).toBe(1);
@@ -401,7 +402,7 @@ for (const backend of BACKENDS) {
         // Out of patience at the timeout, not before; aborted then.
         expect(took).toBeGreaterThanOrEqual(290);
         expect(took).toBeLessThan(PROMPT_MS);
-        expect(set.signals[0]!.aborted).toBe(true);
+        expect(set.signals[0].aborted).toBe(true);
         expect([...timers.intervals.values()]).toEqual([]);
         expect(set.events).toEqual({ closing: 1, closed: 1 });
         expect(set.driverCloses()).toBe(1);
@@ -415,7 +416,7 @@ for (const backend of BACKENDS) {
         expect(
           await within(set.worker.close({ force: true }), PROMPT_MS),
         ).not.toBe("pending");
-        expect(set.signals[0]!.aborted).toBe(true);
+        expect(set.signals[0].aborted).toBe(true);
         expect([...timers.intervals.values()]).toEqual([]);
         expect(set.events).toEqual({ closing: 1, closed: 1 });
         expect(set.driverCloses()).toBe(1);
@@ -495,7 +496,7 @@ describe("close({ force: true }) during a graceful target close", () => {
       "pending",
     );
     expect(target.calls).toEqual([{ force: true }]);
-    expect(set.signals[0]!.aborted).toBe(true);
+    expect(set.signals[0].aborted).toBe(true);
   }, 20_000);
 });
 

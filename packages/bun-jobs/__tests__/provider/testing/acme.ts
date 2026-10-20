@@ -307,7 +307,7 @@ export function acmeProvider(
         if (answer.failures !== undefined && answer.failures.length > 0) {
           return {
             status: "unavailable",
-            reason: answer.failures[0]!.reason,
+            reason: answer.failures[0].reason,
           };
         }
         return answer.deduped === true
@@ -591,7 +591,7 @@ export function acmeSummoner(
       }
       const answer = (await response.json()) as RunAnswer;
       if (answer.failures !== undefined && answer.failures.length > 0) {
-        return { status: "unavailable", reason: answer.failures[0]!.reason };
+        return { status: "unavailable", reason: answer.failures[0].reason };
       }
       return answer.deduped === true
         ? { status: "deduped", handles: answer.handles ?? [] }

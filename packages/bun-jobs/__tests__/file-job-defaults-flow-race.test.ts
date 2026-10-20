@@ -126,7 +126,7 @@ describe("file driver: a stale child failure never buries a retried parent", () 
     const heldDir = join(root, parents.ns, "queues", parents.queue, "held");
     await mkdir(heldDir, { recursive: true });
     const hold = join(heldDir, `${Date.now()}.waiting-children.${marker}`);
-    await rename(join(dir, "waiting-children", marker!), hold);
+    await rename(join(dir, "waiting-children", marker), hold);
 
     const delivery = driver.recordChild(
       parents,
@@ -145,7 +145,7 @@ describe("file driver: a stale child failure never buries a retried parent", () 
       path,
       JSON.stringify({ ...child, flow: { ...child.flow!, recorded: true } }),
     );
-    await rename(hold, join(dir, "waiting-children", marker!));
+    await rename(hold, join(dir, "waiting-children", marker));
 
     expect(await delivery).toBe("already");
     const parent = await driver.getJob(parents, "p");

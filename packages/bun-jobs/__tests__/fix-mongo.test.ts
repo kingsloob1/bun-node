@@ -395,7 +395,7 @@ async function monitoredDriver(): Promise<{
   client.on("commandStarted", (event) => commands.push(event.commandName));
   const driver = new MongoDriver({
     url: URL!,
-    client: client as unknown as MongoClientLike,
+    client,
   });
   drivers.push(driver);
   await driver.connect();
@@ -441,11 +441,11 @@ describe.skipIf(!URL)("MongoDriver fixes (C6: settle and claim)", () => {
       ),
     );
     expect(
-      (await driver.claimJobs!(q, claimAt(now), 3)).map((job) => job.id),
+      (await driver.claimJobs(q, claimAt(now), 3)).map((job) => job.id),
     ).toEqual(["a", "b", "c"]);
     await driver.claimJob(q, claimAt(now, "other"));
 
-    const settled = await driver.completeJobs!(
+    const settled = await driver.completeJobs(
       q,
       "tok",
       [
@@ -485,9 +485,9 @@ describe.skipIf(!URL)("MongoDriver fixes (C6: settle and claim)", () => {
         makeJob({ id, createdAt: now + index, runAt: now }),
       ),
     );
-    await driver.claimJobs!(q, claimAt(now), 4);
+    await driver.claimJobs(q, claimAt(now), 4);
 
-    const settled = await driver.completeJobs!(
+    const settled = await driver.completeJobs(
       q,
       "tok",
       ids.map((id) => ({ id, result: id, retention: 2 })),
@@ -526,7 +526,7 @@ describe.skipIf(!URL)("MongoDriver fixes (C6: settle and claim)", () => {
     const taken: string[] = [];
     const race = async (driver: MongoDriver, token: string) => {
       for (;;) {
-        const batch = await driver.claimJobs!(q, claimAt(now, token), 7);
+        const batch = await driver.claimJobs(q, claimAt(now, token), 7);
         if (batch.length === 0) {
           return;
         }
@@ -555,10 +555,10 @@ describe.skipIf(!URL)("MongoDriver fixes (C6: settle and claim)", () => {
     const now = Date.now();
     await driver.addJob(q, makeJob({ id: "a", createdAt: now }));
     await driver.pauseQueue(q);
-    expect(await driver.claimJobs!(q, claimAt(now), 5)).toEqual([]);
+    expect(await driver.claimJobs(q, claimAt(now), 5)).toEqual([]);
     await driver.resumeQueue(q);
     expect(
-      (await driver.claimJobs!(q, claimAt(now), 5)).map((job) => job.id),
+      (await driver.claimJobs(q, claimAt(now), 5)).map((job) => job.id),
     ).toEqual(["a"]);
   });
 });
@@ -583,7 +583,7 @@ async function countingDriver(poll: number): Promise<{
   });
   const driver = new MongoDriver({
     url: URL!,
-    client: client as unknown as MongoClientLike,
+    client,
     pollInterval: poll,
   });
   drivers.push(driver);

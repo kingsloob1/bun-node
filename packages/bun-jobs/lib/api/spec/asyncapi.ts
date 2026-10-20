@@ -310,7 +310,7 @@ function parameterObject(
 
 /** `queue` → `Queue`, `runners` → `Runners`. */
 function pascal(name: string): string {
-  return `${name[0]!.toUpperCase()}${name.slice(1)}`;
+  return `${name[0].toUpperCase()}${name.slice(1)}`;
 }
 
 /** Where the socket is served, for the document's `servers`. */
@@ -387,7 +387,7 @@ export function generateAsyncApi(
       conjunctive ||= names.length > 1;
       continue;
     }
-    const name = names[0]!;
+    const name = names[0];
     const scopes = requirement[name] ?? [];
     nativeSecurity.push(
       scopes.length === 0
@@ -560,7 +560,7 @@ export function generateAsyncApi(
     operations[`receive${pascal(def.kind)}Events`] = {
       action: "receive",
       channel: channelRef(def.kind),
-      title: `Receive ${label[0]!.toLowerCase()}${label.slice(1)} events`,
+      title: `Receive ${label[0].toLowerCase()}${label.slice(1)} events`,
       summary: def.description,
       messages: events.map((event) =>
         channelMessageRef(def.kind, event.messageName),
@@ -679,7 +679,7 @@ export function asyncApiForRequest(
   socket: AsyncApiSocketInfo,
 ): AsyncApiDocument {
   const copy = structuredClone(document);
-  const server = (copy.servers as Record<string, Record<string, unknown>>).api!;
+  const server = (copy.servers as Record<string, Record<string, unknown>>).api;
   if (server.variables === undefined) {
     return copy;
   }

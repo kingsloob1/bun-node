@@ -79,7 +79,7 @@ function failed(report: ConformanceReport): string[] {
 
 /** The groups of the checks that failed. */
 function failedGroups(report: ConformanceReport): string[] {
-  return [...new Set(failed(report).map((id) => id.split(".")[1]!))];
+  return [...new Set(failed(report).map((id) => id.split(".")[1]))];
 }
 
 /** The shared handoff's check id. */
@@ -200,7 +200,7 @@ describe("a known-good provider conforms", () => {
     );
     expect(roundTrip).toBeGreaterThanOrEqual(0);
     expect(liveBefore).toBeDefined();
-    const summoned = calls[roundTrip]!.request as SummonRequest;
+    const summoned = calls[roundTrip].request as SummonRequest;
     expect(summoned.target).toBe(liveBefore! + 1);
     const released = calls
       .slice(roundTrip + 1)

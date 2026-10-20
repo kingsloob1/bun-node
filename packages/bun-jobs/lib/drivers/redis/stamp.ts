@@ -189,7 +189,7 @@ function unpackAscii(packed: string): (string | undefined)[] | null {
 function unpackBytes(packed: string): (string | undefined)[] | null {
   const bytes = Buffer.from(packed, "utf8");
   const size = bytes.length;
-  const at = (index: number): string => String.fromCharCode(bytes[index]!);
+  const at = (index: number): string => String.fromCharCode(bytes[index]);
   const slice = (from: number, to: number): string =>
     bytes.toString("utf8", from, to);
 

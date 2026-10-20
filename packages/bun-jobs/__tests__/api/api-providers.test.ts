@@ -198,7 +198,7 @@ function acme(
     displayName: "Acme Compute",
     homepage: "https://acme.example/docs",
     apiVersion: { core: "0.1", summon: "0.1" },
-    config: config as typeof base,
+    config,
     secrets: ["apiToken", "dsn"],
     describe: (value) => ({
       region: value.region,
@@ -234,7 +234,7 @@ function acme(
 function defineComputeProviderAgain(
   make: ReturnType<typeof acme>,
 ): (config: AcmeConfig) => unknown {
-  return defineComputeProvider(make.definition as never) as never;
+  return defineComputeProvider(make.definition as never);
 }
 
 /** Every configured instance a case made, held so the registry keeps it. */
@@ -401,7 +401,7 @@ describe("the registry and GET /providers", () => {
         event.fields?.provider === `${bad.provider.name}@1.0.0~1`,
     );
     expect(logged).toHaveLength(1);
-    expect(logged[0]!.fields).toMatchObject({
+    expect(logged[0].fields).toMatchObject({
       provider: `${bad.provider.name}@1.0.0~1`,
       thrown: "Error",
     });
@@ -812,6 +812,7 @@ describe("POST /providers/{id}/validate, more", () => {
           return [];
         }
         return await new Promise<never>((_resolve, reject) => {
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- rejects with the signal's own reason, as fetch does
           signal.addEventListener("abort", () => reject(signal.reason));
         });
       },
@@ -889,7 +890,7 @@ describe("POST /providers/{id}/validate, more", () => {
         "PROVIDER_SCHEMA_NOT_FOUND",
       );
     } finally {
-      server.stop(true);
+      await server.stop(true);
       await served.close();
     }
   });
@@ -1065,7 +1066,7 @@ describe("GET /providers/{id}/schema", () => {
         $defs: { Choice: { type: "string", enum: HOST_CHOICES } },
       },
       // Configured with the second value: redaction by value hides only it.
-      { ...CONFIG, dsn: HOST_CHOICES[1]! },
+      { ...CONFIG, dsn: HOST_CHOICES[1] },
     );
     expect(schema.$defs).toEqual({ Choice: { type: "string" } });
     expect(JSON.stringify(schema)).not.toContain(HOST_CHOICES[0]);
@@ -1667,9 +1668,9 @@ describe("the providers.read and providers.validate actions", () => {
       tags: { name: string }[];
     };
     expect(document.tags.map((tag) => tag.name)).toContain("Providers");
-    const list = document.paths["/providers"]!.get!;
-    const validate = document.paths["/providers/{id}/validate"]!.post!;
-    const schema = document.paths["/providers/{id}/schema"]!.get!;
+    const list = document.paths["/providers"].get;
+    const validate = document.paths["/providers/{id}/validate"].post;
+    const schema = document.paths["/providers/{id}/schema"].get;
     expect(list.operationId).toBe("listProviders");
     expect(validate.operationId).toBe("validateProvider");
     expect(schema.operationId).toBe("getProviderSchema");
@@ -1781,7 +1782,7 @@ describe("a summon status's providerId and readiness", () => {
     let answered = 0;
     const answerNext = async (valid: boolean): Promise<void> => {
       await waitFor(() => started.length > answered, { timeout: 20_000 });
-      started[answered++]!(valid);
+      started[answered++](valid);
     };
     const make = acme({
       asyncConfig: () =>

@@ -111,7 +111,7 @@ describe("worker control: one change counter per process (C7)", () => {
     await Bun.sleep(150);
 
     const writtenAt = Date.now();
-    await writeWorkerConfig(driver, { ns, queue: "mail" }, workers[0]!.key, {
+    await writeWorkerConfig(driver, { ns, queue: "mail" }, workers[0].key, {
       concurrency: 5,
     });
     await waitFor(() => workers.every((worker) => worker.concurrency === 5), {

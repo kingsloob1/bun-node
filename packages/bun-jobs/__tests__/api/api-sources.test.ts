@@ -117,10 +117,10 @@ describe("QueueSource", () => {
     };
     const built: string[] = [];
     const queue = jobs.queue.bind(jobs);
-    jobs.queue = ((name: string) => {
+    jobs.queue = (name: string) => {
       built.push(name);
       return queue(name);
-    }) as typeof jobs.queue;
+    };
 
     const time = clock();
     const source = new QueueSource(resolve(jobs), { now: time.now });
@@ -607,7 +607,7 @@ describe("serializers", () => {
       host: "db-host-7",
       pid: 4242,
     });
-    expect(dto.local!.activeRuns[0]!.error).not.toHaveProperty("stack");
+    expect(dto.local!.activeRuns[0].error).not.toHaveProperty("stack");
 
     const hidden = toRunnerInfoDto(info, req, {
       ...defaults,
