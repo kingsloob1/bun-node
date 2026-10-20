@@ -227,6 +227,68 @@ describe("@Sse() on BunHttpAdapter", () => {
   });
 });
 
+/**
+ * The client leaving an `@Sse()` stream, served and through `adapter.fetch()`
+ * alike: by cancelling the body, or by aborting its own `fetch()`. Either way
+ * Nest unsubscribes (it waits on `req.socket` `'close'`), and an abort
+ * rejects the read in progress with its reason. Each waits on the
+ * unsubscription itself.
+ */
+describe("@Sse() when the client leaves, served and socket-free", () => {
+  /** Opens `/events/endless` in `mode` with `signal`. */
+  async function open(mode: Mode, signal: AbortSignal): Promise<Response> {
+    if (mode === "served") {
+      const url = await startApp();
+      return fetch(`${url}/events/endless`, { signal });
+    }
+    const adapter = new BunHttpAdapter();
+    const app = await NestFactory.create(AppModule, adapter, {
+      logger: false,
+    });
+    apps.push(app);
+    await app.init();
+    return adapter.fetch(
+      new Request("http://localhost/events/endless", { signal }),
+    );
+  }
+
+  for (const mode of ["served", "adapter.fetch()"] as const) {
+    for (const leaving of ["cancels the body", "aborts its fetch"] as const) {
+      it(`${mode}: the client ${leaving}, and the stream unsubscribes`, async () => {
+        const unsubscribed = Promise.withResolvers<void>();
+        endlessUnsubscribed = unsubscribed.resolve;
+        try {
+          const controller = new AbortController();
+          const res = await open(mode, controller.signal);
+          const reader = res.body!.getReader();
+          expect(await readEvents(reader, 2)).toEqual([
+            "id: 1\ndata: n0",
+            "id: 2\ndata: n1",
+          ]);
+          if (leaving === "cancels the body") {
+            await reader.cancel();
+          } else {
+            const reason = new Error("gone");
+            // Reads on until the stream ends or fails.
+            const reading = (async (): Promise<string> => {
+              let chunk = await reader.read();
+              while (!chunk.done) {
+                chunk = await reader.read();
+              }
+              return "ended";
+            })();
+            controller.abort(reason);
+            expect(await reading.catch((error: unknown) => error)).toBe(reason);
+          }
+          await unsubscribed.promise;
+        } finally {
+          endlessUnsubscribed = undefined;
+        }
+      });
+    }
+  }
+});
+
 describe("@Sse() failures and silence on BunHttpAdapter", () => {
   for (const mode of ["served", "adapter.fetch()"] as const) {
     it(`${mode}: an observable that errors before its first event is a 500, not a hang`, async () => {

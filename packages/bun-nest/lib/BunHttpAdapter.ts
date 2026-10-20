@@ -23,6 +23,7 @@ import type {
   RouterMiddlewareHandler,
   ServeHooks,
   ServeStaticOptions,
+  SocketFreeExchange,
   UnmountedRouter,
   ValidatorMiddleware,
   ViewEngine,
@@ -64,15 +65,14 @@ import {
   isRequestTimeoutError,
   isString,
   isUndefined,
-  markSocketFree,
   mergeBunRequestOptions,
   normalizeEtagOption,
   omit,
+  openSocketFree,
   RequestPipelineOptions,
   RouteClass,
   set,
   toFetchResponse,
-  toNativeRequest,
   validateParseBodyOption,
   waitUntil,
 } from "@kingsleyweb/bun-common";
@@ -966,40 +966,89 @@ export class BunHttpAdapter<
    * {@link handleRequestError}), such as `415` for a refused
    * `Content-Encoding` or `500` for a plain throw.
    *
+   * The caller leaving is a disconnect, as served (see bun-common's
+   * `openSocketFree`): an abort of the request's signal rejects this with
+   * its reason, and so does the read in progress on a streamed body (an
+   * `@Sse()` stream among them); cancelling a streamed body aborts
+   * `req.signal`, so `res`, `req` and `req.socket` emit `close` — what Nest's
+   * SSE teardown and `@SseSignal()` listen to. A signal passed in a
+   * `RequestInit` that is aborted already rejects at once, without handling;
+   * a `Request`'s own is read only once the router's pipeline waits on a
+   * layer (a Nest handler always does).
+   *
    * @example
    * ```ts
    * const res = await adapter.fetch("/users/42");
    * expect(res.status).toBe(200);
    * ```
    */
-  public async fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
-    const nativeRequest = markSocketFree(
-      toNativeRequest(input, init, this.isListening ? this.url : undefined),
+  public fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+    const exchange = openSocketFree(
+      input,
+      init,
+      this.isListening ? this.url : undefined,
     );
+    return exchange.preflight() ?? this.#fetchExchange(exchange);
+  }
 
+  /**
+   * {@link fetch}'s handling of the exchange's request: through
+   * {@link serveNativeRequest}, as `Bun.serve`'s `fetch` handler calls it
+   * (or an overriding {@link handleNativeRequest}), racing the caller's
+   * signal only when it returns a promise.
+   */
+  async #fetchExchange(exchange: SocketFreeExchange): Promise<Response> {
+    const nativeRequest = exchange.request;
+    // A live server when one exists, so `requestIP`/`upgrade` behave; a stub
+    // otherwise, which reports no peer and refuses upgrades. The stub is not
+    // a real server (only `requestIP`/`upgrade` exist), which is exactly what
+    // this method touches.
+    const server = this.getBunServer() ?? FETCH_STUB_SERVER;
     let response: Response | undefined;
     try {
-      response = await this.handleNativeRequest(
-        nativeRequest,
-        // A live server when one exists, so `requestIP`/`upgrade` behave; a
-        // stub otherwise, which reports no peer and refuses upgrades.
-        // The stub is not a real server (only `requestIP`/`upgrade` exist),
-        // which is exactly what this method touches.
-        this.getBunServer() ?? FETCH_STUB_SERVER,
-      );
+      const handled =
+        this.handleNativeRequest ===
+        BunHttpAdapter.prototype.handleNativeRequest
+          ? this.serveNativeRequest(nativeRequest, server)
+          : this.handleNativeRequest(nativeRequest, server);
+      response =
+        handled instanceof Promise
+          ? await exchange.race(
+              handled,
+              (late) => {
+                if (late !== undefined) {
+                  exchange.discard(late);
+                }
+              },
+              // Handled as `Bun.serve`'s `error` callback would, for nobody.
+              (error) => {
+                this.handleRequestError(error).catch(() => undefined);
+              },
+            )
+          : handled;
     } catch (error) {
+      if (exchange.callerGone) {
+        throw error;
+      }
       // The same final error handling `Bun.serve`'s `error` callback runs.
-      return toFetchResponse(
-        await this.handleRequestError(error),
-        nativeRequest.method,
+      return exchange.deliver(
+        toFetchResponse(
+          await this.handleRequestError(error),
+          nativeRequest.method,
+        ),
       );
     }
 
     // A served HEAD response carries no body: Bun drops it on the wire.
-    return toFetchResponse(
-      response ??
-        new Response(null, { status: 101, statusText: "Switching Protocols" }),
-      nativeRequest.method,
+    return exchange.deliver(
+      toFetchResponse(
+        response ??
+          new Response(null, {
+            status: 101,
+            statusText: "Switching Protocols",
+          }),
+        nativeRequest.method,
+      ),
     );
   }
 

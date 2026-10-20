@@ -2521,8 +2521,8 @@ export class BunRequest<
       return (
         length !== null &&
         this.#transferEncoding() === null &&
-        (this.request as Request & { [SOCKET_FREE]?: true })[SOCKET_FREE] !==
-          true &&
+        (this.request as Request & { [SOCKET_FREE]?: unknown })[SOCKET_FREE] ===
+          undefined &&
         this.#canReadWhole(limit) &&
         Number(length) > 0
       );
@@ -2763,7 +2763,7 @@ export class BunRequest<
       // *genuine* abort — one that happens before a response was produced;
       // once responded, a drop is reported solely as `close`. Wired once,
       // only when listened to.
-      const signal = this.request.signal;
+      const signal = this.signal;
       if (!signal.aborted) {
         signal.addEventListener(
           "abort",
@@ -2791,12 +2791,35 @@ export class BunRequest<
   }
 
   /**
+   * The request's abort signal: it aborts when the client disconnects, with
+   * Bun's `AbortError` ("The connection was closed."). Every disconnect
+   * bridge reads it: `aborted`, the `aborted`/`close` events, `res` `close`
+   * and `req.socket`'s `close` and `destroyed` (what NestJS's SSE teardown
+   * and `@SseSignal()` listen to).
+   *
+   * Served, it is the native request's own `request.signal`. For a
+   * socket-free `fetch()` it is its exchange's instead (`SocketFreeExchange`):
+   * `request.signal` there is the caller's own `Request`'s, which aborts only
+   * when the caller aborts it, while this one also aborts when the caller
+   * cancels a streamed body, as a served disconnect does. Read this one to
+   * learn that the client left; it is made on first read.
+   */
+  get signal(): AbortSignal {
+    const mark = (
+      this.request as Request & {
+        [SOCKET_FREE]?: true | { readonly signal: AbortSignal };
+      }
+    )[SOCKET_FREE];
+    return typeof mark === "object" ? mark.signal : this.request.signal;
+  }
+
+  /**
    * `true` when the connection was aborted **before** a response was produced
    * — a genuine client abort, not a normal post-response close. Mirrors
    * Node's `IncomingMessage.aborted`.
    */
   get aborted(): boolean {
-    return this.request.signal.aborted && !this.#responded;
+    return this.signal.aborted && !this.#responded;
   }
 
   /** `true` once the request body has been fully received (Node `complete`). */
@@ -3119,7 +3142,7 @@ export class BunRequest<
         created.setMaxListeners(0);
         emitter = created;
 
-        const signal = that.request.signal;
+        const signal = that.signal;
         const onDisconnect = () => created.emit("close", false);
         if (signal.aborted) {
           queueMicrotask(onDisconnect);
@@ -3185,7 +3208,7 @@ export class BunRequest<
         emitter?.emit(event, ...args) ?? false,
       listenerCount: (event) => emitter?.listenerCount(event) ?? 0,
       get destroyed() {
-        return that.request.signal.aborted;
+        return that.signal.aborted;
       },
       get localPort() {
         return that.socketAddress?.port;

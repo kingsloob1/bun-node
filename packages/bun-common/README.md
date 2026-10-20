@@ -601,6 +601,25 @@ Without a socket there is no peer, so `requestIP()` is `null` and a WebSocket
 upgrade cannot succeed. A bare `BunRouter.fetch()` always parses with
 `parseBody: true`; use the adapter to test request options.
 
+The caller leaving is a disconnect, as it is served. Aborting the caller's
+signal rejects `fetch()` with its reason and fails the read in progress on a
+streamed body. Cancelling a streamed body (`res.write()`, or a stream or
+`Response` passed to `send()`) aborts `req.signal` with Bun's `AbortError`,
+"The connection was closed.", so `res`, `req` and `req.socket` emit `close`.
+Code that cleans up on `req.signal` or those events is therefore tested as it
+runs. Cancelling a buffered body leaves the signal alone, as served.
+
+`req.signal` is the one to read: `req.request.signal` is the caller's own,
+which a cancelled body does not abort. A signal passed in a `RequestInit`
+that is aborted already rejects at once, without routing, and is honoured at
+every step. A `Request`'s own signal is read only once the router's pipeline
+waits on a layer (a handler, middleware or `next()` that has not finished),
+or the handler reads `req.signal`, because Bun creates it on first read at
+about a sixth of the cost of the whole call. So a `Request` whose signal was
+aborted before the call is answered if its handler answers synchronously, and
+an abort while only the request body is being read, or only an adapter's
+not-found handler is running, takes effect once that step ends.
+
 A body that cannot be parsed — declared JSON that does not, or a
 `Content-Encoding` that cannot be decoded — is treated differently by the two.
 The adapter refuses it before routing, as Express's global `json()` parser
