@@ -444,7 +444,7 @@ const IMPLICIT_TEXT_RESPONSES = new WeakSet<Response>();
  * on the request before it is handled; returns the request.
  */
 export function markSocketFree(request: Request): Request {
-  (request as Request & { [SOCKET_FREE]?: true })[SOCKET_FREE] = true;
+  (request as SocketFreeRequest)[SOCKET_FREE] ??= true;
   return request;
 }
 
@@ -473,6 +473,483 @@ export function toFetchResponse(response: Response, method: string): Response {
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+/**
+ * A native `Request` as {@link markSocketFree} or a {@link SocketFreeExchange}
+ * leaves it: `true`, or the exchange answering it.
+ */
+type SocketFreeRequest = Request & {
+  [SOCKET_FREE]?: true | SocketFreeExchange;
+};
+
+/** Ignores a settlement nobody is waiting for. */
+function ignore(): void {}
+
+/**
+ * Stands for a caller's signal not read yet: a `Request`'s own, which Bun
+ * creates on its first read (measured: ~200 ns, a sixth of a whole
+ * socket-free request), so it is read only once something needs it.
+ */
+const UNREAD: unique symbol = Symbol("unread caller signal");
+
+/** How many deferred exchanges {@link SocketFreeExchange} queues before dropping settled ones. */
+const WAITING_COMPACT_AT = 1024;
+
+/**
+ * The part of the router's async pipeline an exchange needs: settling it
+ * early, as the router itself does when a stream opens.
+ */
+export interface ParkedPipeline {
+  /** Whether the pipeline's promise is settled. */
+  settled: boolean;
+  /** Rejects the pipeline's promise. */
+  reject: (error: unknown) => void;
+}
+
+/**
+ * One socket-free `fetch()`: the part of a served request's connection that a
+ * `fetch()` without a socket otherwise lacks — its client going away.
+ *
+ * A served request's signal aborts when its client leaves, by cancelling the
+ * body of a response still being produced or by aborting its own `fetch()`;
+ * `res`, `req` and `req.socket` then emit `close`, and the client's `fetch()`
+ * (or the read in progress on its body) rejects with the abort's reason. The
+ * exchange gives a socket-free request the same through {@link signal}, which
+ * `BunRequest.signal` returns in place of the native request's (the caller's
+ * own, which a cancelled body cannot abort) and every disconnect bridge reads.
+ *
+ * Nothing is paid until it is needed. The caller's signal is read, and
+ * listened to, only when the request waits on something ({@link race}), a
+ * streamed body is delivered, or {@link signal} is read; the signal's
+ * controller is made only when it is read. A request answered synchronously
+ * costs this object and a flag.
+ *
+ * Built by `openSocketFree` (BunRouter.ts), through which the adapters' and
+ * the router's `fetch()` serve. A served request never has one.
+ *
+ * Exported only so bun-nest's adapter serves `fetch()` through the same
+ * path; not part of the supported API, and it may change without notice.
+ *
+ * @internal
+ */
+export class SocketFreeExchange {
+  /**
+   * The native request to handle, marked as socket-free: the caller's own
+   * `Request` as it was passed (or the one built from a path or `RequestInit`),
+   * never rebuilt, so its `signal` stays the caller's.
+   */
+  readonly request: Request;
+
+  /**
+   * Whether the response streams its body (a `write()` stream, or a stream,
+   * async iterable or `Response` passed to `send()`). Set by
+   * {@link BunResponse} as it produces one. Only such a body can still be in
+   * production when the caller gets it, so only its cancellation is a
+   * disconnect: a served client cancelling a buffered body leaves the
+   * request's signal alone, the response having been written already.
+   */
+  streaming = false;
+
+  /** The caller's signal; `undefined` when it gave none; {@link UNREAD} until read. */
+  #caller: AbortSignal | undefined | typeof UNREAD;
+
+  /** Behind {@link signal}; made on its first read. */
+  #disconnect: AbortController | undefined;
+
+  /** Why the client left (Bun's served reason), once it has. */
+  #left: DOMException | undefined;
+
+  /** The caller's abort reason, once its signal aborted while it was watched. */
+  #callerReason: unknown;
+
+  /** Whether the caller's signal aborted while it was watched. */
+  #callerGone = false;
+
+  /** The listener on the caller's signal, while one is installed. */
+  #onCallerAbort: (() => void) | undefined;
+
+  /** The router pipeline waiting on the request's layers, once it parked. */
+  #pipeline: ParkedPipeline | undefined;
+
+  /** Rejects the caller's pending promise; set while {@link race} waits on a `RequestInit` signal's step. */
+  #rejectPending: ((reason: unknown) => void) | undefined;
+
+  /** Fails the delivered stream's read in progress; set while it streams. */
+  #failBody: ((reason: unknown) => void) | undefined;
+
+  /** Set once the exchange is over: a later caller abort is not a disconnect. */
+  #done = false;
+
+  /**
+   * @param request The native request, as {@link request}.
+   * @param caller The caller's signal from its `RequestInit`, if any.
+   * @param fromRequest The caller passed a `Request`: its signal is
+   *   `request.signal`, read only when needed, and `caller` is ignored.
+   */
+  constructor(
+    request: Request,
+    caller: AbortSignal | null | undefined,
+    fromRequest: boolean,
+  ) {
+    this.request = request;
+    this.#caller = fromRequest ? UNREAD : (caller ?? undefined);
+    (request as SocketFreeRequest)[SOCKET_FREE] = this;
+  }
+
+  /**
+   * The request's signal as the handler sees it (`BunRequest.signal`): it
+   * aborts with Bun's served reason, `AbortError` "The connection was
+   * closed.", when the caller leaves — cancels a streamed body, or aborts
+   * its own signal before the response is complete.
+   */
+  get signal(): AbortSignal {
+    let disconnect = this.#disconnect;
+    if (disconnect === undefined) {
+      disconnect = this.#disconnect = new AbortController();
+      if (this.#left !== undefined) {
+        disconnect.abort(this.#left);
+      } else if (!this.#done) {
+        this.#watchCaller();
+      }
+    }
+    return disconnect.signal;
+  }
+
+  /**
+   * Rejects with the caller's reason, without handling anything, when the
+   * caller's signal is known to be aborted already, as a served `fetch()`
+   * never reaches the server. Only a signal passed in a `RequestInit` is
+   * known so cheaply; a `Request`'s own is read later (see {@link race}).
+   */
+  preflight(): Promise<never> | undefined {
+    const caller = this.#caller;
+    return caller !== UNREAD && caller?.aborted === true
+      ? Promise.reject(caller.reason)
+      : undefined;
+  }
+
+  /**
+   * `pending`, a step the request waits on, raced against the caller's
+   * signal: it rejects with the caller's reason once the signal aborts, the
+   * request's {@link signal} aborting as a disconnect. What `pending`
+   * settles with afterwards goes to `late` (to cancel a stream nobody will
+   * read) or `lateError`.
+   *
+   * A signal passed in a `RequestInit` is listened to at once, and the step
+   * wrapped so that its abort rejects it.
+   *
+   * A `Request`'s own signal is not raced here at all: `pending` is returned
+   * as it is. It is honoured through the router's pipeline instead (see
+   * {@link park}), which is what waits on route handlers, middleware and a
+   * parked `next()`: the caller leaving rejects that pipeline itself. A step
+   * outside it (the request body being read, an adapter's not-found
+   * handling) does not see a `Request`'s abort until it ends. That is the
+   * price of reading nothing on the common path: a wrapper promise and its
+   * registry cost ~100-250 ns of a bun-nest request's ~3-4 µs (measured,
+   * router guard A/B), and reading the signal makes Bun create it (~200 ns).
+   */
+  race<T>(
+    pending: Promise<T>,
+    late: (value: T) => void,
+    lateError: (error: unknown) => void = ignore,
+  ): Promise<T> {
+    if (this.#caller !== UNREAD) {
+      this.#watchCaller();
+    }
+    if (this.#callerGone) {
+      pending.then(late, lateError);
+      return Promise.reject(this.#callerReason);
+    }
+    if (
+      this.#caller === undefined ||
+      this.#caller === UNREAD ||
+      this.#done ||
+      (this.#pipeline !== undefined && !this.#pipeline.settled)
+    ) {
+      return pending;
+    }
+    return new Promise<T>((resolve, reject) => {
+      this.#rejectPending = reject;
+      pending.then(
+        (value) => {
+          if (this.#callerGone) {
+            late(value);
+            return;
+          }
+          this.#settled();
+          resolve(value);
+        },
+        (error: unknown) => {
+          if (this.#callerGone) {
+            lateError(error);
+            return;
+          }
+          this.#settled();
+          reject(error);
+        },
+      );
+    });
+  }
+
+  /**
+   * The router's pipeline for this request parked (it waits on a layer):
+   * the caller leaving now rejects it, as {@link race} would reject its
+   * wrapper. Called by the router; the caller's signal is watched as
+   * {@link race} watches it.
+   */
+  park(pipeline: ParkedPipeline): void {
+    this.#pipeline = pipeline;
+    if (this.#done || this.#caller === undefined) {
+      return;
+    }
+    if (this.#caller !== UNREAD) {
+      this.#watchCaller();
+    } else if (this.#onCallerAbort === undefined && !this.#callerGone) {
+      SocketFreeExchange.#defer(this);
+    }
+  }
+
+  /** Whether a step of the request is still waiting for the caller. */
+  #isWaiting(): boolean {
+    return (
+      this.#rejectPending !== undefined ||
+      (this.#pipeline !== undefined && !this.#pipeline.settled)
+    );
+  }
+
+  /**
+   * Exchanges whose step was waiting, caller's signal unread, since the last
+   * {@link #flush}. One that finishes as the last entry leaves at once (see
+   * {@link #finish}); others stay until the flush (cheaper than a `Set`'s add
+   * and delete), dropped past {@link WAITING_COMPACT_AT} so a loop that never
+   * yields holds no more than the requests actually in flight.
+   */
+  static #waiting: SocketFreeExchange[] = [];
+
+  /** Whether {@link #flush} is scheduled. */
+  static #flushScheduled = false;
+
+  /** Queues `exchange` for {@link #flush}, scheduling one if none is. */
+  static #defer(exchange: SocketFreeExchange): void {
+    const waiting = SocketFreeExchange.#waiting;
+    if (waiting.length >= WAITING_COMPACT_AT) {
+      SocketFreeExchange.#waiting = waiting.filter((queued) =>
+        queued.#isWaiting(),
+      );
+    }
+    SocketFreeExchange.#waiting.push(exchange);
+    if (!SocketFreeExchange.#flushScheduled) {
+      SocketFreeExchange.#flushScheduled = true;
+      setImmediate(SocketFreeExchange.#flush);
+    }
+  }
+
+  /** Starts watching the caller of every exchange still waiting. */
+  static #flush(this: void): void {
+    SocketFreeExchange.#flushScheduled = false;
+    const waiting = SocketFreeExchange.#waiting;
+    SocketFreeExchange.#waiting = [];
+    for (const exchange of waiting) {
+      if (exchange.#isWaiting()) {
+        exchange.#watchCaller();
+      }
+    }
+  }
+
+  /** A raced step settled before the caller left: it no longer waits. */
+  #settled(): void {
+    this.#rejectPending = undefined;
+  }
+
+  /** Whether the caller's signal aborted while the request was waiting. */
+  get callerGone(): boolean {
+    return this.#callerGone;
+  }
+
+  /** A response produced after the caller left: its stream is cancelled. */
+  discard(response: Response): void {
+    if (this.streaming && response.body !== null) {
+      this.#cancel(response.body.getReader());
+    }
+  }
+
+  /**
+   * `response` as the caller gets it. A buffered one ends the exchange as it
+   * is; a streamed one is wrapped, so that cancelling it before it ended is a
+   * disconnect and the caller's abort fails the read in progress.
+   */
+  deliver(response: Response): Response {
+    if (!this.streaming) {
+      this.#finish();
+      return response;
+    }
+    const body = response.body;
+    if (body === null) {
+      this.#finish();
+      return response;
+    }
+    const source = body.getReader();
+    let ended = false;
+    const end = (): void => {
+      ended = true;
+      this.#finish();
+    };
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        this.#failBody = (reason) => {
+          if (!ended) {
+            end();
+            controller.error(reason);
+            this.#cancel(source);
+          }
+        };
+        this.#watchCaller();
+      },
+      pull: async (controller) => {
+        let chunk: Awaited<ReturnType<typeof source.read>>;
+        try {
+          chunk = await source.read();
+        } catch (error) {
+          if (!ended) {
+            end();
+            controller.error(error);
+          }
+          return;
+        }
+        if (ended) {
+          return;
+        }
+        if (chunk.done) {
+          end();
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      },
+      // The caller cancelling a body still being produced: a disconnect.
+      // One that ended first leaves the request alone, as served.
+      cancel: () => {
+        if (!ended) {
+          end();
+          this.#cancel(source);
+        }
+      },
+    });
+    return new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  /**
+   * Starts listening to the caller's signal, reading it first if unread;
+   * once only, and never after the exchange is over. An aborted one is acted
+   * on at once.
+   */
+  #watchCaller(): void {
+    if (this.#done || this.#onCallerAbort !== undefined || this.#callerGone) {
+      return;
+    }
+    let caller = this.#caller;
+    if (caller === UNREAD) {
+      const read: unknown = this.request.signal;
+      // A foreign request-like may carry anything there.
+      caller = this.#caller =
+        typeof (read as Partial<AbortSignal> | undefined)?.addEventListener ===
+        "function"
+          ? (read as AbortSignal)
+          : undefined;
+    }
+    if (caller === undefined) {
+      return;
+    }
+    const onAbort = (): void => this.#callerLeft(caller.reason);
+    if (caller.aborted) {
+      onAbort();
+      return;
+    }
+    this.#onCallerAbort = onAbort;
+    caller.addEventListener("abort", onAbort, { once: true });
+  }
+
+  /** The caller's signal aborted: its promise or read fails, and the client left. */
+  #callerLeft(reason: unknown): void {
+    this.#callerGone = true;
+    this.#callerReason = reason;
+    const reject = this.#rejectPending;
+    const fail = this.#failBody;
+    const pipeline = this.#pipeline;
+    this.#rejectPending = undefined;
+    this.#failBody = undefined;
+    reject?.(reason);
+    fail?.(reason);
+    if (pipeline !== undefined && !pipeline.settled) {
+      // As the router settles early for a stream: what it does later is
+      // dropped, or handed to its late-error hook.
+      pipeline.settled = true;
+      pipeline.reject(reason);
+    }
+    this.#leave();
+  }
+
+  /**
+   * The client leaving: {@link signal} aborts as Bun aborts a served request
+   * whose connection closed.
+   */
+  #leave(): DOMException {
+    let left = this.#left;
+    if (left === undefined) {
+      left = this.#left = new DOMException(
+        "The connection was closed.",
+        "AbortError",
+      );
+      this.#disconnect?.abort(left);
+    }
+    this.#finish();
+    return left;
+  }
+
+  /** The client leaving mid-stream: `source` is cancelled with Bun's reason, as served. */
+  #cancel(source: { cancel: (reason: unknown) => Promise<void> }): void {
+    source.cancel(this.#leave()).catch(ignore);
+  }
+
+  /** Ends the exchange: the caller's signal is no longer listened to. */
+  #finish(): void {
+    this.#done = true;
+    this.#pipeline = undefined;
+    // Leaves the deferred queue at once when it is its last entry, as it is
+    // for a caller awaiting one fetch() after another: what the queue held
+    // until the next flush cost a bun-nest request ~5-8% (measured, against
+    // ~1% without it).
+    const waiting = SocketFreeExchange.#waiting;
+    if (waiting.length > 0 && waiting[waiting.length - 1] === this) {
+      waiting.pop();
+    }
+    const onAbort = this.#onCallerAbort;
+    if (onAbort !== undefined) {
+      this.#onCallerAbort = undefined;
+      (this.#caller as AbortSignal).removeEventListener("abort", onAbort);
+    }
+  }
+}
+
+/**
+ * Tells the socket-free exchange answering `request`, if one does, that its
+ * response streams (see {@link SocketFreeExchange.streaming}); `response`,
+ * when given, only if it has a body. A served request has no exchange, and
+ * pays one property read.
+ */
+function noteStreamingBody(request: Request, response?: Response): void {
+  const exchange = (request as SocketFreeRequest)[SOCKET_FREE];
+  if (
+    exchange instanceof SocketFreeExchange &&
+    (response === undefined || response.body !== null)
+  ) {
+    exchange.streaming = true;
+  }
 }
 
 /**
@@ -1133,7 +1610,7 @@ export class BunResponse<
 
       // Bridge a dropped connection to a `close` event (Node emits `close`
       // when the socket terminates). Wired only once, only when listened to.
-      const signal = this.req.request.signal;
+      const signal = this.req.signal;
       if (!signal.aborted) {
         signal.addEventListener("abort", () => this.emitClose(), {
           once: true,
@@ -1580,9 +2057,7 @@ export class BunResponse<
         this.#implicitContentType = TEXT_CONTENT_TYPE;
         const response = new Response(text, this.#initWithoutHeaders());
         if (
-          (this.req.request as Request & { [SOCKET_FREE]?: true })[
-            SOCKET_FREE
-          ] === true
+          (this.req.request as SocketFreeRequest)[SOCKET_FREE] !== undefined
         ) {
           IMPLICIT_TEXT_RESPONSES.add(response);
         }
@@ -1807,6 +2282,11 @@ export class BunResponse<
           respHeaders.set(key, headerValue);
         }
       });
+      if (body instanceof Response) {
+        // A passed-through `Response` (a proxied `fetch()`, typically) may
+        // still be streaming.
+        noteStreamingBody(this.req.request, response);
+      }
       this.response = response;
       return this;
     }
@@ -1876,6 +2356,16 @@ export class BunResponse<
       return this;
     }
 
+    if (
+      !(
+        body instanceof Blob ||
+        body instanceof FormData ||
+        body instanceof URLSearchParams
+      )
+    ) {
+      // A stream, a Node `Readable`, an async iterable or generator.
+      noteStreamingBody(this.req.request);
+    }
     this.response = new Response(
       body as ConstructorParameters<typeof Response>[0],
       this.options,
@@ -2044,6 +2534,7 @@ export class BunResponse<
 
     if (!this.response && !this.#readableStream) {
       this.#readableStreamEventMap?.clear();
+      noteStreamingBody(this.req.request);
 
       this.#readableStream = new ReadableStream(
         {
@@ -2090,7 +2581,7 @@ export class BunResponse<
 
       this.#readableStreamClosePromise = new Promise((resolve) => {
         this.#readableStreamCloseResolve = () => resolve(undefined);
-        const signal = this.req.request.signal;
+        const signal = this.req.signal;
         if (signal.aborted) {
           resolve(undefined);
           void this.endLongLivedConnection();

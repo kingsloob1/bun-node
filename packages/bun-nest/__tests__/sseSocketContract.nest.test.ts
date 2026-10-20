@@ -240,8 +240,8 @@ for (const mode of ["served", "adapter.fetch()"] as const) {
       async () => {
         const k = crypto.randomUUID();
         const ac = new AbortController();
-        // Not awaited: served, it rejects with the abort; through
-        // adapter.fetch() a request nothing answers stays pending.
+        // Not awaited: it rejects with the abort, served and through
+        // adapter.fetch() alike.
         void send[mode](`/contract/held?k=${k}`, ac.signal).catch(
           () => undefined,
         );
