@@ -43,18 +43,18 @@ first priority.
 | PR-2 the Nest 12 blockers | merged, #404 |
 | PR-3 versions (and PR-3b) | merged, #414 (PR-3b, bun-jobs-ui's devDeps, landed with it) |
 | PR-4 routing differential | merged, #410 |
-| PR-5 routing parity | designed (measured; OQ1–OQ10 answered); built after the router benchmark guard |
-| PR-6a errors and security | not started |
-| PR-6b lifecycle | not started |
-| PR-6c responses and hooks | not started |
-| PR-7 bun-common request and multipart | not started |
-| PR-8 bun-nest uploads | not started |
-| PR-9 WS differential | not started |
-| PR-10 examples | not started |
-| PR-11 docs | not started |
+| PR-5 routing parity | merged, #431 (with #442, the adapter router case-insensitive by default, and #444) |
+| PR-6a errors and security | merged, #445 |
+| PR-6b lifecycle | merged, #447 |
+| PR-6c responses and hooks | merged, #455 |
+| PR-7 bun-common request and multipart | merged, #456 (with #451, `next(object)` and `json()`'s Content-Type) |
+| PR-8 bun-nest uploads | merged, #449 |
+| PR-9 WS differential | merged, #458 (with #448 and #454, gateway routes unregistered on close); the floor columns fixed by #461 |
+| PR-10 examples | in part: the example fixes stacked on each PR merged (#418, #437, #441, #443, #450, #453, #457, #459, #460), and `02-http-adapter/query-method.ts`; no example yet for `routeResolutionStrategy`/`routeConflictPolicy`, `enableCsrfProtection`/`useSecurityHeaders` or `return503OnClosing` |
+| PR-11 docs | in progress: the bun-nest README's NestJS 12 section and compatibility table (branch `docs/nest12-readme-v2`) |
 | `@SseSignal` parity (addition, 2026-10-17) | merged, #413 (tests only; no difference from Express on 11.2.7 and 12.1.3) |
-| Router benchmark guard (addition, the user's rule 2026-10-17: routing speed must not regress) | in progress |
-| Nest 12.2.0 lock move (addition, the user's decision 2026-10-20), with `getRouteMatchingOptions()` pulled forward from PR-6c | in progress: develop's lock 12.1.3 → 12.2.0; bun-common's copy of Express 5.3.0 (redirect body, `Content-Disposition`) lands in the same branch |
+| Router benchmark guard (addition, the user's rule 2026-10-17: routing speed must not regress) | merged, #415, #422, #429 |
+| Nest 12.2.0 lock move (addition, the user's decision 2026-10-20), with `getRouteMatchingOptions()` pulled forward from PR-6c | merged, #446: develop's lock 12.1.3 → 12.2.0 (Express 5.3.0), and middleware once per request on a 12.2.0 core; bun-common's copy of Express 5.3.0 (redirect body, `Content-Disposition`) merged as #452 |
 
 Where the plan below names the "features agent", "5a", "4c" or "d6", read the
 owners listed here: those names date from before bun-nest and bun-common had
