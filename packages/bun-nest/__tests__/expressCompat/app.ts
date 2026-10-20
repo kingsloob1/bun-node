@@ -333,6 +333,12 @@ export class ResponseController {
     return { statusCode: 404, message: "x" };
   }
 
+  @Get("err-exc-text")
+  @Header("Content-Type", "text/plain")
+  errExcText() {
+    throw new HttpException({ error: "x" }, 404);
+  }
+
   @Get("file")
   file() {
     return new StreamableFile(Buffer.from("streamed"), {

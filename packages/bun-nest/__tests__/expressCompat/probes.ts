@@ -130,6 +130,10 @@ export const GROUPS: ProbeGroup[] = [
       { name: "return Buffer", path: "/buf" },
       { name: "error-shaped body, text/plain", path: "/err-body" },
       { name: "error-shaped body, +json", path: "/err-body-json" },
+      {
+        name: "custom HttpException body, text/plain",
+        path: "/err-exc-text",
+      },
       // StreamableFile and SSE.
       { name: "StreamableFile with options", path: "/file" },
       { name: "StreamableFile from a Readable", path: "/file-plain" },
@@ -840,6 +844,17 @@ const EXPRESS_REPLY_KEEPS_PLUS_JSON = /isJsonContentType\(/.test(
   ExpressAdapter.prototype.reply.toString(),
 );
 
+/**
+ * Whether the installed `@nestjs/platform-express` also treats an object
+ * body replied with a status of 400 or more as an error body, `statusCode`
+ * of its own or not (12.2.0: `isObject(body) && !isNil(statusCode)`), as
+ * bun-nest does on every version. Read from its `reply`, as above.
+ */
+const EXPRESS_REPLY_CHECKS_REPLY_STATUS =
+  /isObject\(body\)\s*&&\s*!isNil\(statusCode\)/.test(
+    ExpressAdapter.prototype.reply.toString(),
+  );
+
 export const TEXT_DEFAULT =
   "a string body defaults to text/plain here, text/html on Express";
 export const TEXT_CHARSET =
@@ -994,6 +1009,15 @@ export const KNOWN: Record<string, KnownDifference> = {
     fields: ["content-type"],
     reason: TEXT_DEFAULT,
   },
+  ...(EXPRESS_REPLY_CHECKS_REPLY_STATUS
+    ? {}
+    : {
+        "compat/custom HttpException body, text/plain": {
+          fields: ["content-type"],
+          reason:
+            "an object body replied with a status of 400 or more is sent as JSON, as Nest 12.2's reply does; before 12.2 only a body with its own `statusCode` is",
+        },
+      }),
   ...(EXPRESS_REPLY_KEEPS_PLUS_JSON
     ? {}
     : {

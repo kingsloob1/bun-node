@@ -301,12 +301,12 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
 
   describe("reply() with an error-shaped body, as platform-express 12", () => {
     /** Replies `body` under `type`, recording the adapter's warnings. */
-    async function replied(type: string, body: object) {
+    async function replied(type: string, body: object, statusCode?: number) {
       const adapter = new BunHttpAdapter();
       const warn = spyOn(adapter.logger, "warn").mockImplementation(() => {});
       adapter.get("/r", (_req, res) => {
         res.setHeader("Content-Type", type);
-        return adapter.reply(res, body);
+        return adapter.reply(res, body, statusCode);
       });
       const response = await adapter.fetch("/r");
       return {
@@ -335,6 +335,13 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
       });
       expect(result.type).toBe("application/vnd.api+json; charset=utf-8");
       expect(result.warnings).toEqual([]);
+    });
+
+    it("sends any object replied with a status of 400 or more as JSON (Nest 12.2)", async () => {
+      const result = await replied("text/plain", { error: "x" }, 404);
+      expect(result.type).toBe("application/json; charset=utf-8");
+      expect(result.body).toEqual({ error: "x" });
+      expect(result.warnings).toEqual([MISMATCH]);
     });
 
     it("leaves a body below 400 alone", async () => {

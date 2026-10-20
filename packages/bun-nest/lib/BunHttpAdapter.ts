@@ -1929,15 +1929,21 @@ export class BunHttpAdapter<
       return this.#replyStreamableFile(response, body);
     }
 
-    // As @nestjs/platform-express 12: an error-shaped body (`statusCode` 400
-    // or more) under a Content-Type that is not JSON is sent as JSON, with
-    // Nest's warning. (Nest 11 tests `startsWith("application/json")`, so it
-    // also forces a `+json` type; this follows 12, the lock.)
+    // As @nestjs/platform-express 12.2: an error body under a Content-Type
+    // that is not JSON is sent as JSON, with Nest's warning. An error body
+    // has a `statusCode` of 400 or more, or is any object replied with such
+    // a status (`new HttpException({ ... }, 404)`; from 12.2). Nest 11 tests
+    // `startsWith("application/json")`, so it also forces a `+json` type;
+    // this follows 12.2, the lock, on every version.
     const contentType = response.getHeader("Content-Type");
     if (
       typeof contentType === "string" &&
       !isJsonContentType(contentType) &&
-      isErrorShapedBody(body)
+      (isErrorShapedBody(body) ||
+        (typeof body === "object" &&
+          body !== null &&
+          statusCode !== undefined &&
+          statusCode >= 400))
     ) {
       this.logger.warn(
         "Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses",
