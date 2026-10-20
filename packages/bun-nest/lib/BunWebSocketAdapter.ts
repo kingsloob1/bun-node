@@ -455,6 +455,23 @@ interface ServerRoute<customWebsocketDataType> {
   route: string;
 }
 
+/**
+ * One upgrade route a `create()` call registered, kept so `close()` and
+ * `dispose()` can unregister it, as `@nestjs/platform-ws` removes its
+ * `upgrade` listener on dispose (Nest 12.0.2, 9847b5443).
+ */
+interface GatewayRoute<customWebsocketDataType> {
+  /** What `create()` returned: the server the gateway was created for. */
+  server: BunWebSocketServerType<customWebsocketDataType> | undefined;
+  /** The route pattern `create()` passed to `router.ws()`. */
+  route: string;
+  /**
+   * The `BunWebSocket` the route was registered on: the router's at
+   * `create()` time, normally the adapter itself.
+   */
+  owner: BunWebSocket<customWebsocketDataType>;
+}
+
 /** Whether `value` is bytes: any typed array, a `DataView` or an `ArrayBuffer`. */
 function isBinary(value: unknown): value is ArrayBufferView | ArrayBuffer {
   return ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
@@ -594,6 +611,14 @@ export class BunWebSocketAdapter<
 
   /** Routes registered by server-creating `create()` calls, oldest first. */
   private readonly _serverRoutes: ServerRoute<customWebsocketDataType>[] = [];
+
+  /**
+   * The upgrade routes `create()` registered that `close()` or `dispose()`
+   * has not unregistered yet, oldest first. A pattern is unregistered once
+   * no entry for it is left, so two gateways sharing a path keep it until
+   * both of their servers are closed.
+   */
+  private _gatewayRoutes: GatewayRoute<customWebsocketDataType>[] = [];
 
   /** Every `bindClientConnect` registration still attached. */
   private _bindings: ConnectBinding<customWebsocketDataType>[] = [];
@@ -774,8 +799,13 @@ export class BunWebSocketAdapter<
     // rather than by opening then closing the socket. Pass `"/*"` to accept
     // every path.
     const route = this.resolveRoute(options?.path, options?.namespace);
+    // `router.ws()` registers on the router's `BunWebSocket`: kept, so the
+    // route is unregistered from that same one.
+    const owner = (this.router.getBunWebsocket() ??
+      this) as BunWebSocket<customWebsocketDataType>;
     this.router.ws(route, this.wsHandler);
     const server = this.getOrCreateWebsocketServer(port);
+    this._gatewayRoutes.push({ server, route, owner });
 
     if (server && server !== this.getServer()) {
       this._dedicatedServers.add(server);
@@ -1236,6 +1266,10 @@ export class BunWebSocketAdapter<
    * `@nestjs/platform-ws` closes its `ws` server:
    *
    * - gateways bound to that server stop receiving connections;
+   * - the upgrade routes `create()` registered for that server are
+   *   unregistered (a pattern a gateway of another open server still uses
+   *   stays), so a later upgrade request to one is not upgraded: it goes on
+   *   to whatever else matches, or a 404;
    * - a server this adapter owns — a gateway port's, or its own under
    *   `newInstance: true` — is stopped, force-closing its connections;
    * - the HTTP adapter's shared server is **not** stopped (that is the HTTP
@@ -1244,6 +1278,10 @@ export class BunWebSocketAdapter<
    */
   close(server: BunWebSocketServerType<customWebsocketDataType> | undefined) {
     const target = server ?? this.getServer();
+
+    this.removeGatewayRoutes((entry) =>
+      this.isSameServer(entry.server, target),
+    );
 
     this._bindings = this._bindings.filter((binding) => {
       if (!this.isSameServer(binding.server, target)) {
@@ -1288,13 +1326,46 @@ export class BunWebSocketAdapter<
   }
 
   /**
+   * Unregisters the gateway routes `matches` selects, then each pattern no
+   * remaining entry still needs. Only this adapter's handler is removed,
+   * never another handler registered on the same pattern.
+   */
+  private removeGatewayRoutes(
+    matches: (entry: GatewayRoute<customWebsocketDataType>) => boolean,
+  ) {
+    const removed: GatewayRoute<customWebsocketDataType>[] = [];
+    this._gatewayRoutes = this._gatewayRoutes.filter((entry) => {
+      if (!matches(entry)) {
+        return true;
+      }
+      removed.push(entry);
+      return false;
+    });
+
+    for (const entry of removed) {
+      const stillUsed = this._gatewayRoutes.some(
+        (kept) => kept.owner === entry.owner && kept.route === entry.route,
+      );
+      if (!stillUsed) {
+        // `false` for a pattern an earlier entry already unregistered.
+        entry.owner.removeRouteHandler(entry.route, this.wsHandler);
+      }
+    }
+  }
+
+  /**
    * Lifecycle hook invoked by NestJS's `SocketModule` during shutdown (after
-   * `close()`), mirroring `AbstractWsAdapter.dispose()`. A no-op here: server
-   * teardown is handled by `close()` / the owning HTTP adapter, but the method
-   * must exist or `SocketModule.close()` throws.
+   * `close()`), mirroring `AbstractWsAdapter.dispose()`. It unregisters every
+   * gateway route still registered, as `@nestjs/platform-ws` removes its
+   * `upgrade` listener (Nest 12.0.2, 9847b5443), so a server that outlives
+   * the application — one the adapter does not own, or the HTTP adapter's
+   * listening again — no longer upgrades to a gateway that is gone. NestJS
+   * calls `close()` only for a server `create()` returned, so a gateway
+   * created before the shared server listened is unregistered here. Open
+   * sockets and servers are `close()`'s.
    */
   dispose() {
-    // Intentionally empty — see method doc.
+    this.removeGatewayRoutes(() => true);
   }
 }
 
