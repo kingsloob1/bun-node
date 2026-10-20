@@ -259,6 +259,79 @@ describe("BunWebSocketAdapter: per-gateway routes and close()", () => {
   });
 });
 
+describe("BunWebSocketAdapter: close() and dispose() unregister gateway routes", () => {
+  /** The status of a WebSocket upgrade request to `url` (`101` when upgraded). */
+  const upgradeStatus = async (url: string) =>
+    (
+      await fetch(url, {
+        headers: {
+          upgrade: "websocket",
+          connection: "Upgrade",
+          "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "sec-websocket-version": "13",
+        },
+      })
+    ).status;
+
+  /** A listening HTTP adapter and its built-in WebSocket adapter. */
+  const listen = async () => {
+    const http = new BunHttpAdapter();
+    listening.push(http);
+    await http.listen(0);
+    return { http, adapter: http.webSocketAdapter };
+  };
+
+  it("close(server) unregisters the routes created for that server", async () => {
+    const { http, adapter } = await listen();
+    const server = adapter.create(0, { path: "/x", transport: [] });
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+
+    adapter.close(server);
+
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+  });
+
+  it("dispose() unregisters a route NestJS never calls close() for", async () => {
+    const http = new BunHttpAdapter();
+    const adapter = http.webSocketAdapter;
+    // Created before the server listens: `create()` returns no server.
+    const server = adapter.create(0, { path: "/x", transport: [] });
+    expect(server).toBeUndefined();
+    listening.push(http);
+    await http.listen(0);
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+
+    adapter.dispose();
+
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+  });
+
+  it("keeps a path another open server's gateway still uses", async () => {
+    const { http, adapter } = await listen();
+    const shared = adapter.create(0, { path: "/x", transport: [] });
+    const dedicated = adapter.create(await getPort(), {
+      path: "/x",
+      transport: [],
+    });
+
+    adapter.close(dedicated);
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+
+    adapter.close(shared);
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+  });
+
+  it("serves a path again once create() registers it after close()", async () => {
+    const { http, adapter } = await listen();
+    adapter.close(adapter.create(0, { path: "/x", transport: [] }));
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(404);
+
+    adapter.create(0, { path: "/x", transport: [] });
+
+    expect(await upgradeStatus(`${http.url}/x`)).toBe(101);
+  });
+});
+
 /** A fake client that records everything sent to it. */
 function makeFakeClient() {
   const sent: string[] = [];

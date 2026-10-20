@@ -1449,7 +1449,17 @@ and
 
 `close(server)` mirrors `@nestjs/platform-ws`:
 
-- Gateways bound to that server stop receiving connections.
+- Gateways bound to that server stop receiving connections, and their routes
+  are unregistered: an upgrade request to a gateway's path is no longer
+  upgraded (it goes on to whatever else matches, or a `404`). A path a
+  gateway on another open server still uses stays, and so does any other
+  handler on the same path.
+- `dispose()`, which `app.close()` calls after `close()`, unregisters every
+  gateway route left, as `@nestjs/platform-ws` 12 removes its `upgrade`
+  listener. So a server that outlives the application (one the adapter does
+  not own, or the HTTP adapter listening again) never upgrades to a gateway
+  that is gone. A new application on the same server registers its gateways
+  again.
 - A server the adapter owns (a gateway port's, or its own under
   `newInstance: true`) is stopped, force-closing its connections.
 - The HTTP adapter's shared server is **not** stopped; that is `app.close()`'s
