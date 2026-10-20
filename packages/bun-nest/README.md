@@ -936,6 +936,12 @@ export class AvatarsController {
   response; if it fails (a custom storage's `removeFile` rejects), the error
   is logged through a Nest `Logger` named `BunFileInterceptor` rather than
   left as an unhandled rejection, which would end a Bun process.
+- On Nest 12.2.0 and later, when a pipe rejects the request (a
+  `ParseFilePipe`, any pipe on the route), the stored files are removed with
+  `force` once the response has been sent, disk files included, as
+  platform-express 12.2.0 does. A handler that throws leaves them where they
+  are, as on Express. Earlier Nest versions keep them in both cases, as
+  platform-express does there.
 
 An uploaded file is a bun-common `StorageFile`:
 
@@ -957,7 +963,7 @@ The options are bun-common's `UploadOptions`, a union keyed by `storageType`:
 |---|---|---|
 | `"memory"` (the default) | `removeAfter` (default `true`) | Files held in a `Buffer`. |
 | `"disk"` | `dest` (default: the OS temp directory), `filename` (default: 32 random hex characters plus the original extension), `removeAfter` (default `false`) | Files written to disk. `dest` and `filename` are strings or `(file, req) => string \| Promise<string>`. The directory is created when missing. A fixed `filename` makes each upload overwrite the last. |
-| `"custom"` | `storage` (required) | Any `Storage`: `handleFile(file, req)` and `removeFile(file, force?)`. A `DiskStorage` or `MemoryStorage` instance works too. |
+| `"custom"` | `storage` (required) | Any `Storage`: `handleFile(file, req)` and `removeFile(file, force?)`. A `DiskStorage` or `MemoryStorage` instance works too. Name `storageType: "custom"` explicitly: a `storage` without it throws at bootstrap. |
 
 Options every storage type accepts:
 
@@ -986,6 +992,54 @@ export const documents = FileFieldsInterceptor([{ name: "cover", maxCount: 1 }, 
   storage: new DiskStorage({ dest: "./docs", filename: (file) => file.filename, removeAfter: false }),
 });
 ```
+
+### Module-level options (`MulterModule`)
+
+`MulterModule.register(options)` (or `registerAsync({ useFactory, inject })`,
+`{ useClass }`, `{ useExisting }`) gives every upload interceptor of the
+importing module default options, as platform-express's `MulterModule` does.
+It provides the same `MULTER_MODULE_OPTIONS` token, so platform-express's own
+`MulterModule` works with these interceptors too.
+
+```ts
+import { FilesInterceptor, MulterModule, UploadedFiles } from "@kingsleyweb/bun-nest";
+import { Controller, Module, Post, UseInterceptors } from "@nestjs/common";
+
+@Controller("uploads")
+export class UploadsController {
+  @Post()
+  // `files: 1` from the module, `fileSize` from the route.
+  @UseInterceptors(FilesInterceptor("f", 5, { limits: { fileSize: 1000 } }))
+  upload(@UploadedFiles() files: unknown[]) {
+    return { count: files.length };
+  }
+}
+
+@Module({
+  imports: [MulterModule.register({ limits: { files: 1 } })],
+  controllers: [UploadsController],
+})
+export class UploadsModule {}
+```
+
+Each interceptor merges the module's options under its own
+(`mergeUploadOptions`, platform-express's `mergeMulterOptions`):
+
+- The interceptor's keys win.
+- On Nest 12, `limits` is merged key by key, so a route's `fileSize` keeps the
+  module's `files`. On Nest 11 the route's `limits` replaces the module's
+  whole, as platform-express 11 does. (platform-express merges key by key from
+  12.0.4, this package from 12.0.0.)
+- On Nest 12.2.0 and later, a route's `dest` given without a `storage` or
+  `storageType` replaces the module's storage, so the route's files go to disk
+  at that `dest`. Before 12.2.0 the module's storage wins, as multer prefers
+  `storage` to `dest`.
+- With no `storageType` on either side it is `"disk"` when there is a `dest`
+  and `"memory"` otherwise, so multer-style options such as `{ limits }` or
+  `{ dest }` work as they are. A `storage` needs an explicit
+  `storageType: "custom"`: a multer storage engine (`multer.diskStorage()`)
+  cannot run here, so options that leave a `storage` without a `storageType`
+  throw a `TypeError` when the interceptor is built, at bootstrap.
 
 ### Limits and where multipart is parsed
 
@@ -1018,7 +1072,8 @@ exception filter is needed:
 |---|---|---|
 | an `HttpException` (e.g. from a custom storage) | kept as it is | its own |
 | `UploadError` `LIMIT_FILE_SIZE` | `PayloadTooLargeException`, bare message | `413` |
-| `UploadError` `LIMIT_PART_COUNT`, `LIMIT_FILE_COUNT`, `LIMIT_FIELD_KEY`, `LIMIT_FIELD_VALUE`, `LIMIT_FIELD_COUNT`, `LIMIT_UNEXPECTED_FILE`, `MISSING_FIELD_NAME` | `BadRequestException` | `400` |
+| `UploadError` `LIMIT_PART_COUNT`, `LIMIT_FILE_COUNT`, `LIMIT_FIELD_KEY`, `LIMIT_FIELD_VALUE`, `LIMIT_FIELD_COUNT`, `LIMIT_FIELD_NESTING`, `LIMIT_FIELD_ARRAY_INDEX`, `INVALID_FIELD_NAME`, `LIMIT_UNEXPECTED_FILE`, `MISSING_FIELD_NAME` | `BadRequestException` | `400` |
+| `UploadError` with a code not listed here | returned unchanged, as platform-express leaves a code it does not list | `500` |
 | `UploadError` `FILTER_REJECTED` (a `filter` returned a string) | `BadRequestException` | `400` |
 | any other error with `statusCode` `413` (bun-common's `PayloadTooLargeError`) | `PayloadTooLargeException` | `413` |
 | busboy's `Multipart: Boundary not found` | `BadRequestException`, message as it is | `400` |
@@ -1028,6 +1083,9 @@ exception filter is needed:
 - Inside Nest, only a file over `limits.fileSize` is `413`. Every count limit
   is `400`. That is platform-express's mapping. bun-common's standalone
   `UploadError.status` uses `413` for every size and count limit.
+- `LIMIT_FIELD_NESTING`, `LIMIT_FIELD_ARRAY_INDEX` and `INVALID_FIELD_NAME`
+  are multer 2.4's field-name codes. They are `400` on every Nest version, as
+  on platform-express 12. platform-express 11.2.7 answers the last two `500`.
 - For an `UploadError`, the response body is an `UploadExceptionBody`:
   `{ statusCode, message, code, field }`. multer's own message for the code
   gets ` - <field>` appended on a `400` (`"Unexpected field - avatar"`), as

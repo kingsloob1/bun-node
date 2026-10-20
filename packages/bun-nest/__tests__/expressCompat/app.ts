@@ -843,15 +843,20 @@ export async function boot(
   return { side, app, base: `http://127.0.0.1:${port}` };
 }
 
-/** Boots `module` on both adapters with the same configuration. */
+/**
+ * Boots `module` on both adapters with the same configuration; given one
+ * module per side, each side boots its own.
+ */
 export async function bootBoth(
-  module: new () => object,
+  module: (new () => object) | Record<Side, new () => object>,
   configure?: Configure,
   options?: NestApplicationOptions,
 ): Promise<Record<Side, Booted>> {
+  const pick = (side: Side) =>
+    typeof module === "function" ? module : module[side];
   const [express, bun] = await Promise.all([
-    boot("express", module, configure, options),
-    boot("bun", module, configure, options),
+    boot("express", pick("express"), configure, options),
+    boot("bun", pick("bun"), configure, options),
   ]);
   return { express, bun };
 }

@@ -18,10 +18,16 @@
         "FilesInterceptor",
         "NoFilesInterceptor",
         "getMultipartRequest",
-        "transformUploadException"
+        "mergeUploadOptions",
+        "transformUploadException",
+        "MulterModule",
+        "MULTER_MODULE_OPTIONS"
       ],
       "types": [
         "BunNestWebSocketClient",
+        "MulterModuleAsyncOptions",
+        "MulterModuleOptions",
+        "MulterOptionsFactory",
         "BunWebSocketAdapterOptions",
         "BunWebSocketGatewayOptions",
         "BunWebSocketServerType",
