@@ -3,7 +3,6 @@ import { createRequire } from "node:module";
 import {
   MemoryStorage,
   PayloadTooLargeError,
-  UPLOAD_ERROR_MESSAGES,
   UploadError,
 } from "@kingsleyweb/bun-common";
 import {
@@ -397,13 +396,6 @@ const NEST_12 =
 /** Nest 12.2.0 or later, by the capability the interceptors read (`isRejectedByPipes`). */
 const NEST_12_2 = nestIsRejectedByPipes() !== undefined;
 
-/**
- * Whether bun-common raises multer 2.4's field-name codes (PR-7 of the Nest
- * 12 parity plan). Until it does, the tests that need bun-common to enforce
- * `fieldNestingDepth`/`fieldArrayIndexLimit` are skipped, visibly.
- */
-const HAS_FIELD_NAME_CODES = "LIMIT_FIELD_NESTING" in UPLOAD_ERROR_MESSAGES;
-
 /** multer 2.4.0's messages for its field-name codes (`lib/multer-error.js`). */
 const FIELD_NAME_CODES = [
   ["LIMIT_FIELD_NESTING", "Field name nesting too deep"],
@@ -568,7 +560,7 @@ describe("multer 2.4's field-name codes map as platform-express maps them (#1785
     },
   );
 
-  it.skipIf(!HAS_FIELD_NAME_CODES).each(FIELD_NAME_CODES)(
+  it.each(FIELD_NAME_CODES)(
     "renders %s as multer's message - field",
     (code, message) => {
       const mapped = transformUploadException(
@@ -592,31 +584,28 @@ describe("multer 2.4's field-name codes map as platform-express maps them (#1785
     expect(transformUploadException(error as unknown)).toBe(error);
   });
 
-  it.skipIf(!HAS_FIELD_NAME_CODES)(
-    "rejects a field nested deeper than limits.fieldNestingDepth, and an array index over fieldArrayIndexLimit",
-    async () => {
-      const Interceptor = AnyFilesInterceptor({
-        limits: { fieldNestingDepth: 1, fieldArrayIndexLimit: 2 } as never,
+  it("rejects a field nested deeper than limits.fieldNestingDepth, and an array index over fieldArrayIndexLimit", async () => {
+    const Interceptor = AnyFilesInterceptor({
+      limits: { fieldNestingDepth: 1, fieldArrayIndexLimit: 2 },
+    });
+    for (const [name, message] of [
+      ["a[b][c]", "Field name nesting too deep - a[b][c]"],
+      ["arr[5]", "Field name array index too large - arr[5]"],
+    ] as const) {
+      const req = await makeMultipartRequest((fd) => fd.set(name, "1"));
+      const error = await Promise.resolve(
+        new Interceptor().intercept(
+          makeExecutionContext(req),
+          makeCallHandler(),
+        ),
+      ).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        statusCode: 400,
+        message,
       });
-      for (const [name, message] of [
-        ["a[b][c]", "Field name nesting too deep - a[b][c]"],
-        ["arr[5]", "Field name array index too large - arr[5]"],
-      ] as const) {
-        const req = await makeMultipartRequest((fd) => fd.set(name, "1"));
-        const error = await Promise.resolve(
-          new Interceptor().intercept(
-            makeExecutionContext(req),
-            makeCallHandler(),
-          ),
-        ).catch((caught: unknown) => caught);
-        expect(error).toBeInstanceOf(BadRequestException);
-        expect((error as BadRequestException).getResponse()).toMatchObject({
-          statusCode: 400,
-          message,
-        });
-      }
-    },
-  );
+    }
+  });
 });
 
 describe("files removed when a pipe rejects the request (Nest 12.2.0+, acb98de89)", () => {
