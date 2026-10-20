@@ -25,11 +25,14 @@
  *   answers every method with no middleware, guard or interceptor, gets an
  *   `ETag`, and wins over a Nest route on the same path. It exists only on
  *   the socket, so `adapter.fetch()` reaches Nest instead.
- * - `@Redirect()` and `res.redirect()` answer as Express's `res.redirect`:
+ * - `@Redirect()` and `res.redirect()` answer as Express 5.3.0's
+ *   `res.redirect` (the Express `@nestjs/platform-express` 12.2.0 pins):
  *   `Location` percent-encoded, `Vary: Accept`, a `Content-Length`, and a
  *   short body chosen by `Accept` — "Found. Redirecting to …" as `text/plain`,
- *   the same in a `<p>` (HTML-escaped) as `text/html`, or nothing for a client
- *   that accepts neither. `res.redirect(301, url)` and the older
+ *   a small HTML document as `text/html`
+ *   (`<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to …</p></body>`,
+ *   the URL HTML-escaped), or nothing for a client that accepts neither.
+ *   `res.redirect(301, url)` and the older
  *   `res.redirect(url, 301)` both work.
  * - `@Controller({ host })` matches a `Host` with a port; `useStaticAssets()`
  *   redirects its bare prefix (`/static`) to `/static/` with a 301;
@@ -593,7 +596,7 @@ async function redirected(path: string, accept?: string) {
   };
 }
 
-step("@Redirect() and res.redirect(): Express's body, chosen by Accept");
+step("@Redirect() and res.redirect(): Express 5.3.0's body, chosen by Accept");
 
 const plain = await redirected("/redirect", "text/plain");
 show("Accept: text/plain", plain);
@@ -606,15 +609,15 @@ checkEqual("Accept: text/plain — a plain-text body", plain, {
   body: "Found. Redirecting to /target",
 });
 checkEqual(
-  "Accept: text/html — the same in a <p>",
+  "Accept: text/html — a small HTML document, 97 bytes",
   await redirected("/redirect", "text/html"),
   {
     status: 302,
     location: "/target",
     vary: "Accept",
     type: "text/html; charset=utf-8",
-    length: String("<p>Found. Redirecting to /target</p>".length),
-    body: "<p>Found. Redirecting to /target</p>",
+    length: "97",
+    body: "<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to /target</p></body>",
   },
 );
 checkEqual(
@@ -632,10 +635,11 @@ checkEqual(
 const encoded = await redirected("/redirect/encoded", "text/html");
 checkEqual(
   "Location is percent-encoded; the HTML body escapes the `&`",
-  [encoded.location, encoded.body],
+  [encoded.location, encoded.length, encoded.body],
   [
     "/search/caf%C3%A9%20menu?q=a%20b&lang=fr",
-    "<p>Found. Redirecting to /search/caf%C3%A9%20menu?q=a%20b&amp;lang=fr</p>",
+    "134",
+    "<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to /search/caf%C3%A9%20menu?q=a%20b&amp;lang=fr</p></body>",
   ],
 );
 checkEqual(

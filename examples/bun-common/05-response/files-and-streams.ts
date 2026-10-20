@@ -25,10 +25,20 @@
  * - Once a response has ended (`end()`, or any `send()`), `write()` writes
  *   nothing: it answers `false` and emits `ERR_STREAM_WRITE_AFTER_END`, as
  *   Node's `ServerResponse` does.
- * - `redirect([status,] url)` is Express 5's: `Location` is the URL
+ * - `download()`, `attachment()` and `sendFile()`'s `download` write
+ *   `Content-Disposition` as Express 5.3.0 does (`content-disposition` 2.x):
+ *   the name's basename, bare when it is a token
+ *   (`attachment; filename=report.csv`), quoted when it is not
+ *   (`filename="Q1 report.csv"`), and for a name outside printable US-ASCII
+ *   an ASCII fallback with `?` for each other character plus `filename*`
+ *   (`filename="caf?.csv"; filename*=UTF-8''caf%C3%A9.csv`). An empty
+ *   `filename` falls back to the file's own name.
+ * - `redirect([status,] url)` is Express 5.3.0's: `Location` is the URL
  *   percent-encoded, the status defaults to `302`, and the body follows
- *   `Accept` — `Found. Redirecting to <url>` as `text/plain`, the same in a
- *   `<p>` as `text/html`, or empty when neither is acceptable (a JSON
+ *   `Accept` — `Found. Redirecting to <url>` as `text/plain`; as
+ *   `text/html` a small document,
+ *   `<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to <url></p></body>`,
+ *   the URL HTML-escaped; or empty when neither is acceptable (a JSON
  *   client) — with `Vary: Accept` and its `Content-Length`. Headers set
  *   earlier on `res` are kept. `redirect(url, status)` still works; only
  *   `redirect(url, init)` with a `ResponseInit` builds Bun's own
@@ -145,16 +155,61 @@ router.get("/attachment/bare", async (_req, res) => {
   res.attachment();
   res.send("no filename");
 });
+router.get("/download/spaced", async (_req, res) => {
+  await res.download("report.csv", "Q1 report.csv", { root: fixtures });
+});
+router.get("/download/accented", async (_req, res) => {
+  await res.download("report.csv", "café.csv", { root: fixtures });
+});
+router.get("/download/unnamed", async (_req, res) => {
+  await res.download("report.csv", "", { root: fixtures });
+});
 
+/** The `Content-Disposition` each path answers, shown as it goes. */
+const dispositions: Record<string, string | null> = {};
 for (const path of [
   "/download",
   "/sendfile-download",
   "/attachment",
   "/attachment/bare",
+  "/download/spaced",
+  "/download/accented",
+  "/download/unnamed",
 ]) {
   const response = await router.fetch(path);
   show(path, fileHeaders(response));
+  dispositions[path] = response.headers.get("Content-Disposition");
 }
+checkEqual(
+  "a token filename is bare: download(), sendFile({ download }), attachment(path)",
+  [
+    dispositions["/download"],
+    dispositions["/sendfile-download"],
+    dispositions["/attachment"],
+    dispositions["/attachment/bare"],
+  ],
+  [
+    "attachment; filename=sales-2031.csv",
+    "attachment; filename=via-sendFile.csv",
+    "attachment; filename=report.csv",
+    "attachment",
+  ],
+);
+checkEqual(
+  "a name that is not a token is quoted",
+  dispositions["/download/spaced"],
+  'attachment; filename="Q1 report.csv"',
+);
+checkEqual(
+  "a non-ASCII name: a ? fallback plus filename*",
+  dispositions["/download/accented"],
+  "attachment; filename=\"caf?.csv\"; filename*=UTF-8''caf%C3%A9.csv",
+);
+checkEqual(
+  'download(path, ""): the file\'s own name',
+  dispositions["/download/unnamed"],
+  "attachment; filename=report.csv",
+);
 
 /* ------------------------------------------------------------------ */
 step("Byte ranges: req.range() and a sliced file");
@@ -311,7 +366,7 @@ show("interval cleared on res close");
 await adapter.close();
 
 /* ------------------------------------------------------------------ */
-step("redirect(): Express 5's body, statuses and a ResponseInit");
+step("redirect(): Express 5.3.0's body, statuses and a ResponseInit");
 
 router.get("/old", (_req, res) => {
   res.set("X-Trace", "kept");
@@ -366,16 +421,13 @@ checkEqual(
     plainText,
   ],
 );
+/** Express 5.3.0's HTML redirect body for `/old`: 111 bytes. */
+const htmlBody =
+  "<!DOCTYPE html><head><title>Found</title></head><body><p>Found. Redirecting to /new%20place?q=%C3%BC</p></body>";
 checkEqual(
-  "…the same in a <p> for a browser (Accept: text/html)",
+  "…a small HTML document for a browser (Accept: text/html), 111 bytes",
   (await redirected("/old", "text/html")).slice(2),
-  [
-    "text/html; charset=utf-8",
-    String(plainText.length + "<p></p>".length),
-    "Accept",
-    "kept",
-    `<p>${plainText}</p>`,
-  ],
+  ["text/html; charset=utf-8", "111", "Accept", "kept", htmlBody],
 );
 checkEqual(
   "…and no body, Content-Length 0, for a JSON client",
@@ -386,6 +438,11 @@ checkEqual(
   "…HEAD: the GET's headers, no body",
   (await redirected("/old", undefined, "HEAD")).slice(3),
   [String(plainText.length), "Accept", "kept", ""],
+);
+checkEqual(
+  "…HEAD with Accept: text/html: the document's Content-Length, no body",
+  (await redirected("/old", "text/html", "HEAD")).slice(2),
+  ["text/html; charset=utf-8", String(htmlBody.length), "Accept", "kept", ""],
 );
 const moved = await redirected("/moved");
 checkEqual(
