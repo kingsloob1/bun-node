@@ -145,7 +145,7 @@ class under a second name. Its constructor is
 |---|---|---|---|
 | `requestTimeout` (1st argument) | `number` | `0` | Milliseconds allowed to finalise a response once routing is done. `0` means no timeout. Also settable with `setTimeout()`. |
 | `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Request parsing forwarded to every `BunRequest`: body, cookie and query parsing, size caps (`parseBody.maxContentLength`, `parseBody.contentTypes`, …) and the cookie secret (`parseCookies: { secret }`). Merged over the default object (`mergeBunRequestOptions`, nested `parseBody`, `parseQuery` and `parseCookies` objects included), so `{ parseCookies: { secret } }` alone keeps body parsing on; set a default explicitly to turn it off (`{ parseBody: false }`). |
-| `router` | `BunRouterOptions` | `{ caseSensitive: true, debug: false }` | Options for the `BunRouter`, merged over the default. |
+| `router` | `BunRouterOptions` | `{ caseSensitive: false, debug: false }` | Options for the `BunRouter`, merged over the default. Paths match case-insensitively, as on `@nestjs/platform-express`; `{ caseSensitive: true }` opts in to exact case. |
 | `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Upper bound on the router's matched-pipeline cache before FIFO eviction. `0` disables it. The cache is keyed by resolved path, so size it above the number of distinct paths in flight, or use `0`. |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag`, so a matching `If-None-Match` is answered `304`: `true`/`"strong"`, `"weak"`, or a function returning the tag. A controller overrules it for its own response with `@Res({ passthrough: true }) res` and `res.setEtag(false)` (or `res.etag = "weak"`); see bun-common's `setEtag`. |
 | `logger` | NestJS `Logger` | `new Logger()` | Logger for adapter diagnostics: bind failures and unhandled errors. |
@@ -158,7 +158,7 @@ import { Logger } from "@nestjs/common";
 
 export const adapter = new BunHttpAdapter(10_000, {
   request: { parseBody: { maxContentLength: "16kb" }, parseCookies: true },
-  router: { caseSensitive: false },
+  router: { caseSensitive: true }, // opt in to exact-case paths
   routeCacheMax: 10_000,
   etag: true,
   logger: new Logger("Http"),
@@ -229,6 +229,17 @@ adapter.get("/search", validate({ query: z.object({ page: z.coerce.number() }) }
   return res.json({ page: req.query.page });
 });
 ```
+
+Route paths have Express 5's syntax and semantics (path-to-regexp 8), as on
+`@nestjs/platform-express`: `*name` is a `string[]` (`@Param("path")` on
+`files/*path` is `["a", "b"]` for `/files/a/b`), `{…}` is optional
+(`archive/:year{/:month}`), and a path Express cannot register fails the
+boot. Every controller and middleware path goes through `normalizePath`,
+which converts a legacy path with Nest's `LegacyRouteConverter` (`users/*`
+becomes `users/{*path}`, with Nest's warning) and throws path-to-regexp's
+`TypeError` for one it cannot convert (`:id?`, `:id(\d+)`), exactly as
+Express's adapter does. `getRequestHostname` (what `@Controller({ host })`
+matches) is the `Host` header as sent, without its port.
 
 Routing, matching and validation behave exactly as in bun-common. See its
 [README](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md)
@@ -786,6 +797,9 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+- Nest middleware gets no route params: `req.params` is `{}` in a
+  `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
+  bun-common binds params only for route handlers.
 - Several Nest applications on one adapter: a not-found handler runs only
   once no route matched, so one application's handler never shadows the
   routes of an application initialised after it. On Express it does where it

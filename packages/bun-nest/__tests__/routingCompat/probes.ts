@@ -32,11 +32,7 @@ import {
   VersionedPrefixModule,
   VersioningModule,
 } from "./app";
-import {
-  CORE_RESOLVES_NEUTRAL_MIDDLEWARE,
-  EXPRESS_HONOURS_EXACT_MARKER,
-  NEST_12,
-} from "./harness";
+import { EXPRESS_HONOURS_EXACT_MARKER, NEST_12 } from "./harness";
 
 /** A request with a method other than GET. */
 function req(
@@ -523,45 +519,6 @@ export interface KnownDifference {
 /** One D-row's row id and reason. */
 type Row = Pick<KnownDifference, "row" | "reason">;
 
-const D3A: Row = {
-  row: "D3a",
-  reason:
-    "a wildcard param is a string, not path-to-regexp 8's `string[]` (PR-5)",
-};
-const D3B: Row = {
-  row: "D3b",
-  reason: "`*name` matches an empty tail; only `{*name}` should (PR-5)",
-};
-const D3C: Row = {
-  row: "D3c",
-  reason:
-    "`{…}` optional groups are literals to routejs and never match (PR-5)",
-};
-const D3D: Row = {
-  row: "D3d",
-  reason:
-    "no `normalizePath`: legacy `*` and `(.*)` are not converted by `LegacyRouteConverter`, so no warning and positional params (PR-5)",
-};
-const D3D_MIDDLEWARE: Row = {
-  row: "D3d",
-  reason:
-    "the middleware path `/api/*` the core builds for `forRoutes('*')` on a prefix is not converted: Express's `createMiddlewareFactory` runs `LegacyRouteConverter` and warns, ours registers it as is, silently (PR-5, beside `normalizePath`)",
-};
-const D3E: Row = {
-  row: "D3e (new)",
-  reason:
-    "`:x?` and `:x(\\d+)` are accepted; Express's `normalizePath` validates with path-to-regexp 8 and fails the boot (PR-5, §5.5 item 2)",
-};
-const D4: Row = {
-  row: "D4",
-  reason:
-    "the adapter defaults the router to `caseSensitive: true`; Express is case-insensitive (PR-5, Q3)",
-};
-const D5: Row = {
-  row: "D5",
-  reason:
-    "`getRequestHostname` is the URL's lower-cased hostname, not the `Host` header as sent (PR-5)",
-};
 const D6_REVERSED: Row = {
   row: "D6 (reversed, by design)",
   reason:
@@ -571,11 +528,6 @@ const D8: Row = {
   row: "D8 (opt-in)",
   reason:
     "bun-common's `routeSpecificity` ranks an exact method over `all` and re-ranks by path itself; Nest's sorter ranks segments only (to document, §5.4)",
-};
-const NEUTRAL_MIDDLEWARE_11: Row = {
-  row: "Nest 11 core (#17947)",
-  reason:
-    "the core builds `/vSymbol(VERSION_NEUTRAL)/ver` for a VERSION_NEUTRAL middleware route; Express fails to boot on it, ours boots",
 };
 /** The same known difference for several probes. */
 function known(
@@ -593,91 +545,6 @@ function known(
  * this test until it takes the entry off.
  */
 export const KNOWN: Record<string, KnownDifference> = {
-  // D3a: a wildcard param is one string under its position and its name,
-  // `{ "0": "a/b", path: "a/b" }`; Express gives `{ path: ["a", "b"] }`.
-  ...known(
-    D3A,
-    ["body"],
-    [
-      "routes/*path wildcard, 3 segments",
-      "routes/*path wildcard, encoded slash",
-      "routes/{*path} wildcard, /files2/x/y",
-      "prefix/excluded 'files/*path': /files/a/b",
-      "mw-basic/'files/*path': /files/a",
-      "n12-declaration/literal after param: /s/a/b",
-      "n12-declaration/param after wildcard: /s/a/z",
-      "n12-declaration/wildcard: /s/x/y/z",
-      "n12-specificity/wildcard: /s/x/y/z",
-      "n12-specificity+bun-routeSpecificity/wildcard: /s/x/y/z",
-      "n12-declaration+bun-routeSpecificity/param after wildcard: /s/a/z",
-      "n12-declaration+bun-routeSpecificity/wildcard: /s/x/y/z",
-    ],
-  ),
-  // D3b: `*path` matches an empty tail, as `{*path}` does.
-  ...known(
-    D3B,
-    ["status", "body", "handler"],
-    ["routes/*path wildcard, /files/"],
-  ),
-  ...known(D3B, ["trail"], ["mw-prefix/'*' + prefix: /api/"]),
-  // D3c: `opt{/:x}` is a literal `{` to routejs, so it never matches.
-  ...known(
-    D3C,
-    ["status", "handler", "body"],
-    [
-      "syntax-optional/optional segment: /opt",
-      "syntax-optional/optional segment: /opt/1",
-      "syntax-optional/optional segment: /opt/",
-    ],
-  ),
-  // D3d: legacy paths are neither converted nor warned about.
-  ...known(
-    D3D,
-    ["logs"],
-    ["syntax-legacy-star/(boot)", "syntax-legacy-group/(boot)"],
-  ),
-  ...known(
-    D3D,
-    ["body"],
-    [
-      "syntax-legacy-star/legacy /legacy/*: /legacy/a/b",
-      "syntax-legacy-star/legacy /legacy/*: /legacy/",
-      "syntax-legacy-star/legacy /legacy/*: literal /legacy/*",
-      "syntax-legacy-group/legacy /old/(.*): /old/x/y",
-      "syntax-legacy-group/legacy /old/(.*): literal /old/(.*)",
-    ],
-  ),
-  ...known(D3D_MIDDLEWARE, ["logs"], ["mw-prefix/(boot)"]),
-  // D3e (new, measured here first; §5.5 item 2 plans the fix): the old
-  // forms `:x?` and `:x(\d+)` boot and serve, where Express's
-  // `normalizePath` rejects them at startup with path-to-regexp's error.
-  ...known(
-    D3E,
-    ["boot-error", "logs"],
-    ["syntax-optional-param/(boot)", "syntax-constrained-param/(boot)"],
-  ),
-  ...known(
-    D3E,
-    ["status", "content-type", "handler", "body"],
-    [
-      "syntax-optional-param/:x?: /optp",
-      "syntax-optional-param/:x?: /optp/1",
-      "syntax-constrained-param/:id(\\d+): /num/12",
-    ],
-  ),
-  ...known(
-    D3E,
-    ["status", "content-type", "body"],
-    ["syntax-constrained-param/:id(\\d+): /num/ab"],
-  ),
-  // D4: the adapter's router is case-sensitive by default.
-  ...known(
-    D4,
-    ["status", "handler", "body"],
-    ["routes/case: /case", "routes/case: /CASE"],
-  ),
-  // D5: `@HostParam` comes from the WHATWG-lower-cased hostname.
-  ...known(D5, ["body"], ["routes/host case A.Example.com"]),
   // D8 (opt-in): bun-common's `routeSpecificity` also ranks an exact method
   // over `all`, and, without Nest's strategy, re-ranks the routes itself.
   ...known(
@@ -701,33 +568,4 @@ export const KNOWN: Record<string, KnownDifference> = {
         ["trail"],
         ["mw-prefix/'*' + prefix: bare /api (#17942)"],
       )),
-  // Where the core predates #17947 (11.x): `forRoutes({ version:
-  // VERSION_NEUTRAL })` builds `/vSymbol(VERSION_NEUTRAL)/ver`, which
-  // Express's path-to-regexp rejects at boot; ours boots, registers that
-  // literal path (so `MwNeutral` never runs) and serves the rest. Not a
-  // debt either: failing to boot is the core's bug, fixed in 12.1.3.
-  ...(CORE_RESOLVES_NEUTRAL_MIDDLEWARE
-    ? {}
-    : {
-        ...known(
-          NEUTRAL_MIDDLEWARE_11,
-          ["boot-error", "logs"],
-          ["mw-version/(boot)"],
-        ),
-        ...known(
-          NEUTRAL_MIDDLEWARE_11,
-          ["status", "content-type", "handler", "trail", "body"],
-          [
-            "mw-version/VERSION_NEUTRAL route info: /ver (#17947)",
-            "mw-version/{ver, GET, v1}: /v1/ver",
-            "mw-version/{ver, GET, v1}: HEAD /v1/ver",
-            "mw-version/versioned controller: /v2/ver",
-          ],
-        ),
-        ...known(
-          NEUTRAL_MIDDLEWARE_11,
-          ["status", "content-type", "handler", "body"],
-          ["mw-version/versioned: /v1/plain (no mw)"],
-        ),
-      }),
 };

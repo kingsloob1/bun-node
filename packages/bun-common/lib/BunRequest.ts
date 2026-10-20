@@ -18,6 +18,7 @@ import type {
   MultiPartOptions,
   NextFunction,
 } from "./types/general";
+import type { ParamsDictionary } from "./types/routeParams";
 import type {
   CompressionDictionaries,
   ContentEncodingAllowlist,
@@ -1464,10 +1465,11 @@ class BunRequestState {
 
 export class BunRequest<
   /**
-   * Shape of `req.params`. Defaults to the untyped `Record<string, string>`;
-   * a route registered with a path literal narrows it to that path's params.
+   * Shape of `req.params`. Defaults to the untyped {@link ParamsDictionary}
+   * (Express 5's: a `string`, or a `string[]` for a wildcard); a route
+   * registered with a path literal narrows it to that path's params.
    */
-  TParams = Record<string, string>,
+  TParams = ParamsDictionary,
   /**
    * Shape of `req.query`. Defaults to the parser's untyped output; a validator
    * narrows it to its parsed result.
@@ -1696,7 +1698,7 @@ export class BunRequest<
    */
   public next?: NextFunction;
   /** Backing field for `params`, stored untyped; `TParams` is the caller's view. */
-  #params: Record<string, string> | undefined = undefined;
+  #params: ParamsDictionary | undefined = undefined;
   /**
    * Backing field for `query`, stored as the parser's untyped output (values
    * are `unknown` until a validator narrows them); `TQuery` is the caller's
@@ -3026,7 +3028,7 @@ export class BunRequest<
   }
 
   set params(value: TParams) {
-    this.#params = value as Record<string, string>;
+    this.#params = value as ParamsDictionary;
   }
 
   /**

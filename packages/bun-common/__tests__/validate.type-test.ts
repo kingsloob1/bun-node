@@ -11,6 +11,7 @@ import type {
   ValidatedShapeFor,
 } from "../lib/BunValidate";
 import type { DefaultRequestBody } from "../lib/types/general";
+import type { ParamsDictionary } from "../lib/types/routeParams";
 import type { EmptyShape } from "../lib/types/routeTyping";
 import type { StandardSchemaV1 } from "../lib/types/standardSchema";
 import { BunRouter } from "../lib/BunRouter";
@@ -56,7 +57,7 @@ validate(
     hooks: {
       params: {
         normalize: (value) => {
-          type _v = Expect<Equal<typeof value, Record<string, string>>>;
+          type _v = Expect<Equal<typeof value, ParamsDictionary>>;
           return value;
         },
       },

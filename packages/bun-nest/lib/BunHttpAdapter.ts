@@ -45,6 +45,7 @@ import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
 import {
+  assertExpressPath,
   awaitPipelineOrStream,
   BunRequest,
   BunResponse,
@@ -69,7 +70,6 @@ import {
   normalizeEtagOption,
   omit,
   RequestPipelineOptions,
-  RouteClass,
   set,
   toFetchResponse,
   toNativeRequest,
@@ -86,6 +86,7 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
+import { LegacyRouteConverter } from "@nestjs/core/router/legacy-route-converter.js";
 import { BunNestWebsocketAdapter } from "./BunWebSocketAdapter";
 
 export type VersionedRoute = (
@@ -200,15 +201,14 @@ function normalizePrefix(prefix: unknown): string | undefined {
  * A normalised prefix compiled as Express's `use(prefix, router)` matches
  * it: at the prefix or below it, on whole segments (`/apiary` is not under
  * `/api`), case-insensitively, a `:param` matching any one segment
- * (`/:tenant` covers `/t1/x`). Compiled by the same routejs `Route` that
- * bun-common's router compiles a `use()` group with; the prefix regex it
- * builds carries no flags, so `i` is added here.
+ * (`/:tenant` covers `/t1/x`), a `{…}` group optional. Compiled by
+ * bun-common's router itself, as it compiles a `use()` prefix, so the two
+ * cannot disagree.
  */
 function prefixMatcher(prefix: string): RegExp {
-  const route = new RouteClass({ group: prefix, callbacks: [] }) as unknown as {
-    pathRegexp: RegExp;
-  };
-  return new RegExp(route.pathRegexp.source, "i");
+  const router = new BunRouter({ caseSensitive: false });
+  router.use(prefix, (_req, _res, next) => next());
+  return router.routes()[0]!.pathRegexp;
 }
 
 /**
@@ -419,7 +419,9 @@ export class BunHttpAdapter<
       logger?: Logger;
       /**
        * Options for the underlying {@link BunRouter} (e.g. `caseSensitive`,
-       * `debug`). Defaults to `{ caseSensitive: true, debug: false }`.
+       * `debug`). Defaults to `{ caseSensitive: false, debug: false }`:
+       * paths match case-insensitively, as on `@nestjs/platform-express`
+       * (Express's default). `{ caseSensitive: true }` opts in to exact case.
        */
       router?: BunRouterOptions;
       /**
@@ -453,7 +455,7 @@ export class BunHttpAdapter<
     },
   ) {
     const routerOptions: BunRouterOptions = {
-      caseSensitive: true,
+      caseSensitive: false,
       debug: false,
       ...(options?.router ?? {}),
       ...(options?.routeCacheMax !== undefined
@@ -1610,12 +1612,47 @@ export class BunHttpAdapter<
   }
 
   /**
+   * Converts and checks a route path before Nest registers it, as
+   * `@nestjs/platform-express`'s `normalizePath` does: a legacy path (`/*`,
+   * `/(.*)`, a mid-path `*`) is converted to path-to-regexp 8 syntax by
+   * Nest's `LegacyRouteConverter`, which warns, and the result must be a path
+   * Express accepts. Anything else (`:id?`, `:id(\d+)`, an unclosed `{`)
+   * throws path-to-regexp's `TypeError` at boot, with the converter's error
+   * logged, exactly as on Express. The router itself still takes routejs
+   * paths registered on it directly (`adapter.get("/a/:b?", …)`).
+   *
+   * @throws PathSyntaxError (a `TypeError`) for a path Express rejects.
+   */
+  public override normalizePath(path: string): string {
+    try {
+      const converted = LegacyRouteConverter.tryConvert(path);
+      assertExpressPath(converted);
+      return converted;
+    } catch (error) {
+      if (error instanceof TypeError) {
+        LegacyRouteConverter.printError(path);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * The request's host name without its port — Express's `req.hostname`,
    * which `@nestjs/platform-express` returns and Nest matches
-   * `@Controller({ host })` against.
+   * `@Controller({ host })` against: the `Host` header as sent (its case
+   * kept), the port stripped (an IPv6 literal keeps its brackets,
+   * `[::1]:3000` is `[::1]`). `X-Forwarded-Host` is not read, as Express
+   * reads it only with `trust proxy` set. Without a `Host` header, the
+   * request URL's host name.
    */
   public getRequestHostname(request: BunRequest): string {
-    return request.hostname || "127.0.0.1";
+    const host = request.headersObj.get("host");
+    if (!host) {
+      return request.hostname || "127.0.0.1";
+    }
+    const offset = host.startsWith("[") ? host.indexOf("]") + 1 : 0;
+    const colon = host.indexOf(":", offset);
+    return colon === -1 ? host : host.slice(0, colon);
   }
 
   public getRequestMethod(request: BunRequest): string {
@@ -3755,6 +3792,23 @@ export class BunHttpAdapter<
     requestMethod: RequestMethod,
   ): MiddlewareFactoryRespType<this> {
     return (path, callback) => {
+      // As `@nestjs/platform-express` does: the core's exact-match marker
+      // (`$`) stripped, a legacy path converted (and warned about), and the
+      // result checked as Express checks a path it registers — a path it
+      // cannot convert fails at boot, with the converter's error logged.
+      const exact = path.endsWith("$");
+      let converted: string;
+      try {
+        converted = LegacyRouteConverter.tryConvert(
+          exact ? path.slice(0, -1) : path,
+        );
+        assertExpressPath(converted, { loosen: true });
+      } catch (error) {
+        if (error instanceof TypeError) {
+          LegacyRouteConverter.printError(path);
+        }
+        throw error;
+      }
       // NestJS middleware must behave like middleware — not a route handler.
       // `useMethod` registers it method-scoped but with `isEndpoint` false,
       // so it keeps registration order and is excluded from route
@@ -3762,11 +3816,11 @@ export class BunHttpAdapter<
       const method = this.getRequestMethodStr(requestMethod);
       // NestJS's `Function` is its `(req, res, next)` middleware.
       const middleware = callback as RouterHandler;
-      if (path.endsWith("$")) {
-        this.useExactMiddleware(method, path.slice(0, -1), middleware);
+      if (exact) {
+        this.useExactMiddleware(method, converted, middleware);
         return this;
       }
-      this.instance.useMethod(method, path, middleware);
+      this.instance.useMethod(method, converted, middleware);
       return this;
     };
   }

@@ -9,6 +9,7 @@ import { BunResponse } from "../lib/BunResponse";
 import { BunRouter, isRequestTimeoutError } from "../lib/BunRouter";
 import { BunWebSocket } from "../lib/BunWebSocket";
 import { createTestLogger, isLogger } from "../lib/logging";
+import { PathSyntaxError } from "../lib/utils/expressPath";
 import { makeRequest } from "./helpers";
 
 /** Convenience: layers matched for a request signature. */
@@ -1385,7 +1386,7 @@ describe("BunRouter: verb/all/use accept 4-arg error handlers", () => {
   });
 });
 
-describe("BunRouter: Express 5 catch-all path normalisation", () => {
+describe("BunRouter: Express 5 catch-all prefixes", () => {
   it("use('*splat', mw) matches every path", () => {
     const router = new BunRouter();
     router.use("*splat", () => {});
@@ -1413,7 +1414,7 @@ describe("BunRouter: Express 5 catch-all path normalisation", () => {
     expect(layersFor(router, "GET", "/other")).toHaveLength(0);
   });
 
-  it("normalises catch-all in verb methods too (get('*splat', h))", () => {
+  it("compiles a catch-all in verb methods too (get('*splat', h))", () => {
     const router = new BunRouter();
     router.get("*splat", () => {});
     expect(layersFor(router, "GET", "/anywhere").length).toBeGreaterThan(0);
@@ -1472,60 +1473,293 @@ describe("BunRouter: accepts a typed RouterErrorMiddlewareHandler", () => {
   });
 });
 
-describe("BunRouter: Express 5 named wildcards", () => {
-  /** Params captured by `path` when `url` is matched. */
-  function paramsFor(path: string, url: string): Record<string, string> {
+describe("BunRouter: Express 5 (path-to-regexp 8) path semantics", () => {
+  /** Params captured by `path` when `url` is matched, or `null` for no match. */
+  function paramsFor(
+    path: string,
+    url: string,
+  ): Record<string, string | string[]> | null {
     const router = new BunRouter();
     router.get(path, () => {});
     const layers = layersFor(router, "GET", url);
+    if (layers.length === 0) {
+      return null;
+    }
     expect(layers).toHaveLength(1);
-    return layers[0].matched.params as Record<string, string>;
+    return layers[0].matched.params as Record<string, string | string[]>;
   }
 
-  it("exposes *name as req.params.name, keeping the positional key", () => {
-    expect(paramsFor("/assets/*splat", "/assets/css/site/app.css")).toEqual({
-      "0": "css/site/app.css",
-      splat: "css/site/app.css",
+  // Each row measured against Express 5.3 / path-to-regexp 8.4.2 (the
+  // design's table D1); `null` is a 404.
+  const ROWS: [string, string, Record<string, string | string[]> | null][] = [
+    ["/files/*path", "/files/a/b/c", { path: ["a", "b", "c"] }],
+    ["/files/*path", "/files/a%2Fb", { path: ["a/b"] }],
+    ["/files/*path", "/files/a//b", { path: ["a", "", "b"] }],
+    ["/files/*path", "/files/a/", { path: ["a", ""] }],
+    ["/files/*path", "/files/", null],
+    ["/files/*path", "/files", null],
+    ["/files{/*path}", "/files", {}],
+    ["/files{/*path}", "/files/", {}],
+    ["/files{/*path}", "/files/a/b", { path: ["a", "b"] }],
+    ["/x/{*path}", "/x/", {}],
+    ["/x/{*path}", "/x/a", { path: ["a"] }],
+    ["*name", "/a/b", { name: ["", "a", "b"] }],
+    ["/a/*rest/b", "/a/x/y/b", { rest: ["x", "y"] }],
+    ["/a/*rest/b", "/a//b", null],
+    ["/two/*a/sep/*b", "/two/1/2/sep/3/4", { a: ["1", "2"], b: ["3", "4"] }],
+    ["/opt{/:x}", "/opt", {}],
+    ["/opt{/:x}", "/opt/1", { x: "1" }],
+    ["/opt{/:x}", "/opt/1/2", null],
+    ["/u/:a-:b", "/u/x-y-z", { a: "x-y", b: "z" }],
+    ["/f/:x.:y", "/f/a.b.c", { x: "a.b", y: "c" }],
+    ["/e/\\(x\\)", "/e/(x)", {}],
+    ["/e2/a\\:b", "/e2/a:b", {}],
+    ['/q/:"q x"', "/q/1", { "q x": "1" }],
+    ['/w/*"x y"', "/w/a/b", { "x y": ["a", "b"] }],
+    ["/a//", "/a/", {}],
+    ["/a//", "/a//", null],
+    ["/", "//", {}],
+  ];
+  for (const [path, url, expected] of ROWS) {
+    it(`${path} on ${url}`, () => {
+      expect(paramsFor(path, url)).toEqual(expected);
     });
+  }
+
+  it("publishes a named wildcard under its name only, with no positional key", () => {
+    const params = paramsFor("/assets/*splat", "/assets/css/app.css");
+    expect(Object.keys(params ?? {})).toEqual(["splat"]);
   });
 
-  it("supports the braced {*name} form", () => {
-    expect(paramsFor("/assets/{*splat}", "/assets/a/b.css")).toEqual({
-      "0": "a/b.css",
-      splat: "a/b.css",
+  it("gives every request the same wildcard array, which a handler cannot change", async () => {
+    // The matched params come from the pipeline cache, shared by every
+    // request with the same signature: the array is frozen, so a mutation
+    // throws instead of reaching the next request.
+    const router = new BunRouter();
+    router.get("/files/*path", (req, res) => {
+      const path = req.params.path;
+      let threw = false;
+      try {
+        path.shift();
+      } catch {
+        threw = true;
+      }
+      res.json({ threw, path: [...path] });
     });
+    for (let i = 0; i < 2; i++) {
+      expect(await (await router.fetch("/files/a/b")).json()).toEqual({
+        threw: true,
+        path: ["a", "b"],
+      });
+    }
   });
 
-  it("leaves a bare * positional only", () => {
+  it("keeps the positional key of a bare *", () => {
     expect(paramsFor("/assets/*", "/assets/a/b.css")).toEqual({
       "0": "a/b.css",
     });
   });
 
-  it("maps several named wildcards positionally", () => {
-    expect(paramsFor("/f/*a/g/*b", "/f/one/g/two")).toEqual({
-      "0": "one",
-      "1": "two",
-      a: "one",
-      b: "two",
+  it("answers 400 for a wildcard segment that cannot be decoded, naming it", async () => {
+    const router = new BunRouter();
+    router.get("/files/*path", (req, res) => res.json(req.params));
+    router.use(((err, _req, res, _next) => {
+      res
+        .status((err as { status: number }).status)
+        .json({ error: (err as Error).message });
+    }) satisfies RouterErrorMiddlewareHandler);
+    const response = await router.fetch("/files/ok/%E0%A4%A/x");
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Failed to decode param '%E0%A4%A'",
     });
   });
+});
 
-  it("names a wildcard alongside a regexp-constrained param", () => {
+describe("BunRouter: routejs paths with named wildcards (bridged)", () => {
+  function paramsFor(path: string, url: string) {
+    const router = new BunRouter();
+    router.get(path, () => {});
+    const layers = layersFor(router, "GET", url);
+    return layers.length === 0 ? null : layers[0].matched.params;
+  }
+
+  it("names the wildcard of a path with an optional param", () => {
+    expect(
+      paramsFor("/files/:bucket/:version?/*key", "/files/photos/v2/2024/a.jpg"),
+    ).toEqual({ bucket: "photos", version: "v2", key: ["2024", "a.jpg"] });
+    expect(
+      paramsFor("/files/:bucket/:version?/*key", "/files/photos/a/b.jpg"),
+    ).toEqual({ bucket: "photos", version: "a", key: ["b.jpg"] });
+  });
+
+  it("names a wildcard beside a regexp-constrained param", () => {
     expect(paramsFor("/n/:id(\\d+)/*rest", "/n/42/x/y")).toEqual({
-      "0": "x/y",
       id: "42",
-      rest: "x/y",
+      rest: ["x", "y"],
     });
   });
 
-  it("withholds names when a bare regexp group shares the counter", () => {
-    // routejs numbers bare groups and wildcards from one counter, so the nth
-    // numeric key is not reliably the nth wildcard — binding a name here could
-    // attach it to the wrong capture, so only positional keys are published.
-    const params = paramsFor("/n/(\\d+)/*rest", "/n/42/x/y");
-    expect(params).toEqual({ "0": "42", "1": "x/y" });
-    expect(params).not.toHaveProperty("rest");
+  it("numbers bare groups among themselves, beside a named wildcard", () => {
+    // routejs numbers bare groups and wildcards from one counter; the bridged
+    // wildcard is taken out of it, so the group keeps `0`.
+    expect(paramsFor("/n/(\\d+)/*rest", "/n/42/x/y")).toEqual({
+      "0": "42",
+      rest: ["x", "y"],
+    });
+  });
+
+  it("leaves an empty {*name} out", () => {
+    expect(paramsFor("/x/:a?/{*rest}", "/x/1/")).toEqual({ a: "1" });
+    expect(paramsFor("/x/:a?/{*rest}", "/x/1/p/q")).toEqual({
+      a: "1",
+      rest: ["p", "q"],
+    });
+  });
+
+  it("keeps {*} and routejs groups as they were", () => {
+    expect(paramsFor("/r{*}", "/r/a/b")).toEqual({ "0": "/a/b" });
+    expect(paramsFor("/reports(/archived)?", "/reports/archived")).toEqual({
+      "0": "/archived",
+    });
+  });
+});
+
+describe("BunRouter: paths rejected at registration", () => {
+  // Express 5 throws each of these at startup with path-to-regexp's error.
+  for (const path of [
+    "/a{/b",
+    "/a/}",
+    "/a/[b]",
+    "/a/b]",
+    "/a!",
+    "/a\\",
+    "/:x:y",
+    "/*n*m",
+    "/:",
+    "/a{/:b}/:c?",
+  ]) {
+    it(`get(${JSON.stringify(path)}) throws a PathSyntaxError`, () => {
+      const router = new BunRouter();
+      expect(() => router.get(path, () => {})).toThrow(PathSyntaxError);
+      expect(router.routes()).toHaveLength(0);
+    });
+  }
+
+  it("use() prefixes are checked too", () => {
+    const router = new BunRouter();
+    expect(() => router.use("/a{", () => {})).toThrow(
+      "Unexpected end at index 3, expected }: /a{;",
+    );
+  });
+
+  it("a route handler's mount group routejs rejects surfaces as a PathSyntaxError", () => {
+    // The group of a route handler is compiled on its own, for `req.baseUrl`.
+    const router = new BunRouter();
+    expect(() =>
+      router.setRoute({
+        method: "GET",
+        path: "/ok",
+        group: "/u/:x(",
+        callbacks: [() => {}],
+      }),
+    ).toThrow(PathSyntaxError);
+    expect(router.routes()).toHaveLength(0);
+  });
+
+  it("accepts the names path-to-regexp accepts that routejs did not", async () => {
+    const router = new BunRouter();
+    router.get('/q/:"q x"', (req, res) => res.json(req.params));
+    router.get("/u/:été", (req, res) => res.json(req.params));
+    router.get("/d/:$x", (req, res) => res.json(req.params));
+    expect(await (await router.fetch("/q/1")).json()).toEqual({ "q x": "1" });
+    expect(await (await router.fetch("/u/2")).json()).toEqual({ été: "2" });
+    expect(await (await router.fetch("/d/3")).json()).toEqual({ $x: "3" });
+  });
+});
+
+describe("BunRouter: mounted sub-routers with Express 5 paths", () => {
+  it("keeps a sub-router wildcard's name under a param mount (F5)", async () => {
+    const app = new BunRouter();
+    const sub = new BunRouter();
+    sub.get("/*rest", (req, res) => res.json(req.params));
+    app.use("/u/:id", sub);
+    expect(await (await app.fetch("/u/7/a/b")).json()).toEqual({
+      id: "7",
+      rest: ["a", "b"],
+    });
+  });
+
+  it("joins a {…} sub-path onto its mount without adding a /", async () => {
+    const app = new BunRouter();
+    const sub = new BunRouter();
+    sub.get("{/*rest}", (req, res) => res.json(req.params));
+    app.use("/api", sub);
+    expect(await (await app.fetch("/api")).json()).toEqual({});
+    expect(await (await app.fetch("/api/")).json()).toEqual({});
+    expect(await (await app.fetch("/api/x/y")).json()).toEqual({
+      rest: ["x", "y"],
+    });
+  });
+
+  it("keeps the path as written on the route", () => {
+    const app = new BunRouter();
+    const sub = new BunRouter();
+    sub.get("/*rest", () => {});
+    app.use("/u/:id", sub);
+    expect(app.routes().map((route) => route.path)).toEqual(["/u/:id/*rest"]);
+  });
+});
+
+describe("BunRouter: req.baseUrl of an Express 5 prefix", () => {
+  /** `req.baseUrl` in a `use(prefix)` middleware on `url`. */
+  async function baseUrlFor(prefix: string, url: string): Promise<string> {
+    const router = new BunRouter();
+    router.use(prefix, (req, res) => res.send(req.baseUrl));
+    return (await router.fetch(url)).text();
+  }
+
+  // Express 5.3 strips one trailing slash from what the prefix matched.
+  it("strips one trailing slash, as Express does", async () => {
+    expect(await baseUrlFor("/api", "/api//x")).toBe("/api");
+    expect(await baseUrlFor("/api", "/api/")).toBe("/api");
+    expect(await baseUrlFor("/a/*rest", "/a/b//")).toBe("/a/b/");
+    expect(await baseUrlFor("/files{/*p}", "/files/x/y")).toBe("/files/x/y");
+  });
+});
+
+describe("BunRouter: routeSpecificity on Express 5 paths", () => {
+  it("counts a param once when an alternation repeats it", async () => {
+    // `/:file{.:ext}` compiles to an alternation whose keys are
+    // [file, ext, file]: it has two params, as `/:x.:y` does, so neither
+    // outranks the other and registration order decides.
+    const router = new BunRouter({ routeSpecificity: true });
+    router.get("/:file{.:ext}", (_req, res) => res.send("file-ext"));
+    expect(router.routes()[0].params).toEqual(["file", "ext", "file"]);
+    router.get("/:x.:y", (_req, res) => res.send("x-y"));
+    expect(await (await router.fetch("/a.b")).text()).toBe("file-ext");
+  });
+});
+
+describe("BunRouter: route(name, params)", () => {
+  it("encodes an Express-mode path as path-to-regexp's compile does", () => {
+    const router = new BunRouter();
+    router.get("/files/*path", () => {}).setName("file");
+    router.get("/u/:id", () => {}).setName("user");
+    expect(router.route("file", { path: ["a/b", "c d", "%", ""] })).toBe(
+      "/files/a%2Fb/c%20d/%25/",
+    );
+    expect(router.route("user", { id: "a b" })).toBe("/u/a%20b");
+  });
+
+  it("negative control: a routejs-mode path stays raw", () => {
+    const router = new BunRouter();
+    router.get("/u/:id?", () => {}).setName("user");
+    router.get("/k/:k?/*key", () => {}).setName("key");
+    expect(router.route("user", { id: "a b/c" })).toBe("/u/a b/c");
+    expect(router.route("key", { k: "x", key: ["a/b", "c"] })).toBe(
+      "/k/x/a/b/c",
+    );
   });
 });
 

@@ -230,6 +230,47 @@ describe("BunWebSocket: route handlers on a live server", () => {
   });
 });
 
+describe("BunWebSocket: ws.data.params is the connection's own copy", () => {
+  it("copies a wildcard's array, so mutating it reaches no other connection", async () => {
+    const ws = new BunWebSocket({
+      newInstance: true,
+      router: new BunRouter(),
+      listen: { port: 0 },
+    });
+    const seen: string[][] = [];
+    await ws.setRouteHandler(
+      "/files/*rest",
+      {
+        open: (socket) => {
+          const rest = socket.data.params?.rest as string[];
+          seen.push([...rest]);
+          // Mutable: the connection's own copy.
+          rest.push("mine");
+          socket.send(rest.join("/"));
+        },
+        message: () => {},
+      },
+      undefined,
+    );
+    try {
+      for (let i = 0; i < 2; i++) {
+        const { client, received } = await openClient(
+          `ws://127.0.0.1:${ws.port}/files/a/b`,
+        );
+        await until(() => received.length > 0);
+        client.close();
+        expect(received).toEqual(["a/b/mine"]);
+      }
+      expect(seen).toEqual([
+        ["a", "b"],
+        ["a", "b"],
+      ]);
+    } finally {
+      ws.killServer(ws.getServer());
+    }
+  });
+});
+
 describe("BunWebSocket: killServer", () => {
   it("force-stops the server it is given", () => {
     const ws = new BunWebSocket({
