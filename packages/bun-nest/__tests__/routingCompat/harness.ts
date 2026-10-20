@@ -27,6 +27,7 @@ import {
 import { ApplicationConfig, NestFactory } from "@nestjs/core";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
 import { RouteInfoPathExtractor } from "@nestjs/core/middleware/route-info-path-extractor.js";
+import { filterMiddleware } from "@nestjs/core/middleware/utils.js";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
 import { expressReference } from "../expressCompat/reference";
@@ -67,6 +68,39 @@ export const CORE_RESOLVES_NEUTRAL_MIDDLEWARE = (() => {
   });
   return !paths.some((path) => path.includes("Symbol("));
 })();
+
+/**
+ * Whether the core asks the adapter how its router matches paths
+ * (`HttpServer.getRouteMatchingOptions`, 12.2.0) to match the routes
+ * excluded with `MiddlewareConsumer.exclude()`. Asked of the core's own
+ * `filterMiddleware`, with an adapter that records the call; an earlier core
+ * never makes it.
+ */
+export const CORE_READS_ROUTE_MATCHING_OPTIONS = (() => {
+  let asked = false;
+  const adapter = {
+    getRouteMatchingOptions: () => {
+      asked = true;
+      return { caseSensitive: true, ignoreTrailingSlash: false };
+    },
+  };
+  filterMiddleware([() => {}], [], adapter as never);
+  return asked;
+})();
+
+/**
+ * Whether the installed platform-express runs an exact middleware path (the
+ * core's `<prefix>$`) on its trailing-slash variant too (12.2.0), leaving
+ * the core to run the middleware once per request. 12.1.3 skipped a request
+ * ending in `/` there (`req.path.endsWith('/')`); before 12.1.3 the marker
+ * was not stripped at all. Read from its `createMiddlewareFactory`, as
+ * {@link EXPRESS_HONOURS_EXACT_MARKER} is.
+ */
+export const EXPRESS_RUNS_EXACT_PATH_ON_SLASH =
+  EXPRESS_HONOURS_EXACT_MARKER &&
+  !/req\.path\.endsWith\(/.test(
+    ExpressAdapter.prototype.createMiddlewareFactory.toString(),
+  );
 
 /** `BunHttpAdapter`'s constructor options. */
 export type BunHttpAdapterOptions = ConstructorParameters<

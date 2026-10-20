@@ -19,6 +19,7 @@ import {
   LegacyStarController,
   moduleOf,
   MwBasicModule,
+  MwExcludeMatchingModule,
   MwPrefixModule,
   MwVersionModule,
   OptionalController,
@@ -33,8 +34,10 @@ import {
   VersioningModule,
 } from "./app";
 import {
+  CORE_READS_ROUTE_MATCHING_OPTIONS,
   CORE_RESOLVES_NEUTRAL_MIDDLEWARE,
   EXPRESS_HONOURS_EXACT_MARKER,
+  EXPRESS_RUNS_EXACT_PATH_ON_SLASH,
   NEST_12,
 } from "./harness";
 
@@ -437,8 +440,54 @@ export const GROUPS: Group[] = [
       get("versioned: /v1/plain (no mw)", "/v1/plain"),
     ],
   },
+  ...excludeMatchingGroups(),
   ...specGroups(),
 ];
+
+/**
+ * `MiddlewareConsumer.exclude()` matched as the router matches paths (Nest
+ * 12.2.0's `getRouteMatchingOptions`): a trailing slash is served by the
+ * route without it, so `/api/users/login/` skips the middleware excluded for
+ * `users/login`, while `/api/invoices/` (served by `invoices`) runs the one
+ * excluded for `invoices/{*path}`. On a core that never asks, both adapters
+ * get its own matching, so the groups run where it asks only.
+ */
+function excludeMatchingGroups(): Group[] {
+  const configure: Group["configure"] = (app) => app.setGlobalPrefix("api");
+  return [
+    {
+      name: "mw-exclude-matching",
+      module: MwExcludeMatchingModule,
+      configure,
+      when: CORE_READS_ROUTE_MATCHING_OPTIONS,
+      probes: [
+        get("excluded users/login: /api/users/login", "/api/users/login"),
+        get("excluded users/login: /api/users/login/", "/api/users/login/"),
+        get("users/login excluded, not its child", "/api/users/login/x"),
+        get("invoices/{*path}: the list /api/invoices", "/api/invoices"),
+        get("invoices/{*path}: the list /api/invoices/", "/api/invoices/"),
+        get("invoices/{*path}: an item /api/invoices/7", "/api/invoices/7"),
+        get("invoices/{*path}: an item /api/invoices/7/", "/api/invoices/7/"),
+        req("excluded for every method: HEAD", "HEAD", "/api/users/login/"),
+      ],
+    },
+    {
+      // Express's router is case-insensitive by default; ours, given
+      // `caseSensitive: false`, too, and the exclusions follow it.
+      name: "mw-exclude-matching-case-insensitive",
+      module: MwExcludeMatchingModule,
+      configure,
+      bunOptions: { router: { caseSensitive: false } },
+      when: CORE_READS_ROUTE_MATCHING_OPTIONS,
+      probes: [
+        get("excluded users/login: /api/USERS/login", "/api/USERS/login"),
+        get("excluded users/login: /api/Users/Login/", "/api/Users/Login/"),
+        get("invoices/{*path}: /api/INVOICES/", "/api/INVOICES/"),
+        get("invoices/{*path}: /api/Invoices/7", "/api/Invoices/7"),
+      ],
+    },
+  ];
+}
 
 /** The requests of the Nest 12 route-option groups. */
 function specProbes(): Probe[] {
@@ -619,7 +668,12 @@ export const KNOWN: Record<string, KnownDifference> = {
     ["status", "body", "handler"],
     ["routes/*path wildcard, /files/"],
   ),
-  ...known(D3B, ["trail"], ["mw-prefix/'*' + prefix: /api/"]),
+  // On `/api/` platform-express 12.2.0 runs `MwStarPath` too, through the
+  // exact `/api` path it no longer skips there, where ours reaches it
+  // through `*path`'s empty tail; before 12.2.0, Express runs it nowhere.
+  ...(EXPRESS_RUNS_EXACT_PATH_ON_SLASH
+    ? {}
+    : known(D3B, ["trail"], ["mw-prefix/'*' + prefix: /api/"])),
   // D3c: `opt{/:x}` is a literal `{` to routejs, so it never matches.
   ...known(
     D3C,
@@ -647,7 +701,15 @@ export const KNOWN: Record<string, KnownDifference> = {
       "syntax-legacy-group/legacy /old/(.*): literal /old/(.*)",
     ],
   ),
-  ...known(D3D_MIDDLEWARE, ["logs"], ["mw-prefix/(boot)"]),
+  ...known(
+    D3D_MIDDLEWARE,
+    ["logs"],
+    [
+      "mw-prefix/(boot)",
+      "mw-exclude-matching/(boot)",
+      "mw-exclude-matching-case-insensitive/(boot)",
+    ],
+  ),
   // D3e (new, measured here first; §5.5 item 2 plans the fix): the old
   // forms `:x?` and `:x(\d+)` boot and serve, where Express's
   // `normalizePath` rejects them at startup with path-to-regexp's error.

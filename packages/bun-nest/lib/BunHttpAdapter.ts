@@ -497,6 +497,14 @@ export class BunHttpAdapter<
   /** The `etag` option every response starts with (see `BunResponse.etag`). */
   protected etagEnabled: EtagOption = false;
   /**
+   * Whether the router this adapter created matches paths case-sensitively:
+   * its `caseSensitive` option as the router resolves it (`true` by
+   * default here, `false` when the option is given unset). Fixed when the
+   * router is created, as the router's own setting is; reported by
+   * {@link getRouteMatchingOptions}.
+   */
+  readonly #routerCaseSensitive: boolean;
+  /**
    * Emits the server's `listening`, `error` and `close` events, which the
    * Nest-facing server proxy forwards. Annotated rather than inferred: the
    * inferred `EventEmitter<[never]>` is written into the shipped declaration
@@ -587,6 +595,8 @@ export class BunHttpAdapter<
     const router = new BunRouter({ ...routerOptions, views });
     super(router);
     this.views = views;
+    // What `BunRouter` applies to every route: its option, else `false`.
+    this.#routerCaseSensitive = routerOptions.caseSensitive ?? false;
 
     const logger = options?.logger || new Logger();
     this.setInstance(router);
@@ -1684,6 +1694,35 @@ export class BunHttpAdapter<
    */
   public isRouteOrderSensitive(): boolean {
     return true;
+  }
+
+  /**
+   * How the router matches request paths, so that Nest matches the routes
+   * excluded with `MiddlewareConsumer.exclude()` (and `enableCsrfProtection`'s
+   * `exclude`) the same way: `caseSensitive` is the router's own setting
+   * (`true` unless `router.caseSensitive` says otherwise), and
+   * `ignoreTrailingSlash` is always `true`, since a route serves its path with
+   * one trailing slash too (`/users/login/` by the `users/login` route), as
+   * Express's non-strict routing does. `@nestjs/platform-express` 12.2.0
+   * reports the same pair from its router's `case sensitive routing` and
+   * `strict routing` settings.
+   *
+   * Nest 12.2.0's core reads it (`HttpServer.getRouteMatchingOptions`), once
+   * per `forRoutes()`; without it, excluded routes match exactly, which
+   * would run an excluded middleware on `/users/login/` and skip one excluded
+   * for `invoices/{*path}` on `/invoices/`. Earlier cores, Nest 11 included,
+   * never call it. Declared without `override` (no base class declares it)
+   * and with the return type spelled out, so no 12.2-only type reaches the
+   * declarations.
+   */
+  public getRouteMatchingOptions(): {
+    caseSensitive: boolean;
+    ignoreTrailingSlash: boolean;
+  } {
+    return {
+      caseSensitive: this.#routerCaseSensitive,
+      ignoreTrailingSlash: true,
+    };
   }
 
   // `prefix` is accepted for `AbstractHttpAdapter` signature parity; these

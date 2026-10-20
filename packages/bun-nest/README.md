@@ -25,8 +25,8 @@ Underneath, routing is
 - **NestJS 11.1.20 or later, or NestJS 12**: the peers `@nestjs/common` and
   `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required;
   `@nestjs/websockets` (the same range) is needed only for gateways. One
-  build serves both majors, and both are tested: the repo runs on Nest 12,
-  and its suites, examples and consumer type checks also run on the latest
+  build serves both majors, and both are tested: the repo runs on Nest 12
+  (12.2.0), and its suites, examples and consumer type checks also run on the latest
   11 and on the floors, 11.1.20 and 12.0.0. The floor is 11.1.20 because
   older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
   `isAckHandledManually`) arrived in 11.1.7, the CORS delegate types this
@@ -284,6 +284,16 @@ interceptors and `setGlobalPrefix` do not apply to it. Mount before
 order ahead of the route handler. Its path is prefix-matched, like Express's
 `use(path)`. Middleware receives a `BunRequest` and a `BunResponse`. A global
 prefix (`app.setGlobalPrefix`) applies as usual.
+
+From Nest 12.2.0, `exclude()` matches its routes as the router matches
+paths, which the adapter reports through `getRouteMatchingOptions()`, as
+`@nestjs/platform-express` 12.2.0 does: case-sensitively unless the
+`router` option sets `caseSensitive: false`, and with an optional trailing
+slash. So `exclude("users/login")` also skips the middleware on
+`/users/login/`, which the `users/login` route serves, while
+`exclude("invoices/{*path}")` still runs it on `/invoices/`, which the
+`invoices` route serves. Earlier Nest releases match exclusions their own
+way, on both adapters alike.
 
 See
 [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts).
