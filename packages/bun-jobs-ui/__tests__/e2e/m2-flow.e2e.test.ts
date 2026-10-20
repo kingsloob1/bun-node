@@ -184,7 +184,18 @@ describe.skipIf(chromePath === undefined)(
       expect((await fetch(`${origin}/jobs`)).status).toBe(200);
       profile = chromeProfile("m2-flow");
       view = new Bun.WebView({
-        backend: { type: "chrome", url: false, path: chromePath },
+        backend: {
+          type: "chrome",
+          url: false,
+          path: chromePath,
+          // Keeps headless Chrome off the desktop's display: its GPU process
+          // connects to DISPLAY / WAYLAND_DISPLAY even headless, and a hung
+          // compositor (2026-10-20) left the page rendering no frames, so the
+          // suite hung. Bun.WebView cannot unset Chrome's environment; with GL
+          // disabled Chrome never opens the display. As in
+          // examples/bun-jobs-ui/shared/browser.ts.
+          argv: ["--use-gl=disabled"],
+        },
         // Chrome always writes a profile; owning the directory is what lets
         // this suite delete it (see `chromeProfile`).
         dataStore: profile.dataStore,
