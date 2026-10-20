@@ -25,8 +25,8 @@ Underneath, routing is
 - **NestJS 11.1.20 or later, or NestJS 12**: the peers `@nestjs/common` and
   `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required;
   `@nestjs/websockets` (the same range) is needed only for gateways. One
-  build serves both majors, and both are tested: the repo runs on Nest 12,
-  and its suites, examples and consumer type checks also run on the latest
+  build serves both majors, and both are tested: the repo runs on Nest 12
+  (12.2.0), and its suites, examples and consumer type checks also run on the latest
   11 and on the floors, 11.1.20 and 12.0.0. The floor is 11.1.20 because
   older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
   `isAckHandledManually`) arrived in 11.1.7, the CORS delegate types this
@@ -303,6 +303,16 @@ interceptors and `setGlobalPrefix` do not apply to it. Mount before
 order ahead of the route handler. Its path is prefix-matched, like Express's
 `use(path)`. Middleware receives a `BunRequest` and a `BunResponse`. A global
 prefix (`app.setGlobalPrefix`) applies as usual.
+
+From Nest 12.2.0, `exclude()` matches its routes as the router matches
+paths, which the adapter reports through `getRouteMatchingOptions()`, as
+`@nestjs/platform-express` 12.2.0 does: case-insensitively unless the
+`router` option sets `caseSensitive: true`, and with an optional trailing
+slash. So `exclude("users/login")` also skips the middleware on
+`/users/login/`, which the `users/login` route serves, while
+`exclude("invoices/{*path}")` still runs it on `/invoices/`, which the
+`invoices` route serves. Earlier Nest releases match exclusions their own
+way, on both adapters alike.
 
 See
 [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts).
@@ -959,6 +969,12 @@ listed here answers the same status, headers and body.
   (a rejection before `done()` is `done(error)`, `done` counts once, a
   response hook's error is logged), where platform-express 11 leaves the
   source open and those rejections and errors unhandled.
+- bun-common copies **Express 5.3.0**'s `res.redirect` body and
+  `Content-Disposition`: an HTML redirect is a small `<!DOCTYPE html>`
+  document, and a download's filename is bare when it is a token
+  (`filename=report.csv`). On Express 5.2.1, which Nest 11 and Nest 12.0–12.1.3
+  install, Express answers `<p>Found. Redirecting to …</p>` and always quotes
+  the filename; Nest 12.2.0's Express 5.3.0 answers as bun-common does.
 - Nest middleware gets no route params: `req.params` is `{}` in a
   `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
   bun-common binds params only for route handlers.

@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import request from "supertest";
 import * as httpAdapterModule from "../lib/BunHttpAdapter";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { coreRunsMiddlewareOnce } from "./coreMiddlewareOnce";
 
 let httpAdapter!: BunHttpAdapter;
 let app!: Parameters<typeof request>[0];
@@ -287,6 +288,26 @@ describe("BunHttpAdapter.fetch: drops the URL fragment, as a served request", ()
   });
 });
 
+/**
+ * What the installed `@nestjs/common`'s default `StreamableFile` error
+ * handler sends for `err`, read by running it on a stand-in response: the
+ * message before 12.2.0, `"Bad Request"` from 12.2.0, which logs the message
+ * instead (it may name the path the stream reads from).
+ */
+function defaultFileErrorBody(err: Error): string {
+  let sent = "";
+  const file = new StreamableFile(Buffer.from("")).setErrorLogger(() => {});
+  file.errorHandler(err, {
+    destroyed: false,
+    headersSent: false,
+    statusCode: 0,
+    send: (body: string) => {
+      sent = body;
+    },
+  } as never);
+  return sent;
+}
+
 describe("BunHttpAdapter: responses NestJS sends", () => {
   it("redirect() finishes the response (no wait for the request timeout)", async () => {
     const adapter = new BunHttpAdapter();
@@ -405,7 +426,7 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
 
     const response = await adapter.fetch("/file");
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe("ENOENT");
+    expect(await response.text()).toBe(defaultFileErrorBody(failure));
     expect(response.headers.get("content-type")).not.toStartWith("text/csv");
     expect(calls).toHaveLength(1);
     expect(calls[0][0]).toBe(failure);
@@ -434,7 +455,9 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
 
     const plain = await adapter.fetch("/default");
     expect(plain.status).toBe(400);
-    expect(await plain.text()).toBe("source failed");
+    expect(await plain.text()).toBe(
+      defaultFileErrorBody(new Error("source failed")),
+    );
     const custom = await adapter.fetch("/custom");
     expect(custom.status).toBe(503);
     expect(await custom.text()).toBe("custom: source failed");
@@ -1474,12 +1497,19 @@ describe("BunHttpAdapter.createMiddlewareFactory: the core's exact-match `$`", (
     return { adapter, seen };
   }
 
-  it("runs on exactly that path, not below it, not with a trailing slash, as Express 12.1.3", async () => {
+  it("runs on exactly that path, not below it; with a trailing slash only where the core runs a middleware once (12.2.0)", async () => {
+    // Nest 12.2.0's core runs a middleware once per request, so, as
+    // platform-express 12.2.0, `/api/` runs it too; on an earlier core it is
+    // skipped there, as platform-express 12.1.3 skips it, since the wildcard
+    // path beside it may run it again.
+    const once = await coreRunsMiddlewareOnce();
     const { adapter, seen } = withMiddleware(RequestMethod.ALL, "/api$");
     // The middleware runs, and alone does not make a route: still a miss.
     expect((await adapter.fetch("/api")).status).toBe(404);
     expect(seen).toEqual(["GET /api"]);
-    expect((await adapter.fetch("/api/")).headers.get("x-mw")).toBeNull();
+    // A miss answers without the middleware's headers: read `seen`.
+    await adapter.fetch("/api/");
+    expect(seen).toEqual(once ? ["GET /api", "GET /api/"] : ["GET /api"]);
     expect((await adapter.fetch("/api/x")).headers.get("x-mw")).toBeNull();
     expect((await adapter.fetch("/apix")).headers.get("x-mw")).toBeNull();
     expect((await adapter.fetch("/api$")).headers.get("x-mw")).toBeNull();
@@ -1488,7 +1518,9 @@ describe("BunHttpAdapter.createMiddlewareFactory: the core's exact-match `$`", (
       "posted",
       "ran",
     ]);
-    expect(seen).toEqual(["GET /api", "POST /api"]);
+    expect(seen).toEqual(
+      once ? ["GET /api", "GET /api/", "POST /api"] : ["GET /api", "POST /api"],
+    );
   });
 
   it("keeps a method: GET middleware skips a POST", async () => {

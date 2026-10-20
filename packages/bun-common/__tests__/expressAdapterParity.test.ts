@@ -234,7 +234,7 @@ describe("BunHttpAdapter's Nest-shaped helpers (as @nestjs/platform-express)", (
     });
     expect(permanent.status).toBe(301);
     expect(await permanent.text()).toBe(
-      "<p>Moved Permanently. Redirecting to /r</p>",
+      "<!DOCTYPE html><head><title>Moved Permanently</title></head><body><p>Moved Permanently. Redirecting to /r</p></body>",
     );
   });
 

@@ -19,6 +19,7 @@ import {
   LegacyStarController,
   moduleOf,
   MwBasicModule,
+  MwExcludeMatchingModule,
   MwPrefixModule,
   MwVersionModule,
   OptionalController,
@@ -32,7 +33,11 @@ import {
   VersionedPrefixModule,
   VersioningModule,
 } from "./app";
-import { EXPRESS_HONOURS_EXACT_MARKER, NEST_12 } from "./harness";
+import {
+  CORE_READS_ROUTE_MATCHING_OPTIONS,
+  EXPRESS_HONOURS_EXACT_MARKER,
+  NEST_12,
+} from "./harness";
 
 /** A request with a method other than GET. */
 function req(
@@ -433,8 +438,45 @@ export const GROUPS: Group[] = [
       get("versioned: /v1/plain (no mw)", "/v1/plain"),
     ],
   },
+  ...excludeMatchingGroups(),
   ...specGroups(),
 ];
+
+/**
+ * `MiddlewareConsumer.exclude()` matched as the router matches paths (Nest
+ * 12.2.0's `getRouteMatchingOptions`): a trailing slash is served by the
+ * route without it, so `/api/users/login/` skips the middleware excluded for
+ * `users/login`, while `/api/invoices/` (served by `invoices`) runs the one
+ * excluded for `invoices/{*path}`. On a core that never asks, both adapters
+ * get its own matching, so the groups run where it asks only.
+ */
+function excludeMatchingGroups(): Group[] {
+  const configure: Group["configure"] = (app) => app.setGlobalPrefix("api");
+  return [
+    {
+      name: "mw-exclude-matching",
+      module: MwExcludeMatchingModule,
+      configure,
+      when: CORE_READS_ROUTE_MATCHING_OPTIONS,
+      probes: [
+        get("excluded users/login: /api/users/login", "/api/users/login"),
+        get("excluded users/login: /api/users/login/", "/api/users/login/"),
+        get("users/login excluded, not its child", "/api/users/login/x"),
+        get("invoices/{*path}: the list /api/invoices", "/api/invoices"),
+        get("invoices/{*path}: the list /api/invoices/", "/api/invoices/"),
+        get("invoices/{*path}: an item /api/invoices/7", "/api/invoices/7"),
+        get("invoices/{*path}: an item /api/invoices/7/", "/api/invoices/7/"),
+        req("excluded for every method: HEAD", "HEAD", "/api/users/login/"),
+        // Both routers are case-insensitive by default, and so are the
+        // exclusions.
+        get("excluded users/login: /api/USERS/login", "/api/USERS/login"),
+        get("excluded users/login: /api/Users/Login/", "/api/Users/Login/"),
+        get("invoices/{*path}: /api/INVOICES/", "/api/INVOICES/"),
+        get("invoices/{*path}: /api/Invoices/7", "/api/Invoices/7"),
+      ],
+    },
+  ];
+}
 
 /** The requests of the Nest 12 route-option groups. */
 function specProbes(): Probe[] {

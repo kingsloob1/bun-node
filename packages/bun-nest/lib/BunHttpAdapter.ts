@@ -91,6 +91,7 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
+import { MiddlewareModule } from "@nestjs/core/middleware/middleware-module.js";
 import { LegacyRouteConverter } from "@nestjs/core/router/legacy-route-converter.js";
 import { BunNestWebsocketAdapter } from "./BunWebSocketAdapter";
 
@@ -152,6 +153,54 @@ function coreScopesNotFoundToPrefix(): boolean {
       .mapException === "function"
   );
 }
+
+/**
+ * Whether the installed `@nestjs/core` runs a middleware once per request
+ * when several of its paths match it (12.2.0: `registerHandler` guards it
+ * per request), so an adapter need not keep two of them apart. Asked of the
+ * core's own `MiddlewareModule.prototype.registerHandler`, never a version
+ * string: with stand-ins, it registers one middleware at two paths, and the
+ * same request is sent through both. Asked when this module loads; the
+ * answer arrives a few microtasks later, long before a request can, and
+ * until then (or when the probe throws) it reads as `false`.
+ */
+let coreRunsMiddlewareOnce = false;
+
+/** Asks the core the question behind {@link coreRunsMiddlewareOnce}. */
+async function askCoreRunsMiddlewareOnce(): Promise<boolean> {
+  const registerHandler = (
+    MiddlewareModule.prototype as unknown as Record<
+      string,
+      (...args: unknown[]) => Promise<void>
+    >
+  ).registerHandler;
+  const registered: RouterHandler[] = [];
+  let runs = 0;
+  await registerHandler.call(
+    { routeInfoPathExtractor: { extractPathsFrom: () => ["/a", "/b"] } },
+    {
+      createMiddlewareFactory: () => (_path: string, h: RouterHandler) =>
+        registered.push(h),
+    },
+    { path: "a", method: RequestMethod.ALL },
+    (_req: unknown, _res: unknown, next: () => void) => {
+      runs++;
+      next();
+    },
+  );
+  const req = {};
+  for (const h of registered) {
+    await h(req as never, {} as never, () => {});
+  }
+  return registered.length === 2 && runs === 1;
+}
+
+askCoreRunsMiddlewareOnce().then(
+  (once) => {
+    coreRunsMiddlewareOnce = once;
+  },
+  () => {},
+);
 
 /**
  * `RequestMethod.QUERY` when the installed `@nestjs/common` has it (11.2.0
@@ -1061,6 +1110,14 @@ export class BunHttpAdapter<
   /** The `etag` option every response starts with (see `BunResponse.etag`). */
   protected etagEnabled: EtagOption = false;
   /**
+   * Whether the router this adapter created matches paths case-sensitively:
+   * its `caseSensitive` option as the router resolves it (`false` by
+   * default, as Express; `false` too when the option is given unset). Fixed when the
+   * router is created, as the router's own setting is; reported by
+   * {@link getRouteMatchingOptions}.
+   */
+  readonly #routerCaseSensitive: boolean;
+  /**
    * Emits the server's `listening`, `error` and `close` events, which the
    * Nest-facing server proxy forwards. Annotated rather than inferred: the
    * inferred `EventEmitter<[never]>` is written into the shipped declaration
@@ -1162,6 +1219,8 @@ export class BunHttpAdapter<
     const router = new BunRouter({ ...routerOptions, views });
     super(router);
     this.views = views;
+    // What `BunRouter` applies to every route: its option, else `false`.
+    this.#routerCaseSensitive = routerOptions.caseSensitive ?? false;
 
     const logger = options?.logger || new Logger();
     this.setInstance(router);
@@ -2951,6 +3010,36 @@ export class BunHttpAdapter<
    */
   public isRouteOrderSensitive(): boolean {
     return true;
+  }
+
+  /**
+   * How the router matches request paths, so that Nest matches the routes
+   * excluded with `MiddlewareConsumer.exclude()` (and `enableCsrfProtection`'s
+   * `exclude`) the same way: `caseSensitive` is the router's own setting
+   * (`false`, as Express's default, unless `router.caseSensitive` is
+   * `true`), and
+   * `ignoreTrailingSlash` is always `true`, since a route serves its path with
+   * one trailing slash too (`/users/login/` by the `users/login` route), as
+   * Express's non-strict routing does. `@nestjs/platform-express` 12.2.0
+   * reports the same pair from its router's `case sensitive routing` and
+   * `strict routing` settings.
+   *
+   * Nest 12.2.0's core reads it (`HttpServer.getRouteMatchingOptions`), once
+   * per `forRoutes()`; without it, excluded routes match exactly, which
+   * would run an excluded middleware on `/users/login/` and skip one excluded
+   * for `invoices/{*path}` on `/invoices/`. Earlier cores, Nest 11 included,
+   * never call it. Declared without `override` (no base class declares it)
+   * and with the return type spelled out, so no 12.2-only type reaches the
+   * declarations.
+   */
+  public getRouteMatchingOptions(): {
+    caseSensitive: boolean;
+    ignoreTrailingSlash: boolean;
+  } {
+    return {
+      caseSensitive: this.#routerCaseSensitive,
+      ignoreTrailingSlash: true,
+    };
   }
 
   /**
@@ -5398,10 +5487,13 @@ export class BunHttpAdapter<
    *
    * For the core's exact-match marker: for a wildcard `forRoutes('*')` under
    * a global prefix it registers `/<prefix>$` beside `/<prefix>/{*path}`,
-   * the `$` meaning "exactly this path". As `@nestjs/platform-express` 12.1.3
-   * (nestjs/nest #17942), the `$` is stripped and a request ending in `/` is
-   * skipped, since the wildcard entry beside it already matches `/api/` and
-   * the middleware must not run twice.
+   * the `$` meaning "exactly this path". As `@nestjs/platform-express`
+   * (12.1.3, nestjs/nest #17942), the `$` is stripped, and the route serves
+   * its path with a trailing slash too, as every route does. Where the core
+   * runs a middleware once per request (12.2.0), that is all, as on
+   * platform-express 12.2.0. On an earlier core a request ending in `/` is
+   * skipped, as platform-express 12.1.3 skips it, since the wildcard entry
+   * beside it may match `/api/` too and the middleware must not run twice.
    */
   private useExactMiddleware(
     method: string,
@@ -5410,7 +5502,9 @@ export class BunHttpAdapter<
   ): void {
     const normalized = method.toUpperCase();
     const handler: RouterHandler = (req, res, next) =>
-      req.path.endsWith("/") ? next() : middleware(req, res, next);
+      !coreRunsMiddlewareOnce && req.path.endsWith("/")
+        ? next()
+        : middleware(req, res, next);
     // `setRoute` with a `path` compiles an exact match; it is not an endpoint
     // (`useMethod` and `use` register through it the same way, with `group`).
     this.instance.setRoute({

@@ -21,6 +21,7 @@ import { connect } from "node:net";
 import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
+import { filterMiddleware } from "@nestjs/core/middleware/utils.js";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { BunHttpAdapter } from "../../lib/BunHttpAdapter";
 import { expressReference } from "../expressCompat/reference";
@@ -43,6 +44,25 @@ export const NEST_12 =
 export const EXPRESS_HONOURS_EXACT_MARKER = /endsWith\(["']\$["']\)/.test(
   ExpressAdapter.prototype.createMiddlewareFactory.toString(),
 );
+
+/**
+ * Whether the core asks the adapter how its router matches paths
+ * (`HttpServer.getRouteMatchingOptions`, 12.2.0) to match the routes
+ * excluded with `MiddlewareConsumer.exclude()`. Asked of the core's own
+ * `filterMiddleware`, with an adapter that records the call; an earlier core
+ * never makes it.
+ */
+export const CORE_READS_ROUTE_MATCHING_OPTIONS = (() => {
+  let asked = false;
+  const adapter = {
+    getRouteMatchingOptions: () => {
+      asked = true;
+      return { caseSensitive: true, ignoreTrailingSlash: false };
+    },
+  };
+  filterMiddleware([() => {}], [], adapter as never);
+  return asked;
+})();
 
 /** `BunHttpAdapter`'s constructor options. */
 export type BunHttpAdapterOptions = ConstructorParameters<

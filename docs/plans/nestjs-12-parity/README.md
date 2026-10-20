@@ -17,7 +17,7 @@ Every measurement ran in a copy of the repo with Nest 12 installed into it
 [`evidence/`](evidence/README.md), and each measurement there can be re-run
 with one command.
 
-### Status (2026-10-17)
+### Status (2026-10-20)
 
 **Approved in full.** On 2026-10-17 the user answered Q1–Q8 with each
 recommendation (§12) and asked for the whole plan, PR-0 to PR-11, as their
@@ -41,7 +41,7 @@ first priority.
 | PR-0 matrix tooling | merged, #400 (2026-10-17) |
 | PR-1 `BunRouter.query()` | merged, #402 |
 | PR-2 the Nest 12 blockers | merged, #404 |
-| PR-3 versions (and PR-3b) | in review; PR-3b (bun-jobs-ui's devDeps) lands with it |
+| PR-3 versions (and PR-3b) | merged, #414 (PR-3b, bun-jobs-ui's devDeps, landed with it) |
 | PR-4 routing differential | merged, #410 |
 | PR-5 routing parity | designed (measured; OQ1–OQ10 answered); built after the router benchmark guard |
 | PR-6a errors and security | not started |
@@ -54,6 +54,7 @@ first priority.
 | PR-11 docs | not started |
 | `@SseSignal` parity (addition, 2026-10-17) | merged, #413 (tests only; no difference from Express on 11.2.7 and 12.1.3) |
 | Router benchmark guard (addition, the user's rule 2026-10-17: routing speed must not regress) | in progress |
+| Nest 12.2.0 lock move (addition, the user's decision 2026-10-20), with `getRouteMatchingOptions()` pulled forward from PR-6c | in progress: develop's lock 12.1.3 → 12.2.0; bun-common's copy of Express 5.3.0 (redirect body, `Content-Disposition`) lands in the same branch |
 
 Where the plan below names the "features agent", "5a", "4c" or "d6", read the
 owners listed here: those names date from before bun-nest and bun-common had

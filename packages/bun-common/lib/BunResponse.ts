@@ -123,7 +123,10 @@ export type SendFileCallOptions = Omit<
   accepRanges?: boolean;
   /** Answer with `Content-Disposition: attachment`. Defaults to `false`. */
   download?: boolean;
-  /** File name for the attachment; defaults to the served file's basename. */
+  /**
+   * File name for the attachment, reduced to its basename; unset or empty,
+   * the served file's basename.
+   */
   filename?: string;
 };
 
@@ -347,27 +350,73 @@ function maxAgeToMs(value: string | number | undefined): number {
 }
 
 /**
- * Builds a `Content-Disposition` value the way the `content-disposition`
- * package does for Express: the file's **basename** in a quoted `filename`,
- * plus an RFC 5987 `filename*` when the name is not ISO-8859-1 (whose
- * `filename` then carries a `?`-substituted fallback).
+ * An RFC 2616 `token`: a parameter value that needs no quotes. The class is
+ * `content-disposition`'s `TOKEN_REGEXP`, with `\w` for its letters, digits
+ * and `_`.
  */
-function contentDisposition(filename?: string): string {
-  if (filename === undefined) {
+const DISPOSITION_TOKEN_REGEXP = /^[!#$%&'*+.\w^`|~-]+$/;
+
+/** A name made of printable US-ASCII alone, usable as a plain `filename`. */
+const DISPOSITION_ASCII_REGEXP = /^[\x20-\x7E]*$/;
+
+/** Each character outside printable US-ASCII, replaced by `?` in a fallback. */
+const DISPOSITION_NON_ASCII_REGEXP = /[^\x20-\x7E]/g;
+
+/** A percent escape, which a plain `filename` must not carry. */
+const DISPOSITION_HEX_ESCAPE_REGEXP = /%[0-9A-F]{2}/i;
+
+/**
+ * The characters `encodeURIComponent` leaves alone that are not an RFC 8187
+ * `attr-char`, so `filename*` percent-encodes them too. `content-disposition`
+ * matches a wider class, but these four are the only members of it that
+ * `encodeURIComponent`'s output can contain.
+ */
+const DISPOSITION_ATTR_CHAR_REGEXP = /['()*]/g;
+
+/**
+ * One `Content-Disposition` parameter as `content-disposition` 2.x's
+ * `format()` writes it: a `token` bare, anything else a quoted string with
+ * `\` and `"` escaped.
+ */
+function dispositionParameter(name: string, value: string): string {
+  if (DISPOSITION_TOKEN_REGEXP.test(value)) {
+    return `; ${name}=${value}`;
+  }
+  return `; ${name}="${value.replace(/[\\"]/g, "\\$&")}"`;
+}
+
+/**
+ * Builds a `Content-Disposition: attachment` value as Express 5.3.0 does with
+ * `contentDisposition.create(name)` (`content-disposition` 2.x): a name of
+ * printable US-ASCII with no `%XX` escape is the only parameter, `filename`,
+ * **unquoted** when it is a `token` (`filename=report.csv`) and quoted
+ * otherwise (`filename="Q1 report.csv"`). Any other name gets a `filename`
+ * fallback with each non-ASCII character as `?` (written by the same rule,
+ * so a `?` quotes it) and an RFC 8187 `filename*=UTF-8''…`. Without a name
+ * it is plain `attachment`. (Express 5.2's `content-disposition` 1.x quoted
+ * every `filename` and kept ISO-8859-1 characters in the fallback.)
+ *
+ * `name` is used as given: Express takes its `basename` first, and so do the
+ * callers. Ported from `content-disposition` 2.0.1's `create`,
+ * `createParameters`, `format` and `encodeExtended` (MIT, Copyright (c)
+ * 2014-2017 Douglas Christopher Wilson), for the options Express passes.
+ */
+function contentDisposition(name?: string): string {
+  if (name === undefined) {
     return "attachment";
   }
-  const name = basename(filename);
-  const quote = (value: string) => `"${value.replace(/[\\"]/g, "\\$&")}"`;
-
-  const nonLatin1 = /[^\x20-\x7E\xA0-\xFF]/g;
-  if (!nonLatin1.test(name) && !/%[0-9A-F]{2}/i.test(name)) {
-    return `attachment; filename=${quote(name)}`;
+  if (
+    DISPOSITION_ASCII_REGEXP.test(name) &&
+    !DISPOSITION_HEX_ESCAPE_REGEXP.test(name)
+  ) {
+    return `attachment${dispositionParameter("filename", name)}`;
   }
-  const encoded = encodeURIComponent(name).replace(
-    /['()*]/g,
+  const fallback = name.replace(DISPOSITION_NON_ASCII_REGEXP, "?");
+  const extended = `UTF-8''${encodeURIComponent(name).replace(
+    DISPOSITION_ATTR_CHAR_REGEXP,
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-  return `attachment; filename=${quote(name.replace(nonLatin1, "?"))}; filename*=UTF-8''${encoded}`;
+  )}`;
+  return `attachment${dispositionParameter("filename", fallback)}${dispositionParameter("filename*", extended)}`;
 }
 
 /** Splits a comma-separated header token list (`If-Match`), trimming each. */
@@ -3004,14 +3053,16 @@ export class BunResponse<
   }
 
   /**
-   * Redirects, as Express 5's `res.redirect([status,] url)`: sets `Location`
-   * to `url`, URL-encoded (`"back"` is not special, as in Express 5), and
-   * answers `status` (default `302`) with a short body negotiated on
-   * `Accept` — `text/plain` `"Found. Redirecting to <url>"`, `text/html`
-   * `<p>Found. Redirecting to <url></p>` (escaped), or empty when neither is
+   * Redirects, as Express 5.3.0's `res.redirect([status,] url)`: sets
+   * `Location` to `url`, URL-encoded (`"back"` is not special, as in Express
+   * 5), and answers `status` (default `302`) with a short body negotiated on
+   * `Accept` — `text/plain` `"Found. Redirecting to <url>"`; `text/html` a
+   * small document, `<!DOCTYPE html><head><title>Found</title></head>`
+   * followed by `<body><p>Found. Redirecting to <url></p></body>`, the URL
+   * HTML-escaped (Express 5.2 sent only the `<p>`); or empty when neither is
    * acceptable — adding `Vary: Accept` and `Content-Length`. A `HEAD`
-   * request gets the headers and no body. No `ETag` is computed: Express
-   * ends a redirect without one.
+   * request gets the headers, `Content-Length` included, and no body. No
+   * `ETag` is computed: Express ends a redirect without one.
    *
    * `redirect(url, status)` — the URL first — is accepted too, as before.
    * With a `ResponseInit` second argument the response is Bun's
@@ -3057,7 +3108,7 @@ export class BunResponse<
       body = `${reason}. Redirecting to ${address}`;
     } else if (accepted === "html") {
       this.setHeader("Content-Type", "text/html; charset=utf-8");
-      body = `<p>${reason}. Redirecting to ${escapeHtml(address)}</p>`;
+      body = `<!DOCTYPE html><head><title>${reason}</title></head><body><p>${reason}. Redirecting to ${escapeHtml(address)}</p></body>`;
     }
 
     this.status(status);
@@ -3400,24 +3451,32 @@ export class BunResponse<
   }
 
   /**
-   * Sets `Content-Disposition: attachment`, as Express's `res.attachment`.
-   * With a `filename`, its **basename** is the `filename` parameter (with an
-   * RFC 5987 `filename*` for non-ISO-8859-1 names) and `Content-Type` is set
-   * from its extension. The file system is not consulted, so the name need
-   * not exist. Synchronous; awaiting it still works.
+   * Sets `Content-Disposition: attachment`, as Express 5.3.0's
+   * `res.attachment`. With a `filename`, its **basename** is the `filename`
+   * parameter — bare when it is an RFC 2616 token (`filename=report.csv`),
+   * quoted otherwise (`filename="Q1 report.csv"`), and with an RFC 8187
+   * `filename*` beside an ASCII fallback for a name that is not printable
+   * US-ASCII (`content-disposition` 2.x; see `contentDisposition`) — and
+   * `Content-Type` is set from its extension. The file system is not
+   * consulted, so the name need not exist. Synchronous; awaiting it still
+   * works.
    */
   attachment(filename?: string): BunResponse {
-    if (filename) {
-      this.type(extname(filename));
+    const name = filename === undefined ? undefined : basename(filename);
+    if (name) {
+      this.type(extname(name));
     }
 
-    this.headersObj.set("Content-Disposition", contentDisposition(filename));
+    this.headersObj.set("Content-Disposition", contentDisposition(name));
     return this;
   }
 
   /**
    * Sends the file as an attachment (`sendFile` with `download: true`), then
-   * calls `cb` with no arguments; its return value is ignored.
+   * calls `cb` with no arguments; its return value is ignored. The
+   * `Content-Disposition` names the basename of `filename` (of `path` when
+   * `filename` is unset or empty), as Express 5.3.0: `filename=report.csv`
+   * for a token, quoted otherwise.
    */
   async download(
     path: string,
@@ -3484,7 +3543,10 @@ export class BunResponse<
    *
    * Where Express passes an error to `next` (missing file, directory, 403…)
    * this answers directly with that status and an empty body, since there is
-   * no callback here. `download`/`filename` add `Content-Disposition`.
+   * no callback here. `download` adds `Content-Disposition: attachment`
+   * naming the basename of `filename`, or of the file when `filename` is
+   * unset or empty, written as {@link attachment} writes it (Express 5.3.0's
+   * `res.download`).
    */
   async sendFile(
     path: string,
@@ -3571,7 +3633,7 @@ export class BunResponse<
     if (opts.download) {
       this.headersObj.set(
         "Content-Disposition",
-        contentDisposition(opts.filename ?? fullPath),
+        contentDisposition(basename(opts.filename || fullPath)),
       );
     }
 

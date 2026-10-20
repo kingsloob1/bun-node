@@ -451,7 +451,7 @@ as columns of `scripts/nest-matrix.ts` (§9.3):
 
 | Column | When |
 |---|---|
-| 12-latest (12.1.3) | every gate: it is develop's lock, the repo itself |
+| 12-latest (12.2.0) | every gate: it is develop's lock, the repo itself |
 | 11-latest (11.2.7) | every PR touching bun-nest or bun-common |
 | 11.1.20 and 12.0.0 (the floors) | once per merge window |
 | a new Nest release | when it ships, before the lock moves |
