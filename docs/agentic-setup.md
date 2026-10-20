@@ -265,7 +265,8 @@ short:
 
 - `bun scripts/typecheck.ts` — every project, with `bun check`, and all must
   pass (Bun ≥ 1.4.4 for development, which until it is stable is the canary:
-  `bun upgrade --canary`, verified on 1.4.4-canary.1+5f5799ed1; the packages'
+  `bun upgrade --canary`, verified on 1.4.4-canary.1+5f5799ed1 and, from
+  2026-10-20, 6bb5dc195; the packages'
   users need 1.4.2; the user's decisions of 2026-10-10 and 2026-10-17). A new
   lint finding or reformatted file after a `bun upgrade --canary` is the
   canary's: report it to the bun-lint-fmt lead with both `bun --revision`s

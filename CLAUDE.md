@@ -47,7 +47,11 @@ here runs (see [Typechecking](#typechecking)). The root `package.json` has
 `scripts/typecheck.ts` refuses an older Bun. Every 1.4.4 canary reports
 `Bun.version` "1.4.4", so the floor cannot tell them apart: the lint and
 format setup was verified on **1.4.4-canary.1+5f5799ed1** (`bun --revision`),
-and the plan's figures are as old as that build. **A later canary can change
+and the plan's figures are as old as that build. The machine moved to
+**1.4.4-canary.1+6bb5dc195** on 2026-10-20 (the user's decision): `bun lint`
+gave the same findings, rule by rule, in all 12 linted directories,
+`bun fmt --check` flagged the same 92 files, and `scripts/typecheck.ts` stayed
+clean (measured against the old binary on develop f325f269). **A later canary can change
 rule or format output**: a new finding or a reformatted file after
 `bun upgrade --canary` is the canary's, and goes to the bun-lint-fmt plan's
 lead with both revisions rather than being fixed in passing. Using the
