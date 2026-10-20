@@ -8,7 +8,7 @@ import type {
   WebSocketClient,
 } from "@kingsleyweb/bun-common";
 import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
-import type { Observable } from "rxjs";
+import type { Observable, Unsubscribable } from "rxjs";
 import { Buffer } from "node:buffer";
 import {
   BunWebSocket,
@@ -29,10 +29,19 @@ import { Logger } from "@nestjs/common";
  */
 const ADAPTER_EMIT = Symbol.for("@kingsleyweb/bun-nest/ws-emit");
 
+/**
+ * Carries, on the `emit` this adapter installs, the same send that throws
+ * instead of logging when the packet cannot be serialised, for the patched
+ * `emitMessage` (see {@link routeWsExceptionsThroughEmit}).
+ */
+const ADAPTER_EMIT_STRICT = Symbol.for("@kingsleyweb/bun-nest/ws-emit-strict");
+
 /** What carries the {@link ADAPTER_EMIT} marker. */
 interface AdapterEmitMarked {
   /** Present (`true`) on this adapter's `emit`, and on a patched prototype. */
   [ADAPTER_EMIT]?: true;
+  /** On this adapter's `emit`: sends, throwing what `JSON.stringify` threw. */
+  [ADAPTER_EMIT_STRICT]?: (event: string, payload: unknown) => void;
 }
 
 /** The part of Nest 12's `BaseWsExceptionFilter.prototype` patched below. */
@@ -67,6 +76,12 @@ let wsExceptionsRouted = false;
  * {@link ADAPTER_EMIT} gets it called; every other client, an `emitMessage`
  * a filter overrides, and Nest 11 (no `emitMessage`) are left alone.
  *
+ * Like the `client.send(JSON.stringify(…))` it replaces, it throws when the
+ * payload cannot be serialised, rather than logging and dropping it as
+ * `emit` does: Nest 12.2.0's filter (`emitErrorPayload`) catches that and
+ * sends the exception again without its `cause`, which echoes the client's
+ * message and may be nested too deep for `JSON.stringify`.
+ *
  * `@nestjs/websockets` is an optional peer, hence the guarded `require`
  * rather than an import; it patches the copy this package resolves.
  */
@@ -99,7 +114,13 @@ function routeWsExceptionsThroughEmit(): void {
       ? (client as { emit?: unknown }).emit
       : undefined;
     if (isFunction(emit) && (emit as AdapterEmitMarked)[ADAPTER_EMIT]) {
-      emit.call(client, event, payload);
+      // A copy of this package without the strict send has only `emit`.
+      const strict = (emit as AdapterEmitMarked)[ADAPTER_EMIT_STRICT];
+      if (isFunction(strict)) {
+        strict(event, payload);
+      } else {
+        emit.call(client, event, payload);
+      }
       return;
     }
     original.call(this, client, event, payload);
@@ -377,10 +398,44 @@ export type BunWebsocketHttpAdapter<
   "instance" | "getBunServer"
 >;
 
+/**
+ * How much of a client's traffic the adapter takes on at once, as
+ * `@nestjs/platform-ws` 12.2.0's `WsAdapter` options of the same names. Both
+ * apply per connection, on every Nest version.
+ */
+export interface BunWebSocketAdapterFlowOptions {
+  /**
+   * How many messages of one client are handled at the same time (per
+   * gateway the client is bound to); later ones wait, in order, for a slot. A
+   * message holds its slot until every handler result it started has
+   * completed or errored, so a handler returning an Observable that never
+   * completes holds one for as long as the client stays. `Infinity` lifts the
+   * limit; anything else must be at least `1`.
+   *
+   * @default 1000
+   */
+  maxConcurrentMessages?: number;
+  /**
+   * How many bytes may be queued for a client that does not read what it is
+   * sent before the adapter disconnects it (`terminate()`, logged as a
+   * warning). Bun's own `backpressureLimit` (`wsOptions`, 16 MB by default)
+   * caps the queue first: a reply Bun drops at that limit disconnects the
+   * client too, so a slow reader never loses a reply silently. `0` lifts this
+   * limit, leaving Bun's (which then drops what does not fit).
+   *
+   * Independently of it, reading from a client pauses while more than 1 MB is
+   * queued for it or while its messages wait for a slot, and resumes once it
+   * has caught up (where Bun's `ServerWebSocket` has `pause()`/`resume()`).
+   *
+   * @default 134217728 (128 MB)
+   */
+  maxSendBufferSize?: number;
+}
+
 export interface BunWebSocketAdapterOptionsFromHttpAdapter<
   customWebsocketDataType = unknown,
   routesType extends string = never,
-> {
+> extends BunWebSocketAdapterFlowOptions {
   /**
    * The HTTP adapter to ride on. The adapter sources its router and shared
    * `Bun.serve` server from it, so gateway upgrades flow through the app's
@@ -391,24 +446,28 @@ export interface BunWebSocketAdapterOptionsFromHttpAdapter<
    * Extra {@link BunWebSocket} options layered on top of the ones derived from
    * `httpAdapter`; every field given wins. `router` and `getServer` default to
    * the HTTP adapter's, and `{ newInstance: true, listen }` binds a dedicated
-   * server instead of riding the HTTP adapter's.
+   * server instead of riding the HTTP adapter's. The
+   * {@link BunWebSocketAdapterFlowOptions} are read here too (this is where
+   * `BunHttpAdapter`'s `websocket` option puts them); a top-level one wins.
    */
-  localOptions?: BunWebSocketOptions<customWebsocketDataType, routesType>;
+  localOptions?: BunWebSocketOptions<customWebsocketDataType, routesType> &
+    BunWebSocketAdapterFlowOptions;
 }
 
 export type BunWebSocketAdapterNormalOptions<
   customWebsocketDataType = unknown,
   routesType extends string = never,
-> = BunWebSocketOptions<customWebsocketDataType, routesType> & {
-  /**
-   * Optional HTTP adapter to source the router from. With `newInstance: true`
-   * the adapter still binds its own server on `listen.port`, but defaults its
-   * router to `httpAdapter.instance` when no explicit `router` is given. With
-   * `newInstance: false` it defaults `router` likewise, while `getServer` still
-   * decides the server.
-   */
-  httpAdapter?: BunWebsocketHttpAdapter<customWebsocketDataType, routesType>;
-};
+> = BunWebSocketOptions<customWebsocketDataType, routesType> &
+  BunWebSocketAdapterFlowOptions & {
+    /**
+     * Optional HTTP adapter to source the router from. With `newInstance: true`
+     * the adapter still binds its own server on `listen.port`, but defaults its
+     * router to `httpAdapter.instance` when no explicit `router` is given. With
+     * `newInstance: false` it defaults `router` likewise, while `getServer` still
+     * decides the server.
+     */
+    httpAdapter?: BunWebsocketHttpAdapter<customWebsocketDataType, routesType>;
+  };
 
 export type BunWebSocketAdapterOptions<
   customWebsocketDataType = unknown,
@@ -531,6 +590,142 @@ function argsToPayload(args: unknown[]): unknown {
   return args.length <= 1 ? args[0] : args;
 }
 
+/** `maxConcurrentMessages` by default: platform-ws 12.2.0's `DEFAULT_MAX_CONCURRENT_MESSAGES`. */
+const DEFAULT_MAX_CONCURRENT_MESSAGES = 1000;
+
+/** `maxSendBufferSize` by default, as platform-ws 12.2.0's (128 MB). */
+const DEFAULT_MAX_SEND_BUFFER_SIZE = 128 * 1024 * 1024;
+
+/** Reading from a client pauses while more than this is queued for it (platform-ws 12.2.0). */
+const SEND_BUFFER_HIGH_WATER_MARK = 1024 * 1024;
+
+/** `WebSocket.OPEN`: the only `readyState` in which a client's messages are handled. */
+const OPEN_STATE = 1;
+
+/** A frame as Bun hands it to the `message` handler. */
+type WsFrameData = string | Buffer;
+
+/**
+ * The parts of Bun's `ServerWebSocket` the flow control uses. `pause` and
+ * `resume` (which stop and restart reading from the client) are read as a
+ * capability: the Bun 1.4.4 runtime has them, `bun-types` 1.4.3 does not
+ * declare them, and without them the adapter only bounds and caps.
+ */
+interface FlowControlledSocket {
+  /** `WebSocket` ready state; `1` is open. */
+  readonly readyState: number;
+  /** Bytes queued for the client and not yet written to the socket. */
+  getBufferedAmount?: () => number;
+  /** Stops reading from the client. */
+  pause?: () => void;
+  /** Starts reading from the client again. */
+  resume?: () => void;
+  /** Closes the connection at once, without a closing handshake. */
+  terminate?: () => void;
+  /** Closes the connection with the closing handshake. */
+  close?: (code?: number, reason?: string) => void;
+}
+
+/** A message waiting for a free slot (see `maxConcurrentMessages`), oldest first. */
+interface WaitingMessage {
+  /** The frame as received. */
+  data: WsFrameData;
+  /** The message that arrived after this one. */
+  next: WaitingMessage | undefined;
+}
+
+/**
+ * What one message's handlers report back: `track()` is called once per
+ * handler result it starts and returns that result's `settle`; the message's
+ * slot is freed once every result settled. `subscriptions` holds the
+ * Observables still running, unsubscribed when the client disconnects.
+ */
+interface MessageScope {
+  /** Registers a handler result; call the function it returns once it completes or errors. */
+  track: () => () => void;
+  /** Handler results still subscribed to. */
+  subscriptions: Set<Unsubscribable>;
+}
+
+/**
+ * The flow-control state of one `bindMessageHandlers` binding (one client,
+ * one gateway), from the binding until the client disconnects.
+ */
+interface ClientFlow {
+  /** Messages being handled: started, with a handler result not yet settled. */
+  active: number;
+  /** The oldest message waiting for a slot. */
+  head: WaitingMessage | undefined;
+  /** The newest message waiting for a slot. */
+  tail: WaitingMessage | undefined;
+  /** Set while the drain loop runs, so a result settling synchronously does not re-enter it. */
+  draining: boolean;
+  /** Set when the client disconnects: nothing more is handled. */
+  closed: boolean;
+  /** Handler results still subscribed to, across the binding's messages. */
+  subscriptions: Set<Unsubscribable>;
+  /** Handles one message; `scope` tracks its handler results. */
+  handle: (data: WsFrameData, scope: MessageScope) => void;
+}
+
+/**
+ * The `maxConcurrentMessages` an adapter runs with: the option, else the
+ * default. Fails at construction on a value that would never handle a
+ * message (`0`, a negative, `NaN`).
+ */
+function resolveMaxConcurrentMessages(value: number | undefined): number {
+  if (isUndefined(value)) {
+    return DEFAULT_MAX_CONCURRENT_MESSAGES;
+  }
+  if (!(typeof value === "number" && value >= 1)) {
+    throw new TypeError(
+      `BunWebSocketAdapter: maxConcurrentMessages must be at least 1 (or Infinity), got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+/** The `maxSendBufferSize` an adapter runs with: the option, else the default; `0` lifts it. */
+function resolveMaxSendBufferSize(value: number | undefined): number {
+  if (isUndefined(value)) {
+    return DEFAULT_MAX_SEND_BUFFER_SIZE;
+  }
+  if (!(typeof value === "number" && value >= 0)) {
+    throw new TypeError(
+      `BunWebSocketAdapter: maxSendBufferSize must be 0 or more (0 lifts it), got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Raises Bun's `backpressureLimit` (16 MB by default), past which Bun drops
+ * what is sent, to `maxSendBufferSize`, so a client is queued for up to that
+ * much and then disconnected, as on platform-ws, rather than losing replies
+ * at 16 MB. A `backpressureLimit` given in `wsOptions` wins; with
+ * `maxSendBufferSize: 0`, Bun's own default stays.
+ */
+function withBackpressureLimit<TOptions extends { wsOptions?: object }>(
+  options: TOptions,
+  maxSendBufferSize: number,
+): TOptions {
+  if (
+    !maxSendBufferSize ||
+    (isObject(options.wsOptions) && "backpressureLimit" in options.wsOptions)
+  ) {
+    return options;
+  }
+  return {
+    ...options,
+    wsOptions: { backpressureLimit: maxSendBufferSize, ...options.wsOptions },
+  };
+}
+
+/** Bytes queued for `client`; `0` where Bun's socket cannot say. */
+function bufferedAmount(client: FlowControlledSocket): number {
+  return isFunction(client.getBufferedAmount) ? client.getBufferedAmount() : 0;
+}
+
 /**
  * NestJS WebSocket adapter over Bun's native WebSockets, speaking a
  * socket.io-shaped JSON packet protocol ({@link MessageEventTypes}).
@@ -633,6 +828,29 @@ export class BunWebSocketAdapter<
     WebSocketClient<customWebsocketDataType>
   >();
 
+  /**
+   * How many messages of one client (per gateway binding) are handled at
+   * once; see {@link BunWebSocketAdapterFlowOptions.maxConcurrentMessages}.
+   */
+  protected readonly maxConcurrentMessages: number;
+
+  /**
+   * Bytes that may be queued for a client before it is disconnected, `0` for
+   * no limit; see {@link BunWebSocketAdapterFlowOptions.maxSendBufferSize}.
+   */
+  protected readonly maxSendBufferSize: number;
+
+  /** Each client's `bindMessageHandlers` bindings still attached, for pausing and resuming it. */
+  private readonly _flows = new WeakMap<
+    WebSocketClient<customWebsocketDataType>,
+    ClientFlow[]
+  >();
+
+  /** Clients this adapter paused reading from (see {@link updatePaused}). */
+  private readonly _paused = new WeakSet<
+    WebSocketClient<customWebsocketDataType>
+  >();
+
   constructor(
     /**
      * Adapter configuration. Two shapes are accepted:
@@ -645,15 +863,34 @@ export class BunWebSocketAdapter<
      */
     options: BunWebSocketAdapterOptions<customWebsocketDataType, routesType>,
   ) {
-    const resolved = resolveAdapterOptions(options);
+    // A top-level flow option wins over one inside `localOptions`, which is
+    // where `BunHttpAdapter`'s `websocket` option puts it.
+    const local = "localOptions" in options ? options.localOptions : undefined;
+    const maxConcurrentMessages = resolveMaxConcurrentMessages(
+      options.maxConcurrentMessages ?? local?.maxConcurrentMessages,
+    );
+    const maxSendBufferSize = resolveMaxSendBufferSize(
+      options.maxSendBufferSize ?? local?.maxSendBufferSize,
+    );
+    const resolved = withBackpressureLimit(
+      resolveAdapterOptions(options),
+      maxSendBufferSize,
+    );
     super(resolved);
     this._ownsServer = resolved.newInstance;
+    this.maxConcurrentMessages = maxConcurrentMessages;
+    this.maxSendBufferSize = maxSendBufferSize;
 
     this.on("connect", (client) => {
       this._clients.add(client);
     });
     this.on("disconnect", (client) => {
       this._clients.delete(client);
+    });
+    // Bun calls `drain` as what was queued for a client is written out: the
+    // moment a client paused for its unread replies may be read again.
+    this.on("drain", (client) => {
+      this.updatePaused(client);
     });
   }
 
@@ -762,6 +999,17 @@ export class BunWebSocketAdapter<
         this.eventPacket(client?.data?.path ?? "/", String(event), args),
       );
     defineHidden(emit, ADAPTER_EMIT, true);
+    defineHidden(
+      emit,
+      ADAPTER_EMIT_STRICT,
+      (event: string, payload: unknown) => {
+        this.sendPacket(
+          target,
+          this.eventPacket(client?.data?.path ?? "/", event, [payload]),
+          true,
+        );
+      },
+    );
     target.emit = emit;
     return target;
   }
@@ -777,16 +1025,171 @@ export class BunWebSocketAdapter<
   private sendPacket(
     client: WebSocketClient<customWebsocketDataType>,
     packet: unknown,
+    /** Throw what `JSON.stringify` threw, rather than log it and answer `false`. */
+    rethrow = false,
   ): boolean {
     let json: string;
     try {
       json = JSON.stringify(packet);
     } catch (error) {
+      if (rethrow) {
+        throw error;
+      }
       wsLogger.error(error);
       return false;
     }
-    client.send(json);
+    const status = client.send(json);
+    // `0`: Bun dropped it, at its `backpressureLimit` (or on a closed socket).
+    if (status === 0 && client.readyState === OPEN_STATE) {
+      this.disconnectOverLimit(
+        client,
+        `Closing a client whose reply Bun dropped at its "backpressureLimit" (${bufferedAmount(client)} bytes queued for it)`,
+      );
+    }
+    if (this.ensureSendBufferWithinLimit(client)) {
+      this.updatePaused(client);
+    }
     return true;
+  }
+
+  /**
+   * Caps what may be queued for one client, as platform-ws 12.2.0's method of
+   * the same name: not reading from a client keeps it from asking for more,
+   * but replies already on their way (an Observable's values, what exception
+   * filters send) still queue up. Returns `false` once the client has been
+   * disconnected for exceeding {@link maxSendBufferSize}.
+   */
+  protected ensureSendBufferWithinLimit(
+    client: WebSocketClient<customWebsocketDataType>,
+  ): boolean {
+    const queued = bufferedAmount(client);
+    if (!this.maxSendBufferSize || !(queued > this.maxSendBufferSize)) {
+      return true;
+    }
+    this.disconnectOverLimit(
+      client,
+      `Closing a client with ${queued} bytes queued for it, more than "maxSendBufferSize" (${this.maxSendBufferSize})`,
+    );
+    return false;
+  }
+
+  /**
+   * Disconnects a client that is not reading what it is sent, with a
+   * warning, once: a client already closing is left to close. Does nothing
+   * with `maxSendBufferSize: 0`.
+   */
+  private disconnectOverLimit(
+    client: WebSocketClient<customWebsocketDataType>,
+    message: string,
+  ): void {
+    if (!this.maxSendBufferSize || client.readyState !== OPEN_STATE) {
+      return;
+    }
+    wsLogger.warn(message);
+    const socket: FlowControlledSocket = client;
+    if (isFunction(socket.terminate)) {
+      socket.terminate();
+    } else {
+      socket.close?.();
+    }
+  }
+
+  /**
+   * Pauses reading from `client` while any of its bindings has messages
+   * waiting for a slot or more than 1 MB is queued for it, and resumes it
+   * once neither holds, as platform-ws 12.2.0 does. A no-op where Bun's
+   * socket has no `pause`/`resume`.
+   */
+  private updatePaused(client: WebSocketClient<customWebsocketDataType>): void {
+    const socket: FlowControlledSocket = client;
+    if (!isFunction(socket.pause) || !isFunction(socket.resume)) {
+      return;
+    }
+    const flows = this._flows.get(client);
+    const shouldPause =
+      socket.readyState === OPEN_STATE &&
+      ((flows?.some((flow) => flow.head !== undefined) ?? false) ||
+        bufferedAmount(socket) > SEND_BUFFER_HIGH_WATER_MARK);
+    if (shouldPause === this._paused.has(client)) {
+      return;
+    }
+    if (shouldPause) {
+      this._paused.add(client);
+      socket.pause();
+    } else {
+      this._paused.delete(client);
+      socket.resume();
+    }
+  }
+
+  /**
+   * Starts the waiting messages of `flow` while it has free slots, in
+   * arrival order. A loop, not recursion: a message may settle
+   * synchronously, and how many wait is up to the client.
+   *
+   * Pausing a client stops further reads only: the messages of a read Bun
+   * has already made are still handed over, and handled here up to the
+   * bound, as `ws` emits those of a read platform-ws has paused.
+   */
+  private drainMessages(
+    client: WebSocketClient<customWebsocketDataType>,
+    flow: ClientFlow,
+  ): void {
+    if (flow.draining) {
+      return;
+    }
+    flow.draining = true;
+    while (
+      flow.head &&
+      flow.active < this.maxConcurrentMessages &&
+      !flow.closed
+    ) {
+      const { data } = flow.head;
+      flow.head = flow.head.next;
+      if (!flow.head) {
+        flow.tail = undefined;
+      }
+      flow.active += 1;
+      this.startMessage(client, flow, data);
+    }
+    flow.draining = false;
+    this.updatePaused(client);
+  }
+
+  /** Handles one message of `flow`, freeing its slot once its handler results settle. */
+  private startMessage(
+    client: WebSocketClient<customWebsocketDataType>,
+    flow: ClientFlow,
+    data: WsFrameData,
+  ): void {
+    // One for the dispatch itself, so a result settling during it cannot
+    // free the slot before every handler has been started.
+    let pending = 1;
+    const settle = () => {
+      pending -= 1;
+      if (pending === 0) {
+        flow.active -= 1;
+        this.drainMessages(client, flow);
+      }
+    };
+    const scope: MessageScope = {
+      subscriptions: flow.subscriptions,
+      track: () => {
+        pending += 1;
+        let settled = false;
+        return () => {
+          if (!settled) {
+            settled = true;
+            settle();
+          }
+        };
+      },
+    };
+    try {
+      flow.handle(data, scope);
+    } finally {
+      settle();
+    }
   }
 
   create(
@@ -1017,6 +1420,10 @@ export class BunWebSocketAdapter<
    * `ack` is always passed to the handler (so `@Ack()` resolves to it), but
    * emissions auto-ack through it only when `handler.isAckHandledManually` is
    * falsy — NestJS sets it for a handler declaring `@Ack()`.
+   *
+   * `scope`, when given, is told when the result settles (completes or
+   * errors), which frees the message's slot, and holds the subscription to it
+   * until then, so a disconnect can end it.
    */
   private invokeHandler(
     handler: WsMessageHandler<string>,
@@ -1025,12 +1432,48 @@ export class BunWebSocketAdapter<
     namespace: string,
     transform?: WsResponseTransform,
     ack?: WsAckFunction,
+    scope?: MessageScope,
   ) {
+    const settle = scope?.track();
     const autoAck = handler.isAckHandledManually ? undefined : ack;
     const onNext = (response: unknown) =>
       this.sendHandlerResponse(client, namespace, response, autoAck);
-    const onError = (error: unknown) =>
-      this.sendError(client, namespace, error);
+    // A result that errors is answered with an `ERROR` packet carrying its
+    // message, with or without Nest. (Under Nest, which turns every handler
+    // error into an `exception` event first, only an exception filter that
+    // threw gets here; Nest's own adapters log that instead.)
+    const onError = (error: unknown) => {
+      try {
+        this.sendError(client, namespace, error);
+      } finally {
+        settle?.();
+      }
+    };
+    const subscribe = (observable: Observable<unknown>) => {
+      let subscription: Unsubscribable | undefined;
+      let ended = false;
+      const end = () => {
+        ended = true;
+        if (subscription) {
+          scope?.subscriptions.delete(subscription);
+        }
+        settle?.();
+      };
+      subscription = observable.subscribe({
+        next: onNext,
+        error: (error: unknown) => {
+          try {
+            onError(error);
+          } finally {
+            end();
+          }
+        },
+        complete: end,
+      });
+      if (!ended) {
+        scope?.subscriptions.add(subscription);
+      }
+    };
 
     try {
       // Pass the payload as the call argument (NestJS pre-binds the socket as
@@ -1041,12 +1484,18 @@ export class BunWebSocketAdapter<
         : handler.callback(payload);
 
       if (transform) {
-        transform(result).subscribe({ next: onNext, error: onError });
+        subscribe(transform(result));
         return;
       }
 
       if (isObject(result) && isFunction((result as { then?: unknown }).then)) {
-        (result as Promise<unknown>).then(onNext, onError);
+        (result as Promise<unknown>).then((value) => {
+          try {
+            onNext(value);
+          } finally {
+            settle?.();
+          }
+        }, onError);
         return;
       }
 
@@ -1054,14 +1503,12 @@ export class BunWebSocketAdapter<
         isObject(result) &&
         isFunction((result as { subscribe?: unknown }).subscribe)
       ) {
-        (result as Observable<unknown>).subscribe({
-          next: onNext,
-          error: onError,
-        });
+        subscribe(result as Observable<unknown>);
         return;
       }
 
       onNext(result);
+      settle?.();
     } catch (error) {
       onError(error);
     }
@@ -1080,10 +1527,19 @@ export class BunWebSocketAdapter<
     namespace: string,
     transform?: WsResponseTransform,
     ack?: WsAckFunction,
+    scope?: MessageScope,
   ): boolean {
     const matched = handlers.filter((handler) => handler.message === eventName);
     matched.forEach((handler) => {
-      this.invokeHandler(handler, payload, client, namespace, transform, ack);
+      this.invokeHandler(
+        handler,
+        payload,
+        client,
+        namespace,
+        transform,
+        ack,
+        scope,
+      );
     });
     return matched.length > 0;
   }
@@ -1095,17 +1551,10 @@ export class BunWebSocketAdapter<
   ) {
     this.installEmit(client);
 
-    const messageHandler: BunWebsocketHandlerFor<
-      "message",
-      customWebsocketDataType
-    > = (sender, data) => {
-      // `message` is a shared event across all connections; only handle frames
-      // from the exact client these handlers were bound to (NestJS binds
-      // handlers per connection), so one client never runs another's handlers.
-      if (sender && sender !== client) {
-        return;
-      }
-      const wsClient = sender || client;
+    // Handles one frame of this client: decode, dispatch, reply. `scope`
+    // tracks the handler results it starts, which hold the message's slot.
+    const handle = (data: WsFrameData, scope: MessageScope) => {
+      const wsClient = client;
       let namespace = "/";
 
       try {
@@ -1174,6 +1623,7 @@ export class BunWebSocketAdapter<
               namespace,
               transform,
               ack,
+              scope,
             );
             break;
           }
@@ -1188,6 +1638,8 @@ export class BunWebSocketAdapter<
               wsClient,
               namespace,
               transform,
+              undefined,
+              scope,
             );
             break;
           }
@@ -1200,6 +1652,8 @@ export class BunWebSocketAdapter<
               wsClient,
               namespace,
               transform,
+              undefined,
+              scope,
             );
             break;
           }
@@ -1212,6 +1666,8 @@ export class BunWebSocketAdapter<
               wsClient,
               namespace,
               transform,
+              undefined,
+              scope,
             );
             break;
           }
@@ -1234,6 +1690,8 @@ export class BunWebSocketAdapter<
           wsClient,
           namespace,
           transform,
+          undefined,
+          scope,
         );
         this.sendError(wsClient, namespace, e);
       }
@@ -1242,13 +1700,67 @@ export class BunWebSocketAdapter<
         (handler) => !handler.message || handler.message === "events",
       );
       handlersForEvent.forEach((handler) => {
-        this.invokeHandler(handler, data, wsClient, namespace, transform);
+        this.invokeHandler(
+          handler,
+          data,
+          wsClient,
+          namespace,
+          transform,
+          undefined,
+          scope,
+        );
       });
+    };
+
+    // At most `maxConcurrentMessages` of this client's messages are handled
+    // at once; the rest wait in a linked list, as platform-ws 12.2.0 does.
+    const flow: ClientFlow = {
+      active: 0,
+      head: undefined,
+      tail: undefined,
+      draining: false,
+      closed: false,
+      subscriptions: new Set(),
+      handle,
+    };
+    this._flows.set(client, [...(this._flows.get(client) ?? []), flow]);
+
+    const messageHandler: BunWebsocketHandlerFor<
+      "message",
+      customWebsocketDataType
+    > = (sender, data) => {
+      // `message` is a shared event across all connections; only handle frames
+      // from the exact client these handlers were bound to (NestJS binds
+      // handlers per connection), so one client never runs another's handlers.
+      if (sender && sender !== client) {
+        return;
+      }
+      // What a client sent after the server began closing it (e.g. from
+      // `handleConnection`) is dropped, as platform-ws 12.2.0 drops it; and
+      // nothing more is read from a client over `maxSendBufferSize`. A client
+      // with no numeric `readyState` (a stand-in, not Bun's socket) is read.
+      const state: unknown = client.readyState;
+      if (
+        (typeof state === "number" && state !== OPEN_STATE) ||
+        !this.ensureSendBufferWithinLimit(client)
+      ) {
+        return;
+      }
+      const waiting: WaitingMessage = { data, next: undefined };
+      if (flow.tail) {
+        flow.tail.next = waiting;
+      } else {
+        flow.head = waiting;
+      }
+      flow.tail = waiting;
+      this.drainMessages(client, flow);
     };
 
     this.on("message", messageHandler);
     // Detach this client's message handler when (and only when) it disconnects,
     // and remove the disconnect listener itself so nothing leaks per connection.
+    // Its waiting messages are dropped and the handler results still running
+    // are unsubscribed from, as platform-ws's `takeUntil(close$)` does.
     const onDisconnect = (
       disconnectedClient?: WebSocketClient<customWebsocketDataType>,
     ) => {
@@ -1257,6 +1769,23 @@ export class BunWebSocketAdapter<
       }
       this.off("message", messageHandler);
       this.off("disconnect", onDisconnect);
+      flow.closed = true;
+      flow.head = undefined;
+      flow.tail = undefined;
+      const subscriptions = [...flow.subscriptions];
+      flow.subscriptions.clear();
+      for (const subscription of subscriptions) {
+        subscription.unsubscribe();
+      }
+      const remaining = (this._flows.get(client) ?? []).filter(
+        (entry) => entry !== flow,
+      );
+      if (remaining.length > 0) {
+        this._flows.set(client, remaining);
+      } else {
+        this._flows.delete(client);
+      }
+      this._paused.delete(client);
     };
     this.on("disconnect", onDisconnect);
   }
