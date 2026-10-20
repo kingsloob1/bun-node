@@ -49,11 +49,17 @@ import process from "node:process";
 /** The checkout this script belongs to, and the one `--prepare` copies. */
 export const REPO_ROOT = resolve(import.meta.dir, "..");
 
-/** The Nest packages the repo installs, all released in lockstep. */
+/**
+ * The Nest packages the repo installs, all released in lockstep, and whose
+ * resolution at the column's version `--prepare` asserts from bun-nest.
+ * `@nestjs/platform-ws` is bun-nest's devDependency for the WebSocket
+ * differential (`wsCompat.nest.test.ts`).
+ */
 export const NEST_PACKAGES = [
   "@nestjs/common",
   "@nestjs/core",
   "@nestjs/platform-express",
+  "@nestjs/platform-ws",
   "@nestjs/websockets",
 ] as const;
 

@@ -972,6 +972,19 @@ listed here answers the same status, headers and body.
   WebSocket exceptions then reach clients as platform-ws's `{ event, data }`
   frame.
 
+Against `@nestjs/platform-ws`, measured by `__tests__/wsCompat.nest.test.ts`
+(the same gateways on both adapters, compared on what happened, not on the
+frames, whose formats differ by design):
+
+- A plain (non-`WsResponse`) return value is sent only as the ack of a packet
+  that asked for one, as on `@nestjs/platform-socket.io`; platform-ws sends it
+  as a frame of its own.
+- A handler's result stream that errors (under Nest, an exception filter that
+  threw) is answered with an `ERROR` packet carrying its message; platform-ws
+  logs it and sends nothing.
+- Not ported yet (a follow-up): platform-ws 12.2.0 answers a plain HTTP
+  request to a gateway's dedicated port with `426 Upgrade Required`.
+
 See the last section of
 [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts),
 which checks four of these against this list.
@@ -1316,7 +1329,9 @@ Every frame is JSON text; a binary frame holding the same JSON also works.
   whose `data` is not an array goes, as raw data, to handlers subscribed to
   `"events"`.
 - **Handler errors.** An error the adapter catches from a handler's result
-  stream is sent as an `ERROR` packet.
+  stream is sent as an `ERROR` packet. (Under Nest that is an exception
+  filter that threw; `@nestjs/platform-ws` logs it instead, see
+  [Known differences](#known-differences-from-nestjsplatform-express).)
 
 `MessageEventTypes` and the packet types (`MessagePacket<T>`,
 `MessageEventType`, `MessageBinaryEventType`, …) are exported for typed
@@ -1367,7 +1382,45 @@ replace that.
 
 A reply that cannot be serialised (a cycle, a `BigInt`, a payload nested too
 deep for `JSON.stringify`) is logged through Nest's `Logger` and not sent, as
-on `@nestjs/platform-ws`; the connection stays open.
+on `@nestjs/platform-ws`; the connection stays open. An exception whose
+`cause` cannot be serialised (it echoes the client's message) is sent again
+without it on Nest 12.2 and later, as on platform-ws.
+
+### Flow control
+
+As `@nestjs/platform-ws` 12.2.0 (nestjs/nest 0bd0810ed, db4e586c5), on every
+Nest version, per connection:
+
+- **At most `maxConcurrentMessages` messages are handled at once** (default
+  `1000`, per gateway the client is bound to). Later ones wait, in order, for
+  a slot. A message holds its slot until every result of its handlers has
+  completed or errored, so a handler returning an Observable that never
+  completes holds one for as long as the client stays. `Infinity` lifts the
+  limit.
+- **Reading from a client pauses** while its messages wait for a slot or
+  while more than 1 MB is queued for it, and resumes once it has caught up.
+  So a client that sends faster than it reads its replies is read more
+  slowly as well. Pausing stops the next read only: the messages of a read
+  already made are still handled, up to the bound, as on platform-ws. (This needs `ServerWebSocket.pause()`/`resume()`, in the
+  Bun 1.4.4 runtime; without them the other two rules still hold.)
+- **A client with more than `maxSendBufferSize` bytes queued for it is
+  disconnected** (`terminate()`, with a warning; default 128 MB, `0` lifts
+  it). What can still queue up while a client is paused is what is already on
+  its way: an Observable's values, what exception filters send. The adapter
+  raises Bun's own `backpressureLimit` (16 MB by default, past which Bun drops
+  what is sent) to `maxSendBufferSize`, so replies are queued up to the cap,
+  never dropped. A `wsOptions.backpressureLimit` you set wins; a reply Bun
+  then drops disconnects the client the same way, so none is lost silently.
+- When a client disconnects, its waiting messages are dropped and the results
+  still running (an Observable) are unsubscribed from. What it sent after the
+  server began closing it is not handled.
+
+```ts
+export const adapter = new BunHttpAdapter(0, {
+  websocket: { maxConcurrentMessages: 100, maxSendBufferSize: 16 * 1024 * 1024 },
+});
+// or: new BunWebSocketAdapter({ httpAdapter, maxConcurrentMessages: 100 })
+```
 
 ### The `websocket` option
 
@@ -1377,7 +1430,9 @@ that bind the built-in adapter to the HTTP adapter:
 
 | Field | Description |
 |---|---|
-| `wsOptions` | Bun `WebSocketHandler` settings: `idleTimeout` (default `30` seconds), `maxPayloadLength` (default 1 MB), `perMessageDeflate` (default on), `backpressureLimit`, `closeOnBackpressureLimit`, `sendPings`, `publishToSelf`. The lifecycle callbacks are supplied by the adapter. |
+| `wsOptions` | Bun `WebSocketHandler` settings: `idleTimeout` (default `30` seconds), `maxPayloadLength` (default 1 MB), `perMessageDeflate` (default on), `backpressureLimit` (default `maxSendBufferSize`), `closeOnBackpressureLimit`, `sendPings`, `publishToSelf`. The lifecycle callbacks are supplied by the adapter. |
+| `maxConcurrentMessages` | Messages of one client handled at once, per gateway; later ones wait. Default `1000`; `Infinity` lifts it. See [Flow control](#flow-control). |
+| `maxSendBufferSize` | Bytes queued for a client before it is disconnected. Default 128 MB; `0` lifts it. See [Flow control](#flow-control). |
 | `onUpgrade` | `(req, res) => WebSocketUpgradeResult \| void`, may be async, run on every gateway upgrade. Its `custom` becomes `client.data.custom`, its `headers` go out on the `101`, and its `data` replaces `client.data` (`route`, `params` and `port` filled in from the match where left out). The adapter's first generic types `custom`: `new BunHttpAdapter<Session>()`. |
 | `customDataToWsClientFn` | **Deprecated.** `(req, res) => Custom \| Promise<Custom>`, treated as `onUpgrade` returning `{ custom }`. Beside `onUpgrade` it is ignored, with one warning. |
 | `router` | The `BunRouter` upgrade routes are registered on. Defaults to the HTTP adapter's. |
