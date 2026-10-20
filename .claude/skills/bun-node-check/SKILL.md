@@ -12,7 +12,7 @@ description: >-
 Run the full quality gate for the affected package(s) of this Bun monorepo.
 Everything runs with **Bun** (`bun` / `bunx`). Source ships as raw `.ts`.
 Developing needs **Bun ≥ 1.4.4**, the canary until it is stable
-(`bun upgrade --canary`; verified on 1.4.4-canary.1+5f5799ed1, `bun --revision`).
+(`bun upgrade --canary`; verified on 1.4.4-canary.1+5f5799ed1 and 6bb5dc195, `bun --revision`).
 
 ## Steps
 
