@@ -56,13 +56,13 @@ describe.skipIf(!NEST_12)(
 
     it("applies a valid one, and keeps the status set before for undefined or null", async () => {
       const applied = await freshResponse();
-      adapter.reply(applied, "x", 201);
+      await adapter.reply(applied, "x", 201);
       expect((await applied.getNativeResponse()).status).toBe(201);
 
       for (const code of [undefined, null]) {
         const kept = await freshResponse();
         kept.status(203);
-        adapter.reply(kept, "x", code as unknown as number);
+        await adapter.reply(kept, "x", code as unknown as number);
         expect((await kept.getNativeResponse()).status).toBe(203);
       }
     });
@@ -76,7 +76,7 @@ describe.skipIf(NEST_12)("BunHttpAdapter.reply: the status, on Nest 11", () => {
     for (const code of [0, Number.NaN]) {
       const res = await freshResponse();
       res.status(203);
-      adapter.reply(res, "x", code);
+      await adapter.reply(res, "x", code);
       expect((await res.getNativeResponse()).status).toBe(203);
     }
   });
