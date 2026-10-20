@@ -692,9 +692,9 @@ describe("validating a flow before anything is written", () => {
       "children.0.opts.jobId",
       "children.1.children.0.opts.jobId",
     ]);
-    expect(siblings[0]!.message).toContain("children.1.children.0.opts.jobId");
-    expect(siblings[1]!.message).toContain("children.0.opts.jobId");
-    expect(siblings[0]!.message).toContain('"fetch:x"');
+    expect(siblings[0].message).toContain("children.1.children.0.opts.jobId");
+    expect(siblings[1].message).toContain("children.0.opts.jobId");
+    expect(siblings[0].message).toContain('"fetch:x"');
 
     // A child with its ancestor's id is the same thing.
     const ancestor = await refused(h, {

@@ -27,7 +27,9 @@ import { testNamespace, waitFor } from "./helpers";
 const outstanding = new Map<AbortSignal, number>();
 /** The most listeners still attached to any one signal. */
 const worst = () => Math.max(0, ...outstanding.values());
+// eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
 const add = EventTarget.prototype.addEventListener;
+// eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
 const remove = EventTarget.prototype.removeEventListener;
 
 beforeAll(() => {

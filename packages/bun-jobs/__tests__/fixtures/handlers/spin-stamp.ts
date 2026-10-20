@@ -38,7 +38,7 @@ export default defineHandler<
   },
   string
 >((ctx) => {
-  const args = ctx.args!;
+  const args = ctx.args;
   process.on("SIGTERM", () => {
     // Deliberately ignored.
   });

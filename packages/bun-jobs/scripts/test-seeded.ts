@@ -185,7 +185,7 @@ export function seededShuffle<T>(items: readonly T[], seed: number): T[] {
   const out = [...items];
   for (let i = out.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
-    [out[i], out[j]] = [out[j]!, out[i]!];
+    [out[i], out[j]] = [out[j], out[i]];
   }
   return out;
 }
@@ -224,7 +224,7 @@ export function partitionFiles(
   const count = Math.min(shards, shuffled.length);
   const out: string[][] = Array.from({ length: count }, () => []);
   if (!weights) {
-    shuffled.forEach((file, index) => out[index % count]!.push(file));
+    shuffled.forEach((file, index) => out[index % count].push(file));
     return out;
   }
 
@@ -238,7 +238,7 @@ export function partitionFiles(
     .map(timed)
     .filter((weight): weight is number => weight !== undefined)
     .sort((a, b) => a - b);
-  const fallback = known.length > 0 ? known[known.length >> 1]! : 1;
+  const fallback = known.length > 0 ? known[known.length >> 1] : 1;
   const weightOf = new Map(
     shuffled.map((file) => [file, Math.max(1, timed(file) ?? fallback)]),
   );
@@ -258,24 +258,23 @@ export function partitionFiles(
       .map(({ index }) => index);
     const target =
       fits.length > 0
-        ? fits[Math.floor(pick() * fits.length)]!
+        ? fits[Math.floor(pick() * fits.length)]
         : load.indexOf(Math.min(...load));
-    out[target]!.push(file);
-    load[target]! += weight;
+    out[target].push(file);
+    load[target] += weight;
   }
   for (const file of rest) {
     let target = 0;
     for (let index = 1; index < count; index++) {
       if (
-        load[index]! < load[target]! ||
-        (load[index] === load[target] &&
-          out[index]!.length < out[target]!.length)
+        load[index] < load[target] ||
+        (load[index] === load[target] && out[index].length < out[target].length)
       ) {
         target = index;
       }
     }
-    out[target]!.push(file);
-    load[target]! += weightOf.get(file)!;
+    out[target].push(file);
+    load[target] += weightOf.get(file)!;
   }
   return out;
 }
@@ -362,9 +361,9 @@ export function failedTests(output: string): string[] {
   let file = "";
   for (const line of output.split("\n")) {
     const heading = /^(\S.*):$/.exec(line);
-    if (heading && TEST_FILE_PATTERN.test(heading[1]!)) file = heading[1]!;
+    if (heading && TEST_FILE_PATTERN.test(heading[1])) file = heading[1]!;
     const fail = /^\(fail\) (.*?)(?: \[[\d.]+m?s\])?$/.exec(line);
-    if (fail) failed.push(file ? `${file} > ${fail[1]}` : fail[1]!);
+    if (fail) failed.push(file ? `${file} > ${fail[1]}` : fail[1]);
   }
   return failed;
 }
@@ -511,7 +510,7 @@ function parseCli(argv: string[]): CliOptions {
   const seedGiven = values.seed !== undefined;
   const seed = seedGiven
     ? Number(values.seed)
-    : crypto.getRandomValues(new Uint32Array(1))[0]!;
+    : crypto.getRandomValues(new Uint32Array(1))[0];
   if (!Number.isInteger(seed) || seed < 0 || seed > MAX_SEED)
     fail(
       `--seed must be a whole number from 0 to ${MAX_SEED}, got ${JSON.stringify(values.seed)}`,
@@ -700,25 +699,28 @@ async function main(): Promise<number> {
   // Set by a signal: the shards it kills then end as failures, which the
   // handler reports and exits on, not the summary.
   let interrupted = false;
+  /** Stops every shard's group on `signal`, then exits with its status. */
+  const stopOn = async (signal: "SIGINT" | "SIGTERM"): Promise<void> => {
+    if (interrupted) return;
+    interrupted = true;
+    const stopping = [...children];
+    for (const child of stopping) signalGroup(child, signal);
+    // Wait up to 5 s for every GROUP to empty, not just its leader, then
+    // SIGKILL whatever is left in it.
+    const deadline = performance.now() + 5_000;
+    while (stopping.some(groupAlive) && performance.now() < deadline)
+      await Bun.sleep(100);
+    for (const child of stopping)
+      if (groupAlive(child)) signalGroup(child, "SIGKILL");
+    await Promise.all(stopping.map((child) => child.exited));
+    console.error(
+      `test-seeded: ${signal}; stopped ${stopping.length} shard(s). Logs in ${options.logDir}`,
+    );
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.on(signal, async () => {
-      if (interrupted) return;
-      interrupted = true;
-      const stopping = [...children];
-      for (const child of stopping) signalGroup(child, signal);
-      // Wait up to 5 s for every GROUP to empty, not just its leader, then
-      // SIGKILL whatever is left in it.
-      const deadline = performance.now() + 5_000;
-      while (stopping.some(groupAlive) && performance.now() < deadline)
-        await Bun.sleep(100);
-      for (const child of stopping)
-        if (groupAlive(child)) signalGroup(child, "SIGKILL");
-      await Promise.all(stopping.map((child) => child.exited));
-      console.error(
-        `test-seeded: ${signal}; stopped ${stopping.length} shard(s). Logs in ${options.logDir}`,
-      );
-      process.exit(signal === "SIGINT" ? 130 : 143);
-    });
+    // An emitter ignores what a listener returns; `void` says so.
+    process.on(signal, () => void stopOn(signal));
   }
 
   const started = performance.now();

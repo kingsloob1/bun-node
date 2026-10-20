@@ -137,7 +137,7 @@ describe("parseBody: object form — size caps", () => {
       body: stream,
       // Required for a streaming request body.
       duplex: "half",
-    } as RequestInit);
+    });
 
     const req = await BunRequest.init(nativeRequest, testServer, {
       parseBody: { maxContentLength: "2kb", contentTypes: "all" },

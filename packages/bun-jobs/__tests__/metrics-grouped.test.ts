@@ -64,8 +64,8 @@ describe("grouped metrics helpers", () => {
       maxMs: 900,
       histogram: emptyHistogram(),
     };
-    a.histogram[durationBin(5)]!++;
-    a.histogram[durationBin(900)]!++;
+    a.histogram[durationBin(5)]++;
+    a.histogram[durationBin(900)]++;
     const b: DurationStats = {
       count: 1,
       sumMs: 3,
@@ -73,11 +73,11 @@ describe("grouped metrics helpers", () => {
       maxMs: 3,
       histogram: emptyHistogram(),
     };
-    b.histogram[durationBin(3)]!++;
+    b.histogram[durationBin(3)]++;
 
     const expected = emptyHistogram();
     for (const ms of [5, 900, 3]) {
-      expected[durationBin(ms)]!++;
+      expected[durationBin(ms)]++;
     }
     expect(totalDurationStats([a, b, emptyDurationStats()])).toEqual({
       count: 3,

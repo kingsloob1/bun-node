@@ -275,8 +275,8 @@ describe("recording: runners", () => {
 
       const duration = read.durations?.find((b) => b.at === finished);
       expect(duration?.count).toBe(1);
-      expect(duration?.minMs).toBe(run.durationMs!);
-      expect(duration?.maxMs).toBe(run.durationMs!);
+      expect(duration?.minMs).toBe(run.durationMs);
+      expect(duration?.maxMs).toBe(run.durationMs);
       expect(read.durations?.some((b) => b.at === started)).toBe(false);
     });
   }
@@ -374,7 +374,7 @@ describe("recording: runners", () => {
         event.message.includes("runner analytics"),
       );
       expect(warned).toHaveLength(1);
-      expect(warned[0]!.level).toBe("warn");
+      expect(warned[0].level).toBe("warn");
     });
   }
 
@@ -722,7 +722,7 @@ describe("recording: the metrics option", () => {
     const shared = resolveDriver(instance, { workers: false });
     expect(shared.driver).toBe(instance);
     expect(shared.owned).toBe(false);
-    expect(instance.getMetricsSupport!().recording.workers).toBe(true);
+    expect(instance.getMetricsSupport().recording.workers).toBe(true);
 
     const tmp = await makeTmpDir("bun-jobs-w7-config");
     dirs.push(tmp.cleanup);

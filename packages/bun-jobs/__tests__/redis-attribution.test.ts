@@ -70,7 +70,7 @@ function scope(queue: string): { ns: string; queue: string } {
  * alike, since the first run of a script is an `EVAL`.
  */
 function countingDriver(): { driver: RedisDriver; calls: () => number } {
-  const client = new BunRedis(URL!);
+  const client = new BunRedis(URL);
   clients.push(client);
   let calls = 0;
 
@@ -162,7 +162,7 @@ describe.skipIf(!URL)("Redis attribution: storage", () => {
     const q = scope("raw");
     const now = Date.now();
     const worker = { key: "svc.raw", host: "host-r", pid: 42 };
-    const client = new BunRedis(URL!);
+    const client = new BunRedis(URL);
     clients.push(client);
     const hash = (id: string): string =>
       `${new RedisKeys({}).queue(q).jobPrefix}${id}`;
@@ -210,7 +210,7 @@ describe.skipIf(!URL)("Redis attribution: storage", () => {
         packStamp({ id: `w-${id}`, ...worker }),
       );
 
-      await settle[id]!(token);
+      await settle[id](token);
 
       // The stamp survives untouched; the holder is cleared, as before.
       expect(await client.hget(hash(id), STAMP_FIELD), id).toBe(

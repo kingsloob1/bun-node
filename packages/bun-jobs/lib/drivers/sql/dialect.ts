@@ -1179,7 +1179,7 @@ function isUniqueViolationError(
  */
 export function declaredCollation(type: string): string | null {
   const match = /\bCOLLATE\s+("[^"]+"|[\w.-]+)/i.exec(type);
-  return match ? match[1]!.replace(/"/g, "").toLowerCase() : null;
+  return match ? match[1].replace(/"/g, "").toLowerCase() : null;
 }
 
 /**

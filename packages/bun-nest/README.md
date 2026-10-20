@@ -25,8 +25,8 @@ Underneath, routing is
 - **NestJS 11.1.20 or later, or NestJS 12**: the peers `@nestjs/common` and
   `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required;
   `@nestjs/websockets` (the same range) is needed only for gateways. One
-  build serves both majors, and both are tested: the repo runs on Nest 12,
-  and its suites, examples and consumer type checks also run on the latest
+  build serves both majors, and both are tested: the repo runs on Nest 12
+  (12.2.0), and its suites, examples and consumer type checks also run on the latest
   11 and on the floors, 11.1.20 and 12.0.0. The floor is 11.1.20 because
   older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
   `isAckHandledManually`) arrived in 11.1.7, the CORS delegate types this
@@ -152,7 +152,7 @@ class under a second name. Its constructor is
 |---|---|---|---|
 | `requestTimeout` (1st argument) | `number` | `0` | Milliseconds allowed to finalise a response once routing is done. `0` means no timeout. Also settable with `setTimeout()`. |
 | `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Request parsing forwarded to every `BunRequest`: body, cookie and query parsing, size caps (`parseBody.maxContentLength`, `parseBody.contentTypes`, …) and the cookie secret (`parseCookies: { secret }`). Merged over the default object (`mergeBunRequestOptions`, nested `parseBody`, `parseQuery` and `parseCookies` objects included), so `{ parseCookies: { secret } }` alone keeps body parsing on; set a default explicitly to turn it off (`{ parseBody: false }`). |
-| `router` | `BunRouterOptions` | `{ caseSensitive: true, debug: false }` | Options for the `BunRouter`, merged over the default. |
+| `router` | `BunRouterOptions` | `{ caseSensitive: false, debug: false }` | Options for the `BunRouter`, merged over the default. Paths match case-insensitively, as on `@nestjs/platform-express`; `{ caseSensitive: true }` opts in to exact case. |
 | `routeCacheMax` | `number` | `50_000` (`DEFAULT_ROUTE_CACHE_MAX`) | Upper bound on the router's matched-pipeline cache before FIFO eviction. `0` disables it. The cache is keyed by resolved path, so size it above the number of distinct paths in flight, or use `0`. |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag`, so a matching `If-None-Match` is answered `304`: `true`/`"strong"`, `"weak"`, or a function returning the tag. A controller overrules it for its own response with `@Res({ passthrough: true }) res` and `res.setEtag(false)` (or `res.etag = "weak"`); see bun-common's `setEtag`. |
 | `logger` | NestJS `Logger` | `new Logger()` | Logger for adapter diagnostics: bind failures and unhandled errors. |
@@ -165,7 +165,7 @@ import { Logger } from "@nestjs/common";
 
 export const adapter = new BunHttpAdapter(10_000, {
   request: { parseBody: { maxContentLength: "16kb" }, parseCookies: true },
-  router: { caseSensitive: false },
+  router: { caseSensitive: true }, // opt in to exact-case paths
   routeCacheMax: 10_000,
   etag: true,
   logger: new Logger("Http"),
@@ -237,7 +237,22 @@ adapter.get("/search", validate({ query: z.object({ page: z.coerce.number() }) }
 });
 ```
 
-Routing, matching and validation behave exactly as in bun-common. See its
+Route paths have Express 5's syntax and semantics (path-to-regexp 8), as on
+`@nestjs/platform-express`: `*name` is a `string[]` (`@Param("path")` on
+`files/*path` is `["a", "b"]` for `/files/a/b`), `{…}` is optional
+(`archive/:year{/:month}`), and a path Express cannot register fails the
+boot. Every controller and middleware path goes through `normalizePath`,
+which converts a legacy path with Nest's `LegacyRouteConverter` (`users/*`
+becomes `users/{*path}`, with Nest's warning) and throws a `PathSyntaxError`
+(a `TypeError` carrying path-to-regexp's message, as Express's adapter
+throws) for one it cannot convert. **That makes the adapter stricter than a
+bare bun-common `BunRouter`**, which still accepts routejs-only forms: a
+route such as `archive/:year(\d{4})/:month?` fails `app.init()` here. Write
+it `archive/:year{/:month}` and validate the year with a pipe.
+`getRequestHostname` (what `@Controller({ host })` matches) is the `Host`
+header as sent, without its port.
+
+Matching and validation otherwise behave exactly as in bun-common. See its
 [README](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md)
 for route patterns, `routeSpecificity`, sub-routers and validators.
 Demonstrated in
@@ -284,6 +299,16 @@ interceptors and `setGlobalPrefix` do not apply to it. Mount before
 order ahead of the route handler. Its path is prefix-matched, like Express's
 `use(path)`. Middleware receives a `BunRequest` and a `BunResponse`. A global
 prefix (`app.setGlobalPrefix`) applies as usual.
+
+From Nest 12.2.0, `exclude()` matches its routes as the router matches
+paths, which the adapter reports through `getRouteMatchingOptions()`, as
+`@nestjs/platform-express` 12.2.0 does: case-insensitively unless the
+`router` option sets `caseSensitive: true`, and with an optional trailing
+slash. So `exclude("users/login")` also skips the middleware on
+`/users/login/`, which the `users/login` route serves, while
+`exclude("invoices/{*path}")` still runs it on `/invoices/`, which the
+`invoices` route serves. Earlier Nest releases match exclusions their own
+way, on both adapters alike.
 
 See
 [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts).
@@ -793,6 +818,9 @@ listed here answers the same status, headers and body.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.
+- Nest middleware gets no route params: `req.params` is `{}` in a
+  `forRoutes("files/*path")` middleware (Express: `{ path: [...] }`), as
+  bun-common binds params only for route handlers.
 - Several Nest applications on one adapter: a not-found handler runs only
   once no route matched, so one application's handler never shadows the
   routes of an application initialised after it. On Express it does where it

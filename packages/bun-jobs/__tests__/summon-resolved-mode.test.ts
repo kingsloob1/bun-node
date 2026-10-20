@@ -1,4 +1,4 @@
-import type { SummonedExit, WorkerInfo } from "../lib/index";
+import type { WorkerInfo } from "../lib/index";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { toWorkerDto } from "../lib/api/serialize";
@@ -94,7 +94,7 @@ describe("the resolved summon mode", () => {
     expect(worker.summon).toEqual(record.summon);
 
     await worker.close();
-    expect(((await run) as SummonedExit).reason).toBe("closed");
+    expect((await run).reason).toBe("closed");
   });
 
   it("is the option's mode when given, beside the mode the summoner requested", async () => {

@@ -122,7 +122,7 @@ export function pickTarget(value: unknown): AuthorizeTarget {
     source.jobIds.every((id) => typeof id === "string")
   ) {
     // A copy `authorize` cannot change under the handler that runs next.
-    target.jobIds = Object.freeze([...(source.jobIds as string[])]);
+    target.jobIds = Object.freeze([...source.jobIds]);
   }
   return target;
 }
@@ -593,7 +593,7 @@ export function mediaTypeOf(contentType: string | null): string | undefined {
   if (!contentType) {
     return undefined;
   }
-  return contentType.split(";", 1)[0]!.trim().toLowerCase() || undefined;
+  return contentType.split(";", 1)[0].trim().toLowerCase() || undefined;
 }
 
 /**

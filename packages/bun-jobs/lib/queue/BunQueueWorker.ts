@@ -584,13 +584,13 @@ const REPORT_LIFETIMES = 3;
  * two workers sharing a process report the same one.
  */
 function processRss(): number | undefined {
-  const rss = process.memoryUsage?.rss;
-  if (typeof rss !== "function") {
+  const usage = process.memoryUsage;
+  if (typeof usage?.rss !== "function") {
     return undefined;
   }
 
   try {
-    const bytes = rss();
+    const bytes = usage.rss();
     return Number.isFinite(bytes) ? bytes : undefined;
   } catch {
     // A runtime that has the function but cannot answer: the record simply
@@ -2886,7 +2886,7 @@ export class BunQueueWorker<
     try {
       const running = this.#target
         ? this.#target.run({
-            job: job as Job<unknown, unknown>,
+            job,
             record,
             context,
           })
@@ -3822,7 +3822,7 @@ export class BunQueueWorker<
           return;
         }
 
-        const child = flow.children[at]!;
+        const child = flow.children[at];
         const key = flowKey(child);
         if (
           Object.hasOwn(flow.values, key) ||

@@ -98,10 +98,10 @@ describe("G19: the subprotocol, as a structured field", () => {
   it("is on the server and the connection channel, from the contract's constant", async () => {
     const document = await documentFor();
     expect(JOBS_API_WS_SUBPROTOCOL).toBe("bun-jobs.v1");
-    expect(document.servers.api!["x-bun-jobs-subprotocol"]).toBe(
+    expect(document.servers.api["x-bun-jobs-subprotocol"]).toBe(
       JOBS_API_WS_SUBPROTOCOL,
     );
-    expect(document.channels.connection!["x-bun-jobs-subprotocol"]).toBe(
+    expect(document.channels.connection["x-bun-jobs-subprotocol"]).toBe(
       JOBS_API_WS_SUBPROTOCOL,
     );
   });
@@ -114,13 +114,13 @@ describe("G19: the subprotocol, as a structured field", () => {
       })
     ).json()) as AsyncDoc;
     await api.close();
-    expect(served.servers.api!["x-bun-jobs-subprotocol"]).toBe(
+    expect(served.servers.api["x-bun-jobs-subprotocol"]).toBe(
       JOBS_API_WS_SUBPROTOCOL,
     );
     const fixed = await documentFor({
       docs: { asyncapiServer: { host: "jobs.example", protocol: "wss" } },
     });
-    expect(fixed.servers.api!["x-bun-jobs-subprotocol"]).toBe(
+    expect(fixed.servers.api["x-bun-jobs-subprotocol"]).toBe(
       JOBS_API_WS_SUBPROTOCOL,
     );
   });
@@ -215,31 +215,31 @@ describe("G20: an example on every message", () => {
     // Another message's example fails: each schema pins its own type.
     expect(
       check(
-        messages["queue.added"]!,
-        messages["queue.removed"]!.examples![0]!.payload,
+        messages["queue.added"],
+        messages["queue.removed"].examples![0].payload,
       ),
     ).not.toBeNull();
     expect(
-      check(messages.hello!, messages.heartbeat!.examples![0]!.payload),
+      check(messages.hello, messages.heartbeat.examples![0].payload),
     ).not.toBeNull();
     // A drifted example fails.
     const hello = structuredClone(
-      messages.hello!.examples![0]!.payload,
+      messages.hello.examples![0].payload,
     ) as Record<string, unknown>;
     hello.protocol = 2;
-    expect(check(messages.hello!, hello)).not.toBeNull();
+    expect(check(messages.hello, hello)).not.toBeNull();
     const failed = structuredClone(
-      messages["queue.failed"]!.examples![0]!.payload,
+      messages["queue.failed"].examples![0].payload,
     ) as { event: { payload: { error: Record<string, unknown> } } };
     delete failed.event.payload.error.message;
-    expect(check(messages["queue.failed"]!, failed)).not.toBeNull();
+    expect(check(messages["queue.failed"], failed)).not.toBeNull();
   });
 });
 
 describe("G21: the job channel's id encoding", () => {
   it("names encodeJobId and its %uXXXX form for a lone surrogate", async () => {
     const { job } = (await documentFor()).channels;
-    const description = job!.parameters!.jobId!.description;
+    const description = job.parameters!.jobId.description;
     expect(description).toContain("encodeJobId");
     expect(description).toContain("encodeURIComponent");
     expect(description).toContain("%uXXXX");
@@ -267,19 +267,17 @@ describe("G22: the name rule on queue and runner parameters", () => {
   it("carries the OpenAPI parameters' schema, as x-bun-jobs-schema", async () => {
     const document = await documentFor({ mode: "both" });
     const { channels } = document;
-    expect(channels.queue!.parameters!.queue!["x-bun-jobs-schema"]).toEqual(
+    expect(channels.queue.parameters!.queue["x-bun-jobs-schema"]).toEqual(
       expected,
     );
-    expect(channels.job!.parameters!.queue!["x-bun-jobs-schema"]).toEqual(
+    expect(channels.job.parameters!.queue["x-bun-jobs-schema"]).toEqual(
       expected,
     );
-    expect(channels.runner!.parameters!.runner!["x-bun-jobs-schema"]).toEqual(
+    expect(channels.runner.parameters!.runner["x-bun-jobs-schema"]).toEqual(
       expected,
     );
     // A job id is escaped, so any string is a valid segment: no rule.
-    expect(
-      channels.job!.parameters!.jobId!["x-bun-jobs-schema"],
-    ).toBeUndefined();
+    expect(channels.job.parameters!.jobId["x-bun-jobs-schema"]).toBeUndefined();
     // AsyncAPI 3.0's Parameter Object has no `schema`: it is never emitted.
     for (const channel of Object.values(channels)) {
       for (const parameter of Object.values(channel.parameters ?? {})) {
@@ -287,10 +285,10 @@ describe("G22: the name rule on queue and runner parameters", () => {
       }
     }
     // The description states the same rule, from the same constants.
-    expect(channels.queue!.parameters!.queue!.description).toContain(
+    expect(channels.queue.parameters!.queue.description).toContain(
       NAME_PARAM_PATTERN,
     );
-    expect(channels.runner!.parameters!.runner!.description).toContain(
+    expect(channels.runner.parameters!.runner.description).toContain(
       `at most ${MAX_NAME_LENGTH} characters`,
     );
     // The OpenAPI path parameter says exactly the same.
@@ -303,7 +301,7 @@ describe("G22: the name rule on queue and runner parameters", () => {
     };
     await api.close();
     expect(
-      openapi.paths["/queues/{queue}"]!.get!.parameters.find(
+      openapi.paths["/queues/{queue}"].get.parameters.find(
         (parameter) => parameter.name === "queue",
       )!.schema,
     ).toMatchObject(expected);
@@ -311,7 +309,7 @@ describe("G22: the name rule on queue and runner parameters", () => {
 
   it("agrees with the channel parser on what a name may be", async () => {
     const config = resolveConfig(apiConfig());
-    const schema = (await documentFor()).channels.queue!.parameters!.queue![
+    const schema = (await documentFor()).channels.queue.parameters!.queue[
       "x-bun-jobs-schema"
     ]!;
     const ajv = new Ajv2020({ strict: false });

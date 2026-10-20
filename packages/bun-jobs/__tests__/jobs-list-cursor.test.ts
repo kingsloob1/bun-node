@@ -823,7 +823,7 @@ describe("jobs list cursor: drivers that cannot seek", () => {
         const value: unknown = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
-    }) as MemoryDriver;
+    });
   }
 
   /** A queue on a driver, closed at the end. */
@@ -981,7 +981,7 @@ describe("jobs list cursor: drivers that cannot seek", () => {
     // place that knows — see `scanAfterCursor`'s JSDoc, and Redis's own
     // `SEEK_JOBS`.
     const created = expected.map((job) => seenCreated.get(job) ?? Number.NaN);
-    expect(created.every((at, i) => i === 0 || at >= created[i - 1]!)).toBe(
+    expect(created.every((at, i) => i === 0 || at >= created[i - 1])).toBe(
       true,
     );
   });

@@ -380,7 +380,7 @@ describe("maxConcurrency and maxBatch", () => {
         result: done.id,
       });
     }
-    expect(byId.get(jobs[3]!.id)).toMatchObject({
+    expect(byId.get(jobs[3].id)).toMatchObject({
       op: "rejected",
       code: "BUSY",
     });

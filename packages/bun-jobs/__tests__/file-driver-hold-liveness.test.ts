@@ -368,12 +368,12 @@ describe("file driver: a hold nobody holds any more", () => {
     const dir = join(queueDir(root, q), "held");
     // `<stamp>-<pid>.<state>.<marker>`: only the stamp changes, so it still
     // names the holder, whose process is alive.
-    const name = held!.split("/").at(-1)!;
+    const name = held.split("/").at(-1)!;
     expect(name).toMatch(/^\d+-[0-9a-z]+\./);
     const older = `${Date.now() - 11_000}${name.slice(name.indexOf("-"))}`;
     await rename(
-      join(dir, held!),
-      join(dir, held!.slice(0, -name.length), older),
+      join(dir, held),
+      join(dir, held.slice(0, -name.length), older),
     );
 
     await driver.recoverStalled(q, Date.now(), 1, 100);
@@ -393,10 +393,10 @@ describe("file driver: a hold nobody holds any more", () => {
     const [held] = await holds(root, q);
     const dir = join(queueDir(root, q), "held");
     // `<host>/<stamp>-<pid>.<state>.<marker>`: the same name, another host.
-    const parts = held!.split("/");
+    const parts = held.split("/");
     expect(parts).toHaveLength(2);
     await mkdir(join(dir, "helsewhere"));
-    await rename(join(dir, held!), join(dir, "helsewhere", parts[1]!));
+    await rename(join(dir, held), join(dir, "helsewhere", parts[1]));
 
     await Bun.sleep(1_500);
     await driver.recoverStalled(q, Date.now(), 1, 100);
@@ -408,7 +408,7 @@ describe("file driver: a hold nobody holds any more", () => {
     const { root, driver, q } = await setup();
     const holder = await startHolder(root, q, { priority: 7 });
     const [held] = await holds(root, q);
-    const ours = held!.split("/")[0]!;
+    const ours = held.split("/")[0];
     process.kill(holder.proc.pid, "SIGKILL");
     await holder.exited;
 

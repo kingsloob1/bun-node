@@ -299,28 +299,33 @@ step("constructor: request");
 /* ------------------------------------------------------------------ */
 step("constructor: router and routeCacheMax");
 {
-  const strict = new BunHttpAdapter();
-  strict.get("/hello", (_req, res) => {
-    return res.send("hi");
-  });
-  checkEqual(
-    "router.caseSensitive defaults to true",
-    (await strict.fetch("/HELLO")).status,
-    404,
-  );
-  check(
-    "instance is the BunRouter underneath",
-    strict.instance instanceof BunRouter,
-  );
-
-  const relaxed = new BunHttpAdapter(0, { router: { caseSensitive: false } });
+  // Paths match in any case by default, as on @nestjs/platform-express;
+  // `router: { caseSensitive: true }` opts in to exact case.
+  const relaxed = new BunHttpAdapter();
   relaxed.get("/hello", (_req, res) => {
     return res.send("hi");
   });
   checkEqual(
-    "router.caseSensitive: false matches any case",
+    "router.caseSensitive defaults to false: /HELLO reaches /hello",
     (await relaxed.fetch("/HELLO")).status,
     200,
+  );
+  check(
+    "instance is the BunRouter underneath",
+    relaxed.instance instanceof BunRouter,
+  );
+
+  const strict = new BunHttpAdapter(0, { router: { caseSensitive: true } });
+  strict.get("/hello", (_req, res) => {
+    return res.send("hi");
+  });
+  checkEqual(
+    "router.caseSensitive: true matches the exact case only",
+    [
+      (await strict.fetch("/HELLO")).status,
+      (await strict.fetch("/hello")).status,
+    ],
+    [404, 200],
   );
 
   // router.acceptUndecodableBody: a body the adapter could not decode is

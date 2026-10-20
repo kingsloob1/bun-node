@@ -787,7 +787,7 @@ export function toRunnerInfoDto(
     }
   }
   if (info.lastRun) {
-    dto.lastRun = toRunRecordDto(info.lastRun as RunRecord, req, options);
+    dto.lastRun = toRunRecordDto(info.lastRun, req, options);
   }
   if (info.lastError) {
     dto.lastError = {

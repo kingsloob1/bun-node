@@ -100,9 +100,9 @@ describe("a custom date parser", () => {
       .start();
 
     const [series] = await context.queue("jobs").listRepeatables();
-    expect(series!.every).toBe(14 * 86_400_000);
-    expect(series!.startAt).toBe(PAYDAY.getTime());
-    expect(series!.endAt).toBe(YEAR_END.getTime());
+    expect(series.every).toBe(14 * 86_400_000);
+    expect(series.startAt).toBe(PAYDAY.getTime());
+    expect(series.endAt).toBe(YEAR_END.getTime());
     expect(job.runAt).toBe(PAYDAY.getTime());
   });
 

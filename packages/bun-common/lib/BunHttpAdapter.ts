@@ -1,7 +1,7 @@
 import type { WebSocketHandler } from "bun";
 import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { EtagOption } from "./BunResponse";
+import type { EtagOption, SocketFreeExchange } from "./BunResponse";
 import type { FetchInput, ServeHooks } from "./BunRouter";
 import type {
   CorsOptions as BunCorsOptions,
@@ -34,15 +34,14 @@ import {
   BunRouter,
   FETCH_STUB_SERVER,
   isRequestTimeoutError,
+  openSocketFree,
   RequestPipelineOptions,
-  toNativeRequest,
 } from "./BunRouter";
 import { cors } from "./cors";
 import {
   BunRequest,
   BunResponse,
   BunWebSocket,
-  markSocketFree,
   mergeBunRequestOptions,
   normalizeEtagOption,
   toFetchResponse,
@@ -300,11 +299,10 @@ export class BunHttpAdapter<
       logger?: LoggerLike;
       /**
        * Options for the underlying {@link BunRouter} (e.g. `caseSensitive`,
-       * `debug`). Merged over the defaults `{ caseSensitive: true, debug: false }`,
-       * so matching is case-sensitive unless `caseSensitive: false` is given —
-       * `/Users` does not match `/users` — even when only `debug` is set.
-       * Unlike a bare `BunRouter` (and Express), which default to
-       * case-insensitive.
+       * `debug`). Merged over the defaults `{ caseSensitive: false, debug: false }`,
+       * so matching ignores case — `/Users` matches `/users` — as a bare
+       * `BunRouter`, bun-nest's adapter and Express do, unless
+       * `caseSensitive: true` is given.
        */
       router?: BunRouterOptions;
       /**
@@ -355,7 +353,7 @@ export class BunHttpAdapter<
     super({
       // The documented defaults, with `router` merged over them — the same
       // shape as bun-nest's adapter, so a partial `router` keeps the rest.
-      caseSensitive: true,
+      caseSensitive: false,
       debug: false,
       ...options?.router,
       ...(options?.routeCacheMax !== undefined
@@ -430,6 +428,7 @@ export class BunHttpAdapter<
         this.#routeRequest(req, nativeRequest, server),
       );
     } catch (error) {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever was thrown, unchanged, so the error handler sees the value a route threw
       return Promise.reject(error);
     }
   }
@@ -617,45 +616,86 @@ export class BunHttpAdapter<
    * request gets (see {@link handleRequestError}), such as `413` for an
    * oversized body or `500` for a plain throw.
    *
+   * The caller leaving is a disconnect, as served (see `openSocketFree`):
+   * an abort of the request's signal rejects this with its reason, and so
+   * does the read in progress on a streamed body; cancelling a streamed body
+   * aborts `req.signal`, so `res`, `req` and `req.socket` emit `close`. A
+   * signal passed in a `RequestInit` that is aborted already rejects at once,
+   * without handling; a `Request`'s own is read only once the router's
+   * pipeline waits on a layer (see {@link SocketFreeExchange.race}).
+   *
    * @example
    * ```ts
    * const res = await adapter.fetch("/users/42");
    * expect(res.status).toBe(200);
    * ```
    */
-  override async fetch(
-    input: FetchInput,
-    init?: RequestInit,
-  ): Promise<Response> {
-    const nativeRequest = markSocketFree(
-      toNativeRequest(input, init, this.isListening ? this.url : undefined),
+  override fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+    const exchange = openSocketFree(
+      input,
+      init,
+      this.isListening ? this.url : undefined,
     );
+    return exchange.preflight() ?? this.#fetchExchange(exchange);
+  }
 
+  /**
+   * {@link fetch}'s handling of the exchange's request: through
+   * {@link serveNativeRequest}, as `Bun.serve`'s `fetch` handler calls it
+   * (or an overriding {@link handleNativeRequest}), racing the caller's
+   * signal only when it returns a promise.
+   */
+  async #fetchExchange(exchange: SocketFreeExchange): Promise<Response> {
+    const nativeRequest = exchange.request;
+    // A live server when one exists, so `requestIP`/`upgrade` behave; a stub
+    // otherwise, which reports no peer and refuses upgrades.
+    const server = this.getBunServer() ?? FETCH_STUB_SERVER;
     let response: Response | undefined;
     try {
-      response = await this.handleNativeRequest(
-        nativeRequest,
-        // A live server when one exists, so `requestIP`/`upgrade` behave; a
-        // stub otherwise, which reports no peer and refuses upgrades.
-        this.getBunServer() ??
-          (FETCH_STUB_SERVER as BunServer<
-            WebSocketClientData<customWebsocketDataType>
-          >),
-      );
+      const handled =
+        this.handleNativeRequest ===
+        BunHttpAdapter.prototype.handleNativeRequest
+          ? this.serveNativeRequest(nativeRequest, server)
+          : this.handleNativeRequest(nativeRequest, server);
+      response =
+        handled instanceof Promise
+          ? await exchange.race(
+              handled,
+              (late) => {
+                if (late !== undefined) {
+                  exchange.discard(late);
+                }
+              },
+              // Handled as `Bun.serve`'s `error` callback would, for nobody.
+              (error) => {
+                this.handleRequestError(error).catch(() => undefined);
+              },
+            )
+          : handled;
     } catch (error) {
-      return toFetchResponse(
-        await this.handleRequestError(error),
-        nativeRequest.method,
+      if (exchange.callerGone) {
+        throw error;
+      }
+      return exchange.deliver(
+        toFetchResponse(
+          await this.handleRequestError(error),
+          nativeRequest.method,
+        ),
       );
     }
 
     // `handleNativeRequest` returns undefined only for a successful WebSocket
     // upgrade, which cannot happen without a socket. A served HEAD response
     // carries no body: Bun drops it on the wire.
-    return toFetchResponse(
-      response ??
-        new Response(null, { status: 101, statusText: "Switching Protocols" }),
-      nativeRequest.method,
+    return exchange.deliver(
+      toFetchResponse(
+        response ??
+          new Response(null, {
+            status: 101,
+            statusText: "Switching Protocols",
+          }),
+        nativeRequest.method,
+      ),
     );
   }
 
@@ -1328,7 +1368,7 @@ export class BunHttpAdapter<
       (url) => !!url,
     );
 
-    return url as URL;
+    return url;
   }
 
   public reply(

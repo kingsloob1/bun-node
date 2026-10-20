@@ -19,7 +19,8 @@ async function openClient(url: string) {
   };
   await new Promise<void>((resolve, reject) => {
     client.onopen = () => resolve();
-    client.onerror = (event) => reject(event);
+    client.onerror = (event) =>
+      reject(new Error(`WebSocket ${url} failed to open`, { cause: event }));
   });
   return { client, received };
 }
@@ -203,7 +204,9 @@ describe("BunWebSocket: route handlers on a live server", () => {
         },
         message: (socket, message) => {
           messages.push(String(message));
-          socket.send(`room ${socket.data.params?.id}: ${String(message)}`);
+          socket.send(
+            `room ${String(socket.data.params?.id)}: ${String(message)}`,
+          );
         },
       },
       undefined,
@@ -224,6 +227,47 @@ describe("BunWebSocket: route handlers on a live server", () => {
       expect(opened[0]?.hash).toBe("");
       expect(messages).toEqual(["hello"]);
       expect(received).toEqual(["room 42: hello"]);
+    } finally {
+      ws.killServer(ws.getServer());
+    }
+  });
+});
+
+describe("BunWebSocket: ws.data.params is the connection's own copy", () => {
+  it("copies a wildcard's array, so mutating it reaches no other connection", async () => {
+    const ws = new BunWebSocket({
+      newInstance: true,
+      router: new BunRouter(),
+      listen: { port: 0 },
+    });
+    const seen: string[][] = [];
+    await ws.setRouteHandler(
+      "/files/*rest",
+      {
+        open: (socket) => {
+          const rest = socket.data.params?.rest as string[];
+          seen.push([...rest]);
+          // Mutable: the connection's own copy.
+          rest.push("mine");
+          socket.send(rest.join("/"));
+        },
+        message: () => {},
+      },
+      undefined,
+    );
+    try {
+      for (let i = 0; i < 2; i++) {
+        const { client, received } = await openClient(
+          `ws://127.0.0.1:${ws.port}/files/a/b`,
+        );
+        await until(() => received.length > 0);
+        client.close();
+        expect(received).toEqual(["a/b/mine"]);
+      }
+      expect(seen).toEqual([
+        ["a", "b"],
+        ["a", "b"],
+      ]);
     } finally {
       ws.killServer(ws.getServer());
     }

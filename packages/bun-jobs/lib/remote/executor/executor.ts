@@ -649,7 +649,7 @@ export function createRemoteExecutorWith(
       return await answer(200, document, null);
     }
     secretHash ??= crypto.subtle
-      .digest("SHA-256", utf8(secret[0]!) as Uint8Array<ArrayBuffer>)
+      .digest("SHA-256", utf8(secret[0]) as Uint8Array<ArrayBuffer>)
       .then((digest) => toHex(new Uint8Array(digest)));
     return await answer(
       200,
@@ -913,8 +913,8 @@ export function createRemoteExecutorWith(
       const [first] = parsed.issues;
       if (
         parsed.issues.length === 1 &&
-        first!.path === "op" &&
-        first!.message === "Unsupported op"
+        first.path === "op" &&
+        first.message === "Unsupported op"
       ) {
         const op = (value as { op?: unknown } | null)?.op;
         return await problem(

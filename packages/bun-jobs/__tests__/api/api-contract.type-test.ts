@@ -30,6 +30,7 @@ import type {
   bulkBodySchema,
   bulkRetryBodySchema,
   ChildrenSchema,
+  ClearJobLogsResultSchema,
   DefinitionListSchema,
   IncludeQuerySchema,
   JobFlowSchema,
@@ -47,7 +48,6 @@ import type {
   RetryBodySchema,
   UpdateBodySchema,
 } from "../../lib/api/schemas/jobs";
-import type * as JobSchemas from "../../lib/api/schemas/jobs";
 import type {
   MetaCsrfSchema,
   MetaLimitsSchema,
@@ -98,6 +98,8 @@ import type {
   ThroughputSchema,
 } from "../../lib/api/schemas/queues";
 import type {
+  ClearHistoryQuerySchema,
+  ClearHistoryResultSchema,
   historyQuerySchema,
   HistorySchema,
   KillBodySchema,
@@ -120,7 +122,6 @@ import type {
   TriggerBodySchema,
   TriggerOutcomeSchema,
 } from "../../lib/api/schemas/runners";
-import type * as RunnerSchemas from "../../lib/api/schemas/runners";
 import type {
   queueWorkerListQuerySchema,
   WorkerConfigBodySchema,
@@ -150,7 +151,6 @@ import type {
   WorkerControlInfo,
 } from "../../lib/drivers/driver";
 import type { THROUGHPUT_BUCKET_MS } from "../../lib/drivers/readApis";
-import type { JobState } from "../../lib/index";
 import type * as Provider from "../../lib/provider/index";
 import type { ClearHistoryResult as RunnerClearHistoryResult } from "../../lib/runner/clearHistory";
 import type { RunnerConfigInfo } from "../../lib/runner/types";
@@ -1859,7 +1859,7 @@ export type ServerProblemOk = Expect<
 
 /* --- constants ------------------------------------------------------- */
 
-export type JobStateOk = Expect<Equal<Contract.JobState, JobState>>;
+export type JobStateOk = Expect<Equal<Contract.JobState, Root.JobState>>;
 export type QueueEventOk = Expect<
   Equal<Contract.QueueEventName, QueueEventName>
 >;
@@ -2230,7 +2230,7 @@ type ClearedJobLogs = Extract<DriverClearJobLogsResult, { status: "cleared" }>;
 export type ClearJobLogsResultOk = Expect<
   DeepEqual<
     Contract.ClearJobLogsResultDto,
-    Infer<typeof JobSchemas.ClearJobLogsResultSchema>
+    Infer<typeof ClearJobLogsResultSchema>
   >
 >;
 export type ClearJobLogsResultRuntimeOk = Expect<
@@ -2239,7 +2239,7 @@ export type ClearJobLogsResultRuntimeOk = Expect<
 export type ClearRunnerHistoryResultOk = Expect<
   DeepEqual<
     Contract.ClearRunnerHistoryResultDto,
-    Infer<typeof RunnerSchemas.ClearHistoryResultSchema>
+    Infer<typeof ClearHistoryResultSchema>
   >
 >;
 export type ClearRunnerHistoryResultRuntimeOk = Expect<
@@ -2248,7 +2248,7 @@ export type ClearRunnerHistoryResultRuntimeOk = Expect<
 export type ClearRunnerHistoryQueryOk = Expect<
   DeepEqual<
     Defaulted<Contract.ClearRunnerHistoryQuery, "staleAfter">,
-    Infer<typeof RunnerSchemas.ClearHistoryQuerySchema>
+    Infer<typeof ClearHistoryQuerySchema>
   >
 >;
 // The query's one field is the library option of the same name, so what the
@@ -2287,7 +2287,7 @@ type LogsDrift = Contract.ClearJobLogsResultDto & {
 };
 type LogsDriftEqual = DeepEqual<
   LogsDrift,
-  Infer<typeof JobSchemas.ClearJobLogsResultSchema>
+  Infer<typeof ClearJobLogsResultSchema>
 >;
 // @ts-expect-error — a field the job-log schema does not declare is caught.
 export type LogsDriftCaught = Expect<LogsDriftEqual>;
@@ -2297,7 +2297,7 @@ type HistoryDrift = Contract.ClearRunnerHistoryResultDto & {
 };
 type HistoryDriftEqual = DeepEqual<
   HistoryDrift,
-  Infer<typeof RunnerSchemas.ClearHistoryResultSchema>
+  Infer<typeof ClearHistoryResultSchema>
 >;
 // @ts-expect-error — a field the history schema does not declare is caught.
 export type HistoryDriftCaught = Expect<HistoryDriftEqual>;

@@ -66,13 +66,13 @@ describe("BunQueueWorker: scoped events", () => {
     const { queue, worker } = setup(async () => "done");
     const heard: string[] = [];
     const listener = (job: { id: string }) => heard.push(job.id);
-    worker.on("completed:mail" as "completed", listener as never);
+    worker.on("completed:mail" as "completed", listener);
     void worker.run();
 
     const first = await queue.add("mail", {});
     await waitFor(() => heard.includes(first.id), { timeout: 5_000 });
 
-    worker.off("completed:mail" as "completed", listener as never);
+    worker.off("completed:mail" as "completed", listener);
     const unheard = await queue.add("mail", {});
     await waitFor(
       async () => (await queue.getJob(unheard.id))?.state === "completed",
@@ -81,7 +81,7 @@ describe("BunQueueWorker: scoped events", () => {
     expect(heard).not.toContain(unheard.id);
 
     // Back on, then everything removed at once.
-    worker.on("completed:mail" as "completed", listener as never);
+    worker.on("completed:mail" as "completed", listener);
     worker.removeAllListeners();
     const alsoUnheard = await queue.add("mail", {});
     await waitFor(
@@ -200,7 +200,7 @@ describe("BunQueueWorker: stored results", () => {
       { timeout: 5_000 },
     );
 
-    expect((await queue.getJob(job.id))?.returnValue as unknown).toEqual({
+    expect((await queue.getJob(job.id))?.returnValue).toEqual({
       count: 1,
       when: "1970-01-01T00:00:00.000Z",
     });

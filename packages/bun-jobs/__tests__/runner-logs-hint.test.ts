@@ -243,7 +243,7 @@ describe("the logs hint: the throttle", () => {
     // Every hint but the settle one is at least a window after the previous.
     // (A little slack for delivery jitter; the timer itself is exact.)
     for (let index = 1; index < hints.length - 1; index++) {
-      expect(hints[index]!.at - hints[index - 1]!.at).toBeGreaterThanOrEqual(
+      expect(hints[index].at - hints[index - 1].at).toBeGreaterThanOrEqual(
         RUN_LOG_HINT_MS - 50,
       );
     }
@@ -391,7 +391,7 @@ describe("the logs hint: the throttle", () => {
     const totals = await capture.close();
 
     expect(totals.count).toBe(2);
-    const page = await driver.getRunLog!(
+    const page = await driver.getRunLog(
       namespace,
       runnerKey("unit"),
       "run-throws",

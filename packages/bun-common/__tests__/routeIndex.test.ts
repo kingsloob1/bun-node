@@ -43,6 +43,14 @@ const ROUTE_SEGMENTS = [
   "café",
   "ab+",
   "ab?c",
+  // Express 5 (path-to-regexp 8) shapes: optional groups, in-segment params,
+  // a quoted name, and the wildcard forms the tree walks as rests.
+  "{/:opt}",
+  ":file{.:ext}",
+  ":a-:b",
+  ':"q x"',
+  "files{/*tail}",
+  "{*star}",
 ];
 const USE_PREFIXES = [
   "/",
@@ -54,6 +62,8 @@ const USE_PREFIXES = [
   "/posts/:id",
   "/*",
   "/σ",
+  "/{*path}",
+  "/files/*rest",
 ];
 const REQUEST_SEGMENTS = [
   "users",
@@ -148,7 +158,7 @@ function randomTable(seed: number, caseSensitive: boolean): Table {
           s.startsWith(":")
             ? pick(["42", "7", "new", "x%20y", "%zz", ".."])
             : s.includes("*")
-              ? pick(["a/b", "", "z"])
+              ? pick(["a/b", "", "z", "files", "files/a/b", "files/"])
               : s,
         )
         .join("/");
@@ -183,7 +193,7 @@ describe("RouteTree over random tables", () => {
   const viaRegex = (routes: Route[], path: string) =>
     matching(routes, path).map((index) => [
       index,
-      [...(routes[index].pathRegexp as RegExp).exec(path)!],
+      [...routes[index].pathRegexp.exec(path)!],
     ]);
   const viaTree = (tree: RouteTree, routes: Route[], path: string) => {
     const found = tree.match(routes, path);

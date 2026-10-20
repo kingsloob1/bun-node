@@ -1370,7 +1370,7 @@ export type JobScopedEvents<TEvents, TName extends string = string> = {
  * @typeParam TResult The jobs' result type.
  * @typeParam TJob The job type listeners are handed: `Job<TData, TResult>` by default, a `TypedJob` on a registry-bound queue.
  */
-// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- an event map: an interface lacks the implicit index signature the Record<string, …> constraint needs
 type BunQueueBaseEvents<
   TData = unknown,
   TResult = unknown,
@@ -1458,7 +1458,7 @@ export type BunQueueEvents<
  * @typeParam TResult The jobs' result type.
  * @typeParam TJob The job type listeners are handed: `Job<TData, TResult>` by default, a `TypedJob` on the registry worker.
  */
-// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- an event map: an interface lacks the implicit index signature the Record<string, …> constraint needs
 type BunQueueWorkerBaseEvents<
   TData = unknown,
   TResult = unknown,

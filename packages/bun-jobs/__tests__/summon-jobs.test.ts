@@ -137,8 +137,8 @@ describe("BunJobs summon", () => {
 
     expect(checks()).toBe(1);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.reason).toBe("add");
-    expect(calls[0]!.demand.waiting).toBe(5_000);
+    expect(calls[0].reason).toBe("add");
+    expect(calls[0].demand.waiting).toBe(5_000);
   });
 
   it("does nothing on an add while a serving worker is known", async () => {
@@ -188,7 +188,7 @@ describe("BunJobs summon", () => {
     await Bun.sleep(100);
     expect(calls).toHaveLength(0);
     await waitFor(() => calls.length === 1, { timeout: 5_000 });
-    expect(calls[0]!.reason).toBe("timer");
+    expect(calls[0].reason).toBe("timer");
   });
 
   it("hears another process's published add through the events trigger", async () => {
@@ -215,7 +215,7 @@ describe("BunJobs summon", () => {
     await Bun.sleep(200);
     await producer.queue("work").add("remote", {});
     await waitFor(() => calls.length === 1, { timeout: 10_000 });
-    expect(calls[0]!.reason).toBe("event");
+    expect(calls[0].reason).toBe("event");
   });
 
   it("closes controllers first, letting a check in flight finish", async () => {

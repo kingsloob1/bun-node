@@ -185,7 +185,7 @@ function compact(node: Record<string, unknown>): JsonSchema {
       delete node[key];
     }
   }
-  return node as JsonSchema;
+  return node;
 }
 
 /** Checks a numeric bound given to a builder is a finite number. */
@@ -577,7 +577,7 @@ export function recursiveSchema<T>(
   // its identity, so the components and enum hints registered on it survive.
   const rebuild = (node: JsonSchema): JsonSchema => {
     if (node === marker) {
-      return root as JsonSchema;
+      return root;
     }
     if (!reaches(node)) {
       return node;
@@ -600,7 +600,7 @@ export function recursiveSchema<T>(
     if (typeof node.additionalProperties === "object") {
       copy.additionalProperties = rebuild(node.additionalProperties);
     }
-    return copy as JsonSchema;
+    return copy;
   };
   Object.assign(root, rebuild(body));
   const json = deepFreeze(root) as JsonSchema;
@@ -639,8 +639,7 @@ export function toJsonSchema(
 ): JsonSchema {
   const prefix = options?.refPrefix ?? "#/components/schemas/";
   const components = options?.components ?? new Map<string, JsonSchema>();
-  const root =
-    "~standard" in schema ? (schema as Schema<any, any>).json : schema;
+  const root = "~standard" in schema ? schema.json : schema;
   /** Nodes already emitted as components, to tell a name clash from a revisit. */
   const bodies = options?.names ?? new Map<string, JsonSchema>();
 
@@ -689,7 +688,7 @@ export function toJsonSchema(
         out[key] = [...(node[key] as unknown[])];
       }
     }
-    return out as JsonSchema;
+    return out;
   };
 
   const inlineRoot = options?.inlineRoot ?? false;

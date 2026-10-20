@@ -25,6 +25,7 @@ import type {
   ContentEncodingAllowlist,
   JsonValue,
 } from "../utils/native";
+import type { ParamsDictionary } from "./routeParams";
 
 /**
  * What `file-type` detected from a file's leading bytes, as
@@ -107,7 +108,7 @@ export type DefaultRequestBody =
   | undefined;
 
 export interface BunRequestInterface<
-  TParams = Record<string, string>,
+  TParams = ParamsDictionary,
   TQuery = Record<string, unknown>,
   TBody = DefaultRequestBody,
 > {
@@ -414,7 +415,7 @@ export interface SendFileOptions {
  * returns, so callers can neither rely on nor be constrained by it.
  */
 export type NextFunction<R = unknown> = (
-  type?: string | Error | undefined,
+  type?: string | Error,
 ) => R | Promise<R>;
 
 /** A request-only handler — e.g. `(req) => res.json(...)` shorthands. */
@@ -455,11 +456,11 @@ export type RouterHandler<R = unknown> = RouterMiddlewareHandler<R>;
  * `TParams` comes from the registered path literal (see `ExtractRouteParams`)
  * unless a validator in the same chain declares its own; `TQuery` and `TBody`
  * come from a validator, or from explicit type arguments on the verb method.
- * Existing untyped handlers keep working — the defaults are exactly the types
- * `RouterHandler` has always used.
+ * Existing untyped handlers keep working — the defaults are the types
+ * `RouterHandler` uses (`TParams` is Express 5's `ParamsDictionary`).
  */
 export type TypedRouteHandler<
-  TParams = Record<string, string>,
+  TParams = ParamsDictionary,
   TQuery = Record<string, unknown>,
   TBody = DefaultRequestBody,
   R = unknown,

@@ -363,7 +363,9 @@ describe("the in-memory store", () => {
 
   it("forgets a record at its expiry", () => {
     const store = createRemoteExecutorStore();
-    store.set("k", record, 1_000, 0);
+    // The in-memory store answers synchronously: `void` discards the Promise
+    // its interface allows.
+    void store.set("k", record, 1_000, 0);
     expect(store.get("k", 999)).toEqual(record);
     expect(store.get("k", 1_000)).toBeUndefined();
   });
@@ -384,10 +386,12 @@ describe("the in-memory store", () => {
 
   it("holds at most max, forgetting the oldest write first", () => {
     const store = createRemoteExecutorStore({ max: 2 });
-    store.set("a", record, 100, 0);
-    store.set("b", record, 100, 0);
-    store.set("a", record, 100, 0); // rewritten: now the newest
-    store.set("c", record, 100, 0);
+    // The in-memory store answers synchronously: `void` discards the Promise
+    // its interface allows.
+    void store.set("a", record, 100, 0);
+    void store.set("b", record, 100, 0);
+    void store.set("a", record, 100, 0); // rewritten: now the newest
+    void store.set("c", record, 100, 0);
     expect(store.get("b", 1)).toBeUndefined();
     expect(store.get("a", 1)).toEqual(record);
     expect(store.get("c", 1)).toEqual(record);

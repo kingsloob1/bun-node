@@ -69,7 +69,7 @@ describe("a JSON body read with request.json()", () => {
       routed = true;
       res.send("routed");
     });
-    const response = (await app.fetch(post('{"n":')))!;
+    const response = await app.fetch(post('{"n":'));
     expect(response.status).toBe(400);
     expect(routed).toBe(false);
   });
@@ -88,7 +88,7 @@ describe("a JSON body read with request.json()", () => {
     app.post("/j", (req, res) => {
       res.json({ got: req.body, buffer: req.buffer === undefined });
     });
-    const response = (await app.fetch(post()))!;
+    const response = await app.fetch(post());
     expect(await response.json()).toEqual({
       got: { n: 7, s: "é" },
       buffer: true,
@@ -193,14 +193,14 @@ describe("caps and re-parsing a body that kept no bytes", () => {
     app.use(((err, _req, res, _next) => {
       res.status((err as { status: number }).status).send("refused");
     }) satisfies RouterErrorMiddlewareHandler);
-    const response = (await app.fetch(post()))!;
+    const response = await app.fetch(post());
     expect(response.status).toBe(413);
     const fits = new BunHttpAdapter(0, { request: { retainBuffer: false } });
     fits.use("/j", requestParsing({ parseBody: { maxContentLength: "1kb" } }));
     fits.post("/j", (req, res) => {
       res.json(req.body);
     });
-    expect(await (await fits.fetch(post()))!.json()).toEqual({
+    expect(await (await fits.fetch(post())).json()).toEqual({
       n: 7,
       s: "é",
     });
@@ -215,7 +215,7 @@ describe("caps and re-parsing a body that kept no bytes", () => {
     app.use(((err, _req, res, _next) => {
       res.status((err as { status: number }).status).send("refused");
     }) satisfies RouterErrorMiddlewareHandler);
-    expect((await app.fetch(post()))!.status).toBe(413);
+    expect((await app.fetch(post())).status).toBe(413);
   });
 
   it("requestParsing({ retainBuffer }) applies to a deferred body", async () => {
@@ -229,7 +229,7 @@ describe("caps and re-parsing a body that kept no bytes", () => {
     app.post("/drop", (req, res) => {
       res.json({ body: req.body, bytes: req.buffer?.toString() ?? null });
     });
-    const keep = (await app.fetch(
+    const keep = await app.fetch(
       new Request("http://h/keep", {
         method: "POST",
         headers: {
@@ -238,12 +238,12 @@ describe("caps and re-parsing a body that kept no bytes", () => {
         },
         body: JSON_BODY,
       }),
-    ))!;
+    );
     expect(await keep.json()).toEqual({
       body: { n: 7, s: "é" },
       bytes: JSON_BODY,
     });
-    const drop = (await app.fetch(
+    const drop = await app.fetch(
       new Request("http://h/drop", {
         method: "POST",
         headers: {
@@ -252,7 +252,7 @@ describe("caps and re-parsing a body that kept no bytes", () => {
         },
         body: JSON_BODY,
       }),
-    ))!;
+    );
     expect(await drop.json()).toEqual({ body: { n: 7, s: "é" }, bytes: null });
   });
 
@@ -272,7 +272,7 @@ describe("caps and re-parsing a body that kept no bytes", () => {
     // Replacing the request options keeps it.
     app.setRequestOpts({ parseCookies: false });
     expect(app.requestOpts.retainBuffer).toBe(true);
-    expect(await (await app.fetch(post()))!.json()).toEqual({
+    expect(await (await app.fetch(post())).json()).toEqual({
       raw: JSON_BODY,
     });
   });

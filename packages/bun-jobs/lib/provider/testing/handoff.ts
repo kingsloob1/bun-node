@@ -271,7 +271,7 @@ async function roundTrip(
       ? alreadyRunning(run)
       : ["fail", "the fake started no unit for the request"];
   }
-  const unit = await started[0]!;
+  const unit = await started[0];
   const code = await within(unit.exited, ROUND_TRIP_WITHIN_MS);
   return roundTripVerdict(
     request.argv,
@@ -538,7 +538,7 @@ interface HandoffPlan {
 /** Fails the handoff at stage `from`, and skips every later stage. */
 function handoffFailer(run: KitRun): (from: number, detail: string) => void {
   return (from, detail) => {
-    run.set(HANDOFF_IDS[from]!, "fail", detail);
+    run.set(HANDOFF_IDS[from], "fail", detail);
     for (const id of HANDOFF_IDS.slice(from + 1)) {
       run.set(id, "skip", `skipped: ${HANDOFF_IDS[from]} failed`);
     }
@@ -550,7 +550,7 @@ function handoffReporter(run: KitRun): HandoffReporter {
   return {
     fail: handoffFailer(run),
     pass: (stage, detail) => {
-      run.set(HANDOFF_IDS[stage]!, "pass", detail);
+      run.set(HANDOFF_IDS[stage], "pass", detail);
     },
   };
 }
@@ -560,7 +560,7 @@ function targetOf(
   plan: HandoffPlan,
 ): Pick<SummonControllerOptions, "queue" | "queues" | "group"> {
   return plan.group === undefined
-    ? { queue: plan.queues[0]! }
+    ? { queue: plan.queues[0] }
     : { queues: plan.queues, group: { name: plan.group, unit: "shared" } };
 }
 
@@ -840,7 +840,7 @@ async function sharedUnregistered(
   if (bad === -1) {
     return `the unit's worker never released attempt ${attempt} on ${queues.join(" and ")} (the provider must pass request.argv to the unit whole, both --bun-jobs-summon-queue= arguments included)`;
   }
-  const stderr = (await within(units[bad]!.process.errors, 1_000)) ?? "";
+  const stderr = (await within(units[bad].process.errors, 1_000)) ?? "";
   return `the unit's process exited ${codes[bad]} before any worker registered${stderr === "" ? "" : `: ${textRedactor(run.secrets)(stderr.trim().split("\n").slice(-3).join(" | "))}`}`;
 }
 
@@ -859,7 +859,7 @@ async function fakeHandoff(run: KitRun, plan: HandoffPlan): Promise<void> {
   const spawner = unitSpawner(FIXTURE_WORKER, {
     [FIXTURE_ENV.driver]: JSON.stringify(store.config),
     [FIXTURE_ENV.namespace]: namespace,
-    [FIXTURE_ENV.queue]: plan.queues[0]!,
+    [FIXTURE_ENV.queue]: plan.queues[0],
     [FIXTURE_ENV.idleMs]: String(FIXTURE_IDLE_MS),
   });
   const units: { unit: FakeUnit; process: SpawnedUnit }[] = [];
@@ -982,7 +982,7 @@ async function fakeHandoff(run: KitRun, plan: HandoffPlan): Promise<void> {
         units.length === 0
           ? "the fake started no unit for the attempt"
           : run.capabilities.passes === "argv"
-            ? `the worker never released attempt ${attempt}: ${records.length === 0 ? "it ran and exited" : `its record carried ${JSON.stringify(records[0]!.summon)}`} without the attempt's id (the provider must pass request.argv to the unit)`
+            ? `the worker never released attempt ${attempt}: ${records.length === 0 ? "it ran and exited" : `its record carried ${JSON.stringify(records[0].summon)}`} without the attempt's id (the provider must pass request.argv to the unit)`
             : "the worker never released the attempt by its start time",
       );
       return;
@@ -1030,7 +1030,7 @@ async function fakeHandoff(run: KitRun, plan: HandoffPlan): Promise<void> {
     }
     const bad = codes.find((code) => code !== 0);
     if (bad !== undefined) {
-      const stderr = (await within(units[0]!.process.errors, 1_000)) ?? "";
+      const stderr = (await within(units[0].process.errors, 1_000)) ?? "";
       fail(
         2,
         `the worker exited ${bad}${stderr === "" ? "" : `: ${textRedactor(run.secrets)(stderr.trim().split("\n").slice(-3).join(" | "))}`}`,
@@ -1139,7 +1139,7 @@ async function selfHostedHandoff(
         env: {
           [FIXTURE_ENV.driver]: JSON.stringify(store.config),
           [FIXTURE_ENV.namespace]: namespace,
-          [FIXTURE_ENV.queue]: plan.queues[0]!,
+          [FIXTURE_ENV.queue]: plan.queues[0],
           [FIXTURE_ENV.idleMs]: String(FIXTURE_IDLE_MS),
         },
         logger: run.logger,
@@ -1505,7 +1505,7 @@ export async function casChecks(run: KitRun): Promise<void> {
           for (const racer of racers) {
             racer.proc.kill("SIGKILL");
           }
-          const stderr = (await within(racers[0]!.errors, 1_000)) ?? "";
+          const stderr = (await within(racers[0].errors, 1_000)) ?? "";
           failures.push(
             `round ${round + 1}: a racer ${codes === undefined ? "hung" : `exited ${codes.find((code) => code !== 0)}`}${stderr === "" ? "" : `: ${textRedactor(run.secrets)(stderr.trim().split("\n").slice(-2).join(" | "))}`}`,
           );

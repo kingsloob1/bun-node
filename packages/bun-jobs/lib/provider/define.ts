@@ -443,7 +443,7 @@ export function defineProvider<TConfig, TInput>(
       definition,
       [COMPUTE_PROVIDER]: true as const,
     }),
-  ) as unknown as ComputeProvider<TInput, TConfig>;
+  );
 }
 
 /**

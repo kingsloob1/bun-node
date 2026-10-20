@@ -20,6 +20,7 @@ import {
   ViewsModule,
   WildcardMiddlewareModule,
 } from "./app";
+import { EXPRESS_OLDER_THAN_BUN_COMMON, OLDER_EXPRESS } from "./expressVersion";
 
 /** One request: a name, a path and its `RequestInit`. */
 export interface Probe {
@@ -764,7 +765,26 @@ export const KNOWN: Record<string, KnownDifference> = {
     fields: ["content-type"],
     reason: TEXT_CHARSET,
   },
-  "compat/res.attachment": { fields: ["content-type"], reason: TEXT_CHARSET },
+  "compat/res.attachment": EXPRESS_OLDER_THAN_BUN_COMMON
+    ? {
+        fields: ["content-type", "content-disposition"],
+        reason: `${TEXT_CHARSET}; ${OLDER_EXPRESS}`,
+      }
+    : { fields: ["content-type"], reason: TEXT_CHARSET },
+  // Where Express predates the release bun-common copies (5.2.1 under Nest
+  // 11 and 12.0-12.1.3, once bun-common copies 5.3.0).
+  ...(EXPRESS_OLDER_THAN_BUN_COMMON
+    ? {
+        "compat/@Redirect default, Accept html": {
+          fields: ["body", "content-length"],
+          reason: OLDER_EXPRESS,
+        },
+        "compat/res.download": {
+          fields: ["content-disposition"],
+          reason: OLDER_EXPRESS,
+        },
+      }
+    : {}),
   "compat/res.format default Accept": {
     fields: ["content-type"],
     reason: TEXT_CHARSET,

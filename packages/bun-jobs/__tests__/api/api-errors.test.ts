@@ -515,20 +515,20 @@ describe("the error handler and catch-all", () => {
       (event) => event.message === "jobs api request failed",
     );
     expect(serverEvents.map((event) => event.level)).toEqual(["error"]);
-    expect(serverEvents[0]!.fields).toMatchObject({
+    expect(serverEvents[0].fields).toMatchObject({
       code: "DRIVER_ERROR",
       status: 503,
       action: "jobs.read",
     });
     // The cause reaches the log, even though it never reaches the client.
-    expect(serverEvents[0]!.error).toBeInstanceOf(DriverError);
+    expect(serverEvents[0].error).toBeInstanceOf(DriverError);
 
     const client = await answer(new ApiError("JOB_NOT_FOUND", 404, "gone"));
     const clientEvents = client.events.filter(
       (event) => event.message === "jobs api request failed",
     );
     expect(clientEvents.map((event) => event.level)).toEqual(["debug"]);
-    expect(clientEvents[0]!.fields).toMatchObject({
+    expect(clientEvents[0].fields).toMatchObject({
       code: "JOB_NOT_FOUND",
       status: 404,
     });
@@ -584,7 +584,7 @@ describe("the error handler and catch-all", () => {
         expect(response.headers.get("retry-after")).not.toBeNull();
         const records = failures(events);
         expect(records.map((event) => event.level)).toEqual(["warn"]);
-        expect(records[0]!.fields).toMatchObject({
+        expect(records[0].fields).toMatchObject({
           code: testCase.code,
           status: 503,
           action: "jobs.read",
@@ -593,7 +593,7 @@ describe("the error handler and catch-all", () => {
           errorMessage: error.message,
           retryAfter: response.headers.get("retry-after"),
         });
-        expectNoStack(records[0]!);
+        expectNoStack(records[0]);
       });
     }
 
@@ -633,9 +633,9 @@ describe("the error handler and catch-all", () => {
         expect(response.status).toBe(testCase.status);
         const records = failures(events);
         expect(records.map((event) => event.level)).toEqual(["error"]);
-        expect(records[0]!.error).toBe(error);
-        expect(records[0]!.error!.stack).toContain("    at ");
-        expect(records[0]!.fields).not.toHaveProperty("errorMessage");
+        expect(records[0].error).toBe(error);
+        expect(records[0].error!.stack).toContain("    at ");
+        expect(records[0].fields).not.toHaveProperty("errorMessage");
       });
     }
   });

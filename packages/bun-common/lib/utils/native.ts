@@ -321,7 +321,7 @@ export function parseByteSize(value: number | string): number | undefined {
  * `Object.keys` does (a string yields its indexes).
  */
 export const keys = (value: unknown): string[] =>
-  value == null ? [] : Object.keys(value as object);
+  value == null ? [] : Object.keys(value);
 
 /** The string keys of an object type; `string` when it declares none. */
 type ObjectKey<C> = [Extract<keyof C, string>] extends [never]
@@ -372,7 +372,7 @@ export type ValuesOf<C> = C extends null | undefined
 
 /** The own enumerable property values of `value`, `[]` for `null`/`undefined`. */
 export const values = <C>(value: C): ValuesOf<C>[] =>
-  value == null ? [] : (Object.values(value as object) as ValuesOf<C>[]);
+  value == null ? [] : (Object.values(value) as ValuesOf<C>[]);
 
 export const first = <T>(
   value: ArrayLike<T> | null | undefined,
@@ -977,9 +977,9 @@ export function etag(
         : isAnyArrayBuffer(entity)
           ? Buffer.from(entity as ArrayBuffer)
           : Buffer.from(
-              (entity as ArrayBufferView).buffer as ArrayBuffer,
-              (entity as ArrayBufferView).byteOffset,
-              (entity as ArrayBufferView).byteLength,
+              entity.buffer as ArrayBuffer,
+              entity.byteOffset,
+              entity.byteLength,
             );
 
   if (buf.length === 0) {
@@ -1655,6 +1655,7 @@ export function withTimeout<T>(
   try {
     promise = Promise.resolve(isFunction(work) ? work() : work);
   } catch (error) {
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- rejects with what `work` threw, unchanged
     return Promise.reject(error);
   }
 
@@ -1690,6 +1691,7 @@ export function withTimeout<T>(
         clearTimeout(timer);
         if (!settled) {
           settled = true;
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- rejects with the work's own reason, unchanged
           reject(error);
         }
         // Otherwise the timeout already rejected and this handler is the
@@ -2109,7 +2111,9 @@ export async function getPort(options?: {
         fetch: () => new Response(null),
       });
       const port = server.port;
-      server.stop(true);
+      // Not awaited: `getPort` is synchronous, and the promise only reports
+      // the force-closed connections finishing (this probe has none).
+      void server.stop(true);
       if (port != null && !lockedPorts.has(port)) {
         lockedPorts.add(port);
         const timer = setTimeout(() => lockedPorts.delete(port), PORT_LOCK_MS);

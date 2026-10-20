@@ -385,7 +385,7 @@ export async function dedupeChecks(run: KitRun): Promise<void> {
       wrong.length === 0 ? "pass" : "fail",
       wrong.length === 0
         ? undefined
-        : `sent a ${wrong[0]!.length}-character token that is not request.dedupeKey (${key.length} characters; maxLength ${dedupe.maxLength})`,
+        : `sent a ${wrong[0].length}-character token that is not request.dedupeKey (${key.length} characters; maxLength ${dedupe.maxLength})`,
     );
   }
 
@@ -518,7 +518,7 @@ export async function concurrencyChecks(run: KitRun): Promise<void> {
     if (thrown === undefined && passes === "argv") {
       // Each call's handles must name the unit its own request started.
       outcomes.forEach((outcome, index) => {
-        const request = requests[index]!;
+        const request = requests[index];
         const result = (outcome as { value: SummonResult }).value;
         for (const handle of handlesOf(result)) {
           // A self-hosted provider's units carry no recorded argv: the
@@ -1212,7 +1212,7 @@ export async function errorChecks(
       ? thrown.length === 0
         ? "no ProviderError was thrown to read"
         : undefined
-      : `${prose.length} ProviderError platformCode(s) are not code-shaped (1-64 characters of letters, digits, _ . : -), so the controller shows ${prose[0]!.code} instead`,
+      : `${prose.length} ProviderError platformCode(s) are not code-shaped (1-64 characters of letters, digits, _ . : -), so the controller shows ${prose[0].code} instead`,
   );
 }
 
@@ -1351,9 +1351,7 @@ export async function timeoutChecks(run: KitRun): Promise<void> {
     fake.internals.clearFaults();
   }
 
-  const result = settled as
-    | { at: number; rejected: boolean; error?: unknown }
-    | undefined;
+  const result = settled;
   if (result === undefined) {
     run.set(
       "summon.timeouts.rejects-on-abort",

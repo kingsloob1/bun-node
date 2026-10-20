@@ -405,7 +405,7 @@ function walkObject(
   let failed = false;
 
   for (const key of Object.keys(properties)) {
-    const child = properties[key]!;
+    const child = properties[key];
     const present = Object.hasOwn(value, key) && value[key] !== undefined;
     if (!present && child.default === undefined) {
       if (required.includes(key)) {

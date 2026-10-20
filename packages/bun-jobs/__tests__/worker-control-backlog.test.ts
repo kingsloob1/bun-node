@@ -203,7 +203,7 @@ function densest(times: number[], width: number): number {
   let most = 0;
   for (let i = 0; i < times.length; i++) {
     let n = 0;
-    for (let j = i; j < times.length && times[j]! - times[i]! < width; j++) {
+    for (let j = i; j < times.length && times[j] - times[i] < width; j++) {
       n++;
     }
     most = Math.max(most, n);

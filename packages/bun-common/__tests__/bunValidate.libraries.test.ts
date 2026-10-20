@@ -40,7 +40,7 @@ const NATIVE: Library[] = [
     name: "zod",
     query: z.object({ page: z.coerce.number().int().min(1) }),
     body: z.object({ title: z.string().min(3) }),
-  } as Library,
+  },
   {
     name: "yup",
     query: yup.object({ page: yup.number().integer().min(1).required() }),
@@ -101,7 +101,7 @@ async function run(
 for (const library of NATIVE) {
   describe(`BunValidate with ${library.name}`, () => {
     it("exposes a version 1 Standard Schema", () => {
-      const standard = (library.query as StandardSchemaV1)["~standard"];
+      const standard = library.query["~standard"];
 
       expect(standard.version).toBe(1);
       expect(standard.vendor).toBe(library.name);
@@ -110,7 +110,7 @@ for (const library of NATIVE) {
 
     it("replaces the query with the parsed value", async () => {
       const { status, payload } = await run(
-        validate({ query: library.query as StandardSchemaV1 }),
+        validate({ query: library.query }),
         { url: "/check?page=2" },
       );
 
@@ -122,7 +122,7 @@ for (const library of NATIVE) {
     it("reports a failure as Standard Schema issues", async () => {
       const { status, payload } = await run(
         validate(
-          { query: library.query as StandardSchemaV1 },
+          { query: library.query },
           {
             onFailure: "respond",
           },
@@ -152,14 +152,11 @@ for (const library of NATIVE) {
     });
 
     it("validates a body as readily as a query", async () => {
-      const ok = await run(
-        validate({ body: library.body as StandardSchemaV1 }),
-        {
-          url: "/check",
-          method: "POST",
-          body: { title: "hello" },
-        },
-      );
+      const ok = await run(validate({ body: library.body }), {
+        url: "/check",
+        method: "POST",
+        body: { title: "hello" },
+      });
       expect(ok.status).toBe(200);
       expect((ok.payload as { body: { title: string } }).body.title).toBe(
         "hello",
@@ -167,7 +164,7 @@ for (const library of NATIVE) {
 
       const bad = await run(
         validate(
-          { body: library.body as StandardSchemaV1 },
+          { body: library.body },
           {
             onFailure: "respond",
           },
@@ -179,7 +176,7 @@ for (const library of NATIVE) {
 
     it("carries the issues on the thrown error", async () => {
       const middleware = validate(
-        { query: library.query as StandardSchemaV1 },
+        { query: library.query },
         { onFailure: "throw" },
       );
 
@@ -208,10 +205,10 @@ describe("BunValidate across libraries at once", () => {
   it("validates each target with a different library", async () => {
     const { status, payload } = await run(
       validate({
-        query: z.object({ page: z.coerce.number() }) as StandardSchemaV1,
+        query: z.object({ page: z.coerce.number() }),
         body: yup.object({
           title: yup.string().required(),
-        }) as unknown as StandardSchemaV1,
+        }),
       }),
       { url: "/check?page=3", method: "POST", body: { title: "mixed" } },
     );
@@ -227,8 +224,8 @@ describe("BunValidate across libraries at once", () => {
     const { payload } = await run(
       validate(
         {
-          query: z.object({ page: z.number() }) as StandardSchemaV1,
-          body: v.object({ title: v.string() }) as StandardSchemaV1,
+          query: z.object({ page: z.number() }),
+          body: v.object({ title: v.string() }),
         },
         { onFailure: "respond" },
       ),
@@ -245,8 +242,8 @@ describe("BunValidate across libraries at once", () => {
     const { payload } = await run(
       validate(
         {
-          query: z.object({ page: z.number() }) as StandardSchemaV1,
-          body: v.object({ title: v.string() }) as StandardSchemaV1,
+          query: z.object({ page: z.number() }),
+          body: v.object({ title: v.string() }),
         },
         { onFailure: "respond", abortEarly: true },
       ),

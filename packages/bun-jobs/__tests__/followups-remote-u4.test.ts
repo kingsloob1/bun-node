@@ -378,7 +378,7 @@ describe("BunRunner.updateConfig() / resetConfig() called directly", () => {
     await waitFor(() => seen.length === 1, {
       message: () => `${seen.length} control events`,
     });
-    expect(seen[0]!.payload).toEqual({ action: "config" });
+    expect(seen[0].payload).toEqual({ action: "config" });
 
     const remote = await manager.controller("configurable");
     expect(remote.isLocal).toBe(true);
@@ -421,11 +421,11 @@ describe("a re-enabled repeat series", () => {
     const [series] = await queue.listRepeatables();
     await queue.setJobDefaults({ attempts: 7, priority: 9, timeout: 900 });
 
-    expect(await queue.disableRepeatable(series!.key)).toBe(true);
-    expect(await queue.enableRepeatable(series!.key)).toBe(true);
+    expect(await queue.disableRepeatable(series.key)).toBe(true);
+    expect(await queue.enableRepeatable(series.key)).toBe(true);
 
     const [enabled] = await queue.listRepeatables();
-    const occurrence = await driver.getJob(queue.ref, enabled!.nextJobId!);
+    const occurrence = await driver.getJob(queue.ref, enabled.nextJobId!);
 
     expect(occurrence?.opts.attempts).toBe(7);
     expect(occurrence?.maxAttempts).toBe(7);

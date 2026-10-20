@@ -210,8 +210,6 @@ export abstract class TypedEmitterBase<
       return heard;
     }
 
-    return (
-      this.safeEmit(scoped as keyof EmitEvents, ...(args as never)) || heard
-    );
+    return this.safeEmit(scoped, ...(args as never)) || heard;
   }
 }

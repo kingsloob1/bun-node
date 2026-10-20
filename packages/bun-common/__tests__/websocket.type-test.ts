@@ -18,7 +18,7 @@ import type {
   WebSocketUpgradeHook,
   WebSocketUpgradeResult,
 } from "../lib/BunWebSocket";
-import type { BunResponse } from "../lib/index";
+import type { BunResponse, ParamsDictionary } from "../lib/index";
 import { BunRouter } from "../lib/BunRouter";
 import { BunWebSocket } from "../lib/BunWebSocket";
 
@@ -117,7 +117,7 @@ void ws.setRouteHandler(
     open(_socket) {
       type _session = Expect<Equal<typeof _socket.data.custom, Session>>;
       type _params = Expect<
-        Equal<typeof _socket.data.params, Record<string, string> | undefined>
+        Equal<typeof _socket.data.params, ParamsDictionary | undefined>
       >;
     },
     message(_socket, _message) {

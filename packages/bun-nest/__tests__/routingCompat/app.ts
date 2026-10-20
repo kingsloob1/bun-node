@@ -604,6 +604,49 @@ export class MwVersionModule {
   }
 }
 
+/**
+ * The routes of the `exclude()` matching groups (Nest 12.2.0's
+ * `getRouteMatchingOptions`): a static route, and a list beside its items.
+ */
+@Controller()
+export class ExcludeMatchingController {
+  @Get("users/login")
+  @Header("x-h", "users.login")
+  login(@Req() req: AnyReq) {
+    return answer("users.login", req);
+  }
+
+  @Get("invoices")
+  @Header("x-h", "invoices.list")
+  invoices(@Req() req: AnyReq) {
+    return answer("invoices.list", req);
+  }
+
+  @Get("invoices/:id")
+  @Header("x-h", "invoices.byId")
+  invoice(@Param("id") id: string, @Req() req: AnyReq) {
+    return answer("invoices.byId", req, { id });
+  }
+}
+
+export const MwGuard = trailMiddleware("MwGuard");
+
+/**
+ * A middleware on every route but `users/login` and the items under
+ * `invoices/`. The router serves `/users/login/` with `users/login` and
+ * `/invoices/` with `invoices`, so the first skips the middleware and the
+ * second runs it, as Express does from 12.2.0.
+ */
+@Module({ controllers: [ExcludeMatchingController] })
+export class MwExcludeMatchingModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(MwGuard)
+      .exclude("users/login", "invoices/{*path}")
+      .forRoutes("*");
+  }
+}
+
 // ---------------------------------------------------------------- Nest 12 route options
 
 @Controller("s")

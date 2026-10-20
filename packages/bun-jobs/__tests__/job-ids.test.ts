@@ -260,7 +260,7 @@ for (const backend of backends) {
         for (const entries of [
           [...good, { name: "reindex", data: { v: 3 }, opts }],
           // Without the series too: the bulk insert path.
-          [good[0]!, { name: "reindex", data: { v: 3 }, opts }],
+          [good[0], { name: "reindex", data: { v: 3 }, opts }],
         ]) {
           const error: unknown = await queue
             .addBulk(entries)
@@ -385,8 +385,8 @@ for (const backend of backends) {
 
       const letters = await dlq.list(["waiting", "delayed"]);
       expect(letters).toHaveLength(1);
-      expect(letters[0]!.id.length).toBeLessThanOrEqual(MAX_JOB_ID_LENGTH);
-      expect(encodeName(letters[0]!.id).length).toBeLessThanOrEqual(
+      expect(letters[0].id.length).toBeLessThanOrEqual(MAX_JOB_ID_LENGTH);
+      expect(encodeName(letters[0].id).length).toBeLessThanOrEqual(
         MAX_ENCODED_NAME,
       );
     });
@@ -734,7 +734,7 @@ describe("caller repeat keys are namespaced", () => {
     const queue = setup();
 
     await queue.add("report", { v: 1 }, { repeat: { every: 60_000 } });
-    const generated = (await queue.listRepeatables())[0]!.key;
+    const generated = (await queue.listRepeatables())[0].key;
     expect(generated).toBe("report|every:60000|");
 
     // The impersonation: exactly the generated key, supplied by a caller.
@@ -762,7 +762,7 @@ describe("caller repeat keys are namespaced", () => {
     // "nightly" contains no `|`, so it can never equal a generated key and the
     // prefix is hidden. Storage still namespaces it.
     expect(job.repeatKey).toBe("nightly");
-    expect((await queue.listRepeatables())[0]!.key).toBe("nightly");
+    expect((await queue.listRepeatables())[0].key).toBe("nightly");
     // The occurrence id follows the displayed key, not the stored one.
     expect(job.id.startsWith("repeat:nightly:")).toBe(true);
 
@@ -775,7 +775,7 @@ describe("caller repeat keys are namespaced", () => {
     const queue = setup();
 
     await queue.add("digest", { v: 1 }, { repeat: { every: 60_000 } });
-    const generated = (await queue.listRepeatables())[0]!.key;
+    const generated = (await queue.listRepeatables())[0].key;
     expect(generated).toBe("digest|every:60000|");
 
     // Hiding this one's prefix would make the two series display identically —

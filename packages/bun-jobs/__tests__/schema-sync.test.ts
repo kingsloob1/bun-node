@@ -222,11 +222,11 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     expect(planned.map((c) => [c.kind, c.target])).toEqual([
       ["add-column", "repeat_key"],
     ]);
-    expect(planned[0]!.applied).toBe(false);
-    expect(planned[0]!.blocking).toBe(false);
+    expect(planned[0].applied).toBe(false);
+    expect(planned[0].blocking).toBe(false);
 
     const applied = await driver.syncSchema();
-    expect(applied[0]!.applied).toBe(true);
+    expect(applied[0].applied).toBe(true);
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
   }, 45_000);
 
@@ -313,12 +313,12 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
       ["create-index", name, false],
     ]);
-    expect(planned[0]!.statement).toBe(
+    expect(planned[0].statement).toBe(
       `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${prefix}kv (ns, kv_key COLLATE "C")`,
     );
 
     // Safe, so a plain sync makes it.
-    expect((await driver.syncSchema())[0]!.applied).toBe(true);
+    expect((await driver.syncSchema())[0].applied).toBe(true);
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
 
     const [row] = await query<{ indexdef: string }>(
@@ -347,7 +347,7 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
       ["drop-index", name, false],
       ["create-index", name, false],
     ]);
-    expect(planned[0]!.reason).toMatch(/collation/);
+    expect(planned[0].reason).toMatch(/collation/);
 
     await driver.syncSchema();
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
@@ -368,10 +368,10 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     expect(planned.map((c) => [c.kind, c.target])).toEqual([
       ["alter-column", "data"],
     ]);
-    expect(planned[0]!.blocking).toBe(true);
+    expect(planned[0].blocking).toBe(true);
 
     // Seen, reported, and left alone.
-    expect((await driver.syncSchema())[0]!.applied).toBe(false);
+    expect((await driver.syncSchema())[0].applied).toBe(false);
     expect(
       String(
         (
@@ -384,7 +384,7 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     ).toBe("jsonb");
 
     // Asked for by name, it does it.
-    expect((await driver.syncSchema({ alterColumns: true }))[0]!.applied).toBe(
+    expect((await driver.syncSchema({ alterColumns: true }))[0].applied).toBe(
       true,
     );
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
@@ -472,7 +472,7 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
       ["add-column", "log_key", false],
     ]);
-    expect((await driver.syncSchema())[0]!.applied).toBe(true);
+    expect((await driver.syncSchema())[0].applied).toBe(true);
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
 
     await driver.addJob(q, makeJob({ id: "synced" }));
@@ -548,7 +548,7 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
       ["add-column", "flow", false],
     ]);
-    expect((await driver.syncSchema())[0]!.applied).toBe(true);
+    expect((await driver.syncSchema())[0].applied).toBe(true);
 
     // A fresh driver, as a deployment gets on its next connect: Postgres will
     // not reuse a statement this connection prepared against the old columns.
@@ -830,8 +830,8 @@ for (const engine of MYSQL_FAMILY) {
         ["drop-index", name, false],
         ["create-index", name, false],
       ]);
-      expect(planned[0]!.reason).toContain("ns,queue,state,run_at");
-      expect(planned[1]!.statement).toBe(
+      expect(planned[0].reason).toContain("ns,queue,state,run_at");
+      expect(planned[1].statement).toBe(
         `CREATE INDEX ${name} ON ${prefix}jobs (${expected})`.replace(
           "CREATE INDEX ",
           `CREATE INDEX ${dialectFor(adapter).indexIfNotExists ? "IF NOT EXISTS " : ""}`,
@@ -921,7 +921,7 @@ for (const engine of MYSQL_FAMILY) {
             text.startsWith(`ALTER TABLE ${table} `),
           );
           expect(mine).toHaveLength(1);
-          expect(mine[0]!.match(/MODIFY COLUMN/g)).toHaveLength(
+          expect(mine[0].match(/MODIFY COLUMN/g)).toHaveLength(
             alters.filter((c) => c.table === table).length,
           );
         }
@@ -1149,7 +1149,7 @@ describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
 
       const planned = await driver.syncSchema({ dryRun: true });
       expect(planned.map((c) => c.kind)).toEqual(["drop-index"]);
-      expect(planned[0]!.applied).toBe(false);
+      expect(planned[0].applied).toBe(false);
 
       await driver.syncSchema();
 

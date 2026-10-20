@@ -237,7 +237,7 @@ for (const engine of ENGINES) {
         const [before] = await raw(
           `SELECT log_key FROM ${jobs} WHERE ${jobWhere(q, "job")}`,
         );
-        const oldKey = String(before!.log_key);
+        const oldKey = String(before.log_key);
 
         expect(await driver.clearJobLogs(q, "job")).toEqual({
           status: "cleared",

@@ -30,6 +30,10 @@ import {
   VIEWS,
 } from "./expressCompat/app";
 import {
+  EXPRESS_OLDER_THAN_BUN_COMMON,
+  OLDER_EXPRESS,
+} from "./expressCompat/expressVersion";
+import {
   BODY_CHANGES,
   SERVE_STATIC_REDIRECT,
   STATIC_VARY,
@@ -201,6 +205,15 @@ const KNOWN: Record<string, KnownDifference> = {
     fields: BODY_CHANGES,
     reason: SERVE_STATIC_REDIRECT,
   },
+  // Where Express predates the release bun-common copies.
+  ...(EXPRESS_OLDER_THAN_BUN_COMMON
+    ? {
+        "helpers/redirect Accept html": {
+          fields: ["body", "content-length"],
+          reason: OLDER_EXPRESS,
+        },
+      }
+    : {}),
 };
 
 /** The two servers of one group. */

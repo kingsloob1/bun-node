@@ -379,7 +379,7 @@ export function runnerEvent<Name extends RunnerEventName>(
     kind: "runner",
     target: event.target,
     type: event.type,
-    ...("runId" in payload ? { id: (payload as { runId: string }).runId } : {}),
+    ...("runId" in payload ? { id: payload.runId } : {}),
     at: event.at ?? Date.now(),
     origin: event.origin,
     payload,

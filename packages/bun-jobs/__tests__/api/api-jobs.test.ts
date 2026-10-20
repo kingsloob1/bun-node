@@ -433,7 +433,7 @@ describe("jobs", () => {
       job: { queue: "fetch", state: "waiting" },
     });
 
-    const childId = flow.children[0]!.job.id;
+    const childId = flow.children[0].job.id;
     const child = await h.call("GET", `/queues/fetch/jobs/${childId}/children`);
     expect(child.body).toEqual({
       parent: { queue: "reports", id: flow.job.id },
@@ -919,10 +919,10 @@ describe("adding to a queue that does not exist yet", () => {
     h.jobs.define("report", async () => {});
     const built: string[] = [];
     const queue = h.jobs.queue.bind(h.jobs);
-    h.jobs.queue = ((name: string) => {
+    h.jobs.queue = (name: string) => {
       built.push(name);
       return queue(name);
-    }) as typeof h.jobs.queue;
+    };
 
     const refused = await h.call("POST", "/queues/fresh/jobs", {
       name: "wipe-database",
@@ -1048,7 +1048,7 @@ describe("repeatables and definitions", () => {
     const h = harness();
     const queue = h.jobs.queue("mail");
     await queue.add("digest", {}, { repeat: { every: 60_000, key: "daily" } });
-    const pending = (await queue.listRepeatables())[0]!.nextJobId!;
+    const pending = (await queue.listRepeatables())[0].nextJobId!;
 
     const listed = await h.call("GET", "/queues/mail/repeatables");
     expect(listed.body.items[0]).toMatchObject({
@@ -1083,7 +1083,7 @@ describe("repeatables and definitions", () => {
       "/queues/mail/repeatables/daily/enable",
     );
     expect(enabled.body).toEqual({ enabled: true });
-    const series = (await queue.listRepeatables())[0]!;
+    const series = (await queue.listRepeatables())[0];
     expect(series.disabled).toBe(false);
     const next = await queue.getJob(series.nextJobId!);
     expect(next?.state).toBe("delayed");

@@ -247,7 +247,7 @@ describe("WorkerExecutor: exited and late events, with a stand-in Worker", () =>
     const handle = new WorkerExecutor({}).start(
       startOptions("/unused.ts", null, events),
     );
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     await waitFor(() => fake.received.some((message) => message.t === "start"));
 
     handle.stop("test", { force: true });
@@ -269,7 +269,7 @@ describe("WorkerExecutor: exited and late events, with a stand-in Worker", () =>
     const handle = new WorkerExecutor({}).start(
       startOptions("/unused.ts", null, events),
     );
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     await waitFor(() => fake.received.some((message) => message.t === "start"));
     // The thread ends before any result: `close` settles the run and `exited`.
     fake.exit();
@@ -284,7 +284,7 @@ describe("WorkerExecutor: exited and late events, with a stand-in Worker", () =>
     const handle = new WorkerExecutor({}).start(
       startOptions("/unused.ts", null, events),
     );
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     // What Bun does when the entry cannot load: `error`, then `close`.
     fake.dispatchEvent(
       new ErrorEvent("error", { message: "the entry failed to load" }),
@@ -299,7 +299,7 @@ describe("WorkerExecutor: exited and late events, with a stand-in Worker", () =>
     const { events, seen } = recordingEvents();
     const options = startOptions("/unused.ts", null, events);
     const handle = new WorkerExecutor({}).start(options);
-    const fake = FakeWorker.instances[0]!;
+    const fake = FakeWorker.instances[0];
     await waitFor(() => fake.received.some((message) => message.t === "start"));
     const runId = options.context.runId;
 

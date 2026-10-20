@@ -67,7 +67,7 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
       await queue.add("tick", {}, { repeat: { every: 60_000, key: "k" } });
       const [before] = await queue.listRepeatables();
       expect(before?.disabled).toBe(false);
-      const pending = before!.nextJobId!;
+      const pending = before.nextJobId!;
       expect(await queue.getJob(pending)).not.toBeNull();
 
       expect(await queue.disableRepeatable("k")).toBe(true);
@@ -81,7 +81,7 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
       const [after] = await queue.listRepeatables();
       expect(after?.disabled).toBe(false);
       expect(after?.nextJobId).not.toBeNull();
-      const next = await queue.getJob(after!.nextJobId!);
+      const next = await queue.getJob(after.nextJobId!);
       expect(next?.state).toBe("delayed");
       // From now: the next interval, not a backlog.
       expect(next!.runAt).toBeGreaterThanOrEqual(enabledAt);
@@ -149,7 +149,7 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
         expect(await queue.enableRepeatable("silent")).toBe(true);
         const [after] = await queue.listRepeatables();
         expect(after?.disabled).toBe(false);
-        const next = await queue.getJob(after!.nextJobId!);
+        const next = await queue.getJob(after.nextJobId!);
         expect(next?.state).toBe("delayed");
         expect(next?.data).toEqual({ v: 2 });
         expect(next!.runAt).toBeGreaterThan(enabledAt);
@@ -172,7 +172,7 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
       const enabledAt = Date.now();
       expect(await queue.enableRepeatable("moved")).toBe(true);
       const [after] = await queue.listRepeatables();
-      const next = await queue.getJob(after!.nextJobId!);
+      const next = await queue.getJob(after.nextJobId!);
       // The hour it was given while disabled, not the minute it had before.
       expect(next!.runAt).toBeGreaterThan(enabledAt + 120_000);
       expect(next!.runAt).toBeLessThanOrEqual(Date.now() + 3_600_000);
@@ -216,8 +216,8 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
       await waitFor(() => heard.length > 0, { timeout: 5_000 });
       await Bun.sleep(50);
 
-      expect(local).toEqual([after!.nextRunAt!]);
-      expect(heard).toEqual([after!.nextRunAt!]);
+      expect(local).toEqual([after.nextRunAt!]);
+      expect(heard).toEqual([after.nextRunAt!]);
     });
 
     it("clears a disabled series' next occurrence, in the stored record and as listed, and sets it again on enable", async () => {
@@ -237,7 +237,7 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
 
       expect(await queue.enableRepeatable("ptr")).toBe(true);
       const [after] = await queue.listRepeatables();
-      const next = await queue.getJob(after!.nextJobId!);
+      const next = await queue.getJob(after.nextJobId!);
       expect(next?.state).toBe("delayed");
       expect(after?.nextRunAt).toBe(next!.runAt);
     });

@@ -142,7 +142,7 @@ function recordingClient(record: Recorded[]): BunRedis {
         }
         if (property === "script") {
           return async (...args: unknown[]) => {
-            const sha = (await call(...args)) as unknown;
+            const sha = await call(...args);
             if (args[0] === "LOAD" && typeof sha === "string") {
               shas.set(sha, String(args[1]));
             }
@@ -178,7 +178,7 @@ function recordingClient(record: Recorded[]): BunRedis {
       },
     });
 
-  const real = new BunRedis(URL!);
+  const real = new BunRedis(URL);
   cleanups.push(async () => real.close());
   return wrap(real);
 }
@@ -250,7 +250,7 @@ describe.skipIf(!URL)(
       );
       await driver.failJob(
         q,
-        many[0]!.id,
+        many[0].id,
         "tm",
         { name: "Error", message: "x" },
         { retry: false, retention: false },
@@ -259,7 +259,7 @@ describe.skipIf(!URL)(
       );
       await driver.buryJob(
         q,
-        many[1]!.id,
+        many[1].id,
         { name: "Error", message: "y" },
         { retention: false, keepStacktraces: 5, token: "tm" },
         now,
@@ -268,7 +268,7 @@ describe.skipIf(!URL)(
       // Maintenance.
       await driver.promoteDelayed(q, now, 100);
       await driver.recoverStalled(q, now + 120_000, 1, 100);
-      await driver.retryJob(q, many[0]!.id, true, now);
+      await driver.retryJob(q, many[0].id, true, now);
       await driver.addJob(
         q,
         makeJob({ id: "later", state: "delayed", runAt: now + 60_000 }),

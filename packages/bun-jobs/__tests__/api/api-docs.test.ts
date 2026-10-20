@@ -63,7 +63,7 @@ function csp(response: Response): Record<string, string> {
   return Object.fromEntries(
     header.split("; ").map((directive) => {
       const [name, ...values] = directive.split(" ");
-      return [name!, values.join(" ")];
+      return [name, values.join(" ")];
     }),
   );
 }
@@ -75,8 +75,8 @@ describe("the pinned assets", () => {
       expect(asset.version).toMatch(/^\d+\.\d+\.\d+$/);
       // No range, ever: the hashes below are of exactly these bytes.
       expect(asset.version).not.toMatch(/[\^~x*]|latest/);
-      expect(asset.integrity!.js).toMatch(/^sha384-[\w+/]+={0,2}$/);
-      expect(asset.integrity!.css).toMatch(/^sha384-[\w+/]+={0,2}$/);
+      expect(asset.integrity.js).toMatch(/^sha384-[\w+/]+={0,2}$/);
+      expect(asset.integrity.css).toMatch(/^sha384-[\w+/]+={0,2}$/);
     }
     // The controls: a range and a non-sha384 hash are both refused.
     expect(/^\d+\.\d+\.\d+$/.test("^5.32.15")).toBe(false);
@@ -192,12 +192,12 @@ describe("the pages", () => {
       expect(response.headers.get("referrer-policy")).toBe("no-referrer");
       expect(response.headers.get("cache-control")).toBe("no-store");
 
-      const nonce = directives["script-src"]!.match(/'nonce-([^']+)'/)![1]!;
+      const nonce = directives["script-src"].match(/'nonce-([^']+)'/)![1];
       expect(html).toContain(`<script nonce="${nonce}">`);
       // Every inline script carries this request's nonce, and no other.
       const inline = [...html.matchAll(/<script(?![^>]*\ssrc=)([^>]*)>/g)];
       expect(inline).toHaveLength(1);
-      expect(inline[0]![1]).toContain(`nonce="${nonce}"`);
+      expect(inline[0][1]).toContain(`nonce="${nonce}"`);
     }
 
     // The control: a second request gets a different nonce, so the page cannot
@@ -295,7 +295,7 @@ describe("the pages", () => {
     const denied = mounted({
       authorize: (_req: unknown, context: JobsApiAuthorizeContext) =>
         context.action !== "docs.read",
-    } as Partial<JobsApiConfig>);
+    });
     for (const path of ["/admin/jobs/docs", "/admin/jobs/docs/asyncapi"]) {
       const response = await denied.fetch(path);
       expect(response.status).toBe(403);
@@ -308,7 +308,7 @@ describe("the pages", () => {
     const unauthenticated = mounted({
       authorize: (_req: unknown, context: JobsApiAuthorizeContext) =>
         context.action === "docs.read" ? { allow: false, status: 401 } : true,
-    } as Partial<JobsApiConfig>);
+    });
     expect((await unauthenticated.fetch("/admin/jobs/docs")).status).toBe(401);
     // The control: an allowed caller still gets the page.
     expect((await mounted().fetch("/admin/jobs/docs")).status).toBe(200);
@@ -375,7 +375,7 @@ describe("the pinned AsyncAPI component's parser", () => {
     expect(ASYNCAPI_PARSER_RANGE).toMatch(/^\^3\./);
     expect(DOCS_CDN.asyncapi.version.startsWith("3.")).toBe(true);
     // The control: the 1.x component (parser 2.x) would not qualify.
-    expect(/^\^3\./.test("^2.0.0")).toBe(false);
+    expect("^2.0.0".startsWith("^3.")).toBe(false);
   });
 
   it.skipIf(!parseAsyncApi)(
@@ -391,7 +391,7 @@ describe("the pinned AsyncAPI component's parser", () => {
       const broken = structuredClone(document) as unknown as {
         operations: Record<string, { action: string }>;
       };
-      broken.operations.subscribe!.action = "publish";
+      broken.operations.subscribe.action = "publish";
       const bad = await parseAsyncApi!(broken);
       expect(bad.parsed).toBe(false);
       expect(bad.errors.length).toBeGreaterThan(0);

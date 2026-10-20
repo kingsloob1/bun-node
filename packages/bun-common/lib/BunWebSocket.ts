@@ -11,6 +11,7 @@ import type {
   matchedRoute,
   NextFunction,
 } from "./index";
+import type { ParamsDictionary } from "./types/routeParams";
 import { EventEmitter } from "node:events";
 import { BunRequest } from "./BunRequest";
 import { BunResponse } from "./BunResponse";
@@ -109,10 +110,11 @@ export interface WebSocketClientData<TCustom = unknown> {
    */
   route?: string;
   /**
-   * Route params of the matched {@link route}, e.g. `{ id: "42" }`. A copy,
-   * so it is safe to mutate. Absent alongside {@link route}.
+   * Route params of the matched {@link route}, e.g. `{ id: "42" }` (a
+   * wildcard's is a `string[]`, as on `req.params`). A copy, arrays
+   * included, so it is safe to mutate. Absent alongside {@link route}.
    */
-  params?: Record<string, string>;
+  params?: ParamsDictionary;
   /**
    * The port of the server that accepted the upgrade — the real bound port,
    * never `0`, even for a server started on port `0`. Lets a handler tell a
@@ -517,7 +519,7 @@ export class BunWebSocket<
         this.emit("drain", ...args);
         await this.processRegisteredRouteHandlerFor("drain", ...args);
       },
-    } as BunWebSocketHandlerType<TCustom>;
+    };
 
     if (options.router) {
       this.router = options.router;
@@ -764,6 +766,7 @@ export class BunWebSocket<
           // along to the `error` callback.
           const err = isObject(e) ? e : new Error(String(e));
           defineHidden(err, "req", req);
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows an object unchanged, Error or not, carrying the request to the `error` callback
           throw err;
         }
 
@@ -862,8 +865,9 @@ export class BunWebSocket<
     try {
       // A graceful `stop(false)` leaves keep-alive connections open, and with
       // `SO_REUSEPORT` a new server on the same port can then be answered by
-      // the stale one.
-      server.stop(true);
+      // the stale one. Not awaited: `killServer` returns synchronously, and
+      // the promise only reports the force-closed connections finishing.
+      void server.stop(true);
     } catch {
       //
     }
@@ -1007,8 +1011,7 @@ export class BunWebSocket<
     handler: BunWebSocketHandlerType<TCustom>,
     fnOrOptions?:
       | WebSocketRouteOptions<TCustom>
-      | WebSocketCustomDataFn<TCustom>
-      | undefined,
+      | WebSocketCustomDataFn<TCustom>,
     defaultsFrom?: WebSocketUpgradeDefaults,
   ) {
     if (!isObject(handler)) {
@@ -1071,10 +1074,14 @@ export class BunWebSocket<
             requestUrl: req.originalUrl,
           })
           .find((entry) => entry.callback === wsRouteHandler);
-        // Copied: matched layers are cached and shared across requests.
-        const params = {
-          ...((layer?.matched.params ?? {}) as Record<string, string>),
-        };
+        // Copied, a wildcard's array included: matched layers are cached and
+        // shared across requests (and their arrays frozen).
+        const params: ParamsDictionary = {};
+        const matched = (layer?.matched.params ?? {}) as ParamsDictionary;
+        for (const key of Object.keys(matched)) {
+          const value = matched[key];
+          params[key] = Array.isArray(value) ? [...value] : value;
+        }
         // Whichever server built `req` — shared, standalone or extra-port.
         const port = acceptingPort(req);
 
@@ -1131,7 +1138,7 @@ export class BunWebSocket<
 
         // Every layer is already applied: `inherit: false` stops the response
         // from layering the serving router's defaults over them again.
-        return res.upgradeToWebsocket(data as WebSocketClientData, {
+        return res.upgradeToWebsocket(data, {
           ...(headers ? { headers } : {}),
           inherit: false,
         });

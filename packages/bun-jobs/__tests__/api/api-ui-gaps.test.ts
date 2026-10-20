@@ -161,7 +161,7 @@ describe("G1: api.info", () => {
     const h = closing({ websocket: { port: 0 } });
     const port = h.api.info.websocket?.port;
     expect(port).toBeGreaterThan(0);
-    expect(port).toBe(h.api.websocket!.port!);
+    expect(port).toBe(h.api.websocket!.port);
   });
 });
 
@@ -545,7 +545,7 @@ describe("G4: the socket's dedicated port in /meta", () => {
   it("is reported when the socket has its own port, and absent otherwise", async () => {
     const dedicated = closing({ websocket: { port: 0 } });
     const reported = (await meta(dedicated)).websocket;
-    expect(reported?.port).toBe(dedicated.api.websocket!.port!);
+    expect(reported?.port).toBe(dedicated.api.websocket!.port);
     expect(reported?.port).toBeGreaterThan(0);
 
     const shared = closing();
@@ -869,7 +869,7 @@ describe("G11: the namespace-wide throughput series", () => {
     expect(series.interval).toBe(60_000);
     expect(series.buckets).toHaveLength(5);
     expect(series.to - series.from).toBe(4 * 60_000);
-    expect(series.buckets[0]!.at).toBe(series.from);
+    expect(series.buckets[0].at).toBe(series.from);
     expect(series.buckets.at(-1)!.at).toBe(series.to);
     expect(series.completed).toBe(3);
     expect(series.failed).toBe(0);

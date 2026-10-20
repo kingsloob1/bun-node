@@ -1,6 +1,5 @@
 import type { CommandStartedEvent, Document, MongoClient } from "mongodb";
 import type { JobQuery, JobRecord, JobState } from "../lib/drivers/driver";
-import type { MongoClientLike } from "../lib/drivers/mongo/mongo-driver";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
 import { MongoDriver } from "../lib/drivers/mongo/mongo-driver";
@@ -111,7 +110,7 @@ async function makeRecorder(name: string): Promise<Recorder> {
 
   const driver = new MongoDriver({
     url: URL,
-    client: shared as unknown as MongoClientLike,
+    client: shared,
     collectionPrefix: prefix,
   });
   drivers.push(driver);

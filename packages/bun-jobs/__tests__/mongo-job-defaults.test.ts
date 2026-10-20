@@ -6,7 +6,6 @@ import type {
   QueueRef,
   StoredJobOptions,
 } from "../lib/drivers/driver";
-import type { MongoClientLike } from "../lib/drivers/mongo/mongo-driver";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
@@ -207,12 +206,12 @@ async function makeRig(name: string): Promise<Rig> {
 
   const driver = new MongoDriver({
     url: URL,
-    client: proxied as unknown as MongoClientLike,
+    client: proxied,
     collectionPrefix: prefix,
   });
   const other = new MongoDriver({
     url: URL,
-    client: shared as unknown as MongoClientLike,
+    client: shared,
     collectionPrefix: prefix,
   });
   drivers.push(driver, other);

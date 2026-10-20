@@ -198,7 +198,7 @@ describe("route-level authorization", () => {
         (call) =>
           call.route?.method === route.method && call.route.path === pattern,
       );
-      expect(calls[0]).toBe(own[0]!);
+      expect(calls[0]).toBe(own[0]);
       expect({ route: route.operationId, calls: own.length }).toEqual({
         route: route.operationId,
         calls: 1,
@@ -371,7 +371,7 @@ describe("resolveConfig: construction", () => {
     });
     const warnings = events.filter((event) => event.level === "warn");
     expect(warnings).toHaveLength(2);
-    expect(warnings[0]!.message).toMatch(/unauthenticated/);
+    expect(warnings[0].message).toMatch(/unauthenticated/);
 
     const quiet = createTestLogger();
     const guarded = resolveConfig({
@@ -727,7 +727,9 @@ describe("authorizeHandler through router.fetch", () => {
       "/queues/:queue/jobs/retry",
       authorizeHandler(config, "jobs.retry", {
         route: { method: "POST", path: "/queues/:queue/jobs/retry" },
-        target: (req) => ({ queue: req.params.queue, jobIds: ["a"] }),
+        // `req` is untyped here: Express 5's `ParamsDictionary`, a wildcard's
+        // value a `string[]`.
+        target: (req) => ({ queue: String(req.params.queue), jobIds: ["a"] }),
       }),
       (_req, res) => res.json({ ok: true }),
     );

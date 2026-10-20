@@ -39,7 +39,7 @@ function logged(
 ): LogEvent {
   const { logger, events } = createTestLogger();
   redactingLogger(logger, secrets).info("m", fields);
-  return events[0]!;
+  return events[0];
 }
 
 describe("binary values become a placeholder", () => {

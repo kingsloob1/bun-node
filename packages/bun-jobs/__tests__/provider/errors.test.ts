@@ -107,6 +107,7 @@ function throwing(
       summon: async () => {
         const thrown = next(++counts.calls);
         if (thrown !== undefined) {
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows what the case threw, unchanged, Error or not: that is what is being classified
           throw thrown;
         }
         return { status: "started", handles: [`unit-${counts.calls}`] };
@@ -470,8 +471,8 @@ describe("SummonController and each ProviderError kind", () => {
       });
       const named = logged(logs, "error", `compute provider ${name}`);
       expect(named).toHaveLength(1);
-      expect(named[0]!.message).toContain(`PROVIDER_${kind.toUpperCase()}`);
-      expect(named[0]!.message).toContain("open at once");
+      expect(named[0].message).toContain(`PROVIDER_${kind.toUpperCase()}`);
+      expect(named[0].message).toContain("open at once");
       // Not also the by-count line: one error about the circuit.
       expect(logged(logs, "error", "too many consecutive failures")).toEqual(
         [],
@@ -564,7 +565,7 @@ describe("SummonController and each ProviderError kind", () => {
     expect(status.last?.detail).toBe("IdempotentParameterMismatch");
     const bug = logged(logs, "error", "not a pure function of its key");
     expect(bug).toHaveLength(1);
-    expect(bug[0]!.message).toContain(name);
+    expect(bug[0].message).toContain(name);
   });
 
   it("conflict, negative control: a plain Error logs no provider bug", async () => {
@@ -650,6 +651,7 @@ describe("a provider's ready rejecting with a ProviderError", () => {
         await Bun.sleep(1);
         const thrown = next();
         if (thrown !== undefined) {
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows what the case threw, unchanged, Error or not: that is what is being classified
           throw thrown;
         }
         return { value: input as { region: string } };
@@ -757,7 +759,7 @@ describe("the unmapped-throw warn", () => {
     }
     const warned = logged(logs, "warn", "other than a ProviderError");
     expect(warned).toHaveLength(1);
-    expect(warned[0]!.message).toContain(name);
+    expect(warned[0].message).toContain(name);
     // Once per process: another controller over the same provider says nothing.
     const again = await setup();
     const { logger: logger2, events: logs2 } = createTestLogger();
@@ -856,7 +858,7 @@ describe("status() explaining a lost attempt", () => {
     expect(asked).toHaveLength(1);
     const lost = events.filter((event) => event.outcome === "lost");
     expect(lost).toHaveLength(1);
-    expect(lost[0]!.detail).toBeUndefined();
+    expect(lost[0].detail).toBeUndefined();
     const status = await summon.status();
     expect(status.last).toMatchObject({ outcome: "lost" });
     expect(status.last?.detail).toBeUndefined();
@@ -917,7 +919,7 @@ describe("the short-grace warn", () => {
     await summon.check({ force: true });
     const warned = graceWarnings(logs);
     expect(warned).toHaveLength(1);
-    expect(warned[0]!.fields).toMatchObject({
+    expect(warned[0].fields).toMatchObject({
       graceMs: 5_000,
       shutdownBuffer: 7_000,
       graceMaxMs: 300_000,
@@ -1057,7 +1059,7 @@ describe("review round 2: retryAfterMs is bounded", () => {
     await summon.check();
     const clamped = logged(logs, "warn", "clamped");
     expect(clamped).toHaveLength(1);
-    expect(clamped[0]!.fields).toMatchObject({
+    expect(clamped[0].fields).toMatchObject({
       provider: name,
       retryAfterMs: 1e12,
       clampedTo: RESET,
@@ -1343,8 +1345,8 @@ describe("review round 2: a run of throttled answers warns once", () => {
     }
     const warned = throttleWarnings(logs);
     expect(warned).toHaveLength(1);
-    expect(warned[0]!.message).toContain("3 summon attempts in a row");
-    expect(warned[0]!.fields).toMatchObject({ provider: name, throttled: 3 });
+    expect(warned[0].message).toContain("3 summon attempts in a row");
+    expect(warned[0].fields).toMatchObject({ provider: name, throttled: 3 });
     // Still never the circuit: the warn changes nothing else.
     expect((await summon.status()).circuitOpenUntil).toBeUndefined();
   });

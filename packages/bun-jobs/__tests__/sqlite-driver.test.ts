@@ -290,12 +290,12 @@ describe("SQL driver: several connections to one SQLite file", () => {
     const ns = testNamespace();
     const q = { ns, queue: "drain" };
 
-    await drivers[0]!.ensureQueue(q);
+    await drivers[0].ensureQueue(q);
     const seeded = [];
     for (let index = 0; index < 30; index++) {
       seeded.push(makeJob({ id: `j${index}` }));
     }
-    await drivers[0]!.addJobs(q, seeded);
+    await drivers[0].addJobs(q, seeded);
 
     // Every driver claims and completes until nothing is left. A job claimed
     // twice or lost would show up in the tally.

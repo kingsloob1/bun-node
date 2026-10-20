@@ -451,7 +451,7 @@ as columns of `scripts/nest-matrix.ts` (§9.3):
 
 | Column | When |
 |---|---|
-| 12-latest (12.1.3) | every gate: it is develop's lock, the repo itself |
+| 12-latest (12.2.0) | every gate: it is develop's lock, the repo itself |
 | 11-latest (11.2.7) | every PR touching bun-nest or bun-common |
 | 11.1.20 and 12.0.0 (the floors) | once per merge window |
 | a new Nest release | when it ships, before the lock moves |
@@ -1049,6 +1049,13 @@ matched route.
 - `use(path, ...)` registers middleware with `group: path` so
   `@routejs/router` compiles a **prefix** regex (Express prefix matching);
   plain `path:` routes are exact-match.
+- Paths are compiled at registration by a port of path-to-regexp 8.4.2
+  (`lib/utils/expressPath.ts`, MIT; the version Express 5.3 runs, and a
+  devDependency for its differential fuzz only). Routejs-only forms (`:x?`,
+  `:x(re)`) are bridged; a malformed path throws `PathSyntaxError`. Plain
+  paths compile byte-identical to routejs, so the RouteTree and the route
+  cache treat them as before. A named wildcard's array is frozen, since
+  matched params are cached and shared across requests.
 
 ## Typed routes (generated overloads)
 
@@ -1056,8 +1063,12 @@ matched route.
 narrow a handler's request:
 
 - `req.params` from the path literal — `get("/home/:name/:id?", h)` gives
-  `{ name: string; id?: string }`. `*name` yields both the positional key and
-  the name, matching what the matcher emits.
+  `{ name: string; id?: string }`. Paths are path-to-regexp 8's (Express 5's)
+  syntax: `*name` yields a `string[]` under its name only (no positional key;
+  a bare `*` keeps `"0"`), and `{*name}` an optional `string[]`, matching what
+  the matcher emits. The walker (`lib/types/routeParams.ts`) reads the literal
+  character by character; a non-literal path falls back to
+  `ParamsDictionary`.
 - `req.query` / `req.body` / `req.params` from a `BunValidate` middleware
   registered ahead of the handler in the same call, via a phantom `__shape`
   type it carries.

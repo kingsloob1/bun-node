@@ -164,7 +164,7 @@ describe("captured text through real runs", () => {
 
   /** What util.format makes of the handler's calls, line by line, by stream. */
   function expectedLines(): { stream: RunLogLine["stream"]; text: string }[] {
-    // eslint-disable-next-line no-new-func -- the same literal the handler logs, evaluated here.
+    // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- the same literal the handler logs, evaluated here.
     const logged = new Function(`return ${LOGGED}`)() as unknown[][];
     return [
       ...logged.flatMap((args) =>

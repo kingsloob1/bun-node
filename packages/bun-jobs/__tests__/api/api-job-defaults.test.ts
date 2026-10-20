@@ -6,7 +6,6 @@ import type {
 import type {
   JobsDriver,
   PendingOptionsRewrite,
-  PendingOptionsRewriteResult,
   QueueRef,
 } from "../../lib/index";
 import type { HarnessResponse } from "./fixtures";
@@ -336,9 +335,9 @@ describe.each(BACKENDS)(
           limit: 2,
         });
         expect(calls.length).toBeGreaterThanOrEqual(2);
-        expect(calls[0]!.examined).toBe(2);
-        expect(calls[0]!.done).toBe(false);
-        expect(typeof calls[0]!.next).toBe("string");
+        expect(calls[0].examined).toBe(2);
+        expect(calls[0].done).toBe(false);
+        expect(typeof calls[0].next).toBe("string");
         expect(total).toMatchObject({
           examined: 4,
           rewritten: 3,
@@ -534,7 +533,7 @@ describe("queue job defaults: refusals are 4xx with a detail", () => {
     });
     // Nothing was written.
     const [job] = await h.jobs.queue("mail").list("waiting");
-    expect(job!.opts.attempts).toBe(1);
+    expect(job.opts.attempts).toBe(1);
   });
 
   it("answers every bad apply request with 400 INVALID_ARGUMENT or VALIDATION", async () => {
@@ -600,10 +599,7 @@ describe("queue job defaults: refusals are 4xx with a detail", () => {
           return async (q: QueueRef, request: PendingOptionsRewrite) => {
             entered.resolve();
             await gate.promise;
-            return (await target.rewritePendingOptions(
-              q,
-              request,
-            )) as PendingOptionsRewriteResult;
+            return await target.rewritePendingOptions(q, request);
           };
         }
         const value = Reflect.get(target, key, receiver);
@@ -734,7 +730,7 @@ describe("queue job defaults: explicit keys, unmarked and exhausted jobs", () =>
     const list = ok<{ items: { opts: Record<string, unknown> }[] }>(
       await h.call("GET", "/queues/mail/repeatables"),
     );
-    expect(list.items[0]!.opts.explicit).toEqual(["attempts"]);
+    expect(list.items[0].opts.explicit).toEqual(["attempts"]);
   });
 });
 
@@ -878,11 +874,11 @@ describe("queue job defaults: pruning and permissions", () => {
         >
       >;
     }>(await h.call("GET", "/openapi.json"));
-    const item = doc.paths["/queues/{queue}/job-defaults"]!;
+    const item = doc.paths["/queues/{queue}/job-defaults"];
     expect(Object.keys(item).sort()).toEqual(
       expect.arrayContaining(["delete", "get", "put"]),
     );
-    const apply = doc.paths["/queues/{queue}/job-defaults/apply"]!.post!;
+    const apply = doc.paths["/queues/{queue}/job-defaults/apply"].post;
     expect(apply.responses).toHaveProperty("409");
     expect(apply.description).toContain("irreversible");
     expect(JSON.stringify(apply.responses["409"])).toContain(

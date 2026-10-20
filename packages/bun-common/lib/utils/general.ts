@@ -9,9 +9,10 @@ import mime from "mime";
 
 /**
  * Set on a native `Request` that is answered without a socket — by a
- * `fetch()` (see `markSocketFree`). Read by the response (Bun's implicit
- * text type) and by the request (a body read without its bytes needs a
- * served request's framing to trust `Content-Length`).
+ * `fetch()`: `true` (see `markSocketFree`), or the `SocketFreeExchange`
+ * answering it. Read by the response (Bun's implicit text type, and whether
+ * its body streams) and by the request (a body read without its bytes needs
+ * a served request's framing to trust `Content-Length`).
  */
 export const SOCKET_FREE: unique symbol = Symbol(
   "bun-common socket-free request",

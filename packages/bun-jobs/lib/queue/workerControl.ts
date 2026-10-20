@@ -460,7 +460,7 @@ export async function readWorkerControl(
       key: stored.key ?? id,
       incarnation:
         typeof stored.incarnation === "number" ? stored.incarnation : 0,
-      state: stored.state as WorkerDesiredState,
+      state: stored.state,
       at: typeof stored.at === "number" ? stored.at : 0,
       ...(stored.persist ? { persist: stored.persist } : {}),
       ...(stored.timeout !== undefined && issue === null

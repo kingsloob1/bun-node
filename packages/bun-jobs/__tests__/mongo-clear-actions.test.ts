@@ -1,5 +1,4 @@
 import type { MongoClient } from "mongodb";
-import type { MongoClientLike } from "../lib/drivers/mongo/mongo-driver";
 import type { QueueRef } from "../lib/index";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
@@ -159,7 +158,7 @@ async function hookedDriver(hook: WriteHook): Promise<MongoDriver> {
 
   const driver = new MongoDriver({
     url: URL,
-    client: proxied as unknown as MongoClientLike,
+    client: proxied,
   });
   jobsName = driver.collections.jobs;
   drivers.push(driver);

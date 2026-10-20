@@ -183,7 +183,7 @@ async function _handlers(): Promise<void> {
   type _untypedFiles = Expect<Equal<(typeof _untyped)["files"], StorageFile[]>>;
 
   // `removeFile` takes what this storage produced.
-  await many.removeFile(many.files[0]!);
+  await many.removeFile(many.files[0]);
   const memoryFile = single.file!;
   // @ts-expect-error — a memory file is not what the bucket storage produced.
   await many.removeFile(memoryFile);

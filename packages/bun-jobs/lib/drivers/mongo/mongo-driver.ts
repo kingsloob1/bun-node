@@ -2009,7 +2009,7 @@ export class MongoDriver implements JobsDriver {
           ...(keep > 0 ? { $slice: keep } : {}),
         },
       },
-    } as UpdateFilterLike);
+    });
   }
 
   async updateHistory(
@@ -2332,7 +2332,7 @@ export class MongoDriver implements JobsDriver {
         {
           $pull: { history: { $in: targets } },
           $set: { updatedAt: Date.now() },
-        } as UpdateFilterLike,
+        },
         { returnDocument: "before", upsert: false },
       );
 
@@ -2379,7 +2379,7 @@ export class MongoDriver implements JobsDriver {
       {
         $set: { ns, key: `${key}:state`, updatedAt: Date.now() },
         $push: { queued: JSON.stringify(trigger) },
-      } as UpdateFilterLike,
+      },
       { upsert: false },
     );
 
@@ -2583,7 +2583,7 @@ export class MongoDriver implements JobsDriver {
     // One job is not a batch, and the singular path already reports precisely
     // what happened to it.
     if (jobs.length === 1) {
-      return [await this.addJob(q, jobs[0]!)];
+      return [await this.addJob(q, jobs[0])];
     }
 
     const collection = await this.#jobs();
@@ -2734,6 +2734,7 @@ export class MongoDriver implements JobsDriver {
     }
 
     if (claimed.length === 0 && failure !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows the stored value unchanged; callers match on its class or name
       throw failure;
     }
 
@@ -2995,7 +2996,7 @@ export class MongoDriver implements JobsDriver {
     let failure: unknown;
 
     outcomes.forEach((outcome, index) => {
-      const one = completions[index]!;
+      const one = completions[index];
       if (outcome.status === "rejected") {
         failure ??= outcome.reason;
         return;
@@ -3011,6 +3012,7 @@ export class MongoDriver implements JobsDriver {
     });
 
     if (settled.length === 0 && failure !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- rethrows the stored value unchanged; callers match on its class or name
       throw failure;
     }
 
@@ -3386,7 +3388,7 @@ export class MongoDriver implements JobsDriver {
     }
 
     for (let index = from; index < states.length; index++) {
-      const state = states[index]!;
+      const state = states[index];
 
       for (;;) {
         // One more than there is room for: finding it is what says the walk
@@ -3979,7 +3981,7 @@ export class MongoDriver implements JobsDriver {
           state: "dead",
           "flow.values": current.flow.values ?? {},
           "flow.failures": current.flow.failures ?? {},
-        } as FilterLike,
+        },
         remaining,
         now,
       );
@@ -7048,7 +7050,7 @@ export class MongoDriver implements JobsDriver {
       {
         ...update,
         $setOnInsert: { ns, key: `${key}:state` },
-      } as UpdateFilterLike,
+      },
       { upsert: true },
     );
   }

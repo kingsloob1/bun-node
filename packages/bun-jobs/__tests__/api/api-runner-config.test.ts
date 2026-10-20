@@ -109,7 +109,7 @@ function without(driver: JobsDriver, methods: readonly string[]): JobsDriver {
         ? false
         : Reflect.has(target, key);
     },
-  }) as JobsDriver;
+  });
 }
 
 describe("storing and clearing an override", () => {
@@ -523,7 +523,7 @@ describe("the documents", () => {
 
   it("documents both routes, their schemas and the :runner pattern", () => {
     const doc = openapi();
-    const path = doc.paths["/runners/{runner}/config"]!;
+    const path = doc.paths["/runners/{runner}/config"];
     expect(Object.keys(path).sort()).toEqual(["delete", "put"]);
     expect(path.put.operationId).toBe("configureRunner");
     expect(path.delete.operationId).toBe("resetRunnerConfig");
@@ -539,7 +539,7 @@ describe("the documents", () => {
     // The pattern the route enforces itself, exactly as another runner
     // mutation documents it.
     const patternOf = (at: string, method: string) =>
-      doc.paths[at]![method].parameters.find(
+      doc.paths[at][method].parameters.find(
         (param: any) => param.name === "runner",
       ).schema.pattern;
     expect(patternOf("/runners/{runner}/config", "put")).toBe(
@@ -604,7 +604,7 @@ describe("the documents", () => {
   it("carries the CSRF header on both, exactly as another runner mutation does", () => {
     const doc = openapi({ csrf: { header: "x-csrf" } });
     const headerOf = (at: string, method: string) =>
-      doc.paths[at]![method].parameters.find(
+      doc.paths[at][method].parameters.find(
         (param: any) => param.in === "header",
       );
     expect(headerOf("/runners/{runner}/config", "put")).toEqual(

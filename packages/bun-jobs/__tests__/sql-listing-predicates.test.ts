@@ -191,24 +191,24 @@ async function fill(
     );
   }
 
-  await driver.completeJob(q, "j0", claimed[0]!.token, 1, false, now);
-  await driver.completeJob(q, "j1", claimed[1]!.token, 2, false, now);
+  await driver.completeJob(q, "j0", claimed[0].token, 1, false, now);
+  await driver.completeJob(q, "j1", claimed[1].token, 2, false, now);
   // A failure with no retry left settles as `dead`.
   await driver.failJob(
     q,
     "j2",
-    claimed[2]!.token,
+    claimed[2].token,
     { name: "Error", message: "no retry" },
     { retry: false, retention: false },
     now,
     5,
   );
   // The other way into `dead`: buried while held, so its token is given.
-  await driver.buryJob!(
+  await driver.buryJob(
     q,
     "j3",
     { name: "Error", message: "buried" },
-    { retention: false, keepStacktraces: 5, token: claimed[3]!.token },
+    { retention: false, keepStacktraces: 5, token: claimed[3].token },
     now,
   );
   // A retry leaves the job `failed` and due later, with no `finished_on` —
@@ -216,7 +216,7 @@ async function fill(
   await driver.failJob(
     q,
     "j4",
-    claimed[4]!.token,
+    claimed[4].token,
     { name: "Error", message: "retry" },
     { retry: true, runAt: now + 600_000 },
     now,
@@ -254,11 +254,11 @@ for (const engine of ENGINES) {
       const [locks] = await made.raw(
         `SELECT COUNT(*) AS n FROM ${table} WHERE state = 'active' AND lock_expires_at IS NULL`,
       );
-      expect(Number(locks!.n)).toBe(0);
+      expect(Number(locks.n)).toBe(0);
       const [finished] = await made.raw(
         `SELECT COUNT(*) AS n FROM ${table} WHERE state IN ('completed', 'dead') AND finished_on IS NULL`,
       );
-      expect(Number(finished!.n)).toBe(0);
+      expect(Number(finished.n)).toBe(0);
 
       // And that the listing agrees with the counts, which carry the same
       // predicate: a hidden row would show up here as a short page.
@@ -282,7 +282,7 @@ for (const engine of ENGINES) {
       const [broken] = await made.raw(
         `SELECT COUNT(*) AS n FROM ${table} WHERE state = 'active' AND lock_expires_at IS NULL`,
       );
-      expect(Number(broken!.n)).toBe(1);
+      expect(Number(broken.n)).toBe(1);
       const after = await made.driver.listJobs(q, ["active"], {
         offset: 0,
         limit: 50,
@@ -383,10 +383,8 @@ for (const engine of ENGINES) {
           order: "asc",
           total: true,
         });
-        expect(whole.total).toBe(expected[state]!.length);
-        expect(whole.jobs.map((job) => job.id).sort()).toEqual(
-          expected[state]!,
-        );
+        expect(whole.total).toBe(expected[state].length);
+        expect(whole.jobs.map((job) => job.id).sort()).toEqual(expected[state]);
 
         // The second page of one, walked: the predicate is in the page and in
         // the count alike, so the two cannot disagree about how many there are.
@@ -398,7 +396,7 @@ for (const engine of ENGINES) {
           total: true,
         });
         expect(second.total).toBe(whole.total);
-        expect(second.jobs.map((job) => job.id)).toEqual([whole.jobs[1]!.id]);
+        expect(second.jobs.map((job) => job.id)).toEqual([whole.jobs[1].id]);
       }
 
       // Several states at once take no predicate at all — their order is
@@ -412,7 +410,7 @@ for (const engine of ENGINES) {
       });
       expect(both.total).toBe(4);
       expect(both.jobs.map((job) => job.id).sort()).toEqual(
-        [...expected.completed!, ...expected.dead!].sort(),
+        [...expected.completed, ...expected.dead].sort(),
       );
 
       // And a listing sorted by creation takes none either, on any state.
@@ -426,7 +424,7 @@ for (const engine of ENGINES) {
       });
       expect(byCreated.total).toBe(2);
       expect(byCreated.jobs.map((job) => job.id).sort()).toEqual(
-        expected.completed!,
+        expected.completed,
       );
     }, 60_000);
   });

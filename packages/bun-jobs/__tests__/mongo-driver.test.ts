@@ -98,7 +98,7 @@ if (URL) {
       driver,
       unlockActive: async (q, id) => {
         const { MongoClient } = await import("mongodb");
-        const client = new MongoClient(URL!);
+        const client = new MongoClient(URL);
         await client.connect();
         try {
           await client
@@ -182,7 +182,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
       await driver.recordChild(
         q,
         "p",
-        children[0]!,
+        children[0],
         {
           completed: true,
           value: results[0],

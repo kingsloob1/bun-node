@@ -767,7 +767,7 @@ async function groupedRunnersRollup(
   const rows: RunnerAnalyticsRowDto[] = capped.rows.map((row, index) => ({
     runner: row.runner,
     totals: row.totals,
-    runningNow: running[index]!,
+    runningNow: running[index],
     ...(row.durations ? { durations: row.durations } : {}),
   }));
   const beyondCap = sorted

@@ -173,16 +173,16 @@ for (const [name, make] of Object.entries(TRANSPORTS)) {
         answer.body.outcomes.map((outcome: any) => [outcome.job, outcome]),
       );
       expect(byId.size).toBe(5);
-      expect(byId.get(jobs[0]!.id)).toMatchObject({
+      expect(byId.get(jobs[0].id)).toMatchObject({
         op: "result",
         attempt: 1,
-        fence: jobs[0]!.fence,
+        fence: jobs[0].fence,
         status: "completed",
         result: { echoed: { a: 1 } },
         progress: 50,
         logs: [{ line: 'echo {"a":1}' }],
       });
-      expect(byId.get(jobs[1]!.id)).toMatchObject({
+      expect(byId.get(jobs[1].id)).toMatchObject({
         op: "fail",
         status: "failed",
         error: {
@@ -192,22 +192,22 @@ for (const [name, make] of Object.entries(TRANSPORTS)) {
           data: { status: 503 },
         },
       });
-      expect(typeof byId.get(jobs[1]!.id).error.stack).toBe("string");
-      expect(byId.get(jobs[2]!.id)).toMatchObject({
+      expect(typeof byId.get(jobs[1].id).error.stack).toBe("string");
+      expect(byId.get(jobs[2].id)).toMatchObject({
         op: "fail",
         status: "failed-fatal",
         error: { name: "UnrecoverableJobError", code: "UNRECOVERABLE_JOB" },
       });
-      expect(byId.get(jobs[3]!.id)).toMatchObject({
+      expect(byId.get(jobs[3].id)).toMatchObject({
         op: "fail",
         status: "handler-not-found",
         error: { name: "HandlerNotFoundError" },
       });
-      expect(byId.get(jobs[4]!.id)).toMatchObject({
+      expect(byId.get(jobs[4].id)).toMatchObject({
         op: "result",
         status: "completed",
       });
-      expect("result" in byId.get(jobs[4]!.id)).toBe(false);
+      expect("result" in byId.get(jobs[4].id)).toBe(false);
     });
 
     it("fails a result that is not JSON, rather than sending a broken one", async () => {

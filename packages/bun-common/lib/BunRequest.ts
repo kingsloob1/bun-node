@@ -18,6 +18,7 @@ import type {
   MultiPartOptions,
   NextFunction,
 } from "./types/general";
+import type { ParamsDictionary } from "./types/routeParams";
 import type {
   CompressionDictionaries,
   ContentEncodingAllowlist,
@@ -1205,7 +1206,7 @@ function resolveBodyParseConfig(
   // The object form, as an adapter's options carry it to every request: one
   // resolved config per object, shared while the object reads the same.
   if (isObject(parseBody) && !isArray(parseBody) && !isArray(legacyAllowed)) {
-    const config = parseBody as ParseBodyConfig;
+    const config = parseBody;
     const cached = RESOLVED_BODY_CONFIGS.get(config);
     if (cached && matchesSnapshot(cached.snapshot, config)) {
       return cached.config;
@@ -1240,7 +1241,7 @@ function parseBodySnapshot(config: ParseBodyConfig): unknown[] {
   ];
   if (isObject(contentTypes)) {
     for (const kind of VALID_PARSER_KINDS) {
-      const entry = (contentTypes as ParseBodyContentTypesMap)[kind];
+      const entry = contentTypes[kind];
       snapshot.push(entry);
       if (isObject(entry)) {
         const typeConfig = entry as ParseBodyContentTypeConfig;
@@ -1279,7 +1280,7 @@ function matchesSnapshot(
   let at = 7;
   if (isObject(contentTypes)) {
     for (const kind of VALID_PARSER_KINDS) {
-      const entry = (contentTypes as ParseBodyContentTypesMap)[kind];
+      const entry = contentTypes[kind];
       if (!Object.is(snapshot[at++], entry)) {
         return false;
       }
@@ -1320,7 +1321,7 @@ function buildBodyParseConfig(
     return resolved;
   }
 
-  const config = parseBody as ParseBodyConfig;
+  const config = parseBody;
 
   // Object form: body-size caps apply. Store the explicit config-level cap
   // (if any); when unset, the per-kind defaults are used at resolve time.
@@ -1464,10 +1465,11 @@ class BunRequestState {
 
 export class BunRequest<
   /**
-   * Shape of `req.params`. Defaults to the untyped `Record<string, string>`;
-   * a route registered with a path literal narrows it to that path's params.
+   * Shape of `req.params`. Defaults to the untyped {@link ParamsDictionary}
+   * (Express 5's: a `string`, or a `string[]` for a wildcard); a route
+   * registered with a path literal narrows it to that path's params.
    */
-  TParams = Record<string, string>,
+  TParams = ParamsDictionary,
   /**
    * Shape of `req.query`. Defaults to the parser's untyped output; a validator
    * narrows it to its parsed result.
@@ -1527,7 +1529,7 @@ export class BunRequest<
    * header never pays for it.
    */
   get headersObj(): InstanceType<typeof Headers> {
-    return (this.#headersObj ??= this.request.headers as Headers);
+    return (this.#headersObj ??= this.request.headers);
   }
 
   set headersObj(value: InstanceType<typeof Headers>) {
@@ -1696,7 +1698,7 @@ export class BunRequest<
    */
   public next?: NextFunction;
   /** Backing field for `params`, stored untyped; `TParams` is the caller's view. */
-  #params: Record<string, string> | undefined = undefined;
+  #params: ParamsDictionary | undefined = undefined;
   /**
    * Backing field for `query`, stored as the parser's untyped output (values
    * are `unknown` until a validator narrows them); `TQuery` is the caller's
@@ -2521,8 +2523,8 @@ export class BunRequest<
       return (
         length !== null &&
         this.#transferEncoding() === null &&
-        (this.request as Request & { [SOCKET_FREE]?: true })[SOCKET_FREE] !==
-          true &&
+        (this.request as Request & { [SOCKET_FREE]?: unknown })[SOCKET_FREE] ===
+          undefined &&
         this.#canReadWhole(limit) &&
         Number(length) > 0
       );
@@ -2763,7 +2765,7 @@ export class BunRequest<
       // *genuine* abort — one that happens before a response was produced;
       // once responded, a drop is reported solely as `close`. Wired once,
       // only when listened to.
-      const signal = this.request.signal;
+      const signal = this.signal;
       if (!signal.aborted) {
         signal.addEventListener(
           "abort",
@@ -2791,12 +2793,35 @@ export class BunRequest<
   }
 
   /**
+   * The request's abort signal: it aborts when the client disconnects, with
+   * Bun's `AbortError` ("The connection was closed."). Every disconnect
+   * bridge reads it: `aborted`, the `aborted`/`close` events, `res` `close`
+   * and `req.socket`'s `close` and `destroyed` (what NestJS's SSE teardown
+   * and `@SseSignal()` listen to).
+   *
+   * Served, it is the native request's own `request.signal`. For a
+   * socket-free `fetch()` it is its exchange's instead (`SocketFreeExchange`):
+   * `request.signal` there is the caller's own `Request`'s, which aborts only
+   * when the caller aborts it, while this one also aborts when the caller
+   * cancels a streamed body, as a served disconnect does. Read this one to
+   * learn that the client left; it is made on first read.
+   */
+  get signal(): AbortSignal {
+    const mark = (
+      this.request as Request & {
+        [SOCKET_FREE]?: true | { readonly signal: AbortSignal };
+      }
+    )[SOCKET_FREE];
+    return typeof mark === "object" ? mark.signal : this.request.signal;
+  }
+
+  /**
    * `true` when the connection was aborted **before** a response was produced
    * — a genuine client abort, not a normal post-response close. Mirrors
    * Node's `IncomingMessage.aborted`.
    */
   get aborted(): boolean {
-    return this.request.signal.aborted && !this.#responded;
+    return this.signal.aborted && !this.#responded;
   }
 
   /** `true` once the request body has been fully received (Node `complete`). */
@@ -3026,7 +3051,7 @@ export class BunRequest<
   }
 
   set params(value: TParams) {
-    this.#params = value as Record<string, string>;
+    this.#params = value as ParamsDictionary;
   }
 
   /**
@@ -3119,7 +3144,7 @@ export class BunRequest<
         created.setMaxListeners(0);
         emitter = created;
 
-        const signal = that.request.signal;
+        const signal = that.signal;
         const onDisconnect = () => created.emit("close", false);
         if (signal.aborted) {
           queueMicrotask(onDisconnect);
@@ -3185,7 +3210,7 @@ export class BunRequest<
         emitter?.emit(event, ...args) ?? false,
       listenerCount: (event) => emitter?.listenerCount(event) ?? 0,
       get destroyed() {
-        return that.request.signal.aborted;
+        return that.signal.aborted;
       },
       get localPort() {
         return that.socketAddress?.port;
@@ -3551,7 +3576,7 @@ export class BunRequest<
           merged[key] = value;
         }
       }
-      options = merged as MultiPartOptions;
+      options = merged;
     }
 
     const contentTypeHeader = this.getHeader("Content-Type");
@@ -3613,6 +3638,7 @@ export class BunRequest<
         this.#multipartOptions = parseOptions;
         this.#parsedMultipartResp = undefined;
         this.#multipartFailure = { error };
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the parse rejects with the failure exactly as busboy, a storage or an inflator raised it
         reject(error);
       };
 
@@ -3710,6 +3736,7 @@ export class BunRequest<
             try {
               storeFile(name, info, file as Buffer, undefined);
             } catch (error) {
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the storage's error, unchanged, as the parse rejects with it
               const failed = Promise.reject(error);
               failed.catch(() => {});
               filePromises.push(failed);
@@ -4466,10 +4493,8 @@ export class BunRequest<
 
     const sentSecret = !isUndefined(opts?.secret) ? opts?.secret : "";
 
-    let reqSecret = this.secret;
-    if (!reqSecret && sentSecret) {
+    if (!this.secret && sentSecret) {
       this.secret = isArray(sentSecret) ? sentSecret[0] : sentSecret;
-      reqSecret = this.secret;
     }
 
     // `Headers#get` ignores case, so one lookup covers `Cookie` too.
@@ -4502,7 +4527,7 @@ export class BunRequest<
     const cookies = parseCookie(
       cookieStr,
       this.#configuredCookieParseOptions(),
-    ) as Record<string, string>;
+    );
     let signedCookiesObj: Record<string, JsonValue> = {};
 
     if (secrets.length) {
@@ -4776,6 +4801,7 @@ export class BunRequest<
                     : {}),
               );
             } catch (error) {
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the multipart parser's error, unchanged, as the asynchronous parse rejects with it
               return Promise.reject(error);
             }
             return parsed instanceof Promise ? parsed : undefined;
@@ -5327,8 +5353,8 @@ export class BunRequest<
           "cache-control": this.headersObj.get("cache-control") ?? undefined,
         },
         {
-          etag: (res.get("ETag", "") || "") as string | string[],
-          "last-modified": res.get("Last-Modified", "") as string | string[],
+          etag: res.get("ETag", "") || "",
+          "last-modified": res.get("Last-Modified", ""),
         },
       );
     }

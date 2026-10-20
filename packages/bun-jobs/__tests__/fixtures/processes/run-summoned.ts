@@ -258,7 +258,7 @@ const processor =
           await Bun.sleep(jobMs);
           return "done";
         }
-      : files[processorKind]!;
+      : files[processorKind];
 
 const worker = new BunQueueWorker(queueName, processor, {
   namespace,

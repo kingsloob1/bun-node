@@ -777,7 +777,7 @@ class SummonedRun {
 
   /** The listeners for the worker at `index`. */
   #listenersFor(index: number): SummonedListeners {
-    const member = (): SummonedMember => this.#members[index]!;
+    const member = (): SummonedMember => this.#members[index];
     return {
       completed: () => {
         member().completed += 1;
@@ -1199,7 +1199,7 @@ class SummonedRun {
       return;
     }
     const idle = running.every(({ worker }, index) => {
-      const demand = demands[index]!;
+      const demand = demands[index];
       // The count includes this worker's own record wherever it keeps one.
       // Its first report is not awaited, so the first check may not see it
       // yet: that reads one other worker too few, which only ever delays an
@@ -1719,7 +1719,7 @@ export async function runSummoned(
       "runSummoned needs a worker: it was given an empty set",
     );
   }
-  const resolved = resolveOptions(options, workers[0]!.logger);
+  const resolved = resolveOptions(options, workers[0].logger);
 
   for (const worker of workers) {
     if (worker.isRunning) {
@@ -1743,7 +1743,7 @@ export async function runSummoned(
       worker,
       // The events a generic worker's map cannot show the compiler; see
       // `SummonedWorkerEvents`.
-      events: worker as unknown as SummonedWorkerEvents,
+      events: worker,
     })),
     single,
     resolved,

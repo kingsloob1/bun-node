@@ -23,6 +23,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import request from "supertest";
 import * as httpAdapterModule from "../lib/BunHttpAdapter";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { coreRunsMiddlewareOnce } from "./coreMiddlewareOnce";
 
 let httpAdapter!: BunHttpAdapter;
 let app!: Parameters<typeof request>[0];
@@ -1266,12 +1267,19 @@ describe("BunHttpAdapter.createMiddlewareFactory: the core's exact-match `$`", (
     return { adapter, seen };
   }
 
-  it("runs on exactly that path, not below it, not with a trailing slash, as Express 12.1.3", async () => {
+  it("runs on exactly that path, not below it; with a trailing slash only where the core runs a middleware once (12.2.0)", async () => {
+    // Nest 12.2.0's core runs a middleware once per request, so, as
+    // platform-express 12.2.0, `/api/` runs it too; on an earlier core it is
+    // skipped there, as platform-express 12.1.3 skips it, since the wildcard
+    // path beside it may run it again.
+    const once = await coreRunsMiddlewareOnce();
     const { adapter, seen } = withMiddleware(RequestMethod.ALL, "/api$");
     // The middleware runs, and alone does not make a route: still a miss.
     expect((await adapter.fetch("/api")).status).toBe(404);
     expect(seen).toEqual(["GET /api"]);
-    expect((await adapter.fetch("/api/")).headers.get("x-mw")).toBeNull();
+    // A miss answers without the middleware's headers: read `seen`.
+    await adapter.fetch("/api/");
+    expect(seen).toEqual(once ? ["GET /api", "GET /api/"] : ["GET /api"]);
     expect((await adapter.fetch("/api/x")).headers.get("x-mw")).toBeNull();
     expect((await adapter.fetch("/apix")).headers.get("x-mw")).toBeNull();
     expect((await adapter.fetch("/api$")).headers.get("x-mw")).toBeNull();
@@ -1280,7 +1288,9 @@ describe("BunHttpAdapter.createMiddlewareFactory: the core's exact-match `$`", (
       "posted",
       "ran",
     ]);
-    expect(seen).toEqual(["GET /api", "POST /api"]);
+    expect(seen).toEqual(
+      once ? ["GET /api", "GET /api/", "POST /api"] : ["GET /api", "POST /api"],
+    );
   });
 
   it("keeps a method: GET middleware skips a POST", async () => {

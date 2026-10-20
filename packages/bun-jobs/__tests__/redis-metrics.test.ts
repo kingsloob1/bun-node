@@ -112,20 +112,20 @@ describe.skipIf(!URL)("Redis analytics: the key layout", () => {
     const driver = makeDriver();
     const ns = scope("mx-layout");
     const q = { ns, queue: "jobs" };
-    const client = new (await import("bun")).RedisClient(URL!);
+    const client = new (await import("bun")).RedisClient(URL);
     await client.connect();
 
     // Every second of one minute, written through the buffered per-worker
     // series so the test is sixty counts rather than sixty jobs.
     for (let second = 0; second < 60; second++) {
-      await driver.countWorkerJobs!(
+      await driver.countWorkerJobs(
         q,
         "worker-a",
         MINUTE + second * SECOND_BUCKET_MS,
         { completed: 1 },
       );
     }
-    await driver.flushMetrics!();
+    await driver.flushMetrics();
 
     const prefix = driver.keys.queue(q).metricsPrefix;
     const key = `${prefix}wjobs:s:${MINUTE}:worker-a`;
@@ -156,7 +156,7 @@ describe.skipIf(!URL)("Redis analytics: the key layout", () => {
     await completeOne(driver, q, "j1", at);
     await completeOne(driver, q, "j2", at);
 
-    const client = new (await import("bun")).RedisClient(URL!);
+    const client = new (await import("bun")).RedisClient(URL);
     await client.connect();
 
     const keys = driver.keys.queue(q);
@@ -217,18 +217,18 @@ describe.skipIf(!URL)("Redis analytics: the namespace roll-up", () => {
 
     // Up to a second behind, by design: nothing has been written yet.
     expect(
-      (await driver.getNamespaceMetrics!(ns, { ...range, kinds: ["jobs"] }))
+      (await driver.getNamespaceMetrics(ns, { ...range, kinds: ["jobs"] }))
         .jobs,
     ).toEqual([]);
 
-    await driver.flushMetrics!();
+    await driver.flushMetrics();
 
     expect(
-      await driver.getNamespaceMetrics!(ns, { ...range, kinds: ["jobs"] }),
+      await driver.getNamespaceMetrics(ns, { ...range, kinds: ["jobs"] }),
     ).toEqual({ jobs: [{ at, completed: 1, failed: 0 }] });
 
     // And the queue's own series, which never lagged, agrees with it.
-    expect(await driver.getQueueMetrics!(q, range)).toEqual([
+    expect(await driver.getQueueMetrics(q, range)).toEqual([
       { at, completed: 1, failed: 0 },
     ]);
   });
@@ -247,10 +247,10 @@ describe.skipIf(!URL)("Redis analytics: the namespace roll-up", () => {
       interval: MINUTE_BUCKET_MS,
     };
 
-    expect(await driver.getQueueMetrics!(q, minute)).toEqual(
-      await driver.getThroughput!(q, { from: MINUTE, to: MINUTE }),
+    expect(await driver.getQueueMetrics(q, minute)).toEqual(
+      await driver.getThroughput(q, { from: MINUTE, to: MINUTE }),
     );
-    expect(await driver.getQueueMetrics!(q, minute)).toEqual([
+    expect(await driver.getQueueMetrics(q, minute)).toEqual([
       { at: MINUTE, completed: 1, failed: 0 },
     ]);
   });
@@ -261,14 +261,14 @@ describe.skipIf(!URL)("Redis analytics: the namespace roll-up", () => {
     const q = { ns, queue: "jobs" };
     const at = MINUTE + 5 * SECOND_BUCKET_MS;
 
-    await driver.countWorkerJobs!(q, "worker-a", at, { completed: 2 });
-    await driver.countWorkerJobs!(q, "worker-b", at, { failed: 1 });
-    await driver.countRunnerRun!(ns, "nightly", at, { started: 1 });
-    await driver.countRunnerRun!(ns, "nightly", at, {
+    await driver.countWorkerJobs(q, "worker-a", at, { completed: 2 });
+    await driver.countWorkerJobs(q, "worker-b", at, { failed: 1 });
+    await driver.countRunnerRun(ns, "nightly", at, { started: 1 });
+    await driver.countRunnerRun(ns, "nightly", at, {
       succeeded: 1,
       durationMs: 120,
     });
-    await driver.flushMetrics!();
+    await driver.flushMetrics();
 
     const range = {
       from: MINUTE,
@@ -276,7 +276,7 @@ describe.skipIf(!URL)("Redis analytics: the namespace roll-up", () => {
       interval: SECOND_BUCKET_MS,
     };
 
-    const rollUp = await driver.getNamespaceMetrics!(ns, {
+    const rollUp = await driver.getNamespaceMetrics(ns, {
       ...range,
       kinds: ["runs", "workerJobs"],
     });
@@ -296,7 +296,7 @@ describe.skipIf(!URL)("Redis analytics: the namespace roll-up", () => {
     // `jobs` was not asked for, so it is absent rather than an array of zeros.
     expect(rollUp.jobs).toBeUndefined();
 
-    const worker = await driver.getWorkerMetrics!(q, "worker-a", range);
+    const worker = await driver.getWorkerMetrics(q, "worker-a", range);
     expect(worker.jobs).toEqual([{ at, completed: 2, failed: 0 }]);
     expect(worker.busyness).toBeUndefined();
   });
@@ -307,9 +307,9 @@ describe.skipIf(!URL)("Redis analytics: the namespace roll-up", () => {
     const q = { ns, queue: "jobs" };
     const at = MINUTE + 9 * SECOND_BUCKET_MS;
 
-    await driver.countWorkerJobs!(q, "worker-a", at, { completed: 3 });
+    await driver.countWorkerJobs(q, "worker-a", at, { completed: 3 });
     await driver.purge(ns);
-    await driver.flushMetrics!();
+    await driver.flushMetrics();
 
     const range = {
       from: MINUTE,
@@ -317,7 +317,7 @@ describe.skipIf(!URL)("Redis analytics: the namespace roll-up", () => {
       interval: SECOND_BUCKET_MS,
     };
 
-    expect(await driver.getWorkerMetrics!(q, "worker-a", range)).toEqual({
+    expect(await driver.getWorkerMetrics(q, "worker-a", range)).toEqual({
       jobs: [],
     });
   });
@@ -330,14 +330,14 @@ describe.skipIf(!URL)("Redis analytics: durations and busyness", () => {
     const at = MINUTE + 21 * SECOND_BUCKET_MS;
 
     for (const ms of [5, 9, 1_000]) {
-      await driver.countRunnerRun!(ns, "nightly", at, {
+      await driver.countRunnerRun(ns, "nightly", at, {
         succeeded: 1,
         durationMs: ms,
       });
     }
-    await driver.flushMetrics!();
+    await driver.flushMetrics();
 
-    const read = await driver.getRunnerMetrics!(ns, "nightly", {
+    const read = await driver.getRunnerMetrics(ns, "nightly", {
       from: MINUTE,
       to: MINUTE + 59 * SECOND_BUCKET_MS,
       interval: SECOND_BUCKET_MS,
@@ -347,7 +347,7 @@ describe.skipIf(!URL)("Redis analytics: durations and busyness", () => {
     expect(read.runs).toHaveLength(1);
     expect(read.durations).toHaveLength(1);
 
-    const bucket = read.durations![0]!;
+    const bucket = read.durations![0];
     expect(bucket.at).toBe(at);
     expect(bucket.count).toBe(3);
     expect(bucket.sumMs).toBe(1_014);
@@ -363,22 +363,22 @@ describe.skipIf(!URL)("Redis analytics: durations and busyness", () => {
     // Two writers of one bucket keep exact extremes, because min and max are
     // compared in the script rather than overwritten.
     const other = makeDriver();
-    await other.countRunnerRun!(ns, "nightly", at, {
+    await other.countRunnerRun(ns, "nightly", at, {
       succeeded: 1,
       durationMs: 2,
     });
-    await other.flushMetrics!();
+    await other.flushMetrics();
 
-    const merged = await driver.getRunnerMetrics!(ns, "nightly", {
+    const merged = await driver.getRunnerMetrics(ns, "nightly", {
       from: MINUTE,
       to: MINUTE + 59 * SECOND_BUCKET_MS,
       interval: SECOND_BUCKET_MS,
       durations: true,
     });
 
-    expect(merged.durations![0]!.minMs).toBe(2);
-    expect(merged.durations![0]!.maxMs).toBe(1_000);
-    expect(merged.durations![0]!.count).toBe(4);
+    expect(merged.durations![0].minMs).toBe(2);
+    expect(merged.durations![0].maxMs).toBe(1_000);
+    expect(merged.durations![0].count).toBe(4);
   });
 
   it("round-trips a worker's busyness, keeping the latest concurrency", async () => {
@@ -387,19 +387,19 @@ describe.skipIf(!URL)("Redis analytics: durations and busyness", () => {
     const q = { ns, queue: "jobs" };
     const at = MINUTE + 31 * SECOND_BUCKET_MS;
 
-    await driver.sampleWorkerBusyness!(q, "worker-a", at, {
+    await driver.sampleWorkerBusyness(q, "worker-a", at, {
       active: 2,
       concurrency: 4,
     });
     // A later sample in the same bucket: the concurrency it reports wins, and
     // the active figures still add up.
-    await driver.sampleWorkerBusyness!(q, "worker-a", at + 100, {
+    await driver.sampleWorkerBusyness(q, "worker-a", at + 100, {
       active: 6,
       concurrency: 8,
     });
-    await driver.flushMetrics!();
+    await driver.flushMetrics();
 
-    const read = await driver.getWorkerMetrics!(q, "worker-a", {
+    const read = await driver.getWorkerMetrics(q, "worker-a", {
       from: MINUTE,
       to: MINUTE + 59 * SECOND_BUCKET_MS,
       interval: SECOND_BUCKET_MS,
@@ -428,7 +428,7 @@ describe.skipIf(!URL)("Redis analytics: retention", () => {
 
     await completeOne(driver, q, "ok", at);
 
-    const client = new (await import("bun")).RedisClient(URL!);
+    const client = new (await import("bun")).RedisClient(URL);
     await client.connect();
 
     const key = `${driver.keys.queue(q).metricsPrefix}jobs:s:${MINUTE}`;
@@ -448,21 +448,21 @@ describe.skipIf(!URL)("Redis analytics: retention", () => {
     const at = MINUTE + 8 * SECOND_BUCKET_MS;
 
     await completeOne(driver, q, "ok", at);
-    await driver.countWorkerJobs!(q, "worker-a", at, { completed: 1 });
-    await driver.flushMetrics!();
+    await driver.countWorkerJobs(q, "worker-a", at, { completed: 1 });
+    await driver.flushMetrics();
 
-    expect(driver.getMetricsSupport!().resolutions).toEqual([60]);
-    expect(driver.getMetricsSupport!().recording.resolution).toBe("minute");
+    expect(driver.getMetricsSupport().resolutions).toEqual([60]);
+    expect(driver.getMetricsSupport().recording.resolution).toBe("minute");
 
     expect(
-      await driver.getQueueMetrics!(q, {
+      await driver.getQueueMetrics(q, {
         from: MINUTE,
         to: MINUTE + 59 * SECOND_BUCKET_MS,
         interval: SECOND_BUCKET_MS,
       }),
     ).toEqual([]);
 
-    const client = new (await import("bun")).RedisClient(URL!);
+    const client = new (await import("bun")).RedisClient(URL);
     await client.connect();
 
     // Nothing per-second was written at all: the block is not in the script,
@@ -473,7 +473,7 @@ describe.skipIf(!URL)("Redis analytics: retention", () => {
 
     // The minute is all there.
     expect(
-      await driver.getQueueMetrics!(q, {
+      await driver.getQueueMetrics(q, {
         from: MINUTE,
         to: MINUTE,
         interval: MINUTE_BUCKET_MS,
@@ -540,7 +540,7 @@ describe.skipIf(!URL)("Redis analytics: two drivers, two retentions", () => {
     await completeOne(short, { ns: shortNs, queue: "jobs" }, "c", at);
     await completeOne(long, { ns: longNs, queue: "jobs" }, "d", at);
 
-    const client = new (await import("bun")).RedisClient(URL!);
+    const client = new (await import("bun")).RedisClient(URL);
     await client.connect();
 
     const ttlOf = async (driver: RedisDriver, ns: string): Promise<number> =>

@@ -334,6 +334,7 @@ describe("console capture: in-process runs", () => {
     const runner = makeRunner("sturdy", { driver });
     await runner.start();
 
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- saved to restore the original afterwards; never called detached
     const output = RunLogCapture.prototype.output;
     RunLogCapture.prototype.output = () => {
       throw new Error("capture exploded");

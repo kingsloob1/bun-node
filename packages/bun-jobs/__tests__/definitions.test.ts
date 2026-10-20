@@ -80,11 +80,11 @@ describe("defined jobs", () => {
     const jobs = makeJobs();
 
     // Rather than enqueueing something nothing can run.
-    expect(jobs.now("neverDefined")).rejects.toThrow(ConfigError);
+    await expect(jobs.now("neverDefined")).rejects.toThrow(ConfigError);
 
     // And starting with nothing defined is a mistake worth naming, not a
     // worker that sits there consuming a queue it can never satisfy.
-    expect(jobs.start()).rejects.toThrow(ConfigError);
+    await expect(jobs.start()).rejects.toThrow(ConfigError);
   }, 15_000);
 
   it("reads a schedule as a sentence", async () => {
@@ -158,13 +158,13 @@ describe("defined jobs", () => {
     jobs.define("b", async () => null);
 
     expect(jobs.definitions().map((d) => d.name)).toEqual(["a", "b"]);
-    expect(jobs.definitions()[0]!.options.attempts).toBe(2);
+    expect(jobs.definitions()[0].options.attempts).toBe(2);
 
     // Defining a name again replaces it — what a caller reloading a module
     // expects, and not silent, because they called `define` again.
     jobs.define("a", async () => null, { attempts: 9 });
     expect(jobs.definitions()).toHaveLength(2);
-    expect(jobs.definitions()[0]!.options.attempts).toBe(9);
+    expect(jobs.definitions()[0].options.attempts).toBe(9);
   }, 15_000);
 
   it("starts once however many times it is asked", async () => {

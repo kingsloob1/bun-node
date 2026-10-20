@@ -2534,7 +2534,7 @@ export class SqlDriver implements JobsDriver {
     // One job is not a batch, and the singular path already reports precisely
     // what happened to it.
     if (jobs.length === 1) {
-      return [await this.addJob(q, jobs[0]!)];
+      return [await this.addJob(q, jobs[0])];
     }
 
     await this.connect();
@@ -2808,7 +2808,7 @@ export class SqlDriver implements JobsDriver {
           stamps && chunk.some((job) => carriesStamp(job)),
         );
     const allTypes = jobColumnTypes(this.dialect);
-    const types = columnIndices(columns).map((index) => allTypes[index]!);
+    const types = columnIndices(columns).map((index) => allTypes[index]);
 
     const taken = await this.#existingIds(
       q,
@@ -3858,7 +3858,7 @@ export class SqlDriver implements JobsDriver {
     }
 
     for (let index = from; index < states.length; index++) {
-      const state = states[index]!;
+      const state = states[index];
       let floor = after;
       after = null;
 
@@ -5572,7 +5572,7 @@ export class SqlDriver implements JobsDriver {
 
   /** The counter row the next counted statement takes, in turn. */
   #takeMetricsShard(): string {
-    const shard = this.#metricsShards[this.#nextMetricsShard]!;
+    const shard = this.#metricsShards[this.#nextMetricsShard];
     this.#nextMetricsShard = (this.#nextMetricsShard + 1) % METRICS_SHARDS;
     return shard;
   }
@@ -8136,7 +8136,7 @@ export class SqlDriver implements JobsDriver {
     // A plain loop rather than `Object.fromEntries(columns.map(...))`: this
     // runs once per job, and the tuple array that builds is pure garbage.
     for (let position = 0; position < indices.length; position++) {
-      document[columns[position]!] = values[indices[position]!];
+      document[columns[position]] = values[indices[position]];
     }
 
     return document;

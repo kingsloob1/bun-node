@@ -134,7 +134,7 @@ describe("a contended group charge's retry (A4)", () => {
         }
         return typeof value === "function" ? value.bind(target) : value;
       },
-    }) as JobsDriver;
+    });
     const queue = new BunQueue("q", { namespace, driver, logger: noopLogger });
     perTest.push(async () => await queue.close());
     await queue.add("a", {});
