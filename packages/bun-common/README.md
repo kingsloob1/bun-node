@@ -803,7 +803,7 @@ a boolean on either side replaces the other.
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `parseBody` | `boolean \| ParseBodyConfig` | `true` | `true` parses every body with **no size cap**, and `false` parses none. An object enables caps and a per-type allowlist. |
-| `parseCookies` | `boolean \| ParseCookiesConfig` | `true` | Parses `Cookie` into `req.cookies`/`req.signedCookies`. An object turns it on with `{ secret, decode }`: `secret` (a string, or an array for rotation) verifies signed cookies as `cookieParser(secret)` and its first entry is `req.secret`; `decode(value)` replaces the standard percent-decoding, as the `cookie` package's (a decoder that throws keeps the raw value). See [Request cookies](#request-cookies). |
+| `parseCookies` | `boolean \| ParseCookiesConfig` | `true` | Parses `Cookie` into `req.cookies`/`req.signedCookies`. `false` leaves both `undefined` until something assigns them, as Express without cookie-parser (so Nest's `@Cookies()` parses the header itself). An object turns it on with `{ secret, decode }`: `secret` (a string, or an array for rotation) verifies signed cookies as `cookieParser(secret)` and its first entry is `req.secret`; `decode(value)` replaces the standard percent-decoding, as the `cookie` package's (a decoder that throws keeps the raw value). See [Request cookies](#request-cookies). |
 | `parseQuery` | `boolean \| QueryParserOpts` | `true` | Parses the query string into `req.query`. An object turns it on with those picoquery options, merged over the defaults. See [Query parsing](#query-parsing). |
 | `parseQueryOpts` | `QueryParserOpts` | none | **Deprecated**: pass the options as `parseQuery` instead. Still honoured when `parseQuery` is `true`; an object `parseQuery` wins. |
 | `cookieParseOptions` | `CookieParseOptions` | none | **Deprecated**: use `parseCookies: { decode }`. Still honoured where the object form leaves `decode` out. |
@@ -895,7 +895,7 @@ here, and throw a `TypeError` naming the replacement):
 | Option | Effect on the request |
 |---|---|
 | `parseQuery` | `false` empties `req.query`; `true` parses it again with the defaults; an object parses it again with those picoquery options |
-| `parseCookies` | `false` empties `req.cookies`/`req.signedCookies`; `true` parses them again with no secret; `{ secret, decode }` parses them again with those, and `req.secret` becomes the first secret |
+| `parseCookies` | `false` leaves `req.cookies`/`req.signedCookies` `undefined`, as the request option does; `true` parses them again with no secret; `{ secret, decode }` parses them again with those, and `req.secret` becomes the first secret |
 | `parseBody` | `false` parses nothing more; `true` or a `ParseBodyConfig` parses the body under these caps and allowlist |
 | `retainBuffer` | Keep the body's bytes for the route — for a body not read yet (the adapter's `deferBody`), which this middleware then reads |
 
@@ -964,7 +964,19 @@ any object with `headers`.
 
 `req.cookies` holds unsigned cookies; a `j:`-prefixed value is JSON-decoded,
 as cookie-parser does. Signed (`s:`) cookies move to `req.signedCookies` once
-a secret verifies them, and a tampered one becomes `false`.
+a secret verifies them, and a tampered one becomes `false`. A value both
+starting and ending with `"` is unquoted first, as the `cookie` package
+(cookie-parser's) does — `q="x"` is `x`, `""` and a lone `"` are `""`, `"a`
+and `a"` stay as sent — so a quoted signed or `j:` cookie verifies or
+parses too.
+
+Parsing is on by default (the request option `parseCookies: true`, and the
+adapters' default `{ parseBody: true, parseCookies: true }`): both are then
+always objects, `{}` without a `Cookie` header. With `parseCookies: false`
+both are **`undefined`** until something assigns them or `req.parseCookies()`
+is called, as `req.cookies` is in Express without cookie-parser; Nest 12's
+`@Cookies()` then parses the header itself. They are typed
+`Record<string, JsonValue> | undefined` for that reason.
 
 The `Cookie` header is read and parsed the first time `req.cookies`,
 `req.signedCookies` or `req.parseCookies()` is touched, with the options the
@@ -1527,12 +1539,14 @@ repeated names become arrays.
 
 | Upload option | Default | Meaning |
 |---|---|---|
-| `storageType` | `"memory"` | `"memory"` (`MemoryStorage`), `"disk"` (`DiskStorage`), or `"custom"` with a `storage` implementing `Storage` (`handleFile`, `removeFile`). |
+| `storageType` | `"memory"` | `"memory"` (`MemoryStorage`), `"disk"` (`DiskStorage`), or `"custom"` with a `storage` implementing `Storage` (`handleFile`, `removeFile`). Left out, storage is chosen as multer chooses it: `dest` writes to disk there, exactly as `storageType: "disk"` with that `dest` (the other disk options apply too), and otherwise the upload is kept in memory, so multer-style options (`{ limits }`, `{ dest }`) work as they are. A `storage` without a `storageType` (a multer storage engine, which bun-common cannot run) throws a `TypeError`. |
 | `dest` (disk) | OS temp directory | A directory, or a `(file, req) => string` function. Created when missing. |
 | `filename` (disk) | 32 random hex characters plus the original extension | A string or function. A fixed string overwrites on every upload. |
 | `removeAfter` | disk `false`, memory `true` | Whether `removeFile(file)` / `removeAll()` removes files without `force`. |
 | `filter` | none | `(req, file)`: `true` keeps the file, `false` drops it, a string rejects the upload with `FILTER_REJECTED`. |
 | `limits`, `preservePath`, `defCharset`, ... | busboy defaults | busboy options. `getBusBoyConfig(opts)` extracts them. |
+| `limits.fieldNestingDepth` | `32` | multer 2.4's: the deepest a field name may nest (`a[b][c]` has 2 levels). Deeper refuses with `LIMIT_FIELD_NESTING`. `Infinity` turns it off. |
+| `limits.fieldArrayIndexLimit` | `1000` | multer 2.4's: the largest array index a field name may hold (`a[3]` uses 3). Larger refuses with `LIMIT_FIELD_ARRAY_INDEX`, so `arr[4294967294]` cannot build a 4294967295-long array. `Infinity` turns it off. |
 | `inflate` | `true` | Parse field values as JSON or urlencoded. `false` keeps the raw strings. |
 | `fieldInflator`, `fileInflator` | none | Custom inflation of a field value or a file's bytes. |
 | `isPartAFile` | ignored | Deprecated: busboy 1.x never read it. A part is a file when it has a `filename` or is `application/octet-stream`. |
@@ -1636,10 +1650,51 @@ app.post("/avatar", async (req, res) => {
 | `LIMIT_FIELD_COUNT` | 413 | `limits.fields` exceeded |
 | `LIMIT_UNEXPECTED_FILE` | 400 | a file on a field the handler does not accept, or more files than `maxCount` |
 | `MISSING_FIELD_NAME` | 400 | a part without a field name |
+| `LIMIT_FIELD_NESTING` | 400 | a field name nests deeper than `limits.fieldNestingDepth` |
+| `LIMIT_FIELD_ARRAY_INDEX` | 400 | a field name holds an array index above `limits.fieldArrayIndexLimit` |
+| `INVALID_FIELD_NAME` | 400 | a custom `fieldInflator` threw placing the field (multer: `append-field` threw); `cause` is what it threw |
 | `FILTER_REJECTED` | 400 | the `filter` answered a string |
 
-`UPLOAD_ERROR_MESSAGES`, `DEFAULT_UPLOAD_OPTIONS`, `removeStorageFiles` and
-`filterUpload` are exported too.
+The default message for each code is multer 2.4.0's, word for word
+(`UPLOAD_ERROR_MESSAGES`). Every `LIMIT_UNEXPECTED_FILE` uses it,
+`Unexpected file field`, with `field` naming the field multer names: the
+file's own field for a file on a field the handler does not accept
+(`single()`, `array()`, `fields()`, `none()`), and the field itself for one
+file too many (a second file on `single()`'s, more than `maxCount` on
+`array()`'s or a `fields()` entry's). A Nest app answers
+`Unexpected file field - <field>`, as platform-express does.
+
+**Field-name limits.** A bracketed field name builds structure, so one small
+field could build a huge array (`arr[4294967294]`) or a deep object.
+multer 2.4 added two limits against that, and bun-common applies them with
+platform-express 12.2's defaults, `DEFAULT_FIELD_NAME_LIMITS`
+(`fieldNestingDepth: 32`, `fieldArrayIndexLimit: 1000`), wherever they are
+unset — to the parse made while the request is built and to every upload
+handler. Each name is checked right after `fieldNameSize`, nesting first,
+and the refusal names it in `field`. Repeated names still make arrays of any
+length. A limit that is not a non-negative integer or `Infinity` throws
+multer's `TypeError` when the options are built (`transformUploadOptions`)
+or parsed.
+
+The checks are multer's: one nesting level per `[`, and an array index
+counted only in a name `append-field` reads as a path. **bun-common checks
+more than multer in three places, all under its default inflator**, because
+that inflator (the query-string parser) builds more from a name than
+multer's `append-field` does, and a limit that skipped what it builds would
+not protect anything:
+
+| Where | multer | bun-common, default inflator | Why |
+|---|---|---|---|
+| A `.` in a field name | not a level (`a.b` stays a key) | one level, like `[` | the inflator nests on `.`: `a.b` is `{ a: { b } }`, and 5000 dots nest 5000 levels |
+| An index outside a path (`a[5]suffix`, `a[[5]]`) | not checked (`append-field` keeps it a literal key) | checked | the inflator builds an array there: `x[4294967294]suffix` is a 4294967295-long array |
+| A file's field name | never checked (multer never nests file names) | checked like a field's | the default file inflator nests files (`docs[passport]` puts the file at `docs.passport`) |
+
+With `inflate: false` or a custom `fieldInflator`, a field gets multer's
+checks exactly, and a file's name is checked only when the default file
+inflator nests it.
+
+`UPLOAD_ERROR_MESSAGES`, `DEFAULT_UPLOAD_OPTIONS`, `DEFAULT_FIELD_NAME_LIMITS`,
+`removeStorageFiles` and `filterUpload` are exported too.
 
 Examples:
 [`single-and-multiple.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/08-multipart/single-and-multiple.ts),

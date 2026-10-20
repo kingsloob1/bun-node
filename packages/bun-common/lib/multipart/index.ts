@@ -9,6 +9,7 @@ import type {
 import type { DiskStorageOptions, MemoryStorageOptions } from "./storage";
 import { isString, omit } from "../utils/native";
 import { UploadError } from "./errors";
+import { validateFieldNameLimits } from "./fieldNames";
 import { DiskStorage, MemoryStorage } from "./storage";
 
 export {
@@ -17,6 +18,7 @@ export {
   type UploadErrorCode,
   type UploadErrorOptions,
 } from "./errors";
+export { DEFAULT_FIELD_NAME_LIMITS, type FieldNameLimits } from "./fieldNames";
 
 export interface StorageFile {
   size: number;
@@ -115,12 +117,38 @@ export type DiskUploadOptions = MultiPartOptions &
   };
 
 /**
+ * multer-style disk options: `dest` without a `storageType` writes to disk at
+ * `dest`, as multer's `{ dest }` does. Exactly {@link DiskUploadOptions} with
+ * `storageType: "disk"`; every other disk option (`filename`, `removeAfter`)
+ * applies too.
+ */
+export type DestUploadOptions = MultiPartOptions &
+  DiskStorageOptions & {
+    /** Left out: `dest` selects a `DiskStorage`, as in multer. */
+    storageType?: undefined;
+    /** The directory (or `(file, req) => string`) files are written into. Required here: it is what selects disk storage. */
+    dest: NonNullable<DiskStorageOptions["dest"]>;
+    /**
+     * Decides per stored file: `true` keeps it, `false` leaves it out (and
+     * removes it from storage), a string or a throw rejects the upload.
+     */
+    filter?: UploadFilterHandler;
+  };
+
+/**
  * Uploads kept in memory by a {@link MemoryStorage} built from these options.
+ * `storageType` may be left out, so multer-style options (`{ limits }`) work
+ * as they are, as multer itself defaults to memory storage.
  */
 export type MemoryUploadOptions = MultiPartOptions &
   MemoryStorageOptions & {
-    /** Selects a `MemoryStorage`. The default. */
-    storageType: "memory";
+    /**
+     * Selects a `MemoryStorage`. The default: left out, the upload is kept in
+     * memory, as multer's is without `dest` or `storage` (with `dest` it goes
+     * to disk, see {@link DestUploadOptions}; a `storage` needs
+     * `storageType: "custom"`).
+     */
+    storageType?: "memory";
     /**
      * Decides per stored file: `true` keeps it, `false` leaves it out (and
      * removes it from storage), a string or a throw rejects the upload.
@@ -149,6 +177,7 @@ export type CustomUploadOptions<TFile extends StorageFile = StorageFile> =
 /** Every accepted upload configuration; `TFile` is a custom storage's file. */
 export type UploadOptions<TFile extends StorageFile = StorageFile> =
   | DiskUploadOptions
+  | DestUploadOptions
   | MemoryUploadOptions
   | CustomUploadOptions<TFile>;
 
@@ -188,6 +217,16 @@ export function transformUploadOptions(
   /** The `DiskStorage` built from these options. */
   storage: DiskStorage;
 };
+/**
+ * multer-style `{ dest }` without a `storageType`: a `DiskStorage` at `dest`,
+ * exactly as `storageType: "disk"`.
+ */
+export function transformUploadOptions(
+  opts: DestUploadOptions,
+): DiskUploadOptions & {
+  /** The `DiskStorage` built from these options. */
+  storage: DiskStorage;
+};
 /** Memory options: a `MemoryStorage` built from their `removeAfter`. */
 export function transformUploadOptions(
   opts: MemoryUploadOptions,
@@ -204,9 +243,18 @@ export function transformUploadOptions(
   opts?: UploadOptions,
 ): TransFormedUploadOptions;
 /**
+ * Without a `storageType`, the storage is chosen as multer chooses it: `dest`
+ * writes to disk there (exactly `storageType: "disk"`, which the result
+ * carries), and otherwise the upload is kept in memory, so multer-style
+ * options (`{ limits }`, `{ dest }`) work as they are. The field-name limits (`limits.fieldNestingDepth`,
+ * `limits.fieldArrayIndexLimit`) are checked here, as multer checks its
+ * limits when it is built.
+ *
  * @throws {TypeError} for a `storageType` other than `"disk"`, `"memory"` or
- *   `"custom"` (reachable from plain JS), and for `"custom"` without a
- *   `storage`.
+ *   `"custom"` (reachable from plain JS); for `"custom"` without a
+ *   `storage`; for a `storage` without a `storageType` (a multer storage
+ *   engine, which bun-common cannot run and would otherwise ignore); and for a
+ *   field-name limit that is not a non-negative integer or `Infinity`.
  */
 export function transformUploadOptions(
   opts?: UploadOptions,
@@ -215,10 +263,28 @@ export function transformUploadOptions(
   // Read before narrowing: past the three known kinds `opts` is `never`, yet
   // plain JS can still get there.
   const storageType: unknown = opts.storageType;
+  validateFieldNameLimits(opts.limits);
 
   let storage: Storage;
   if (opts.storageType === "disk") {
     storage = new DiskStorage(opts);
+  } else if (opts.storageType === undefined) {
+    // Plain JS can pass a multer storage engine here: it is neither memory
+    // nor runnable, so it is refused rather than silently ignored.
+    if ((opts as { storage?: unknown }).storage !== undefined) {
+      throw new TypeError(
+        'Upload options with a storage need storageType "custom" (and a storage implementing handleFile/removeFile)',
+      );
+    }
+    if ("dest" in opts && opts.dest !== undefined) {
+      // multer's `{ dest }`: disk storage there, as `storageType: "disk"`.
+      return {
+        ...opts,
+        storageType: "disk",
+        storage: new DiskStorage(opts),
+      };
+    }
+    storage = new MemoryStorage({ removeAfter: opts.removeAfter });
   } else if (opts.storageType === "memory") {
     storage = new MemoryStorage({ removeAfter: opts.removeAfter });
   } else if (opts.storageType === "custom") {
