@@ -2543,7 +2543,7 @@ const GATES = [
  * `parseChannel` scopes, `all` only in `both`.
  */
 function channelInMode(address: string, mode: MetaDto["mode"]): boolean {
-  const scope = address.split("/")[0]!;
+  const scope = address.split("/")[0];
   const queues = mode !== "runner";
   const runners = mode !== "jobs";
   if (scope === "all") {
@@ -2745,7 +2745,7 @@ function onMaps(gates: Gates, ...maps: GateMap[]): Partial<Gates> {
       gate.name,
       gates[gate.name],
     ]),
-  ) as Partial<Gates>;
+  );
 }
 
 /** Every gate on `maps` set to `value`. */
@@ -2755,7 +2755,7 @@ function allGates(value: boolean, ...maps: GateMap[]): Partial<Gates> {
       gate.name,
       value,
     ]),
-  ) as Partial<Gates>;
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -2791,7 +2791,7 @@ async function readmeTable(heading: string): Promise<string[][]> {
   const rows: string[][] = [];
   // Skip the header and the |---| separator; stop at the first non-row.
   for (let at = start + 2; lines[at]?.startsWith("|"); at++) {
-    rows.push(lines[at]!.split("|").map((cell) => cell.trim()));
+    rows.push(lines[at].split("|").map((cell) => cell.trim()));
   }
   return rows;
 }
@@ -2799,7 +2799,7 @@ async function readmeTable(heading: string): Promise<string[][]> {
 /** The table under `### What each element needs`. */
 async function readmeGatingTable(): Promise<ReadmeRow[]> {
   return (await readmeTable("### What each element needs")).map((cells) => ({
-    element: cells[1]!,
+    element: cells[1],
     // A cell holding a `|` of its own is rejoined, as the split broke it.
     needs: cells.slice(2, -1).join("|"),
   }));
@@ -2825,9 +2825,9 @@ interface UrlParamRow {
 async function readmeUrlParams(): Promise<UrlParamRow[]> {
   return (await readmeTable("### URL parameters")).flatMap((cells) =>
     // A row may name several parameters ("`jobsRange`, `queuesRange`, …").
-    [...cells[2]!.matchAll(/`([^`]+)`/g)].map((match) => ({
-      screen: cells[1]!.replace(/`/g, ""),
-      parameter: match[1]!,
+    [...cells[2].matchAll(/`([^`]+)`/g)].map((match) => ({
+      screen: cells[1].replace(/`/g, ""),
+      parameter: match[1],
       meaning: cells.slice(3, -1).join("|"),
     })),
   );
@@ -2870,26 +2870,25 @@ function needsOfCell(
 ) {
   // "`sections.manage` is not needed" names a section in order to exclude it.
   const notNeeded = [...needs.matchAll(/`sections\.(\w+)` is not needed/g)].map(
-    (match) => match[1]!,
+    (match) => match[1],
   );
   // So do "separate from `queues.defaults`" and "even when that answer
   // refuses `workers.list`", for any code.
   const excluded = new Set([
     ...notNeeded.map((section) => `sections.${section}`),
     ...[...needs.matchAll(/(?:separate from|refuses) `([^`]+)`/g)].map(
-      (match) => match[1]!,
+      (match) => match[1],
     ),
   ]);
   const codes = [...needs.matchAll(/`([^`]+)`/g)]
-    .map((match) => match[1]!)
+    .map((match) => match[1])
     .filter((code) => !excluded.has(code));
   // "the Workers nav entry's needs": another row's needs, by the start of
   // its element; one naming no row stays as written, and fails.
   // An element's name may end in "…" ("the Summon panel Summon now…'s
   // needs"), which `\w` does not match.
   const refs = [...needs.matchAll(/\bthe ([A-Z][\w …]*)'s needs\b/g)].map(
-    (match) =>
-      elements.find((other) => other.startsWith(match[1]!)) ?? match[1]!,
+    (match) => elements.find((other) => other.startsWith(match[1])) ?? match[1],
   );
   const mode = codes.indexOf("meta.mode");
   return {
@@ -4233,7 +4232,7 @@ function queueGates(
     meta,
     sections,
     boot,
-    queue: maps[queue]!,
+    queue: maps[queue],
     detail: details[queue],
     job,
     repeatable,
@@ -4404,7 +4403,7 @@ checkEqual(
 );
 checkEqual(
   "payroll's job screen: Job hidden (no jobs.read on its map)",
-  [can(boot, "jobs.read"), can(maps.payroll!, "jobs.read")],
+  [can(boot, "jobs.read"), can(maps.payroll, "jobs.read")],
   [true, false],
 );
 
@@ -4451,9 +4450,9 @@ checkEqual(
     ["mail", "audit", "payroll"].map((queue) => [
       queue,
       [
-        can(maps[queue]!, "jobs.fail"),
-        can(maps[queue]!, "repeatables.disable"),
-        can(maps[queue]!, "repeatables.enable"),
+        can(maps[queue], "jobs.fail"),
+        can(maps[queue], "repeatables.disable"),
+        can(maps[queue], "repeatables.enable"),
       ],
     ]),
   ),
@@ -4474,7 +4473,7 @@ checkEqual(
 );
 
 /** The states in which mail's job screen offers Fail…, from the gate alone. */
-const failableStates = (JOB_STATES as readonly JobState[]).filter(
+const failableStates = JOB_STATES.filter(
   (state) => queueGates("mail", { state })["job: Fail…"],
 );
 checkEqual(
@@ -4644,7 +4643,7 @@ checkEqual(
 );
 // The screen reads the detail again (every 15 s, and at once after its own
 // click), and the paused flag swaps the button.
-details.mail = await detailFor("mail", maps.mail!);
+details.mail = await detailFor("mail", maps.mail);
 checkEqual(
   "mail (paused): Resume replaces Pause",
   [queueGates("mail")["queue: Pause"], queueGates("mail")["queue: Resume"]],
@@ -4656,7 +4655,7 @@ checkEqual(
   [false, false],
 );
 await send("POST", "/queues/mail/resume");
-details.mail = await detailFor("mail", maps.mail!);
+details.mail = await detailFor("mail", maps.mail);
 checkEqual(
   "resumed: Pause again",
   [queueGates("mail")["queue: Pause"], queueGates("mail")["queue: Resume"]],
@@ -4721,7 +4720,7 @@ for (const path of [
 // jobs, because it is never asked about a particular job. The request is.
 checkEqual(
   "the mail map allows jobs.remove",
-  maps.mail!.actions["jobs.remove"],
+  maps.mail.actions["jobs.remove"],
   true,
 );
 const vip = await send("DELETE", "/queues/mail/jobs/vip-1");
@@ -4846,36 +4845,36 @@ function runnerActionsAll(
       ]),
   );
 }
-show("?runner=ledger", runnerActions(runnerMaps.ledger!));
+show("?runner=ledger", runnerActions(runnerMaps.ledger));
 checkEqual(
   "nightly: every runner action",
-  runnerActions(runnerMaps.nightly!),
+  runnerActions(runnerMaps.nightly),
   runnerActionsAll(true),
 );
 checkEqual(
   "ledger: runners.list and runners.read, no mutation",
-  runnerActions(runnerMaps.ledger!),
+  runnerActions(runnerMaps.ledger),
   runnerActionsAll(false, true),
 );
 checkEqual(
   "vault: no runner action at all, not even runners.list",
-  runnerActions(runnerMaps.vault!),
+  runnerActions(runnerMaps.vault),
   runnerActionsAll(false),
 );
 checkEqual(
   "remote-sync: every runner action (the map is not asked where it runs)",
-  runnerActions(runnerMaps["remote-sync"]!),
+  runnerActions(runnerMaps["remote-sync"]),
   runnerActionsAll(true),
 );
 
 /** The gates of one runner's screen, for this caller, read fresh. */
 async function runnerGates(id: string): Promise<Gates> {
-  runnerInfos[id] = await runnerFor(id, runnerMaps[id]!);
+  runnerInfos[id] = await runnerFor(id, runnerMaps[id]);
   return screenGates({
     meta,
     sections,
     boot,
-    runnerMap: runnerMaps[id]!,
+    runnerMap: runnerMaps[id],
     runner: runnerInfos[id],
   });
 }
@@ -5293,7 +5292,7 @@ checkEqual(
   Object.fromEntries(
     [
       ...["mail", "audit", "payroll"].map(
-        (queue) => [queue, maps[queue]!] as const,
+        (queue) => [queue, maps[queue]] as const,
       ),
       ["untargeted", boot] as const,
     ].map(([target, map]) => [
@@ -5313,7 +5312,7 @@ checkEqual(
   Object.fromEntries(
     RUNNERS.map((id) => [
       id,
-      NEW_RUNNER_ACTIONS.map((action) => can(runnerMaps[id]!, action)),
+      NEW_RUNNER_ACTIONS.map((action) => can(runnerMaps[id], action)),
     ]),
   ),
   {
@@ -5467,7 +5466,7 @@ checkEqual(
     workerRow(mailer, boot, workerList, { workerTableMemory: true })[
       "worker table: Memory column"
     ],
-    workerRow(mailer, maps.mail!)["worker table: Memory column"],
+    workerRow(mailer, maps.mail)["worker table: Memory column"],
     workerRow(
       mailer,
       boot,
@@ -5503,9 +5502,9 @@ function targetBadge(make: (worker: WorkerDto) => WorkerDto): boolean[] {
   const [mail, audit] = [make(mailer), make(auditor)];
   return [
     workerRow(mail, boot, [mail, audit], { workerTableMemory: true }),
-    workerRow(mail, maps.mail!, [mail], { workerTableQueuePanel: true }),
-    workerRow(audit, maps.audit!, [audit], { workerTableQueuePanel: true }),
-    workerRow(mail, maps.mail!, [mail], { workerTableMemory: true }),
+    workerRow(mail, maps.mail, [mail], { workerTableQueuePanel: true }),
+    workerRow(audit, maps.audit, [audit], { workerTableQueuePanel: true }),
+    workerRow(mail, maps.mail, [mail], { workerTableMemory: true }),
   ].map((set) => set["worker table: target badge"]);
 }
 checkEqual(
@@ -5534,9 +5533,9 @@ function summonBadge(make: (worker: WorkerDto) => WorkerDto): boolean[] {
   const [mail, audit] = [make(mailer), make(auditor)];
   return [
     workerRow(mail, boot, [mail, audit], { workerTableMemory: true }),
-    workerRow(mail, maps.mail!, [mail], { workerTableQueuePanel: true }),
-    workerRow(audit, maps.audit!, [audit], { workerTableQueuePanel: true }),
-    workerRow(mail, maps.mail!, [mail], { workerTableMemory: true }),
+    workerRow(mail, maps.mail, [mail], { workerTableQueuePanel: true }),
+    workerRow(audit, maps.audit, [audit], { workerTableQueuePanel: true }),
+    workerRow(mail, maps.mail, [mail], { workerTableMemory: true }),
   ].map((set) => set["worker table: summon badge"]);
 }
 checkEqual(
@@ -5558,7 +5557,7 @@ checkEqual(
 );
 /** The note's gate for a queue's Workers panel listing `table`. */
 function sweepNote(table: readonly WorkerDto[]): boolean {
-  return workerRow(table[0]!, maps.mail!, table, {
+  return workerRow(table[0], maps.mail, table, {
     workerTableQueuePanel: true,
   })["worker table: housekeeping note"];
 }
@@ -5589,12 +5588,12 @@ checkEqual(
 );
 checkEqual(
   "mail's Workers panel (mail's map): Pause, Stop… and Settings… on the running worker, and the column",
-  rowView(workerRow(mailer, maps.mail!)),
+  rowView(workerRow(mailer, maps.mail)),
   [true, false, true, false, true, true],
 );
 checkEqual(
   "audit's Workers panel (audit's map): nothing, and no Actions column",
-  rowView(workerRow(auditor, maps.audit!)),
+  rowView(workerRow(auditor, maps.audit)),
   [false, false, false, false, false, false],
 );
 checkEqual(
@@ -5602,20 +5601,20 @@ checkEqual(
   [
     mailer.control?.stopPersistenceOverridable,
     mailer.control?.stopPersistence,
-    workerRow(mailer, maps.mail!)["worker: Stop… persistence choice"],
+    workerRow(mailer, maps.mail)["worker: Stop… persistence choice"],
     workerRow(
       {
         ...mailer,
         control: { ...mailer.control!, stopPersistenceOverridable: true },
       },
-      maps.mail!,
+      maps.mail,
     )["worker: Stop… persistence choice"],
   ],
   [false, "process", false, true],
 );
 checkEqual(
   "the rule on a worker that stopped reporting: no lifecycle action, but Settings… stays",
-  rowView(workerRow({ ...mailer, stale: true }, maps.mail!)),
+  rowView(workerRow({ ...mailer, stale: true }, maps.mail)),
   [false, false, false, false, true, true],
 );
 checkEqual(
@@ -5623,7 +5622,7 @@ checkEqual(
   rowView(
     workerRow(
       { ...mailer, control: { ...mailer.control!, enabled: false } },
-      maps.mail!,
+      maps.mail,
     ),
   ),
   [false, false, false, false, false, false],
@@ -5631,10 +5630,10 @@ checkEqual(
 checkEqual(
   "a worker reporting control.pending shows Change pending; mailer does not",
   [
-    workerRow(mailer, maps.mail!)["worker: Change pending"],
+    workerRow(mailer, maps.mail)["worker: Change pending"],
     workerRow(
       { ...mailer, control: { ...mailer.control!, pending: true } },
-      maps.mail!,
+      maps.mail,
     )["worker: Change pending"],
   ],
   [false, true],
@@ -5659,17 +5658,17 @@ checkEqual(
   [
     pausedWorker.status,
     pausedWorker.body.applied,
-    workerRow(mailer, maps.mail!, [mailer], {
+    workerRow(mailer, maps.mail, [mailer], {
       controlResult: { applied: pausedWorker.body.applied === true },
     })["worker: instruction says done (applied)"],
   ],
   [200, true, true],
 );
 const { body: mailWorkers } = await get<WorkerListDto>("/queues/mail/workers");
-const mailerPaused = mailWorkers.items[0]!;
+const mailerPaused = mailWorkers.items[0];
 checkEqual(
   "the listing reads paused: Resume and Stop… replace Pause",
-  [mailerPaused.state, rowView(workerRow(mailerPaused, maps.mail!))],
+  [mailerPaused.state, rowView(workerRow(mailerPaused, maps.mail))],
   ["paused", [false, true, true, false, true, true]],
 );
 const resumedWorker = await instruct("mail", mailerPaused, "resume");
@@ -5717,7 +5716,7 @@ async function workerPageOf(
   queue: string,
   key: string,
 ): Promise<ScreenInputs["workerPage"]> {
-  if (!can(maps[queue]!, "workers.list")) {
+  if (!can(maps[queue], "workers.list")) {
     return undefined;
   }
   const { body } = await get<WorkerListDto>(
@@ -5746,7 +5745,7 @@ async function workerPage(queue: string, key: string): Promise<boolean[]> {
     meta,
     sections,
     boot,
-    queue: maps[queue]!,
+    queue: maps[queue],
     workerPage: await workerPageOf(queue, key),
   });
   return WORKER_PAGE_GATES.map((name) => set[name]);
@@ -5783,7 +5782,7 @@ async function instancesAndTarget(
     meta,
     sections,
     boot,
-    queue: maps[queue]!,
+    queue: maps[queue],
     workerPage: await workerPageOf(queue, key),
   });
   return [set["worker page: instances"], set["worker page: Target card"]];
@@ -5802,7 +5801,7 @@ async function instancesAndSummoned(
     meta,
     sections,
     boot,
-    queue: maps[queue]!,
+    queue: maps[queue],
     ...(page
       ? { workerPage: { ...page, instances: page.instances.map(make) } }
       : {}),
@@ -6077,7 +6076,7 @@ function defaultsGates(queue: string, jobDefaults: JobDefaultsDto): boolean[] {
     meta,
     sections,
     boot,
-    queue: maps[queue]!,
+    queue: maps[queue],
     jobDefaults,
   });
   return [
@@ -6178,7 +6177,7 @@ function processedByGates(job: ScreenInputs["job"], set = sections): boolean[] {
     meta,
     sections: set,
     boot,
-    queue: maps.mail!,
+    queue: maps.mail,
     job,
   });
   return [
@@ -6212,10 +6211,10 @@ checkEqual(
   [
     newest.status,
     newest.body.items[0]?.id,
-    screenGates({ meta, sections, boot, queue: maps.mail! })[
+    screenGates({ meta, sections, boot, queue: maps.mail })[
       "queue: jobs newest added first (sort=createdAt)"
     ],
-    screenGates({ meta, sections, boot, queue: maps.mail!, countTotal: true })[
+    screenGates({ meta, sections, boot, queue: maps.mail, countTotal: true })[
       "queue: jobs newest added first (sort=createdAt)"
     ],
   ],
@@ -6262,7 +6261,7 @@ step("Runners: run logs, Clear history… and Settings…");
 const nightlyRuns = (
   await get<{ items: RunRecordDto[] }>("/runners/nightly/history")
 ).body.items;
-const killedRun = nightlyRuns[0]!;
+const killedRun = nightlyRuns[0];
 
 /** The three run gates on `id`'s screen for `run`: [Log column, Log button, dropped]. */
 function runGates(id: string, run: ScreenInputs["run"]): boolean[] {
@@ -6270,7 +6269,7 @@ function runGates(id: string, run: ScreenInputs["run"]): boolean[] {
     meta,
     sections,
     boot,
-    runnerMap: runnerMaps[id]!,
+    runnerMap: runnerMaps[id],
     runner: runnerInfos[id],
     run,
   });
@@ -6323,7 +6322,7 @@ function newRunnerGates(id: string): boolean[] {
     meta,
     sections,
     boot,
-    runnerMap: runnerMaps[id]!,
+    runnerMap: runnerMaps[id],
     runner: runnerInfos[id],
   });
   return [
@@ -6588,7 +6587,7 @@ checkEqual(
   "`workers.list` granted per queue but not untargeted: every key is plain text, and the queue link survives",
   [
     can(refusedUntargeted("workers.list"), "workers.list"),
-    can(maps.mail!, "workers.list"),
+    can(maps.mail, "workers.list"),
     rowLinks(refusedUntargeted("workers.list")),
   ],
   [false, true, [false, true, true]],
@@ -6597,7 +6596,7 @@ checkEqual(
   "the same for the queue column: `queues.list` per queue only leaves every row's queue plain text, and the key still links",
   [
     can(refusedUntargeted("queues.list"), "queues.list"),
-    can(maps.mail!, "queues.list"),
+    can(maps.mail, "queues.list"),
     // `queues.list` is the Overview's own alternative to `metrics.read`, and
     // the Workers nav entry never asks for it, so the section and the key stay.
     rowLinks(refusedUntargeted("queues.list")),
@@ -6626,11 +6625,11 @@ const withoutDemand = {
 checkEqual(
   "the demand gates: the panel wherever `queues.read` is, read-only audit's included, and the Overview column; both gone with meta.features.demand false (runner mode)",
   [
-    screenGates({ meta, sections, boot, queue: maps.mail! })["panel=demand"],
-    screenGates({ meta, sections, boot, queue: maps.audit! })["panel=demand"],
-    screenGates({ meta, sections, boot, queue: maps.payroll! })["panel=demand"],
+    screenGates({ meta, sections, boot, queue: maps.mail })["panel=demand"],
+    screenGates({ meta, sections, boot, queue: maps.audit })["panel=demand"],
+    screenGates({ meta, sections, boot, queue: maps.payroll })["panel=demand"],
     screenGates({ meta, sections, boot })["Overview: Demand column"],
-    screenGates({ meta: withoutDemand, sections, boot, queue: maps.mail! })[
+    screenGates({ meta: withoutDemand, sections, boot, queue: maps.mail })[
       "panel=demand"
     ],
     screenGates({ meta: withoutDemand, sections, boot })[
@@ -6673,7 +6672,7 @@ const overOnePage = rowsPerTable((size) => size + 1);
  */
 function pagers(
   tableRows: Partial<Record<PagedTable, number>>,
-  queueMap: PermissionsBody = maps.mail!,
+  queueMap: PermissionsBody = maps.mail,
   bootMap: PermissionsBody = boot,
 ): boolean[] {
   const set = screenGates({
@@ -6715,17 +6714,17 @@ checkEqual(
 // no Workers panel, no instances — so there are no pages of them either.
 checkEqual(
   "payroll: the three queue-side pagers close with their tables; the rest the untargeted map decides",
-  pagers(overOnePage, maps.payroll!),
+  pagers(overOnePage, maps.payroll),
   [true, false, true, true, true, false, false],
 );
 checkEqual(
   "audit reads all of them, as it reads the tables they page",
-  pagers(overOnePage, maps.audit!),
+  pagers(overOnePage, maps.audit),
   pagerGates.map(() => true),
 );
 checkEqual(
   "and without untargeted queues.list there is no Overview queue table, so nothing to page",
-  pagers(overOnePage, maps.mail!, refusedUntargeted("queues.list"))[0],
+  pagers(overOnePage, maps.mail, refusedUntargeted("queues.list"))[0],
   false,
 );
 
@@ -6763,7 +6762,7 @@ const offsetParamCell = runnerParam("offset");
 function historyScreen(
   total: number,
   page: NonNullable<ScreenInputs["historyPage"]> = {},
-  runnerMap: PermissionsBody = runnerMaps.nightly!,
+  runnerMap: PermissionsBody = runnerMaps.nightly,
 ): ScreenInputs {
   return {
     meta,
@@ -6786,7 +6785,7 @@ function historyPager(
 
 /** `nightly`'s own map with `actions` refused, the rest of it untouched. */
 function refusedOnRunner(...actions: JobsApiAction[]): PermissionsBody {
-  const map = runnerMaps.nightly!;
+  const map = runnerMaps.nightly;
   return {
     ...map,
     actions: {
@@ -7104,7 +7103,7 @@ async function summonHost(config: Partial<JobsApiConfig>) {
         : `${read.status} ${read.body.code}`;
     // `getSummonStatus`: a 409 SUMMON_NOT_CONFIGURED or a 404 is "no
     // summoner here"; and without `queues.read` the screen never asks.
-    statuses[queue] = !can(hostMaps[queue]!, "queues.read")
+    statuses[queue] = !can(hostMaps[queue], "queues.read")
       ? undefined
       : read.status === 200
         ? read.body
@@ -7126,7 +7125,7 @@ async function summonHost(config: Partial<JobsApiConfig>) {
       boot: hostBoot,
       ...(queue === undefined
         ? {}
-        : { queue: hostMaps[queue]!, summon: statuses[queue] }),
+        : { queue: hostMaps[queue], summon: statuses[queue] }),
       ...inputs,
     });
   }
@@ -7142,7 +7141,7 @@ async function summonHost(config: Partial<JobsApiConfig>) {
       meta: hostMeta,
       sections,
       boot: hostBoot,
-      queue: hostMaps[queue]!,
+      queue: hostMaps[queue],
       summon: given === undefined ? statuses[queue] : given.summon,
     });
     return [
@@ -7267,7 +7266,7 @@ checkEqual(
   "readOnly, and a host built with the default actions (queues.summon is opt-in): mail keeps its tab, loses both buttons, and neither POST is routed",
   await Promise.all(
     [summonReadOnly, summonDefault].map(async (host) => [
-      "queues.summon" in host.maps.mail!.actions,
+      "queues.summon" in host.maps.mail.actions,
       ...host.summonGatesOf("mail"),
       (await host.call<object>("POST", "/queues/mail/summon")).status,
       (await host.call<object>("POST", "/queues/mail/summon/reset")).status,
@@ -7649,7 +7648,7 @@ async function unitHost(
     maps[queue] = (
       await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
     ).body;
-    if (can(maps[queue]!, "queues.read")) {
+    if (can(maps[queue], "queues.read")) {
       const read = await call<SummonStatusDto>(
         "GET",
         `/queues/${queue}/summon`,
@@ -7667,7 +7666,7 @@ async function unitHost(
       meta,
       sections,
       boot,
-      queue: maps[queue]!,
+      queue: maps[queue],
       summon,
       members: Object.fromEntries(
         (summon?.queues ?? []).map((member) => [member, maps[member]]),
@@ -7744,8 +7743,8 @@ const unitNoSummon = await unitHost({ noSummon: "thumbs" });
 checkEqual(
   "an authorize refusing queues.summon on thumbs: renders' own map still grants it, and thumbs' map refuses it",
   [
-    can(unitNoSummon.maps.renders!, "queues.summon"),
-    can(unitNoSummon.maps.thumbs!, "queues.summon"),
+    can(unitNoSummon.maps.renders, "queues.summon"),
+    can(unitNoSummon.maps.thumbs, "queues.summon"),
   ],
   [true, false],
 );
@@ -8328,8 +8327,8 @@ function summonedViews(instances: readonly WorkerDto[]): boolean[] {
     meta: summonHostAll.meta,
     sections,
     boot: summonHostAll.boot,
-    queue: summonHostAll.maps.plain!,
-    workerMap: summonHostAll.maps.plain!,
+    queue: summonHostAll.maps.plain,
+    workerMap: summonHostAll.maps.plain,
     workerTable: instances,
   };
   return [
@@ -8339,7 +8338,7 @@ function summonedViews(instances: readonly WorkerDto[]): boolean[] {
     ),
     screenGates({
       ...onScreen,
-      workerPage: { key: instances[0]!.key!, instances },
+      workerPage: { key: instances[0].key!, instances },
     })["worker page: Summoned card"],
   ];
 }
@@ -8635,7 +8634,7 @@ async function providerHost(
       await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
     ).body;
     const read = await call<SummonStatusDto>("GET", `/queues/${queue}/summon`);
-    statuses[queue] = !can(hostMaps[queue]!, "queues.read")
+    statuses[queue] = !can(hostMaps[queue], "queues.read")
       ? undefined
       : read.status === 200
         ? read.body
@@ -8654,7 +8653,7 @@ async function providerHost(
       ...(queue === undefined
         ? {}
         : {
-            queue: hostMaps[queue]!,
+            queue: hostMaps[queue],
             summon: statuses[queue],
             providers: listed,
           }),
@@ -8918,9 +8917,7 @@ async function schemaOf(id: string): Promise<[number, string[] | string]> {
   return [
     status,
     status === 200
-      ? Object.keys(
-          (body.schema.properties ?? {}) as Record<string, unknown>,
-        ).sort()
+      ? Object.keys(body.schema.properties ?? {}).sort()
       : (body.code ?? ""),
   ];
 }
@@ -9026,9 +9023,9 @@ checkEqual(
     // A map without `providers.read` closes it even with the list cached.
     readNotInMap: providerAll.screen("mail", {
       queue: {
-        ...providerAll.maps.mail!,
+        ...providerAll.maps.mail,
         actions: {
-          ...providerAll.maps.mail!.actions,
+          ...providerAll.maps.mail.actions,
           "providers.read": false,
         },
       },
@@ -9073,7 +9070,7 @@ checkEqual(
   "and without providers.read the panel reads nothing: mail's map lacks it or says no, GET /providers is 404 (not routed) or 403, and the tab and the readiness stay",
   [providerNoRead, providerRefuseRead].map((host) => [
     host.list.status,
-    can(host.maps.mail!, "providers.read"),
+    can(host.maps.mail, "providers.read"),
     host.screen("mail")["panel=summon"],
     host.screen("mail")["summon: summoner readiness"],
   ]),
@@ -9137,8 +9134,8 @@ const providerMailAndProviders = await providerHost({}, mailAndProviders);
  */
 async function mailProviderAgreement(host: ProviderHost) {
   return [
-    can(host.maps.mail!, "providers.read"),
-    can(host.maps.mail!, "providers.validate"),
+    can(host.maps.mail, "providers.read"),
+    can(host.maps.mail, "providers.validate"),
     host.screen("mail")["panel=summon"],
     host.screen("mail")["summon: Test connection"],
     host.screen("mail", { providers: providerAll.listed })[

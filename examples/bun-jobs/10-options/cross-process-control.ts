@@ -510,7 +510,7 @@ const unsubscribeDigest = await driver.subscribe(
   "digest",
   (event) => {
     if (event.type === "state") {
-      digestStates.push(event.payload as WorkerEventPayloads["state"]);
+      digestStates.push(event.payload);
     }
   },
 );
@@ -838,8 +838,7 @@ for (const [label, patch, reason] of [
 ] as const) {
   const error = (await checkRejects(
     `updateConfig(): ${label}`,
-    () =>
-      ownerA.updateConfig(patch as Parameters<typeof ownerA.updateConfig>[0]),
+    () => ownerA.updateConfig(patch),
     { name: "ConfigError" },
   )) as ConfigError | undefined;
   checkEqual(`  context.reason is "${reason}"`, error?.context?.reason, reason);
@@ -1161,10 +1160,10 @@ const oldSpelling = (text: string) =>
     .replaceAll("worker-thread", "worker");
 const written = await driver.getState(namespace, legacyKey);
 await driver.setState(namespace, legacyKey, {
-  executionMode: oldSpelling(written.executionMode!),
-  [RUNNER_CONFIG_STATE.code]: oldSpelling(written[RUNNER_CONFIG_STATE.code]!),
+  executionMode: oldSpelling(written.executionMode),
+  [RUNNER_CONFIG_STATE.code]: oldSpelling(written[RUNNER_CONFIG_STATE.code]),
   [RUNNER_CONFIG_STATE.allowed]: oldSpelling(
-    written[RUNNER_CONFIG_STATE.allowed]!,
+    written[RUNNER_CONFIG_STATE.allowed],
   ),
   // An override a controller of that version stored, and no owner adopted
   // yet: the one field an owner's next start does not rewrite.
@@ -1200,8 +1199,8 @@ checkEqual(
   [
     (await driver.listHistory(namespace, legacyKey)).map((run) => run.mode),
     rawState.executionMode,
-    JSON.parse(rawState[RUNNER_CONFIG_STATE.code]!).executionMode,
-    JSON.parse(rawState[RUNNER_CONFIG_STATE.allowed]!),
+    JSON.parse(rawState[RUNNER_CONFIG_STATE.code]).executionMode,
+    JSON.parse(rawState[RUNNER_CONFIG_STATE.allowed]),
     rawState[RUNNER_CONFIG_STATE.executionMode],
   ],
   [
@@ -1324,8 +1323,8 @@ checkEqual(
   "the owner rewrote its own fields in today's words; the override stays as it was stored",
   [
     healedState.executionMode,
-    JSON.parse(healedState[RUNNER_CONFIG_STATE.code]!).executionMode,
-    JSON.parse(healedState[RUNNER_CONFIG_STATE.allowed]!),
+    JSON.parse(healedState[RUNNER_CONFIG_STATE.code]).executionMode,
+    JSON.parse(healedState[RUNNER_CONFIG_STATE.allowed]),
     healedState[RUNNER_CONFIG_STATE.executionMode],
   ],
   [
@@ -1370,21 +1369,21 @@ async function buriedFlow(label: string) {
     ],
   });
   const parent = tree.job;
-  const [bad, good] = tree.children!.map((child) => child.job);
+  const [bad, good] = tree.children.map((child) => child.job);
   await waitFor(
     `${label}: the parent to be buried and the good child to complete`,
     async () =>
       (await reports.getJob(parent.id))?.state === "dead" &&
-      (await fetch.getJob(good!.id))?.state === "completed",
+      (await fetch.getJob(good.id))?.state === "completed",
     WAIT,
   );
   const buried = (await reports.getJob(parent.id))!;
   checkEqual(
     `${label}: the parent is dead with a ChildFailedError; good completed`,
-    [buried.failedReason?.name, (await fetch.getJob(good!.id))?.state],
+    [buried.failedReason?.name, (await fetch.getJob(good.id))?.state],
     ["ChildFailedError", "completed"],
   );
-  return { parent: parent.id, bad: bad!.id, good: good!.id };
+  return { parent: parent.id, bad: bad.id, good: good.id };
 }
 
 /** Waits for the parent to complete, and checks it saw both children. */

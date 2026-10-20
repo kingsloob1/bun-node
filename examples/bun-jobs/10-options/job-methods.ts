@@ -884,7 +884,7 @@ await waitFor(
   () => seriesRuns.length > 0,
   WAIT,
 );
-const inFlight = seriesRuns[0]!;
+const inFlight = seriesRuns[0];
 const hourly = async () =>
   (await series.listRepeatables()).find((info) => info.key === "hourly");
 // The worker scheduled the next occurrence as it claimed this one.

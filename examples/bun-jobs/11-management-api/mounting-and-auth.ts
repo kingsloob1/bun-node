@@ -151,7 +151,7 @@ async function call(
   const text = await response.text();
   return {
     status: response.status,
-    body: text ? (JSON.parse(text) as any) : undefined,
+    body: text ? JSON.parse(text) : undefined,
   };
 }
 

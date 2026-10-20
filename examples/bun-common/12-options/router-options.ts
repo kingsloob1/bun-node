@@ -454,6 +454,7 @@ const verbs = new BunRouter();
 for (const verb of VERBS) {
   // A verb picked at runtime: the overloaded union assigns, uncast, to the
   // untyped signature every verb shares.
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- a false positive on a union-keyed element access (oven-sh/bun#45784); typescript-eslint does not report it
   const method: RouterVerbMethod<BunRouter> = verbs[verb];
   checkEqual(
     `${verb}() returns the router`,

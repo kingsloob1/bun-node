@@ -281,15 +281,15 @@ await checkRejects("now: undeclared name", () => jobs.now("send-fax"), {
   name: "ConfigError",
 });
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error amountCents is a number
-  jobs.now("generate-invoice", { customerId: "c", amountCents: "9" });
+  await jobs.now("generate-invoice", { customerId: "c", amountCents: "9" });
 
   // @ts-expect-error { userId } has no `email`: excess properties are caught
-  jobs.now("sync-crm", { userId: "u", email: "x" });
+  await jobs.now("sync-crm", { userId: "u", email: "x" });
 
   // @ts-expect-error the payload is required: "sync-crm" cannot run without one
-  jobs.now("sync-crm");
+  await jobs.now("sync-crm");
 });
 
 /* ------------------------------------------------------------------ */
@@ -437,18 +437,18 @@ check(
   heardBeats,
 );
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error "send-fax" is not declared
-  registry.add("send-fax", { to: "+1 555 0100" });
+  await registry.add("send-fax", { to: "+1 555 0100" });
 
   // @ts-expect-error userId is a string
-  registry.add("sync-crm", { userId: 3 });
+  await registry.add("sync-crm", { userId: 3 });
 
   // @ts-expect-error the payload is required, as on now()
-  registry.add("sync-crm");
+  await registry.add("sync-crm");
 
   // @ts-expect-error an undeclared name without type arguments is refused
-  registry.add("scratch", { note: "one off" });
+  await registry.add("scratch", { note: "one off" });
 
   // @ts-expect-error "added:nope" is no more an event than "completed:nope"
   registry.on("added:nope", () => {});
@@ -549,19 +549,19 @@ const audit = await registry.add<"audit", { note: string }>(
 type _AuditTyped = Expect<Equal<typeof audit, Job<{ note: string }, unknown>>>;
 checkEqual("add<Name, Payload>: stored under its name", audit.name, "audit");
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error a declared name is refused: its payload is already known
-  registry.add<"sync-crm", { userId: number }>("sync-crm", { userId: 1 });
+  await registry.add<"sync-crm", { userId: number }>("sync-crm", { userId: 1 });
 
   const runtimeName: string = "audit";
   // @ts-expect-error a plain string is refused: it could be a declared name
-  registry.add<string, { note: string }>(runtimeName, { note: "x" });
+  await registry.add<string, { note: string }>(runtimeName, { note: "x" });
 
   // @ts-expect-error the payload type is required too, not only the name
-  registry.add<"audit">("audit", { note: "x" });
+  await registry.add<"audit">("audit", { note: "x" });
 
   // @ts-expect-error the named payload is checked: note is a string
-  registry.add<"audit", { note: string }>("audit", { note: 1 });
+  await registry.add<"audit", { note: string }>("audit", { note: 1 });
 });
 
 await waitFor("the audit job to fail", () => {
@@ -638,9 +638,9 @@ void mailWorker.run();
 
 await mail.add("welcome", { to: "ops@example.com", subject: "hi" });
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error the named payload is still checked: subject is missing
-  mail.add("welcome", { to: "ops@example.com" });
+  await mail.add("welcome", { to: "ops@example.com" });
 });
 
 await waitFor("the mail job", () => sent.length === 1);

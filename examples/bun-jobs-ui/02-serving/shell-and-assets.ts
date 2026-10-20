@@ -72,7 +72,7 @@ checkEqual("200", first.status, 200);
 // The recipe, without helpers: the config is a JSON <script> with a fixed id.
 const raw = new RegExp(
   `<script type="application/json" id="${UI_CONFIG_ELEMENT_ID}"[^>]*>([\\s\\S]*?)</script>`,
-).exec(html)![1]!;
+).exec(html)![1];
 checkEqual(
   "the config element's id",
   UI_CONFIG_ELEMENT_ID,
@@ -166,8 +166,8 @@ check(
   "no inline script: every <script> is JSON data or has a src",
   [...html.matchAll(/<script\b([^>]*)>/g)].every(
     ([, attributes]) =>
-      attributes!.includes('type="application/json"') ||
-      attributes!.includes("src="),
+      attributes.includes('type="application/json"') ||
+      attributes.includes("src="),
   ),
 );
 
@@ -392,7 +392,7 @@ checkEqual(
   digest,
 );
 
-const css = await app.fetch(shell.styles[0]!.href);
+const css = await app.fetch(shell.styles[0].href);
 await css.arrayBuffer();
 checkEqual(
   "a stylesheet's Content-Type",

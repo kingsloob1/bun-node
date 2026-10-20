@@ -206,7 +206,7 @@ async function serveHost(
   api.websocket?.attach(app);
   app.use(ui.basePath, ui.router);
   await app.listen(0);
-  const origin = app.url!.replace(/\/$/, "");
+  const origin = app.url.replace(/\/$/, "");
   // Build the bundle before the browser asks.
   await (await fetch(`${origin}${ui.basePath}`)).arrayBuffer();
   return {
@@ -313,7 +313,7 @@ const closeCodes = (
 ).map((entry) => entry.code);
 /** The connection channel's `x-bun-jobs-limits` names. */
 const limitNames = Object.keys(
-  (asyncapi.channels.connection?.["x-bun-jobs-limits"] ?? {}) as object,
+  asyncapi.channels.connection?.["x-bun-jobs-limits"] ?? {},
 ).filter((name) => name !== "replay");
 
 /* --- the browser: skip, not fail, if Chrome will not start --------- */

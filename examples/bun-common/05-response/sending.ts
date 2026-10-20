@@ -169,6 +169,7 @@ router.get("/end-object", (_req, res) => {
   // `end()` takes text or bytes, as Node's `end(chunk)`; an object throws
   // (`Reflect.apply`: plain JS can pass what the types rule out).
   try {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Reflect.apply calls it with `res` as `this`
     Reflect.apply(res.end, res, [{ not: "a chunk" }]);
   } catch (error) {
     res.status(500).json({

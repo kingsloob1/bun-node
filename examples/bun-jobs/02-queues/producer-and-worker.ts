@@ -105,7 +105,7 @@ show(
 await waitFor("all six to complete", () => completed === added.length);
 
 step("Reading a finished job back");
-const job = await images.getJob(added[0]!.id);
+const job = await images.getJob(added[0].id);
 show("state", job?.state);
 show("returnValue", job?.returnValue);
 show("progress", job?.progress);

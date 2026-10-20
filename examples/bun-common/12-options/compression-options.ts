@@ -387,6 +387,7 @@ checkEqual(
 );
 await checkRejects(
   "an unknown encoding throws",
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- needed: "lzma" is no CompressionEncoding, so the call is a TS2322 without it, and the runtime check is the point
   () => compression({ encodings: ["lzma" as "gzip"] }),
   {
     name: "TypeError",

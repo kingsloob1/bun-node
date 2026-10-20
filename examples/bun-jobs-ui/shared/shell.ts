@@ -60,8 +60,8 @@ export function parseShell(html: string): ParsedShell {
   return {
     html,
     title: /<title>([\s\S]*?)<\/title>/.exec(html)?.[1] ?? "",
-    config: JSON.parse(configMatch[2]!) as UiConfig,
-    configNonce: attribute(configMatch[1]!, "nonce"),
+    config: JSON.parse(configMatch[2]) as UiConfig,
+    configNonce: attribute(configMatch[1], "nonce"),
     script: {
       src: attribute(scriptTag, "src"),
       integrity: attribute(scriptTag, "integrity"),

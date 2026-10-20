@@ -456,6 +456,7 @@ const failuresWorker = startWorker(
             "abort",
             () => {
               aborted.add(job.id);
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the signal's own reason (an AbortError here), typed `any` by the DOM types; rejecting with it is the point
               reject(ctx.signal.reason);
             },
             { once: true },
@@ -1745,7 +1746,7 @@ checkEqual("catchUp: true ran all five occurrences", on.length, 5);
 check(
   "…one grid step apart, none skipped",
   on.every(
-    (run, index) => index === 0 || run.runAt - on[index - 1]!.runAt === EVERY,
+    (run, index) => index === 0 || run.runAt - on[index - 1].runAt === EVERY,
   ),
   on,
 );

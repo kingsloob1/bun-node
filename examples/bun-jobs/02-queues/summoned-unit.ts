@@ -166,7 +166,7 @@ function startUnit(
   /** The first line with `message`, and where it came. */
   const find = (message: string) => {
     const index = decisions.findIndex((one) => one.message === message);
-    return index < 0 ? undefined : { index, ...decisions[index]! };
+    return index < 0 ? undefined : { index, ...decisions[index] };
   };
   /**
    * The exit code once the child has exited and its output is read, or
@@ -264,7 +264,7 @@ async function recordOf(jobs: BunJobs, queue: string) {
     async () => (await jobs.queue(queue).listWorkers()).length === 1,
     WAIT,
   );
-  return (await jobs.queue(queue).listWorkers())[0]!;
+  return (await jobs.queue(queue).listWorkers())[0];
 }
 
 /** Waits until `queue`'s one worker record reports `state`. */
@@ -387,6 +387,7 @@ checkEqual(
     queues: request.queues,
     group: "group" in request,
     demands: "demands" in request,
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- needed: widens typeof's union to string to match the expected rows (TS2345 without it)
     demand: typeof request.demand?.demand as string,
   })),
   ["renders", "thumbs"].map((queue) => ({
@@ -522,8 +523,8 @@ checkEqual(
 );
 check(
   "…saying what to do about it",
-  /^runSummoned: the summon arguments name a queue with no worker \(thumbs\): build one worker for each queue in summonedFromArgs\(\)\.queues/.test(
-    String(missing.find("refused")?.fields.message),
+  String(missing.find("refused")?.fields.message).startsWith(
+    "runSummoned: the summon arguments name a queue with no worker (thumbs): build one worker for each queue in summonedFromArgs().queues",
   ),
   missing.find("refused")?.fields.message,
 );
@@ -570,8 +571,8 @@ const allDone = async (queue: string, ids: string[]) =>
 await waitFor(
   "renders' and thumbs' jobs to complete",
   async () =>
-    (await allDone("renders", quickIds.renders!)) &&
-    (await allDone("thumbs", quickIds.thumbs!)),
+    (await allDone("renders", quickIds.renders)) &&
+    (await allDone("thumbs", quickIds.thumbs)),
   WAIT,
 );
 await running(idleJobs, "previews", gated.id);

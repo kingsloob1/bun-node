@@ -168,7 +168,7 @@ app.use((req, _res, next) => {
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 await app.listen(0);
-const origin = app.url!.replace(/\/$/, "");
+const origin = app.url.replace(/\/$/, "");
 
 /**
  * "Another process", as far as the API can tell: a second context on the

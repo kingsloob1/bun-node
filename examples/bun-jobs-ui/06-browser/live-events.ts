@@ -231,7 +231,7 @@ async function serveHost(
   api.websocket?.attach(app);
   app.use(ui.basePath, ui.router);
   await app.listen(0);
-  const origin = app.url!.replace(/\/$/, "");
+  const origin = app.url.replace(/\/$/, "");
   // Build the bundle before the browser asks.
   await (await fetch(`${origin}${ui.basePath}`)).arrayBuffer();
   return {

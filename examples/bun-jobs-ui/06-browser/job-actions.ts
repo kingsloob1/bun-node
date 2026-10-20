@@ -135,7 +135,7 @@ app.use((req, _res, next) => {
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 await app.listen(0);
-const origin = app.url!.replace(/\/$/, "");
+const origin = app.url.replace(/\/$/, "");
 
 /** Released at shutdown: until then the held job stays active. */
 const release = createDeferred<void>();

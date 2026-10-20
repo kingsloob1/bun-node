@@ -1706,7 +1706,7 @@ step("processEvery: never set, the option, start() options, later calls");
   await waitFor("a first wait", () => plain.waits.length > 0, WAIT);
   checkEqual(
     "never set: waits use maxBlock on a blocking driver, pollInterval elsewhere",
-    plain.waits[0]!.ms,
+    plain.waits[0].ms,
     blocking ? 5_000 : 1_000,
   );
 
@@ -2044,7 +2044,7 @@ step(
   check('processEvery("1 minute"): a new job still runs within 1.5s', picked, {
     waitedMs: Date.now() - addedAt,
   });
-  if (picked) show("picked up after", `${ran[0]! - addedAt}ms`);
+  if (picked) show("picked up after", `${ran[0] - addedAt}ms`);
   await dispose(ctx);
 }
 

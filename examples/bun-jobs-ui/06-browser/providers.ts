@@ -438,7 +438,7 @@ for (const ui of Object.values(uis)) {
   app.use(ui.basePath, ui.router);
 }
 await app.listen(0);
-const origin = app.url!.replace(/\/$/, "");
+const origin = app.url.replace(/\/$/, "");
 
 /** A request this script makes itself, with the CSRF header. */
 async function call<T = unknown>(
@@ -1094,7 +1094,7 @@ try {
   );
   const gap =
     readsAfter.length > 0 && readsBefore.length > 0
-      ? readsAfter[0]!.at - readsBefore.at(-1)!.at
+      ? readsAfter[0].at - readsBefore.at(-1)!.at
       : -1;
   check(
     `it came with the list's own refetch: a GET /providers after the release, at least 9 s after the one before it (${gap} ms)`,

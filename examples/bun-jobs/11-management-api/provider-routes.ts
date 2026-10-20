@@ -405,7 +405,7 @@ checkEqual(
       ].map(async ([method, path]) => {
         const { status, body } = await plainApi.call(
           method as "GET" | "POST",
-          path!,
+          path,
         );
         return `${status} ${body.code}`;
       }),

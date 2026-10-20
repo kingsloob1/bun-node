@@ -37,7 +37,7 @@
  *   `lib/index.ts` does not re-export them. (`DEBOUNCE_PREFIX` and
  *   `THROTTLE_PREFIX` now are, with `RESERVED_STATE_PREFIX`.)
  */
-import type { LogFields, RepeatRecord } from "@kingsleyweb/bun-jobs";
+import type { LogFields } from "@kingsleyweb/bun-jobs";
 import { hostname } from "node:os";
 import process from "node:process";
 import {
@@ -592,12 +592,12 @@ await waitFor("three interval ticks", () => intervalTicks.length >= 3, {
   timeout: 5_000,
 });
 const grid = intervalTicks.map(
-  (tick) => tick.scheduled - intervalTicks[0]!.scheduled,
+  (tick) => tick.scheduled - intervalTicks[0].scheduled,
 );
 check(
   "ticks stay on the 100ms grid (drift-free)",
   grid.every((offset) => offset % 100 === 0) &&
-    grid.slice(1).every((offset, index) => offset > grid[index]!),
+    grid.slice(1).every((offset, index) => offset > grid[index]),
   grid,
 );
 check(
@@ -609,7 +609,7 @@ const upcoming = interval.next()?.getTime() ?? 0;
 check(
   "next() is a later grid point",
   upcoming > intervalTicks.at(-1)!.scheduled &&
-    (upcoming - intervalTicks[0]!.scheduled) % 100 === 0,
+    (upcoming - intervalTicks[0].scheduled) % 100 === 0,
   { upcoming, ticks: intervalTicks },
 );
 
@@ -659,7 +659,7 @@ everySecond.stop();
 check(
   "six-field ticks land on whole seconds, a second apart or more",
   secondTicks.every((ms) => ms % 1_000 === 0) &&
-    secondTicks[1]! - secondTicks[0]! >= 1_000,
+    secondTicks[1] - secondTicks[0] >= 1_000,
   secondTicks,
 );
 
@@ -782,13 +782,7 @@ checkEqual(
 await checkConfig(
   "neither cron nor every",
   () => {
-    return nextOccurrence(
-      { count: 0, createdAt: created } as Pick<
-        RepeatRecord,
-        "count" | "createdAt"
-      >,
-      created,
-    );
+    return nextOccurrence({ count: 0, createdAt: created }, created);
   },
   /A repeat needs either a cron expression or every/,
 );
@@ -1246,7 +1240,7 @@ check("newToken: a scope goes last", scoped.endsWith(":worker-1"), scoped);
 checkEqual("parseToken: round trip", parseToken(token), {
   host: HOST,
   pid: process.pid,
-  id: token.split(":")[2]!,
+  id: token.split(":")[2],
 });
 checkEqual("parseToken: a scope", parseToken(scoped)?.scope, "worker-1");
 checkEqual(

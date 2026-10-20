@@ -231,21 +231,24 @@ checkEqual(
 );
 checkEqual("addBulk: payloads stored", bulk[4].data, { userId: "u_1" });
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error "reindex" carries nothing, so not a month
-  registry.addBulk([{ name: "reindex", data: { month: "2026-01" } }]);
+  await registry.addBulk([{ name: "reindex", data: { month: "2026-01" } }]);
 
   // @ts-expect-error "send-report" needs its payload
-  registry.addBulk([{ name: "send-report" }]);
+  await registry.addBulk([{ name: "send-report" }]);
 
   // @ts-expect-error month is a string
-  registry.addBulk([{ name: "send-report", data: { month: 1 } }]);
+  await registry.addBulk([{ name: "send-report", data: { month: 1 } }]);
 
-  // @ts-expect-error one wrong entry among right ones is still caught
-  registry.addBulk([{ name: "reindex" }, { name: "notify-sms", data: {} }]);
+  await registry.addBulk([
+    { name: "reindex" },
+    // @ts-expect-error one wrong entry among right ones is still caught
+    { name: "notify-sms", data: {} },
+  ]);
 
   // @ts-expect-error no escape hatch: an undeclared name is refused in bulk
-  registry.addBulk([{ name: "audit", data: { note: "x" } }]);
+  await registry.addBulk([{ name: "audit", data: { note: "x" } }]);
 });
 
 await settle(
@@ -310,15 +313,17 @@ compileOnly(() => {
   });
 });
 
-compileOnly(() => {
-  registry.retryAll("dead", {
+compileOnly(async () => {
+  await registry.retryAll("dead", {
     name: "send-report",
     // @ts-expect-error a report job has no userId
     filter: (job) => job.data.userId === "u",
   });
 
-  // @ts-expect-error unnarrowed, not every declared job carries a month
-  registry.retryAll("dead", { filter: (job) => job.data.month === "2026-01" });
+  await registry.retryAll("dead", {
+    // @ts-expect-error unnarrowed, not every declared job carries a month
+    filter: (job) => job.data.month === "2026-01",
+  });
 });
 
 await settle(january ? [january.id] : [], ["completed"]);
@@ -397,23 +402,23 @@ checkEqual(
   ["reindex", "notify-email", "summarise"],
 );
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error the top node is checked: month is a string
-  registry.addFlow({ name: "send-report", data: { month: 4 } });
+  await registry.addFlow({ name: "send-report", data: { month: 4 } });
 
   // @ts-expect-error and needs its payload
-  registry.addFlow({ name: "send-report" });
+  await registry.addFlow({ name: "send-report" });
 
   // @ts-expect-error `queue` on the top node: it was always ignored, now refused
-  registry.addFlow({ name: "reindex", queue: "digest" });
+  await registry.addFlow({ name: "reindex", queue: "digest" });
 
-  registry.addFlow({
+  await registry.addFlow({
     name: "reindex",
     // @ts-expect-error a child on the registry queue is checked
     children: [{ name: "send-report", data: { month: 4 } }],
   });
 
-  registry.addFlow({
+  await registry.addFlow({
     name: "reindex",
     children: [
       // @ts-expect-error and so is a grandchild, at any depth
@@ -424,7 +429,7 @@ compileOnly(() => {
     ],
   });
 
-  registry.addFlow({
+  await registry.addFlow({
     name: "reindex",
     // @ts-expect-error an undeclared name, with no `queue` to take it elsewhere
     children: [{ name: "audit", data: {} }],
@@ -481,9 +486,9 @@ type _NotAReport = Expect<
   Equal<[{ month: string }] extends [UpdateDataOf<unknown, Jobs>] ? 1 : 0, 0>
 >;
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error the id could name any job, and this suits only a report
-  registry.update(later.id, { data: { month: "2026-06" } });
+  await registry.update(later.id, { data: { month: "2026-06" } });
 });
 
 // The way round, when only the data changes and the job is in hand: narrow
@@ -561,17 +566,17 @@ checkEqual(
   { via: "sms", userId: "u_7" },
 );
 
-compileOnly(() => {
+compileOnly(async () => {
   const mixed = channelFor("x") === "notify-sms" ? "send-report" : "reindex";
 
   // @ts-expect-error no payload is both { month } and void
-  jobs.now(mixed, { month: "2026-08" });
+  await jobs.now(mixed, { month: "2026-08" });
 
   // @ts-expect-error nor may it be left out: that suits "reindex" only
-  jobs.now(mixed);
+  await jobs.now(mixed);
 
   // @ts-expect-error the registry queue's add applies the same rule
-  registry.add(mixed, { month: "2026-08" });
+  await registry.add(mixed, { month: "2026-08" });
 });
 
 /** Two names whose payload is the same union — a type-only illustration. */
@@ -773,9 +778,9 @@ for (const plain of [loose.queue<Mail>("mail"), jobs.queue<Mail>("mail")]) {
   );
 }
 
-compileOnly(() => {
+compileOnly(async () => {
   // @ts-expect-error a plain queue still checks the payload it was given
-  loose.queue<Mail>("mail").addBulk([{ name: "x", data: { to: 1 } }]);
+  await loose.queue<Mail>("mail").addBulk([{ name: "x", data: { to: 1 } }]);
 });
 
 /* ------------------------------------------------------------------ */

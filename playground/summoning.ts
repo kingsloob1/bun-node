@@ -192,7 +192,7 @@ function between(min: number, max: number): number {
 /** A job's data on the group's queues: what `compute/worker.ts` reads. */
 function work(min: number, max: number): { subject: string; steps: number } {
   return {
-    subject: SUBJECTS[between(0, SUBJECTS.length - 1)]!,
+    subject: SUBJECTS[between(0, SUBJECTS.length - 1)],
     steps: between(min, max),
   };
 }
@@ -556,7 +556,7 @@ export async function createSummoning(
               onSummonFailed: alert,
             },
             "secure-exports": {
-              summoner: vaults[0]!,
+              summoner: vaults[0],
               triggers: { poll: 5_000 },
               cooldown: 5_000,
               backoff: { initial: 5_000, max: 30_000 },
@@ -669,7 +669,7 @@ export async function createSummoning(
         // one or two units and the others one: the unit asks for the
         // maximum, never the sum.
         for (let index = between(2, 6); index > 0; index--) {
-          const upload = UPLOADS[between(0, UPLOADS.length - 1)]!;
+          const upload = UPLOADS[between(0, UPLOADS.length - 1)];
           await jobs
             .queue("ingest")
             .add("ingest", { upload, steps: between(4, 8) });
@@ -688,7 +688,7 @@ export async function createSummoning(
               Array.from({ length: between(3, 6) }, () => ({
                 name: "caption",
                 data: {
-                  upload: UPLOADS[between(0, UPLOADS.length - 1)]!,
+                  upload: UPLOADS[between(0, UPLOADS.length - 1)],
                   steps: between(3, 6),
                 },
               })),

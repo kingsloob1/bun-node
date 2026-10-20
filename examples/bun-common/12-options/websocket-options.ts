@@ -275,6 +275,7 @@ step("wsOptions — bun-common's defaults, and overrides merged over them");
   );
   check(
     "every lifecycle callback is supplied by BunWebSocket",
+    /* eslint-disable @typescript-eslint/unbound-method -- read only for their typeof, never called */
     [
       defaults.open,
       defaults.message,
@@ -283,6 +284,7 @@ step("wsOptions — bun-common's defaults, and overrides merged over them");
       defaults.pong,
       defaults.drain,
     ].every((callback) => typeof callback === "function"),
+    /* eslint-enable @typescript-eslint/unbound-method */
   );
 
   const tuned = new BunHttpAdapter(0, {

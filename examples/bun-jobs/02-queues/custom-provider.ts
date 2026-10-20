@@ -289,7 +289,7 @@ function defineNimbus(options: { globalFetch?: boolean } = {}) {
           if (answer.failures !== undefined && answer.failures.length > 0) {
             return {
               status: "unavailable",
-              reason: answer.failures[0]!.reason,
+              reason: answer.failures[0].reason,
             };
           }
           return answer.deduped === true
@@ -535,7 +535,7 @@ await waitFor(
   { ...WAIT, interval: 100 },
 );
 show("summon events", emailEvents);
-const attempt = emailEvents[0]!;
+const attempt = emailEvents[0];
 const units = await platform.units();
 checkEqual(
   "one attempt, started by the add through Nimbus, then registered by its worker",
@@ -546,9 +546,9 @@ show("what Nimbus was sent", runs[0]);
 check(
   "Nimbus got the attempt's dedupe key as its token, and its argv as the unit's arguments",
   runs.length === 1 &&
-    /^[A-Z0-9-]{1,64}$/i.test(runs[0]!.token) &&
-    runs[0]!.args.includes(`--bun-jobs-summon-id=${attempt.id}`) &&
-    Bun.deepEquals(units[0]?.argv, runs[0]!.args),
+    /^[A-Z0-9-]{1,64}$/i.test(runs[0].token) &&
+    runs[0].args.includes(`--bun-jobs-summon-id=${attempt.id}`) &&
+    Bun.deepEquals(units[0]?.argv, runs[0].args),
   { runs, units },
 );
 await waitFor(

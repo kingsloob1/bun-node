@@ -50,7 +50,6 @@
  * - **Wait on conditions, never on time.** Every page-side helper polls the
  *   DOM until what it wants is there, and every API check polls the API.
  */
-import type { StoredJobOptions } from "@kingsleyweb/bun-jobs";
 import {
   BunHttpAdapter,
   createDeferred,
@@ -257,7 +256,7 @@ for (const ui of Object.values(uis)) {
   app.use(ui.basePath, ui.router);
 }
 await app.listen(0);
-const origin = app.url!.replace(/\/$/, "");
+const origin = app.url.replace(/\/$/, "");
 
 /** A request this script makes itself, with the CSRF header. */
 async function call<T = unknown>(
@@ -467,7 +466,7 @@ function checkChained(
     const answer = one.json as ApplyDto;
     const last = index === calls.length - 1;
     const cursor =
-      index === 0 ? undefined : (calls[index - 1]!.json as ApplyDto).next;
+      index === 0 ? undefined : (calls[index - 1].json as ApplyDto).next;
     if (one.status !== 200) {
       problems.push(`call ${index}: status ${one.status}`);
     }
@@ -537,7 +536,7 @@ async function seedUnmarked(queue: string, id: string): Promise<void> {
   const bunQueue = queueOf(jobs, queue);
   await bunQueue.add("legacy", {}, { jobId: id });
   const stored = (await driver.getJob(bunQueue.ref, id))!;
-  const { explicit: _explicit, ...unmarked } = stored.opts as StoredJobOptions;
+  const { explicit: _explicit, ...unmarked } = stored.opts;
   await driver.removeJob(bunQueue.ref, id);
   await driver.addJob(bunQueue.ref, { ...stored, opts: unmarked });
 }

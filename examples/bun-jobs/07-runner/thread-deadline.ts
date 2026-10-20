@@ -131,7 +131,7 @@ async function checkStill(
   if (warned.length > 0) {
     show(
       `${label}: the thread outlived the 500 ms cap; the runner warned`,
-      warned[0]!.fields,
+      warned[0].fields,
     );
   } else if (Number(last.value) > 0) {
     const gap = endedAt - Number(last.value);

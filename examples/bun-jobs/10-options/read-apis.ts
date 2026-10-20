@@ -457,7 +457,7 @@ check(
 );
 checkEqual(
   "expiresAt is three report intervals past the heartbeat",
-  listed!.expiresAt - listed!.heartbeatAt,
+  listed.expiresAt - listed.heartbeatAt,
   3 * 200,
 );
 // Where its attempts run, as the worker resolved its `target` option: this one
@@ -650,6 +650,7 @@ function fleetRss(workers: WorkerInfo[]): number {
  * nothing either way. Restored below, and nothing else in the tour reads it.
  */
 const PINNED_RSS = 512 * 1024 * 1024;
+// eslint-disable-next-line @typescript-eslint/unbound-method -- kept only to put it back on process.memoryUsage, never called unbound
 const realRss = process.memoryUsage.rss;
 process.memoryUsage.rss = () => PINNED_RSS;
 
@@ -770,14 +771,14 @@ const [olderRecord] = await olderQueue.listWorkers();
 checkEqual(
   "read back with neither field present — not present, not zero",
   [
-    Object.hasOwn(olderRecord!, "rssBytes"),
-    Object.hasOwn(olderRecord!, "heartbeatRttMs"),
+    Object.hasOwn(olderRecord, "rssBytes"),
+    Object.hasOwn(olderRecord, "heartbeatRttMs"),
   ],
   [false, false],
 );
 checkEqual(
   "…so a reader sees undefined, which is a different answer from 0",
-  [olderRecord!.rssBytes, olderRecord!.heartbeatRttMs],
+  [olderRecord.rssBytes, olderRecord.heartbeatRttMs],
   [undefined, undefined],
 );
 checkEqual(
@@ -986,7 +987,7 @@ await waitFor(
 const [byDefault] = await defaultsQueue.listWorkers();
 checkEqual(
   "reportInterval defaults to 10s, so a record stands for 30s",
-  byDefault!.expiresAt - byDefault!.heartbeatAt,
+  byDefault.expiresAt - byDefault.heartbeatAt,
   30_000,
 );
 await defaultWorker.close();
@@ -1208,14 +1209,14 @@ checkEqual("minutes asked for is buckets returned", measured.buckets.length, 5);
 checkEqual(
   "from and to are the first and last bucket",
   [measured.from, measured.to],
-  [measured.buckets[0]!.at, measured.buckets.at(-1)!.at],
+  [measured.buckets[0].at, measured.buckets.at(-1)!.at],
 );
 check(
   "buckets are consecutive minutes, oldest first",
   measured.buckets.every(
     (bucket, index) =>
       index === 0 ||
-      bucket.at - measured.buckets[index - 1]!.at === THROUGHPUT_BUCKET_MS,
+      bucket.at - measured.buckets[index - 1].at === THROUGHPUT_BUCKET_MS,
   ),
   measured.buckets.map((bucket) => bucket.at),
 );
@@ -1343,7 +1344,7 @@ checkEqual(
 );
 checkEqual(
   "counts carry every state, zeros included",
-  Object.keys(summaries[0]!.counts).sort(),
+  Object.keys(summaries[0].counts).sort(),
   [
     "active",
     "completed",

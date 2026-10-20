@@ -176,7 +176,7 @@ async function reread(queue: BunQueue, id: string): Promise<Job> {
 async function addUnmarked(queue: BunQueue, name: string): Promise<string> {
   const job = await queue.add(name, {});
   const record = (await driver.getJob(queue.ref, job.id))!;
-  const { explicit: _explicit, ...unmarked } = record.opts as StoredJobOptions;
+  const { explicit: _explicit, ...unmarked } = record.opts;
   await driver.removeJob(queue.ref, job.id);
   await driver.addJob(queue.ref, { ...record, opts: unmarked });
   return job.id;
@@ -813,7 +813,7 @@ const ids: Record<string, string> = {};
     children: [{ name: "child", data: {} }],
   });
   ids.parent = flow.job.id;
-  ids.child = flow.children![0]!.job.id;
+  ids.child = flow.children[0].job.id;
   ids.legacy = await addUnmarked(backlog, "legacy");
 
   const saved = await backlog.setJobDefaults({ attempts: 5, timeout: 3_000 });
@@ -991,7 +991,7 @@ step("Apply refusals");
   );
   checkEqual(
     "none of them wrote anything",
-    (await queue.list("waiting"))[0]!.opts.attempts,
+    (await queue.list("waiting"))[0].opts.attempts,
     1,
   );
 }
@@ -1322,13 +1322,13 @@ step("Repeat series: re-enable, and the worker's next occurrence");
 
   await queue.add("report", {}, { repeat: { every: 60_000 } });
   const [series] = await queue.listRepeatables();
-  await queue.disableRepeatable(series!.key);
+  await queue.disableRepeatable(series.key);
   await queue.setJobDefaults({ attempts: 7 });
-  await queue.enableRepeatable(series!.key);
+  await queue.enableRepeatable(series.key);
   const [enabled] = await queue.listRepeatables();
   checkEqual(
     "re-enabled: its new occurrence takes the override",
-    (await reread(queue, enabled!.nextJobId!)).opts.attempts,
+    (await reread(queue, enabled.nextJobId!)).opts.attempts,
     7,
   );
 

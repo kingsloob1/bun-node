@@ -510,7 +510,7 @@ step("Repeat keys: stored as k:<key>, shown bare");
     key: "legacy",
     name: "digest",
     data: { v: 0 },
-    opts: listed!.opts,
+    opts: listed.opts,
     every: 60_000,
     count: 0,
     nextRunAt: null,

@@ -43,7 +43,7 @@ const names = ["sendEmail", "resizeImage", "buildReport"];
 
 await tasks.addBulk(
   Array.from({ length: 12 }, (_, index) => ({
-    name: names[index % 3]!,
+    name: names[index % 3],
     data: { order: `ord-${index + 1}` },
     // Ids an operator would recognise, so a search over ids has something to
     // find. `list` returns waiting jobs oldest first, so these stay in order.

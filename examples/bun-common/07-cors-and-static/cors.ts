@@ -190,7 +190,7 @@ function queryApi(options?: CorsOptions): BunRouter {
   const router = new BunRouter();
   router.use(cors(options));
   router.query("/items/search", (req, res) => {
-    res.json({ matched: req.body as unknown });
+    res.json({ matched: req.body });
   });
   return router;
 }

@@ -65,6 +65,7 @@ const worker = new BunQueueWorker<Task, string>(
             "abort",
             () => {
               clearTimeout(timer);
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the signal's own reason (an AbortError here), typed `any` by the DOM types; rejecting with it is the point
               reject(ctx.signal.reason);
             },
             { once: true },

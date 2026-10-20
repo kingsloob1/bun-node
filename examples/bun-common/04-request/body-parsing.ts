@@ -825,11 +825,11 @@ checkEqual(
   ).status,
   413,
 );
-const inProcess = (await BunRequest.init(
+const inProcess = await BunRequest.init(
   new Request("http://localhost/", { method: "POST", body: "x" }),
   FETCH_STUB_SERVER,
   { parseBody: false },
-)) as BunRequest;
+);
 checkEqual(
   "req.hasBody: true for an in-process Request with a body stream, false without",
   [
@@ -1082,6 +1082,7 @@ check(
     clientErrorLogs.every((event) => event.level === "warn"),
   clientErrorLogs.map((event) => [event.level, event.error?.message]),
 );
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- needed: it adds the `req` the next check reads (TS2339 without it)
 const logged = clientErrorLogs[0]?.error as
   | (Error & { req?: unknown })
   | undefined;
