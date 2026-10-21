@@ -1098,6 +1098,31 @@ describe("responseValidation: route over router over adapter", () => {
     }
   });
 
+  it("a mounted router that set its own logger gets its routes' warnings", async () => {
+    for (const subHasLogger of [true, false]) {
+      const adapterLog = createTestLogger();
+      const subLog = createTestLogger();
+      const adapter = new BunHttpAdapter(0, {
+        responseValidation: "warn",
+        logger: adapterLog.logger,
+      });
+      const sub = new BunRouter();
+      if (subHasLogger) {
+        sub.setLogger(subLog.logger);
+      }
+      sub.get("/x", validate({}, { responses: { 200: N_ZOD } }), (_req, res) =>
+        res.json({ n: "x" } as never),
+      );
+      adapter.use("/s", sub);
+      expect((await adapter.fetch("/s/x")).status).toBe(200);
+      const warned = (events: { level: string }[]): number =>
+        events.filter((event) => event.level === "warn").length;
+      // Before: mounting rebound every warning to the adapter's logger.
+      expect(warned(subLog.events)).toBe(subHasLogger ? 1 : 0);
+      expect(warned(adapterLog.events)).toBe(subHasLogger ? 0 : 1);
+    }
+  });
+
   it("refuses an unknown mode when declared", () => {
     expect(
       () => new BunRouter({ responseValidation: "strict" as never }),

@@ -458,6 +458,13 @@ type RouteWithGroup = Route & {
    * through, outermost first (compiled); carried across a flatten.
    */
   commonResponses?: readonly OutboundDef[];
+  /**
+   * The logger of the innermost router (this one or one it was flattened in
+   * from) that set its own, for the route's response-check warnings;
+   * carried across a flatten as {@link responseValidation} is. Absent when
+   * none did: the router the route is finally registered on logs them.
+   */
+  responseLogger?: () => Logger;
 };
 
 /** The modes `responseValidation` takes. */
@@ -1096,6 +1103,12 @@ export class BunRouter<
   declare readonly __mount?: { path: TMountPath; shape: TMountShape };
 
   public _logger!: Logger;
+  /**
+   * Whether a logger was set on this router (`logger =`, `setLogger()`), as
+   * opposed to the default it resolves when none is given. A mounted router
+   * that set one keeps its response-check warnings (see `responseLogger`).
+   */
+  #ownLogger = false;
   private _bunWebSocket?: BunWebSocket;
 
   /** Router-wide `101` headers — see {@link webSocketUpgradeHeaders}. */
@@ -1367,6 +1380,7 @@ export class BunRouter<
   /** Replaces the logger. Accepts any {@link LoggerLike}. */
   set logger(logger: LoggerLike) {
     this._logger = resolveLogger(logger);
+    this.#ownLogger = true;
   }
 
   /** Replaces the logger and returns the router, for chaining. */
@@ -1578,6 +1592,16 @@ export class BunRouter<
     if (common !== undefined) {
       route.commonResponses = common;
     }
+    // The innermost router that set a logger keeps its warnings, as its
+    // `responseValidation` wins; with none, this router's logger.
+    const ownLogger =
+      this.#ownLogger || this.localOptions?.logger !== undefined
+        ? (): Logger => this.logger
+        : undefined;
+    const responseLogger = flattenSource?.responseLogger ?? ownLogger;
+    if (responseLogger !== undefined) {
+      route.responseLogger = responseLogger;
+    }
     const callbacks = route.callbacks as unknown;
     if (!Array.isArray(callbacks)) {
       return;
@@ -1592,7 +1616,7 @@ export class BunRouter<
       bound[i] = binding.bind({
         mode,
         common: common ?? [],
-        logger: () => this.logger,
+        logger: responseLogger ?? ((): Logger => this.logger),
       });
     }
     if (bound !== undefined) {

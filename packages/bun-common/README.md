@@ -1475,19 +1475,22 @@ router.get(
 - **`HEAD`** is checked as the `GET` it reuses. **A freshness `304`** for a
   conditional request is allowed without being declared.
 - **An error handler's response** is checked but only reported, never
-  replaced, so a thrown error is never masked.
+  replaced, so a thrown error is never masked. The response it sends for a
+  refusal (a `ResponseValidationError`) is not checked again.
 
 `responseValidation` is `"off"` (the default), `"warn"` or `"error"`, set on
 the validator, else on its `BunRouter` or adapter (`new BunHttpAdapter(0, {
 responseValidation, commonResponses })`): the most specific wins, a mounted
 router's over its parent's. Router settings are read when a route is
-registered.
+registered. Warnings and refusals are logged to the innermost router that set
+its own logger (`logger`, `setLogger()`, the adapter's `logger` option), else
+to the router the route is registered on.
 
 | Mode | A mismatching response |
 |---|---|
 | `"off"` | is sent; nothing is installed, and the response path is the one without `responses` |
 | `"warn"` | is sent, and one warning is logged per response, with the issues and no value from the response |
-| `"error"` | is refused before anything goes out: its own headers (`Location`, `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) and status are dropped, request-wide ones (CORS, `Vary`) kept, and a `ResponseValidationError` (status `500`, with `issues` and `responseStatus`) goes to the error handlers. With none, the adapter answers `500` and `router.fetch()` rejects with it |
+| `"error"` | is refused before anything goes out: its own headers (`Location`, `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) and status are dropped, request-wide ones (CORS, `Vary`, kept whole, so a refused `redirect()`'s `Vary: Accept` stays) kept, and a `ResponseValidationError` (status `500`, with `issues` and `responseStatus`) goes to the error handlers. With none, the adapter answers `500` and `router.fetch()` rejects with it |
 
 Under `"error"`, a synchronous vendor (zod, valibot, arktype) decides in
 place, so a synchronous request stays synchronous; yup, an async schema, or a
@@ -1504,7 +1507,9 @@ JSON (or wildcard) bodies, `send()` every declared body (and a native
 is declared. Undeclared header and cookie names stay free. A helper that takes
 a bare `BunResponse` escapes the types, and `res.status(200); res.json(b)` in
 two statements is held only to the union of the bodies. Statuses declared
-only in `commonResponses` are not in the handler's types.
+only in `commonResponses` are not in the handler's types. The typing is a
+help, not a guarantee (a plain `BunResponse` also assigns to a narrowed one);
+`responseValidation: "error"` is what refuses a response that does not match.
 
 Examples:
 [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts),
