@@ -596,6 +596,17 @@ describe("native: getPort", () => {
     const result = await getPort({ port: [preferred + 1] });
     expect(typeof result).toBe("number");
   });
+
+  it("asks the OS again when it hands back a port still locked", async () => {
+    // The OS reuses ephemeral ports quickly; a single ask used to throw
+    // "No available port found" for about one call in five in a tight loop.
+    const ports = new Set<number>();
+    for (let i = 0; i < 600; i++) {
+      ports.add(await getPort());
+    }
+    // Every call answered, and none twice within the lock window.
+    expect(ports.size).toBe(600);
+  });
 });
 
 describe("native: parseXmlToObject", () => {

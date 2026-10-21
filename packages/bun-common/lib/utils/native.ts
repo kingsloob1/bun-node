@@ -2116,6 +2116,8 @@ export class Semaphore {
  */
 const lockedPorts = new Set<number>();
 const PORT_LOCK_MS = 1000;
+/** How many times {@link getPort} asks the OS for an ephemeral port. */
+const EPHEMERAL_ATTEMPTS = 32;
 
 /**
  * Finds an available TCP port. Tries each candidate in `port` (and finally an
@@ -2133,7 +2135,14 @@ export async function getPort(options?: {
       : [options.port]
     : [];
 
-  for (const candidate of [...candidates, 0]) {
+  // Port 0 is asked several times: the OS can hand back a port this process
+  // gave out moments ago (still in `lockedPorts`), and one ask would then
+  // fail although a free port is a retry away (measured: ~1 in 5 bare calls
+  // in a tight loop on Linux).
+  const ephemeralAsks = Array.from<number>({ length: EPHEMERAL_ATTEMPTS }).fill(
+    0,
+  );
+  for (const candidate of [...candidates, ...ephemeralAsks]) {
     if (candidate !== 0 && lockedPorts.has(candidate)) {
       continue;
     }
