@@ -1450,6 +1450,11 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   never checks it. `toStandardSchema(fn, { jsonSchema })` publishes a JSON
   Schema too.
 
+Examples:
+[`contract-sharing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/contract-sharing.ts),
+[`message-scrub.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/message-scrub.ts),
+[`synchronous-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/synchronous-validation.ts).
+
 #### Writing a transport
 
 A transport is a declaration plus an adapter. The adapter calls a receiver on
@@ -1512,6 +1517,9 @@ is the same calls the other way round: a sender on the `inbound` side before
 it sends, and a receiver on the `outbound` side for the replies. The
 package's tests run this adapter on port 0
 (`__tests__/contract/udp.test.ts`).
+
+Example:
+[`custom-transport.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/custom-transport.ts).
 
 ### CORS
 
