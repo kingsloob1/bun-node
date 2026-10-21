@@ -32,7 +32,8 @@
  *   checked as its GET, and an error handler's own response is only
  *   reported, never replaced.
  * - Only buffered bodies are read here (JSON, text, bytes, a Blob, a
- *   passed-through `Response`). Streams and `sendFile()`'s bytes are not.
+ *   passed-through `Response`). Streams, `sendFile()`'s bytes, `chunks()`,
+ *   `sse()` and `opaque()` are in `streaming-responses.ts`.
  */
 import type {
   BunResponse,
