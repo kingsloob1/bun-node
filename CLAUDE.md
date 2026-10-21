@@ -1069,6 +1069,10 @@ matched route.
   none handles destroys a streamed response (`res.destroy`) and is logged.
 - A route without its own HEAD handler answers `HEAD` with its GET one;
   socket-free `fetch()` drops the body as `Bun.serve` does (`toFetchResponse`).
+  A `HEAD` text or JSON answer with no header set costs about what its GET
+  does: `BunResponse#respondToHead` sets the type on the built response (Bun
+  writes none for a served `HEAD`, `docs/bun-bugs/`) and builds a socket-free
+  one bodiless. A fresh `HEAD` (`If-None-Match: *`) still answers `304`.
 - An unhandled error is re-thrown for the adapter's final error handler
   (`setErrorHandler` / `Bun.serve` `error()` callback).
 - `use(path, ...)` registers middleware with `group: path` so

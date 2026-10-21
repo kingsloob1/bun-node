@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | **Bun** | 1.4.2 (`744846f8`), Linux x64 |
-| **Status** | Not filed upstream yet |
+| **Status** | Filed: [oven-sh/bun#46337](https://github.com/oven-sh/bun/issues/46337) (2026-10-21, still present on 1.4.4-canary.1+6bb5dc195) |
 | **Reproduction** | [`head-response-loses-implicit-content-type.ts`](./head-response-loses-implicit-content-type.ts) (exits 1 while present) |
-| **Worked around in** | `packages/bun-common/lib/BunResponse.ts`, `#canSkipHeaders` |
+| **Worked around in** | `packages/bun-common/lib/BunResponse.ts`, `#respondToHead` |
 
 ## What happens
 
@@ -41,12 +41,17 @@ the type is not in `response.headers` either). [I]
 
 ## How bun-node works around it
 
-`BunResponse` sends a text body with no `Headers` object when no header was
-set, which halves the cost of `res.send()`. That relies on Bun writing the
-type, so a `HEAD` request is excluded from that path and carries its type
-explicitly. Covered by `__tests__/responseNoHeaders.test.ts` ("answers HEAD
-with the headers and no body, served and through fetch()").
+`BunResponse` sends a text or JSON body with no `Headers` object when no
+header was set, which halves the cost of `res.send()`. That relies on Bun
+writing the type, so a `HEAD` answered that way (`#respondToHead`) sets its
+type on the built response (`response.headers.set`), which costs well under a
+`Headers` object in the init. Until 2026-10-21 a `HEAD` was excluded from that
+path altogether and took the full one, about three times the cost of its GET.
+Covered by `__tests__/responseNoHeaders.test.ts` ("answers HEAD with the
+headers and no body, served and through fetch()") and
+`__tests__/headOnGet.test.ts`.
 
 **When it is fixed** (the reproduction exits 0 on the Bun version
-`engines.bun` requires), the `this.req.method !== "HEAD"` condition in
-`#canSkipHeaders` can go, and the test above stays as the guard.
+`engines.bun` requires), a served `HEAD` no longer needs the
+`response.headers.set` in `#respondToHead`; a socket-free one, built with no
+body, still does. The tests above stay as the guard.
