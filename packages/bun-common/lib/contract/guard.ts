@@ -9,6 +9,7 @@
  */
 import type { Logger } from "../logging";
 import type { IssueFormat } from "./issues";
+import type { MediaMatcher } from "./media";
 import type {
   AnyContract,
   GuardOptions,
@@ -26,6 +27,7 @@ import type {
 } from "./model";
 import { resolveLogger } from "../logging";
 import { runSchema } from "./issues";
+import { compileMediaMap } from "./media";
 import { isDocumented } from "./schemas";
 import { isSchema } from "./transport";
 
@@ -103,19 +105,25 @@ const identity: Guard<unknown, unknown> = Object.assign(
   { checks: false, checksKey: (_key: string | number): boolean => false },
 );
 
-/** Media types match without parameters and case (`text/plain; charset=utf-8` → `text/plain`). */
+/** Each media map's compiled matcher, built on its first message. */
+const MATCHERS = new WeakMap<MediaMap, MediaMatcher<Schema>>();
+
+/**
+ * The declared entry a media type falls under (`lib/contract/media.ts`):
+ * parameters stripped on both sides, case ignored, the most specific key
+ * winning (exact, then `type/*`, then `*\/*`).
+ */
 function mediaEntry(
   map: MediaMap,
   mediaType: string,
 ): [declared: string, schema: Schema] | undefined {
-  const semi = mediaType.indexOf(";");
-  const bare = (semi === -1 ? mediaType : mediaType.slice(0, semi))
-    .trim()
-    .toLowerCase();
-  for (const declared of Object.keys(map)) {
-    if (declared.toLowerCase() === bare) return [declared, map[declared]];
+  let matcher = MATCHERS.get(map);
+  if (matcher === undefined) {
+    matcher = compileMediaMap<Schema>(map, "contract media map");
+    MATCHERS.set(map, matcher);
   }
-  return undefined;
+  const found = matcher.match(mediaType);
+  return found === undefined ? undefined : [found[0].declared, found[1]];
 }
 
 /** The declared keys, for an undeclared-key message: never the key received. */

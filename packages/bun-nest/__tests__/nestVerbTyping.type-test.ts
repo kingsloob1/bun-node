@@ -48,3 +48,23 @@ adapter.get(dynamicPath, (_req) => {
 });
 
 export {};
+
+/* --- responses: the Nest adapter's verbs hold res too (V3a) --------- */
+
+declare const UserSchema: StandardSchemaV1<{ id: string }, { id: string }>;
+adapter.get(
+  "/typed/:id",
+  validate(
+    { query: QuerySchema },
+    { responses: { 200: UserSchema, 204: null } },
+  ),
+  (req, res) => {
+    type _q = Expect<Equal<typeof req.query, { page: number }>>;
+    if (req.query.page === 0) return res.status(204).send(null);
+    // @ts-expect-error the 200's body is a User
+    if (req.query.page === 1) return res.status(200).json({ id: 1 });
+    // @ts-expect-error 404 is not declared
+    if (req.query.page === 2) return res.status(404).json({ id: "a" });
+    return res.status(200).json({ id: req.params.id });
+  },
+);

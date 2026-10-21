@@ -13,6 +13,7 @@ import type {
   Transport,
   TransportSpec,
 } from "./model";
+import { compileMediaMap } from "./media";
 import { CONTRACT } from "./model";
 
 /** The two sides, in canonical order. */
@@ -108,6 +109,8 @@ function checkParts(where: string, spec: SideSpec, parts: unknown): void {
         );
       }
     }
+    // Every key a media type, no two tying once bare (plan Q-C14).
+    compileMediaMap(decl, `${where}: "${part}"`);
   }
 }
 

@@ -80,6 +80,22 @@ plain.get("/user/:id", (_req) => {
   type _q = Expect<Equal<typeof _req.query, Record<string, unknown>>>;
 });
 
+/* --- responses on a mounted router's route (V3a) ------------------- */
+
+declare const UserBody: StandardSchemaV1<{ id: string }, { id: string }>;
+const typedSub = new BunRouter<"/t/:id">();
+typedSub.get(
+  "/x",
+  validate({}, { responses: { 200: UserBody } }),
+  (_req, res) => {
+    type _p = Expect<Equal<typeof _req.params, { id: string }>>;
+    res.status(200).json({ id: "a" });
+    // @ts-expect-error a mounted router's route holds res to its responses
+    res.status(404).json({ id: "a" });
+  },
+);
+adapter.use("/t/:id", typedSub);
+
 /* --- existing untyped mounts still compile ------------------------- */
 
 const legacy = new BunRouter();

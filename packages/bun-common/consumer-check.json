@@ -10,6 +10,7 @@
         "BunHttpAdapter",
         "BunWebSocket",
         "validate",
+        "ResponseValidationError",
         "createLogger",
         "cors",
         "compression",
@@ -30,7 +31,7 @@
         "SerializedError",
         "BunServer"
       ],
-      "snippet": "const router = new m.BunRouter();\nrouter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _busboyLimits = Expect<IsAny<NonNullable<t.MultiPartOptions[\"limits\"]>>>;\nexport type _acceptsTypes = Expect<IsAny<ReturnType<typeof m.accepts>>>;\nexport type _logFields = Expect<IsAny<Parameters<t.Logger[\"info\"]>[1]>>;"
+      "snippet": "const router = new m.BunRouter();\nrouter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _busboyLimits = Expect<IsAny<NonNullable<t.MultiPartOptions[\"limits\"]>>>;\nexport type _acceptsTypes = Expect<IsAny<ReturnType<typeof m.accepts>>>;\nexport type _logFields = Expect<IsAny<Parameters<t.Logger[\"info\"]>[1]>>;\ndeclare const User: t.StandardSchemaV1<{ id: string }>;\nrouter.get(\"/typed\", m.validate({}, { responses: { 200: User } }), (_req, res) => {\n  type Sent = Parameters<typeof res.json>[0];\n  const _sentNotAny: Expect<IsAny<Sent>> = false;\n  const _sentExact: Equal<Sent, { id: string }> = true;\n  // @ts-expect-error an undeclared status, when responses are declared\n  res.status(404);\n  res.status(200).json({ id: \"a\" });\n});\nexport const _refused: Error = new m.ResponseValidationError([], 500);"
     },
     {
       "spelling": "@kingsleyweb/bun-common/lib/cors",

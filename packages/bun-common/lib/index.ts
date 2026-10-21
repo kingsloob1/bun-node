@@ -351,6 +351,14 @@ export {
   type ValidationTarget,
   type ValidatorMiddleware,
 } from "./BunValidate";
+export {
+  type ResponseSchemas,
+  type ResponseSpec,
+  type ResponseSpecObject,
+  ResponseValidationError,
+  type ResponseValidationMode,
+  type SetCookieView,
+} from "./responseValidation";
 export type { StandardSchemaV1 } from "./types/standardSchema";
 /* ------------------------------------------------------------------ *
  * The transport-agnostic contract core (`lib/contract/`), also the
