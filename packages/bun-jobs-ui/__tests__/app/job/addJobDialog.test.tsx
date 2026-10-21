@@ -416,6 +416,45 @@ describe("the add-job dialog: results and errors", () => {
       expect(errorOf(dialog, "Attempts")).toBe("Must be ≥ 1"),
     );
     expect(errorOf(dialog, "Name")).toBe("Too long");
+    expectAbsent(within(dialog).queryByRole("alert"), "a banner");
+  });
+
+  it("shows a VALIDATION issue no field shows in a banner", async () => {
+    const { dialog } = await openAdd({
+      meta: jobMeta({ addableNames: ["a"] }),
+      post: {
+        status: 400,
+        body: problem(400, "VALIDATION", "Validation failed", {
+          issues: [
+            { target: "headers", path: "x-tenant", message: "Required" },
+          ],
+        }),
+      },
+    });
+    await submit(dialog);
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("headers.x-tenant Required");
+  });
+
+  it("shows body issues under their fields and the rest in a banner", async () => {
+    const { dialog } = await openAdd({
+      meta: jobMeta({ addableNames: ["a"] }),
+      post: {
+        status: 400,
+        body: problem(400, "VALIDATION", "Validation failed", {
+          issues: [
+            { target: "body", path: "opts.attempts", message: "Must be ≥ 1" },
+            { target: "headers", path: "x-tenant", message: "Required" },
+          ],
+        }),
+      },
+    });
+    await submit(dialog);
+    await waitFor(() =>
+      expect(errorOf(dialog, "Attempts")).toBe("Must be ≥ 1"),
+    );
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("headers.x-tenant Required");
   });
 
   it("shows SERIALIZATION under the data", async () => {

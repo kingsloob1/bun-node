@@ -215,6 +215,31 @@ describe("the update dialog", () => {
     expect(page().getByRole("dialog", { name: "Edit job" })).toBeTruthy();
   });
 
+  it("shows a VALIDATION issue no field shows in a banner, beside the field ones", async () => {
+    const { dialog } = await openEdit({
+      status: 400,
+      body: problem(400, "VALIDATION", "Validation failed", {
+        issues: [
+          {
+            target: "body",
+            path: "priority",
+            message: "Expected a finite number",
+          },
+          { target: "headers", path: "x-tenant", message: "Required" },
+        ],
+      }),
+    });
+    fireEvent.change(within(dialog).getByLabelText("Priority"), {
+      target: { value: "3" },
+    });
+    await save(dialog);
+    await waitFor(() =>
+      expect(errorOf(dialog, "Priority")).toBe("Expected a finite number"),
+    );
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("headers.x-tenant Required");
+  });
+
   it("explains a 409 JOB_STATE_CONFLICT inline", async () => {
     const { dialog } = await openEdit({
       status: 409,

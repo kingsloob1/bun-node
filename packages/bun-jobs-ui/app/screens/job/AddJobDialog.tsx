@@ -93,7 +93,9 @@ function OpenAddJobDialog({ queue, onClose }: AddJobDialogProps) {
       ? (explainJobError(apiError, "add") ?? apiError.detail)
       : undefined);
   const bannerError =
-    add.error && !inlineCode && Object.keys(serverErrors).length === 0
+    add.error &&
+    !inlineCode &&
+    (Object.keys(serverErrors).length === 0 || add.unplacedIssues.length > 0)
       ? add.error
       : null;
   const bodyError = serverErrors.body ?? serverErrors.opts;

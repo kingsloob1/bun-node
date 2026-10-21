@@ -175,7 +175,9 @@ function LimitsEditor({
   const contended =
     isApiError(save.error) && save.error.code === "LIMITS_CONTENDED";
   const bannerError =
-    save.error && Object.keys(save.fieldErrors).length === 0
+    save.error &&
+    (Object.keys(save.fieldErrors).length === 0 ||
+      save.unplacedIssues.length > 0)
       ? save.error
       : null;
   const nextKey = draft.names.reduce(
