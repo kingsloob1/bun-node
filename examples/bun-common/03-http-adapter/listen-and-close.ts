@@ -15,9 +15,11 @@
  * - A busy port is an error: `listen()` rejects rather than binding somewhere
  *   else, as `node:http` does.
  * - `listen()` binds TCP only; there is no unix-socket form.
- * - `close()` force-closes (`server.stop(true)`), so a keep-alive connection
- *   cannot keep answering from a stopped server. Routes and the error and
- *   not-found handlers survive it, so the adapter can listen again as it was.
+ * - `close()` lets the requests in flight finish (for at most the
+ *   `closeDrainTimeout` option, 10 s by default), then force-closes
+ *   (`server.stop(true)`), so nothing of a stopped server keeps answering:
+ *   `shutdown.ts` shows the drain. Routes and the error and not-found
+ *   handlers survive it, so the adapter can listen again as it was.
  */
 import type { BunServer, WebSocketClientData } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";

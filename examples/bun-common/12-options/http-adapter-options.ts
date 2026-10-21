@@ -32,7 +32,10 @@
  * - `useStaticAssets` also answers the bare prefix, a `301` to the prefix
  *   with its slash, and `getRequestHostname` is `req.hostname`, the host
  *   without its port.
- * - `close()` keeps routes and the error/not-found handlers.
+ * - `close()` keeps routes and the error/not-found handlers. It lets the
+ *   requests in flight finish first, for at most `closeDrainTimeout`
+ *   milliseconds (10 s by default; `0` cuts them at once; a negative or
+ *   non-finite value is a `RangeError` at construction), then force-closes.
  * - Static files and the rendered view live in a temporary directory, removed
  *   at the end.
  */
@@ -428,6 +431,69 @@ check(
   "routeCacheMax: 1 evicts the older signature",
   capped.getMatchedLayers(signature) !== x1,
 );
+
+/* ------------------------------------------------------------------ */
+step("closeDrainTimeout (streams and WebSockets: 03-http-adapter/shutdown.ts)");
+{
+  for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, "100"]) {
+    await checkRejects(
+      `closeDrainTimeout: ${typeof bad === "string" ? `"${bad}"` : String(bad)} throws at construction`,
+      () => new BunHttpAdapter(0, { closeDrainTimeout: bad as number }),
+      { name: "RangeError", message: /closeDrainTimeout must be/ },
+    );
+  }
+
+  /**
+   * An adapter listening on port 0 with one route, `/hang`, that answers only
+   * once the returned `release()` is called; it resolves once a request is
+   * inside that route.
+   */
+  const hanging = async (options: { closeDrainTimeout?: number }) => {
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const adapter = new BunHttpAdapter(0, { logger: noopLogger, ...options });
+    adapter.get("/hang", async (_req, res) => {
+      entered.resolve();
+      await released.promise;
+      res.send("answered");
+    });
+    await adapter.listen(0);
+    const request = fetch(`${adapter.url}/hang`).then(
+      async (response) => `${response.status} ${await response.text()}`,
+      () => "cut",
+    );
+    await entered.promise;
+    return { adapter, request, release: () => released.resolve() };
+  };
+
+  // The default (10 s): close() waits for a request that finishes in time.
+  {
+    const { adapter, request, release } = await hanging({});
+    let closed = false;
+    const closing = adapter.close().then(() => {
+      closed = true;
+    });
+    await Bun.sleep(200);
+    check("by default close() waits for the request in flight", !closed);
+    release();
+    await closing;
+    checkEqual("…which is answered in full", await request, "200 answered");
+  }
+
+  // 0: nothing waits.
+  {
+    const { adapter, request, release } = await hanging({
+      closeDrainTimeout: 0,
+    });
+    await adapter.close();
+    checkEqual(
+      "closeDrainTimeout: 0 cuts the request in flight at once",
+      await request,
+      "cut",
+    );
+    release();
+  }
+}
 
 /* ------------------------------------------------------------------ */
 step("server: Bun.serve options");
