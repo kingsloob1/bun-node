@@ -555,14 +555,32 @@ export type RemoteParseResult<T> =
       issues: { path: string; message: string }[];
     };
 
-/** Runs one schema synchronously and flattens its issues. */
+/** Whether a schema's answer is a thenable (a native `Promise` or any other). */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    ((typeof value === "object" && value !== null) ||
+      typeof value === "function") &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+/**
+ * Runs one schema synchronously and flattens its issues.
+ *
+ * Not bun-common's `validateStandard`: this entry bundles for an edge isolate
+ * without bun-common (`__tests__/remote/remote-bundle.test.ts`), and the
+ * builder's messages never quote the received value, so its scrub would only
+ * withhold a message that happens to spell a value or one of its keys.
+ */
 function run<T>(
   schema: Schema<unknown, any>,
   value: unknown,
 ): RemoteParseResult<T> {
   const result = schema["~standard"].validate(value);
-  if (result instanceof Promise) {
-    // The builder's validator is synchronous; a promise here is a bug.
+  // The builder's validator is synchronous; a promise here is a bug. Any
+  // thenable counts, not only a native Promise: one read as a result would
+  // have no `issues`, and pass.
+  if (isThenable(result)) {
     throw new TypeError("remote schemas validate synchronously");
   }
   if (result.issues) {
