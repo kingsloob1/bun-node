@@ -555,6 +555,15 @@ export type RemoteParseResult<T> =
       issues: { path: string; message: string }[];
     };
 
+/** Whether a schema's answer is a thenable (a native `Promise` or any other). */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
 /**
  * Runs one schema synchronously and flattens its issues.
  *
@@ -568,8 +577,10 @@ function run<T>(
   value: unknown,
 ): RemoteParseResult<T> {
   const result = schema["~standard"].validate(value);
-  if (result instanceof Promise) {
-    // The builder's validator is synchronous; a promise here is a bug.
+  // The builder's validator is synchronous; a promise here is a bug. Any
+  // thenable counts, not only a native Promise: one read as a result would
+  // have no `issues`, and pass.
+  if (isThenable(result)) {
     throw new TypeError("remote schemas validate synchronously");
   }
   if (result.issues) {

@@ -3,6 +3,7 @@ import {
   parseRemoteMessage,
   parseRemoteRequest,
   parseRemoteResponse,
+  WelcomeMessageSchema,
 } from "../../lib/remote/schemas";
 
 /**
@@ -170,4 +171,35 @@ describe("the remote parsers' issues", () => {
       issues: [{ path: "kind", message: 'Expected "job"' }],
     });
   });
+});
+
+describe("a schema answering asynchronously", () => {
+  // The builder never does; were one to, any thenable must be refused, not
+  // read as a result with no issues, which would pass.
+  for (const [kind, answer] of [
+    ["a Promise", () => Promise.resolve({ issues: [{ message: "bad" }] })],
+    [
+      "a thenable",
+      () => ({
+        then: (resolve: (value: unknown) => void) =>
+          resolve({ issues: [{ message: "bad" }] }),
+      }),
+    ],
+  ] as const) {
+    it(`throws for ${kind} rather than passing the message`, () => {
+      const standard = WelcomeMessageSchema["~standard"] as {
+        validate: (value: unknown) => unknown;
+      };
+      const original = standard.validate;
+      standard.validate = answer;
+      try {
+        expect(() => parseRemoteMessage(WELCOME)).toThrow(
+          "remote schemas validate synchronously",
+        );
+      } finally {
+        standard.validate = original;
+      }
+      expect(parseRemoteMessage(WELCOME).ok).toBe(true);
+    });
+  }
 });
