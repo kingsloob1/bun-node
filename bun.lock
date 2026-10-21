@@ -83,6 +83,7 @@
         "mongodb": "^6",
         "prettier": "^3.8.4",
         "typescript": "^6.0.3",
+        "zod": "^4",
       },
       "peerDependencies": {
         "@types/bun": ">=1.4.2",
