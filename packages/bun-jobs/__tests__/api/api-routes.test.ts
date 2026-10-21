@@ -4,7 +4,11 @@ import type {
   JobsApiConfig,
 } from "../../lib/api/config";
 import type { AnyRouteDef } from "../../lib/api/routes/define";
-import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
+import {
+  BunRouter,
+  createTestLogger,
+  ResponseValidationError,
+} from "@kingsleyweb/bun-common";
 import { afterAll, describe, expect, it } from "bun:test";
 import { resolveConfig } from "../../lib/api/config";
 import {
@@ -301,29 +305,234 @@ describe("the per-route pipeline", () => {
     expect(await response.json()).toMatchObject({ code: "UNAUTHORIZED" });
   });
 
-  it("logs a response that breaks its schema only with validateResponses", async () => {
-    const strict = createTestLogger();
-    const root = mounted(
-      api({ validateResponses: true, logger: strict.logger }),
-    );
-    const response = await root.fetch("/admin/jobs/wrong-body");
-    expect(response.status).toBe(200);
-    const logged = strict.events.filter(
-      (event) => event.message === "jobs api response did not match its schema",
-    );
-    expect(logged).toHaveLength(1);
-    expect(logged[0].level).toBe("error");
-    expect(logged[0].fields).toMatchObject({
-      operationId: "getWrongBody",
-      status: 200,
-      mismatch: "ok: Expected boolean, received string",
+  describe("validateResponses", () => {
+    /** A value no log line or problem may carry: it is only ever in the bad body. */
+    const PLANTED = "planted-response-value-7f3a";
+
+    /**
+     * A schema whose vendor message quotes the received value, as valibot's
+     * and arktype's do: built on an `s` schema so a route can declare it.
+     */
+    const Quoting = s.object({ ok: s.boolean() });
+    const QuotingSchema: typeof Quoting = Object.freeze({
+      ...Quoting,
+      "~standard": Object.freeze({
+        ...Quoting["~standard"],
+        validate: (value: unknown) => {
+          const ok = (value as { ok?: unknown } | null)?.ok;
+          return typeof ok === "boolean"
+            ? { value: { ok } }
+            : {
+                issues: [
+                  {
+                    message: `Expected boolean, got ${String(ok)}`,
+                    path: ["ok"],
+                  },
+                ],
+              };
+        },
+      }),
     });
 
-    const lax = createTestLogger();
-    await mounted(api({ logger: lax.logger })).fetch("/admin/jobs/wrong-body");
-    expect(lax.events.filter((event) => event.level === "error")).toHaveLength(
-      0,
-    );
+    /** Routes that each break their declaration a different way. */
+    const extra = (): AnyRouteDef[] => [
+      ...testRoutes(),
+      defineRoute({
+        method: "GET",
+        path: "/planted-body",
+        operationId: "getPlantedBody",
+        action: "jobs.read",
+        mode: "jobs",
+        summary: "A wrong body holding a value no log may show",
+        tags: ["Jobs"],
+        responses: { 200: QuotingSchema },
+        handler: () => ({
+          body: { ok: PLANTED } as unknown as { ok: boolean },
+        }),
+      }),
+      defineRoute({
+        method: "GET",
+        path: "/undeclared-status",
+        operationId: "getUndeclaredStatus",
+        action: "jobs.read",
+        mode: "jobs",
+        summary: "Answers a status it does not declare",
+        tags: ["Jobs"],
+        responses: { 200: s.object({ ok: s.boolean() }) },
+        handler: () => ({ status: 202, body: { ok: true } }),
+      }),
+      defineRoute({
+        method: "GET",
+        path: "/body-on-empty",
+        operationId: "getBodyOnEmpty",
+        action: "jobs.read",
+        mode: "jobs",
+        summary: "Sends a body on a status declared without one",
+        tags: ["Jobs"],
+        responses: { 204: null },
+        handler: () => ({ status: 204, body: { ok: true } as never }),
+      }),
+    ];
+
+    /** A mounted API with `validateResponses` set, and its log. */
+    function withMode(validateResponses: JobsApiConfig["validateResponses"]) {
+      const log = createTestLogger();
+      const root = mounted(
+        api(
+          {
+            ...(validateResponses === undefined ? {} : { validateResponses }),
+            logger: log.logger,
+          },
+          extra(),
+        ),
+      );
+      const mismatches = () =>
+        log.events.filter(
+          (event) =>
+            event.message === "jobs api response did not match its schema",
+        );
+      return { root, events: log.events, mismatches };
+    }
+
+    const WRONG_BODY_ISSUES = [
+      {
+        target: "body",
+        path: "ok",
+        message: "Expected boolean, received string",
+        key: "200",
+        mediaType: "application/json",
+      },
+    ];
+
+    it('`true` is `"warn"`: the response is sent and one warn line logged, with the issues', async () => {
+      for (const mode of [true, "warn"] as const) {
+        const { root, mismatches } = withMode(mode);
+        const response = await root.fetch("/admin/jobs/wrong-body");
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ ok: "yes" });
+        const logged = mismatches();
+        expect(logged).toHaveLength(1);
+        expect(logged[0].level).toBe("warn");
+        expect(logged[0].fields).toEqual({
+          operationId: "getWrongBody",
+          status: 200,
+          issues: WRONG_BODY_ISSUES,
+        });
+      }
+    });
+
+    it('`"error"` refuses the response before it is sent: 500, with the issues logged', async () => {
+      const { root, events, mismatches } = withMode("error");
+      const response = await root.fetch("/admin/jobs/wrong-body");
+      expect(response.status).toBe(500);
+      expect(response.headers.get("content-type")).toBe(
+        "application/problem+json",
+      );
+      expect(await response.json()).toMatchObject({
+        code: "INTERNAL",
+        status: 500,
+      });
+      const logged = mismatches();
+      expect(logged).toHaveLength(1);
+      expect(logged[0].level).toBe("error");
+      expect(logged[0].fields).toEqual({
+        operationId: "getWrongBody",
+        status: 200,
+        issues: WRONG_BODY_ISSUES,
+      });
+      // The API's error handler answered it, with bun-common's error.
+      const failed = events.find(
+        (event) => event.message === "jobs api request failed",
+      );
+      expect(failed?.error).toBeInstanceOf(ResponseValidationError);
+      expect((failed?.error as ResponseValidationError).responseStatus).toBe(
+        200,
+      );
+
+      // A response that matches is sent as before.
+      expect((await root.fetch("/admin/jobs/meta")).status).toBe(200);
+      expect(mismatches()).toHaveLength(1);
+    });
+
+    it('`"off"`, `false` and unset check nothing', async () => {
+      for (const mode of ["off", false, undefined] as const) {
+        const { root, events, mismatches } = withMode(mode);
+        const response = await root.fetch("/admin/jobs/wrong-body");
+        expect(response.status).toBe(200);
+        expect(mismatches()).toEqual([]);
+        expect(events.filter((event) => event.level === "error")).toEqual([]);
+      }
+    });
+
+    it("an undeclared status, and a body on a status without one, are mismatches", async () => {
+      const { root, mismatches } = withMode("warn");
+      expect((await root.fetch("/admin/jobs/undeclared-status")).status).toBe(
+        202,
+      );
+      expect((await root.fetch("/admin/jobs/body-on-empty")).status).toBe(204);
+      expect(mismatches().map((event) => event.fields)).toEqual([
+        {
+          operationId: "getUndeclaredStatus",
+          status: 202,
+          issues: [
+            {
+              target: "status",
+              path: "",
+              message: "This status is not declared",
+              key: "202",
+            },
+          ],
+        },
+        {
+          operationId: "getBodyOnEmpty",
+          status: 204,
+          issues: [
+            {
+              target: "body",
+              path: "",
+              message: "No body is declared for this status",
+              key: "204",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("no log line or answer carries a value from the body, even when the schema's message quotes it", async () => {
+      for (const mode of ["warn", "error"] as const) {
+        const { root, events, mismatches } = withMode(mode);
+        const response = await root.fetch("/admin/jobs/planted-body");
+        const text = await response.text();
+        expect(response.status).toBe(mode === "warn" ? 200 : 500);
+        expect(mismatches()).toHaveLength(1);
+        expect(mismatches()[0].fields).toMatchObject({
+          issues: [{ target: "body", path: "ok", message: "Invalid value" }],
+        });
+        // The 200 body is the handler's own; only the log and a 500 are checked.
+        if (mode === "error") {
+          expect(text).not.toContain(PLANTED);
+        }
+        const logged = JSON.stringify(
+          events.map((event) => ({
+            message: event.message,
+            fields: event.fields,
+            error: event.error?.message,
+            issues: (event.error as { issues?: unknown } | undefined)?.issues,
+          })),
+        );
+        expect(logged).not.toContain(PLANTED);
+      }
+    });
+
+    it("refuses a value it does not take", () => {
+      expect(() =>
+        resolveConfig(
+          apiConfig({
+            validateResponses: "loud" as unknown as "warn",
+          }),
+        ),
+      ).toThrow(ConfigError);
+    });
   });
 
   it("runs middleware before every route, and maps its thrown status", async () => {

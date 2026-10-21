@@ -2,7 +2,10 @@ import type {
   BunRequest,
   BunResponse,
   BunRouter,
+  ResponseSchemas,
+  ResponseSpec,
   RouterHandler,
+  ValidationIssue,
   ValidationSchemas,
 } from "@kingsleyweb/bun-common";
 import type { AuthorizeTarget } from "../auth";
@@ -15,7 +18,12 @@ import type {
 import type { ApiErrorCode } from "../errors";
 import type { Infer, Schema } from "../schema/builder";
 import type { QueueSource, RunnerSource } from "../sources";
-import { validate } from "@kingsleyweb/bun-common";
+import {
+  forwardContract,
+  ResponseValidationError,
+  validate,
+  validateStandard,
+} from "@kingsleyweb/bun-common";
 import { ConfigError } from "../../shared/errors";
 import {
   authorizeHandler,
@@ -31,7 +39,9 @@ import {
   jsonBodyGuard,
 } from "../body";
 import { isMutation } from "../config";
-import { tagRequestAction } from "../errors";
+import { API_ERROR_STATUS, tagRequestAction } from "../errors";
+import { s } from "../schema/builder";
+import { ProblemSchema } from "../schemas/common";
 
 /**
  * One route definition feeds three things: the router (validation, CSRF,
@@ -267,10 +277,126 @@ export function defaultStatus(def: AnyRouteDef): number {
   return statuses.find((status) => status >= 200 && status < 300) ?? 200;
 }
 
-/** Turns a handler's result into the response, checking it against its schema when asked. */
+/** The problem codes a route can answer with: its own plus the ones every route of its kind gets. */
+export function routeErrorCodes(
+  def: AnyRouteDef,
+  config: Pick<ResolvedJobsApiConfig, "csrf">,
+): string[] {
+  const codes = new Set<string>(["UNAUTHORIZED", "FORBIDDEN"]);
+  const mutation = isMutation(def.action);
+  if (def.params || def.query || def.body) {
+    codes.add("VALIDATION");
+  }
+  if (def.body || mutation) {
+    // Every route that reads a body checks its size and its JSON, whether or
+    // not it declares a body schema.
+    codes.add("INVALID_JSON");
+    codes.add("PAYLOAD_TOO_LARGE");
+  }
+  if (mutation && config.csrf !== false) {
+    codes.add("CSRF_REJECTED");
+    if (config.csrf.requireJson) {
+      codes.add("UNSUPPORTED_MEDIA_TYPE");
+    }
+  }
+  for (const code of def.errors ?? []) {
+    codes.add(code);
+  }
+  return [...codes].sort();
+}
+
+/** The status a documented code is answered with; `ConfigError` for a code with none. */
+function problemStatusOf(code: string, operationId: string): number {
+  const status = (API_ERROR_STATUS as Record<string, number>)[code];
+  if (status === undefined) {
+    throw new ConfigError(
+      `Route "${operationId}" documents "${code}", which has no known status`,
+      { operationId, code },
+    );
+  }
+  return status;
+}
+
+/**
+ * The problem statuses a route can answer with, ascending, each with the codes
+ * answered with it ({@link routeErrorCodes}): what the OpenAPI document and the
+ * route's contract list as `application/problem+json` responses.
+ */
+export function routeProblems(
+  def: AnyRouteDef,
+  config: Pick<ResolvedJobsApiConfig, "csrf">,
+): {
+  /** The HTTP status. */
+  status: number;
+  /** The problem codes answered with it, sorted. */
+  codes: string[];
+}[] {
+  const byStatus = new Map<number, string[]>();
+  for (const code of routeErrorCodes(def, config)) {
+    const status = problemStatusOf(code, def.operationId);
+    byStatus.set(status, [...(byStatus.get(status) ?? []), code]);
+  }
+  return [...byStatus]
+    .sort(([a], [b]) => a - b)
+    .map(([status, codes]) => ({ status, codes }));
+}
+
+/**
+ * A route's responses as a bun-common response table (plan §4.12 M5): each
+ * declared status with its JSON body schema (`null` for none), the default
+ * status's alternate representations beside it as string bodies, and every
+ * problem status the route can answer with as `application/problem+json`.
+ * The API's catch-all `default` problem response has no place in it (a
+ * status not listed is undeclared there).
+ */
+export function routeResponseTable(
+  def: AnyRouteDef,
+  config: Pick<ResolvedJobsApiConfig, "csrf">,
+): ResponseSchemas {
+  const table: Record<number, ResponseSpec> = {};
+  const alternateStatus = defaultStatus(def);
+  for (const [key, schema] of Object.entries(def.responses as RouteResponses)) {
+    const status = Number(key);
+    const alternates =
+      status === alternateStatus ? def.alternateContent : undefined;
+    table[status] =
+      alternates === undefined
+        ? schema
+        : {
+            content: {
+              ...(schema === null ? {} : { "application/json": schema }),
+              ...Object.fromEntries(
+                Object.entries(alternates).map(([type, alternate]) => [
+                  type,
+                  s.string({ description: alternate.description }),
+                ]),
+              ),
+            },
+          };
+  }
+  for (const { status } of routeProblems(def, config)) {
+    // The OpenAPI document refuses a status that is both; neither is replaced here.
+    if (!Object.hasOwn(table, status)) {
+      table[status] = {
+        content: { "application/problem+json": ProblemSchema },
+      };
+    }
+  }
+  return table;
+}
+
+/** What a mismatching response is logged as, under `validateResponses` `"warn"` and `"error"`. */
+const RESPONSE_MISMATCH = "jobs api response did not match its schema";
+
+/**
+ * Turns a handler's result into the response, checking it against its schema
+ * under `validateResponses` (`"warn"` logs a mismatch, `"error"` logs it and
+ * refuses the response before anything is written).
+ */
 function respond(def: AnyRouteDef, services: RouteServices): RouterHandler {
   const fallback = defaultStatus(def);
-  return async (req, res) => {
+  const mode = services.config.validateResponses;
+  return async (req, res, next) => {
     const result = await def.handler({
       req,
       res,
@@ -286,13 +412,16 @@ function respond(def: AnyRouteDef, services: RouteServices): RouterHandler {
     const status = result.status ?? fallback;
     const schema = def.responses[status];
 
-    if (services.config.validateResponses) {
-      const mismatch = await responseMismatch(schema, status, result.body);
-      if (mismatch) {
-        services.config.logger.error(
-          "jobs api response did not match its schema",
-          { operationId: def.operationId, status, mismatch },
-        );
+    if (mode !== "off") {
+      const issues = await responseIssues(schema, status, result.body);
+      if (issues.length > 0) {
+        const fields = { operationId: def.operationId, status, issues };
+        if (mode === "warn") {
+          services.config.logger.warn(RESPONSE_MISMATCH, fields);
+        } else {
+          services.config.logger.error(RESPONSE_MISMATCH, fields);
+          return next(new ResponseValidationError(issues, status));
+        }
       }
     }
 
@@ -309,34 +438,47 @@ function respond(def: AnyRouteDef, services: RouteServices): RouterHandler {
   };
 }
 
-/** Why a response does not match its declaration, or `undefined` when it does. */
-async function responseMismatch(
+/**
+ * Why a response does not match its declaration, as bun-common's response
+ * issues (target `status` or `body`, `key` the status): none when it matches.
+ * Issues come from bun-common's runner, so no message quotes the body.
+ */
+async function responseIssues(
   schema: Schema<any, any> | null | undefined,
   status: number,
   body: unknown,
-): Promise<string | undefined> {
+): Promise<ValidationIssue<"status" | "body">[]> {
+  const key = String(status);
   if (schema === undefined) {
-    return `status ${status} is not declared`;
+    return [
+      {
+        target: "status",
+        message: "This status is not declared",
+        path: "",
+        key,
+      },
+    ];
   }
   if (schema === null) {
-    return body === undefined ? undefined : `status ${status} declares no body`;
+    return body === undefined
+      ? []
+      : [
+          {
+            target: "body",
+            message: "No body is declared for this status",
+            path: "",
+            key,
+          },
+        ];
   }
-  const result = await schema["~standard"].validate(body);
-  if (!result.issues) {
-    return undefined;
-  }
-  return result.issues
-    .map((issue) => {
-      const path = (issue.path ?? [])
-        .map((segment) =>
-          typeof segment === "object" && segment !== null && "key" in segment
-            ? String(segment.key)
-            : String(segment),
-        )
-        .join(".");
-      return `${path || "(body)"}: ${issue.message}`;
-    })
-    .join("; ");
+  const outcome = await validateStandard(
+    schema,
+    body,
+    "body",
+    key,
+    "application/json",
+  );
+  return outcome.ok ? [] : outcome.issues;
 }
 
 /** Thrown by {@link targetFromPath} when a route's `target` reads more than the path. */
@@ -434,7 +576,9 @@ function selfAuthorizedGate(
  * 5. `authorizeHandler` — with the target read from the **validated** inputs
  *    (for a route that {@link RouteDef.authorizesItself}, a gate that asks
  *    only when a check failed, and the handler asks per target);
- * 6. the handler.
+ * 6. the handler, whose layer carries the route's HTTP contract
+ *    (`getContract(layer)`): its params, query and body schemas and
+ *    {@link routeResponseTable}.
  *
  * Steps 2–4 are deferred ({@link deferFailure}): a failure is recorded, not
  * answered, and step 5 asks `authorize` once before the client learns what was
@@ -511,8 +655,17 @@ export function registerRoutes(
     if (def.body) {
       schemas.body = def.body;
     }
+    // One validator per route: registered (deferred) when there is a request
+    // part to check, and in every case the carrier of the route's full HTTP
+    // contract, which the terminal layer is given below (plan §4.12 M5). Its
+    // own `responseValidation: "off"` installs no response gate whatever a
+    // host router sets: `validateResponses` checks the handler's result.
+    const validator = validate(schemas, {
+      responses: routeResponseTable(def, config),
+      responseValidation: "off",
+    });
     if (Object.keys(schemas).length > 0) {
-      handlers.push(deferred(validate(schemas)));
+      handlers.push(deferred(validator));
     }
     const target = def.target;
     const pathTarget = targetFromPath(def);
@@ -537,7 +690,10 @@ export function registerRoutes(
         }),
       );
     }
-    handlers.push(respond(def, services));
+    // The terminal layer carries the route's contract, so a route listing
+    // (`getContract(layer)`, `describeContract`) finds params, query, body
+    // and responses on it, though the validator layer is wrapped.
+    handlers.push(forwardContract(respond(def, services), validator));
 
     const verb = def.method.toLowerCase() as Lowercase<RouteMethod>;
     // eslint-disable-next-line @typescript-eslint/unbound-method -- oven-sh/bun#45784: a union-keyed method, bound by .call below

@@ -26,7 +26,8 @@ import type {
   RunnerStats,
   TriggerOutcome,
 } from "../../lib/index";
-import { BunRouter, validate } from "@kingsleyweb/bun-common";
+import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
+import { BunRouter, validate, variants } from "@kingsleyweb/bun-common";
 import { s } from "../../lib/api/schema/builder";
 
 type Equal<X, Y> =
@@ -172,6 +173,90 @@ export type QueryKeepsType = Expect<QueryEqual>;
 type QueryStringEqual = Equal<Infer<typeof _Coerced>, { limit: string }>;
 // @ts-expect-error — coercion changes the input, never the output type.
 export type QueryIsString = Expect<QueryStringEqual>;
+
+/* --- m11: a defaulted key is optional on input, required in output --- */
+
+const _M11 = s.object({
+  a: s.string(),
+  d: s.integer({ default: 1 }),
+  od: s.optional(s.boolean({ default: true })),
+  o: s.optional(s.string()),
+  list: s.array(s.object({ n: s.number({ default: 0 }) })),
+  map: s.record(s.object({ m: s.enum(["x", "y"], { default: "x" }) })),
+  maybe: s.nullable(s.object({ z: s.string({ default: "z" }) })),
+  either: s.union(s.object({ u: s.integer({ default: 2 }) }), s.literal(0)),
+});
+type M11In = StandardSchemaV1.InferInput<typeof _M11>;
+type M11InEqual = Equal<
+  M11In,
+  {
+    a: string;
+    d?: number;
+    od?: boolean;
+    o?: string;
+    list: { n?: number }[];
+    map: Record<string, { m?: "x" | "y" }>;
+    maybe: { z?: string } | null;
+    either: { u?: number } | 0;
+  }
+>;
+export type M11InMatches = Expect<M11InEqual>;
+
+type M11OutEqual = Equal<
+  Infer<typeof _M11>,
+  {
+    a: string;
+    d: number;
+    od: boolean;
+    o?: string;
+    list: { n: number }[];
+    map: Record<string, { m: "x" | "y" }>;
+    maybe: { z: string } | null;
+    either: { u: number } | 0;
+  }
+>;
+export type M11OutMatches = Expect<M11OutEqual>;
+
+type M11InIsOutEqual = Equal<M11In, Infer<typeof _M11>>;
+// @ts-expect-error — the input is not the output: a defaulted key is optional in it.
+export type M11InIsOut = Expect<M11InIsOutEqual>;
+
+type M11InRequiresDefaulted = Equal<M11In["d"], number>;
+// @ts-expect-error — `d` has a default, so the input may leave it out.
+export type M11DefaultedRequiredOnInput = Expect<M11InRequiresDefaulted>;
+
+// The converter is declared, so bun-common's readers see it in the type.
+type Converter = (typeof _M11)["~standard"]["jsonSchema"];
+type ConverterReturns = Equal<
+  ReturnType<Converter["input"] | Converter["output"]>,
+  Record<string, unknown>
+>;
+export type ConverterTyped = Expect<ConverterReturns>;
+
+/* --- s through bun-common's res.variant(): literal fields fillable --- */
+
+const _Kinded = s.object({ kind: s.literal("a"), n: s.integer() });
+const variantRouter = new BunRouter();
+variantRouter.get(
+  "/v",
+  validate(
+    {},
+    {
+      responses: {
+        200: variants({ a: { content: { "application/json": _Kinded } } }),
+      },
+    },
+  ),
+  (req, res) => {
+    if (req.query.n === "1") {
+      // `s` carries ~standard.jsonSchema, so `kind` is filled at runtime and
+      // optional here, as for zod.
+      return res.status(200).variant("a").json({ n: 1 });
+    }
+    // @ts-expect-error — without .variant() nothing is filled: kind is required.
+    return res.status(200).json({ n: 1 });
+  },
+);
 
 /* --- through bun-common's typed routes ------------------------------- */
 
