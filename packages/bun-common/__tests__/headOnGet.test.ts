@@ -173,7 +173,8 @@ describe("HEAD on a GET route: what it answers", () => {
         // Control: unconditional.
         expect((await raw(server.port!, "HEAD", path)).status).toBe(200);
       }
-      // GET's rule is unchanged: no 304 without a validator.
+      // GET's no-headers path does not look (a known difference from Express,
+      // responseNoHeaders.test.ts says why).
       const get = await adapter.fetch("/t", {
         headers: { "if-none-match": "*" },
       });

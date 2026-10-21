@@ -996,7 +996,16 @@ const CACHE_NO_CACHE = /(?:^|,)\s*no-cache\s*(?:,|$)/;
 
 /**
  * Determines whether a cached response is still fresh given request and
- * response headers, per RFC 7232.
+ * response headers — a port of the `fresh` package 2.0.0, which Express 5
+ * runs for `req.fresh`:
+ *
+ * - no `If-None-Match` and no `If-Modified-Since`: never fresh;
+ * - `Cache-Control: no-cache` on the request: never fresh;
+ * - `If-None-Match` takes precedence over `If-Modified-Since`, which is then
+ *   ignored: `*` is fresh on its own, with no `ETag` needed; a list is fresh
+ *   when one of its tags matches the response's `ETag` (weakly);
+ * - otherwise `If-Modified-Since` is fresh when the response's
+ *   `Last-Modified` is not later.
  */
 export function fresh(
   reqHeaders: Record<string, string | string[] | undefined>,
@@ -1005,6 +1014,7 @@ export function fresh(
   const modifiedSince = reqHeaders["if-modified-since"];
   const noneMatch = reqHeaders["if-none-match"];
 
+  // An unconditional request.
   if (!modifiedSince && !noneMatch) {
     return false;
   }
@@ -1019,50 +1029,67 @@ export function fresh(
     return false;
   }
 
-  // If-None-Match
-  if (noneMatch && noneMatch !== "*") {
+  // If-None-Match, which takes precedence over If-Modified-Since.
+  if (noneMatch) {
+    const list = Array.isArray(noneMatch) ? noneMatch.join(",") : noneMatch;
+    if (list === "*") {
+      return true;
+    }
+
     const etagHeader = resHeaders.etag;
-    if (!etagHeader) {
+    const currentEtag = Array.isArray(etagHeader) ? etagHeader[0] : etagHeader;
+    if (!currentEtag) {
       return false;
     }
 
-    const matches = parseTokenList(
-      Array.isArray(noneMatch) ? noneMatch.join(",") : noneMatch,
-    );
-    const currentEtag = Array.isArray(etagHeader) ? etagHeader[0] : etagHeader;
-    let etagMatches = false;
-    for (const match of matches) {
+    for (const match of freshTokenList(list)) {
       if (
         match === currentEtag ||
         match === `W/${currentEtag}` ||
         `W/${match}` === currentEtag
       ) {
-        etagMatches = true;
-        break;
+        return true;
       }
     }
-    if (!etagMatches) {
-      return false;
-    }
+    return false;
   }
 
-  // If-Modified-Since
-  if (modifiedSince) {
-    const lastModified = resHeaders["last-modified"];
-    const since = Array.isArray(modifiedSince)
-      ? modifiedSince[0]
-      : modifiedSince;
-    const modified = Array.isArray(lastModified)
-      ? lastModified[0]
-      : lastModified;
-    const lastModifiedValid =
-      modified && Date.parse(modified) <= Date.parse(since);
-    if (!lastModifiedValid) {
-      return false;
+  // If-Modified-Since.
+  const since = Array.isArray(modifiedSince) ? modifiedSince[0] : modifiedSince;
+  const lastModified = resHeaders["last-modified"];
+  const modified = Array.isArray(lastModified) ? lastModified[0] : lastModified;
+  if (!modified || since === undefined) {
+    return false;
+  }
+  return Date.parse(modified) <= Date.parse(since);
+}
+
+/**
+ * Splits an `If-None-Match` list as `fresh` 2.0.0 does: on commas, dropping
+ * the spaces (only spaces, not tabs) around each token, empty tokens kept.
+ */
+function freshTokenList(str: string): string[] {
+  let end = 0;
+  let start = 0;
+  const list: string[] = [];
+  for (let i = 0, len = str.length; i < len; i++) {
+    switch (str.charCodeAt(i)) {
+      case 0x20 /* space */:
+        if (start === end) {
+          start = end = i + 1;
+        }
+        break;
+      case 0x2c /* , */:
+        list.push(str.substring(start, end));
+        start = end = i + 1;
+        break;
+      default:
+        end = i + 1;
+        break;
     }
   }
-
-  return true;
+  list.push(str.substring(start, end));
+  return list;
 }
 
 function parseTokenList(str: string): string[] {

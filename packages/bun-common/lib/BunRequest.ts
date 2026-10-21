@@ -5452,11 +5452,12 @@ export class BunRequest<
       const modifiedSince = this.headersObj.get("if-modified-since");
       const noneMatch = this.headersObj.get("if-none-match");
 
-      // Without a validator there is nothing to revalidate against, so the
-      // response can never be fresh — `fresh()` itself returns false on this
-      // exact condition. Short-circuiting here keeps the overwhelmingly common
-      // unconditional request from reading a third header, allocating two
-      // object literals and calling into `fresh()`.
+      // An unconditional request is never fresh — `fresh()` itself returns
+      // false on this exact condition. Short-circuiting here keeps the
+      // overwhelmingly common unconditional request from reading a third
+      // header, allocating two object literals and calling into `fresh()`.
+      // (A conditional one can be fresh with no validator on the response:
+      // `If-None-Match: *` is, as in Express.)
       if (modifiedSince === null && noneMatch === null) {
         return false;
       }

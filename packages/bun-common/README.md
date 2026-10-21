@@ -1209,8 +1209,21 @@ itself writes for such a body, so a response's `Content-Type` is the same
 whether or not other headers were set, and `res.getHeader("Content-Type")`
 reports it after the send. A `HEAD` request always takes the full path.
 
-Freshness follows Express: a fresh conditional request becomes 304, and a 204
-or 304 loses its body headers.
+Freshness follows Express (its `fresh` 2.0.0): a fresh conditional request
+becomes 304, and a 204 or 304 loses its body headers. Only a 2xx (or 304)
+answer to a `GET` or `HEAD` can be fresh, and never with `Cache-Control:
+no-cache` on the request. `If-None-Match` takes precedence over
+`If-Modified-Since`, which is then ignored: `If-None-Match: *` is fresh on its
+own, with no `ETag` on the response, and a list of tags is fresh when one of
+them matches the `ETag` (weakly; a list holding `*` is not the wildcard).
+`If-Modified-Since` alone is fresh only against a `Last-Modified` no later
+than its date. One known difference: a `GET` answered on the no-`Headers` path
+above does not look for `If-None-Match: *`, and answers it with its own status
+where Express answers `304` (a `HEAD`, or a `GET` that sets any header, gets
+the `304`). Looking would make Bun build the request's headers on every plain
+`GET`, which measured +6–13% per served request. The exported `fresh()`
+also accepts a header given as an array (bun-common's request headers can be
+`string[]`), where `fresh` 2.0.0 throws.
 
 Example:
 [`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts).

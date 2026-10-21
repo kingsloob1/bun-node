@@ -123,7 +123,7 @@ describe("freshness", () => {
     return app.fetch("/x", { headers });
   }
 
-  it("no validator: only If-None-Match: * makes it fresh, as fresh() does", async () => {
+  it("no validator: only If-None-Match: * makes it fresh, If-Modified-Since beside it or not", async () => {
     expect((await serve({})).status).toBe(200);
     expect((await serve({ "if-none-match": '"abc"' })).status).toBe(200);
     expect(
@@ -137,7 +137,7 @@ describe("freshness", () => {
           "if-modified-since": new Date().toUTCString(),
         })
       ).status,
-    ).toBe(200);
+    ).toBe(304);
   });
 
   it("with an ETag or Last-Modified, the full check runs", async () => {

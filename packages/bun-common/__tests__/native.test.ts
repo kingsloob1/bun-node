@@ -401,6 +401,47 @@ describe("native: fresh", () => {
       true,
     );
   });
+
+  // The cases below are `fresh` 2.0.0's, the version Express 5.3.0 runs.
+  it("finds if-none-match: * fresh with no ETag, unless no-cache", () => {
+    expect(fresh({ "if-none-match": "*" }, {})).toBe(true);
+    expect(
+      fresh({ "if-none-match": "*", "cache-control": "no-cache" }, {}),
+    ).toBe(false);
+    // A list holding `*` is a list of tags, not the wildcard.
+    expect(fresh({ "if-none-match": '*, "x"' }, {})).toBe(false);
+  });
+
+  it("lets if-none-match take precedence over if-modified-since", () => {
+    const past = "Tue, 01 Jan 2019 00:00:00 GMT";
+    const later = "Wed, 01 Jan 2020 00:00:00 GMT";
+    // A modification after the date, or no date to compare: still fresh.
+    expect(
+      fresh(
+        { "if-none-match": '"a"', "if-modified-since": past },
+        { etag: '"a"', "last-modified": later },
+      ),
+    ).toBe(true);
+    expect(fresh({ "if-none-match": "*", "if-modified-since": past }, {})).toBe(
+      true,
+    );
+    // An unmodified date does not rescue a tag that does not match.
+    expect(
+      fresh(
+        { "if-none-match": '"b"', "if-modified-since": later },
+        { etag: '"a"', "last-modified": past },
+      ),
+    ).toBe(false);
+  });
+
+  it("matches a tag list as fresh 2.0.0 splits it", () => {
+    const tag = { etag: '"a"' };
+    expect(fresh({ "if-none-match": '"x",  "a" ' }, tag)).toBe(true);
+    expect(fresh({ "if-none-match": 'W/"a"' }, tag)).toBe(true);
+    expect(fresh({ "if-none-match": '"a"' }, { etag: 'W/"a"' })).toBe(true);
+    // Only spaces are trimmed: a tab stays part of the token.
+    expect(fresh({ "if-none-match": '"x",\t"a"' }, tag)).toBe(false);
+  });
 });
 
 describe("native: rangeParser", () => {
