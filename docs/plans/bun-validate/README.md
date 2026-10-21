@@ -1894,6 +1894,15 @@ schema there, an `application/json` body. `chunks()`'s `framing` values
 media type mapped to `null` (V3a's deferral) is built, in the core's
 `MediaMap`.
 
+**`validate()` (2026-10-21):** the user approved extending the guard
+options `messages: "generic"` and `redactPaths` (Q-C2, Q-C3) to `validate()` /
+`BunValidateOptions`, with the same names and semantics, and asked that they
+word both sides: every issue the validator's request schemas report (the
+`ValidationError`, so the `"respond"` body and the `"throw"` and `"next"`
+errors) and its `responses` checks' (`ResponseValidationError` and the
+`"warn"` log). Per validator only, no router or adapter option; a mount's
+validator and a route's checked together take the stricter of the two.
+
 **V2 (2026-10-21):** `ContractEntry.implicit` approved; a declared part beats an implicit one in `mergeContracts`, silently; `TypedRouteHandler` gains a trailing `TRes` now, for V3a.
 
 **V1's names were approved on 2026-10-20**: the core's functions and types in
@@ -1920,7 +1929,7 @@ The rest stay internal. **V2's names were approved on 2026-10-21**: the
 | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `StandardValidationModule`, `ValidationExceptionFilter`, `ResponseValidationInterceptor`, `WsValidationFilter`, `@Validated(part)`, `reply()` | pipes, class factory, module, filters, interceptor, decorator, helper | bun-nest root |
 | `schema: { data, result }`, `dataValidation` (`{ enqueue, process }`), `resultValidation`, `JobDataValidationError`, `JobMapFromSchemas` | definition and queue options, error, type | bun-jobs |
 | `messageValidation`, `closeOnInvalid` | `defineChannel` options (TC's function) | bun-common |
-| `redactPaths`, `messages: "generic"` | guard options (if Q-C2, Q-C3) | bun-common |
+| `redactPaths`, `messages: "generic"` | guard options (if Q-C2, Q-C3); `validate()` options too (2026-10-21) | bun-common |
 | `validateOnWrite`, `CacheSchemaFrom` | option, type | bun-cache |
 
 ---

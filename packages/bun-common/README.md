@@ -1367,11 +1367,33 @@ middleware is built, rather than being ignored. An option given as
 | `formatError` | `{ error: "Validation failed", issues }` | The JSON body `"respond"` sends. |
 | `responses` | none | The route's responses by status, typing the handler's `res`; see [Responses](#responses). |
 | `responseValidation` | the router's, else `"off"` | `"off"`, `"warn"` or `"error"`: whether `responses` is checked at runtime; see [Responses](#responses). |
+| `messages` | unset (the scrub) | `"generic"` replaces every issue's message with `Invalid value` (plus the vendor's issue code when it has one), instead of withholding only a message found to quote the received value. |
+| `redactPaths` | `false` | `true` empties every issue's `path`, for schemas keyed by user data (an e-mail-keyed record, an unknown key's name). |
 
 `ValidationError` carries `issues` (each `{ target, message, path }`, with
 `path` dot-joined), `targets` and `status`. A message that quotes the
 received value is withheld (see [Contracts](#contracts)), and the middleware
 answers synchronously when every schema does.
+
+`messages: "generic"` and `redactPaths: true` are the contract guards'
+options of the same names (see [Contracts](#contracts)), set per validator;
+there is no router or adapter setting. They word every issue the
+validator's schemas report: the `ValidationError` (so the `"respond"` body,
+what `formatError` is given, and the error `"throw"` and `"next"` raise) and,
+on the response side, the `ResponseValidationError` and the `"warn"` log
+line of its `responses` checks (see [Responses](#responses)). A value
+neither takes (`messages: "Generic"`) throws a `TypeError` when the
+middleware is built. Unset, they cost nothing.
+
+```ts
+// A record keyed by e-mail: the path would name the address.
+validate(
+  { body: z.record(z.email(), z.number()) },
+  { onFailure: "respond", messages: "generic", redactPaths: true },
+);
+// 400 { error: "Validation failed",
+//       issues: [{ target: "body", path: "", message: "Invalid value (invalid_type)" }] }
+```
 
 ```ts
 import { toStandardSchema, validate } from "@kingsleyweb/bun-common";
@@ -1502,6 +1524,16 @@ place, so a synchronous request stays synchronous; yup, an async schema, or a
 body that must be read (a `Blob`, a passed-through `Response`) holds the
 response until the check settles. Use `"error"` in development and tests and
 `"off"` or `"warn"` in production.
+
+The validator's `messages` and `redactPaths` word the issues its `responses`
+checks report, in a `ResponseValidationError` and in a `"warn"` line alike,
+for the headers, cookies and body schemas, a router's `commonResponses`
+included. An issue the check writes itself (an undeclared status or media
+type, a body that is not JSON) names only what is declared, and is kept as
+it is; an `sse()` event's issues keep their `<event>.data` prefix, a
+declared name. A mount's validator and a route's checked together use the
+stricter of the two: either one's `messages: "generic"` or
+`redactPaths: true` holds.
 
 ##### Streamed bodies: `chunks()`, `sse()` and `opaque()`
 
@@ -1662,7 +1694,8 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   received value (valibot, arktype, yup and zod all do in some messages) is
   replaced by `Invalid value (<code>)`. The scrub is a heuristic, so
   `messages: "generic"` replaces every message, and `redactPaths: true`
-  empties paths, since a path can name a key the sender chose. `onIssues(issues,
+  empties paths, since a path can name a key the sender chose (both are
+  [`validate()` options](#validation) too). `onIssues(issues,
   context)` is a telemetry hook, called once per failing message.
 - **Contracts are readable at runtime.** `attachContract(handler, contract)`
   carries one, non-enumerably, and `getContract(handler)` reads it back. A
