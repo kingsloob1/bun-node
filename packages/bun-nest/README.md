@@ -177,8 +177,9 @@ What changes for an application on this adapter when it moves to Nest 12:
   it `string`. Nest 11 calls `handleDisconnect(client)`. See
   [Standalone and custom adapters](#standalone-and-custom-adapters).
 - **`routeResolutionStrategy` and `routeConflictPolicy` work as on Express.**
-  `isRouteOrderSensitive()` returns `true`, as platform-express's does. So
-  under `"specificity"`, Nest sorts the routes and the router keeps that
+  They are the core's options, given to `NestFactory.create()`; the adapter
+  only reports `isRouteOrderSensitive()` as `true`, as platform-express does.
+  So under `"specificity"`, Nest sorts the routes and the router keeps that
   order, and conflicts give the same warnings and `RouteConflictException`.
   Use Nest's option rather than `router: { routeSpecificity: true }`, which
   ranks differently
@@ -196,8 +197,8 @@ What changes for an application on this adapter when it moves to Nest 12:
   [`listen()` and `close()`](#listen-and-close)) and, from 12.1,
   `app.useSecurityHeaders()` and `app.enableCsrfProtection()` (see
   [Security headers and CSRF protection](#security-headers-and-csrf-protection)).
-- **From Nest 12.2.0**, `exclude()` matches as the router does
-  ([Nest middleware](#nest-middleware)), a route's `dest` replaces the
+- **From Nest 12.2.0**, `exclude()` follows the router's trailing-slash and
+  case settings ([Nest middleware](#nest-middleware)), a route's `dest` replaces the
   module's storage ([Module-level options](#module-level-options-multermodule)),
   files are removed when a pipe rejects the request
   ([Interceptors](#interceptors)), and a WebSocket exception whose `cause`
@@ -252,7 +253,7 @@ What differs by release, and what the adapter reads to tell:
 | A route's `dest` | module wins | module wins | module wins | route wins | `isRejectedByPipes` (2) |
 | Files removed on a pipe's rejection | no | no | no | yes | `isRejectedByPipes` (2) |
 | `exclude()` matching | Nest's | Nest's | Nest's | the router's | — |
-| A middleware matched twice runs | twice | twice | twice | once | the core's `registerHandler` (3) |
+| A middleware two of one entry's paths match runs | twice | twice | twice | once | the core's `registerHandler` (3) |
 | WS exception frame | ours | ours | ours | ours | `emitMessage` on Nest's filter |
 | `handleDisconnect` 2nd argument | none | none | close code | close code | — |
 | Express's redirect page, filenames | 5.2.1's | 5.2.1's | 5.2.1's | 5.3.0's | — |
@@ -262,12 +263,17 @@ What differs by release, and what the adapter reads to tell:
 2. `isRejectedByPipes` in `@nestjs/core/internal`, added in 12.2.0.
 3. Asked of the core's own `MiddlewareModule.prototype.registerHandler` when
    the adapter loads, with stand-ins: one middleware at two paths, one
-   request through both.
+   request through both. In an app, `forRoutes("*")` under a global prefix
+   runs once on `/api/` on every release measured (11.2.7, 12.1.3, 12.2.0),
+   on both adapters: before 12.2.0 the core's exact `/api$` entry skips
+   `/api/`, leaving it to the wildcard entry; on 12.2.0 it serves `/api/`
+   too and the core runs the middleware once.
 
 A dash means the adapter reads nothing: the core calls what it needs
 (`getRouteMatchingOptions()` for `exclude()`), and an older core never calls
 it. "Nest's" exclusion matching is the core's own (path-to-regexp's
-defaults), on both adapters alike. The last row is bun-common's answer on
+defaults: case-insensitive, an optional trailing slash), on both adapters
+alike. The last row is bun-common's answer on
 every release, which Express matches from 5.3.0 (Nest 12.2.0); the
 difference is listed under
 [known differences](#known-differences-from-nestjsplatform-express), with
@@ -439,15 +445,22 @@ order ahead of the route handler. Its path is prefix-matched, like Express's
 `use(path)`. Middleware receives a `BunRequest` and a `BunResponse`. A global
 prefix (`app.setGlobalPrefix`) applies as usual.
 
-From Nest 12.2.0, `exclude()` matches its routes as the router matches
-paths, which the adapter reports through `getRouteMatchingOptions()`, as
-`@nestjs/platform-express` 12.2.0 does: case-insensitively unless the
-`router` option sets `caseSensitive: true`, and with an optional trailing
-slash. So `exclude("users/login")` also skips the middleware on
-`/users/login/`, which the `users/login` route serves, while
-`exclude("invoices/{*path}")` still runs it on `/invoices/`, which the
-`invoices` route serves. Earlier Nest releases match exclusions their own
-way, on both adapters alike.
+From Nest 12.2.0, the core asks the adapter how its router matches paths
+(`getRouteMatchingOptions()`) and matches `exclude()` routes the same way.
+The adapter answers as `@nestjs/platform-express` 12.2.0 does:
+case-insensitive unless the `router` option sets `caseSensitive: true`, and
+a trailing slash ignored. Earlier cores use path-to-regexp's defaults
+(case-insensitive, an optional trailing slash) on both adapters alike, so
+`exclude("users/login")` skips the middleware on `/users/LOGIN` and
+`/users/login/` on every release. What 12.2.0 changes, on both adapters:
+
+- `exclude("invoices/{*path}")` runs the middleware on `/invoices/`, which
+  the `invoices` route serves; earlier cores skip it.
+- With `router: { caseSensitive: true }` (Express: `case sensitive routing`),
+  `exclude("users/login")` runs it on `/users/LOGIN`; earlier cores skip it.
+
+Measured in whole apps on Nest 11.2.7, 12.1.3 and 12.2.0
+([evidence](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/nestjs-12-parity/evidence/middleware-1220/README.md)).
 
 See
 [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts).
