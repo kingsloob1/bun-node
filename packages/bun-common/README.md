@@ -1933,7 +1933,17 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
 - **Issues never carry the received value.** Every issue is `{ target,
   message, path, key?, mediaType? }`. A vendor message that quotes the
   received value (valibot, arktype, yup and zod all do in some messages) is
-  replaced by `Invalid value (<code>)`. The scrub is a heuristic, so
+  replaced by `Invalid value (<code>)`. A message is compared with what its
+  issue is about: the value at the issue's path (its leaves, and its keys
+  when it is an object), the keys of the object holding it, and the path's
+  keys. So `Expected one of "waiting", "active"` survives another field
+  holding `"waiting"`. A root issue (no path) is compared with the whole
+  value, as is a response `refine`'s, which sees every part. A root issue's
+  message is also withheld when it names one of the value's keys of three or
+  more characters as a word, quoted or not (yup's `unspecified keys: …`), so
+  an object-level `refine` naming a field (`total must equal the item count`)
+  keeps its message only when it is given a `path`. The scrub is a heuristic,
+  so
   `messages: "generic"` replaces every message, and `redactPaths: true`
   empties paths, since a path can name a key the sender chose (both are
   [`validate()` options](#validation) too). `onIssues(issues,
