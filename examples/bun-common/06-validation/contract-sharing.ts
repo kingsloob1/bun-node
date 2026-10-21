@@ -156,9 +156,21 @@ step("describeContract(): the rows a document generator reads");
 
 const httpRows = describeContract(httpContract as AnyContract);
 show("validator", rows(httpRows));
-checkEqual("the validator declares one row: the inbound body", rows(httpRows), [
-  ["inbound", undefined, "body", undefined, "zod"],
-]);
+// A respond-mode validator also documents the 400 it answers itself, marked
+// `implicit`: a generator can list it, or leave it out of the declared rows.
+checkEqual(
+  "the validator declares the inbound body, and documents its own 400",
+  rows(httpRows),
+  [
+    ["inbound", undefined, "body", undefined, "zod"],
+    ["outbound", "400", "body", undefined, "bun-common/documented"],
+  ],
+);
+checkEqual(
+  "…the 400 marked implicit, the body declared",
+  httpRows.entries.map((entry) => entry.implicit === true),
+  [false, true],
+);
 checkEqual(
   "…as a JSON body, encoded as one",
   httpRows.entries[0]?.encoding,
