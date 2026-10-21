@@ -9,7 +9,8 @@
  * - The adapter *is* a router: `get`/`post`/`use` register straight on it.
  * - A 4-argument callback is an error handler, and like every middleware it
  *   runs in registration order — so it is registered after the routes.
- * - `listen(0)` asks the OS for a free port; `close()` force-closes it.
+ * - `listen(0)` asks the OS for a free port; `close()` lets the requests in
+ *   flight finish (10 s at most), then force-closes it.
  */
 import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";

@@ -31,6 +31,10 @@ import { join } from "node:path";
  *   on the router.
  * - `router` goes to the underlying `BunRouter`; `logger`, `etag` and
  *   `routeCacheMax` sit beside it.
+ * - `closeDrainTimeout` caps how long `close()` lets the requests in flight
+ *   finish, in milliseconds (10 s by default; `0` cuts them at once). A bad
+ *   value throws a `RangeError` here, at construction. `shutdown.ts` shows
+ *   the drain itself.
  */
 import {
   BunHttpAdapter,
@@ -184,6 +188,28 @@ const secondLookup = noCache.getMatchedLayers(signature);
 show(
   "routeCacheMax: 0 — every lookup rebuilds the pipeline",
   firstLookup !== secondLookup,
+);
+
+/* ------------------------------------------------------------------ */
+step("closeDrainTimeout: how long close() waits for requests in flight");
+
+show(
+  "closeDrainTimeout: 2000 — close() waits up to 2 s, then cuts what is left",
+  new BunHttpAdapter(0, { closeDrainTimeout: 2000 }) instanceof BunHttpAdapter,
+);
+/** What building an adapter with `closeDrainTimeout: -1` threw, if anything. */
+const drainError = ((): unknown => {
+  try {
+    return new BunHttpAdapter(0, { closeDrainTimeout: -1 });
+  } catch (error) {
+    return error;
+  }
+})();
+show("closeDrainTimeout: -1", String(drainError));
+check(
+  "…is a RangeError at construction, not on the first close()",
+  drainError instanceof RangeError,
+  drainError,
 );
 
 /* ------------------------------------------------------------------ */
