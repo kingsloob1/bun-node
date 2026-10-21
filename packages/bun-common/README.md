@@ -616,8 +616,9 @@ Example tours:
   `listeningPort`, `address()`, `timeout`. `nodeHttpServer()` returns a
   Node-style server shim whose event methods delegate to `eventEmitter`.
 
-Example:
-[`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts).
+Examples:
+[`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts),
+[`shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/shutdown.ts) (the drain, `closeDrainTimeout`, `drainAndStop()`).
 
 #### Not-found and error handlers
 
@@ -2502,6 +2503,7 @@ Each file is a standalone script whose opening comment says what it shows.
 | `02-routing` | [`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts) | Every `fetch()` input form, router versus adapter `fetch`, parity with a served request |
 | `02-routing` | [`route-cache.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/route-cache.ts) | The route cache and `routeCacheMax`, named routes, `RouteClass`, `toNativeRequest` |
 | `03-http-adapter` | [`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts) | Every `listen()` overload, address getters, events, `setListenOptions`, `close()` |
+| `03-http-adapter` | [`shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/shutdown.ts) | `close()`'s drain: an in-flight request finishing, `closeDrainTimeout` (`0`, a short cap cutting an endless stream), `drainAndStop()` on a plain `Bun.serve` |
 | `03-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/adapter-options.ts) | Every constructor option |
 | `03-http-adapter` | [`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts) | Not-found and error handlers, `enableCors`, `useStaticAssets` and its bare prefix, body parsers, `setTimeout` |
 | `04-request` | [`reading-a-request.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/reading-a-request.ts) | Every request property, query options, freshness, ranges, content negotiation |
