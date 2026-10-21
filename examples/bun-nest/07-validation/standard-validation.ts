@@ -1,8 +1,9 @@
 /**
  * BunValidate's Nest pipes and filter, asserted: `StandardSchemaPipe` on a
  * parameter, a `SchemaDto` body under the global `StandardValidationPipe`,
- * `ValidationExceptionFilter`'s answers over HTTP and over a gateway, and
- * `StandardValidationModule`, which registers the pipe and the filter.
+ * `ValidationExceptionFilter`'s answers over HTTP, over a gateway and to a
+ * microservice's client, and `StandardValidationModule`, which registers the
+ * pipe and the filter.
  *
  * ```bash
  * bun 07-validation/standard-validation.ts
@@ -24,16 +25,33 @@
  *   a gateway, emits an `exception` event carrying `{ status, code:
  *   "VALIDATION", issues }`. It is `@Catch`-scoped to BunValidate's errors:
  *   every other error, Nest's own pipes' included, keeps Nest's answer.
- * - Nest applies global filters to HTTP only, so a gateway takes the filter
- *   with `@UseFilters`. Global pipes reach a gateway on Nest 12 only, so a
- *   gateway takes `@UsePipes(StandardValidationPipe)`, which works on both;
- *   on Nest 12 the schema then runs twice, the second time on its own
- *   output. So there a schema must accept what it outputs: one that changes
- *   a type (a string transformed to a `Date`) refuses every message, and
- *   belongs in a `StandardSchemaPipe`, which the global pipe passes by.
+ * - Nest applies global pipes and filters to controllers and microservices,
+ *   never to gateways, with one exception: global pipes reach gateways on
+ *   Nest 12. So a gateway takes the filter with `@UseFilters`, and its pipes
+ *   with `@UsePipes(...StandardValidationModule.gatewayPipes())`: none on
+ *   Nest 12, where the global pipe already checks a `SchemaDto` message, and
+ *   on Nest 11 the pipe's class, which Nest builds with `forRoot()`'s
+ *   options. A plain `@UsePipes(StandardValidationPipe)` is right on Nest 11
+ *   only: on Nest 12 the schema runs a second time, on its own output, so
+ *   one that changes a type (a string transformed to a `Date`) refuses every
+ *   message.
+ * - In a microservice, `StandardValidationModule`'s filter answers a refused
+ *   payload as Nest answers an rpc error, so the client's `send()` fails
+ *   with `{ status: "error", statusCode, code: "VALIDATION", message, issues
+ *   }`. Shown over Nest's TCP transport on port 0 (`@nestjs/microservices`,
+ *   no broker).
+ * - Before a schema runs, the pipes strip the value's prototype-pollution
+ *   keys in place, by Nest 12's rule unless told otherwise (`stripProtoKeys:
+ *   "nest"`: own `__proto__`, `prototype` and `constructor` keys), so a yup
+ *   schema, which crashes on an own `__proto__` key (a 500), sees the rest.
+ *   `"minimal"` keeps a `prototype` field and a `constructor` without a
+ *   `prototype`. `validate()`, the contract guards, both pipes and
+ *   `forRoot()` take the option.
  * - `StandardValidationModule.forRoot({ messages: "generic" })` words the
- *   global pipe's issues; a `StandardSchemaPipe` keeps its own options, and
- *   a wrong option is a `TypeError` when the module is built.
+ *   global pipe's issues, and those of a `StandardValidationPipe` Nest builds
+ *   from its class (`gatewayPipes()`' on Nest 11); a `StandardSchemaPipe`
+ *   keeps its own options, and a wrong option is a `TypeError` when the
+ *   module is built.
  * - On Nest 12, its own `@Body({ schema })` and `StandardSchemaValidationPipe`
  *   work beside these, independently. On Nest 11 those checks sit out on a
  *   line starting `skipped:`; the rest runs on both.
@@ -45,6 +63,7 @@ import type {
   PipeTransform,
   Type,
 } from "@nestjs/common";
+import type { AddressInfo, Server } from "node:net";
 import type { WirePacket, WsClient } from "../04-websockets/fixtures/ws-client";
 import {
   BunHttpAdapter,
@@ -70,11 +89,19 @@ import {
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import {
+  ClientProxyFactory,
+  MessagePattern,
+  Payload,
+  Transport,
+} from "@nestjs/microservices";
+import {
   MessageBody,
   SubscribeMessage,
   WebSocketGateway,
 } from "@nestjs/websockets";
 import { SocketModule } from "@nestjs/websockets/socket-module.js";
+import { firstValueFrom, timeout } from "rxjs";
+import * as yup from "yup";
 import { z } from "zod";
 import { connect, eventName } from "../04-websockets/fixtures/ws-client";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
@@ -99,7 +126,9 @@ const NestSchemaPipe = (nestCommon as unknown as Record<string, unknown>)
  * Whether Nest applies global pipes to gateways: Nest 12's
  * `SocketModule.getContextCreator(container, config, …)` hands the
  * application's config (its global pipes) to the gateway's pipes; Nest 11's
- * takes the container alone.
+ * takes the container alone. Read here as well as by
+ * `StandardValidationModule.gatewayPipes()`, so the checks below hold the
+ * helper to what the installed Nest does rather than to its own answer.
  */
 const GLOBAL_PIPES_REACH_GATEWAYS =
   (
@@ -141,7 +170,7 @@ const Chat = z
     return true;
   });
 
-/** A chat message under the global pipe or `@UsePipes(StandardValidationPipe)`. */
+/** A chat message under the global pipe or `gatewayPipes()`. */
 class ChatDto extends SchemaDto(Chat) {}
 
 /**
@@ -150,8 +179,25 @@ class ChatDto extends SchemaDto(Chat) {}
  */
 const Reminder = z.object({ at: z.string().transform((at) => new Date(at)) });
 
-/** A reminder under `@UsePipes(StandardValidationPipe)`. */
+/** A reminder under `gatewayPipes()`, and under the plain pipe (the pitfall). */
 class ReminderDto extends SchemaDto(Reminder) {}
+
+/**
+ * A profile, in yup: an own `__proto__` key crashes yup's object schema
+ * (`field.resolve is not a function`), so it must be stripped first.
+ */
+const Profile = yup.object({ name: yup.string().required() });
+
+/** A yup profile under the global pipe: Nest 12's proto-key rule. */
+class ProfileDto extends SchemaDto(Profile) {}
+
+/**
+ * A profile as a client might send it, written as JSON text: an object
+ * literal's `__proto__` would set its prototype, not make the own key
+ * `JSON.parse` makes.
+ */
+const POLLUTED_PROFILE =
+  '{"name":"Ada","prototype":"seed","__proto__":{"admin":true}}';
 
 /** What a handler reports about the value it received. */
 interface Received {
@@ -199,6 +245,24 @@ class EventsController {
   }
 }
 
+@Controller("profiles")
+class ProfilesController {
+  /** A yup `SchemaDto` body: the global pipe strips by Nest 12's rule. */
+  @Post()
+  create(@Body() body: ProfileDto) {
+    return { keys: Object.keys(body) };
+  }
+
+  /** The same schema through `StandardSchemaPipe` with `"minimal"`. */
+  @Post("minimal")
+  minimal(
+    @Body(new StandardSchemaPipe(Profile, { stripProtoKeys: "minimal" }))
+    body: yup.InferType<typeof Profile>,
+  ) {
+    return { keys: Object.keys(body) };
+  }
+}
+
 /**
  * Nest 12's own per-parameter schema, `@Body({ schema })` read by its
  * `StandardSchemaValidationPipe`, beside ours in the same application. Built
@@ -239,9 +303,9 @@ class LiveGateway {
     return { event: "piped", data: msg };
   }
 
-  /** A `SchemaDto` message under `@UsePipes(StandardValidationPipe)`: both majors. */
+  /** A `SchemaDto` message under `gatewayPipes()`: checked once on both majors. */
   @SubscribeMessage("scoped")
-  @UsePipes(StandardValidationPipe)
+  @UsePipes(...StandardValidationModule.gatewayPipes())
   scoped(@MessageBody() msg: ChatDto) {
     return { event: "scoped", data: msg };
   }
@@ -252,24 +316,29 @@ class LiveGateway {
     return { event: "global", data: msg };
   }
 
-  /** A type-changing `SchemaDto` under `@UsePipes`: run twice on Nest 12. */
+  /** A type-changing `SchemaDto` under `gatewayPipes()`: one run, a `Date`. */
   @SubscribeMessage("remind")
-  @UsePipes(StandardValidationPipe)
+  @UsePipes(...StandardValidationModule.gatewayPipes())
   remind(@MessageBody() msg: ReminderDto) {
     return { event: "remind", data: { isDate: msg.at instanceof Date } };
   }
 
-  /** The same schema through `StandardSchemaPipe`: run once on both majors. */
-  @SubscribeMessage("remind-piped")
-  remindPiped(
-    @MessageBody(new StandardSchemaPipe(Reminder))
-    msg: StandardSchemaV1.InferOutput<typeof Reminder>,
-  ) {
-    return { event: "remind-piped", data: { isDate: msg.at instanceof Date } };
+  /**
+   * DON'T: the same under a plain `@UsePipes(StandardValidationPipe)`, the
+   * double-run pitfall. On Nest 12 the global pipe runs the schema, then
+   * this pipe runs it again on the first run's `Date`, and refuses it.
+   */
+  @SubscribeMessage("remind-twice")
+  @UsePipes(StandardValidationPipe)
+  remindTwice(@MessageBody() msg: ReminderDto) {
+    return { event: "remind-twice", data: { isDate: msg.at instanceof Date } };
   }
 }
 
-/** The same message handler with no filter: Nest's own answer. */
+/**
+ * The same message handler with no `@UseFilters`: the module's global filter
+ * does not reach a gateway, so Nest's own answer.
+ */
 @WebSocketGateway({ path: "/bare" })
 class BareGateway {
   /** `StandardSchemaPipe` on the message body, no filter. */
@@ -286,6 +355,7 @@ class BareGateway {
   imports: [StandardValidationModule],
   controllers: [
     EventsController,
+    ProfilesController,
     ...(NestSchemaPipe === undefined ? [] : [nest12Controller(NestSchemaPipe)]),
   ],
   providers: [LiveGateway, BareGateway],
@@ -439,6 +509,31 @@ check(
 );
 
 /* ------------------------------------------------------------------ */
+step("Prototype-pollution keys are stripped before the schema runs");
+
+/** Request options for a `POST` of JSON text, sent as it is. */
+function postText(text: string): RequestInit {
+  return {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: text,
+  };
+}
+
+const nestRule = await call("/profiles", postText(POLLUTED_PROFILE));
+show(`POST /profiles ${POLLUTED_PROFILE}`, nestRule);
+checkEqual(
+  'by default ("nest"): __proto__ and prototype go, yup sees { name } (no 500)',
+  nestRule,
+  { status: 201, body: { keys: ["name"] } },
+);
+checkEqual(
+  'stripProtoKeys: "minimal": only __proto__ goes, the prototype field stays',
+  await call("/profiles/minimal", postText(POLLUTED_PROFILE)),
+  { status: 201, body: { keys: ["name", "prototype"] } },
+);
+
+/* ------------------------------------------------------------------ */
 step("Nest 12's own @Body({ schema }) beside ours");
 
 /** How many checks the Nest 12 step holds, for the skip line. */
@@ -545,17 +640,30 @@ checkEqual("the filter's exception event", wsRefused, [
 const bareRefused = await reply(bare, "piped", { room: "", text: "x" });
 show("the same message, no filter", bareRefused);
 checkEqual(
-  "without the filter, Nest's 'Internal server error' frame",
+  "no @UseFilters: the global filter never reaches a gateway, Nest's 'Internal server error' frame",
   (bareRefused as [string, { message?: string }])[1].message,
   "Internal server error",
 );
 
 /* ------------------------------------------------------------------ */
-step("SchemaDto in a gateway: @UsePipes(StandardValidationPipe)");
+step("SchemaDto in a gateway: @UsePipes(...gatewayPipes())");
+
+const gatewayPipes = StandardValidationModule.gatewayPipes();
+show(
+  "gatewayPipes() on this Nest",
+  gatewayPipes.map((pipe) => pipe.name),
+);
+checkEqual(
+  GLOBAL_PIPES_REACH_GATEWAYS
+    ? "Nest 12: gatewayPipes() is [], the global pipe reaches the gateway"
+    : "Nest 11: gatewayPipes() is [StandardValidationPipe], no global pipe does",
+  gatewayPipes,
+  GLOBAL_PIPES_REACH_GATEWAYS ? [] : [StandardValidationPipe],
+);
 
 chatRuns = 0;
 checkEqual(
-  "@UsePipes(StandardValidationPipe) checks a SchemaDto message",
+  "under gatewayPipes(), a SchemaDto message is checked",
   ((await reply(live, "scoped", { room: "lobby" })) as [string])[0],
   "exception",
 );
@@ -568,10 +676,10 @@ checkEqual(
 show("the schema ran, for one valid message", chatRuns);
 checkEqual(
   GLOBAL_PIPES_REACH_GATEWAYS
-    ? "Nest 12: twice, the global pipe's run and @UsePipes' (on its output)"
-    : "Nest 11: once, @UsePipes' alone",
+    ? "Nest 12: once, the global pipe's run"
+    : "Nest 11: once, gatewayPipes()' pipe's run",
   chatRuns,
-  GLOBAL_PIPES_REACH_GATEWAYS ? 2 : 1,
+  1,
 );
 
 const globalOnly = (await reply(live, "global", { room: "lobby" })) as [string];
@@ -586,12 +694,25 @@ checkEqual(
 
 const reminder = { at: "2026-11-05T09:00:00Z" };
 const remind = await reply(live, "remind", reminder);
-show("a valid reminder, schema output a Date, under @UsePipes", remind);
+show("a valid reminder, schema output a Date, under gatewayPipes()", remind);
 checkEqual(
   GLOBAL_PIPES_REACH_GATEWAYS
-    ? "Nest 12: the second run refuses the first's Date"
-    : "Nest 11: one run, the handler gets a Date",
+    ? "Nest 12: one run (the global pipe's), the handler gets a Date"
+    : "Nest 11: one run (gatewayPipes()' pipe's), the handler gets a Date",
   remind,
+  ["remind", { isDate: true }],
+);
+
+const remindTwice = await reply(live, "remind-twice", reminder);
+show(
+  "DON'T: the same reminder under a plain @UsePipes(StandardValidationPipe)",
+  remindTwice,
+);
+checkEqual(
+  GLOBAL_PIPES_REACH_GATEWAYS
+    ? "the pitfall, Nest 12: a second run refuses the first's Date"
+    : "the pitfall, Nest 11: no global pipe there, so one run and a Date",
+  remindTwice,
   GLOBAL_PIPES_REACH_GATEWAYS
     ? [
         "exception",
@@ -607,12 +728,7 @@ checkEqual(
           ],
         },
       ]
-    : ["remind", { isDate: true }],
-);
-checkEqual(
-  "through StandardSchemaPipe instead, one run on both: the handler gets a Date",
-  await reply(live, "remind-piped", reminder),
-  ["remind-piped", { isDate: true }],
+    : ["remind-twice", { isDate: true }],
 );
 
 await live.close();
@@ -683,9 +799,22 @@ await plain.close();
 /* ------------------------------------------------------------------ */
 step("StandardValidationModule.forRoot(): the global pipe's options");
 
+/** A gateway under `forRoot()`: its pipes, as `gatewayPipes()` gives them. */
+@WebSocketGateway({ path: "/generic" })
+@UseFilters(ValidationExceptionFilter)
+class GenericGateway {
+  /** A `SchemaDto` message under `gatewayPipes()`. */
+  @SubscribeMessage("scoped")
+  @UsePipes(...StandardValidationModule.gatewayPipes())
+  scoped(@MessageBody() msg: ChatDto) {
+    return { event: "scoped", data: msg };
+  }
+}
+
 @Module({
   imports: [StandardValidationModule.forRoot({ messages: "generic" })],
   controllers: [EventsController],
+  providers: [GenericGateway],
 })
 class GenericModule {}
 
@@ -693,7 +822,8 @@ const genericAdapter = new BunHttpAdapter();
 const generic = await NestFactory.create(GenericModule, genericAdapter, {
   logger: false,
 });
-await generic.init();
+generic.useWebSocketAdapter(genericAdapter.webSocketAdapter);
+await generic.listen(0);
 
 const genericBody = await answer(
   await genericAdapter.fetch("/events", post({ title: "", seats: "40" })),
@@ -723,6 +853,23 @@ checkEqual(
     },
   },
 );
+
+const genericLive = await connect(
+  `ws://127.0.0.1:${genericAdapter.listeningPort}/generic`,
+);
+const genericFrame = (await reply(genericLive, "scoped", {
+  room: "",
+  text: "hi",
+})) as [string, { issues?: { message: string }[] }];
+show("forRoot's options in a gateway under gatewayPipes()", genericFrame);
+checkEqual(
+  GLOBAL_PIPES_REACH_GATEWAYS
+    ? "Nest 12: the global pipe words a gateway's issues generically"
+    : "Nest 11: gatewayPipes()' pipe, built by Nest, gets forRoot's options too",
+  genericFrame[1].issues?.map((issue) => issue.message),
+  ["Invalid value (too_small)"],
+);
+await genericLive.close();
 await generic.close();
 
 await checkRejects(
@@ -730,5 +877,88 @@ await checkRejects(
   () => StandardValidationModule.forRoot({ messages: "quiet" as "generic" }),
   { name: "TypeError", message: /messages must be "generic" or unset/ },
 );
+
+/* ------------------------------------------------------------------ */
+step("In a microservice: the client's send() fails with the issues");
+
+/** A `@MessagePattern` taking a `SchemaDto` payload. */
+@Controller()
+class EventPatterns {
+  /** Checked by the module's global pipe, refused by its global filter. */
+  @MessagePattern("events.create")
+  create(@Payload() event: NewEventDto) {
+    return received(event);
+  }
+}
+
+@Module({ imports: [StandardValidationModule], controllers: [EventPatterns] })
+class ServiceModule {}
+
+const service = await NestFactory.createMicroservice(ServiceModule, {
+  transport: Transport.TCP,
+  options: { host: "127.0.0.1", port: 0 },
+  logger: false,
+});
+await service.listen();
+const { port } = service.unwrap<Server>().address() as AddressInfo;
+const client = ClientProxyFactory.create({
+  transport: Transport.TCP,
+  options: { host: "127.0.0.1", port },
+});
+await client.connect();
+
+/** Sends `data` to `pattern`: `{ ok }` with the reply, or `{ error }`. */
+async function send(
+  pattern: string,
+  data: unknown,
+): Promise<{ ok: unknown } | { error: unknown }> {
+  try {
+    return {
+      ok: await firstValueFrom(client.send(pattern, data).pipe(timeout(5000))),
+    };
+  } catch (error) {
+    return { error };
+  }
+}
+
+checkEqual(
+  "a valid payload: the pattern receives the schema's output",
+  await send("events.create", {
+    title: "Bun meetup",
+    seats: "40",
+    startsAt: "2026-11-05",
+  }),
+  {
+    ok: {
+      title: "Bun meetup",
+      seats: "number",
+      startsAtIsDate: true,
+      isDtoInstance: false,
+    },
+  },
+);
+const rpcRefused = await send("events.create", {
+  title: "",
+  seats: "40",
+  startsAt: "2026-11-05",
+});
+show("a refused payload, as the client receives it", rpcRefused);
+checkEqual("the filter's rpc answer", rpcRefused, {
+  error: {
+    status: "error",
+    statusCode: 400,
+    code: "VALIDATION",
+    message: "Validation failed",
+    issues: [
+      {
+        target: "body",
+        message: "Too small: expected string to have >=1 characters",
+        path: "title",
+      },
+    ],
+  },
+});
+await client.close();
+await service.close();
 
 summary();

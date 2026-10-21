@@ -1832,6 +1832,10 @@ already validate a per-parameter schema; ours is the path on Nest 11, and the
 `SchemaDto` path on both. The two are independent: ours never reads
 `metadata.schema`, and Nest's never reads a `SchemaDto`.
 
+Every row of this table runs, with each answer asserted, in
+[`07-validation/standard-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/standard-validation.ts):
+all of them on Nest 12, and all but the last on Nest 11.
+
 ### `StandardSchemaPipe`
 
 ```ts
@@ -2197,7 +2201,7 @@ describes the conventions they share.
 | `01-quick-start` | [`index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/01-quick-start/index.ts) | `NestFactory.create(AppModule, new BunHttpAdapter())`, a controller with params, query and body, `listen(0)`, `close()` |
 | `02-http-adapter` | [`controllers-and-routing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/controllers-and-routing.ts) | every HTTP method decorator, parameter decorators, `@HttpCode`, `@Header`, `@Redirect`, `StreamableFile`, `@Render`, raw response access |
 | `02-http-adapter` | [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts) | Nest middleware, a global prefix, every versioning type, `fetch()` without a socket |
-| `02-http-adapter` | [`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts) | guards, pipes, exception filters and interceptors; not-found and error handlers |
+| `02-http-adapter` | [`pipeline.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/pipeline.ts) | guards, pipes (`StandardSchemaPipe` among them), exception filters and interceptors; not-found and error handlers |
 | `02-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts) | adapter options, `enableCors`, static assets, body parsing and raw bodies, the logger, server introspection, `fetch()`, `close()` |
 | `02-http-adapter` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/views.ts) | `@Render()` and `res.render()` with a view engine: `setBaseViewsDir`, `setViewEngine`, `engine(ext, fn)`, `setLocal`, both view lookups, how locals merge, and the errors when a view or engine is missing |
 | `02-http-adapter` | [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts) | what `@nestjs/platform-express` users rely on: `HEAD` on `@Get()`, late `next()`, the request timeout, redirect bodies, host matching, the static-prefix redirect, `clearCookie`, invalid JSON, and the [known differences](#known-differences-from-nestjsplatform-express) checked as deliberate |
@@ -2219,6 +2223,7 @@ describes the conventions they share.
 | `04-websockets` | [`custom-adapter.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
 | `05-jobs-api` | [`module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/05-jobs-api/module.ts) | `BunJobsApiModule.forRoot`, `@InjectJobsApi()`, authorized requests against the mounted API, and what `app.close()` closes |
 | `06-jobs-ui` | [`mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts) | the bun-jobs management UI, `jobsUi()`, mounted beside `BunJobsApiModule` with `adapter.use()` and served with and without a socket |
+| `07-validation` | [`standard-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/standard-validation.ts) | [Validation](#validation): `StandardValidationModule` with a `SchemaDto` body, `StandardSchemaPipe` on a query and a param, `ValidationExceptionFilter` over HTTP, WebSocket and a microservice, a gateway's `@UsePipes(...StandardValidationModule.gatewayPipes())` (and the double run a plain `@UsePipes` gives on Nest 12), `stripProtoKeys`, Nest 12's `@Body({ schema })` beside them, `forRoot({ messages })` |
 
 **Option tours** exercise every option of one part of the API and assert the
 result, so a failed check fails the script:
