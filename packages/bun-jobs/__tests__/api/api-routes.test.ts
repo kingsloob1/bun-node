@@ -428,10 +428,14 @@ describe("the per-route pipeline", () => {
       expect(response.headers.get("content-type")).toBe(
         "application/problem+json",
       );
-      expect(await response.json()).toMatchObject({
-        code: "INTERNAL",
-        status: 500,
-      });
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({ code: "INTERNAL", status: 500 });
+      // The issues are logged, never sent: the client gets the generic 500.
+      expect(body).not.toHaveProperty("issues");
+      expect(body).not.toHaveProperty("context");
+      for (const issue of WRONG_BODY_ISSUES) {
+        expect(JSON.stringify(body)).not.toContain(issue.message);
+      }
       const logged = mismatches();
       expect(logged).toHaveLength(1);
       expect(logged[0].level).toBe("error");
