@@ -15,11 +15,12 @@
  *   matches: `{ caseSensitive, ignoreTrailingSlash: true }`, `caseSensitive`
  *   being the `router` option's (`false` by default, as on platform-express).
  * - Nest 12.2.0's core asks for it once per `forRoutes()` and compiles each
- *   `exclude()` path with it, so an exclusion skips the middleware on every
- *   path the excluded route serves: `exclude("users/login")` also skips
- *   `/users/LOGIN` and `/users/login/`, and with `router: { caseSensitive:
- *   true }` no longer skips `/users/LOGIN`, which that router does not serve.
- *   `exclude("invoices/{*path}")` still runs the middleware on `/invoices/`,
+ *   `exclude()` path with it, so an exclusion skips the middleware on exactly
+ *   the paths the excluded route serves. `exclude("users/login")` skips
+ *   `/users/LOGIN` and `/users/login/`, as earlier cores did too; what
+ *   12.2.0 changes is that with `router: { caseSensitive: true }` it no
+ *   longer skips `/users/LOGIN`, which that router does not serve, and that
+ *   `exclude("invoices/{*path}")` now runs the middleware on `/invoices/`,
  *   which the `invoices` route serves. An adapter that reports nothing gets
  *   exact matching on 12.2.0; the last check of that step shows what that
  *   would do.
