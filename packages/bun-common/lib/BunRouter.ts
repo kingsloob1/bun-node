@@ -29,6 +29,7 @@ import type {
   PathSyntaxError,
   RoutePathPlan,
 } from "./utils/expressPath";
+import { Buffer } from "node:buffer";
 import path, { join } from "node:path";
 import process from "node:process";
 import { Router } from "@routejs/router";
@@ -682,9 +683,10 @@ export function toNativeRequest(
       ? input
       : undefined;
   const target = initForm ? initForm.url : (input as string | URL);
-  const options: RequestInit | undefined = initForm
+  let options: RequestInit | undefined = initForm
     ? { ...initForm, ...init }
     : init;
+  const body = options?.body;
 
   // `Request` accepts a string or another `Request`, not a `URL`. A bare path
   // is appended to the origin rather than resolved against it: resolved,
@@ -697,7 +699,121 @@ export function toNativeRequest(
       : new URL(text, origin)
     ).href,
   );
-  return new Request(url, options);
+  // No body and no method: a `GET`, which a client frames with nothing.
+  if ((body === undefined || body === null) && options?.method === undefined) {
+    return new Request(url, options);
+  }
+  // A `FormData` is serialised once, here, into the `Blob` the request then
+  // carries, so its length is known: the same bytes and boundary Bun's own
+  // serialisation gives it, and the same implied `Content-Type`.
+  let sent: unknown = body;
+  if (typeof FormData === "function" && body instanceof FormData) {
+    const blob = peekBodyBlob(body);
+    if (blob !== undefined) {
+      options = { ...options, body: blob };
+      sent = blob;
+    }
+  }
+  const request = new Request(url, options);
+  frameInProcessBody(request, sent);
+  return request;
+}
+
+/**
+ * Gives a request built in process the framing header a client puts on the
+ * wire, which `new Request()` never adds: `Content-Length` for a body whose
+ * size is known, `Transfer-Encoding: chunked` for a stream, and
+ * `Content-Length: 0` for no body on any method but `GET` and `HEAD`. A
+ * served request always has one of them (HTTP/1.1 frames every body), and
+ * `type-is` — `req.is()`, body-parser's "has a body" — reads them, so
+ * without them a socket-free request with a body read as one without.
+ *
+ * What Bun's `fetch` client sends, per body kind (measured, Bun 1.4.4):
+ * a string, bytes, a `Blob`/`File`, `URLSearchParams` and `FormData` get
+ * their byte length; a `ReadableStream` or async iterable is chunked; no
+ * body is `Content-Length: 0`, except on `GET`/`HEAD`. Two differ, as they
+ * cannot be told apart without reading the stream: Bun's client sends a
+ * `Content-Length` for a stream it can see is a `Blob`'s (`response.body`)
+ * or is already closed and empty, where this says chunked.
+ *
+ * A header the caller set (either of the two) is left alone, as is
+ * everything else about the request.
+ */
+function frameInProcessBody(request: Request, body: unknown): void {
+  if (body === undefined || body === null) {
+    const method = request.method;
+    if (method === "GET" || method === "HEAD") {
+      return;
+    }
+  }
+  const headers = request.headers;
+  if (headers.has("content-length") || headers.has("transfer-encoding")) {
+    return;
+  }
+  const length =
+    body === undefined || body === null ? 0 : knownBodyLength(body);
+  if (length === undefined) {
+    headers.set("Transfer-Encoding", "chunked");
+  } else {
+    headers.set("Content-Length", String(length));
+  }
+}
+
+/**
+ * The byte length a request body of this kind is sent with, or `undefined`
+ * for one sent chunked (a stream, an async iterable). Read without
+ * serialising anything but `URLSearchParams` (ASCII once encoded) and,
+ * for a kind not named here, Bun's own conversion of it.
+ */
+function knownBodyLength(body: unknown): number | undefined {
+  if (typeof body === "string") {
+    return Buffer.byteLength(body, "utf8");
+  }
+  if (
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body) ||
+    (typeof SharedArrayBuffer === "function" &&
+      body instanceof SharedArrayBuffer)
+  ) {
+    return body.byteLength;
+  }
+  if (body instanceof Blob) {
+    // A `Bun.file()` of a stream (`/dev/stdin`, a pipe) has size `Infinity`.
+    return Number.isFinite(body.size) ? body.size : undefined;
+  }
+  if (body instanceof URLSearchParams) {
+    return body.toString().length;
+  }
+  if (
+    body instanceof ReadableStream ||
+    (typeof body === "object" &&
+      typeof (body as Partial<AsyncIterable<unknown>>)[Symbol.asyncIterator] ===
+        "function")
+  ) {
+    return undefined;
+  }
+  // Anything else (a number, an object, a `FormData` a shim made): measured
+  // the way Bun converts it, through the same body extraction.
+  return peekBodyBlob(body)?.size;
+}
+
+/**
+ * `body` as the `Blob` Bun's body extraction makes of it, when that is
+ * ready synchronously (it is for every kind but a stream); `undefined`
+ * otherwise, the conversion's outcome ignored.
+ */
+function peekBodyBlob(body: unknown): Blob | undefined {
+  let pending: Promise<Blob>;
+  try {
+    pending = new Response(body as Bun.BodyInit).blob();
+  } catch {
+    return undefined;
+  }
+  if (Bun.peek.status(pending) === "fulfilled") {
+    return Bun.peek(pending) as Blob;
+  }
+  pending.catch(ignoreLate);
+  return undefined;
 }
 
 /**

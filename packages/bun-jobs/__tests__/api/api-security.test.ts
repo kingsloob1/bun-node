@@ -229,16 +229,30 @@ describe("failures before authorization", () => {
     expect((refusals[0] as ApiError).context).toEqual({ limit: 10 });
     expect(refusals[1]).toBeUndefined();
 
-    // A body whose size only shows once read is refused after authorization:
-    // a denied caller is told 403, not 413.
     const denied = await setup(false, {
       actions: ["jobs.update"],
       limits: { queueCacheMs: 0, maxJobDataBytes: 64 },
     });
-    const huge = await denied.call("PATCH", "/queues/mail/jobs/a", {
-      data: { blob: "x".repeat(500) },
+    const oversized = JSON.stringify({ data: { blob: "x".repeat(500) } });
+    // A declared length (what `fetch()` sends for a string, as a client
+    // does) is refused before authorize, whoever asks.
+    const declared = await denied.call(
+      "PATCH",
+      "/queues/mail/jobs/a",
+      oversized,
+    );
+    expect(declared.status).toBe(413);
+    expect(denied.calls).toEqual([]);
+
+    // A body whose size only shows once read (a stream, sent chunked) is
+    // refused after authorization: a denied caller is told 403, not 413.
+    const huge = await denied.root.fetch("/admin/jobs/queues/mail/jobs/a", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: new Blob([oversized]).stream(),
     });
     expect(huge.status).toBe(403);
+    expect(denied.calls).toHaveLength(1);
   });
 });
 
