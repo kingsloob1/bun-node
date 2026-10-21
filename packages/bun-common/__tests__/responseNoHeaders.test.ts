@@ -160,9 +160,18 @@ describe("BunResponse: sending with no headers set", () => {
     );
   });
 
-  it("never answers 304 without a validator, as before", async () => {
+  // A known difference: Express answers `If-None-Match: *` 304 (`fresh`
+  // 2.0.0 finds it fresh with no validator), as the full path and `HEAD` do
+  // here. Telling would read the request's headers, which a GET sent with no
+  // header set never builds: measured, +83% at the route and +6-13% served
+  // on every plain GET, conditional or not.
+  it("answers If-None-Match: * 200 on the GET no-headers path (unlike Express)", async () => {
     const res = await makeResponse({ headers: { "If-None-Match": "*" } });
     expect((await res.send("hi").getNativeResponse(0)).status).toBe(200);
+    // Control: with a header set (the full path), it is fresh, as in Express.
+    const full = await makeResponse({ headers: { "If-None-Match": "*" } });
+    const native = await full.set("x-h", "1").send("hi").getNativeResponse(0);
+    expect(native.status).toBe(304);
   });
 
   it("sends JSON edge values as JSON.stringify does", async () => {
