@@ -62,7 +62,7 @@ import { JOB_INCLUDES } from "./contract/constants";
 /** A validation issue inside a problem, as bun-common's `validate()` reports it. */
 export interface ProblemIssueDto {
   /** Which part of the request failed. */
-  target: "params" | "query" | "body" | "headers";
+  target: "params" | "query" | "body" | "headers" | "cookies" | "signedCookies";
   /** Dotted path within the target, or `""` for the target itself. */
   path: string;
   /** Human-readable description. */

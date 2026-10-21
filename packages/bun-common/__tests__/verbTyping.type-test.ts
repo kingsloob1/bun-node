@@ -191,9 +191,9 @@ void chained;
 
 /* --- a handler declared ahead of the call --------------------------- */
 
-// Typed as the route's own handler type. It cannot follow an *inline*
-// `validate(...)` (a TypeScript inference limit, documented on
-// `ResolvedHandler`), so these are the two supported forms.
+// Typed as the route's own handler type. It follows a validator stored in a
+// const, spelled-out type arguments, or (since V2 lifted the limit) an inline
+// `validate(...)`.
 interface PageShape {
   query: { page: number };
 }
@@ -222,8 +222,9 @@ router.get<"/declared/:id", PageShape>(
   declaredHandler,
 );
 
-// The limit itself, pinned so a TypeScript that lifts it is noticed.
-// @ts-expect-error an inline generic validator loses inference to TShape
+// The limit is lifted now that the handler's request is one type argument
+// (TypedRouteHandler's TReq): the inline form infers TShape. The negative
+// control below still fires.
 router.get("/declared/:id", validate({ query: QuerySchema }), declaredHandler);
 
 // Negative control: a declared handler expecting a shape the validator does

@@ -1472,9 +1472,25 @@ export class BunRequest<
   TQuery = Record<string, unknown>,
   /** Shape of `req.body`. Defaults to the union the body parsers produce. */
   TBody = DefaultRequestBody,
+  /**
+   * Shape of `req.cookies`. Defaults to the parser's untyped output
+   * (`undefined` with `parseCookies: false`); a `cookies` validator narrows
+   * it to its parsed result.
+   */
+  TCookies = Record<string, JsonValue> | undefined,
+  /**
+   * Shape of `req.signedCookies`. Defaults like {@link TCookies}; a
+   * `signedCookies` validator narrows it.
+   */
+  TSignedCookies = Record<string, JsonValue> | undefined,
+  /**
+   * Shape of `req.valid`, every request part the validators parsed. Empty by
+   * default; a validator ahead of the handler fills it in.
+   */
+  TValid = Record<never, never>,
 >
   implements
-    BunRequestInterface<TParams, TQuery, TBody>,
+    BunRequestInterface<TParams, TQuery, TBody, TCookies, TSignedCookies>,
     TypedEmitter<BunRequestEvents>
 {
   /**
@@ -1677,6 +1693,8 @@ export class BunRequest<
   #cookies: Record<string, JsonValue> | undefined = undefined;
   /** Backing field for `signedCookies`; `undefined` until parsed or assigned (and so for good with `parseCookies: false`). */
   #signedCookies: Record<string, JsonValue> | undefined = undefined;
+  /** Backing field for `valid`; `undefined` until a validator or a read allocates it. */
+  #valid: Record<string, unknown> | undefined = undefined;
   /** Backing field for `url`; computed from the request on first read. */
   #url: string | undefined = undefined;
 
@@ -2996,20 +3014,20 @@ export class BunRequest<
    * that falls back to the header when it is not an object (Nest 12's
    * `@Cookies()`) does so.
    */
-  get cookies(): Record<string, JsonValue> | undefined {
+  get cookies(): TCookies {
     if (this.#scheduled & COOKIES_PENDING) {
       this.#parsePendingCookies();
     }
-    return this.#cookies;
+    return this.#cookies as TCookies;
   }
 
-  set cookies(value: Record<string, JsonValue> | undefined) {
+  set cookies(value: TCookies) {
     // The parse the options asked for happens first, as it did while the
     // request was built: an assignment replaces its result, not the reverse.
     if (this.#scheduled & COOKIES_PENDING) {
       this.#parsePendingCookies();
     }
-    this.#cookies = value;
+    this.#cookies = value as Record<string, JsonValue> | undefined;
   }
 
   /**
@@ -3033,18 +3051,40 @@ export class BunRequest<
    * {@link cookies}, an object while `parseCookies` is on and `undefined`
    * with `parseCookies: false` until something assigns it.
    */
-  get signedCookies(): Record<string, JsonValue> | undefined {
+  get signedCookies(): TSignedCookies {
     if (this.#scheduled & COOKIES_PENDING) {
       this.#parsePendingCookies();
     }
-    return this.#signedCookies;
+    return this.#signedCookies as TSignedCookies;
   }
 
-  set signedCookies(value: Record<string, JsonValue> | undefined) {
+  set signedCookies(value: TSignedCookies) {
     if (this.#scheduled & COOKIES_PENDING) {
       this.#parsePendingCookies();
     }
-    this.#signedCookies = value;
+    this.#signedCookies = value as Record<string, JsonValue> | undefined;
+  }
+
+  /**
+   * Every request part a `validate()` middleware parsed, by target —
+   * `headers`, `cookies`, `signedCookies`, `params`, `query`, `body` — as Hono's
+   * `c.req.valid(target)`. Each holds what the validator wrote back (a
+   * `transform` hook's result when there is one); `headers` holds the
+   * schema's output, and is the one typed view of the headers, since they
+   * are never written back (`req.headers` stays the raw view that `accepts`,
+   * `type-is` and the body parsers read). A mount's validator and a route's
+   * fill the same object, the later one replacing a part both parse.
+   *
+   * Lazily allocated: `{}` before any validator ran. Typed as `TValid`, which
+   * a validator registered ahead of the handler narrows (with `replace:
+   * false` it is filled at runtime but not typed).
+   */
+  get valid(): TValid {
+    return (this.#valid ??= {}) as TValid;
+  }
+
+  set valid(value: TValid) {
+    this.#valid = value as Record<string, unknown>;
   }
 
   /**
@@ -4578,8 +4618,8 @@ export class BunRequest<
     if (!cookieStr) {
       const empty = { cookies: {}, signedCookies: {} };
       if (updateRequest) {
-        this.cookies = {};
-        this.signedCookies = {};
+        this.cookies = {} as TCookies;
+        this.signedCookies = {} as TSignedCookies;
       }
       return empty;
     }
@@ -4625,8 +4665,8 @@ export class BunRequest<
     };
 
     if (updateRequest) {
-      this.cookies = resp.cookies;
-      this.signedCookies = resp.signedCookies;
+      this.cookies = resp.cookies as TCookies;
+      this.signedCookies = resp.signedCookies as TSignedCookies;
     }
 
     return resp;

@@ -33,7 +33,14 @@ export const JobStateSchema = s.named(
 
 /** A validation issue inside a problem. */
 export const ProblemIssueSchema = s.object({
-  target: s.enum(["params", "query", "body", "headers"]),
+  target: s.enum([
+    "params",
+    "query",
+    "body",
+    "headers",
+    "cookies",
+    "signedCookies",
+  ]),
   path: s.string({
     description: 'Dotted path within the target, or "" for the target itself.',
   }),

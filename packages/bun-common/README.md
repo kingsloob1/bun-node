@@ -443,10 +443,10 @@ router.get(
 );
 ```
 
-A handler declared ahead of time (typed `ResolvedHandler` or
-`TypedRouteHandler`) cannot follow an *inline* `validate(...)` call. Store the
-validator in a variable first, or spell out the verb's type arguments:
-`router.get<"/posts/:id", { query: { page: number } }>(...)`.
+A handler declared ahead of time as a `ResolvedHandler` can follow an
+*inline* `validate(...)` call. One typed as a plain `TypedRouteHandler`
+cannot: store the validator in a variable first, or spell out the verb's type
+arguments: `router.get<"/posts/:id", { query: { page: number } }>(...)`.
 
 **Mounted sub-routers** declare the path, and optionally the validated shape,
 they will be mounted at. Their routes can then see the mount's params:
@@ -1328,12 +1328,28 @@ validation library. Every library below is tested against:
 | zod 4, yup 1.7, valibot 1, arktype 2 | native: pass the schema directly |
 | superstruct 2, joi, a hand-written check | wrap with `toStandardSchema(validateFn, { vendor })` |
 
-Targets are `headers`, `params`, `query` and `body`, validated in that order.
-On success the parsed output **replaces** `req.params`, `req.query` and
-`req.body`, so `z.coerce.number()` gives the handler a `number`. Headers are
-checked but never replaced.
+Targets are `headers`, `cookies`, `signedCookies`, `params`, `query` and
+`body`, validated and reported in that order, so a cheap header or session
+check fails before a body is read. On success the parsed output **replaces**
+`req.cookies`, `req.signedCookies`, `req.params`, `req.query` and `req.body`,
+so `z.coerce.number()` gives the handler a `number`, and a schema that strips
+unknown keys strips unknown cookies too.
 
-Any other key in `schemas` (`cookies`, a typo) throws a `TypeError` when the
+- **`req.valid`** holds every part a validator parsed, by target, as Hono's
+  `c.req.valid()` does. It is typed from the schemas (with `replace: true`,
+  the default). A mount's validator and a route's fill the same object.
+- **Headers are parsed onto `req.valid.headers` only**, never written back:
+  `req.headers` stays the raw view that `accepts`, `type-is` and the
+  multipart parser read. Header schemas are keyed by **lower-case** name; a
+  `"Content-Type"` key never matches. A `transform` on headers changes
+  nothing, as before.
+- **`cookies` cannot require a signature**: a forged unsigned `sid` lands in
+  `req.cookies` and passes. `signedCookies` holds only the cookies a secret
+  verified (a tampered one is `false`, an unsigned one absent), so require a
+  signed session there. With `parseCookies: false`, a cookie schema is given
+  `{}`, as for a request without a `Cookie` header.
+
+Any other key in `schemas` (`cookie`, a typo) throws a `TypeError` when the
 middleware is built, rather than being ignored. An option given as
 `undefined` keeps its default.
 
@@ -1342,7 +1358,7 @@ middleware is built, rather than being ignored. An option given as
 | `onFailure` | `"next"` | `"next"` passes a `ValidationError` to the error pipeline, `"throw"` throws it, and `"respond"` answers at once. |
 | `status` | `400` | The status `"respond"` uses, also reported on the error. |
 | `abortEarly` | `false` | Stop at the first failing target instead of collecting every issue. |
-| `replace` | `true` | Write parsed values back. With `false` the handler keeps the request's own types. |
+| `replace` | `true` | Write parsed values back. With `false` the handler keeps the request's own types; `req.valid` is still filled at runtime, but not typed. |
 | `hooks` | none | Per-target `{ normalize, transform }`. `normalize(raw, req)` runs before validation; `transform(parsed, req)` runs after it, and its return type becomes the handler's type. Only targets that have a schema accept hooks. |
 | `formatError` | `{ error: "Validation failed", issues }` | The JSON body `"respond"` sends. |
 
@@ -1368,6 +1384,12 @@ export const createPost = validate(
   },
 );
 
+// A signed session and a coerced header, read typed from `req.valid`.
+export const session = validate({
+  headers: z.object({ "x-request-id": z.uuid() }),
+  signedCookies: z.object({ sid: z.string() }),
+});
+
 export const Page = toStandardSchema<{ page: number }>((input) => {
   const page = Number((input as { page?: unknown } | undefined)?.page ?? 1);
   return Number.isInteger(page) && page > 0
@@ -1384,6 +1406,7 @@ inside the definition.
 Examples:
 [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts),
 [`schema-libraries.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/schema-libraries.ts),
+[`cookies-and-headers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/cookies-and-headers.ts),
 tour
 [`validate-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/validate-options.ts).
 
@@ -1445,6 +1468,12 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   `mergeContracts(layers)` merges nested layers. Inbound, the outermost
   declaring a part is the wire schema. Outbound, the innermost wins (a route
   over its router). Every row records its `origin`.
+- **A `validate()` with `onFailure: "respond"` declares its own status**
+  (`400`, or its `status`) on its contract's outbound side, with the JSON body
+  it sends documented, and its rows marked `implicit: true`. Under `"next"` or
+  `"throw"` the app's error handler answers, so the contract declares no
+  status. When layers are merged, a status body the app declares wins over an
+  implicit one.
 - `recordOf({ a, b })` is a schema over a record of schemas, and
   `documented(jsonSchema)` documents a part known only as JSON Schema and
   never checks it. `toStandardSchema(fn, { jsonSchema })` publishes a JSON

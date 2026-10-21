@@ -208,7 +208,14 @@ export const RemoteProblemSchema = open({
   issues: s.optional(
     s.array(
       open({
-        target: s.enum(["params", "query", "body", "headers"]),
+        target: s.enum([
+          "params",
+          "query",
+          "body",
+          "headers",
+          "cookies",
+          "signedCookies",
+        ]),
         path: s.string(),
         message: s.string(),
       }),

@@ -1,3 +1,6 @@
+import type { BunRequest } from "../BunRequest";
+import type { BunResponse } from "../BunResponse";
+import type { JsonValue } from "../utils/native";
 import type {
   DefaultRequestBody,
   RouterHandler,
@@ -94,6 +97,12 @@ export interface ValidationShape {
   query?: unknown;
   /** Parsed `req.body`, when the validator declared a body schema. */
   body?: unknown;
+  /** Parsed headers, read through `req.valid.headers` only (never written back). */
+  headers?: unknown;
+  /** Parsed `req.cookies`, when the validator declared a cookies schema. */
+  cookies?: unknown;
+  /** Parsed `req.signedCookies`, when the validator declared a signedCookies schema. */
+  signedCookies?: unknown;
 }
 
 /** A shape contributing nothing — the default for a non-validator position. */
@@ -120,15 +129,62 @@ export type ResolveBody<S> = S extends { body: infer B }
   : DefaultRequestBody;
 
 /**
- * The final handler of a chain, with its request narrowed by the path and the
- * accumulated validator shapes.
+ * `req.cookies`: whatever a validator parsed, else the parser's untyped
+ * output (`undefined` with `parseCookies: false`). Internal: its name is not
+ * approved.
  *
- * A handler declared with this type ahead of the call cannot follow an
- * inline validator call — `router.get(path, validate({ query }), handler)`
- * matches no overload. That is a TypeScript inference limit: the inline
- * `validate(...)` is inferred against the verb's unresolved shape parameter,
- * which then falls back to empty. (An inline arrow handler is unaffected.) Use
- * either form instead:
+ * @internal
+ */
+export type ResolveCookies<S> = S extends { cookies: infer C }
+  ? C
+  : Record<string, JsonValue> | undefined;
+
+/**
+ * `req.signedCookies`, likewise. Internal: its name is not approved.
+ *
+ * @internal
+ */
+export type ResolveSignedCookies<S> = S extends { signedCookies: infer C }
+  ? C
+  : Record<string, JsonValue> | undefined;
+
+/**
+ * `req.valid`: every request part a validator parsed, by target, headers
+ * included; `{}` with none. Internal: its name is not approved.
+ *
+ * @internal
+ */
+export type ResolveValid<S> = {
+  [K in keyof S as K extends keyof ValidationShape ? K : never]: S[K];
+};
+
+/**
+ * The request a typed handler receives: params, query, body, cookies, signed
+ * cookies and `req.valid`, all read off one shape `S`. Internal.
+ *
+ * @internal
+ */
+type ResolvedRequest<TParams, S> = BunRequest<
+  TParams,
+  ResolveQuery<S>,
+  ResolveBody<S>,
+  ResolveCookies<S>,
+  ResolveSignedCookies<S>,
+  ResolveValid<S>
+>;
+
+/**
+ * The final handler of a chain, with its request narrowed by the path and the
+ * accumulated validator shapes: params, query, body, cookies, signed cookies
+ * and `req.valid`.
+ *
+ * A handler declared with this type ahead of the call can follow an inline
+ * validator call, `router.get(path, validate({ query }), handler)`. One typed
+ * as a plain {@link TypedRouteHandler} cannot: the inline `validate(...)` is
+ * inferred against the verb's unresolved shape parameter, which then falls
+ * back to empty (a TypeScript inference limit; an inline arrow handler is
+ * unaffected). For that one, store the validator first, or spell out the
+ * verb's type arguments:
  *
  * ```ts
  * // the validator stored first
@@ -146,7 +202,10 @@ export type ResolveBody<S> = S extends { body: infer B }
 export type ResolvedHandler<TPath extends string, S> = TypedRouteHandler<
   ResolveParams<TPath, S>,
   ResolveQuery<S>,
-  ResolveBody<S>
+  ResolveBody<S>,
+  unknown,
+  BunResponse,
+  ResolvedRequest<ResolveParams<TPath, S>, S>
 >;
 
 /**
@@ -200,5 +259,11 @@ export type MountedHandler<
 > = TypedRouteHandler<
   ResolveHostedParams<`${TMountPath}${TPath}`, TShape, THost>,
   ResolveQuery<MergeShape<TMountShape, TShape>>,
-  ResolveBody<MergeShape<TMountShape, TShape>>
+  ResolveBody<MergeShape<TMountShape, TShape>>,
+  unknown,
+  BunResponse,
+  ResolvedRequest<
+    ResolveHostedParams<`${TMountPath}${TPath}`, TShape, THost>,
+    MergeShape<TMountShape, TShape>
+  >
 >;
