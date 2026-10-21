@@ -19,11 +19,12 @@
  * Every case first shows that the library's own message does quote the value,
  * so a case cannot pass because a library stopped quoting.
  *
- * The scrub is a heuristic. Where a guarantee is needed, the guards and
- * `validateStandard` take `messages: "generic"`, which replaces every
- * message, and `redactPaths: true`, which empties paths (a path can name a
- * key the sender chose). `validate()` itself has neither option in this
- * release: it always applies the scrub.
+ * The scrub is a heuristic. Where a guarantee is needed,
+ * `messages: "generic"` replaces every message, and `redactPaths: true`
+ * empties paths (a path can name a key the sender chose). `validate()`, the
+ * guards and `validateStandard` all take both; this file shows them on
+ * `validateStandard` and a guard, and `message-options.ts` on `validate()`:
+ * its 400, `formatError`, and its response checks.
  */
 import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import {
@@ -224,6 +225,27 @@ const signup = defineTransport({
 });
 const strictGuard = createReceiver(signup, "inbound", { messages: "generic" });
 const refused = await strictGuard({ form: { age: 12 } });
+const strictRouter = new BunRouter();
+strictRouter.post(
+  "/generic",
+  validate({ body: Adult }, { onFailure: "respond", messages: "generic" }),
+  (_req, res) => {
+    res.json({ ok: true });
+  },
+);
+const strictAnswer = (await (
+  await strictRouter.fetch("/generic", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ age: 12 }),
+  })
+).json()) as FailureBody;
+checkEqual(
+  "validate() takes the same option (more in message-options.ts)",
+  strictAnswer.issues.map((i) => i.message),
+  ["Invalid value (too_small)"],
+);
+
 checkEqual(
   "a guard takes the same option",
   refused instanceof ContractError ? refused.issues.map((i) => i.message) : [],
