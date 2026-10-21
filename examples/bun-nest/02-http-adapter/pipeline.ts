@@ -13,9 +13,14 @@
  *   Nest's order: middleware → guards → interceptors → pipes → handler →
  *   interceptors → filters. The adapter hands it a `BunRequest` and a
  *   `BunResponse` and sends what comes back.
- * - Validation needs no `class-validator`: a small pipe runs any
- *   [Standard Schema](https://standardschema.dev) (zod, valibot, arktype, …),
- *   and bun-common's `toStandardSchema` turns a plain function into one.
+ * - Validation needs no `class-validator`: bun-nest's `StandardSchemaPipe`
+ *   runs any [Standard Schema](https://standardschema.dev) (zod, valibot,
+ *   arktype, …), and bun-common's `toStandardSchema` turns a plain function
+ *   into one. A refused value is a `StandardValidationException`, a
+ *   `BadRequestException` whose response is Nest's own 400 body (one
+ *   `message` line per issue), so the app's `HttpException` filter answers
+ *   it like any other. `standard-validation.ts` shows the rest: `SchemaDto`,
+ *   the global pipe, the `{ error, issues }` filter and gateways.
  * - Behind Nest's own handling sit three fallbacks, for what never reaches a
  *   controller:
  *   - `adapter.setNotFoundHandler` — a request no route matched. Nest adds its
@@ -33,7 +38,6 @@ import type {
   BunResponse,
   JsonValue,
   RouterErrorMiddlewareHandler,
-  StandardSchemaV1,
 } from "@kingsleyweb/bun-common";
 import type {
   ArgumentMetadata,
@@ -47,9 +51,8 @@ import type {
 } from "@nestjs/common";
 import type { Observable } from "rxjs";
 import { toStandardSchema } from "@kingsleyweb/bun-common";
-import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
+import { BunHttpAdapter, StandardSchemaPipe } from "@kingsleyweb/bun-nest";
 import {
-  BadRequestException,
   Body,
   Catch,
   Controller,
@@ -133,34 +136,6 @@ class RolesGuard implements CanActivate {
 /* ------------------------------------------------------------------ */
 /* Pipes                                                               */
 
-/** Validates a value against any Standard Schema, answering 400 with the issues. */
-class SchemaPipe<T> implements PipeTransform<unknown, Promise<T>> {
-  constructor(
-    /** The schema the value must satisfy. */
-    private readonly schema: StandardSchemaV1<unknown, T>,
-  ) {}
-
-  async transform(value: unknown): Promise<T> {
-    trail.push("SchemaPipe");
-    const result = await this.schema["~standard"].validate(value);
-    if (result.issues) {
-      throw new BadRequestException({
-        message: "Validation failed",
-        issues: result.issues.map((issue) => {
-          const path = (issue.path ?? []).map((segment) => {
-            return typeof segment === "object"
-              ? String(segment.key)
-              : String(segment);
-          });
-          return { path: path.join("."), message: issue.message };
-        }),
-      });
-    }
-
-    return result.value;
-  }
-}
-
 /** Global pipe: trims every string field of a body. */
 class TrimBodyPipe implements PipeTransform {
   transform(value: unknown, metadata: ArgumentMetadata) {
@@ -187,6 +162,7 @@ interface NewOrder {
 
 /** A Standard Schema from a plain function, via bun-common. */
 const NewOrderSchema = toStandardSchema<unknown, NewOrder>((input) => {
+  trail.push("StandardSchemaPipe (NewOrderSchema)");
   const candidate = (input ?? {}) as Record<string, unknown>;
   const issues: { message: string; path: string[] }[] = [];
 
@@ -337,7 +313,7 @@ class OrdersController {
 
   @Post()
   @UseFilters(OutOfStockFilter)
-  create(@Body(new SchemaPipe(NewOrderSchema)) order: NewOrder) {
+  create(@Body(new StandardSchemaPipe(NewOrderSchema)) order: NewOrder) {
     trail.push("OrdersController.create");
     if (order.sku === "unobtainium") {
       throw new OutOfStockError(order.sku);
@@ -468,7 +444,7 @@ await call(
 );
 
 /* ------------------------------------------------------------------ */
-step("A Standard Schema pipe and a route-scoped filter");
+step("StandardSchemaPipe and a route-scoped filter");
 const key = { "x-api-key": "secret" };
 await call("invalid order", "/orders", post({ sku: "", quantity: 0 }, key));
 await call(
