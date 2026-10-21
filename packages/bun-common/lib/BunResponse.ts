@@ -2863,13 +2863,21 @@ export class BunResponse<
    * `responseValidation: "off"` the adjust still runs, with no check. Never
    * throws; called after the response was committed, it is ignored (one
    * warning per route). Without a validator declaring variants it does
-   * nothing.
+   * nothing. On a response with no declared responses (a plain `@Res()`
+   * handler, an untyped `res`) it takes any name and keeps the response's
+   * type, since the runtime is what knows the route's variants.
    *
    * @param name The variant's name, as declared.
    */
-  public variant<const N extends VariantNames<TResponses>>(
+  public variant<
+    const N extends ([TResponses] extends [undefined]
+      ? string
+      : VariantNames<TResponses>),
+  >(
     name: N,
-  ): BunResponse<customWebsocketDataType, NarrowVariant<TResponses, N>> {
+  ): [TResponses] extends [undefined]
+    ? BunResponse<customWebsocketDataType>
+    : BunResponse<customWebsocketDataType, NarrowVariant<TResponses, N>> {
     const slot = this.#state?.gate;
     if (slot !== undefined && typeof name === "string") {
       if (slot.done || slot.held || this.headersSent) {
@@ -2878,10 +2886,9 @@ export class BunResponse<
         slot.variant = name;
       }
     }
-    return this as unknown as BunResponse<
-      customWebsocketDataType,
-      NarrowVariant<TResponses, N>
-    >;
+    return this as unknown as [TResponses] extends [undefined]
+      ? BunResponse<customWebsocketDataType>
+      : BunResponse<customWebsocketDataType, NarrowVariant<TResponses, N>>;
   }
 
   /** The class's own status writes, which no declared response constrains. */

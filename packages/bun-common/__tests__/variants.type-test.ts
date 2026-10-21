@@ -12,6 +12,7 @@
  */
 import * as v from "valibot";
 import { z } from "zod";
+import type { BunResponse } from "../lib/BunResponse";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRouter } from "../lib/BunRouter";
 import { validate } from "../lib/BunValidate";
@@ -267,10 +268,14 @@ validate(
   },
 );
 
-/* ---- 5. no responses, or plain ones: .variant() is not callable ---- */
+/* ---- 5. no responses: any name, the type kept; plain ones: not callable ---- */
 r.get("/plain", (_req, res) => {
-  // @ts-expect-error VT16 no responses declared: no variant names
-  return res.variant("admin");
+  // VT16 no responses declared (a plain @Res() handler, an untyped res):
+  // any name is accepted and the response keeps its plain type, since only
+  // the runtime knows the route's variants.
+  const same = res.variant("admin");
+  type _VT16 = Expect<Equal<typeof same, BunResponse>>;
+  return same;
 });
 r.get("/v3a", validate({}, { responses: { 200: UserView } }), (_req, res) => {
   res.status(200).json(userBody); // V3a's own declarations, unchanged
