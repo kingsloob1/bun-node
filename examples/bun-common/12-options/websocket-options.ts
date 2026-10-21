@@ -22,6 +22,10 @@
  *   by middleware), then the route's `onUpgrade` result — or a bare
  *   `upgradeToWebsocket()`'s own arguments. `customDataToWsClientFn` is the
  *   deprecated name of a hook that returns only `custom`.
+ * - `removeRouteHandler(path, handler?)` unregisters what `ws()` and
+ *   `setRouteHandler()` registered. With no handler left, an upgrade to the
+ *   path goes on to the next matching route, or a 404. Sockets already open
+ *   stay open: closing them is the caller's job.
  * - The idle-timeout section waits for Bun's idle timer, so the tour takes
  *   several seconds longer than the rest would.
  */
@@ -810,6 +814,143 @@ step("setRouteHandler — handlers accumulate per path");
     "first",
     "second",
   ]);
+}
+
+/* ------------------------------------------------------------------ */
+step("removeRouteHandler — unregistering a WebSocket route");
+
+{
+  /** Answers every message with `echo <message>`. */
+  const echo: BunWebSocketHandlerType = {
+    message(ws, message) {
+      ws.sendText(`echo ${String(message)}`);
+    },
+  };
+  /** A second handler on the same path: answers with `audit <message>`. */
+  const audit: BunWebSocketHandlerType = {
+    message(ws, message) {
+      ws.sendText(`audit ${String(message)}`);
+    },
+  };
+
+  const served = await serve({}, (adapter) => {
+    adapter.ws("/solo", echo);
+    adapter.ws("/feed", echo);
+    adapter.ws("/feed", audit);
+    adapter.ws("/shared", echo);
+    // Registered after the WebSocket route on the same path: what an upgrade
+    // request reaches once that route stands aside.
+    adapter.get("/shared", (_req, res) => {
+      res.send("the plain GET route");
+    });
+  });
+  const bunWebSocket = served.adapter.webSocketAdapter;
+
+  /** The status an upgrade request to `path` is answered with: `101` when upgraded. */
+  const upgradeStatus = async (path: string) => {
+    const { statusLine } = await upgradeHead(`${served.origin}${path}`);
+    return Number(statusLine.split(" ")[1]);
+  };
+
+  // Opened before anything is removed, to see what removal leaves alone.
+  const held = await openClient(`${served.origin}/solo`, {
+    headers: { "x-id": "held" },
+  });
+  const heldServerSide = await served.socket("held");
+  held.socket.send("before");
+  await held.waitForText("the echo before removal", (text) => {
+    return text === "echo before";
+  });
+
+  checkEqual(
+    "before removal, every route upgrades",
+    [
+      await upgradeStatus("/solo"),
+      await upgradeStatus("/feed"),
+      await upgradeStatus("/shared"),
+    ],
+    [101, 101, 101],
+  );
+
+  checkEqual(
+    "removeRouteHandler(path) removes every handler of the path: true",
+    bunWebSocket.removeRouteHandler("/solo"),
+    true,
+  );
+  checkEqual(
+    "… after which an upgrade to it is a 404",
+    await upgradeStatus("/solo"),
+    404,
+  );
+  checkEqual(
+    "removing it again: false, nothing was left",
+    bunWebSocket.removeRouteHandler("/solo"),
+    false,
+  );
+
+  bunWebSocket.removeRouteHandler("/shared");
+  checkEqual(
+    "an upgrade to a removed route goes on to the next route matching it (here a GET route: 200)",
+    await upgradeStatus("/shared"),
+    200,
+  );
+
+  // A socket already open is the caller's to close.
+  const messageEvents = () => served.events.filter((e) => e === "message");
+  const messagesBefore = messageEvents().length;
+  held.socket.send("after");
+  await waitFor("the instance's message event", () => {
+    return messageEvents().length > messagesBefore;
+  });
+  heldServerSide.sendText("the server can still write");
+  await held.waitForText("the server's write", (text) => {
+    return text === "the server can still write";
+  });
+  checkEqual(
+    "a socket opened before removal stays open, and the server can still write to it",
+    [held.closed, held.texts().at(-1)],
+    [undefined, "the server can still write"],
+  );
+  check(
+    "… while its messages reach the instance's events but no removed handler: no `echo after`",
+    !held.texts().includes("echo after"),
+    held.texts(),
+  );
+
+  // Two handlers on one path: removing one keeps the route.
+  checkEqual(
+    "removeRouteHandler(path, handler) with a handler that is not one of the path's: false",
+    [
+      bunWebSocket.removeRouteHandler("/feed", reportData),
+      bunWebSocket.removeRouteHandler("/nowhere", echo),
+    ],
+    [false, false],
+  );
+  checkEqual(
+    "removing one of two handlers: true",
+    bunWebSocket.removeRouteHandler("/feed", audit),
+    true,
+  );
+  checkEqual("… the route still upgrades", await upgradeStatus("/feed"), 101);
+  const feed = await openClient(`${served.origin}/feed`);
+  feed.socket.send("one");
+  feed.socket.send("two");
+  await feed.waitForText("the second echo", (text) => text === "echo two");
+  // An `audit one` would have arrived between the two echoes: a message's
+  // handlers run in registration order, and `audit` was registered second.
+  checkEqual("… and only the handler left answers", feed.texts(), [
+    "echo one",
+    "echo two",
+  ]);
+
+  checkEqual(
+    "registering a removed path again revives it",
+    [
+      await bunWebSocket.setRouteHandler("/solo", echo, undefined),
+      await upgradeStatus("/solo"),
+    ],
+    [true, 101],
+  );
 }
 
 /* ------------------------------------------------------------------ */

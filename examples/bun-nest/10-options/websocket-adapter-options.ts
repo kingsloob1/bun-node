@@ -27,6 +27,22 @@
  *   `@ConnectedSocket()`/`client.data`/`client.emit`, `@MessageBody(key)`,
  *   `@Ack()`, namespaces, `path`, gateway ports, exceptions with and without a
  *   filter, and what `app.close()` calls.
+ * - **Flow control** (as `@nestjs/platform-ws` 12.2.0, on every Nest) —
+ *   `maxConcurrentMessages` (default 1000) with a limit of 2: a client's third
+ *   message waits for a slot and runs in order, another client is not held
+ *   up, and the waiting client is not read meanwhile (its close frame
+ *   included); `maxSendBufferSize` (default 128 MB) with a 256 KB cap: a
+ *   client that reads none of a flood is terminated, with a warning, after a
+ *   few MB; Bun's `backpressureLimit` defaulting to the cap; what a client
+ *   queued dropped when it is disconnected, and a frame handed over after
+ *   `close()` not handled.
+ * - **Exceptions** — a throwing exception filter still answers with an
+ *   `ERROR` packet (Nest's own adapters send nothing); on Nest 12.2.0, an
+ *   exception whose `cause` cannot be serialised is sent again without it.
+ *   That check is gated on a capability, `emitErrorPayload` on
+ *   `BaseWsExceptionFilter.prototype`, and checked against the installed
+ *   `@nestjs/websockets` version read from disk; below 12.2.0 it prints a
+ *   `skipped:` line (the 11.2.7 column of `scripts/nest-matrix.ts`).
  */
 import type {
   BunRequest,
@@ -44,6 +60,7 @@ import type {
 import type {
   ArgumentsHost,
   ExceptionFilter,
+  LoggerService,
   WsMessageHandler,
 } from "@nestjs/common";
 import type {
@@ -55,6 +72,7 @@ import type {
 import type { Observable } from "rxjs";
 import type { WirePacket, WsClient } from "../04-websockets/fixtures/ws-client";
 import { Buffer } from "node:buffer";
+import { dirname, join } from "node:path";
 import { BunRouter, getPort } from "@kingsleyweb/bun-common";
 import {
   BunHttpAdapter,
@@ -66,6 +84,7 @@ import { Catch, Module, UseFilters } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import {
   Ack,
+  BaseWsExceptionFilter,
   ConnectedSocket,
   MessageBody,
   SubscribeMessage,
@@ -73,7 +92,7 @@ import {
   WebSocketServer,
   WsException,
 } from "@nestjs/websockets";
-import { from, isObservable, of } from "rxjs";
+import { from, isObservable, map, of, range, takeWhile } from "rxjs";
 import {
   connect,
   eventName,
@@ -82,7 +101,7 @@ import {
   upgradeHead,
 } from "../04-websockets/fixtures/ws-client";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
-import { step, title, waitFor } from "../shared/console";
+import { show, step, title, waitFor } from "../shared/console";
 import "reflect-metadata";
 
 /** The `transform` argument of `bindMessageHandlers`. */
@@ -1592,6 +1611,516 @@ check("… and dispose()", disposed);
 check(
   "the gateway port is released",
   await refused(`ws://127.0.0.1:${METRICS_PORT}/`),
+);
+
+/* ------------------------------------------------------------------ */
+step("Flow control: the options and their defaults");
+
+checkEqual(
+  "Bun's backpressureLimit follows maxSendBufferSize: 128 MB by default",
+  new BunHttpAdapter().webSocketAdapter.wsHandler.backpressureLimit,
+  128 * 1024 * 1024,
+);
+checkEqual(
+  "… the cap given, when one is",
+  new BunHttpAdapter(0, { websocket: { maxSendBufferSize: 4096 } })
+    .webSocketAdapter.wsHandler.backpressureLimit,
+  4096,
+);
+checkEqual(
+  "… unless wsOptions sets its own, which wins",
+  new BunHttpAdapter(0, {
+    websocket: {
+      maxSendBufferSize: 4096,
+      wsOptions: { backpressureLimit: 64 },
+    },
+  }).webSocketAdapter.wsHandler.backpressureLimit,
+  64,
+);
+checkEqual(
+  "… and maxSendBufferSize: 0 (no cap) leaves Bun's default",
+  new BunHttpAdapter(0, { websocket: { maxSendBufferSize: 0 } })
+    .webSocketAdapter.wsHandler.backpressureLimit,
+  undefined,
+);
+await checkRejects(
+  "maxConcurrentMessages below 1 is refused at construction",
+  () => new BunHttpAdapter(0, { websocket: { maxConcurrentMessages: 0 } }),
+  { name: "TypeError", message: /maxConcurrentMessages must be at least 1/ },
+);
+await checkRejects(
+  "a negative maxSendBufferSize is refused at construction",
+  () => new BunHttpAdapter(0, { websocket: { maxSendBufferSize: -1 } }),
+  { name: "TypeError", message: /maxSendBufferSize must be 0 or more/ },
+);
+
+/** How many of one client's messages the flow app handles at once. */
+const MAX_CONCURRENT = 2;
+
+/**
+ * The flow app's `maxSendBufferSize`: small, so a client that reads none of
+ * a flood of replies is over it after a few megabytes, not 128 MB.
+ */
+const SEND_CAP = 256 * 1024;
+
+/** One reply of the flood: 64 KB. */
+const CHUNK = "x".repeat(64 * 1024);
+
+/** At most this many flood replies (64 MB), so a broken cap cannot run away. */
+const MAX_CHUNKS = 1024;
+
+/** The `work` ids, in the order their handlers started. */
+const started: number[] = [];
+
+/** The `work` ids whose handlers returned, in that order. */
+const finished: number[] = [];
+
+/** How many `work` handlers are running now, and the most there ever were. */
+const inFlight = { now: 0, max: 0 };
+
+/** One promise per `work` id; a handler finishes once its id is released. */
+const gates = new Map<number, PromiseWithResolvers<void>>();
+
+/** The gate of `work` `id`, made on first use. */
+function gate(id: number): PromiseWithResolvers<void> {
+  let entry = gates.get(id);
+  if (!entry) {
+    entry = Promise.withResolvers<void>();
+    gates.set(id, entry);
+  }
+  return entry;
+}
+
+/** Lets `work` `id` finish. */
+function release(...ids: number[]): void {
+  for (const id of ids) {
+    gate(id).resolve();
+  }
+}
+
+/** Throws whatever it catches: an exception filter that fails. */
+@Catch()
+class ThrowingFilter implements ExceptionFilter {
+  catch(): never {
+    throw new Error("the filter threw");
+  }
+}
+
+/**
+ * Nest's own exception filter, with a cause no `JSON.stringify` can write
+ * (a `BigInt`). The default cause echoes the client's message, which fails
+ * the same way when it is nested deeper than `JSON.stringify` recurses; a
+ * `BigInt` fails at once, without the CPU a deep payload costs.
+ */
+const unsendableCause = new BaseWsExceptionFilter({
+  causeFactory: (pattern: string) => ({ pattern, at: 1n }),
+});
+
+@WebSocketGateway()
+class FlowGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  /** Each connection, by its `?who=` name. */
+  readonly clients = new Map<string, Client>();
+
+  /** The names of the clients `handleDisconnect` saw. */
+  readonly disconnected: string[] = [];
+
+  handleConnection(client: Client): void {
+    this.clients.set(
+      new URLSearchParams(client.data.search).get("who") ?? "",
+      client,
+    );
+  }
+
+  handleDisconnect(client: Client): void {
+    this.disconnected.push(
+      new URLSearchParams(client.data.search).get("who") ?? "",
+    );
+  }
+
+  /** Lets `framesFrom` mark the end of a probe. */
+  @SubscribeMessage("echo")
+  echo(@MessageBody() body: JsonValue): WsResponse<JsonValue> {
+    return { event: "echo", data: body };
+  }
+
+  /** Holds its slot until the example releases `id`. */
+  @SubscribeMessage("work")
+  async work(@MessageBody() id: number): Promise<WsResponse<number>> {
+    started.push(id);
+    inFlight.now++;
+    inFlight.max = Math.max(inFlight.max, inFlight.now);
+    await gate(id).promise;
+    inFlight.now--;
+    finished.push(id);
+    return { event: "worked", data: id };
+  }
+
+  /**
+   * 64 KB replies, all sent before the client (in this process) can read
+   * one, until the adapter disconnects it or `MAX_CHUNKS` have gone.
+   */
+  @SubscribeMessage("flood")
+  flood(@ConnectedSocket() client: Client): Observable<WsResponse<string>> {
+    return range(0, MAX_CHUNKS).pipe(
+      takeWhile(() => client.readyState === 1),
+      map(() => ({ event: "chunk", data: CHUNK })),
+    );
+  }
+
+  @SubscribeMessage("unsendable-cause")
+  @UseFilters(unsendableCause)
+  unsendable(): never {
+    throw new WsException("its cause cannot be sent");
+  }
+
+  @SubscribeMessage("filter-throws")
+  @UseFilters(new ThrowingFilter())
+  filterThrows(): never {
+    throw new WsException("handled by a filter that throws");
+  }
+}
+
+@Module({ providers: [FlowGateway] })
+class FlowModule {}
+
+/** Every warning Nest's `Logger` printed while the flow app ran. */
+const warnings: string[] = [];
+
+/** Records warnings and drops the rest, so the flood's warning can be checked. */
+const captureLogger: LoggerService = {
+  log: () => undefined,
+  error: () => undefined,
+  warn: (message: unknown) => void warnings.push(String(message)),
+};
+
+const flowHttp = new BunHttpAdapter<Session>(0, {
+  websocket: {
+    newInstance: false,
+    maxConcurrentMessages: MAX_CONCURRENT,
+    maxSendBufferSize: SEND_CAP,
+  },
+});
+const flowApp = await NestFactory.create(FlowModule, flowHttp, {
+  logger: captureLogger,
+});
+flowApp.useWebSocketAdapter(flowHttp.webSocketAdapter);
+await flowApp.listen(0);
+const flowAdapter = flowHttp.webSocketAdapter;
+const flowGateway = flowApp.get(FlowGateway);
+
+/** Connects `who` to the flow app and waits for `handleConnection`. */
+async function flowClient(who: string): Promise<[WsClient, Client]> {
+  const client = await connect(
+    `ws://127.0.0.1:${flowHttp.listeningPort}/?who=${who}`,
+  );
+  await waitFor(`${who}'s handleConnection`, () => {
+    return flowGateway.clients.has(who);
+  });
+  return [client, flowGateway.clients.get(who)!];
+}
+
+/** How many frames the adapter has received from each server-side client. */
+const framesIn = new Map<WebSocketClient, number>();
+flowAdapter.on("message", (sender) => {
+  framesIn.set(sender, (framesIn.get(sender) ?? 0) + 1);
+});
+
+checkEqual(
+  "the adapter's backpressureLimit is the app's maxSendBufferSize",
+  flowAdapter.wsHandler.backpressureLimit,
+  SEND_CAP,
+);
+
+/* ------------------------------------------------------------------ */
+step(
+  `maxConcurrentMessages: ${MAX_CONCURRENT} at once per client, the rest wait in order`,
+);
+
+const [busy, busyServerSide] = await flowClient("busy");
+for (const id of [1, 2, 3, 4, 5]) {
+  busy.emit("work", id);
+}
+// Received, not only sent: the third has reached the adapter, and waits.
+await waitFor("three of busy's frames to arrive", () => {
+  return (framesIn.get(busyServerSide) ?? 0) >= 3;
+});
+checkEqual(
+  "of five messages sent at once, two handlers start; the third waits",
+  started,
+  [1, 2],
+);
+
+const [other] = await flowClient("other");
+other.emit("echo", "not held up");
+checkEqual(
+  "the limit is per client: another client is answered meanwhile",
+  eventPayload(await other.nextEvent("echo")),
+  "not held up",
+);
+checkEqual("… while busy's third still waits", started, [1, 2]);
+
+release(2);
+await waitFor("a third handler", () => started.length === 3);
+checkEqual(
+  "a finished handler frees its slot, and the oldest waiting message takes it",
+  started,
+  [1, 2, 3],
+);
+
+release(1, 3, 4, 5);
+await waitFor("every reply", () => busy.payloadsOf("worked").length === 5);
+checkEqual(
+  "every message ran, in the order sent, never more than two at once",
+  { started, max: inFlight.max },
+  { started: [1, 2, 3, 4, 5], max: MAX_CONCURRENT },
+);
+
+/* ------------------------------------------------------------------ */
+step("While messages wait, the client is not read: its close frame included");
+
+/**
+ * Whether the adapter paused reading from `client`: Bun's `isPaused`, which
+ * the Bun 1.4.4 runtime has and `bun-types` 1.4.3 does not declare;
+ * `undefined` where the runtime lacks it.
+ */
+const isPaused = (client: Client): boolean | undefined =>
+  (client as { isPaused?: boolean }).isPaused;
+
+const [patient, patientServerSide] = await flowClient("patient");
+check(
+  "an idle client is read",
+  isPaused(patientServerSide) !== true,
+  isPaused(patientServerSide),
+);
+for (const id of [11, 12, 13]) {
+  patient.emit("work", id);
+}
+await waitFor("patient's three frames to arrive", () => {
+  return (framesIn.get(patientServerSide) ?? 0) >= 3;
+});
+await waitFor("patient's two handlers", () => started.includes(12));
+if (isPaused(patientServerSide) === undefined) {
+  show("skipped: this Bun's ServerWebSocket has no isPaused; 1 check skipped");
+} else {
+  check(
+    "while a message waits for a slot, the adapter stops reading the client",
+    isPaused(patientServerSide) === true,
+  );
+}
+// The client begins its closing handshake; its close frame waits unread.
+patient.socket.close(1000, "done");
+await framesFrom(other, () => undefined);
+await framesFrom(other, () => undefined);
+checkEqual(
+  "… so a close it sends now is not heard yet: no handleDisconnect",
+  flowGateway.disconnected.includes("patient"),
+  false,
+);
+release(11);
+await waitFor("patient's close", () => patient.closed() !== undefined);
+checkEqual(
+  "once nothing waits, reading resumes: the waiting message started first, then the close is heard",
+  {
+    started: started.filter((id) => id > 10),
+    close: patient.closed()?.code,
+    disconnected: flowGateway.disconnected.includes("patient"),
+  },
+  { started: [11, 12, 13], close: 1000, disconnected: true },
+);
+release(12, 13);
+
+/* ------------------------------------------------------------------ */
+step("A client the server disconnects: what it queued is dropped");
+
+const [leaver, leaverServerSide] = await flowClient("leaver");
+for (const id of [21, 22, 23, 24]) {
+  leaver.emit("work", id);
+}
+await waitFor("three of leaver's frames to arrive", () => {
+  return (framesIn.get(leaverServerSide) ?? 0) >= 3;
+});
+await waitFor("leaver's two handlers", () => started.includes(22));
+// `terminate()`: a closing handshake would wait on the unread client.
+leaverServerSide.terminate();
+await waitFor("leaver's handleDisconnect", () => {
+  return flowGateway.disconnected.includes("leaver");
+});
+release(21, 22);
+await waitFor("leaver's two handlers to return", () => {
+  return finished.includes(21) && finished.includes(22);
+});
+// Two round trips through the adapter: long enough for a freed slot to start
+// a waiting message, had any been kept.
+await framesFrom(other, () => undefined);
+await framesFrom(other, () => undefined);
+checkEqual(
+  "the two running handlers return, but the two that waited never start",
+  started.filter((id) => id > 20),
+  [21, 22],
+);
+await waitFor("leaver's close", () => leaver.closed() !== undefined);
+
+/* ------------------------------------------------------------------ */
+step("A client the server closes: nothing it sends after is handled");
+
+const [kicked, kickedServerSide] = await flowClient("kicked");
+// Frames are handed to the adapter here as Bun's `message` callback hands
+// them over, because Bun calls that callback for no client the server has
+// closed: there would be nothing to see.
+const frame = (id: number) =>
+  JSON.stringify({
+    type: MessageEventTypes.EVENT,
+    namespace: "/",
+    data: ["work", id],
+  });
+flowAdapter.emit("message", kickedServerSide, frame(31));
+await waitFor("work 31, handed over while open", () => started.includes(31));
+release(31);
+kickedServerSide.close(4000, "kicked");
+/**
+ * Bun 1.4.4-canary.1+6bb5dc195 runs its `close` callback inside `close()`,
+ * so `handleDisconnect` has run, and the adapter has detached the client's
+ * handlers, by the time `close()` returns; `readyState` is then `3`.
+ */
+const closeSeen = {
+  disconnected: flowGateway.disconnected.includes("kicked"),
+  readyState: kickedServerSide.readyState,
+};
+show("right after close()", closeSeen);
+// The adapter also drops a frame from a client that is no longer OPEN while
+// its handlers are still attached, as platform-ws 12.2.0 does. On Bun's
+// socket that window does not exist (see above); its unit tests cover it.
+flowAdapter.emit("message", kickedServerSide, frame(32));
+const kickedClose = await kicked.close();
+await framesFrom(other, () => undefined);
+checkEqual(
+  "a frame handed over while open runs; one after close() does not",
+  {
+    code: kickedClose.code,
+    open: closeSeen.readyState === 1,
+    ran: started.filter((id) => id > 30),
+  },
+  { code: 4000, open: false, ran: [31] },
+);
+release(32);
+
+/* ------------------------------------------------------------------ */
+step(
+  `maxSendBufferSize: ${SEND_CAP / 1024} KB queued for a client that reads none of it`,
+);
+
+const [flooded] = await flowClient("flooded");
+const warningsBefore = warnings.length;
+flooded.emit("flood");
+await waitFor("the flooded client's close", () => {
+  return flooded.closed() !== undefined;
+});
+const floodWarnings = warnings.slice(warningsBefore);
+show("the adapter's warning", floodWarnings[0]);
+checkEqual(
+  "the client is terminated (1006: no closing handshake), and handleDisconnect runs",
+  [
+    flooded.closed()?.code,
+    await waitFor("flooded's handleDisconnect", () => {
+      return flowGateway.disconnected.includes("flooded");
+    }).then(() => true),
+  ],
+  [1006, true],
+);
+check(
+  "… with a warning naming maxSendBufferSize",
+  floodWarnings.length === 1 &&
+    floodWarnings[0].includes(`"maxSendBufferSize" (${SEND_CAP})`),
+  floodWarnings,
+);
+const chunksReceived = flooded.payloadsOf("chunk").length;
+show("64 KB replies received before the disconnect", chunksReceived);
+check(
+  `… long before all ${MAX_CHUNKS} replies were sent`,
+  chunksReceived > 0 && chunksReceived < MAX_CHUNKS / 4,
+  { chunksReceived },
+);
+other.emit("echo", "still served");
+checkEqual(
+  "other clients are unaffected",
+  (await other.next("the echo", (p) => eventPayload(p) === "still served"))
+    .type,
+  MessageEventTypes.EVENT,
+);
+
+/* ------------------------------------------------------------------ */
+step("Exceptions: a throwing filter, and a cause that cannot be sent");
+
+checkEqual(
+  "an exception filter that throws still answers with an ERROR packet (Nest's adapters log it and send nothing)",
+  await framesFrom(other, () => other.emit("filter-throws")),
+  [{ type: MessageEventTypes.ERROR, namespace: "/", data: "the filter threw" }],
+);
+
+/**
+ * The installed `@nestjs/websockets`'s version, read from its `package.json`
+ * on disk (Nest 12's `exports` map has no `./package.json`).
+ * @returns The version string, such as "12.2.0".
+ */
+async function nestWebsocketsVersion(): Promise<string> {
+  let dir = dirname(Bun.resolveSync("@nestjs/websockets", import.meta.dir));
+  for (;;) {
+    const file = Bun.file(join(dir, "package.json"));
+    if (await file.exists()) {
+      const pkg = (await file.json()) as { name?: string; version: string };
+      if (pkg.name === "@nestjs/websockets") return pkg.version;
+    }
+    const parent = dirname(dir);
+    if (parent === dir)
+      throw new Error("@nestjs/websockets's package.json was not found");
+    dir = parent;
+  }
+}
+
+/** The installed `@nestjs/websockets`, for the skip line and the check below. */
+const WEBSOCKETS_VERSION = await nestWebsocketsVersion();
+
+/**
+ * The gate: whether Nest's exception filter sends an exception again without
+ * its `cause` when the first send throws (`emitErrorPayload`, 12.2.0). A
+ * capability, read off the prototype; the version only names it.
+ */
+const RETRIES_WITHOUT_CAUSE =
+  typeof (BaseWsExceptionFilter.prototype as unknown as Record<string, unknown>)
+    .emitErrorPayload === "function";
+
+checkEqual(
+  "the capability arrives with @nestjs/websockets 12.2.0",
+  RETRIES_WITHOUT_CAUSE,
+  Bun.semver.satisfies(WEBSOCKETS_VERSION, ">=12.2.0"),
+);
+if (RETRIES_WITHOUT_CAUSE) {
+  checkEqual(
+    "Nest 12.2.0: an exception whose cause cannot be serialised is sent again without it",
+    await framesFrom(other, () => other.emit("unsendable-cause", null)),
+    [
+      {
+        type: MessageEventTypes.EVENT,
+        namespace: "/",
+        data: [
+          "exception",
+          { status: "error", message: "its cause cannot be sent" },
+        ],
+      },
+    ],
+  );
+} else {
+  show(
+    `skipped: @nestjs/websockets ${WEBSOCKETS_VERSION} has no emitErrorPayload (12.2.0); 1 check skipped`,
+  );
+}
+
+await busy.close();
+await other.close();
+await flowApp.close();
+check(
+  "the flow app's port is released",
+  await refused(`ws://127.0.0.1:${flowHttp.listeningPort}/`),
 );
 
 await elsewhere.close();
