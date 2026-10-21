@@ -1012,7 +1012,7 @@ describe("validate() responses: exemptions", () => {
     expect((await router.fetch("/x?n=1")).status).toBe(200);
   });
 
-  it("a piped stream's status and media type are checked; its body is not (V3b), with one warning", async () => {
+  it("a piped stream's status and media type are checked; against a whole-body schema its body is not (Q-H4), with one warning", async () => {
     const { router, events } = routerFor("error");
     router.get(
       "/x",

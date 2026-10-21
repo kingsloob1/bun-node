@@ -1469,9 +1469,14 @@ router.get(
   status and headers, and its body read from a `clone()`, so what is sent is
   untouched. A redirect's or `sendStatus()`'s generated body, and `204`,
   `205` and `304`, are exempt: only their status and headers are checked.
-  Streams (`send(stream)`, `write()`/`end()`) and `sendFile()`'s bytes are
-  not read yet: a piped stream's and a file's status, headers, cookies and
-  media type are, and a whole-body schema against them logs one warning.
+  `sendFile()`'s bytes (or the range it sends) are read under a whole-body
+  schema. **A stream is never buffered**: against a whole-body schema its
+  body is skipped, with one warning per route, while its status, headers,
+  cookies and media type are checked; declare `chunks()` or `sse()` to
+  check it as it streams (below).
+- **A media type mapped to `null`** (`content: { "text/plain": null }`)
+  allows that media type with an empty body only; an empty body with no
+  `Content-Type` passes where any media type maps to `null`.
 - **`HEAD`** is checked as the `GET` it reuses. **A freshness `304`** for a
   conditional request is allowed without being declared.
 - **An error handler's response** is checked but only reported, never
@@ -1498,13 +1503,93 @@ body that must be read (a `Blob`, a passed-through `Response`) holds the
 response until the check settles. Use `"error"` in development and tests and
 `"off"` or `"warn"` in production.
 
+##### Streamed bodies: `chunks()`, `sse()` and `opaque()`
+
+A `content` map's value can also say how a body is read:
+
+```ts
+import { chunks, opaque, sse, validate } from "@kingsleyweb/bun-common";
+
+validate({}, {
+  responses: {
+    200: {
+      content: {
+        "application/x-ndjson": chunks(Row, { framing: "ndjson" }), // each line
+        "text/event-stream": sse({ tick: Tick, done: null }),       // each event
+        "image/png": opaque(),                                      // never read
+      },
+    },
+    201: opaque("image/png"), // shorthand: { content: { "image/png": opaque() } }
+  },
+  responseValidation: "error",
+});
+```
+
+- **`chunks(schema, { framing })`** checks each chunk as it streams: each
+  `write()` of a stream opened with `write()`/`flushHeaders()`, and each chunk
+  of a piped `ReadableStream`, Node `Readable`, async iterable or
+  `async function*` (a `Blob`, a file or a passed-through `Response` is piped
+  through the check too, never read whole). `framing: "raw"` (the default)
+  hands the schema each chunk: a string for a textual media type (`text/*`,
+  JSON), decoded across chunk boundaries, else a `Uint8Array`; a zero-length
+  chunk is not checked. `framing: "ndjson"` splits the bytes into lines across
+  chunks (a trailing `\r` dropped, blank lines skipped) and hands the schema
+  each line parsed as JSON; a line that is not JSON is a mismatch, and a last
+  line without its `\n` is checked when the stream ends.
+- **`sse(events, { data })`** frames a `text/event-stream` body into events
+  across chunks (lines ending in CRLF, LF or CR; comments, and blocks with only
+  `id:` or `retry:`, are not events), picks the schema by the event's name
+  (`message` when it has no `event:` line), and treats an undeclared name as a
+  mismatch, without naming it. `data: "json"` (the default) parses the event's
+  data as JSON, `data: "text"` hands the schema the string; a `null` event
+  carries no data. An event the stream ends in the middle of is not checked (a
+  client never dispatches it). Issues are located at `<event>.data.<path>`.
+- **`opaque()`** declares a media type whose body is never read: a file, an
+  image, a proxied `Response`. Its status, headers, cookies and media type are
+  checked as for any body, and nothing is held to read it.
+  **`opaque(mediaType)`** is the same declaration as a whole status's spec:
+  `200: opaque("image/png")` is exactly `200: { content: { "image/png":
+  opaque() } }`, with the same check, the same typed `send()` and the same
+  `describeContract` rows. Its argument is checked as a `content` key is
+  (`type/*` and `*/*` allowed, parameters kept for documents); anything else
+  throws a `TypeError`, and is a type error when it is not `type/subtype`.
+  Inside a `content` map, `opaque(mediaType)` throws a `TypeError` when the
+  responses are declared (and is a type error): the key already names the
+  media type. `200: opaque()`, with no argument, is like any bare schema there
+  an `application/json` body, never read.
+- A body held in memory (`send(text)`, bytes, a `json()` value) under
+  `chunks()` or `sse()` is checked as a stream of one chunk.
+
+Under `"error"`, **before the body has started a mismatch is still a clean
+`500`**: a `write()` stream's opening (its status, headers, media type and the
+first `write()`'s chunk) is checked before anything goes out, and the
+producer's later writes are dropped until the error handlers answer. **After
+it has started, a mismatch can only cut the stream off**: the bad chunk (or
+the one completing a bad line or event) is not sent, the stream is destroyed
+(a `write()` stream) or errored (a piped one), and the issues are logged at
+`error`; a client reading over a socket sees the connection reset, one reading
+`router.fetch()`'s body a `ResponseValidationError`. **A piped stream whose
+first chunk fails** (a `ReadableStream`, `Readable`, async iterable or
+`async function*` handed to `send()`) is cut before Bun has written its
+headers: a client over a socket sees the connection reset with no response at
+all (no status, no `500`), and the issues are logged at `error`. A `write()`
+stream's bad first chunk is still a clean `500`, since its opening is checked
+before anything goes out. `"warn"` sends everything and logs a stream's first mismatch
+once. A Promise-answering vendor (yup) holds each chunk, in order: later
+writes wait behind it, and `end()` waits for the last. Chunks are checked as
+the producer or Bun hands them over, so a good event written in the same
+`write()` as a bad one is lost with it. With no `chunks()`/`sse()` declared,
+nothing is wrapped and no chunk is checked.
+
 The handler's `res` is held to each schema's wire input, field by field (a
 `z.date()` field takes a `Date`, a `z.coerce.number()` one a `number`):
 `status()` takes only a declared status and narrows to it, `json()` takes the
 JSON (or wildcard) bodies, `send()` every declared body (and a native
 `Response`), `set()`/`header()` a declared header's value in any letter case,
 `cookie()` a declared cookie's `value`, and `redirect(url)` only where `302`
-is declared. Undeclared header and cookie names stay free. A helper that takes
+is declared. A `chunks()` or `sse()` media type takes a stream (or a buffered
+body), an `opaque()` one any body, and a `null` one only `null` or
+`undefined`; `write()` is not typed per chunk. Undeclared header and cookie names stay free. A helper that takes
 a bare `BunResponse` escapes the types, and `res.status(200); res.json(b)` in
 two statements is held only to the union of the bodies. Statuses declared
 only in `commonResponses` are not in the handler's types. The typing is a
@@ -1572,8 +1657,10 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   carries one, non-enumerably, and `getContract(handler)` reads it back. A
   `validate()` middleware carries its HTTP contract. `describeContract`
   flattens a contract into its declared sides and keys, and one row per side,
-  key, part and media type, each with its `kind`, wire `encoding` and schema.
-  `mergeContracts(layers)` merges nested layers. Inbound, the outermost
+  key, part and media type, each with its `kind`, wire `encoding` and schema
+  (`kind` is `"chunks"`, `"sse"` or `"opaque"` for the response body helpers;
+  an `sse()` row lists its events as `nested` rows, keyed by `event` with the
+  parts `data` and `id`). `mergeContracts(layers)` merges nested layers. Inbound, the outermost
   declaring a part is the wire schema. Outbound, the innermost wins (a route
   over its router). Every row records its `origin`.
 - **Media maps** (a part the transport lists in `media`, such as HTTP's
@@ -1581,7 +1668,8 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   stripped on both sides, and take `type/*` and `*/*` keys, the most
   specific key winning (exact, then `type/*`, then `*/*`). A key that is not
   a media type, or two keys that tie once bare and lower-cased, are a
-  `TypeError` when the contract is declared.
+  `TypeError` when the contract is declared. A media type mapped to `null`
+  allows that media type with no value.
 - **A `validate()` with `onFailure: "respond"` declares its own status**
   (`400`, or its `status`) on its contract's outbound side, with the JSON body
   it sends documented, and its rows marked `implicit: true`. Under `"next"` or

@@ -1,6 +1,8 @@
 /**
- * Compile-time checks for typed responses (plan §4.4.4, V3a), from
- * `evidence/http-complete/types.probe.ts` (N6–N16, without V3b's streams).
+ * Compile-time checks for typed responses (plan §4.4.4, V3a and V3b), from
+ * `evidence/http-complete/types.probe.ts` (N6–N17), plus V3b's body helpers
+ * (`chunks()`, `sse()`, `opaque()`, a media type mapped to `null`, and the
+ * status-level `opaque(mediaType)`: S1–S14).
  * Checked by `bun run check` (a `*.type-test.ts` is never run by
  * `bun test`). Each directive below must fire on the line under it, and
  * only there: a run with every directive stripped gives exactly one error
@@ -12,6 +14,7 @@ import { z } from "zod";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRouter } from "../lib/BunRouter";
 import { validate } from "../lib/BunValidate";
+import { chunks, opaque, sse } from "../lib/responseBodies";
 
 const User = z.object({ id: z.string(), name: z.string() });
 const Problem = z.object({ code: z.string() });
@@ -186,5 +189,137 @@ adapter.post(
     if (name === "taken") return res.status(409).json({ code: "TAKEN" });
     // @ts-expect-error N23 the adapter's verbs hold res too
     return res.status(201).json({ id: 1, name });
+  },
+);
+
+/* ---- V3b: streamed bodies, opaque() and a media type mapped to null ---- */
+const Tick = z.object({ n: z.number() });
+const streams = validate(
+  {},
+  {
+    responses: {
+      200: {
+        content: {
+          "text/event-stream": sse({ tick: Tick, done: null }),
+          "application/x-ndjson": chunks(Tick, { framing: "ndjson" }),
+        },
+      },
+      201: { content: { "image/png": opaque() } },
+      202: { content: { "text/plain": null } },
+      203: { content: { "application/json": chunks(z.string()) } },
+    },
+  },
+);
+r.get("/streams", streams, (req, res) => {
+  const n = Number(req.query.n);
+  /* ---- POSITIVE ---- */
+  if (n === 1) return res.status(200).send(new ReadableStream());
+  if (n === 2)
+    return res.status(200).send(async function* () {
+      yield "data: 1\n\n";
+    });
+  if (n === 3) return res.status(200).send('event: tick\ndata: {"n":1}\n\n'); // one chunk
+  if (n === 4) return res.status(201).send(new Blob([]));
+  if (n === 5) return res.status(201).send(Response.json({}));
+  if (n === 6) return res.status(202).send(null);
+  res.status(200).write("data: anything\n\n"); // write() is not typed per chunk
+  /* ---- NEGATIVE ---- */
+  // @ts-expect-error S1 a plain object where only streams are declared
+  if (n === 7) return res.status(200).send({ n: 1 });
+  // @ts-expect-error S2 json() where only a stream is declared under a JSON key
+  if (n === 8) return res.status(203).json("x");
+  // @ts-expect-error S3 a body where the media type is mapped to null
+  if (n === 9) return res.status(202).send("x");
+  // @ts-expect-error S4 json() on a status whose only media type is opaque image/png
+  if (n === 10) return res.status(201).json({ a: 1 });
+  // @ts-expect-error S5 an undeclared status beside stream bodies
+  return res.status(204).send(new ReadableStream());
+});
+
+/* ---- the helpers' own types ---- */
+const raw = chunks(z.string());
+const rawFraming: "raw" = raw.framing;
+const nd = chunks(Tick, { framing: "ndjson" });
+const ndFraming: "ndjson" = nd.framing;
+const ev = sse({ tick: Tick });
+const evData: "json" = ev.data;
+const tx = sse({ tick: z.string() }, { data: "text" });
+const txData: "text" = tx.data;
+const tickSchema: typeof Tick = ev.events.tick;
+void [rawFraming, ndFraming, evData, txData, tickSchema];
+// @ts-expect-error S6 an unknown framing
+chunks(z.string(), { framing: "lines" });
+// @ts-expect-error S7 chunks() takes a Standard Schema
+chunks("x");
+// @ts-expect-error S8 an event must be a Standard Schema or null
+sse({ tick: "x" });
+// @ts-expect-error S9 an unknown data format
+sse({ tick: Tick }, { data: "xml" });
+// @ts-expect-error S10 the framing is the declared one, not another
+const wrongFraming: "ndjson" = raw.framing;
+// @ts-expect-error S11 an undeclared event is not on the declaration
+void ev.events.boom;
+void wrongFraming;
+
+/* ---- opaque(mediaType): a whole status's spec, the keyed form's twin ---- */
+/** Whether two types are the same (not merely mutually assignable). */
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+const png = opaque("image/png");
+const pngType: "image/png" = png.mediaType;
+const keyless: undefined = opaque().mediaType;
+void [pngType, keyless];
+r.get(
+  "/opaque",
+  validate(
+    {},
+    {
+      responses: {
+        200: opaque("image/png"), // = { content: { "image/png": opaque() } }
+        201: { content: { "image/png": opaque() } },
+        202: opaque("image/*"),
+        203: opaque("text/plain; version=0.0.4"),
+      },
+    },
+  ),
+  (req, res) => {
+    const n = Number(req.query.n);
+    /* ---- POSITIVE ---- */
+    if (n === 1) return res.status(200).send(new Blob([]));
+    if (n === 2) return res.status(200).send(Response.json({}));
+    if (n === 3) return res.status(202).send(new Uint8Array([1]));
+    if (n === 4) return res.status(203).send("# metrics");
+    type Short = ReturnType<typeof res.status<200>>;
+    type Keyed = ReturnType<typeof res.status<201>>;
+    const sameSend: Equal<
+      Parameters<Short["send"]>[0],
+      Parameters<Keyed["send"]>[0]
+    > = true;
+    const sameJson: Equal<
+      Parameters<Short["json"]>[0],
+      Parameters<Keyed["json"]>[0]
+    > = true;
+    void [sameSend, sameJson];
+    /* ---- NEGATIVE ---- */
+    // @ts-expect-error S12 json() on a status declared opaque("image/png"), as on the keyed form (S4)
+    if (n === 5) return res.status(200).json({ a: 1 });
+    return res.status(201).send(new Blob([]));
+  },
+);
+// @ts-expect-error S13 opaque() takes a media type (type/subtype), not a bare name
+opaque("png");
+validate(
+  {},
+  {
+    responses: {
+      200: {
+        content: {
+          // @ts-expect-error S14 opaque(mediaType) inside a content map: the key already names the media type
+          "image/png": opaque("image/png"),
+        },
+      },
+    },
   },
 );

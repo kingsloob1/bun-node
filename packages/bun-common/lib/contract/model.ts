@@ -28,11 +28,13 @@ export type Schema = StandardSchemaV1;
  * key's own parameters are kept for documents), and `type/*` and `*\/*` keys
  * match too, the most specific key winning: an exact `type/subtype`, then
  * `type/*`, then `*\/*`. A key that is not a media type, or two keys that are
- * the same once bare and lower-cased, are refused when declared.
+ * the same once bare and lower-cased, are refused when declared. A `null`
+ * value declares the media type with no body: a message sent as it must
+ * carry none.
  */
 export interface MediaMap {
-  /** The schema for a body sent as this media type. */
-  readonly [mediaType: string]: Schema;
+  /** The schema for a body sent as this media type; `null`: this media type, with no body. */
+  readonly [mediaType: string]: Schema | null;
 }
 
 /**
@@ -68,8 +70,9 @@ export type ContractEncoding =
 /**
  * What kind of value a described row is (plan §4.12 M4): a whole value, a
  * stream of chunks, server-sent events, or an opaque body declared without
- * being read. Every row is `"value"` until the response helpers that declare
- * the other kinds land (V3a/V3b).
+ * being read. A row is `"value"` unless one of bun-common's response body
+ * helpers declared it: `chunks()`, `sse()` (whose events are expanded into
+ * the row's `nested` rows) or `opaque()`.
  */
 export type ContractKind = "value" | "chunks" | "sse" | "opaque";
 
@@ -348,7 +351,9 @@ type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
 /** A media-typed part's value: the media type it was sent as, and the value. */
 export type MediaValue<M extends MediaMap, R extends Role> = {
-  [K in keyof M & string]: { mediaType: K; value: Of<M[K], R> };
+  [K in keyof M & string]: M[K] extends Schema
+    ? { mediaType: K; value: Of<M[K], R> }
+    : { mediaType: K; value?: undefined };
 }[keyof M & string];
 
 /** One part's value in a role's view. */

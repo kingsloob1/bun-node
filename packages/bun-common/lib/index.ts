@@ -352,6 +352,19 @@ export {
   type ValidatorMiddleware,
 } from "./BunValidate";
 export {
+  type ChunkFraming,
+  chunks,
+  type ChunksOptions,
+  opaque,
+  type OpaqueBody,
+  sse,
+  type SseDataFormat,
+  type SseEventMap,
+  type SseEvents,
+  type SseOptions,
+  type StreamChunks,
+} from "./responseBodies";
+export {
   type ResponseSchemas,
   type ResponseSpec,
   type ResponseSpecObject,

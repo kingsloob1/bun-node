@@ -19,7 +19,13 @@ import type {
   TransportSpec,
 } from "./model";
 import { resolveLogger } from "../logging";
-import { isDocumented, isImplicit, jsonSchemaOf, kindOf } from "./schemas";
+import {
+  isDocumented,
+  isImplicit,
+  jsonSchemaOf,
+  kindOf,
+  nestedOf,
+} from "./schemas";
 import { isSchema, makeContract, SIDES } from "./transport";
 
 /** One schema in a contract, located. */
@@ -50,6 +56,13 @@ export interface ContractEntry {
    * m5). Absent otherwise.
    */
   implicit?: true;
+  /**
+   * The rows a body of kind `"sse"` expands into (plan §4.12 M4): one per
+   * declared event and part, keyed by `event` (`keyName: "event"`, `key` the
+   * event's name, parts `data` and `id`), exactly as an SSE writer's
+   * contract describes them. Absent on every other row.
+   */
+  nested?: ContractEntry[];
 }
 
 /**
@@ -127,6 +140,24 @@ function variants(
     : Object.entries(def as Record<string, Record<string, unknown>>);
 }
 
+/** A row's located fields, before its schema. */
+type RowBase = Omit<ContractEntry, "kind" | "schema" | "vendor">;
+
+/** The row of one schema: its kind, vendor and implicit flag, and an `sse()` body's events as nested rows. */
+function schemaRow(base: RowBase, schema: Schema): ContractEntry {
+  const nested = nestedOf(schema);
+  return {
+    ...base,
+    kind: kindOf(schema),
+    schema,
+    vendor: schema["~standard"].vendor,
+    ...(isImplicit(schema) ? { implicit: true as const } : {}),
+    ...(nested === undefined
+      ? {}
+      : { nested: describeContract(nested).entries }),
+  };
+}
+
 /**
  * Flattens a contract into its declared sides and keys, and one row per
  * `(side, key, part, mediaType)` with its kind, wire encoding, origin, schema
@@ -173,24 +204,15 @@ export function describeContract(contract: AnyContract): ContractDescription {
         if (decl === null) {
           entries.push({ ...base, kind: "value", schema: null });
         } else if (isSchema(decl)) {
-          entries.push({
-            ...base,
-            kind: kindOf(decl),
-            schema: decl,
-            vendor: decl["~standard"].vendor,
-            ...(isImplicit(decl) ? { implicit: true as const } : {}),
-          });
+          entries.push(schemaRow(base, decl));
         } else {
           for (const mediaType of Object.keys(decl).sort(byCodeUnit)) {
             const schema = decl[mediaType];
-            entries.push({
-              ...base,
-              mediaType,
-              kind: kindOf(schema),
-              schema,
-              vendor: schema["~standard"].vendor,
-              ...(isImplicit(schema) ? { implicit: true as const } : {}),
-            });
+            entries.push(
+              schema === null
+                ? { ...base, mediaType, kind: "value", schema: null }
+                : schemaRow({ ...base, mediaType }, schema),
+            );
           }
         }
       }
@@ -262,7 +284,12 @@ function jsonDocs(decl: PartDecl): Map<string, string | undefined> {
   };
   if (decl === null) out.set("", "null");
   else if (isSchema(decl)) one("", decl);
-  else for (const [k, s] of Object.entries(decl)) one(k, s);
+  else {
+    for (const [k, s] of Object.entries(decl)) {
+      if (s === null) out.set(k, "null");
+      else one(k, s);
+    }
+  }
   return out;
 }
 
