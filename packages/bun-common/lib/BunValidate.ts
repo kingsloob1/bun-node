@@ -1,6 +1,6 @@
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
-import type { IssueFormat } from "./contract/issues";
+import type { IssueFormat, RunOptions } from "./contract/issues";
 import type {
   AnyContract,
   GuardOptions,
@@ -23,7 +23,8 @@ import type { StandardSchemaV1 } from "./types/standardSchema";
 import type { JsonValue } from "./utils/native";
 import { exemptResponseFromGate, installResponseGate } from "./BunResponse";
 import { httpTransport } from "./contract/http";
-import { validateStandard } from "./contract/issues";
+import { runSchema, validateStandard } from "./contract/issues";
+import { checkProtoKeyRule } from "./contract/protoKeys";
 import { documented, markImplicit, toConverter } from "./contract/schemas";
 import { attachContract, isSchema, makeContract } from "./contract/transport";
 import { resolveLogger } from "./logging";
@@ -405,6 +406,18 @@ export interface BunValidateOptions<
    * value that is not a boolean throws a `TypeError` here.
    */
   redactPaths?: GuardOptions["redactPaths"];
+  /**
+   * Which prototype-pollution keys are deleted, in place, from every part
+   * but `params` before its schema runs. `"nest"` (the default) is Nest
+   * 12.2.0's rule: every own `__proto__` and `prototype` key and every own
+   * `constructor` key, recursively, so a legitimate `prototype` or
+   * `constructor` field in a body or query is deleted too. `"minimal"`
+   * deletes only own `__proto__` keys and own `constructor` keys whose
+   * value is an object with an own `prototype`. The contract guards' option
+   * of the same name. A response is never stripped. Anything else throws a
+   * `TypeError` here.
+   */
+  stripProtoKeys?: GuardOptions["stripProtoKeys"];
 }
 
 /**
@@ -652,6 +665,12 @@ export class BunValidate<
   readonly #format: IssueFormat | undefined;
 
   /**
+   * {@link #format} plus the request parts' `stripProtoKeys` rule, for the
+   * request's schema runs; `#format` itself when the rule is unset.
+   */
+  readonly #requestFormat: RunOptions | undefined;
+
+  /**
    * The HTTP contract of the schemas, attached to every middleware this
    * builds so `getContract(middleware)` reads them back (plan Q-C10).
    */
@@ -705,6 +724,10 @@ export class BunValidate<
       );
     }
     this.#format = issueFormat(options.messages, options.redactPaths);
+    const rule = checkProtoKeyRule("validate()", options.stripProtoKeys);
+    // The request targets always strip, by Nest 12's rule unless told
+    // otherwise: `validateStandard` strips only when given a rule.
+    this.#requestFormat = { ...this.#format, stripProtoKeys: rule ?? "nest" };
     this.#responses =
       options.responses === undefined
         ? undefined
@@ -818,7 +841,7 @@ export class BunValidate<
         }
       | undefined;
     const targets = this.#targets;
-    const format = this.#format;
+    const format = this.#requestFormat;
 
     // Each target in turn, as before the core: a `normalize` hook may read
     // what an earlier target wrote back, and `abortEarly` stops the rest. It
@@ -901,14 +924,21 @@ export class BunValidate<
           const input = targetHooks?.normalize
             ? targetHooks.normalize(raw, req)
             : raw;
-          const outcome = validateStandard(
-            schema,
-            input,
-            target,
-            undefined,
-            undefined,
-            format,
-          );
+          // `params` is the one part whose keys are the code's (the route's
+          // names), never the client's, and the matched-pipeline cache
+          // shares its object across requests, so it must not be mutated:
+          // it runs without `validateStandard`'s proto-key strip.
+          const outcome =
+            target === "params"
+              ? runSchema(schema, input, target, undefined, undefined, format)
+              : validateStandard(
+                  schema,
+                  input,
+                  target,
+                  undefined,
+                  undefined,
+                  format,
+                );
           if (outcome instanceof Promise) {
             return outcome.then((settled) =>
               settle(target, settled) ? finish() : run(i + 1),

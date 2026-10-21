@@ -78,6 +78,7 @@ describe("the contract subpath in a browser bundle", () => {
       "contract/issues.ts",
       "contract/media.ts",
       "contract/model.ts",
+      "contract/protoKeys.ts",
       "contract/schemas.ts",
       "contract/transport.ts",
       "logging.ts",

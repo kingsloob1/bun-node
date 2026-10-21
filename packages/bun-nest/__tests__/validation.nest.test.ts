@@ -33,6 +33,7 @@ import {
   createParamDecorator,
   Get,
   Headers,
+  Logger,
   Module,
   Param,
   Post,
@@ -40,7 +41,8 @@ import {
   UseFilters,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { firstValueFrom, isObservable } from "rxjs";
 import * as yup from "yup";
 import { z } from "zod";
 import {
@@ -456,6 +458,142 @@ describe("SchemaDto with the global StandardValidationPipe", () => {
   });
 });
 
+/* ---- prototype-pollution keys ------------------------------------- */
+
+describe("a body with an own __proto__ key (yup): stripped first, as Nest 12's pipes do", () => {
+  const PROTO_BODY = '{"name":"n","age":"6","__proto__":{"polluted":"yes"}}';
+
+  it("control: yup alone crashes on it (what answered 500 before the strip)", async () => {
+    let failure: unknown;
+    try {
+      await YupUser["~standard"].validate(JSON.parse(PROTO_BODY));
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("resolve is not a function");
+  });
+
+  it("StandardSchemaPipe answers 201 with the schema's output", async () => {
+    expect(await post(validated, "/pipe/yup", PROTO_BODY)).toEqual({
+      status: 201,
+      body: { name: "n", age: 6 },
+    });
+  });
+
+  it("a SchemaDto under StandardValidationPipe answers 201 with the schema's output", async () => {
+    expect(await post(validated, "/yup-dto", PROTO_BODY)).toEqual({
+      status: 201,
+      body: { age: 6, typeofAge: "number" },
+    });
+  });
+});
+
+/* ---- the stripProtoKeys option ------------------------------------ */
+
+const Loose = z.looseObject({ name: z.string() });
+class LooseDto extends SchemaDto(Loose) {}
+
+@Controller("proto")
+class ProtoController {
+  @Post("dto")
+  dto(@Body() body: LooseDto) {
+    return Object.keys(body);
+  }
+
+  @Post("pipe")
+  pipe(
+    @Body(new StandardSchemaPipe(Loose, { stripProtoKeys: "minimal" }))
+    body: object,
+  ) {
+    return Object.keys(body);
+  }
+}
+
+@Module({
+  imports: [StandardValidationModule.forRoot({ stripProtoKeys: "minimal" })],
+  controllers: [ProtoController],
+})
+class MinimalProtoModule {}
+
+@Module({
+  imports: [StandardValidationModule],
+  controllers: [ProtoController],
+})
+class DefaultProtoModule {}
+
+describe('the stripProtoKeys option: "nest" (default) or "minimal"', () => {
+  const BODY = '{"name":"a","prototype":1,"__proto__":{"polluted":"yes"}}';
+  let minimal: BunHttpAdapter;
+  let byDefault: BunHttpAdapter;
+  beforeAll(async () => {
+    minimal = await boot(MinimalProtoModule);
+    byDefault = await boot(DefaultProtoModule);
+  });
+
+  it('forRoot({ stripProtoKeys: "minimal" }) reaches the global pipe: a prototype field is kept', async () => {
+    expect(await post(minimal, "/proto/dto", BODY)).toEqual({
+      status: 201,
+      body: ["name", "prototype"],
+    });
+  });
+
+  it('negative control: the default ("nest") deletes it', async () => {
+    expect(await post(byDefault, "/proto/dto", BODY)).toEqual({
+      status: 201,
+      body: ["name"],
+    });
+  });
+
+  it("StandardSchemaPipe keeps its own option, whatever the module's", async () => {
+    for (const app of [minimal, byDefault]) {
+      expect(await post(app, "/proto/pipe", BODY)).toEqual({
+        status: 201,
+        body: ["name", "prototype"],
+      });
+    }
+  });
+
+  it('both pipes, called directly: "minimal" keeps prototype, the default deletes it', () => {
+    const body = { type: "body", metatype: LooseDto } as const;
+    const fresh = () => JSON.parse(BODY) as object;
+    expect(
+      Object.keys(
+        new StandardValidationPipe({ stripProtoKeys: "minimal" }).transform(
+          fresh(),
+          body,
+        ) as object,
+      ),
+    ).toEqual(["name", "prototype"]);
+    expect(
+      Object.keys(
+        new StandardValidationPipe().transform(fresh(), body) as object,
+      ),
+    ).toEqual(["name"]);
+    expect(
+      Object.keys(
+        new StandardSchemaPipe(Loose, { stripProtoKeys: "minimal" }).transform(
+          fresh(),
+          body,
+        ) as object,
+      ),
+    ).toEqual(["name", "prototype"]);
+    expect(
+      Object.keys(
+        new StandardSchemaPipe(Loose).transform(fresh(), body) as object,
+      ),
+    ).toEqual(["name"]);
+  });
+
+  it("refuses any other value with a TypeError when built", () => {
+    const bad = { stripProtoKeys: "Nest" } as never;
+    expect(() => new StandardSchemaPipe(Loose, bad)).toThrow(
+      'StandardSchemaPipe: stripProtoKeys must be "nest" or "minimal" (or unset)',
+    );
+    expect(() => new StandardValidationPipe(bad)).toThrow(TypeError);
+    expect(() => StandardValidationModule.forRoot(bad)).toThrow(TypeError);
+  });
+});
+
 /* ---- StandardSchemaPipe -------------------------------------------- */
 
 describe("StandardSchemaPipe on each part", () => {
@@ -757,13 +895,56 @@ describe("ValidationExceptionFilter", () => {
     expect(caught).not.toContain(BadRequestException);
   });
 
-  it("rethrows outside HTTP and WebSocket contexts (a job fails with the error)", () => {
+  it("in rpc, returns an Observable that errors, as Nest's BaseRpcExceptionFilter does (TCP: validationRpc.nest.test.ts)", async () => {
+    const filter = new ValidationExceptionFilter();
+    const host = { getType: () => "rpc" } as unknown as Parameters<
+      ValidationExceptionFilter["catch"]
+    >[1];
+    /** What the Observable `filter.catch` returns errors with. */
+    const errorOf = async (error: Error): Promise<unknown> => {
+      const answer = filter.catch(error, host);
+      expect(isObservable(answer)).toBe(true);
+      return firstValueFrom(answer!).then(
+        () => "no error",
+        (reason: unknown) => reason,
+      );
+    };
+    expect(
+      await errorOf(
+        new ValidationError([{ target: "body", message: "m", path: "" }], 400),
+      ),
+    ).toEqual({
+      status: "error",
+      statusCode: 400,
+      code: "VALIDATION",
+      message: "Validation failed",
+      issues: [{ target: "body", message: "m", path: "" }],
+    });
+    // A server fault: Nest's own answer (logged by Nest's filter).
+    const logged = spyOn(Logger.prototype, "error").mockImplementation(
+      () => {},
+    );
+    try {
+      expect(
+        await errorOf(
+          new ResponseValidationError(
+            [{ target: "body", message: "m", path: "id", key: "200" }],
+            200,
+          ),
+        ),
+      ).toEqual({ status: "error", message: "Internal server error" });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("rethrows outside HTTP, WebSocket and rpc contexts (a job fails with the error)", () => {
     const filter = new ValidationExceptionFilter();
     const error = new ValidationError(
       [{ target: "body", message: "m", path: "" }],
       400,
     );
-    const host = { getType: () => "rpc" } as unknown as Parameters<
+    const host = { getType: () => "bun-jobs" } as unknown as Parameters<
       ValidationExceptionFilter["catch"]
     >[1];
     expect(() => filter.catch(error, host)).toThrow(error);

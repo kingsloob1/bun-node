@@ -342,6 +342,18 @@ export interface GuardOptions {
    * found to quote a received value (plan Q-C3).
    */
   messages?: "generic";
+  /**
+   * Which prototype-pollution keys a receiver deletes from what arrived,
+   * in place, before its schemas run. `"nest"` (the default) is Nest
+   * 12.2.0's rule: every own `__proto__` and `prototype` key and every own
+   * `constructor` key, recursively, so a legitimate `prototype` or
+   * `constructor` field is deleted too. `"minimal"` deletes only own
+   * `__proto__` keys and own `constructor` keys whose value is an object
+   * with an own `prototype`. A sender never strips (it hands back its
+   * owner's message as given), so it ignores this. Anything else throws a
+   * `TypeError` when the guard is built.
+   */
+  stripProtoKeys?: "nest" | "minimal";
 }
 
 // ---------------------------------------------------------------------------

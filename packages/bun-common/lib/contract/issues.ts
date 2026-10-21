@@ -25,6 +25,7 @@ import type {
   StandardOutcome,
   ValidationIssue,
 } from "./model";
+import { checkProtoKeyRule, stripProtoKeys } from "./protoKeys";
 
 /** The issue-wording options a runner honours. */
 export type IssueFormat = Pick<GuardOptions, "messages" | "redactPaths">;
@@ -38,6 +39,12 @@ export type IssueFormat = Pick<GuardOptions, "messages" | "redactPaths">;
  * wherever the issue points.
  */
 export type ScrubScope = "path" | "whole";
+
+/** `validateStandard`'s options: the issue wording, and the proto-key rule. */
+export type RunOptions = Pick<
+  GuardOptions,
+  "messages" | "redactPaths" | "stripProtoKeys"
+>;
 
 /** At most this many received leaves are compared with a message. */
 const MAX_LEAVES = 256;
@@ -346,12 +353,27 @@ export function runSchema<T, TTarget extends string>(
  * Synchronous when the vendor is (zod, valibot, arktype, a hand-rolled sync
  * schema); a Promise only when the vendor returns one (yup, an async schema).
  *
+ * Given `options.stripProtoKeys`, `value`'s prototype-pollution keys are
+ * stripped in place first, by that rule: `"nest"`, Nest 12's (every own
+ * `__proto__` and `prototype` key, and `constructor` keys, recursively), or
+ * `"minimal"` (own `__proto__` keys, and `constructor` keys holding an object
+ * with a `prototype`). Unset, nothing is stripped: this runner also checks
+ * values a server built itself (a response body, whose `__proto__`-named key
+ * is data). The input entry points pass a rule, `"nest"` by default:
+ * `validate()`'s request targets, the guards' receivers and bun-nest's pipes.
+ * A caller validating untrusted input itself must pass `stripProtoKeys` too.
+ * A `{"__proto__": …}` body would otherwise crash yup (a 500) or reach a
+ * vendor that assigns it.
+ *
  * @param schema    Any Standard Schema.
- * @param value     What arrived.
+ * @param value     The value to check; given `stripProtoKeys`, its prototype-pollution keys are deleted.
  * @param target    The part's name, reported on every issue (`"body"`, `"payload"`).
  * @param key       The declared key, reported on every issue (a status, a message type).
  * @param mediaType The declared media type, reported on every issue.
- * @param options   How issues are worded: `messages: "generic"` and `redactPaths`.
+ * @param options   How issues are worded (`messages: "generic"` and
+ *   `redactPaths`), and which proto keys are stripped (`stripProtoKeys`:
+ *   none when unset; anything but `"nest"` or `"minimal"` throws a
+ *   `TypeError`).
  */
 export function validateStandard<S extends Schema, TTarget extends string>(
   schema: S,
@@ -359,7 +381,9 @@ export function validateStandard<S extends Schema, TTarget extends string>(
   target: TTarget,
   key?: string,
   mediaType?: string,
-  options?: IssueFormat,
+  options?: RunOptions,
 ): MaybePromise<StandardOutcome<StandardSchemaV1.InferOutput<S>, TTarget>> {
+  const rule = checkProtoKeyRule("validateStandard()", options?.stripProtoKeys);
+  if (rule !== undefined) stripProtoKeys(value, rule);
   return runSchema(schema, value, target, key, mediaType, options);
 }

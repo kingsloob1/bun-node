@@ -180,6 +180,10 @@ export type _optionsType = Expect<
 export type _optionsFields = Expect<
   Equal<
     Required<StandardValidationPipeOptions>,
-    { messages: "generic"; redactPaths: boolean }
+    {
+      messages: "generic";
+      redactPaths: boolean;
+      stripProtoKeys: "nest" | "minimal";
+    }
   >
 >;

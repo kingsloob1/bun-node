@@ -10,6 +10,7 @@
 import type { Logger } from "../logging";
 import type { IssueFormat } from "./issues";
 import type { MediaMatcher } from "./media";
+import type { ProtoKeyRule } from "./protoKeys";
 import type {
   AnyContract,
   GuardOptions,
@@ -29,6 +30,7 @@ import { resolveLogger } from "../logging";
 import { runSchema } from "./issues";
 import { compileMediaMap } from "./media";
 import { variantsOf } from "./model";
+import { checkProtoKeyRule, stripProtoKeys } from "./protoKeys";
 import { isDocumented } from "./schemas";
 import { isSchema } from "./transport";
 
@@ -133,13 +135,20 @@ function declaredList(keys: readonly string[]): string {
   return keys.length > 10 ? `${shown}, …` : shown;
 }
 
-/** Checks one part of a message. */
+/**
+ * Checks one part of a message. A receiver's part is what arrived, so its
+ * prototype-pollution keys are stripped in place by `strip`'s rule before
+ * the schema runs, as `validateStandard` does; a sender's (`strip`
+ * `undefined`) is the owner's own message, handed back as given, so it is
+ * never touched.
+ */
 function checkPart(
   part: string,
   decl: PartDecl,
   value: unknown,
   key: string | number | undefined,
   format: IssueFormat,
+  strip: ProtoKeyRule | undefined,
 ): MaybePromise<StandardOutcome<unknown>> {
   if (decl === null) {
     if (value === undefined) return { ok: true, value };
@@ -152,6 +161,7 @@ function checkPart(
     return { ok: false, issues: [issue] };
   }
   if (isSchema(decl)) {
+    if (strip !== undefined) stripProtoKeys(value, strip);
     return runSchema(decl, value, part, key, undefined, format);
   }
   const media = value as { mediaType?: unknown; value?: unknown } | undefined;
@@ -181,6 +191,7 @@ function checkPart(
     if (key !== undefined) issue.key = String(key);
     return { ok: false, issues: [issue] };
   }
+  if (strip !== undefined) stripProtoKeys(media!.value, strip);
   const outcome = runSchema(schema, media!.value, part, key, declared, format);
   const wrap = (o: StandardOutcome<unknown>): StandardOutcome<unknown> =>
     o.ok
@@ -224,6 +235,14 @@ function compile(
   const policy: Policy = options.policy ?? "error";
   const undeclaredKey = options.undeclaredKey ?? "report";
   const { onIssues } = options;
+  // A receiver strips by this rule; a sender ignores it (it never strips),
+  // though a value neither rule names is refused on either.
+  const rule =
+    checkProtoKeyRule(
+      parse ? "createReceiver()" : "createSender()",
+      options.stripProtoKeys,
+    ) ?? "nest";
+  const strip = parse ? rule : undefined;
   const format: IssueFormat = {
     ...(options.messages === undefined ? {} : { messages: options.messages }),
     ...(options.redactPaths === undefined
@@ -368,7 +387,7 @@ function compile(
     let pending = false;
     for (let i = 0; i < plan.length; i++) {
       const [part, decl] = plan[i];
-      const result = checkPart(part, decl, msg?.[part], rawKey, format);
+      const result = checkPart(part, decl, msg?.[part], rawKey, format, strip);
       results[i] = result;
       pending ||= result instanceof Promise;
     }
