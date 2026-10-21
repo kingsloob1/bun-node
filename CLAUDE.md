@@ -1245,8 +1245,10 @@ cannot succeed — a stub server reports both honestly rather than pretending.
   `stop(false)` alone. A graceful stop leaves long-lived traffic on the old
   server: an SSE stream keeps flowing and a WebSocket keeps answering from it
   after `close()`, even with a new server bound on the same port (measured).
-  bun-nest's drains first (`stop(false)`, then waits for `pendingRequests` to
-  reach 0, at most `closeDrainTimeout`); bun-common's force-closes at once.
+  Both drain first (`stop(false)`, then wait for `pendingRequests` to reach
+  0, at most their `closeDrainTimeout` option, 10 s by default), so an
+  endless stream holds `close()` for the whole cap; WebSockets are not
+  waited for.
   Keep-alive connections are not the reason: on Bun 1.4.2, 1.4.3 and
   1.4.4-canary 6bb5dc195, `stop(false)` closes an idle keep-alive connection
   at once, closes a busy one after its response, and stops listening. 20 of

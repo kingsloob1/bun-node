@@ -881,9 +881,9 @@ export class BunWebSocket<
   };
 
   /**
-   * Force-stops `server` (`stop(true)`, closing keep-alive connections so the
-   * port is really released) and forgets it. Never creates a server: killing
-   * one that is not running is a no-op beyond the `stop` call.
+   * Force-stops `server` (`stop(true)`, cutting its streams and WebSockets
+   * so none outlives it) and forgets it. Never creates a server: killing one
+   * that is not running is a no-op beyond the `stop` call.
    */
   public killServer(server: BunWebSocketServerType<TCustom> | undefined) {
     if (!server) {
@@ -891,10 +891,11 @@ export class BunWebSocket<
     }
 
     try {
-      // A graceful `stop(false)` leaves keep-alive connections open, and with
-      // `SO_REUSEPORT` a new server on the same port can then be answered by
-      // the stale one. Not awaited: `killServer` returns synchronously, and
-      // the promise only reports the force-closed connections finishing.
+      // A graceful `stop(false)` alone leaves an SSE stream flowing and a
+      // WebSocket answering from the stale server, even once a new one is
+      // bound on the same port (the port-release rule in CLAUDE.md). Not
+      // awaited: `killServer` returns synchronously, and the promise only
+      // reports the force-closed connections finishing.
       void server.stop(true);
     } catch {
       //
