@@ -8,14 +8,19 @@
  * copied, never a segment's value. The scrub runs only on failure.
  *
  * A message is compared with what its issue is about: the value at the
- * issue's path (its leaves, and its keys when it is an object), the keys of
- * the object holding it, and the path's own keys. Not the rest of the value,
- * so a schema's own words (`Expected one of "waiting", "active"`) survive
- * another field holding `"waiting"`. A root issue, or a path the value does
- * not lead along, is compared with the whole value; so is every issue under
- * the `"whole"` {@link ScrubScope}. That fallback also compares the value's
- * keys of three or more characters unquoted, as whole words (yup's
- * `unspecified keys: …`).
+ * issue's path (its leaves, and its keys when it is an object) and the
+ * path's own keys (an unknown key reported at its own path, valibot's and
+ * arktype's, is the path's last). Not the rest of the value, nor the keys
+ * beside it, so a schema's own words (`Expected one of "waiting", "active"`,
+ * `Expected "job"`) survive another field holding `"waiting"` or named
+ * `job`. A root issue, or a path the value does not lead along, is compared
+ * with the whole value; so is every issue under the `"whole"`
+ * {@link ScrubScope}. That fallback also compares the value's keys of three
+ * or more characters unquoted, as whole words (yup's `unspecified keys: …`),
+ * and so does a path-scoped issue with the keys of the value at its path
+ * (yup's `o field has unspecified keys: …` at `o`): a `refine` on an object
+ * whose message names one of its keys is withheld, unless it reports at
+ * that key's own path.
  */
 import type { StandardSchemaV1 } from "../types/standardSchema";
 import type {
@@ -25,17 +30,17 @@ import type {
   StandardOutcome,
   ValidationIssue,
 } from "./model";
+import { isPromiseLike } from "./model";
 
 /** The issue-wording options a runner honours. */
 export type IssueFormat = Pick<GuardOptions, "messages" | "redactPaths">;
 
 /**
  * What of the received value an issue's message is compared with.
- * `"path"` (a schema's issues): the value at the issue's path, the keys of
- * the object holding it and the path's keys; the whole value for a root
- * issue, its keys of three or more characters unquoted too. `"whole"` (a
- * response `refine`'s, which sees every part): the whole received value,
- * wherever the issue points.
+ * `"path"` (a schema's issues): the value at the issue's path, its keys of
+ * three or more characters unquoted too, and the path's keys; the whole
+ * value for a root issue, its keys likewise. `"whole"` (a response `refine`'s, which sees
+ * every part): the whole received value, wherever the issue points.
  */
 export type ScrubScope = "path" | "whole";
 
@@ -55,7 +60,9 @@ export function andThen<A, B>(
   value: MaybePromise<A>,
   f: (resolved: A) => MaybePromise<B>,
 ): MaybePromise<B> {
-  return value instanceof Promise ? value.then(f) : f(value);
+  return isPromiseLike(value)
+    ? Promise.resolve(value as PromiseLike<A>).then(f)
+    : f(value);
 }
 
 /** The vendor's issue code (zod, arktype) or type (valibot), when it is a safe identifier. */
@@ -96,7 +103,8 @@ interface Forbidden {
   short: string[];
   /**
    * Keys of three or more characters, matched unquoted as whole words
-   * ({@link namesKey}); filled only when the whole value is compared.
+   * ({@link namesKey}); filled from the whole value, or under `"path"` the
+   * value at the issue's path.
    * Capped at `MAX_LEAVES` on their own, so they never crowd out a leaf.
    */
   keys: string[];
@@ -201,23 +209,14 @@ function atPath(
   return { value, holder };
 }
 
-/** Adds an object's own keys, quoted, to `out` (an array's indices are not); bounded. */
-function collectKeys(holder: object, out: Forbidden): void {
-  if (Array.isArray(holder)) return;
-  for (const k of Object.keys(holder)) {
-    if (out.plain.length + out.short.length >= MAX_LEAVES) return;
-    out.plain.push(JSON.stringify(k));
-  }
-}
-
 /**
  * Whether `issue`'s message quotes anything received, each bounded. Under
  * `"path"`: the value at the issue's path (its leaves, and its keys when it
- * is an object), the keys of the object holding it, and the path's own keys
- * (quoted); the whole value for a root issue or a path that does not lead
- * along it, with its keys of three or more characters also unquoted
+ * is an object) and the path's own keys (quoted); the whole value for a
+ * root issue or a path that does not lead along it; either way with the
+ * compared value's keys of three or more characters also unquoted
  * ({@link namesKey}). Under `"whole"`: the value at the path first, so it is
- * inside the bound, then the whole value.
+ * inside the bound, then the whole value, keys quoted only.
  */
 function quotesReceived(
   issue: StandardSchemaV1.Issue,
@@ -231,8 +230,9 @@ function quotesReceived(
     // The whole value: a root issue, or a path that does not lead along it.
     collect(received, tokens, 0, true);
   } else {
-    collect(at.value, tokens, 0);
-    collectKeys(at.holder, tokens);
+    // Under "path", the keys at the path unquoted too (yup's nested
+    // `unspecified keys: …`); a response refine's "whole" stays quoted.
+    collect(at.value, tokens, 0, scope === "path");
     if (scope === "whole") collect(received, tokens, 0);
   }
   for (const segment of issue.path ?? []) {
@@ -336,7 +336,11 @@ export function runSchema<T, TTarget extends string>(
         }
       : { ok: true, value: result.value as T };
   const result = schema["~standard"].validate(value);
-  return result instanceof Promise ? result.then(settle) : settle(result);
+  // Any thenable is async, not only a Promise: a vendor's own thenable would
+  // otherwise read as a result with no `issues`, a pass.
+  return isPromiseLike(result)
+    ? Promise.resolve(result).then(settle)
+    : settle(result);
 }
 
 /**

@@ -465,17 +465,63 @@ describe("the scrub compares a message with what its issue is about", () => {
     ]);
   });
 
-  it("the keys of the object holding the value are compared (valibot reports an unknown key at its own path)", async () => {
-    const schema = v.object({ o: v.strictObject({ a: v.string() }) });
-    const value = { o: { a: "x", [SECRET]: 1 } };
-    expect(await rawIssues(schema, value)).toContain(`"${SECRET}"`);
-    expect(await messagesOf(schema, value)).toEqual([
+  it("an unknown key reported at its own path is withheld through the path's keys (valibot, arktype)", async () => {
+    const value = { o: { a: "x", [SECRET]: 1 }, other: "unrelated" };
+    const valibot = v.object({ o: v.strictObject({ a: v.string() }) });
+    expect(await rawIssues(valibot, value)).toBe(
+      `Invalid key: Expected never but received "${SECRET}"`,
+    );
+    expect(await messagesOf(valibot, value)).toEqual([
       "Invalid value (strict_object)",
     ]);
+    const arktype = type({ o: { "+": "reject", a: "string" } });
+    expect(await rawIssues(arktype, value)).toBe(
+      `o["${SECRET}"] must be removed`,
+    );
+    expect(await messagesOf(arktype, value)).toEqual([
+      "Invalid value (predicate)",
+    ]);
+    // The key is the path's last segment, which is compared quoted.
+    expect(
+      await messagesOf(
+        reporting(`"holder-key" is not allowed`, ["o", "holder-key"]),
+        { o: { "holder-key": 1, x: 2 } },
+      ),
+    ).toEqual(["Invalid value"]);
+  });
+
+  // The negative control: on develop's issues.ts (#505, which compared the
+  // keys of the object holding the value too) this test fails, with
+  // "Invalid value" for the second input.
+  it('the keys beside the path are not compared: a schema\'s `Expected "job"` survives a sibling named job', async () => {
+    const kind = toStandardSchema((input: unknown) => {
+      const k = (input as { kind?: unknown }).kind;
+      return k === "job"
+        ? { value: input }
+        : { issues: [{ message: 'Expected "job"', path: ["kind"] }] };
+    });
+    expect(await messagesOf(kind, { kind: "run" })).toEqual(['Expected "job"']);
+    expect(await messagesOf(kind, { kind: "run", job: {} })).toEqual([
+      'Expected "job"',
+    ]);
+    // Nor at a nested path: `o.x`'s message naming `o`'s other key is kept,
+    // as no vendor reports an unknown key at a sibling's path.
     expect(
       await messagesOf(reporting(`"holder-key" is not allowed`, ["o", "x"]), {
         o: { "holder-key": 1, x: 2 },
       }),
+    ).toEqual(['"holder-key" is not allowed']);
+    // The value at the path is still compared, sibling or not.
+    const quotingKind = toStandardSchema((input: unknown) => ({
+      issues: [
+        {
+          message: `Expected "job", got ${JSON.stringify((input as { kind?: unknown }).kind)}`,
+          path: ["kind"],
+        },
+      ],
+    }));
+    expect(
+      await messagesOf(quotingKind, { kind: "run-away", job: {} }),
     ).toEqual(["Invalid value"]);
   });
 
@@ -583,7 +629,7 @@ describe("the scrub compares a message with what its issue is about", () => {
   });
 });
 
-describe("a whole-value comparison also names the keys, unquoted", () => {
+describe("a whole-value comparison, and the value at an issue's path, also name the keys, unquoted", () => {
   // The negative control: on the path-scoped issues.ts before this rule
   // (keys compared only quoted), this test fails with yup's raw message.
   it("yup 1.7, noUnknown: an unknown key named unquoted is withheld", async () => {
@@ -630,6 +676,72 @@ describe("a whole-value comparison also names the keys, unquoted", () => {
         "extra-key": 1,
       }),
     ).toEqual(["Invalid value"]);
+  });
+
+  // The negative control: with the value at the path collected without its
+  // bare keys (develop before this rule), this test fails with yup's raw
+  // message.
+  it("yup 1.7, nested noUnknown: an unknown key named unquoted at the object's path is withheld", async () => {
+    const schema = yup.object({
+      o: yup.object({ a: yup.string() }).noUnknown().strict(),
+      other: yup.string(),
+    });
+    const value = { o: { a: "x", [SECRET]: 1 }, other: "unrelated" };
+    expect(await rawIssues(schema, value)).toBe(
+      `o field has unspecified keys: ${SECRET}`,
+    );
+    expect(await messagesOf(schema, value)).toEqual(["Invalid value"]);
+  });
+
+  it("the trade-off at a path: a refine on an object naming one of its keys is withheld, unless it reports at that key's path", async () => {
+    const Range = z.object({ start: z.number(), end: z.number() });
+    const value = { o: { start: 5, end: 1 } };
+    const atObject = z.object({
+      o: Range.refine((r) => r.start < r.end, {
+        message: "start must be before end",
+      }),
+    });
+    expect(await rawIssues(atObject, value)).toBe("start must be before end");
+    expect(await messagesOf(atObject, value)).toEqual([
+      "Invalid value (custom)",
+    ]);
+    const atKey = z.object({
+      o: Range.refine((r) => r.start < r.end, {
+        message: "start must be before end",
+        path: ["start"],
+      }),
+    });
+    expect(await messagesOf(atKey, value)).toEqual([
+      "start must be before end",
+    ]);
+  });
+
+  it("keeps the bound with the keys at the path: they never crowd out a leaf", async () => {
+    const wide = Object.fromEntries(
+      Array.from({ length: 300 }, (_, i) => {
+        const n = String(i).padStart(3, "0");
+        return [`key-${n}`, `leaf-${n}`];
+      }),
+    );
+    // Each entry adds its quoted key and its leaf to the leaf bound
+    // (MAX_LEAVES); its bare key is counted apart, so the same leaves are
+    // compared as before the bare keys, and the walk stops where it did.
+    for (const message of ["refused leaf-100", "unknown key-100"]) {
+      expect(await messagesOf(reporting(message, ["o"]), { o: wide })).toEqual([
+        "Invalid value",
+      ]);
+    }
+    expect(
+      await messagesOf(reporting("refused leaf-200", ["o"]), { o: wide }),
+    ).toEqual(["refused leaf-200"]);
+  });
+
+  it("never withholds a path-scoped message for a key of 1 or 2 characters at the path", async () => {
+    expect(
+      await messagesOf(reporting("id and a must agree", ["o"]), {
+        o: { id: 5000, a: "zzz" },
+      }),
+    ).toEqual(["id and a must agree"]);
   });
 
   it("gives a path-scoped issue nothing new: a sibling key named unquoted is kept", async () => {
