@@ -2,7 +2,8 @@
 
 Backs [`../README.md`](../README.md). Recorded 2026-10-15 on `develop` at
 `73bf4a00` (`contract-core/` and `http-complete/` on 2026-10-17 at
-`68023d36`), with the installed Bun 1.4.4-canary.1 (`7583003d8`). Nothing here
+`68023d36`; `response-variants/` on 2026-10-21 at `a471c18d`, Bun
+1.4.4-canary.1 `6bb5dc195`), with the installed Bun 1.4.4-canary.1 (`7583003d8`). Nothing here
 is part of a package, and no project the repo checks includes this folder:
 the probes carry deliberate `@ts-expect-error` controls, and
 `response-typing/responses.spike.ts` only compiles against a patched copy of
@@ -23,6 +24,7 @@ repo's root `node_modules`, so run `bun install` at the root first.
 | `response-typing/run.sh` | `bash response-typing/run.sh [scratch-dir]` | `response-typing/results.txt` | a, c: no errors; b: 9 errors in `zz-mutant`; d: errors (the unpatched base); e: both generated files "up to date" |
 | `contract-core/` (2026-10-17) | `cd contract-core && bash check-types.sh`, then `bun run.ts` | `contract-core/results.txt` | the clean check exits 0 and the mutant fails on exactly the 24 control lines ("PASS: every control fires"); C1–C22 as `contract-core/README.md` lists |
 | `http-complete/run.sh` (2026-10-17) | `bash http-complete/run.sh [scratch-dir]`; `BENCH=1` adds the cost run through the heavy-run wrapper | `http-complete/results.txt` | b: no errors; c: 19 errors in `zz-mutant`; d: 1 error, bun-jobs' `ProblemIssueDto`; e: errors (the unpatched base); f: both generated files "up to date"; g: H1–H52 as `http-complete/README.md` lists; h: the same 3 location-caused failures patched and unpatched |
+| `response-variants/` (2026-10-21, V3c) | `cd response-variants && bash check-types.sh`, then `bun run.ts`; the cost run `bash bench.sh` through the heavy-run wrapper | `response-variants/results.txt` | the clean check exits 0 and the mutant fails on exactly the 21 control lines ("PASS: every control fires, and nothing else fails"); every `run.ts` line `PASS` (RV1–RV28); the bench is read for its minimums and load |
 | `nest-interceptor/` (2026-10-17, bun-node-15) | see `nest-interceptor/README.md` (against a `scripts/nest-matrix.ts` copy of Nest 11 or 12) | `nest-interceptor/out11.json`, `out12.json` | the rows of the plan's §4.5.4 table; `@Body({ schema })` without the pipe answers 201 |
 
 `AGENT`, `CLAUDECODE` and `REPL_ID` are removed for every `bun --check`

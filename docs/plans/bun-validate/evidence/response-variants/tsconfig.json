@@ -1,0 +1,8 @@
+{
+  // The response-variants spike (plan §4.4.6, V3c), checked on its own (see
+  // README.md): its probe carries deliberate @ts-expect-error controls, so no
+  // repo project includes it. It reads the real V3a types from
+  // packages/bun-common/lib and bun-nest's adapter, through relative imports.
+  "extends": "../tsconfig.json",
+  "include": ["./*.ts"]
+}
