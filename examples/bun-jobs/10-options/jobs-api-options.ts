@@ -33,6 +33,12 @@
  *   own HTML 400 — which a host route beside the API still gets.
  * - **A 5xx never carries the underlying message.** Its `detail` is the
  *   generic title, always.
+ * - **`validateResponses` checks the API's own answers against its
+ *   contract**, where a host's `serialize` hook can make them drift:
+ *   `"warn"` (or `true`) sends the body and logs one `warn` line naming the
+ *   route, the status and the issues, never a value from the body; `"error"`
+ *   refuses it with a 500 `INTERNAL` before anything is sent. Off by
+ *   default.
  * - **Adding a queue's first job creates it**, as `BunQueue.add` does: a
  *   `POST /queues/:queue/jobs` with an addable name is 201 for a queue the
  *   backend has never seen. Only a configured `queues` list still makes an
@@ -70,6 +76,7 @@ import type {
   EnableRepeatableResultDto,
   FailJobBody,
   FailJobResultDto,
+  JobDto,
   PermissionsDto,
   RepeatableDto,
   RunnerInfoDto,
@@ -80,6 +87,7 @@ import {
   BunHttpAdapter,
   BunRouter,
   createTestLogger,
+  ResponseValidationError,
 } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
@@ -113,6 +121,9 @@ const namespace = exampleNamespace("tour-api");
 
 /** A message that must never reach a client. */
 const SECRET = "SECRET-connection-string-7f3a";
+
+/** What `validateResponses` logs a response that does not match its schema as. */
+const RESPONSE_MISMATCH = "jobs api response did not match its schema";
 
 /** Contexts opened by the tour, closed at the end. */
 const contexts: BunJobs[] = [];
@@ -409,6 +420,26 @@ await checkRejects(
     }),
   { code: "CONFIG", message: /segments/ },
 );
+
+// `validateResponses` takes a boolean or one of bun-common's three modes;
+// anything else is refused rather than read as on or off.
+for (const validateResponses of ["loud", 1]) {
+  await checkRejects(
+    `validateResponses ${JSON.stringify(validateResponses)}`,
+    () =>
+      createJobsApi({
+        jobs: context("c7"),
+        basePath: "/admin/jobs",
+        authorize: () => true,
+        validateResponses: validateResponses as never,
+      }),
+    {
+      name: "ConfigError",
+      code: "CONFIG",
+      message: /validateResponses must be a boolean, "off", "warn" or "error"/,
+    },
+  );
+}
 
 /* ------------------------------------------------------------------ */
 step("allowUnauthenticated: allowed, but it says so every time");
@@ -2009,8 +2040,9 @@ check(
   triggered,
 );
 
-// `validateResponses` checks every body against its own schema and logs a
-// mismatch. It costs a validation per response, so it is off by default.
+// `validateResponses` checks every body against its own schema. It costs a
+// validation per response, so it is off by default; the next step shows
+// what it does with a body that does not match.
 checkEqual(
   "validateResponses is off by default",
   (await mount().call("GET", "/meta")).status,
@@ -2020,11 +2052,143 @@ const validating = mount({ validateResponses: true });
 await validating.call("GET", "/meta");
 check(
   "with it on, a correct response logs nothing",
-  !validating.events.some(
-    (event) => event.message === "jobs api response did not match its schema",
-  ),
+  !validating.events.some((event) => event.message === RESPONSE_MISMATCH),
   validating.events.map((event) => event.message),
 );
+
+/* ------------------------------------------------------------------ */
+step(
+  'validateResponses: "warn" sends a drifted body and says so, "error" refuses it',
+);
+
+// The API's own serializers are written to match its schemas (bun-jobs' route
+// tests run with `"error"`), so a mismatch comes from what a host plugs in,
+// and the check is how a host finds out. This `serialize.job` hook formats
+// `createdAt` for people, as an ISO string, where the contract — and every
+// client generated from the OpenAPI document — reads epoch milliseconds.
+// `JobDto` types `createdAt` a number, so the cast stands for what the
+// compiler cannot see: a hook written in plain JavaScript, or one that reads
+// its value from `any`.
+const drifting = context("drift");
+await drifting.queue("mail").add("send", {}, { jobId: "drifted" });
+/** Every `createdAt` the hook wrote, for the checks that look for it in the log. */
+const written: string[] = [];
+/** The hook that drifts from the contract: `createdAt` as an ISO string. */
+const humanDates = {
+  job: (dto: JobDto): JobDto => {
+    const createdAt = new Date(dto.createdAt).toISOString();
+    written.push(createdAt);
+    return { ...dto, createdAt: createdAt as unknown as number };
+  },
+};
+/** The one issue the drifted body has, as the log line names it. */
+const CREATED_AT_ISSUE = {
+  target: "body",
+  message: "Expected integer, received string",
+  path: "createdAt",
+  key: "200",
+  mediaType: "application/json",
+};
+
+for (const mode of [true, "warn"] as const) {
+  const warned = mount(
+    { validateResponses: mode, serialize: humanDates },
+    drifting,
+  );
+  const answer = await warned.call("GET", "/queues/mail/jobs/drifted");
+  /** The `createdAt` the client received. */
+  const sent = (answer.body as { createdAt: unknown }).createdAt;
+  checkEqual(
+    `${JSON.stringify(mode)}: the response is sent as the hook shaped it`,
+    [answer.status, typeof sent],
+    [200, "string"],
+  );
+  const logged = warned.events.filter(
+    (event) => event.message === RESPONSE_MISMATCH,
+  );
+  checkEqual(
+    `${JSON.stringify(mode)}: logged once, at warn`,
+    logged.map((event) => event.level),
+    ["warn"],
+  );
+  // The route, the status and the issues: where to look and what is wrong,
+  // with no `mismatch` string beside them.
+  checkEqual(
+    `${JSON.stringify(mode)}: with the route, the status and the issues`,
+    logged[0]?.fields,
+    { operationId: "getJob", status: 200, issues: [CREATED_AT_ISSUE] },
+  );
+  check(
+    `${JSON.stringify(mode)}: and no value from the body`,
+    written.length > 0 &&
+      written.every((value) => !JSON.stringify(logged).includes(value)),
+    { written, logged },
+  );
+}
+
+const rejecting = mount(
+  { validateResponses: "error", serialize: humanDates },
+  drifting,
+);
+const rejected = await rejecting.call("GET", "/queues/mail/jobs/drifted");
+/** The problem the client received instead of the job. */
+const problem = rejected.body as { code?: string; id?: unknown };
+checkEqual(
+  '"error": the response is refused, answered 500 INTERNAL',
+  [rejected.status, rejected.headers.get("content-type"), problem.code],
+  [500, "application/problem+json", "INTERNAL"],
+);
+check(
+  "before anything of the job was sent",
+  problem.id === undefined && !rejected.text.includes("createdAt"),
+  problem,
+);
+const rejectedLine = rejecting.events.filter(
+  (event) => event.message === RESPONSE_MISMATCH,
+);
+checkEqual(
+  "the same line, logged once at error",
+  rejectedLine.map((event) => [event.level, event.fields]),
+  [
+    [
+      "error",
+      { operationId: "getJob", status: 200, issues: [CREATED_AT_ISSUE] },
+    ],
+  ],
+);
+// The API's error handler answered it, so the line it logs for every 5xx,
+// "jobs api request failed", carries bun-common's error.
+const rejectedError = rejecting.events.find(
+  (event) => event.message === "jobs api request failed",
+)?.error;
+check(
+  "with bun-common's ResponseValidationError as the error",
+  rejectedError instanceof ResponseValidationError &&
+    rejectedError.responseStatus === 200,
+  rejectedError,
+);
+checkEqual(
+  "a response that matches is still sent",
+  (await rejecting.call("GET", "/meta")).status,
+  200,
+);
+
+for (const mode of ["off", false] as const) {
+  const quiet = mount(
+    { validateResponses: mode, serialize: humanDates },
+    drifting,
+  );
+  const answer = await quiet.call("GET", "/queues/mail/jobs/drifted");
+  checkEqual(
+    `${JSON.stringify(mode)}: sent as it is, and nothing logged`,
+    [
+      answer.status,
+      quiet.events.filter((event) => event.message === RESPONSE_MISMATCH)
+        .length,
+    ],
+    [200, 0],
+  );
+}
 
 /* ------------------------------------------------------------------ */
 step("docs: the JSON is always there, the pages are not");
