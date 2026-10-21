@@ -1221,7 +1221,9 @@ than its date. One known difference: a `GET` answered on the no-`Headers` path
 above does not look for `If-None-Match: *`, and answers it with its own status
 where Express answers `304` (a `HEAD`, or a `GET` that sets any header, gets
 the `304`). Looking would make Bun build the request's headers on every plain
-`GET`, which measured +6–13% per served request.
+`GET`, which measured +6–13% per served request. The exported `fresh()`
+also accepts a header given as an array (bun-common's request headers can be
+`string[]`), where `fresh` 2.0.0 throws.
 
 Example:
 [`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts).
