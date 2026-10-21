@@ -2,7 +2,8 @@
  * The contract model: what a transport declares, what a contract holds, and
  * the static types derived from it.
  *
- * Types only, apart from the {@link CONTRACT} symbol. Nothing here imports a
+ * Types only, apart from the {@link CONTRACT} and {@link VARIANTS} symbols
+ * and {@link variantsOf}. Nothing here imports a
  * Bun or Node API, so the module is safe in a browser bundle (the
  * `@kingsleyweb/bun-common/contract` subpath).
  *
@@ -168,6 +169,67 @@ export interface ContractMeta {
  */
 export const CONTRACT: unique symbol = Symbol.for("bun-validate.contract");
 
+/**
+ * Where a keyed side's key declared as several whole **variants** keeps
+ * them (HTTP's `variants()`, plan §4.4.6): a property of the key's parts
+ * object under `Symbol.for("bun-validate.variants")`, holding a
+ * {@link VariantsDecl}. Such a key declares no part of its own; each variant
+ * declares its parts in full, and `describeContract` gives each a row with
+ * its `variant`. Internal.
+ *
+ * @internal
+ */
+export const VARIANTS: unique symbol = Symbol.for("bun-validate.variants");
+
+/**
+ * One variant of a key, as a contract records it: its name, its parts in
+ * full, and what documents say about when it is sent.
+ *
+ * @internal
+ */
+export interface VariantDecl {
+  /** The variant's name, the author's (`"admin"`). */
+  readonly name: string;
+  /** The variant's parts, keyed by the transport's part names, each declared as a key's are (a schema, a media map or `null`). */
+  readonly parts: object;
+  /** Whether the variant applies only to some requests (it has a `when`); a `when` itself is never described. */
+  readonly conditional: boolean;
+  /** What documents say instead of the `when`; absent when none was given. */
+  readonly description?: string;
+}
+
+/**
+ * A key's variants, and the discriminant that selects one, as a contract
+ * records them under {@link VARIANTS}.
+ *
+ * @internal
+ */
+export interface VariantsDecl {
+  /** The variants, in declaration order. */
+  readonly variants: readonly VariantDecl[];
+  /**
+   * The discriminant: the part (`"headers"`, `"cookies"`) and the name in it
+   * whose value selects the variant, and each selectable variant's value (an
+   * exact string, `true` for any value, `null` for absence). Absent when the
+   * key has none.
+   */
+  readonly by?: {
+    /** The part the discriminant is in. */
+    readonly part: string;
+    /** The header (lower-case) or cookie name. */
+    readonly name: string;
+    /** Variant name to the value that selects it; a variant not listed is not selected by it. */
+    readonly values: Readonly<Record<string, string | true | null>>;
+  };
+}
+
+/** The {@link VariantsDecl} a key's parts object carries, if it declares variants. */
+export function variantsOf(parts: unknown): VariantsDecl | undefined {
+  return typeof parts === "object" && parts !== null
+    ? (parts as { [VARIANTS]?: VariantsDecl })[VARIANTS]
+    : undefined;
+}
+
 /** Something carrying contract `C` (a handler, a router layer, a queue definition). */
 export interface Carries<C> {
   /** The contract, reachable through `getContract`. */
@@ -213,6 +275,13 @@ export interface ValidationIssue<TTarget extends string = string> {
   key?: string;
   /** The declared media type, on a media-typed part. */
   mediaType?: string;
+  /**
+   * The variant of the key the issue was checked against (HTTP's
+   * `variants()`, plan §4.4.6, Q-H19): a name the contract's author chose.
+   * Absent on a key with no variants, and on an issue about the key as a
+   * whole (`The response matches no acceptable variant (…)`).
+   */
+  variant?: string;
 }
 
 /** A flattened outcome: the parsed value, or every issue. */

@@ -28,6 +28,7 @@ import type {
 import { resolveLogger } from "../logging";
 import { runSchema } from "./issues";
 import { compileMediaMap } from "./media";
+import { variantsOf } from "./model";
 import { isDocumented } from "./schemas";
 import { isSchema } from "./transport";
 
@@ -188,6 +189,31 @@ function checkPart(
   return outcome instanceof Promise ? outcome.then(wrap) : wrap(outcome);
 }
 
+/**
+ * Throws a `TypeError` when the side declares a key (or, unkeyed, its one
+ * shape) with variants (HTTP's `variants()`, plan §4.4.6): the guards do not
+ * check variants yet, and passing such a message unchecked would be a silent
+ * hole. `validate()`'s response gate checks them.
+ */
+function refuseVariants(
+  transport: string,
+  side: Side,
+  def: Record<string, object> | undefined,
+  keyName: string | undefined,
+): void {
+  if (def === undefined) return;
+  const found =
+    keyName === undefined
+      ? variantsOf(def) === undefined
+        ? undefined
+        : ""
+      : Object.keys(def).find((k) => variantsOf(def[k]) !== undefined);
+  if (found === undefined) return;
+  throw new TypeError(
+    `${transport} ${side}${found === "" ? "" : ` ${keyName} ${JSON.stringify(found)}`} is declared with variants(), which the contract core's guards (createSender, createReceiver) do not check yet; HTTP's validate() checks them`,
+  );
+}
+
 /** Compiles one side of `contract` into a guard. */
 function compile(
   contract: AnyContract,
@@ -209,6 +235,7 @@ function compile(
     side
   ];
   const keyName = spec?.key;
+  refuseVariants(contract.transport.name, side, def, keyName);
   const single: Plan =
     def === undefined || keyName !== undefined ? [] : toPlan(def);
 
@@ -374,6 +401,8 @@ function compile(
  * `"warn"` it is logged and the raw message handed on, and under `"off"`
  * nothing is checked, so with either (or a policy only known to be a
  * {@link Policy}) the receiver is typed to hand on `unknown` (plan Q-C1).
+ * A side declaring a key with variants (HTTP's `variants()`) throws a
+ * `TypeError` here: the guards do not check variants yet.
  *
  * @param contract The contract.
  * @param side     The side its owner receives (`"inbound"` on a server).
@@ -404,7 +433,9 @@ export function createReceiver(
  * Compiles a sender for one side of `contract`: it **checks**, and resolves
  * to the very message it was given, which is what goes on the wire. Its
  * input is typed by {@link Sent}: each field's input, or its output where
- * the input is `unknown`. Takes all three policies.
+ * the input is `unknown`. Takes all three policies. A side declaring a key
+ * with variants (HTTP's `variants()`) throws a `TypeError` here: the guards
+ * do not check variants yet.
  *
  * @param contract The contract.
  * @param side     The side its owner sends (`"outbound"` on a server).

@@ -1,12 +1,13 @@
 /**
  * Compile-time assertions that the Nest adapter's verb methods narrow their
- * handlers the same way bun-common's do. Checked by `bun check`, not `bun test`.
+ * handlers the same way bun-common's do, response variants (V3c) included.
+ * Checked by `bun check`, not `bun test`.
  */
 import type {
   ParamsDictionary,
   StandardSchemaV1,
 } from "@kingsleyweb/bun-common";
-import { validate } from "@kingsleyweb/bun-common";
+import { validate, variants } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 
 type Equal<X, Y> =
@@ -66,5 +67,45 @@ adapter.get(
     // @ts-expect-error 404 is not declared
     if (req.query.page === 2) return res.status(404).json({ id: "a" });
     return res.status(200).json({ id: req.params.id });
+  },
+);
+
+/* --- response variants: the union, narrowed by res.variant() (V3c) --- */
+
+declare const AdminSchema: StandardSchemaV1<
+  { id: string; salary: number },
+  { id: string; salary: number }
+>;
+declare const AdminHeaderSchema: StandardSchemaV1<
+  { "x-admin"?: "1" },
+  { "x-admin"?: "1" }
+>;
+adapter.get(
+  "/variants",
+  validate(
+    { headers: AdminHeaderSchema },
+    {
+      responses: {
+        200: variants(
+          {
+            admin: {
+              when: (valid) => valid.headers["x-admin"] === "1",
+              content: { "application/json": AdminSchema },
+            },
+            user: { content: { "application/json": UserSchema } },
+          },
+          { by: { header: "x-view" } },
+        ),
+      },
+    },
+  ),
+  (_req, res) => {
+    res.status(200).json({ id: "a" }); // the union
+    res.status(200).variant("admin").set("x-view", "admin");
+    // @ts-expect-error the user variant's body under the admin variant
+    res.status(200).variant("admin").json({ id: "a" });
+    // @ts-expect-error the discriminant holds the variant's own value
+    res.status(200).variant("user").set("x-view", "admin");
+    return res.status(200).variant("user").json({ id: "a" });
   },
 );

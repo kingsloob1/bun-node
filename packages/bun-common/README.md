@@ -1517,7 +1517,8 @@ router.get(
 - **A status the table does not list is a mismatch**, whatever the body.
   Statuses a route does not own (an auth `401`, the error handler's `500`)
   are declared once with the router's or adapter's `commonResponses`, merged
-  under every route's `responses` per status and part (the route winning).
+  under every route's `responses` per status and part (the route winning; a
+  status declared with `variants()` is replaced whole).
 - **Headers** are an object keyed by lower-case name, each a string,
   `Content-Type` included even when Bun sets it implicitly. **Cookies** are
   the `Set-Cookie` lines by name, each `{ value, httpOnly, secure,
@@ -1563,7 +1564,7 @@ to the router the route is registered on.
 
 | Mode | A mismatching response |
 |---|---|
-| `"off"` | is sent; nothing is installed, and the response path is the one without `responses` |
+| `"off"` | is sent; nothing is installed, and the response path is the one without `responses` (unless the table declares variants: then only `res.variant()`'s adjust, below) |
 | `"warn"` | is sent, and one warning is logged per response, with the issues and no value from the response |
 | `"error"` | is refused before anything goes out: its own headers (`Location`, `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) and status are dropped, request-wide ones (CORS, `Vary`, kept whole, so a refused `redirect()`'s `Vary: Accept` stays) kept, and a `ResponseValidationError` (status `500`, with `issues` and `responseStatus`) goes to the error handlers. With none, the adapter answers `500` and `router.fetch()` rejects with it |
 
@@ -1694,6 +1695,175 @@ Examples:
 tour
 [`validate-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/validate-options.ts).
 
+##### Response variants: `variants()` and `res.variant()`
+
+Within **one** status, the response may differ by who asked or by what it
+carries: an admin, recognised by a request header, gets another body and
+headers. A union per part cannot say that (it accepts `x-admin: 1` with a
+user's body, and the admin body for a non-admin), so a status can declare
+**variants**, several whole responses, of which a response must match one:
+
+```ts
+import { validate, variants } from "@kingsleyweb/bun-common";
+
+const admin = validate(
+  { headers: z.object({ "x-admin": z.literal("1").optional() }) },
+  {
+    responses: {
+      200: variants(
+        {
+          admin: {
+            when: (valid, req) => valid.headers["x-admin"] === "1", // typed: the parsed parts
+            headers: z.object({ "x-tier": z.literal("gold") }),
+            content: { "application/json": AdminView },
+            description: "to admins (x-admin: 1)", // what documents say instead of the when
+          },
+          user: { content: { "application/json": z.strictObject({ id: z.string() }) } },
+        },
+        { by: { header: "x-view" } }, // optional: the response says which
+      ),
+      404: Problem,
+    },
+    responseValidation: "error",
+  },
+);
+
+router.get("/me", admin, (req, res) =>
+  req.valid.headers["x-admin"] === "1"
+    ? res.status(200).variant("admin").json({ id, salary }) // x-view, x-tier, Content-Type filled
+    : res.status(200).variant("user").json(user),           // undeclared fields stripped
+);
+```
+
+A variant is **acceptable** for a response when it is:
+
+1. **selected**: the one `res.variant()` named; else the one the
+   discriminant `by` selects; else every variant;
+2. **applicable**: its `when(valid, req)` holds for the request (`valid` is
+   `req.valid`, the parts the validator parsed, typed; a part none parsed is
+   `undefined`); a variant with no `when` applies to every request;
+3. **matched whole**: its headers, cookies, media type and body all pass, then
+   its `refine` and the status's. Parts are never taken from two variants.
+
+**No acceptable variant is a mismatch**, refused under `"error"` and logged
+under `"warn"`, with no fallback: a variant with no `when` (a default) is how
+to declare one, and no status needs one. The first acceptable variant that
+matches wins, cheap parts first, so a discriminant (or the most frequent
+variant first) is the advice past a handful of variants.
+
+- **`when`** runs at the commit (the status is unknown before). A boolean is
+  decided in place, with no Promise made, so a synchronous request stays
+  synchronous; a Promise is awaited, holding the commit as yup does. A
+  non-boolean, a throw or a rejection is a **failed check**: `The response
+  could not be checked` (a `500` under `"error"`), the error logged, never in
+  an issue. Under `commonResponses` it takes `UntypedValid` (every part
+  optional, `unknown`). It is typed by the schemas' outputs, not a `transform`
+  hook's result, though at runtime `req.valid` holds what the hook returned.
+- **The discriminant** `by: { header }` or `{ cookie }`, with `values`
+  mapping each variant to the value that selects it (default: its name): a
+  string matches exactly, `true` any value, `null` absence, tried in that
+  order. A value that selects nothing is refused on `headers.<name>` with the
+  **declared** values (`Does not select a variant (expected full, summary)`),
+  never the received one. `null` exists because "this header must be absent"
+  in a headers schema is vendor-specific (zod 4's `z.undefined()` makes the
+  key required: write `z.never().optional()`).
+- **`refine(response, req)`**, on a variant, on `variants(…, { refine })`, or
+  on a plain status's spec, checks the whole response once its parts pass,
+  synchronously, and returns `{ part, path?, message }[]` or `undefined`. Its
+  messages are scrubbed against **every** part, so one quoting a body value
+  under `headers.x-total` comes out `Invalid value`. Inline in `responses`, a
+  plain status's `refine` with an inferred parameter needs `satisfies Refine`
+  (as an inline error handler needs its hint).
+- **What an issue says**: a status-level summary (`The response matches no
+  acceptable variant (admin, user)`), then each acceptable variant's issues,
+  each with its `variant`; and, on the refusal path only, a variant `when`
+  excluded that the response matches in full: `The response matches variant
+  "admin", which does not apply to this request`. That is the leak's own
+  diagnosis, and it costs nothing on a passing response. Never a received
+  value; the validator's `messages` and `redactPaths` apply. The issues are
+  for logs, not for the client: send them on only after reading them.
+- **Merging**: a variants status is replaced **whole** by a more specific
+  layer's declaration of that status (a route over its router's
+  `commonResponses`, a route's validator over its mount's), never merged per
+  part.
+- **Streams** (`chunks()`, `sse()` in a variant's `content`): the commit keeps
+  every applicable variant whose status, headers, cookies and media type (and,
+  for a `write()` stream, first chunk) pass; each later chunk is checked
+  against the survivors, a variant failing one dropping out, and the stream is
+  cut off when none survives (logged once under `"warn"`). A discriminant or
+  `res.variant()` decides at the commit instead.
+
+**`res.variant(name)`** narrows `res` to that variant (its body, headers and
+cookies; a header its discriminant maps to `null` takes no value), the gate
+checks that variant alone, its `when` still enforced, and, once its `when`
+holds, **adjusts the response** at the commit. It fills what the variant's
+schemas allow **exactly one value** for and the handler did not set:
+
+| What | Filled from | When |
+|---|---|---|
+| the discriminant | `by.values[name]`, an exact string only (`true` and `null` are not one value) | the handler set none |
+| a header | a required property of the headers schema with one value | the header is absent |
+| a cookie | a required property of the cookies schema whose `value` and every attribute it requires have one value (`path: "/"` as `res.cookie()` defaults) | that `Set-Cookie` is absent |
+| the status | the one status that declares a variant of that name | `status()` was never called |
+| `Content-Type` | the variant's one declared media type, when it is JSON (`application/json`, `*+json`) and the body a JSON value | only `json()`'s implicit type is set |
+| literal body fields | required properties with one value, at any depth inside objects and array elements the handler sent | the field is `undefined` |
+
+and **strips** JSON body fields the variant does not declare, from every
+object whose schema lists its properties and allows nothing more. Both are
+read from each schema's **`~standard.jsonSchema`** (its input side, once per
+variant at declaration), never from the schema's output: a property with
+`const`, or an `enum` of one, is one value. A union, an intersection, a record
+(its keys stay), a tuple and anything deeper than 16 levels are neither filled
+nor stripped. The handler's object is never mutated (a copy along the changed
+paths), and a body that changed is serialised again into a new `Response`; an
+unchanged one is sent as it was. Only a JSON value (`json()`, `send(object)`)
+has its body adjusted; headers, cookies and the status are adjusted for every
+body kind before its status line is out. What it cannot adjust (a required
+field with no single value, a value the handler set, even a wrong one) is left
+to the check. `res.variant()` never throws; called after the response was
+committed it is ignored, with one warning per route. The changes are logged
+at `debug` as paths and counts (`body.meta: stripped 1 undeclared field`),
+never key names or values. **Under `"off"`** a validator declaring variants
+still installs this adjust step (no `when`, no check), since the stripping is
+a privacy measure.
+
+The types follow: after `res.variant()`, `json()` and `send()` take the
+variant's body with its required single-literal fields **optional**, through
+nested objects and array elements, when every JSON body schema of the variant
+carries `~standard.jsonSchema` in its type (zod 4, arktype 2). **valibot and
+yup carry none**, so their variants are not adjusted (nothing filled or
+stripped, one warning per variant at declaration) and their literals stay
+required in the types. zod converts `z.date()` and other unrepresentable
+types only when asked, which the adjust does
+(`libraryOptions: { unrepresentable: "any" }`): such a field is neither
+filled nor stripped.
+
+**The leak limit.** The check never strips: only `res.variant()` does. A user
+variant that is a loose structural **subset** of the admin one
+(`z.object({ id })` against `z.object({ id, salary })`) accepts the admin
+body, so a non-admin answered with it without `res.variant()` is **sent**, and
+the types let it through too. Declare the less privileged variant so it
+rejects what the privileged one adds: a strict object (as `user` above), a
+discriminating literal (`role: z.literal("user")`), or a discriminant. Then
+the same response is refused, and the admin variant named:
+
+```ts
+user: { content: { "application/json": z.strictObject({ id: z.string() }) } },
+// a non-admin answered { id, salary }: refused,
+// 'The response matches variant "admin", which does not apply to this request'
+```
+
+`describeContract` gives each variant's parts their own rows, flat, with a
+`variant` field (a generator that ignores it sees two `application/json` rows
+for one status), and `sides.outbound.variants` the table per status: `names`,
+`conditional` (the variants with a `when`), `by` (the part, the name and each
+variant's value) and `descriptions`.
+
+**Cost**: a status with no variants costs nothing more (no `when` call, no
+allocation; the path is the one without variants). One `when` call per
+variant that has one. While matching, only each vendor's pass or fail is
+asked; issues are built on the refusal path alone.
+
 ### Contracts
 
 `validate()` is built on a transport-agnostic **contract core**, also
@@ -1734,6 +1904,10 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
 - **The policy** is `"off" | "warn" | "error"` (default `"error"`). A receiver
   under `"warn"` or `"off"` may hand on a message its schemas did not parse,
   so it is typed to hand on `unknown`.
+- **Variants are not checked by the guards yet.** `createSender` and
+  `createReceiver` throw a `TypeError` when the side declares a status with
+  `variants()` (rather than pass it unchecked); `validate()`'s response gate
+  checks them, and `describeContract` and `mergeContracts` read them.
 - **No schema costs nothing.** A side or key with no schema gets the same
   message back, synchronously, with nothing allocated. `guard.checks` and
   `guard.checksKey(key)` let an adapter skip the call entirely.

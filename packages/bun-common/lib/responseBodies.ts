@@ -3,7 +3,8 @@
  * `docs/plans/bun-validate/` §4.4.1, §4.4.3, V3b): a body checked chunk by
  * chunk (`chunks()`), server-sent events checked event by event (`sse()`),
  * and a body whose media type is declared but whose content is never read
- * (`opaque()`).
+ * (`opaque()`); and a status's **variants** (`variants()`, §4.4.6, V3c),
+ * several whole responses for one status.
  *
  * ```ts
  * validate({}, {
@@ -26,7 +27,9 @@
  *
  * Nothing here imports a Bun or Node API.
  */
+import type { BunRequest } from "./BunRequest";
 import type { AnyContract, Schema } from "./contract/model";
+import type { ResponseSpecObject, SetCookieView } from "./responseValidation";
 import type { StandardSchemaV1 } from "./types/standardSchema";
 import { parseMediaKey } from "./contract/media";
 import { markKind, markNested } from "./contract/schemas";
@@ -281,6 +284,248 @@ export function opaque<
     },
   };
   return markKind(out, "opaque");
+}
+
+// ---------------------------------------------------------------------------
+// Response variants (plan §4.4.6, V3c)
+// ---------------------------------------------------------------------------
+
+/**
+ * The request view a `when` takes under `commonResponses` (a router has no
+ * validator, so nothing is typed): every part optional and `unknown`. Inside
+ * `validate()` a `when` takes the validator's parsed parts instead.
+ */
+export type UntypedValid = Partial<
+  Record<
+    "headers" | "cookies" | "signedCookies" | "params" | "query" | "body",
+    unknown
+  >
+>;
+
+/**
+ * What a discriminant value maps a variant to: an exact value (a string),
+ * `true` (present, any value) or `null` (absent). Tried in that order.
+ */
+export type DiscriminantValue = string | true | null;
+
+/**
+ * A response header or `Set-Cookie` whose value selects the variant (the
+ * `by` option of {@link variants}): exactly one of `header` and `cookie`.
+ * `values` maps each variant to the value that selects it; a variant it
+ * leaves out is selected by its own name.
+ *
+ * @typeParam N The variant names.
+ */
+export type Discriminant<N extends string = string> =
+  | {
+      /** The response header whose value selects the variant (matched in any letter case). */
+      readonly header: string;
+      /** Variant name to the value that selects it ({@link DiscriminantValue}); default: the name itself. */
+      readonly values?: { readonly [K in N]?: DiscriminantValue };
+    }
+  | {
+      /** The `Set-Cookie` name whose value selects the variant. */
+      readonly cookie: string;
+      /** Variant name to the value that selects it ({@link DiscriminantValue}); default: the name itself. */
+      readonly values?: { readonly [K in N]?: DiscriminantValue };
+    };
+
+/** The response a `refine` sees: every part as the gate saw it. */
+export interface RefineResponse {
+  /** The status. */
+  readonly status: number;
+  /** The headers, by lower-case name (`set-cookie` is {@link cookies}), `Content-Type` included. */
+  readonly headers: Readonly<Record<string, string>>;
+  /** The `Set-Cookie`s, by name. */
+  readonly cookies: Readonly<Record<string, SetCookieView>>;
+  /** The bare media type sent; `undefined` with no `Content-Type`. */
+  readonly mediaType: string | undefined;
+  /** The body as the schema saw it (parsed JSON, text or bytes); `undefined` for a stream or no body. */
+  readonly body: unknown;
+  /** The variant the parts matched; `undefined` on a status with no variants. */
+  readonly variant: string | undefined;
+}
+
+/**
+ * One issue a `refine` reports. Its message is scrubbed as a schema's is,
+ * against **every** part (a `refine` sees all of them): one that quotes a
+ * received value is replaced by `Invalid value`.
+ */
+export interface RefineIssue {
+  /** The part the issue is about. */
+  readonly part: "status" | "headers" | "cookies" | "body";
+  /** Dotted path within the part; absent (or `""`) for the part itself. */
+  readonly path?: string;
+  /** What is wrong. Never quote a value: it is withheld when found. */
+  readonly message: string;
+}
+
+/**
+ * A whole-response check, run synchronously once every part of the response
+ * (of a variant, or of a plain status) passes; `undefined` or `[]` passes.
+ * One that throws is a failed check (`The response could not be checked`).
+ *
+ * @param response Every part of the response, as the gate saw it.
+ * @param req      The request.
+ */
+export type Refine = (
+  response: RefineResponse,
+  req: BunRequest,
+) => readonly RefineIssue[] | undefined;
+
+/**
+ * One variant of a status: a whole response spec (V3a's `headers`,
+ * `cookies`, `content`), plus when it applies and a whole-response check.
+ *
+ * @typeParam V The request view `when` takes: the validator's parsed parts
+ *   inside `validate()`, {@link UntypedValid} under `commonResponses`.
+ */
+export interface VariantSpec<V = UntypedValid> extends ResponseSpecObject {
+  /**
+   * Makes the variant acceptable only for the requests it holds for, run at
+   * the commit with `req.valid` (only the parts a validator parsed; a part
+   * none parsed is `undefined`) and the request. A boolean is decided in
+   * place, with no Promise made; a Promise of one is awaited, holding the
+   * commit. A non-boolean, a throw or a rejection is a failed check (a `500`
+   * under `"error"`, the error logged, never in an issue). Absent: the
+   * variant applies to every request (a default, which no status needs).
+   */
+  readonly when?: (valid: V, req: BunRequest) => boolean | Promise<boolean>;
+  /** What documents say about when this variant is sent (a `when` cannot be described). */
+  readonly description?: string;
+}
+
+/** Marks what {@link variants} returns. */
+const VARIANTS_DECL: unique symbol = Symbol.for(
+  "bun-validate.responseVariants",
+);
+
+/**
+ * A status's variants, as {@link variants} returns them.
+ *
+ * @typeParam T The variant table.
+ * @typeParam B The discriminant, or `undefined`.
+ * @typeParam V The request view `when` takes.
+ */
+export interface ResponseVariants<
+  T = Readonly<Record<string, VariantSpec<never>>>,
+  B = Discriminant | undefined,
+  V = UntypedValid,
+> {
+  /** Always `"variants"`. */
+  readonly kind: "variants";
+  /** Variant name to its spec. */
+  readonly table: T;
+  /** The discriminant; `undefined` when none was given. */
+  readonly by: B;
+  /** A whole-response check for every variant of the status; `undefined` when none was given. */
+  readonly refine: Refine | undefined;
+  /** Phantom: the request view `when` takes; never present at runtime. */
+  readonly __request?: (valid: V) => void;
+}
+
+/**
+ * The options of {@link variants}.
+ *
+ * @typeParam B The discriminant, or `undefined`.
+ */
+export interface VariantsOptions<B = Discriminant | undefined> {
+  /** A response header or cookie whose value selects the variant ({@link Discriminant}). */
+  readonly by?: B;
+  /** A whole-response check for every variant, after the variant's own ({@link Refine}). */
+  readonly refine?: Refine;
+}
+
+/** Refuses an unknown key in a variant (a `const` generic skips excess-property checks). */
+type StrictTable<T> = {
+  readonly [N in keyof T]: {
+    readonly [K in keyof T[N]]: K extends keyof VariantSpec<unknown>
+      ? T[N][K]
+      : never;
+  };
+};
+
+/** Refuses a `values` key that names no variant. */
+type StrictBy<B, N extends string> = B extends { values: infer M }
+  ? {
+      readonly by?: {
+        readonly values?: {
+          readonly [K in keyof M]: K extends N ? M[K] : never;
+        };
+      };
+    }
+  : unknown;
+
+/**
+ * Declares a status's **variants**: several whole responses, of which a
+ * response must match exactly one, never a part from one and a part from
+ * another. A variant is acceptable for a response when it is **selected**
+ * (the one `res.variant()` named, else the one the discriminant `by`
+ * selects, else every variant), **applies** (its `when` holds for the
+ * request) and **matches whole** (its headers, cookies, media type and body,
+ * then its `refine` and the status's). No acceptable variant is a mismatch:
+ * there is no fallback, and a variant with no `when` (a default) is only
+ * declared when wanted.
+ *
+ * ```ts
+ * validate({ headers: z.object({ "x-admin": z.literal("1").optional() }) }, {
+ *   responses: {
+ *     200: variants({
+ *       admin: {
+ *         when: (valid) => valid.headers["x-admin"] === "1",
+ *         content: { "application/json": AdminView },
+ *       },
+ *       user: { content: { "application/json": UserView } },
+ *     }, { by: { header: "x-view" } }),
+ *   },
+ * });
+ * ```
+ *
+ * `V`, the request view each `when` takes, is inferred from where the call
+ * sits: `validate()`'s schemas, with nothing restated; outside a validator
+ * (`commonResponses`) it is {@link UntypedValid}. Declaration mistakes (an
+ * empty table, two variants on one discriminant value, a `values` key naming
+ * no variant, an unknown key) throw a `TypeError` when the responses are
+ * declared.
+ *
+ * @param table   Variant name to its {@link VariantSpec}.
+ * @param options `by` (a {@link Discriminant}) and `refine`.
+ */
+export function variants<
+  const T extends Readonly<Record<string, VariantSpec<V>>>,
+  const B extends Discriminant<keyof T & string> | undefined = undefined,
+  V = UntypedValid,
+>(
+  table: T & StrictTable<T>,
+  options?: VariantsOptions<B> & StrictBy<B, keyof T & string>,
+): ResponseVariants<T, NoInfer<B>, V> {
+  if (!isPlainObject(table)) {
+    throw new TypeError("variants(): expected an object of variant names");
+  }
+  if (options !== undefined && !isPlainObject(options)) {
+    throw new TypeError("variants(): options must be an object");
+  }
+  const out: ResponseVariants<T, B, V> = {
+    kind: "variants",
+    table,
+    by: options?.by as B,
+    refine: options?.refine,
+  };
+  Object.defineProperty(out, VARIANTS_DECL, { value: true, enumerable: false });
+  return out;
+}
+
+/**
+ * Whether `value` came from {@link variants}. Internal.
+ *
+ * @internal
+ */
+export function isResponseVariants(value: unknown): value is ResponseVariants {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { [VARIANTS_DECL]?: unknown })[VARIANTS_DECL] === true
+  );
 }
 
 // ---------------------------------------------------------------------------
