@@ -21,7 +21,13 @@
         "mergeUploadOptions",
         "transformUploadException",
         "MulterModule",
-        "MULTER_MODULE_OPTIONS"
+        "MULTER_MODULE_OPTIONS",
+        "SchemaDto",
+        "StandardSchemaPipe",
+        "StandardValidationModule",
+        "StandardValidationPipe",
+        "ValidationExceptionFilter",
+        "StandardValidationException"
       ],
       "types": [
         "BunBeforeWriteBody",
@@ -50,7 +56,8 @@
         "WebSocketClient",
         "WebSocketClientData",
         "WsAckFunction",
-        "UploadExceptionBody"
+        "UploadExceptionBody",
+        "StandardValidationPipeOptions"
       ],
       "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;"
     },
@@ -89,6 +96,18 @@
       "spelling": "@kingsleyweb/bun-nest/lib/BunWebSocketAdapter",
       "values": ["BunWebSocketAdapter", "MessageEventTypes"],
       "types": ["WebSocketClient", "BunWebSocketAdapterOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/validation",
+      "values": [
+        "SchemaDto",
+        "StandardSchemaPipe",
+        "StandardValidationModule",
+        "StandardValidationException",
+        "StandardValidationPipe",
+        "ValidationExceptionFilter"
+      ],
+      "snippet": "type Out = { a: number };\ndeclare const S: { readonly \"~standard\": { readonly version: 1; readonly vendor: string; readonly validate: (value: unknown) => { value: Out }; readonly types?: { readonly input: unknown; readonly output: Out } } };\nexport class Dto extends m.SchemaDto(S) {}\nexport const _dtoExact: Equal<Pick<Dto, keyof Dto>, Out> = true;\nexport const _pipeAnswer: Equal<ReturnType<m.StandardSchemaPipe<typeof S>[\"transform\"]>, Out | Promise<Out>> = true;"
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/interceptors",
