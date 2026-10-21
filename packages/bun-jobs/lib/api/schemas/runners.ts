@@ -1,5 +1,5 @@
 import { DEFAULT_STALE_RUN_AFTER } from "../../runner/clearHistory";
-import { legacyExecutionModeHint } from "../../runner/config";
+import { legacyExecutionModeReplacementHint } from "../../runner/config";
 import {
   EXECUTION_MODES,
   MAX_NAME_LENGTH,
@@ -214,10 +214,11 @@ export const RunnerConfigBodySchema = s.named(
           description:
             "Where runs execute, from the *next* run on. 409 CONFIG_NOT_ALLOWED when the runner's code does not permit it; `null` clears the override.",
           // New spellings only (D5): an old one is refused, and told which
-          // value replaced it.
+          // value replaced it. The hint never repeats the refused value,
+          // which `validate()`'s scrub would answer with "Invalid value".
           hints: {
-            spawn: legacyExecutionModeHint("spawn"),
-            worker: legacyExecutionModeHint("worker"),
+            spawn: legacyExecutionModeReplacementHint("spawn"),
+            worker: legacyExecutionModeReplacementHint("worker"),
           },
         }),
       ),

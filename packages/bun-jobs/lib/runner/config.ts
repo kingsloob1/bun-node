@@ -249,6 +249,18 @@ export function legacyExecutionModeHint(value: unknown): string {
     : "";
 }
 
+/**
+ * {@link legacyExecutionModeHint} without the refused value, for a message
+ * that reaches a caller through bun-common's `validate()`: its scrub withholds
+ * any issue message quoting the received value, so the hint names only the
+ * replacement — `: an old spelling of "child-process"` — or is `""`.
+ */
+export function legacyExecutionModeReplacementHint(value: unknown): string {
+  return isLegacyExecutionMode(value)
+    ? `: an old spelling of "${LEGACY_EXECUTION_MODES[value]}"`
+    : "";
+}
+
 /** Whether a string names an overlap policy. */
 function isRunMode(value: string): value is "parallel" | "single" {
   return (RUN_MODES as readonly string[]).includes(value);
