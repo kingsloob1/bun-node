@@ -335,9 +335,24 @@ step("An extra port on an attached BunWebSocket");
 
 // What a NestJS gateway with its own port does: the same router and handlers,
 // served on a dedicated server. Port `0` (or the shared port) is the shared
-// server instead.
-const extraPort = await getPort();
-const extra = tuned.webSocketAdapter.getOrCreateWebsocketServer(extraPort);
+// server instead, so a dedicated server needs a port number up front.
+// `getPort()` finds a free one, but only locks it within this process: another
+// process can bind it before this one does. So the bind is retried on
+// `EADDRINUSE` (`Bun.serve` throws before the adapter records the server).
+let extraPort: number;
+let extra: ReturnType<typeof tuned.webSocketAdapter.getOrCreateWebsocketServer>;
+for (let attempt = 1; ; attempt++) {
+  extraPort = await getPort();
+  try {
+    extra = tuned.webSocketAdapter.getOrCreateWebsocketServer(extraPort);
+    break;
+  } catch (error) {
+    const taken = (error as { code?: unknown }).code === "EADDRINUSE";
+    if (!taken || attempt === 5) {
+      throw error;
+    }
+  }
+}
 show(
   "port 0 is the shared server",
   tuned.webSocketAdapter.getOrCreateWebsocketServer(0) === tuned.server,
