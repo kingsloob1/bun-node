@@ -30,6 +30,7 @@ import {
 } from "./app";
 import { EXPRESS_OLDER_THAN_BUN_COMMON, OLDER_EXPRESS } from "./expressVersion";
 import { UPLOAD_GROUPS, UPLOAD_KNOWN } from "./uploads";
+import { VALIDATION_GROUPS, VALIDATION_KNOWN } from "./validation";
 
 /** One request: a name, a path and its `RequestInit`. */
 export interface Probe {
@@ -893,6 +894,7 @@ export const GROUPS: ProbeGroup[] = [
     ],
   },
   ...UPLOAD_GROUPS,
+  ...VALIDATION_GROUPS,
 ];
 
 /** What a known difference covers: the fields that differ, and why. */
@@ -1223,4 +1225,5 @@ export const KNOWN: Record<string, KnownDifference> = {
     reason: "the 413's message names the limit and the size received",
   },
   ...UPLOAD_KNOWN,
+  ...VALIDATION_KNOWN,
 };
