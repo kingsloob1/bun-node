@@ -606,3 +606,5 @@ export const accepts: AcceptsFunction = acceptsFn as AcceptsFunction;
  */
 export const typeIs: TypeIsFunction = typeIsFn as TypeIsFunction;
 export { default as mime } from "mime";
+/** The graceful stop both adapters' `close()` share (`closeDrainTimeout`). */
+export { drainAndStop, validateCloseDrainTimeout } from "./serverDrain";

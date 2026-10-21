@@ -3,6 +3,7 @@ import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { EtagOption, SocketFreeExchange } from "./BunResponse";
 import type { FetchInput, ServeHooks } from "./BunRouter";
+import { drainAndStop, validateCloseDrainTimeout } from "./serverDrain";
 import type {
   CorsOptions as BunCorsOptions,
   CorsOptionsDelegate,
@@ -204,27 +205,6 @@ export function finalErrorResponse(
     statusText: message,
     headers,
   });
-}
-
-/** `close()`'s default drain cap, in milliseconds. */
-const DEFAULT_CLOSE_DRAIN_TIMEOUT = 10_000;
-
-/**
- * The `closeDrainTimeout` adapter option, checked: `undefined` is the
- * default; anything but a finite number of milliseconds `>= 0` throws.
- */
-function validateCloseDrainTimeout(value: unknown): number {
-  if (value === undefined) {
-    return DEFAULT_CLOSE_DRAIN_TIMEOUT;
-  }
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    const shown =
-      typeof value === "number" ? String(value) : Bun.inspect(value);
-    throw new RangeError(
-      `closeDrainTimeout must be a finite number of milliseconds >= 0, got ${shown}`,
-    );
-  }
-  return value;
 }
 
 /**
@@ -1705,29 +1685,11 @@ export class BunHttpAdapter<
     this.isServerListening = false;
   }
 
-  /**
-   * {@link close}'s stop: drain, then force. `stop(false)` stops accepting:
-   * Bun closes the listener and every idle keep-alive connection at once, and
-   * each busy connection as soon as its response completes (measured on Bun
-   * 1.4.2 to 1.4.4). The wait is on `pendingRequests`, not on that call's
-   * promise, which also waits for every WebSocket. `stop(true)` then always
-   * runs: a graceful stop alone leaves a long-lived response (an SSE stream)
-   * and WebSockets served by this server after `close()` resolves, even
-   * once another server is bound on the same port (measured: S3 of
-   * `docs/plans/nestjs-12-parity/evidence/lifecycle-spike/`). The same
-   * sequence as bun-nest's adapter.
-   */
+  /** {@link close}'s stop: {@link drainAndStop} with this adapter's cap. */
   async #stopServer(
     server: BunServer<WebSocketClientData<customWebsocketDataType>>,
   ): Promise<void> {
-    if (this.#closeDrainTimeout > 0 && server.pendingRequests > 0) {
-      server.stop(false).catch(() => undefined);
-      const deadline = Date.now() + this.#closeDrainTimeout;
-      while (server.pendingRequests > 0 && Date.now() < deadline) {
-        await Bun.sleep(10);
-      }
-    }
-    await server.stop(true);
+    await drainAndStop(server, this.#closeDrainTimeout);
   }
 
   public getType(): string {
