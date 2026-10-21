@@ -2986,6 +2986,8 @@ export class ResponseContractGate implements ResponseGate {
       String(status),
       undefined,
       this.#format,
+      // A refine sees every part, so its message is compared with them all.
+      "whole",
     );
     return {
       target: part,

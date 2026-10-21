@@ -298,3 +298,346 @@ describe("what a warn log holds (C12)", () => {
     ]);
   });
 });
+
+/** The schema of the narrowed-scope repro: refuses `state` unless it is one of {@link STATES}. */
+const STATES = ["waiting", "active"];
+/** Its message, which quotes the schema's own values and nothing received. */
+const ONE_OF = `Expected one of ${STATES.map((s) => JSON.stringify(s)).join(", ")}`;
+/** A `toStandardSchema` check that says {@link ONE_OF}, or echoes the value with `echo`. */
+const oneOf = (echo: boolean) =>
+  toStandardSchema((input: unknown) => {
+    const state = (input as { state?: unknown }).state;
+    return STATES.includes(state as string)
+      ? { value: input }
+      : {
+          issues: [
+            {
+              message: echo ? `${JSON.stringify(state)}: ${ONE_OF}` : ONE_OF,
+              path: ["state"],
+            },
+          ],
+        };
+  });
+
+/** A `toStandardSchema` check reporting one issue, `message` at `path`, whatever it receives. */
+const reporting = (
+  message: string,
+  path?: (PropertyKey | { key: PropertyKey })[],
+) =>
+  toStandardSchema(() => ({
+    issues: [path === undefined ? { message } : { message, path }],
+  }));
+
+/** The messages the core reports for `value`. */
+async function messagesOf(
+  schema: StandardSchemaV1,
+  value: unknown,
+): Promise<string[]> {
+  const outcome = await validateStandard(schema, value, "payload");
+  expect(outcome.ok).toBe(false);
+  return outcome.ok ? [] : outcome.issues.map((i) => i.message);
+}
+
+describe("the scrub compares a message with what its issue is about", () => {
+  it("the repro's control: nothing else holds a schema word, the message survives", async () => {
+    expect(
+      await messagesOf(oneOf(false), { state: "bogus", note: "hello" }),
+    ).toEqual([ONE_OF]);
+  });
+
+  // The negative control: on develop's issues.ts (a scrub over the whole
+  // value) this test fails, with "Invalid value".
+  it('the repro: another field holding "waiting" no longer withholds the schema\'s own words', async () => {
+    expect(
+      await messagesOf(oneOf(false), { state: "bogus", note: "waiting" }),
+    ).toEqual([ONE_OF]);
+  });
+
+  it("the repro: a message echoing the value at the path is still withheld", async () => {
+    expect(
+      await messagesOf(oneOf(true), { state: "waiting!", note: "waiting" }),
+    ).toEqual(["Invalid value"]);
+    expect(await messagesOf(oneOf(true), { state: "waiting!" })).toEqual([
+      "Invalid value",
+    ]);
+  });
+
+  /** `[vendor, schema, received, the raw message]`: a message about `k` that quotes a sibling's value only. */
+  const SIBLINGS: [string, StandardSchemaV1, unknown, string][] = [
+    [
+      "zod 4",
+      z.object({ k: z.enum(["waiting", "active"]) }),
+      { k: "bogus", note: "waiting" },
+      'Invalid option: expected one of "waiting"|"active"',
+    ],
+    [
+      "valibot 1",
+      v.object({ k: v.number() }),
+      { k: {}, note: "number" },
+      "Invalid type: Expected number but received Object",
+    ],
+    [
+      "arktype 2",
+      type({ k: "number" }),
+      { k: "x", note: "number" },
+      "k must be a number (was a string)",
+    ],
+    [
+      "yup 1.7",
+      yup.object({ k: yup.string().oneOf(["waiting", "active"]) }),
+      { k: "bogus", note: "waiting" },
+      "k must be one of the following values: waiting, active",
+    ],
+    [
+      "toStandardSchema",
+      oneOf(false),
+      { state: "bogus", note: "waiting" },
+      ONE_OF,
+    ],
+  ];
+  for (const [vendor, schema, value, raw] of SIBLINGS) {
+    it(`${vendor}: a word another field holds does not withhold the message`, async () => {
+      expect(await rawIssues(schema, value)).toBe(raw);
+      expect(await messagesOf(schema, value)).toEqual([raw]);
+    });
+  }
+
+  /** `[vendor, schema, received, the token at the issue's path its message quotes]`, each beside an unrelated field. */
+  const AT_PATH: [string, StandardSchemaV1, unknown, string][] = [
+    [
+      "zod 4",
+      z.object({
+        k: z.string().refine(() => false, {
+          error: (issue) => `bad value ${String(issue.input)}`,
+        }),
+      }),
+      { k: SECRET, other: "unrelated" },
+      SECRET,
+    ],
+    [
+      "valibot 1",
+      v.object({ k: v.pipe(v.string(), v.email()) }),
+      { k: SECRET, other: "unrelated" },
+      SECRET,
+    ],
+    [
+      "arktype 2",
+      type({ k: "'a'|'b'" }),
+      { k: SECRET, other: "unrelated" },
+      SECRET,
+    ],
+    [
+      "yup 1.7",
+      yup.object({ k: yup.number().required() }),
+      { k: SECRET, other: "unrelated" },
+      SECRET,
+    ],
+    ["toStandardSchema", quoting, { n: SECRET, other: "unrelated" }, SECRET],
+  ];
+  for (const [vendor, schema, value, token] of AT_PATH) {
+    it(`${vendor}: a message quoting the value at the issue's path is still withheld`, async () => {
+      expect(await rawIssues(schema, value)).toContain(token);
+      for (const message of await messagesOf(schema, value)) {
+        expect(message).not.toContain(token);
+        expect(message).toMatch(/^Invalid value( \([\w.:-]+\))?$/);
+      }
+    });
+  }
+
+  it("zod 4: an unrecognized key, quoted, is still withheld (at the root, and inside an object)", async () => {
+    const root = z.strictObject({ a: z.string() });
+    const atRoot = { a: "x", [SECRET]: 1 };
+    expect(await rawIssues(root, atRoot)).toBe(`Unrecognized key: "${SECRET}"`);
+    expect(await messagesOf(root, atRoot)).toEqual([
+      "Invalid value (unrecognized_keys)",
+    ]);
+    // Zod reports it at the object's path (`o`): the keys at the path are compared.
+    const nested = z.object({
+      o: z.strictObject({ a: z.string() }),
+      other: z.string(),
+    });
+    const inside = { o: { a: "x", [SECRET]: 1 }, other: "unrelated" };
+    expect(await rawIssues(nested, inside)).toBe(
+      `Unrecognized key: "${SECRET}"`,
+    );
+    expect(await messagesOf(nested, inside)).toEqual([
+      "Invalid value (unrecognized_keys)",
+    ]);
+  });
+
+  it("the keys of the object holding the value are compared (valibot reports an unknown key at its own path)", async () => {
+    const schema = v.object({ o: v.strictObject({ a: v.string() }) });
+    const value = { o: { a: "x", [SECRET]: 1 } };
+    expect(await rawIssues(schema, value)).toContain(`"${SECRET}"`);
+    expect(await messagesOf(schema, value)).toEqual([
+      "Invalid value (strict_object)",
+    ]);
+    expect(
+      await messagesOf(reporting(`"holder-key" is not allowed`, ["o", "x"]), {
+        o: { "holder-key": 1, x: 2 },
+      }),
+    ).toEqual(["Invalid value"]);
+  });
+
+  it("a nested path (a.b[2].c) compares that leaf's value, not its siblings'", async () => {
+    const value = {
+      a: { b: [{ c: "first-leaf" }, { c: "second-leaf" }, { c: SECRET }] },
+      top: "top-level",
+    };
+    const path = ["a", "b", 2, "c"];
+    expect(await messagesOf(reporting(`c is ${SECRET}`, path), value)).toEqual([
+      "Invalid value",
+    ]);
+    // Vendors spell segments differently: `{ key }` (valibot) and a string index (yup).
+    expect(
+      await messagesOf(
+        reporting(`c is ${SECRET}`, [
+          { key: "a" },
+          { key: "b" },
+          { key: "2" },
+          { key: "c" },
+        ]),
+        value,
+      ),
+    ).toEqual(["Invalid value"]);
+    for (const elsewhere of ["second-leaf", "first-leaf", "top-level"]) {
+      expect(
+        await messagesOf(reporting(`c is not ${elsewhere}`, path), value),
+      ).toEqual([`c is not ${elsewhere}`]);
+    }
+    // The real vendors, at that path.
+    const nested = {
+      a: { b: [{ c: 1 }, { c: 2 }, { c: SECRET }] },
+      note: "number",
+    };
+    const valibot = v.object({
+      a: v.object({ b: v.array(v.object({ c: v.number() })) }),
+    });
+    expect(await rawIssues(valibot, nested)).toContain(SECRET);
+    expect(await messagesOf(valibot, nested)).toEqual([
+      "Invalid value (number)",
+    ]);
+    const yupNested = yup.object({
+      a: yup.object({
+        b: yup.array(yup.object({ c: yup.number().required() })),
+      }),
+    });
+    expect(await rawIssues(yupNested, nested)).toContain(SECRET);
+    expect(await messagesOf(yupNested, nested)).toEqual(["Invalid value"]);
+    const zodNested = z.object({
+      a: z.object({ b: z.array(z.object({ c: z.number() })) }),
+    });
+    // zod's own message names a type, and the decoy elsewhere holds that word.
+    expect(await messagesOf(zodNested, { ...nested, note: "string" })).toEqual([
+      "Invalid input: expected number, received string",
+    ]);
+  });
+
+  it("a root issue, or one with an empty path, compares the whole value", async () => {
+    const value = { deep: { inside: [SECRET] } };
+    expect(await messagesOf(reporting(`refused ${SECRET}`), value)).toEqual([
+      "Invalid value",
+    ]);
+    expect(await messagesOf(reporting(`refused ${SECRET}`, []), value)).toEqual(
+      ["Invalid value"],
+    );
+    expect(await messagesOf(reporting("refused nothing"), value)).toEqual([
+      "refused nothing",
+    ]);
+  });
+
+  it("a path the value does not lead along compares the whole value", async () => {
+    // `a` is a string, so `a.b` leads nowhere: the path cannot say what the issue is about.
+    expect(
+      await messagesOf(reporting(`refused ${SECRET}`, ["a", "b"]), {
+        a: "a-string",
+        other: SECRET,
+      }),
+    ).toEqual(["Invalid value"]);
+  });
+
+  it("keeps the short-token rule at the path", async () => {
+    expect(await messagesOf(reporting("got u9", ["k"]), { k: "u9" })).toEqual([
+      "Invalid value",
+    ]);
+    expect(
+      await messagesOf(reporting("u9 is wrong", ["k"]), { k: "u9" }),
+    ).toEqual(["u9 is wrong"]);
+    // A short token elsewhere is not compared.
+    expect(
+      await messagesOf(reporting("got u9", ["k"]), { k: "x", other: "u9" }),
+    ).toEqual(["got u9"]);
+  });
+
+  it("stays bounded at the path (MAX_LEAVES)", async () => {
+    const big = Array.from(
+      { length: 300 },
+      (_, i) => `leaf-${String(i).padStart(3, "0")}`,
+    );
+    expect(
+      await messagesOf(reporting("refused leaf-010", ["k"]), { k: big }),
+    ).toEqual(["Invalid value"]);
+    expect(
+      await messagesOf(reporting("refused leaf-299", ["k"]), { k: big }),
+    ).toEqual(["refused leaf-299"]);
+  });
+});
+
+describe("a whole-value comparison also names the keys, unquoted", () => {
+  // The negative control: on the path-scoped issues.ts before this rule
+  // (keys compared only quoted), this test fails with yup's raw message.
+  it("yup 1.7, noUnknown: an unknown key named unquoted is withheld", async () => {
+    const schema = yup.object({ a: yup.string() }).noUnknown().strict();
+    const value = { a: "x", [SECRET]: 1 };
+    expect(await rawIssues(schema, value)).toBe(
+      `this field has unspecified keys: ${SECRET}`,
+    );
+    expect(await messagesOf(schema, value)).toEqual(["Invalid value"]);
+  });
+
+  it("the trade-off: a root message whose own word is also a key of 3+ characters is withheld", async () => {
+    expect(
+      await messagesOf(reporting("total must equal the item count"), {
+        total: 3,
+        items: [],
+      }),
+    ).toEqual(["Invalid value"]);
+    // A nested key counts too, at any depth `collect` walks.
+    expect(
+      await messagesOf(reporting("the cart is empty"), { order: { cart: [] } }),
+    ).toEqual(["Invalid value"]);
+  });
+
+  it("matches a key only as a whole word", async () => {
+    expect(
+      await messagesOf(reporting("a statement is required"), { state: 1 }),
+    ).toEqual(["a statement is required"]);
+  });
+
+  it("never withholds a root message for a key of 1 or 2 characters", async () => {
+    expect(
+      await messagesOf(reporting("id and a must agree"), {
+        id: 5000,
+        a: "zzz",
+      }),
+    ).toEqual(["id and a must agree"]);
+  });
+
+  it("applies to a path the value does not lead along (the whole-value fallback)", async () => {
+    expect(
+      await messagesOf(reporting("unspecified keys: extra-key", ["a", "b"]), {
+        a: "a-string",
+        "extra-key": 1,
+      }),
+    ).toEqual(["Invalid value"]);
+  });
+
+  it("gives a path-scoped issue nothing new: a sibling key named unquoted is kept", async () => {
+    expect(
+      await messagesOf(reporting("items must not exceed total", ["items"]), {
+        items: 3,
+        total: 4,
+      }),
+    ).toEqual(["items must not exceed total"]);
+  });
+});
