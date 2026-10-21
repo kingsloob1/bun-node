@@ -59,6 +59,8 @@ export interface SchemaWithJson<
 const DOCUMENTED: unique symbol = Symbol.for("bun-validate.documented");
 /** Marks a schema with its body kind (V3a/V3b's `chunks()`, `sse()`, `opaque()`). */
 const KIND: unique symbol = Symbol.for("bun-validate.kind");
+/** Marks a schema the framework declared on its own (plan §4.12 m5). */
+const IMPLICIT: unique symbol = Symbol.for("bun-validate.implicit");
 
 /** Whether `source` is a converter rather than one JSON Schema object. */
 function isConverter(source: JsonSchemaSource): source is JsonSchemaConverter {
@@ -110,6 +112,32 @@ export function markKind<S extends object>(schema: S, kind: ContractKind): S {
     configurable: true,
   });
   return schema;
+}
+
+/**
+ * Marks `schema` as declared by the framework rather than the app (a
+ * validator's own failure status, plan §4.12 m5): `describeContract` flags
+ * its rows `implicit`, and `mergeContracts` lets any declared schema for the
+ * same part win over it. Returns `schema`. Not exported.
+ *
+ * @internal
+ */
+export function markImplicit<S extends object>(schema: S): S {
+  Object.defineProperty(schema, IMPLICIT, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return schema;
+}
+
+/** Whether `markImplicit` marked `schema`. */
+export function isImplicit(schema: unknown): boolean {
+  return (
+    typeof schema === "object" &&
+    schema !== null &&
+    (schema as { [IMPLICIT]?: unknown })[IMPLICIT] === true
+  );
 }
 
 /** The kind `markKind` recorded on `schema`; `"value"` when none. */

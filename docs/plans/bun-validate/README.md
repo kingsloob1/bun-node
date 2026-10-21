@@ -1787,22 +1787,22 @@ it names.
   API contract change bun-jobs-ui reads)? **Recommended: yes, in the same
   PR**, reviewed by bun-node-e9 and bun-node-99. ✅ **Answered 2026-10-17: yes, as recommended.**
 - **Q-H8** **Type `req.valid` under `replace: false`?** **Recommended:
-  later** (it changes five existing type-test assertions).
+  later** (it changes five existing type-test assertions). ✅ **Answered 2026-10-21: later, as recommended.** V2 fills `req.valid` at runtime either way and leaves it untyped (`{}`) there.
 - **Q-H9** **Accept the lifted inline-validator limit** (five lines of an
-  existing type test change)? **Recommended: yes.**
+  existing type test change)? **Recommended: yes.** ✅ **Answered 2026-10-21: yes, as recommended.**
 - **Q-H10** **Typed SSE writes** (`SseWriter.send` typed by a contract)?
   **Recommended: yes, inside bun-native-routes PR-sse2** (V11).
 - **Q-H11** **The response cookie view** holds values as written plus their
   attributes? **Recommended: yes.**
 - **Q-H12** **`req.valid` as the name** of the parsed-parts view (Hono's
   `c.req.valid`)? **Recommended: yes.** (Alternatives: `req.validated`,
-  `req.parsed`.)
+  `req.parsed`.) ✅ **Answered 2026-10-21: `req.valid`, as recommended.**
 - **Q-H13** **The private `#self` getter** that keeps 35 internal call sites
   compiling under typed `set`/`header`/`cookie`? **Recommended: yes**
   (internal only).
 - **Q-H14** **The new target order** `headers → cookies → signedCookies →
   params → query → body`? **Recommended: yes**: a cheap header or session
-  check fails before a body is parsed.
+  check fails before a body is parsed. ✅ **Answered 2026-10-21: yes, as recommended.**
 
 ### 8.4 NestJS (§4.5)
 
@@ -1841,6 +1841,8 @@ it names.
 
 ## 9. Names needing approval
 
+**V2 (2026-10-21):** `ContractEntry.implicit` approved; a declared part beats an implicit one in `mergeContracts`, silently; `TypedRouteHandler` gains a trailing `TRes` now, for V3a.
+
 **V1's names were approved on 2026-10-20**: the core's functions and types in
 the first three rows below, plus `mergeContracts`, `documented`, `redactPaths`
 and `messages: "generic"`. On 2026-10-21 the user also approved exporting the
@@ -1849,7 +1851,8 @@ types a transport author names: `Transport`, `TransportSpec`, `SideSpec`,
 `Carries`, `Guard`, `IssueContext`, `MediaMap`, `WireInput`,
 `ContractDescription`, `ContractEncoding`, `ContractKind`, `ContractWire`,
 `forwardContract` and the `CONTRACT` symbol. `checksKey` is a guard method.
-The rest stay internal.
+The rest stay internal. **V2's names were approved on 2026-10-21**: the
+`cookies` and `signedCookies` targets and `req.valid`.
 
 | Name | Kind | Where |
 |---|---|---|
