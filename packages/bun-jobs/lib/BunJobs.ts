@@ -35,6 +35,7 @@ import type {
   JobCheck,
   JobCheckLookup,
   JobSchema,
+  QueueCheckLookup,
   JobValidationOptions,
   QueueValidationOptions,
   SchemaData,
@@ -67,8 +68,10 @@ import { JOB_ROUTER } from "./queue/jobRouter";
 import {
   attachJobContract,
   compileJobCheck,
+  DATA_CHECK,
   JOB_CHECKS,
   liftValidation,
+  QUEUE_CHECKS,
 } from "./queue/jobSchema";
 import { BunRunnerManager } from "./runner/index";
 import { mapConcurrent } from "./shared/bounded";
@@ -419,6 +422,30 @@ export class BunJobs<
   /** The lookup handed to the registry queue and its workers ({@link JOB_CHECKS}). */
   readonly #checkLookup: JobCheckLookup = (name) => this.#checks.get(name);
   /**
+   * Whether any schema exists in this context — a definition's, or a queue's
+   * own `schema` — from which point every queue created here carries
+   * {@link #queueCheckLookup}. Until then a flow's pre-write pass walks
+   * nothing.
+   */
+  #schemas = false;
+  /**
+   * How a flow added on one queue here finds a node's data check on another
+   * ({@link QUEUE_CHECKS}): that queue's own, when this context has created
+   * it; the definitions', for the registry queue not created yet (under the
+   * default enqueue policy); nothing for any other queue.
+   */
+  readonly #queueCheckLookup: QueueCheckLookup = (queue, name) => {
+    const instance = this.#queues.get(queue);
+    if (instance !== undefined) {
+      return instance[DATA_CHECK](name);
+    }
+    if (queue !== this.#registryQueue) {
+      return undefined;
+    }
+    const check = this.#checks.get(name);
+    return check?.data === undefined ? undefined : { check, policy: "error" };
+  };
+  /**
    * Backoff strategies registered with `defineBackoff`.
    *
    * Handed to every worker created here by reference, so a strategy defined
@@ -699,6 +726,14 @@ export class BunJobs<
       queue[JOB_CHECKS] = this.#checkLookup;
     }
     this.#queues.set(name, queue);
+    // A flow added on any queue here checks its nodes on the others, once a
+    // schema exists anywhere in the context; this queue's own counts.
+    if (options?.schema !== undefined && !this.#schemas) {
+      this.#schemas = true;
+      this.#attachQueueChecks();
+    } else if (this.#schemas) {
+      queue[QUEUE_CHECKS] = this.#queueCheckLookup;
+    }
     // With the queue's own defaults resolved, so passing one explicitly
     // later (`subscribe: false`) is not a difference.
     const subscribe = created.subscribe ?? false;
@@ -1040,7 +1075,7 @@ export class BunJobs<
   // Implementation-signature widening; callers only ever see the three above.
   define(
     name: string,
-    handler: JobProcessor<any, any>,
+    handler: JobProcessor<any, any, any>,
     options: JobDefinitionOptions & JobValidationOptions = {},
   ): this {
     if (typeof name !== "string" || name.length === 0) {
@@ -1104,6 +1139,20 @@ export class BunJobs<
       if (worker.queueName === this.#registryQueue) {
         worker[JOB_CHECKS] = this.#checkLookup;
       }
+    }
+    if (!this.#schemas) {
+      this.#schemas = true;
+      this.#attachQueueChecks();
+    }
+  }
+
+  /**
+   * Hands every queue created here the cross-queue lookup a flow's pre-write
+   * pass uses ({@link QUEUE_CHECKS}), once the first schema exists.
+   */
+  #attachQueueChecks(): void {
+    for (const queue of this.#queues.values()) {
+      queue[QUEUE_CHECKS] = this.#queueCheckLookup;
     }
   }
 

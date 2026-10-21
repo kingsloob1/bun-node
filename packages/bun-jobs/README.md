@@ -1617,15 +1617,18 @@ jobs.define("sendEmail", async (job) => send(job.data.to), {
 
 **Where data is checked.** At enqueue, in the queue, before anything is
 written: `add`, `addBulk` (every entry, before the first write: one bad entry
-rejects the whole call), `now`, a builder's `start()`, a draft's `save()`, a
-repeat series when it is created, a debounce or throttle add, and an update
-(`queue.update`, `job.updateData`, `job.update`). A failure rejects with
-`JobDataValidationError` (`code` `JOB_DATA_VALIDATION`, `target: "data"`, the
-`issues`, and `context.index` for a bulk entry) and nothing is written: a
-debounced job keeps its data, an updated job is unchanged. The management
-API's add and update routes answer it with 400 `VALIDATION`, its issues at
-body paths (`data.to`). A definition's schema applies on the registry queue;
-any other queue checks with its own `schema` option.
+rejects the whole call), `addFlow` (every node, before the first write: see
+[Flows](#flows-and-schemas) below), `now`, a builder's `start()`, a draft's
+`save()`, a repeat series when it is created, a debounce or throttle add, and
+an update (`queue.update`, `job.updateData`, `job.update`). A failure rejects
+with `JobDataValidationError` (`code` `JOB_DATA_VALIDATION`, `target:
+"data"`, the `issues`, `context.index` for a bulk entry and
+`context.flowPath` for a flow node) and nothing is written: a debounced job
+keeps its data, an updated job is unchanged. The management API's add, update
+and flows routes answer it with 400 `VALIDATION`, its issues at body paths
+(`data.to`; a flow node's `children.0.data.to`). A definition's schema
+applies on the registry queue; any other queue checks with its own `schema`
+option.
 
 Then again **before the handler**, once per attempt, in the worker, whatever
 runs the handler: in-process, a `Worker`, a child process, a container or a
@@ -1746,6 +1749,123 @@ message that quotes it, and a warning logs only the job's name, queue, id
 and the issues.
 
 Example: [`03-job-registry/validating-job-data.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/validating-job-data.ts).
+
+#### Flows and schemas
+
+**Every node is checked before anything is written.** `addFlow` plans the
+whole tree first (ids, queues, the repeated-id checks of [Flows](#flows)),
+then checks every node's data, the top and every descendant, against **its
+own name's** schema on **its own queue**, under that queue's enqueue policy,
+and only then adds the first job. One node failing under `"error"` rejects
+the whole flow with a `JobDataValidationError` naming the node, and nothing is
+written on any queue:
+
+```ts
+await queue.addFlow({
+  name: "report",
+  data: { month: "2026-10" },
+  children: [
+    { name: "fetch", data: { page: 1 } },
+    { name: "fetch", data: { page: 2 }, children: [{ name: "sendEmail", data: { to: "nope" } }] },
+  ],
+});
+// JobDataValidationError: context.name "sendEmail", context.flowPath "children.1.children.0"
+```
+
+`context.flowPath` is the node's place in the flow, `""` for the top and
+`children.1.children.0` below it (the same path the management API puts in
+front of `data`), with `context.jobId` when the node gave one. A node under
+`"warn"` is written and logs one warning (its name, queue, `flowPath`, never
+its data); under `"off"` it is not checked, and its siblings still are. The
+check is the one `add` makes: the data's JSON form, `null` for no data, and a
+node whose `jobId` already exists is checked too, though nothing is then
+written for it. With no schema anywhere a flow walks nothing and awaits
+nothing extra.
+
+**Which checks a node gets** depends on where it goes and what this process
+can see:
+
+| The node goes to | Checked with |
+|---|---|
+| the queue `addFlow` is called on | what `add` there would use: its name's definition on the registry queue, else the queue's own `schema` |
+| another queue of the same `BunJobs` context | that queue's checks, as if added there: the registry queue's definitions (even before the registry queue is created in this process, then under the default `"error"` policy), or the `schema` the context's queue for it was created with |
+| a queue the context has not created, or any other queue from a bare `BunQueue` | **nothing at enqueue**: a bare queue cannot see another queue's checks. That queue's worker still checks the job before its handler, if it has a schema |
+| a queue of the management API's flows route | the queue instance the route resolved for it, so a configured bare queue checks with its own `schema` |
+
+**A crash mid-write can still orphan children.** The check is a pass before
+the writes, not a transaction: no driver adds a flow atomically, so a process
+dying between two writes leaves children with no parent, exactly as before;
+[healing](#flows) releases them to their retention.
+
+**Processing and results are per node too.** Each node is a job like any
+other: its worker checks its stored data against its own name's schema before
+its handler, hands the handler that schema's output, and checks its result
+under its own `resultValidation`. A child whose data fails there dies
+unrecoverable and fails its parent (unless it is marked `ignoreFailure`); a
+child whose result is refused under `"error"` delivers nothing to its parent.
+
+**A parent's typed children.** `job.getChildrenValues()` answers each
+completed child's result keyed `queue:id`, as it is stored. Declare the flow
+once, `as const`, and `FlowChildrenValues` derives that record's type from it;
+a job map entry's `children` gives the parent's handler that type:
+
+```ts
+const report = {
+  name: "send-report",
+  data: { month: "2026-10" },
+  children: [
+    { name: "totals", data: { month: "2026-10" }, opts: { jobId: "totals-2026-10" } },
+    { name: "refunds", data: { month: "2026-10" }, opts: { jobId: "refunds-2026-10", ignoreFailure: true } },
+    { name: "summary", data: { month: "2026-10" } },
+  ],
+} as const;
+
+interface Jobs {
+  totals: { data: { month: string }; result: number };
+  refunds: { data: { month: string }; result: { count: number } };
+  summary: { data: { month: string }; result: { lines: number } };
+  "send-report": {
+    data: { month: string };
+    result: string;
+    children: FlowChildrenValues<typeof report, Jobs, "jobs">;
+  };
+}
+
+const jobs = new BunJobs<Jobs>({ namespace, driver });
+jobs.define("send-report", async (job) => {
+  const values = await job.getChildrenValues();
+  values["jobs:totals-2026-10"]; // number
+  values["jobs:refunds-2026-10"]; // { count: number } | undefined
+  return "sent";
+});
+await jobs.queue("jobs").addFlow(report);
+```
+
+- **Keys.** A child whose queue and `jobId` are literals has its own key. Its
+  queue is its own `queue`, else its parent's, and the top's is the third type
+  argument (the queue `addFlow` is called on). Every other child (a generated
+  id, an inherited queue the type does not name) is read through one
+  `` `${string}:${string}` `` index, typed as the union of their results.
+- **Results.** On a registry flow, a child that stays on the registry queue
+  has its name's declared result. A child on another queue, and every child
+  of a flow with no map, is `unknown`.
+- **A child that may fail is `T | undefined`.** A child marked `ignoreFailure`
+  (or whose options are typed wider than a literal) counts as optional: its
+  parent runs without its value when it fails. A node's `optional: true`
+  marks one so whatever its options say, and `optional: false` claims the
+  value is there. `optional` is read by the types only.
+- **A claim, not a guarantee.** The parent's types are not checked again when
+  it reads the values: each child's result was checked at its own completion,
+  under the child's own `resultValidation`. That is `"off"` by default, and
+  with it `"off"` the parent's types are a claim, not a guarantee. A child
+  processed by another service's worker is checked, or not, by that worker's
+  definition.
+- A job whose entry declares no `children` keeps `Record<string, unknown>`,
+  and so does a bare `BunQueueWorker`'s job: its processor is typed by the
+  worker's `TData` and `TResult` alone, so a bare parent reads its children
+  untyped. With `JobMapFromSchemas`, give the parent's entry `children` in a
+  map built on it:
+  `type Jobs = JobMapFromSchemas<typeof schemas> & { report: { data: ...; children: ... } }`.
 
 ### Builder methods
 
@@ -2083,7 +2203,9 @@ parent in `waiting-children` until its children settle.
 - **Adding.** The whole tree is checked first. A `queue:id` that appears twice,
   or a child with the id of one of its ancestors, throws a `ConfigError` and
   nothing is written. `repeat`, `debounce` and `throttle` are not allowed in a
-  flow.
+  flow. Every node's data is then checked against its own name's schema, if
+  it has one, before the first write (see
+  [Flows and schemas](#flows-and-schemas)).
 
   Jobs are then added children first, each parent after its children, so a
   parent's `createdAt` follows every child it lists. A child that finishes
@@ -2093,8 +2215,9 @@ parent in `waiting-children` until its children settle.
   missing. A job whose `jobId` already exists keeps the children it has.
   `added` is published on each job's own queue.
 - **Results.** `job.getChildrenValues()` returns each completed child's return
-  value, keyed `queue:id`. `job.getChildrenFailures()` returns the failures of
-  children marked `ignoreFailure`.
+  value, keyed `queue:id` (typed from the flow's declared shape with
+  [`FlowChildrenValues`](#flows-and-schemas)). `job.getChildrenFailures()`
+  returns the failures of children marked `ignoreFailure`.
 - **Failing by default.** A child that fails for good fails its parent. The
   parent goes to `dead` with a `ChildFailedError` naming the child, and that
   failure travels on up the flow.

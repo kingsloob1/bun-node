@@ -16,7 +16,9 @@ import { crossProcessBackends } from "./helpers/backends";
  * Job data schemas on every backend (bun-validate V5a): what the producer
  * stores must come back from the store in a shape its own schema accepts,
  * because the worker checks the stored input again before the handler. A
- * refused add writes nothing on any backend.
+ * refused add writes nothing on any backend. A flow (V5c): one bad node
+ * writes nothing for the whole flow, and a good one runs each node with its
+ * schema's output and hands the parent its children's results.
  */
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -127,6 +129,72 @@ for (const backend of backends) {
         expect(error).toBeInstanceOf(JobDataValidationError);
         const counts = await queue.count();
         expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(0);
+      }, 30_000);
+
+      it("a flow with one bad grandchild writes nothing; a good one runs whole", async () => {
+        const seen: unknown[] = [];
+        const queue = setup(Order, seen);
+        const at = "2026-10-21T10:00:00.000Z";
+        const order = (id: string) => ({
+          id,
+          qty: "2",
+          lines: [{ sku: "a", at }],
+        });
+
+        const error = await queue
+          .addFlow({
+            name: "order",
+            data: order("top"),
+            opts: { jobId: "top" },
+            children: [
+              {
+                name: "order",
+                data: order("mid"),
+                opts: { jobId: "mid" },
+                children: [
+                  {
+                    name: "order",
+                    data: { id: "leaf", qty: "x", lines: [] },
+                    opts: { jobId: "leaf" },
+                  },
+                ],
+              },
+            ],
+          })
+          .catch((thrown: unknown) => thrown);
+        expect(error).toBeInstanceOf(JobDataValidationError);
+        expect((error as JobDataValidationError).context.flowPath).toBe(
+          "children.0.children.0",
+        );
+        for (const id of ["top", "mid", "leaf"]) {
+          expect(await queue.getJob(id)).toBeNull();
+        }
+        const counts = await queue.count();
+        expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(0);
+
+        const flow = await queue.addFlow({
+          name: "order",
+          data: order("top"),
+          children: [
+            { name: "order", data: order("a"), opts: { jobId: "a" } },
+            { name: "order", data: order("b"), opts: { jobId: "b" } },
+          ],
+        });
+        await waitFor(
+          async () => (await queue.getJob(flow.job.id))?.state === "completed",
+          { timeout: 15_000 },
+        );
+        // Every node's handler got the output; the store kept the input.
+        expect(seen).toHaveLength(3);
+        for (const data of seen) {
+          expect(data).toMatchObject({ qty: 2, note: "" });
+        }
+        expect((await queue.getJob("a"))?.data).toEqual(order("a"));
+        const parent = await queue.getJob(flow.job.id);
+        expect(await parent!.getChildrenValues()).toEqual({
+          "orders:a": null,
+          "orders:b": null,
+        });
       }, 30_000);
 
       it("a job with no data is checked as null, at enqueue and before the handler", async () => {
