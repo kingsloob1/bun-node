@@ -65,7 +65,7 @@ not yet written into §8, and the next PR's brief.
 | bun-jobs data, results and flows (§4.8) | designed with the Jobs & Telemetry agent (bun-node-e9), from its survey of the code; e9 builds it |
 | **V4**, bun-jobs alignment (§4.8.5, §4.12 M5 and m11) | **merged 2026-10-21**, #502 (bun-jobs; examples beside it, #504). `s` carries `~standard.jsonSchema` (`draft-2020-12` and `draft-07`; any other target throws), its input built through the documents' `toJsonSchema`, so `s.documented` keywords and named `$defs` are included; a defaulted key is optional on input and required in output, in the types too. `validateResponses` takes `"off" \| "warn" \| "error"` (`true` is `"warn"`), checked with `validateStandard` and refused with `ResponseValidationError`, rather than through bun-common's gate (the API's `default` problem response has no place there, m8). Every route's terminal layer carries its full contract through `forwardContract` (87 of 87 routes, tested against the OpenAPI document). Of the issue-flattening copies, `define.ts`'s adopted `validateStandard`; `remote/schemas.ts` and `provider/configure.ts` keep theirs, as the scrub was then broader than the issue's path |
 | **V5a**, job data and results (§4.8.1–§4.8.4, flows excepted) | **merged 2026-10-21**, #507 (bun-jobs; examples #510); Q-J1–Q-J3 answered and its names approved the same day |
-| **V5c**, flows (§4.8, flows) | **built and gated 2026-10-21, open, not merged**: #515 (`feat/bun-validate-v5c-flows`), with its examples fix #517 (`examples/v5c-warn-refused`). The examples for V5c itself merged as #516. What is left: [Handoff](#handoff-2026-10-22-how-to-resume) |
+| **V5c**, flows (§4.8.2's `addFlow` and flows-route rows, §4.8.4) | **merged 2026-10-22**, #515 (bun-jobs; the examples for V5c merged as #516, and its examples fix #517 merged into #515's branch first): `addFlow`'s pre-write pass over every node (its own queue's checks; other queues' where the process can see them), the flows route's 400 `VALIDATION` at body paths, typed `getChildrenValues()` through `FlowChildrenValues` and a job map entry's `children`, `optional` (Q-C9). `recordOf` not used: children are keyed `queue:id`, and the parent needs no second check. Also `6aa72631`: in `addBulk` and `addFlow`, a `"warn"` entry's "written anyway" warning waits until every entry's check has passed (it is still logged before the write, not after it: an open follow-up). Its names approved 2026-10-21 (§9) |
 | Group 2: **V7a**, `@Validate` request side | **not started** (an agent began and stopped at a usage limit having written nothing; its empty branch was deleted). Q-N1–Q-N4 answered 2026-10-21 (§8.4) |
 | Follow-ups of group 1, merged 2026-10-21 | `messages` and `redactPaths` as `validate()` options #486 (#487); `close()` drains, `drainAndStop`, `closeDrainTimeout` #488 (#491), bun-nest on it #493; socket-free `fetch()` frames a body as a client does #489 (#490); HEAD on a GET route on the fast path #494; `getPort()` retry #497; `fresh()` an exact port of fresh 2.0.0 #498 (#499); the scrub scoped to the issue's path #505 (#506); a thenable schema result is async, scrub keys at the path #511 (#512); bun-jobs' remote and provider issue messages pinned #509; the API's old-spelling hint survives the scrub #500 |
 | OpenAPI, AsyncAPI, typed client ([`api-docs-generation/`](../api-docs-generation/README.md) "AD", [`typed-client/`](../typed-client/README.md) "TC") | plan only; §4.11 says what they read from this plan's runtime metadata; reviewed against TC by bun-node-99, and its findings are requirements of the PRs they name (§4.12) |
@@ -2396,7 +2396,7 @@ it names.
   **Recommended: keep both by default** (right across services); measure
   before optimising.
 - **Q-C9** **A flow child that may fail** typed `T | undefined`, through a
-  per-child `optional`? **Recommended: yes.**
+  per-child `optional`? **Recommended: yes.** ✅ **Answered 2026-10-21: yes, as recommended**; `ignoreFailure` children count as optional by default (built in V5c).
 - **Q-C10** **Route keys above the contract**: router layers carry contracts,
   rather than the route being a key of the HTTP transport? **Recommended:
   yes.** ✅ **Answered 2026-10-20: yes, as recommended.**
@@ -2639,6 +2639,8 @@ the fields `definition.schema`, `definition.dataValidation`,
 `QueueValidationOptions`, `WorkerValidationOptions`, `ProducerJobSchema`,
 `ProcessorJobSchema`, `SchemaData`, `SchemaResult` and `TypedDefinitionSchema`,
 exported from their modules, not from the package root.
+
+**V5c (2026-10-21):** `optional`, the per-child marker on a flow node (Q-C9), approved. The same day: the types `FlowChildrenValues` and `JobChildrenOf`, the field `JobTypeEntry.children`, the type parameter `TChildren` on `Job` and `JobProcessor`, and the `JobDataValidationError` context field `flowPath`, approved.
 
 **V6 (2026-10-21):** `StandardSchemaPipe`, `SchemaDto`,
 `StandardValidationPipe`, `StandardValidationModule` and

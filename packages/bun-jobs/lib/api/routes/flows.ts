@@ -5,6 +5,7 @@ import type { ResolvedJobsApiConfig } from "../config";
 import type { AddFlowNodeBody, ProblemIssueDto } from "../contract/types";
 import type { AddFlowResultOut } from "../schemas/jobs";
 import type { AnyRouteDef, RouteServices } from "./define";
+import { ADD_FLOW, DATA_CHECK } from "../../queue/jobSchema";
 import { assertJobId } from "../../queue/options";
 import { ConfigError } from "../../shared/errors";
 import { decide } from "../auth";
@@ -290,15 +291,25 @@ export function addFlowRoute(config: ResolvedJobsApiConfig): AnyRouteDef {
       // the single add, a queue the backend does not know yet is no 404.
       let created = false;
       let topQueue: BunQueue<any, any, any> | undefined;
+      const instances = new Map<string, BunQueue<any, any, any>>();
       for (const name of queues) {
         const resolved = await services.queues.getForAdd(name);
         created ||= resolved.created;
         topQueue ??= resolved.queue;
+        instances.set(name, resolved.queue);
       }
 
       let result: FlowResult;
       try {
-        result = await topQueue!.addFlow(toFlowNode(body, true));
+        // Each node's data is checked against its own name's schema on the
+        // instance this route resolved for its queue, so a configured queue
+        // no `BunJobs` context made checks with its own `schema` too. A
+        // failure is a `JobDataValidationError` naming the node's
+        // `flowPath`, answered as 400 at that body path.
+        result = await topQueue![ADD_FLOW](
+          toFlowNode(body, true),
+          (queue, name) => instances.get(queue)?.[DATA_CHECK](name),
+        );
       } catch (error) {
         throw mapCallSiteError(error, "jobInput");
       }
