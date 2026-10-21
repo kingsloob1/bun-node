@@ -58,6 +58,7 @@ import {
   createRequestTimeoutError,
   createServeStaticHandler,
   defineHidden,
+  drainAndStop,
   each,
   encodeUrl,
   FETCH_STUB_SERVER,
@@ -78,6 +79,7 @@ import {
   RequestPipelineOptions,
   set,
   toFetchResponse,
+  validateCloseDrainTimeout,
   validateParseBodyOption,
   waitUntil,
 } from "@kingsleyweb/bun-common";
@@ -459,25 +461,6 @@ function buildCannotRoute(
     statusText: page.statusText,
     headers,
   });
-}
-
-/** `close()`'s default drain cap, in milliseconds. */
-const DEFAULT_CLOSE_DRAIN_TIMEOUT = 10_000;
-
-/**
- * The `closeDrainTimeout` adapter option, checked: `undefined` is the
- * default; anything but a finite number of milliseconds `>= 0` throws.
- */
-function validateCloseDrainTimeout(value: unknown): number {
-  if (value === undefined) {
-    return DEFAULT_CLOSE_DRAIN_TIMEOUT;
-  }
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new RangeError(
-      `closeDrainTimeout must be a finite number of milliseconds >= 0, got ${String(value)}`,
-    );
-  }
-  return value;
 }
 
 /**
@@ -3326,30 +3309,17 @@ export class BunHttpAdapter<
   }
 
   /**
-   * {@link close}'s stop: drain, then force. `stop(false)` stops accepting:
-   * Bun closes the listener and every idle keep-alive connection at once, and
-   * each busy connection as soon as its response completes (measured on Bun
-   * 1.4.2 to 1.4.4). The wait is on `pendingRequests`, not on that call's
-   * promise, which also waits for every WebSocket. `stop(true)` then always
-   * runs: a graceful stop alone leaves a long-lived response (an SSE stream)
-   * and WebSockets served by this server after `close()` resolves, even
-   * once another server is bound on the same port (measured, PR-6b's spike).
+   * {@link close}'s stop: bun-common's `drainAndStop`, the stop bun-common's
+   * adapter uses too, so the two cannot drift. `forceCloseConnections` drains
+   * for nothing.
    */
   async #stopServer(
     server: BunWebSocketServerType<customWebsocketDataType>,
   ): Promise<void> {
-    if (
-      !this.#forceCloseConnections &&
-      this.#closeDrainTimeout > 0 &&
-      server.pendingRequests > 0
-    ) {
-      server.stop(false).catch(() => undefined);
-      const deadline = Date.now() + this.#closeDrainTimeout;
-      while (server.pendingRequests > 0 && Date.now() < deadline) {
-        await Bun.sleep(10);
-      }
-    }
-    await server.stop(true);
+    await drainAndStop(
+      server,
+      this.#forceCloseConnections ? 0 : this.#closeDrainTimeout,
+    );
   }
 
   public getType(): string {
