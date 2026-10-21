@@ -9,8 +9,8 @@
  *
  * A few things worth knowing before reading it:
  *
- * - Targets run in a fixed order — headers, params, query, body — whatever
- *   order the schemas object lists them in. `abortEarly` stops at the first
+ * - Targets run in a fixed order — headers, cookies, signedCookies, params,
+ *   query, body — whatever order the schemas object lists them in. `abortEarly` stops at the first
  *   failing one in *that* order.
  * - `onFailure: "next"` and `"throw"` both reach a router's error handlers;
  *   the difference is only visible to whoever calls the middleware, so those
@@ -22,6 +22,11 @@
  *   never run) is a compile error. `formatError` answers any JSON value.
  * - The schemas here are built with `toStandardSchema`, so every message is
  *   known exactly.
+ * - `onFailure: "respond"` answers failures itself, so its status is on the
+ *   validator's contract, marked `implicit`; under `"next"` or `"throw"` the
+ *   app's error handler answers, and the contract declares no status.
+ * - Cookies, signed cookies and `req.valid` have their own example,
+ *   `06-validation/cookies-and-headers.ts`.
  */
 import type {
   JsonValue,
@@ -39,7 +44,9 @@ import {
   BunResponse,
   BunRouter,
   BunValidate,
+  describeContract,
   FETCH_STUB_SERVER,
+  getContract,
   toStandardSchema,
   validate,
   ValidationError,
@@ -258,10 +265,11 @@ const noSchemas = await run(validate({}), { url: "/check?page=x" });
 checkEqual("no schemas: next() and nothing touched", noSchemas.nextCalls, [[]]);
 checkEqual("…query as parsed", noSchemas.req.query, { page: "x" });
 
-// A key that is not a target (a typo, or `cookies`) throws when the
-// middleware is built, rather than being ignored. TypeScript already rejects
-// it in a literal; schemas assembled at run time, typed loosely, reach the check.
-const fromConfig: Record<string, typeof Page> = { cookies: Page };
+// A key that is not a target (a typo, `cookie` for `cookies`, or a name like
+// `session`) throws when the middleware is built, rather than being ignored.
+// TypeScript already rejects it in a literal; schemas assembled at run time,
+// typed loosely, reach the check.
+const fromConfig: Record<string, typeof Page> = { session: Page };
 /** The TypeError building throws, or undefined when it does not. */
 function buildError(build: () => unknown): TypeError | undefined {
   try {
@@ -277,7 +285,7 @@ function buildError(build: () => unknown): TypeError | undefined {
 checkEqual(
   "an unknown target throws a TypeError naming the targets",
   buildError(() => validate(fromConfig))?.message,
-  'validate(): unknown target "cookies"; the targets are headers, params, query, body',
+  'validate(): unknown target "session"; the targets are headers, cookies, signedCookies, params, query, body',
 );
 check(
   "…from new BunValidate() and BunValidate.middleware() as well",
@@ -287,7 +295,9 @@ check(
 );
 
 /* ------------------------------------------------------------------ */
-step("Targets run in a fixed order: headers, params, query, body");
+step(
+  "Targets run in a fixed order: headers, cookies, signedCookies, params, query, body",
+);
 
 const orderSeen: string[] = [];
 
@@ -304,12 +314,16 @@ await run(
     body: recording("body"),
     query: recording("query"),
     params: recording("params"),
+    signedCookies: recording("signedCookies"),
+    cookies: recording("cookies"),
     headers: recording("headers"),
   }),
   { url: "/check", body: {}, params: {} },
 );
 checkEqual("order, whatever the object lists", orderSeen, [
   "headers",
+  "cookies",
+  "signedCookies",
   "params",
   "query",
   "body",
@@ -460,6 +474,38 @@ checkEqual(
     )
   ).body,
   { caught: "ValidationError" },
+);
+
+/** The outbound rows of a validator's contract, as `[status, implicit]`. */
+function outboundStatuses(
+  middleware: RouterHandler,
+): [string | undefined, true | undefined][] {
+  const contract = getContract(middleware);
+  return contract === undefined
+    ? []
+    : describeContract(contract)
+        .entries.filter((entry) => entry.side === "outbound")
+        .map((entry) => [entry.key, entry.implicit]);
+}
+checkEqual(
+  "respond: the contract declares the validator's own 400, marked implicit",
+  outboundStatuses(validate({ query: Page }, { onFailure: "respond" })),
+  [["400", true]],
+);
+checkEqual(
+  "…at its configured status",
+  outboundStatuses(
+    validate({ query: Page }, { onFailure: "respond", status: 422 }),
+  ),
+  [["422", true]],
+);
+checkEqual(
+  "next and throw: no status declared — the app's error handler answers",
+  [
+    outboundStatuses(validate({ query: Page })),
+    outboundStatuses(validate({ query: Page }, { onFailure: "throw" })),
+  ],
+  [[], []],
 );
 
 /* ------------------------------------------------------------------ */
