@@ -617,6 +617,37 @@ function processRss(): number | undefined {
   }
 }
 
+/**
+ * `work`, or the abort reason of `signal` if it aborts first: how a job's
+ * asynchronous schema check gives up with its attempt (a timeout, a lost
+ * lock, a close) rather than holding the slot until it settles, which it may
+ * never do. Only ever called with a check that returned a promise.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    // A late settlement of `work` is not this caller's to hear.
+    work.catch(() => undefined);
+    return Promise.reject(signal.reason as Error);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason as Error);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- rejects with the check's own reason, unchanged
+        reject(error);
+      },
+    );
+  });
+}
+
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
 
@@ -2966,36 +2997,63 @@ export class BunQueueWorker<
     void this.#publish("active", { id: record.id });
 
     try {
-      /** The record an isolated target is sent: the stored one, unless the data schema parsed it. */
-      let sent = record;
-      if (check?.data !== undefined) {
-        // Before the processor, once, whatever runs it: in-process it gets
-        // the schema's output; an isolated target its `jsonClone`, in the
-        // copy sent. Every attempt re-checks from the stored input.
-        const preparing = this.#prepareData(check, record);
-        const prepared =
-          preparing instanceof Promise ? await preparing : preparing;
-        if (prepared !== record) {
-          job = new Job<TData, TResult>(
-            this.driver,
-            this.ref,
-            prepared,
-            true,
-            hooks,
-          );
-          if (this.#isolatedKind !== undefined) {
-            sent = prepared;
-          }
-        }
-      }
+      // With schemas, the data check, the run and the result check are one
+      // piece of work under the one deadline below, and each check gives up
+      // when the attempt's signal aborts (a timeout, a lost lock, a close),
+      // as the run is asked to. Without, the run alone, as it always was.
+      const running =
+        check === undefined
+          ? this.#target
+            ? this.#target.run({
+                job,
+                record,
+                context,
+              })
+            : Promise.resolve(this.#processor!(job, context))
+          : (async (): Promise<unknown> => {
+              /** The record an isolated target is sent: the stored one, unless the data schema parsed it. */
+              let sent = record;
+              if (check.data !== undefined) {
+                // Before the processor, once, whatever runs it: in-process it
+                // gets the schema's output; an isolated target its
+                // `jsonClone`, in the copy sent. Every attempt re-checks from
+                // the stored input.
+                const preparing = this.#prepareData(check, record);
+                const prepared =
+                  preparing instanceof Promise
+                    ? await untilAborted(preparing, controller.signal)
+                    : preparing;
+                if (prepared !== record) {
+                  job = new Job<TData, TResult>(
+                    this.driver,
+                    this.ref,
+                    prepared,
+                    true,
+                    hooks,
+                  );
+                  if (this.#isolatedKind !== undefined) {
+                    sent = prepared;
+                  }
+                }
+              }
 
-      const running = this.#target
-        ? this.#target.run({
-            job,
-            record: sent,
-            context,
-          })
-        : Promise.resolve(this.#processor!(job, context));
+              const result = await (this.#target
+                ? this.#target.run({ job, record: sent, context })
+                : this.#processor!(job, context));
+
+              // The result, against its schema, before anything records it:
+              // under "error" a refusal rejects here, into the failure path
+              // below, so no `completed` is emitted or published and nothing
+              // is stored or delivered to a parent. A result arriving after
+              // the deadline is not checked: the attempt has already failed.
+              if (check.result !== undefined && !controller.signal.aborted) {
+                const checking = this.#checkResult(check, record, result);
+                if (checking !== undefined) {
+                  await untilAborted(checking, controller.signal);
+                }
+              }
+              return result;
+            })();
       // No timeout, no wrapper around it.
       const result =
         record.opts.timeout > 0
@@ -3019,17 +3077,6 @@ export class BunQueueWorker<
       if (failedWith) {
         await this.#recordFailure(job, record, failedWith);
         return;
-      }
-
-      // The result, against its schema, before anything records it: under
-      // "error" a refusal throws here, into the failure path below, so no
-      // `completed` is emitted or published and nothing is stored or
-      // delivered to a parent. Nothing to do without a result schema.
-      if (check?.result !== undefined) {
-        const checking = this.#checkResult(check, record, result);
-        if (checking !== undefined) {
-          await checking;
-        }
       }
 
       // Not awaited, deliberately.

@@ -992,6 +992,123 @@ describe("results", () => {
   });
 });
 
+describe("the attempt's deadline covers the checks", () => {
+  /** A Standard Schema whose `validate` never settles. */
+  const never: StandardSchemaV1 = {
+    "~standard": {
+      version: 1,
+      vendor: "test-never",
+      validate: async () => await new Promise<never>(() => {}),
+    },
+  };
+
+  /** A queue and a worker on `target`, with `schema`, on one memory driver. */
+  function setup(
+    schema: { data?: StandardSchemaV1; result?: StandardSchemaV1 },
+    target: "in-process" | "worker-thread" = "in-process",
+  ) {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace("v5a");
+    const queue = new BunQueue("deadline", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    const ran: unknown[] = [];
+    const processor =
+      target === "in-process"
+        ? async (job: Job<unknown, unknown>) => {
+            ran.push(job.data);
+            return { ok: true };
+          }
+        : join(import.meta.dir, "fixtures", "handlers", "job-schema-report.ts");
+    const worker = new BunQueueWorker("deadline", processor, {
+      namespace,
+      driver,
+      logger: noopLogger,
+      pollInterval: 5,
+      waitToExit: false,
+      ...(target === "worker-thread"
+        ? { target: { kind: target, closeTimeout: 200 } }
+        : {}),
+      schema,
+      resultValidation: "error",
+    });
+    const events: string[] = [];
+    worker.on("completed", () => events.push("completed"));
+    worker.on("failed", (_job, error) => events.push(`failed:${error.name}`));
+    closers.push(
+      () => queue.close(),
+      () => worker.close({ force: true }),
+    );
+    void worker.run();
+    return { queue, worker, ran, events };
+  }
+
+  for (const target of ["in-process", "worker-thread"] as const) {
+    it(`${target}: a data check that never settles fails the attempt at its timeout; the handler never runs`, async () => {
+      const { queue, worker, ran, events } = setup({ data: never }, target);
+      const job = await queue.add("x", { n: 1 }, { timeout: 200 });
+      const dead = await settled(queue, job.id, "dead");
+
+      expect(dead.failedReason?.name).toBe("JobTimeoutError");
+      expect(dead.attemptsMade).toBe(1);
+      expect(dead.returnValue).toBeNull();
+      expect(ran).toEqual([]);
+      expect(events).toEqual(["failed:TimeoutError"]);
+
+      const started = Date.now();
+      await worker.close();
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }, 20_000);
+  }
+
+  it("a result check that never settles fails the attempt at its timeout: nothing completed or stored", async () => {
+    const { queue, worker, ran, events } = setup({ result: never });
+    const job = await queue.add("x", { n: 1 }, { timeout: 200 });
+    const dead = await settled(queue, job.id, "dead");
+
+    expect(ran).toEqual([{ n: 1 }]);
+    expect(dead.failedReason?.name).toBe("JobTimeoutError");
+    expect(dead.returnValue).toBeNull();
+    expect(events).toEqual(["failed:TimeoutError"]);
+
+    const started = Date.now();
+    await worker.close();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  }, 20_000);
+
+  it("with no timeout, a close gives up on a data check that never settles; the handler never runs", async () => {
+    const { queue, worker, ran } = setup({ data: never });
+    const job = await queue.add("x", { n: 1 });
+    await settled(queue, job.id, "active");
+
+    const started = Date.now();
+    await worker.close({ timeout: 200 });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(ran).toEqual([]);
+    // The check gave up with the attempt's signal, so the attempt was
+    // recorded as failed rather than left active under a lock nobody renews.
+    const stopped = await settled(queue, job.id, "dead");
+    expect(stopped.failedReason?.name).toBe("AbortError");
+  }, 20_000);
+
+  it("checks that settle inside the budget still pass", async () => {
+    const { queue, ran } = setup({
+      data: asyncSchema(isN, 20),
+      result: asyncSchema(
+        (value): value is { ok: true } =>
+          (value as { ok?: unknown } | null)?.ok === true,
+        20,
+      ),
+    });
+    const job = await queue.add("x", { n: 1 }, { timeout: 1_000 });
+    const done = await settled(queue, job.id, "completed");
+    expect(ran).toEqual([{ n: 1 }]);
+    expect(done.returnValue).toEqual({ ok: true });
+  }, 20_000);
+});
+
 describe("no schema, no cost", () => {
   it("leaves the registry queue and its worker without a lookup until a definition has a schema", async () => {
     const jobs = makeJobs();

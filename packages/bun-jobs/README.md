@@ -1639,8 +1639,9 @@ schema again on the stored input and hands the handler the output: above,
 `job.data.retries` is a `number` with `3` filled in. So **a schema must accept
 its own input** every time it runs, on every attempt, retries included. A job
 added with no data is stored, and read back by every backend, as `null`, so
-it is checked as `null` at enqueue too: give it a schema that accepts `null`
-(`z.null()`, `.nullish()`). A `Date` is checked as the string JSON makes of
+it is checked as `null`, its stored form, at enqueue too. So
+`z.object(…).optional()` refuses it: for a job that may carry no data use
+`.nullable()` or `.nullish()` (or `z.null()` for one that never does). A `Date` is checked as the string JSON makes of
 it, so `z.coerce.date()` accepts it where `z.date()` refuses it at enqueue.
 
 **An isolated target gets the output through JSON.** A `Worker`, a child
@@ -1687,11 +1688,23 @@ process, for example), check each job against its own name's definition.
   schema's output. An async result schema delays the completion until it
   settles.
 
+**Both checks run under the attempt's deadline.** The data check, the handler
+and the result check share the job's `timeout`, and an asynchronous check gives
+up when the attempt's signal aborts (the timeout, a lost lock, a `close()`).
+A check that outlives the timeout fails the attempt exactly as a slow handler
+does (`JobTimeoutError`, retried while attempts remain): a timeout in the data
+check means the handler never runs, and one in the result check means the job
+is not completed.
+
 **Types.** A schema types its definition: the handler's `job.data` is the data
 schema's output, and it must answer with the result schema's input.
 `JobMapFromSchemas` builds a whole [job map](#typed-jobs) from a record of
 schemas, with each entry's `data` the data schema's output and its `result`
-the result schema's input:
+the result schema's input. Because it types `data` by the **output**, a field
+with a default is required when adding through a typed registry, though the
+schema would fill it in; a bare `BunQueue` given `{ schema }` infers what `add`
+takes from the schema's input instead. Typing a registry's producers by the
+input is a follow-up (an input slot in `JobMap`).
 
 ```ts
 const schemas = {
