@@ -129,6 +129,7 @@ reference.
   - [Analytics in a driver of your own](#analytics-in-a-driver-of-your-own)
 - [Management API](#management-api)
   - [Analytics routes](#analytics-routes)
+  - [Checking responses (`validateResponses`)](#checking-responses-validateresponses)
 - [Recipes: summoning workers and scaling on demand](#recipes-summoning-workers-and-scaling-on-demand)
   - [Where the summoner runs](#where-the-summoner-runs)
   - [The worker file](#the-worker-file)
@@ -6688,6 +6689,32 @@ at that field. A cron expression or time zone the scheduler refuses is 400
 | `INTERNAL` | 500 | | `PROVIDER_SCHEMA_NOT_FOUND` | 404 |
 | `JOBS_CLOSED` | 503 | | | |
 
+### Checking responses (`validateResponses`)
+
+`createJobsApi({ validateResponses })` checks the value each route's handler
+returns against the response the route declares, the same schemas the OpenAPI
+document is built from. It is for development and tests: the routes' own tests
+run in `"error"`.
+
+| Value | What happens to a mismatching response |
+|---|---|
+| `"off"`, `false` or unset (the default) | nothing is checked |
+| `"warn"` or `true` | sent as it is, plus one `warn` line, `jobs api response did not match its schema`, with `{ operationId, status, issues }` |
+| `"error"` | refused before anything is sent: the client gets the generic 500 `INTERNAL` problem; the same line is logged at `error`, and the API's error handler logs `jobs api request failed` with bun-common's `ResponseValidationError` |
+
+Each issue is `{ target, path, message, key, mediaType }`, `key` being the
+status. Issues never carry a value from the body, and are never sent to the
+client. An undeclared status, or a body on a status declared without one, is a
+mismatch. A response the handler writes itself (an alternate representation, a
+documentation page) is not checked. Anything else as `validateResponses` is a
+`ConfigError`. The API's routes follow this option alone: a host router's
+`responseValidation` does not apply to them.
+
+Every route also carries its full HTTP contract (params, query, body and every
+response it can answer with, problem statuses and alternate content included)
+on the layer that answers it, so bun-common's `getContract` and
+`describeContract` read the same declaration the OpenAPI document does.
+
 ### Live events
 
 The socket is at `<basePath>/ws` (`websocket.path`). Connect, then subscribe
@@ -8450,7 +8477,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
 | [`utilities.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/utilities.ts) | every exported helper: cron, schedules, repeats, options, backoff, JSON, ids, keys, connection, constants |
 | [`ids-and-keys.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/ids-and-keys.ts) | job ids and repeat keys at every entry point: what is refused, derived ids fitted to the tightest store, repeat keys as listed and removed, debounce and throttle windows, per-engine name limits |
-| [`jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts) | every `createJobsApi` option: construction `ConfigError`s, `mode` / `readOnly` / `actions` / capability pruning against `/meta` and `/meta/permissions`, RFC 9457 problems, `authorize` asked once, a request failing a check still against the target its path names, `limits`, `cors` / `csrf` / `trustProxy`, `serialize`, `docs` |
+| [`jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts) | every `createJobsApi` option: construction `ConfigError`s, `mode` / `readOnly` / `actions` / capability pruning against `/meta` and `/meta/permissions`, RFC 9457 problems, `authorize` asked once, a request failing a check still against the target its path names, `limits`, `cors` / `csrf` / `trustProxy`, `serialize`, `docs`, `validateResponses` |
 | [`jobs-api-socket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-socket-options.ts) | every `websocket` option, per-channel subscribe refusals, replay and resume, coalesced progress, the client limits and every close code |
 | [`job-defaults.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-defaults.ts) | queue job defaults: the stored override and its precedence, propagation, the `applyJobDefaults()` walk and its refusals, and the four API routes with their opt-ins |
 | [`analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts) | the `metrics` option, what is recorded, range resolution and every clamp reason, the analytics routes; `processedBy` and the worker filters; `countAdded()` and `sort: "createdAt"`, and their fallbacks per driver |

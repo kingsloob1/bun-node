@@ -646,11 +646,14 @@ export interface JobsApiConfig {
    * - `"warn"` (and `true`) sends the response and logs one `warn` line per
    *   mismatching response, `"jobs api response did not match its schema"`,
    *   with the route's operation id, the status and the issues (each a
-   *   `target`, `path` and `message`, never a value from the body);
+   *   `target`, `path`, `message`, `key` (the status) and `mediaType`, never
+   *   a value from the body);
    * - `"error"` logs the same line at `error` and refuses the response
    *   before anything is sent: the request is answered 500 `INTERNAL`
    *   through the API's error handler, with bun-common's
-   *   `ResponseValidationError` as the error.
+   *   `ResponseValidationError` as the error, which that handler logs too
+   *   (`"jobs api request failed"`), so one mismatch gives two `error`
+   *   lines. The client sees the generic 500, never the issues.
    *
    * An undeclared status, or a body on a status declared without one, is a
    * mismatch. A response the handler writes itself (an alternate
