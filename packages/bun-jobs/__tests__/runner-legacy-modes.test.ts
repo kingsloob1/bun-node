@@ -624,15 +624,16 @@ for (const { name, available, backend } of backends) {
           expect(list.status).toBe(200);
           expect(oldSpellings(list.body)).toEqual([]);
 
-          // An old spelling on input is refused, naming its replacement.
+          // An old spelling on input is refused, naming its replacement but
+          // not the value sent: `validate()` withholds a message quoting it.
           const refused = await api.call("PUT", `/runners/${id}/config`, {
             executionMode: "spawn",
           });
           expect(refused.status).toBe(400);
           expect(refused.body.code).toBe("VALIDATION");
-          expect(refused.body.issues[0].message).toContain(
-            '"spawn" is the old spelling of "child-process"',
-          );
+          const message = refused.body.issues[0].message as string;
+          expect(message).toEndWith(': an old spelling of "child-process"');
+          expect(message).not.toContain('"spawn"');
 
           // Accepted, because the stored `allowed` read translated rather than
           // dropped: a filtered list would have answered 409 here.
