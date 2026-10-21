@@ -54,7 +54,7 @@ first priority.
 | PR-11 docs | in progress: the bun-nest README's NestJS 12 section and compatibility table (branch `docs/nest12-readme-v2`) |
 | `@SseSignal` parity (addition, 2026-10-17) | merged, #413 (tests only; no difference from Express on 11.2.7 and 12.1.3) |
 | Router benchmark guard (addition, the user's rule 2026-10-17: routing speed must not regress) | merged, #415, #422, #429 |
-| Nest 12.2.0 lock move (addition, the user's decision 2026-10-20), with `getRouteMatchingOptions()` pulled forward from PR-6c | merged, #446: develop's lock 12.1.3 → 12.2.0 (Express 5.3.0), and middleware once per request on a 12.2.0 core; bun-common's copy of Express 5.3.0 (redirect body, `Content-Disposition`) merged as #452 |
+| Nest 12.2.0 lock move (addition, the user's decision 2026-10-20), with `getRouteMatchingOptions()` pulled forward from PR-6c | merged, #446: develop's lock 12.1.3 → 12.2.0 (Express 5.3.0), and the core's exact `/api$` middleware entry serving `/api/` on a 12.2.0 core (a whole app's `forRoutes('*')` runs once on `/api/` on 11.2.7, 12.1.3 and 12.2.0 alike; 12.2.0's `exclude()` changes are `/invoices/` under `invoices/{*path}` and `/users/LOGIN` on a case-sensitive router: [`evidence/middleware-1220/`](evidence/middleware-1220/README.md)); bun-common's copy of Express 5.3.0 (redirect body, `Content-Disposition`) merged as #452 |
 
 Where the plan below names the "features agent", "5a", "4c" or "d6", read the
 owners listed here: those names date from before bun-nest and bun-common had
