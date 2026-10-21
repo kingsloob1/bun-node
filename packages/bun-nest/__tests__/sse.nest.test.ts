@@ -11,7 +11,10 @@ import type { BunResponse } from "@kingsleyweb/bun-common";
  *
  * No assertion rests on a short window: "promptly" is a deadline of seconds
  * (the bug it guards was a hang until the idle timeout), and the idle-timeout
- * case carries a control proving the timeout is live.
+ * case carries a control proving the timeout is live. Each step a client
+ * waits on has its own deadline ({@link step}), so a hang fails naming the
+ * step rather than as bun:test's timeout, and a test that fails part way
+ * still disconnects its client, so the `afterEach` close has nothing to drain.
  *
  * `reflect-metadata` is imported last per the import-sort rule. No top-level
  * `await`: it perturbs decorator metadata in other gateway test files.
@@ -88,14 +91,25 @@ class EdgesController {
 @Module({ controllers: [EventsController, EdgesController] })
 class AppModule {}
 
+/**
+ * The deadline of one step a client waits on (a response, two events, the
+ * unsubscription). Each takes milliseconds, so only a hang reaches it; a
+ * test's own timeout is three steps, bun:test's default of 5 s being shorter
+ * than a busy machine's boot plus a step.
+ */
+const STEP_MS = 10_000;
+
 /** Applications to close after each test. */
 const apps: INestApplication[] = [];
 
+// `close()` drains open requests for up to `closeDrainTimeout` (10 s) before
+// cutting them, past bun:test's 5 s hook default: a stream a failing test
+// left connected would otherwise be reported as this hook's timeout.
 afterEach(async () => {
   while (apps.length) {
     await apps.pop()?.close();
   }
-});
+}, 2 * STEP_MS);
 
 /** A Nest application on `BunHttpAdapter`, listening on an OS-assigned port. */
 async function startApp(
@@ -148,7 +162,24 @@ async function within<T>(
   }
 }
 
-/** Reads from `reader` until `count` SSE events (blank-line terminated) have arrived. */
+/** Resolves `pending`, or rejects naming `name` once {@link STEP_MS} passes first. */
+async function step<T>(name: string, pending: Promise<T>): Promise<T> {
+  const settled = await within(
+    pending.then((value) => ({ value })),
+    STEP_MS,
+  );
+  if (settled === undefined) {
+    throw new Error(`${name}: still pending after ${STEP_MS} ms`);
+  }
+  return settled.value;
+}
+
+/**
+ * Reads from `reader` until `count` SSE events (blank-line terminated) have
+ * arrived, and returns exactly those: a client the scheduler held back reads
+ * several of a stream's 5 ms ticks in one chunk, and the ones past `count`
+ * are dropped.
+ */
 async function readEvents(
   /** A response body's reader; only `read()` is used. */
   reader: Pick<ReadableStreamDefaultReader<Uint8Array>, "read">,
@@ -173,58 +204,68 @@ async function readEvents(
       boundary = buffer.indexOf("\n\n");
     }
   }
-  return events;
+  return events.slice(0, count);
 }
 
 describe("@Sse() on BunHttpAdapter", () => {
-  it("streams every event with Nest's SSE headers, then ends", async () => {
-    const url = await startApp();
-    const res = await fetch(`${url}/events/ticks`);
+  it(
+    "streams every event with Nest's SSE headers, then ends",
+    async () => {
+      const url = await step("the app's start", startApp());
+      const res = await step("the response", fetch(`${url}/events/ticks`));
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/event-stream");
-    expect(res.headers.get("cache-control")).toContain("no-cache");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+      expect(res.headers.get("cache-control")).toContain("no-cache");
 
-    const reader = res.body!.getReader();
-    const events = await readEvents(reader, 3);
-    expect(events).toEqual([
-      'event: tick\nid: 1\ndata: {"tick":0}',
-      'event: tick\nid: 2\ndata: {"tick":1}',
-      'event: tick\nid: 3\ndata: {"tick":2}',
-    ]);
+      const reader = res.body!.getReader();
+      const events = await step("three events", readEvents(reader, 3));
+      expect(events).toEqual([
+        'event: tick\nid: 1\ndata: {"tick":0}',
+        'event: tick\nid: 2\ndata: {"tick":1}',
+        'event: tick\nid: 3\ndata: {"tick":2}',
+      ]);
 
-    // The observable completed, so Nest ends the response.
-    const rest = await reader.read();
-    expect(rest.done).toBe(true);
-  });
+      // The observable completed, so Nest ends the response.
+      const rest = await step("the end of the stream", reader.read());
+      expect(rest.done).toBe(true);
+    },
+    3 * STEP_MS,
+  );
 
-  it("unsubscribes when the client disconnects (req.socket 'close')", async () => {
-    const url = await startApp();
-    const unsubscribed = Promise.withResolvers<void>();
-    endlessUnsubscribed = unsubscribed.resolve;
+  it(
+    "unsubscribes when the client disconnects (req.socket 'close')",
+    async () => {
+      const unsubscribed = Promise.withResolvers<void>();
+      endlessUnsubscribed = unsubscribed.resolve;
+      const controller = new AbortController();
+      try {
+        const url = await step("the app's start", startApp());
+        const res = await step(
+          "the response",
+          fetch(`${url}/events/endless`, { signal: controller.signal }),
+        );
+        const reader = res.body!.getReader();
+        const events = await step(
+          "the first two events",
+          readEvents(reader, 2),
+        );
+        expect(events).toEqual(["id: 1\ndata: n0", "id: 2\ndata: n1"]);
 
-    const controller = new AbortController();
-    const res = await fetch(`${url}/events/endless`, {
-      signal: controller.signal,
-    });
-    const reader = res.body!.getReader();
-    const events = await readEvents(reader, 2);
-    expect(events).toEqual(["id: 1\ndata: n0", "id: 2\ndata: n1"]);
-
-    controller.abort();
-    await reader.cancel().catch(() => undefined);
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const outcome = await Promise.race([
-      unsubscribed.promise.then(() => "unsubscribed"),
-      new Promise<string>((resolve) => {
-        timer = setTimeout(resolve, 2000, "still subscribed");
-      }),
-    ]);
-    clearTimeout(timer);
-    endlessUnsubscribed = undefined;
-    expect(outcome).toBe("unsubscribed");
-  });
+        controller.abort();
+        await reader.cancel().catch(() => undefined);
+        await step(
+          "the unsubscription after the client disconnected",
+          unsubscribed.promise,
+        );
+      } finally {
+        // Disconnects a client an earlier failure left connected.
+        controller.abort();
+        endlessUnsubscribed = undefined;
+      }
+    },
+    3 * STEP_MS,
+  );
 });
 
 /**
@@ -238,7 +279,7 @@ describe("@Sse() when the client leaves, served and socket-free", () => {
   /** Opens `/events/endless` in `mode` with `signal`. */
   async function open(mode: Mode, signal: AbortSignal): Promise<Response> {
     if (mode === "served") {
-      const url = await startApp();
+      const url = await step("the app's start", startApp());
       return fetch(`${url}/events/endless`, { signal });
     }
     const adapter = new BunHttpAdapter();
@@ -254,37 +295,53 @@ describe("@Sse() when the client leaves, served and socket-free", () => {
 
   for (const mode of ["served", "adapter.fetch()"] as const) {
     for (const leaving of ["cancels the body", "aborts its fetch"] as const) {
-      it(`${mode}: the client ${leaving}, and the stream unsubscribes`, async () => {
-        const unsubscribed = Promise.withResolvers<void>();
-        endlessUnsubscribed = unsubscribed.resolve;
-        try {
+      it(
+        `${mode}: the client ${leaving}, and the stream unsubscribes`,
+        async () => {
+          const unsubscribed = Promise.withResolvers<void>();
+          endlessUnsubscribed = unsubscribed.resolve;
           const controller = new AbortController();
-          const res = await open(mode, controller.signal);
-          const reader = res.body!.getReader();
-          expect(await readEvents(reader, 2)).toEqual([
-            "id: 1\ndata: n0",
-            "id: 2\ndata: n1",
-          ]);
-          if (leaving === "cancels the body") {
-            await reader.cancel();
-          } else {
-            const reason = new Error("gone");
-            // Reads on until the stream ends or fails.
-            const reading = (async (): Promise<string> => {
-              let chunk = await reader.read();
-              while (!chunk.done) {
-                chunk = await reader.read();
-              }
-              return "ended";
-            })();
-            controller.abort(reason);
-            expect(await reading.catch((error: unknown) => error)).toBe(reason);
+          try {
+            const res = await step(
+              "the response",
+              open(mode, controller.signal),
+            );
+            const reader = res.body!.getReader();
+            expect(
+              await step("the first two events", readEvents(reader, 2)),
+            ).toEqual(["id: 1\ndata: n0", "id: 2\ndata: n1"]);
+            if (leaving === "cancels the body") {
+              await step("the cancellation", reader.cancel());
+            } else {
+              const reason = new Error("gone");
+              // Reads on until the stream ends or fails.
+              const reading = (async (): Promise<string> => {
+                let chunk = await reader.read();
+                while (!chunk.done) {
+                  chunk = await reader.read();
+                }
+                return "ended";
+              })();
+              controller.abort(reason);
+              expect(
+                await step(
+                  "the read in progress after the abort",
+                  reading.catch((error: unknown) => error),
+                ),
+              ).toBe(reason);
+            }
+            await step(
+              `the unsubscription after the client ${leaving === "cancels the body" ? "cancelled" : "aborted"}`,
+              unsubscribed.promise,
+            );
+          } finally {
+            // Disconnects a client an earlier failure left connected.
+            controller.abort();
+            endlessUnsubscribed = undefined;
           }
-          await unsubscribed.promise;
-        } finally {
-          endlessUnsubscribed = undefined;
-        }
-      });
+        },
+        3 * STEP_MS,
+      );
     }
   }
 });
