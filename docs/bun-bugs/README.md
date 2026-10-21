@@ -13,6 +13,7 @@ it and the test that guards it.
 | [`new Response(string).headers` has no `Content-Type`](./response-headers-miss-body-content-type.md) | 1.4.2 | not filed | `toFetchResponse` (socket-free `fetch()`) |
 | [`console.log` / `Bun.inspect` print an object's non-enumerable properties](./inspect-shows-non-enumerable-properties.md) | 1.4.2 | not filed | `defineHidden` (`err.req`), partially: Errors only |
 | [`JSON.stringify` on a deeply nested array takes 0.8–1.5 s past ~30,000 levels](./json-stringify-deep-nesting-slow.md) | 1.4.3, 1.4.4-canary.1 | [#45791](https://github.com/oven-sh/bun/issues/45791) | bun-nest's WebSocket serialisation tests' deadlines |
+| [`idleTimeout` from 1 to 4 cuts an actively streaming response at 4 s](./idle-timeout-cuts-active-stream.md) | 1.4.2, 1.4.3, 1.4.4-canary.1 | [#46211](https://github.com/oven-sh/bun/issues/46211) | documented only: bun-common's README and `server` option JSDoc |
 
 Found earlier, while planning native routes, and filed upstream; their
 reproductions live with that plan's evidence

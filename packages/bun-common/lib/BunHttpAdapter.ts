@@ -206,6 +206,27 @@ export function finalErrorResponse(
   });
 }
 
+/** `close()`'s default drain cap, in milliseconds. */
+const DEFAULT_CLOSE_DRAIN_TIMEOUT = 10_000;
+
+/**
+ * The `closeDrainTimeout` adapter option, checked: `undefined` is the
+ * default; anything but a finite number of milliseconds `>= 0` throws.
+ */
+function validateCloseDrainTimeout(value: unknown): number {
+  if (value === undefined) {
+    return DEFAULT_CLOSE_DRAIN_TIMEOUT;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    const shown =
+      typeof value === "number" ? String(value) : Bun.inspect(value);
+    throw new RangeError(
+      `closeDrainTimeout must be a finite number of milliseconds >= 0, got ${shown}`,
+    );
+  }
+  return value;
+}
+
 /**
  * `error` with the request riding on it, for `handleRequestError`, which
  * needs it to run the error handlers; a thrown primitive is wrapped to carry
@@ -244,6 +265,12 @@ export class BunHttpAdapter<
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
   protected isServerListening = false;
+  /**
+   * The longest {@link close} waits for in-flight requests to finish before
+   * cutting them, in milliseconds: the constructor's `closeDrainTimeout`
+   * option, default `10_000`.
+   */
+  readonly #closeDrainTimeout: number;
   private serverOptions:
     | BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
@@ -329,9 +356,24 @@ export class BunHttpAdapter<
        */
       routeCacheMax?: number;
       /**
+       * The longest `close()` waits for in-flight requests to finish before
+       * cutting them, in milliseconds. Defaults to `10_000`. `0` waits for
+       * nothing: in-flight requests are cut at once. A streamed response (a
+       * server-sent events stream, any `res.write()` or streamed body) is in
+       * flight until it ends, so one that never ends holds `close()` for the
+       * whole cap. WebSockets are not waited for. A negative or non-finite
+       * value throws a `RangeError` here, at construction.
+       */
+      closeDrainTimeout?: number;
+      /**
        * Base `Bun.serve` options merged into the server created in `listen()`
        * (TLS, `maxRequestBodySize`, etc.). `port`/`hostname`/`fetch`/`websocket`
-       * are managed by the adapter and override anything set here.
+       * are managed by the adapter and override anything set here. Keep an
+       * `idleTimeout` of `0` or at least `5`: from `1` to `4`, Bun cuts even
+       * an actively streaming body at 4 s (oven-sh/bun#46211) — a
+       * `ReadableStream` or async iterable passed to `res.send()`. A
+       * `res.write()` or `pipe()` stream (server-sent events) is exempt: it
+       * turns the idle timeout off for its request.
        */
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
@@ -391,6 +433,11 @@ export class BunHttpAdapter<
 
     // Merged over the defaults, not in place of them.
     this.requestOpts = options?.request ?? {};
+
+    // Checked here, so a bad value fails at startup, not on the first close.
+    this.#closeDrainTimeout = validateCloseDrainTimeout(
+      options?.closeDrainTimeout,
+    );
 
     // Checked here, so a bad value fails at startup, not on every request.
     this.etagEnabled = normalizeEtagOption(options?.etag);
@@ -1626,8 +1673,18 @@ export class BunHttpAdapter<
   }
 
   /**
-   * Stops listening: force-closes the server (`server.stop(true)`, so a
-   * keep-alive connection cannot keep answering from it) and emits `close`.
+   * Stops listening, then emits `close`. The server stops accepting
+   * connections and the requests in flight are let finish, for at most the
+   * constructor's `closeDrainTimeout` option (10 s by default; `0` waits for
+   * nothing); whatever is still open then — a stream that never ends, a hung
+   * handler — is cut. A streamed response (server-sent events, a
+   * `res.write()` body) is in flight until it ends, so an endless one holds
+   * `close()` for the whole cap.
+   *
+   * WebSocket connections are not waited for; they are closed when the
+   * server stops. Nothing of the stopped server outlives the returned
+   * promise, so a server bound on the same port next can never be answered
+   * by this one (the port-release rule in CLAUDE.md).
    *
    * Everything registered survives — routes, middleware, and the
    * {@link setErrorHandler}/{@link setNotFoundHandler} handlers — so the
@@ -1636,9 +1693,7 @@ export class BunHttpAdapter<
   public async close() {
     try {
       if (this._serverInstance && this.isServerListening) {
-        // Force-close active (keep-alive) connections so the port is fully
-        // released; a graceful stop can leave the listener lingering.
-        await this._serverInstance.stop(true);
+        await this.#stopServer(this._serverInstance);
       }
     } catch (err) {
       this.logger.error("An error occurred while closing bun http adapter", {
@@ -1648,6 +1703,31 @@ export class BunHttpAdapter<
     this.eventEmitter.emit("close");
     this._serverInstance = undefined;
     this.isServerListening = false;
+  }
+
+  /**
+   * {@link close}'s stop: drain, then force. `stop(false)` stops accepting:
+   * Bun closes the listener and every idle keep-alive connection at once, and
+   * each busy connection as soon as its response completes (measured on Bun
+   * 1.4.2 to 1.4.4). The wait is on `pendingRequests`, not on that call's
+   * promise, which also waits for every WebSocket. `stop(true)` then always
+   * runs: a graceful stop alone leaves a long-lived response (an SSE stream)
+   * and WebSockets served by this server after `close()` resolves, even
+   * once another server is bound on the same port (measured: S3 of
+   * `docs/plans/nestjs-12-parity/evidence/lifecycle-spike/`). The same
+   * sequence as bun-nest's adapter.
+   */
+  async #stopServer(
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Promise<void> {
+    if (this.#closeDrainTimeout > 0 && server.pendingRequests > 0) {
+      server.stop(false).catch(() => undefined);
+      const deadline = Date.now() + this.#closeDrainTimeout;
+      while (server.pendingRequests > 0 && Date.now() < deadline) {
+        await Bun.sleep(10);
+      }
+    }
+    await server.stop(true);
   }
 
   public getType(): string {
