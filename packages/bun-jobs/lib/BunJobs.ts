@@ -433,6 +433,12 @@ export class BunJobs<
    * ({@link QUEUE_CHECKS}): that queue's own, when this context has created
    * it; the definitions', for the registry queue not created yet (under the
    * default enqueue policy); nothing for any other queue.
+   *
+   * The not-yet-created registry queue has no options to read a policy from:
+   * a queue's `dataValidation` arrives with `queue(name, options)`, and
+   * `BunJobs`' own options carry none. So a definition's own `dataValidation`
+   * applies (it wins inside the check), else `"error"`, even where the queue,
+   * once created with `dataValidation: { enqueue: "warn" }`, would only warn.
    */
   readonly #queueCheckLookup: QueueCheckLookup = (queue, name) => {
     const instance = this.#queues.get(queue);
