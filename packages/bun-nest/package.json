@@ -142,7 +142,9 @@
     "rxjs": "^7.8.1",
     "supertest": "^7.1.4",
     "typescript": "^6.0.3",
-    "ws": "8.22.0"
+    "ws": "8.22.0",
+    "yup": "^1",
+    "zod": "^4"
   },
   "gitHead": "58f50ad7df6fde1d9853b1a23b7b2f8a3967b8a1",
   "trustedDependencies": [
