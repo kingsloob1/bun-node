@@ -9,7 +9,7 @@ it and the test that guards it.
 
 | Report | Bun | Upstream | Worked around in |
 |---|---|---|---|
-| [A served HEAD response loses the implicit `Content-Type` its GET gets](./head-response-loses-implicit-content-type.md) | 1.4.2 | not filed | `BunResponse` `#canSkipHeaders` |
+| [A served HEAD response loses the implicit `Content-Type` its GET gets](./head-response-loses-implicit-content-type.md) | 1.4.2 | [#46337](https://github.com/oven-sh/bun/issues/46337) | `BunResponse` `#respondToHead` |
 | [`new Response(string).headers` has no `Content-Type`](./response-headers-miss-body-content-type.md) | 1.4.2 | not filed | `toFetchResponse` (socket-free `fetch()`) |
 | [`console.log` / `Bun.inspect` print an object's non-enumerable properties](./inspect-shows-non-enumerable-properties.md) | 1.4.2 | not filed | `defineHidden` (`err.req`), partially: Errors only |
 | [`JSON.stringify` on a deeply nested array takes 0.8–1.5 s past ~30,000 levels](./json-stringify-deep-nesting-slow.md) | 1.4.3, 1.4.4-canary.1 | [#45791](https://github.com/oven-sh/bun/issues/45791) | bun-nest's WebSocket serialisation tests' deadlines |

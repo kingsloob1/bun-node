@@ -1685,8 +1685,8 @@ export class BunResponse<
    * Whether the body can be sent without a `Headers` object: nothing set a
    * header (or passed one in the init), no `ETag` is to be computed and no
    * transform (`compression()`) will rewrite the response, and the request
-   * is not `HEAD`. Freshness needs a validator header, so it cannot apply
-   * either.
+   * is not `HEAD` (see {@link #canSendHeadBare}). Freshness needs a validator
+   * header, so it cannot apply either.
    */
   #canSkipHeaders(): boolean {
     return (
@@ -1698,6 +1698,58 @@ export class BunResponse<
       !this.#etagEnabled &&
       this.#responseTransforms === undefined
     );
+  }
+
+  /**
+   * Whether a `HEAD`, kept off the {@link #canSkipHeaders} path, can still be
+   * sent without a `Headers` object passed in, by {@link #respondToHead}: on
+   * the same conditions, and when it is not fresh (an `If-None-Match: *`
+   * makes it fresh without a validator; the full path answers that `304`, as
+   * it always has) and its status does not strip the body (204, 205, 304).
+   * Asked only once the GET path is ruled out, so a GET pays nothing for it.
+   */
+  #canSendHeadBare(): boolean {
+    const code = this.options.status;
+    return (
+      this.req.method === "HEAD" &&
+      this.#headers === undefined &&
+      this.options.headers === undefined &&
+      !this.#etagEnabled &&
+      this.#responseTransforms === undefined &&
+      code !== 204 &&
+      code !== 205 &&
+      code !== 304 &&
+      !this.req.fresh
+    );
+  }
+
+  /**
+   * Sends the answer to a `HEAD` with no `Headers` object passed in, as the
+   * full path would send it: `text` as the body, which `Bun.serve` measures
+   * for `Content-Length` and drops, and `contentType` set on the built
+   * response, because Bun writes no implicit type for a served `HEAD`
+   * (oven-sh/bun#46337;
+   * docs/bun-bugs/head-response-loses-implicit-content-type.md). Set there,
+   * it costs well under a `Headers` object in the init. A socket-free
+   * `fetch()` gets no body at all: {@link toFetchResponse} would drop it,
+   * at the cost of reading it and building a second response. Only when
+   * {@link #canSendHeadBare}.
+   *
+   * @param text The body, as the full path would send it.
+   * @param contentType The type the full path would set.
+   */
+  #respondToHead(text: string | undefined, contentType: string): BunResponse {
+    this.req.setResponse(this.#self);
+    this.#implicitContentType = contentType;
+    const response = new Response(
+      (this.req.request as SocketFreeRequest)[SOCKET_FREE] === undefined
+        ? text
+        : null,
+      this.#initWithoutHeaders(),
+    );
+    response.headers.set("Content-Type", contentType);
+    this.response = response;
+    return this.#self;
   }
 
   /** The init for a response sent without headers: status and reason only. */
@@ -2780,6 +2832,10 @@ export class BunResponse<
     if (this.#canSkipHeaders()) {
       return this.#respondWithJson(body);
     }
+    if (this.#canSendHeadBare()) {
+      // Serialised as the full path does it, with its errors.
+      return this.#respondToHead(JSON.stringify(body), JSON_CONTENT_TYPE);
+    }
     this.options.headers = this.headersObj;
     this.#setJsonContentType();
     return this.#respondWithText(JSON.stringify(body));
@@ -2915,6 +2971,8 @@ export class BunResponse<
         this.response = response;
         return this.#self;
       }
+    } else if (this.#canSendHeadBare()) {
+      return this.#respondToHead(text, TEXT_CONTENT_TYPE);
     }
 
     this.options.headers = this.headersObj;
