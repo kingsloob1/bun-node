@@ -558,8 +558,8 @@ export type RemoteParseResult<T> =
 /** Whether a schema's answer is a thenable (a native `Promise` or any other). */
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return (
-    typeof value === "object" &&
-    value !== null &&
+    ((typeof value === "object" && value !== null) ||
+      typeof value === "function") &&
     typeof (value as { then?: unknown }).then === "function"
   );
 }
@@ -570,7 +570,7 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * Not bun-common's `validateStandard`: this entry bundles for an edge isolate
  * without bun-common (`__tests__/remote/remote-bundle.test.ts`), and the
  * builder's messages never quote the received value, so its scrub would only
- * withhold a message that happens to spell a value or a sibling key.
+ * withhold a message that happens to spell a value or one of its keys.
  */
 function run<T>(
   schema: Schema<unknown, any>,
