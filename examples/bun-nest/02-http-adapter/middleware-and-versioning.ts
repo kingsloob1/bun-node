@@ -16,6 +16,17 @@
  *   which wraps each versioned handler. A request whose version does not match
  *   calls `next()`, so the next candidate route gets it; a request no route
  *   accepts ends as Nest's 404.
+ * - `MEDIA_TYPE` reads the version as the installed Nest's platform-express
+ *   does, and that changed. Nest 11 reads the first parameter of the header
+ *   only. Nest 12 finds it in any parameter of any media range
+ *   (`text/html, application/json;charset=utf-8;v=2` is version 2), and from
+ *   12.2.0 a quoted value is unquoted (`v="2"` is 2). The adapter tells them
+ *   apart by capabilities of `@nestjs/core`, never a version string, and the
+ *   checks of that step ask the same ones: `mapException` on
+ *   `AbstractHttpAdapter` (12.0.0) and `isRejectedByPipes` in
+ *   `@nestjs/core/internal` (12.2.0). Where a check's behaviour is not the
+ *   installed Nest's, a line starting `skipped:` says so, and the installed
+ *   Nest's own answer is checked instead.
  * - Nest allows one versioning type per application, so this example builds
  *   one app per type. Those apps never listen: after `app.init()`,
  *   `adapter.fetch()` runs a request through the whole adapter pipeline with
@@ -44,7 +55,9 @@ import {
   VERSION_NEUTRAL,
   VersioningType,
 } from "@nestjs/common";
-import { NestFactory } from "@nestjs/core";
+import { createRequire } from "node:module";
+import { AbstractHttpAdapter, NestFactory } from "@nestjs/core";
+import { checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import "reflect-metadata";
 
@@ -342,6 +355,94 @@ step("VersioningType.MEDIA_TYPE — a parameter of the Accept header");
   await app.close();
 }
 
+step("MEDIA_TYPE: any parameter (Nest 12), a quoted value (Nest 12.2.0)");
+{
+  /**
+   * Whether the core is Nest 12's, whose platform-express reads a version
+   * parameter from any media range: `mapException` arrived in 12.0.0.
+   */
+  const anyParameter =
+    typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
+      .mapException === "function";
+
+  /**
+   * Whether the core is 12.2.0 or later, whose platform-express unquotes
+   * `v="2"`: `isRejectedByPipes` in `@nestjs/core/internal` arrived with it
+   * (Nest 11 has no such file, 12.0–12.1 no such export).
+   */
+  const unquotes = (() => {
+    try {
+      const internal = createRequire(import.meta.url)(
+        "@nestjs/core/internal",
+      ) as { isRejectedByPipes?: unknown };
+      return typeof internal.isRejectedByPipes === "function";
+    } catch {
+      return false;
+    }
+  })();
+
+  const { app, adapter } = await versionedApp({
+    type: VersioningType.MEDIA_TYPE,
+    key: "v=",
+  });
+
+  /** Which controller answered `GET /products` for `accept`, or the status. */
+  const served = async (accept: string) => {
+    const response = await adapter.fetch("/products", { headers: { accept } });
+    return response.status === 200
+      ? ((await response.json()) as { served: string }).served
+      : String(response.status);
+  };
+
+  const later = "text/html, application/json;charset=utf-8;v=2";
+  const quoted = 'application/json;v="2"';
+  const answers = {
+    "application/json;v=2": await served("application/json;v=2"),
+    [later]: await served(later),
+    [quoted]: await served(quoted),
+  };
+  show("GET /products, by Accept", answers);
+
+  checkEqual(
+    "a version in the first parameter is read on every Nest",
+    answers["application/json;v=2"],
+    "v2|v3",
+  );
+  if (anyParameter) {
+    checkEqual(
+      "Nest 12: the version is found in a later parameter of a later media range",
+      answers[later],
+      "v2|v3",
+    );
+  } else {
+    show(
+      "skipped: Nest 11 reads the first parameter only, so the any-parameter check sits out",
+    );
+    checkEqual(
+      "Nest 11: a version past the first parameter is not seen, and no route matches",
+      answers[later],
+      "404",
+    );
+  }
+  if (unquotes) {
+    checkEqual(
+      'Nest 12.2.0: a quoted version, v="2", is unquoted',
+      answers[quoted],
+      "v2|v3",
+    );
+  } else {
+    show(
+      'skipped: Nest before 12.2.0 takes v="2" as written, so the unquoting check sits out',
+    );
+    checkEqual(
+      'before Nest 12.2.0: v="2" is taken with its quotes, and no route matches',
+      answers[quoted],
+      "404",
+    );
+  }
+  await app.close();
+}
+
 step("VersioningType.CUSTOM — an extractor decides");
 {
   const { app, adapter } = await versionedApp({
@@ -389,3 +490,5 @@ show(
     await manual.fetch("/manual", { headers: { "X-API-Version": "1" } })
   ).json(),
 );
+
+summary();

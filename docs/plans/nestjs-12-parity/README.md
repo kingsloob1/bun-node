@@ -50,7 +50,7 @@ first priority.
 | PR-7 bun-common request and multipart | merged, #456 (with #451, `next(object)` and `json()`'s Content-Type) |
 | PR-8 bun-nest uploads | merged, #449 |
 | PR-9 WS differential | merged, #458 (with #448 and #454, gateway routes unregistered on close); the floor columns fixed by #461 |
-| PR-10 examples | in part: the example fixes stacked on each PR merged (#418, #437, #441, #443, #450, #453, #457, #459, #460), and `02-http-adapter/query-method.ts`; no example yet for `routeResolutionStrategy`/`routeConflictPolicy`, `enableCsrfProtection`/`useSecurityHeaders` or `return503OnClosing` |
+| PR-10 examples | done: the example fixes stacked on each PR (#418, #437, #441, #443, #450, #453, #457, #459, #460), and the new examples #469 (WebSocket flow control, `removeRouteHandler`), #471 (uploads, `routeResolutionStrategy`/`routeConflictPolicy`, middleware matching) and this PR (`enableCsrfProtection`/`useSecurityHeaders`, `return503OnClosing` and the drain, the response and hook changes); examples/bun-nest passes on 12.2.0 and 11.2.7 |
 | PR-11 docs | in progress: the bun-nest README's NestJS 12 section and compatibility table (branch `docs/nest12-readme-v2`) |
 | `@SseSignal` parity (addition, 2026-10-17) | merged, #413 (tests only; no difference from Express on 11.2.7 and 12.1.3) |
 | Router benchmark guard (addition, the user's rule 2026-10-17: routing speed must not regress) | merged, #415, #422, #429 |

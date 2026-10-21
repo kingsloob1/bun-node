@@ -504,6 +504,100 @@ step("constructor: logger, and setLogger()");
 }
 
 /* ------------------------------------------------------------------ */
+step("constructor: closeDrainTimeout");
+{
+  for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, "100"]) {
+    await checkRejects(
+      `closeDrainTimeout: ${typeof bad === "string" ? `"${bad}"` : String(bad)} throws at construction`,
+      () => new BunHttpAdapter(0, { closeDrainTimeout: bad as number }),
+      { name: "RangeError", message: /closeDrainTimeout must be/ },
+    );
+  }
+  check(
+    "0 and a finite number of milliseconds are accepted",
+    [0, 1500, 10_000].every(
+      (ms) =>
+        new BunHttpAdapter(0, { closeDrainTimeout: ms }) instanceof
+        BunHttpAdapter,
+    ),
+  );
+
+  /**
+   * An adapter listening on port 0 with one raw route, `/hang`, that answers
+   * only once the returned `release()` is called; it resolves once a request
+   * is inside that route.
+   */
+  const hanging = async (options: { closeDrainTimeout?: number }) => {
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const adapter = new BunHttpAdapter(0, options);
+    adapter.get("/hang", async (_req, res) => {
+      entered.resolve();
+      await released.promise;
+      return res.send("answered");
+    });
+    await adapter.listen(0);
+    const request = fetch(`${adapter.url}/hang`).then(
+      async (response) => `${response.status} ${await response.text()}`,
+      () => "cut",
+    );
+    await entered.promise;
+    return { adapter, request, release: () => released.resolve() };
+  };
+
+  // The default (10 s): close() waits for a request that finishes in time.
+  {
+    const { adapter, request, release } = await hanging({});
+    let closed = false;
+    const closing = adapter.close().then(() => {
+      closed = true;
+    });
+    await Bun.sleep(200);
+    check("by default close() waits for the request in flight", !closed);
+    release();
+    await closing;
+    checkEqual(
+      "…which is answered before close() resolves",
+      await request,
+      "200 answered",
+    );
+  }
+
+  // 0: nothing waits.
+  {
+    const { adapter, request, release } = await hanging({
+      closeDrainTimeout: 0,
+    });
+    await adapter.close();
+    checkEqual(
+      "closeDrainTimeout: 0 cuts the request in flight at once",
+      await request,
+      "cut",
+    );
+    release();
+  }
+
+  // A cap: a request that never ends is cut once it passes. The lower
+  // bound is the cap itself, which load cannot shorten; the upper bound is
+  // far below the 10 s default, which an ignored option would wait for.
+  {
+    const { adapter, request, release } = await hanging({
+      closeDrainTimeout: 1500,
+    });
+    const started = performance.now();
+    await adapter.close();
+    const took = performance.now() - started;
+    check(
+      "closeDrainTimeout: 1500 waits about 1.5 s for a request that never ends, not the default 10 s",
+      took >= 1400 && took < 8000,
+      { took },
+    );
+    checkEqual("…then cuts it", await request, "cut");
+    release();
+  }
+}
+
+/* ------------------------------------------------------------------ */
 step("constructor: websocket (covered by websocket-adapter-options.ts)");
 check(
   "a BunNestWebsocketAdapter is built in",
