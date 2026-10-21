@@ -28,7 +28,9 @@
  *   bare `BunQueue` checks its own nodes only; there the other queue's worker
  *   is what refuses the job, before its handler.
  * - **`"warn"` writes and logs once per node, `"off"` skips the node.** The
- *   warning names the node (`name`, `queue`, `flowPath`), never its data.
+ *   warning names the node (`name`, `queue`, `flowPath`), never its data, and
+ *   is logged only once every node has passed: a flow another node refuses
+ *   writes nothing and warns about nothing.
  * - **A parent's children typed.** Declare the flow `as const` and
  *   `FlowChildrenValues<typeof flow, Jobs, "jobs">` derives what
  *   `getChildrenValues()` answers, keyed `queue:id`; put it in the parent's
@@ -436,6 +438,10 @@ check(
   flowWarnings,
 );
 
+// A "warn" node's warning says the job was written, so it is logged only once
+// every node has passed: here a strict sibling refuses the flow, nothing is
+// written, and the "warn" node logs nothing.
+const warnedBeforeRefusal = warnings(WRITTEN_ANYWAY).length;
 await checkRejects(
   'an "off" node is skipped, but a strict sibling still rejects the flow',
   () =>
@@ -443,6 +449,7 @@ await checkRejects(
       name: "monthly-report",
       data: { month: "2026-12" },
       children: [
+        { name: "send-digest", data: { to: SECRET } },
         { name: "send-sms", data: { phone: SECRET } },
         { name: "fetch-page", data: { source: "orders", page: SECRET } },
       ],
@@ -450,6 +457,11 @@ await checkRejects(
   { code: "JOB_DATA_VALIDATION" },
 );
 checkEqual("and nothing more written", (await total(registry)) - before, 4);
+checkEqual(
+  'nor a "written anyway" warning from the "warn" node of the refused flow',
+  warnings(WRITTEN_ANYWAY).length - warnedBeforeRefusal,
+  0,
+);
 
 /* ------------------------------------------------------------------ */
 step("A registry parent typed through FlowChildrenValues");
