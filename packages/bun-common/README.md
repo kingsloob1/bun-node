@@ -600,6 +600,10 @@ Example tours:
      `closeDrainTimeout` option (10 s by default; `0` skips the wait);
   3. `server.stop(true)` always runs, cutting whatever is still open.
 
+  The same sequence is exported as `drainAndStop(server, drainMs)`, with
+  `validateCloseDrainTimeout(ms)` for the option, for a server you stop
+  yourself (bun-nest's adapter uses it too).
+
   A streamed response, server-sent events included, is in flight until it
   ends, so a stream that never ends is cut by the cap and holds `close()`
   that long: end your streams on shutdown, or lower the cap. WebSockets are

@@ -27,6 +27,7 @@ import type { BunResponse } from "../lib/BunResponse";
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { noopLogger } from "../lib/logging";
+import { drainAndStop, validateCloseDrainTimeout } from "../lib/serverDrain";
 
 /** A promise with its resolver, for gating a handler. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -364,5 +365,55 @@ describe("BunHttpAdapter close(): the port-release rule", () => {
       stream: "still flowing",
       websocket: "A:ping",
     });
+  });
+});
+
+describe("drainAndStop and validateCloseDrainTimeout", () => {
+  /** A server double recording each stop and draining on a schedule. */
+  function fakeServer(pendingFor: number) {
+    const calls: boolean[] = [];
+    const started = Date.now();
+    return {
+      calls,
+      server: {
+        get pendingRequests() {
+          return Date.now() - started < pendingFor ? 1 : 0;
+        },
+        stop: async (force?: boolean) => {
+          calls.push(force === true);
+        },
+      },
+    };
+  }
+
+  it("drains, then always force-closes", async () => {
+    const { calls, server } = fakeServer(40);
+    await drainAndStop(server, 1_000);
+    expect(calls).toEqual([false, true]);
+  });
+
+  it("force-closes at once with nothing in flight, or a 0 cap", async () => {
+    const idle = fakeServer(0);
+    await drainAndStop(idle.server, 1_000);
+    expect(idle.calls).toEqual([true]);
+    const busy = fakeServer(10_000);
+    await drainAndStop(busy.server, 0);
+    expect(busy.calls).toEqual([true]);
+  });
+
+  it("stops waiting at the cap", async () => {
+    const { calls, server } = fakeServer(10_000);
+    const started = Date.now();
+    await drainAndStop(server, 50);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(calls).toEqual([false, true]);
+  });
+
+  it("validates the cap as the adapter option does", () => {
+    expect(validateCloseDrainTimeout(undefined)).toBe(10_000);
+    expect(validateCloseDrainTimeout(0)).toBe(0);
+    expect(() => validateCloseDrainTimeout(-1)).toThrow(RangeError);
+    expect(() => validateCloseDrainTimeout(Number.NaN)).toThrow(RangeError);
+    expect(() => validateCloseDrainTimeout("100")).toThrow(RangeError);
   });
 });
