@@ -66,6 +66,15 @@ export {
   type MulterModuleOptions,
   type MulterOptionsFactory,
 } from "./MulterModule";
+export {
+  SchemaDto,
+  StandardSchemaPipe,
+  StandardValidationException,
+  StandardValidationModule,
+  StandardValidationPipe,
+  type StandardValidationPipeOptions,
+  ValidationExceptionFilter,
+} from "./validation";
 // bun-common's per-route parsing middleware, for `consumer.apply(...)`.
 export {
   requestParsing,

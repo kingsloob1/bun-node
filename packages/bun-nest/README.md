@@ -82,6 +82,12 @@ Underneath, routing is
   - [Authentication on upgrade](#authentication-on-upgrade)
   - [Standalone and custom adapters](#standalone-and-custom-adapters)
   - [Closing](#closing)
+- [Validation](#validation)
+  - [`StandardSchemaPipe`](#standardschemapipe)
+  - [`SchemaDto` and `StandardValidationPipe`](#schemadto-and-standardvalidationpipe)
+  - [`ValidationExceptionFilter`](#validationexceptionfilter)
+  - [`StandardValidationModule`](#standardvalidationmodule)
+  - [Issues carry no received value](#issues-carry-no-received-value)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
@@ -1803,6 +1809,174 @@ and
   job. Instead the adapter closes the WebSocket connections it holds, with
   code `1001`.
 
+## Validation
+
+BunValidate's Nest pipes and filter: any [Standard Schema](https://standardschema.dev)
+(zod, valibot, arktype, yup, or a function wrapped with bun-common's
+`toStandardSchema`), the same runner and issue shape as bun-common's
+`validate()`, on Nest 11 and 12 alike. They are platform-neutral: the filter
+answers through the application's adapter, and the same app answers the same
+on bun-nest and `@nestjs/platform-express` (the differential test compares
+them probe by probe).
+
+| You want | Use | Works on |
+|---|---|---|
+| One parameter, one schema | `new StandardSchemaPipe(schema)` | Nest 11 and 12 |
+| Parameters typed from a schema, one global pipe | `class Dto extends SchemaDto(schema) {}` + `StandardValidationPipe` | Nest 11 and 12 |
+| `{ error, issues }` answers | `ValidationExceptionFilter` (opt-in) | Nest 11 and 12 |
+| Both registered globally | `StandardValidationModule` | Nest 11 and 12 |
+| Nest's own per-parameter schema | `@Body({ schema })` + Nest's `StandardSchemaValidationPipe` | Nest 12 only |
+
+On Nest 12, its own `StandardSchemaValidationPipe` and `@Body({ schema })`
+already validate a per-parameter schema; ours is the path on Nest 11, and the
+`SchemaDto` path on both. The two are independent: ours never reads
+`metadata.schema`, and Nest's never reads a `SchemaDto`.
+
+### `StandardSchemaPipe`
+
+```ts
+import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
+import { StandardSchemaPipe } from "@kingsleyweb/bun-nest";
+import { z } from "zod";
+
+const CreateUser = z.object({ name: z.string().min(1), age: z.coerce.number().int() });
+
+@Controller("users")
+class UsersController {
+  @Post()
+  create(@Body(new StandardSchemaPipe(CreateUser)) body: StandardSchemaV1.InferOutput<typeof CreateUser>) {}
+
+  @Get(":id")
+  find(@Param("id", new StandardSchemaPipe(z.coerce.number().int())) id: number) {}
+}
+
+@WebSocketGateway()
+class ChatGateway {
+  @SubscribeMessage("chat")
+  chat(@MessageBody(new StandardSchemaPipe(Chat)) msg: StandardSchemaV1.InferOutput<typeof Chat>) {}
+}
+```
+
+- The handler receives the schema's **output** (coerced, transformed).
+- A failure throws a `StandardValidationException`, a `BadRequestException`
+  carrying the issues as `issues`: without the filter Nest answers 400 with
+  its own body, `{ statusCode: 400, message: ["age: Invalid input…"], error:
+  "Bad Request" }`, the shape of Nest's own validation pipes. An app's own
+  filter can `@Catch(StandardValidationException)` and read `issues`.
+- Each issue is `{ target, message, path }`: `target` is `"body"` (a
+  gateway's `@MessageBody()` too), `"query"`, `"params"` or `"custom"` (a
+  custom decorator, `@RawBody()`, Nest 12's `@Cookies()`); `path` is prefixed
+  with the parameter's key (`@Query("page", pipe)` reports `page`), so it
+  reads as `validate()`'s would.
+- It is synchronous when the vendor is (zod, valibot, arktype) and answers
+  with a Promise only for an async one (yup).
+- A pipe cannot type its parameter, so annotate it
+  (`StandardSchemaV1.InferOutput<typeof S>`), or use a `SchemaDto`.
+- **Nest runs no pipe on `@Headers()`**, `@Req()` or `@Res()` (both majors).
+  For headers, a custom decorator is pipeable:
+
+  ```ts
+  const ReqHeaders = createParamDecorator((_: unknown, ctx: ExecutionContext) => ctx.switchToHttp().getRequest().headers);
+  version(@ReqHeaders(new StandardSchemaPipe(ApiHeaders)) headers: ApiHeaders) {}
+  ```
+
+- Anything Nest runs through its pipes takes it, a handler built with Nest's
+  `ExternalContextCreator` included (the way a jobs or microservice
+  integration runs handlers).
+
+### `SchemaDto` and `StandardValidationPipe`
+
+```ts
+import { SchemaDto, StandardValidationPipe } from "@kingsleyweb/bun-nest";
+
+class CreateUserDto extends SchemaDto(CreateUser) {}
+
+@Post()
+create(@Body() body: CreateUserDto) {
+  body.age; // number: the schema's output, nothing restated
+}
+
+app.useGlobalPipes(new StandardValidationPipe());
+```
+
+`SchemaDto(schema)` is a class whose instance type is the schema's output,
+carrying the schema as `schema`. The global `StandardValidationPipe` validates
+every parameter whose declared type is such a class and passes the rest
+through, the way Nest's `ValidationPipe` finds class-validator DTOs; so both
+can be global, each taking its own DTOs.
+
+- It finds the class through Nest's `design:paramtypes`: the app compiles
+  with `emitDecoratorMetadata` (Bun reads it from the **working directory's**
+  `tsconfig.json`, oven-sh/bun#28605: start the app from the directory whose
+  config enables it).
+- The handler receives the schema's output, a plain value, not an instance of
+  the class.
+- Like `ValidationPipe`, it skips a custom decorator's parameter; give that
+  one a `StandardSchemaPipe`.
+- A schema whose output is a union cannot be a class's instance type
+  (TypeScript's TS2509 at `extends`): use `StandardSchemaPipe` and
+  `StandardSchemaV1.InferOutput<typeof S>` there.
+- In a gateway, **Nest 12** applies global pipes too, so a
+  `@MessageBody() msg: ChatDto` is checked; **Nest 11** applies no global pipe
+  to gateways (`useGlobalPipes` and `APP_PIPE` alike), so there the gateway
+  takes `@UsePipes(StandardValidationPipe)`, which works on both.
+
+### `ValidationExceptionFilter`
+
+```ts
+import { HttpAdapterHost } from "@nestjs/core";
+import { ValidationExceptionFilter } from "@kingsleyweb/bun-nest";
+
+app.useGlobalFilters(new ValidationExceptionFilter(app.get(HttpAdapterHost)));
+// or @UseFilters(ValidationExceptionFilter) on a controller or gateway
+```
+
+Opt-in and `@Catch`-scoped to BunValidate's errors; every other error goes on
+to the app's other filters and Nest's own (an invalid JSON body is still
+Nest's 400). It answers `{ error, issues }` with the error's status:
+
+| Error | Status | `error` |
+|---|---|---|
+| the pipes' `StandardValidationException` | 400 | `"Validation failed"` |
+| `ValidationError` (a `validate()` middleware applied with `consumer.apply()`, `onFailure: "next"`) | its `status` (400, or what `status` set) | `"Validation failed"` |
+| `ResponseValidationError` (a `validate()` middleware's `responses` under `responseValidation: "error"`) | 500, and logged once (no value from the response) | `"Response validation failed"` |
+
+Without the filter, the last two are Nest's `500 Internal server error`.
+Built with no adapter (`new ValidationExceptionFilter()`) it writes an
+Express-style response (`status().json()`), which bun-nest's and Express's
+are. In a gateway (`@UseFilters`, since Nest applies no global filter there)
+it emits an `exception` event with `{ status, code: "VALIDATION", issues }`
+(`status` the error's, as over HTTP; `code` in place of `error`), exactly as
+Nest emits a `WsException` built with that object; without it, the pipe's
+error is Nest's `Internal server error` frame, as for Nest's `ValidationPipe`.
+In any other context (a job handler, a microservice) it rethrows the error.
+
+### `StandardValidationModule`
+
+```ts
+@Module({ imports: [StandardValidationModule] })
+// or StandardValidationModule.forRoot({ messages: "generic", redactPaths: true })
+class AppModule {}
+```
+
+Registers `StandardValidationPipe` (`APP_PIPE`) and `ValidationExceptionFilter`
+(`APP_FILTER`, with the adapter host injected). Nest applies `APP_FILTER` to
+HTTP only, and `APP_PIPE` to controllers and, on Nest 12 only, gateways.
+
+### Issues carry no received value
+
+Every issue comes from bun-common's runner, which never puts what the client
+sent into an issue, an error or a log line: a vendor message that quotes it
+(yup, valibot, zod's unknown keys) is replaced by a generic one. The pipes
+and the module take `validate()`'s two wording options, with the same names
+and meaning (the type `StandardValidationPipeOptions`); a wrong value throws
+a `TypeError` when the pipe is built:
+
+| Option | Effect |
+|---|---|
+| `messages: "generic"` | every message becomes `Invalid value` (plus the vendor's issue code) |
+| `redactPaths: true` | every `path` is `""` (the parameter's key is not prefixed either) |
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -1913,6 +2087,7 @@ Everything below is exported from the package root; see
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
+| [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`; type `StandardValidationPipeOptions` |
 
 `BunRequest`, `BunResponse`, `UploadOptions`, `StorageFile`, `DiskStorage`,
 `MemoryStorage`, `compression`, `validate` and the rest of the HTTP layer are
