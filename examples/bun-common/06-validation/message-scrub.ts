@@ -16,12 +16,13 @@
  * library's issue code when it has one (yup's issues have none). A message
  * that quotes nothing is kept as the library wrote it.
  *
- * "The value" is the one at the issue's path: its leaves and keys, the keys
- * of the object holding it, and the path's own keys. So a message is not
- * withheld because another field happens to hold the same words. An issue
- * with no path (an object-level check) is compared with the whole value,
- * keys included, so a refine whose message names a field is withheld unless
- * the refine gives a `path`.
+ * "The value" is the one at the issue's path: its leaves, its keys (those of
+ * three or more characters also unquoted, as whole words), and the path's
+ * own keys. Not the rest of the value, nor the keys beside it, so a message
+ * is not withheld because another field holds, or is named, the same words.
+ * An issue with no path (an object-level check) is compared with the whole
+ * value the same way, so a refine whose message names one of the object's
+ * keys is withheld unless the refine reports at that key's `path`.
  *
  * Every case first shows that the library's own message does quote the value,
  * so a case cannot pass because a library stopped quoting.
@@ -209,6 +210,18 @@ checkEqual(
   [[enumMessage, "status"]],
 );
 
+// Nor does a field beside it *named* that word: `kind` must be "job", and the
+// object also has a key `job`, which is not the value at `kind`.
+const Kind = z.object({ kind: z.literal("job"), job: z.string() });
+const kindBody = { kind: "task", job: "nightly" };
+const literalMessage = (await libraryMessages(Kind, kindBody))[0];
+show("zod writes", literalMessage);
+checkEqual(
+  "a key beside the value, named as the message quotes, does not withhold it",
+  await scrubbed(Kind, kindBody),
+  [[literalMessage, "kind"]],
+);
+
 // yup's `noUnknown()` (it fails only under `strict()`) reports at the root
 // and names the unknown keys: compared with the whole value, keys included.
 const NoUnknown = yup.object({ name: yup.string() }).strict().noUnknown();
@@ -226,9 +239,30 @@ checkEqual(
   [["Invalid value", ""]],
 );
 
+// The same check one level down reports at `profile`, and is compared with
+// the value there, its own keys included.
+const Nested = yup
+  .object({
+    profile: yup.object({ name: yup.string() }).noUnknown().strict(),
+  })
+  .strict();
+const nestedBody = { profile: { name: "Ada", [SECRET]: 1 } };
+const nestedMessages = await libraryMessages(Nested, nestedBody);
+show("yup writes", nestedMessages[0]);
+check(
+  "yup's nested message names the key the sender chose (the control)",
+  nestedMessages.some((m) => m.includes(SECRET)),
+  nestedMessages,
+);
+checkEqual(
+  "an issue at a path is compared with the keys of the value there",
+  await scrubbed(Nested, nestedBody),
+  [["Invalid value", "profile"]],
+);
+
 // The trade-off: an object-level refine whose message names a field is
-// withheld, since `total` is one of the value's keys. Give it a `path` and
-// it is compared with that field alone.
+// withheld, since `total` is one of the value's keys. Report it at that
+// field's `path` and it is compared with the field alone.
 const Order = z.object({ items: z.array(z.number()), total: z.number() });
 const COUNT_MESSAGE = "total must equal the item count";
 const order = { items: [1, 2], total: 3 };
