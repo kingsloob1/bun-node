@@ -19,7 +19,7 @@ import type {
   TransportSpec,
 } from "./model";
 import { resolveLogger } from "../logging";
-import { isDocumented, jsonSchemaOf, kindOf } from "./schemas";
+import { isDocumented, isImplicit, jsonSchemaOf, kindOf } from "./schemas";
 import { isSchema, makeContract, SIDES } from "./transport";
 
 /** One schema in a contract, located. */
@@ -44,6 +44,12 @@ export interface ContractEntry {
   schema: Schema | null;
   /** The schema's vendor (`"zod"`); `"bun-common/documented"` for `documented()`. */
   vendor?: string;
+  /**
+   * `true` on a row the framework declared rather than the app: a
+   * validator's own failure status under `onFailure: "respond"` (plan §4.12
+   * m5). Absent otherwise.
+   */
+  implicit?: true;
 }
 
 /**
@@ -172,6 +178,7 @@ export function describeContract(contract: AnyContract): ContractDescription {
             kind: kindOf(decl),
             schema: decl,
             vendor: decl["~standard"].vendor,
+            ...(isImplicit(decl) ? { implicit: true as const } : {}),
           });
         } else {
           for (const mediaType of Object.keys(decl).sort(byCodeUnit)) {
@@ -182,6 +189,7 @@ export function describeContract(contract: AnyContract): ContractDescription {
               kind: kindOf(schema),
               schema,
               vendor: schema["~standard"].vendor,
+              ...(isImplicit(schema) ? { implicit: true as const } : {}),
             });
           }
         }
@@ -205,6 +213,16 @@ interface Candidate {
   origin: string;
   /** Whether it checks anything (`documented()` does not). */
   checks: boolean;
+  /** Whether the framework declared it (`markImplicit`), so any declared candidate wins over it. */
+  implicit: boolean;
+}
+
+/** Whether a declaration is the framework's own: an implicit schema, or a media map of only implicit ones. */
+function declImplicit(decl: PartDecl): boolean {
+  if (decl === null) return false;
+  if (isSchema(decl)) return isImplicit(decl);
+  const schemas = Object.values(decl);
+  return schemas.length > 0 && schemas.every((s) => isImplicit(s));
 }
 
 /** Whether a declaration checks anything at runtime. */
@@ -259,7 +277,9 @@ function jsonDocs(decl: PartDecl): Map<string, string | undefined> {
  * - **outbound**, the innermost wins: a route over its router over the
  *   adapter;
  * - a checking schema wins over a `documented()` one wherever they sit, with
- *   a warning when the two JSON Schemas disagree (or cannot be compared).
+ *   a warning when the two JSON Schemas disagree (or cannot be compared);
+ * - a part the app declares wins over one the framework declared on its own
+ *   (an `implicit` row, plan §4.12 m5) wherever they sit, with no warning.
  *
  * Every part of the result records the origin it came from, which
  * `describeContract` puts on each row. The result is a contract like any
@@ -321,7 +341,12 @@ export function mergeContracts<T extends TransportSpec>(
           keys.get(key)!.add(part);
           const id = unitId(side, key, part);
           const list = units.get(id) ?? [];
-          list.push({ decl, origin: layer.origin, checks: declChecks(decl) });
+          list.push({
+            decl,
+            origin: layer.origin,
+            checks: declChecks(decl),
+            implicit: declImplicit(decl),
+          });
           units.set(id, list);
         }
       }
@@ -333,7 +358,11 @@ export function mergeContracts<T extends TransportSpec>(
       for (const part of spec.parts) {
         if (!parts.has(part)) continue;
         const id = unitId(side, key, part);
-        const candidates = units.get(id)!;
+        // A part the app declares wins over the framework's implicit one
+        // wherever they sit, and is never compared with it.
+        const all = units.get(id)!;
+        const declared = all.filter((c) => !c.implicit);
+        const candidates = declared.length > 0 ? declared : all;
         const checking = candidates.filter((c) => c.checks);
         const pool = checking.length > 0 ? checking : candidates;
         const winner = side === "inbound" ? pool[0] : pool[pool.length - 1];

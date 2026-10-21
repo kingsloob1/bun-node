@@ -141,6 +141,10 @@ export interface BunRequestInterface<
   TParams = ParamsDictionary,
   TQuery = Record<string, unknown>,
   TBody = DefaultRequestBody,
+  /** Shape of `cookies`; a `cookies` validator narrows it. */
+  TCookies = Record<string, JsonValue> | undefined,
+  /** Shape of `signedCookies`; a `signedCookies` validator narrows it. */
+  TSignedCookies = Record<string, JsonValue> | undefined,
 > {
   parsedUrl: InstanceType<typeof URL>;
   headersObj: InstanceType<typeof Headers>;
@@ -180,12 +184,12 @@ export interface BunRequestInterface<
    * does. `undefined` when cookie parsing is off (`parseCookies: false`) and
    * nothing assigned it, as in Express without cookie-parser.
    */
-  cookies: Record<string, JsonValue> | undefined;
+  cookies: TCookies;
   /**
    * Cookies whose signature verified against `secret`, decoded like
    * `cookies`; `undefined` when cookie parsing is off, as `cookies` is.
    */
-  signedCookies: Record<string, JsonValue> | undefined;
+  signedCookies: TSignedCookies;
   hostname: string;
   ip: string;
   ips: string[];
@@ -501,11 +505,15 @@ export type TypedRouteHandler<
   TQuery = Record<string, unknown>,
   TBody = DefaultRequestBody,
   R = unknown,
-> = (
-  req: BunRequest<TParams, TQuery, TBody>,
-  res: BunResponse,
-  next: NextFunction,
-) => R | Promise<R>;
+  /** The handler's response. `BunResponse`; reserved for typed responses. */
+  TRes = BunResponse,
+  /**
+   * The handler's whole request, when more than params, query and body is
+   * narrowed (cookies, `req.valid`): the verb overloads pass one here.
+   * Defaults to the request those three describe.
+   */
+  TReq = BunRequest<TParams, TQuery, TBody>,
+> = (req: TReq, res: TRes, next: NextFunction) => R | Promise<R>;
 
 /**
  * Any callback registrable on a route. The router accepts handlers of every

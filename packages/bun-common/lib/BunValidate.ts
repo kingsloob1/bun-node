@@ -12,7 +12,7 @@ import type { StandardSchemaV1 } from "./types/standardSchema";
 import type { JsonValue } from "./utils/native";
 import { httpTransport } from "./contract/http";
 import { validateStandard } from "./contract/issues";
-import { toConverter } from "./contract/schemas";
+import { documented, markImplicit, toConverter } from "./contract/schemas";
 import { attachContract, isSchema, makeContract } from "./contract/transport";
 
 /**
@@ -23,11 +23,18 @@ import { attachContract, isSchema, makeContract } from "./contract/transport";
 export type { ValidationIssue } from "./contract/model";
 
 /** The request members `BunValidate` can validate. */
-export type ValidationTarget = "params" | "query" | "body" | "headers";
+export type ValidationTarget =
+  "params" | "query" | "body" | "headers" | "cookies" | "signedCookies";
 
-/** Every target, in the order they are validated and reported. */
+/**
+ * Every target, in the order they are validated and reported: headers and
+ * cookies first, so a cheap header or session check fails before a body is
+ * read (plan Q-H14).
+ */
 const VALIDATION_TARGETS: readonly ValidationTarget[] = [
   "headers",
+  "cookies",
+  "signedCookies",
   "params",
   "query",
   "body",
@@ -41,8 +48,28 @@ export interface ValidationSchemas {
   query?: StandardSchemaV1;
   /** Validates `req.body`. Requires body parsing to be enabled. */
   body?: StandardSchemaV1;
-  /** Validates the request headers as a plain object. */
+  /**
+   * Validates the request headers as a plain object, keyed by **lower-case**
+   * name (a schema keyed `"Content-Type"` never matches). Never written back:
+   * the parsed value is on `req.valid.headers`, and `req.headers` stays the
+   * raw view the body parsers, `accepts` and `type-is` read.
+   */
   headers?: StandardSchemaV1;
+  /**
+   * Validates `req.cookies`: the unsigned cookies, a `j:` cookie already
+   * JSON-decoded. Written back, like `query`. Cannot require a signature —
+   * a forged unsigned cookie lands here — so use `signedCookies` for that.
+   * With `parseCookies: false` (and nothing assigned `req.cookies`) the
+   * schema is given `{}`.
+   */
+  cookies?: StandardSchemaV1;
+  /**
+   * Validates `req.signedCookies`: only cookies whose signature a secret
+   * verified, a tampered one as `false`; an unsigned or forged one is absent.
+   * The way to require a signature. Written back. Given `{}` with
+   * `parseCookies: false`, as `cookies` is.
+   */
+  signedCookies?: StandardSchemaV1;
 }
 
 /**
@@ -60,6 +87,10 @@ export interface ValidationTargetValues {
   body: BunRequest["body"];
   /** `req.headers`, as a plain object. */
   headers: BunRequest["headers"];
+  /** `req.cookies`, or `{}` when cookie parsing is off. */
+  cookies: NonNullable<BunRequest["cookies"]>;
+  /** `req.signedCookies`, or `{}` when cookie parsing is off. */
+  signedCookies: NonNullable<BunRequest["signedCookies"]>;
 }
 
 /** The output type of a target's schema, or `unknown` when it has none. */
@@ -69,7 +100,7 @@ export type ValidationSchemaOutput<T> = T extends StandardSchemaV1
 
 /**
  * The targets `S` gives a schema — the only ones a hook can be attached to.
- * For the wide `ValidationSchemas` every target may have one, so all four.
+ * For the wide `ValidationSchemas` every target may have one, so all six.
  */
 export type SchemaTargets<S extends ValidationSchemas> = {
   [K in keyof S & ValidationTarget]: S[K] extends undefined ? never : K;
@@ -95,7 +126,8 @@ export type ValidationHooks<S extends ValidationSchemas = ValidationSchemas> = {
 /**
  * The value a target ends up with: a `transform` hook's return type when one
  * is given, the schema's output otherwise. Headers are never written back, so
- * their `transform` does not change what a handler reads.
+ * their `transform` does not change what a handler reads: `req.valid.headers`
+ * holds the schema's output.
  */
 type TargetResult<
   S extends ValidationSchemas,
@@ -127,10 +159,12 @@ export type InferValidatedShape<S extends ValidationSchemas, H = unknown> = {
  * `replace` option `R`.
  *
  * Only `replace: true` (the default) writes the validated values onto the
- * request, so only then does the handler see {@link InferValidatedShape}.
- * With `replace: false` the request is left exactly as it was, and the shape
- * is empty — the handler keeps the request's own types. A `replace` that is
- * only known to be a `boolean` claims nothing, since it may be `false`.
+ * request, so only then does the handler see {@link InferValidatedShape}, on
+ * the written targets and on `req.valid`. With `replace: false` the request
+ * is left exactly as it was, and the shape is empty — the handler keeps the
+ * request's own types, and `req.valid`, filled at runtime either way, is not
+ * typed. A `replace` that is only known to be a `boolean` claims nothing,
+ * since it may be `false`.
  */
 export type ValidatedShapeFor<
   S extends ValidationSchemas,
@@ -252,9 +286,9 @@ export interface BunValidateOptions<
    * `"42"` to `42` therefore changes what later middleware reads.
    *
    * With `false` nothing is written, so the handler that follows keeps the
-   * request's own types rather than the validated ones — read the parsed
-   * values by running the schema yourself if you need them. `transform` hooks
-   * still run (their result is discarded).
+   * request's own types rather than the validated ones. `req.valid` is still
+   * filled with the parsed values, but not typed. `transform` hooks still
+   * run (their result reaches only `req.valid`).
    */
   replace?: R;
   /**
@@ -276,7 +310,11 @@ export interface BunValidateOptions<
   formatError?: (error: ValidationError, req: BunRequest) => JsonValue;
 }
 
-/** Reads a target off the request. */
+/**
+ * Reads a target off the request. Cookies are `undefined` while cookie
+ * parsing is off and nothing assigned them; a schema is then given `{}`, as
+ * for a request with no `Cookie` header.
+ */
 function readTarget(
   req: BunRequest,
   target: ValidationTarget,
@@ -288,6 +326,10 @@ function readTarget(
       return req.query;
     case "body":
       return req.body;
+    case "cookies":
+      return req.cookies ?? {};
+    case "signedCookies":
+      return req.signedCookies ?? {};
     default:
       return req.headers;
   }
@@ -314,6 +356,12 @@ function writeTarget(
     case "body":
       req.body = value as never;
       break;
+    case "cookies":
+      req.cookies = value as Record<string, JsonValue>;
+      break;
+    case "signedCookies":
+      req.signedCookies = value as Record<string, JsonValue>;
+      break;
     default:
       // Headers are validated for their shape but never replaced: the parsed
       // view is a plain object, while `req.headers` is backed by the live
@@ -321,6 +369,43 @@ function writeTarget(
       break;
   }
 }
+
+/**
+ * Records a parsed part on `req.valid`, allocating it when a stub request
+ * (a test's plain object) has none.
+ */
+function recordValid(
+  req: BunRequest,
+  target: ValidationTarget,
+  value: unknown,
+): void {
+  const holder = req as { valid?: Record<string, unknown> };
+  (holder.valid ??= {})[target] = value;
+}
+
+/**
+ * The body `onFailure: "respond"` sends by default, documented as JSON
+ * Schema for the implicit status it adds to the contract (plan §4.12 m5).
+ */
+const RESPOND_BODY_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    error: { const: "Validation failed" },
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          target: { enum: [...VALIDATION_TARGETS] },
+          message: { type: "string" },
+          path: { type: "string" },
+        },
+        required: ["target", "message", "path"],
+      },
+    },
+  },
+  required: ["error", "issues"],
+};
 
 /**
  * A plain validate function {@link toStandardSchema} can wrap: given whatever
@@ -480,7 +565,31 @@ export class BunValidate<
       const schema = options.schemas[target];
       if (isSchema(schema)) inbound[target] = schema;
     }
-    this.#contract = makeContract(httpTransport.spec, { inbound }, {});
+    // `"respond"` answers failures itself, so its status is part of the
+    // route's contract: added, and marked implicit (plan §4.12 m5). With
+    // `"next"` or `"throw"` the app's error handler answers, and declaring
+    // that status is the app's business.
+    const outbound =
+      this.#options.onFailure === "respond"
+        ? {
+            [String(this.#options.status)]: {
+              body: {
+                "application/json": markImplicit(
+                  documented(
+                    options.formatError === undefined
+                      ? RESPOND_BODY_JSON_SCHEMA
+                      : {},
+                  ),
+                ),
+              },
+            },
+          }
+        : undefined;
+    this.#contract = makeContract(
+      httpTransport.spec,
+      outbound === undefined ? { inbound } : { inbound, outbound },
+      {},
+    );
   }
 
   /** The schemas this instance validates against. */
@@ -532,6 +641,9 @@ export class BunValidate<
         const value = targetHooks?.transform
           ? targetHooks.transform(outcome.value, req)
           : outcome.value;
+        // Every parsed part on one view; headers as the schema produced
+        // them, since their `transform` is never written anywhere.
+        recordValid(req, target, target === "headers" ? outcome.value : value);
         if (replace) {
           writeTarget(req, target, value);
         }

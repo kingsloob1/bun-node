@@ -452,10 +452,10 @@ describe("BunValidate: options given as undefined, and unknown targets", () => {
   it("throws a TypeError for a schema key that is not a target", () => {
     // A known target beside it compiled, and the unknown one was ignored at
     // runtime, so a failing value reached the handler.
-    const schemas = { query: PageQuery, cookies: TitleBody };
+    const schemas = { query: PageQuery, session: TitleBody };
     expect(() => validate(schemas as never)).toThrow(
       new TypeError(
-        'validate(): unknown target "cookies"; the targets are headers, params, query, body',
+        'validate(): unknown target "session"; the targets are headers, cookies, signedCookies, params, query, body',
       ),
     );
     expect(() => new BunValidate({ schemas: schemas as never })).toThrow(
@@ -470,6 +470,8 @@ describe("BunValidate: options given as undefined, and unknown targets", () => {
     expect(() =>
       validate({
         headers: TitleBody,
+        cookies: TitleBody,
+        signedCookies: TitleBody,
         params: NumericIdParams,
         query: PageQuery,
         body: TitleBody,

@@ -19,6 +19,8 @@ import {
   toProblem,
 } from "../../lib/api/errors";
 import { s } from "../../lib/api/schema/builder";
+import { ProblemSchema } from "../../lib/api/schemas/common";
+import { RemoteProblemSchema } from "../../lib/remote/schemas";
 import {
   ChildExitError,
   ChildFailedError,
@@ -316,6 +318,36 @@ describe("the §3.3 mapping", () => {
         },
       ],
     });
+  });
+
+  it("cookie and signed-cookie issues reach the problem, which its own schemas accept", async () => {
+    const router = new BunRouter();
+    router.get(
+      "/c",
+      validate({
+        cookies: s.object({ theme: s.string() }),
+        signedCookies: s.object({ sid: s.string() }),
+      }),
+      () => "ok",
+    );
+    router.use(createApiErrorHandler({ logger: createTestLogger().logger }));
+    const response = await router.fetch("/c");
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as {
+      issues: { target: string; path: string }[];
+    };
+    expect(body.issues.map(({ target, path }) => ({ target, path }))).toEqual([
+      { target: "cookies", path: "theme" },
+      { target: "signedCookies", path: "sid" },
+    ]);
+    // The management API's and a remote session's problem schemas take
+    // every target bun-common reports, so the body round-trips.
+    const checked = await ProblemSchema["~standard"].validate(body);
+    expect(checked.issues).toBeUndefined();
+    expect((checked as { value?: unknown }).value).toEqual(body);
+    expect(
+      (await RemoteProblemSchema["~standard"].validate(body)).issues,
+    ).toBeUndefined();
   });
 
   it("NOT_SUPPORTED names the method but never the message or the driver", () => {
