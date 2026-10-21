@@ -1745,6 +1745,8 @@ issues come from bun-common's `validateStandard`, which scrubs a vendor's
 message that quotes it, and a warning logs only the job's name, queue, id
 and the issues.
 
+Example: [`03-job-registry/validating-job-data.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/validating-job-data.ts).
+
 ### Builder methods
 
 Nothing is added until `start()`, which returns the `Job`.
@@ -8568,6 +8570,7 @@ Each run uses its own namespace and purges it on exit.
 | | [`per-name-concurrency.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/per-name-concurrency.ts) | `define(..., { concurrency })` enforced across two service instances |
 | | [`jobs-create.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/jobs-create.ts) | `jobs.create()` drafts: setters, `save()`, saving once, `unique` across drafts, repeating and debounced drafts, a failed save corrected |
 | | [`process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/process-every.ts) | `processEvery` as an option and a method, against `start()`'s options, while paused; a worker's runtime `pollInterval` / `maxBlock` |
+| | [`validating-job-data.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/validating-job-data.ts) | `schema: { data, result }` (zod) on `define()`, a queue and a worker: bad adds rejected with nothing written, `addBulk` all or nothing, the handler given the parsed output and a `worker-thread` target its JSON copy, deploy skew to `dead`, `resultValidation`, the policies, and the API's 400 |
 | [`04-scheduling`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/04-scheduling) | [`repeatable-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/repeatable-jobs.ts) | `repeat`: intervals, six-field cron, `startAt` / `endAt`, `limit`, keys, `listRepeatables`, `removeRepeatable` |
 | | [`human-schedules.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/human-schedules.ts) | "tomorrow at 9am", "every 2 weeks starting next monday", windows in words |
 | | [`custom-date-parser.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/custom-date-parser.ts) | a `DateParser` that understands "payday" and "month end" |
