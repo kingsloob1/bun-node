@@ -9,9 +9,11 @@ import { compilePattern, registerEnumHints, validateJson } from "./validate";
  * One definition feeds three consumers: the request validator (through
  * Standard Schema, so bun-common's `validate()` accepts it unchanged), the
  * TypeScript types handlers see (through {@link Infer}), and the OpenAPI and
- * AsyncAPI documents (through {@link Schema.json}). Writing the types and the
- * JSON Schema separately is exactly how the two drift apart, and a spec that
- * describes a different API from the one routed is worse than no spec.
+ * AsyncAPI documents (through {@link Schema.json}, and for any other reader
+ * through the Standard JSON Schema converter `~standard.jsonSchema`). Writing
+ * the types and the JSON Schema separately is exactly how the two drift
+ * apart, and a spec that describes a different API from the one routed is
+ * worse than no spec.
  *
  * Deliberately small: it emits only the JSON Schema keywords the validator in
  * `validate.ts` interprets, and nothing a draft-07 (AsyncAPI) reader would
@@ -29,6 +31,22 @@ declare const HAS_DEFAULT: unique symbol;
  * bun-common's `validate()` or to anything else that speaks the spec.
  */
 export interface Schema<TOut, TIn = TOut> extends StandardSchemaV1<TIn, TOut> {
+  /**
+   * The Standard Schema properties, with the Standard JSON Schema converter
+   * (`jsonSchema`): document generators and bun-common's response checks read
+   * the schema's JSON Schema from it rather than from {@link json}.
+   */
+  readonly "~standard": StandardSchemaV1.Props<TIn, TOut> & {
+    /**
+     * The schema's JSON Schema, per the Standard JSON Schema spec: `input`
+     * describes what validation accepts (a key with a default is optional),
+     * `output` what it produces (that key is required, since the default fills
+     * it). Targets `"draft-2020-12"` and `"draft-07"`; any other target
+     * (`"openapi-3.0"` included) throws a `ConfigError`, as the spec asks of a
+     * target a library does not support. Each call returns a fresh document.
+     */
+    readonly jsonSchema: StandardJsonSchemaConverter;
+  };
   /**
    * The JSON Schema, deep-frozen. Nested schemas appear inlined by identity:
    * `s.object({ a: A })` holds `A.json` itself under `properties.a`, which is
@@ -56,6 +74,39 @@ export type DefaultedSchema<TOut, TIn = TOut> = Schema<TOut, TIn> & {
 export type Infer<S> = S extends StandardSchemaV1
   ? StandardSchemaV1.InferOutput<S>
   : never;
+
+/** The input type a schema accepts: a key with a default is optional in it. */
+type InferIn<S> = S extends StandardSchemaV1
+  ? StandardSchemaV1.InferInput<S>
+  : never;
+
+/**
+ * The JSON Schema dialects `~standard.jsonSchema` is asked for, as the
+ * Standard JSON Schema spec names them. `s` supports `"draft-2020-12"` and
+ * `"draft-07"`.
+ */
+export type StandardJsonSchemaTarget =
+  "draft-2020-12" | "draft-07" | "openapi-3.0" | (string & {});
+
+/** The options `~standard.jsonSchema.input()` and `.output()` take (the spec's `Options`). */
+export interface StandardJsonSchemaOptions {
+  /** The dialect wanted; an unsupported one throws a `ConfigError`. */
+  readonly target: StandardJsonSchemaTarget;
+  /** Vendor-specific options; `s` takes none and ignores them. */
+  readonly libraryOptions?: Record<string, unknown> | undefined;
+}
+
+/** A Standard JSON Schema converter: one JSON Schema for a schema's input, one for its output. */
+export interface StandardJsonSchemaConverter {
+  /** The JSON Schema of what validation accepts. */
+  readonly input: (
+    options: StandardJsonSchemaOptions,
+  ) => Record<string, unknown>;
+  /** The JSON Schema of what validation produces. */
+  readonly output: (
+    options: StandardJsonSchemaOptions,
+  ) => Record<string, unknown>;
+}
 
 /** Wraps a property schema to make the property optional in `s.object`. */
 export interface Optional<S extends Schema<any, any>> {
@@ -89,6 +140,33 @@ export type ObjectOut<P extends Record<string, PropertySchema>> = Simplify<
     [K in Exclude<keyof P, OptionalKeys<P>>]: PropertyOut<P[K]>;
   } & {
     [K in OptionalKeys<P>]?: PropertyOut<P[K]>;
+  }
+>;
+
+/**
+ * Keys a client may leave out: an optional property, and one whose schema has
+ * a default (it is filled in when absent, plan §4.12 m11).
+ */
+type InputOptionalKeys<P> = {
+  [K in keyof P]: P[K] extends Optional<Schema<any, any>>
+    ? K
+    : P[K] extends { readonly [HAS_DEFAULT]?: true }
+      ? K
+      : never;
+}[keyof P];
+
+/** The input type of one property, unwrapping `Optional`. */
+type PropertyIn<T> = T extends Optional<infer S> ? InferIn<S> : InferIn<T>;
+
+/**
+ * The input type of `s.object(props)`: what validation accepts. A key with a
+ * default is optional here and required in {@link ObjectOut}.
+ */
+export type ObjectIn<P extends Record<string, PropertySchema>> = Simplify<
+  {
+    [K in Exclude<keyof P, InputOptionalKeys<P>>]: PropertyIn<P[K]>;
+  } & {
+    [K in InputOptionalKeys<P>]?: PropertyIn<P[K]>;
   }
 >;
 
@@ -226,6 +304,14 @@ function make<TOut, TIn = TOut>(
         validateJson(frozen, value, {
           coerce,
         }) as StandardSchemaV1.Result<TOut>,
+      // Read lazily: `s.named` and `s.documented` register the node before
+      // calling here, and a recursive schema's node is complete only after.
+      jsonSchema: Object.freeze({
+        input: (options: StandardJsonSchemaOptions) =>
+          jsonSchemaDocument(frozen, options, "input"),
+        output: (options: StandardJsonSchemaOptions) =>
+          jsonSchemaDocument(frozen, options, "output"),
+      }),
     },
   };
   return Object.freeze(schema);
@@ -377,7 +463,7 @@ export const s = {
   array<S extends Schema<any, any>>(
     item: S,
     options?: ArrayOptions,
-  ): Schema<Infer<S>[]> {
+  ): Schema<Infer<S>[], InferIn<S>[]> {
     const o = options ?? {};
     assertCount(o.minItems, "minItems");
     assertCount(o.maxItems, "maxItems");
@@ -396,7 +482,7 @@ export const s = {
   object<const P extends Record<string, PropertySchema>>(
     properties: P,
     options?: ObjectOptions,
-  ): Schema<ObjectOut<P>> {
+  ): Schema<ObjectOut<P>, ObjectIn<P>> {
     const props: Record<string, JsonSchema> = {};
     const required: string[] = [];
     for (const [key, entry] of Object.entries(properties)) {
@@ -425,7 +511,7 @@ export const s = {
   record<S extends Schema<any, any>>(
     value: S,
     options?: BaseOptions,
-  ): Schema<Record<string, Infer<S>>> {
+  ): Schema<Record<string, Infer<S>>, Record<string, InferIn<S>>> {
     return make(
       compact({
         type: "object",
@@ -441,7 +527,9 @@ export const s = {
   },
 
   /** Also accepts `null`. */
-  nullable<S extends Schema<any, any>>(schema: S): Schema<Infer<S> | null> {
+  nullable<S extends Schema<any, any>>(
+    schema: S,
+  ): Schema<Infer<S> | null, InferIn<S> | null> {
     return make(compact({ anyOf: [schema.json, { type: "null" }] }));
   },
 
@@ -451,7 +539,7 @@ export const s = {
    */
   union<const S extends readonly [Schema<any, any>, ...Schema<any, any>[]]>(
     ...members: S
-  ): Schema<Infer<S[number]>> {
+  ): Schema<Infer<S[number]>, InferIn<S[number]>> {
     return make(compact({ anyOf: members.map((member) => member.json) }));
   },
 
@@ -706,4 +794,138 @@ export function toJsonSchema(
     bodies.set(rootName, root);
   }
   return emit(root, inlineRoot);
+}
+
+/** Each supported target's `$schema` URI and the keyword its definitions live under. */
+const DIALECTS: Readonly<
+  Record<
+    string,
+    { readonly uri: string; readonly defs: "$defs" | "definitions" }
+  >
+> = Object.freeze({
+  "draft-2020-12": {
+    uri: "https://json-schema.org/draft/2020-12/schema",
+    defs: "$defs",
+  },
+  "draft-07": {
+    uri: "http://json-schema.org/draft-07/schema#",
+    defs: "definitions",
+  },
+});
+
+/** Whether a value is a JSON object node (not an array). */
+function isNode(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Whether `node` or anything below it is the reference `ref`. */
+function refersTo(node: unknown, ref: string): boolean {
+  if (Array.isArray(node)) {
+    return node.some((child) => refersTo(child, ref));
+  }
+  if (!isNode(node)) {
+    return false;
+  }
+  return (
+    node.$ref === ref ||
+    Object.values(node).some((child) => refersTo(child, ref))
+  );
+}
+
+/**
+ * Turns an input document into the output one, in place: every property
+ * whose schema has a default is filled when absent, so it is `required` in
+ * what validation produces (plan §4.12 m11). Walks the root and every
+ * definition, following a `$ref` into the definitions to read its default.
+ */
+function requireDefaulted(
+  document: Record<string, unknown>,
+  defsKey: string,
+  refPrefix: string,
+): void {
+  const defs = isNode(document[defsKey]) ? document[defsKey] : {};
+  const resolve = (node: unknown): unknown =>
+    isNode(node) &&
+    typeof node.$ref === "string" &&
+    node.$ref.startsWith(refPrefix)
+      ? defs[node.$ref.slice(refPrefix.length)]
+      : node;
+  const visit = (node: unknown): void => {
+    if (!isNode(node)) {
+      return;
+    }
+    if (isNode(node.properties)) {
+      const required = new Set(
+        Array.isArray(node.required) ? (node.required as unknown[]) : [],
+      );
+      const filled = Object.entries(node.properties)
+        .filter(([key, child]) => {
+          const target = resolve(child);
+          return (
+            required.has(key) ||
+            (isNode(target) && target.default !== undefined)
+          );
+        })
+        .map(([key]) => key);
+      if (filled.length > 0) {
+        node.required = filled;
+      }
+      Object.values(node.properties).forEach(visit);
+    }
+    visit(node.items);
+    if (Array.isArray(node.anyOf)) {
+      node.anyOf.forEach(visit);
+    }
+    visit(node.additionalProperties);
+  };
+  visit(document);
+  Object.values(defs).forEach(visit);
+}
+
+/**
+ * One `~standard.jsonSchema` document: the node emitted as {@link toJsonSchema}
+ * emits it for the API's documents (named components as `$ref`s into the
+ * target's definitions, documented keywords included), with `$schema` set,
+ * as a fresh object. A recursive root that refers to itself is both inlined
+ * and defined.
+ */
+function jsonSchemaDocument(
+  root: JsonSchema,
+  options: StandardJsonSchemaOptions,
+  direction: "input" | "output",
+): Record<string, unknown> {
+  const target = (options as Partial<StandardJsonSchemaOptions> | undefined)
+    ?.target;
+  const dialect =
+    typeof target === "string" && Object.hasOwn(DIALECTS, target)
+      ? DIALECTS[target]
+      : undefined;
+  if (dialect === undefined) {
+    throw new ConfigError(
+      `s schemas produce JSON Schema for "draft-2020-12" and "draft-07" only, not ${JSON.stringify(target)}`,
+      { target },
+    );
+  }
+  const refPrefix = `#/${dialect.defs}/`;
+  const components = new Map<string, JsonSchema>();
+  const body = toJsonSchema(root, { refPrefix, components, inlineRoot: true });
+  const name = NAMED.get(root);
+  if (
+    name !== undefined &&
+    !components.has(name) &&
+    refersTo(body, `${refPrefix}${name}`)
+  ) {
+    components.set(name, structuredClone(body));
+  }
+  const document: Record<string, unknown> = {
+    $schema: dialect.uri,
+    ...body,
+    ...(components.size > 0
+      ? { [dialect.defs]: Object.fromEntries(components) }
+      : {}),
+  };
+  if (direction === "output") {
+    requireDefaulted(document, dialect.defs, refPrefix);
+  }
+  return document;
 }

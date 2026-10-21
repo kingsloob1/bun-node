@@ -3,8 +3,8 @@ import type { AnyRouteDef, RouteResponses } from "../routes/define";
 import type { JsonSchema } from "../schema/validate";
 import { ConfigError } from "../../shared/errors";
 import { isMutation } from "../config";
-import { API_ERROR_STATUS, problemTitle } from "../errors";
-import { defaultStatus } from "../routes/define";
+import { problemTitle } from "../errors";
+import { defaultStatus, routeProblems } from "../routes/define";
 import { toJsonSchema } from "../schema/builder";
 import {
   ErrorDtoSchema,
@@ -15,6 +15,8 @@ import {
 } from "../schemas/common";
 import { pruneSchemaComponents } from "./refs";
 import { openApiSecurity } from "./security";
+
+export { routeErrorCodes } from "../routes/define";
 
 /**
  * The OpenAPI 3.1 generator. It describes exactly the routes it is given —
@@ -74,46 +76,6 @@ export function toOpenApiPath(path: string): { path: string; names: string[] } {
     },
   );
   return { path: converted, names };
-}
-
-/** The problem codes a route can answer with: its own plus the ones every route of its kind gets. */
-export function routeErrorCodes(
-  def: AnyRouteDef,
-  config: Pick<ResolvedJobsApiConfig, "csrf">,
-): string[] {
-  const codes = new Set<string>(["UNAUTHORIZED", "FORBIDDEN"]);
-  const mutation = isMutation(def.action);
-  if (def.params || def.query || def.body) {
-    codes.add("VALIDATION");
-  }
-  if (def.body || mutation) {
-    // Every route that reads a body checks its size and its JSON, whether or
-    // not it declares a body schema.
-    codes.add("INVALID_JSON");
-    codes.add("PAYLOAD_TOO_LARGE");
-  }
-  if (mutation && config.csrf !== false) {
-    codes.add("CSRF_REJECTED");
-    if (config.csrf.requireJson) {
-      codes.add("UNSUPPORTED_MEDIA_TYPE");
-    }
-  }
-  for (const code of def.errors ?? []) {
-    codes.add(code);
-  }
-  return [...codes].sort();
-}
-
-/** The status a documented code is answered with. */
-function statusOf(code: string, operationId: string): number {
-  const status = (API_ERROR_STATUS as Record<string, number>)[code];
-  if (status === undefined) {
-    throw new ConfigError(
-      `Route "${operationId}" documents "${code}", which has no known status`,
-      { operationId, code },
-    );
-  }
-  return status;
 }
 
 /** Builds one operation. */
@@ -217,12 +179,7 @@ function operation(
     };
   }
 
-  const byStatus = new Map<number, string[]>();
-  for (const code of routeErrorCodes(def, config)) {
-    const status = statusOf(code, def.operationId);
-    byStatus.set(status, [...(byStatus.get(status) ?? []), code]);
-  }
-  for (const [status, codes] of [...byStatus].sort(([a], [b]) => a - b)) {
+  for (const { status, codes } of routeProblems(def, config)) {
     if (Object.hasOwn(responses, String(status))) {
       throw new ConfigError(
         `Route "${def.operationId}" declares ${status} both as a response and as a problem`,

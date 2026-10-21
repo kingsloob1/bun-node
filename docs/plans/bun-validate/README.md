@@ -56,6 +56,7 @@ command.
 | HTTP completeness: cookies, typed headers, responses of every body kind (§4.3, §4.4) | spiked as a patch on a copy of bun-common: [`evidence/http-complete/`](evidence/http-complete/README.md), H1–H52 at runtime, 18 type controls shown to fire, cost per body kind |
 | NestJS (§4.5) | designed with the Nest agent (bun-node-15); waits on nestjs-12-parity PR-2, PR-3, PR-5, PR-6a and PR-6c (§6); bun-node-15 reviewed §4.5 with a probe on Nest 11 and 12 (`evidence/nest-interceptor/`) |
 | bun-jobs data, results and flows (§4.8) | designed with the Jobs & Telemetry agent (bun-node-e9), from its survey of the code; e9 builds it |
+| **V4**, bun-jobs alignment (§4.8.5, §4.12 M5 and m11) | **built 2026-10-21, PR pending** (branch `feat/bun-validate-v4-jobs-alignment`, bun-jobs). `s` carries `~standard.jsonSchema` (`draft-2020-12` and `draft-07`; any other target throws), its input built through the documents' `toJsonSchema`, so `s.documented` keywords and named `$defs` are included; a defaulted key is optional on input and required in output, in the types too. `validateResponses` takes `"off" \| "warn" \| "error"` (`true` is `"warn"`), checked with `validateStandard` and refused with `ResponseValidationError`, rather than through bun-common's gate (the API's `default` problem response has no place there, m8). Every route's terminal layer carries its full contract through `forwardContract` (87 of 87 routes, tested against the OpenAPI document). Of the issue-flattening copies, `define.ts`'s adopted `validateStandard`; `remote/schemas.ts` and `provider/configure.ts` keep theirs, as the scrub was then broader than the issue's path |
 | OpenAPI, AsyncAPI, typed client ([`api-docs-generation/`](../api-docs-generation/README.md) "AD", [`typed-client/`](../typed-client/README.md) "TC") | plan only; §4.11 says what they read from this plan's runtime metadata; reviewed against TC by bun-node-99, and its findings are requirements of the PRs they name (§4.12) |
 | Validate-on-read for caches ([`bun-cache/`](../bun-cache/README.md), "BC" §3.13) | plan only; uses this plan's core |
 
@@ -2408,6 +2409,8 @@ key `content` and `ResponseValidationError` approved. V3a exports only
 are internal.
 
 **V3a (2026-10-21):** the types `ResponseSchemas`, `ResponseSpec`, `ResponseSpecObject`, `ResponseValidationMode` and `SetCookieView` are exported; a `write()`-opened stream's gate and a media-level `null` move to V3b; `commonResponses` merges per status and part, like `mergeContracts`.
+
+**V4 (2026-10-21):** the types `ObjectIn`, `StandardJsonSchemaTarget`, `StandardJsonSchemaOptions` and `StandardJsonSchemaConverter`, exported from bun-jobs' `lib/api/schema/builder.ts` (not from `lib/api`'s index), approved.
 
 **V3c (2026-10-21):** every V3c name below is approved: `variants()` with `by` (`header`, `cookie`, `values`) and `refine`; a variant's `when`, `refine` and `description`; `refine` on a plain status; `res.variant()`; the types `ResponseVariants`, `VariantSpec`, `VariantsOptions`, `Discriminant`, `DiscriminantValue`, `Refine`, `RefineResponse`, `RefineIssue`, `UntypedValid`; and the fields `ValidationIssue.variant`, `ContractEntry.variant` and `ContractDescription.sides.outbound.variants`. V13's spelling is asked with V13.
 

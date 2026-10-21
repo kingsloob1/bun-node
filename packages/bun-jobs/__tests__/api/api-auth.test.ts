@@ -577,7 +577,7 @@ describe("resolveConfig: construction", () => {
       exposeHosts: true,
     });
     expect(config.runnerTriggerArgs).toBe(false);
-    expect(config.validateResponses).toBe(false);
+    expect(config.validateResponses).toBe("off");
   });
 
   it("resolves addable names from definitions at request time", () => {

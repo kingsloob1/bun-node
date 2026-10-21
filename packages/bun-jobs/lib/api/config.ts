@@ -5,6 +5,7 @@ import type {
   CorsOptions,
   Logger,
   LoggerLike,
+  ResponseValidationMode,
   RouterHandler,
   WebSocketClientData,
 } from "@kingsleyweb/bun-common";
@@ -637,8 +638,30 @@ export interface JobsApiConfig {
    * `"any"` allows every name.
    */
   addableNames?: readonly string[] | "any";
-  /** Validate every response body against its schema and log a mismatch. Defaults to `false`; on in tests. */
-  validateResponses?: boolean;
+  /**
+   * Checks every response a route's handler returns against the route's
+   * declared responses, in the modes of bun-common's `responseValidation`:
+   *
+   * - `"off"` (the default, and `false`) checks nothing;
+   * - `"warn"` (and `true`) sends the response and logs one `warn` line per
+   *   mismatching response, `"jobs api response did not match its schema"`,
+   *   with the route's operation id, the status and the issues (each a
+   *   `target`, `path`, `message`, `key` (the status) and `mediaType`, never
+   *   a value from the body);
+   * - `"error"` logs the same line at `error` and refuses the response
+   *   before anything is sent: the request is answered 500 `INTERNAL`
+   *   through the API's error handler, with bun-common's
+   *   `ResponseValidationError` as the error, which that handler logs too
+   *   (`"jobs api request failed"`), so one mismatch gives two `error`
+   *   lines. The client sees the generic 500, never the issues.
+   *
+   * An undeclared status, or a body on a status declared without one, is a
+   * mismatch. A response the handler writes itself (an alternate
+   * representation, a docs page) is not checked. Recommended: `"error"` in
+   * development and tests, `"off"` or `"warn"` in production. Anything else
+   * is a `ConfigError`.
+   */
+  validateResponses?: boolean | ResponseValidationMode;
 }
 
 /** One registered route, after pruning. */
@@ -836,8 +859,8 @@ export interface ResolvedJobsApiConfig {
    * names in `jobs.definitions()` at request time.
    */
   addableNames: readonly string[] | "any" | "defined";
-  /** Whether response bodies are validated against their schemas. */
-  validateResponses: boolean;
+  /** How response bodies are checked against their schemas: `true` resolved to `"warn"`, `false` to `"off"`. */
+  validateResponses: ResponseValidationMode;
 }
 
 /** A path segment the API accepts in `basePath` and sub-paths: no route syntax, no dot segments. */
@@ -1516,8 +1539,27 @@ export function resolveConfig(config: JobsApiConfig): ResolvedJobsApiConfig {
     },
     runnerTriggerArgs: config.runnerTriggerArgs ?? false,
     addableNames,
-    validateResponses: config.validateResponses ?? false,
+    validateResponses: resolveResponseValidation(config.validateResponses),
   };
+}
+
+/** `validateResponses` as a mode: `true` is `"warn"`, `false` and unset `"off"`. */
+function resolveResponseValidation(
+  value: JobsApiConfig["validateResponses"],
+): ResponseValidationMode {
+  if (value === undefined || value === false) {
+    return "off";
+  }
+  if (value === true) {
+    return "warn";
+  }
+  if (value === "off" || value === "warn" || value === "error") {
+    return value;
+  }
+  throw new ConfigError(
+    'validateResponses must be a boolean, "off", "warn" or "error"',
+    { validateResponses: value },
+  );
 }
 
 /** Whether an action is enabled by the static limits (`actions`, `readOnly`). */

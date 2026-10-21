@@ -174,9 +174,10 @@ export interface HarnessResponse {
 export const openHarnesses: { mismatches: () => unknown[] }[] = [];
 
 /**
- * A mounted API for route tests: every action enabled, `validateResponses` on,
- * no queue-membership cache, and every `authorize` call recorded. Override
- * anything.
+ * A mounted API for route tests: every action enabled, `validateResponses`
+ * `"error"` (a response that breaks its schema is answered 500, and logged
+ * for {@link mismatches}), no queue-membership cache, and every `authorize`
+ * call recorded. Override anything.
  *
  * `sources` reaches the queue and runner caches, as `createJobsApi` cannot:
  * a test that turns the cache on passes a clock that stands still, so the
@@ -196,7 +197,7 @@ export function harness(
   const config: JobsApiConfig = {
     basePath: "/admin/jobs",
     logger,
-    validateResponses: true,
+    validateResponses: "error",
     actions: [...JOBS_API_ACTIONS],
     limits: { queueCacheMs: 0 },
     authorize: (_req, context) => {
