@@ -1572,7 +1572,11 @@ the one completing a bad line or event) is not sent, the stream is destroyed
 first chunk fails** (a `ReadableStream`, `Readable`, async iterable or
 `async function*` handed to `send()`) is cut before Bun has written its
 headers: a client over a socket sees the connection reset with no response at
-all (no status, no `500`), and the issues are logged at `error`. A `write()`
+all (no status, no `500`), and the issues are logged at `error`. Bun's
+`fetch()` retries an idempotent request (a `GET`) once when a kept-alive
+connection resets before any response, so such a handler can run and log
+twice; Bun's server also prints each cut's error (with no value from the
+response) to stderr. A `write()`
 stream's bad first chunk is still a clean `500`, since its opening is checked
 before anything goes out. `"warn"` sends everything and logs a stream's first mismatch
 once. A Promise-answering vendor (yup) holds each chunk, in order: later
@@ -1580,6 +1584,9 @@ writes wait behind it, and `end()` waits for the last. Chunks are checked as
 the producer or Bun hands them over, so a good event written in the same
 `write()` as a bad one is lost with it. With no `chunks()`/`sse()` declared,
 nothing is wrapped and no chunk is checked.
+
+Example:
+[`streaming-responses.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/streaming-responses.ts).
 
 The handler's `res` is held to each schema's wire input, field by field (a
 `z.date()` field takes a `Date`, a `z.coerce.number()` one a `number`):
@@ -1595,8 +1602,12 @@ two statements is held only to the union of the bodies. Statuses declared
 only in `commonResponses` are not in the handler's types. The typing is a
 help, not a guarantee (a plain `BunResponse` also assigns to a narrowed one);
 `responseValidation: "error"` is what refuses a response that does not match.
+Under a whole-body schema the typed `send()` refuses a stream, so the
+whole-body-against-a-stream warning is reached only through an untyped `res`.
 
 Examples:
+[`response-checks.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/response-checks.ts),
+[`typed-responses.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/typed-responses.ts),
 [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts),
 [`schema-libraries.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/schema-libraries.ts),
 [`cookies-and-headers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/cookies-and-headers.ts),
