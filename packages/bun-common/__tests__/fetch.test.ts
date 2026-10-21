@@ -869,6 +869,340 @@ describe("BunHttpAdapter.fetch: no error handler (finalhandler fallback)", () =>
   });
 });
 
+/**
+ * A client frames every body it sends: `Content-Length` when it knows the
+ * size, `Transfer-Encoding: chunked` when it does not, and `Content-Length:
+ * 0` for no body on any method but `GET`/`HEAD`. `new Request()` adds
+ * neither, and `type-is` (`req.is()`, body-parser's "has a body") reads
+ * them, so `fetch()` frames the body it builds the way Bun's own client
+ * does. Each kind is sent served, as the reference, and through
+ * `adapter.fetch()` and `router.fetch()`; all three must agree.
+ */
+describe("fetch: frames a request body as a client does on the wire", () => {
+  /** What a handler saw of the request's framing and body. */
+  interface Framing {
+    /** `req.get("content-length")`, `null` without one. */
+    length: string | null;
+    /** `req.get("transfer-encoding")`, `null` without one. */
+    transfer: string | null;
+    /** `req.is()` for each of {@link IS_TYPES}, in order. */
+    is: (string | false | null)[];
+    /** `req.hasBody`. */
+    hasBody: boolean;
+    /** `req.body` as parsed, `null` when unset. */
+    body: unknown;
+  }
+
+  /** The `req.is()` queries every case answers. */
+  const IS_TYPES = ["multipart", "json", "urlencoded", "text/*"] as const;
+
+  /** One body kind: how to make a fresh copy, and its method. */
+  interface Kind {
+    /** The case's name. */
+    name: string;
+    /** The request method. */
+    method: string;
+    /** A fresh body for one request (a body can be sent only once). */
+    body: () => Bun.BodyInit | undefined;
+    /** Extra request headers. */
+    headers?: Record<string, string>;
+    /** What the served handler sees, which the socket-free ones must too. */
+    expected: Pick<Framing, "length" | "transfer">;
+  }
+
+  /** A `FormData` with one field. */
+  const form = (): FormData => {
+    const data = new FormData();
+    data.append("a", "1");
+    return data;
+  };
+  /** A `ReadableStream` of `"abc"`. */
+  const stream = (): ReadableStream<Uint8Array> =>
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("abc"));
+        controller.close();
+      },
+    });
+
+  const KINDS: Kind[] = [
+    {
+      name: "a string",
+      method: "POST",
+      body: () => "héllo",
+      expected: { length: "6", transfer: null },
+    },
+    {
+      name: "a JSON string",
+      method: "POST",
+      body: () => '{"n":1}',
+      headers: { "content-type": "application/json" },
+      expected: { length: "7", transfer: null },
+    },
+    {
+      name: "a Uint8Array",
+      method: "POST",
+      body: () => new Uint8Array([104, 105]),
+      expected: { length: "2", transfer: null },
+    },
+    {
+      name: "a Blob",
+      method: "POST",
+      body: () => new Blob(["abc"], { type: "text/plain" }),
+      expected: { length: "3", transfer: null },
+    },
+    {
+      name: "URLSearchParams",
+      method: "POST",
+      body: () => new URLSearchParams({ a: "1", b: "x y" }),
+      expected: { length: "9", transfer: null },
+    },
+    {
+      name: "a FormData",
+      method: "POST",
+      body: form,
+      // Bun's boundary is a fixed-length random token: 165 bytes every time.
+      expected: { length: "165", transfer: null },
+    },
+    {
+      name: "a ReadableStream",
+      method: "POST",
+      body: stream,
+      expected: { length: null, transfer: "chunked" },
+    },
+    {
+      name: "no body, POST",
+      method: "POST",
+      body: () => undefined,
+      expected: { length: "0", transfer: null },
+    },
+    {
+      name: "no body, JSON-typed PUT",
+      method: "PUT",
+      body: () => undefined,
+      headers: { "content-type": "application/json" },
+      expected: { length: "0", transfer: null },
+    },
+    {
+      name: "no body, GET",
+      method: "GET",
+      body: () => undefined,
+      expected: { length: null, transfer: null },
+    },
+  ];
+
+  /** Registers the reporting route on a router or adapter. */
+  function build(target: BunRouter | BunHttpAdapter): void {
+    target.all("/framing", (req, res) => {
+      const framing: Framing = {
+        length: req.get("content-length") ?? null,
+        transfer: req.get("transfer-encoding") ?? null,
+        is: IS_TYPES.map((type) => req.is(type)),
+        hasBody: req.hasBody,
+        body: req.body ?? null,
+      };
+      res.json(framing);
+    });
+  }
+
+  /** The init each request of `kind` is sent with. */
+  function initOf(kind: Kind): RequestInit {
+    const body = kind.body();
+    return {
+      method: kind.method,
+      ...(kind.headers ? { headers: kind.headers } : {}),
+      ...(body === undefined ? {} : { body }),
+    };
+  }
+
+  it("each body kind is framed, and read, as served", async () => {
+    const served = new BunHttpAdapter(0);
+    build(served);
+    await served.listen(0);
+    const offline = new BunHttpAdapter(0);
+    build(offline);
+    const router = new BunRouter();
+    build(router);
+
+    try {
+      for (const kind of KINDS) {
+        const overSocket = (await (
+          await fetch(
+            `http://127.0.0.1:${served.listeningPort}/framing`,
+            initOf(kind),
+          )
+        ).json()) as Framing;
+        expect({ kind: kind.name, length: overSocket.length }).toEqual({
+          kind: kind.name,
+          length: kind.expected.length,
+        });
+        expect({ kind: kind.name, transfer: overSocket.transfer }).toEqual({
+          kind: kind.name,
+          transfer: kind.expected.transfer,
+        });
+
+        for (const [via, answer] of [
+          ["adapter.fetch", await offline.fetch("/framing", initOf(kind))],
+          ["router.fetch", await router.fetch("/framing", initOf(kind))],
+        ] as const) {
+          expect({
+            kind: kind.name,
+            via,
+            ...((await answer.json()) as Framing),
+          }).toEqual({ kind: kind.name, via, ...overSocket });
+        }
+      }
+    } finally {
+      await served.close();
+    }
+  });
+
+  it("a Request passed as it is keeps its headers, and req.is() still sees its body", async () => {
+    const adapter = new BunHttpAdapter(0);
+    build(adapter);
+    const router = new BunRouter();
+    build(router);
+
+    for (const target of [adapter, router]) {
+      const request = new Request("http://localhost/framing", {
+        method: "POST",
+        body: form(),
+      });
+      const seen = (await (await target.fetch(request)).json()) as Framing;
+      // Its size is not known without reading it, so nothing is added...
+      expect(seen.length).toBeNull();
+      expect(seen.transfer).toBeNull();
+      expect(request.headers.has("content-length")).toBe(false);
+      // ...but it has a body, and `req.is()` says what it is, as served.
+      expect(seen.hasBody).toBe(true);
+      expect(seen.is).toEqual(["multipart", false, false, false]);
+    }
+  });
+
+  it("keeps a framing header the caller set, and leaves the caller's init alone", async () => {
+    const router = new BunRouter();
+    build(router);
+
+    const headers = { "content-length": "3" };
+    const streamed = (await (
+      await router.fetch("/framing", {
+        method: "POST",
+        body: stream(),
+        headers,
+      })
+    ).json()) as Framing;
+    expect(streamed.length).toBe("3");
+    expect(streamed.transfer).toBeNull();
+    expect(headers).toEqual({ "content-length": "3" });
+
+    const chunked = (await (
+      await router.fetch("/framing", {
+        method: "POST",
+        body: "abc",
+        headers: { "transfer-encoding": "chunked" },
+      })
+    ).json()) as Framing;
+    expect(chunked.length).toBeNull();
+    expect(chunked.transfer).toBe("chunked");
+
+    const data = form();
+    const init: RequestInit = { method: "POST", body: data };
+    await router.fetch("/framing", init);
+    expect(init).toEqual({ method: "POST", body: data });
+    expect(init.body).toBe(data);
+  });
+
+  it("toNativeRequest gives each body kind the length it is sent with", async () => {
+    /** One body, and the framing the request built from it carries. */
+    const table: [
+      string,
+      string,
+      () => unknown,
+      string | null,
+      string | null,
+    ][] = [
+      ["an empty string", "POST", () => "", "0", null],
+      ["a lone surrogate", "POST", () => "a\uD800b", "5", null],
+      ["an emoji", "PUT", () => "é😀", "6", null],
+      ["a DataView", "POST", () => new DataView(new ArrayBuffer(5)), "5", null],
+      ["an ArrayBuffer", "POST", () => new ArrayBuffer(3), "3", null],
+      ["a File", "POST", () => new File(["xyz"], "f.txt"), "3", null],
+      ["an empty Blob", "POST", () => new Blob([]), "0", null],
+      ["an empty FormData", "POST", () => new FormData(), "60", null],
+      ["a number", "POST", () => 123, "3", null],
+      [
+        "an async iterable",
+        "POST",
+        async function* chunks() {
+          yield "ab";
+        },
+        null,
+        "chunked",
+      ],
+      // Bun's client sends this one's length (it sees the `Blob` behind the
+      // stream); without reading it, a stream is a stream.
+      [
+        "a Response's body",
+        "POST",
+        () => new Response("abc").body,
+        null,
+        "chunked",
+      ],
+      ["no body, HEAD", "HEAD", () => undefined, null, null],
+      ["no body, DELETE", "DELETE", () => undefined, "0", null],
+      ["no body, OPTIONS", "OPTIONS", () => undefined, "0", null],
+      ["no body, PATCH", "PATCH", () => undefined, "0", null],
+      ["no body, QUERY", "QUERY", () => undefined, "0", null],
+      ["a null body, POST", "POST", () => null, "0", null],
+    ];
+    for (const [name, method, make, length, transfer] of table) {
+      const made = make();
+      const body = (
+        typeof made === "function" ? (made as () => unknown)() : made
+      ) as Bun.BodyInit | null | undefined;
+      const request = toNativeRequest("/x", { method, body });
+      expect({
+        name,
+        length: request.headers.get("content-length"),
+        transfer: request.headers.get("transfer-encoding"),
+      }).toEqual({ name, length, transfer });
+      if (length !== null) {
+        // The length is the bytes the request carries.
+        expect({
+          name,
+          bytes: (await request.arrayBuffer()).byteLength,
+        }).toEqual({ name, bytes: Number(length) });
+      }
+    }
+    // A bare path is a `GET` with nothing to frame.
+    expect([...toNativeRequest("/x").headers.keys()]).toEqual([]);
+  });
+
+  it("serialises a FormData once, keeping its fields and implied multipart type", async () => {
+    const data = form();
+    data.append("file", new File(["xyz"], "f.txt", { type: "text/plain" }));
+    const request = toNativeRequest("/x", { method: "POST", body: data });
+    expect(request.headers.get("content-type")).toStartWith(
+      "multipart/form-data; boundary=",
+    );
+    const length = Number(request.headers.get("content-length"));
+    const parsed = await request.clone().formData();
+    expect(parsed.get("a")).toBe("1");
+    expect(await (parsed.get("file") as File).text()).toBe("xyz");
+    expect((await request.arrayBuffer()).byteLength).toBe(length);
+
+    // A Content-Type the caller set wins, as for any FormData body.
+    const typed = toNativeRequest("/x", {
+      method: "POST",
+      body: form(),
+      headers: { "content-type": "multipart/form-data; boundary=mine" },
+    });
+    expect(typed.headers.get("content-type")).toBe(
+      "multipart/form-data; boundary=mine",
+    );
+  });
+});
+
 describe("fetch: a bare path starting with // is a path, not a host", () => {
   it("toNativeRequest keeps // paths on the origin, as a served request has them", () => {
     // A raw `GET //x/y` reaches Bun.serve as `http://<host>//x/y`; resolving

@@ -3282,7 +3282,7 @@ export class BunRequest<
   /**
    * The parsed body. As with Express's body parsers:
    * - no body at all (no `Content-Length` and no `Transfer-Encoding`, e.g. a
-   *   plain GET, or `fetch()` without a `body`) — `undefined`, never `{}`;
+   *   plain GET, or a `Request` built without a `body`) — `undefined`, never `{}`;
    * - a declared but empty body (`Content-Length: 0`) — `{}` for JSON and
    *   urlencoded, `""` for text, an empty `Buffer` for raw, `undefined` with no
    *   or an unrecognised `Content-Type`;
@@ -5697,7 +5697,20 @@ export class BunRequest<
   public is(types: string[]): string | false | null;
   public is(...types: string[]): string | false | null;
   public is(...args: string[] | [string[]]) {
-    return typeIs(this as unknown as IncomingMessage, flattenDeep(args));
+    const types = flattenDeep<string>(args);
+    // `type-is` answers `null`, "no body", for a request with neither
+    // `Content-Length` nor `Transfer-Encoding`. A served request with a body
+    // always has one; a `Request` built in process and handed to `fetch()`
+    // as it is may not (`fetch()` frames only a body it builds itself), so
+    // its body stream decides instead, as in {@link hasBody}.
+    if (
+      !typeIs.hasBody(this as unknown as IncomingMessage) &&
+      this.request.body !== null
+    ) {
+      const contentType = this.headers["content-type"];
+      return typeIs.is(isString(contentType) ? contentType : "", types);
+    }
+    return typeIs(this as unknown as IncomingMessage, types);
   }
 
   end() {

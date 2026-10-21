@@ -660,6 +660,15 @@ Without a socket there is no peer, so `requestIP()` is `null` and a WebSocket
 upgrade cannot succeed. A bare `BunRouter.fetch()` always parses with
 `parseBody: true`; use the adapter to test request options.
 
+A body given as a path plus `RequestInit` (or a `RequestInit` with a `url`)
+is framed as Bun's `fetch` client frames it on the wire, since `req.is()` and
+the body parsers read the framing. A string, bytes, a `Blob`, `URLSearchParams`
+or `FormData` gets its `Content-Length`, a stream `Transfer-Encoding: chunked`,
+and no body `Content-Length: 0` on every method but `GET` and `HEAD`. A
+framing header you set yourself is kept. A `Request` you build is passed as it
+is, without either header, because its size is not known without reading it;
+`req.is()` and `req.hasBody` still see its body.
+
 The caller leaving is a disconnect, as it is served. Aborting the caller's
 signal rejects `fetch()` with its reason and fails the read in progress on a
 streamed body. Cancelling a streamed body (`res.write()`, or a stream or

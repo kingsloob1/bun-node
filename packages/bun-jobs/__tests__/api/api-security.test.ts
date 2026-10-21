@@ -210,7 +210,7 @@ describe("failures before authorization", () => {
     });
   });
 
-  it("refuses an oversized declared body before authorize, and a lying one after it", async () => {
+  it("refuses an oversized declared body before authorize, and an undeclared one after it", async () => {
     // The declared check is a router handler of its own: the only answer given
     // before `authorize`, so a caller cannot make the process buffer a body.
     const guard = declaredBodySizeGuard(10);
@@ -229,16 +229,48 @@ describe("failures before authorization", () => {
     expect((refusals[0] as ApiError).context).toEqual({ limit: 10 });
     expect(refusals[1]).toBeUndefined();
 
-    // A body whose size only shows once read is refused after authorization:
-    // a denied caller is told 403, not 413.
     const denied = await setup(false, {
       actions: ["jobs.update"],
       limits: { queueCacheMs: 0, maxJobDataBytes: 64 },
     });
-    const huge = await denied.call("PATCH", "/queues/mail/jobs/a", {
-      data: { blob: "x".repeat(500) },
+    const oversized = JSON.stringify({ data: { blob: "x".repeat(500) } });
+    // A declared length (what `fetch()` sends for a string, as a client
+    // does) is refused before authorize, whoever asks.
+    const declared = await denied.call(
+      "PATCH",
+      "/queues/mail/jobs/a",
+      oversized,
+    );
+    expect(declared.status).toBe(413);
+    expect(denied.calls).toEqual([]);
+
+    // A body whose size only shows once read (a stream, sent chunked) is
+    // refused after authorization: a denied caller is told 403, not 413.
+    const huge = await denied.root.fetch("/admin/jobs/queues/mail/jobs/a", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: new Blob([oversized]).stream(),
     });
     expect(huge.status).toBe(403);
+    expect(denied.calls).toHaveLength(1);
+
+    // The same undeclared body from a caller who is allowed: refused once
+    // read, so the 403 above is the deferral, not a missing size check.
+    const allowed = await setup(true, {
+      actions: ["jobs.update"],
+      limits: { queueCacheMs: 0, maxJobDataBytes: 64 },
+    });
+    const read = await allowed.root.fetch("/admin/jobs/queues/mail/jobs/a", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: new Blob([oversized]).stream(),
+    });
+    expect(read.status).toBe(413);
+    expect(await read.json()).toMatchObject({
+      code: "PAYLOAD_TOO_LARGE",
+      context: { limit: 64 },
+    });
+    expect(allowed.calls).toHaveLength(1);
   });
 });
 
