@@ -16,9 +16,12 @@
  *
  * Every issue comes from bun-common's runner (`validateStandard`), so it has
  * the core's shape and keeps its rule: no received value in an issue, an
- * error or a log line. Everything here works on Nest 11 and 12 alike and
- * reads nothing version-specific; Nest 12's own `StandardSchemaValidationPipe`
- * and `@Body({ schema })` are not read or replaced (composition is V7a's).
+ * error or a log line, and the value's prototype-pollution keys stripped
+ * first, as Nest 12's pipes strip them. Everything here works on Nest 11 and
+ * 12 alike; the one difference between them it reads, whether global pipes
+ * reach gateways, is read from a capability (`gatewayPipes()`), never a
+ * version. Nest 12's own `StandardSchemaValidationPipe` and
+ * `@Body({ schema })` are not read or replaced (composition is V7a's).
  *
  * Decorators are applied by call, not with `@`: Bun reads the decorator
  * options from the working directory's tsconfig (oven-sh/bun#28605), and the
@@ -38,6 +41,7 @@ import type {
   PipeTransform,
   Provider,
 } from "@nestjs/common";
+import type { Observable } from "rxjs";
 import { createRequire } from "node:module";
 import {
   ResponseValidationError,
@@ -47,13 +51,16 @@ import {
 import {
   BadRequestException,
   Catch,
+  Global,
   Inject,
   Injectable,
+  IntrinsicException,
   Logger,
   Module,
   Optional,
 } from "@nestjs/common";
 import { APP_FILTER, APP_PIPE, HttpAdapterHost } from "@nestjs/core";
+import { throwError } from "rxjs";
 
 /* ------------------------------------------------------------------ *
  * Options and the issue shape
@@ -62,10 +69,10 @@ import { APP_FILTER, APP_PIPE, HttpAdapterHost } from "@nestjs/core";
 /**
  * The options of {@link StandardSchemaPipe}, {@link StandardValidationPipe}
  * and `StandardValidationModule.forRoot()`: how the pipes word their issues,
- * with `validate()`'s options of the same names and meaning (plan Q-C2,
- * Q-C3). Both are privacy options, so a value either does not take throws a
- * `TypeError` when the pipe (or the module) is built, rather than leaving
- * messages as they were.
+ * and which prototype-pollution keys they strip, with `validate()`'s
+ * options of the same names and meaning (plan Q-C2, Q-C3). A value an option
+ * does not take throws a `TypeError` when the pipe (or the module) is built,
+ * rather than leaving messages (or keys) as they were.
  */
 export interface StandardValidationPipeOptions {
   /**
@@ -82,6 +89,18 @@ export interface StandardValidationPipeOptions {
    * throws a `TypeError` when the pipe is built.
    */
   redactPaths?: GuardOptions["redactPaths"];
+  /**
+   * Which prototype-pollution keys are deleted from the parameter's value,
+   * in place, before the schema runs. `"nest"` (the default) is Nest
+   * 12.2.0's rule, the one its own `ValidationPipe` and
+   * `StandardSchemaValidationPipe` apply: every own `__proto__` and
+   * `prototype` key and every own `constructor` key, recursively, so a
+   * legitimate `prototype` or `constructor` field is deleted too.
+   * `"minimal"` deletes only own `__proto__` keys and own `constructor` keys
+   * whose value is an object with an own `prototype`. Anything else throws
+   * a `TypeError` when the pipe is built.
+   */
+  stripProtoKeys?: GuardOptions["stripProtoKeys"];
 }
 
 /**
@@ -92,36 +111,53 @@ export interface StandardValidationPipeOptions {
  */
 type PipeTarget = "body" | "query" | "params" | "custom";
 
-/** The issue wording the options ask for, `undefined` when neither is set. */
+/**
+ * The issue wording and proto-key rule the options ask for, `undefined`
+ * when none is set.
+ */
 type IssueFormat = Pick<
   StandardValidationPipeOptions,
-  "messages" | "redactPaths"
+  "messages" | "redactPaths" | "stripProtoKeys"
 >;
 
+/** A pipe given no options: Nest 12's proto-key rule, nothing else. */
+const NEST_RULE: IssueFormat = Object.freeze({ stripProtoKeys: "nest" });
+
 /**
- * Checks `options` as `validate()` checks its own `messages` and
- * `redactPaths`: both are privacy options, so a typo throws rather than
- * leaving messages as they were.
+ * Checks `options` as `validate()` checks its own `messages`, `redactPaths`
+ * and `stripProtoKeys`: a typo throws rather than leaving messages (or keys)
+ * as they were.
  */
 function issueFormat(
   owner: string,
   options: StandardValidationPipeOptions | undefined,
 ): IssueFormat | undefined {
-  if (options === undefined) return undefined;
+  if (options === undefined) return NEST_RULE;
   if (typeof options !== "object" || options === null) {
     throw new TypeError(`${owner}: options must be an object`);
   }
-  const { messages, redactPaths } = options;
+  const { messages, redactPaths, stripProtoKeys } = options;
   if (messages !== undefined && messages !== "generic") {
     throw new TypeError(`${owner}: messages must be "generic" or unset`);
   }
   if (redactPaths !== undefined && typeof redactPaths !== "boolean") {
     throw new TypeError(`${owner}: redactPaths must be a boolean`);
   }
-  if (messages === undefined && redactPaths === undefined) return undefined;
+  if (
+    stripProtoKeys !== undefined &&
+    stripProtoKeys !== "nest" &&
+    stripProtoKeys !== "minimal"
+  ) {
+    throw new TypeError(
+      `${owner}: stripProtoKeys must be "nest" or "minimal" (or unset)`,
+    );
+  }
   return {
     ...(messages === undefined ? {} : { messages }),
     ...(redactPaths === undefined ? {} : { redactPaths }),
+    // A pipe's input always strips (`validateStandard` strips only when
+    // given a rule): Nest 12's rule unless told otherwise.
+    stripProtoKeys: stripProtoKeys ?? "nest",
   };
 }
 
@@ -276,13 +312,13 @@ export class StandardSchemaPipe<
 > {
   /** The schema every value is checked against. */
   readonly schema: S;
-  /** The issue wording asked for, or `undefined` for the default scrub. */
+  /** The issue wording and proto-key rule asked for, or `undefined` for the defaults. */
   readonly #format: IssueFormat | undefined;
 
   /**
    * @param schema  Any Standard Schema; anything else throws a `TypeError`.
-   * @param options How issues are worded: `messages` and `redactPaths`, as
-   *   on `validate()`.
+   * @param options How issues are worded (`messages` and `redactPaths`) and
+   *   which proto keys are stripped (`stripProtoKeys`), as on `validate()`.
    */
   constructor(schema: S, options?: StandardValidationPipeOptions) {
     if (!isStandardSchema(schema)) {
@@ -366,7 +402,7 @@ export function SchemaDto<S extends StandardSchemaV1<unknown, object>>(
     static readonly [SCHEMA_DTO] = true;
   }
   Object.defineProperty(Dto, "name", { value: "SchemaDto" });
-  return Dto as unknown as SchemaDtoClass<S>;
+  return Dto;
 }
 
 /**
@@ -408,12 +444,15 @@ function schemaOfDto(metatype: unknown): StandardSchemaV1 | undefined {
  * every parameter it passes through.
  */
 export class StandardValidationPipe implements PipeTransform {
-  /** The issue wording asked for, or `undefined` for the default scrub. */
+  /** The issue wording and proto-key rule asked for, or `undefined` for the defaults. */
   readonly #format: IssueFormat | undefined;
 
   /**
-   * @param options How issues are worded: `messages` and `redactPaths`, as
-   *   on `validate()`.
+   * @param options How issues are worded (`messages` and `redactPaths`) and
+   *   which proto keys are stripped (`stripProtoKeys`), as on `validate()`.
+   *   Built by Nest's injector (the class in `@UsePipes`,
+   *   as `StandardValidationModule.gatewayPipes()` gives it), the pipe is
+   *   given `StandardValidationModule.forRoot()`'s options, or none.
    */
   constructor(options?: StandardValidationPipeOptions) {
     this.#format = issueFormat("StandardValidationPipe", options);
@@ -434,9 +473,17 @@ export class StandardValidationPipe implements PipeTransform {
   }
 }
 
+/** The token of `StandardValidationModule.forRoot()`'s options (internal). */
+const MODULE_OPTIONS = Symbol.for("bun-nest.standardValidationModuleOptions");
+
 // Injectable, so `@UsePipes(StandardValidationPipe)` (a class, built by
-// Nest's injector with no arguments) works as `new StandardValidationPipe()`.
+// Nest's injector) works as `new StandardValidationPipe(options)`, with
+// `forRoot()`'s options when the module is imported (it is global and
+// exports them) and none otherwise: `@Optional() @Inject(MODULE_OPTIONS)` on
+// the constructor's parameter, by call.
 Injectable()(StandardValidationPipe);
+Optional()(StandardValidationPipe, undefined, 0);
+Inject(MODULE_OPTIONS)(StandardValidationPipe, undefined, 0);
 
 /* ------------------------------------------------------------------ *
  * ValidationExceptionFilter
@@ -481,7 +528,36 @@ interface NestWebSockets {
   };
 }
 
-/** `require` from this file, for the optional `@nestjs/websockets` (see {@link emitWsException}). */
+/**
+ * The slice of `@nestjs/microservices` the filter answers an rpc call
+ * through, declared here so no declaration of this package imports that
+ * optional peer.
+ */
+interface NestMicroservices {
+  /** Nest's base rpc filter: what a microservice answers with no filter of the app's. */
+  BaseRpcExceptionFilter: new () => {
+    /** Nest's answer to `exception`: an Observable that errors with `{ status: "error", message }`. */
+    catch: (exception: unknown, host: ArgumentsHost) => Observable<never>;
+  };
+}
+
+/** The slice of `@nestjs/websockets`' `SocketModule` whose parameters tell the majors apart. */
+interface NestSocketModule {
+  /** `SocketModule`, whose `getContextCreator` arity is the capability. */
+  SocketModule: {
+    /** The prototype, whose `getContextCreator` is read. */
+    prototype: {
+      /** `(container)` on Nest 11; `(container, config, filters)` on Nest 12. */
+      getContextCreator: (...args: never[]) => unknown;
+    };
+  };
+}
+
+/**
+ * `require` from this file, for the optional `@nestjs/websockets` and
+ * `@nestjs/microservices` (see {@link emitWsException} and
+ * {@link rpcUnknownError}).
+ */
 const requireFromHere = createRequire(import.meta.url);
 
 /** What the filter answers: its body, and the status. */
@@ -514,6 +590,61 @@ function answerFor(exception: Error): Answer {
 }
 
 /**
+ * What an rpc client receives for a validation failure: Nest's rpc error
+ * shape (`status: "error"` and a `message`), carrying what the HTTP and
+ * gateway answers carry, the error's status (as `statusCode`, the name
+ * Nest's HTTP body gives it), the gateway frame's `code` and the issues.
+ */
+interface RpcValidationAnswer {
+  /** `"error"`, as Nest's `BaseRpcExceptionFilter` answers every error. */
+  status: "error";
+  /** The error's status: 400, or a `validate()` middleware's own. */
+  statusCode: number;
+  /** `"VALIDATION"`, as in the gateway's `exception` frame. */
+  code: "VALIDATION";
+  /** `"Validation failed"`, the HTTP body's `error`. */
+  message: string;
+  /** Every issue, value-free. */
+  issues: readonly ValidationIssue[];
+}
+
+/** The logger of {@link rpcUnknownError}'s fallback, Nest's rpc handler's context. */
+const RPC_LOGGER = new Logger("RpcExceptionsHandler");
+
+/**
+ * Nest's own answer to `exception` in an rpc context, exactly what a
+ * microservice answers without this filter: `BaseRpcExceptionFilter`'s
+ * `catch` when `@nestjs/microservices` loads (an optional peer, installed
+ * wherever a microservice runs), and otherwise the same answer built here,
+ * Nest 11.1.20 to 12.2.0's: the error logged (unless intrinsic) under
+ * `RpcExceptionsHandler`, and an Observable that errors with `{ status:
+ * "error", message: "Internal server error" }`.
+ */
+function rpcUnknownError(
+  exception: Error,
+  host: ArgumentsHost,
+): Observable<never> {
+  let microservices: NestMicroservices | undefined;
+  try {
+    microservices = requireFromHere(
+      "@nestjs/microservices",
+    ) as NestMicroservices;
+  } catch {
+    microservices = undefined;
+  }
+  if (microservices !== undefined) {
+    return new microservices.BaseRpcExceptionFilter().catch(exception, host);
+  }
+  if (!(exception instanceof IntrinsicException)) {
+    RPC_LOGGER.error(exception);
+  }
+  return throwError(() => ({
+    status: "error",
+    message: "Internal server error",
+  }));
+}
+
+/**
  * Answers BunValidate's errors with `{ error, issues }` and the error's
  * status: a `ValidationError` (a `validate()` middleware's, 400 or its
  * `status`), a `ResponseValidationError` (500, logged once, its message
@@ -532,9 +663,14 @@ function answerFor(exception: Error): Answer {
  * `@UseFilters`, since Nest applies no global filter there) it emits an
  * `exception` event with `{ status, code: "VALIDATION", issues }` (the frame
  * shape plan §4.6.2 gives V9's gateway validation), exactly as Nest emits a
- * `WsException` built with that object. In any other
- * context (a job handler, a microservice) it rethrows, so the error fails
- * what it would have failed.
+ * `WsException` built with that object. In a microservice (`rpc`: global
+ * filters apply there, so `StandardValidationModule` applies it too) it
+ * returns what Nest's `BaseRpcExceptionFilter` returns, an Observable that
+ * errors: for a validation failure (a status under 500) with `{ status:
+ * "error", statusCode, code: "VALIDATION", message: "Validation failed",
+ * issues }`, and for a `ResponseValidationError` with Nest's own answer
+ * (logged, `Internal server error`). In any other context (a job handler)
+ * it rethrows, so the error fails what it would have failed.
  */
 export class ValidationExceptionFilter implements ExceptionFilter<Error> {
   /** The adapter, or the host whose adapter is read when an error is caught. */
@@ -552,12 +688,14 @@ export class ValidationExceptionFilter implements ExceptionFilter<Error> {
   }
 
   /**
-   * Answers `exception`.
+   * Answers `exception`: writes the HTTP response or emits the gateway's
+   * frame (returning nothing), returns the rpc answer's Observable, or
+   * rethrows.
    *
    * @param exception One of the errors this filter is `@Catch`-scoped to.
    * @param host      Nest's arguments host for the request, message or call.
    */
-  catch(exception: Error, host: ArgumentsHost): void {
+  catch(exception: Error, host: ArgumentsHost): Observable<never> | undefined {
     const answer = answerFor(exception);
     const type = host.getType<string>();
     if (type === "http") {
@@ -565,7 +703,7 @@ export class ValidationExceptionFilter implements ExceptionFilter<Error> {
         this.#logger.error(exception.message, exception.stack);
       }
       this.#reply(host.switchToHttp().getResponse<unknown>(), answer);
-      return;
+      return undefined;
     }
     if (type === "ws") {
       emitWsException(host.switchToWs().getClient<unknown>(), {
@@ -573,7 +711,20 @@ export class ValidationExceptionFilter implements ExceptionFilter<Error> {
         code: "VALIDATION",
         issues: answer.body.issues,
       });
-      return;
+      return undefined;
+    }
+    if (type === "rpc") {
+      // A server fault (a refused response) is answered as Nest answers
+      // any other: the client learns nothing of it, and it is logged.
+      if (answer.status >= 500) return rpcUnknownError(exception, host);
+      const reply: RpcValidationAnswer = {
+        status: "error",
+        statusCode: answer.status,
+        code: "VALIDATION",
+        message: answer.body.error,
+        issues: answer.body.issues,
+      };
+      return throwError(() => reply);
     }
     throw exception;
   }
@@ -642,36 +793,90 @@ Inject(HttpAdapterHost)(ValidationExceptionFilter, undefined, 0);
  * StandardValidationModule
  * ------------------------------------------------------------------ */
 
-/** The token of `StandardValidationModule.forRoot()`'s options (internal). */
-const MODULE_OPTIONS = Symbol.for("bun-nest.standardValidationModuleOptions");
+/**
+ * Whether Nest applies global pipes to gateways, read once from the
+ * installed `@nestjs/websockets`: Nest 12's
+ * `SocketModule.getContextCreator(container, config, filters)` hands the
+ * application config (and so its global pipes) to the gateways' pipes
+ * context; Nest 11's takes the container alone. The capability, its
+ * parameters, never a version string. `undefined` until first read.
+ */
+let globalPipesReachGateways: boolean | undefined;
+
+/** Reads (once) {@link globalPipesReachGateways}. */
+function readGlobalPipesReachGateways(): boolean {
+  if (globalPipesReachGateways === undefined) {
+    let socket: NestSocketModule | undefined;
+    try {
+      socket = requireFromHere(
+        "@nestjs/websockets/socket-module.js",
+      ) as NestSocketModule;
+    } catch {
+      socket = undefined;
+    }
+    // Without `@nestjs/websockets` no gateway runs; the pipe is harmless.
+    globalPipesReachGateways =
+      socket !== undefined &&
+      socket.SocketModule.prototype.getContextCreator.length >= 2;
+  }
+  return globalPipesReachGateways;
+}
 
 /**
  * Registers {@link StandardValidationPipe} as a global pipe (`APP_PIPE`) and
  * {@link ValidationExceptionFilter} as a global filter (`APP_FILTER`).
+ * Global, so its `forRoot()` options reach a pipe Nest builds anywhere.
  *
  * ```ts
  * @Module({ imports: [StandardValidationModule] })                       // defaults
  * @Module({ imports: [StandardValidationModule.forRoot({ messages: "generic" })] })
+ *
+ * @WebSocketGateway()
+ * @UsePipes(...StandardValidationModule.gatewayPipes())
+ * @UseFilters(ValidationExceptionFilter)
+ * class ChatGateway {}
  * ```
  *
- * Nest applies global pipes to controllers, and to gateways on Nest 12 only
- * (Nest 11's take `@UsePipes(StandardValidationPipe)`), and global filters to
- * HTTP only: a gateway takes the filter with `@UseFilters`.
+ * Nest applies global pipes to controllers, and to gateways on Nest 12 only;
+ * a gateway takes {@link StandardValidationModule.gatewayPipes} for the
+ * difference. Global filters reach controllers and microservices, never
+ * gateways: a gateway takes the filter with `@UseFilters`.
  */
 export class StandardValidationModule {
   /**
-   * The module with the pipe's issue options.
+   * The module with the pipe's options.
    *
-   * @param options How the pipe words its issues: `messages` and
-   *   `redactPaths`, as on `validate()`. Checked here: a wrong value throws
-   *   a `TypeError`.
+   * @param options How the pipe words its issues (`messages` and
+   *   `redactPaths`) and which proto keys it strips (`stripProtoKeys`,
+   *   default `"nest"`), as on `validate()`. Checked here: a wrong value
+   *   throws a `TypeError`.
    */
   static forRoot(options?: StandardValidationPipeOptions): DynamicModule {
     issueFormat("StandardValidationModule.forRoot()", options);
     return {
       module: StandardValidationModule,
       providers: [{ provide: MODULE_OPTIONS, useValue: options ?? {} }],
+      exports: [MODULE_OPTIONS],
     };
+  }
+
+  /**
+   * The pipes a gateway needs for {@link SchemaDto} messages on the
+   * installed Nest, for `@UsePipes(...StandardValidationModule.gatewayPipes())`
+   * on the gateway class: none on Nest 12, where the global pipe reaches
+   * gateways (a second {@link StandardValidationPipe} would run the schema
+   * again on its own output, and a transforming schema would then refuse
+   * every valid message); on Nest 11, where it does not, the pipe's class,
+   * which Nest builds with this module's `forRoot()` options.
+   *
+   * Decided once, from a capability of `@nestjs/websockets` (its
+   * `SocketModule.getContextCreator`'s parameters), never a version. It
+   * assumes the global pipe is this module's: with
+   * `app.useGlobalPipes(new StandardValidationPipe(options))` instead, a
+   * Nest 11 gateway's pipe has no options.
+   */
+  static gatewayPipes(): (typeof StandardValidationPipe)[] {
+    return readGlobalPipesReachGateways() ? [] : [StandardValidationPipe];
   }
 }
 
@@ -691,3 +896,4 @@ const MODULE_PROVIDERS: Provider[] = [
 ];
 
 Module({ providers: MODULE_PROVIDERS })(StandardValidationModule);
+Global()(StandardValidationModule);

@@ -1918,8 +1918,29 @@ can be global, each taking its own DTOs.
   `StandardSchemaV1.InferOutput<typeof S>` there.
 - In a gateway, **Nest 12** applies global pipes too, so a
   `@MessageBody() msg: ChatDto` is checked; **Nest 11** applies no global pipe
-  to gateways (`useGlobalPipes` and `APP_PIPE` alike), so there the gateway
-  takes `@UsePipes(StandardValidationPipe)`, which works on both.
+  to gateways (`useGlobalPipes` and `APP_PIPE` alike). A plain
+  `@UsePipes(StandardValidationPipe)` is therefore right on Nest 11 only: on
+  Nest 12 it runs the schema a second time, on the first run's output, so a transforming schema (`z.string().transform((s) => new
+  Date(s))`) refuses every valid message. Give the gateway
+  `StandardValidationModule.gatewayPipes()` instead, which is exactly what
+  the installed Nest needs: no pipe on Nest 12, and on Nest 11 the pipe's
+  class, which Nest builds with the module's `forRoot()` options:
+
+  ```ts
+  @WebSocketGateway()
+  @UsePipes(...StandardValidationModule.gatewayPipes())
+  @UseFilters(ValidationExceptionFilter)
+  class ChatGateway {
+    @SubscribeMessage("chat")
+    chat(@MessageBody() msg: ChatDto) {}
+  }
+  ```
+
+  It decides once, from a capability of `@nestjs/websockets`
+  (`SocketModule.getContextCreator`'s parameters), never from a version, and
+  it assumes the global pipe is `StandardValidationModule`'s: with
+  `app.useGlobalPipes(new StandardValidationPipe(options))` instead, a Nest 11
+  gateway's pipe has none of those options.
 
 ### `ValidationExceptionFilter`
 
@@ -1949,7 +1970,22 @@ it emits an `exception` event with `{ status, code: "VALIDATION", issues }`
 (`status` the error's, as over HTTP; `code` in place of `error`), exactly as
 Nest emits a `WsException` built with that object; without it, the pipe's
 error is Nest's `Internal server error` frame, as for Nest's `ValidationPipe`.
-In any other context (a job handler, a microservice) it rethrows the error.
+
+In a microservice (`rpc`; Nest applies global filters there, so
+`StandardValidationModule` reaches a `@MessagePattern` as `@UseFilters` does)
+it answers as Nest's `BaseRpcExceptionFilter` answers, with an Observable that
+errors, so the client's `send()` fails with:
+
+```ts
+{ status: "error", statusCode: 400, code: "VALIDATION", message: "Validation failed", issues: [...] }
+```
+
+(`status: "error"` as Nest answers every rpc error; `statusCode` the error's,
+a `ValidationError`'s own included; `code` and `issues` as in the gateway's
+frame). A `ResponseValidationError`, a server fault, gets Nest's own answer,
+`{ status: "error", message: "Internal server error" }`, logged by Nest, the
+same as without the filter. `@nestjs/microservices` is an optional peer, loaded
+only there. In any other context (a job handler) it rethrows the error.
 
 ### `StandardValidationModule`
 
@@ -1961,7 +1997,13 @@ class AppModule {}
 
 Registers `StandardValidationPipe` (`APP_PIPE`) and `ValidationExceptionFilter`
 (`APP_FILTER`, with the adapter host injected). Nest applies `APP_FILTER` to
-HTTP only, and `APP_PIPE` to controllers and, on Nest 12 only, gateways.
+controllers and microservices (`@MessagePattern`), never to gateways, and
+`APP_PIPE` to controllers and microservices and, on Nest 12 only, gateways
+(`gatewayPipes()` covers the difference, see
+[above](#schemadto-and-standardvalidationpipe)). The module is global and
+exports `forRoot()`'s options, so a `StandardValidationPipe` Nest builds
+from its class anywhere in the app (`@UsePipes(StandardValidationPipe)`) is
+given them.
 
 ### Issues carry no received value
 
@@ -1976,6 +2018,48 @@ a `TypeError` when the pipe is built:
 |---|---|
 | `messages: "generic"` | every message becomes `Invalid value` (plus the vendor's issue code) |
 | `redactPaths: true` | every `path` is `""` (the parameter's key is not prefixed either) |
+| `stripProtoKeys: "minimal"` | only `__proto__` keys, and `constructor` keys holding a `prototype`, are stripped (default `"nest"`) |
+
+Before the schema runs, the value's prototype-pollution keys are stripped in
+place, recursively. By default (`stripProtoKeys: "nest"`) that is Nest 12's
+own pipes' rule, own `__proto__` and `prototype` keys and `constructor`
+keys, so a legitimate `prototype` or `constructor` field is deleted too: a
+body of `{"name":"a","__proto__":{…}}` reaches yup as `{ name: "a" }` (201,
+as with Nest's `StandardSchemaValidationPipe`) instead of crashing it.
+`"minimal"` (on either pipe, or `forRoot()`) keeps `prototype` fields and a
+`constructor` without a `prototype`; yup crashes on a kept `constructor`
+key, as it does on `toString` under either rule.
+
+### Differences from Nest 12's `StandardSchemaValidationPipe`
+
+Compared with Nest 12.2.0's own pipe (`@Body({ schema })` and the global
+`StandardSchemaValidationPipe`), measured on the same app:
+
+- **Options.** Ours take only `messages`, `redactPaths` and
+  `stripProtoKeys` (Nest strips by its rule, our default, with no option).
+  Nest's
+  `transform: false` (hand on the original value), `errorHttpStatusCode`
+  (Nest's default 400), `exceptionFactory`, `validateCustomDecorators`
+  (Nest skips a custom decorator's parameter unless it is set) and
+  `validateOptions` (passed to the vendor's `validate`) have no
+  counterpart: ours always hand on the schema's output, always throw
+  `StandardValidationException` (400), call the vendor with the value alone,
+  and `StandardSchemaPipe` validates a custom decorator's parameter (the
+  global `StandardValidationPipe` skips it, as Nest's does by default).
+- **Keyed parameters.** Ours prefix the issue's path with the parameter's
+  key; Nest's do not. For `@Query("page")` and `z.coerce.number().min(1)`,
+  `?page=0` answers Nest's `message: ["Too small: expected number to be
+  >=1"]` and ours `message: ["page: Too small: expected number to be >=1"]`
+  (the filter's issue: `{ target: "query", path: "page", … }`). For the
+  whole query (`@Query()` and `z.object({ page })`) both give `page: Too
+  small: …`.
+- **Messages are scrubbed.** Nest hands on the vendor's message as it is;
+  ours withhold one that quotes the received value. A `z.strictObject` given
+  an unknown key `PLANTED_x` answers Nest's `Unrecognized key: "PLANTED_x"`
+  and ours `Invalid value (unrecognized_keys)`.
+- **A sync vendor stays sync.** Nest's `transform` is `async`, so it answers
+  with a Promise for every vendor; ours answer zod, valibot and arktype
+  synchronously, and with a Promise only for an async vendor (yup).
 
 ## The jobs API module
 

@@ -1430,11 +1430,28 @@ middleware is built, rather than being ignored. An option given as
 | `responseValidation` | the router's, else `"off"` | `"off"`, `"warn"` or `"error"`: whether `responses` is checked at runtime; see [Responses](#responses). |
 | `messages` | unset (the scrub) | `"generic"` replaces every issue's message with `Invalid value` (plus the vendor's issue code when it has one), instead of withholding only a message found to quote the received value. |
 | `redactPaths` | `false` | `true` empties every issue's `path`, for schemas keyed by user data (an e-mail-keyed record, an unknown key's name). |
+| `stripProtoKeys` | `"nest"` | Which prototype-pollution keys are deleted before the schemas run: `"nest"` (Nest 12's rule, a `prototype` or `constructor` field included) or `"minimal"` (only `__proto__`, and a `constructor` holding a `prototype`). See below. |
 
 `ValidationError` carries `issues` (each `{ target, message, path }`, with
 `path` dot-joined), `targets` and `status`. A message that quotes the
 received value is withheld (see [Contracts](#contracts)), and the middleware
 answers synchronously when every schema does.
+
+Before a schema runs, every part but `params` (whose keys are the route's)
+has its prototype-pollution keys deleted in place, recursively, by the
+`stripProtoKeys` rule. `"nest"`, the default, is Nest 12's pipes' rule: own
+`__proto__` and `prototype` keys and `constructor` keys, so a legitimate
+`prototype` or `constructor` field goes too. `"minimal"` deletes only own
+`__proto__` keys and `constructor` keys holding an object with a
+`prototype`; but yup crashes on any key naming an `Object.prototype` member
+(`constructor`, `toString`), so a plain `constructor` field kept by
+`"minimal"` still answers 500 there. Either way `{"name":"a","__proto__":{…}}`
+reaches yup as `{ name: "a" }` instead of crashing it. The contract guards'
+receivers (`GuardOptions`; a sender never strips) and bun-nest's pipes take
+the same option with the same default; a response is never touched.
+`validateStandard` strips only when its options name a rule, since it also
+checks values a server built itself (a response body whose `__proto__`-named
+record key is data).
 
 `messages: "generic"` and `redactPaths: true` are the contract guards'
 options of the same names (see [Contracts](#contracts)), set per validator;
@@ -1941,7 +1958,9 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   path) is compared with the whole value, as is a response `refine`'s, which
   sees every part. A schema's message is also withheld when it names one of
   the compared value's keys of three or more characters as a word, quoted or
-  not (yup's `unspecified keys: …`, at the root or nested), so a `refine` on
+  not (yup's `unspecified keys: …`, at the root or nested, which
+  `.noUnknown()` reports only under `.strict()`; without it yup drops the
+  unknown key and passes), so a `refine` on
   an object naming one of its fields (`start must be before end`) keeps its
   message only when it reports at that field's own `path`. The scrub is a
   heuristic, so `messages: "generic"` replaces every message, and

@@ -9,8 +9,10 @@
  * - `validation-vs-nest12`: Nest 12's own `StandardSchemaValidationPipe` and
  *   `@Body({ schema })` on platform-express against `StandardSchemaPipe` on
  *   bun-nest, on schemas whose messages quote nothing and parameters with no
- *   key: the answers must be the same. Skipped visibly on Nest 11, which has
- *   no such pipe (read from `@nestjs/common`'s exports, never a version).
+ *   key: the answers must be the same, a yup body with an own `__proto__`
+ *   key included (both strip it first: 201, where yup alone crashes).
+ *   Skipped visibly on Nest 11, which has no such pipe (read from
+ *   `@nestjs/common`'s exports, never a version).
  */
 import type { ExecutionContext, PipeTransform } from "@nestjs/common";
 import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
@@ -49,6 +51,10 @@ const YupUser = yup.object({
   name: yup.string().required(),
   age: yup.number().required(),
 });
+class YupUserDto extends SchemaDto(YupUser) {}
+
+/** A JSON body with an own `__proto__` key, as `JSON.parse` builds it. */
+const PROTO_BODY = '{"name":"n","age":4,"__proto__":{"polluted":"yes"}}';
 
 /** The request's headers, through a custom decorator (pipeable). */
 const ReqHeaders = createParamDecorator(
@@ -144,6 +150,7 @@ const PROBES: Probe[] = [
     init: json({ name: "n", age: "4" }),
   },
   { name: "pipe yup, invalid", path: "/v/yup", init: json({ age: 1 }) },
+  { name: "pipe yup, a __proto__ key", path: "/v/yup", init: json(PROTO_BODY) },
   { name: "another 400, not caught", path: "/v/other-400" },
   { name: "invalid JSON, not caught", path: "/v/dto", init: json('{"name":') },
 ];
@@ -160,9 +167,11 @@ type WithSchema = (options: { schema: StandardSchemaV1 }) => ParameterDecorator;
 
 /**
  * The Nest 12 application of `validation-vs-nest12`, one per side. Built
- * only where Nest 12's pipe exists: Nest 11's `@Body()` takes `{ schema }`
- * for a pipe and throws when the class is decorated. Decorators applied by
- * call, so nothing runs at load.
+ * only where Nest 12's pipe exists. Nest 11's `@Body()` takes `{ schema }`
+ * as a pipe without complaint: on 11.2.7 and 11.1.20 the class decorates,
+ * `app.init()` succeeds, and a body the schema would refuse reaches the
+ * handler unchecked (201, measured). Decorators applied by call, so nothing
+ * runs at load.
  */
 function nest12Modules(): Record<Side, new () => object> {
   const BodyWith = Body as unknown as WithSchema;
@@ -176,9 +185,19 @@ function nest12Modules(): Record<Side, new () => object> {
     list(query: unknown) {
       return query;
     }
+
+    yup(body: unknown) {
+      return body;
+    }
+
+    yupDto(body: unknown) {
+      return body;
+    }
   }
   BodyWith({ schema: CreateUser })(Nest12Controller.prototype, "create", 0);
   QueryWith({ schema: Page })(Nest12Controller.prototype, "list", 0);
+  BodyWith({ schema: YupUser })(Nest12Controller.prototype, "yup", 0);
+  BodyWith({ schema: YupUser })(Nest12Controller.prototype, "yupDto", 0);
 
   class OursController {
     create(body: unknown) {
@@ -188,6 +207,14 @@ function nest12Modules(): Record<Side, new () => object> {
     list(query: unknown) {
       return query;
     }
+
+    yup(body: unknown) {
+      return body;
+    }
+
+    yupDto(body: unknown) {
+      return body;
+    }
   }
   Body(new StandardSchemaPipe(CreateUser))(
     OursController.prototype,
@@ -195,12 +222,24 @@ function nest12Modules(): Record<Side, new () => object> {
     0,
   );
   Query(new StandardSchemaPipe(Page))(OursController.prototype, "list", 0);
+  Body(new StandardSchemaPipe(YupUser))(OursController.prototype, "yup", 0);
+  // A SchemaDto parameter, for the global StandardValidationPipe: the
+  // metadata `emitDecoratorMetadata` would write for `body: YupUserDto`.
+  Body()(OursController.prototype, "yupDto", 0);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [YupUserDto],
+    OursController.prototype,
+    "yupDto",
+  );
 
   for (const controller of [Nest12Controller, OursController]) {
     const proto = controller.prototype;
     for (const [method, decorate] of [
       ["create", Post("users")],
       ["list", Get("users")],
+      ["yup", Post("users-yup")],
+      ["yupDto", Post("users-yup-dto")],
     ] as const) {
       decorate(proto, method, Object.getOwnPropertyDescriptor(proto, method)!);
     }
@@ -214,11 +253,16 @@ function nest12Modules(): Record<Side, new () => object> {
   return { express: ExpressSide, bun: BunSide };
 }
 
-/** The Nest 12 pipe, global on the platform-express side only. */
+/**
+ * The Nest 12 pipe, global on the platform-express side; ours on the
+ * bun-nest side, for its `SchemaDto` route (it passes the others through).
+ */
 const configureNest12: Configure = (app, side) => {
-  if (side === "express") {
-    app.useGlobalPipes(new NestStandardSchemaValidationPipe!());
-  }
+  app.useGlobalPipes(
+    side === "express"
+      ? new NestStandardSchemaValidationPipe!()
+      : new StandardValidationPipe(),
+  );
 };
 
 export const VALIDATION_GROUPS: ProbeGroup[] = [
@@ -250,6 +294,16 @@ export const VALIDATION_GROUPS: ProbeGroup[] = [
       },
       { name: "query, valid", path: "/n12/users?page=2" },
       { name: "query, invalid", path: "/n12/users?page=0" },
+      {
+        name: "yup body with a __proto__ key (StandardSchemaPipe)",
+        path: "/n12/users-yup",
+        init: json(PROTO_BODY),
+      },
+      {
+        name: "yup body with a __proto__ key (SchemaDto + StandardValidationPipe)",
+        path: "/n12/users-yup-dto",
+        init: json(PROTO_BODY),
+      },
     ],
   },
 ];

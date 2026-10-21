@@ -148,7 +148,7 @@ which logs a mismatch and nothing more.
 | A1 | Response validated at runtime? | **No** | a body breaking a declared schema goes out `200` [M `R1`]; no response target (`bun-common/lib/BunValidate.ts:9`); bun-jobs' API alone checks, and only logs (`bun-jobs/lib/api/routes/define.ts:289-297`) |
 | A2 | Response typed? | **No** | `res` is a bare `BunResponse` in every typed handler (`bun-common/lib/types/general.ts:447-458`); `res.status(418).json({ anything })` compiles after a validator; a `responses` option is TS2353 [M `T2`–`T4`, `T9`] |
 | A3 | Request side | **Yes, with 3 defects** | targets `params`/`query`/`body`/`headers`; output-typed `req.*`; but an explicit `status: undefined` answers a failed request **200** [M `R2h`], a `cookies` schema is silently ignored [M `R5`, `T7`], headers are validated but never typed [M `T6`] |
-| A4 | bun-nest decorator, pipe, interceptor, filter | **No** | `bun-nest/lib/decorators.ts` is one re-export line; `interceptors.ts` is multipart only (`:182-321`); the examples hand-roll a `SchemaPipe` (`examples/bun-nest/02-http-adapter/pipeline.ts:137-160`) |
+| A4 | bun-nest decorator, pipe, interceptor, filter | **No** | `bun-nest/lib/decorators.ts` is one re-export line; `interceptors.ts` is multipart only (`:182-321`); the examples hand-rolled a `SchemaPipe` (`examples/bun-nest/02-http-adapter/pipeline.ts:137-160` at ab01c57a; since #503 the example uses V6's `StandardSchemaPipe`, `packages/bun-nest/lib/validation.ts`) |
 | A5 | WebSocket messages | **No** | messages are `string \| Buffer` (`bun-common/lib/BunWebSocket.ts:393-411`) [M `T10`]; bun-nest casts parsed JSON (`bun-nest/lib/BunWebSocketAdapter.ts:962-964`) |
 | A6 | bun-jobs data and results | **No** | typed by type arguments only; `{ to: 42 }` reached a `BunQueue<{ to: string }>` worker [M `R8`]; `define()` has no schema option [M `T11`]. `s` **is** a Standard Schema [M `R7`] |
 | A7 | bun cache | **No code**; BC plans `validate` on read | BC §3.13 |
@@ -282,7 +282,9 @@ Defects and gaps found:
   proxy, so no `__shape` reaches it (NTR §2) [S, P].
 - **Users write the pipe themselves today**: the bun-nest pipeline example
   defines a 20-line `SchemaPipe` over `~standard.validate`
-  (`examples/bun-nest/02-http-adapter/pipeline.ts:137-160`) [S].
+  (`examples/bun-nest/02-http-adapter/pipeline.ts:137-160`, at ab01c57a) [S].
+  Since #503 the example uses V6's `StandardSchemaPipe`
+  (`packages/bun-nest/lib/validation.ts`) instead.
 
 Against the "full set" asked for:
 
@@ -2004,7 +2006,7 @@ mutant run, as both spikes do (`check-types.sh`, `run.sh` step c).
 | V3a | new `bunValidate.responses.test.ts`: H1–H20, H25–H38, H41–H45 (buffered kinds × modes × zod/yup; status, headers, cookies, media type; exemptions); `commonResponses`; router- and adapter-level defaults | new `responses.type-test.ts` from `http-complete/types.probe.ts` (N1–N18, L1); `verbTyping`, `mountTyping` and `nestVerbTyping` response cases; `generate-verb-overloads.ts --check`; `consumer-check.ts` for all four packages (the `BunResponse` and `BunRequest` surfaces) | `06-validation/responses.ts` (new) |
 | V3b | streams, `write()`/`end()`, SSE per event, H21–H24, H39, H40; a cut-off stream reaches the client as an error | `chunks()`/`sse()`/`opaque()` types | `06-validation/streaming-responses.ts` (new) |
 | V3c | new `bunValidate.variants.test.ts` from `response-variants/run.ts` (RV1–RV28), through `router.fetch()` and the adapter, under `"warn"` and `"error"`, zod and yup: a whole match per variant; parts from two variants refused (RV2); **the leak** refused with the excluded variant named (RV3), **with its negative control**: the same handler on V3a's per-part union is answered 200; no applicable variant (RV5); header and cookie discriminants with `values` (`string`, `true`, `null`), an unknown value listed without itself (RV6, RV7); `res.variant()` agreeing and disagreeing with the discriminant (RV8); `refine` scrubbed against every part (RV9); no validator (`req.valid` `{}`) and `commonResponses` with `UntypedValid` (RV11); `when` call counts, and 0 with no variants (RV12); the loose-subset limit and its strict fix (RV17); an async `when` awaited, a sync one leaving the verdict sync, a non-boolean, throwing or rejecting one a failed check (RV10a–e); `.variant()`'s adjust (RV18–RV28): the discriminant, literal headers and cookies, the status and `Content-Type` filled, literal body fields filled at depth and in array elements, undeclared fields stripped (counted, never named), the handler's object unmutated, a wrong value the handler set kept and refused, a non-literal field left to the check, `when` decided before any adjust, the leak fixed on RV17's loose table (RV25), valibot not adjustable with its declaration `warn`, union and record limits, under `"off"` too (Q-H29), the re-serialised body on the wire, a `.variant()` after the commit warned once; declaration `TypeError`s (RV14); whole replacement under `commonResponses` and a mount; a streamed variant with survivors per chunk; `describeContract`'s `variant` rows and `sides.outbound.variants`; planted values in no issue or log line | `responses.type-test.ts` gains VT1–VT21 from `response-variants/types.probe.ts` (an async `when` allowed, a non-boolean refused; literal fields optional after `.variant()` for zod, required for valibot and on the union), plus B1 made a control (a discriminant's `null` refuses `set()`); `when`'s parameter asserted equal to the parsed parts; `nestVerbTyping.type-test.ts` gains a variants case; `generate-verb-overloads.ts --check`; `consumer-check.ts` for all four packages | `06-validation/response-variants.ts` (new): an admin header, a session cookie, a mode header |
-| V6 | the pipe, the global pipe (with and without, `results-nest.txt`), the filter, through `adapter.fetch()`, on Nest 11 and 12 | `SchemaDto` instance type; TS2509 for unions | `examples/bun-nest/02-http-adapter/pipeline.ts` drops its hand-written pipe |
+| V6 | the pipe, the global pipe (with and without, `results-nest.txt`), the filter, through `adapter.fetch()`, on Nest 11 and 12 | `SchemaDto` instance type; TS2509 for unions | `examples/bun-nest/02-http-adapter/pipeline.ts` drops its hand-written pipe for `StandardSchemaPipe` (`packages/bun-nest/lib/validation.ts`; #503) |
 | V7a | `@Validate` request side: every part, `@Validated(part)`; the skip rule both ways (a `@Body({ schema })` with the pipe in effect is not checked twice; without the pipe, or with `@Query('page', { schema })`, `@Validate` still checks); on 11 and 12 | parameter and return types; a `string[]` wildcard | `examples/bun-nest/08-validate/` (AD) |
 | V7b | responses: the status and `@Header()` headers seen in `map()` (each row of §4.5.4's table), a thrown 409 checked in `catchError`, redirects and `StreamableFile` through the before-write hook, plain `@Res()` skipped without a throw, `@Sse` with a sync and an async first event, both serializer placements; `ResponseValidationInterceptor` | `reply()` per-status types | the same folder |
 | V8 | frames: valid, invalid → error frame, unknown type, order with an async vendor, `closeOnInvalid`, outgoing modes; the upgrade request's parts checked before the upgrade (M7); `receives: { typing: null }` normalised to `{ data: null }` (P5 throws in the spike); the implicit `error` frame listed as a declared outbound key; the pure channel contract bundles browser-safe, its server binding does not (m12) | handler `msg` types; `send` rejects an undeclared type | a WebSocket channel example |
@@ -2086,7 +2088,7 @@ user reorders. Group 4's V12 can follow V3a.
 | V3a, V3b | `responses`, `responseValidation`, `ResponseValidationError`, `commonResponses`, `chunks`/`sse`/`opaque`; the `BunResponse` and `BunRequest` type parameters (bun-jobs' `define.ts` and bun-jobs-ui's server use `BunResponse` and must still check) |
 | V3c | `variants()` (`when`, sync or async, `by`, `refine`, `description`), `refine` on a plain status, `res.variant()`, which **adjusts the response** (fills single literals, the discriminant, the status and `Content-Type`; strips undeclared JSON body fields), also under `"off"`; the optional `variant` field on issues and on `describeContract` rows, and `sides.outbound.variants` (to 99: TC reads them); a variants status replaces a `commonResponses` one whole; the `RS` constraint change on `validate()` (to 15/bun-node-a9: bun-nest's type surface) |
 | V13 | the `"parse"` mode: a response may now differ from what the handler passed (the schema's output) |
-| V6, V7a, V7b, V9 | new bun-nest exports; `examples/bun-nest/02-http-adapter/pipeline.ts` can drop its `SchemaPipe` |
+| V6, V7a, V7b, V9 | new bun-nest exports; `examples/bun-nest/02-http-adapter/pipeline.ts` drops its `SchemaPipe` for V6's `StandardSchemaPipe` (`packages/bun-nest/lib/validation.ts`; #503) |
 | V8, V11 | channel API; typed SSE writer |
 | V4, V5a, V5c, V5b | from e9; V5b changes `api/contract` (to 99); `examples/bun-jobs/11-management-api/mounting-and-auth.ts:283-286` prints the whole `/definitions` body |
 
@@ -2438,7 +2440,11 @@ exported from their modules, not from the package root.
 day, the pipes' error class `StandardValidationException` and the options
 type `StandardValidationPipeOptions` (`messages`, `redactPaths`), both
 exported from bun-nest's root. `SchemaDtoClass`, the type `SchemaDto()`
-returns, stays internal.
+returns, stays internal. From #501's review, approved the same day:
+`StandardValidationModule.gatewayPipes()`, and the option
+`stripProtoKeys: "nest" | "minimal"` (default `"nest"`, Nest 12's rule) on
+`validate()`, the contract guards, `validateStandard` and
+`StandardValidationPipeOptions`, so on both pipes and `forRoot()`.
 
 **V3a (2026-10-21):** `responses`, `responseValidation` (`"off" | "warn" |
 "error"`, default `"off"`, also a `BunRouter` and adapter option, route over
