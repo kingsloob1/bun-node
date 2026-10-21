@@ -873,7 +873,11 @@ export class StandardValidationModule {
    * `SocketModule.getContextCreator`'s parameters), never a version. It
    * assumes the global pipe is this module's: with
    * `app.useGlobalPipes(new StandardValidationPipe(options))` instead, a
-   * Nest 11 gateway's pipe has no options.
+   * Nest 11 gateway's pipe has no options. On Nest 12 it relies on a global
+   * `StandardValidationPipe` being registered (this module, or
+   * `useGlobalPipes`): with none, it still returns `[]`, and a gateway's
+   * `SchemaDto` messages go unchecked. Without `@nestjs/websockets` it
+   * returns the pipe's class.
    */
   static gatewayPipes(): (typeof StandardValidationPipe)[] {
     return readGlobalPipesReachGateways() ? [] : [StandardValidationPipe];

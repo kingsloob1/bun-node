@@ -1944,7 +1944,12 @@ can be global, each taking its own DTOs.
   (`SocketModule.getContextCreator`'s parameters), never from a version, and
   it assumes the global pipe is `StandardValidationModule`'s: with
   `app.useGlobalPipes(new StandardValidationPipe(options))` instead, a Nest 11
-  gateway's pipe has none of those options.
+  gateway's pipe has none of those options. On Nest 12 it relies on a global
+  `StandardValidationPipe` being registered (the module, or your own
+  `useGlobalPipes`): with neither, it still returns no pipe, and a gateway's
+  `SchemaDto` message goes **unchecked**. Without `@nestjs/websockets`
+  installed it returns the pipe's class, which is harmless (there is no
+  gateway to run it).
 
 ### `ValidationExceptionFilter`
 
