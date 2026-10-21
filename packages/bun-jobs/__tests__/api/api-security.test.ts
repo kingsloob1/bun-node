@@ -210,7 +210,7 @@ describe("failures before authorization", () => {
     });
   });
 
-  it("refuses an oversized declared body before authorize, and a lying one after it", async () => {
+  it("refuses an oversized declared body before authorize, and an undeclared one after it", async () => {
     // The declared check is a router handler of its own: the only answer given
     // before `authorize`, so a caller cannot make the process buffer a body.
     const guard = declaredBodySizeGuard(10);
@@ -253,6 +253,24 @@ describe("failures before authorization", () => {
     });
     expect(huge.status).toBe(403);
     expect(denied.calls).toHaveLength(1);
+
+    // The same undeclared body from a caller who is allowed: refused once
+    // read, so the 403 above is the deferral, not a missing size check.
+    const allowed = await setup(true, {
+      actions: ["jobs.update"],
+      limits: { queueCacheMs: 0, maxJobDataBytes: 64 },
+    });
+    const read = await allowed.root.fetch("/admin/jobs/queues/mail/jobs/a", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: new Blob([oversized]).stream(),
+    });
+    expect(read.status).toBe(413);
+    expect(await read.json()).toMatchObject({
+      code: "PAYLOAD_TOO_LARGE",
+      context: { limit: 64 },
+    });
+    expect(allowed.calls).toHaveLength(1);
   });
 });
 
