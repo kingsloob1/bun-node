@@ -11,24 +11,41 @@ import { dirname, join } from "node:path";
 import { AbstractHttpAdapter } from "@nestjs/core";
 
 /**
- * The installed `@nestjs/core`'s version, read from its `package.json` on
- * disk, found by walking up from the resolved entry point: that works on
- * every release, whatever its `exports` map lists.
+ * The installed version of the Nest package `name`, read from its
+ * `package.json` on disk, found by walking up from the resolved entry point:
+ * that works on every release, whatever its `exports` map lists.
+ * @param name The package, such as "@nestjs/core".
  * @returns The version string, such as "12.2.0".
  */
-export async function nestCoreVersion(): Promise<string> {
-  let dir = dirname(Bun.resolveSync("@nestjs/core", import.meta.dir));
+async function installedVersion(name: string): Promise<string> {
+  let dir = dirname(Bun.resolveSync(name, import.meta.dir));
   for (;;) {
     const file = Bun.file(join(dir, "package.json"));
     if (await file.exists()) {
       const pkg = (await file.json()) as { name?: string; version: string };
-      if (pkg.name === "@nestjs/core") return pkg.version;
+      if (pkg.name === name) return pkg.version;
     }
     const parent = dirname(dir);
-    if (parent === dir)
-      throw new Error("@nestjs/core's package.json was not found");
+    if (parent === dir) throw new Error(`${name}'s package.json was not found`);
     dir = parent;
   }
+}
+
+/**
+ * The installed `@nestjs/core`'s version (see {@link installedVersion}).
+ * @returns The version string, such as "12.2.0".
+ */
+export async function nestCoreVersion(): Promise<string> {
+  return installedVersion("@nestjs/core");
+}
+
+/**
+ * The installed `@nestjs/common`'s version (see {@link installedVersion}),
+ * for an example gated on what `@nestjs/common` exports.
+ * @returns The version string, such as "12.2.0".
+ */
+export async function nestCommonVersion(): Promise<string> {
+  return installedVersion("@nestjs/common");
 }
 
 /**
