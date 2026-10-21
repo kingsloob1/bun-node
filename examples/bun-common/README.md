@@ -139,7 +139,7 @@ every option.
 | [`static-options.ts`](./12-options/static-options.ts) | every static-file option, caching, 304s, traversal, ranges, `precompressed` and `compression`; the bare prefix (`/static`) redirected to `/static/` when the handler is mounted with `use()`, unmatched by a `${prefix}/*` route alone (`useStaticAssets` adds a route on the prefix itself) |
 | [`compression-options.ts`](./12-options/compression-options.ts) | every `compression()` option, negotiation with q-values and wildcards, `dcb`/`dcz` dictionaries, `res.flush()` |
 | [`multipart-options.ts`](./12-options/multipart-options.ts) | every upload option, handler errors as `UploadError` codes and statuses, filters, storage options, busboy limits, `detectFileType` on and off in the adapter's multipart opts, served and through `fetch()` |
-| [`websocket-options.ts`](./12-options/websocket-options.ts) | every WebSocket option, event and emitter method; `onUpgrade` and the router- and response-level upgrade values |
+| [`websocket-options.ts`](./12-options/websocket-options.ts) | every WebSocket option, event and emitter method; `onUpgrade` and the router- and response-level upgrade values; `removeRouteHandler`: a removed route's upgrade going on to the next route or a 404, one of two handlers removed, open sockets left open |
 | [`logging-options.ts`](./12-options/logging-options.ts) | every logger option, sink and adapter mapping |
 | [`native-utilities.ts`](./12-options/native-utilities.ts) | every exported helper, with its options and edge cases |
 
