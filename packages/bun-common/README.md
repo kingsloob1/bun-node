@@ -137,7 +137,7 @@ const created = await fetch(`${app.url}/todos`, {
 });
 console.log(created.status, await created.json());
 
-await app.close(); // force-closes the server and its keep-alive connections
+await app.close(); // lets in-flight requests finish (10 s at most), then force-closes
 ```
 
 Runnable version:
@@ -526,7 +526,19 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
 | `views` | `BunViews` | a `BunViews` of its own | The views every response renders through, its error handlers' included; see the router's `views` option. Configure them with the [view helpers](#adapter-helpers). After `setInstance()` the adapter's views still apply. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
-| `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. `routes` serves constants natively, ahead of the router; see [Native static routes](#native-static-routes-serverroutes). |
+| `closeDrainTimeout` | `number` | `10_000` | The longest `close()` waits for in-flight requests to finish before cutting them, in milliseconds. `0` waits for nothing: in-flight requests are cut at once. A streamed response is in flight until it ends, so an endless server-sent events stream holds `close()` for the whole cap. WebSockets are not waited for. A negative or non-finite value throws a `RangeError` here. See [Listening and closing](#listening-and-closing). |
+| `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. `routes` serves constants natively, ahead of the router; see [Native static routes](#native-static-routes-serverroutes). The adapter sets no `idleTimeout`, so Bun's default applies; if you set one, make it `0` or at least `5` (see the warning below). |
+
+> **`idleTimeout` from 1 to 4 cuts streams at 4 s.** With `server.idleTimeout`
+> set to `1`–`4`, Bun cuts a response that is still streaming at the next
+> 4-second timeout sweep, even while it writes and the client reads every
+> chunk ([oven-sh/bun#46211](https://github.com/oven-sh/bun/issues/46211);
+> Bun 1.4.2 to 1.4.4-canary, any client). `0` or `5` and up are fine. Through
+> the adapter this hits a stream passed to `res.send()` (a `ReadableStream`,
+> an async generator, a Node `Readable`). A stream written with `res.write()`,
+> `flushHeaders()` or piped into `res`, server-sent events included, is
+> exempt: it turns the idle timeout off for its own request, as Node's
+> `socket.setTimeout(0)` would.
 
 A request whose body is absent and whose layers all finish synchronously
 reaches `Bun.serve` as a `Response`, with no promise in between; anything
@@ -581,16 +593,32 @@ Example tours:
   - A call for a different address stops the old server and binds the new one.
 - `setListenOptions({ port, hostname, ...serveOptions })` merges server options,
   then listens.
-- `close()` force-stops the server with `server.stop(true)` and emits `close`.
-  A graceful stop would leave keep-alive connections answering from the old
-  server, which `SO_REUSEPORT` can route to a new server on the same port.
-  Routes and handlers survive, so you can `listen()` again.
+- `close()` drains, then force-stops, then emits `close`:
+  1. `server.stop(false)`: the server stops accepting connections, closes
+     idle keep-alive ones, and lets the requests in flight finish;
+  2. it waits until `server.pendingRequests` is `0`, for at most the
+     `closeDrainTimeout` option (10 s by default; `0` skips the wait);
+  3. `server.stop(true)` always runs, cutting whatever is still open.
+
+  The same sequence is exported as `drainAndStop(server, drainMs)`, with
+  `validateCloseDrainTimeout(ms)` for the option, for a server you stop
+  yourself (bun-nest's adapter uses it too).
+
+  A streamed response, server-sent events included, is in flight until it
+  ends, so a stream that never ends is cut by the cap and holds `close()`
+  that long: end your streams on shutdown, or lower the cap. WebSockets are
+  not waited for (they are not requests); step 3 closes them. Nothing of the
+  old server outlives `close()`: a graceful stop alone would leave an SSE
+  stream flowing and a WebSocket answering from it even after a new server
+  bound the same port. Routes and handlers survive, so you can `listen()`
+  again.
 - Getters: `url`, `server`, `isListening` / `listening`, `listeningHost`,
   `listeningPort`, `address()`, `timeout`. `nodeHttpServer()` returns a
   Node-style server shim whose event methods delegate to `eventEmitter`.
 
-Example:
-[`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts).
+Examples:
+[`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts),
+[`shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/shutdown.ts) (the drain, `closeDrainTimeout`, `drainAndStop()`).
 
 #### Not-found and error handlers
 
@@ -1323,6 +1351,17 @@ app.get("/events", (_req, res) => {
 For a body that is a stream from the start, pass a `ReadableStream`, Node
 `Readable` or async generator to `send()`. `res.flush()` pushes out data
 buffered by a response transform such as [compression](#response-compression).
+
+Two things end a stream besides `end()`:
+
+- **The adapter's `close()`** waits for an open stream at most
+  `closeDrainTimeout` (10 s by default), then cuts it; see
+  [Listening and closing](#listening-and-closing).
+- **A small `idleTimeout`.** With `server.idleTimeout` set to `1`–`4`, Bun
+  cuts a stream passed to `send()` at 4 s however actively it flows
+  ([oven-sh/bun#46211](https://github.com/oven-sh/bun/issues/46211)); use `0`
+  or `5` and up. A `write()` stream turns the idle timeout off for its own
+  request, so it is not affected.
 
 Example:
 [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts),
@@ -2464,6 +2503,7 @@ Each file is a standalone script whose opening comment says what it shows.
 | `02-routing` | [`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts) | Every `fetch()` input form, router versus adapter `fetch`, parity with a served request |
 | `02-routing` | [`route-cache.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/route-cache.ts) | The route cache and `routeCacheMax`, named routes, `RouteClass`, `toNativeRequest` |
 | `03-http-adapter` | [`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts) | Every `listen()` overload, address getters, events, `setListenOptions`, `close()` |
+| `03-http-adapter` | [`shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/shutdown.ts) | `close()`'s drain: an in-flight request finishing, `closeDrainTimeout` (`0`, a short cap cutting an endless stream), `drainAndStop()` on a plain `Bun.serve` |
 | `03-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/adapter-options.ts) | Every constructor option |
 | `03-http-adapter` | [`handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/handlers.ts) | Not-found and error handlers, `enableCors`, `useStaticAssets` and its bare prefix, body parsers, `setTimeout` |
 | `04-request` | [`reading-a-request.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/reading-a-request.ts) | Every request property, query options, freshness, ranges, content negotiation |
