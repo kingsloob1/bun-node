@@ -2,8 +2,8 @@
  * The contract model: what a transport declares, what a contract holds, and
  * the static types derived from it.
  *
- * Types only, apart from the {@link CONTRACT} and {@link VARIANTS} symbols
- * and {@link variantsOf}. Nothing here imports a
+ * Types only, apart from the {@link CONTRACT} and {@link VARIANTS} symbols,
+ * {@link variantsOf} and {@link isPromiseLike}. Nothing here imports a
  * Bun or Node API, so the module is safe in a browser bundle (the
  * `@kingsleyweb/bun-common/contract` subpath).
  *
@@ -18,6 +18,22 @@ import type { StandardSchemaV1 } from "../types/standardSchema";
 
 /** A value, or a promise of one: what the runner and the guards return. */
 export type MaybePromise<T> = T | Promise<T>;
+
+/**
+ * Whether `value` is a thenable (an object or function with a callable
+ * `then`), not only a native `Promise`: what the Promises/A+ resolution
+ * procedure adopts. A vendor's `validate` or a hook may answer with one, and
+ * reading it as a settled value would take its `issues` as absent. Hand it
+ * to `Promise.resolve()`, so its rejection is a rejected Promise like any
+ * other.
+ */
+export function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
 
 /** Any Standard Schema: the only schema type the core knows. */
 export type Schema = StandardSchemaV1;

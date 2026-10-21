@@ -56,7 +56,7 @@ import type { StandardSchemaV1 } from "./types/standardSchema";
 import { ContractError } from "./contract/guard";
 import { andThen, runSchema, toIssues } from "./contract/issues";
 import { bareMediaType, compileMediaMap } from "./contract/media";
-import { VARIANTS, variantsOf } from "./contract/model";
+import { isPromiseLike, VARIANTS, variantsOf } from "./contract/model";
 import {
   isDocumented,
   jsonSchemaOf,
@@ -1259,8 +1259,9 @@ function run(
 ): Found {
   if (short) {
     const result = schema["~standard"].validate(value);
-    return result instanceof Promise
-      ? result.then(verdictOf)
+    // Any thenable is async, as in the core's runner.
+    return isPromiseLike(result)
+      ? Promise.resolve(result).then(verdictOf)
       : verdictOf(result);
   }
   const issuesOf = (
@@ -3280,8 +3281,8 @@ function discriminate(
 
 /**
  * Whether variant `variant`'s `when` holds for `req`: a boolean decided in
- * place (no Promise made), a Promise of one awaited. A non-boolean answer,
- * or a Promise resolving to one, throws (a failed check).
+ * place (no Promise made), a Promise (or any thenable) of one awaited. A
+ * non-boolean answer, or a Promise resolving to one, throws (a failed check).
  */
 function applies(
   variant: CompiledVariant,
@@ -3294,8 +3295,8 @@ function applies(
     req,
   );
   if (typeof answer === "boolean") return answer;
-  if (answer instanceof Promise) {
-    return answer.then((resolved: unknown) => {
+  if (isPromiseLike(answer)) {
+    return Promise.resolve(answer).then((resolved: unknown) => {
       if (typeof resolved !== "boolean") {
         throw new TypeError(
           `variant ${JSON.stringify(variant.name)}: when must resolve to a boolean`,

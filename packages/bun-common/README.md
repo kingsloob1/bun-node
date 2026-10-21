@@ -1935,17 +1935,17 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   received value (valibot, arktype, yup and zod all do in some messages) is
   replaced by `Invalid value (<code>)`. A message is compared with what its
   issue is about: the value at the issue's path (its leaves, and its keys
-  when it is an object), the keys of the object holding it, and the path's
-  keys. So `Expected one of "waiting", "active"` survives another field
-  holding `"waiting"`. A root issue (no path) is compared with the whole
-  value, as is a response `refine`'s, which sees every part. A root issue's
-  message is also withheld when it names one of the value's keys of three or
-  more characters as a word, quoted or not (yup's `unspecified keys: …`), so
-  an object-level `refine` naming a field (`total must equal the item count`)
-  keeps its message only when it is given a `path`. The scrub is a heuristic,
-  so
-  `messages: "generic"` replaces every message, and `redactPaths: true`
-  empties paths, since a path can name a key the sender chose (both are
+  when it is an object) and the path's keys, not the keys beside it. So
+  `Expected one of "waiting", "active"` survives another field holding
+  `"waiting"`, and `Expected "job"` a sibling named `job`. A root issue (no
+  path) is compared with the whole value, as is a response `refine`'s, which
+  sees every part. A schema's message is also withheld when it names one of
+  the compared value's keys of three or more characters as a word, quoted or
+  not (yup's `unspecified keys: …`, at the root or nested), so a `refine` on
+  an object naming one of its fields (`start must be before end`) keeps its
+  message only when it reports at that field's own `path`. The scrub is a
+  heuristic, so `messages: "generic"` replaces every message, and
+  `redactPaths: true` empties paths, since a path can name a key the sender chose (both are
   [`validate()` options](#validation) too). `onIssues(issues,
   context)` is a telemetry hook, called once per failing message.
 - **Contracts are readable at runtime.** `attachContract(handler, contract)`

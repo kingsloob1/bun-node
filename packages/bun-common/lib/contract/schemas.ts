@@ -5,6 +5,7 @@
  */
 import type { StandardSchemaV1 } from "../types/standardSchema";
 import type { AnyContract, ContractKind, MaybePromise, Schema } from "./model";
+import { isPromiseLike } from "./model";
 
 /**
  * The options a JSON Schema converter takes, as the Standard JSON Schema
@@ -285,7 +286,8 @@ export function recordOf<const M extends Readonly<Record<string, Schema>>>(
       });
       return issues.length > 0 ? { issues } : { value: out as Out };
     };
-    return results.some((r) => r instanceof Promise)
+    // Promise.all adopts any thenable a member answers with, not only a Promise.
+    return results.some(isPromiseLike)
       ? Promise.all(results).then(finish)
       : finish(results as StandardSchemaV1.Result<unknown>[]);
   };
