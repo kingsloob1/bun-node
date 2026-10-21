@@ -70,10 +70,15 @@ function OpenUpdateJobDialog({ job, onClose }: UpdateJobDialogProps) {
     (key === "runAt" ? times.problems.runAt : undefined) ??
     clientErrors[key] ??
     serverErrors[key];
-  // A problem that is not a per-field VALIDATION issue is shown as a banner.
+  // A problem that is not a per-field VALIDATION issue is shown as a banner,
+  // as is one with an issue no field shows (`unplacedIssues`).
   const bannerError =
     update.error &&
-    !(isApiError(update.error) && Object.keys(serverErrors).length > 0)
+    !(
+      isApiError(update.error) &&
+      Object.keys(serverErrors).length > 0 &&
+      update.unplacedIssues.length === 0
+    )
       ? update.error
       : null;
   const bodyError = serverErrors.body;

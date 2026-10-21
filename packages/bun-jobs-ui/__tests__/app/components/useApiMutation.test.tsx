@@ -90,7 +90,6 @@ describe("useApiMutation", () => {
           { target: "body", path: "opts.delay", message: "Must be >= 0" },
           { target: "body", path: "opts.delay", message: "Second message" },
           { target: "body", path: "", message: "Body required" },
-          { target: "query", path: "total", message: "Must be a boolean" },
         ],
       });
     });
@@ -101,8 +100,8 @@ describe("useApiMutation", () => {
     expect(holder.current!.fieldErrors).toEqual({
       "opts.delay": "Must be >= 0",
       body: "Body required",
-      total: "Must be a boolean",
     });
+    expect(holder.current!.unplacedIssues).toEqual([]);
     expect(toastText()).toEqual({ polite: "", assertive: "" });
     expect(invalidate).not.toHaveBeenCalled();
     // reset() clears them.
@@ -111,6 +110,73 @@ describe("useApiMutation", () => {
       await settleNotifications();
     });
     expect(holder.current!.fieldErrors).toEqual({});
+  });
+
+  it("toasts and lists the issues no field shows, keeping the body ones as fieldErrors", async () => {
+    // A host's own check in front of the API (headers here; cookies and
+    // signedCookies alike) names nothing a form edits.
+    const headers = {
+      target: "headers",
+      path: "x-tenant",
+      message: "Required",
+    } as const;
+    const params = {
+      target: "params",
+      path: "",
+      message: "Bad params",
+    } as const;
+    const query = {
+      target: "query",
+      path: "expectedSeq",
+      message: "Must be an integer",
+    } as const;
+    const { holder } = renderMutation(async () => {
+      throw new ApiError({
+        kind: "problem",
+        status: 400,
+        code: "VALIDATION",
+        title: "Request validation failed",
+        issues: [
+          { target: "body", path: "opts.delay", message: "Must be >= 0" },
+          headers,
+          params,
+          query,
+        ],
+      });
+    });
+    await act(async () => {
+      holder.current!.mutate({ queue: "emails" });
+    });
+    await waitFor(() => expect(holder.current!.isError).toBe(true));
+    expect(holder.current!.fieldErrors).toEqual({
+      "opts.delay": "Must be >= 0",
+    });
+    expect(holder.current!.unplacedIssues).toEqual([headers, params, query]);
+    const { assertive } = toastText();
+    expect(assertive).toContain("Request validation failed");
+    expect(assertive).toContain(
+      "headers.x-tenant Required; params Bad params; query.expectedSeq Must be an integer",
+    );
+    expect(assertive).not.toContain("opts.delay");
+  });
+
+  it("toasts a VALIDATION problem whose only issue no field shows, with no fieldErrors", async () => {
+    const { holder } = renderMutation(async () => {
+      throw new ApiError({
+        kind: "problem",
+        status: 400,
+        code: "VALIDATION",
+        title: "Request validation failed",
+        issues: [{ target: "headers", path: "x-tenant", message: "Required" }],
+      });
+    });
+    await act(async () => {
+      holder.current!.mutate({ queue: "emails" });
+    });
+    await waitFor(() => expect(holder.current!.isError).toBe(true));
+    expect(holder.current!.fieldErrors).toEqual({});
+    expect(holder.current!.unplacedIssues).toHaveLength(1);
+    expect(toastText().assertive).toContain("headers.x-tenant Required");
   });
 
   it("toasts any other ApiError's title and detail, assertively", async () => {
@@ -132,6 +198,7 @@ describe("useApiMutation", () => {
     expect(assertive).toContain("Queue not found");
     expect(assertive).toContain("No queue named emails.");
     expect(holder.current!.fieldErrors).toEqual({});
+    expect(holder.current!.unplacedIssues).toEqual([]);
   });
 
   it("prefers errorTitle as the headline, and handles non-API errors", async () => {

@@ -211,6 +211,32 @@ describe("the limits editor", () => {
     expectAbsent(within(form).queryByRole("alert"));
   });
 
+  it("shows a VALIDATION issue no field shows in a banner, beside the field ones", async () => {
+    renderQueue({
+      handlers: {
+        "PUT /queues/emails/limits": {
+          status: 400,
+          body: problem(400, "VALIDATION", "Invalid request", {
+            issues: [
+              { target: "body", path: "concurrency", message: "must be >= 1" },
+              { target: "headers", path: "x-tenant", message: "Required" },
+            ],
+          }),
+        },
+      },
+    });
+    const form = await limitsForm();
+    fireEvent.click(within(form).getByRole("button", { name: "Save limits" }));
+    // The banner lists every issue, so the field's message appears twice.
+    const alert = await within(form).findByRole("alert");
+    expect(alert.textContent).toContain("headers.x-tenant Required");
+    expect(
+      within(form)
+        .getByLabelText("Queue: concurrency")
+        .getAttribute("aria-invalid"),
+    ).toBe("true");
+  });
+
   it("offers a retry on LIMITS_CONTENDED", async () => {
     let attempts = 0;
     const { calls } = renderQueue({

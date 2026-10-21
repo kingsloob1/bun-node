@@ -394,6 +394,27 @@ describe("the schedule editor: validation", () => {
     ).toBe("true");
   });
 
+  it("shows a VALIDATION issue no field shows in a banner, beside the field ones", async () => {
+    await renderActions({
+      handlers: {
+        [`PUT ${PATH}`]: {
+          status: 400,
+          body: problem(400, "VALIDATION", "Validation failed", {
+            issues: [
+              { target: "body", path: "schedule.tz", message: "Too long" },
+              { target: "headers", path: "x-tenant", message: "Required" },
+            ],
+          }),
+        },
+      },
+    });
+    const dialog = await openAction("Reschedule…");
+    fireEvent.click(dialogButton(dialog, "Save schedule"));
+    await waitFor(() => expect(dialog.textContent).toContain("Too long"));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("headers.x-tenant Required");
+  });
+
   it("puts a VALIDATION issue at schedule.anchor on the anchor, as INVALID_SCHEDULE's are", async () => {
     await renderActions({
       handlers: {

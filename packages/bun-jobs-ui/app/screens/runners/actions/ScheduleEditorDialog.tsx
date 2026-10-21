@@ -117,10 +117,13 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
     server.fields[field];
   const hasServerFieldError = Object.keys(server.fields).length > 0;
   // An INVALID_SCHEDULE without issues (an API from before they were sent)
-  // names no field, so it falls through to the banner.
+  // names no field, so it falls through to the banner. So does an issue no
+  // field shows (`unplacedIssues`), as the whole problem, which lists it.
+  const unplaced = save.unplacedIssues.length > 0;
   const bannerError =
-    save.error && !hasServerFieldError
-      ? (server.other ?? explained(save.error, "reschedule"))
+    save.error && (!hasServerFieldError || unplaced)
+      ? ((unplaced ? undefined : server.other) ??
+        explained(save.error, "reschedule"))
       : null;
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {

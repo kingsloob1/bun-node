@@ -31,11 +31,31 @@ export function issuesToFieldErrors(
   return errors;
 }
 
-/** Whether an error is a `VALIDATION` problem carrying issues (shown as field errors, not a toast). */
+/**
+ * Whether an issue can be shown beside a form input: it is about the
+ * request body, which every form's fields are sent in. Issues on `params`,
+ * `query`, `headers`, `cookies` or `signedCookies` name nothing a form edits
+ * (the one mutation with a query, `expectedSeq`, is not a field), so they are
+ * {@link UseApiMutationResult.unplacedIssues} instead.
+ */
+function isFieldIssue(issue: ProblemIssueDto): boolean {
+  return issue.target === "body";
+}
+
+/** A `VALIDATION` problem's issues, or `[]` for any other error. */
+function validationIssues(error: unknown): readonly ProblemIssueDto[] {
+  return isApiError(error) && error.code === "VALIDATION" ? error.issues : [];
+}
+
+/** Whether an error is a `VALIDATION` problem whose issues are all shown as field errors (so it is not toasted). */
 function isFieldValidation(error: unknown): boolean {
-  return (
-    isApiError(error) && error.code === "VALIDATION" && error.issues.length > 0
-  );
+  const issues = validationIssues(error);
+  return issues.length > 0 && issues.every(isFieldIssue);
+}
+
+/** An issue as one line of text, as the problem banner shows it: `cookies.session Required`. */
+function issueText(issue: ProblemIssueDto): string {
+  return `${issue.target}${issue.path ? `.${issue.path}` : ""} ${issue.message}`;
 }
 
 /** Options of {@link useApiMutation}. */
@@ -73,15 +93,24 @@ export type UseApiMutationResult<
   TVariables,
   TOnMutateResult = unknown,
 > = UseMutationResult<TData, Error, TVariables, TOnMutateResult> & {
-  /** From the last failure's `VALIDATION` issues (see {@link issuesToFieldErrors}); `{}` otherwise. Cleared by the next `mutate` or `reset`. */
+  /** From the last failure's `VALIDATION` issues on the body (see {@link issuesToFieldErrors}); `{}` otherwise. Cleared by the next `mutate` or `reset`. */
   fieldErrors: FieldErrors;
+  /**
+   * The last failure's `VALIDATION` issues that no form field shows: those
+   * not on the body, e.g. a host's own cookie check in front of the API.
+   * `[]` otherwise. A screen that hides its banner while there are field
+   * errors still shows it when this is non-empty, or they are shown nowhere.
+   */
+  unplacedIssues: readonly ProblemIssueDto[];
 };
 
 /**
  * TanStack's `useMutation` with the app's conventions: on success it toasts
  * `successMessage` and invalidates `invalidate`; on failure it toasts the
- * problem's title and detail, except a `VALIDATION` problem with issues,
- * which becomes `fieldErrors` for the form to show beside its inputs.
+ * problem's title and detail, except a `VALIDATION` problem whose issues
+ * are all on the body, which becomes `fieldErrors` for the form to show
+ * beside its inputs. Issues on anything else are `unplacedIssues`, and are
+ * listed in the toast.
  */
 export function useApiMutation<
   TData,
@@ -130,8 +159,13 @@ export function useApiMutation<
           const title = errorTitle ?? error.title;
           const detail =
             error.detail && error.detail !== title ? error.detail : undefined;
+          const unplaced = validationIssues(error)
+            .filter((issue) => !isFieldIssue(issue))
+            .map(issueText)
+            .join("; ");
           toast.error(title, {
-            description: errorTitle && !detail ? error.title : detail,
+            description:
+              unplaced || (errorTitle && !detail ? error.title : detail),
           });
         } else {
           toast.error(errorTitle ?? "Something went wrong", {
@@ -143,12 +177,12 @@ export function useApiMutation<
     },
   });
   const { error } = mutation;
-  const fieldErrors = useMemo(
-    () =>
-      isApiError(error) && isFieldValidation(error)
-        ? issuesToFieldErrors(error.issues)
-        : {},
-    [error],
-  );
-  return { ...mutation, fieldErrors };
+  const { fieldErrors, unplacedIssues } = useMemo(() => {
+    const issues = validationIssues(error);
+    return {
+      fieldErrors: issuesToFieldErrors(issues.filter(isFieldIssue)),
+      unplacedIssues: issues.filter((issue) => !isFieldIssue(issue)),
+    };
+  }, [error]);
+  return { ...mutation, fieldErrors, unplacedIssues };
 }
