@@ -1,7 +1,9 @@
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
+import type { IssueFormat } from "./contract/issues";
 import type {
   AnyContract,
+  GuardOptions,
   StandardOutcome,
   ValidationIssue,
 } from "./contract/model";
@@ -377,6 +379,52 @@ export interface BunValidateOptions<
    * production.
    */
   responseValidation?: ResponseValidationMode;
+  /**
+   * `"generic"` replaces every issue's message with `Invalid value` (plus the
+   * vendor's issue code when it has one), rather than the default scrub,
+   * which withholds only a message found to quote a received value. The
+   * contract guards' option of the same name (plan Q-C3). Applies to every
+   * issue a schema of this validator reports: the `ValidationError` (so the
+   * `"respond"` body, `formatError`'s argument and the `"throw"` and
+   * `"next"` errors), and the `responses` checks' `ResponseValidationError`
+   * and warnings. An issue the framework writes itself (an undeclared
+   * status or media type) names only what is declared, and is kept. Default
+   * unset: the scrub. Anything else throws a `TypeError` here.
+   */
+  messages?: GuardOptions["messages"];
+  /**
+   * Empties every issue's `path` (`""`), for schemas keyed by user data (an
+   * e-mail-keyed record, an unknown key's name), since a path names keys
+   * the sender chose. The contract guards' option of the same name (plan
+   * Q-C2), on the same issues as {@link messages}. An `sse()` event's issues
+   * keep their `<event>.data` prefix, a declared name. Default `false`; a
+   * value that is not a boolean throws a `TypeError` here.
+   */
+  redactPaths?: GuardOptions["redactPaths"];
+}
+
+/**
+ * The issue wording `messages` and `redactPaths` ask for, or `undefined`
+ * when neither is set, so the runner is handed exactly what it was before.
+ * Throws a `TypeError` on a value neither option takes: both are privacy
+ * options, and a typo (`"Generic"`) would otherwise leave messages as they
+ * were, silently.
+ */
+function issueFormat(
+  messages: unknown,
+  redactPaths: unknown,
+): IssueFormat | undefined {
+  if (messages !== undefined && messages !== "generic") {
+    throw new TypeError(`validate(): messages must be "generic" or unset`);
+  }
+  if (redactPaths !== undefined && typeof redactPaths !== "boolean") {
+    throw new TypeError(`validate(): redactPaths must be a boolean`);
+  }
+  if (messages === undefined && redactPaths === undefined) return undefined;
+  return {
+    ...(messages === undefined ? {} : { messages }),
+    ...(redactPaths === undefined ? {} : { redactPaths }),
+  };
 }
 
 /**
@@ -596,6 +644,9 @@ export class BunValidate<
   /** `responses`, checked and in contract form; `undefined` when none is declared. */
   readonly #responses: OutboundDef | undefined;
 
+  /** `messages` and `redactPaths`, for every schema run; `undefined` when neither is set. */
+  readonly #format: IssueFormat | undefined;
+
   /**
    * The HTTP contract of the schemas, attached to every middleware this
    * builds so `getContract(middleware)` reads them back (plan Q-C10).
@@ -649,6 +700,7 @@ export class BunValidate<
         `validate(): responseValidation must be "off", "warn" or "error"`,
       );
     }
+    this.#format = issueFormat(options.messages, options.redactPaths);
     this.#responses =
       options.responses === undefined
         ? undefined
@@ -702,7 +754,7 @@ export class BunValidate<
     const own = this.#options.responseValidation;
     const ownGate =
       responses !== undefined && own !== undefined && own !== "off"
-        ? new ResponseContractGate(responses, own, defaultLogger)
+        ? new ResponseContractGate(responses, own, defaultLogger, this.#format)
         : undefined;
     const handler = this.#handler(ownGate);
     attachContract(handler, this.#contract);
@@ -725,6 +777,7 @@ export class BunValidate<
             : mergeOutboundDefs([...settings.common, responses]),
           mode,
           settings.logger,
+          this.#format,
         );
         const bound = this.#handler(gate);
         attachContract(bound, contract);
@@ -754,6 +807,7 @@ export class BunValidate<
         }
       | undefined;
     const targets = this.#targets;
+    const format = this.#format;
 
     // Each target in turn, as before the core: a `normalize` hook may read
     // what an earlier target wrote back, and `abortEarly` stops the rest. It
@@ -836,7 +890,14 @@ export class BunValidate<
           const input = targetHooks?.normalize
             ? targetHooks.normalize(raw, req)
             : raw;
-          const outcome = validateStandard(schema, input, target);
+          const outcome = validateStandard(
+            schema,
+            input,
+            target,
+            undefined,
+            undefined,
+            format,
+          );
           if (outcome instanceof Promise) {
             return outcome.then((settled) =>
               settle(target, settled) ? finish() : run(i + 1),

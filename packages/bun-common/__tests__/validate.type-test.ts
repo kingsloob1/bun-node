@@ -7,9 +7,11 @@
  * Runtime behaviour is covered in `bunValidate.test.ts`.
  */
 import type {
+  BunValidateOptions,
   InferValidatedShape,
   ValidatedShapeFor,
 } from "../lib/BunValidate";
+import type { GuardOptions } from "../lib/contract/model";
 import type { DefaultRequestBody } from "../lib/types/general";
 import type { ParamsDictionary } from "../lib/types/routeParams";
 import type { EmptyShape } from "../lib/types/routeTyping";
@@ -289,4 +291,34 @@ router.get(
     // @ts-expect-error — `offset` is a number, not a string.
     type _q = Expect<Equal<typeof _req.query.offset, string>>;
   },
+);
+
+/* --- messages and redactPaths: the contract guards' options -------------- */
+
+// The same names, types and optionality as `GuardOptions` (plan Q-C2, Q-C3).
+type Wording = "messages" | "redactPaths";
+type _wording = Expect<
+  Equal<Pick<BunValidateOptions, Wording>, Pick<GuardOptions, Wording>>
+>;
+type _messages = Expect<
+  Equal<BunValidateOptions["messages"], GuardOptions["messages"]>
+>;
+type _redactPaths = Expect<
+  Equal<BunValidateOptions["redactPaths"], GuardOptions["redactPaths"]>
+>;
+validate({ query: PageQuery }, { messages: "generic", redactPaths: true });
+BunValidate.middleware({
+  schemas: { query: PageQuery },
+  messages: "generic",
+  redactPaths: false,
+});
+validate(
+  { query: PageQuery },
+  // @ts-expect-error — `"generic"` is the only wording.
+  { messages: "verbose" },
+);
+validate(
+  { query: PageQuery },
+  // @ts-expect-error — a boolean, not a string.
+  { redactPaths: "yes" },
 );

@@ -34,6 +34,7 @@ import type {
   StandardOutcome,
   ValidationIssue,
 } from "./contract/model";
+import type { IssueFormat } from "./contract/issues";
 import type { Logger } from "./logging";
 import type { SseEvents, StreamChunks } from "./responseBodies";
 import type { StandardSchemaV1 } from "./types/standardSchema";
@@ -548,13 +549,18 @@ function issue(
   return out;
 }
 
-/** Runs one schema through the core's runner (its issues scrubbed of the value). */
+/**
+ * Runs one schema through the core's runner (its issues scrubbed of the
+ * value, and worded per `format`: the validator's `messages` and
+ * `redactPaths`).
+ */
 function run(
   schema: Schema,
   value: unknown,
   target: ResponsePart,
   status: number,
-  mediaType?: string,
+  mediaType: string | undefined,
+  format: IssueFormat | undefined,
 ): Found {
   const issuesOf = (
     outcome: StandardOutcome<unknown, ResponsePart>,
@@ -565,7 +571,7 @@ function run(
     target,
     status,
     mediaType,
-    undefined,
+    format,
   );
   return outcome instanceof Promise
     ? outcome.then(issuesOf)
@@ -578,9 +584,10 @@ function runBody(
   value: BodyValue,
   status: number,
   key: MediaKey,
+  format: IssueFormat | undefined,
 ): Found {
   return value.ok
-    ? run(schema, value.value, "body", status, key.declared)
+    ? run(schema, value.value, "body", status, key.declared, format)
     : [issue("body", status, "The body is not valid JSON", key.declared)];
 }
 
@@ -635,6 +642,8 @@ class StreamChecker implements ResponseStreamCheck {
   readonly #text: boolean;
   /** Where mismatches go. */
   readonly #reporter: StreamReporter;
+  /** How the schemas' issues are worded (`messages`, `redactPaths`); `undefined` for the default. */
+  readonly #format: IssueFormat | undefined;
   /** Decodes byte chunks across boundaries (multi-byte characters split between chunks). */
   #decoder: TextDecoder | undefined;
   /** The SSE framer, for `sse()`. */
@@ -650,6 +659,7 @@ class StreamChecker implements ResponseStreamCheck {
    * @param key      The declared media key the body fell under.
    * @param bare     The bare media type sent.
    * @param reporter Where mismatches go.
+   * @param format   How the schemas' issues are worded.
    */
   constructor(
     decl: StreamChunks | SseEvents,
@@ -657,12 +667,14 @@ class StreamChecker implements ResponseStreamCheck {
     key: MediaKey,
     bare: string,
     reporter: StreamReporter,
+    format: IssueFormat | undefined,
   ) {
     this.#decl = decl;
     this.#status = status;
     this.#key = key;
     this.#text = isTextMedia(bare);
     this.#reporter = reporter;
+    this.#format = format;
   }
 
   /** Marks the stream's mismatch as reported (the commit reported its first chunk's). */
@@ -741,6 +753,7 @@ class StreamChecker implements ResponseStreamCheck {
       "body",
       this.#status,
       this.#key.declared,
+      this.#format,
     );
   }
 
@@ -826,7 +839,10 @@ class StreamChecker implements ResponseStreamCheck {
         ];
       }
     }
-    return prefixed(run(schema, value, "body", status, media), path);
+    return prefixed(
+      run(schema, value, "body", status, media, this.#format),
+      path,
+    );
   }
 
   /** Turns a chunk's issues into a verdict, reporting them. */
@@ -923,6 +939,8 @@ export class ResponseContractGate implements ResponseGate {
   readonly #mode: "warn" | "error";
   /** The logger, resolved when first needed (the router's, once bound). */
   readonly #logger: () => Logger;
+  /** How the schemas' issues are worded (the validator's `messages`, `redactPaths`); `undefined` for the default. */
+  readonly #format: IssueFormat | undefined;
   /** Set once the gate said it does not buffer a stream (one warning per gate, i.e. per route). */
   #warnedUnread = false;
   /** Gates combined with an inner validator's, cached by that gate. */
@@ -932,18 +950,29 @@ export class ResponseContractGate implements ResponseGate {
    * @param def    The response table, checked by {@link toOutboundDef} (and merged).
    * @param mode   `"warn"` or `"error"`; `"off"` installs no gate.
    * @param logger Resolves the logger mismatches are written to.
+   * @param format The validator's `messages` and `redactPaths`, applied to
+   *   every schema's issues; `undefined` (the default) for the core's scrub.
    */
-  constructor(def: OutboundDef, mode: "warn" | "error", logger: () => Logger) {
+  constructor(
+    def: OutboundDef,
+    mode: "warn" | "error",
+    logger: () => Logger,
+    format?: IssueFormat,
+  ) {
     this.#def = def;
     this.#table = compileTable(def);
     this.#mode = mode;
     this.#logger = logger;
+    this.#format = format;
   }
 
   /**
    * The gate for a response two validators let through (a mount's, then a
    * route's): their tables merged with the inner one winning per status and
-   * part, under the inner one's mode. Cached, so a pair compiles once.
+   * part, under the inner one's mode. Their issue wording is the stricter
+   * of the two (`messages: "generic"` or `redactPaths` set on either holds),
+   * so a route's validator never undoes its mount's. Cached, so a pair
+   * compiles once.
    *
    * @param inner The inner validator's gate.
    */
@@ -956,6 +985,7 @@ export class ResponseContractGate implements ResponseGate {
         mergeOutboundDefs([this.#def, inner.#def]),
         inner.#mode,
         inner.#logger,
+        strictest(this.#format, inner.#format),
       );
       cache.set(inner, combined);
     }
@@ -1115,6 +1145,8 @@ export class ResponseContractGate implements ResponseGate {
           headersView(response, commit.contentType),
           "headers",
           status,
+          undefined,
+          this.#format,
         ),
       );
     }
@@ -1125,6 +1157,8 @@ export class ResponseContractGate implements ResponseGate {
           setCookieView(response.headers.getSetCookie()),
           "cookies",
           status,
+          undefined,
+          this.#format,
         ),
       );
     }
@@ -1225,13 +1259,21 @@ export class ResponseContractGate implements ResponseGate {
           ),
         ];
       case "json":
-        return run(entry, commit.body, "body", status, key.declared);
+        return run(
+          entry,
+          commit.body,
+          "body",
+          status,
+          key.declared,
+          this.#format,
+        );
       case "text":
         return runBody(
           entry,
           textValue(bare, String(commit.body)),
           status,
           key,
+          this.#format,
         );
       case "bytes":
         return runBody(
@@ -1239,6 +1281,7 @@ export class ResponseContractGate implements ResponseGate {
           bytesValue(bare, toBytes(commit.body as ArrayBufferView)),
           status,
           key,
+          this.#format,
         );
       case "blob":
       case "file":
@@ -1246,7 +1289,7 @@ export class ResponseContractGate implements ResponseGate {
         // Read without consuming what is sent: a Blob (a file's too) reads
         // again; a Response is cloned (Q-H5).
         return readBytes(response, commit).then((bytes) =>
-          runBody(entry, bytesValue(bare, bytes), status, key),
+          runBody(entry, bytesValue(bare, bytes), status, key, this.#format),
         );
       default:
         // A stream: never buffered (Q-H4).
@@ -1272,11 +1315,18 @@ export class ResponseContractGate implements ResponseGate {
     decl: StreamChunks | SseEvents,
     out: CommitOut,
   ): Found {
-    const checker = new StreamChecker(decl, status, key, bare, {
-      refuse: this.#mode === "error" && !commit.reportOnly,
-      logger: this.#logger,
-      where: this.#where(res),
-    });
+    const checker = new StreamChecker(
+      decl,
+      status,
+      key,
+      bare,
+      {
+        refuse: this.#mode === "error" && !commit.reportOnly,
+        logger: this.#logger,
+        where: this.#where(res),
+      },
+      this.#format,
+    );
     const kind = commit.kind;
     const whole = (chunk: BunResponseChunk): Found =>
       gather([checker.issues(chunk), checker.endIssues()]);
@@ -1305,6 +1355,24 @@ export class ResponseContractGate implements ResponseGate {
         return [];
     }
   }
+}
+
+/**
+ * The stricter of two validators' issue wordings, for a gate combining
+ * them: each option set on either holds. `undefined` when neither sets one.
+ */
+function strictest(
+  outer: IssueFormat | undefined,
+  inner: IssueFormat | undefined,
+): IssueFormat | undefined {
+  if (outer === undefined) return inner;
+  if (inner === undefined) return outer;
+  const generic = outer.messages === "generic" || inner.messages === "generic";
+  const redact = outer.redactPaths === true || inner.redactPaths === true;
+  return {
+    ...(generic ? { messages: "generic" as const } : {}),
+    ...(redact ? { redactPaths: true } : {}),
+  };
 }
 
 /** A Blob's, a file's or a passed-through `Response`'s bytes, read without consuming what is sent. */

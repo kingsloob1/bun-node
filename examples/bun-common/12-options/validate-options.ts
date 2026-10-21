@@ -26,7 +26,9 @@
  *   validator's contract, marked `implicit`; under `"next"` or `"throw"` the
  *   app's error handler answers, and the contract declares no status.
  * - Cookies, signed cookies and `req.valid` have their own example,
- *   `06-validation/cookies-and-headers.ts`.
+ *   `06-validation/cookies-and-headers.ts`; `messages` and `redactPaths` on
+ *   the 400, `formatError` and the response checks have
+ *   `06-validation/message-options.ts`.
  */
 import type {
   JsonValue,
@@ -563,6 +565,41 @@ checkEqual(
     await run(validate({ query: Page }, { replace: false }), { url: "/check" }),
   )?.targets,
   ["query"],
+);
+
+/* ------------------------------------------------------------------ */
+step("messages and redactPaths");
+
+/** The `[message, path]` of each issue a failing `?page=0` reports under `options`. */
+async function wording(options: {
+  messages?: "generic";
+  redactPaths?: boolean;
+}): Promise<[string, string][]> {
+  const error = passedError(
+    await run(validate({ query: Page }, options), { url: "/check?page=0" }),
+  );
+  return (error?.issues ?? []).map((issue) => [issue.message, issue.path]);
+}
+
+checkEqual(
+  "unset (default): the schema's message and path",
+  await wording({}),
+  [["page must be a whole number", "page"]],
+);
+checkEqual(
+  'messages: "generic": every message replaced (this schema has no issue code)',
+  await wording({ messages: "generic" }),
+  [["Invalid value", "page"]],
+);
+checkEqual(
+  "redactPaths: true: every path emptied",
+  await wording({ redactPaths: true }),
+  [["page must be a whole number", ""]],
+);
+checkEqual(
+  "undefined keeps both defaults",
+  await wording({ messages: undefined, redactPaths: undefined }),
+  [["page must be a whole number", "page"]],
 );
 
 /* ------------------------------------------------------------------ */
