@@ -541,6 +541,13 @@ export function checkJobDataWrite(
   data: unknown,
   logger: Logger,
   context?: Record<string, unknown>,
+  /**
+   * Where a `"warn"` outcome's warning goes instead of the log: a caller
+   * checking several entries (`addBulk`, `addFlow`) emits them only once
+   * every entry has passed, so a write another entry refuses warns nothing.
+   * Logged at once when omitted.
+   */
+  warnings?: (() => void)[],
 ): void | Promise<void> {
   const schema = check?.data;
   if (schema === undefined) return undefined;
@@ -563,12 +570,18 @@ export function checkJobDataWrite(
         detail,
       );
     }
-    warnJobIssues(
-      logger,
-      'Job data did not pass its schema; written anyway (dataValidation.enqueue is "warn")',
-      { name, queue, ...detail },
-      outcome.issues,
-    );
+    const warn = (): void =>
+      warnJobIssues(
+        logger,
+        'Job data did not pass its schema; written anyway (dataValidation.enqueue is "warn")',
+        { name, queue, ...detail },
+        outcome.issues,
+      );
+    if (warnings === undefined) {
+      warn();
+    } else {
+      warnings.push(warn);
+    }
   };
   // JSON has no `undefined`: a job added with no data is stored, and read
   // back by every backend, as `null`, so that is what the worker will check.

@@ -732,3 +732,107 @@ describe("processing, per node", () => {
     });
   });
 });
+
+describe('a "warn" node in a write another entry refuses', () => {
+  /** Refuses every `page` after an await, as an async vendor check would. */
+  const SlowPage = z.object({ page: z.number() }).refine(async () => false);
+
+  /** A context where `sendEmail` warns and `fetch`/`slow` refuse. */
+  function warnBeside(logger: ReturnType<typeof createTestLogger>["logger"]) {
+    const jobs = makeJobs({ logger });
+    jobs.define("fetch", async () => null, { schema: { data: Page } });
+    jobs.define("slow", async () => null, { schema: { data: SlowPage } });
+    jobs.define("sendEmail", async () => null, {
+      schema: { data: Email },
+      dataValidation: { enqueue: "warn" },
+    });
+    return jobs.queue("jobs");
+  }
+
+  it("a flow refused by a later node logs no warning, as nothing is written", async () => {
+    const { logger, events } = createTestLogger();
+    const queue = warnBeside(logger);
+    const error = await refusal(() =>
+      queue.addFlow({
+        name: "fetch",
+        data: { page: 1 },
+        children: [
+          { name: "sendEmail", data: { to: SECRET } },
+          { name: "fetch", data: { page: "x" } },
+        ],
+      }),
+    );
+    expect((error as JobDataValidationError).context).toMatchObject({
+      flowPath: "children.1",
+    });
+    expect(await total(queue)).toBe(0);
+    expect(warnings(events)).toHaveLength(0);
+  });
+
+  it("the same when the refusal comes from an asynchronous check", async () => {
+    const { logger, events } = createTestLogger();
+    const queue = warnBeside(logger);
+    const error = await refusal(() =>
+      queue.addFlow({
+        name: "fetch",
+        data: { page: 1 },
+        children: [
+          { name: "sendEmail", data: { to: SECRET } },
+          { name: "slow", data: { page: 2 } },
+        ],
+      }),
+    );
+    expect((error as JobDataValidationError).context).toMatchObject({
+      flowPath: "children.1",
+    });
+    expect(await total(queue)).toBe(0);
+    expect(warnings(events)).toHaveLength(0);
+  });
+
+  it("a bulk refused by a later entry logs no warning either", async () => {
+    const { logger, events } = createTestLogger();
+    const queue = warnBeside(logger);
+    const error = await refusal(() =>
+      queue.addBulk([
+        { name: "sendEmail", data: { to: SECRET } },
+        { name: "fetch", data: { page: "x" } },
+      ]),
+    );
+    expect((error as JobDataValidationError).context).toMatchObject({
+      index: 1,
+    });
+    expect(await total(queue)).toBe(0);
+    expect(warnings(events)).toHaveLength(0);
+  });
+
+  it("once every other entry passes, the warning is logged, after an asynchronous check too", async () => {
+    const { logger, events } = createTestLogger();
+    const jobs = makeJobs({ logger });
+    jobs.define("fetch", async () => null, { schema: { data: Page } });
+    jobs.define("later", async () => null, {
+      schema: {
+        data: z.object({ page: z.number() }).refine(async () => true),
+      },
+    });
+    jobs.define("sendEmail", async () => null, {
+      schema: { data: Email },
+      dataValidation: { enqueue: "warn" },
+    });
+    const queue = jobs.queue("jobs");
+    await queue.addFlow({
+      name: "fetch",
+      data: { page: 1 },
+      children: [
+        { name: "sendEmail", data: { to: SECRET } },
+        { name: "later", data: { page: 2 } },
+      ],
+    });
+    expect(await total(queue)).toBe(3);
+    expect(warnings(events)).toHaveLength(1);
+    await queue.addBulk([
+      { name: "sendEmail", data: { to: SECRET } },
+      { name: "later", data: { page: 3 } },
+    ]);
+    expect(warnings(events)).toHaveLength(2);
+  });
+});
