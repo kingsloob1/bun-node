@@ -1771,7 +1771,10 @@ variant first) is the advice past a handful of variants.
   on a plain status's spec, checks the whole response once its parts pass,
   synchronously, and returns `{ part, path?, message }[]` or `undefined`. Its
   messages are scrubbed against **every** part, so one quoting a body value
-  under `headers.x-total` comes out `Invalid value`. Inline in `responses`, a
+  under `headers.x-total` comes out `Invalid value`. The scrub is the core's
+  heuristic: a value of one or two characters is caught only where the message
+  quotes it (`"u9"`, `received u9`), so `u9 is not the body's id` goes out as
+  written; use `messages: "generic"` for a guarantee. Inline in `responses`, a
   plain status's `refine` with an inferred parameter needs `satisfies Refine`
   (as an inline error handler needs its hint).
 - **What an issue says**: a status-level summary (`The response matches no
@@ -1863,6 +1866,9 @@ variant's value) and `descriptions`.
 allocation; the path is the one without variants). One `when` call per
 variant that has one. While matching, only each vendor's pass or fail is
 asked; issues are built on the refusal path alone.
+
+Example:
+[`response-variants.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/response-variants.ts).
 
 ### Contracts
 
