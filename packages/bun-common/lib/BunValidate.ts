@@ -28,6 +28,7 @@ import { documented, markImplicit, toConverter } from "./contract/schemas";
 import { attachContract, isSchema, makeContract } from "./contract/transport";
 import { resolveLogger } from "./logging";
 import {
+  declaresVariants,
   mergeOutboundDefs,
   RESPONSE_BINDING,
   ResponseContractGate,
@@ -200,7 +201,7 @@ export type ValidatedShapeFor<
   H = unknown,
   R extends boolean = true,
   RS = undefined,
-> = [RS] extends [ResponseSchemas]
+> = [RS] extends [ResponseSchemas<never>]
   ? RequestShapeFor<S, H, R> & { responses: InferResponses<RS> }
   : RequestShapeFor<S, H, R>;
 
@@ -297,7 +298,8 @@ export interface BunValidateOptions<
   S extends ValidationSchemas = ValidationSchemas,
   H extends ValidationHooks<S> = ValidationHooks<S>,
   R extends boolean = true,
-  RS extends ResponseSchemas | undefined = ResponseSchemas | undefined,
+  RS extends ResponseSchemas<InferValidatedShape<S>> | undefined =
+    ResponseSchemas<InferValidatedShape<S>> | undefined,
 > {
   /**
    * Schemas to apply, keyed by request target. A key that is not a target
@@ -365,7 +367,9 @@ export interface BunValidateOptions<
   responses?: RS;
   /**
    * Runtime response checks for {@link responses}: `"off"` checks nothing
-   * and installs nothing; `"warn"` sends the response and logs each
+   * and installs nothing (unless a status is declared with `variants()`:
+   * then only `res.variant()`'s adjust runs, plan Q-H29); `"warn"` sends
+   * the response and logs each
    * mismatch once (no value from it); `"error"` refuses a mismatching
    * response before anything is sent, handing a `ResponseValidationError`
    * to the error handlers (the adapter answers 500 without one). A body that
@@ -628,7 +632,7 @@ export class BunValidate<
   S extends ValidationSchemas = ValidationSchemas,
   H extends ValidationHooks<S> = ValidationHooks<S>,
   R extends boolean = true,
-  RS extends ResponseSchemas | undefined = undefined,
+  RS extends ResponseSchemas<InferValidatedShape<S>> | undefined = undefined,
 > {
   /** Targets that have a schema, in a fixed order for predictable reporting. */
   readonly #targets: ValidationTarget[];
@@ -752,8 +756,13 @@ export class BunValidate<
   public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
     const responses = this.#responses;
     const own = this.#options.responseValidation;
+    // `"off"` installs nothing, unless the table declares variants: then the
+    // adjust-only step, so `res.variant()`'s fills and strips still apply
+    // (plan Q-H29).
     const ownGate =
-      responses !== undefined && own !== undefined && own !== "off"
+      responses !== undefined &&
+      own !== undefined &&
+      (own !== "off" || declaresVariants(responses))
         ? new ResponseContractGate(responses, own, defaultLogger, this.#format)
         : undefined;
     const handler = this.#handler(ownGate);
@@ -768,13 +777,15 @@ export class BunValidate<
     const binding: ResponseBinding = {
       bind: (settings: RouterResponseSettings) => {
         const mode = own ?? settings.mode ?? "off";
-        if (mode === "off") {
+        const table =
+          settings.common.length === 0
+            ? responses
+            : mergeOutboundDefs([...settings.common, responses]);
+        if (mode === "off" && !declaresVariants(table)) {
           return handler;
         }
         const gate = new ResponseContractGate(
-          settings.common.length === 0
-            ? responses
-            : mergeOutboundDefs([...settings.common, responses]),
+          table,
           mode,
           settings.logger,
           this.#format,
@@ -921,7 +932,8 @@ export class BunValidate<
     S extends ValidationSchemas,
     H extends ValidationHooks<S> = ValidationHooks<S>,
     R extends boolean = true,
-    const RS extends ResponseSchemas | undefined = undefined,
+    const RS extends ResponseSchemas<InferValidatedShape<S>> | undefined =
+      undefined,
   >(
     options: BunValidateOptions<S, H, R, RS>,
   ): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
@@ -946,7 +958,8 @@ export function validate<
   S extends ValidationSchemas,
   H extends ValidationHooks<S> = ValidationHooks<S>,
   R extends boolean = true,
-  const RS extends ResponseSchemas | undefined = undefined,
+  const RS extends ResponseSchemas<InferValidatedShape<S>> | undefined =
+    undefined,
 >(
   schemas: S,
   options?: Omit<BunValidateOptions<S, H, R, RS>, "schemas">,

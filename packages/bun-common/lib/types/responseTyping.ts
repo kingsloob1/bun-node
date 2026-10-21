@@ -19,6 +19,7 @@ import type {
   CookieValue,
 } from "../BunResponse";
 import type { WireInput } from "../contract/model";
+import type { ResponseVariants } from "../responseBodies";
 import type { EmptyShape } from "./routeTyping";
 import type { StandardSchemaV1 } from "./standardSchema";
 
@@ -99,16 +100,31 @@ type DeclaredValue<M, P extends "headers" | "cookies", N> =
       : never
     : never;
 
+/** Marks a header a variant declares absent (a discriminant's `null`, plan §4.4.6). */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- a type-only brand: only its `typeof` is read
+declare const ABSENT: unique symbol;
+
+/**
+ * A header a variant declares absent: a discriminant mapping the variant to
+ * `null`. `set()` takes no value for it.
+ *
+ * @internal
+ */
+export type DeclaredAbsent = typeof ABSENT;
+
 /**
  * A declared header's value narrowed to what a header can be (a string or a
  * list of them), or any header value when it does not say (undeclared, or a
- * coercing schema whose input is a number).
+ * coercing schema whose input is a number); no value at all for a header
+ * declared absent ({@link DeclaredAbsent}).
  */
 type HeaderArg<D> = [D] extends [never]
   ? string | string[]
-  : [Extract<D, string | readonly string[]>] extends [never]
-    ? string | string[]
-    : Extract<D, string | string[]>;
+  : [D] extends [DeclaredAbsent]
+    ? never
+    : [Extract<D, string | readonly string[]>] extends [never]
+      ? string | string[]
+      : Extract<D, string | string[]>;
 
 /**
  * The value `set(name, …)`/`header(name, …)` take: the declared type for a
@@ -272,16 +288,205 @@ type CookiesOf<Sp> = Sp extends { cookies: infer C extends StandardSchemaV1 }
     }
   : EmptyShape;
 
+/** One plain status's (or one variant's) spec. */
+interface PlainSpec<Sp> {
+  /** What `json()` takes. */
+  json: JsonOf<ContentOf<Sp>>;
+  /** What `send()` takes. */
+  send: SendOf<ContentOf<Sp>>;
+  /** The declared headers. */
+  headers: HeadersOf<Sp>;
+  /** The declared cookies. */
+  cookies: CookiesOf<Sp>;
+}
+
 /**
  * A `responses` declaration's map: status to what a handler may send for it.
+ * A status declared with `variants()` is the **union** of its variants'
+ * specs, each tagged with its `variant` name (plan §4.4.6): `json()`,
+ * `send()`, `set()` and `cookie()` take the union until `res.variant()`
+ * narrows it.
  *
  * @internal
  */
 export type InferResponses<RS> = {
-  [K in keyof RS]: {
-    json: JsonOf<ContentOf<RS[K]>>;
-    send: SendOf<ContentOf<RS[K]>>;
-    headers: HeadersOf<RS[K]>;
-    cookies: CookiesOf<RS[K]>;
-  };
+  [K in keyof RS]: RS[K] extends ResponseVariants<infer T, infer B, infer _V>
+    ? VariantsSpec<T, B>
+    : PlainSpec<RS[K]>;
 };
+
+// ---------------------------------------------------------------------------
+// Variants (plan §4.4.6, V3c)
+// ---------------------------------------------------------------------------
+
+/** A status's variants as the union of their tagged specs. */
+type VariantsSpec<T, B> = {
+  [N in keyof T & string]: VariantTypeSpec<T[N], B, N>;
+}[keyof T & string];
+
+/** The discriminant's value for variant `N`, as a header (or cookie) value type. */
+type DiscValue<B, N extends string> = B extends { values: infer M }
+  ? N extends keyof M
+    ? M[N] extends string
+      ? M[N]
+      : M[N] extends true
+        ? string
+        : DeclaredAbsent
+    : N
+  : N;
+
+/** Variant `N`'s headers with the discriminant header pinned to its value. */
+type WithDiscHeader<H, B, N extends string> = B extends {
+  header: infer Name extends string;
+}
+  ? Omit<H, Lowercase<Name>> & { [P in Lowercase<Name>]: DiscValue<B, N> }
+  : H;
+
+/** Variant `N`'s cookies with the discriminant cookie pinned to its value. */
+type WithDiscCookie<C, B, N extends string> = B extends {
+  cookie: infer Name extends string;
+}
+  ? Omit<C, Name> & { [P in Name]: DiscValue<B, N> }
+  : C;
+
+/** Whether `T` is a union (`boolean` is one). */
+type IsUnion<T, U = T> = T extends unknown
+  ? [U] extends [T]
+    ? false
+    : true
+  : never;
+
+/** Whether `T` admits exactly one value: one string, number or boolean literal. */
+type IsSingleLiteral<T> = [T] extends [string | number | boolean]
+  ? string extends T
+    ? false
+    : number extends T
+      ? false
+      : true extends IsUnion<T>
+        ? false
+        : true
+  : false;
+
+/** Keys of `T` whose required value is a single literal: what `.variant()` fills. */
+type LiteralKeys<T> = {
+  [K in keyof T]-?: Record<never, never> extends Pick<T, K>
+    ? never
+    : IsSingleLiteral<T[K]> extends true
+      ? K
+      : never;
+}[keyof T];
+
+/** Flattens an intersection for readable hovers. */
+type Flat<T> = { [K in keyof T]: T[K] };
+
+/**
+ * What a handler passes after `.variant()`: every required single-literal
+ * field optional, through nested objects and array elements, since the
+ * runtime fills them (plan Q-H30).
+ *
+ * @internal
+ */
+export type LiteralOptional<T> = T extends readonly (infer E)[]
+  ? LiteralOptional<E>[]
+  : T extends Date | Uint8Array | ArrayBuffer | Blob
+    ? T
+    : T extends object
+      ? Flat<
+          { [K in LiteralKeys<T>]?: T[K] } & {
+            [
+              K in keyof T as K extends LiteralKeys<T> ? never : K
+            ]: LiteralOptional<T[K]>;
+          }
+        >
+      : T;
+
+/**
+ * Whether every JSON body schema of a variant carries `~standard.jsonSchema`
+ * in its type (zod 4 and arktype 2 do; valibot and yup do not): only then
+ * can the runtime find its literals, so only then are they optional.
+ */
+type Fillable<Sp> =
+  ContentOf<Sp> extends infer C
+    ? C extends object
+      ? [
+          {
+            [K in keyof C]: MediaClass<K> extends "json" | "any"
+              ? C[K] extends null
+                ? never
+                : C[K] extends {
+                      "~standard": {
+                        jsonSchema: { input: (...args: never[]) => unknown };
+                      };
+                    }
+                  ? never
+                  : K
+              : never;
+          }[keyof C],
+        ] extends [never]
+        ? true
+        : false
+      : false
+    : false;
+
+/** One variant as a spec, tagged with its name, and its filled bodies for `.variant()`. */
+type VariantTypeSpec<Sp, B, N extends string> =
+  PlainSpec<Sp> extends infer S
+    ? S extends PlainSpec<Sp>
+      ? {
+          /** What `json()` takes on the union. */
+          json: S["json"];
+          /** What `send()` takes on the union. */
+          send: S["send"];
+          /** The variant's headers, the discriminant pinned to its value. */
+          headers: WithDiscHeader<S["headers"], B, N>;
+          /** The variant's cookies, the discriminant pinned to its value. */
+          cookies: WithDiscCookie<S["cookies"], B, N>;
+          /** The variant's name: what `.variant()` narrows by. */
+          variant: N;
+          /** `json()`'s body after `.variant()`: literal fields optional where the runtime can fill them. */
+          filledJson: Fillable<Sp> extends true
+            ? LiteralOptional<S["json"]>
+            : S["json"];
+          /** `send()`'s body after `.variant()`, likewise. */
+          filledSend: Fillable<Sp> extends true
+            ? LiteralOptional<S["send"]>
+            : S["send"];
+        }
+      : never
+    : never;
+
+/**
+ * The variant names a map declares, across its statuses: what
+ * `res.variant()` takes. `never` with none, or with no map.
+ *
+ * @internal
+ */
+export type VariantNames<M> = [M] extends [undefined]
+  ? never
+  : M[keyof M] extends infer S
+    ? S extends { variant: infer N extends string }
+      ? N
+      : never
+    : never;
+
+/**
+ * The map after `.variant(N)`: each status's variant `N` alone, its
+ * `json`/`send` the filled forms; a status without that variant is dropped.
+ *
+ * @internal
+ */
+export type NarrowVariant<M, N extends string> = {
+  [
+    K in keyof M as [Extract<M[K], { variant: N }>] extends [never] ? never : K
+  ]: Filled<Extract<M[K], { variant: N }>>;
+};
+
+/** A variant's spec with `json`/`send` swapped for their filled forms. */
+type Filled<S> = S extends { filledJson: infer J; filledSend: infer D }
+  ? Omit<S, "json" | "send" | "filledJson" | "filledSend"> & {
+      /** What `json()` takes after `.variant()`. */
+      json: J;
+      /** What `send()` takes after `.variant()`. */
+      send: D;
+    }
+  : S;

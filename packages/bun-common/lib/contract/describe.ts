@@ -17,8 +17,10 @@ import type {
   Side,
   SideSpec,
   TransportSpec,
+  VariantsDecl,
 } from "./model";
 import { resolveLogger } from "../logging";
+import { variantsOf } from "./model";
 import {
   isDocumented,
   isImplicit,
@@ -36,6 +38,14 @@ export interface ContractEntry {
   keyName?: string;
   /** The key (`"200"`, `"chat.post"`), on a keyed side, always as a string. */
   key?: string;
+  /**
+   * The variant the row belongs to, on a key declared as several whole
+   * variants (HTTP's `variants()`, plan §4.4.6, Q-H21): the rows of one
+   * variant share its key and part names with the other variants', so a
+   * generator that ignores this field sees two `application/json` rows for
+   * one status. Absent on a key with no variants.
+   */
+  variant?: string;
   /** The part. */
   part: string;
   /** The declared media type, on a media-typed part. */
@@ -69,7 +79,7 @@ export interface ContractEntry {
  * A contract flattened for generators: what the transport is, which sides
  * and keys it declares (even a key with no parts, `202: {}`, so "nothing
  * declared" and "declared empty" differ, plan §4.12 B1), and one row per
- * `(side, key, part, mediaType)`: `describeContract`'s return type.
+ * `(side, key, variant, part, mediaType)`: `describeContract`'s return type.
  */
 export interface ContractDescription {
   /** The transport's name. */
@@ -93,6 +103,35 @@ export interface ContractDescription {
       declared: true;
       /** The declared keys in canonical order, on a keyed side. */
       keys?: string[];
+      /**
+       * Each key declared as variants (HTTP's `variants()`, plan §4.4.6),
+       * by key; absent when none is. A `when` is a function and is never
+       * described: `conditional` and `descriptions` are what documents get.
+       */
+      variants?: Record<
+        string,
+        {
+          /** The variants' names, in declaration order. */
+          names: string[];
+          /** The names of the variants that apply only to some requests (they have a `when`). */
+          conditional: string[];
+          /**
+           * The discriminant, when the key has one: the part and the name in
+           * it, and each selectable variant's value (an exact string, `true`
+           * for any value, `null` for absence; by default each name).
+           */
+          by?: {
+            /** `"headers"` or `"cookies"`. */
+            part: string;
+            /** The header (lower-case) or cookie name. */
+            name: string;
+            /** Variant name to the value that selects it. */
+            values: Record<string, string | true | null>;
+          };
+          /** Variant name to the description its author gave (`description`); only those that have one. */
+          descriptions: Record<string, string>;
+        }
+      >;
     };
   };
   /**
@@ -158,9 +197,72 @@ function schemaRow(base: RowBase, schema: Schema): ContractEntry {
   };
 }
 
+/** Appends the rows of one key's (or one variant's) parts, in the transport's part order. */
+function partRows(
+  entries: ContractEntry[],
+  spec: SideSpec,
+  side: Side,
+  key: string | undefined,
+  variant: string | undefined,
+  parts: Readonly<Record<string, unknown>>,
+  origins: ReadonlyMap<string, string> | undefined,
+): void {
+  for (const part of spec.parts) {
+    const decl = parts[part] as PartDecl | undefined;
+    if (decl === undefined) continue;
+    const origin = origins?.get(unitId(side, key, part));
+    const base = {
+      side,
+      ...(spec.key === undefined ? {} : { keyName: spec.key, key }),
+      ...(variant === undefined ? {} : { variant }),
+      part,
+      encoding: spec.encodings?.[part] ?? "body",
+      ...(origin === undefined ? {} : { origin }),
+    };
+    if (decl === null) {
+      entries.push({ ...base, kind: "value", schema: null });
+    } else if (isSchema(decl)) {
+      entries.push(schemaRow(base, decl));
+    } else {
+      for (const mediaType of Object.keys(decl).sort(byCodeUnit)) {
+        const schema = decl[mediaType];
+        entries.push(
+          schema === null
+            ? { ...base, mediaType, kind: "value", schema: null }
+            : schemaRow({ ...base, mediaType }, schema),
+        );
+      }
+    }
+  }
+}
+
+/** The table `sides.outbound.variants` holds for one key. */
+function variantsTable(
+  declared: VariantsDecl,
+): NonNullable<
+  NonNullable<ContractDescription["sides"]["outbound"]>["variants"]
+>[string] {
+  const descriptions: Record<string, string> = {};
+  for (const v of declared.variants) {
+    if (v.description !== undefined) descriptions[v.name] = v.description;
+  }
+  const by = declared.by;
+  return {
+    names: declared.variants.map((v) => v.name),
+    conditional: declared.variants
+      .filter((v) => v.conditional)
+      .map((v) => v.name),
+    ...(by === undefined
+      ? {}
+      : { by: { part: by.part, name: by.name, values: { ...by.values } } }),
+    descriptions,
+  };
+}
+
 /**
  * Flattens a contract into its declared sides and keys, and one row per
- * `(side, key, part, mediaType)` with its kind, wire encoding, origin, schema
+ * `(side, key, variant, part, mediaType)` (`variant` only on a key declared
+ * as variants, whose table is also in `sides.outbound.variants`) with its kind, wire encoding, origin, schema
  * and vendor. A generator reads only this; the core never converts a schema
  * to JSON Schema (`~standard.jsonSchema` is the schema's own).
  *
@@ -190,31 +292,26 @@ export function describeContract(contract: AnyContract): ContractDescription {
         : { declared: true, keys: keys as string[] };
     for (const key of keys) {
       const parts = byKey.get(key) ?? {};
-      for (const part of spec.parts) {
-        const decl = parts[part] as PartDecl | undefined;
-        if (decl === undefined) continue;
-        const origin = origins?.get(unitId(side, key, part));
-        const base = {
+      const declared = variantsOf(parts);
+      if (declared === undefined) {
+        partRows(entries, spec, side, key, undefined, parts, origins);
+        continue;
+      }
+      // One row per (variant, part, mediaType), flat (plan Q-H21).
+      for (const variant of declared.variants) {
+        partRows(
+          entries,
+          spec,
           side,
-          ...(spec.key === undefined ? {} : { keyName: spec.key, key }),
-          part,
-          encoding: spec.encodings?.[part] ?? "body",
-          ...(origin === undefined ? {} : { origin }),
-        };
-        if (decl === null) {
-          entries.push({ ...base, kind: "value", schema: null });
-        } else if (isSchema(decl)) {
-          entries.push(schemaRow(base, decl));
-        } else {
-          for (const mediaType of Object.keys(decl).sort(byCodeUnit)) {
-            const schema = decl[mediaType];
-            entries.push(
-              schema === null
-                ? { ...base, mediaType, kind: "value", schema: null }
-                : schemaRow({ ...base, mediaType }, schema),
-            );
-          }
-        }
+          key,
+          variant.name,
+          variant.parts as Readonly<Record<string, unknown>>,
+          origins,
+        );
+      }
+      if (side === "outbound" && key !== undefined) {
+        const outbound = sides.outbound!;
+        (outbound.variants ??= {})[key] = variantsTable(declared);
       }
     }
   }
@@ -306,7 +403,10 @@ function jsonDocs(decl: PartDecl): Map<string, string | undefined> {
  * - a checking schema wins over a `documented()` one wherever they sit, with
  *   a warning when the two JSON Schemas disagree (or cannot be compared);
  * - a part the app declares wins over one the framework declared on its own
- *   (an `implicit` row, plan §4.12 m5) wherever they sit, with no warning.
+ *   (an `implicit` row, plan §4.12 m5) wherever they sit, with no warning;
+ * - a key some layer declares as variants (HTTP's `variants()`, plan
+ *   Q-H22) is replaced **whole** by the winning layer's declaration of that
+ *   key, never merged per part.
  *
  * Every part of the result records the origin it came from, which
  * `describeContract` puts on each row. The result is a contract like any
@@ -353,6 +453,13 @@ export function mergeContracts<T extends TransportSpec>(
     // unit → candidates in layer order; keys in first-seen order.
     const units = new Map<string, Candidate[]>();
     const keys = new Map<string | undefined, Set<string>>();
+    // Each key's whole declaration per layer, for a key some layer declares
+    // as variants: that key is replaced whole, never merged per part (Q-H22).
+    const wholes = new Map<
+      string | undefined,
+      { parts: Record<string, unknown>; origin: string }[]
+    >();
+    const variantKeys = new Set<string | undefined>();
     let declared = false;
     for (const layer of layers) {
       const sideDef = (layer.contract.def as Partial<Record<Side, unknown>>)?.[
@@ -362,6 +469,10 @@ export function mergeContracts<T extends TransportSpec>(
       declared = true;
       for (const [key, parts] of variants(spec, sideDef)) {
         if (!keys.has(key)) keys.set(key, new Set());
+        const list = wholes.get(key) ?? [];
+        list.push({ parts, origin: layer.origin });
+        wholes.set(key, list);
+        if (variantsOf(parts) !== undefined) variantKeys.add(key);
         for (const part of spec.parts) {
           const decl = parts[part] as PartDecl | undefined;
           if (decl === undefined) continue;
@@ -381,6 +492,17 @@ export function mergeContracts<T extends TransportSpec>(
     if (!declared) continue;
     const merged: Record<string, Record<string, unknown>> = {};
     for (const [key, parts] of keys) {
+      if (variantKeys.has(key)) {
+        // Replaced whole: the innermost declaration of the key on the
+        // outbound side, the outermost on the inbound, as for one part.
+        const list = wholes.get(key)!;
+        const winner = side === "inbound" ? list[0] : list[list.length - 1];
+        merged[key ?? ""] = { ...winner.parts };
+        for (const part of spec.parts) {
+          origins.set(unitId(side, key, part), winner.origin);
+        }
+        continue;
+      }
       const out: Record<string, unknown> = {};
       for (const part of spec.parts) {
         if (!parts.has(part)) continue;

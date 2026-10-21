@@ -17,10 +17,12 @@ import type {
   HeaderValueFor,
   JsonBodyFor,
   NarrowResponses,
+  NarrowVariant,
   RedirectStatus,
   RedirectUrl,
   ResponseTypeMap,
   SendBodyFor,
+  VariantNames,
 } from "./types/responseTyping";
 import type { CookieSerializeOptions, Deferred } from "./utils/native";
 import type { RenderCallback, RenderLocals } from "./views";
@@ -1212,6 +1214,30 @@ export interface ResponseCommit {
   contentType: string | undefined;
   /** Whether an error handler produced it: such a response is only reported, never refused (Q-H2). */
   reportOnly: boolean;
+  /** The variant `res.variant()` named (plan §4.4.6); `undefined` when none was. */
+  variant: string | undefined;
+  /** Whether the handler set the status (`status()`, `statusCode`), so `.variant()` never fills it. */
+  statusSet: boolean;
+  /** Whether a `json()`/`send(object)` body carries only `json()`'s implicit `Content-Type`, which `.variant()` may replace. */
+  typeImplicit: boolean;
+}
+
+/**
+ * A gate's verdict sending an adjusted response in place of the committed
+ * one (`res.variant()`'s fills and strips, plan §4.4.6): its status, headers
+ * and body are adopted by the response.
+ *
+ * @internal
+ */
+export interface ResponseReplacement {
+  /** The `Response` to send instead (for a `write()` stream's opening, its status and headers only). */
+  readonly replacement: Response;
+  /** Its per-chunk check, when its body streams under `chunks()`/`sse()`. */
+  readonly stream: ResponseStreamCheck | undefined;
+  /** The adjusted JSON value, when the body changed. */
+  readonly body?: unknown;
+  /** The adjusted body's serialisation, when the body changed. */
+  readonly text?: string;
 }
 
 /**
@@ -1262,8 +1288,9 @@ export interface ResponseGate {
   ) =>
     | Error
     | ResponseStreamCheck
+    | ResponseReplacement
     | undefined
-    | Promise<Error | ResponseStreamCheck | undefined>;
+    | Promise<Error | ResponseStreamCheck | ResponseReplacement | undefined>;
   /**
    * Told of a refusal the pipeline could not take (it had already ended):
    * the response is then answered `500` directly.
@@ -1279,6 +1306,20 @@ export interface ResponseGate {
    * @param inner The inner validator's gate.
    */
   within: (inner: ResponseGate) => ResponseGate;
+  /**
+   * Told that `res.variant()` was called after the commit, too late to
+   * select or adjust anything (the gate says so once per route). Optional.
+   *
+   * @param res The response.
+   */
+  lateVariant?: (res: BunResponse) => void;
+}
+
+/** Whether a gate's verdict is an adjusted response to send instead. */
+function isReplacement(
+  verdict: Error | ResponseStreamCheck | ResponseReplacement,
+): verdict is ResponseReplacement {
+  return (verdict as Partial<ResponseReplacement>).replacement !== undefined;
 }
 
 /** A response's gate and the gate's per-response state; created only when a validator installs one. */
@@ -1309,6 +1350,10 @@ class ResponseGateSlot {
   ending = false;
   /** Set when a stream's opening was refused: the producer's later writes are dropped until an error handler runs. */
   refused = false;
+  /** The variant `res.variant()` named (plan §4.4.6); `undefined` until one is. */
+  variant: string | undefined = undefined;
+  /** Whether the last `json()`/`send(object)` found no `Content-Type` set, so its type is only `json()`'s implicit one. */
+  jsonTypeImplicit = false;
 
   /** @param gate The gate a validator installed. */
   constructor(gate: ResponseGate) {
@@ -2441,6 +2486,9 @@ export class BunResponse<
       body: kind === "native" ? value : kind === "file" ? file : this.#sentBody,
       contentType,
       reportOnly: slot.reportOnly,
+      variant: slot.variant,
+      statusSet: this.options.status !== undefined,
+      typeImplicit: kind === "json" && slot.jsonTypeImplicit,
     });
     if (verdict === undefined) {
       slot.done = true;
@@ -2458,7 +2506,7 @@ export class BunResponse<
           } else {
             slot.done = true;
             this.response =
-              settled === undefined ? value : checkedStream(value, settled);
+              settled === undefined ? value : this.#passed(value, settled);
           }
         },
         (error: unknown) => {
@@ -2473,7 +2521,40 @@ export class BunResponse<
       return undefined;
     }
     slot.done = true;
-    return checkedStream(value, verdict);
+    return this.#passed(value, verdict);
+  }
+
+  /** The `Response` a passing verdict sends: adjusted (`res.variant()`), with its body piped through its check when it streams. */
+  #passed(
+    value: Response,
+    verdict: ResponseStreamCheck | ResponseReplacement,
+  ): Response {
+    if (!isReplacement(verdict)) {
+      return checkedStream(value, verdict);
+    }
+    const replaced = this.#adopt(verdict);
+    return verdict.stream === undefined
+      ? replaced
+      : checkedStream(replaced, verdict.stream);
+  }
+
+  /**
+   * Adopts an adjusted response's status and headers (and body, when it
+   * changed), so what the response reports after the send is what was sent.
+   */
+  #adopt(verdict: ResponseReplacement): Response {
+    const replaced = verdict.replacement;
+    this.options.status = replaced.status;
+    this.#headers = new Headers(replaced.headers);
+    this.options.headers = this.#headers;
+    this.#implicitContentType = undefined;
+    if (verdict.text !== undefined) {
+      this.#sentBody = verdict.body as BunResponseSentBody;
+      if (this.#transformBody !== undefined) {
+        this.#transformBody = verdict.text;
+      }
+    }
+    return replaced;
   }
 
   /**
@@ -2497,6 +2578,9 @@ export class BunResponse<
       body: chunk,
       contentType: probe.headers.get("content-type") ?? undefined,
       reportOnly: slot.reportOnly,
+      variant: slot.variant,
+      statusSet: this.options.status !== undefined,
+      typeImplicit: false,
     });
     if (verdict instanceof Promise) {
       slot.streaming = true;
@@ -2515,14 +2599,22 @@ export class BunResponse<
   /** Applies a gated opening's verdict: opens the stream (with its first chunk, already checked), or refuses it. */
   #opened(
     slot: ResponseGateSlot,
-    verdict: Error | ResponseStreamCheck | undefined,
+    passed: Error | ResponseStreamCheck | ResponseReplacement | undefined,
     chunk: BunResponseChunk | undefined,
   ): boolean {
-    if (verdict instanceof Error) {
+    if (passed instanceof Error) {
       slot.streaming = false;
       slot.refused = true;
-      this.#refuse(slot, verdict);
+      this.#refuse(slot, passed);
       return false;
+    }
+    let verdict: ResponseStreamCheck | undefined;
+    if (passed !== undefined && isReplacement(passed)) {
+      // `.variant()` adjusted the opening: the stream opens with its status and headers.
+      this.#adopt(passed);
+      verdict = passed.stream;
+    } else {
+      verdict = passed;
     }
     slot.stream = verdict;
     slot.streaming = verdict !== undefined || slot.chain !== undefined;
@@ -2755,6 +2847,50 @@ export class BunResponse<
       : BunResponse;
   }
 
+  /**
+   * Names the **variant** of a status declared with `variants()` that this
+   * response is (plan §4.4.6). The types narrow to that variant alone (its
+   * body, headers and cookies, its single-literal body fields optional where
+   * its schemas carry `~standard.jsonSchema`), and the response gate checks
+   * that variant alone, its `when` still enforced. Once its `when` holds, the
+   * response is **adjusted** at the commit: what the variant's schemas allow
+   * exactly one value for and the handler did not set is filled (the
+   * discriminant, literal headers and cookies, the status when `status()`
+   * was never called and one status declares the name, `Content-Type` over
+   * `json()`'s implicit one, literal JSON body fields), and JSON body fields
+   * the variant does not declare are stripped, without mutating the
+   * handler's object. What cannot be adjusted is left to the check. Under
+   * `responseValidation: "off"` the adjust still runs, with no check. Never
+   * throws; called after the response was committed, it is ignored (one
+   * warning per route). Without a validator declaring variants it does
+   * nothing. On a response with no declared responses (a plain `@Res()`
+   * handler, an untyped `res`) it takes any name and keeps the response's
+   * type, since the runtime is what knows the route's variants.
+   *
+   * @param name The variant's name, as declared.
+   */
+  public variant<
+    const N extends ([TResponses] extends [undefined]
+      ? string
+      : VariantNames<TResponses>),
+  >(
+    name: N,
+  ): [TResponses] extends [undefined]
+    ? BunResponse<customWebsocketDataType>
+    : BunResponse<customWebsocketDataType, NarrowVariant<TResponses, N>> {
+    const slot = this.#state?.gate;
+    if (slot !== undefined && typeof name === "string") {
+      if (slot.done || slot.held || this.headersSent) {
+        slot.gate.lateVariant?.(this.#self);
+      } else {
+        slot.variant = name;
+      }
+    }
+    return this as unknown as [TResponses] extends [undefined]
+      ? BunResponse<customWebsocketDataType>
+      : BunResponse<customWebsocketDataType, NarrowVariant<TResponses, N>>;
+  }
+
   /** The class's own status writes, which no declared response constrains. */
   #setStatus(code: number): void {
     this.options.status = code;
@@ -2828,7 +2964,11 @@ export class BunResponse<
    */
   public json<T extends JsonBodyFor<TResponses>>(body: T): BunResponse {
     this.#sentBody = body as BunResponseSentBody;
-    this.#tag("json");
+    const slot = this.#state?.gate;
+    if (slot !== undefined) {
+      slot.kind = "json";
+      slot.jsonTypeImplicit = this.#headers?.has("content-type") !== true;
+    }
     if (this.#canSkipHeaders()) {
       return this.#respondWithJson(body);
     }
@@ -3254,6 +3394,10 @@ export class BunResponse<
     ) {
       if (this.#canSkipHeaders()) {
         return this.#respondWithJson(body);
+      }
+      const slot = this.#state?.gate;
+      if (slot !== undefined) {
+        slot.jsonTypeImplicit = !this.headersObj.has("content-type");
       }
       this.#setJsonContentType();
       return this.#respondWithText(JSON.stringify(body));
