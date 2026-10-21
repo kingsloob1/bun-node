@@ -73,6 +73,10 @@ async function readPort(stream: ReadableStream<Uint8Array>): Promise<number> {
   throw new Error(`the server exited before listening: ${text}`);
 }
 
+// The child boots a Nest application in a fresh Bun process: about 0.75 s on
+// its own (measured at a load of 37), but in a whole suite run beside other
+// jobs it passed bun:test's 5 s hook default (the 11.2.7 matrix column at a
+// load of 35–39), so the hook takes the step deadline too.
 beforeAll(async () => {
   child = Bun.spawn(
     [
@@ -95,7 +99,7 @@ beforeAll(async () => {
     }
   })();
   base = `ws://127.0.0.1:${await readPort(child.stdout)}`;
-});
+}, STEP_MS);
 
 afterAll(async () => {
   child.kill();
