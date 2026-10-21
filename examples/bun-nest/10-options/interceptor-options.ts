@@ -22,6 +22,16 @@
  *   parses multipart bodies while building the request. The second leaves
  *   `multipart` out of `request.parseBody.contentTypes`, so the interceptor
  *   parses the body itself — which is what makes busboy options apply.
+ * - `MulterModule.register({ limits })` gives the interceptors of the module
+ *   importing it default limits. A route's own `limits` merge with them key
+ *   by key on Nest 12, and replace them whole on Nest 11, as
+ *   platform-express does on each; `mergeUploadOptions(moduleOptions,
+ *   routeOptions)` is that merge. The tour reads Nest 12 from the capability
+ *   the adapter reads (`AbstractHttpAdapter.prototype.mapException`), and
+ *   12.2.0's `dest` rule from `isRejectedByPipes`, never from a version
+ *   string, and prints a line starting `skipped:`, naming the installed
+ *   version, for the checks that sat out. More in
+ *   `03-file-uploads/module-options.ts`.
  */
 import type {
   BunRequest,
@@ -50,6 +60,8 @@ import {
   FileInterceptor,
   FilesInterceptor,
   getMultipartRequest,
+  mergeUploadOptions,
+  MulterModule,
   NoFilesInterceptor,
   transformUploadException,
   UploadedFile,
@@ -74,7 +86,12 @@ import {
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
-import { step, title, waitFor } from "../shared/console";
+import { show, step, title, waitFor } from "../shared/console";
+import {
+  coreHasIsRejectedByPipes,
+  coreHasMapException,
+  nestCoreVersion,
+} from "../shared/nest";
 import "reflect-metadata";
 
 const scratch = await mkdtemp(join(tmpdir(), "bun-nest-interceptor-tour-"));
@@ -350,6 +367,32 @@ class TourController {
 
 @Module({ controllers: [TourController] })
 class TourModule {}
+
+/** Module limits: one file, of at most 1000 bytes. */
+@Controller("module-limits")
+class ModuleLimitsController {
+  /** The module's limits alone. */
+  @Post("module-only")
+  @HttpCode(200)
+  @UseInterceptors(FilesInterceptor("f", 5))
+  moduleOnly(@NestUploadedFiles() files: StorageFile[]) {
+    return { count: files.length };
+  }
+
+  /** A route `fileSize` beside the module's limits. */
+  @Post("route-size")
+  @HttpCode(200)
+  @UseInterceptors(FilesInterceptor("f", 5, { limits: { fileSize: 8 } }))
+  routeSize(@NestUploadedFiles() files: StorageFile[]) {
+    return { count: files.length };
+  }
+}
+
+@Module({
+  imports: [MulterModule.register({ limits: { files: 1, fileSize: 1000 } })],
+  controllers: [ModuleLimitsController],
+})
+class ModuleLimitsModule {}
 
 title("Option tour: upload interceptors and UploadOptions");
 
@@ -1015,6 +1058,131 @@ await checkRefused(
   "/pipe",
   form([["other", "field"]]),
   /File is required/,
+);
+
+/* ------------------------------------------------------------------ */
+step("MulterModule.register({ limits }) under a route's limits");
+
+/** The installed `@nestjs/core`, for the skip lines. */
+const NEST_VERSION = await nestCoreVersion();
+/** Whether `limits` merge key by key: Nest 12 (`mapException`). */
+const MERGES_LIMITS = coreHasMapException();
+/** Whether a route's `dest` replaces the module's storage: 12.2.0. */
+const ROUTE_DEST_WINS = await coreHasIsRejectedByPipes();
+show("@nestjs/core", NEST_VERSION);
+
+// Limits apply only where the interceptor parses the body.
+const limitsApp = await NestFactory.create(
+  ModuleLimitsModule,
+  new BunHttpAdapter(0, {
+    request: {
+      parseBody: { contentTypes: { json: true, urlencoded: true, text: true } },
+    },
+  }),
+  { logger: false, abortOnError: false },
+);
+limitsApp.useGlobalFilters(new MessageFilter());
+await limitsApp.listen(0);
+const limitsUrl = await limitsApp.getUrl();
+
+/** Two 5-byte files. */
+const twoSmall = () =>
+  form([
+    ["f", text("a.txt")],
+    ["f", text("b.txt")],
+  ]);
+/** One 20-byte file. */
+const oneLarger = () => form([["f", text("c.txt", "x".repeat(20))]]);
+
+checkEqual(
+  "the module's files: 1 refuses two files on a route with no limits of its own",
+  (await post("/module-limits/module-only", twoSmall(), limitsUrl)).body,
+  { status: 400, message: "Too many files" },
+);
+checkEqual(
+  "the module's fileSize: 1000 lets 20 bytes through there",
+  (await post("/module-limits/module-only", oneLarger(), limitsUrl)).body,
+  { count: 1 },
+);
+checkEqual(
+  "the route's fileSize: 8 wins over the module's 1000: 413",
+  (await post("/module-limits/route-size", oneLarger(), limitsUrl)).body,
+  { status: 413, message: "File too large" },
+);
+const routeSizeTwo = await post(
+  "/module-limits/route-size",
+  twoSmall(),
+  limitsUrl,
+);
+if (MERGES_LIMITS) {
+  checkEqual(
+    "Nest 12: limits merge key by key, so the route keeps the module's files: 1",
+    routeSizeTwo.body,
+    { status: 400, message: "Too many files" },
+  );
+} else {
+  checkEqual(
+    "Nest 11: the route's limits replace the module's whole, so two files pass",
+    routeSizeTwo.body,
+    { count: 2 },
+  );
+  show(
+    `skipped: limits merge key by key from Nest 12 (mapException); 1 check skipped on Nest ${NEST_VERSION}`,
+  );
+}
+await limitsApp.close();
+
+/* ------------------------------------------------------------------ */
+step("mergeUploadOptions(moduleOptions, routeOptions)");
+
+checkEqual(
+  `limits: ${MERGES_LIMITS ? "merged key by key (Nest 12)" : "the route's replace the module's (Nest 11)"}; no storageType and no dest is memory`,
+  mergeUploadOptions({ limits: { files: 1 } }, { limits: { fileSize: 8 } }),
+  {
+    limits: MERGES_LIMITS ? { files: 1, fileSize: 8 } : { fileSize: 8 },
+    storageType: "memory",
+  },
+);
+checkEqual(
+  'a dest and no storageType is "disk"',
+  mergeUploadOptions({ dest: "/uploads" }),
+  { dest: "/uploads", storageType: "disk" },
+);
+checkEqual(
+  "the route's keys win: its storageType over the module's dest",
+  mergeUploadOptions({ dest: "/uploads" }, { storageType: "memory" }),
+  // A memory storage has no `dest`: the module's is carried along unused.
+  { dest: "/uploads", storageType: "memory" } as UploadOptions,
+);
+const moduleStorage = new DiskStorage({ dest: diskDir });
+const routeOverStorage = mergeUploadOptions(
+  { storageType: "custom", storage: moduleStorage },
+  { dest: "/route" },
+);
+if (ROUTE_DEST_WINS) {
+  checkEqual(
+    "12.2.0: a route's dest with no storage replaces the module's storage",
+    routeOverStorage,
+    { dest: "/route", storageType: "disk" },
+  );
+} else {
+  checkEqual(
+    "before 12.2.0: the module's storage stays, beside the route's dest",
+    routeOverStorage,
+    {
+      storageType: "custom",
+      storage: moduleStorage,
+      dest: "/route",
+    } as unknown as UploadOptions,
+  );
+  show(
+    `skipped: a route's dest replaces the module's storage from Nest 12.2.0 (isRejectedByPipes); 1 check skipped on Nest ${NEST_VERSION}`,
+  );
+}
+await checkRejects(
+  'a storage without storageType: "custom" is refused',
+  () => mergeUploadOptions({ storage: moduleStorage }),
+  { name: "TypeError", message: /storageType "custom"/ },
 );
 
 await main.app.close();

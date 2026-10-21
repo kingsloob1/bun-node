@@ -33,6 +33,16 @@
  *   interceptor (`limits`, `inflate`, …) are not applied. Leave `multipart`
  *   out of the adapter's `request.parseBody.contentTypes` and the interceptor
  *   parses the body itself, with its options — see the last section.
+ * - multer-style options work as they are: `{ dest }` with no `storageType`
+ *   is disk storage at `dest`, and `{ limits }` alone is memory storage.
+ *   `MulterModule` (module-level options) is in `module-options.ts`.
+ * - From Nest 12.2.0, when a pipe such as `ParseFilePipe` rejects the
+ *   request, the stored files are removed once the response is sent, disk
+ *   files included, as platform-express 12.2.0 does. A handler that throws
+ *   leaves them, on every Nest. This example reads the capability the
+ *   adapter gates it on, `isRejectedByPipes` in `@nestjs/core/internal`,
+ *   never a version string; before 12.2.0 it checks that the files stay, and
+ *   prints a line starting `skipped:` naming the installed version.
  */
 import type {
   DiskStorageFile,
@@ -59,6 +69,7 @@ import {
   UploadedFiles,
 } from "@kingsleyweb/bun-nest";
 import {
+  BadRequestException,
   Body,
   Controller,
   createParamDecorator,
@@ -72,12 +83,25 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
+import { coreHasIsRejectedByPipes, nestCoreVersion } from "../shared/nest";
 import "reflect-metadata";
 
 /** Where disk uploads are written for this run. */
 const scratch = await mkdtemp(join(tmpdir(), "bun-nest-uploads-"));
 const reportsDir = join(scratch, "reports");
 const scratchDir = join(scratch, "scratch");
+const multerDestDir = join(scratch, "multer-dest");
+const pipeRejectedDir = join(scratch, "pipe-rejected");
+const handlerThrewDir = join(scratch, "handler-threw");
+
+/** The installed `@nestjs/core`'s version. */
+const NEST_VERSION = await nestCoreVersion();
+
+/**
+ * Whether the installed core removes files on a pipe's rejection: it has
+ * `isRejectedByPipes` (12.2.0), the capability the adapter reads.
+ */
+const REMOVES_ON_PIPE_REJECTION = await coreHasIsRejectedByPipes();
 
 /** A real 1×1 PNG, so magic-byte detection has something to find. */
 const PNG = Buffer.from(
@@ -241,6 +265,53 @@ class UploadsController {
   }
 }
 
+/** multer-style options: no `storageType`. */
+@Controller("multer-style")
+class MulterStyleController {
+  /** `{ dest }` alone: disk storage at `dest`. */
+  @Post("dest")
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor("doc", { dest: multerDestDir }))
+  dest(@UploadedFile() file: DiskStorageFile) {
+    return { file: describe(file), dest: file.dest ?? null };
+  }
+
+  /** `{ limits }` alone: memory storage, files of at most 8 bytes. */
+  @Post("limits")
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor("doc", { limits: { fileSize: 8 } }))
+  limits(@UploadedFile() file: MemoryStorageFile) {
+    return { file: describe(file) };
+  }
+}
+
+/** Disk uploads a pipe, or the handler, refuses. */
+@Controller("refused")
+class RefusedController {
+  /** `ParseFilePipe` refuses a note over 64 bytes, after it is on disk. */
+  @Post("by-pipe")
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor("note", { dest: pipeRejectedDir }))
+  byPipe(
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [new MaxFileSizeValidator({ maxSize: 64 })],
+      }),
+    )
+    file: DiskStorageFile,
+  ) {
+    return { accepted: describe(file) };
+  }
+
+  /** The pipe-free route's handler throws: its file is left where it is. */
+  @Post("by-handler")
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor("note", { dest: handlerThrewDir }))
+  byHandler(@UploadedFile() _file: DiskStorageFile): never {
+    throw new BadRequestException("the handler refused it");
+  }
+}
+
 /** A bare controller: an upload error is already a 400 `BadRequestException`. */
 @Controller("unfiltered")
 class UnfilteredController {
@@ -279,7 +350,13 @@ class LimitedController {
 }
 
 @Module({
-  controllers: [UploadsController, UnfilteredController, LimitedController],
+  controllers: [
+    UploadsController,
+    UnfilteredController,
+    LimitedController,
+    MulterStyleController,
+    RefusedController,
+  ],
 })
 class UploadModule {}
 
@@ -466,6 +543,51 @@ await waitFor("the scratch file to be removed", () => !existsSync(scratchPath));
 show("…removed once the response was produced", !existsSync(scratchPath));
 
 /* ------------------------------------------------------------------ */
+step("multer-style options: { dest } and { limits }, no storageType");
+
+checkEqual(
+  "{ dest } alone is disk storage at that dest",
+  (
+    await upload(
+      "{ dest }",
+      "/multer-style/dest",
+      form([["doc", textFile("d.txt")]]),
+    )
+  ).body,
+  {
+    file: {
+      field: "doc",
+      name: "d.txt",
+      claimed: "text/plain",
+      detected: null,
+      size: 5,
+      storage: "disk",
+    },
+    dest: multerDestDir,
+  },
+);
+checkEqual(
+  "{ limits } alone is memory storage (the limit itself needs the interceptor to parse: see the last section)",
+  (
+    await upload(
+      "{ limits }",
+      "/multer-style/limits",
+      form([["doc", textFile("l.txt")]]),
+    )
+  ).body,
+  {
+    file: {
+      field: "doc",
+      name: "l.txt",
+      claimed: "text/plain",
+      detected: null,
+      size: 5,
+      storage: "memory",
+    },
+  },
+);
+
+/* ------------------------------------------------------------------ */
 step("ParseFilePipe with MaxFileSizeValidator");
 await upload(
   "a 5-byte note",
@@ -476,6 +598,60 @@ await upload(
   "a 100-byte note",
   "/uploads/note",
   form([["note", textFile("n.txt", "x".repeat(100))]]),
+);
+
+/* ------------------------------------------------------------------ */
+step(
+  "Disk files a pipe refuses are removed (Nest 12.2.0); a handler's refusal keeps them",
+);
+
+/** How many files `dir` holds now; `0` when it was never created. */
+const filesIn = async (dir: string) =>
+  (await readdir(dir).catch(() => [])).length;
+
+const byHandler = await upload(
+  "the handler throws",
+  "/refused/by-handler",
+  form([["note", textFile("kept.txt")]]),
+);
+const byPipe = await upload(
+  "ParseFilePipe refuses a 100-byte note",
+  "/refused/by-pipe",
+  form([["note", textFile("big.txt", "x".repeat(100))]]),
+);
+checkEqual(
+  "both are refused with a 400",
+  [byHandler.status, byPipe.status],
+  [400, 400],
+);
+if (REMOVES_ON_PIPE_REJECTION) {
+  await waitFor(
+    "the refused note to be removed",
+    async () => (await filesIn(pipeRejectedDir)) === 0,
+    { timeout: 5000 },
+  );
+  checkEqual(
+    "12.2.0: the note the pipe refused is gone from disk; the one the handler refused is still there",
+    [await filesIn(pipeRejectedDir), await filesIn(handlerThrewDir)],
+    [0, 1],
+  );
+} else {
+  // Nothing is scheduled to remove them, so a short wait is enough to see
+  // that nothing does.
+  await Bun.sleep(200);
+  checkEqual(
+    "before 12.2.0: both notes stay on disk, as platform-express keeps them there",
+    [await filesIn(pipeRejectedDir), await filesIn(handlerThrewDir)],
+    [1, 1],
+  );
+  show(
+    `skipped: files are removed on a pipe's rejection from Nest 12.2.0 (isRejectedByPipes); 1 check skipped on Nest ${NEST_VERSION}`,
+  );
+}
+checkEqual(
+  "isRejectedByPipes, the capability read, arrives with Nest 12.2.0",
+  REMOVES_ON_PIPE_REJECTION,
+  Bun.semver.satisfies(NEST_VERSION, ">=12.2.0"),
 );
 
 /* ------------------------------------------------------------------ */
@@ -522,6 +698,18 @@ await upload(
   "/limited",
   limitedForm(),
   await second.getUrl(),
+);
+checkEqual(
+  "the multer-style { limits } route applies its fileSize once the interceptor parses: 413",
+  (
+    await upload(
+      "{ limits }, a 20-byte file, interceptor-parsed",
+      "/multer-style/limits",
+      form([["doc", textFile("big.txt", "x".repeat(20))]]),
+      await second.getUrl(),
+    )
+  ).status,
+  413,
 );
 
 await second.close();
