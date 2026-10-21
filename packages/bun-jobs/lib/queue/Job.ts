@@ -107,6 +107,18 @@ export interface JobHooks {
    * attempt to order those against.
    */
   writes?: AttemptWrites;
+  /**
+   * Checks new data against the schema of the queue or worker that built this
+   * view, before `updateData()` or `update()` writes it: throws (or rejects
+   * with) a `JobDataValidationError` under `"error"`, so the job is
+   * unchanged. Answers `undefined` when there is nothing to check. Absent,
+   * nothing is checked.
+   */
+  checkData?: (
+    name: string,
+    data: unknown,
+    jobId: string,
+  ) => void | Promise<void>;
 }
 
 /** What {@link Job.update} changes. Anything left out stays as it is. */
@@ -450,8 +462,16 @@ export class Job<TData = unknown, TResult = unknown> {
    *
    * Allowed in any state, including while it runs: the running attempt keeps
    * the data it started with, and a later attempt reads the new data.
+   *
+   * When its queue (or the worker running it) has a data schema, the new data
+   * is checked first, as an add's is: a `JobDataValidationError` under
+   * `dataValidation.enqueue: "error"`, and the job is left unchanged.
    */
   async updateData(data: TData): Promise<this | null> {
+    const checking = this.#hooks.checkData?.(this.name, data, this.id);
+    if (checking !== undefined) {
+      await checking;
+    }
     return await this.#update(
       { data: assertJsonSafe(data, "job data") },
       "updateData()",
@@ -499,6 +519,13 @@ export class Job<TData = unknown, TResult = unknown> {
       throw new ConfigError("priority must be a number", {
         priority: patch.priority,
       });
+    }
+
+    if (patch.data !== undefined) {
+      const checking = this.#hooks.checkData?.(this.name, patch.data, this.id);
+      if (checking !== undefined) {
+        await checking;
+      }
     }
 
     return await this.#update(

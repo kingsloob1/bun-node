@@ -15,6 +15,10 @@
  * a caller — typed or not — can add to `context` but never replace what the
  * declared type promises.
  */
+// The browser-safe subpath, not the package root: `./remote` is a
+// browser-safe entry of this package and reaches this module, so nothing here
+// may pull in bun-common's server types.
+import type { ValidationIssue } from "@kingsleyweb/bun-common/contract";
 
 /**
  * Extra detail a caller adds to an error's `context`: open, but never one of
@@ -146,6 +150,69 @@ export class UnrecoverableJobError extends JobsError {
     options?: { cause?: unknown },
   ) {
     super(message, "UNRECOVERABLE_JOB", context, options);
+  }
+}
+
+/**
+ * A job's data, or its handler's result, did not pass the schema its
+ * definition, queue or worker declares (`schema: { data, result }`).
+ *
+ * Thrown by an add (`add`, `addBulk`, `now`, a builder's `start()`, a repeat
+ * series' creation, a debounce) or an update (`queue.update`,
+ * `job.updateData`, `job.update`) before anything is written; and, for a
+ * result under `resultValidation: "error"`, by the worker before it records
+ * the completion, so the attempt fails and may be retried. Never carries the
+ * value: only the issues, whose messages bun-common's runner has scrubbed of
+ * anything quoting it.
+ */
+export class JobDataValidationError extends JobsError {
+  /** Every issue, value-free; `target` is `"data"` or `"result"`. */
+  readonly issues: readonly ValidationIssue[];
+  /** What failed: the job's `"data"` or its handler's `"result"`. */
+  readonly target: "data" | "result";
+  /** The job name, the queue, what failed and the issues, plus any added detail. */
+  declare readonly context: {
+    name: string;
+    queue: string;
+    target: "data" | "result";
+    issues: { target: string; path: string; message: string }[];
+  } & Record<string, unknown>;
+
+  constructor(
+    /** The job's name. */
+    name: string,
+    /** The queue it was being added to, or ran on. */
+    queue: string,
+    /** What failed: `"data"` or `"result"`. */
+    target: "data" | "result",
+    /** The issues the schema reported, already free of received values. */
+    issues: readonly ValidationIssue[],
+    /** Extra detail, safe to log (a job id, a bulk entry's index). */
+    context?: ErrorContext<"name" | "queue" | "target" | "issues">,
+  ) {
+    const summary = issues
+      .map(
+        (issue) =>
+          `${issue.path === "" ? target : `${target}.${issue.path}`}: ${issue.message}`,
+      )
+      .join("; ");
+    super(
+      `Job "${name}" ${target} on queue "${queue}" did not pass its schema: ${summary}`,
+      "JOB_DATA_VALIDATION",
+      {
+        ...context,
+        name,
+        queue,
+        target,
+        issues: issues.map((issue) => ({
+          target: issue.target,
+          path: issue.path,
+          message: issue.message,
+        })),
+      },
+    );
+    this.issues = issues;
+    this.target = target;
   }
 }
 

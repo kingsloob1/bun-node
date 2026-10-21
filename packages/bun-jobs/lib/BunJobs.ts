@@ -1,3 +1,4 @@
+import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import type {
   DriverConfig,
   JobsDriver,
@@ -30,6 +31,16 @@ import type {
   WhenDeclared,
 } from "./queue/index";
 import type { JobRoute, JobRouter } from "./queue/JobBuilder";
+import type {
+  JobCheck,
+  JobCheckLookup,
+  JobSchema,
+  JobValidationOptions,
+  QueueValidationOptions,
+  SchemaData,
+  SchemaResult,
+  WorkerValidationOptions,
+} from "./queue/jobSchema";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
@@ -53,6 +64,12 @@ import {
 import { JobBuilder } from "./queue/JobBuilder";
 import { JobDraft } from "./queue/JobDraft";
 import { JOB_ROUTER } from "./queue/jobRouter";
+import {
+  attachJobContract,
+  compileJobCheck,
+  JOB_CHECKS,
+  liftValidation,
+} from "./queue/jobSchema";
 import { BunRunnerManager } from "./runner/index";
 import { mapConcurrent } from "./shared/bounded";
 import {
@@ -255,10 +272,30 @@ export type TypedJobDefinition<TJobs> = {
     name: TName;
     /** What runs when one of them is claimed. */
     handler: TypedJobProcessor<TJobs, TName>;
-    /** Merged under every job added by this name. */
+    /**
+     * Merged under every job added by this name: plain data, with `schema`,
+     * `dataValidation` and `resultValidation` lifted out beside it.
+     */
     options: JobDefinitionOptions;
+    /** The job's schemas, lifted out of `define()`'s options; absent when none was given. */
+    schema?: JobSchema;
+    /** What a failed data check does for this name. */
+    dataValidation?: JobValidationOptions["dataValidation"];
+    /** What a failed result check does for this name. */
+    resultValidation?: JobValidationOptions["resultValidation"];
   };
 }[JobName<TJobs>];
+
+/**
+ * The `schema` a typed context's `define()` takes for a name: any data schema
+ * whose output is that name's declared data, and any result schema.
+ *
+ * @typeParam TData The name's data in the declared map.
+ */
+export type TypedDefinitionSchema<TData> = JobSchema & {
+  /** Checks what the job carries; its output must be the declared data. */
+  data?: StandardSchemaV1<unknown, TData>;
+};
 
 /**
  * What `definitions()` answers with: `JobDefinition<never, never>` with no
@@ -374,6 +411,13 @@ export class BunJobs<
   readonly #workers = new Set<BunQueueWorker<any, any>>();
   /** Jobs defined by name, and how to run them. */
   readonly #definitions = new JobDefinitions();
+  /**
+   * Each defined name's compiled schema check, for the names that have one —
+   * what the registry queue and its workers look a job's checks up by.
+   */
+  readonly #checks = new Map<string, JobCheck>();
+  /** The lookup handed to the registry queue and its workers ({@link JOB_CHECKS}). */
+  readonly #checkLookup: JobCheckLookup = (name) => this.#checks.get(name);
   /**
    * Backoff strategies registered with `defineBackoff`.
    *
@@ -599,7 +643,8 @@ export class BunJobs<
    */
   queue(
     name: WhenDeclared<TJobs, TRegistryQueue>,
-    options?: Omit<BunQueueOptions, "namespace" | "driver">,
+    options?: Omit<BunQueueOptions, "namespace" | "driver"> &
+      QueueValidationOptions,
   ): RegistryQueue<TJobs>;
   /**
    * A queue whose contents this context's registry does not describe, or any
@@ -615,13 +660,14 @@ export class BunJobs<
    */
   queue<TData = unknown, TResult = unknown, TName extends string = string>(
     name: string,
-    options?: Omit<BunQueueOptions, "namespace" | "driver">,
+    options?: Omit<BunQueueOptions, "namespace" | "driver"> &
+      QueueValidationOptions<TData, TResult>,
   ): BunQueue<TData, TResult, TName>;
   // `any` is the implementation-signature widening the two overloads above
   // hide; `#queues` has held queues of mixed types all along.
   queue(
     name: string,
-    options?: Omit<BunQueueOptions, "namespace" | "driver">,
+    options?: QueueCreateOptions,
   ): BunQueue<any, any, any, any> {
     this.#assertOpen("queue", "queue()");
     const existing = this.#queues.get(name);
@@ -648,6 +694,10 @@ export class BunJobs<
 
     // Its verbs, and every builder's toQueue(), route through this context.
     queue[JOB_ROUTER] = this.#router;
+    // The registry queue checks defined names' data, once any has a schema.
+    if (name === this.#registryQueue && this.#checks.size > 0) {
+      queue[JOB_CHECKS] = this.#checkLookup;
+    }
     this.#queues.set(name, queue);
     // With the queue's own defaults resolved, so passing one explicitly
     // later (`subscribe: false`) is not a difference.
@@ -886,7 +936,8 @@ export class BunJobs<
   worker<TData = unknown, TResult = unknown>(
     name: string,
     processor: JobProcessor<TData, TResult> | string | URL,
-    options?: Omit<BunQueueWorkerOptions, "namespace" | "driver">,
+    options?: Omit<BunQueueWorkerOptions, "namespace" | "driver"> &
+      WorkerValidationOptions<TData, TResult>,
   ): BunQueueWorker<TData, TResult> {
     this.#assertOpen("work", "worker()");
     const ordinal = (this.#workerOrdinals.get(name) ?? 0) + 1;
@@ -906,6 +957,11 @@ export class BunJobs<
       backoffStrategies: options?.backoffStrategies ?? this.#backoffs,
     });
 
+    // A worker of the registry queue checks defined names' data and results,
+    // once any has a schema: in this process, those definitions are its own.
+    if (name === this.#registryQueue && this.#checks.size > 0) {
+      worker[JOB_CHECKS] = this.#checkLookup;
+    }
     this.#workers.add(worker);
     this.#followInNotifiers("queue", name);
     return worker;
@@ -929,11 +985,43 @@ export class BunJobs<
    *
    * Defining a name twice replaces the first — what a caller reloading a
    * module expects, and not silent, because they called `define` again.
+   *
+   * **Schemas** (plan bun-validate §4.8): `schema: { data, result }`, each
+   * any Standard Schema, checks this name's data wherever a job of it is
+   * added to the registry queue (`add`, `addBulk`, `now`, a builder, the
+   * management API) and again before its handler runs, which then receives
+   * the data schema's output; `resultValidation` checks what it returns.
+   * `define()` lifts `schema`, `dataValidation` and `resultValidation` out of
+   * the options into `definition.schema` and its siblings, so
+   * `definition.options` stays plain data, and the definition carries a jobs
+   * contract (`describeContract(getContract(definition))`).
+   *
+   * ```ts
+   * jobs.define("sendEmail", async (job) => send(job.data.to), {
+   *   attempts: 5,
+   *   schema: { data: z.object({ to: z.email() }) },
+   * });
+   * ```
    */
   define<TName extends TypedJobName<TJobs>>(
     name: TName,
     handler: TypedJobProcessor<TJobs, TName>,
-    options?: JobDefinitionOptions,
+    options?: JobDefinitionOptions &
+      JobValidationOptions<TypedDefinitionSchema<JobDataOf<TJobs, TName>>>,
+  ): this;
+  /**
+   * Defines a job with a schema on a context with no declared
+   * {@link JobMap}: the handler's `job.data` is the data schema's output, and
+   * it answers with the result schema's input.
+   */
+  define<S extends JobSchema>(
+    name: UntypedJobName<TJobs>,
+    handler: JobProcessor<SchemaData<S>, SchemaResult<S>>,
+    options: JobDefinitionOptions &
+      JobValidationOptions<S> & {
+        /** The job's schemas, `{ data, result }`. */
+        schema: S;
+      },
   ): this;
   /**
    * Defines a job on a context with no declared {@link JobMap} — the signature
@@ -943,30 +1031,80 @@ export class BunJobs<
   define<TData = unknown, TResult = unknown>(
     name: UntypedJobName<TJobs>,
     handler: JobProcessor<TData, TResult>,
-    options?: JobDefinitionOptions,
+    options?: JobDefinitionOptions &
+      Omit<JobValidationOptions, "schema"> & {
+        /** No schema: the overload above takes one. */
+        schema?: undefined;
+      },
   ): this;
-  // Implementation-signature widening; callers only ever see the two above.
+  // Implementation-signature widening; callers only ever see the three above.
   define(
     name: string,
     handler: JobProcessor<any, any>,
-    options: JobDefinitionOptions = {},
+    options: JobDefinitionOptions & JobValidationOptions = {},
   ): this {
     if (typeof name !== "string" || name.length === 0) {
       throw new ConfigError("A job definition needs a name", { name });
     }
 
+    // Out of the options before anything reads them: a vendor schema left in
+    // would reach `GET /definitions` and every job's defaults.
+    const { options: plain, validation } = liftValidation(options);
+
     if (
-      options.concurrency !== undefined &&
-      (!Number.isInteger(options.concurrency) || options.concurrency < 1)
+      plain.concurrency !== undefined &&
+      (!Number.isInteger(plain.concurrency) || plain.concurrency < 1)
     ) {
       throw new ConfigError(
         `The concurrency for "${name}" must be a whole number of at least 1`,
-        { name, concurrency: options.concurrency },
+        { name, concurrency: plain.concurrency },
       );
     }
 
-    this.#definitions.set({ name, handler, options });
+    const check = compileJobCheck(validation, `define("${name}")`, name);
+    const definition: JobDefinition<unknown, unknown> = {
+      name,
+      handler,
+      options: plain,
+    };
+    if (validation.schema !== undefined) {
+      definition.schema = validation.schema;
+    }
+    if (validation.dataValidation !== undefined) {
+      definition.dataValidation = validation.dataValidation;
+    }
+    if (validation.resultValidation !== undefined) {
+      definition.resultValidation = validation.resultValidation;
+    }
+    if (check !== undefined) {
+      attachJobContract(definition, validation.schema!, name);
+    }
+
+    this.#definitions.set(definition);
+    if (check === undefined) {
+      this.#checks.delete(name);
+    } else {
+      this.#checks.set(name, check);
+      this.#attachChecks();
+    }
     return this;
+  }
+
+  /**
+   * Hands the definitions' checks to the registry queue and every worker of
+   * it built here, once a definition has a schema. Before that none of them
+   * carries a lookup, so their paths read one property and go on.
+   */
+  #attachChecks(): void {
+    const queue = this.#queues.get(this.#registryQueue);
+    if (queue !== undefined) {
+      queue[JOB_CHECKS] = this.#checkLookup;
+    }
+    for (const worker of this.#workers) {
+      if (worker.queueName === this.#registryQueue) {
+        worker[JOB_CHECKS] = this.#checkLookup;
+      }
+    }
   }
 
   /**
@@ -1263,7 +1401,7 @@ export class BunJobs<
     options?: Omit<
       BunQueueWorkerOptions,
       "namespace" | "driver" | "concurrency"
-    > & { concurrency?: number },
+    > & { concurrency?: number } & WorkerValidationOptions,
   ): Promise<RegistryWorker<TJobs>> {
     this.#assertOpen("work", "start()");
     if (this.#registryWorker) {
@@ -1726,7 +1864,8 @@ function readProcessEvery(interval: number | string): number {
 }
 
 /** The options `BunJobs.queue()` takes: a queue's, less what the context sets. */
-type QueueCreateOptions = Omit<BunQueueOptions, "namespace" | "driver">;
+type QueueCreateOptions = Omit<BunQueueOptions, "namespace" | "driver"> &
+  QueueValidationOptions;
 
 /**
  * What `BunJobs.close()` closes, one kind at a time and in this order: each
@@ -1743,7 +1882,7 @@ type ClosingKind = "summon" | "notifier" | "work" | "queue";
  */
 const IDENTITY_QUEUE_OPTIONS: ReadonlySet<string> = new Set<
   keyof QueueCreateOptions
->(["logger", "dateParser", "publishGate"]);
+>(["logger", "dateParser", "publishGate", "schema"]);
 
 /**
  * The top-level keys of `passed` whose value differs from the one in

@@ -17,10 +17,16 @@ import type {
   QueueEventName,
   QueueEventPayloads,
 } from "../shared/events";
+import type { Policy } from "@kingsleyweb/bun-common";
 import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
 import type { JobEvent, JobHooks } from "./Job";
 import type { JobRouter } from "./JobBuilder";
+import type {
+  JobCheck,
+  JobCheckLookup,
+  QueueValidationOptions,
+} from "./jobSchema";
 import type {
   JobDefaultsPatch,
   JobDefaultsUpdate,
@@ -123,6 +129,12 @@ import {
 } from "./jobDefaults";
 import { JobDraft } from "./JobDraft";
 import { JOB_ROUTER } from "./jobRouter";
+import {
+  checkJobDataWrite,
+  compileJobCheck,
+  JOB_CHECKS,
+  ownPolicies,
+} from "./jobSchema";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import {
   assertJobId,
@@ -426,6 +438,35 @@ export class BunQueue<
    * {@link JOB_ROUTER}.
    */
   [JOB_ROUTER]: JobRouter | undefined;
+  /**
+   * The creating `BunJobs` context's per-name schema checks, set on its
+   * registry queue once a definition has a schema; `undefined` otherwise, the
+   * usual case. A defined name's check wins over {@link #ownCheck}.
+   * Internal; see {@link JOB_CHECKS}.
+   */
+  [JOB_CHECKS]: JobCheckLookup | undefined;
+  /** This queue's own `schema` (with its policies), or `undefined` for none. */
+  readonly #ownCheck: JobCheck | undefined;
+  /** The enqueue policy under every check here: `dataValidation.enqueue`, `"error"` by default. */
+  readonly #enqueuePolicy: Policy;
+  /**
+   * The data check a job view of this queue runs before `updateData()` or
+   * `update()` writes new data; built once, so a view costs one property.
+   */
+  readonly #checkWrite = (
+    name: string,
+    data: unknown,
+    jobId: string,
+  ): void | Promise<void> =>
+    checkJobDataWrite(
+      this.#checkFor(name),
+      this.#enqueuePolicy,
+      name,
+      this.name,
+      data,
+      this.#logger,
+      { jobId },
+    );
   /** Whether to re-emit other processes' events. */
   readonly #subscribe: boolean;
   /** Whether this queue announces its events to other processes. */
@@ -440,11 +481,23 @@ export class BunQueue<
   /** Whether `close()` has run. */
   #closed = false;
 
-  constructor(name: string, options: BunQueueOptions) {
+  constructor(
+    name: string,
+    /**
+     * The queue's options, and the schemas its adds are checked with
+     * (`schema`, `dataValidation`); `TData` and `TResult` are inferred from
+     * `schema` when it is given and the type arguments are not.
+     */
+    options: BunQueueOptions & QueueValidationOptions<TData, TResult>,
+  ) {
     super();
 
     this.name = assertSegment(name, "queue name");
     this.namespace = assertNamespace(options.namespace);
+    // Checked before anything is built: a bad schema or policy is the
+    // constructor's error, not the first add's.
+    this.#ownCheck = compileJobCheck(options, `queue "${this.name}"`);
+    this.#enqueuePolicy = ownPolicies(options, `queue "${this.name}"`).enqueue;
 
     const { driver, owned } = resolveDriver(
       options.driver,
@@ -635,6 +688,8 @@ export class BunQueue<
     options?: JobOptions,
     /** A `define()` definition's editable options, as their own layer; see `addDefinedJob`. */
     definition?: JobOptions,
+    /** Whether the data was already checked (`addBulk`'s pass over every entry). */
+    checked = false,
   ): Promise<Job<TData, TResult>> {
     await this.connect();
 
@@ -648,6 +703,18 @@ export class BunQueue<
     // one must not leave a first occurrence behind with no series to own it.
     if (options?.repeat?.key !== undefined) {
       assertRepeatKey(options.repeat.key);
+    }
+
+    // The data, against its schema, before any path below writes anything:
+    // a plain add, a debounce that would replace a pending job's data, a
+    // throttle, and a repeat series (whose "no occurrences left" branch
+    // writes the series first). With no schema this answers `undefined` at
+    // once, and nothing is awaited.
+    if (!checked) {
+      const checking = this.#checkData(jobName, payload, options?.jobId);
+      if (checking !== undefined) {
+        await checking;
+      }
     }
 
     if (options?.debounce || options?.throttle) {
@@ -748,12 +815,22 @@ export class BunQueue<
       }
     }
 
+    // Every entry's data, in one pass before the first write, so a bad one
+    // rejects the whole bulk with nothing written. With no schema nothing is
+    // collected and nothing awaited.
+    const checking = this.#checkBulk(entries);
+    if (checking !== undefined) {
+      await checking;
+    }
+
     // A repeat is a definition plus a first occurrence, so it cannot be part
     // of a bulk insert; adding them one at a time keeps that explicit.
     if (entries.some((entry) => entry.opts?.repeat)) {
       const added: Job<TData, TResult>[] = [];
       for (const entry of entries) {
-        added.push(await this.#add(entry.name, entry.data, entry.opts));
+        added.push(
+          await this.#add(entry.name, entry.data, entry.opts, undefined, true),
+        );
       }
       return added;
     }
@@ -782,6 +859,84 @@ export class BunQueue<
       }
       return view;
     });
+  }
+
+  /**
+   * The schema check that applies to jobs of `name` here: a defined name's
+   * (through {@link JOB_CHECKS}), else this queue's own, else `undefined`.
+   */
+  #checkFor(name: string): JobCheck | undefined {
+    const lookup = this[JOB_CHECKS];
+    return (lookup === undefined ? undefined : lookup(name)) ?? this.#ownCheck;
+  }
+
+  /**
+   * Checks the data of one add; `undefined` when there is nothing to check.
+   * Throws (or rejects with) `JobDataValidationError` under `"error"`.
+   */
+  #checkData(
+    name: string,
+    data: unknown,
+    jobId: string | undefined,
+  ): void | Promise<void> {
+    if (this[JOB_CHECKS] === undefined && this.#ownCheck === undefined) {
+      return undefined;
+    }
+    return checkJobDataWrite(
+      this.#checkFor(name),
+      this.#enqueuePolicy,
+      name,
+      this.name,
+      data,
+      this.#logger,
+      jobId === undefined ? undefined : { jobId },
+    );
+  }
+
+  /**
+   * Checks every entry of a bulk add before any is written; `undefined` when
+   * there is nothing to check. The first entry to fail rejects the call with
+   * its `JobDataValidationError`, which names its `index`.
+   */
+  #checkBulk(
+    entries: readonly { name: TName; data: TData; opts?: JobOptions }[],
+  ): Promise<void> | undefined {
+    if (this[JOB_CHECKS] === undefined && this.#ownCheck === undefined) {
+      return undefined;
+    }
+    const pending: Promise<void>[] = [];
+    try {
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
+        const checking = checkJobDataWrite(
+          this.#checkFor(entry.name),
+          this.#enqueuePolicy,
+          entry.name,
+          this.name,
+          entry.data,
+          this.#logger,
+          {
+            index,
+            ...(entry.opts?.jobId === undefined
+              ? {}
+              : { jobId: entry.opts.jobId }),
+          },
+        );
+        if (checking !== undefined) {
+          pending.push(checking);
+        }
+      }
+    } catch (error) {
+      // An entry failed synchronously; the asynchronous ones still running
+      // must not reject unheard.
+      for (const checking of pending) {
+        checking.catch(() => undefined);
+      }
+      throw error;
+    }
+    return pending.length === 0
+      ? undefined
+      : Promise.all(pending).then(() => undefined);
   }
 
   /**
@@ -1814,6 +1969,23 @@ export class BunQueue<
       throw new ConfigError("runAt must be a valid date or timestamp", {
         runAt: patch.runAt,
       });
+    }
+
+    // New data, against the job's schema, before the write: the id does not
+    // say which name it is, so the job is read for it — only when this queue
+    // has a schema to check with. A job that is gone is left to the write,
+    // which answers `null` for it.
+    if (
+      patch.data !== undefined &&
+      (this[JOB_CHECKS] !== undefined || this.#ownCheck !== undefined)
+    ) {
+      const current = await this.driver.getJob(this.ref, id);
+      if (current) {
+        const checking = this.#checkData(current.name, patch.data, id);
+        if (checking !== undefined) {
+          await checking;
+        }
+      }
     }
 
     const record = await driver.updateJob!(
@@ -2905,6 +3077,9 @@ export class BunQueue<
   #hooksFor(queue: string): JobHooks {
     return {
       onEvent: async (event) => await this.#onJobEvent(queue, event),
+      // This queue's schemas are for its own jobs only; a flow node in another
+      // queue is checked by whoever owns that queue.
+      checkData: queue === this.name ? this.#checkWrite : undefined,
     };
   }
 

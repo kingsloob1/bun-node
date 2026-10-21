@@ -1,3 +1,5 @@
+import type { Policy } from "@kingsleyweb/bun-common";
+import type { JobDataValidation, JobSchema } from "./jobSchema";
 import type { JobOptions, JobProcessor } from "./types";
 
 /**
@@ -36,8 +38,22 @@ export interface JobDefinition<TData = unknown, TResult = unknown> {
   name: string;
   /** What runs when one of them is claimed. */
   handler: JobProcessor<TData, TResult>;
-  /** Merged under every job added by this name. */
+  /**
+   * Merged under every job added by this name. Plain data: `define()` lifts
+   * `schema`, `dataValidation` and `resultValidation` out of it, so it is
+   * what `GET /definitions` serves and what jobs inherit as defaults.
+   */
   options: JobDefinitionOptions;
+  /**
+   * The job's schemas, `{ data, result }`, lifted out of `define()`'s
+   * options; absent when none was given. The definition then also carries a
+   * jobs contract (`getContract(definition)`, read with `describeContract`).
+   */
+  schema?: JobSchema;
+  /** What a failed data check does for this name, lifted out of the options. */
+  dataValidation?: JobDataValidation;
+  /** What a failed result check does for this name, lifted out of the options. */
+  resultValidation?: Policy;
 }
 
 /**

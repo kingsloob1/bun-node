@@ -27,6 +27,7 @@ export { JobDefinitions } from "./definitions";
 export { Job } from "./Job";
 export type { JobEvent, JobHooks, JobUpdate } from "./Job";
 export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
+export type { JobMapFromSchemas } from "./jobSchema";
 export {
   ALL_JOB_OPTION_BITS,
   assertRewriteRequest,
