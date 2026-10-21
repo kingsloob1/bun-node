@@ -17,10 +17,20 @@
  * an origin that holds admin cookies, and "try it out" is a mutation console.
  * With `docs.ui: true` they are served with pinned CDN versions, `sha384`
  * Subresource Integrity and a strict Content Security Policy.
+ *
+ * The router says the same thing without either document: the layer that
+ * answers each route carries the route's HTTP contract (bun-common's
+ * `getContract`), so anything that walks a bun-common router finds a
+ * management route's params, query and every status it answers.
  */
-import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+import {
+  BunHttpAdapter,
+  describeContract,
+  getContract,
+} from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi } from "@kingsleyweb/bun-jobs";
 import { exampleDriver, exampleNamespace } from "../shared/backend";
+import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 
 title("The management API: OpenAPI, AsyncAPI and the docs pages");
@@ -67,6 +77,61 @@ show(
       status,
       codes: response["x-bun-jobs-codes"],
     })),
+);
+
+/* ------------------------------------------------------------------ */
+step("The route itself carries the same contract");
+
+// The route's callbacks run in order; the last one answers, and it carries
+// the route's contract whichever layers sit before it.
+const getJobRoute = api.router
+  .routes()
+  .find(
+    (route) =>
+      route.method === "GET" && route.path === "/queues/:queue/jobs/:id",
+  );
+const getJobContract = getContract(getJobRoute?.callbacks.at(-1));
+const rows =
+  getJobContract === undefined ? [] : describeContract(getJobContract).entries;
+show(
+  "its contract's rows",
+  rows.map((row) =>
+    [row.side, row.key, row.part, row.mediaType].filter(Boolean).join(" "),
+  ),
+);
+checkEqual(
+  "it reads the path parameters and the query",
+  rows.filter((row) => row.side === "inbound").map((row) => row.part),
+  ["params", "query"],
+);
+// The document adds only its catch-all `default` problem; every status the
+// contract lists is the document's, and the document's are the contract's.
+checkEqual(
+  "it answers the statuses the document lists",
+  rows.filter((row) => row.side === "outbound").map((row) => row.key),
+  Object.keys(
+    (getJob as { responses: Record<string, unknown> }).responses,
+  ).filter((status) => status !== "default"),
+);
+// `api.routes` lists what was registered, with the base path; the router
+// holds the same routes relative to it, beside its middleware.
+const routerRoutes = api.router.routes();
+const uncontracted = api.routes
+  .filter((listed) => {
+    const answering: unknown = routerRoutes
+      .find(
+        (route) =>
+          route.method === listed.method &&
+          `${api.basePath}${route.path}` === listed.path,
+      )
+      ?.callbacks.at(-1);
+    return getContract(answering) === undefined;
+  })
+  .map((listed) => `${listed.method} ${listed.path}`);
+check(
+  `so does every one of the ${api.routes.length} routes`,
+  uncontracted.length === 0,
+  uncontracted,
 );
 
 const asyncapi = api.asyncapi()!;
@@ -192,3 +257,5 @@ await Promise.all([api.close(), documented.close(), readOnly.close()]);
 await jobs.purge();
 await jobs.close();
 show("closed");
+
+summary();
