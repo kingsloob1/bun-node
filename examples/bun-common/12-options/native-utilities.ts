@@ -755,8 +755,10 @@ checkEqual(
   ],
   [true, true, false, false],
 );
+// As fresh 2.0.0 (Express 5.3's): with If-None-Match present,
+// If-Modified-Since is ignored either way; and `*` is the wildcard only alone.
 checkEqual(
-  "fresh: both must pass; no-cache and no conditionals are never fresh",
+  "fresh: If-None-Match takes precedence over If-Modified-Since; `*` in a list is not the wildcard",
   [
     fresh(
       {
@@ -765,6 +767,17 @@ checkEqual(
       },
       resHeaders,
     ),
+    fresh(
+      { "if-none-match": '"xyz"', "if-modified-since": lastModified },
+      resHeaders,
+    ),
+    fresh({ "if-none-match": '*, "xyz"' }, resHeaders),
+  ],
+  [true, false, false],
+);
+checkEqual(
+  "fresh: no-cache and no conditionals are never fresh",
+  [
     fresh(
       { "if-none-match": '"abc"', "cache-control": "max-age=0, no-cache" },
       resHeaders,
@@ -779,7 +792,7 @@ checkEqual(
     ),
     fresh({}, resHeaders),
   ],
-  [false, false, false, true, false],
+  [false, false, true, false],
 );
 
 /* ------------------------------------------------------------------ */
