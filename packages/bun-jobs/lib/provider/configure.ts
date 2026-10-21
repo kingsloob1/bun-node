@@ -133,6 +133,11 @@ function issuePath(issue: StandardSchemaV1.Issue): string {
 /**
  * The `ConfigError` for a failed validation: the issues' paths and messages,
  * with the input's declared secret values redacted from the messages.
+ *
+ * Not bun-common's `validateStandard` scrub: the error is for the developer
+ * who wrote the config, and the scrub would replace a provider's message that
+ * names the value it refused, or a root message naming a key, with
+ * `Invalid value`. Declared secrets are what is withheld here.
  */
 function invalid(
   state: Pick<ProviderState, "definition" | "identity" | "input">,

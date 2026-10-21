@@ -555,7 +555,14 @@ export type RemoteParseResult<T> =
       issues: { path: string; message: string }[];
     };
 
-/** Runs one schema synchronously and flattens its issues. */
+/**
+ * Runs one schema synchronously and flattens its issues.
+ *
+ * Not bun-common's `validateStandard`: this entry bundles for an edge isolate
+ * without bun-common (`__tests__/remote/remote-bundle.test.ts`), and the
+ * builder's messages never quote the received value, so its scrub would only
+ * withhold a message that happens to spell a value or a sibling key.
+ */
 function run<T>(
   schema: Schema<unknown, any>,
   value: unknown,
