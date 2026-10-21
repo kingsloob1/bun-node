@@ -1406,6 +1406,7 @@ inside the definition.
 Examples:
 [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts),
 [`schema-libraries.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/schema-libraries.ts),
+[`cookies-and-headers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/cookies-and-headers.ts),
 tour
 [`validate-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/validate-options.ts).
 
