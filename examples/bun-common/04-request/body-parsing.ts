@@ -423,10 +423,9 @@ show(
     await custom.fetch({
       url: "/echo",
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-ndjson",
-        "Content-Length": String(ndjson.length),
-      },
+      // fetch() frames the body with a Content-Length, as a client would,
+      // so req.is("application/x-ndjson") matches without one set by hand.
+      headers: { "Content-Type": "application/x-ndjson" },
       body: ndjson,
     })
   ).json(),
@@ -1230,9 +1229,21 @@ checkEqual(
   [viaJson, viaJson],
 );
 checkEqual(
-  "…an in-process Request without a Content-Length is read as bytes",
+  "…fetch(path, init) frames the body as a client does, so it is parsed as served",
   await (
     await nativeJson.fetch("/echo", bodyInit("application/json", '{"a":1}'))
+  ).json(),
+  viaJson,
+);
+checkEqual(
+  "…a hand-built Request without a Content-Length is read as bytes",
+  await (
+    await nativeJson.fetch(
+      new Request(
+        `http://localhost/echo`,
+        bodyInit("application/json", '{"a":1}'),
+      ),
+    )
   ).json(),
   { body: { a: 1 }, buffer: '{"a":1}', events: ["data", "end"] },
 );
