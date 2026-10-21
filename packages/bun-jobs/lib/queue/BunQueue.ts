@@ -349,6 +349,25 @@ interface PlannedFlowNode {
 }
 
 /**
+ * The end of a check over several entries (`addBulk`, `addFlow`) once none
+ * failed synchronously: the deferred `"warn"` warnings, logged when every
+ * asynchronous check has passed too, and never when one refuses.
+ */
+function settleChecks(
+  pending: Promise<void>[],
+  warnings: (() => void)[],
+): Promise<void> | undefined {
+  const emit = (): void => {
+    for (const warn of warnings) warn();
+  };
+  if (pending.length === 0) {
+    emit();
+    return undefined;
+  }
+  return Promise.all(pending).then(emit);
+}
+
+/**
  * The producer and management side of a queue.
  *
  * A queue is a name inside a namespace, and nothing more: it has no server,
@@ -933,6 +952,9 @@ export class BunQueue<
       return undefined;
     }
     const pending: Promise<void>[] = [];
+    // `"warn"` outcomes, logged only once every entry has passed: a bulk
+    // another entry refuses writes nothing, so nothing was written anyway.
+    const warnings: (() => void)[] = [];
     try {
       for (let index = 0; index < entries.length; index++) {
         const entry = entries[index];
@@ -949,6 +971,7 @@ export class BunQueue<
               ? {}
               : { jobId: entry.opts.jobId }),
           },
+          warnings,
         );
         if (checking !== undefined) {
           pending.push(checking);
@@ -962,9 +985,7 @@ export class BunQueue<
       }
       throw error;
     }
-    return pending.length === 0
-      ? undefined
-      : Promise.all(pending).then(() => undefined);
+    return settleChecks(pending, warnings);
   }
 
   /**
@@ -1755,6 +1776,9 @@ export class BunQueue<
       return undefined;
     }
     const pending: Promise<void>[] = [];
+    // `"warn"` outcomes, logged only once every node has passed: a flow
+    // another node refuses writes nothing, so nothing was written anyway.
+    const warnings: (() => void)[] = [];
     // The node's path in the flow as indexes, joined only for a node that
     // has a check: a walk over unchecked nodes builds no strings.
     const indexes: number[] = [];
@@ -1778,6 +1802,7 @@ export class BunQueue<
               ? {}
               : { jobId: node.opts.jobId }),
           },
+          warnings,
         );
         if (checking !== undefined) {
           pending.push(checking);
@@ -1799,9 +1824,7 @@ export class BunQueue<
       }
       throw error;
     }
-    return pending.length === 0
-      ? undefined
-      : Promise.all(pending).then(() => undefined);
+    return settleChecks(pending, warnings);
   }
 
   /**
