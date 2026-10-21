@@ -16,6 +16,13 @@
  * library's issue code when it has one (yup's issues have none). A message
  * that quotes nothing is kept as the library wrote it.
  *
+ * "The value" is the one at the issue's path: its leaves and keys, the keys
+ * of the object holding it, and the path's own keys. So a message is not
+ * withheld because another field happens to hold the same words. An issue
+ * with no path (an object-level check) is compared with the whole value,
+ * keys included, so a refine whose message names a field is withheld unless
+ * the refine gives a `path`.
+ *
  * Every case first shows that the library's own message does quote the value,
  * so a case cannot pass because a library stopped quoting.
  *
@@ -173,6 +180,76 @@ checkEqual(
   "a message that quotes nothing received is kept as the library wrote it",
   keptAnswer.issues.map((i) => i.message),
   ["age must be greater than or equal to 18"],
+);
+
+/* ------------------------------------------------------------------ */
+step("A message is compared with the value at its path");
+
+/** The messages and paths bun-common reports for `value`. */
+async function scrubbed(
+  schema: StandardSchemaV1,
+  value: unknown,
+): Promise<string[][]> {
+  const result = await validateStandard(schema, value, "body");
+  return result.ok ? [] : result.issues.map((i) => [i.message, i.path]);
+}
+
+// zod lists the allowed values; `note` holds one of them, which says
+// nothing about `status`, so the message stays.
+const Task = z.object({
+  status: z.enum(["waiting", "active"]),
+  note: z.string(),
+});
+const taskBody = { status: "done", note: "waiting" };
+const enumMessage = (await libraryMessages(Task, taskBody))[0];
+show("zod writes", enumMessage);
+checkEqual(
+  "another field holding a word the message quotes does not withhold it",
+  await scrubbed(Task, taskBody),
+  [[enumMessage, "status"]],
+);
+
+// yup's `noUnknown()` (it fails only under `strict()`) reports at the root
+// and names the unknown keys: compared with the whole value, keys included.
+const NoUnknown = yup.object({ name: yup.string() }).strict().noUnknown();
+const withUnknown = { name: "Ada", [SECRET]: 1 };
+const unknownMessages = await libraryMessages(NoUnknown, withUnknown);
+show("yup writes", unknownMessages[0]);
+check(
+  "yup's own root message names the key the sender chose (the control)",
+  unknownMessages.some((m) => m.includes(SECRET)),
+  unknownMessages,
+);
+checkEqual(
+  "an issue with no path is compared with the whole value, its keys too",
+  await scrubbed(NoUnknown, withUnknown),
+  [["Invalid value", ""]],
+);
+
+// The trade-off: an object-level refine whose message names a field is
+// withheld, since `total` is one of the value's keys. Give it a `path` and
+// it is compared with that field alone.
+const Order = z.object({ items: z.array(z.number()), total: z.number() });
+const COUNT_MESSAGE = "total must equal the item count";
+const order = { items: [1, 2], total: 3 };
+checkEqual(
+  "a refine with no path, naming a key: withheld",
+  await scrubbed(
+    Order.refine((o) => o.total === o.items.length, { message: COUNT_MESSAGE }),
+    order,
+  ),
+  [["Invalid value (custom)", ""]],
+);
+checkEqual(
+  "the same refine with path: ['total']: kept",
+  await scrubbed(
+    Order.refine((o) => o.total === o.items.length, {
+      message: COUNT_MESSAGE,
+      path: ["total"],
+    }),
+    order,
+  ),
+  [[COUNT_MESSAGE, "total"]],
 );
 
 /* ------------------------------------------------------------------ */
