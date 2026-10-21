@@ -1723,19 +1723,19 @@ it names.
   three. ✅ **Answered 2026-10-17: yes, as recommended.**
 - **Q-C2** **Paths can carry user data** (an unknown key's name, a
   user-keyed record). **Recommended: keep paths; state the rule as "no received
-  value"; add an opt-in `redactPaths`.**
+  value"; add an opt-in `redactPaths`.** ✅ **Answered 2026-10-20: yes, as recommended.** `redactPaths: true` empties paths (2026-10-21: the core cannot tell schema keys from sender-chosen ones).
 - **Q-C3** **The value scrub is heuristic.** **Recommended: keep it, add
   `messages: "generic"` for deployments that need a guarantee, and test it
-  against every supported vendor.**
+  against every supported vendor.** ✅ **Answered 2026-10-20: yes, as recommended.**
 - **Q-C4** **Media-type keys**: exact bare types (OpenAPI's), parameters and
   case ignored at runtime, no wildcards? **Recommended: yes; wildcards later,
   with most-specific-wins.**
 - **Q-C5** **What the wire changes** (`Jsonify`, header strings): a
   per-transport `wire` mapping, recorded as **data** on each row (`encoding`,
   §4.12 m3) and applied by client types, not the core's `Received`?
-  **Recommended: yes** (V1 records it, V12 applies it).
+  **Recommended: yes** (V1 records it, V12 applies it). ✅ **Answered 2026-10-20: yes, as recommended.**
 - **Q-C6** **A cached `checksKey(key)`** so a router or topic table skips the
-  ~15 ns lookup for keys with no schema? **Recommended: yes, in V1.**
+  ~15 ns lookup for keys with no schema? **Recommended: yes, in V1.** ✅ **Answered 2026-10-20: yes, as recommended.** Built as a guard method, `guard.checksKey(key)` (2026-10-21).
 - **Q-C7** ★ **Where the core lives**: bun-common's root **and** a
   browser-safe subpath `@kingsleyweb/bun-common/contract`? **Recommended:
   yes.** ✅ **Answered 2026-10-17: yes, as recommended.**
@@ -1746,17 +1746,17 @@ it names.
   per-child `optional`? **Recommended: yes.**
 - **Q-C10** **Route keys above the contract**: router layers carry contracts,
   rather than the route being a key of the HTTP transport? **Recommended:
-  yes.**
+  yes.** ✅ **Answered 2026-10-20: yes, as recommended.**
 - **Q-C11** **How layered contracts merge** (a mount and a route, a Nest class
   and method, `commonResponses`; §4.12 M3): inbound, the **outermost** layer
   that declares a part is the wire schema and later ones refine it (with a
   warning); outbound, route over router over adapter; every row records its
-  origin. **Recommended: yes.**
+  origin. **Recommended: yes.** ✅ **Answered 2026-10-20: yes, as recommended.** `mergeContracts` merges per side, key and part; whole-key replacement is revisited in V3a with `commonResponses` (2026-10-21).
 - **Q-C12** **A `documented(json)` helper** for parts known only as JSON
   Schema (docs-only `.describe({ responses })`, swagger-only Nest routes): a
   pass-through Standard Schema that documents and never checks?
   **Recommended: yes**, with AD Decision 4's rule: the validator wins, and a
-  disagreeing `.describe()` is a warning.
+  disagreeing `.describe()` is a warning. ✅ **Answered 2026-10-20: yes, as recommended.**
 - **Q-C13** **SSE `data` decoding declared, not guessed**: `sse({ … }, {
   data: "json" | "text" })` rather than "JSON-parsed when it parses" (which
   turns `"123"` into a number)? **Recommended: yes, default `"json"`.**
@@ -1840,6 +1840,16 @@ it names.
 ---
 
 ## 9. Names needing approval
+
+**V1's names were approved on 2026-10-20**: the core's functions and types in
+the first three rows below, plus `mergeContracts`, `documented`, `redactPaths`
+and `messages: "generic"`. On 2026-10-21 the user also approved exporting the
+types a transport author names: `Transport`, `TransportSpec`, `SideSpec`,
+`Side`, `Policy`, `Contract`, `ContractDef`, `ContractMeta`, `AnyContract`,
+`Carries`, `Guard`, `IssueContext`, `MediaMap`, `WireInput`,
+`ContractDescription`, `ContractEncoding`, `ContractKind`, `ContractWire`,
+`forwardContract` and the `CONTRACT` symbol. `checksKey` is a guard method.
+The rest stay internal.
 
 | Name | Kind | Where |
 |---|---|---|

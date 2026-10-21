@@ -38,6 +38,16 @@
       "types": "./dts/index.d.ts",
       "default": "./lib/index.ts"
     },
+    "./contract": {
+      "@kingsleyweb/source": "./lib/contract/index.ts",
+      "types": "./dts/contract/index.d.ts",
+      "default": "./lib/contract/index.ts"
+    },
+    "./lib/contract": {
+      "@kingsleyweb/source": "./lib/contract/index.ts",
+      "types": "./dts/contract/index.d.ts",
+      "default": "./lib/contract/index.ts"
+    },
     "./lib/multipart": {
       "@kingsleyweb/source": "./lib/multipart/index.ts",
       "types": "./dts/multipart/index.d.ts",

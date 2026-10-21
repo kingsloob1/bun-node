@@ -352,6 +352,49 @@ export {
   type ValidatorMiddleware,
 } from "./BunValidate";
 export type { StandardSchemaV1 } from "./types/standardSchema";
+/* ------------------------------------------------------------------ *
+ * The transport-agnostic contract core (`lib/contract/`), also the
+ * browser-safe subpath `@kingsleyweb/bun-common/contract`. `ValidationIssue`
+ * is its issue shape, exported above with BunValidate.
+ * ------------------------------------------------------------------ */
+export {
+  type AnyContract,
+  attachContract,
+  type Carries,
+  CONTRACT,
+  type Contract,
+  type ContractDef,
+  type ContractDescription,
+  type ContractEncoding,
+  type ContractEntry,
+  ContractError,
+  type ContractKind,
+  type ContractMeta,
+  type ContractWire,
+  createReceiver,
+  createSender,
+  defineTransport,
+  describeContract,
+  documented,
+  forwardContract,
+  getContract,
+  type Guard,
+  type GuardOptions,
+  type IssueContext,
+  type MediaMap,
+  mergeContracts,
+  type Policy,
+  type Received,
+  recordOf,
+  type Sent,
+  type Side,
+  type SideSpec,
+  type StandardOutcome,
+  type Transport,
+  type TransportSpec,
+  validateStandard,
+  type WireInput,
+} from "./contract/index";
 export { requestParsing, type RequestParsingOptions } from "./requestParsing";
 export { createServeStaticHandler, ServeStaticError } from "./serveStatic";
 export {

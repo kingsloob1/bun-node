@@ -12,6 +12,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
+import ts from "typescript";
 import { rewrite } from "../scripts/build-declarations";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -96,10 +97,39 @@ describe("package.json exports", () => {
     }
   });
 
+  it("publishes the contract core at the browser-safe ./contract subpath", () => {
+    const conditions = {
+      "@kingsleyweb/source": "./lib/contract/index.ts",
+      types: "./dts/contract/index.d.ts",
+      default: "./lib/contract/index.ts",
+    };
+    expect(manifest.exports["./contract"]).toEqual(conditions);
+    expect(manifest.exports["./lib/contract"]).toEqual(conditions);
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
     expect(manifest.files).toEqual(expect.arrayContaining(["dts", "lib"]));
+  });
+});
+
+describe("the declaration build", () => {
+  // `tsconfig.build.json` decides what reaches `dts/`; a module it missed
+  // would leave `./contract`'s `types` target pointing at nothing.
+  it("covers every module of lib/contract", () => {
+    const configPath = join(ROOT, "tsconfig.build.json");
+    const read = ts.readConfigFile(configPath, (path) => ts.sys.readFile(path));
+    expect(read.error).toBeUndefined();
+    const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, ROOT);
+    const built = new Set(parsed.fileNames.map((f) => resolve(f)));
+    const contract = readdirSync(join(ROOT, "lib/contract")).filter((f) =>
+      f.endsWith(".ts"),
+    );
+    expect(contract).toContain("index.ts");
+    for (const file of contract) {
+      expect(built.has(join(ROOT, "lib/contract", file))).toBe(true);
+    }
   });
 });
 

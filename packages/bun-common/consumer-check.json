@@ -92,6 +92,31 @@
       "types": ["RouterHandler", "MultiPartOptions"]
     },
     {
+      "spelling": "@kingsleyweb/bun-common/contract",
+      "values": [
+        "defineTransport",
+        "createReceiver",
+        "createSender",
+        "validateStandard",
+        "describeContract",
+        "mergeContracts",
+        "getContract",
+        "attachContract",
+        "documented",
+        "recordOf",
+        "ContractError"
+      ],
+      "types": ["GuardOptions", "ValidationIssue", "ContractEntry"],
+      "browser": true,
+      "snippet": "const transport = m.defineTransport({ name: \"t\", inbound: { parts: [\"data\"] } });\nconst c = transport.contract({ inbound: {} });\nconst g = m.createReceiver(c, \"inbound\");\nexport type _guardNotAny = Expect<IsAny<ReturnType<typeof g>>>;\nexport type _entryNotAny = Expect<IsAny<t.ContractEntry[\"encoding\"]>>;\nexport type _receivedNotAny = Expect<IsAny<t.Received<typeof c, \"inbound\">>>;\nexport type _sentNotAny = Expect<IsAny<t.Sent<typeof c, \"inbound\">>>;\nexport type _outcomeNotAny = Expect<IsAny<t.StandardOutcome<number>>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/contract",
+      "values": ["defineTransport", "validateStandard"],
+      "types": ["ValidationIssue"],
+      "browser": true
+    },
+    {
       "spelling": "@kingsleyweb/bun-common/lib/types/standardSchema",
       "types": ["StandardSchemaV1"],
       "browser": true

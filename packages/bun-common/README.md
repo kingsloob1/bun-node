@@ -51,6 +51,8 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Redirects, views and format](#redirects-views-and-format)
     - [Streaming and server-sent events](#streaming-and-server-sent-events)
   - [Validation](#validation)
+  - [Contracts](#contracts)
+    - [Writing a transport](#writing-a-transport)
   - [CORS](#cors)
   - [Static files](#static-files)
   - [Response compression](#response-compression)
@@ -1345,7 +1347,9 @@ middleware is built, rather than being ignored. An option given as
 | `formatError` | `{ error: "Validation failed", issues }` | The JSON body `"respond"` sends. |
 
 `ValidationError` carries `issues` (each `{ target, message, path }`, with
-`path` dot-joined), `targets` and `status`.
+`path` dot-joined), `targets` and `status`. A message that quotes the
+received value is withheld (see [Contracts](#contracts)), and the middleware
+answers synchronously when every schema does.
 
 ```ts
 import { toStandardSchema, validate } from "@kingsleyweb/bun-common";
@@ -1382,6 +1386,140 @@ Examples:
 [`schema-libraries.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/schema-libraries.ts),
 tour
 [`validate-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/validate-options.ts).
+
+### Contracts
+
+`validate()` is built on a transport-agnostic **contract core**, also
+published on its own as `@kingsleyweb/bun-common/contract`. That entry
+imports no Bun or Node API, so a contract module can be shared by a server
+and a browser client. A transport declares the **parts** its messages carry
+on each **side** (and, when a side carries several kinds of message, the name
+of its **key**). A **contract** maps parts to Standard Schemas, and **guards**
+check messages against it:
+
+```ts
+import { createReceiver, createSender, defineTransport } from "@kingsleyweb/bun-common/contract";
+import { z } from "zod";
+
+const jobs = defineTransport({
+  name: "jobs",
+  inbound: { parts: ["data"] },
+  outbound: { parts: ["result"] },
+});
+
+const sendMail = jobs.contract({
+  inbound: { data: z.object({ to: z.email(), at: z.coerce.date() }) },
+  outbound: { result: z.object({ id: z.string() }) },
+});
+
+export const receive = createReceiver(sendMail, "inbound"); // parses: `at` arrives as a Date
+export const send = createSender(sendMail, "outbound"); // checks, and hands back the same object
+```
+
+- **A receiver parses** and hands on each part's output. **A sender checks**
+  and hands back the very message it was given, and its input is typed field
+  by field: each field's schema input, or its output where the input is
+  `unknown` (a coercion).
+- **A guard returns** the message, or a `ContractError` (with `issues` and
+  `context`). It never throws one, and it answers synchronously when every
+  schema it runs does (zod, valibot, arktype); yup and async schemas give a
+  Promise.
+- **The policy** is `"off" | "warn" | "error"` (default `"error"`). A receiver
+  under `"warn"` or `"off"` may hand on a message its schemas did not parse,
+  so it is typed to hand on `unknown`.
+- **No schema costs nothing.** A side or key with no schema gets the same
+  message back, synchronously, with nothing allocated. `guard.checks` and
+  `guard.checksKey(key)` let an adapter skip the call entirely.
+- **Issues never carry the received value.** Every issue is `{ target,
+  message, path, key?, mediaType? }`. A vendor message that quotes the
+  received value (valibot, arktype, yup and zod all do in some messages) is
+  replaced by `Invalid value (<code>)`. The scrub is a heuristic, so
+  `messages: "generic"` replaces every message, and `redactPaths: true`
+  empties paths, since a path can name a key the sender chose. `onIssues(issues,
+  context)` is a telemetry hook, called once per failing message.
+- **Contracts are readable at runtime.** `attachContract(handler, contract)`
+  carries one, non-enumerably, and `getContract(handler)` reads it back. A
+  `validate()` middleware carries its HTTP contract. `describeContract`
+  flattens a contract into its declared sides and keys, and one row per side,
+  key, part and media type, each with its `kind`, wire `encoding` and schema.
+  `mergeContracts(layers)` merges nested layers. Inbound, the outermost
+  declaring a part is the wire schema. Outbound, the innermost wins (a route
+  over its router). Every row records its `origin`.
+- `recordOf({ a, b })` is a schema over a record of schemas, and
+  `documented(jsonSchema)` documents a part known only as JSON Schema and
+  never checks it. `toStandardSchema(fn, { jsonSchema })` publishes a JSON
+  Schema too.
+
+Examples:
+[`contract-sharing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/contract-sharing.ts),
+[`message-scrub.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/message-scrub.ts),
+[`synchronous-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/synchronous-validation.ts).
+
+#### Writing a transport
+
+A transport is a declaration plus an adapter. The adapter calls a receiver on
+what arrives and a sender on what leaves, and maps a `ContractError` to its
+transport's refusal. This one serves request/reply over UDP: one JSON object
+per datagram, `{ id, type, payload }`, with an invalid request answered by an
+error frame.
+
+```ts
+import type { Received, Sent } from "@kingsleyweb/bun-common/contract";
+import {
+  attachContract,
+  ContractError,
+  createReceiver,
+  createSender,
+  defineTransport,
+} from "@kingsleyweb/bun-common/contract";
+import { z } from "zod";
+
+export const udp = defineTransport({
+  name: "udp",
+  inbound: { key: "type", parts: ["payload"] },
+  outbound: { key: "type", parts: ["payload"] },
+});
+
+export const chat = udp.contract({
+  inbound: { "chat.post": { payload: z.object({ text: z.string().max(500), at: z.coerce.date() }) } },
+  outbound: { "chat.ack": { payload: z.object({ seq: z.number().int() }) } },
+});
+
+type Handler = (message: Received<typeof chat, "inbound">) => Sent<typeof chat, "outbound">;
+
+export async function serveChat(handler: Handler) {
+  const receive = createReceiver(chat, "inbound");
+  const check = createSender(chat, "outbound");
+  attachContract(handler, chat); // so a document generator finds it
+  const socket = await Bun.udpSocket({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      async data(sock, buf, port, address) {
+        const reply = (frame: object): void => void sock.send(JSON.stringify(frame), port, address);
+        const { id, ...message } = JSON.parse(buf.toString()) as Record<string, unknown>;
+        const parsed = await receive(message);
+        if (parsed instanceof ContractError) {
+          return reply({ id, type: "error", payload: { issues: parsed.issues } });
+        }
+        const checked = await check(handler(parsed));
+        return reply(checked instanceof ContractError ? { id, type: "error" } : { id, ...checked });
+      },
+    },
+  });
+  return socket;
+}
+```
+
+An undeclared `type` is an issue with `target: "type"`; under `"warn"` a bad
+datagram is logged and handed on raw; under `"off"` no schema runs. A client
+is the same calls the other way round: a sender on the `inbound` side before
+it sends, and a receiver on the `outbound` side for the replies. The
+package's tests run this adapter on port 0
+(`__tests__/contract/udp.test.ts`).
+
+Example:
+[`custom-transport.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/custom-transport.ts).
 
 ### CORS
 

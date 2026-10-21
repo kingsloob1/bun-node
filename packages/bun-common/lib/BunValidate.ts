@@ -1,9 +1,26 @@
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
+import type {
+  AnyContract,
+  StandardOutcome,
+  ValidationIssue,
+} from "./contract/model";
+import type { JsonSchemaSource } from "./contract/schemas";
 import type { NextFunction, RouterHandler } from "./types/general";
 import type { EmptyShape } from "./types/routeTyping";
 import type { StandardSchemaV1 } from "./types/standardSchema";
 import type { JsonValue } from "./utils/native";
+import { httpTransport } from "./contract/http";
+import { validateStandard } from "./contract/issues";
+import { toConverter } from "./contract/schemas";
+import { attachContract, isSchema, makeContract } from "./contract/transport";
+
+/**
+ * A validation issue, flattened with the target that produced it; the
+ * contract core's issue shape (`lib/contract/`). `ValidationError` narrows
+ * `target` to the request's targets.
+ */
+export type { ValidationIssue } from "./contract/model";
 
 /** The request members `BunValidate` can validate. */
 export type ValidationTarget = "params" | "query" | "body" | "headers";
@@ -130,16 +147,6 @@ export type ValidationFailureMode =
   /** Respond immediately with `status` and a JSON body of the issues. */
   | "respond";
 
-/** A validation issue, flattened with the target that produced it. */
-export interface ValidationIssue {
-  /** Which part of the request failed. */
-  target: ValidationTarget;
-  /** Human-readable description from the schema. */
-  message: string;
-  /** Dotted path within the target, or `""` for the target itself. */
-  path: string;
-}
-
 /**
  * Raised when a request fails validation.
  *
@@ -147,14 +154,21 @@ export interface ValidationIssue {
  * the application wants, rather than being handed a library-specific error.
  */
 export class ValidationError extends Error {
-  /** Every issue found, across all validated targets. */
-  public readonly issues: ValidationIssue[];
+  /**
+   * Every issue found, across all validated targets. Messages never quote
+   * the received value (the contract core withholds a message that does).
+   */
+  public readonly issues: ValidationIssue<ValidationTarget>[];
   /** The targets that produced at least one issue. */
   public readonly targets: ValidationTarget[];
   /** Suggested HTTP status; `422` when configured, `400` by default. */
   public readonly status: number;
 
-  constructor(issues: ValidationIssue[], status: number) {
+  /**
+   * @param issues Every issue found, each naming its target.
+   * @param status The suggested HTTP status.
+   */
+  constructor(issues: ValidationIssue<ValidationTarget>[], status: number) {
     const summary = issues
       .map(
         (issue) =>
@@ -322,6 +336,13 @@ export type StandardValidateFunction<TOutput> = (
 export interface ToStandardSchemaOptions {
   /** Name reported as the schema's vendor. Defaults to `"custom"`. */
   vendor?: string;
+  /**
+   * The schema's JSON Schema, published as `~standard.jsonSchema` (the
+   * Standard JSON Schema converter) so document generators can read it: one
+   * JSON Schema object, used for input and output, or a converter
+   * `{ input(options), output(options) }`. Default: none.
+   */
+  jsonSchema?: JsonSchemaSource;
 }
 
 /**
@@ -371,22 +392,11 @@ export function toStandardSchema<TInput, TOutput>(
       vendor: options?.vendor ?? "custom",
       validate,
       types: undefined,
+      ...(options?.jsonSchema === undefined
+        ? {}
+        : { jsonSchema: toConverter(options.jsonSchema) }),
     },
   };
-}
-
-/** Renders a Standard Schema issue path as a dotted string. */
-function formatPath(issue: StandardSchemaV1.Issue): string {
-  if (!issue.path || issue.path.length === 0) {
-    return "";
-  }
-  return issue.path
-    .map((segment) =>
-      typeof segment === "object" && segment !== null && "key" in segment
-        ? String(segment.key)
-        : String(segment),
-    )
-    .join(".");
 }
 
 /**
@@ -429,6 +439,12 @@ export class BunValidate<
     };
 
   /**
+   * The HTTP contract of the schemas, attached to every middleware this
+   * builds so `getContract(middleware)` reads them back (plan Q-C10).
+   */
+  readonly #contract: AnyContract;
+
+  /**
    * @param options Schemas, hooks and failure behaviour; see
    *   {@link BunValidateOptions}.
    */
@@ -456,6 +472,15 @@ export class BunValidate<
     this.#targets = VALIDATION_TARGETS.filter(
       (target) => !!options.schemas[target],
     );
+
+    // Only real Standard Schemas reach the contract; anything else truthy
+    // still fails at request time, exactly as it did before the core.
+    const inbound: Record<string, StandardSchemaV1> = {};
+    for (const target of this.#targets) {
+      const schema = options.schemas[target];
+      if (isSchema(schema)) inbound[target] = schema;
+    }
+    this.#contract = makeContract(httpTransport.spec, { inbound }, {});
   }
 
   /** The schemas this instance validates against. */
@@ -483,75 +508,95 @@ export class BunValidate<
       | undefined;
     const targets = this.#targets;
 
-    const handler: RouterHandler = async (
+    // Each target in turn, as before the core: a `normalize` hook may read
+    // what an earlier target wrote back, and `abortEarly` stops the rest. It
+    // stays synchronous while every schema answers synchronously, so a
+    // request through sync vendors costs no await.
+    const handler: RouterHandler = (
       req: BunRequest,
       res: BunResponse,
       next: NextFunction,
     ) => {
-      const issues: ValidationIssue[] = [];
+      const issues: ValidationIssue<ValidationTarget>[] = [];
 
-      for (const target of targets) {
-        const schema = schemas[target];
-        if (!schema) {
-          continue;
+      /** Records one target's outcome; `true` when validation should stop. */
+      const settle = (
+        target: ValidationTarget,
+        outcome: StandardOutcome<unknown, ValidationTarget>,
+      ): boolean => {
+        if (!outcome.ok) {
+          issues.push(...outcome.issues);
+          return abortEarly;
         }
-
         const targetHooks = hooks?.[target];
-        const raw = readTarget(req, target);
-        const input = targetHooks?.normalize
-          ? targetHooks.normalize(raw, req)
-          : raw;
-
-        const result = await schema["~standard"].validate(input);
-
-        if (result.issues) {
-          for (const issue of result.issues) {
-            issues.push({
-              target,
-              message: issue.message,
-              path: formatPath(issue),
-            });
-          }
-          if (abortEarly) {
-            break;
-          }
-          continue;
-        }
-
         const value = targetHooks?.transform
-          ? targetHooks.transform(result.value, req)
-          : result.value;
-
+          ? targetHooks.transform(outcome.value, req)
+          : outcome.value;
         if (replace) {
           writeTarget(req, target, value);
         }
-      }
+        return false;
+      };
 
-      if (issues.length === 0) {
-        return next();
-      }
-
-      const error = new ValidationError(issues, status);
-
-      if (onFailure === "throw") {
-        throw error;
-      }
-      if (onFailure === "respond") {
-        if (!formatError) {
-          return res
-            .status(status)
-            .json({ error: "Validation failed", issues: error.issues });
+      /** Answers once every target has run (or one stopped the rest). */
+      const finish = (): unknown => {
+        if (issues.length === 0) {
+          return next();
         }
-        const body = formatError(error, req);
-        // `res.json` takes objects only; any other JSON value is serialised
-        // the same way and sent with the same Content-Type.
-        return typeof body === "object" && body !== null && !Array.isArray(body)
-          ? res.status(status).json(body)
-          : res.status(status).type("json").send(JSON.stringify(body));
-      }
-      return next(error);
+
+        const error = new ValidationError(issues, status);
+
+        if (onFailure === "throw") {
+          throw error;
+        }
+        if (onFailure === "respond") {
+          if (!formatError) {
+            return res
+              .status(status)
+              .json({ error: "Validation failed", issues: error.issues });
+          }
+          const body = formatError(error, req);
+          // `res.json` takes objects only; any other JSON value is serialised
+          // the same way and sent with the same Content-Type.
+          return typeof body === "object" &&
+            body !== null &&
+            !Array.isArray(body)
+            ? res.status(status).json(body)
+            : res.status(status).type("json").send(JSON.stringify(body));
+        }
+        return next(error);
+      };
+
+      /** Validates targets from index `from` on. */
+      const run = (from: number): unknown => {
+        for (let i = from; i < targets.length; i++) {
+          const target = targets[i];
+          const schema = schemas[target];
+          if (!schema) {
+            continue;
+          }
+          const targetHooks = hooks?.[target];
+          const raw = readTarget(req, target);
+          const input = targetHooks?.normalize
+            ? targetHooks.normalize(raw, req)
+            : raw;
+          const outcome = validateStandard(schema, input, target);
+          if (outcome instanceof Promise) {
+            return outcome.then((settled) =>
+              settle(target, settled) ? finish() : run(i + 1),
+            );
+          }
+          if (settle(target, outcome)) {
+            return finish();
+          }
+        }
+        return finish();
+      };
+
+      return run(0);
     };
 
+    attachContract(handler, this.#contract);
     return handler;
   }
 
