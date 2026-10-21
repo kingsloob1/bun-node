@@ -44,11 +44,14 @@ Bun, 1.4.4-canary.1; the repo's floor is 1.4.3. The evidence is in
 [`evidence/`](evidence/README.md), and each measurement there re-runs with one
 command.
 
-### Status (2026-10-17)
+### Status (2026-10-21)
 
 | Part | State |
 |---|---|
-| This plan | **revised to the user's 2026-10-17 scope**; nothing built. The eight ★ questions in §8 are **answered** (2026-10-17, each as recommended); the rest are asked before the PR each gates. **Group 1 starts once the whole [nestjs-12-parity](../nestjs-12-parity/README.md) plan has merged** (the user's decision, 2026-10-17) |
+| This plan | **revised to the user's 2026-10-17 scope**. The eight ★ questions in §8 are **answered** (2026-10-17, each as recommended); the rest are asked before the PR each gates. Group 1 started once the whole [nestjs-12-parity](../nestjs-12-parity/README.md) plan had merged (the user's decision, 2026-10-17) |
+| Group 1 (§6): V0, V1, V2, V3a, V3b | **merged 2026-10-21**: V0 #463, V1 #470, V2 #477, V3a #482, V3b #484 (bun-common; examples beside each) |
+| Group 1: **V3c**, response variants (§4.4.6) | **added 2026-10-21** (the user's decision: group 1 includes V3c, before group 2); planned and spiked ([`evidence/response-variants/`](evidence/response-variants/README.md)); its questions are Q-H15–Q-H31: all answered 2026-10-21 (Q-H17 and Q-H18 changed by the user: an async `when`, and `.variant()` adjusting the response) and its names approved |
+| Follow-up: **V13**, the `"parse"` response mode (Q5) | **added 2026-10-21** (the user's answer to Q-H20); after group 2; not designed beyond §6's row |
 | The transport-agnostic core (§4.1) | spiked: [`evidence/contract-core/`](evidence/contract-core/README.md), with a UDP and an in-process broker adapter, 24 type controls shown to fire |
 | HTTP completeness: cookies, typed headers, responses of every body kind (§4.3, §4.4) | spiked as a patch on a copy of bun-common: [`evidence/http-complete/`](evidence/http-complete/README.md), H1–H52 at runtime, 18 type controls shown to fire, cost per body kind |
 | NestJS (§4.5) | designed with the Nest agent (bun-node-15); waits on nestjs-12-parity PR-2, PR-3, PR-5, PR-6a and PR-6c (§6); bun-node-15 reviewed §4.5 with a probe on Nest 11 and 12 (`evidence/nest-interceptor/`) |
@@ -166,13 +169,14 @@ which logs a mismatch and nothing more.
 | V-D12 | **bun-jobs**: a definition carries `schema: { data, result }`, **beside** its options; checks live in `BunQueue` so every enqueue path (add, bulk, flows, the API, updates, debounce, repeat series) runs them; processing re-runs the data schema once, in the worker, before any executor; flows validate every node before the first write. | e9's survey of the code and its nine constraints [A]. |
 | V-D13 | **Future transports** (gRPC, Kafka, RabbitMQ/AMQP, UDP) need no core change: `defineTransport` plus a small adapter; no integrations are built. | Two spike adapters, UDP over loopback (about 100 lines) and an in-process broker (about 80) [M `contract-core` C1–C9]. |
 | V-D14 | **Docs and the typed client read one thing**: the contract a route, channel, SSE endpoint or job definition carries (`getContract`), flattened by `describeContract` to `{ side, key, part, mediaType, schema }` rows. AD's `__schemas` becomes that. | Spiked [M `contract-core` C20]; AD and TC already expect request parts and per-status responses (§4.11). |
+| V-D15 | **Response variants** (V3c, added 2026-10-21): within one status, `variants({ name: { when?, headers, cookies, content, refine? } }, { by?, refine? })`; a response must match **one** variant whole; `when` on the validated request makes a variant acceptable only for the requests it holds for; a discriminant (`by`, a response header or cookie) selects one; `res.status(200).variant(name)` narrows the types; no variant applicable is a mismatch. | The user's need (2026-10-21). Spiked against the real V3a types and overloads (21 controls fire, line-exact) and as a runtime matcher (RV1–RV28) [M `response-variants`]; §4.4.6. The user's answers (2026-10-21): `when` may be async; `.variant()` adjusts the response (fills single literals, strips undeclared body fields). |
 
 ### 1.3 What it costs
 
 | Work | Effort | Owner |
 |---|---|---|
-| Group 1 — core and HTTP completeness, bun-common (V0, V1, V2, V3a, V3b) | **~14–15 d** | bun-common agent (bun-node-11) |
-| Group 2 — NestJS (V6, V7a, V7b) | **~8–10 d** | bun-common agent builds in bun-nest; bun-node-15 reviews |
+| Group 1 — core and HTTP completeness, bun-common (V0, V1, V2, V3a, V3b; V3c added 2026-10-21) | **~14–15 d**, **+5 d** for V3c | bun-common agent (bun-node-11) |
+| Group 2 — NestJS (V6, V7a, V7b) | **~8.5–10.5 d** (V7b +0.5 d for V3c's variants) | bun-common agent builds in bun-nest; bun-node-15 reviews |
 | Group 3 — other transports: WebSocket (V8, V9), SSE (V11), jobs (V4, V5a, V5c, V5b), cache (V10) | **~17–20 d** | bun-common agent (WS, SSE); bun-node-e9 (jobs); BC's owner (cache) |
 | Group 4 — client and docs hooks (AD (b0), V12, AD (a)/(b)/(e) deltas) | **~3 d new** + AD's own estimates; bun-node-99 reviewed the shapes (§4.12) | bun-common agent |
 | Examples, per PR | **~5 d** | bun-node-74 |
@@ -1077,6 +1081,419 @@ production.
 **bun-jobs' `validateResponses`** keeps its boolean and accepts the modes
 (`true` = `"warn"`), so the two speak one vocabulary (V4).
 
+#### 4.4.6 Response variants (V3c)
+
+[D, M [`evidence/response-variants/`](evidence/response-variants/README.md)]
+**The need, the user's (2026-10-21)**: within **one** status the response
+differs by who asked or by what it carries. An admin, recognised by a request
+header, gets another body and headers; a request cookie, or a response header
+or cookie, changes what is sent. A union per part, which V3a already accepts,
+fails three ways: it cannot tie the parts together (`x-admin: 1` with a
+`UserView` passes), it cannot tie the response to the request (a non-admin
+answered with the `AdminView` passes: a leak), and it types `res` as the union
+in every branch. V3c fixes all three for the cases the spike covers, and
+states where the fix stops (the leak limit below).
+
+**The declaration** [D, M]:
+
+```ts
+validate(
+  { headers: z.object({ "x-admin": z.literal("1").optional() }) },
+  {
+    responses: {
+      200: variants(
+        {
+          admin: {
+            when: (valid, req) => valid.headers["x-admin"] === "1",   // valid: the parsed parts, typed; may be async
+            headers: z.object({ "x-admin": z.literal("1") }),
+            content: { "application/json": AdminView },
+            description: "to admins (x-admin: 1)",                    // for documents: a `when` cannot be
+          },
+          user: { content: { "application/json": UserView } },       // no `when`: for every request (optional)
+        },
+        { by: { header: "x-admin", values: { admin: "1", user: null } } },  // optional: the response selects
+      ),
+      404: Problem,
+    },
+    responseValidation: "error",
+  },
+);
+
+res.status(200).variant("admin").json(adminView);   // narrowed; x-admin: 1 filled, undeclared fields stripped
+res.status(200).json(body);                         // the union, as V3a types it; nothing adjusted
+```
+
+```ts
+function variants<
+  const T extends Readonly<Record<string, VariantSpec<V>>>,
+  const B extends Discriminant<keyof T & string> | undefined = undefined,
+  V = UntypedValid,                      // inferred from validate()'s schemas; UntypedValid under commonResponses
+>(table: T, options?: { by?: B; refine?: Refine }): ResponseVariants<T, B, V>;
+
+interface VariantSpec<V> extends ResponseSpecObject {      // headers, cookies, content: V3a's own spec
+  when?: (valid: V, req: BunRequest) => boolean | Promise<boolean>;  // a boolean decided in place; absent: every request
+  refine?: Refine;                                         // a whole-response check after the parts pass
+  description?: string;                                    // what documents say instead of the `when`
+}
+type Discriminant<N extends string> =
+  | { header: string; values?: { [K in N]?: string | true | null } }   // default: each variant's name
+  | { cookie: string; values?: { [K in N]?: string | true | null } };  // true: present; null: absent
+type Refine = (response: RefineResponse, req: BunRequest) => readonly RefineIssue[] | undefined;
+interface RefineResponse { status; headers; cookies; mediaType; body; variant }   // as the gate saw them
+interface RefineIssue { part: "status" | "headers" | "cookies" | "body"; path?: string; message: string }
+
+// BunResponse: narrows (literal fields optional, LiteralOptional), records, and adjusts at the commit
+variant<const N extends VariantNames<TResponses>>(name: N): BunResponse<_, NarrowVariant<TResponses, N>>;
+```
+
+**One mechanism, not two** [D, M RV1–RV8]: a variant is **acceptable** for a
+response when it is **selected**, its **`when` holds**, and **every part
+matches, whole** (then its `refine`). `when` (on the request) and the
+discriminant (on the response) are two filters on the same candidate set, so
+the user's item 4 needs no second feature:
+
+1. **Selected**: the variant `res.variant()` named; else the one the
+   discriminant's value selects; else every variant. The two must agree when
+   both are present (RV8a–b, RV6c).
+2. **Applicable**: the selected variants whose `when` holds, one call per
+   variant that has one (RV12: 8 variants, 8 calls; a status with no variants,
+   0). A `when` that answers a Promise is awaited, holding the commit. For a
+   named variant whose `when` holds, `.variant()` now **adjusts** the
+   response (below).
+3. **Matched**: the first applicable variant whose headers, cookies, media
+   type and body all pass, cheap parts first, each variant stopping at its
+   first failing part. A part is never taken from one variant and another part
+   from another (RV2: `x-admin: 1` with a user body is refused, with each
+   variant's own issues).
+
+**The decisions**:
+
+- **No variant applicable is a mismatch** (RV5; Q-H16, answered), refused
+  under `"error"` and logged under `"warn"`, like an undeclared status. There
+  is no implicit fallback. **A default variant is optional**: no status needs
+  one, and a table where every variant has a `when` is complete (RV5's is).
+  A variant with no `when` is only how to declare a fallback, for the authors
+  who want one. The issue: `No variant of this status applies to this request
+  (2 excluded by when)`.
+- **`when` reads `req.valid`, typed by the validator**, plus the raw request
+  second, for what no schema parsed (an auth middleware's `req.user`). Its
+  parameter is exactly the parsed parts: `Equal<typeof valid, { headers: {
+  "x-admin"?: "1" }; cookies: { sid?: string } }>` holds, inferred through the
+  nested `variants()` call with nothing restated; reading a part no validator
+  parsed is a type error (VT7), and so is comparing a parsed header with a
+  number (VT8) [M]. **A part with no validator is absent**: from the type, and
+  `undefined` at runtime, so a `when` reading it answers `false` and does not
+  throw (RV11). Under `commonResponses` (a router has no validator) the view is
+  `UntypedValid`, every part optional and `unknown`. Under a mount, a route's
+  `when` is typed by its own validator while `req.valid` holds every layer's
+  parts at runtime (B3, [I]).
+- **`when` runs at the commit**, never at request time (the status is
+  unknown until then), and **may be asynchronous** (Q-H17, the user's answer
+  of 2026-10-21), with a fast path [M RV10b–e]. A `when` that returns a
+  boolean is decided in place: no Promise is made and a sync verdict stays
+  sync (RV10c). One that returns a Promise is awaited, holding the commit as
+  an async vendor does (RV10b), and must resolve to a boolean. A non-boolean
+  (VT9, VT18 in the types; RV10d), a throw (RV10a) or a rejection (RV10e) is
+  a **failed check**: under `"error"` a 500 with `The response could not be
+  checked`, the error itself logged and never in an issue. It still takes
+  `(valid, req)`.
+- **The discriminant** (`by`): a response header or a `Set-Cookie` name;
+  `values` maps each variant to the value that selects it (default: its name),
+  a string matching exactly, `true` any value, `null` absence, tried in that
+  order. Two variants on one value, a `values` key naming no variant, and an
+  empty `variants({})` are `TypeError`s (RV14), and the second a type error
+  too (VT14). A value that selects nothing is refused on `headers.<name>` (or
+  `cookies.<name>`) with the **declared** values, never the received one:
+  `Does not select a variant (expected full, summary)` (RV6f–g). The
+  discriminant turns N body checks into one, and is what lets a typed client
+  tell variants apart (below). `null` exists because "this header must be
+  absent" in a headers schema is vendor-specific: zod 4's `z.undefined()`
+  makes the key required, so it is `z.never().optional()` there [M].
+- **`res.variant(name)` narrows the types, records the name, and adjusts the
+  response** (Q-H18, the user's answer of 2026-10-21; designed below). The gate
+  checks that variant alone, its `when` still enforced (RV8a, RV23: named for a
+  non-admin request, refused before anything is adjusted). On a status with no
+  variants it is a type error (VT5, VT16, VT17) and a runtime issue (RV8c).
+
+**What `.variant()` adjusts** [D, M RV18–RV28]. `.variant(name)` fills what
+the variant's schemas allow **exactly one value** for, wherever the handler
+did not set it, and strips body fields the variant does not declare, so the
+handler writes only what varies. Anything it cannot adjust (a required field
+with no single value, missing or wrong, or a value the handler set) is left to
+the check like any mismatch: 500 under `"error"`, logged under `"warn"`.
+`.variant()` **never throws**; an adjust that fails leaves the response as the
+handler made it, and logs.
+
+| What | Filled from | When | Spike |
+|---|---|---|---|
+| the discriminant header or cookie | `by.values[name]`, an exact string only (`true` and `null` are not one value) | the handler set none | RV18 (`x-view`), RV24 (the handler's own other value is kept, and refused as a disagreement) |
+| a declared header | the headers schema's required property with one value | the header is absent | RV18 (`x-tier`), RV22 (a wrong `x-tier` the handler set is kept and refused) |
+| a declared cookie | the cookies schema's required property, when its `value` **and every attribute it requires** have one value; `path: "/"` as `res.cookie()` defaults | that `Set-Cookie` is absent | RV28 (`mode` filled with `httpOnly`; `sid`, any value, not fillable: the handler's kept, and its absence refused, RV28b) |
+| the status | the one status that declares a variant of that name | `status()` was never called | RV20 (`created` → 201) |
+| `Content-Type` | the variant's one declared media type, when it is JSON-classed (`application/json`, `*+json`) and the body is a JSON value | only `json()`'s implicit type is set, never one the handler set | RV18 (`application/vnd.admin+json`) |
+| literal body fields | required properties with one value, at any depth inside objects the handler sent, and in every element of arrays it sent; an object or element is never created | the field is `undefined` | RV18 (`kind`, `meta.v`, `items[].k`), RV20 |
+| undeclared body fields | removed from every object whose JSON Schema lists `properties` and allows nothing more | always, for a JSON body | RV18 (three removed at three depths), RV25 |
+
+- **How "one value" is found, per vendor** [M]: from the schema's
+  **`~standard.jsonSchema.input()`** (the wire side), read once per variant at
+  declaration: a property with `const`, or an `enum` of one. Measured on zod
+  4.6 (`z.literal("admin")` → `{ "const": "admin" }`, `z.enum(["one"])` →
+  `{ "enum": ["one"] }`) and arktype 2.2 (`"'admin'"` → `{ "const": "admin" }`).
+  valibot 1.5 and yup 1.7 carry no `~standard.jsonSchema`, nor does
+  `toStandardSchema()` without its `jsonSchema` option, so **their variants are
+  not adjustable**: nothing filled, nothing stripped (RV26), and V3c says so
+  once per variant at declaration (Q-H25). Vendor internals (zod's `_zod.def`)
+  are never read: a vendor-neutral rule, or nothing. zod throws converting
+  `z.date()` and other unrepresentable types unless asked otherwise, so the
+  call passes `libraryOptions: { unrepresentable: "any" }` (an opaque,
+  per-vendor option of the Standard JSON Schema spec; zod then writes `{}`,
+  which is neither filled nor stripped); a converter that still throws makes
+  that schema not adjustable.
+- **How stripping works, and its limits** [M RV27]: by JSON Schema, not by the
+  schema's output. The output would apply transforms and defaults (a
+  `z.coerce.number()`, a `Date`), sending a value of the wrong wire type,
+  which is the `"parse"` mode's business (below). An object is stripped when
+  its node lists `properties` and has neither `additionalProperties: true` or
+  a schema, nor `patternProperties` (zod writes `additionalProperties` only for
+  a record or a passthrough object, so a plain `z.object` strips); `$ref`s into
+  `$defs` are followed. **Not stripped and not filled**: a union, an
+  intersection or a discriminated union (`anyOf`/`oneOf`/`allOf`: RV27 keeps
+  a member's extra key; choosing a branch would need the check first), a
+  record (its keys stay), tuples, and anything past depth 16. What was
+  removed is recorded as a path and a count (`body.meta: stripped 1 undeclared
+  field`), never a key name: a key of a user-keyed record is user data
+  (§4.1.6).
+- **When it runs**: at the commit, before the check, and only after the
+  named variant's `when` holds (so a refused response is never adjusted,
+  RV23). Headers, cookies, the status and `Content-Type` are adjusted for
+  every body kind the gate sees before the status line is out, the first
+  `write()` included. The **body** is adjusted only for a JSON value
+  (`json()`, `send(object)`): never text, bytes, a `Blob`, a passed-through
+  `Response`, a stream, an `opaque()` body or a `sendFile()`. The handler's
+  object is **never mutated**: copy-on-write along the changed paths (RV19). A
+  body that changed is serialised again into a new native `Response`; the
+  `json()` fast path built one already, which is harmless until handed on
+  (§2.9). A `.variant()` called after the response committed is too late: it
+  is ignored, with one `warn` per route.
+- **With the discriminant and `when`**: the order is: select the named
+  variant, decide its `when` (a refusal stops here), adjust (the discriminant
+  is filled first), then check that the discriminant now selects the named
+  variant (a value the handler set for another variant is kept and refused,
+  RV24), then check the parts whole. Without `.variant()` nothing is
+  adjusted: the gate cannot know which variant the handler meant.
+- **Under `responseValidation: "off"`**: V3a installs no gate there, but
+  `.variant()`'s adjust is what the handler asked for, and its stripping is a
+  privacy measure, so a validator that declares variants installs an
+  adjust-only step under `"off"` (no `when`, no check), costing one field read
+  when `.variant()` was not named (Q-H29).
+- **The types follow** [M VT19–VT21]: after `.variant()`, `json()` and
+  `send()` take the variant's body with every required single-literal field
+  **optional**, through nested objects and array elements
+  (`.variant("admin").json({ id, meta: { at } })` compiles, `kind` and
+  `meta.v` filled), only when every JSON body schema of the variant carries
+  `~standard.jsonSchema` **in its type** (zod's does, valibot's does not, so a
+  valibot literal stays required: VT21). On the union, without `.variant()`,
+  nothing is optional (VT19), and a non-literal field never is (VT20). A
+  header or cookie a variant fills was already optional to `set()` and
+  `cookie()`.
+- **What it costs** [M `bench.sh`]: the plan is built once per variant at
+  declaration (one JSON Schema conversion per schema). Per response, a walk of
+  the declared shape and the body's own keys: see the cost table below
+  (`adjust fill+strip`, and `reserialize` for the new `Response` when the body
+  changed). A `.variant()` with nothing to change walks the plan and copies
+  nothing (the `named` rows include it).
+- **Without `.variant()`, `res` is the union**: each variants status enters
+  V3a's type map as the **union** of its variants' specs, each tagged
+  `variant: N`, and V3a's `SpecField` already distributes over a union, so
+  `status()`, `json()`, `send()`, `set()`, `header()` and `cookie()` take the
+  union with no change to them (§1 of the probe). The runtime still enforces
+  whole matches and `when`.
+- **`refine`**, on a variant or on `variants(…, { refine })`, runs after the
+  parts pass, synchronously, with the whole response (`status`, `headers`,
+  `cookies`, `mediaType`, the parsed `body`, the matched `variant`) and the
+  request; its issues go through the core's scrub **against every part**,
+  since it sees all of them (RV9b: a message quoting a body value under
+  `headers.x-total` came out `Invalid value`) [M]. A plain status's spec
+  object takes `refine` too.
+- **A plain status is unchanged**: V3a's issues, no `variant` field (RV15);
+  `when` on a plain status is a `TypeError` naming `variants()` (RV14).
+- **Merging** (`commonResponses`, a mount's validator): a variants status is
+  replaced **whole** by a more specific layer's declaration of that status,
+  never merged per part. `mergeOutboundDefs` merges per part today
+  (`bun-common/lib/responseValidation.ts:320`, `{ ...out[status], ...parts }`),
+  so V3c special-cases it (Q-H22).
+- **Streams** (`chunks()`, `sse()` in a variant's `content`): the commit
+  narrows the candidates by status, headers, cookies and media type; when
+  more than one applicable variant remains, each chunk is checked against the
+  survivors, a variant failing a chunk dropping out, and the stream is cut off
+  when none survives [I, Q-H24]. A discriminant or `res.variant()` avoids it.
+
+**What an issue says** [M RV2, RV3, RV5, RV6, RV16]: never a received value
+(§4.1.6), and never which variant was "nearly" matched with values. A refusal
+carries a status-level summary (`The response matches no acceptable variant
+(admin, user)`), then each **applicable** variant's issues in full, each
+tagged with an optional **`variant`** field (a new optional field of the
+core's `ValidationIssue`, Q-H19), with its path and the vendor's scrubbed
+message. **On the failure path only**, the gate also checks the variants
+`when` excluded and names one the response matches in full: `The response
+matches variant "admin", which does not apply to this request` (RV3, RV13b).
+That is the leak's own diagnosis, and it costs nothing on a passing response.
+Variant names are the author's, like statuses; the README says a
+`ResponseValidationError`'s issues are for logs, not for the client. Three
+planted values (a body field, a discriminant value, a value a `refine` message
+quoted) appear in none of the 44 verdicts (RV16).
+
+**The leak limit** [M RV17, RV25]: the gate **checks, it never strips**,
+except through `.variant()`. A user view that is a structural **subset** of the
+admin view (`z.object({ id })` against `z.object({ id, salary })`) accepts
+the admin body, so a non-admin answered with it is **sent** (RV17a); the types
+let it through too (B2: no excess-property check on `json()`'s type
+parameter). The same table with `z.strictObject` for the user view refuses it
+and names the admin variant (RV17b). So variants catch the leak only where the
+less-privileged variant's schema rejects what the privileged one adds: a
+strict object, a discriminating literal (`role: "user"`, as RV1–RV4 use), or a
+discriminant. **`.variant("user")` closes it for the handlers that name their
+variant**: the admin-only `salary` is stripped and the user body sent (RV25,
+the same loose table as RV17a). The README documents the limit with a
+strict-schema example, and the **`"parse"` response mode** (Q5: send the
+schema's output, stripping unknown keys) is planned as a follow-up feature,
+**V13** in §6, for every response a handler sends without `.variant()`
+(Q-H20, the user's answer of 2026-10-21).
+
+**Typing: composes with the real V3a types; the overloads stay
+byte-identical** [M `types.probe.ts`, 21 controls, line-exact]. The probe
+imports the real `BunRouter` (its generated overloads), `BunResponse`
+(`status()` with `AllowedStatus`/`NarrowResponses`, `json`/`send`/`set`/
+`cookie`), `InferResponses`, `InferValidatedShape`, `ValidatorMiddleware` and
+bun-nest's `BunHttpAdapter`, and adds `.variant()` to the real `BunResponse`
+by module augmentation, changing no lib file. Handlers registered through the
+real overloads, on both adapters, get the union, narrow with `.variant()`, and
+refuse VT1–VT21. `generate-verb-overloads.ts --check` is up to date on the
+base (27 and 17 verbs), and nothing V3c changes is an input of the generator:
+the overloads name only `MountedHandler`, `ValidatorMiddleware<TShape>` and
+`RouterHandler`. **Unchanged**: the overloads, `MountedHandler`,
+`ResolvedHandler`, `ResolveResponses`, `TypedRouteHandler`'s `TRes`,
+`AllowedStatus`, `NarrowResponses`, `SpecField`, bun-nest's adapter.
+**What V3c changes**:
+
+| File (`bun-common/lib/`) | Change |
+|---|---|
+| `responseBodies.ts` | `variants()` and its types |
+| `responseValidation.ts` | the adjust plan per variant, built at declaration from `~standard.jsonSchema` (through the core's `jsonSchemaOf`), and the adjust step at the commit, before the check, also under `"off"` (Q-H29), swapping in a re-serialised `Response` when the body changed; an async `when` held like an async vendor, a sync one decided in place; `ResponseSpec` gains `ResponseVariants`; `ResponseSchemas` takes the `when` view as a defaulted type parameter (`ResponseSchemas<V = UntypedValid>`); `toOutboundDef` compiles variants and refuses the declaration mistakes; `mergeOutboundDefs` replaces a variants status whole; the gate's `#check` gains the three steps (asking only the vendor's result while matching, building issues on the refusal path alone) and the failure-path diagnosis; the chunk gate carries survivors |
+| `BunValidate.ts` | the `RS` constraint of `validate()`, `BunValidate.middleware`, `BunValidate` and `BunValidateOptions` becomes `ResponseSchemas<InferValidatedShape<S, H>>`, so `when` is typed: a constraint change, no type parameter added, removed or reordered |
+| `types/responseTyping.ts` | `InferResponses` maps a variants status to the tagged union (the spike's `InferVariantResponses`); `VariantNames`, `NarrowVariant`, with `LiteralOptional` for a variant whose body schemas carry `~standard.jsonSchema` in their types (VT19–VT21); `HeaderArg` learns a declared-absent marker, so a discriminant's `null` refuses `set()` (B1; the probe's §7 checks the rule with `Equal`) |
+| `BunResponse.ts` | `variant()`, typed by the class's own `TResponses`, recording the name for the gate (a `warn` once per route when called after the commit); two flags the adjust reads: whether the handler set the status, and whether `Content-Type` is only `json()`'s implicit one |
+| `contract/model.ts`, `contract/describe.ts` | `ValidationIssue.variant?`; `ContractEntry.variant?` and the variants table on `sides` (below) |
+
+Two things the spike had to get right, each now a requirement: `variants()`'s
+discriminant parameter takes `NoInfer` in the return type (without it the
+contextual `Discriminant | undefined` became `B`, and every header of every
+variant typed as the variant's name), and a declaration is matched with
+`infer` for the request view, not `unknown` (its `when` parameter is
+contravariant, so the match failed and the status fell back to a plain spec).
+Both are in `evidence/response-variants/README.md`.
+
+**`describeContract`** (V1's core) [D]: one row per `(side, key, variant,
+part, mediaType)`, each with an optional **`variant`** field, flat rather than
+`nested` like V3b's `sse()` rows, because variants share their status's key
+space and part names, where SSE events open a new key space (`event`). Each
+variants status also appears on the side: `sides.outbound.variants: { "200":
+{ names: ["admin", "user"], conditional: ["admin"], by?: { part: "headers",
+name: "x-admin", values: { admin: "1", user: null } }, descriptions: { admin:
+"…" } } }`. A `when` is a function and is never described; `conditional` and
+`description` are what documents get. A generator that ignores `variant` sees
+two `application/json` rows for one status, so V12 and TC read the field
+(Q-H21).
+
+**Cost** [M `bench.sh`]: the prototype matcher alone (no router), zod, each
+scenario in its own process pinned to one CPU, three runs, the **lowest**
+minimum in ns per response, 15 rounds of 20,000 after 200,000 warm-up calls;
+load 8.5 falling to 5.7 on 16 cores (other sessions' jobs; separate processes
+of one scenario differed by up to 3x, so read orders of magnitude). Every
+response is accepted; "last" matches the last of N variants with no
+discriminant, so N−1 variants fail first.
+
+| Variants | first matches | last matches | last, issues built while matching | `by` header | `res.variant()` |
+|---|---|---|---|---|---|
+| none (a plain status) | 541 | | | | |
+| 1 | 525 | 544 | 413 | 455 | 415 |
+| 2 | 437 | 1,138 | 3,312 | 439 | 436 |
+| 4 | 473 | 2,170 | 8,374 | 468 | 521 |
+| 8 | 619 ¹ | 4,428 | 19,216 | 439 | 436 |
+
+¹ An earlier pinned run (`bench4`); this run's three processes gave
+1,748–2,573, the bimodal noise above, against 437–473 at N = 1, 2, 4.
+
+- **`when` costs nothing measurable**: N variants with a `when` each, matching
+  the first, stay within noise of a plain status up to N = 4 (one call per
+  variant, RV12). With no variants the gate makes no call and no allocation:
+  the plain path is V3a's.
+- **A discriminant or `res.variant()` makes the cost independent of N**
+  (about 0.45 µs here at every N): one variant checked.
+- **Without one, each variant that fails before the match costs about
+  0.56 µs** (N = 8: +3.9 µs for 7), **if the matcher does not build issues
+  while matching**. Building and scrubbing them for every failing candidate,
+  as the first version of the spike did, cost about 2.7 µs each (19 µs at
+  N = 8). So V3c asks only the vendor's own result ("does it pass") while
+  matching and builds issues on the **refusal path alone**, re-running the
+  applicable variants in full there (the spike's `matching.flatten`, `FLATTEN=1`
+  in `bench.sh`). The refusal path also runs the diagnosis over the excluded
+  variants, which costs one check each and only when refusing.
+- **`.variant()`'s adjust** (a later run, `bench6`, same method, at a
+  higher load, 8.3–10.5, so every row ran slower than above): with one
+  variant, `by` 708 ns against `named` 901 ns, the adjust walking its plan
+  with nothing to change (about +0.2 µs); `adjust fill+strip` (one literal
+  filled, three undeclared fields stripped, a copy made) 1,350 ns, about
+  +0.45 µs over `named`; and `reserialize` (a `JSON.stringify` and a new
+  `Response`, which V3c adds only when the body changed) 860 ns. So an adjust
+  that changes the body costs about 1.3 µs, against V3a's json gate cost of
+  +2.77 µs for 20 items (§4.4.5); one that changes nothing, a plan walk.
+- So the check stays at the commit gate with one `when` call per variant and
+  zero with no variants; the README advises a discriminant, or the most
+  frequent variant first, past a handful of variants. A V3a status's own check
+  is the gate's, not this prototype's `plain` row; V3c's bench (in
+  `http-complete/bench.ts`'s shape, through the pipeline) re-measures the gate
+  itself.
+
+**What V3c gives later PRs** (each PR's row in §6 says it too):
+
+- **V7b (Nest responses)**: `@Validate({ responses: { 200: variants({…}) } })`
+  takes the same declaration; `when` gets the parts `@Validate` parsed (the
+  same `req.valid` view) and the request; the interceptor's `map()` runs the
+  three steps on the status, `@Header()` headers and returned body it already
+  sees (§4.5.4). `reply(200, body, { variant: "admin" })` names and types a
+  variant (Q-N2's helper gains the option). A plain `@Res()` handler calls
+  `res.variant()` at runtime on bun-nest, checked by PR-6c's before-write
+  hook; it is untyped there (Nest's `@Res()` carries no `TResponses`).
+- **V8 (WebSocket channels)**: a `sends` message type may take `variants()`,
+  with `when` on the connection (the upgrade request's `req.valid`), for
+  `send(ws, …)`. Not for `publish(topic, …)`: Bun's fan-out is native and has
+  no per-recipient hook, so a conditional variant published to a topic is
+  refused at the call (a `TypeError` in V8's tests). A response discriminant
+  adds nothing to a frame, whose only part is `data`: a discriminated union in
+  the schema does it.
+- **V11 (SSE)**: an `sse({ tick: variants({…}) })` event may take variants,
+  `when` on the request that opened the stream (one request per stream, so it
+  fits as HTTP's does), checked per event before encoding by the typed
+  `SseWriter`.
+- **Brokers and other transports (§4.2)**: no request, so no `when`; the
+  discriminant generalises as `by: { part, name }` in the core (a message
+  header such as `schema-version` selecting the payload schema), when a
+  broker package is planned.
+- **V12 / AD (OpenAPI)**: a variants status's media type becomes `{ oneOf:
+  [Admin, User] }`; a header or cookie only some variants declare is
+  `required: false` with a description naming them; and an **`x-variants`**
+  extension on the response carries the exact table (names, `conditional`,
+  descriptions, the discriminant, and per variant its headers, cookies and
+  media types by reference), since OpenAPI's own `discriminator` reads a body
+  property, never a header.
+- **TC / V12 (the typed client)**: the result union is discriminated by
+  `status` and, when the status has a discriminant, by its value: `{ status:
+  200; variant: "full"; headers; body: Full } | { status: 200; variant:
+  "summary"; … }`, the client reading the header. Without one, variants cannot
+  be told apart on the wire, so the client gets V3a's per-part union, unless it
+  parses with the schemas (TC §5.4).
+
 ### 4.5 NestJS: body, query, headers, cookies, and responses of every kind [D, A]
 
 Agreed with the Nest agent (bun-node-15) on 2026-10-17. bun-nest supports
@@ -1576,6 +1993,7 @@ mutant run, as both spikes do (`check-types.sh`, `run.sh` step c).
 | V2 | `bunValidate.test.ts`: cookies, signedCookies (genuine, forged, tampered: H49–H51), typed coerced header on `req.valid` with raw `req.headers` untouched and `accepts`/busboy working (H46), H47, H48; bun-jobs `ProblemIssueDto` round trip | `validate.type-test.ts`: `req.cookies`, `req.signedCookies`, `req.valid` types; a `string[]` wildcard param case; the lifted inline limit (5 lines of `verbTyping.type-test.ts`) | `06-validation/cookies-and-headers.ts` (new) |
 | V3a | new `bunValidate.responses.test.ts`: H1–H20, H25–H38, H41–H45 (buffered kinds × modes × zod/yup; status, headers, cookies, media type; exemptions); `commonResponses`; router- and adapter-level defaults | new `responses.type-test.ts` from `http-complete/types.probe.ts` (N1–N18, L1); `verbTyping`, `mountTyping` and `nestVerbTyping` response cases; `generate-verb-overloads.ts --check`; `consumer-check.ts` for all four packages (the `BunResponse` and `BunRequest` surfaces) | `06-validation/responses.ts` (new) |
 | V3b | streams, `write()`/`end()`, SSE per event, H21–H24, H39, H40; a cut-off stream reaches the client as an error | `chunks()`/`sse()`/`opaque()` types | `06-validation/streaming-responses.ts` (new) |
+| V3c | new `bunValidate.variants.test.ts` from `response-variants/run.ts` (RV1–RV28), through `router.fetch()` and the adapter, under `"warn"` and `"error"`, zod and yup: a whole match per variant; parts from two variants refused (RV2); **the leak** refused with the excluded variant named (RV3), **with its negative control**: the same handler on V3a's per-part union is answered 200; no applicable variant (RV5); header and cookie discriminants with `values` (`string`, `true`, `null`), an unknown value listed without itself (RV6, RV7); `res.variant()` agreeing and disagreeing with the discriminant (RV8); `refine` scrubbed against every part (RV9); no validator (`req.valid` `{}`) and `commonResponses` with `UntypedValid` (RV11); `when` call counts, and 0 with no variants (RV12); the loose-subset limit and its strict fix (RV17); an async `when` awaited, a sync one leaving the verdict sync, a non-boolean, throwing or rejecting one a failed check (RV10a–e); `.variant()`'s adjust (RV18–RV28): the discriminant, literal headers and cookies, the status and `Content-Type` filled, literal body fields filled at depth and in array elements, undeclared fields stripped (counted, never named), the handler's object unmutated, a wrong value the handler set kept and refused, a non-literal field left to the check, `when` decided before any adjust, the leak fixed on RV17's loose table (RV25), valibot not adjustable with its declaration `warn`, union and record limits, under `"off"` too (Q-H29), the re-serialised body on the wire, a `.variant()` after the commit warned once; declaration `TypeError`s (RV14); whole replacement under `commonResponses` and a mount; a streamed variant with survivors per chunk; `describeContract`'s `variant` rows and `sides.outbound.variants`; planted values in no issue or log line | `responses.type-test.ts` gains VT1–VT21 from `response-variants/types.probe.ts` (an async `when` allowed, a non-boolean refused; literal fields optional after `.variant()` for zod, required for valibot and on the union), plus B1 made a control (a discriminant's `null` refuses `set()`); `when`'s parameter asserted equal to the parsed parts; `nestVerbTyping.type-test.ts` gains a variants case; `generate-verb-overloads.ts --check`; `consumer-check.ts` for all four packages | `06-validation/response-variants.ts` (new): an admin header, a session cookie, a mode header |
 | V6 | the pipe, the global pipe (with and without, `results-nest.txt`), the filter, through `adapter.fetch()`, on Nest 11 and 12 | `SchemaDto` instance type; TS2509 for unions | `examples/bun-nest/02-http-adapter/pipeline.ts` drops its hand-written pipe |
 | V7a | `@Validate` request side: every part, `@Validated(part)`; the skip rule both ways (a `@Body({ schema })` with the pipe in effect is not checked twice; without the pipe, or with `@Query('page', { schema })`, `@Validate` still checks); on 11 and 12 | parameter and return types; a `string[]` wildcard | `examples/bun-nest/08-validate/` (AD) |
 | V7b | responses: the status and `@Header()` headers seen in `map()` (each row of §4.5.4's table), a thrown 409 checked in `catchError`, redirects and `StreamableFile` through the before-write hook, plain `@Res()` skipped without a throw, `@Sse` with a sync and an async first event, both serializer placements; `ResponseValidationInterceptor` | `reply()` per-status types | the same folder |
@@ -1612,14 +2030,17 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 | 3 | **V2** request completeness | `cookies`, `signedCookies`, typed headers, `req.valid`, the `BunRequest` type parameters, the new target order; a validator with `onFailure: "respond"` attaching its own 400 to its contract, marked implicit (§4.12 m5); bun-jobs `ProblemIssueDto` widened | V1; nestjs-12-parity PR-5 for the `string[]` wildcard test (or a follow-up line) | 2 d | 11; e9 and 99 review the DTO |
 | 4 | **V3a** responses, buffered | `ResponseSchemas`, the commit gate, every buffered kind, status/headers/cookies/media type, modes, router/adapter defaults, `ResponseValidationError`, `commonResponses`, response typing (`status`/`json`/`send`/`set`/`header`/`cookie`/`redirect`) held to `WireInput` (§4.12 M1), media keys matched with parameters stripped on both sides (m2, Q-C14), the `#self` getter; consumer check for all four packages | V2 | 5 d | 11; 15 reviews the bun-nest type surface |
 | 5 | **V3b** responses, streamed | the chunk gate, `chunks(S, { framing })`, `sse()` with its events expanded into rows (§4.12 M4) and declared `data: "json" \| "text"` (m9, Q-C13), `opaque()`, `sendFile` reads, stream cut-off | V3a | 2.5 d | 11 |
+| 5a | **V3c** response variants (added 2026-10-21) | §4.4.6: `variants()` with `when`, `by` (header or cookie, `values`) and `refine`; `refine` on a plain status too; the gate's three steps (selected, applicable, matched whole) and the failure-path diagnosis; survivors per chunk for streamed variants; whole replacement in `mergeOutboundDefs`; `res.variant()` and **its adjust** (fill single literals and the discriminant, the status and `Content-Type`; strip undeclared JSON body fields; planned from `~standard.jsonSchema`; also under `"off"`, Q-H29); an async `when` with the sync fast path; the typed `when` (the `RS` constraint), the tagged union in `InferResponses`, `VariantNames`/`NarrowVariant`/`LiteralOptional`, `HeaderArg`'s declared-absent marker; `ValidationIssue.variant`; `describeContract`'s `variant` rows and variants table; the overloads byte-identical | V3b | 5 d (3.5 d, +1.5 d for the adjust, 2026-10-21) | 11; 15 (bun-node-a9) reviews the bun-nest type surface |
 | **Group 2** | **NestJS** | | | | |
 | 6 | **V6** pipes | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`; replaces NTR PR-N3's pipe half and NJD's pipe | V1; nestjs-12-parity PR-2 (filter tests on both majors) and **PR-3** (bun-nest's devDependencies on Nest 12, so its tests run on 12) | 2.5 d | 11 in bun-nest; 15 reviews |
 | 7 | **V7a** `@Validate`, request side | every part, `@Validated(part)`, Nest 12 composition (the skip rule of §4.5.1), `SchemaDto` integration | V2, V6; nestjs-12-parity **PR-3** (tests on 12) and **PR-5** (the `string[]` wildcard test) | 3 d | 11 in bun-nest; 15 reviews |
-| 8 | **V7b** `@Validate`, responses | per-status checks in `map()` and `catchError`, plus PR-6c's before-write hook (name TBD) for redirects, `StreamableFile` and plain `@Res()`; `reply()`, `@Sse`, `ResponseValidationInterceptor`, both serializer placements | V3b, V7a; nestjs-12-parity **PR-6a and PR-6c** | 3.5 d | 11 in bun-nest; 15 reviews |
+| 8 | **V7b** `@Validate`, responses | per-status checks in `map()` and `catchError`, plus PR-6c's before-write hook (name TBD) for redirects, `StreamableFile` and plain `@Res()`; `reply()`, `@Sse`, `ResponseValidationInterceptor`, both serializer placements; **from V3c**: `variants()` in `@Validate` responses, `when` on `@Validate`'s parsed parts, `reply(status, body, { variant })`, and `res.variant()` on plain `@Res()` through the before-write hook (§4.4.6) | V3b, **V3c**, V7a; nestjs-12-parity **PR-6a and PR-6c** | 3.5 d **+0.5 d** | 11 in bun-nest; 15 reviews |
+| **Follow-up** | **after group 2** (added 2026-10-21) | | | | |
+| 8a | **V13** the `"parse"` response mode (Q5) | opt-in, per validator, router or adapter: a buffered JSON body that passes is **sent as the schema's output** (unknown keys stripped by the vendor, defaults applied), for every response, not only those `.variant()` names (V3c already strips those, by JSON Schema); its open points: transforms change the wire type (`Date`, coercions), so the response types and the typed client follow the output under it; vendors that keep unknown keys (yup by default, arktype) strip nothing; streams and non-JSON bodies are out | V3c | ~2 d [I] | 11 |
 | **Group 3** | **Other transports** | | | | |
-| 9 | **V8** WebSocket channels (= TC PR-M4) | `defineChannel` on the core, §4.6.1; §4.12's M7 (the upgrade side, channel meta, the implicit error frame) and m12 (a pure contract apart from its server binding) | V1 | ~5 d (TC) **+1 d** | 11; 99 reviews (TC) |
+| 9 | **V8** WebSocket channels (= TC PR-M4) | `defineChannel` on the core, §4.6.1; §4.12's M7 (the upgrade side, channel meta, the implicit error frame) and m12 (a pure contract apart from its server binding); **from V3c**: `variants()` per `sends` type with `when` on the connection, for `send()` only, refused for `publish()` (§4.4.6) | V1 (V3c for variants) | ~5 d (TC) **+1 d** | 11; 99 reviews (TC) |
 | 10 | **V9** Nest gateways (= NTR PR-N5) | `@ValidateMessage`, `@Emits`, `WsValidationFilter` (an object `WsException`, §4.6.2) | V6, V8; nestjs-12-parity **PR-2** (Q4(a): the frame shape on 12) | ~4.5 d (NTR) **+0.5 d** | 11 in bun-nest; 15 reviews |
-| 11 | **V11** SSE on both adapters | `res.sse({ contract })` typed and checked (inside bun-native-routes PR-sse2, also 11's), with declared `data` decoding (m9); Nest `@Sse` per event | V3b, PR-sse2 | 1.5 d **inside PR-sse2** + 1 d bun-nest | 11; 15 reviews the Nest part |
+| 11 | **V11** SSE on both adapters | `res.sse({ contract })` typed and checked (inside bun-native-routes PR-sse2, also 11's), with declared `data` decoding (m9); Nest `@Sse` per event; **from V3c**: per-event `variants()`, `when` on the opening request (§4.4.6) | V3b, V3c, PR-sse2 | 1.5 d **inside PR-sse2** + 1 d bun-nest | 11; 15 reviews the Nest part |
 | 12 | **V4** bun-jobs alignment | `s` `~standard.jsonSchema`, with defaulted keys optional on input and required in output (§4.12 m11); `validateResponses` modes; `defineRoute` attaching a full HTTP contract to its terminal layer through `forwardContract` (M5); the flattening copies may adopt `validateStandard` | V1 | 2.5 d | e9; 11 reviews |
 | 13 | **V5a** job data and results | §4.8.1–§4.8.4 except flows; checks in `BunQueue`; `JobMapFromSchemas`; the bench guard | V1 | 3.5 d | e9; 11 reviews |
 | 14 | **V5c** flows | the pre-write pass, per-node definitions, typed `getChildrenValues` | V5a | 1.5 d | e9; 11 reviews |
@@ -1627,17 +2048,21 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 | 16 | **V10** cache hook | inside BC's core PR | V1, BC core | 0.5 d inside BC | BC's owner |
 | **Group 4** | **Client and docs hooks** | | | | |
 | 17 | **AD (b0)** spec types 1.1.0 | as AD | — | 0.5–1 d (AD) | 11 |
-| 18 | **V12** route listing and the route model's inputs | router layers carry contracts; `listRoutes(router)` → `{ key, method, path, params, contract (effective), doc }[]`, which TC PR-M1 serialises; `effectiveContract`; the `wire` mapping and one agreed `Jsonify`; AD's `RouteDoc` and TC's `ModelRoute` gain cookies, response headers and media types; §4.12's M2, M6, m4, m6 | V3a, (b0) | 3 d **+** AD (a)/(b) 10–14 d (AD) | 11; 99 reviews the route model |
+| 18 | **V12** route listing and the route model's inputs | router layers carry contracts; `listRoutes(router)` → `{ key, method, path, params, contract (effective), doc }[]`, which TC PR-M1 serialises; `effectiveContract`; the `wire` mapping and one agreed `Jsonify`; AD's `RouteDoc` and TC's `ModelRoute` gain cookies, response headers and media types; §4.12's M2, M6, m4, m6; **from V3c**: `oneOf` per media type, variant-only headers and cookies `required: false` with a note, the `x-variants` extension, and the client's union discriminated by status and discriminant (§4.4.6) | V3a, V3c, (b0) | 3 d **+** AD (a)/(b) 10–14 d (AD) | 11; 99 reviews the route model |
 | 19 | **AD (e)** AsyncAPI | channels, SSE and broker contracts through `describeContract` | V8, V11, V12 | AD's estimate | 11 |
 
-**New in this plan**: V0 0.5 + V1 4.5 + V2 2 + V3a 5 + V3b 2.5 + V6 2.5 + V7a
-3 + V7b 3.5 + V8 delta 1 + V9 delta 0.5 + V11 2.5 + V4 2.5 + V5a 3.5 + V5c
-1.5 + V5b 1.5 + V10 0.5 + V12 3 = **~40 d**. **Adopted** (estimated in AD, TC
+**New in this plan**: V0 0.5 + V1 4.5 + V2 2 + V3a 5 + V3b 2.5 + V3c 5 + V6
+2.5 + V7a 3 + V7b 4 + V8 delta 1 + V9 delta 0.5 + V11 2.5 + V4 2.5 + V5a 3.5 +
+V5c 1.5 + V5b 1.5 + V10 0.5 + V12 3 = **~45.5 d** (V3c's 5 d and V7b's 0.5 d
+added 2026-10-21), **plus V13's ~2 d** as a follow-up. **Adopted** (estimated in AD, TC
 and NTR, not counted again): (b0), AD (a)/(b), AD (e), TC PR-M4, NTR PR-N5.
 
 **Order**: group 1 starts once the whole nestjs-12-parity plan has merged
-(the user's decision, 2026-10-17). Then V0 → V1 → V2 → V3a → V3b, then group 2 (V6 → V7a → V7b, the last
-after nestjs-12-parity PR-6a and PR-6c). Group 3 may start once V1 merges where
+(the user's decision, 2026-10-17). Then V0 → V1 → V2 → V3a → V3b → **V3c**
+(group 1 now includes V3c, before group 2: the user's decision, 2026-10-21;
+V0–V3b merged that day), then group 2 (V6 → V7a → V7b, the last after
+nestjs-12-parity PR-6a and PR-6c), then the follow-up V13 (the `"parse"`
+mode, the user's answer to Q-H20, 2026-10-21). Group 3 may start once V1 merges where
 it depends on nothing else (V4, V5a, V8), but lands after group 2 unless the
 user reorders. Group 4's V12 can follow V3a.
 
@@ -1649,6 +2074,8 @@ user reorders. Group 4's V12 can follow V3a.
 | V1 | new exports (`lib/contract`, a subpath); issue messages may change where a vendor quoted a value (the scrub) |
 | V2 | new targets; `req.valid`; the target order; bun-jobs' `ProblemIssueDto` (to e9 and 99: bun-jobs-ui's fixtures move) |
 | V3a, V3b | `responses`, `responseValidation`, `ResponseValidationError`, `commonResponses`, `chunks`/`sse`/`opaque`; the `BunResponse` and `BunRequest` type parameters (bun-jobs' `define.ts` and bun-jobs-ui's server use `BunResponse` and must still check) |
+| V3c | `variants()` (`when`, sync or async, `by`, `refine`, `description`), `refine` on a plain status, `res.variant()`, which **adjusts the response** (fills single literals, the discriminant, the status and `Content-Type`; strips undeclared JSON body fields), also under `"off"`; the optional `variant` field on issues and on `describeContract` rows, and `sides.outbound.variants` (to 99: TC reads them); a variants status replaces a `commonResponses` one whole; the `RS` constraint change on `validate()` (to 15/bun-node-a9: bun-nest's type surface) |
+| V13 | the `"parse"` mode: a response may now differ from what the handler passed (the schema's output) |
 | V6, V7a, V7b, V9 | new bun-nest exports; `examples/bun-nest/02-http-adapter/pipeline.ts` can drop its `SchemaPipe` |
 | V8, V11 | channel API; typed SSE writer |
 | V4, V5a, V5c, V5b | from e9; V5b changes `api/contract` (to 99); `examples/bun-jobs/11-management-api/mounting-and-auth.ts:283-286` prints the whole `/definitions` body |
@@ -1704,8 +2131,10 @@ it names.
    **Recommended: yes** (measured twice per part; per field from bun-node-99's
    review, M1). A typed client's responses follow the same wire side. ✅ **Answered 2026-10-17: yes, as recommended.**
 5. **A `"parse"` mode that sends the schema's output** (stripping unknown keys
-   to stop leaking fields)? **Recommended: later, opt-in.** Check-only never
-   changes a response.
+   to stop leaking fields)? **Recommended: later, opt-in.** ✅ **Decided
+   2026-10-21 (with Q-H20): a follow-up feature, V13 in §6**, opt-in. Until
+   then the modes only check, apart from `.variant()`'s adjust (V3c, Q-H18),
+   which already strips for a handler that names its variant.
 6. ★ **One shared runner named `validateStandard`** (NJD's name) instead of
    NTR's `validateTarget`? **Recommended: yes.** ✅ **Answered 2026-10-17: yes, as recommended.**
 7. **One `StandardSchemaPipe` at bun-nest's root**, replacing NTR's and NJD's
@@ -1828,6 +2257,112 @@ it names.
   params → query → body`? **Recommended: yes**: a cheap header or session
   check fails before a body is parsed. ✅ **Answered 2026-10-21: yes, as recommended.**
 
+**V3c, response variants (§4.4.6)**. The user answered every question,
+Q-H15–Q-H31, and approved V3c's names (§9) on 2026-10-21, in bun-node-ea's
+session; Q-H25–Q-H31 came from the answer to Q-H18.
+
+- **Q-H15** **One mechanism**: a variant is accepted when it is selected
+  (`res.variant()`, else the discriminant, else all), its `when` holds, and
+  every part matches whole; `when` (request) and `by` (response) are filters
+  on one candidate set, not two features? **Recommended: yes** (RV1–RV8).
+  ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H16** **No applicable variant is a mismatch**, with no fallback?
+  **Recommended: yes** (RV5): a silent fallback would send the very response
+  the `when` was written to withhold. ✅ **Answered 2026-10-21: yes, as
+  recommended.** The user asked whether a default variant is necessary: **it
+  is not**. A variant with no `when` is optional, and only how to declare a
+  fallback for an author who wants one; a table whose every variant has a
+  `when` is complete.
+- **Q-H17** **`when(valid, req)`**, run at the commit, `valid` typed by the
+  validator (`UntypedValid` under `commonResponses`), the raw request second;
+  synchronous only? **Recommended: synchronous**, the raw request included.
+  ✅ **Answered 2026-10-21, changed by the user: `when` may be asynchronous,
+  with a fast path.** A boolean is decided in place (no Promise made, a sync
+  request stays sync); a Promise is awaited, holding the commit as yup does;
+  it must resolve to a boolean or throw, and a non-boolean, a throw or a
+  rejection is a failed check (500 "could not be checked", the error logged,
+  never in an issue). It still takes `(valid, req)`. Spiked: VT9, VT18,
+  RV10a–e (§4.4.6).
+- **Q-H18** **What `res.variant(name)` does at runtime**: record only, setting
+  nothing? **Recommended: record only.** ✅ **Answered 2026-10-21, changed by
+  the user: `.variant()` adjusts the response wherever it can**: it fills
+  only what the variant's schemas allow exactly one value for, and only what
+  the handler did not set (the discriminant from `by.values`, a single-literal
+  header or cookie, the status, the one declared media type as
+  `Content-Type`, literal body fields), and strips body fields the variant's
+  schema does not declare. What it cannot adjust is left to the check;
+  `.variant()` never throws. Designed and spiked in §4.4.6 ("What
+  `.variant()` adjusts"): RV18–RV28, VT19–VT21; Q-H25–Q-H31 follow from it.
+- **Q-H19** **What an issue names**: a status-level summary, each applicable
+  variant's issues tagged with a new optional **`variant`** field on the
+  core's `ValidationIssue`, and, on the failure path only, an excluded variant
+  the response matches in full; never a received value? **Recommended: yes**
+  (RV2, RV3, RV6f, RV16), the README saying the issues are for logs, not
+  clients. ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H20** **The leak limit**: the gate checks and never strips, so a user
+  view that is a loose subset of the admin view lets the admin body through
+  (RV17a). **Recommended: document it, with a strict-schema example**; Q5's
+  `"parse"` mode later. ✅ **Answered 2026-10-21: document it with a
+  strict-schema example, and add the `"parse"` mode to the plan as a
+  follow-up feature** (V13 in §6; Q5 in §8.1). `.variant()`'s stripping
+  (Q-H18) already covers a handler that names its variant (RV25).
+- **Q-H21** **`describeContract`**: a flat optional `variant` field on rows
+  plus `sides.outbound.variants`, rather than nested rows like `sse()`'s?
+  **Recommended: flat.** ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H22** **Merging**: a more specific layer's declaration of a variants
+  status replaces it **whole**, never per part? **Recommended: yes.**
+  ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H23** **The discriminant's `values`**: a string (exact), `true`
+  (present, any value), `null` (absent), defaulting to each variant's name,
+  tried in that order? **Recommended: yes** (RV6, RV7); `null` is what makes
+  "the user variant has no `x-admin`" declarable without a vendor-specific
+  "absent" schema (zod 4's `z.undefined()` makes the key required). Since
+  Q-H18, only an exact string is filled by `.variant()`. ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H24** **Streamed variants**: when more than one applicable variant
+  remains at the commit, check each chunk against the survivors and cut the
+  stream off when none survives, rather than refusing the declaration?
+  **Recommended: survivors**, with the README pointing at a discriminant or
+  `res.variant()` to decide at the commit. [I]: not spiked. ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H25** **A variant `.variant()` cannot adjust** (its JSON body schema
+  carries no `~standard.jsonSchema`: valibot, yup, `toStandardSchema` without
+  `jsonSchema`; or the vendor's converter throws): nothing is filled or
+  stripped, so the leak fix silently does not apply. **Recommended: a `warn`
+  once per variant at declaration** naming the variant and the reason, and
+  the types keep its literals required (VT21), so the handler sees it; not a
+  `TypeError`, which would forbid valibot and yup in variants. Alternative:
+  a `TypeError` only for a variant some other variant of the status has more
+  fields than (where the leak is possible). ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H26** **The strip rule**: remove keys not in an object node's
+  `properties`, unless it has `additionalProperties: true` or a schema, or
+  `patternProperties`; leave unions, intersections, records and tuples
+  untouched (RV27)? **Recommended: yes**, with union branches left for later
+  (stripping one would need its branch chosen by the check first). ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H27** **What is said about an adjust**: the changes as paths and
+  counts (`headers.x-tier: filled`, `body.meta: stripped 1 undeclared
+  field`), never key names or values; logged at `debug` only, and carried on
+  nothing else? **Recommended: yes**: an adjust is the intended behaviour,
+  not a mismatch, so it is not a `warn`. ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H28** **The status and `Content-Type` fills**: the status only when
+  `status()` was never called and exactly one status declares the name
+  (RV20); `Content-Type` only replacing `json()`'s implicit type, and only by
+  a JSON-classed type for a JSON body (RV18)? **Recommended: yes**: anything
+  wider would change a response the handler shaped on purpose. ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H29** **Adjusting under `responseValidation: "off"`** (the default):
+  V3a installs no gate under `"off"`, so `.variant()` would silently do
+  nothing there, stripping included. **Recommended: a validator that declares
+  variants installs an adjust-only step under `"off"`** (no `when`, no
+  check, one field read when `.variant()` was not named), since the handler
+  asked for the adjust and its stripping protects data. Alternative: adjust
+  only under `"warn"` and `"error"`, documented. ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H30** **The types after `.variant()`**: required single-literal body
+  fields optional (`LiteralOptional`), only when every JSON body schema of the
+  variant carries `~standard.jsonSchema` in its type? **Recommended: yes**
+  (VT19–VT21): the types promise a fill only where the runtime can make it. ✅ **Answered 2026-10-21: yes, as recommended.**
+- **Q-H31** **A body that changed is re-serialised** into a new native
+  `Response` (the `json()` fast path built one already), costing about the
+  `reserialize` row of §4.4.6's table? **Recommended: yes**, only when an
+  adjust changed the body; an unchanged body keeps the first `Response`. ✅ **Answered 2026-10-21: yes, as recommended.**
+
 ### 8.4 NestJS (§4.5)
 
 - **Q-N1** **On Nest 12, `@Validate` composes with `@Body({ schema })` and
@@ -1873,6 +2408,8 @@ key `content` and `ResponseValidationError` approved. V3a exports only
 are internal.
 
 **V3a (2026-10-21):** the types `ResponseSchemas`, `ResponseSpec`, `ResponseSpecObject`, `ResponseValidationMode` and `SetCookieView` are exported; a `write()`-opened stream's gate and a media-level `null` move to V3b; `commonResponses` merges per status and part, like `mergeContracts`.
+
+**V3c (2026-10-21):** every V3c name below is approved: `variants()` with `by` (`header`, `cookie`, `values`) and `refine`; a variant's `when`, `refine` and `description`; `refine` on a plain status; `res.variant()`; the types `ResponseVariants`, `VariantSpec`, `VariantsOptions`, `Discriminant`, `DiscriminantValue`, `Refine`, `RefineResponse`, `RefineIssue`, `UntypedValid`; and the fields `ValidationIssue.variant`, `ContractEntry.variant` and `ContractDescription.sides.outbound.variants`. V13's spelling is asked with V13.
 
 **V3b (2026-10-21):** `chunks()`, `sse()` and `opaque()` approved and
 exported from the package root. **Approved and exported (the user's
@@ -1925,6 +2462,11 @@ The rest stay internal. **V2's names were approved on 2026-10-21**: the
 | `req.valid` | request member | bun-common |
 | `responses`, `responseValidation` (`"off" \| "warn" \| "error"`), `commonResponses` | `validate()` options; `responseValidation` and `commonResponses` also router and adapter options | bun-common |
 | `content`, `chunks()`, `sse()`, `opaque()` | response spec key and helpers | bun-common |
+| `variants()`; its options `by` (`header`, `cookie`, `values`) and `refine`; a variant's `when`, `refine` and `description`; `refine` on a plain status (V3c, §4.4.6; alternatives for `by`: `discriminant`, `select`) | helper, options, spec keys | bun-common |
+| `res.variant(name)` (V3c; alternative: `res.as(name)`) | response method | bun-common |
+| `ResponseVariants`, `VariantSpec`, `VariantsOptions`, `Discriminant`, `DiscriminantValue`, `Refine`, `RefineResponse`, `RefineIssue`, `UntypedValid` (V3c; `VariantNames`, `NarrowVariant` and `LiteralOptional` internal) | types | bun-common |
+| the `"parse"` mode's spelling (V13: a fourth `responseValidation` value, or a separate `responseOutput: "as-sent" \| "parsed"`), asked with V13 | option value | bun-common |
+| `ValidationIssue.variant`, `ContractEntry.variant`, `ContractDescription.sides.outbound.variants` (V3c; Q-H19, Q-H21) | fields | bun-common (core) |
 | `ResponseValidationError` | error class | bun-common |
 | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `StandardValidationModule`, `ValidationExceptionFilter`, `ResponseValidationInterceptor`, `WsValidationFilter`, `@Validated(part)`, `reply()` | pipes, class factory, module, filters, interceptor, decorator, helper | bun-nest root |
 | `schema: { data, result }`, `dataValidation` (`{ enqueue, process }`), `resultValidation`, `JobDataValidationError`, `JobMapFromSchemas` | definition and queue options, error, type | bun-jobs |
@@ -1949,4 +2491,5 @@ re-run each file and what passing means.
 | `nest-schema-dto.ts` → `results-nest.txt` | `SchemaDto` + a global pipe on bun-nest through Nest's real pipeline; no-pipe control; type controls |
 | **`contract-core/`** (2026-10-17) | the transport-agnostic core: eight transports declared; UDP and broker adapters; C1–C22 (sync/Promise per vendor, policies, the value scrub, the no-schema path, `onIssues`, `getContract`, flows, declaration errors); cost; 24 type controls, line-exact (`check-types.sh`) |
 | **`http-complete/`** (2026-10-17) | a patch on a copy of bun-common at `68023d36`: cookies and signed cookies, typed headers and `req.valid`, the commit and chunk gates, every body kind × mode × zod/yup (H1–H52), 18 type controls and the pinned limit, the unpatched base failing, overloads unchanged, cost per body kind |
+| **`response-variants/`** (2026-10-21, V3c) | §4.4.6: a prototype of `variants()` composed with the real V3a types, the real overloads on both adapters and `.variant()` by module augmentation (21 controls, line-exact, `check-types.sh`), literal fields optional after `.variant()`; a runtime matcher on the core's runner, RV1–RV28 (whole match, `when` refusal and async `when`, the leak diagnosed, discriminants, `res.variant()` and its adjust: fills and strips, `refine`, privacy, the loose-subset limit and its fix); the matcher's and the adjust's cost, each scenario in its own process |
 | **`nest-interceptor/`** (2026-10-17, bun-node-15) | what a Nest interceptor's `map()` sees (status, headers, sent) against the wire, on Nest 11.1.27 and 12.1.3, Express and bun-nest adapters; `@Body({ schema })` with and without the pipe; `@RawBody`; `@Sse` sync and async first events; the serializer's placement ; `out-sse.txt`: the `@Sse` cases, re-run by bun-node-11 |

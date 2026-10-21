@@ -229,6 +229,13 @@ file, check every link into and out of it, `#anchors` included.
     of bun-common: cookies, typed headers, response checks for every body kind,
     H1–H52, 18 type controls, cost per body kind), and `nest-interceptor/`
     (bun-node-15's probe of what a Nest interceptor sees on Nest 11 and 12).
+    Added 2026-10-21 at `a471c18d`: `response-variants/` (V3c, the plan's
+    §4.4.6): a prototype of response variants composed with the real V3a
+    types and overloads on both adapters (21 type controls, line-exact), a
+    runtime matcher with cases RV1–RV28 (whole matches, `when` sync and
+    async, discriminants, `refine`, `.variant()` filling single literals and
+    stripping undeclared body fields, no value in any issue, the loose-subset
+    leak limit and its fix), and the matcher's cost per variant count.
 - **[`bun-lint-fmt/`](bun-lint-fmt/README.md)** — replacing ESLint and
   Prettier with `bun lint` and `bun fmt` (there is no oxlint to drop): rule and
   formatter parity, the proposed `bunfig.toml`, VS Code, gating on a stable

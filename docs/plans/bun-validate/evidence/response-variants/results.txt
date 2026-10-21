@@ -1,0 +1,274 @@
+# response-variants results, recorded 2026-10-21T12:10Z at a471c18d (Bun 1.4.4-canary.1+6bb5dc195); round 2: the user's answers of 2026-10-21 (async when, .variant() adjusts)
+
+## bash check-types.sh
+## clean: bun --check in response-variants/
+✓ No type errors in 51 files [123.89ms]
+exit=0
+
+## mutant: every @ts-expect-error removed (21 controls)
+types.probe.ts(77,47): error TS2345: Argument of type '"root"' is not assignable to parameter of type '"admin" | "user"'.
+types.probe.ts(78,60): error TS2345: Argument of type '{ id: string; role: "admin"; salary: number; }' is not assignable to parameter of type 'Flat<{ role?: "user" | undefined; } & { id: string; }>'.
+types.probe.ts(79,61): error TS2741: Property 'salary' is missing in type '{ id: string; role: "user"; }' but required in type 'Flat<{ role?: "admin" | undefined; } & { id: string; salary: number; }>'.
+types.probe.ts(80,51): error TS2345: Argument of type '"0"' is not assignable to parameter of type '"1"'.
+types.probe.ts(81,47): error TS2345: Argument of type '"admin"' is not assignable to parameter of type 'never'.
+types.probe.ts(82,56): error TS2322: Type '"root"' is not assignable to type '"admin" | "user"'.
+types.probe.ts(102,34): error TS2339: Property 'cookies' does not exist on type 'InferValidatedShape<{ headers: ZodObject<{ "x-admin": ZodOptional<ZodLiteral<"1">>; }, $strip>; }>'.
+types.probe.ts(116,28): error TS2367: This comparison appears to be unintentional because the types 'string | undefined' and 'number' have no overlap.
+types.probe.ts(133,11): error TS2322: Type '() => string' is not assignable to type 'When<InferValidatedShape<{}>>'.
+types.probe.ts(137,11): error TS2322: Type '() => Promise<string>' is not assignable to type 'When<InferValidatedShape<{}>>'.
+types.probe.ts(151,11): error TS2322: Type '() => boolean' is not assignable to type 'never'.
+types.probe.ts(175,52): error TS2345: Argument of type '"full"' is not assignable to parameter of type '"summary"'.
+types.probe.ts(176,33): error TS2345: Argument of type '"partial"' is not assignable to parameter of type '"full" | "summary"'.
+types.probe.ts(177,61): error TS2353: Object literal may only specify known properties, and 'items' does not exist in type 'Flat<{} & { id: string; count: number; }>'.
+types.probe.ts(198,46): error TS2353: Object literal may only specify known properties, and 'root' does not exist in type '{ readonly admin?: DiscriminantValue | undefined; }'.
+types.probe.ts(211,11): error TS2322: Type '() => { part: "bdy"; message: string; }[]' is not assignable to type 'Refine'.
+types.probe.ts(219,22): error TS2345: Argument of type '"admin"' is not assignable to parameter of type 'never'.
+types.probe.ts(223,34): error TS2345: Argument of type '"user"' is not assignable to parameter of type 'never'.
+types.probe.ts(248,44): error TS2741: Property 'kind' is missing in type '{ id: string; meta: { v: 2; at: string; }; }' but required in type 'WireMembers<{ kind: "admin"; id: string; meta: { v: 2; at: string; }; }, { kind: "admin"; id: string; meta: { v: 2; at: string; }; }>'.
+types.probe.ts(249,61): error TS2741: Property 'id' is missing in type '{ meta: { at: string; }; }' but required in type 'Flat<{ kind?: "admin" | undefined; } & { id: string; meta: Flat<{ v?: 2 | undefined; } & { at: string; }>; }>'.
+types.probe.ts(250,61): error TS2741: Property 'kind' is missing in type '{ id: string; }' but required in type 'WireMembers<{ kind: "admin"; id: string; }, { kind: "admin"; id: string; }>'.
+Found 21 errors in 1 file, checked 49 files [139.74ms]
+mutant: 21 errors; controls=21; errors outside the probe: 0
+expected lines: 77 78 79 80 81 82 102 116 133 137 151 175 176 177 198 211 219 223 248 249 250 
+error lines:    77 78 79 80 81 82 102 116 133 137 151 175 176 177 198 211 219 223 248 249 250 
+PASS: every control fires, and nothing else fails
+
+## bun run.ts
+# response-variants run.ts — Bun 1.4.4 (6bb5dc195), zod 4.6.1, yup 1.7.1
+PASS RV1 admin request, admin header + admin body: sent as admin
+     {"ok":true,"variant":"admin"}
+PASS RV2 admin request, x-admin: 1 + a user body (parts from two variants): refused; each variant's own issues
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (admin, user)","path":"","key":"200"},{"target":"body","message":"Invalid input: expected \"admin\"","path":"role","key":"200","mediaType":"application/json","variant":"admin"},{"target":"body","message":"Invalid input: expected number, received undefined","path":"salary","key":"200","mediaType":"application/json","variant":"admin"},{"target":"body","message":"Invalid input: expected string, received undefined","path":"note","key":"200","mediaType":"application/json","variant":"admin"},{"target":"headers","message":"Invalid input: expected never, received string","path":"x-admin","key":"200","variant":"user"}]}
+PASS RV3 non-admin request, a valid admin response (the leak): refused, the diagnostic names the variant
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (user)","path":"","key":"200"},{"target":"headers","message":"Invalid input: expected never, received string","path":"x-admin","key":"200","variant":"user"},{"target":"body","message":"Invalid input: expected \"user\"","path":"role","key":"200","mediaType":"application/json","variant":"user"},{"target":"status","message":"The response matches variant \"admin\", which does not apply to this request","path":"","key":"200","variant":"admin"}]}
+PASS RV4 non-admin request, user body: sent as user
+     {"ok":true,"variant":"user"}
+PASS RV5 a request no variant applies to: refused, 'no variant applies'
+     {"ok":false,"issues":[{"target":"status","message":"No variant of this status applies to this request (2 excluded by when)","path":"","key":"200"},{"target":"status","message":"The response matches variant \"member\", which does not apply to this request","path":"","key":"200","variant":"member"}]}
+PASS RV6a discriminant: header x-admin "1" from an admin request selects admin
+     {"ok":true,"variant":"admin"}
+PASS RV6b discriminant: absent header selects user
+     {"ok":true,"variant":"user"}
+PASS RV6c discriminant: x-admin "1" + a user body: only admin is checked (one variant's issues)
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (admin)","path":"","key":"200"},{"target":"body","message":"Invalid input: expected \"admin\"","path":"role","key":"200","mediaType":"application/json","variant":"admin"},{"target":"body","message":"Invalid input: expected number, received undefined","path":"salary","key":"200","mediaType":"application/json","variant":"admin"},{"target":"body","message":"Invalid input: expected string, received undefined","path":"note","key":"200","mediaType":"application/json","variant":"admin"}]}
+PASS RV6d discriminant selects admin for a non-admin request: refused, 'does not apply'
+     {"ok":false,"issues":[{"target":"status","message":"Variant \"admin\" (selected by header x-admin) does not apply to this request","path":"","key":"200","variant":"admin"}]}
+PASS RV6e x-mode: summary + summary body: sent as summary
+     {"ok":true,"variant":"summary"}
+PASS RV6f x-mode: weird-mode: refused; the issue lists the declared values, never the received one
+     {"ok":false,"issues":[{"target":"headers","path":"x-mode","key":"200","message":"Does not select a variant (expected full, summary)"}]}
+PASS RV6g x-mode missing: refused on headers.x-mode
+     {"ok":false,"issues":[{"target":"headers","path":"x-mode","key":"200","message":"Does not select a variant (expected full, summary)"}]}
+PASS RV7a discriminant: a Set-Cookie sid (any value) selects fresh
+     {"ok":true,"variant":"fresh"}
+PASS RV7b discriminant: no sid cookie selects anon; a fresh body under it is refused
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (anon)","path":"","key":"200"},{"target":"body","message":"Invalid input: expected true","path":"guest","key":"200","mediaType":"application/json","variant":"anon"}]}
+PASS RV8a variant("admin") named for a non-admin request: refused, 'does not apply'
+     {"ok":false,"issues":[{"target":"status","message":"Variant \"admin\" (named by variant()) does not apply to this request","path":"","key":"200","variant":"admin"}]}
+PASS RV8b variant("user") named, admin body sent: only user is checked
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (user)","path":"","key":"200"},{"target":"body","message":"Invalid input: expected \"user\"","path":"role","key":"200","mediaType":"application/json","variant":"user"}]}
+PASS RV8c variant() named on a status without variants: refused
+     {"ok":false,"issues":[{"target":"status","message":"variant(\"admin\") was named, but this status declares no variants","path":"","key":"404"}]}
+PASS RV9a refine passes: x-total 2, two items
+     {"ok":true,"variant":"list"}
+PASS RV9b refine fails: x-total 5, items quote 'Alice-Secret': refused, the quoted value withheld
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (list)","path":"","key":"200"},{"target":"headers","message":"Invalid value","path":"x-total","key":"200","variant":"list"}]}
+PASS RV10a when throws: refused as 'could not be checked'; the error goes to the log, not the issue
+     {"ok":false,"failed":true,"issues":[{"target":"status","message":"The response could not be checked","path":"","key":"200"}]}
+PASS RV10b an async when resolving true: awaited (the verdict is a Promise), sent as admin
+     {"ok":true,"variant":"admin"}
+PASS RV10c the fast path: a sync when gives a sync verdict, no Promise made
+     {"ok":true,"variant":"admin"}
+PASS RV10d an async when resolving to a non-boolean: a failed check
+     {"ok":false,"failed":true,"issues":[{"target":"status","message":"The response could not be checked","path":"","key":"200"}]}
+PASS RV10e an async when that rejects: a failed check, the error logged, not in the issue
+     {"ok":false,"failed":true,"issues":[{"target":"status","message":"The response could not be checked","path":"","key":"200"}]}
+PASS RV11 no validator ran (valid is {}): admin's when is false, the user variant applies
+     {"ok":true,"variant":"user"}
+PASS RV12 when calls: 8 variants → 8; a plain status → 0
+     {"ok":true}
+PASS RV13a yup: a Promise verdict, user body sent as user
+     {"ok":true,"variant":"user"}
+PASS RV13b yup: non-admin, an admin body: refused, the leak named
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (user)","path":"","key":"200"},{"target":"body","message":"role is a required field","path":"role","key":"200","mediaType":"application/json","variant":"user"},{"target":"status","message":"The response matches variant \"admin\", which does not apply to this request","path":"","key":"200","variant":"admin"}]}
+PASS RV14 declaration errors: TypeError: responses[200]: `when` belongs on a variant; declare variants({ … }) | TypeError: responses[200].by: a and b are selected by the same value | TypeError: responses[200].by.values: "zz" is not a variant | TypeError: responses[200]: variants() declares none
+     {"ok":true}
+PASS RV15 plain status: a bad body refused with V3a's issue shape (no variant field)
+     {"ok":false,"issues":[{"target":"body","message":"Invalid input: expected string, received number","path":"id","key":"200","mediaType":"application/json"},{"target":"body","message":"Invalid input: expected \"user\"","path":"role","key":"200","mediaType":"application/json"}]}
+PASS RV17a LIMIT: non-admin, admin body, user view a loose subset: SENT as user (the leak passes a check-only gate)
+     {"ok":true,"variant":"user"}
+PASS RV17b the same with z.strictObject for the user view: refused, the admin variant named
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (user)","path":"","key":"200"},{"target":"body","message":"Invalid value (unrecognized_keys)","path":"","key":"200","mediaType":"application/json","variant":"user"},{"target":"status","message":"The response matches variant \"admin\", which does not apply to this request","path":"","key":"200","variant":"admin"}]}
+PASS RV18 variant("admin"): fills the discriminant x-view, the literal x-tier, Content-Type, kind, meta.v, items[].k; strips 3 undeclared fields; sent
+     {"ok":true,"variant":"admin","adjusted":{"changes":["headers.x-view: filled","headers.x-tier: filled","headers.content-type: filled","body: stripped 1 undeclared field","body.kind: filled","body.meta: stripped 1 undeclared field","body.meta.v: filled","body.items[].k: filled","body.items[]: stripped 1 undeclared field","body.items[].k: filled"],"view":{"status":200,"headers":{"content-type":"application/vnd.admin+json","x-request-id":"r1","x-view":"admin-view","x-tier":"gold"},"cookies":{},"mediaType":"application/vnd.admin+json","body":{"id":"a","salary":9,"meta":{"at":"t","v":2},"items":[{"y":"1","k":"a"},{"y":"2","k":"a"}],"kind":"admin"},"variant":"admin","statusExplicit":false,"contentTypeExplicit":false}}}
+PASS RV19 the handler's own object is never mutated (copy-on-write)
+     {"ok":true}
+PASS RV20 variant("created") with no status set: the one status declaring it (201) is filled, and kind
+     {"ok":true,"variant":"created","adjusted":{"changes":["status: filled (201)","body.kind: filled"],"view":{"status":201,"headers":{"content-type":"application/json","location":"/a"},"cookies":{},"mediaType":"application/json","body":{"id":"a","kind":"created"},"variant":"created","statusExplicit":false,"contentTypeExplicit":false}}}
+PASS RV21 a required field with no single value (salary) missing: not fillable, left to the check, refused on body.salary
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (admin)","path":"","key":"200"},{"target":"body","message":"Invalid input: expected number, received undefined","path":"salary","key":"200","mediaType":"application/vnd.admin+json","variant":"admin"}]}
+PASS RV22 a literal the handler set wrongly (x-tier: silver) is never overwritten: refused on headers.x-tier
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (admin)","path":"","key":"200"},{"target":"headers","message":"Invalid input: expected \"gold\"","path":"x-tier","key":"200","variant":"admin"}]}
+PASS RV23 variant("admin") for a non-admin request: when is decided first, nothing adjusted, refused
+     {"ok":false,"issues":[{"target":"status","message":"Variant \"admin\" (named by variant()) does not apply to this request","path":"","key":"200","variant":"admin"}]}
+PASS RV24 the handler set the discriminant to another variant's value: not overwritten, refused (disagreement)
+     {"ok":false,"issues":[{"target":"headers","path":"x-view","key":"200","variant":"admin","message":"Selects variant \"user\", but variant(\"admin\") was named"}]}
+PASS RV25 THE LEAK FIX: RV17a's loose table, variant("user") on the admin body: salary stripped, sent as user
+     {"ok":true,"variant":"user","adjusted":{"changes":["body: stripped 1 undeclared field"],"view":{"status":200,"headers":{"content-type":"application/json"},"cookies":{},"mediaType":"application/json","body":{"id":"a"},"variant":"user"}}}
+PASS RV26 valibot (no ~standard.jsonSchema): the body is not adjustable; kind left to the check, refused
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (admin)","path":"","key":"200"},{"target":"body","message":"Invalid value (object)","path":"kind","key":"200","mediaType":"application/json","variant":"admin"}]}
+PASS RV27 limits: a union member and a record are neither filled nor stripped (their keys stay); the top level is stripped
+     {"ok":true,"variant":"shape","adjusted":{"changes":["body: stripped 1 undeclared field"],"view":{"status":200,"headers":{"content-type":"application/json"},"cookies":{},"mediaType":"application/json","body":{"id":"a","u":{"a":1,"x":9},"rec":{"k":1}},"variant":"shape"}}}
+PASS RV28 cookies: mode (value and httpOnly each one value) filled with its attributes; sid (any value) is not fillable, and the handler's own is kept
+     {"ok":true,"variant":"full","adjusted":{"changes":["cookies.mode: filled"],"view":{"status":200,"headers":{"content-type":"application/json"},"cookies":{"sid":{"value":"x","httpOnly":true,"secure":false,"partitioned":false},"mode":{"httpOnly":true,"secure":false,"partitioned":false,"path":"/","value":"full"}},"mediaType":"application/json","body":{"id":"a"},"variant":"full"}}}
+PASS RV28b cookies: with no sid at all, mode is filled but sid cannot be: refused on cookies.sid
+     {"ok":false,"issues":[{"target":"status","message":"The response matches no acceptable variant (full)","path":"","key":"200"},{"target":"cookies","message":"Invalid input: expected object, received undefined","path":"sid","key":"200","variant":"full"}]}
+PASS RV16 no planted value (s3cr3t-salary-77, weird-mode, Alice-Secret) in any verdict; failures: 0
+exit=0
+
+## bash bench.sh, bench5 (before the adjust existed; the plan quotes its table)
+# response-variants bench — Bun 1.4.4 (6bb5dc195), 16 cores, 15 rounds × 20000 after 200000 warm-up calls
+# pinned: taskset -c 3; 3 runs per scenario
+plain                  min   1707 ns  median   1800 ns   (load before 8.49 7.45 5.48; after 8.49 7.45 5.48)
+plain                  min    683 ns  median    831 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+plain                  min    541 ns  median    620 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+first N=1              min    546 ns  median    600 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+first N=1              min    525 ns  median    604 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+first N=1              min    531 ns  median    567 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+last N=1               min    544 ns  median    592 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+last N=1               min    589 ns  median    662 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+last N=1               min    561 ns  median    600 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+by N=1                 min    535 ns  median    585 ns   (load before 8.69 7.51 5.51; after 8.69 7.51 5.51)
+by N=1                 min    480 ns  median    502 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+by N=1                 min    455 ns  median    478 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+named N=1              min    415 ns  median    423 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+named N=1              min    435 ns  median    449 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+named N=1              min    434 ns  median    445 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+first N=2              min    437 ns  median    453 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+first N=2              min    439 ns  median    452 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+first N=2              min    468 ns  median    500 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+last N=2               min   1289 ns  median   1342 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+last N=2               min   1186 ns  median   1279 ns   (load before 8.31 7.45 5.50; after 8.31 7.45 5.50)
+last N=2               min   1138 ns  median   1191 ns   (load before 8.31 7.45 5.50; after 7.81 7.36 5.48)
+by N=2                 min    467 ns  median    499 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+by N=2                 min    460 ns  median    484 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+by N=2                 min    439 ns  median    466 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+named N=2              min    436 ns  median    472 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+named N=2              min    439 ns  median    459 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+named N=2              min    446 ns  median    462 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+first N=4              min    473 ns  median    488 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+first N=4              min    489 ns  median    508 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+first N=4              min    481 ns  median    502 ns   (load before 7.81 7.36 5.48; after 7.81 7.36 5.48)
+last N=4               min   2170 ns  median   2291 ns   (load before 7.81 7.36 5.48; after 7.26 7.26 5.45)
+last N=4               min   2377 ns  median   2812 ns   (load before 7.26 7.26 5.45; after 7.26 7.26 5.45)
+last N=4               min   3124 ns  median   3452 ns   (load before 7.26 7.26 5.45; after 7.26 7.26 5.45)
+by N=4                 min    525 ns  median    544 ns   (load before 7.26 7.26 5.45; after 7.26 7.26 5.45)
+by N=4                 min    502 ns  median    517 ns   (load before 7.26 7.26 5.45; after 7.26 7.26 5.45)
+by N=4                 min    468 ns  median    481 ns   (load before 7.26 7.26 5.45; after 7.26 7.26 5.45)
+named N=4              min    521 ns  median    652 ns   (load before 7.26 7.26 5.45; after 7.00 7.20 5.45)
+named N=4              min    634 ns  median    667 ns   (load before 7.00 7.20 5.45; after 7.00 7.20 5.45)
+named N=4              min    829 ns  median    906 ns   (load before 7.00 7.20 5.45; after 7.00 7.20 5.45)
+first N=8              min   1748 ns  median   2520 ns   (load before 7.00 7.20 5.45; after 7.00 7.20 5.45)
+first N=8              min   2422 ns  median   2728 ns   (load before 7.00 7.20 5.45; after 7.00 7.20 5.45)
+first N=8              min   2573 ns  median   2842 ns   (load before 7.72 7.35 5.50; after 7.72 7.35 5.50)
+last N=8               min  21002 ns  median  21644 ns   (load before 7.72 7.35 5.50; after 7.60 7.34 5.52)
+last N=8               min   4428 ns  median   4554 ns   (load before 7.60 7.34 5.52; after 7.55 7.33 5.53)
+last N=8               min   4659 ns  median   4883 ns   (load before 7.55 7.33 5.53; after 7.11 7.24 5.51)
+by N=8                 min    449 ns  median    465 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+by N=8                 min    439 ns  median    467 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+by N=8                 min    459 ns  median    467 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+named N=8              min    436 ns  median    453 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+named N=8              min    444 ns  median    461 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+named N=8              min    443 ns  median    455 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+last N=1 (flatten)     min    423 ns  median    439 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+last N=1 (flatten)     min    413 ns  median    437 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+last N=1 (flatten)     min    414 ns  median    456 ns   (load before 7.11 7.24 5.51; after 7.11 7.24 5.51)
+last N=2 (flatten)     min   3326 ns  median   3540 ns   (load before 7.11 7.24 5.51; after 6.70 7.15 5.49)
+last N=2 (flatten)     min   3560 ns  median   3617 ns   (load before 6.70 7.15 5.49; after 6.70 7.15 5.49)
+last N=2 (flatten)     min   3312 ns  median   3443 ns   (load before 6.70 7.15 5.49; after 6.40 7.08 5.48)
+last N=4 (flatten)     min   9048 ns  median   9370 ns   (load before 6.40 7.08 5.48; after 6.40 7.08 5.48)
+last N=4 (flatten)     min  40192 ns  median  41145 ns   (load before 6.40 7.08 5.48; after 6.30 7.01 5.49)
+last N=4 (flatten)     min   8374 ns  median   8845 ns   (load before 6.30 7.01 5.49; after 5.95 6.93 5.47)
+last N=8 (flatten)     min  19397 ns  median  21062 ns   (load before 5.95 6.93 5.47; after 5.66 6.83 5.45)
+last N=8 (flatten)     min  19982 ns  median  92804 ns   (load before 5.66 6.83 5.45; after 6.23 6.85 5.49)
+last N=8 (flatten)     min  19216 ns  median  20369 ns   (load before 6.23 6.85 5.49; after 5.65 6.71 5.46)
+
+## bash bench.sh, bench6 (with .variant()'s adjust: the named rows walk its plan; adjust fill+strip; reserialize), at a higher load
+# response-variants bench — Bun 1.4.4 (6bb5dc195), 16 cores, 15 rounds × 20000 after 200000 warm-up calls
+# pinned: taskset -c 3; 3 runs per scenario
+plain                  min    876 ns  median   1160 ns   (load before 8.54 11.15 7.55; after 10.50 11.52 7.69)
+plain                  min    799 ns  median   1285 ns   (load before 10.50 11.52 7.69; after 10.50 11.52 7.69)
+plain                  min    629 ns  median    726 ns   (load before 10.50 11.52 7.69; after 10.50 11.52 7.69)
+first N=1              min    818 ns  median    919 ns   (load before 10.50 11.52 7.69; after 10.50 11.52 7.69)
+first N=1              min    690 ns  median    858 ns   (load before 10.50 11.52 7.69; after 10.50 11.52 7.69)
+first N=1              min    637 ns  median    681 ns   (load before 10.50 11.52 7.69; after 10.50 11.52 7.69)
+last N=1               min    637 ns  median    709 ns   (load before 10.50 11.52 7.69; after 10.50 11.52 7.69)
+last N=1               min    823 ns  median   1256 ns   (load before 10.50 11.52 7.69; after 10.22 11.44 7.69)
+last N=1               min    776 ns  median    899 ns   (load before 10.22 11.44 7.69; after 10.22 11.44 7.69)
+by N=1                 min    728 ns  median    773 ns   (load before 10.22 11.44 7.69; after 10.22 11.44 7.69)
+by N=1                 min    727 ns  median    826 ns   (load before 10.22 11.44 7.69; after 10.22 11.44 7.69)
+by N=1                 min    708 ns  median    777 ns   (load before 10.22 11.44 7.69; after 10.22 11.44 7.69)
+named N=1              min   1015 ns  median   1074 ns   (load before 10.22 11.44 7.69; after 10.22 11.44 7.69)
+named N=1              min    999 ns  median   1073 ns   (load before 10.22 11.44 7.69; after 9.96 11.37 7.68)
+named N=1              min    901 ns  median    980 ns   (load before 9.96 11.37 7.68; after 9.96 11.37 7.68)
+first N=2              min    556 ns  median    573 ns   (load before 9.96 11.37 7.68; after 9.96 11.37 7.68)
+first N=2              min    619 ns  median    663 ns   (load before 9.96 11.37 7.68; after 9.96 11.37 7.68)
+first N=2              min    606 ns  median    631 ns   (load before 9.96 11.37 7.68; after 9.96 11.37 7.68)
+last N=2               min   1334 ns  median   2312 ns   (load before 9.96 11.37 7.68; after 9.96 11.37 7.68)
+last N=2               min   1480 ns  median   1589 ns   (load before 9.96 11.37 7.68; after 9.96 11.37 7.68)
+last N=2               min   1854 ns  median   2134 ns   (load before 9.96 11.37 7.68; after 9.88 11.33 7.69)
+by N=2                 min    757 ns  median   1285 ns   (load before 9.88 11.33 7.69; after 9.88 11.33 7.69)
+by N=2                 min    625 ns  median    695 ns   (load before 9.88 11.33 7.69; after 9.88 11.33 7.69)
+by N=2                 min    561 ns  median    590 ns   (load before 9.88 11.33 7.69; after 9.88 11.33 7.69)
+named N=2              min    850 ns  median    895 ns   (load before 9.88 11.33 7.69; after 9.88 11.33 7.69)
+named N=2              min    864 ns  median    905 ns   (load before 9.88 11.33 7.69; after 9.88 11.33 7.69)
+named N=2              min    800 ns  median    846 ns   (load before 9.88 11.33 7.69; after 9.41 11.21 7.67)
+first N=4              min    614 ns  median    667 ns   (load before 9.41 11.21 7.67; after 9.41 11.21 7.67)
+first N=4              min    584 ns  median    616 ns   (load before 9.41 11.21 7.67; after 9.41 11.21 7.67)
+first N=4              min    610 ns  median    639 ns   (load before 9.41 11.21 7.67; after 9.41 11.21 7.67)
+last N=4               min   2842 ns  median   3075 ns   (load before 9.41 11.21 7.67; after 9.41 11.21 7.67)
+last N=4               min   3664 ns  median   3997 ns   (load before 9.41 11.21 7.67; after 9.38 11.17 7.68)
+last N=4               min   2568 ns  median   2714 ns   (load before 9.38 11.17 7.68; after 9.38 11.17 7.68)
+by N=4                 min    775 ns  median    824 ns   (load before 9.38 11.17 7.68; after 9.38 11.17 7.68)
+by N=4                 min    805 ns  median    955 ns   (load before 9.38 11.17 7.68; after 9.38 11.17 7.68)
+by N=4                 min    868 ns  median   1005 ns   (load before 9.38 11.17 7.68; after 9.19 11.10 7.67)
+named N=4              min   1821 ns  median   2396 ns   (load before 9.19 11.10 7.67; after 9.19 11.10 7.67)
+named N=4              min   3439 ns  median   4607 ns   (load before 9.19 11.10 7.67; after 9.19 11.10 7.67)
+named N=4              min   3398 ns  median   3843 ns   (load before 9.19 11.10 7.67; after 10.14 11.27 7.74)
+first N=8              min   2644 ns  median   2780 ns   (load before 10.14 11.27 7.74; after 10.14 11.27 7.74)
+first N=8              min   2616 ns  median   2736 ns   (load before 10.14 11.27 7.74; after 9.89 11.19 7.74)
+first N=8              min   1012 ns  median   1406 ns   (load before 9.89 11.19 7.74; after 9.89 11.19 7.74)
+last N=8               min   5034 ns  median   5304 ns   (load before 9.89 11.19 7.74; after 9.33 11.06 7.71)
+last N=8               min   6008 ns  median   7499 ns   (load before 9.33 11.06 7.71; after 8.83 10.92 7.69)
+last N=8               min   6946 ns  median   7523 ns   (load before 8.83 10.92 7.69; after 8.83 10.92 7.69)
+by N=8                 min    814 ns  median    869 ns   (load before 8.83 10.92 7.69; after 8.68 10.86 7.69)
+by N=8                 min    993 ns  median   1489 ns   (load before 8.68 10.86 7.69; after 8.68 10.86 7.69)
+by N=8                 min    979 ns  median   1175 ns   (load before 8.68 10.86 7.69; after 8.68 10.86 7.69)
+named N=8              min   1056 ns  median   1175 ns   (load before 8.68 10.86 7.69; after 8.68 10.86 7.69)
+named N=8              min    928 ns  median    959 ns   (load before 8.68 10.86 7.69; after 8.68 10.86 7.69)
+named N=8              min    980 ns  median   1045 ns   (load before 8.68 10.86 7.69; after 8.68 10.86 7.69)
+adjust fill+strip      min   1419 ns  median   1670 ns   (load before 8.68 10.86 7.69; after 8.47 10.78 7.68)
+adjust fill+strip      min   2056 ns  median   2152 ns   (load before 8.47 10.78 7.68; after 8.47 10.78 7.68)
+adjust fill+strip      min   1350 ns  median   1397 ns   (load before 8.47 10.78 7.68; after 8.47 10.78 7.68)
+reserialize            min    905 ns  median   1105 ns   (load before 8.47 10.78 7.68; after 8.47 10.78 7.68)
+reserialize            min    860 ns  median   1067 ns   (load before 8.47 10.78 7.68; after 8.47 10.78 7.68)
+reserialize            min   1100 ns  median   1179 ns   (load before 8.47 10.78 7.68; after 8.27 10.70 7.67)
+last N=1 (flatten)     min   1027 ns  median   1099 ns   (load before 8.27 10.70 7.67; after 8.27 10.70 7.67)
+last N=1 (flatten)     min    581 ns  median    628 ns   (load before 8.27 10.70 7.67; after 8.27 10.70 7.67)
+last N=1 (flatten)     min    595 ns  median    628 ns   (load before 8.27 10.70 7.67; after 8.27 10.70 7.67)
+last N=2 (flatten)     min   4449 ns  median   5324 ns   (load before 8.27 10.70 7.67; after 8.27 10.70 7.67)
+last N=2 (flatten)     min   3982 ns  median   4459 ns   (load before 8.41 10.69 7.68; after 8.41 10.69 7.68)
+last N=2 (flatten)     min   5658 ns  median   8917 ns   (load before 8.41 10.69 7.68; after 8.46 10.66 7.69)
+last N=4 (flatten)     min  10846 ns  median  11712 ns   (load before 8.46 10.66 7.69; after 8.32 10.53 7.69)
+last N=4 (flatten)     min  10260 ns  median  13965 ns   (load before 8.32 10.53 7.69; after 9.17 10.67 7.75)
+last N=4 (flatten)     min  10020 ns  median  10990 ns   (load before 9.17 10.67 7.75; after 8.45 10.46 7.72)
+last N=8 (flatten)     min  23077 ns  median  33473 ns   (load before 8.45 10.46 7.72; after 7.62 10.18 7.67)
+last N=8 (flatten)     min  20721 ns  median  22132 ns   (load before 7.62 10.18 7.67; after 7.52 9.99 7.66)
+last N=8 (flatten)     min  21832 ns  median  23684 ns   (load before 7.52 9.99 7.66; after 7.31 9.86 7.64)
+
+## bench4, issues built while matching (as FLATTEN=1); the plan quotes its first N=8
+# response-variants bench — Bun 1.4.4 (6bb5dc195), 16 cores, 15 rounds × 20000 after 200000 warm-up calls
+# pinned: taskset -c 3; 3 runs per scenario
+first N=8    min    637 ns  median    664 ns   (load before 8.38 6.01 4.68; after 8.38 6.01 4.68)
+first N=8    min    631 ns  median    653 ns   (load before 8.38 6.01 4.68; after 8.03 5.98 4.68)
+first N=8    min    619 ns  median    647 ns   (load before 8.03 5.98 4.68; after 8.03 5.98 4.68)
