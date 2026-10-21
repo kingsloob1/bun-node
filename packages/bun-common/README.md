@@ -343,6 +343,8 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `logger` | `LoggerLike` | console logger | See [Structured logging](#structured-logging). Also settable with `setLogger()` or `router.logger = ...`. |
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
 | `acceptUndecodableBody` | `boolean` | unset (the default), which refuses | On an adapter, route a request whose body could not be decoded (bad JSON, a corrupt stream, an unsupported `Content-Encoding`) to this router's routes, with `req.bodyDecodingError` set, instead of refusing it before routing. Unset, the router takes its mount's setting; unset all the way up, the adapter refuses. `false` refuses inside an opted-in router. Set it before adding routes. See [Testing without a socket](#testing-without-a-socket). |
+| `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Runtime response checks for the validators on its routes that declare `responses` and no `responseValidation` of their own. A mounted router's setting wins over its parent's. Set it before adding routes. See [Responses](#responses). |
+| `commonResponses` | `validate()`'s `responses` form | none | Statuses every route may answer without declaring them (an auth `401`, the error handler's `500`), merged under each validator's `responses` per status and part, and under a mounted router's own (the inner winning). Only routes whose validators declare `responses` are checked. See [Responses](#responses). |
 | `views` | `BunViews` | a `BunViews` of its own, made on first read | The views `res.render` uses in every response the router builds: `fetch()`, a `BunWebSocket` dedicated server and, on the adapter, every request and error handler. One instance, so its cache and `locals` are shared. Read it as `router.views`. A mounted sub-router renders with the views of the router serving the request. See [Redirects, views and format](#redirects-views-and-format). |
 
 Examples:
@@ -518,6 +520,8 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `request` | `Partial<BunRequestOptions>` | `{ parseBody: true, parseCookies: true }` | Parsing options for every request; see [Request options](#request-options). Merged over the default object (`mergeBunRequestOptions`), so `{ parseQuery: { nesting: false } }` alone keeps body and cookie parsing on; set a default explicitly to turn it off. Change it later with `setRequestOpts()`. |
 | `router` | `BunRouterOptions` | `{ caseSensitive: false, debug: false }` | [Router options](#router-options), merged over those defaults. Matching ignores case by default, as a bare `BunRouter`, bun-nest's adapter and Express do; `{ caseSensitive: true }` opts in. |
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
+| `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Forwarded to the router, over `router.responseValidation`. See [Responses](#responses). |
+| `commonResponses` | `validate()`'s `responses` form | none | Forwarded to the router, over `router.commonResponses`. See [Responses](#responses). |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
 | `views` | `BunViews` | a `BunViews` of its own | The views every response renders through, its error handlers' included; see the router's `views` option. Configure them with the [view helpers](#adapter-helpers). After `setInstance()` the adapter's views still apply. |
@@ -1361,6 +1365,8 @@ middleware is built, rather than being ignored. An option given as
 | `replace` | `true` | Write parsed values back. With `false` the handler keeps the request's own types; `req.valid` is still filled at runtime, but not typed. |
 | `hooks` | none | Per-target `{ normalize, transform }`. `normalize(raw, req)` runs before validation; `transform(parsed, req)` runs after it, and its return type becomes the handler's type. Only targets that have a schema accept hooks. |
 | `formatError` | `{ error: "Validation failed", issues }` | The JSON body `"respond"` sends. |
+| `responses` | none | The route's responses by status, typing the handler's `res`; see [Responses](#responses). |
+| `responseValidation` | the router's, else `"off"` | `"off"`, `"warn"` or `"error"`: whether `responses` is checked at runtime; see [Responses](#responses). |
 
 `ValidationError` carries `issues` (each `{ target, message, path }`, with
 `path` dot-joined), `targets` and `status`. A message that quotes the
@@ -1402,6 +1408,108 @@ Validators chain: each one replaces `req.query` wholesale, so a later schema
 receives the earlier one's output. arktype does not accept a bound after a
 morph: `"string.integer.parse >= 1"` is a parse error, so express the range
 inside the definition.
+
+#### Responses
+
+`responses` declares what a route answers, by status, and types the handler's
+`res` from it. `responseValidation` decides whether it is also checked at
+runtime:
+
+```ts
+import { validate } from "@kingsleyweb/bun-common";
+import { z } from "zod";
+
+const User = z.object({ id: z.string(), name: z.string() });
+const Problem = z.object({ code: z.string() });
+
+router.get(
+  "/users/:id",
+  validate(
+    { params: z.object({ id: z.string() }) },
+    {
+      responses: {
+        200: {
+          headers: z.object({ "x-ratelimit-remaining": z.string() }),
+          cookies: z.object({ sid: z.object({ value: z.string(), httpOnly: z.literal(true) }) }),
+          content: { "application/json": User, "text/plain": z.string() },
+        },
+        302: { headers: z.object({ location: z.string().startsWith("/app") }) },
+        204: null, // no body
+        404: Problem, // shorthand: { content: { "application/json": Problem } }
+      },
+      responseValidation: "error",
+    },
+  ),
+  (req, res) => res.status(404).json({ code: "NOT_FOUND" }), // held to Problem
+);
+```
+
+- **A status the table does not list is a mismatch**, whatever the body.
+  Statuses a route does not own (an auth `401`, the error handler's `500`)
+  are declared once with the router's or adapter's `commonResponses`, merged
+  under every route's `responses` per status and part (the route winning).
+- **Headers** are an object keyed by lower-case name, each a string,
+  `Content-Type` included even when Bun sets it implicitly. **Cookies** are
+  the `Set-Cookie` lines by name, each `{ value, httpOnly, secure,
+  partitioned, sameSite?, path?, domain?, maxAge?, expires?, priority? }`:
+  the value as written (`j:`/`s:` kept), `maxAge` in seconds as the header
+  carries it, `expires` a `Date`, `sameSite` and `priority` capitalised
+  (`"Lax"`, `"High"`).
+- **Media types are keys**, matched case-insensitively with parameters
+  stripped on both sides (a declared `text/plain; version=0.0.4` matches a
+  sent `text/plain;charset=utf-8`; the key is kept as written for documents).
+  `type/*` and `*/*` are keys too, and **the most specific wins**: the exact
+  `type/subtype`, then `type/*`, then `*/*`. Two keys that are the same once
+  bare and lower-cased, or a key that is not a media type, throw a
+  `TypeError` when declared.
+- **What a body schema sees:** `json()` and `send(object)` the raw value, not
+  its text; a string the string (parsed first when the media type is JSON or
+  `*+json`); bytes a `Uint8Array` (decoded for `text/*`, parsed for JSON); a
+  `Blob` its bytes, read with `arrayBuffer()`; `send(new Response(…))` its
+  status and headers, and its body read from a `clone()`, so what is sent is
+  untouched. A redirect's or `sendStatus()`'s generated body, and `204`,
+  `205` and `304`, are exempt: only their status and headers are checked.
+  Streams (`send(stream)`, `write()`/`end()`) and `sendFile()`'s bytes are
+  not read yet: a piped stream's and a file's status, headers, cookies and
+  media type are, and a whole-body schema against them logs one warning.
+- **`HEAD`** is checked as the `GET` it reuses. **A freshness `304`** for a
+  conditional request is allowed without being declared.
+- **An error handler's response** is checked but only reported, never
+  replaced, so a thrown error is never masked. The response it sends for a
+  refusal (a `ResponseValidationError`) is not checked again.
+
+`responseValidation` is `"off"` (the default), `"warn"` or `"error"`, set on
+the validator, else on its `BunRouter` or adapter (`new BunHttpAdapter(0, {
+responseValidation, commonResponses })`): the most specific wins, a mounted
+router's over its parent's. Router settings are read when a route is
+registered. Warnings and refusals are logged to the innermost router that set
+its own logger (`logger`, `setLogger()`, the adapter's `logger` option), else
+to the router the route is registered on.
+
+| Mode | A mismatching response |
+|---|---|
+| `"off"` | is sent; nothing is installed, and the response path is the one without `responses` |
+| `"warn"` | is sent, and one warning is logged per response, with the issues and no value from the response |
+| `"error"` | is refused before anything goes out: its own headers (`Location`, `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) and status are dropped, request-wide ones (CORS, `Vary`, kept whole, so a refused `redirect()`'s `Vary: Accept` stays) kept, and a `ResponseValidationError` (status `500`, with `issues` and `responseStatus`) goes to the error handlers. With none, the adapter answers `500` and `router.fetch()` rejects with it |
+
+Under `"error"`, a synchronous vendor (zod, valibot, arktype) decides in
+place, so a synchronous request stays synchronous; yup, an async schema, or a
+body that must be read (a `Blob`, a passed-through `Response`) holds the
+response until the check settles. Use `"error"` in development and tests and
+`"off"` or `"warn"` in production.
+
+The handler's `res` is held to each schema's wire input, field by field (a
+`z.date()` field takes a `Date`, a `z.coerce.number()` one a `number`):
+`status()` takes only a declared status and narrows to it, `json()` takes the
+JSON (or wildcard) bodies, `send()` every declared body (and a native
+`Response`), `set()`/`header()` a declared header's value in any letter case,
+`cookie()` a declared cookie's `value`, and `redirect(url)` only where `302`
+is declared. Undeclared header and cookie names stay free. A helper that takes
+a bare `BunResponse` escapes the types, and `res.status(200); res.json(b)` in
+two statements is held only to the union of the bodies. Statuses declared
+only in `commonResponses` are not in the handler's types. The typing is a
+help, not a guarantee (a plain `BunResponse` also assigns to a narrowed one);
+`responseValidation: "error"` is what refuses a response that does not match.
 
 Examples:
 [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts),
@@ -1468,6 +1576,12 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
   `mergeContracts(layers)` merges nested layers. Inbound, the outermost
   declaring a part is the wire schema. Outbound, the innermost wins (a route
   over its router). Every row records its `origin`.
+- **Media maps** (a part the transport lists in `media`, such as HTTP's
+  `body`) match a message's media type case-insensitively with parameters
+  stripped on both sides, and take `type/*` and `*/*` keys, the most
+  specific key winning (exact, then `type/*`, then `*/*`). A key that is not
+  a media type, or two keys that tie once bare and lower-cased, are a
+  `TypeError` when the contract is declared.
 - **A `validate()` with `onFailure: "respond"` declares its own status**
   (`400`, or its `status`) on its contract's outbound side, with the JSON body
   it sends documented, and its rows marked `implicit: true`. Under `"next"` or

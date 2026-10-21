@@ -25,6 +25,10 @@ import type {
   WebSocketRouteOptions,
 } from "./index";
 import type { LoggerLike } from "./logging";
+import type {
+  ResponseSchemas,
+  ResponseValidationMode,
+} from "./responseValidation";
 import type { ViewEngine } from "./views";
 import { EventEmitter } from "node:events";
 import { STATUS_CODES } from "node:http";
@@ -342,6 +346,22 @@ export class BunHttpAdapter<
        * {@link engine}, {@link setLocal} and {@link set} configure.
        */
       views?: BunViews;
+      /**
+       * Runtime response checks for every validator that declares
+       * `responses` and no `responseValidation` of its own, unless a mounted
+       * router sets one: `"off"` (the default), `"warn"` or `"error"`.
+       * Forwarded to the underlying {@link BunRouter} (it wins over
+       * `router.responseValidation`); see that option.
+       */
+      responseValidation?: ResponseValidationMode;
+      /**
+       * Statuses every route may answer without declaring them (a `401`,
+       * the error handler's `500`), in `validate()`'s `responses` form,
+       * merged under each validator's `responses`. Forwarded to the
+       * underlying {@link BunRouter} (it wins over `router.commonResponses`);
+       * see that option.
+       */
+      commonResponses?: ResponseSchemas;
     },
   ) {
     const websocketOptions = options?.websocket || {};
@@ -360,6 +380,12 @@ export class BunHttpAdapter<
         ? { routeCacheMax: options.routeCacheMax }
         : {}),
       ...(options?.views !== undefined ? { views: options.views } : {}),
+      ...(options?.responseValidation !== undefined
+        ? { responseValidation: options.responseValidation }
+        : {}),
+      ...(options?.commonResponses !== undefined
+        ? { commonResponses: options.commonResponses }
+        : {}),
       logger,
     });
 

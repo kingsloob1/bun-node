@@ -11,6 +11,17 @@ import type {
   RouterMiddlewareHandler,
   SendFileOptions,
 } from "./types/general";
+import type {
+  AllowedStatus,
+  CookieValueFor,
+  HeaderValueFor,
+  JsonBodyFor,
+  NarrowResponses,
+  RedirectStatus,
+  RedirectUrl,
+  ResponseTypeMap,
+  SendBodyFor,
+} from "./types/responseTyping";
 import type { CookieSerializeOptions, Deferred } from "./utils/native";
 import type { RenderCallback, RenderLocals } from "./views";
 import { EventEmitter } from "node:events";
@@ -1161,6 +1172,168 @@ type ResEventName = keyof BunResponseEvents;
 type ResListener<E extends ResEventName> = BunResponseEvents[E];
 
 /**
+ * What produced a committed response, as `BunResponse` tells its response
+ * gate: `json` (a raw JSON value), `text` (a string, number or boolean),
+ * `bytes`, `blob`, `native` (a passed-through `Response`), `redirect` and
+ * `status` (a generated body), `file` (`sendFile`), `stream` (a piped stream,
+ * `FormData`, `URLSearchParams`), or `empty`.
+ *
+ * @internal
+ */
+export type ResponseCommitKind =
+  | "json"
+  | "text"
+  | "bytes"
+  | "blob"
+  | "native"
+  | "redirect"
+  | "status"
+  | "file"
+  | "stream"
+  | "empty";
+
+/**
+ * What a response gate is told at the commit point, beside the `Response`.
+ *
+ * @internal
+ */
+export interface ResponseCommit {
+  /** What produced the response. */
+  kind: ResponseCommitKind;
+  /** The body as handed in (`getBody()`): the raw `json()` value, the text, the bytes, the `Blob`. */
+  body: unknown;
+  /** The `Content-Type` in force, the implicit one Bun adds included; `undefined` for none. */
+  contentType: string | undefined;
+  /** Whether an error handler produced it: such a response is only reported, never refused (Q-H2). */
+  reportOnly: boolean;
+}
+
+/**
+ * A response gate (`validate()`'s `responses`, plan §4.4.2): consulted once,
+ * as the native `Response` is committed, before transforms, waiters and
+ * `finish`. `undefined` sends it, an `Error` refuses it (it enters the
+ * pipeline's error handlers), and a Promise holds it until it settles.
+ *
+ * @internal
+ */
+export interface ResponseGate {
+  /**
+   * Checks the response about to be committed.
+   *
+   * @param res      The response.
+   * @param response The native `Response`, built but not yet handed on.
+   * @param commit   What produced it.
+   */
+  commit: (
+    res: BunResponse,
+    response: Response,
+    commit: ResponseCommit,
+  ) => Error | undefined | Promise<Error | undefined>;
+  /**
+   * Told of a refusal the pipeline could not take (it had already ended):
+   * the response is then answered `500` directly.
+   *
+   * @param res   The response.
+   * @param error The refusal.
+   */
+  undelivered: (res: BunResponse, error: Error) => void;
+  /**
+   * The gate for a response that this validator and an inner one (a mount's,
+   * then a route's) both let through.
+   *
+   * @param inner The inner validator's gate.
+   */
+  within: (inner: ResponseGate) => ResponseGate;
+}
+
+/** A response's gate and the gate's per-response state; created only when a validator installs one. */
+class ResponseGateSlot {
+  /** The gate. */
+  gate: ResponseGate;
+  /** What the next commit is, for a producer whose body does not say (`json()`, a redirect). */
+  kind: ResponseCommitKind | undefined = undefined;
+  /** Set while an error handler runs: its response is checked, but only reported. */
+  reportOnly = false;
+  /** Set once a commit was decided (sent, refused or exempted): later commits pass unchecked. */
+  done = false;
+  /** Set while a commit waits for its verdict; another commit meanwhile is dropped. */
+  held = false;
+
+  /** @param gate The gate a validator installed. */
+  constructor(gate: ResponseGate) {
+    this.gate = gate;
+  }
+}
+
+/**
+ * The refused response's own headers (plan Q-H3): they describe it, not the
+ * `500` that replaces it. Request-wide ones (CORS, `Vary`, `Cache-Control`,
+ * `Content-Security-Policy`) stay.
+ */
+const REFUSED_RESPONSE_HEADERS = [
+  "content-disposition",
+  "content-encoding",
+  "content-language",
+  "content-length",
+  "content-location",
+  "content-range",
+  "content-type",
+  "etag",
+  "last-modified",
+  "location",
+  "set-cookie",
+] as const;
+
+/** The class's private gate operations, handed to the module functions below by a static block. */
+interface GateAccess {
+  /** See {@link installResponseGate}. */
+  install: (res: BunResponse, gate: ResponseGate) => void;
+  /** See {@link markResponseErrorPath}. */
+  errorPath: (res: BunResponse, on: boolean) => void;
+  /** See {@link exemptResponseFromGate}. */
+  exempt: (res: BunResponse) => void;
+}
+
+/** Set by `BunResponse`'s static block, before any instance exists. */
+let gateAccess: GateAccess | undefined;
+
+/**
+ * Installs `gate` on `res`, as a validator does for each response it lets
+ * through; a gate already there (a mount's validator) is combined with it,
+ * the new one inner. Internal.
+ *
+ * @internal
+ */
+export function installResponseGate(
+  res: BunResponse,
+  gate: ResponseGate,
+): void {
+  gateAccess!.install(res, gate);
+}
+
+/**
+ * Marks `res` as produced by an error handler (`on: true`), or no longer:
+ * the router calls it on entering an error handler and when one hands the
+ * pipeline back. A no-op without a gate. Internal.
+ *
+ * @internal
+ */
+export function markResponseErrorPath(res: BunResponse, on: boolean): void {
+  gateAccess!.errorPath(res, on);
+}
+
+/**
+ * Exempts `res`'s next commit from its gate: a validator answering its own
+ * failure (`onFailure: "respond"`) under a mount's gate. A no-op without a
+ * gate. Internal.
+ *
+ * @internal
+ */
+export function exemptResponseFromGate(res: BunResponse): void {
+  gateAccess!.exempt(res);
+}
+
+/**
  * BunResponse's rarely-used state (see its `#state`): one object,
  * allocated only when one of these fields is first written.
  */
@@ -1219,6 +1392,8 @@ class BunResponseState<customWebsocketDataType = unknown> {
   responseTransforms: BunResponseTransform[] | undefined = undefined;
   /** Backs BunResponse's `#transformBody`; see its documentation there. */
   transformBody: BunResponseTransformBody | undefined = undefined;
+  /** The response gate a validator installed (`responses`); `undefined` without one. */
+  gate: ResponseGateSlot | undefined = undefined;
 }
 
 export class BunResponse<
@@ -1228,6 +1403,13 @@ export class BunResponse<
    * `onUpgrade` hook returns as `custom`.
    */
   customWebsocketDataType = unknown,
+  /**
+   * The responses a validator declared (`validate(…, { responses })`), as the
+   * verb overloads pass them to a typed handler: `status()`, `json()`,
+   * `send()`, `set()`/`header()`, `cookie()` and `redirect()` are then held
+   * to them. `undefined` (the default) constrains nothing.
+   */
+  TResponses = undefined,
 > implements TypedEmitter<BunResponseEvents> {
   /**
    * Rarely-used state, created on first write. Each field moved here is an
@@ -1701,7 +1883,7 @@ export class BunResponse<
     // Bind the pair at construction, as Express does with `req.res`, so
     // `req.fresh` / `req.stale` can be computed from the moment the response
     // exists — not only once `send()` runs.
-    req.setResponse(this);
+    req.setResponse(this.#self);
   }
 
   /**
@@ -1736,7 +1918,7 @@ export class BunResponse<
    */
   public setEtag(option: EtagOption = true): BunResponse {
     this.etag = option;
-    return this;
+    return this.#self;
   }
 
   /** Whether any `ETag` is to be generated for this response. */
@@ -1951,8 +2133,25 @@ export class BunResponse<
   }
 
   private set response(value: Response | undefined) {
-    if (value && this.#responseTransforms !== undefined) {
-      value = this.#applyResponseTransforms(value, this.#responseTransforms);
+    const holder = this.#state;
+    if (holder !== undefined) {
+      // The one commit point every producer passes through (plan §4.4.2):
+      // a validator's gate decides here, before transforms, waiters and
+      // `finish`. A long-lived stream's opening is V3b's.
+      const slot = holder.gate;
+      if (
+        slot !== undefined &&
+        !slot.done &&
+        value !== undefined &&
+        !holder._isLongLived &&
+        (slot.held || this.#gateHolds(slot, value))
+      ) {
+        return;
+      }
+      const transforms = holder.responseTransforms;
+      if (value && transforms !== undefined) {
+        value = this.#applyResponseTransforms(value, transforms);
+      }
     }
     this.#nativeResponse = value;
     // Certify to the request that a response has been produced — a later
@@ -1977,6 +2176,163 @@ export class BunResponse<
     if (value && !this._isLongLived) {
       this.emitFinish();
     }
+  }
+
+  static {
+    gateAccess = {
+      install(res, gate) {
+        const holder = (res.#state ??= new BunResponseState());
+        const slot = holder.gate;
+        if (slot === undefined || slot.done) {
+          holder.gate = new ResponseGateSlot(gate);
+        } else {
+          slot.gate = slot.gate.within(gate);
+        }
+      },
+      errorPath(res, on) {
+        const slot = res.#state?.gate;
+        if (slot !== undefined) {
+          slot.reportOnly = on;
+        }
+      },
+      exempt(res) {
+        const slot = res.#state?.gate;
+        if (slot !== undefined) {
+          slot.done = true;
+        }
+      },
+    };
+  }
+
+  /** Tags what the next commit is, for a producer its body cannot tell (`json()`, a redirect). */
+  #tag(kind: ResponseCommitKind): void {
+    const slot = this.#state?.gate;
+    if (slot !== undefined) {
+      slot.kind = kind;
+    }
+  }
+
+  /** What produced the response being committed, read off the body when no producer tagged it. */
+  #commitKind(sent: BunResponseSentBody): ResponseCommitKind {
+    if (sent === undefined || sent === null) {
+      return "empty";
+    }
+    switch (typeof sent) {
+      case "string":
+      case "number":
+      case "boolean":
+        return "text";
+      case "function":
+        return "stream";
+      default:
+        break;
+    }
+    if (isBinaryBody(sent)) {
+      return "bytes";
+    }
+    if (sent instanceof Response || sent instanceof BunResponse) {
+      return "native";
+    }
+    if (sent instanceof Blob) {
+      return "blob";
+    }
+    if (
+      sent instanceof ReadableStream ||
+      isNodeReadableStream(sent) ||
+      isAsyncIterable(sent) ||
+      sent instanceof FormData ||
+      sent instanceof URLSearchParams
+    ) {
+      return "stream";
+    }
+    return "json";
+  }
+
+  /**
+   * Consults the gate on a commit: `false` to commit `value` now, `true`
+   * when the gate held it (a verdict to come) or refused it.
+   */
+  #gateHolds(slot: ResponseGateSlot, value: Response): boolean {
+    const kind = slot.kind ?? this.#commitKind(this.#sentBody);
+    slot.kind = undefined;
+    const contentType =
+      value.headers.get("content-type") ??
+      this.#implicitContentType ??
+      (kind === "text" ? TEXT_CONTENT_TYPE : undefined);
+    const verdict = slot.gate.commit(this.#self, value, {
+      kind,
+      body: kind === "native" ? value : this.#sentBody,
+      contentType,
+      reportOnly: slot.reportOnly,
+    });
+    if (verdict === undefined) {
+      slot.done = true;
+      return false;
+    }
+    if (verdict instanceof Promise) {
+      // Held: nothing is handed on until the verdict settles. `headersSent`
+      // stays false meanwhile, so the pipeline waits on this layer.
+      slot.held = true;
+      verdict.then(
+        (refusal) => {
+          slot.held = false;
+          if (refusal === undefined) {
+            slot.done = true;
+            this.response = value;
+          } else {
+            this.#refuse(slot, refusal);
+          }
+        },
+        (error: unknown) => {
+          slot.held = false;
+          this.#refuse(
+            slot,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        },
+      );
+      return true;
+    }
+    this.#refuse(slot, verdict);
+    return true;
+  }
+
+  /**
+   * Refuses a commit. Nothing has gone out, so the refused response's own
+   * headers, status and body are dropped (Q-H3) and the error goes to the
+   * current layer's `next`, for the app's error handlers (with none, the
+   * adapter answers 500 and `router.fetch()` rejects). What they answer is
+   * not checked again. When no pipeline can take it, `500` at once.
+   */
+  #refuse(slot: ResponseGateSlot, error: Error): void {
+    slot.done = true;
+    const headers = this.#headers;
+    if (headers !== undefined) {
+      for (const name of REFUSED_RESPONSE_HEADERS) {
+        headers.delete(name);
+      }
+    }
+    this.#implicitContentType = undefined;
+    delete this.options.status;
+    delete this.options.statusText;
+    this.#sentBody = undefined;
+    this.#transformBody = undefined;
+    const next = this.req.next;
+    if (next === undefined || next(error) !== true) {
+      slot.gate.undelivered(this.#self, error);
+      this.#respondWithStatus(500);
+    }
+  }
+
+  /**
+   * This response as the unconstrained `BunResponse`. Typing `status()`,
+   * `set()`, `header()` and `cookie()` by declared responses makes a generic
+   * `this` no longer assignable to `BunResponse` inside the class, so the
+   * class's own `return this` / `setResponse(this)` sites go through this
+   * (plan Q-H13). Internal only.
+   */
+  get #self(): BunResponse {
+    return this as unknown as BunResponse;
   }
 
   /**
@@ -2029,7 +2385,7 @@ export class BunResponse<
 
     let current = response;
     for (const transform of transforms) {
-      const next = transform.transform(current, { res: this, body });
+      const next = transform.transform(current, { res: this.#self, body });
       if (next !== current) {
         // The body described no longer is the one being sent.
         body = undefined;
@@ -2043,17 +2399,41 @@ export class BunResponse<
     return this.req.isKeepAlive || this._isLongLived || false;
   }
 
-  public header(key: string, value: string | string[]) {
+  /**
+   * Sets a header, as {@link setHeader}. With declared responses, a declared
+   * name (in any letter case) takes its declared value type; any other name
+   * takes any header value.
+   */
+  public header<N extends string>(
+    key: N,
+    value: HeaderValueFor<TResponses, N>,
+  ) {
     return this.setHeader(key, value);
   }
 
-  public status(code: number): BunResponse {
+  /**
+   * Sets the status. With declared responses only a declared status is
+   * accepted, and the response that comes back is held to that status's
+   * body, headers and cookies.
+   */
+  public status<const C extends AllowedStatus<TResponses>>(
+    code: C,
+  ): [TResponses] extends [ResponseTypeMap]
+    ? BunResponse<customWebsocketDataType, NarrowResponses<TResponses, C>>
+    : BunResponse {
     this.options.status = code;
-    return this;
+    return this as unknown as [TResponses] extends [ResponseTypeMap]
+      ? BunResponse<customWebsocketDataType, NarrowResponses<TResponses, C>>
+      : BunResponse;
+  }
+
+  /** The class's own status writes, which no declared response constrains. */
+  #setStatus(code: number): void {
+    this.options.status = code;
   }
 
   set statusCode(code: number) {
-    this.status(code);
+    this.#setStatus(code);
   }
 
   /**
@@ -2084,7 +2464,7 @@ export class BunResponse<
       ? type
       : (mime.getType(type) ?? "application/octet-stream");
     this.headersObj.set("Content-Type", contentType);
-    return this;
+    return this.#self;
   }
 
   public contentType(...args: Parameters<BunResponse["type"]>) {
@@ -2093,12 +2473,12 @@ export class BunResponse<
 
   public option(option: ResponseInit): BunResponse {
     this.options = Object.assign(this.options, option);
-    return this;
+    return this.#self;
   }
 
   public statusText(text: string): BunResponse {
     this.options.statusText = text;
-    return this;
+    return this.#self;
   }
 
   /**
@@ -2118,8 +2498,9 @@ export class BunResponse<
    * shape: `res.json<UserDto>(user)`. (`bigint` and `symbol`, which
    * `JSON.stringify` cannot serialise, are rejected.)
    */
-  public json<T extends BunResponseBody>(body: T): BunResponse {
-    this.#sentBody = body;
+  public json<T extends JsonBodyFor<TResponses>>(body: T): BunResponse {
+    this.#sentBody = body as BunResponseSentBody;
+    this.#tag("json");
     if (this.#canSkipHeaders()) {
       return this.#respondWithJson(body);
     }
@@ -2155,7 +2536,7 @@ export class BunResponse<
       this.headersObj.set("Content-Type", JSON_CONTENT_TYPE);
       return this.#respondWithText(JSON.stringify(body));
     }
-    this.req.setResponse(this);
+    this.req.setResponse(this.#self);
     this.#implicitContentType = JSON_CONTENT_TYPE;
     const kind = typeof body;
     // `JSON.stringify` gives `undefined` for `undefined`, a function or a
@@ -2164,7 +2545,7 @@ export class BunResponse<
       kind === "undefined" || kind === "function" || kind === "symbol"
         ? new Response(undefined, this.#initWithoutHeaders())
         : Response.json(body, this.#initWithoutHeaders());
-    return this;
+    return this.#self;
   }
 
   /**
@@ -2182,8 +2563,8 @@ export class BunResponse<
     let callback: unknown = this.req.query.callback;
 
     if (!this.hasHeader("Content-Type")) {
-      this.set("X-Content-Type-Options", "nosniff");
-      this.set("Content-Type", JSON_CONTENT_TYPE);
+      this.setHeader("X-Content-Type-Options", "nosniff");
+      this.setHeader("Content-Type", JSON_CONTENT_TYPE);
     }
 
     if (isArray(callback)) {
@@ -2191,8 +2572,8 @@ export class BunResponse<
     }
 
     if (isString(callback) && callback.length !== 0) {
-      this.set("X-Content-Type-Options", "nosniff");
-      this.set("Content-Type", "text/javascript");
+      this.setHeader("X-Content-Type-Options", "nosniff");
+      this.setHeader("Content-Type", "text/javascript");
 
       const name = callback.replace(/[^[\]\w$.]/g, "");
       const payload =
@@ -2202,7 +2583,7 @@ export class BunResponse<
       text = `/**/ typeof ${name} === 'function' && ${name}(${payload});`;
     }
 
-    return this.send(text);
+    return this.#send(text);
   }
 
   /**
@@ -2213,7 +2594,7 @@ export class BunResponse<
    */
   #applyFreshnessAndStrip(): boolean {
     if (this.req.fresh) {
-      this.status(304);
+      this.#setStatus(304);
     }
 
     const code = this.statusCode;
@@ -2225,7 +2606,7 @@ export class BunResponse<
     }
 
     if (code === 205) {
-      this.set("Content-Length", "0");
+      this.setHeader("Content-Length", "0");
       this.removeHeader("Transfer-Encoding");
       return true;
     }
@@ -2239,7 +2620,7 @@ export class BunResponse<
    * `text/plain` unless a Content-Type is already set. Synchronous.
    */
   #respondWithText(text: string): BunResponse {
-    this.req.setResponse(this);
+    this.req.setResponse(this.#self);
 
     // Nothing set a header: send the text with no `Headers` object at all.
     // Bun writes `text/plain;charset=utf-8` for a string body itself, which
@@ -2256,7 +2637,7 @@ export class BunResponse<
           IMPLICIT_TEXT_RESPONSES.add(response);
         }
         this.response = response;
-        return this;
+        return this.#self;
       }
     }
 
@@ -2271,7 +2652,7 @@ export class BunResponse<
 
     if (this.#applyFreshnessAndStrip()) {
       this.response = new Response(null, this.options);
-      return this;
+      return this.#self;
     }
 
     if (!this.headersObj.has("content-type")) {
@@ -2282,7 +2663,7 @@ export class BunResponse<
       this.#transformBody = text;
     }
     this.response = new Response(text, this.options);
-    return this;
+    return this.#self;
   }
 
   /**
@@ -2433,9 +2814,14 @@ export class BunResponse<
    * sends those as JSON. `null`/`undefined` send an empty body with no
    * Content-Type, as Express does.
    */
-  send(body: BunResponseBody): BunResponse {
+  send(body: SendBodyFor<TResponses>): BunResponse {
+    return this.#send(body as BunResponseBody);
+  }
+
+  /** {@link send}, unconstrained by declared responses: the class's own sends. */
+  #send(body: BunResponseBody): BunResponse {
     if (this.headersSent) {
-      return this;
+      return this.#self;
     }
 
     // Capture the body for inspection (see `getBody`) before any 204/304
@@ -2463,7 +2849,7 @@ export class BunResponse<
         const peeked = Bun.peek(body.getNativeResponse(0));
         if (!(peeked instanceof Response)) {
           this.response = new Response(undefined, this.options);
-          return this;
+          return this.#self;
         }
         response = peeked;
       }
@@ -2480,14 +2866,14 @@ export class BunResponse<
         noteStreamingBody(this.req.request, response);
       }
       this.response = response;
-      return this;
+      return this.#self;
     }
 
     if (isNumber(body) || typeof body === "boolean") {
       return this.#respondWithText(String(body));
     }
 
-    this.req.setResponse(this);
+    this.req.setResponse(this.#self);
 
     if (isBinaryBody(body)) {
       // Binary bodies (Buffer, any typed array, DataView, ArrayBuffer,
@@ -2502,7 +2888,7 @@ export class BunResponse<
 
       if (this.#applyFreshnessAndStrip()) {
         this.response = new Response(null, this.options);
-        return this;
+        return this.#self;
       }
 
       // Express defaults a binary body to `application/octet-stream`; be
@@ -2515,7 +2901,7 @@ export class BunResponse<
         body as ConstructorParameters<typeof Response>[0],
         this.options,
       );
-      return this;
+      return this.#self;
     }
 
     if (
@@ -2545,7 +2931,7 @@ export class BunResponse<
     // and `async function*` stream.
     if (this.#applyFreshnessAndStrip() || isNull(body) || isUndefined(body)) {
       this.response = new Response(null, this.options);
-      return this;
+      return this.#self;
     }
 
     if (!(
@@ -2560,7 +2946,7 @@ export class BunResponse<
       body as ConstructorParameters<typeof Response>[0],
       this.options,
     );
-    return this;
+    return this.#self;
   }
 
   /**
@@ -2608,7 +2994,7 @@ export class BunResponse<
       this.setHeaders(headers);
     }
     if (statusCode) {
-      this.status(statusCode);
+      this.#setStatus(statusCode);
     }
 
     if (statusMessage) {
@@ -3023,7 +3409,7 @@ export class BunResponse<
       if (hasChunk) {
         this.#emitWriteAfterEnd();
       }
-      return Promise.resolve(this);
+      return Promise.resolve(this.#self);
     }
 
     return this.#endOpen(hasChunk ? chunk : undefined);
@@ -3036,10 +3422,10 @@ export class BunResponse<
         this.write(chunk);
       }
       await this.endLongLivedConnection();
-      return this;
+      return this.#self;
     }
 
-    return this.send(chunk);
+    return this.#send(chunk);
   }
 
   /**
@@ -3058,15 +3444,21 @@ export class BunResponse<
    * With a `ResponseInit` second argument the response is Bun's
    * `Response.redirect(url, init)`, unchanged.
    */
-  redirect(url: string): BunResponse;
-  redirect(status: number, url: string): BunResponse;
-  redirect(url: string, status: ResponseInit | number | undefined): BunResponse;
+  redirect(url: RedirectUrl<TResponses>): BunResponse;
+  redirect<const C extends RedirectStatus<TResponses>>(
+    status: C,
+    url: string,
+  ): BunResponse;
+  redirect(
+    url: string,
+    status: ResponseInit | RedirectStatus<TResponses> | undefined,
+  ): BunResponse;
   redirect(
     first: string | number,
     second?: string | ResponseInit | number,
   ): BunResponse {
     if (this.headersSent) {
-      return this;
+      return this.#self;
     }
 
     let address: string;
@@ -3077,8 +3469,9 @@ export class BunResponse<
     } else {
       address = first;
       if (isObject(second)) {
+        this.#tag("redirect");
         this.response = Response.redirect(first, second);
-        return this;
+        return this.#self;
       }
       if (typeof second === "number" && Number.isFinite(second)) {
         status = second;
@@ -3101,19 +3494,20 @@ export class BunResponse<
       body = `<!DOCTYPE html><head><title>${reason}</title></head><body><p>${reason}. Redirecting to ${escapeHtml(address)}</p></body>`;
     }
 
-    this.status(status);
+    this.#setStatus(status);
     this.setHeader(
       "Content-Length",
       String(new TextEncoder().encode(body).byteLength),
     );
-    this.req.setResponse(this);
+    this.req.setResponse(this.#self);
     this.#sentBody = body;
     this.options.headers = this.headersObj;
+    this.#tag("redirect");
     this.response = new Response(
       this.req.method === "HEAD" || body === "" ? null : body,
       this.options,
     );
-    return this;
+    return this.#self;
   }
 
   /**
@@ -3158,7 +3552,7 @@ export class BunResponse<
         if (!this.hasHeader("Content-Type")) {
           this.setHeader("Content-Type", "text/html; charset=utf-8");
         }
-        this.send(html ?? "");
+        this.#send(html ?? "");
       });
 
     (this.#views ??= new BunViews()).render(view, opts, finish);
@@ -3458,7 +3852,7 @@ export class BunResponse<
     }
 
     this.headersObj.set("Content-Disposition", contentDisposition(name));
-    return this;
+    return this.#self;
   }
 
   /**
@@ -3494,6 +3888,7 @@ export class BunResponse<
 
     this.options.status = 404;
     this.options.statusText = "Not Found";
+    this.#tag("status");
     this.response = new Response(undefined, this.options);
     return this;
   }
@@ -3506,8 +3901,9 @@ export class BunResponse<
     this.options.status = code;
     this.options.statusText = STATUS_CODES[code] ?? "";
     this.options.headers = this.headersObj;
+    this.#tag("status");
     this.response = new Response(null, this.options);
-    return this;
+    return this.#self;
   }
 
   /**
@@ -3607,7 +4003,7 @@ export class BunResponse<
     }
 
     if (this.headersSent) {
-      return this;
+      return this.#self;
     }
 
     const acceptRanges = opts.acceptRanges ?? opts.accepRanges ?? true;
@@ -3659,7 +4055,7 @@ export class BunResponse<
     }
 
     this.options.headers = this.headersObj;
-    this.req.setResponse(this);
+    this.req.setResponse(this.#self);
 
     // Conditional GET.
     if (this.#isPreconditionFailure()) {
@@ -3695,7 +4091,7 @@ export class BunResponse<
 
       if (ranges !== -2 && ranges.length === 1) {
         const [{ start, end }] = ranges;
-        this.status(206);
+        this.#setStatus(206);
         this.headersObj.set(
           "Content-Range",
           `bytes ${start}-${end}/${stats.size}`,
@@ -3707,8 +4103,9 @@ export class BunResponse<
     if (this.#responseTransforms !== undefined) {
       this.#transformBody = body;
     }
+    this.#tag("file");
     this.response = new Response(body, this.options);
-    return this;
+    return this.#self;
   }
 
   /** `send`'s `isPreconditionFailure`: a failed `If-Match` or `If-Unmodified-Since`. */
@@ -3812,12 +4209,23 @@ export class BunResponse<
       return;
     }
 
-    this.status(status);
+    this.#setStatus(status);
     this.type("txt");
-    return this.send(STATUS_CODES[status] ?? String(status));
+    this.#tag("status");
+    return this.#send(STATUS_CODES[status] ?? String(status));
   }
 
-  public set(name: string, value: string | string[], replace = true) {
+  /**
+   * Sets a header, as {@link setHeader}: `replace` (default `true`) replaces
+   * every value of it, `false` appends. With declared responses, a declared
+   * name (in any letter case) takes its declared value type; any other name
+   * takes any header value.
+   */
+  public set<N extends string>(
+    name: N,
+    value: HeaderValueFor<TResponses, N>,
+    replace = true,
+  ) {
     return this.setHeader(name, value, replace);
   }
 
@@ -3836,14 +4244,14 @@ export class BunResponse<
       loc = referer || "/";
     }
 
-    return this.set("Location", encodeUrl(loc));
+    return this.setHeader("Location", encodeUrl(loc));
   }
 
   public links(links: Record<string, string>) {
     let link = this.get("Link", "") || "";
     if (link) link += ", ";
 
-    return this.set(
+    return this.setHeader(
       "Link",
       link +
         Object.keys(links)
@@ -3861,7 +4269,11 @@ export class BunResponse<
    * numeric string); `path` defaults to `/`. The caller's `opts` object is not
    * modified.
    */
-  public cookie(name: string, value: CookieValue, opts?: BunCookieOptions) {
+  public cookie<N extends string>(
+    name: N,
+    value: CookieValueFor<TResponses, N>,
+    opts?: BunCookieOptions,
+  ) {
     const { signed, secret: optsSecret, maxAge, ...rest } = opts ?? {};
     const options: CookieSerializeOptions = { ...rest };
 
@@ -3903,7 +4315,7 @@ export class BunResponse<
    */
   public clearCookie(name: string, opts?: BunCookieOptions) {
     const { maxAge: _maxAge, ...rest } = opts ?? {};
-    return this.cookie(name, "", {
+    return this.#self.cookie(name, "", {
       path: "/",
       ...rest,
       expires: new Date(1),
@@ -3943,10 +4355,10 @@ export class BunResponse<
     this.vary("Accept");
 
     if (matchedType) {
-      this.set("Content-Type", matchedType);
-      obj[keyStr](req, this, next);
+      this.setHeader("Content-Type", matchedType);
+      obj[keyStr](req, this.#self, next);
     } else if (obj.default) {
-      obj.default(req, this, next);
+      obj.default(req, this.#self, next);
     } else if (pipelineNext) {
       pipelineNext(
         Object.assign(new Error("Not Acceptable"), {

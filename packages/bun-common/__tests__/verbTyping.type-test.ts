@@ -6,6 +6,7 @@
  * overloads existed still resolve the same way. Checked by `bun check`, not
  * `bun test` — run `bun run check` in the package.
  */
+import type { ValidatorMiddleware } from "../lib/BunValidate";
 import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import type { ParamsDictionary } from "../lib/types/routeParams";
 import type { ResolvedHandler } from "../lib/types/routeTyping";
@@ -235,6 +236,36 @@ const wrongHandler: ResolvedHandler<
 > = () => undefined;
 // @ts-expect-error the validator parses `page` as a number, not a string
 router.get("/declared/:id", pageQuery, wrongHandler);
+
+/* --- responses: a declared handler's `res` is held to them (V3a) --- */
+
+declare const UserSchema: StandardSchemaV1<{ id: string }, { id: string }>;
+const userResponses = validate(
+  {},
+  { responses: { 200: UserSchema, 204: null } },
+);
+type UserResponses =
+  typeof userResponses extends ValidatorMiddleware<infer S> ? S : never;
+const typedResponseHandler: ResolvedHandler<"/typed", UserResponses> = (
+  _req,
+  res,
+) => {
+  res.status(204).send(null);
+  return res.status(200).json({ id: "a" });
+};
+router.get("/typed", userResponses, typedResponseHandler);
+adapter.get("/typed", userResponses, typedResponseHandler);
+router.get("/typed-inline", userResponses, (_req, res) => {
+  // @ts-expect-error the inline handler's res holds only the declared statuses
+  return res.status(404).json({ id: "a" });
+});
+const wrongResponseHandler: ResolvedHandler<"/typed", UserResponses> = (
+  _req,
+  res,
+) =>
+  // @ts-expect-error a declared handler's res is held to the 200's body
+  res.status(200).json({ id: 1 });
+void wrongResponseHandler;
 
 /* --- ws(): `ws.data.custom` is the adapter's WebSocket data type ---- */
 

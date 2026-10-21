@@ -11,6 +11,11 @@ import type {
 } from "./BunWebSocket";
 import type { Logger, LoggerLike } from "./logging";
 import type {
+  OutboundDef,
+  ResponseSchemas,
+  ResponseValidationMode,
+} from "./responseValidation";
+import type {
   BunServer,
   NextFunction,
   RouterCallback,
@@ -30,10 +35,12 @@ import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
 import {
   BunResponse as BunResponseClass,
+  markResponseErrorPath,
   SocketFreeExchange,
   toFetchResponse,
 } from "./BunResponse";
 import { resolveLogger } from "./logging";
+import { responseBindingOf, toOutboundDef } from "./responseValidation";
 import {
   CAPTURE_OPTIONAL_WILDCARD,
   CAPTURE_PARAM,
@@ -440,7 +447,32 @@ type RouteWithGroup = Route & {
    * {@link BunRouter.routesUndecodableBody}).
    */
   mountDepth?: number;
+  /**
+   * The `responseValidation` of the innermost router (this one or one it was
+   * flattened in from) that set one; carried across a flatten so a mounted
+   * router's setting wins over its parent's.
+   */
+  responseValidation?: ResponseValidationMode;
+  /**
+   * The `commonResponses` of every router the route was flattened in
+   * through, outermost first (compiled); carried across a flatten.
+   */
+  commonResponses?: readonly OutboundDef[];
+  /**
+   * The logger of the innermost router (this one or one it was flattened in
+   * from) that set its own, for the route's response-check warnings;
+   * carried across a flatten as {@link responseValidation} is. Absent when
+   * none did: the router the route is finally registered on logs them.
+   */
+  responseLogger?: () => Logger;
 };
+
+/** The modes `responseValidation` takes. */
+const RESPONSE_VALIDATION_MODES: readonly ResponseValidationMode[] = [
+  "off",
+  "warn",
+  "error",
+];
 
 /** Tags the middleware {@link acceptUndecodableBody} returns. */
 const UNDECODABLE_BODY_MARK: unique symbol = Symbol.for(
@@ -1071,6 +1103,12 @@ export class BunRouter<
   declare readonly __mount?: { path: TMountPath; shape: TMountShape };
 
   public _logger!: Logger;
+  /**
+   * Whether a logger was set on this router (`logger =`, `setLogger()`), as
+   * opposed to the default it resolves when none is given. A mounted router
+   * that set one keeps its response-check warnings (see `responseLogger`).
+   */
+  #ownLogger = false;
   private _bunWebSocket?: BunWebSocket;
 
   /** Router-wide `101` headers — see {@link webSocketUpgradeHeaders}. */
@@ -1233,6 +1271,28 @@ export class BunRouter<
        * {@link BunViews} of its own, created on first use.
        */
       views?: BunViews;
+      /**
+       * Runtime response checks for the validators on this router's routes
+       * that declare `responses` but no `responseValidation` of their own:
+       * `"off"` (the default), `"warn"` or `"error"`. The most specific
+       * setting wins: a validator's own, then the innermost router that set
+       * one (a mounted router over its parent, the adapter last). Read at
+       * registration, like every router option here: set it before adding
+       * routes. A route whose validators declare no `responses` is never
+       * checked, whatever this says.
+       */
+      responseValidation?: ResponseValidationMode;
+      /**
+       * Statuses every route on this router may answer without declaring
+       * them itself — a validator's own `400`, an auth `401`, the error
+       * handler's `500` — in `validate()`'s `responses` form. Merged under
+       * each validator's `responses` (per status and part, the validator
+       * winning), and under a mounted router's own `commonResponses` (the
+       * inner router winning). Only routes whose validators declare
+       * `responses` are checked. A declaration that is not a response table
+       * throws a `TypeError` here. Read at registration.
+       */
+      commonResponses?: ResponseSchemas;
     },
   ) {
     super(pick(localOptions, ["caseSensitive", "host"]));
@@ -1259,7 +1319,23 @@ export class BunRouter<
     this.#routeSpecificity = localOptions?.routeSpecificity ?? false;
     this.#anyUndecodableBodyOptIn =
       localOptions?.acceptUndecodableBody === true;
+
+    // Checked here, so a bad value fails at startup rather than per request.
+    const mode = localOptions?.responseValidation;
+    if (mode !== undefined && !RESPONSE_VALIDATION_MODES.includes(mode)) {
+      throw new TypeError(
+        `BunRouter: responseValidation must be "off", "warn" or "error"`,
+      );
+    }
+    const common = localOptions?.commonResponses;
+    this.#commonResponses =
+      common === undefined
+        ? undefined
+        : toOutboundDef(common, "BunRouter: commonResponses");
   }
+
+  /** The `commonResponses` option, checked and compiled; `undefined` without one. */
+  readonly #commonResponses: OutboundDef | undefined;
 
   /**
    * The application's views — where templates live, the default engine,
@@ -1304,6 +1380,7 @@ export class BunRouter<
   /** Replaces the logger. Accepts any {@link LoggerLike}. */
   set logger(logger: LoggerLike) {
     this._logger = resolveLogger(logger);
+    this.#ownLogger = true;
   }
 
   /** Replaces the logger and returns the router, for chaining. */
@@ -1474,6 +1551,7 @@ export class BunRouter<
     if (flattenSource !== undefined) {
       route.mountDepth = (flattenSource.mountDepth ?? 0) + 1;
     }
+    this.#bindResponseSettings(route, flattenSource);
     if (route.hostRegexp) {
       this.#hostScoped = true;
     }
@@ -1488,6 +1566,62 @@ export class BunRouter<
     }
     this.#routeTree.invalidate();
     return this;
+  }
+
+  /**
+   * Carries this router's `responseValidation` and `commonResponses` onto a
+   * route (the innermost router's winning, as for `acceptUndecodableBody`),
+   * and binds each validator among its callbacks that declares `responses`
+   * to them, so that a validator knows its router's settings without any
+   * per-request lookup. A route without such a validator is left as it is.
+   */
+  #bindResponseSettings(
+    route: RouteWithGroup,
+    flattenSource: RouteWithGroup | undefined,
+  ): void {
+    const mode =
+      flattenSource?.responseValidation ??
+      this.localOptions?.responseValidation;
+    if (mode !== undefined) {
+      route.responseValidation = mode;
+    }
+    const inner = flattenSource?.commonResponses;
+    const own = this.#commonResponses;
+    const common =
+      own === undefined ? inner : inner === undefined ? [own] : [own, ...inner];
+    if (common !== undefined) {
+      route.commonResponses = common;
+    }
+    // The innermost router that set a logger keeps its warnings, as its
+    // `responseValidation` wins; with none, this router's logger.
+    const ownLogger =
+      this.#ownLogger || this.localOptions?.logger !== undefined
+        ? (): Logger => this.logger
+        : undefined;
+    const responseLogger = flattenSource?.responseLogger ?? ownLogger;
+    if (responseLogger !== undefined) {
+      route.responseLogger = responseLogger;
+    }
+    const callbacks = route.callbacks as unknown;
+    if (!Array.isArray(callbacks)) {
+      return;
+    }
+    let bound: unknown[] | undefined;
+    for (let i = 0; i < callbacks.length; i++) {
+      const binding = responseBindingOf(callbacks[i]);
+      if (binding === undefined) {
+        continue;
+      }
+      bound ??= [...(callbacks as unknown[])];
+      bound[i] = binding.bind({
+        mode,
+        common: common ?? [],
+        logger: responseLogger ?? ((): Logger => this.logger),
+      });
+    }
+    if (bound !== undefined) {
+      route.callbacks = bound as typeof route.callbacks;
+    }
   }
 
   private getFormattedSetRouteOption(
@@ -5872,6 +6006,9 @@ export class BunRouter<
         nextArg: undefined,
         returned: undefined,
       };
+      // Answers `true` when the call was taken (the first for this layer),
+      // so a caller outside the layer (a response gate's refusal) can tell a
+      // pipeline that has moved on.
       const next: NextFunction = (arg) => {
         if (step.nextCalled) {
           return;
@@ -5884,6 +6021,7 @@ export class BunRouter<
         if (wait !== undefined && wait.step === step) {
           this.#wake(state, wait, NEXT_CALLED);
         }
+        return true;
       };
 
       // Express sets both on entering each layer: `baseUrl` to the layer's
@@ -5894,14 +6032,19 @@ export class BunRouter<
 
       let invoked: unknown;
       try {
-        invoked = layer.isErrorHandler
-          ? (layer.callback as RouterErrorMiddlewareHandler)(
-              state.currentError,
-              request,
-              response,
-              next,
-            )
-          : (layer.callback as RouterHandler)(request, response, next);
+        if (layer.isErrorHandler) {
+          // An error handler's response is checked against a declared
+          // contract but only reported, never refused (plan Q-H2).
+          markResponseErrorPath(response, true);
+          invoked = (layer.callback as RouterErrorMiddlewareHandler)(
+            state.currentError,
+            request,
+            response,
+            next,
+          );
+        } else {
+          invoked = (layer.callback as RouterHandler)(request, response, next);
+        }
       } catch (error) {
         if (this.#settleLayer(state, step, true, error)) {
           return this.#finishPipeline(state);
@@ -6335,8 +6478,12 @@ export class BunRouter<
       return false;
     }
 
-    // 6. next() / next('skip') — clear any active error and continue.
-    state.hasError = false;
+    // 6. next() / next('skip') — clear any active error and continue. An
+    //    error handler handing the pipeline back ends its report-only spell.
+    if (state.hasError) {
+      state.hasError = false;
+      markResponseErrorPath(response, false);
+    }
     return false;
   }
 

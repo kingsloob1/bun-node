@@ -6,14 +6,31 @@ import type {
   ValidationIssue,
 } from "./contract/model";
 import type { JsonSchemaSource } from "./contract/schemas";
+import type { Logger } from "./logging";
+import type {
+  OutboundDef,
+  ResponseBinding,
+  ResponseSchemas,
+  ResponseValidationMode,
+  RouterResponseSettings,
+} from "./responseValidation";
 import type { NextFunction, RouterHandler } from "./types/general";
+import type { InferResponses } from "./types/responseTyping";
 import type { EmptyShape } from "./types/routeTyping";
 import type { StandardSchemaV1 } from "./types/standardSchema";
 import type { JsonValue } from "./utils/native";
+import { exemptResponseFromGate, installResponseGate } from "./BunResponse";
 import { httpTransport } from "./contract/http";
 import { validateStandard } from "./contract/issues";
 import { documented, markImplicit, toConverter } from "./contract/schemas";
 import { attachContract, isSchema, makeContract } from "./contract/transport";
+import { resolveLogger } from "./logging";
+import {
+  mergeOutboundDefs,
+  RESPONSE_BINDING,
+  ResponseContractGate,
+  toOutboundDef,
+} from "./responseValidation";
 
 /**
  * A validation issue, flattened with the target that produced it; the
@@ -21,6 +38,12 @@ import { attachContract, isSchema, makeContract } from "./contract/transport";
  * `target` to the request's targets.
  */
 export type { ValidationIssue } from "./contract/model";
+
+/** The logger an unbound validator (used outside a router) writes mismatches to. */
+let defaultValidateLogger: Logger | undefined;
+/** Resolves {@link defaultValidateLogger} on first use. */
+const defaultLogger = (): Logger =>
+  (defaultValidateLogger ??= resolveLogger(undefined));
 
 /** The request members `BunValidate` can validate. */
 export type ValidationTarget =
@@ -156,7 +179,7 @@ export type InferValidatedShape<S extends ValidationSchemas, H = unknown> = {
 
 /**
  * What a validator's middleware tells the following handler, given its
- * `replace` option `R`.
+ * `replace` option `R` and its `responses` `RS`.
  *
  * Only `replace: true` (the default) writes the validated values onto the
  * request, so only then does the handler see {@link InferValidatedShape}, on
@@ -165,12 +188,26 @@ export type InferValidatedShape<S extends ValidationSchemas, H = unknown> = {
  * request's own types, and `req.valid`, filled at runtime either way, is not
  * typed. A `replace` that is only known to be a `boolean` claims nothing,
  * since it may be `false`.
+ *
+ * Declared `responses` add a `responses` key, whatever `replace` says: the
+ * handler's `res` is then held to them (`status`, `json`, `send`, `set`,
+ * `header`, `cookie`, `redirect`).
  */
 export type ValidatedShapeFor<
   S extends ValidationSchemas,
   H = unknown,
   R extends boolean = true,
-> = [R] extends [true] ? InferValidatedShape<S, H> : EmptyShape;
+  RS = undefined,
+> = [RS] extends [ResponseSchemas]
+  ? RequestShapeFor<S, H, R> & { responses: InferResponses<RS> }
+  : RequestShapeFor<S, H, R>;
+
+/** The request side of {@link ValidatedShapeFor}: the parsed parts under `replace: true`, nothing otherwise. */
+type RequestShapeFor<S extends ValidationSchemas, H, R extends boolean> = [
+  R,
+] extends [true]
+  ? InferValidatedShape<S, H>
+  : EmptyShape;
 
 /** What to do when a target fails validation. */
 export type ValidationFailureMode =
@@ -252,11 +289,13 @@ export interface TargetHooks<In = unknown, Out = unknown, TResult = unknown> {
  * @typeParam H The `hooks` as passed; a `transform` decides its target's type.
  * @typeParam R The `replace` option as passed: `false` leaves the handler's
  *   request types unchanged ({@link ValidatedShapeFor}).
+ * @typeParam RS The `responses` as passed, which type the handler's `res`.
  */
 export interface BunValidateOptions<
   S extends ValidationSchemas = ValidationSchemas,
   H extends ValidationHooks<S> = ValidationHooks<S>,
   R extends boolean = true,
+  RS extends ResponseSchemas | undefined = ResponseSchemas | undefined,
 > {
   /**
    * Schemas to apply, keyed by request target. A key that is not a target
@@ -308,6 +347,36 @@ export interface BunValidateOptions<
    * not only an object.
    */
   formatError?: (error: ValidationError, req: BunRequest) => JsonValue;
+  /**
+   * The route's responses, by status (plan §4.4.1): each a Standard Schema
+   * (a JSON body), `null` (no body), or `{ headers, cookies, content }`,
+   * `content` keyed by media type (`"text/*"` and `"*\/*"` match as
+   * fallbacks, the most specific key winning). A status not listed is a
+   * mismatch, unless a router's `commonResponses` lists it.
+   *
+   * Always types the handler's `res` (held to each schema's wire input);
+   * checked at runtime only when {@link responseValidation} (this
+   * validator's, else its router's or adapter's) is not `"off"`. Added to
+   * the validator's contract (`getContract(middleware)`). A declaration that
+   * is not a response table throws a `TypeError` here.
+   */
+  responses?: RS;
+  /**
+   * Runtime response checks for {@link responses}: `"off"` checks nothing
+   * and installs nothing; `"warn"` sends the response and logs each
+   * mismatch once (no value from it); `"error"` refuses a mismatching
+   * response before anything is sent, handing a `ResponseValidationError`
+   * to the error handlers (the adapter answers 500 without one). A body that
+   * must be read (a `Blob`, a passed-through `Response`) or a vendor that
+   * answers with a Promise holds the response under `"error"` until checked.
+   * An error handler's response is only ever reported.
+   *
+   * Unset (or `undefined`), the route's router decides (`BunRouter`'s and
+   * the adapter's `responseValidation`), and `"off"` when none does.
+   * Recommended: `"error"` in development and tests, `"off"` or `"warn"` in
+   * production.
+   */
+  responseValidation?: ResponseValidationMode;
 }
 
 /**
@@ -511,17 +580,21 @@ export class BunValidate<
   S extends ValidationSchemas = ValidationSchemas,
   H extends ValidationHooks<S> = ValidationHooks<S>,
   R extends boolean = true,
+  RS extends ResponseSchemas | undefined = undefined,
 > {
   /** Targets that have a schema, in a fixed order for predictable reporting. */
   readonly #targets: ValidationTarget[];
   /** The options given, with every behavioural default filled in. */
   readonly #options: Required<
-    Pick<BunValidateOptions<S, H, R>, "onFailure" | "status" | "abortEarly">
+    Pick<BunValidateOptions<S, H, R, RS>, "onFailure" | "status" | "abortEarly">
   > &
-    Omit<BunValidateOptions<S, H, R>, "replace"> & {
+    Omit<BunValidateOptions<S, H, R, RS>, "replace"> & {
       /** Whether validated values are written back; defaults to `true`. */
       replace: boolean;
     };
+
+  /** `responses`, checked and in contract form; `undefined` when none is declared. */
+  readonly #responses: OutboundDef | undefined;
 
   /**
    * The HTTP contract of the schemas, attached to every middleware this
@@ -533,7 +606,7 @@ export class BunValidate<
    * @param options Schemas, hooks and failure behaviour; see
    *   {@link BunValidateOptions}.
    */
-  constructor(options: BunValidateOptions<S, H, R>) {
+  constructor(options: BunValidateOptions<S, H, R, RS>) {
     // A key the request has no target for would be ignored at runtime, and a
     // type cannot catch it once `S` is inferred, so it fails here.
     for (const key of Object.keys(options.schemas)) {
@@ -565,14 +638,32 @@ export class BunValidate<
       const schema = options.schemas[target];
       if (isSchema(schema)) inbound[target] = schema;
     }
+    const mode = options.responseValidation;
+    if (
+      mode !== undefined &&
+      mode !== "off" &&
+      mode !== "warn" &&
+      mode !== "error"
+    ) {
+      throw new TypeError(
+        `validate(): responseValidation must be "off", "warn" or "error"`,
+      );
+    }
+    this.#responses =
+      options.responses === undefined
+        ? undefined
+        : toOutboundDef(options.responses, "validate(): responses");
+
     // `"respond"` answers failures itself, so its status is part of the
-    // route's contract: added, and marked implicit (plan §4.12 m5). With
-    // `"next"` or `"throw"` the app's error handler answers, and declaring
-    // that status is the app's business.
-    const outbound =
-      this.#options.onFailure === "respond"
+    // route's contract: added, and marked implicit (plan §4.12 m5), unless
+    // `responses` declares it. With `"next"` or `"throw"` the app's error
+    // handler answers, and declaring that status is the app's business.
+    const failureStatus = String(this.#options.status);
+    const implicit =
+      this.#options.onFailure === "respond" &&
+      this.#responses?.[failureStatus] === undefined
         ? {
-            [String(this.#options.status)]: {
+            [failureStatus]: {
               body: {
                 "application/json": markImplicit(
                   documented(
@@ -585,6 +676,10 @@ export class BunValidate<
             },
           }
         : undefined;
+    const outbound =
+      implicit === undefined
+        ? this.#responses
+        : { ...this.#responses, ...implicit };
     this.#contract = makeContract(
       httpTransport.spec,
       outbound === undefined ? { inbound } : { inbound, outbound },
@@ -602,7 +697,50 @@ export class BunValidate<
    * as a phantom type, so a verb method registering it can narrow the
    * following handler's `req` without the caller restating anything.
    */
-  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
+  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
+    const responses = this.#responses;
+    const own = this.#options.responseValidation;
+    const ownGate =
+      responses !== undefined && own !== undefined && own !== "off"
+        ? new ResponseContractGate(responses, own, defaultLogger)
+        : undefined;
+    const handler = this.#handler(ownGate);
+    attachContract(handler, this.#contract);
+    if (responses === undefined) {
+      return handler;
+    }
+    // The router binds the validator to its own `responseValidation` and
+    // `commonResponses` when it registers the route (plan §4.4.5): the
+    // validator's own mode wins, then the innermost router's.
+    const contract = this.#contract;
+    const binding: ResponseBinding = {
+      bind: (settings: RouterResponseSettings) => {
+        const mode = own ?? settings.mode ?? "off";
+        if (mode === "off") {
+          return handler;
+        }
+        const gate = new ResponseContractGate(
+          settings.common.length === 0
+            ? responses
+            : mergeOutboundDefs([...settings.common, responses]),
+          mode,
+          settings.logger,
+        );
+        const bound = this.#handler(gate);
+        attachContract(bound, contract);
+        return Object.assign(bound, { [RESPONSE_BINDING]: binding });
+      },
+    };
+    return Object.assign(handler, { [RESPONSE_BINDING]: binding });
+  }
+
+  /**
+   * Builds the middleware itself, installing `gate` on the response of each
+   * request it lets through (none when `undefined`: nothing is installed).
+   */
+  #handler(
+    gate: ResponseContractGate | undefined,
+  ): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
     const { onFailure, status, abortEarly, replace, schemas, formatError } =
       this.#options;
     // Erased for the loop, which handles every target through one code path:
@@ -653,6 +791,9 @@ export class BunValidate<
       /** Answers once every target has run (or one stopped the rest). */
       const finish = (): unknown => {
         if (issues.length === 0) {
+          if (gate !== undefined) {
+            installResponseGate(res, gate);
+          }
           return next();
         }
 
@@ -662,6 +803,9 @@ export class BunValidate<
           throw error;
         }
         if (onFailure === "respond") {
+          // This validator's own failure status, declared implicitly: a
+          // mount validator's gate does not check it.
+          exemptResponseFromGate(res);
           if (!formatError) {
             return res
               .status(status)
@@ -708,7 +852,6 @@ export class BunValidate<
       return run(0);
     };
 
-    attachContract(handler, this.#contract);
     return handler;
   }
 
@@ -717,10 +860,11 @@ export class BunValidate<
     S extends ValidationSchemas,
     H extends ValidationHooks<S> = ValidationHooks<S>,
     R extends boolean = true,
+    const RS extends ResponseSchemas | undefined = undefined,
   >(
-    options: BunValidateOptions<S, H, R>,
-  ): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
-    return new BunValidate(options).middleware();
+    options: BunValidateOptions<S, H, R, RS>,
+  ): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
+    return new BunValidate<S, H, R, RS>(options).middleware();
   }
 }
 
@@ -741,9 +885,10 @@ export function validate<
   S extends ValidationSchemas,
   H extends ValidationHooks<S> = ValidationHooks<S>,
   R extends boolean = true,
+  const RS extends ResponseSchemas | undefined = undefined,
 >(
   schemas: S,
-  options?: Omit<BunValidateOptions<S, H, R>, "schemas">,
-): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
-  return new BunValidate({ ...options, schemas }).middleware();
+  options?: Omit<BunValidateOptions<S, H, R, RS>, "schemas">,
+): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
+  return new BunValidate<S, H, R, RS>({ ...options, schemas }).middleware();
 }

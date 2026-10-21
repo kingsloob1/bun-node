@@ -1729,7 +1729,11 @@ it names.
   against every supported vendor.** ✅ **Answered 2026-10-20: yes, as recommended.**
 - **Q-C4** **Media-type keys**: exact bare types (OpenAPI's), parameters and
   case ignored at runtime, no wildcards? **Recommended: yes; wildcards later,
-  with most-specific-wins.**
+  with most-specific-wins.** ✅ **Answered 2026-10-21: bare, case-insensitive,
+  and wildcards now** (against the recommendation): `type/*` and `*/*` are
+  keys, the most specific winning (exact, then `type/*`, then `*/*`); two keys
+  that tie once bare and lower-cased are a `TypeError`. Built in V3a, in the
+  core (`lib/contract/media.ts`), so every transport's media map matches so.
 - **Q-C5** **What the wire changes** (`Jsonify`, header strings): a
   per-transport `wire` mapping, recorded as **data** on each row (`encoding`,
   §4.12 m3) and applied by client types, not the core's `Received`?
@@ -1763,26 +1767,31 @@ it names.
 - **Q-C14** **Media keys with parameters** (bun-jobs' Prometheus
   `text/plain; version=0.0.4`): strip parameters on **both** sides when
   matching, and keep the declared key's parameters for documents?
-  **Recommended: yes.**
+  **Recommended: yes.** ✅ **Answered 2026-10-21: yes, as recommended** (V3a).
 
 ### 8.3 HTTP (§4.3, §4.4)
 
 - **Q-H1** **A freshness 304 for a conditional request is allowed without
-  being declared?** **Recommended: yes** (H42).
+  being declared?** **Recommended: yes** (H42). ✅ **Answered 2026-10-21: yes.**
 - **Q-H2** **An error handler's response is checked and only reported, never
   replaced?** **Recommended: yes** (H44); declare such statuses with
-  `commonResponses`.
+  `commonResponses`. ✅ **Answered 2026-10-21: yes.**
 - **Q-H3** **On a refusal, drop the refused response's own headers**
   (`Location`, `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`), keeping CORS
-  and `Vary`? **Recommended: yes** (H45).
+  and `Vary`? **Recommended: yes** (H45). ✅ **Answered 2026-10-21: yes.**
+  V3a also drops the refused response's status and body, so an error handler
+  that sets none answers with its own.
 - **Q-H4** **A whole-body schema against a stream**: skip with one warning
   per route? **Recommended: yes**; streams use `chunks()` or `sse()`.
 - **Q-H5** **Blobs, files and a passed-through `Response` are read to be
   checked** (so `"error"` holds them)? **Recommended: yes, with `opaque()`
-  to declare without reading;** a size bound later.
+  to declare without reading;** a size bound later. ✅ **Answered 2026-10-21:
+  yes** (`opaque()` with V3b). V3a reads a `Blob` (`arrayBuffer()`) and a
+  passed-through `Response` (`clone()`); `sendFile()`'s bytes are V3b's.
 - **Q-H6** **A handler returning a native `Response`** is not supported by
   bun-common. **Recommended: out of scope**; if it is ever added, it routes
-  into `send(response)` and is checked there.
+  into `send(response)` and is checked there. ✅ **Answered 2026-10-21: out of
+  scope.**
 - **Q-H7** ★ **Widen bun-jobs' `ProblemIssueDto.target` in V2** (a management
   API contract change bun-jobs-ui reads)? **Recommended: yes, in the same
   PR**, reviewed by bun-node-e9 and bun-node-99. ✅ **Answered 2026-10-17: yes, as recommended.**
@@ -1793,13 +1802,17 @@ it names.
 - **Q-H10** **Typed SSE writes** (`SseWriter.send` typed by a contract)?
   **Recommended: yes, inside bun-native-routes PR-sse2** (V11).
 - **Q-H11** **The response cookie view** holds values as written plus their
-  attributes? **Recommended: yes.**
+  attributes? **Recommended: yes.** ✅ **Answered 2026-10-21: yes.** Built as
+  `{ value, httpOnly, secure, partitioned, sameSite?, path?, domain?, maxAge?,
+  expires?, priority? }`, named after `res.cookie()`'s options (`maxAge` in
+  seconds as the header carries it, `expires` a `Date`, `sameSite`/`priority`
+  capitalised).
 - **Q-H12** **`req.valid` as the name** of the parsed-parts view (Hono's
   `c.req.valid`)? **Recommended: yes.** (Alternatives: `req.validated`,
   `req.parsed`.) ✅ **Answered 2026-10-21: `req.valid`, as recommended.**
 - **Q-H13** **The private `#self` getter** that keeps 35 internal call sites
   compiling under typed `set`/`header`/`cookie`? **Recommended: yes**
-  (internal only).
+  (internal only). ✅ **Answered 2026-10-21: yes** (34 sites in V3a).
 - **Q-H14** **The new target order** `headers → cookies → signedCookies →
   params → query → body`? **Recommended: yes**: a cheap header or session
   check fails before a body is parsed. ✅ **Answered 2026-10-21: yes, as recommended.**
@@ -1840,6 +1853,15 @@ it names.
 ---
 
 ## 9. Names needing approval
+
+**V3a (2026-10-21):** `responses`, `responseValidation` (`"off" | "warn" |
+"error"`, default `"off"`, also a `BunRouter` and adapter option, route over
+router over adapter), `commonResponses` (router and adapter option), the spec
+key `content` and `ResponseValidationError` approved. V3a exports only
+`ResponseValidationError`; its other names (the spec and cookie-view types)
+are internal.
+
+**V3a (2026-10-21):** the types `ResponseSchemas`, `ResponseSpec`, `ResponseSpecObject`, `ResponseValidationMode` and `SetCookieView` are exported; a `write()`-opened stream's gate and a media-level `null` move to V3b; `commonResponses` merges per status and part, like `mergeContracts`.
 
 **V2 (2026-10-21):** `ContractEntry.implicit` approved; a declared part beats an implicit one in `mergeContracts`, silently; `TypedRouteHandler` gains a trailing `TRes` now, for V3a.
 

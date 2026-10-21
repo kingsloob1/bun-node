@@ -103,6 +103,11 @@ export interface ValidationShape {
   cookies?: unknown;
   /** Parsed `req.signedCookies`, when the validator declared a signedCookies schema. */
   signedCookies?: unknown;
+  /**
+   * The declared responses, status to what a handler may send for it (types
+   * the handler's `res`); never on `req.valid`.
+   */
+  responses?: unknown;
 }
 
 /** A shape contributing nothing — the default for a non-validator position. */
@@ -155,8 +160,22 @@ export type ResolveSignedCookies<S> = S extends { signedCookies: infer C }
  * @internal
  */
 export type ResolveValid<S> = {
-  [K in keyof S as K extends keyof ValidationShape ? K : never]: S[K];
+  [
+    K in keyof S as K extends Exclude<keyof ValidationShape, "responses">
+      ? K
+      : never
+  ]: S[K];
 };
+
+/**
+ * The responses a shape declares, which the handler's `res` is held to, or
+ * `undefined` (unconstrained). Internal: its name is not approved.
+ *
+ * @internal
+ */
+export type ResolveResponses<S> = S extends { responses: infer M }
+  ? M
+  : undefined;
 
 /**
  * The request a typed handler receives: params, query, body, cookies, signed
@@ -204,7 +223,7 @@ export type ResolvedHandler<TPath extends string, S> = TypedRouteHandler<
   ResolveQuery<S>,
   ResolveBody<S>,
   unknown,
-  BunResponse,
+  BunResponse<unknown, ResolveResponses<S>>,
   ResolvedRequest<ResolveParams<TPath, S>, S>
 >;
 
@@ -261,7 +280,7 @@ export type MountedHandler<
   ResolveQuery<MergeShape<TMountShape, TShape>>,
   ResolveBody<MergeShape<TMountShape, TShape>>,
   unknown,
-  BunResponse,
+  BunResponse<unknown, ResolveResponses<MergeShape<TMountShape, TShape>>>,
   ResolvedRequest<
     ResolveHostedParams<`${TMountPath}${TPath}`, TShape, THost>,
     MergeShape<TMountShape, TShape>

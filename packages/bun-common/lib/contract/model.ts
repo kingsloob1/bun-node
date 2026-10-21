@@ -23,8 +23,12 @@ export type Schema = StandardSchemaV1;
 
 /**
  * One schema per media type, as OpenAPI's `content` keys a body
- * (`"application/json"`, `"text/plain"`). Keys are bare media types; at
- * runtime a message's media type matches without its parameters and case.
+ * (`"application/json"`, `"text/plain"`). At runtime a message's media type
+ * matches a key case-insensitively with parameters stripped on both sides (a
+ * key's own parameters are kept for documents), and `type/*` and `*\/*` keys
+ * match too, the most specific key winning: an exact `type/subtype`, then
+ * `type/*`, then `*\/*`. A key that is not a media type, or two keys that are
+ * the same once bare and lower-cased, are refused when declared.
  */
 export interface MediaMap {
   /** The schema for a body sent as this media type. */
