@@ -56,7 +56,8 @@ command.
 | HTTP completeness: cookies, typed headers, responses of every body kind (§4.3, §4.4) | spiked as a patch on a copy of bun-common: [`evidence/http-complete/`](evidence/http-complete/README.md), H1–H52 at runtime, 18 type controls shown to fire, cost per body kind |
 | NestJS (§4.5) | designed with the Nest agent (bun-node-15); waits on nestjs-12-parity PR-2, PR-3, PR-5, PR-6a and PR-6c (§6); bun-node-15 reviewed §4.5 with a probe on Nest 11 and 12 (`evidence/nest-interceptor/`) |
 | bun-jobs data, results and flows (§4.8) | designed with the Jobs & Telemetry agent (bun-node-e9), from its survey of the code; e9 builds it |
-| **V4**, bun-jobs alignment (§4.8.5, §4.12 M5 and m11) | **built 2026-10-21, PR pending** (branch `feat/bun-validate-v4-jobs-alignment`, bun-jobs). `s` carries `~standard.jsonSchema` (`draft-2020-12` and `draft-07`; any other target throws), its input built through the documents' `toJsonSchema`, so `s.documented` keywords and named `$defs` are included; a defaulted key is optional on input and required in output, in the types too. `validateResponses` takes `"off" \| "warn" \| "error"` (`true` is `"warn"`), checked with `validateStandard` and refused with `ResponseValidationError`, rather than through bun-common's gate (the API's `default` problem response has no place there, m8). Every route's terminal layer carries its full contract through `forwardContract` (87 of 87 routes, tested against the OpenAPI document). Of the issue-flattening copies, `define.ts`'s adopted `validateStandard`; `remote/schemas.ts` and `provider/configure.ts` keep theirs, as the scrub was then broader than the issue's path |
+| **V4**, bun-jobs alignment (§4.8.5, §4.12 M5 and m11) | **merged 2026-10-21**, #502 (bun-jobs; examples beside it, #504). `s` carries `~standard.jsonSchema` (`draft-2020-12` and `draft-07`; any other target throws), its input built through the documents' `toJsonSchema`, so `s.documented` keywords and named `$defs` are included; a defaulted key is optional on input and required in output, in the types too. `validateResponses` takes `"off" \| "warn" \| "error"` (`true` is `"warn"`), checked with `validateStandard` and refused with `ResponseValidationError`, rather than through bun-common's gate (the API's `default` problem response has no place there, m8). Every route's terminal layer carries its full contract through `forwardContract` (87 of 87 routes, tested against the OpenAPI document). Of the issue-flattening copies, `define.ts`'s adopted `validateStandard`; `remote/schemas.ts` and `provider/configure.ts` keep theirs, as the scrub was then broader than the issue's path |
+| **V5a**, job data and results (§4.8.1–§4.8.4, flows excepted) | **built 2026-10-21, PR pending** (branch `feat/bun-validate-v5a-job-data`, bun-jobs); Q-J1–Q-J3 answered and its names approved the same day |
 | OpenAPI, AsyncAPI, typed client ([`api-docs-generation/`](../api-docs-generation/README.md) "AD", [`typed-client/`](../typed-client/README.md) "TC") | plan only; §4.11 says what they read from this plan's runtime metadata; reviewed against TC by bun-node-99, and its findings are requirements of the PRs they name (§4.12) |
 | Validate-on-read for caches ([`bun-cache/`](../bun-cache/README.md), "BC" §3.13) | plan only; uses this plan's core |
 
@@ -2397,9 +2398,27 @@ session; Q-H25–Q-H31 came from the answer to Q-H18.
   given the parsed value? **Recommended: yes to all three** (the first
   version's Q12, refined with e9).
 
+**Q-J1–Q-J3 were answered on 2026-10-21, each as recommended** (the user's
+decision): store the input, no `storeOutput`; isolated targets get the
+`jsonClone`d output, a non-cloneable one unrecoverable; checked at enqueue and
+at processing by default, `dataValidation: { enqueue: "error", process:
+"error" }`, `resultValidation: "off"`.
+
 ---
 
 ## 9. Names needing approval
+
+**bun-jobs (2026-10-21):** `schema: { data, result }`, `dataValidation`
+(`{ enqueue, process }`, each `"error" | "warn" | "off"`), `resultValidation`,
+`JobDataValidationError` and `JobMapFromSchemas` approved (the user's
+decision), for V5a.
+Approved the same day, also for V5a: the error code `"JOB_DATA_VALIDATION"`;
+the fields `definition.schema`, `definition.dataValidation`,
+`definition.resultValidation` and `JobHooks.checkData`; and the types
+`JobSchema`, `JobDataValidation`, `JobValidationOptions`,
+`QueueValidationOptions`, `WorkerValidationOptions`, `ProducerJobSchema`,
+`ProcessorJobSchema`, `SchemaData`, `SchemaResult` and `TypedDefinitionSchema`,
+exported from their modules, not from the package root.
 
 **V3a (2026-10-21):** `responses`, `responseValidation` (`"off" | "warn" |
 "error"`, default `"off"`, also a `BunRouter` and adapter option, route over
@@ -2472,7 +2491,7 @@ The rest stay internal. **V2's names were approved on 2026-10-21**: the
 | `ValidationIssue.variant`, `ContractEntry.variant`, `ContractDescription.sides.outbound.variants` (V3c; Q-H19, Q-H21) | fields | bun-common (core) |
 | `ResponseValidationError` | error class | bun-common |
 | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `StandardValidationModule`, `ValidationExceptionFilter`, `ResponseValidationInterceptor`, `WsValidationFilter`, `@Validated(part)`, `reply()` | pipes, class factory, module, filters, interceptor, decorator, helper | bun-nest root |
-| `schema: { data, result }`, `dataValidation` (`{ enqueue, process }`), `resultValidation`, `JobDataValidationError`, `JobMapFromSchemas` | definition and queue options, error, type | bun-jobs |
+| `schema: { data, result }`, `dataValidation` (`{ enqueue, process }`), `resultValidation`, `JobDataValidationError`, `JobMapFromSchemas` (**approved 2026-10-21**) | definition and queue options, error, type | bun-jobs |
 | `messageValidation`, `closeOnInvalid` | `defineChannel` options (TC's function) | bun-common |
 | `redactPaths`, `messages: "generic"` | guard options (if Q-C2, Q-C3); `validate()` options too (2026-10-21) | bun-common |
 | `validateOnWrite`, `CacheSchemaFrom` | option, type | bun-cache |

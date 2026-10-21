@@ -1,4 +1,8 @@
-import type { SerializedError } from "@kingsleyweb/bun-common";
+import type {
+  Policy,
+  SerializedError,
+  StandardOutcome,
+} from "@kingsleyweb/bun-common";
 import type {
   ChildOutcome,
   ChildRecordResult,
@@ -31,7 +35,12 @@ import type {
   WorkerTargetInfo,
 } from "../shared/workers";
 import type { SummonClaimExit } from "../summon/claim";
-import type { JobEvent } from "./Job";
+import type { JobEvent, JobHooks } from "./Job";
+import type {
+  JobCheck,
+  JobCheckLookup,
+  WorkerValidationOptions,
+} from "./jobSchema";
 import type { Reservation } from "./limits";
 import type {
   BunQueueWorkerEvents,
@@ -79,6 +88,7 @@ import { TypedEmitterBase } from "../shared/emitter";
 import {
   ChildFailedError,
   ConfigError,
+  JobDataValidationError,
   JobTimeoutError,
   LockLostError,
   UnrecoverableJobError,
@@ -106,6 +116,14 @@ import { addDeadLetter, selfLetterError } from "./deadLetter";
 import { noteScheduled, scheduleEpoch } from "./delayedHints";
 import { Job } from "./Job";
 import { JobDefaultsCache, overlayJobDefaults } from "./jobDefaults";
+import {
+  checkJobDataWrite,
+  compileJobCheck,
+  JOB_CHECKS,
+  ownPolicies,
+  runJobSchema,
+  warnJobIssues,
+} from "./jobSchema";
 import { QueueLimiter } from "./limits";
 import { displayRepeatKey, shortenJobId } from "./options";
 import { nextOccurrence, repeatJobId } from "./repeat";
@@ -599,6 +617,37 @@ function processRss(): number | undefined {
   }
 }
 
+/**
+ * `work`, or the abort reason of `signal` if it aborts first: how a job's
+ * asynchronous schema check gives up with its attempt (a timeout, a lost
+ * lock, a close) rather than holding the slot until it settles, which it may
+ * never do. Only ever called with a check that returned a promise.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    // A late settlement of `work` is not this caller's to hear.
+    work.catch(() => undefined);
+    return Promise.reject(signal.reason as Error);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason as Error);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- rejects with the check's own reason, unchanged
+        reject(error);
+      },
+    );
+  });
+}
+
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
 
@@ -722,6 +771,43 @@ export class BunQueueWorker<
    * `#process()` calls directly.
    */
   readonly #target: WorkerTargetExecutor | undefined;
+  /**
+   * The kind of target attempts run on, when it is not this thread
+   * (`"worker-thread"`, `"child-process"`, `"container"`, `"custom"`): such a
+   * target is sent the job's record, so a schema's parsed data reaches it
+   * through a `jsonClone`. `undefined` for in-process, which is handed the
+   * parsed value as it is.
+   */
+  readonly #isolatedKind: string | undefined;
+  /**
+   * The creating `BunJobs` context's per-name schema checks, set on a worker
+   * of its registry queue once a definition has a schema; `undefined`
+   * otherwise, the usual case. A defined name's check wins over
+   * {@link #ownCheck}. Internal; see {@link JOB_CHECKS}.
+   */
+  [JOB_CHECKS]: JobCheckLookup | undefined;
+  /** This worker's own `schema` (with its policies), or `undefined` for none. */
+  readonly #ownCheck: JobCheck | undefined;
+  /** The policies under every check here: `dataValidation` and `resultValidation`, with their defaults. */
+  readonly #policies: { enqueue: Policy; process: Policy; result: Policy };
+  /**
+   * The data check the processor's view of a job runs before
+   * `updateData()` or `update()`; built once, so a view costs one property.
+   */
+  readonly #checkWrite = (
+    name: string,
+    data: unknown,
+    jobId: string,
+  ): void | Promise<void> =>
+    checkJobDataWrite(
+      this.#checkFor(name),
+      this.#policies.enqueue,
+      name,
+      this.queueName,
+      data,
+      this.#logger,
+      { jobId },
+    );
   /**
    * Aborted by `close()`: ends a start-up check still running in `run()` —
    * a container target's probe, which may be pulling an image — so a close
@@ -1134,7 +1220,13 @@ export class BunQueueWorker<
      * child process.
      */
     processor: JobProcessor<TData, TResult> | string | URL,
-    options: BunQueueWorkerOptions,
+    /**
+     * The worker's options, and the schemas it checks each job and result
+     * with (`schema`, `dataValidation`, `resultValidation`); `TData` and
+     * `TResult` are inferred from `schema` when it is given and the type
+     * arguments are not.
+     */
+    options: BunQueueWorkerOptions & WorkerValidationOptions<TData, TResult>,
   ) {
     super();
 
@@ -1143,6 +1235,15 @@ export class BunQueueWorker<
     // Validated here, before the worker has any side effects; the executor
     // is built below, once the id and logger a factory is handed exist.
     const target = resolveWorkerTarget(options, processor);
+    this.#ownCheck = compileJobCheck(
+      options,
+      `worker of queue "${this.queueName}"`,
+    );
+    this.#policies = ownPolicies(
+      options,
+      `worker of queue "${this.queueName}"`,
+    );
+    this.#isolatedKind = target.kind === "in-process" ? undefined : target.kind;
     this.#processor = typeof processor === "function" ? processor : undefined;
     this.processStartedAt = Math.round(performance.timeOrigin);
     this.service =
@@ -2825,13 +2926,23 @@ export class BunQueueWorker<
      * must not land on top of it.
      */
     const writes = new AttemptWrites(controller.signal);
+    // The job's schemas, when it has any: one property read, and nothing else,
+    // for a worker with none.
+    const check = this.#checkFor(record.name);
 
     // The progress hook is how `updateProgress` reaches an emitter: `Job` has
     // none of its own, and the worker is the only thing that sees the call.
     // `onFail` is what makes this view the job's owner. `lockDuration` is read
     // per call, so a bare `extendLock()` / `touch()` renews for what this
     // worker's heartbeat does now, even after a configuration change.
-    const job = new Job<TData, TResult>(this.driver, this.ref, record, true, {
+    /**
+     * The processor's view of the job. Assigned just below, once its hooks
+     * exist (they report progress on it); replaced by a view over the
+     * schema's parsed data when the job's data schema passes. The stored
+     * record never changes.
+     */
+    let job: Job<TData, TResult>;
+    const hooks: JobHooks = {
       writes,
       lockDuration: () => this.#options.lockDuration,
       onProgress: (progress) => {
@@ -2849,7 +2960,9 @@ export class BunQueueWorker<
         return true;
       },
       onEvent: async (event) => await this.#onJobEvent(event),
-    });
+      checkData: this.#checkWrite,
+    };
+    job = new Job<TData, TResult>(this.driver, this.ref, record, true, hooks);
     this.#aborts.set(attempt, controller);
 
     const heartbeat = setInterval(() => {
@@ -2884,13 +2997,63 @@ export class BunQueueWorker<
     void this.#publish("active", { id: record.id });
 
     try {
-      const running = this.#target
-        ? this.#target.run({
-            job,
-            record,
-            context,
-          })
-        : Promise.resolve(this.#processor!(job, context));
+      // With schemas, the data check, the run and the result check are one
+      // piece of work under the one deadline below, and each check gives up
+      // when the attempt's signal aborts (a timeout, a lost lock, a close),
+      // as the run is asked to. Without, the run alone, as it always was.
+      const running =
+        check === undefined
+          ? this.#target
+            ? this.#target.run({
+                job,
+                record,
+                context,
+              })
+            : Promise.resolve(this.#processor!(job, context))
+          : (async (): Promise<unknown> => {
+              /** The record an isolated target is sent: the stored one, unless the data schema parsed it. */
+              let sent = record;
+              if (check.data !== undefined) {
+                // Before the processor, once, whatever runs it: in-process it
+                // gets the schema's output; an isolated target its
+                // `jsonClone`, in the copy sent. Every attempt re-checks from
+                // the stored input.
+                const preparing = this.#prepareData(check, record);
+                const prepared =
+                  preparing instanceof Promise
+                    ? await untilAborted(preparing, controller.signal)
+                    : preparing;
+                if (prepared !== record) {
+                  job = new Job<TData, TResult>(
+                    this.driver,
+                    this.ref,
+                    prepared,
+                    true,
+                    hooks,
+                  );
+                  if (this.#isolatedKind !== undefined) {
+                    sent = prepared;
+                  }
+                }
+              }
+
+              const result = await (this.#target
+                ? this.#target.run({ job, record: sent, context })
+                : this.#processor!(job, context));
+
+              // The result, against its schema, before anything records it:
+              // under "error" a refusal rejects here, into the failure path
+              // below, so no `completed` is emitted or published and nothing
+              // is stored or delivered to a parent. A result arriving after
+              // the deadline is not checked: the attempt has already failed.
+              if (check.result !== undefined && !controller.signal.aborted) {
+                const checking = this.#checkResult(check, record, result);
+                if (checking !== undefined) {
+                  await untilAborted(checking, controller.signal);
+                }
+              }
+              return result;
+            })();
       // No timeout, no wrapper around it.
       const result =
         record.opts.timeout > 0
@@ -2953,6 +3116,129 @@ export class BunQueueWorker<
         this.#limiter?.release(record.name);
       }
     }
+  }
+
+  /**
+   * The schema check that applies to jobs of `name` here: a defined name's
+   * (through {@link JOB_CHECKS}), else this worker's own, else `undefined`.
+   */
+  #checkFor(name: string): JobCheck | undefined {
+    const lookup = this[JOB_CHECKS];
+    return (lookup === undefined ? undefined : lookup(name)) ?? this.#ownCheck;
+  }
+
+  /**
+   * Checks a claimed job's stored data with its data schema, under the
+   * process policy, and answers with the record the attempt is handed: a copy
+   * carrying the schema's output (its `jsonClone` for an isolated target), or
+   * the stored record itself under `"off"` or a `"warn"` that failed.
+   *
+   * Under `"error"` a mismatch throws an {@link UnrecoverableJobError}, so the
+   * job goes straight to `dead`: deploy skew (data enqueued under one schema,
+   * processed under another) is not cured by a retry. So does an output an
+   * isolated target cannot be sent (a `BigInt`, a cycle): the stored input is
+   * never sent in its place. Neither error carries the data.
+   */
+  #prepareData(
+    check: JobCheck,
+    record: JobRecord,
+  ): JobRecord | Promise<JobRecord> {
+    const policy = check.process ?? this.#policies.process;
+    if (policy === "off") {
+      return record;
+    }
+    const where = {
+      jobId: record.id,
+      ...(check.definition === undefined
+        ? {}
+        : { definition: check.definition }),
+    };
+    const settle = (outcome: StandardOutcome<unknown>): JobRecord => {
+      if (!outcome.ok) {
+        if (policy === "warn") {
+          warnJobIssues(
+            this.#logger,
+            'Job data did not pass its schema; the processor gets the stored data (dataValidation.process is "warn")',
+            { name: record.name, ...where },
+            outcome.issues,
+          );
+          return record;
+        }
+        const refused = new JobDataValidationError(
+          record.name,
+          this.queueName,
+          "data",
+          outcome.issues,
+          where,
+        );
+        throw new UnrecoverableJobError(
+          `Job ${record.id} cannot run: ${refused.message}`,
+          { name: record.name, ...where, issues: refused.context.issues },
+          { cause: refused },
+        );
+      }
+      let data = outcome.value;
+      if (this.#isolatedKind !== undefined) {
+        try {
+          data = jsonClone(outcome.value);
+        } catch (error) {
+          throw new UnrecoverableJobError(
+            `Job ${record.id} ("${record.name}") cannot run: its data schema's output cannot be sent to its ${this.#isolatedKind} target as JSON`,
+            { name: record.name, ...where, target: this.#isolatedKind },
+            { cause: error },
+          );
+        }
+      }
+      return { ...record, data };
+    };
+    const outcome = runJobSchema(check.data!, record.data, "data");
+    return outcome instanceof Promise ? outcome.then(settle) : settle(outcome);
+  }
+
+  /**
+   * Checks what a processor answered with its result schema, under the
+   * result policy: `undefined` when there is nothing to check; under
+   * `"error"` a mismatch throws a {@link JobDataValidationError} (target
+   * `"result"`), which fails the attempt like any thrown error, retryably;
+   * under `"warn"` one warning is logged and the job completes.
+   */
+  #checkResult(
+    check: JobCheck,
+    record: JobRecord,
+    result: unknown,
+  ): void | Promise<void> {
+    const policy = check.resultPolicy ?? this.#policies.result;
+    if (policy === "off") {
+      return undefined;
+    }
+    const where = {
+      jobId: record.id,
+      ...(check.definition === undefined
+        ? {}
+        : { definition: check.definition }),
+    };
+    const settle = (outcome: StandardOutcome<unknown>): void => {
+      if (outcome.ok) {
+        return;
+      }
+      if (policy === "error") {
+        throw new JobDataValidationError(
+          record.name,
+          this.queueName,
+          "result",
+          outcome.issues,
+          where,
+        );
+      }
+      warnJobIssues(
+        this.#logger,
+        'Job result did not pass its schema; recorded anyway (resultValidation is "warn")',
+        { name: record.name, ...where },
+        outcome.issues,
+      );
+    };
+    const outcome = runJobSchema(check.result!, result, "result");
+    return outcome instanceof Promise ? outcome.then(settle) : settle(outcome);
   }
 
   /**

@@ -84,6 +84,7 @@ reference.
   - [BunJobs options](#bunjobs-options)
   - [Defining and adding jobs](#defining-and-adding-jobs)
   - [Typed jobs](#typed-jobs)
+  - [Validating job data and results](#validating-job-data-and-results)
   - [Builder methods](#builder-methods)
   - [Sending a job to another queue](#sending-a-job-to-another-queue)
   - [Saved drafts](#saved-drafts)
@@ -1592,6 +1593,159 @@ any name and any `registryQueue`, still takes `TData` from `create<TData>()` or
 from the payload passed in, and adds no new errors. Runtime behaviour is
 identical either way: a name that was never defined throws `ConfigError`
 whether or not the types would also have caught it.
+
+### Validating job data and results
+
+A definition, a queue or a worker can check job data, and results, with any
+[Standard Schema](https://standardschema.dev) — zod, valibot, arktype, yup,
+or bun-jobs' own `s`:
+
+```ts
+import { z } from "zod";
+
+jobs.define("sendEmail", async (job) => send(job.data.to), {
+  attempts: 5,
+  schema: {
+    data: z.object({ to: z.email(), retries: z.coerce.number().default(3) }),
+    result: z.object({ id: z.string() }),
+  },
+  // the defaults, written out:
+  dataValidation: { enqueue: "error", process: "error" },
+  resultValidation: "off",
+});
+```
+
+**Where data is checked.** At enqueue, in the queue, before anything is
+written: `add`, `addBulk` (every entry, before the first write: one bad entry
+rejects the whole call), `now`, a builder's `start()`, a draft's `save()`, a
+repeat series when it is created, a debounce or throttle add, and an update
+(`queue.update`, `job.updateData`, `job.update`). A failure rejects with
+`JobDataValidationError` (`code` `JOB_DATA_VALIDATION`, `target: "data"`, the
+`issues`, and `context.index` for a bulk entry) and nothing is written: a
+debounced job keeps its data, an updated job is unchanged. The management
+API's add and update routes answer it with 400 `VALIDATION`, its issues at
+body paths (`data.to`). A definition's schema applies on the registry queue;
+any other queue checks with its own `schema` option.
+
+Then again **before the handler**, once per attempt, in the worker, whatever
+runs the handler: in-process, a `Worker`, a child process, a container or a
+custom target. A job whose stored data fails there goes straight to `dead`
+with an `UnrecoverableJobError` naming the job, the definition and the issues
+— never the data — because no retry cures it.
+
+**Store the input, hand the handler the output.** What is stored is what the
+producer sent (its JSON form), never the schema's output; the worker runs the
+schema again on the stored input and hands the handler the output: above,
+`job.data.retries` is a `number` with `3` filled in. So **a schema must accept
+its own input** every time it runs, on every attempt, retries included. A job
+added with no data is stored, and read back by every backend, as `null`, so
+it is checked as `null`, its stored form, at enqueue too. So
+`z.object(…).optional()` refuses it: for a job that may carry no data use
+`.nullable()` or `.nullish()` (or `z.null()` for one that never does). A `Date` is checked as the string JSON makes of
+it, so `z.coerce.date()` accepts it where `z.date()` refuses it at enqueue.
+
+**An isolated target gets the output through JSON.** A `Worker`, a child
+process, a container or a custom target is sent the job's record, so the
+output replaces `data` in the copy sent, through a `jsonClone`, and never in
+the stored record. A coercion arrives intact (`"7"` becomes `7`); a
+transform producing a `Date` or a `Map` arrives as JSON makes it (a `Date` is
+its ISO string), so the in-process handler and an isolated one can see
+different values for the same job. An output JSON cannot carry (a `BigInt`, a
+cycle) fails the attempt as unrecoverable, naming the definition and the
+target; the stored input is never sent in its place.
+
+**Why both checks, each with its own policy: deploy skew.** A job enqueued
+under one version of a schema may be processed by a worker running another,
+so the worker checks what it is about to run whatever the producer checked.
+Each site has its own policy, `"error"`, `"warn"` or `"off"`:
+
+| Site | `"error"` (default) | `"warn"` | `"off"` |
+|---|---|---|---|
+| `dataValidation.enqueue` | reject; nothing written | written; one warning, no values | no check |
+| `dataValidation.process` | `UnrecoverableJobError`, straight to `dead` | the handler runs with the **stored input**; one warning | no check; the handler gets the stored input |
+
+A definition's policy wins over its queue's or worker's, which win over the
+defaults. Under `"warn"` and `"off"` the handler may be handed data its type
+says was parsed when it was not.
+
+**Schemas live in code.** A worker checks only if **its own** definition (or
+its own `schema` option) has the schema: a worker in another process, thread,
+host or summoned unit that defines the name without one checks nothing, and a
+bare `BunQueueWorker` with no schema checks nothing. Neither is an error. In
+a `BunJobs` context the registry worker `start()` builds, and any
+`jobs.worker()` on the registry queue (a processor file on a `Worker` or child
+process, for example), check each job against its own name's definition.
+
+**Results** are checked under `resultValidation`, `"off"` by default:
+
+- `"error"`: a refused result fails the attempt — retryable like any thrown
+  error, with a `failed` event and a `JobDataValidationError` (`target:
+  "result"`). No `completed` event fires, locally or published, and nothing is
+  stored or delivered to a flow's parent.
+- `"warn"`: the job completes exactly as it would with no check, plus one
+  warning.
+- What is stored is what the handler returned, never a transforming result
+  schema's output. An async result schema delays the completion until it
+  settles.
+
+**Both checks run under the attempt's deadline.** The data check, the handler
+and the result check share the job's `timeout`, and an asynchronous check gives
+up when the attempt's signal aborts (the timeout, a lost lock, a `close()`).
+A check that outlives the timeout fails the attempt exactly as a slow handler
+does (`JobTimeoutError`, retried while attempts remain): a timeout in the data
+check means the handler never runs, and one in the result check means the job
+is not completed.
+
+**Types.** A schema types its definition: the handler's `job.data` is the data
+schema's output, and it must answer with the result schema's input.
+`JobMapFromSchemas` builds a whole [job map](#typed-jobs) from a record of
+schemas, with each entry's `data` the data schema's output and its `result`
+the result schema's input. Because it types `data` by the **output**, a field
+with a default is required when adding through a typed registry, though the
+schema would fill it in; a bare `BunQueue` given `{ schema }` infers what `add`
+takes from the schema's input instead. Typing a registry's producers by the
+input is a follow-up (an input slot in `JobMap`).
+
+```ts
+const schemas = {
+  sendEmail: { data: z.object({ to: z.email() }), result: z.object({ id: z.string() }) },
+};
+const jobs = new BunJobs<JobMapFromSchemas<typeof schemas>>({ namespace, driver });
+jobs.define("sendEmail", async (job) => ({ id: await send(job.data.to) }), {
+  schema: schemas.sendEmail,
+});
+```
+
+A bare `BunQueue` or `BunQueueWorker` takes `schema` in its own options, and
+infers its types from it: a queue's `add` takes the data schema's input, a
+worker's processor gets its output.
+
+```ts
+const Email = z.object({ to: z.email() });
+const mail = new BunQueue("mail", { namespace, driver, schema: { data: Email } });
+const worker = new BunQueueWorker("mail", async (job) => send(job.data.to), {
+  namespace,
+  driver,
+  schema: { data: Email },
+});
+```
+
+**What `define()` keeps.** `schema`, `dataValidation` and `resultValidation`
+are lifted out of the options into `definition.schema` (and its two
+siblings), so `definition.options` stays plain data: it is what
+`GET /definitions` serves and what every job of the name inherits, and a
+vendor schema in it would leak into both. A definition with a schema carries
+a jobs contract, `inbound: { data }` and `outbound: { result }`, read with
+bun-common's `describeContract(getContract(definition))`.
+
+**No schema, no cost.** A queue or worker with no schema runs none of this:
+its add and its attempt read one property and go on, with no extra `await`
+and no allocation per job. A check never carries the value that failed: the
+issues come from bun-common's `validateStandard`, which scrubs a vendor's
+message that quotes it, and a warning logs only the job's name, queue, id
+and the issues.
+
+Example: [`03-job-registry/validating-job-data.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/validating-job-data.ts).
 
 ### Builder methods
 
@@ -8259,7 +8413,8 @@ so a caller can add to them but never overwrite them.
 | `LockUnavailableError` | `LOCK_UNAVAILABLE` | A lock is held elsewhere (`context.key`). |
 | `LockLostError` | `LOCK_LOST` | A lock expired or was taken mid-work. |
 | `JobTimeoutError` | `JOB_TIMEOUT` | A run or attempt outlived its timeout (`ms`). |
-| `UnrecoverableJobError` | `UNRECOVERABLE_JOB` | Thrown by your processor: the job goes to `dead` now. |
+| `UnrecoverableJobError` | `UNRECOVERABLE_JOB` | Thrown by your processor: the job goes to `dead` now. A worker raises one too when a job's stored data fails its [data schema](#validating-job-data-and-results) before the handler. |
+| `JobDataValidationError` | `JOB_DATA_VALIDATION` | A job's data failed its [schema](#validating-job-data-and-results) at enqueue or update (nothing was written), or a result failed it under `resultValidation: "error"` (the attempt fails). `target` is `"data"` or `"result"`; `issues` and `context` (`name`, `queue`, `issues`, and `jobId`, `index` or `definition` where they apply) never carry the value. |
 | `ChildFailedError` | `CHILD_FAILED` | A flow child failed for good and buried its parent (`child` as `queue:id`). |
 | `ChildExitError` | `CHILD_EXIT` | A child process exited without reporting a result (`exitCode`, `signalCode`). |
 | `OutputLimitError` | `OUTPUT_LIMIT` | A child wrote more to its piped stdout and stderr than its [`maxBuffer`](#hardening-a-child-process) allows (`maxBuffer`, `bytes`, and `killed`: whether it was still running to be killed). |
@@ -8415,6 +8570,7 @@ Each run uses its own namespace and purges it on exit.
 | | [`per-name-concurrency.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/per-name-concurrency.ts) | `define(..., { concurrency })` enforced across two service instances |
 | | [`jobs-create.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/jobs-create.ts) | `jobs.create()` drafts: setters, `save()`, saving once, `unique` across drafts, repeating and debounced drafts, a failed save corrected |
 | | [`process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/process-every.ts) | `processEvery` as an option and a method, against `start()`'s options, while paused; a worker's runtime `pollInterval` / `maxBlock` |
+| | [`validating-job-data.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/validating-job-data.ts) | `schema: { data, result }` (zod) on `define()`, a queue and a worker: bad adds rejected with nothing written, `addBulk` all or nothing, the handler given the parsed output and a `worker-thread` target its JSON copy, deploy skew to `dead`, `resultValidation`, the policies, and the API's 400 |
 | [`04-scheduling`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/04-scheduling) | [`repeatable-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/repeatable-jobs.ts) | `repeat`: intervals, six-field cron, `startAt` / `endAt`, `limit`, keys, `listRepeatables`, `removeRepeatable` |
 | | [`human-schedules.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/human-schedules.ts) | "tomorrow at 9am", "every 2 weeks starting next monday", windows in words |
 | | [`custom-date-parser.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/custom-date-parser.ts) | a `DateParser` that understands "payday" and "month end" |

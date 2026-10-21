@@ -14,6 +14,7 @@ import {
   ConfigError,
   DriverError,
   InvalidHandlerError,
+  JobDataValidationError,
   JobsClosedError,
   JobsError,
   JobTimeoutError,
@@ -299,7 +300,10 @@ function isValidationError(error: unknown): error is ValidationError {
  *   already checked with `normalizeLimits`, which throws `ConfigError` too for
  *   bad input — wrap the `setLimits` call alone.
  * - `"jobInput"`: a `SerializationError` or `ConfigError` from `add()`/`update()`
- *   describes the caller's payload (400, with its message), not a server fault.
+ *   describes the caller's payload (400, with its message), not a server fault;
+ *   a `JobDataValidationError` (the job's data failed its definition's or
+ *   queue's schema) is a 400 `VALIDATION` problem, its issues at body paths
+ *   (`data.to`). Its issues hold no received values.
  * - `"limitsInput"`: a `ConfigError` from `normalizeLimits()` describes the
  *   caller's limits (400, with its message).
  * - `"jobDefaults"`: a `ConfigError` from `queue.setJobDefaults()` or
@@ -338,6 +342,23 @@ export function mapCallSiteError(
   }
   if (site === "jobInput" && error instanceof SerializationError) {
     return new ApiError("SERIALIZATION", 400, error.message, { cause: error });
+  }
+  if (site === "jobInput" && error instanceof JobDataValidationError) {
+    // The body's `data` failed the job's schema. Reported where it sits in
+    // the request body, as the request validator reports its own issues.
+    return new ApiError(
+      "VALIDATION",
+      400,
+      `The job data did not match the schema of "${error.context.name}"`,
+      {
+        cause: error,
+        issues: error.issues.map((issue) => ({
+          target: "body",
+          path: issue.path === "" ? "data" : `data.${issue.path}`,
+          message: issue.message,
+        })),
+      },
+    );
   }
   if (
     (site === "jobInput" || site === "limitsInput" || site === "jobDefaults") &&
