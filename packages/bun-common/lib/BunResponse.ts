@@ -1176,7 +1176,8 @@ type ResListener<E extends ResEventName> = BunResponseEvents[E];
  * gate: `json` (a raw JSON value), `text` (a string, number or boolean),
  * `bytes`, `blob`, `native` (a passed-through `Response`), `redirect` and
  * `status` (a generated body), `file` (`sendFile`), `stream` (a piped stream,
- * `FormData`, `URLSearchParams`), or `empty`.
+ * `FormData`, `URLSearchParams`), `open` (a stream opened by `write()` or
+ * `flushHeaders()`), or `empty`.
  *
  * @internal
  */
@@ -1190,6 +1191,7 @@ export type ResponseCommitKind =
   | "status"
   | "file"
   | "stream"
+  | "open"
   | "empty";
 
 /**
@@ -1200,7 +1202,11 @@ export type ResponseCommitKind =
 export interface ResponseCommit {
   /** What produced the response. */
   kind: ResponseCommitKind;
-  /** The body as handed in (`getBody()`): the raw `json()` value, the text, the bytes, the `Blob`. */
+  /**
+   * The body as handed in (`getBody()`): the raw `json()` value, the text,
+   * the bytes, the `Blob`; `sendFile()`'s file (or its range); for `open`,
+   * the first `write()`'s chunk (`undefined` for `flushHeaders()`).
+   */
   body: unknown;
   /** The `Content-Type` in force, the implicit one Bun adds included; `undefined` for none. */
   contentType: string | undefined;
@@ -1209,10 +1215,35 @@ export interface ResponseCommit {
 }
 
 /**
+ * A streamed body's per-chunk check (plan §4.4.2's chunk gate), which a
+ * response gate hands back for a body declared `chunks()` or `sse()`. It is
+ * called once per chunk, in the order the chunks are sent, and once at the
+ * end; `undefined` sends the chunk (or ends the stream), an `Error` cuts the
+ * stream off (already logged), and a Promise holds that chunk, and every
+ * later one, until it settles.
+ *
+ * @internal
+ */
+export interface ResponseStreamCheck {
+  /**
+   * Checks the next chunk.
+   *
+   * @param chunk The chunk, as written or as the piped stream yields it.
+   */
+  chunk: (
+    chunk: BunResponseChunk,
+  ) => Error | undefined | Promise<Error | undefined>;
+  /** Checks what is left when the stream ends (an NDJSON line without its `\n`). */
+  end: () => Error | undefined | Promise<Error | undefined>;
+}
+
+/**
  * A response gate (`validate()`'s `responses`, plan §4.4.2): consulted once,
  * as the native `Response` is committed, before transforms, waiters and
- * `finish`. `undefined` sends it, an `Error` refuses it (it enters the
- * pipeline's error handlers), and a Promise holds it until it settles.
+ * `finish` (for a `write()` stream, as it opens). `undefined` sends it, an
+ * `Error` refuses it (it enters the pipeline's error handlers), a
+ * {@link ResponseStreamCheck} sends it and checks each chunk, and a Promise
+ * holds it until it settles.
  *
  * @internal
  */
@@ -1228,7 +1259,11 @@ export interface ResponseGate {
     res: BunResponse,
     response: Response,
     commit: ResponseCommit,
-  ) => Error | undefined | Promise<Error | undefined>;
+  ) =>
+    | Error
+    | ResponseStreamCheck
+    | undefined
+    | Promise<Error | ResponseStreamCheck | undefined>;
   /**
    * Told of a refusal the pipeline could not take (it had already ended):
    * the response is then answered `500` directly.
@@ -1258,6 +1293,22 @@ class ResponseGateSlot {
   done = false;
   /** Set while a commit waits for its verdict; another commit meanwhile is dropped. */
   held = false;
+  /** `sendFile()`'s file (or its range), for the next commit. */
+  file: Blob | undefined = undefined;
+  /** The open stream's per-chunk check (`chunks()`, `sse()`); `undefined` when its chunks are not checked. */
+  stream: ResponseStreamCheck | undefined = undefined;
+  /**
+   * The verdicts still to come for a stream's opening and its writes, in
+   * order; each resolves `false` once the stream was refused or cut off.
+   * `undefined` when none is pending.
+   */
+  chain: Promise<boolean> | undefined = undefined;
+  /** Set while the gate governs the stream's writes: its opening awaits a verdict, or its chunks are checked. */
+  streaming = false;
+  /** Set once `end()` was called on a governed stream: a later write is after the end. */
+  ending = false;
+  /** Set when a stream's opening was refused: the producer's later writes are dropped until an error handler runs. */
+  refused = false;
 
   /** @param gate The gate a validator installed. */
   constructor(gate: ResponseGate) {
@@ -1283,6 +1334,70 @@ const REFUSED_RESPONSE_HEADERS = [
   "location",
   "set-cookie",
 ] as const;
+
+/** `error` as an `Error` (a thrown non-error wrapped). */
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+/**
+ * `response` with its body piped through `check` (plan §4.4.3): each chunk is
+ * sent only once it passes, and a chunk that fails errors the stream (the
+ * client sees it cut off), a timer later so a chunk already passed reaches
+ * the socket first (see `#pullDestroyed`). A response with no body is
+ * returned as it is.
+ */
+function checkedStream(
+  response: Response,
+  check: ResponseStreamCheck,
+): Response {
+  const body = response.body;
+  if (body === null) {
+    return response;
+  }
+  const cut = async (
+    controller: TransformStreamDefaultController<BunResponseChunk>,
+    error: Error,
+  ): Promise<void> => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    controller.error(error);
+  };
+  const checked = body.pipeThrough(
+    new TransformStream<BunResponseChunk, BunResponseChunk>({
+      transform(chunk, controller) {
+        const verdict = check.chunk(chunk);
+        if (verdict instanceof Promise) {
+          return verdict.then(
+            (settled) =>
+              settled === undefined
+                ? controller.enqueue(chunk)
+                : cut(controller, settled),
+            async (error: unknown) => cut(controller, toError(error)),
+          );
+        }
+        if (verdict !== undefined) {
+          return cut(controller, verdict);
+        }
+        controller.enqueue(chunk);
+        return undefined;
+      },
+      flush(controller) {
+        const verdict = check.end();
+        if (verdict instanceof Promise) {
+          return verdict.then((settled) =>
+            settled === undefined ? undefined : cut(controller, settled),
+          );
+        }
+        return verdict === undefined ? undefined : cut(controller, verdict);
+      },
+    }),
+  );
+  return new Response(checked, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
 
 /** The class's private gate operations, handed to the module functions below by a static block. */
 interface GateAccess {
@@ -2011,6 +2126,9 @@ export class BunResponse<
    * stream, it was asked to end. Writing after that is an error.
    */
   get #ended(): boolean {
+    if (this.#state?.gate?.ending === true) {
+      return true;
+    }
     return this._isLongLived
       ? this.#streamEnding
       : this.#nativeResponse !== undefined;
@@ -2137,16 +2255,20 @@ export class BunResponse<
     if (holder !== undefined) {
       // The one commit point every producer passes through (plan §4.4.2):
       // a validator's gate decides here, before transforms, waiters and
-      // `finish`. A long-lived stream's opening is V3b's.
+      // `finish`. A `write()` stream's opening is decided before it is
+      // built (`#openGated`), so a long-lived response passes.
       const slot = holder.gate;
       if (
         slot !== undefined &&
         !slot.done &&
         value !== undefined &&
-        !holder._isLongLived &&
-        (slot.held || this.#gateHolds(slot, value))
+        !holder._isLongLived
       ) {
-        return;
+        const passed = slot.held ? undefined : this.#gateCommit(slot, value);
+        if (passed === undefined) {
+          return;
+        }
+        value = passed;
       }
       const transforms = holder.responseTransforms;
       if (value && transforms !== undefined) {
@@ -2249,52 +2371,206 @@ export class BunResponse<
   }
 
   /**
-   * Consults the gate on a commit: `false` to commit `value` now, `true`
-   * when the gate held it (a verdict to come) or refused it.
+   * Consults the gate on a commit: the `Response` to commit now (`value`, or
+   * a piped stream wrapped so its chunks are checked), or `undefined` when
+   * the gate held it (a verdict to come) or refused it.
    */
-  #gateHolds(slot: ResponseGateSlot, value: Response): boolean {
+  #gateCommit(slot: ResponseGateSlot, value: Response): Response | undefined {
     const kind = slot.kind ?? this.#commitKind(this.#sentBody);
     slot.kind = undefined;
+    const file = slot.file;
+    slot.file = undefined;
     const contentType =
       value.headers.get("content-type") ??
       this.#implicitContentType ??
       (kind === "text" ? TEXT_CONTENT_TYPE : undefined);
     const verdict = slot.gate.commit(this.#self, value, {
       kind,
-      body: kind === "native" ? value : this.#sentBody,
+      body: kind === "native" ? value : kind === "file" ? file : this.#sentBody,
       contentType,
       reportOnly: slot.reportOnly,
     });
     if (verdict === undefined) {
       slot.done = true;
-      return false;
+      return value;
     }
     if (verdict instanceof Promise) {
       // Held: nothing is handed on until the verdict settles. `headersSent`
       // stays false meanwhile, so the pipeline waits on this layer.
       slot.held = true;
       verdict.then(
-        (refusal) => {
+        (settled) => {
           slot.held = false;
-          if (refusal === undefined) {
-            slot.done = true;
-            this.response = value;
+          if (settled instanceof Error) {
+            this.#refuse(slot, settled);
           } else {
-            this.#refuse(slot, refusal);
+            slot.done = true;
+            this.response =
+              settled === undefined ? value : checkedStream(value, settled);
           }
         },
         (error: unknown) => {
           slot.held = false;
-          this.#refuse(
-            slot,
-            error instanceof Error ? error : new Error(String(error)),
-          );
+          this.#refuse(slot, toError(error));
         },
+      );
+      return undefined;
+    }
+    if (verdict instanceof Error) {
+      this.#refuse(slot, verdict);
+      return undefined;
+    }
+    slot.done = true;
+    return checkedStream(value, verdict);
+  }
+
+  /**
+   * Opens a `write()`/`flushHeaders()` stream under a gate (plan §4.4.3,
+   * H38): its status, headers and media type, and the first `write()`'s
+   * chunk, are checked before anything is built, so a refusal is still a
+   * clean `500`. `true` when the stream opened or awaits its verdict,
+   * `false` when it was refused.
+   */
+  #openGated(
+    slot: ResponseGateSlot,
+    chunk: BunResponseChunk | undefined,
+  ): boolean {
+    this.options.headers = this.headersObj;
+    const probe = new Response(null, this.options);
+    // The opening is this response's one commit: whatever the verdict, the
+    // gate is not consulted for it again.
+    slot.done = true;
+    const verdict = slot.gate.commit(this.#self, probe, {
+      kind: "open",
+      body: chunk,
+      contentType: probe.headers.get("content-type") ?? undefined,
+      reportOnly: slot.reportOnly,
+    });
+    if (verdict instanceof Promise) {
+      slot.streaming = true;
+      this.#chain(
+        slot,
+        verdict.then(
+          (settled) => this.#opened(slot, settled, chunk),
+          (error: unknown) => this.#opened(slot, toError(error), chunk),
+        ),
       );
       return true;
     }
-    this.#refuse(slot, verdict);
+    return this.#opened(slot, verdict, chunk);
+  }
+
+  /** Applies a gated opening's verdict: opens the stream (with its first chunk, already checked), or refuses it. */
+  #opened(
+    slot: ResponseGateSlot,
+    verdict: Error | ResponseStreamCheck | undefined,
+    chunk: BunResponseChunk | undefined,
+  ): boolean {
+    if (verdict instanceof Error) {
+      slot.streaming = false;
+      slot.refused = true;
+      this.#refuse(slot, verdict);
+      return false;
+    }
+    slot.stream = verdict;
+    slot.streaming = verdict !== undefined || slot.chain !== undefined;
+    this.#openStream();
+    if (chunk !== undefined) {
+      // Not awaited: the write is synchronous, and the promise only reports it.
+      void this.getWritable().write(chunk);
+    }
     return true;
+  }
+
+  /** Makes `step` the stream's pending verdict, cleared once it settles with nothing after it. */
+  #chain(slot: ResponseGateSlot, step: Promise<boolean>): void {
+    slot.chain = step;
+    const clear = (): void => {
+      if (slot.chain === step) {
+        slot.chain = undefined;
+        if (slot.stream === undefined && !slot.ending) {
+          slot.streaming = false;
+        }
+      }
+    };
+    step.then(clear, clear);
+  }
+
+  /** A write to a governed stream: checked in order, after any verdict still to come. */
+  #gatedWrite(slot: ResponseGateSlot, chunk: BunResponseChunk): boolean {
+    const pending = slot.chain;
+    if (pending !== undefined) {
+      this.#chain(
+        slot,
+        pending.then((alive) =>
+          alive ? this.#checkChunk(slot, chunk) : false,
+        ),
+      );
+      return true;
+    }
+    const written = this.#checkChunk(slot, chunk);
+    if (written instanceof Promise) {
+      this.#chain(slot, written);
+      return true;
+    }
+    return written;
+  }
+
+  /** Checks one chunk of a governed stream and writes it, or cuts the stream off. */
+  #checkChunk(
+    slot: ResponseGateSlot,
+    chunk: BunResponseChunk,
+  ): boolean | Promise<boolean> {
+    if (this.#destroyed) {
+      return false;
+    }
+    const check = slot.stream;
+    if (check === undefined) {
+      void this.getWritable().write(chunk);
+      return true;
+    }
+    const verdict = check.chunk(chunk);
+    if (verdict instanceof Promise) {
+      return verdict.then(
+        (settled) => this.#afterChunk(settled, chunk),
+        (error: unknown) => this.#afterChunk(toError(error), chunk),
+      );
+    }
+    return this.#afterChunk(verdict, chunk);
+  }
+
+  /** Writes a chunk that passed; destroys the stream on one that did not (plan §4.4.2: after the start, only a cut-off). */
+  #afterChunk(verdict: Error | undefined, chunk: BunResponseChunk): boolean {
+    if (this.#destroyed) {
+      return false;
+    }
+    if (verdict !== undefined) {
+      this.destroy(verdict);
+      return false;
+    }
+    void this.getWritable().write(chunk);
+    return true;
+  }
+
+  /** `end()` on a governed stream: waits for every verdict, checks the stream's end, then ends it. */
+  async #endGated(
+    slot: ResponseGateSlot,
+    chunk: BunResponseChunk | undefined,
+  ): Promise<BunResponse> {
+    if (chunk !== undefined) {
+      this.#gatedWrite(slot, chunk);
+    }
+    slot.ending = true;
+    const alive = await (slot.chain ?? true);
+    if (alive && !this.#destroyed && this._isLongLived) {
+      const verdict = await slot.stream?.end();
+      if (verdict !== undefined) {
+        this.destroy(verdict);
+      } else {
+        await this.endLongLivedConnection();
+      }
+    }
+    return this.#self;
   }
 
   /**
@@ -3015,6 +3291,22 @@ export class BunResponse<
    */
   public async initLongLivedConnection() {
     if (this._isLongLived) return false;
+    const slot = this.#state?.gate;
+    if (slot !== undefined) {
+      if (slot.streaming || (slot.refused && !slot.reportOnly)) {
+        // Opening already (its verdict to come), or refused.
+        return false;
+      }
+      if (!slot.done) {
+        return this.#openGated(slot, undefined);
+      }
+    }
+    this.#openStream();
+    return true;
+  }
+
+  /** Builds and commits the long-lived streamed response. */
+  #openStream(): void {
     this.req.socket.setKeepAlive(true);
     this.req.socket.setNoDelay(true);
     this.req.socket.setTimeout(0);
@@ -3023,7 +3315,6 @@ export class BunResponse<
     this.options.headers = this.headersObj;
     const readableStream = this.readableStream;
     this.response = new Response(readableStream, this.options);
-    return true;
   }
 
   async endLongLivedConnection() {
@@ -3374,6 +3665,21 @@ export class BunResponse<
       return false;
     }
 
+    const slot = this.#state?.gate;
+    if (slot !== undefined) {
+      // A validator's gate (plan §4.4.3): the opening is checked with its
+      // first chunk, and a `chunks()`/`sse()` stream's every write.
+      if (slot.refused && !slot.reportOnly) {
+        return false;
+      }
+      if (slot.streaming) {
+        return this.#gatedWrite(slot, chunk);
+      }
+      if (!slot.done && !this._isLongLived) {
+        return this.#openGated(slot, chunk);
+      }
+    }
+
     if (!this._isLongLived) {
       // Not awaited: the stream opens synchronously; the promise only reports it.
       void this.initLongLivedConnection();
@@ -3405,11 +3711,21 @@ export class BunResponse<
       assertResponseChunk(chunk);
     }
 
+    const slot = this.#state?.gate;
+    if (slot?.refused === true && !slot.reportOnly) {
+      // The stream's opening was refused: the error handlers answer.
+      return Promise.resolve(this.#self);
+    }
+
     if (this.#ended) {
       if (hasChunk) {
         this.#emitWriteAfterEnd();
       }
       return Promise.resolve(this.#self);
+    }
+
+    if (slot?.streaming === true) {
+      return this.#endGated(slot, hasChunk ? chunk : undefined);
     }
 
     return this.#endOpen(hasChunk ? chunk : undefined);
@@ -4103,7 +4419,11 @@ export class BunResponse<
     if (this.#responseTransforms !== undefined) {
       this.#transformBody = body;
     }
-    this.#tag("file");
+    const slot = this.#state?.gate;
+    if (slot !== undefined) {
+      slot.kind = "file";
+      slot.file = body;
+    }
     this.response = new Response(body, this.options);
     return this.#self;
   }

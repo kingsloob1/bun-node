@@ -1,22 +1,31 @@
 /**
- * Response contracts for HTTP (plan `docs/plans/bun-validate/` §4.4, V3a):
- * what `validate(schemas, { responses })` declares per status, how it is
- * compiled once, and the gate `BunResponse` consults at its single commit
+ * Response contracts for HTTP (plan `docs/plans/bun-validate/` §4.4, V3a and
+ * V3b): what `validate(schemas, { responses })` declares per status, how it
+ * is compiled once, and the gate `BunResponse` consults at its single commit
  * point (its private `response` setter, which every producer passes
- * through) for the status, the headers, the `Set-Cookie`s, the media type and
- * a buffered body.
+ * through) for the status, the headers, the `Set-Cookie`s, the media type
+ * and the body, and then, for a streamed body declared with `chunks()` or
+ * `sse()`, at each chunk (plan §4.4.2's chunk gate).
  *
- * V3a checks buffered bodies: `json()`, `send()` of an object, a string,
- * bytes, a `Blob` (read with `arrayBuffer()`) or a native `Response` (read
- * through `clone()`). A stream, `sendFile()`'s bytes and `write()`/`end()`
- * streams are V3b's (the status, headers, cookies and media type of a piped
- * stream and of `sendFile()` are checked here; their bytes are not).
+ * Every body kind is checked: `json()`, `send()` of an object, a string,
+ * bytes, a `Blob` (read with `arrayBuffer()`), a native `Response` (read
+ * through `clone()`) and `sendFile()`'s bytes against a whole-body schema;
+ * a piped stream and a `write()`/`end()` stream chunk by chunk under
+ * `chunks()`/`sse()`. A stream against a whole-body schema is never
+ * buffered: it is skipped, with one warning per route (plan Q-H4).
+ * `opaque()` declares a media type whose content is never read.
  *
- * Only `ResponseValidationError` is exported from the package (plan §9's
- * approved names); the rest is reachable through `validate()`'s and the
- * router's option types.
+ * Only `ResponseValidationError` and the declaration types are exported from
+ * the package (plan §9's approved names), with the body helpers of
+ * `lib/responseBodies.ts`.
  */
-import type { BunResponse, ResponseCommit, ResponseGate } from "./BunResponse";
+import type {
+  BunResponse,
+  BunResponseChunk,
+  ResponseCommit,
+  ResponseGate,
+  ResponseStreamCheck,
+} from "./BunResponse";
 import type { MediaKey, MediaMatcher } from "./contract/media";
 import type {
   MaybePromise,
@@ -26,12 +35,14 @@ import type {
   ValidationIssue,
 } from "./contract/model";
 import type { Logger } from "./logging";
+import type { SseEvents, StreamChunks } from "./responseBodies";
 import type { StandardSchemaV1 } from "./types/standardSchema";
 import { ContractError } from "./contract/guard";
 import { runSchema } from "./contract/issues";
 import { bareMediaType, compileMediaMap } from "./contract/media";
-import { isDocumented } from "./contract/schemas";
+import { isDocumented, kindOf, opaqueMediaType } from "./contract/schemas";
 import { isSchema } from "./contract/transport";
+import { LineFramer, opaque, SseFramer } from "./responseBodies";
 
 // ---------------------------------------------------------------------------
 // Declarations
@@ -64,15 +75,32 @@ export interface ResponseSpecObject {
    * The body, by media type (`"application/json"`, `"text/*"`, `"*\/*"`):
    * matched case-insensitively with parameters stripped on both sides, the
    * most specific key winning (exact, then `type/*`, then `*\/*`); a media
-   * type no key matches is a mismatch. `null`: the status has no body.
-   * Omitted: the body is not checked.
+   * type no key matches is a mismatch. Each value is a whole-body schema,
+   * `chunks(S)` (a stream checked per chunk), `sse({...})` (server-sent
+   * events checked per event), `opaque()` (declared, never read), or `null`
+   * (this media type with an empty body). `content: null`: the status has
+   * no body. Omitted: the body is not checked. `opaque(mediaType)` is refused
+   * here (a type error, and a `TypeError` at declaration): the key already
+   * names the media type.
    */
-  readonly content?: Readonly<Record<string, StandardSchemaV1>> | null;
+  readonly content?: Readonly<Record<string, ContentValue>> | null;
 }
 
 /**
+ * A `content` map's value: a schema or a body helper, but not an
+ * `opaque(mediaType)` (whose media type would be a second one), or `null`.
+ */
+type ContentValue =
+  | (StandardSchemaV1 & {
+      /** Only `opaque(mediaType)` sets it; a `content` map's value never does. */
+      readonly mediaType?: undefined;
+    })
+  | null;
+
+/**
  * One status's contract: a schema (shorthand for `{ content: {
- * "application/json": schema } }`), `null` (no body), or the full
+ * "application/json": schema } }`), `opaque(mediaType)` (shorthand for `{
+ * content: { [mediaType]: opaque() } }`), `null` (no body), or the full
  * {@link ResponseSpecObject}.
  */
 export type ResponseSpec = StandardSchemaV1 | null | ResponseSpecObject;
@@ -166,8 +194,8 @@ export interface OutboundParts {
   headers?: Schema;
   /** The `Set-Cookie` view schema. */
   cookies?: Schema;
-  /** The body by media type, or `null` for none. */
-  body?: Readonly<Record<string, Schema>> | null;
+  /** The body by media type (a media type mapped to `null` carries no body), or `null` for none. */
+  body?: Readonly<Record<string, Schema | null>> | null;
 }
 
 /** A declared response table in contract form: status (as a string) to its parts. */
@@ -215,6 +243,12 @@ export function toOutboundDef(responses: unknown, where: string): OutboundDef {
       out[key] = { body: null };
       continue;
     }
+    const shorthand = opaqueMediaType(spec);
+    if (shorthand !== undefined) {
+      // `opaque("image/png")`: exactly `{ content: { "image/png": opaque() } }`.
+      out[key] = { body: { [shorthand]: opaque() } };
+      continue;
+    }
     if (isSchema(spec)) {
       out[key] = { body: { "application/json": spec as Schema } };
       continue;
@@ -243,14 +277,20 @@ export function toOutboundDef(responses: unknown, where: string): OutboundDef {
           );
         }
         for (const [media, schema] of Object.entries(value)) {
-          if (!isSchema(schema)) {
+          if (schema !== null && !isSchema(schema)) {
             throw new TypeError(
-              `${at}.content[${JSON.stringify(media)}]: expected a Standard Schema`,
+              `${at}.content[${JSON.stringify(media)}]: expected a Standard Schema, chunks(), sse(), opaque() or null`,
+            );
+          }
+          const own = opaqueMediaType(schema);
+          if (own !== undefined) {
+            throw new TypeError(
+              `${at}.content[${JSON.stringify(media)}]: opaque(${JSON.stringify(own)}) names a second media type; inside a content map write opaque(), or declare the status as ${key}: opaque(${JSON.stringify(own)})`,
             );
           }
         }
         compileMediaMap(value, `${at}.content`);
-        parts.body = value as Record<string, Schema>;
+        parts.body = value as Record<string, Schema | null>;
         continue;
       }
       if (!isSchema(value)) {
@@ -290,7 +330,9 @@ interface CompiledStatus {
   /** The cookies schema; `undefined` when not declared or only documented. */
   readonly cookies: Schema | undefined;
   /** The body: `undefined` unchecked, `null` none allowed, else by media type. */
-  readonly body: MediaMatcher<Schema> | null | undefined;
+  readonly body: MediaMatcher<Schema | null> | null | undefined;
+  /** Whether a media type maps to `null`, so an empty body with no `Content-Type` is allowed. */
+  readonly emptyAllowed: boolean;
 }
 
 /** A response table compiled once, for the gate. */
@@ -316,6 +358,10 @@ function compileTable(def: OutboundDef): CompiledTable {
         parts.body === undefined || parts.body === null
           ? parts.body
           : compileMediaMap(parts.body, `responses[${status}].content`),
+      emptyAllowed:
+        parts.body !== undefined &&
+        parts.body !== null &&
+        Object.values(parts.body).includes(null),
     });
   }
   const keys = [...statuses.keys()].sort((a, b) => a - b).map(String);
@@ -475,6 +521,7 @@ type Found = MaybePromise<ValidationIssue<ResponsePart>[]>;
 
 /** Flattens a mix of issue lists and promises of them, staying sync when it can. */
 function gather(parts: readonly Found[]): Found {
+  if (parts.length === 1) return parts[0];
   let pending = false;
   for (const part of parts) pending ||= part instanceof Promise;
   if (!pending) return (parts as ValidationIssue<ResponsePart>[][]).flat();
@@ -489,11 +536,12 @@ function issue(
   status: number,
   message: string,
   mediaType?: string,
+  path = "",
 ): ValidationIssue<ResponsePart> {
   const out: ValidationIssue<ResponsePart> = {
     target,
     message,
-    path: "",
+    path,
     key: String(status),
   };
   if (mediaType !== undefined) out.mediaType = mediaType;
@@ -536,10 +584,335 @@ function runBody(
     : [issue("body", status, "The body is not valid JSON", key.declared)];
 }
 
+/** Prefixes each issue's path with `prefix` (an SSE event's `<name>.data`). */
+function prefixed(found: Found, prefix: string): Found {
+  const map = (
+    issues: ValidationIssue<ResponsePart>[],
+  ): ValidationIssue<ResponsePart>[] =>
+    issues.map((i) => ({
+      ...i,
+      path: i.path === "" ? prefix : `${prefix}.${i.path}`,
+    }));
+  return found instanceof Promise ? found.then(map) : map(found);
+}
+
+/** Whether a bare media type is textual for a `"raw"` chunk: `text/*` or JSON's. */
+function isTextMedia(bare: string): boolean {
+  return bare.startsWith("text/") || isJsonMedia(bare);
+}
+
+/** Encodes text as UTF-8. */
+const encoder = new TextEncoder();
+
+/**
+ * Where a stream's mismatches go: whether one cuts the stream off (`"error"`,
+ * not an error handler's response), and the log line's fields.
+ */
+interface StreamReporter {
+  /** `true` under `"error"` (outside an error handler): a mismatch cuts the stream off. */
+  readonly refuse: boolean;
+  /** The logger. */
+  readonly logger: () => Logger;
+  /** The log line's location fields (method, route pattern). */
+  readonly where: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * One streamed body's checks (`chunks()`, `sse()`): created per response by
+ * the gate when the body's media type maps to one, and fed each chunk in the
+ * order it is sent. It frames the bytes (lines, events) across chunk
+ * boundaries, so its calls must follow the stream's order; only the schemas'
+ * verdicts may be asynchronous.
+ */
+class StreamChecker implements ResponseStreamCheck {
+  /** The declaration. */
+  readonly #decl: StreamChunks | SseEvents;
+  /** The response's status. */
+  readonly #status: number;
+  /** The declared media key the body fell under. */
+  readonly #key: MediaKey;
+  /** For `"raw"` chunks: whether the schema sees text (else bytes). */
+  readonly #text: boolean;
+  /** Where mismatches go. */
+  readonly #reporter: StreamReporter;
+  /** Decodes byte chunks across boundaries (multi-byte characters split between chunks). */
+  #decoder: TextDecoder | undefined;
+  /** The SSE framer, for `sse()`. */
+  #events: SseFramer | undefined;
+  /** The line framer, for `chunks(S, { framing: "ndjson" })`. */
+  #lines: LineFramer | undefined;
+  /** Set once a mismatch of this stream was reported: `"warn"` reports one per stream. */
+  #reported = false;
+
+  /**
+   * @param decl     The `chunks()` or `sse()` declaration.
+   * @param status   The response's status.
+   * @param key      The declared media key the body fell under.
+   * @param bare     The bare media type sent.
+   * @param reporter Where mismatches go.
+   */
+  constructor(
+    decl: StreamChunks | SseEvents,
+    status: number,
+    key: MediaKey,
+    bare: string,
+    reporter: StreamReporter,
+  ) {
+    this.#decl = decl;
+    this.#status = status;
+    this.#key = key;
+    this.#text = isTextMedia(bare);
+    this.#reporter = reporter;
+  }
+
+  /** Marks the stream's mismatch as reported (the commit reported its first chunk's). */
+  markReported(): void {
+    this.#reported = true;
+  }
+
+  /**
+   * The issues of the next chunk, framing it (with what came before) into
+   * the values the schemas check. Exported for the gate's first chunk and
+   * for buffered bodies.
+   *
+   * @param chunk The chunk, as written or as the piped stream yields it.
+   */
+  issues(chunk: BunResponseChunk): Found {
+    const decl = this.#decl;
+    if (decl.kind === "chunks" && decl.framing === "raw") {
+      if (typeof chunk === "string") {
+        if (chunk.length === 0) return [];
+        return this.#run(this.#text ? chunk : encoder.encode(chunk));
+      }
+      const bytes = toBytes(chunk);
+      if (bytes.byteLength === 0) return [];
+      return this.#run(
+        this.#text
+          ? (this.#decoder ??= new TextDecoder()).decode(bytes, {
+              stream: true,
+            })
+          : bytes,
+      );
+    }
+    return this.#framed(
+      typeof chunk === "string"
+        ? chunk
+        : (this.#decoder ??= new TextDecoder()).decode(toBytes(chunk), {
+            stream: true,
+          }),
+    );
+  }
+
+  /** The issues of what is left when the stream ends: an NDJSON line without its `\n`. */
+  endIssues(): Found {
+    const decl = this.#decl;
+    if (decl.kind !== "chunks" || decl.framing !== "ndjson") return [];
+    const tail = this.#decoder?.decode() ?? "";
+    const parts: Found[] = tail.length === 0 ? [] : [this.#framed(tail)];
+    const last = (this.#lines ??= new LineFramer()).end();
+    if (last !== undefined) parts.push(this.#line(last));
+    return parts.length === 0 ? [] : gather(parts);
+  }
+
+  /**
+   * Checks the next chunk: `undefined` to send it, a
+   * {@link ResponseValidationError} to cut the stream off (logged at
+   * `error`), or a promise of either. Under `"warn"` it never refuses, and
+   * the stream's first mismatch is logged.
+   *
+   * @param chunk The chunk.
+   */
+  chunk(
+    chunk: BunResponseChunk,
+  ): MaybePromise<ResponseValidationError | undefined> {
+    return this.#verdict(this.issues(chunk));
+  }
+
+  /** Checks what is left at the stream's end, as {@link chunk} does. */
+  end(): MaybePromise<ResponseValidationError | undefined> {
+    return this.#verdict(this.endIssues());
+  }
+
+  /** Runs the chunk schema on one value. */
+  #run(value: unknown): Found {
+    return run(
+      (this.#decl as StreamChunks).chunk,
+      value,
+      "body",
+      this.#status,
+      this.#key.declared,
+    );
+  }
+
+  /** Frames text into NDJSON lines or SSE events, and checks each. */
+  #framed(text: string): Found {
+    const decl = this.#decl;
+    const parts: Found[] = [];
+    if (decl.kind === "sse") {
+      for (const event of (this.#events ??= new SseFramer()).push(text)) {
+        parts.push(this.#event(decl, event.name, event.data));
+      }
+    } else {
+      for (const line of (this.#lines ??= new LineFramer()).push(text)) {
+        parts.push(this.#line(line));
+      }
+    }
+    return parts.length === 0 ? [] : gather(parts);
+  }
+
+  /** Checks one NDJSON line (blank lines are skipped). */
+  #line(line: string): Found {
+    if (line.trim().length === 0) return [];
+    let value: unknown;
+    try {
+      value = JSON.parse(line) as unknown;
+    } catch {
+      return [
+        issue(
+          "body",
+          this.#status,
+          "A line is not valid JSON",
+          this.#key.declared,
+        ),
+      ];
+    }
+    return this.#run(value);
+  }
+
+  /** Checks one SSE event against the schema its name selects. */
+  #event(decl: SseEvents, name: string, data: string | undefined): Found {
+    const status = this.#status;
+    const media = this.#key.declared;
+    if (!Object.hasOwn(decl.events, name)) {
+      const names = Object.keys(decl.events);
+      const shown = names.slice(0, 10).join(", ");
+      return [
+        issue(
+          "body",
+          status,
+          `This event is not declared (${names.length > 10 ? `${shown}, …` : shown})`,
+          media,
+        ),
+      ];
+    }
+    const schema = decl.events[name];
+    const path = `${name}.data`;
+    if (schema === null) {
+      return data === undefined || data === ""
+        ? []
+        : [
+            issue(
+              "body",
+              status,
+              "No data is declared for this event",
+              media,
+              path,
+            ),
+          ];
+    }
+    let value: unknown = data;
+    if (decl.data === "json" && data !== undefined) {
+      try {
+        value = JSON.parse(data) as unknown;
+      } catch {
+        return [
+          issue(
+            "body",
+            status,
+            "The event's data is not valid JSON",
+            media,
+            path,
+          ),
+        ];
+      }
+    }
+    return prefixed(run(schema, value, "body", status, media), path);
+  }
+
+  /** Turns a chunk's issues into a verdict, reporting them. */
+  #verdict(found: Found): MaybePromise<ResponseValidationError | undefined> {
+    if (!(found instanceof Promise)) return this.#decide(found);
+    if (!this.#reporter.refuse) {
+      // "warn" never holds a chunk back: reported when the check settles.
+      void found.then(
+        (issues) => this.#decide(issues),
+        (error: unknown) => this.#failed(error),
+      );
+      return undefined;
+    }
+    return found.then(
+      (issues) => this.#decide(issues),
+      (error: unknown) => {
+        this.#failed(error);
+        return new ResponseValidationError(
+          [
+            issue(
+              "body",
+              this.#status,
+              "The response could not be checked",
+              this.#key.declared,
+            ),
+          ],
+          this.#status,
+        );
+      },
+    );
+  }
+
+  /** The verdict for a chunk's settled issues. */
+  #decide(
+    issues: ValidationIssue<ResponsePart>[],
+  ): ResponseValidationError | undefined {
+    if (issues.length === 0) return undefined;
+    const reporter = this.#reporter;
+    const fields = { ...reporter.where, status: this.#status, issues };
+    if (reporter.refuse) {
+      reporter
+        .logger()
+        .error(
+          "streamed response does not match its contract; the stream was cut off",
+          fields,
+        );
+      return new ResponseValidationError(issues, this.#status);
+    }
+    if (!this.#reported) {
+      this.#reported = true;
+      reporter
+        .logger()
+        .warn(
+          "streamed response does not match its contract (reported once per stream)",
+          fields,
+        );
+    }
+    return undefined;
+  }
+
+  /** Logs a chunk check that threw (a schema's own failure). */
+  #failed(error: unknown): void {
+    const reporter = this.#reporter;
+    reporter.logger().error("response contract check failed", {
+      ...reporter.where,
+      status: this.#status,
+      error,
+    });
+  }
+}
+
+/** What a commit's checks found besides issues: the stream check the response needs, if any. */
+interface CommitOut {
+  /** The per-chunk check of a `chunks()`/`sse()` stream. */
+  stream?: StreamChecker;
+}
+
+/** Whether a commit opens or pipes a stream (rather than a buffered body). */
+const isStream = (kind: ResponseCommit["kind"]): boolean =>
+  kind === "stream" || kind === "open";
+
 /**
  * The gate one validator installs on each response it lets through (one per
  * validator and router binding, not per request): checks the response at
- * its commit point against the compiled table, under one mode.
+ * its commit point against the compiled table, under one mode, and hands a
+ * streamed body's per-chunk check back to the response.
  */
 export class ResponseContractGate implements ResponseGate {
   /** The compiled table. */
@@ -550,7 +923,7 @@ export class ResponseContractGate implements ResponseGate {
   readonly #mode: "warn" | "error";
   /** The logger, resolved when first needed (the router's, once bound). */
   readonly #logger: () => Logger;
-  /** Set once the gate said it does not read a body kind (one warning per gate). */
+  /** Set once the gate said it does not buffer a stream (one warning per gate, i.e. per route). */
   #warnedUnread = false;
   /** Gates combined with an inner validator's, cached by that gate. */
   #within: WeakMap<ResponseContractGate, ResponseContractGate> | undefined;
@@ -591,28 +964,32 @@ export class ResponseContractGate implements ResponseGate {
 
   /**
    * Checks a committed response. Answers `undefined` to send it, a
-   * {@link ResponseValidationError} to refuse it, or a promise of either
-   * (a Promise-answering vendor, a body that must be read) to hold it; only
-   * `"error"` refuses or holds, and never for an error handler's response
-   * (`commit.reportOnly`), which is only reported.
+   * {@link ResponseValidationError} to refuse it, the per-chunk check of a
+   * `chunks()`/`sse()` stream to send it and check each chunk, or a promise
+   * of one of these (a Promise-answering vendor, a body that must be read)
+   * to hold it; only `"error"` refuses or holds, and never for an error
+   * handler's response (`commit.reportOnly`), which is only reported.
    *
    * @param res      The response.
-   * @param response The native `Response` about to be handed on.
+   * @param response The native `Response` about to be handed on (for a
+   *   `write()` stream's opening, one with its status and headers only).
    * @param commit   What produced it.
    */
   commit(
     res: BunResponse,
     response: Response,
     commit: ResponseCommit,
-  ): MaybePromise<ResponseValidationError | undefined> {
+  ): MaybePromise<ResponseValidationError | ResponseStreamCheck | undefined> {
     const status = response.status;
-    const found = this.#check(res, response, commit, status);
+    const out: CommitOut = {};
+    const found = this.#check(res, response, commit, status, out);
     const reportOnly = this.#mode === "warn" || commit.reportOnly;
     if (!(found instanceof Promise)) {
-      if (found.length === 0) return undefined;
+      if (found.length === 0) return out.stream;
       if (reportOnly) {
         this.#report(res, status, found, commit.reportOnly);
-        return undefined;
+        out.stream?.markReported();
+        return out.stream;
       }
       return new ResponseValidationError(found, status);
     }
@@ -622,16 +999,17 @@ export class ResponseContractGate implements ResponseGate {
         (issues) => {
           if (issues.length > 0) {
             this.#report(res, status, issues, commit.reportOnly);
+            out.stream?.markReported();
           }
         },
         (error: unknown) => this.#failed(res, status, error),
       );
-      return undefined;
+      return out.stream;
     }
     return found.then(
       (issues) =>
         issues.length === 0
-          ? undefined
+          ? out.stream
           : new ResponseValidationError(issues, status),
       (error: unknown) => {
         this.#failed(res, status, error);
@@ -699,12 +1077,12 @@ export class ResponseContractGate implements ResponseGate {
     });
   }
 
-  /** Says once per gate that a body kind is not read against a whole-body schema in V3a. */
-  #unread(res: BunResponse, status: number, kind: string): void {
+  /** Says once per gate (per route) that a stream is not buffered to check it against a whole-body schema (Q-H4). */
+  #unread(res: BunResponse, status: number): void {
     if (this.#warnedUnread) return;
     this.#warnedUnread = true;
     this.#logger().warn(
-      `a ${kind} body is not checked against a whole-body schema (its status, headers, cookies and media type are)`,
+      "a streamed body is not checked against a whole-body schema (streams are never buffered; declare chunks() or sse()); its status, headers, cookies and media type are",
       { ...this.#where(res), status },
     );
   }
@@ -715,6 +1093,7 @@ export class ResponseContractGate implements ResponseGate {
     response: Response,
     commit: ResponseCommit,
     status: number,
+    out: CommitOut,
   ): Found {
     const spec = this.#table.statuses.get(status);
     if (spec === undefined) {
@@ -749,21 +1128,20 @@ export class ResponseContractGate implements ResponseGate {
         ),
       );
     }
-    const body = spec.body;
     const kind = commit.kind;
     // A redirect's or a status's generated body, and the body-less statuses,
     // are exempt: only their status and headers are the handler's.
     if (
-      body !== undefined &&
+      spec.body !== undefined &&
       kind !== "redirect" &&
       kind !== "status" &&
       status !== 204 &&
       status !== 205 &&
       status !== 304
     ) {
-      parts.push(this.#checkBody(res, response, commit, status, body));
+      parts.push(this.#checkBody(res, response, commit, status, spec, out));
     }
-    return parts.length === 1 ? parts[0] : gather(parts);
+    return parts.length === 0 ? [] : gather(parts);
   }
 
   /** The body's issues, by kind. */
@@ -772,8 +1150,10 @@ export class ResponseContractGate implements ResponseGate {
     response: Response,
     commit: ResponseCommit,
     status: number,
-    body: MediaMatcher<Schema> | null,
+    spec: CompiledStatus,
+    out: CommitOut,
   ): Found {
+    const body = spec.body!;
     const kind = commit.kind;
     if (body === null) {
       if (kind === "empty") return [];
@@ -790,67 +1170,186 @@ export class ResponseContractGate implements ResponseGate {
       return [issue("body", status, "No body is declared for this status")];
     }
     const contentType = commit.contentType;
-    if (kind === "empty" || contentType === undefined) {
-      return [
-        issue(
-          "body",
-          status,
-          `This status declares a body (${body.declared.join(", ")}), and none was sent`,
-        ),
-      ];
-    }
-    const found = body.match(contentType);
+    const found =
+      contentType === undefined ? undefined : body.match(contentType);
     if (found === undefined) {
+      if (contentType !== undefined) {
+        return [
+          issue(
+            "body",
+            status,
+            `This media type is not declared (${body.declared.join(", ")})`,
+          ),
+        ];
+      }
+      // No Content-Type: an empty body is allowed where a media type maps
+      // to `null`.
+      if (kind === "empty" && spec.emptyAllowed) return [];
       return [
         issue(
           "body",
           status,
-          `This media type is not declared (${body.declared.join(", ")})`,
+          isStream(kind)
+            ? `The stream has no Content-Type (declared: ${body.declared.join(", ")})`
+            : `This status declares a body (${body.declared.join(", ")}), and none was sent`,
         ),
       ];
     }
-    const [key, schema] = found;
-    if (isDocumented(schema)) return [];
-    const bare = bareMediaType(contentType);
+    const [key, entry] = found;
+    if (entry === null) {
+      return emptyBodyIssues(response, commit, status, key);
+    }
+    if (isDocumented(entry)) return [];
+    const bodyKind = kindOf(entry);
+    if (bodyKind === "opaque") return [];
+    const bare = bareMediaType(contentType!);
+    if (bodyKind === "chunks" || bodyKind === "sse") {
+      return this.#streamBody(
+        res,
+        response,
+        commit,
+        status,
+        key,
+        bare,
+        entry as unknown as StreamChunks | SseEvents,
+        out,
+      );
+    }
     switch (kind) {
+      case "empty":
+        return [
+          issue(
+            "body",
+            status,
+            `This status declares a body (${body.declared.join(", ")}), and none was sent`,
+          ),
+        ];
       case "json":
-        return run(schema, commit.body, "body", status, key.declared);
+        return run(entry, commit.body, "body", status, key.declared);
       case "text":
         return runBody(
-          schema,
+          entry,
           textValue(bare, String(commit.body)),
           status,
           key,
         );
       case "bytes":
         return runBody(
-          schema,
+          entry,
           bytesValue(bare, toBytes(commit.body as ArrayBufferView)),
           status,
           key,
         );
       case "blob":
-      case "native": {
-        // Read without consuming what is sent: a Blob reads again; a
-        // Response is cloned (Q-H5).
-        const source =
-          kind === "native" ? response.clone() : (commit.body as Blob);
-        return source
-          .arrayBuffer()
-          .then((buffer) =>
-            runBody(
-              schema,
-              bytesValue(bare, new Uint8Array(buffer)),
-              status,
-              key,
-            ),
-          );
-      }
+      case "file":
+      case "native":
+        // Read without consuming what is sent: a Blob (a file's too) reads
+        // again; a Response is cloned (Q-H5).
+        return readBytes(response, commit).then((bytes) =>
+          runBody(entry, bytesValue(bare, bytes), status, key),
+        );
       default:
-        // A stream or a file: V3b reads those.
-        this.#unread(res, status, kind === "file" ? "sendFile()" : "streamed");
+        // A stream: never buffered (Q-H4).
+        this.#unread(res, status);
         return [];
     }
+  }
+
+  /**
+   * A body under `chunks()`/`sse()`: a stream gets its per-chunk check (a
+   * `write()` stream's first chunk checked now, with the commit), and so
+   * does a `Blob`, a file or a passed-through `Response`, whose body is
+   * piped through it rather than read whole; a body held in memory (text,
+   * bytes, a `json()` value) is checked as a stream of one chunk.
+   */
+  #streamBody(
+    res: BunResponse,
+    response: Response,
+    commit: ResponseCommit,
+    status: number,
+    key: MediaKey,
+    bare: string,
+    decl: StreamChunks | SseEvents,
+    out: CommitOut,
+  ): Found {
+    const checker = new StreamChecker(decl, status, key, bare, {
+      refuse: this.#mode === "error" && !commit.reportOnly,
+      logger: this.#logger,
+      where: this.#where(res),
+    });
+    const kind = commit.kind;
+    const whole = (chunk: BunResponseChunk): Found =>
+      gather([checker.issues(chunk), checker.endIssues()]);
+    switch (kind) {
+      case "stream":
+      case "blob":
+      case "file":
+      case "native":
+        // Piped through the check as it streams, never read whole.
+        out.stream = checker;
+        return [];
+      case "open":
+        out.stream = checker;
+        return commit.body === undefined
+          ? []
+          : checker.issues(commit.body as BunResponseChunk);
+      case "empty":
+        return [];
+      case "json":
+        return whole(JSON.stringify(commit.body) ?? "");
+      case "text":
+        return whole(String(commit.body));
+      case "bytes":
+        return whole(toBytes(commit.body as ArrayBufferView));
+      default:
+        return [];
+    }
+  }
+}
+
+/** A Blob's, a file's or a passed-through `Response`'s bytes, read without consuming what is sent. */
+async function readBytes(
+  response: Response,
+  commit: ResponseCommit,
+): Promise<Uint8Array> {
+  const source =
+    commit.kind === "native" ? response.clone() : (commit.body as Blob);
+  return new Uint8Array(await source.arrayBuffer());
+}
+
+/** The issues of a body sent as a media type mapped to `null`: it must be empty. */
+function emptyBodyIssues(
+  response: Response,
+  commit: ResponseCommit,
+  status: number,
+  key: MediaKey,
+): Found {
+  const none: ValidationIssue<ResponsePart>[] = [];
+  const some = [
+    issue(
+      "body",
+      status,
+      "No body is declared for this media type",
+      key.declared,
+    ),
+  ];
+  const body = commit.body;
+  switch (commit.kind) {
+    case "empty":
+      return none;
+    case "text":
+      return String(body) === "" ? none : some;
+    case "bytes":
+      return toBytes(body as ArrayBufferView).byteLength === 0 ? none : some;
+    case "blob":
+    case "file":
+      return (body as Blob).size === 0 ? none : some;
+    case "native":
+      return readBytes(response, commit).then((bytes) =>
+        bytes.byteLength === 0 ? none : some,
+      );
+    default:
+      return some;
   }
 }
 

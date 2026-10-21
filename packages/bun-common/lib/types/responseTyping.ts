@@ -12,7 +12,12 @@
  * Types only. Internal: the names are not approved (plan §9); they reach a
  * consumer through `BunResponse`'s signatures.
  */
-import type { BunResponseBody, CookieValue } from "../BunResponse";
+import type { Readable } from "node:stream";
+import type {
+  BunResponseBody,
+  BunResponseChunk,
+  CookieValue,
+} from "../BunResponse";
 import type { WireInput } from "../contract/model";
 import type { EmptyShape } from "./routeTyping";
 import type { StandardSchemaV1 } from "./standardSchema";
@@ -173,14 +178,46 @@ type MediaClass<K> =
         ? "any"
         : "bytes";
 
-/** A status's content map: a bare schema is a JSON body; `undefined`: unchecked. */
+/**
+ * A status's content map: `opaque(mediaType)` is that media type, never
+ * read; any other bare schema is a JSON body; `undefined`: unchecked.
+ */
 type ContentOf<Sp> = Sp extends null
   ? null
-  : Sp extends StandardSchemaV1
-    ? { "application/json": Sp }
-    : Sp extends { content: infer C }
-      ? C
-      : undefined;
+  : Sp extends OpaqueDecl & { readonly mediaType: infer M extends string }
+    ? { [K in M]: OpaqueDecl }
+    : Sp extends StandardSchemaV1
+      ? { "application/json": Sp }
+      : Sp extends { content: infer C }
+        ? C
+        : undefined;
+
+/** A `chunks()` or `sse()` declaration (a stream checked chunk by chunk, or event by event). */
+interface StreamDecl {
+  /** Its kind. */
+  readonly kind: "chunks" | "sse";
+}
+
+/** An `opaque()` declaration (a media type whose body is never read). */
+interface OpaqueDecl {
+  /** Its kind. */
+  readonly kind: "opaque";
+}
+
+/** A body that streams: what `send()` pipes (plan §4.4.3). */
+type StreamBody =
+  | ReadableStream
+  | Readable
+  | AsyncIterable<BunResponseChunk>
+  | (() => AsyncGenerator<BunResponseChunk>);
+
+/**
+ * What a `chunks()`/`sse()` media type takes: a stream, or a body held in
+ * memory (checked as a stream of one chunk), a `Blob` or a passed-through
+ * `Response` (piped through the check).
+ */
+type StreamSend =
+  StreamBody | string | ArrayBufferView | ArrayBufferLike | Blob;
 
 /** What `json()` takes for a content map: the bodies of its JSON (or wildcard) keys. */
 type JsonOf<C> = C extends null
@@ -189,18 +226,30 @@ type JsonOf<C> = C extends null
     ? BunResponseBody
     : {
         [K in keyof C]: MediaClass<K> extends "json" | "any"
-          ? C[K] extends StandardSchemaV1
-            ? WireInput<C[K]>
-            : never
+          ? C[K] extends StreamDecl
+            ? never
+            : C[K] extends StandardSchemaV1
+              ? WireInput<C[K]>
+              : never
           : never;
       }[keyof C];
 
-/** What `send()` takes for one media key. */
-type SendOne<K, V> = V extends StandardSchemaV1
-  ? MediaClass<K> extends "json" | "text"
-    ? WireInput<V>
-    : WireInput<V> | Blob | ArrayBufferView | ArrayBufferLike
-  : never;
+/**
+ * What `send()` takes for one media key: an empty body for `null`, any body
+ * for `opaque()`, a stream (or a buffered body) for `chunks()`/`sse()`, and
+ * a schema's wire input otherwise.
+ */
+type SendOne<K, V> = V extends null
+  ? null | undefined
+  : V extends OpaqueDecl
+    ? BunResponseBody
+    : V extends StreamDecl
+      ? StreamSend
+      : V extends StandardSchemaV1
+        ? MediaClass<K> extends "json" | "text"
+          ? WireInput<V>
+          : WireInput<V> | Blob | ArrayBufferView | ArrayBufferLike
+        : never;
 
 /** What `send()` takes for a content map: every media key's body. */
 type SendOf<C> = C extends null

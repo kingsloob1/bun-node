@@ -678,6 +678,7 @@ interface ContractEntry {
   encoding: "path-string" | "querystring" | "header-string" | "cookie-string" | "signed-cookie" | "set-cookie" | "body";  // m3
   origin?: string;                                    // the layer it came from, after mergeContracts (M3)
   schema: StandardSchemaV1; vendor?: string;
+  nested?: ContractEntry[];                           // an sse() row's event rows (V3b, approved 2026-10-21)
 }
 ```
 
@@ -919,16 +920,20 @@ validate(
 type ResponseSchemas = Readonly<Record<number, ResponseSpec>>;
 type ResponseSpec =
   | StandardSchemaV1                     // shorthand for { content: { "application/json": S } }
+  | OpaqueBody<`${string}/${string}`>    // opaque("image/png"): shorthand for { content: { "image/png": opaque() } } (V3b)
   | null                                 // no body
   | {
       headers?: StandardSchemaV1;        // lower-case names; set-cookie is the cookies part
       cookies?: StandardSchemaV1;        // { [name]: { value, httpOnly, secure, sameSite?, path?, domain?, maxAge?, expires?, partitioned } }
       content?: Readonly<Record<string, ContentSpec>> | null;   // media type → body; type/* and */* fall back
     };
-type ContentSpec = StandardSchemaV1 | null | StreamChunks | SseEvents | OpaqueBody;
-function chunks<S extends StandardSchemaV1>(chunk: S): StreamChunks<S>;          // a stream, per chunk
-function sse<const E extends Record<string, StandardSchemaV1 | null>>(events: E): SseEvents<E>;  // per event name
-function opaque(): OpaqueBody;                                                  // a type, never read
+type ContentSpec = StandardSchemaV1 | null | StreamChunks | SseEvents | OpaqueBody<undefined>;  // opaque(mediaType) here: a TypeError
+function chunks<S extends StandardSchemaV1, const F extends "raw" | "ndjson" = "raw">(
+  chunk: S, options?: { framing?: F }): StreamChunks<S, F>;                        // a stream, per chunk (or NDJSON line)
+function sse<const E extends Record<string, StandardSchemaV1 | null>, const D extends "json" | "text" = "json">(
+  events: E, options?: { data?: D }): SseEvents<E, D>;                             // per event name (Q-C13)
+function opaque<const M extends `${string}/${string}` | undefined = undefined>(
+  mediaType?: M): OpaqueBody<M>;                                                 // a type, never read; 200: opaque("image/png") = { content: { "image/png": opaque() } }
 ```
 
 - **An undeclared status is a mismatch**, as the user asked: whatever the
@@ -995,7 +1000,7 @@ return, and one setter covers every kind.
 | `sendFile()` / `download()` | status (200, 206, and the 304/404/412/416 it can answer), headers; the file's bytes **only** under a whole-body schema; `opaque()` declares the type unread | commit, after `stat`, ranges and freshness | held while read, then 500 |
 | `send(ReadableStream \| Readable \| async iterable)` | status, headers and media type at the commit; then each chunk via `chunks(S)` through a piped `TransformStream` | commit, then per chunk | before the start 500; after, the stream is errored and logged |
 | `write()` / `end()` | the first `write()` commits (it can still be refused, H38); then each write, async verdicts chained in order, `end()` waiting for the chain | commit, then per write | before the start 500; after, `destroy()` and a log |
-| SSE (`text/event-stream`) | each event, framed across chunk boundaries; `data` JSON-parsed when it parses; the schema chosen by the event name (`message` by default); an undeclared name is a mismatch | per event | cut off at the bad event, logged (H23, H24, H39) |
+| SSE (`text/event-stream`) | each event, framed across chunk boundaries; `data` decoded as declared (`data: "json"`, the default, or `"text"`; Q-C13); the schema chosen by the event name (`message` by default); an undeclared name is a mismatch | per event | cut off at the bad event, logged (H23, H24, H39) |
 | a stream against a **whole-body** schema | nothing: a stream is never buffered | — | one `warn` per route (H40, Q-H4) |
 | `sendStatus()`, `handleNotFound()`, `sendFile` failures, 204/205/304 | status and headers; the body is exempt | commit | 500 |
 | `HEAD` | checked as the GET it reuses | commit | 500 on a mismatch (H41) |
@@ -1306,7 +1311,8 @@ An SSE endpoint's contract is the HTTP request's inbound side plus an
 
 - **On the response contract**: `responses: { 200: { content: {
   "text/event-stream": sse({ tick: Tick, done: null }) } } }`. The chunk gate
-  frames events across chunk boundaries, JSON-parses `data` when it parses,
+  frames events across chunk boundaries, decodes `data` as declared
+  (`sse({...}, { data: "json" | "text" })`, default `"json"`; Q-C13),
   picks the schema by `event:` (`message` by default), and treats an
   undeclared name as a mismatch. Measured with zod and yup: `"warn"` passes
   and logs; `"error"` cuts the stream at the bad event and logs at `error`
@@ -1764,6 +1770,9 @@ it names.
 - **Q-C13** **SSE `data` decoding declared, not guessed**: `sse({ … }, {
   data: "json" | "text" })` rather than "JSON-parsed when it parses" (which
   turns `"123"` into a number)? **Recommended: yes, default `"json"`.**
+  ✅ **Answered 2026-10-21: yes, as recommended** (V3b): `data` is
+  JSON-parsed only under `"json"`, and a data that does not parse is a
+  mismatch.
 - **Q-C14** **Media keys with parameters** (bun-jobs' Prometheus
   `text/plain; version=0.0.4`): strip parameters on **both** sides when
   matching, and keep the declared key's parameters for documents?
@@ -1783,6 +1792,8 @@ it names.
   that sets none answers with its own.
 - **Q-H4** **A whole-body schema against a stream**: skip with one warning
   per route? **Recommended: yes**; streams use `chunks()` or `sse()`.
+  ✅ **Answered 2026-10-21: yes, as recommended** (V3b): never buffered; the
+  status, headers, cookies and media type are still checked.
 - **Q-H5** **Blobs, files and a passed-through `Response` are read to be
   checked** (so `"error"` holds them)? **Recommended: yes, with `opaque()`
   to declare without reading;** a size bound later. ✅ **Answered 2026-10-21:
@@ -1862,6 +1873,26 @@ key `content` and `ResponseValidationError` approved. V3a exports only
 are internal.
 
 **V3a (2026-10-21):** the types `ResponseSchemas`, `ResponseSpec`, `ResponseSpecObject`, `ResponseValidationMode` and `SetCookieView` are exported; a `write()`-opened stream's gate and a media-level `null` move to V3b; `commonResponses` merges per status and part, like `mergeContracts`.
+
+**V3b (2026-10-21):** `chunks()`, `sse()` and `opaque()` approved and
+exported from the package root. **Approved and exported (the user's
+decision, 2026-10-21):** the return and option types `StreamChunks`,
+`SseEvents`, `OpaqueBody`, `ChunkFraming`, `ChunksOptions`,
+`SseDataFormat`, `SseOptions` and `SseEventMap`, and the
+`ContractEntry.nested` field, an `sse()` row's event rows (§4.12 M4).
+**Added the same day, at the user's request:** the shorthand
+`opaque(mediaType)`, so `200: opaque("image/png")` is a whole status's spec,
+exactly `200: { content: { "image/png": opaque() } }` (the same check, the
+same typed `send()`, the same `describeContract` rows). Its argument is
+checked as a `content` key is (wildcards and parameters allowed; anything
+else a `TypeError`, and a type error when it is not `type/subtype`), and
+`opaque(mediaType)` inside a `content` map (or a core media map) is a
+`TypeError` at declaration and a type error, since the key already names the
+media type; `opaque()` with no argument at status level stays, like any bare
+schema there, an `application/json` body. `chunks()`'s `framing` values
+`"raw"` (the default) and `"ndjson"` were approved in the same decision. A
+media type mapped to `null` (V3a's deferral) is built, in the core's
+`MediaMap`.
 
 **V2 (2026-10-21):** `ContractEntry.implicit` approved; a declared part beats an implicit one in `mergeContracts`, silently; `TypedRouteHandler` gains a trailing `TRes` now, for V3a.
 

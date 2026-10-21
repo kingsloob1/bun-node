@@ -4,7 +4,7 @@
  * markers describeContract reads.
  */
 import type { StandardSchemaV1 } from "../types/standardSchema";
-import type { ContractKind, MaybePromise, Schema } from "./model";
+import type { AnyContract, ContractKind, MaybePromise, Schema } from "./model";
 
 /**
  * The options a JSON Schema converter takes, as the Standard JSON Schema
@@ -57,8 +57,10 @@ export interface SchemaWithJson<
 
 /** Marks a schema as documentation only (`documented()`). */
 const DOCUMENTED: unique symbol = Symbol.for("bun-validate.documented");
-/** Marks a schema with its body kind (V3a/V3b's `chunks()`, `sse()`, `opaque()`). */
+/** Marks a schema with its body kind (`chunks()`, `sse()`, `opaque()`). */
 const KIND: unique symbol = Symbol.for("bun-validate.kind");
+/** Marks a schema with the contract its rows expand into (an `sse()` body's events, plan §4.12 M4). */
+const NESTED: unique symbol = Symbol.for("bun-validate.nested");
 /** Marks a schema the framework declared on its own (plan §4.12 m5). */
 const IMPLICIT: unique symbol = Symbol.for("bun-validate.implicit");
 
@@ -101,7 +103,7 @@ export function isDocumented(schema: unknown): boolean {
 
 /**
  * Marks `schema` as a body of `kind`, read by `describeContract`. Returns
- * `schema`. For V3a/V3b's `chunks()`, `sse()` and `opaque()`; not exported.
+ * `schema`. For `chunks()`, `sse()` and `opaque()`; not exported.
  *
  * @internal
  */
@@ -147,6 +149,19 @@ export function kindOf(schema: unknown): ContractKind {
   return kind === "chunks" || kind === "sse" || kind === "opaque"
     ? kind
     : "value";
+}
+
+/**
+ * The media type an `opaque(mediaType)` declaration carries; `undefined` for
+ * any other schema, `opaque()` included. Such a declaration is a whole
+ * status's spec, so a media map refuses it as a value.
+ *
+ * @internal
+ */
+export function opaqueMediaType(schema: unknown): string | undefined {
+  if (kindOf(schema) !== "opaque") return undefined;
+  const mediaType = (schema as { mediaType?: unknown }).mediaType;
+  return typeof mediaType === "string" ? mediaType : undefined;
 }
 
 /**
@@ -298,4 +313,31 @@ export function recordOf<const M extends Readonly<Record<string, Schema>>>(
     { -readonly [K in keyof M]: StandardSchemaV1.InferInput<M[K]> },
     Out
   >;
+}
+
+/**
+ * Records on `schema` the contract its row expands into: an `sse()` body
+ * carries its events as an SSE contract (keyed by `event`, parts `data` and
+ * `id`), so `describeContract` lists them as the row's `nested` rows,
+ * identical to an SSE writer's own (plan §4.12 M4). Returns `schema`. Not
+ * exported.
+ *
+ * @internal
+ */
+export function markNested<S extends object>(
+  schema: S,
+  contract: AnyContract,
+): S {
+  Object.defineProperty(schema, NESTED, {
+    value: contract,
+    enumerable: false,
+    configurable: true,
+  });
+  return schema;
+}
+
+/** The contract `markNested` recorded on `schema`, if any. */
+export function nestedOf(schema: unknown): AnyContract | undefined {
+  if (typeof schema !== "object" || schema === null) return undefined;
+  return (schema as { [NESTED]?: AnyContract })[NESTED];
 }

@@ -15,6 +15,7 @@ import type {
 } from "./model";
 import { compileMediaMap } from "./media";
 import { CONTRACT } from "./model";
+import { opaqueMediaType } from "./schemas";
 
 /** The two sides, in canonical order. */
 export const SIDES: readonly Side[] = ["inbound", "outbound"];
@@ -103,9 +104,15 @@ function checkParts(where: string, spec: SideSpec, parts: unknown): void {
       );
     }
     for (const [mediaType, schema] of Object.entries(decl)) {
-      if (!isSchema(schema)) {
+      if (schema !== null && !isSchema(schema)) {
         throw new TypeError(
-          `${where}: "${part}" media type "${mediaType}" must be a Standard Schema`,
+          `${where}: "${part}" media type "${mediaType}" must be a Standard Schema or null`,
+        );
+      }
+      const own = opaqueMediaType(schema);
+      if (own !== undefined) {
+        throw new TypeError(
+          `${where}: "${part}" media type "${mediaType}": opaque(${JSON.stringify(own)}) names a second media type; inside a media map write opaque()`,
         );
       }
     }

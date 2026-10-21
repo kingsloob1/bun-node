@@ -106,7 +106,7 @@ const identity: Guard<unknown, unknown> = Object.assign(
 );
 
 /** Each media map's compiled matcher, built on its first message. */
-const MATCHERS = new WeakMap<MediaMap, MediaMatcher<Schema>>();
+const MATCHERS = new WeakMap<MediaMap, MediaMatcher<Schema | null>>();
 
 /**
  * The declared entry a media type falls under (`lib/contract/media.ts`):
@@ -116,10 +116,10 @@ const MATCHERS = new WeakMap<MediaMap, MediaMatcher<Schema>>();
 function mediaEntry(
   map: MediaMap,
   mediaType: string,
-): [declared: string, schema: Schema] | undefined {
+): [declared: string, schema: Schema | null] | undefined {
   let matcher = MATCHERS.get(map);
   if (matcher === undefined) {
-    matcher = compileMediaMap<Schema>(map, "contract media map");
+    matcher = compileMediaMap<Schema | null>(map, "contract media map");
     MATCHERS.set(map, matcher);
   }
   const found = matcher.match(mediaType);
@@ -168,6 +168,18 @@ function checkPart(
     return { ok: false, issues: [issue] };
   }
   const [declared, schema] = found;
+  if (schema === null) {
+    // This media type is declared with no body.
+    if (media!.value === undefined) return { ok: true, value };
+    const issue: ValidationIssue = {
+      target: part,
+      message: `No ${part} is declared for this media type`,
+      path: "",
+      mediaType: declared,
+    };
+    if (key !== undefined) issue.key = String(key);
+    return { ok: false, issues: [issue] };
+  }
   const outcome = runSchema(schema, media!.value, part, key, declared, format);
   const wrap = (o: StandardOutcome<unknown>): StandardOutcome<unknown> =>
     o.ok
