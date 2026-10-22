@@ -209,22 +209,27 @@ function issueLine(issue: ValidationIssue): string {
  *
  * Its `message` summarises the issues as `ValidationError`'s does; like the
  * issues, it holds no received value.
+ *
+ * @typeParam TTarget The parts its issues name: the pipes' four by default;
+ *   `@Validate` (`lib/validate.ts`) throws it with the request's six.
  */
-export class StandardValidationException extends BadRequestException {
+export class StandardValidationException<
+  TTarget extends string = PipeTarget,
+> extends BadRequestException {
   /**
    * Every issue, in the core's shape `{ target, message, path }`: `target`
    * is the parameter's part (`"body"`, `"query"`, `"params"` or `"custom"`),
    * `path` is prefixed with the parameter's key (`@Query('page')`) unless
    * `redactPaths` is set. No received value in any.
    */
-  readonly issues: readonly ValidationIssue<PipeTarget>[];
+  readonly issues: readonly ValidationIssue<TTarget>[];
 
   /**
    * @param issues Every issue the schema reported, already worded (scrubbed,
    *   and with `messages`/`redactPaths` applied); each becomes one line of
    *   the 400 body's `message` array.
    */
-  constructor(issues: readonly ValidationIssue<PipeTarget>[]) {
+  constructor(issues: readonly ValidationIssue<TTarget>[]) {
     super(issues.map(issueLine));
     this.issues = issues;
     this.message = `Validation failed — ${issues

@@ -13,6 +13,13 @@
  *   key included (both strip it first: 201, where yup alone crashes).
  *   Skipped visibly on Nest 11, which has no such pipe (read from
  *   `@nestjs/common`'s exports, never a version).
+ * - `validate-decorator`: bun-validate V7a's `@Validate` (plan
+ *   `docs/plans/bun-validate/` §4.5.1–§4.5.2), the interceptor checking
+ *   params, query, headers and body before the handler, with no filter
+ *   registered so Nest answers its `StandardValidationException` as any
+ *   `BadRequestException`. The interceptor is platform-neutral, and the
+ *   parsed parts it writes back are read through Nest's own `@Param`,
+ *   `@Query` and `@Body`, so every answer must be platform-express's.
  */
 import type { ExecutionContext, PipeTransform } from "@nestjs/common";
 import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
@@ -37,6 +44,8 @@ import {
   StandardSchemaPipe,
   StandardValidationModule,
   StandardValidationPipe,
+  Validate,
+  Validated,
 } from "../../lib";
 
 const CreateUser = z.object({
@@ -265,6 +274,49 @@ const configureNest12: Configure = (app, side) => {
   );
 };
 
+/* ---- bun-validate V7a: the `@Validate` decorator ------------------- */
+
+const IdParams = z.object({ id: z.coerce.number().int() });
+
+/**
+ * `@Validate` on one route, checking all four parts it is given. `id`,
+ * `page` and `body` reach the handler through Nest's own `@Param`,
+ * `@Query` and `@Body` — proving the interceptor's in-place write-back on
+ * both adapters; the headers, never written back, through
+ * `@Validated("headers")`.
+ */
+@Controller("vd")
+class ValidateDecoratorController {
+  @Post("parts/:id")
+  @Validate({
+    params: IdParams,
+    query: Page,
+    headers: ApiHeaders,
+    body: CreateUser,
+  })
+  parts(
+    @Param("id") id: unknown,
+    @Query("page") page: unknown,
+    @Body() body: unknown,
+    @Validated("headers") headers: unknown,
+  ) {
+    return { id, page, body, headers };
+  }
+}
+
+@Module({ controllers: [ValidateDecoratorController] })
+class ValidateDecoratorModule {}
+
+/** A JSON `POST` carrying the API header `vd/parts` requires. */
+const jsonApi = (body: unknown, apiVersion = "1"): RequestInit => ({
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-api-version": apiVersion,
+  },
+  body: JSON.stringify(body),
+});
+
 export const VALIDATION_GROUPS: ProbeGroup[] = [
   { name: "validation", module: ValidationModule, probes: PROBES },
   {
@@ -272,6 +324,32 @@ export const VALIDATION_GROUPS: ProbeGroup[] = [
     module: PipeOnlyModule,
     configure: configurePipeOnly,
     probes: PROBES,
+  },
+  {
+    name: "validate-decorator",
+    module: ValidateDecoratorModule,
+    probes: [
+      {
+        name: "all parts valid, coerced",
+        path: "/vd/parts/42?page=2",
+        init: jsonApi({ name: "a", age: "3" }),
+      },
+      {
+        name: "invalid body",
+        path: "/vd/parts/42?page=2",
+        init: jsonApi({ name: "", age: "x" }),
+      },
+      {
+        name: "invalid query",
+        path: "/vd/parts/42?page=0",
+        init: jsonApi({ name: "a", age: 3 }),
+      },
+      {
+        name: "invalid header",
+        path: "/vd/parts/42?page=2",
+        init: jsonApi({ name: "a", age: 3 }, "9"),
+      },
+    ],
   },
   {
     name: "validation-vs-nest12",
