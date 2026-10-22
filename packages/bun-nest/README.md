@@ -83,6 +83,7 @@ Underneath, routing is
   - [Standalone and custom adapters](#standalone-and-custom-adapters)
   - [Closing](#closing)
 - [Validation](#validation)
+  - [`@Validate`](#validate)
   - [`StandardSchemaPipe`](#standardschemapipe)
   - [`SchemaDto` and `StandardValidationPipe`](#schemadto-and-standardvalidationpipe)
   - [`ValidationExceptionFilter`](#validationexceptionfilter)
@@ -1823,6 +1824,7 @@ them probe by probe).
 |---|---|---|
 | One parameter, one schema | `new StandardSchemaPipe(schema)` | Nest 11 and 12 |
 | Parameters typed from a schema, one global pipe | `class Dto extends SchemaDto(schema) {}` + `StandardValidationPipe` | Nest 11 and 12 |
+| A route's whole request — body, query, params, headers, cookies | `@Validate({ … })` + `@Validated(part)` | Nest 11 and 12 |
 | `{ error, issues }` answers | `ValidationExceptionFilter` (opt-in) | Nest 11 and 12 |
 | Both registered globally | `StandardValidationModule` | Nest 11 and 12 |
 | Nest's own per-parameter schema | `@Body({ schema })` + Nest's `StandardSchemaValidationPipe` | Nest 12 only |
@@ -1834,7 +1836,64 @@ already validate a per-parameter schema; ours is the path on Nest 11, and the
 
 Every row of this table runs, with each answer asserted, in
 [`07-validation/standard-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/standard-validation.ts):
-all of them on Nest 12, and all but the last on Nest 11.
+all of them on Nest 12, and all but the last on Nest 11. `@Validate` runs in
+[`07-validation/validate-decorator.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/validate-decorator.ts).
+
+### `@Validate`
+
+```ts
+import { Validate, Validated, ValidBody, ValidQuery } from "@kingsleyweb/bun-nest";
+
+@Controller("users")
+@Validate({ headers: ApiHeaders })                     // class level: every route
+class UsersController {
+  @Validate({ params: IdParams, query: Page, cookies: Session, body: CreateUser })
+  @Post(":id")
+  create(
+    @ValidBody() body: CreateUserDto,                  // or Infer<typeof CreateUser>
+    @ValidQuery() query: { page: number },             // coerced
+    @Validated("params") params: { id: number },
+  ) {}
+}
+```
+
+`@Validate(schemas)` checks a route's request parts — `params`, `query`,
+`headers`, `cookies`, `signedCookies`, `body` — with Standard Schemas, in an
+interceptor, before the handler and before Nest's pipes:
+
+- Every parsed part is **written back in place** (`req.query`, `req.body`, …)
+  and recorded on the request's **`valid`** view, which `@Validated(part)`
+  and its aliases (`@ValidBody()`, `@ValidQuery()`, `@ValidParams()`,
+  `@ValidHeaders()`, `@ValidCookies()`, `@ValidSignedCookies()`) read: a
+  coerced value arrives coerced. `@Validated(part)` is `undefined` where
+  nothing validated the part.
+- **Headers are never written back** — `req.headers` stays raw, so `accepts`,
+  `type-is` and the body parsers keep working; their typed view is
+  `req.valid.headers` (and `@ValidHeaders()`).
+- A failure throws a `StandardValidationException` (400) carrying every
+  part's issues, value-free: with `ValidationExceptionFilter` the answer is
+  `{ error: "Validation failed", issues }`; without it, Nest's own 400 body.
+- Method and class level merge **per part**: a part both declare is the
+  method's; the class's other parts still apply.
+- Every schema is recorded on the route's contract (`getContract` on the
+  handler, or on the class for a class-level `@Validate`), so documentation
+  tooling reads them.
+
+**Composing with Nest 12** (`@Body({ schema })`, and `@Query` / `@Param`
+alike): `@Validate` skips a part only when a **whole-part** parameter
+decorator for it carries a schema **and** Nest's own
+`StandardSchemaValidationPipe` applies to that parameter (from the
+parameter's, the method's or the class's `@UsePipes`, or the global pipes) —
+one parse per part, by whichever runs. A keyed decorator
+(`@Body("field", { schema })`) covers one property, never the part; headers
+and cookies can never be skipped (Nest runs no pipes on them); on Nest 11
+`@Validate` checks everything itself. The check is read from the installed
+Nest's capabilities, never a version. Skipped or not, every schema still
+reaches the route's contract.
+
+`@Validate` works on any adapter: the request is read and written through
+plain properties (Express 5's getter-only `req.query` is defined over). It
+checks HTTP requests only; gateway messages are the gateway pipes' ground.
 
 ### `StandardSchemaPipe`
 

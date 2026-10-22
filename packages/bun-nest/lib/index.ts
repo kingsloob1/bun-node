@@ -75,6 +75,16 @@ export {
   type StandardValidationPipeOptions,
   ValidationExceptionFilter,
 } from "./validation";
+export {
+  Validate,
+  Validated,
+  ValidBody,
+  ValidCookies,
+  ValidHeaders,
+  ValidParams,
+  ValidQuery,
+  ValidSignedCookies,
+} from "./validate";
 // bun-common's per-route parsing middleware, for `consumer.apply(...)`.
 export {
   requestParsing,
