@@ -35,7 +35,9 @@ any session's memory. Everything a session knew that the repository did not
 has been written into this file, [`CLAUDE.md`](../CLAUDE.md) and the plans.
 The rest of this file describes the multi-agent setup that ran until then;
 [Working alone](#working-alone-the-roles-collapse) says how its rules apply to
-one developer.
+one developer. [`AGENTS.md`](../AGENTS.md), at the root, is the entry point
+that agents other than Claude Code read on their own: it names these
+documents in reading order and lists the rules that must never be broken.
 
 ### The state at handoff
 

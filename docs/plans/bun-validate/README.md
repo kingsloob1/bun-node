@@ -90,7 +90,7 @@ each, with its examples PR.
 
 | PR | Branch, head | What | State |
 |---|---|---|---|
-| **#515** | `feat/bun-validate-v5c-flows`, `d4046e65` | **V5c**, flows: `addFlow`'s pre-write pass, the flows route's 400 `VALIDATION` at body paths, typed `getChildrenValues()` (`FlowChildrenValues`, `JobChildrenOf`, `TChildren`, per-child `optional`), and `6aa72631`: a `"warn"` entry's warning waits until the whole bulk or flow is written (the follow-up agreed in its review) | gated on develop `666ad4b5` (the PR body has every figure: 1723 pass / 0 fail targeted with all five database URLs, `test:seeded` passed, 18 projects clean, consumer-check 160/160, lint and format clean, 5 negative controls). Q-C9 and its names were approved by the user on 2026-10-21. The bench `--compare` it was allowed failed 7 rows, which the user **accepted on the code evidence** (the PR body says why). **Now conflicting with develop**, in this file only (below) |
+| **#515** | `feat/bun-validate-v5c-flows`, `d4046e65` | **V5c**, flows: `addFlow`'s pre-write pass, the flows route's 400 `VALIDATION` at body paths, typed `getChildrenValues()` (`FlowChildrenValues`, `JobChildrenOf`, `TChildren`, per-child `optional`), and `6aa72631`: in `addBulk` and `addFlow`, a `"warn"` entry's "written anyway" warning waits until **every entry's check has passed**, so a bulk or flow another entry refuses warns nothing (it is still logged before the write, not after it: an open follow-up, below) | gated on develop `666ad4b5` (the PR body has every figure: 1723 pass / 0 fail targeted with all five database URLs, `test:seeded` passed, 18 projects clean, consumer-check 160/160, lint and format clean, 5 negative controls). **Approved** by the bun-common agent (the plan's lead), including its re-review of `6aa72631`. The seeded re-run after `6aa72631` exited 0 but its log was not kept, so the re-gate below is not optional. Q-C9 and its names were approved by the user on 2026-10-21. The bench `--compare` it was allowed failed 7 rows, which the user **accepted on the code evidence** (the PR body says why). **Now conflicting with develop**, in this file only (below) |
 | **#517** | `examples/v5c-warn-refused`, `c3dc87c2` | the examples check for `6aa72631`: a refused flow holding a `"warn"` node logs no "written anyway" warning (`examples/bun-jobs/03-job-registry/validating-flows.ts`) | its base is #515's branch, not develop; gated on `d4046e65` (30/30 on memory ×3, postgres, redis, sqlite), with a negative control on `3a96f61c` |
 
 **To land them**, in this order, each step asked of the user separately
@@ -123,8 +123,14 @@ each, with its examples PR.
    - **No bench run**: the one allowed is spent, and the user's rule is no
      speed comparisons without asking.
 4. Optionally refresh `bun-timings.json` and `bun-timings.seeded.json`
-   (`bun run test:timings`, `bun run test:seeded --update-timings`): the two
-   new test files have no entries, which costs scheduling only.
+   (`bun run test:timings`, `bun run test:seeded --update-timings`): V5c's
+   new test file, `job-schema-flows.test.ts`, and V5a's have no entries
+   (`flowChildren.type-test.ts` is checked by `bun run check`, never run), which costs scheduling only.
+   Commit the refresh with the change that made it stale, or on its own.
+   Tests known to flake under load (not V5c's): local-compute's "kills a unit
+   at its lifetime" and "localCompute conforms on redis", and
+   `createTicker`'s interval. Re-run on a quiet machine before blaming a
+   change.
 5. Merge with `--match-head-commit`, confirm `MERGED`, then delete the
    branches (local and remote) and the stopped agents' worktrees
    `../bun-node-v5c-a0` and `../bun-node-v5c-check-74` (both clean, at the PR
@@ -132,12 +138,21 @@ each, with its examples PR.
 
 **Left open by V5c** (from #515's review section; none blocks the merge):
 a bare `BunQueueWorker`'s processor is not typed for children (`TChildren` is
-not on it); a refused flow reports its first failing node only, as `addBulk`
+not on it; the bun-jobs agent's next item after the warning fix below); a refused flow reports its first failing node only, as `addBulk`
 does (V5b's question, below); a registry node on a registry queue this process
 has not created is checked under the default `"error"` policy; `flowPath` is in
 the error's `context`, not its message; `optional` is types-only and the flows
 route body does not accept it; and the playground has no V5c addition yet
 (the user's rule: every feature reaches the playground).
+
+**Owed right after V5c, as its own small PR** (agreed in #515's review by the
+bun-jobs and bun-common agents): log a `"warn"` entry's "written anyway"
+warning **after the write succeeds**, in `add`, `addBulk` and `addFlow`
+alike. Today `6aa72631` defers it only until every entry's check has passed,
+so a write that then fails (a driver error) has already logged "written
+anyway". Keep the wording "written anyway": the examples
+(`examples/bun-jobs/03-job-registry/validating-flows.ts` and the V5a ones)
+match it.
 
 #### Decisions taken but not yet recorded elsewhere
 
