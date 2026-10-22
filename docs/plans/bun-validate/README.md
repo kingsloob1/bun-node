@@ -44,23 +44,221 @@ Bun, 1.4.4-canary.1; the repo's floor is 1.4.3. The evidence is in
 [`evidence/`](evidence/README.md), and each measurement there re-runs with one
 command.
 
-### Status (2026-10-21)
+### Status (2026-10-22)
+
+**Paused for a handoff on 2026-10-22** (the user's decision): every agent
+stopped, and development continues with another model. Read
+[Handoff (2026-10-22)](#handoff-2026-10-22-how-to-resume) below before
+anything else in this plan: it lists what merged, what is open, the decisions
+not yet written into §8, and the next PR's brief.
 
 | Part | State |
 |---|---|
 | This plan | **revised to the user's 2026-10-17 scope**. The eight ★ questions in §8 are **answered** (2026-10-17, each as recommended); the rest are asked before the PR each gates. Group 1 started once the whole [nestjs-12-parity](../nestjs-12-parity/README.md) plan had merged (the user's decision, 2026-10-17) |
 | Group 1 (§6): V0, V1, V2, V3a, V3b | **merged 2026-10-21**: V0 #463, V1 #470, V2 #477, V3a #482, V3b #484 (bun-common; examples beside each) |
-| Group 1: **V3c**, response variants (§4.4.6) | **built 2026-10-21, PR pending** (branch `feat/bun-validate-v3c-variants`, bun-common). Added 2026-10-21 (the user's decision: group 1 includes V3c, before group 2); planned and spiked ([`evidence/response-variants/`](evidence/response-variants/README.md)); its questions are Q-H15–Q-H31: all answered 2026-10-21 (Q-H17 and Q-H18 changed by the user: an async `when`, and `.variant()` adjusting the response) and its names approved. Two measured departures from §4.4.6's table: `validate()`'s `RS` constraint is `ResponseSchemas<InferValidatedShape<S>>`, without `H` (with `H` in it TypeScript cannot infer `variants()`'s request view, so `when` is typed by the schemas' outputs, not a `transform` hook's result); and a plain status's `refine` written inline with an inferred parameter needs `satisfies Refine` (a context-sensitive function in `responses` fixes `RS` to its default) |
-| Group 2: **V6**, the Nest pipes and filter (§4.5.3, §4.5.5) | **built 2026-10-21, PR pending** (branch `feat/bun-validate-v6-nest-pipes`, bun-nest): `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule` (Q7 and Q8 answered by the user 2026-10-21, as recommended); the pipes take `validate()`'s `messages` and `redactPaths`; tested on Nest 12 and in the 11.2.7 column, with expressCompat groups against platform-express and, on 12, against Nest's own `StandardSchemaValidationPipe` |
+| Group 1: **V3c**, response variants (§4.4.6) | **merged 2026-10-21**, #495 (bun-common; examples #496). Added 2026-10-21 (the user's decision: group 1 includes V3c, before group 2); planned and spiked ([`evidence/response-variants/`](evidence/response-variants/README.md)); its questions are Q-H15–Q-H31: all answered 2026-10-21 (Q-H17 and Q-H18 changed by the user: an async `when`, and `.variant()` adjusting the response) and its names approved. Two measured departures from §4.4.6's table: `validate()`'s `RS` constraint is `ResponseSchemas<InferValidatedShape<S>>`, without `H` (with `H` in it TypeScript cannot infer `variants()`'s request view, so `when` is typed by the schemas' outputs, not a `transform` hook's result); and a plain status's `refine` written inline with an inferred parameter needs `satisfies Refine` (a context-sensitive function in `responses` fixes `RS` to its default) |
+| Group 2: **V6**, the Nest pipes and filter (§4.5.3, §4.5.5) | **merged 2026-10-21**, #501 (bun-nest, with its review fixes: the `rpc` filter, `stripProtoKeys: "nest" \| "minimal"` in `validateStandard`, which strips only when given a rule, and `gatewayPipes()`; examples #503): `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule` (Q7 and Q8 answered by the user 2026-10-21, as recommended); the pipes take `validate()`'s `messages` and `redactPaths`; tested on Nest 12 and in the 11.2.7 column, with expressCompat groups against platform-express and, on 12, against Nest's own `StandardSchemaValidationPipe` |
 | Follow-up: **V13**, the `"parse"` response mode (Q5) | **added 2026-10-21** (the user's answer to Q-H20); after group 2; not designed beyond §6's row |
 | The transport-agnostic core (§4.1) | spiked: [`evidence/contract-core/`](evidence/contract-core/README.md), with a UDP and an in-process broker adapter, 24 type controls shown to fire |
 | HTTP completeness: cookies, typed headers, responses of every body kind (§4.3, §4.4) | spiked as a patch on a copy of bun-common: [`evidence/http-complete/`](evidence/http-complete/README.md), H1–H52 at runtime, 18 type controls shown to fire, cost per body kind |
 | NestJS (§4.5) | designed with the Nest agent (bun-node-15); waits on nestjs-12-parity PR-2, PR-3, PR-5, PR-6a and PR-6c (§6); bun-node-15 reviewed §4.5 with a probe on Nest 11 and 12 (`evidence/nest-interceptor/`) |
 | bun-jobs data, results and flows (§4.8) | designed with the Jobs & Telemetry agent (bun-node-e9), from its survey of the code; e9 builds it |
 | **V4**, bun-jobs alignment (§4.8.5, §4.12 M5 and m11) | **merged 2026-10-21**, #502 (bun-jobs; examples beside it, #504). `s` carries `~standard.jsonSchema` (`draft-2020-12` and `draft-07`; any other target throws), its input built through the documents' `toJsonSchema`, so `s.documented` keywords and named `$defs` are included; a defaulted key is optional on input and required in output, in the types too. `validateResponses` takes `"off" \| "warn" \| "error"` (`true` is `"warn"`), checked with `validateStandard` and refused with `ResponseValidationError`, rather than through bun-common's gate (the API's `default` problem response has no place there, m8). Every route's terminal layer carries its full contract through `forwardContract` (87 of 87 routes, tested against the OpenAPI document). Of the issue-flattening copies, `define.ts`'s adopted `validateStandard`; `remote/schemas.ts` and `provider/configure.ts` keep theirs, as the scrub was then broader than the issue's path |
-| **V5a**, job data and results (§4.8.1–§4.8.4, flows excepted) | **built 2026-10-21, PR pending** (branch `feat/bun-validate-v5a-job-data`, bun-jobs); Q-J1–Q-J3 answered and its names approved the same day |
+| **V5a**, job data and results (§4.8.1–§4.8.4, flows excepted) | **merged 2026-10-21**, #507 (bun-jobs; examples #510); Q-J1–Q-J3 answered and its names approved the same day |
+| **V5c**, flows (§4.8, flows) | **built and gated 2026-10-21, open, not merged**: #515 (`feat/bun-validate-v5c-flows`), with its examples fix #517 (`examples/v5c-warn-refused`). The examples for V5c itself merged as #516. What is left: [Handoff](#handoff-2026-10-22-how-to-resume) |
+| Group 2: **V7a**, `@Validate` request side | **not started** (an agent began and stopped at a usage limit having written nothing; its empty branch was deleted). Q-N1–Q-N4 answered 2026-10-21 (§8.4) |
+| Follow-ups of group 1, merged 2026-10-21 | `messages` and `redactPaths` as `validate()` options #486 (#487); `close()` drains, `drainAndStop`, `closeDrainTimeout` #488 (#491), bun-nest on it #493; socket-free `fetch()` frames a body as a client does #489 (#490); HEAD on a GET route on the fast path #494; `getPort()` retry #497; `fresh()` an exact port of fresh 2.0.0 #498 (#499); the scrub scoped to the issue's path #505 (#506); a thenable schema result is async, scrub keys at the path #511 (#512); bun-jobs' remote and provider issue messages pinned #509; the API's old-spelling hint survives the scrub #500 |
 | OpenAPI, AsyncAPI, typed client ([`api-docs-generation/`](../api-docs-generation/README.md) "AD", [`typed-client/`](../typed-client/README.md) "TC") | plan only; §4.11 says what they read from this plan's runtime metadata; reviewed against TC by bun-node-99, and its findings are requirements of the PRs they name (§4.12) |
 | Validate-on-read for caches ([`bun-cache/`](../bun-cache/README.md), "BC" §3.13) | plan only; uses this plan's core |
+
+### Handoff (2026-10-22): how to resume
+
+Written by the main agent when the user stopped every agent so that another
+model could continue. Nothing of this plan is in flight: no agent, no
+uncommitted work, no queued heavy run. All of it is on GitHub, as merged PRs,
+two open PRs, or the decisions below. The working rules (consent popups,
+signed commits, gates, the heavy-run wrapper) are in
+[`docs/agentic-setup.md`](../../agentic-setup.md), "Handoff" and "Standing
+rules from the maintainer"; read them first.
+
+**develop** is at `bc2b1a5f` (#501). Merged: group 1 entire (V0 #463, V1
+#470, V2 #477, V3a #482, V3b #484, V3c #495) and its follow-ups, group 2's V6
+(#501), group 3's V4 (#502) and V5a (#507). The Status table above lists
+each, with its examples PR.
+
+#### Open PRs
+
+| PR | Branch, head | What | State |
+|---|---|---|---|
+| **#515** | `feat/bun-validate-v5c-flows`, `d4046e65` | **V5c**, flows: `addFlow`'s pre-write pass, the flows route's 400 `VALIDATION` at body paths, typed `getChildrenValues()` (`FlowChildrenValues`, `JobChildrenOf`, `TChildren`, per-child `optional`), and `6aa72631`: in `addBulk` and `addFlow`, a `"warn"` entry's "written anyway" warning waits until **every entry's check has passed**, so a bulk or flow another entry refuses warns nothing (it is still logged before the write, not after it: an open follow-up, below) | gated on develop `666ad4b5` (the PR body has every figure: 1723 pass / 0 fail targeted with all five database URLs, `test:seeded` passed, 18 projects clean, consumer-check 160/160, lint and format clean, 5 negative controls). **Approved** by the bun-common agent (the plan's lead), including its re-review of `6aa72631`. The seeded re-run after `6aa72631` exited 0 but its log was not kept, so the re-gate below is not optional. Q-C9 and its names were approved by the user on 2026-10-21. The bench `--compare` it was allowed failed 7 rows, which the user **accepted on the code evidence** (the PR body says why). **Now conflicting with develop**, in this file only (below) |
+| **#517** | `examples/v5c-warn-refused`, `c3dc87c2` | the examples check for `6aa72631`: a refused flow holding a `"warn"` node logs no "written anyway" warning (`examples/bun-jobs/03-job-registry/validating-flows.ts`) | its base is #515's branch, not develop; gated on `d4046e65` (30/30 on memory ×3, postgres, redis, sqlite), with a negative control on `3a96f61c` |
+
+**To land them**, in this order, each step asked of the user separately
+(commit, PR, merge):
+
+1. Merge #517 into `feat/bun-validate-v5c-flows` (it is the examples fix
+   stacked on the feature branch, [Merge order](../../agentic-setup.md#merge-order)).
+2. Rebase `feat/bun-validate-v5c-flows` onto `origin/develop`. The one
+   conflict is this README's Status table: keep develop's table (it already
+   has a V5c row, from the handoff) and set that row to **merged** with #515's
+   number; keep #515's own edits to Q-C9 (§8.2) and its V5c paragraph in §9.
+   No code file conflicts (`git merge-tree --write-tree origin/develop
+   origin/feat/bun-validate-v5c-flows` names only this file).
+3. Re-gate the rebased head, in a **fresh** worktree:
+   - `bun install` at the root, then `bun install --frozen-lockfile` in
+     `packages/bun-common/bench`, `packages/bun-jobs/bench`, `benchmarks/`,
+     `templates/compute-provider/` and `tools/vscode-bun-lint/`;
+   - `bun scripts/typecheck.ts` (18 projects);
+   - in `packages/bun-jobs`: `bun run check`, `bun run lint`,
+     `bun run format:check`; the targeted run with all five
+     `BUN_JOBS_TEST_*_URL`s (`bun test job-schema flow typed-registry
+     job-ids job-fail fix-mongo fix-redis-slots mongo-driver __tests__/api
+     __tests__/remote`, path filters, the set #515 ran); and
+     `bun run test:seeded` through the heavy-run wrapper (CLAUDE.md, "Tests
+     run in parallel");
+   - `bun scripts/consumer-check.ts packages/bun-jobs` (160/160 before);
+   - `examples/bun-jobs`: `03-job-registry/validating-flows.ts` on memory and
+     one server (`EXAMPLE_DRIVER` **and** the URL), then `bun run-all.ts` for
+     the merge window.
+   - **No bench run**: the one allowed is spent, and the user's rule is no
+     speed comparisons without asking.
+4. Optionally refresh `bun-timings.json` and `bun-timings.seeded.json`
+   (`bun run test:timings`, `bun run test:seeded --update-timings`): V5c's
+   new test file, `job-schema-flows.test.ts`, and V5a's have no entries
+   (`flowChildren.type-test.ts` is checked by `bun run check`, never run), which costs scheduling only.
+   Commit the refresh with the change that made it stale, or on its own.
+   Tests known to flake under load (not V5c's): local-compute's "kills a unit
+   at its lifetime" and "localCompute conforms on redis", and
+   `createTicker`'s interval. Re-run on a quiet machine before blaming a
+   change.
+5. Merge with `--match-head-commit`, confirm `MERGED`, then delete the
+   branches (local and remote) and the stopped agents' worktrees
+   `../bun-node-v5c-a0` and `../bun-node-v5c-check-74` (both clean, at the PR
+   heads; nothing in them is not on GitHub).
+
+**Left open by V5c** (from #515's review section; none blocks the merge):
+a bare `BunQueueWorker`'s processor is not typed for children (`TChildren` is
+not on it; the bun-jobs agent's next item after the warning fix below); a refused flow reports its first failing node only, as `addBulk`
+does (V5b's question, below); a registry node on a registry queue this process
+has not created is checked under the default `"error"` policy; `flowPath` is in
+the error's `context`, not its message; `optional` is types-only and the flows
+route body does not accept it; and the playground has no V5c addition yet
+(the user's rule: every feature reaches the playground).
+
+**Owed right after V5c, as its own small PR** (agreed in #515's review by the
+bun-jobs and bun-common agents): log a `"warn"` entry's "written anyway"
+warning **after the write succeeds**, in `add`, `addBulk` and `addFlow`
+alike. Today `6aa72631` defers it only until every entry's check has passed,
+so a write that then fails (a driver error) has already logged "written
+anyway". Keep the wording "written anyway": the examples
+(`examples/bun-jobs/03-job-registry/validating-flows.ts` and the V5a ones)
+match it.
+
+#### Decisions taken but not yet recorded elsewhere
+
+- **Q-N1–Q-N4**, answered by the user on 2026-10-21 and now written into §8.4:
+  compose with Nest 12's schema options; a `reply()` helper (V7b);
+  `@Validated(part)` **plus** six per-part aliases; keep the name `@Validate`.
+- **The Nest agent's review conditions for V7a's skip rule** (bun-node-a9,
+  2026-10-21), binding on V7a:
+  - detect a `StandardSchemaValidationPipe` from **all four** sources
+    (global, through `useGlobalPipes` or `APP_PIPE`; controller; method;
+    parameter), gated on a capability read once (a prototype member, an enum
+    key, or `@nestjs/core/internal` through `createRequire`), never on a
+    version string, each source with its own test;
+  - when detection is unreliable, **do not skip**; check the part;
+  - **Nest 11 never skips**, proved on the 11.1.20 and 11.2.7 matrix
+    columns;
+  - `@Body("field", { schema })` and a keyed `@Query("page", { schema })`
+    cover one key, so they never skip the whole part.
+- **The rules for any bun-nest PR of group 2** (a9's, the same day):
+  - both Nest majors (`^11.1.20 || ^12.0.0`): no `override` of a member
+    Nest 11 lacks; Nest types used structurally;
+  - Nest 12's native schema pieces get a capability gate and either a Nest 11
+    path or a clear "needs Nest 12" error, with tests on both columns;
+  - param decorators are applied by call in tests,
+    `Inject(TOKEN)(target, undefined, 0)`, because Bun drops decorators that
+    the cwd's tsconfig does not enable (oven-sh/bun#28605);
+  - child-process Nest fixtures set their cwd to `packages/bun-nest`;
+  - deep imports carry `.js`; bun-common is imported from its root only;
+  - every new export goes in `lib/index.ts` and `consumer-check.json`;
+  - responses go through PR-6c's before-write hook
+    (`addBeforeWriteHook(ctx)` returns a remover):
+    - `ctx.phase` is `"response"` or `"error"`, and under `"error"`
+      `ctx.response` is undefined;
+    - `ctx.body.kind` is one of `json`, `text`, `buffer`, `stream`, `file`,
+      `blob`, `empty`;
+    - a throw refuses the response, and a fresh 500 goes through Nest's
+      filters with CORS kept;
+    - a returned promise holds the write, capped by the request timeout;
+    - variants and `@Res()` go through the same hook.
+  - **The gate per PR:**
+    - in bun-nest: `bun run check`, `bun run lint`, `bun run format:check`,
+      `bun run test`, and a `bun test --randomize --seed=N`;
+    - `bun scripts/typecheck.ts`;
+    - `examples/bun-nest`'s `bun run-all.ts`;
+    - consumer-check, 66/66 plus the new cells;
+    - `scripts/nest-matrix.ts --run 11.2.7`, and for V7a also 11.1.20 and
+      12.0.0;
+    - expressCompat and routingCompat green, with new probes against
+      platform-express;
+    - no speed A/B.
+- **V7a's example lives at `examples/bun-nest/07-validation/validate-decorator.ts`**
+  (agreed by the bun-common and examples agents), not the `08-validate/` the
+  plan once named.
+- **V5b's question, still to be put to the user**: when a flow is refused
+  through the API, collect every failing node's issues into one 400, as
+  `ruleIssues` does? The bun-common agent recommends **yes**.
+- **V7b's question, still to be put to the user**: root exports from
+  bun-common of `InferResponses`, `VariantNames`, `NarrowVariant`,
+  `DeclaredAbsent`, `ResponseTypeMap`, `JsonBodyFor`, `SendBodyFor` and
+  `AllowedStatus`, which bun-nest's `@Validate` response typing needs.
+
+#### What comes next, in the user's order
+
+1. **Finish V5c** (above). Independent of group 2.
+2. **V7a**, `@Validate` request side (§6 row 7, §4.5.1, §4.5.2). Its
+   dependencies have all merged (V2, V6, nestjs-12-parity PR-3 and PR-5).
+   Built in bun-nest under the rules above. Its names are approved through
+   Q-N3 and Q-N4: `@Validate`, `@Validated(part)`, `@ValidBody()`,
+   `@ValidQuery()`, `@ValidParams()`, `@ValidHeaders()`, `@ValidCookies()`,
+   `@ValidSignedCookies()`; no `@Cookies()` of ours. Record them in §9 in
+   the PR. CHANGE REPORT (the list of what changed for users) in the PR body,
+   and the example above in the same merge window.
+3. **V7b**, `@Validate` responses (§6 row 8): ask the exports question
+   first; `reply(status, body, { headers })` (Q-N2), `@Sse`, variants, and
+   `@Res()` through the before-write hook.
+4. **V13**, the `"parse"` response mode (§6 row 8a): not designed beyond its
+   row; its open points are listed there.
+5. **Group 3, after group 2** unless the user reorders: V8 (WebSocket
+   channels), V9 (Nest gateways), V11 (SSE, inside
+   [bun-native-routes](../bun-native-routes/README.md)' PR-sse2, which has
+   not started), V5b (after V12's converter, with the question above), V10
+   (inside bun-cache's core PR, which has not started).
+6. **Group 4**: AD (b0), V12, AD (e).
+
+**Speed comparisons**: none without asking the user first (their rule,
+2026-10-20). V3a's router A/B and V5a/V5c's one bench run each were asked for
+and granted; no standing permission remains.
+
+#### Small bun-common follow-ups (none started)
+
+- A lazy empty-body settle for a non-GET request with `Content-Length: 0`
+  (socket-free and served), from #489.
+- Raise the timeouts of tests that fail under load: the compression flush and
+  SSE test, RouteTree's 5 s differential test, and the async-control
+  example's timing.
+- `fresh()` and `If-None-Match: *`: #498 shipped the zero-cost subset (the
+  user's choice). A GET with no headers set still answers 200 on the fast path
+  where Express answers 304 (18 cells, documented in the README). A patch for
+  the fast path exists only on the old machine
+  (`~/.cache/bun-node-11/followups/inm/scratch/fastpath.patch`); it is not
+  needed unless the user asks for that case.
+
+The stopped agents' notes, which this section copies from, stay on the old
+machine only: `~/.cache/bun-node-11/validate-g1/decisions.md`,
+`~/.cache/bun-node-11/validate-g1/group2-a9-rules.md` and
+`~/.cache/bun-node-e9/validate/v5c/PROGRESS.md`.
 
 ### Contents
 
@@ -2386,15 +2584,23 @@ session; Q-H25–Q-H31 came from the answer to Q-H18.
   a part only when that parameter's `{ schema }` covers the whole part **and**
   a `StandardSchemaValidationPipe` applies, and otherwise checks it itself;
   its order with the serializer is the interceptors' order (§4.5.1)?
-  **Recommended: compose.** (It gates V7a, not group 1.)
+  **Recommended: compose.** (It gates V7a, not group 1.) ✅ **Answered
+  2026-10-21: compose, as recommended**: `@Validate` skips a part only when
+  that parameter's `{ schema }` covers the whole part **and** a
+  `StandardSchemaValidationPipe` applies (the review conditions are in the
+  [Handoff](#handoff-2026-10-22-how-to-resume)).
 - **Q-N2** **Per-status typing in a controller through a `reply(status, body,
   { headers })` helper** the interceptor unwraps, beside the plain return?
-  **Recommended: yes.**
+  **Recommended: yes.** ✅ **Answered 2026-10-21: yes**, built in V7b.
 - **Q-N3** **One `@Validated(part)` parameter decorator**, and no
-  `@Cookies()` of ours? **Recommended: yes.**
+  `@Cookies()` of ours? **Recommended: yes.** ✅ **Answered 2026-10-21, beyond
+  the recommendation**: `@Validated(part)` **plus** the per-part aliases
+  `@ValidBody()`, `@ValidQuery()`, `@ValidParams()`, `@ValidHeaders()`,
+  `@ValidCookies()` and `@ValidSignedCookies()`; no `@Cookies()` of ours.
 - **Q-N4** **The name `@Validate`**, which class-validator also exports as
   `@Validate(constraint)` (apps using both alias one; §4.5.6)? **Recommended:
   keep it**, matching AD and NTR; the alternative is `@ValidateRoute`.
+  ✅ **Answered 2026-10-21: keep `@Validate`.**
 
 ### 8.5 bun-jobs (§4.8)
 

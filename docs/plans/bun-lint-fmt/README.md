@@ -25,6 +25,40 @@ on since** (to `56d6afde` when this was written, #401 among the merges): the
 2026-10-17 figures are `930dd664`'s and were not re-measured; each PR
 re-measures on its own branch.
 
+## Handoff (2026-10-22)
+
+**Only PR F is left**, and nobody is building it: the user stopped every agent
+on 2026-10-22 so that another model could continue (see
+[`docs/agentic-setup.md`](../../agentic-setup.md), "Handoff"). PR E merged as
+#462, with the one-time reformat `879310e0` (listed in
+`.git-blame-ignore-revs`); since then `bun run lint` and `bun run format:check`
+are the gate in every directory, and nothing runs ESLint. PR E's merge window
+has passed and every owner has gated on `bun lint` since, so PR F's
+precondition ([PR F](#pr-f-remove-eslint-and-prettier)) is met; it still waits
+for the user's go-ahead, like any PR.
+
+To build it, follow [PR F](#pr-f-remove-eslint-and-prettier) to the letter:
+remove every `eslint.legacy.config.mjs` (13 are tracked on develop
+`bc2b1a5f`, `templates/` and `tools/vscode-bun-lint/` included:
+`git ls-files | grep eslint.legacy`) and `eslint.legacy.directives.mjs`, the
+ESLint and Prettier packages it lists from the `package.json`s, keep
+`eslint-plugin-regexp` (with `eslint` beside it as its peer, Q1), reinstall
+every lock with `--frozen-lockfile` afterwards, and run its checks:
+`bun scripts/typecheck.ts`, every package's `bun run test`, consumer-check for
+all four packages with every cell unchanged (bun-common 92/92, bun-nest
+66/66, bun-jobs 160/160 since V5a, bun-jobs-ui 44/44: re-read today's counts
+from a run on develop first, they grow with exports), the four
+`__tests__/packaging.test.ts`, and `bun pm ls` in each package naming none of
+the removed packages. `benchmarks/` still has a `lint:eslint` script; PR F
+moves it to `bun lint` too. CLAUDE.md's "Lint and format" paragraph and
+`docs/agentic-setup.md`'s "Gates" mention the legacy files: update both in
+the same PR.
+
+**Canary drift.** The gate runs on a Bun 1.4.4 canary (verified on
+`1.4.4-canary.1+5f5799ed1` and `6bb5dc195`). A new finding or a reformatted
+file after `bun upgrade --canary` is the canary's: record both
+`bun --revision`s and fix it in its own PR, not in passing.
+
 ## Contents
 
 1. [Summary](#1-summary)
