@@ -11,6 +11,8 @@ It is written for two readers: a Claude session starting work on this repo
 `CLAUDE.md` holds the project knowledge; this file holds the working
 agreement between the agents.
 
+- [Handoff (2026-10-22): read this first](#handoff-2026-10-22-read-this-first)
+- [Standing rules from the maintainer](#standing-rules-from-the-maintainer)
 - [The agents](#the-agents)
 - [Ownership](#ownership)
 - [Talking to each other](#talking-to-each-other)
@@ -20,8 +22,370 @@ agreement between the agents.
 - [Sharing the machine](#sharing-the-machine)
 - [Subagents](#subagents)
 - [Memory](#memory)
+- [Plans](#plans)
 - [Bun bugs](#bun-bugs)
 - [Starting a new agent](#starting-a-new-agent)
+
+## Handoff (2026-10-22): read this first
+
+On 2026-10-22 the maintainer stopped every Claude session working on this
+repository, so that development could continue with another model. This
+section is written for that developer, human or model, who arrives without
+any session's memory. Everything a session knew that the repository did not
+has been written into this file, [`CLAUDE.md`](../CLAUDE.md) and the plans.
+The rest of this file describes the multi-agent setup that ran until then;
+[Working alone](#working-alone-the-roles-collapse) says how its rules apply to
+one developer.
+
+### The state at handoff
+
+- **develop** is at `bc2b1a5f` (#501). Every agent's work is merged except
+  the two open PRs below. No agent is running and none may resume (the user's
+  instruction). No worktree holds uncommitted changes. No local commit is
+  missing from GitHub: every local branch and worktree head was checked
+  against the remotes on 2026-10-22. So were the dangling commits since
+  2026-10-14, each a pre-rebase copy of merged work.
+- **Open PRs**, both pushed and gated, neither merged:
+
+  | PR | Branch, head | What | To land |
+  |---|---|---|---|
+  | #515 | `feat/bun-validate-v5c-flows`, `d4046e65` | bun-validate V5c: schemas for flows (bun-jobs) | rebase onto develop (the conflict is in `docs/plans/bun-validate/README.md` only), re-gate, merge |
+  | #517 | `examples/v5c-warn-refused`, `c3dc87c2` | the examples check for #515's `"warn"` fix; its base is #515's branch | merge into #515's branch first |
+
+  The exact steps, gate and resolution are in the bun-validate plan's
+  [Handoff](plans/bun-validate/README.md#handoff-2026-10-22-how-to-resume).
+- **Pushed `wip/` branches**: `wip/stash-2026-10-07-playground-local-compute`
+  and `wip/stash-2026-09-23-examples-read-apis`. They preserve the only two
+  stash entries in the repository, both old and superseded by merged work.
+  [`docs/plans/README.md`](plans/README.md#handoff-2026-10-22-where-every-plan-stands)
+  says what each holds. The stash entries themselves were left in place.
+- **Worktrees on the machine**, beside the main checkout:
+  `../bun-node-v5c-a0` and `../bun-node-v5c-check-74`. They belonged to the
+  stopped agents, are clean, and sit at #515's and #517's heads. Remove them
+  (and their local branches) once those PRs merge. `../bun-node-handoff-b8`
+  holds the branch that wrote this section, `docs/handoff-2026-10-22`; remove
+  it once that merges.
+- **The main checkout** (`bun-node/`, on `develop`) is the user's. It holds
+  one untracked file of theirs, `playground/compute/obinna-queue-worker.ts.orig`.
+  Never edit, switch or clean the main checkout; work in your own worktree.
+- **Where every plan stands**, and what is held:
+  [`docs/plans/README.md`, "Handoff"](plans/README.md#handoff-2026-10-22-where-every-plan-stands).
+  The user's current priority is bun-validate. Next there is V5c to finish,
+  then V7a.
+- **No standing permissions remain.** The two time-boxed ones (the
+  2026-10-20 overnight window to commit, open PRs and merge without asking,
+  and auto-resume after a usage limit) expired. Every commit, PR and merge
+  needs the user's own yes, each step separately.
+
+### First steps on this machine
+
+The machine rebooted on 2026-10-22, which empties `/tmp`. Before any gate:
+
+1. **Bun.** `bun --revision` should be a 1.4.4 canary. Everything was last
+   verified on `1.4.4-canary.1+6bb5dc195`. If a later canary changes lint or
+   format output, that change is the canary's (CLAUDE.md, "Dev workflow").
+2. **The heavy-run wrapper is not installed** after the reboot:
+   `bun scripts/install-heavy-run.ts` from an up-to-date develop
+   ([Where the wrapper comes from](#where-the-wrapper-comes-from)).
+3. **Databases.** Run `bun scripts/setup-databases.ts` (`--dry-run` first
+   prints the plan and the five URLs). A restart resets MariaDB's
+   `max_connections` to 151, which shows up as MariaDB-only "Too many
+   connections" failures in bun-jobs' full suite. Check that all five ports
+   answer: Postgres 5432, MariaDB **3306**, MySQL **3307**, Redis 6379,
+   MongoDB 27017. Postgres's raised limit needs `--restart-postgres`. A
+   permanent fix is still owed: recreate the MariaDB container with
+   `--max-connections`, so a restart keeps it.
+4. **GitHub.** The gh CLI's active account may be `kingsloob1-concavehr`,
+   which is not a collaborator. Check with `gh api user --jq .login`; if it is
+   not `kingsloob1`, prefix each gh command with
+   `GH_TOKEN=$(gh auth token --user kingsloob1)` and pass
+   `-R kingsloob1/bun-node`. Never `gh auth switch`: that changes the user's
+   global state for their other work.
+5. **Blame.** Run `git config blame.ignoreRevsFile .git-blame-ignore-revs`
+   once per clone.
+6. **A worktree per task**
+   ([Worktrees and branches](#worktrees-and-branches)): `bun install` at
+   its root, then `bun install --frozen-lockfile` in
+   `packages/bun-common/bench`, `packages/bun-jobs/bench`, `benchmarks/`,
+   `templates/compute-provider/` and `tools/vscode-bun-lint/`, then
+   `bun scripts/typecheck.ts` (18 projects).
+
+### On another machine
+
+- Clone, then `bun upgrade --canary` (development needs Bun ≥ 1.4.4).
+  Install as in step 6 above. Provide the databases with
+  `bun scripts/setup-databases.ts --docker`. For bun-jobs-ui's e2e tests and
+  examples, provide a Chrome (`BUN_CHROME_PATH`).
+- **Signed commits.** develop's ruleset requires them. This machine signs
+  with the repository's SSH key configuration (`gpg.format=ssh`,
+  `user.signingkey=~/.ssh/id_ed25519.pub`, `commit.gpgsign=true`). Elsewhere,
+  set up a signing key that GitHub accepts for the pushing account, and ask
+  the user which account and key to use.
+- The stopped sessions' memory (`~/.claude/projects/…/memory/`) and their
+  notes in `~/.cache/bun-node-*` stay on the old machine. Their durable
+  content is copied into this file, CLAUDE.md and the plans. Nothing else
+  is needed from them.
+
+### Working alone: the roles collapse
+
+One developer now holds every role in [The agents](#the-agents). The rules
+between agents still hold; they become a checklist per PR:
+
+- **Reviews by the owner**: run that package's whole gate yourself before
+  merging a PR that touches it ([Gates](#gates)). After a bun-common change,
+  also run bun-nest's and bun-jobs' gates, bun-jobs' `test:seeded` included.
+  For bun-nest, also the 11.2.7 Nest matrix column.
+- **CHANGE REPORT to the examples agent**: for every user-facing change,
+  write the PR body as that report (what changed, signatures, defaults,
+  limits, which example checks change). Land the example additions or fixes
+  under `examples/**` in the same merge window: in the same PR, or stacked
+  on its branch ([Merge order](#merge-order)). Write the package README's
+  reference section in the feature's branch.
+- **The playground** gets every finished feature
+  ([Ownership](#ownership)): typecheck, `cd playground && bun run lint &&
+  bun run format:check`, and a smoke run on `PORT=0` that stops cleanly.
+- **One asker**: ask the user each decision once, then record the answer in
+  the plan (its questions and names sections) in the same PR, so nobody asks
+  again.
+- `ListAgents`, `SendMessage`, session names and the roster need no
+  successor. [Subagents](#subagents) still applies if your tool has them.
+
+### The tools this file names
+
+This file was written for Claude Code. If your tool differs:
+
+- **"The `AskUserQuestion` popup"** means a separate, explicit question to
+  the user about one decision (commit, open the PR, merge), with your
+  recommendation first. Then you wait for the answer. It never goes in
+  passing in a longer message, and silence or an earlier approval is never
+  consent.
+- **"`run_in_background` and the completion notification"** means: start
+  long jobs detached, and don't spend turns watching them. With the heavy-run
+  wrapper, re-issuing the same command with the same `HEAVY_TICKET` attaches
+  to the job, or returns its recorded result at once, so you never re-queue.
+- **"Memory"** is Claude Code's per-project notes. Keep durable facts in the
+  plans, CLAUDE.md and this file instead.
+
+## Standing rules from the maintainer
+
+These are the maintainer's rules, collected on 2026-10-22 from their global
+instructions (which apply to every repository they work in) and from the
+decisions they gave the sessions on this one. Most also appear, with their
+mechanics, elsewhere in this file or in CLAUDE.md. Here they sit in one
+place, because they are what any successor most needs to follow. Where a
+rule was learned from an incident, the incident is named.
+
+### From the maintainer's global instructions (every repository)
+
+**Consent for commit, PR and merge.**
+
+- **Every request to commit, open a PR or merge is its own explicit question**
+  (Claude Code: an `AskUserQuestion` call), never a question in passing in the
+  reply text. This is absolute: every repository, every session, every time.
+  It covers follow-ups, one-line and documentation-only changes, and merging
+  something approved at an earlier stage. Approval of a commit is not
+  approval of a PR, and approval of a PR is not approval of a merge.
+- These phrasings are **not allowed**, because they are the same question in
+  disguise:
+  - "Shall I commit this?", "Want me to open a PR?", "Say the word and I'll
+    merge.";
+  - "Ready to merge whenever you are.", "Tell me if you'd like this landed.";
+  - offering a choice of landing strategy in prose ("its own PR, or folded
+    into the open one?");
+  - pointing at a pending decision instead of asking it: "waiting on your
+    merge decision", "#155 is still open for you", "I'll ask before
+    merging", "nothing needs you except the merge".
+- **The test before ending any turn:** is anything ready to commit, open or
+  merge that the user has not decided? If yes, the question is in this turn.
+- **The reply text carries the evidence**: gate results, what was verified
+  and how, what changed, and what is still unproven. The question carries the
+  decision.
+- **Never commit unasked.** (2026-09-10: sixteen commits landed on a branch
+  during an autonomous run. The work was wanted; the unprompted commits were
+  not.) A plan's "one commit per phase" describes the history's shape; it is
+  not permission to write it.
+- **No AI attribution** in commits or PRs: no `Co-Authored-By` trailer, no
+  "Generated with" footer, even when a tool's defaults add them.
+- **Delete your own branch and worktree, local and remote, once merged.**
+
+**Reproducible Bun bugs get an issue on `oven-sh/bun`.** This needs no
+permission first; it is a standing instruction.
+
+1. **Search the existing issues first**, before reducing the bug, in several
+   phrasings (`gh search issues --repo oven-sh/bun "<symptom>"`). If one
+   exists, run its reproduction on our build and add what is new as a
+   comment: our version, OS and arch, any other affected API, a workaround.
+   Don't open a duplicate. (2026-09-27: hours went into reducing a
+   `toBeNull()` false pass before a search found oven-sh/bun#37310 with the
+   reproduction in it.)
+2. **Prove it is Bun's.** Reduce it to a minimal reproduction with none of
+   our code: one file, run with `bun`, showing expected against actual. If it
+   only happens inside our code, keep reducing, or say exactly which of our
+   code it needs. A bug that does not reproduce minimally is not ready.
+3. **Read how Bun wants issues filed, every time**, from the repository: the
+   issue templates (`.github/ISSUE_TEMPLATE/`), `CONTRIBUTING.md` and any
+   "before filing" guidance. Follow the template's fields exactly, with
+   `bun --revision`, `bun --version`, OS, arch and the reproduction.
+4. **File it with `gh issue create -R oven-sh/bun`.** Keep it factual, with
+   no speculation beyond what the reproduction shows. Include none of our
+   proprietary code, paths, hostnames or secrets.
+5. **Tell the user the URL.** Note it where the workaround lives (a code
+   comment and [`docs/bun-bugs/`](bun-bugs/README.md)), so the workaround
+   can go once Bun fixes it.
+
+Filing needs no permission, but working around the bug in our code follows
+the consent rules above.
+
+**`.env.example` hygiene.** This applies to every `.env.example`,
+`.env.sample`, `.env.template` and `example.env`, whenever one is created,
+edited or committed, including edits the user made and asked you to commit.
+
+1. **No duplicate keys.** A commented-out copy of a key that also appears
+   live is a duplicate, so remove it. If the copy was there to show a format,
+   keep that as a plain comment with a placeholder value. The check must
+   print nothing:
+   `grep -oE '^\s*#?\s*[A-Z][A-Z0-9_]*=' .env.example | sed -E 's/^\s*#?\s*//; s/=$//' | sort | uniq -d`
+2. **No sensitive values** without the user's explicit approval of that
+   specific value. That means secrets, API keys (test keys too: `sk_test_…`
+   is a secret), passwords, tokens, DSNs, connection strings, real database
+   hosts and ports, and real production URLs, whether live or commented.
+   Leave such a value empty or use an obvious placeholder. Non-sensitive
+   defaults (`false`, `3600`, `NGN`) are fine. An approval covers one value in
+   one request.
+3. **Before committing**, review every non-empty value
+   (`grep -nE '^\s*#?\s*[A-Z][A-Z0-9_]*=.+' .env.example`). If a credential
+   has to be stripped, check whether it was ever committed
+   (`git log --all -S '<value>'`). If it was, tell the user it needs
+   rotating, not just deleting.
+4. **Tell the user** what was stripped and why, in the reply that reports
+   the commit.
+
+### This repository's rules
+
+**Git and GitHub**
+
+- **Signed commits** on everything that reaches develop (a ruleset since
+  2026-09-29). Check one with
+  `gh api repos/kingsloob1/bun-node/commits/<sha> --jq .commit.verification`.
+  Never force-push develop.
+- **Never `git stash`.** The stash list is shared by every worktree. Use a
+  commit on your branch, or a patch file outside the repository.
+- **A worktree per task, branched at creation, at a fresh path per check.**
+  Run `bun install` in it and assert `@kingsleyweb/*` resolves inside it.
+  (2026-09-19: a reused worktree path gave deterministic false failures.
+  2026-09-26: a long-lived worktree without a fresh install reported a pass
+  the code did not earn.)
+- **Never type a full SHA** by extending a short one. Take it from
+  `git rev-parse`, `git ls-remote` or `gh pr view`, and pass it to
+  `--match-head-commit` or `--force-with-lease` as a variable. (2026-10-11:
+  guessed SHAs failed two guards.)
+- **Merge, confirm `MERGED`, then clean up, joined with `&&`, never `;`.**
+  (2026-09-29: a refused merge's `;`-chained cleanup deleted #235's branch.)
+- **The gh account and PR bodies**: step 4 of
+  [First steps](#first-steps-on-this-machine). `gh pr edit` fails silently
+  here; update a body with
+  `gh api -X PATCH repos/kingsloob1/bun-node/pulls/N -F body=@file` and
+  read it back.
+- **Before removing a worktree or branch you did not create**, check it
+  (`git -C <path> status --short`, unpushed commits) and ask its owner.
+  (2026-09-23 and 2026-09-27: two worktrees were wrongly claimed.)
+
+**Decisions belong to the user**
+
+- **Public API, names and behaviour changes** are approved by the user
+  before they are built. Each plan lists the names awaiting approval (its
+  "Names needing approval" section) and its open questions. Ask each one
+  once, give a recommendation, and record the answer in the plan.
+- **Conditional approvals** ("merge after the joint gate") are fine. Merge
+  when the condition is met; bring it back to the user if the check finds a
+  problem.
+- **No speed comparisons without asking** (2026-10-20): no router-guard A/B,
+  no bench `--compare`, and no re-recorded baseline unless the user says yes
+  for that change. Tests, the Nest matrix, consumer-check and the examples are
+  unaffected. (Chained 20–40-minute A/Bs had stalled the machine for hours.)
+- **Held plans stay held** until the user schedules them
+  ([`docs/plans/README.md`](plans/README.md#handoff-2026-10-22-where-every-plan-stands)).
+- **Don't remove a Bun workaround because a canary fixes the bug.** It stays
+  until the fix is in a stable release, and for shipped code until
+  `engines.bun` excludes the affected versions (2026-10-06).
+
+**Code**
+
+- Prefer native and Bun APIs and the in-repo helpers (`native.ts`) over new
+  dependencies (CLAUDE.md, "Dependency policy").
+- When emulating a framework (Express 5, NestJS, path-to-regexp, `fresh`),
+  match its semantics exactly: look up the spec or port the source, don't
+  approximate.
+- Fix lint errors with real TypeScript types, with no lazy `any`. Give every
+  new or edited property, field, option and constructor parameter a JSDoc
+  description: what it is, its default, any gotcha.
+- **Tests for every change**, and every existing test kept green. Show a
+  new check is able to fail: run it on the base, or mutate the code (a
+  negative control). Writing tests has repeatedly found real bugs here.
+- **The four `scripts/build-declarations.ts` and four `tsconfig.build.json`
+  are one file**: change all four together or none
+  (`buildDeclarations.test.ts`). (2026-10-20: a per-package `--fix` turned
+  develop red, #433 → #436.)
+- **Never autofix `@typescript-eslint/no-duplicate-type-constituents`**: its
+  fix deletes deliberate compile-time guards.
+- Don't edit generated code by hand: the typed verb overloads come from
+  `bun scripts/generate-verb-overloads.ts`.
+- **Parsed READMEs are code**: the bun-jobs-ui "What each element needs"
+  table and bun-jobs' scaler recipes are read by examples. (2026-09: a
+  docs-only edit turned develop red, #141.)
+- **Type-check with `bun check`**, not `tsc` (2026-10-10). tsc stays only
+  for emitting declarations and consumer-check's TS 5.9/6.0 matrix.
+- **Check the file before claiming how code behaves**, and quote
+  `file:line`. Prefer a measurement to an argument. A claim about a knob goes
+  stale when the knob changes, so re-read prose against develop.
+
+**Tests, gates and examples**
+
+- **Quote what ran, not what was green**: "78 passed, 3 skipped", with the
+  backends.
+- **Frozen lockfile installs** in the bench directories, `benchmarks/`, the
+  template and the VS Code extension. A plain install rewrites the lock
+  against the registry. Change a lock on purpose, in its own commit.
+- **A bun-common change runs bun-jobs' `test:seeded` and `bun run check`**,
+  not a subset. (2026-10-21: a gate that ran only `__tests__/api` let V1
+  break `runner-legacy-modes.test.ts`.)
+- **Examples green in the merge window**: a change that breaks an example
+  check lands with its fix, never leaving develop red. Re-run on the exact
+  tree being merged, rebased onto the current develop tip.
+- **Example prose must be true on develop**, not only on the branch.
+- **A test that starts failing under load is fixed**, not answered by
+  lowering the worker count.
+- A job reads `active` once it is claimed, before its handler runs. A test
+  that needs "it is running" waits for a marker the handler writes.
+
+**The machine**
+
+- **Heavy jobs go through the wrapper**, with a ticket, under `nice -n 10`
+  and a `timeout`, started in the background and never polled
+  ([Heavy runs](#heavy-runs)). bun-jobs' suite with database URLs is
+  `HEAVY_EXCLUSIVE=1`. While a seeded or full suite runs, start nothing else
+  of your own: an unwrapped job beside it caused 7 timing failures
+  (2026-10-17). (2026-10-08: load around 30 on 16 cores rebooted the
+  machine.)
+- **Kill by PID only, and only your own**: never `pkill` or `killall` by
+  pattern.
+- **Delete only the test data your run created**, its exact namespaces,
+  never a `LIKE` sweep. Redis databases: 13 for examples, 15 for tests, 14
+  for benchmarks.
+- **Keep scratch you need after a crash under `~/.cache/`**, not `/tmp`,
+  which a reboot empties.
+- Docker is a snap and cannot write `/tmp`: pipe captured docker output
+  through `| cat`. `/tmp` can run out of inodes with space free (`df -i /tmp`).
+
+**Plans and docs**
+
+- **The plans folder layout** (2026-10-11): `docs/plans/<plan>/README.md`,
+  with sub-plans and `evidence/` inside it, and the index updated in the same
+  change ([Plans](#plans)).
+- **Keep a plan's Status current** in the PR that changes it, and record
+  every user decision there in the same PR.
+- **Every finished feature reaches the playground** (2026-09-30), for the
+  user to see and try.
 
 ## The agents
 
@@ -37,6 +401,14 @@ shows today, and think in roles.
 | **bun-jobs-ui agent** | `packages/bun-jobs-ui/**`, `playground/**` | the React UI and its server; its tests, e2e and package README; reviews every playground change |
 | **Examples agent** | `examples/**`, and the example links and tables in package READMEs | a self-asserting example for every user-facing change; reviews runner changes |
 | **Features agent** | nothing exclusively | cross-package and phase work: performance; summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review. Also the [main agent](#the-main-agent) |
+
+**Retired 2026-10-22.** The user stopped every session for the handoff
+above. The last roster, after the reboot of 2026-10-20, was: bun-node-ea
+(Common, Validate & Cache), bun-node-a9 (Nest), bun-node-a0 (Jobs &
+Telemetry), bun-node-2f (UI, Views & Client), bun-node-4c (Examples &
+Tooling), and the main agent (Features and Coordinator, last as bun-node-b8).
+The tables below are kept for the ownership they describe, which
+[Working alone](#working-alone-the-roles-collapse) turns into a checklist.
 
 **As of 2026-10-16.** Each session carries several roles (the user's
 decision): it owns a package, as the table above says, and **leads** one or
@@ -490,7 +862,8 @@ the issue where the workaround lives, so it can go when Bun fixes it.
 
 ## Starting a new agent
 
-The user starts a session in this repository and gives it its role. A kickoff
+For when the multi-session setup resumes (it was retired on 2026-10-22,
+[above](#handoff-2026-10-22-read-this-first)). The user starts a session in this repository and gives it its role. A kickoff
 prompt, for the bun-common agent (swap the package for bun-nest):
 
 > You are the **bun-common agent** for bun-node. You own

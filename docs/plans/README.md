@@ -24,6 +24,51 @@ Every main plan is a folder named after it (the user's decision, 2026-10-11):
 Links between plans are relative, so a move changes them: after moving a
 file, check every link into and out of it, `#anchors` included.
 
+## Handoff (2026-10-22): where every plan stands
+
+On 2026-10-22 the user stopped every Claude agent so that development could
+continue with another model. **Nothing is in flight.** No agent is running,
+no worktree holds uncommitted work, and no local commit is missing from
+GitHub. The only unmerged work is two pushed PRs of bun-validate V5c. Start
+with [`docs/agentic-setup.md`](../agentic-setup.md), "Handoff (2026-10-22)":
+it covers the machine, the open branches and the maintainer's standing rules.
+Then read the plan you are about to work on.
+
+develop is at `bc2b1a5f` (#501). Verify any state below against
+`git log origin/develop` and `gh pr list` before acting on it: this table is
+as of that commit.
+
+| Plan | State on 2026-10-22 | Next | Where to resume |
+|---|---|---|---|
+| [`bun-validate/`](bun-validate/README.md) | **in progress**, the user's current priority. Group 1 (V0–V3c) merged, with its follow-ups; V6, V4 and V5a merged. **V5c open**: #515, with its examples fix #517 stacked on it; gated, now conflicting with develop in the plan README only | finish V5c; then **V7a**, V7b, V13; then groups 3 and 4 | its [Handoff](bun-validate/README.md#handoff-2026-10-22-how-to-resume): the open PRs and how to land them, the decisions not yet recorded elsewhere, V7a's review conditions, two questions still to ask the user |
+| [`nestjs-12-parity/`](nestjs-12-parity/README.md) | **complete** (PR-0 to PR-11 and three additions merged; PR-11 as #467) | none; the version matrix stays live (CLAUDE.md, "Nest versions") | its Status |
+| [`bun-lint-fmt/`](bun-lint-fmt/README.md) | **through PR E** (#462): `bun lint` and `bun fmt` are the gate | **PR F**: remove ESLint and Prettier; its precondition is met; it needs the user's go-ahead | its [Handoff](bun-lint-fmt/README.md#handoff-2026-10-22) |
+| [`worker-runtimes/`](worker-runtimes/README.md) and [`summon-compute/`](worker-runtimes/summon-compute/README.md) | Phases 0, 1 and 1r merged; Phase 1.5 merged except the cloud providers; summon groups ([`summon-multi-queue.md`](worker-runtimes/summon-compute/summon-multi-queue.md)) complete, its two open items carried into 1.5d by #393 | **held** by the user's order: 1.5c (AWS, Fly), 1.5d (Google, Azure), 1.5e (Render, SSH), 1.5g (live verification), 1.5s (the stability gate), none started; Phase 2 per its own §11 | each plan's Status (2026-10-11); nothing has changed since |
+| [`bun-native-routes/`](bun-native-routes/README.md) | the routing question is answered (`Bun.serve({ routes })` gives no speed-up on 1.4.3; oven-sh/bun#44176 and #44177 filed, #41363 commented); the **SSE helpers** (§16, PR-sse1 to sse5) and the broadcast channel with express-sse's conveniences (§16.14, planned in #412) are **not started** | **held**; PR-sse2 also carries bun-validate's V11 | §16 |
+| [`bun-cache/`](bun-cache/README.md) | plan only (with [`bun-jobs-s3-driver.md`](bun-cache/bun-jobs-s3-driver.md)) | **held**; its core PR carries bun-validate's V10 | the plan |
+| [`api-docs-generation/`](api-docs-generation/README.md) | plan only | bun-validate's group 4 (AD (b0), V12, AD (e)) builds on it | the plan, and bun-validate §4.11–§4.12 |
+| [`typed-client/`](typed-client/README.md) (with [`nest-typed-routes.md`](typed-client/nest-typed-routes.md)) | plan only | **held**; reads bun-validate's runtime metadata (§4.11) | the plan |
+| [`bun-views/`](bun-views/README.md) | PR-C (#320) and PR-C2 (#328) merged; PR-0 and PR-1 to PR-8 not started | **held** | its Status |
+| [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | plan only; its validation pipe is replaced by bun-validate's V6 (merged) | **held** | the plan |
+| [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
+
+**Held** means the user has not scheduled it, not that it is blocked. The
+user's order (2026-10-17): Nest 12 parity (done), then BunValidate complete
+and transport-agnostic, then BunValidate in Nest, then the rest. Ask the
+user before starting any held plan.
+
+**Pushed branches that are not PRs.** Two `wip/` branches preserve the only
+stash entries in the repository. They are old, and both were superseded by
+merged work. Each is a stash commit: the first parent is its base, the
+second the index, the third (when there is one) the untracked files. Inspect
+one with `git show <branch>` and `git show <branch>^3`; never apply one
+blindly.
+
+| Branch | Head | What it holds |
+|---|---|---|
+| `wip/stash-2026-10-07-playground-local-compute` | `49befc34` | the playground's switch to the library's `localCompute()` as it stood on 2026-10-07 (`playground/index.ts`, `compute/platform.ts`, `summoning.ts`), and in its untracked part an early `playground/compute/obinna-queue-worker.ts`. The feature merged since, in its own form (`3c070a38`, "summon on the library localCompute()"). The untracked `playground/compute/obinna-queue-worker.ts.orig` in the main checkout is that same file, byte for byte |
+| `wip/stash-2026-09-23-examples-read-apis` | `f0d975a8` | a draft of `examples/bun-jobs/10-options/read-apis.ts` and an edit to `jobs-api-options.ts`, stashed on `docs/maintenance-split`; `read-apis.ts` has been on develop in its own, later form for weeks |
+
 ## Index
 
 - **[`worker-runtimes/`](worker-runtimes/README.md)** — where a

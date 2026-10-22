@@ -17,7 +17,19 @@ Every measurement ran in a copy of the repo with Nest 12 installed into it
 [`evidence/`](evidence/README.md), and each measurement there can be re-run
 with one command.
 
-### Status (2026-10-20)
+### Status (2026-10-22)
+
+**Complete.** Every PR of the plan, PR-0 to PR-11, and its three additions
+have merged (the table below); nothing is open. What stays live is the version
+matrix (§9.3), which outlives the plan: develop's lock is Nest 12.2.0
+(Express 5.3.0), the supported range `^11.1.20 || ^12.0.0`, and
+`scripts/nest-matrix.ts` runs the 11.2.7 column on every PR touching bun-nest
+or bun-common, the floors 11.1.20 and 12.0.0 once per merge window, and a new
+Nest release before the lock moves (CLAUDE.md, "Nest versions"). The Nest
+work that follows this plan is bun-validate's group 2 (V7a, V7b), whose
+handoff is in [`../bun-validate/README.md`](../bun-validate/README.md#handoff-2026-10-22-how-to-resume).
+The one load-sensitive test left (`sse.nest.test.ts`'s idle-timeout control,
+`ECONNRESET` in 2 of 25 suites run side by side) is recorded in CLAUDE.md.
 
 **Approved in full.** On 2026-10-17 the user answered Q1–Q8 with each
 recommendation (§12) and asked for the whole plan, PR-0 to PR-11, as their
@@ -51,7 +63,7 @@ first priority.
 | PR-8 bun-nest uploads | merged, #449 |
 | PR-9 WS differential | merged, #458 (with #448 and #454, gateway routes unregistered on close); the floor columns fixed by #461 |
 | PR-10 examples | done: the example fixes stacked on each PR (#418, #437, #441, #443, #450, #453, #457, #459, #460), and the new examples #469 (WebSocket flow control, `removeRouteHandler`), #471 (uploads, `routeResolutionStrategy`/`routeConflictPolicy`, middleware matching) and this PR (`enableCsrfProtection`/`useSecurityHeaders`, `return503OnClosing` and the drain, the response and hook changes); examples/bun-nest passes on 12.2.0 and 11.2.7 |
-| PR-11 docs | in progress: the bun-nest README's NestJS 12 section and compatibility table (branch `docs/nest12-readme-v2`) |
+| PR-11 docs | merged, #467 (the bun-nest README's NestJS 12 section and compatibility table), with #473 and #474 |
 | `@SseSignal` parity (addition, 2026-10-17) | merged, #413 (tests only; no difference from Express on 11.2.7 and 12.1.3) |
 | Router benchmark guard (addition, the user's rule 2026-10-17: routing speed must not regress) | merged, #415, #422, #429 |
 | Nest 12.2.0 lock move (addition, the user's decision 2026-10-20), with `getRouteMatchingOptions()` pulled forward from PR-6c | merged, #446: develop's lock 12.1.3 → 12.2.0 (Express 5.3.0), and the core's exact `/api$` middleware entry serving `/api/` on a 12.2.0 core (a whole app's `forRoutes('*')` runs once on `/api/` on 11.2.7, 12.1.3 and 12.2.0 alike; 12.2.0's `exclude()` changes are `/invoices/` under `invoices/{*path}` and `/users/LOGIN` on a case-sensitive router: [`evidence/middleware-1220/`](evidence/middleware-1220/README.md)); bun-common's copy of Express 5.3.0 (redirect body, `Content-Disposition`) merged as #452 |
