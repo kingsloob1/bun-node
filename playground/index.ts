@@ -34,6 +34,7 @@ import {
   removeTempData,
 } from "./backend";
 import { startMailer } from "./mailer";
+import { startFlows } from "./flows";
 import { startRunners } from "./runners";
 import { startSimulation } from "./simulation";
 import { createSummoning } from "./summoning";
@@ -88,6 +89,13 @@ const mailer = await startMailer({
   summon: summoning.mailerSummon,
 });
 const { stop: stopRunners } = await startRunners(jobs);
+// A third service: the schema-checked digest flow (flows.ts), the only
+// registry worker in the namespace.
+const flows = await startFlows({
+  namespace: "playground",
+  driver,
+  logger: noopLogger,
+});
 
 const api = createJobsApi({
   jobs,
@@ -178,6 +186,7 @@ async function shutdown(): Promise<void> {
     );
     await simulation.stop();
     await mailer.stop();
+    await flows.stop();
     await stopRunners();
     await api.close();
     await app.close();
