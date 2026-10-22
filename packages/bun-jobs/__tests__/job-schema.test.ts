@@ -123,6 +123,17 @@ const isN = (value: unknown): value is { n: number } =>
   value !== null &&
   typeof (value as { n?: unknown }).n === "number";
 
+/** A driver whose every write fails, after any check has passed. */
+class FailingWriteDriver extends MemoryDriver {
+  override async addJob(): Promise<never> {
+    throw new Error("the write failed");
+  }
+
+  override async addJobs(): Promise<never> {
+    throw new Error("the write failed");
+  }
+}
+
 describe("define(): the declaration", () => {
   it("lifts schema and its policies out of the options, and carries a jobs contract", async () => {
     const jobs = makeJobs();
@@ -450,6 +461,28 @@ describe("the enqueue policy", () => {
       issues: [{ target: "data", path: "to" }],
     });
     expect(JSON.stringify(warned[0])).not.toContain(SECRET);
+  });
+
+  it('"warn" logs nothing when the write itself fails (add and addBulk)', async () => {
+    const { logger, events } = createTestLogger();
+    const queue = new BunQueue("jobs", {
+      namespace: testNamespace("v5a"),
+      driver: new FailingWriteDriver(),
+      logger,
+      schema: { data: Email },
+      dataValidation: { enqueue: "warn" },
+    });
+    closers.push(() => queue.close());
+
+    // Every check passed, but the write failed: nothing was written anyway,
+    // so there is nothing to warn about.
+    await expect(queue.add("sendEmail", { to: SECRET })).rejects.toThrow(
+      "the write failed",
+    );
+    await expect(
+      queue.addBulk([{ name: "sendEmail", data: { to: SECRET } }]),
+    ).rejects.toThrow("the write failed");
+    expect(warnings(events)).toHaveLength(0);
   });
 
   it('"off" does not check at enqueue', async () => {

@@ -350,21 +350,14 @@ interface PlannedFlowNode {
 
 /**
  * The end of a check over several entries (`addBulk`, `addFlow`) once none
- * failed synchronously: the deferred `"warn"` warnings, logged when every
- * asynchronous check has passed too, and never when one refuses.
+ * failed synchronously: the asynchronous checks still running, awaited
+ * together. The caller logs the deferred `"warn"` warnings it collected once
+ * the write has succeeded — never when a check or the write itself refused.
  */
-function settleChecks(
-  pending: Promise<void>[],
-  warnings: (() => void)[],
-): Promise<void> | undefined {
-  const emit = (): void => {
-    for (const warn of warnings) warn();
-  };
-  if (pending.length === 0) {
-    emit();
-    return undefined;
-  }
-  return Promise.all(pending).then(emit);
+function settleChecks(pending: Promise<void>[]): Promise<void> | undefined {
+  return pending.length === 0
+    ? undefined
+    : Promise.all(pending).then(() => undefined);
 }
 
 /**
@@ -739,24 +732,45 @@ export class BunQueue<
     // The data, against its schema, before any path below writes anything:
     // a plain add, a debounce that would replace a pending job's data, a
     // throttle, and a repeat series (whose "no occurrences left" branch
-    // writes the series first). With no schema this answers `undefined` at
-    // once, and nothing is awaited.
-    if (!checked) {
-      const checking = this.#checkData(jobName, payload, options?.jobId);
+    // writes the series first). With no schema nothing is collected and
+    // nothing is awaited. A `"warn"` outcome's warning is logged only once
+    // the write has succeeded: a write that failed wrote nothing anyway.
+    const warnings: (() => void)[] | undefined =
+      !checked &&
+      (this[JOB_CHECKS] !== undefined || this.#ownCheck !== undefined)
+        ? []
+        : undefined;
+    if (warnings !== undefined) {
+      const checking = this.#checkData(
+        jobName,
+        payload,
+        options?.jobId,
+        warnings,
+      );
       if (checking !== undefined) {
         await checking;
       }
     }
 
+    let written: Job<TData, TResult>;
     if (options?.debounce || options?.throttle) {
-      return await this.#addWindowed(jobName, payload, options, definition);
+      written = await this.#addWindowed(jobName, payload, options, definition);
+    } else if (options?.repeat) {
+      written = await this.#addRepeatable(
+        jobName,
+        payload,
+        options,
+        definition,
+      );
+    } else {
+      written = await this.#addSimple(jobName, payload, options, definition);
     }
-
-    if (options?.repeat) {
-      return await this.#addRepeatable(jobName, payload, options, definition);
+    if (warnings !== undefined) {
+      for (const warn of warnings) {
+        warn();
+      }
     }
-
-    return await this.#addSimple(jobName, payload, options, definition);
+    return written;
   }
 
   /**
@@ -848,10 +862,11 @@ export class BunQueue<
 
     // Every entry's data, in one pass before the first write, so a bad one
     // rejects the whole bulk with nothing written. With no schema nothing is
-    // collected and nothing awaited.
-    const checking = this.#checkBulk(entries);
-    if (checking !== undefined) {
-      await checking;
+    // collected and nothing awaited. The deferred `"warn"` warnings are
+    // logged only once the writes below have succeeded.
+    const checkedEntries = this.#checkBulk(entries);
+    if (checkedEntries?.settle !== undefined) {
+      await checkedEntries.settle;
     }
 
     // A repeat is a definition plus a first occurrence, so it cannot be part
@@ -862,6 +877,11 @@ export class BunQueue<
         added.push(
           await this.#add(entry.name, entry.data, entry.opts, undefined, true),
         );
+      }
+      if (checkedEntries !== undefined) {
+        for (const warn of checkedEntries.warnings) {
+          warn();
+        }
       }
       return added;
     }
@@ -878,6 +898,11 @@ export class BunQueue<
     for (const { job } of results) {
       if (this.#noteIfScheduled(this.ref, job)) {
         break;
+      }
+    }
+    if (checkedEntries !== undefined) {
+      for (const warn of checkedEntries.warnings) {
+        warn();
       }
     }
 
@@ -919,12 +944,15 @@ export class BunQueue<
 
   /**
    * Checks the data of one add; `undefined` when there is nothing to check.
-   * Throws (or rejects with) `JobDataValidationError` under `"error"`.
+   * Throws (or rejects with) `JobDataValidationError` under `"error"`. A
+   * `"warn"` outcome is logged at once, or collected into `warnings` for the
+   * caller to log once the write has succeeded.
    */
   #checkData(
     name: string,
     data: unknown,
     jobId: string | undefined,
+    warnings?: (() => void)[],
   ): void | Promise<void> {
     if (this[JOB_CHECKS] === undefined && this.#ownCheck === undefined) {
       return undefined;
@@ -937,23 +965,29 @@ export class BunQueue<
       data,
       this.#logger,
       jobId === undefined ? undefined : { jobId },
+      warnings,
     );
   }
 
   /**
    * Checks every entry of a bulk add before any is written; `undefined` when
    * there is nothing to check. The first entry to fail rejects the call with
-   * its `JobDataValidationError`, which names its `index`.
+   * its `JobDataValidationError`, which names its `index`. The deferred
+   * `"warn"` warnings come back unlogged: the caller logs them once the
+   * bulk's writes have succeeded.
    */
   #checkBulk(
     entries: readonly { name: TName; data: TData; opts?: JobOptions }[],
-  ): Promise<void> | undefined {
+  ):
+    | { settle: Promise<void> | undefined; warnings: (() => void)[] }
+    | undefined {
     if (this[JOB_CHECKS] === undefined && this.#ownCheck === undefined) {
       return undefined;
     }
     const pending: Promise<void>[] = [];
-    // `"warn"` outcomes, logged only once every entry has passed: a bulk
-    // another entry refuses writes nothing, so nothing was written anyway.
+    // `"warn"` outcomes, collected rather than logged: the caller logs them
+    // once every entry has passed and the writes have succeeded, so a
+    // refused or failed write warns nothing.
     const warnings: (() => void)[] = [];
     try {
       for (let index = 0; index < entries.length; index++) {
@@ -985,7 +1019,7 @@ export class BunQueue<
       }
       throw error;
     }
-    return settleChecks(pending, warnings);
+    return { settle: settleChecks(pending), warnings };
   }
 
   /**
@@ -1746,12 +1780,19 @@ export class BunQueue<
     const plan = this.#planFlow(node, this.name, new Set(), []);
     // Every node's data, before the first write: one bad node rejects the
     // whole flow with nothing written. With no schema anywhere this answers
-    // `undefined` without walking the tree, and nothing is awaited.
-    const checking = this.#checkFlow(plan, across ?? this[QUEUE_CHECKS]);
-    if (checking !== undefined) {
-      await checking;
+    // `undefined` without walking the tree, and nothing is awaited. The
+    // deferred `"warn"` warnings are logged only once the flow is written.
+    const checkedFlow = this.#checkFlow(plan, across ?? this[QUEUE_CHECKS]);
+    if (checkedFlow?.settle !== undefined) {
+      await checkedFlow.settle;
     }
-    return await this.#addFlowNode(plan, null);
+    const written = await this.#addFlowNode(plan, null);
+    if (checkedFlow !== undefined) {
+      for (const warn of checkedFlow.warnings) {
+        warn();
+      }
+    }
+    return written;
   }
 
   /**
@@ -1759,7 +1800,9 @@ export class BunQueue<
    * name's check on its own queue (see `addFlow`); `undefined` when nothing
    * needs awaiting. A node failing synchronously throws at once; otherwise
    * the asynchronous checks are awaited together and the first to reject
-   * rejects the flow. The error's `context.flowPath` names the node.
+   * rejects the flow. The error's `context.flowPath` names the node. The
+   * deferred `"warn"` warnings come back unlogged: the caller logs them once
+   * the flow's writes have succeeded.
    *
    * @param plan   The planned flow.
    * @param across Finds a node's check on another queue, if this process can.
@@ -1767,7 +1810,9 @@ export class BunQueue<
   #checkFlow(
     plan: PlannedFlowNode,
     across: QueueCheckLookup | undefined,
-  ): Promise<void> | undefined {
+  ):
+    | { settle: Promise<void> | undefined; warnings: (() => void)[] }
+    | undefined {
     if (
       this[JOB_CHECKS] === undefined &&
       this.#ownCheck === undefined &&
@@ -1776,8 +1821,9 @@ export class BunQueue<
       return undefined;
     }
     const pending: Promise<void>[] = [];
-    // `"warn"` outcomes, logged only once every node has passed: a flow
-    // another node refuses writes nothing, so nothing was written anyway.
+    // `"warn"` outcomes, collected rather than logged: the caller logs them
+    // once every node has passed and the flow's writes have succeeded, so a
+    // refused or failed write warns nothing.
     const warnings: (() => void)[] = [];
     // The node's path in the flow as indexes, joined only for a node that
     // has a check: a walk over unchecked nodes builds no strings.
@@ -1824,7 +1870,7 @@ export class BunQueue<
       }
       throw error;
     }
-    return settleChecks(pending, warnings);
+    return { settle: settleChecks(pending), warnings };
   }
 
   /**
