@@ -543,9 +543,9 @@ export function checkJobDataWrite(
   context?: Record<string, unknown>,
   /**
    * Where a `"warn"` outcome's warning goes instead of the log: a caller
-   * checking several entries (`addBulk`, `addFlow`) emits them only once
-   * every entry has passed, so a write another entry refuses warns nothing.
-   * Logged at once when omitted.
+   * emits them only once every check has passed **and the write has
+   * succeeded**, so a refused entry warns nothing and neither does a write
+   * that then fails. Logged at once when omitted.
    */
   warnings?: (() => void)[],
 ): void | Promise<void> {

@@ -134,6 +134,13 @@ const isN = (value: unknown): value is { n: number } =>
   value !== null &&
   typeof (value as { n?: unknown }).n === "number";
 
+/** A driver whose every write fails, after any check has passed. */
+class FailingWriteDriver extends MemoryDriver {
+  override async addJob(): Promise<never> {
+    throw new Error("the write failed");
+  }
+}
+
 /** Rejects with whatever `run` rejects with, or fails the test when it resolves. */
 async function refusal(run: () => Promise<unknown>): Promise<unknown> {
   try {
@@ -834,5 +841,27 @@ describe('a "warn" node in a write another entry refuses', () => {
       { name: "later", data: { page: 3 } },
     ]);
     expect(warnings(events)).toHaveLength(2);
+  });
+
+  it('a "warn" node logs nothing when the flow\'s write fails after every check passed', async () => {
+    const { logger, events } = createTestLogger();
+    const queue = bareQueue("jobs", {
+      namespace: testNamespace("v5c"),
+      driver: new FailingWriteDriver(),
+      logger,
+      schema: { data: Email },
+      dataValidation: { enqueue: "warn" },
+    });
+
+    // Every node's check passed, but the write failed: nothing was written
+    // anyway, so there is nothing to warn about.
+    await expect(
+      queue.addFlow({
+        name: "sendEmail",
+        data: { to: SECRET },
+        children: [{ name: "sendEmail", data: { to: SECRET } }],
+      }),
+    ).rejects.toThrow("the write failed");
+    expect(warnings(events)).toHaveLength(0);
   });
 });
