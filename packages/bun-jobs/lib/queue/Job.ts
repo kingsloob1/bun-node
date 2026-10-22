@@ -144,8 +144,18 @@ export interface JobUpdate<TData> {
  * decided rather than assuming: `remove()` on an active job is refused, and
  * `extendLock()` fails once the lock is someone else's. `refresh()` is how a
  * caller re-reads state another process changed.
+ *
+ * @typeParam TData The payload type.
+ * @typeParam TResult The handler's result type.
+ * @typeParam TChildren What {@link Job.getChildrenValues} answers for a flow
+ * parent: `Record<string, unknown>` unless the job map's entry declares
+ * `children` (see `FlowChildrenValues`). A type only.
  */
-export class Job<TData = unknown, TResult = unknown> {
+export class Job<
+  TData = unknown,
+  TResult = unknown,
+  TChildren = Record<string, unknown>,
+> {
   /** Identifies the job, and is its idempotency key. */
   readonly id: string;
   /** The name the producer gave it. */
@@ -679,7 +689,7 @@ export class Job<TData = unknown, TResult = unknown> {
    * name and payload are the stored job's, which is what narrowed it.
    */
   #view(record: JobRecord, wasAdded?: boolean): this {
-    return new Job<TData, TResult>(
+    return new Job<TData, TResult, TChildren>(
       this.#driver,
       this.#ref,
       record,
@@ -713,10 +723,18 @@ export class Job<TData = unknown, TResult = unknown> {
   /**
    * The results of this job's children that completed, keyed `queue:id`, read
    * fresh from the driver. Empty for a job with no children.
+   *
+   * Typed `TChildren`: on a registry job whose map entry declares `children`
+   * (built with `FlowChildrenValues`), each key's child's result, `T |
+   * undefined` for a child that may fail without failing this job. Nothing
+   * checks the values here: each was checked at its child's own completion,
+   * under the child's `resultValidation`, so with that `"off"` the type is a
+   * claim, not a guarantee.
    */
-  async getChildrenValues(): Promise<Record<string, unknown>> {
+  async getChildrenValues(): Promise<TChildren> {
     const record = await this.#driver.getJob(this.#ref, this.id);
-    return { ...record?.flow?.values };
+    // The stored values, typed by the declared shape; see above.
+    return { ...record?.flow?.values } as TChildren;
   }
 
   /**

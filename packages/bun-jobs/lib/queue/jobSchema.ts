@@ -305,6 +305,49 @@ export interface JobCheck {
 /** Finds a job name's {@link JobCheck}, or `undefined` for none. Internal. */
 export type JobCheckLookup = (name: string) => JobCheck | undefined;
 
+/**
+ * A job name's data check on one queue, as that queue resolves it: the
+ * check, which has a data schema, and the enqueue policy beneath the check's
+ * own. What a flow's pre-write pass runs for a node. Internal.
+ */
+export interface QueueDataCheck {
+  /** The check: the definition's on a registry queue, else the queue's own. */
+  readonly check: JobCheck;
+  /** The queue's own enqueue policy, used when the check sets none. */
+  readonly policy: Policy;
+}
+
+/**
+ * Finds the data check for a job of `name` written to the queue named
+ * `queue`, for a flow node on a queue other than the one `addFlow` was
+ * called on; `undefined` when that queue checks nothing (or this process
+ * cannot see how it would). Internal.
+ */
+export type QueueCheckLookup = (
+  queue: string,
+  name: string,
+) => QueueDataCheck | undefined;
+
+/**
+ * The key a queue carries its {@link QueueCheckLookup} under: set by
+ * `BunJobs` on every queue it creates once any schema exists in the context,
+ * so a flow added on one queue checks its nodes on the others. Internal.
+ */
+export const QUEUE_CHECKS: unique symbol = Symbol("bun-jobs: queue checks");
+
+/**
+ * The key of a queue's method answering its own {@link QueueDataCheck} for a
+ * job name, or `undefined` when it checks none. Internal.
+ */
+export const DATA_CHECK: unique symbol = Symbol("bun-jobs: data check");
+
+/**
+ * The key of a queue's `addFlow` taking a {@link QueueCheckLookup} of the
+ * caller's, for the management API, which has resolved every queue a flow
+ * writes to (and may hold queues no `BunJobs` context made). Internal.
+ */
+export const ADD_FLOW: unique symbol = Symbol("bun-jobs: add flow");
+
 /** The three policy words. */
 const POLICIES: ReadonlySet<string> = new Set<Policy>(["off", "warn", "error"]);
 
@@ -498,6 +541,13 @@ export function checkJobDataWrite(
   data: unknown,
   logger: Logger,
   context?: Record<string, unknown>,
+  /**
+   * Where a `"warn"` outcome's warning goes instead of the log: a caller
+   * checking several entries (`addBulk`, `addFlow`) emits them only once
+   * every entry has passed, so a write another entry refuses warns nothing.
+   * Logged at once when omitted.
+   */
+  warnings?: (() => void)[],
 ): void | Promise<void> {
   const schema = check?.data;
   if (schema === undefined) return undefined;
@@ -520,12 +570,18 @@ export function checkJobDataWrite(
         detail,
       );
     }
-    warnJobIssues(
-      logger,
-      'Job data did not pass its schema; written anyway (dataValidation.enqueue is "warn")',
-      { name, queue, ...detail },
-      outcome.issues,
-    );
+    const warn = (): void =>
+      warnJobIssues(
+        logger,
+        'Job data did not pass its schema; written anyway (dataValidation.enqueue is "warn")',
+        { name, queue, ...detail },
+        outcome.issues,
+      );
+    if (warnings === undefined) {
+      warn();
+    } else {
+      warnings.push(warn);
+    }
   };
   // JSON has no `undefined`: a job added with no data is stored, and read
   // back by every backend, as `null`, so that is what the worker will check.

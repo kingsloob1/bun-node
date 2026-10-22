@@ -25,6 +25,8 @@ import type { JobRouter } from "./JobBuilder";
 import type {
   JobCheck,
   JobCheckLookup,
+  QueueCheckLookup,
+  QueueDataCheck,
   QueueValidationOptions,
 } from "./jobSchema";
 import type {
@@ -130,10 +132,13 @@ import {
 import { JobDraft } from "./JobDraft";
 import { JOB_ROUTER } from "./jobRouter";
 import {
+  ADD_FLOW,
   checkJobDataWrite,
   compileJobCheck,
+  DATA_CHECK,
   JOB_CHECKS,
   ownPolicies,
+  QUEUE_CHECKS,
 } from "./jobSchema";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import {
@@ -344,6 +349,25 @@ interface PlannedFlowNode {
 }
 
 /**
+ * The end of a check over several entries (`addBulk`, `addFlow`) once none
+ * failed synchronously: the deferred `"warn"` warnings, logged when every
+ * asynchronous check has passed too, and never when one refuses.
+ */
+function settleChecks(
+  pending: Promise<void>[],
+  warnings: (() => void)[],
+): Promise<void> | undefined {
+  const emit = (): void => {
+    for (const warn of warnings) warn();
+  };
+  if (pending.length === 0) {
+    emit();
+    return undefined;
+  }
+  return Promise.all(pending).then(emit);
+}
+
+/**
  * The producer and management side of a queue.
  *
  * A queue is a name inside a namespace, and nothing more: it has no server,
@@ -445,6 +469,13 @@ export class BunQueue<
    * Internal; see {@link JOB_CHECKS}.
    */
   [JOB_CHECKS]: JobCheckLookup | undefined;
+  /**
+   * How a flow added here finds the data checks of its nodes on **other**
+   * queues: set by the creating `BunJobs` context once any schema exists in
+   * it, `undefined` otherwise (and always on a bare queue, which cannot see
+   * another queue's checks). Internal; see {@link QUEUE_CHECKS}.
+   */
+  [QUEUE_CHECKS]: QueueCheckLookup | undefined;
   /** This queue's own `schema` (with its policies), or `undefined` for none. */
   readonly #ownCheck: JobCheck | undefined;
   /** The enqueue policy under every check here: `dataValidation.enqueue`, `"error"` by default. */
@@ -871,6 +902,22 @@ export class BunQueue<
   }
 
   /**
+   * The data check a job of `name` written here gets, with this queue's
+   * enqueue policy beneath it, or `undefined` when there is no data schema
+   * to check with: what a flow added on another queue runs for a node of
+   * this one. Internal; see {@link DATA_CHECK}.
+   */
+  [DATA_CHECK](name: string): QueueDataCheck | undefined {
+    if (this[JOB_CHECKS] === undefined && this.#ownCheck === undefined) {
+      return undefined;
+    }
+    const check = this.#checkFor(name);
+    return check?.data === undefined
+      ? undefined
+      : { check, policy: this.#enqueuePolicy };
+  }
+
+  /**
    * Checks the data of one add; `undefined` when there is nothing to check.
    * Throws (or rejects with) `JobDataValidationError` under `"error"`.
    */
@@ -905,6 +952,9 @@ export class BunQueue<
       return undefined;
     }
     const pending: Promise<void>[] = [];
+    // `"warn"` outcomes, logged only once every entry has passed: a bulk
+    // another entry refuses writes nothing, so nothing was written anyway.
+    const warnings: (() => void)[] = [];
     try {
       for (let index = 0; index < entries.length; index++) {
         const entry = entries[index];
@@ -921,6 +971,7 @@ export class BunQueue<
               ? {}
               : { jobId: entry.opts.jobId }),
           },
+          warnings,
         );
         if (checking !== undefined) {
           pending.push(checking);
@@ -934,9 +985,7 @@ export class BunQueue<
       }
       throw error;
     }
-    return pending.length === 0
-      ? undefined
-      : Promise.all(pending).then(() => undefined);
+    return settleChecks(pending, warnings);
   }
 
   /**
@@ -1645,12 +1694,47 @@ export class BunQueue<
    * added below it. Jobs in other queues of this namespace take this queue's
    * default options, and their `added` events are published on their own
    * queue.
+   *
+   * **Job data schemas** (plan bun-validate §4.8.2): once the tree is
+   * planned, and before the first write, every node's data is checked
+   * against its own name's schema on its own queue, under that queue's
+   * enqueue policy: a node on this queue as `add` would check it; a node on
+   * another queue with that queue's checks when this process can see them
+   * (a queue of the same `BunJobs` context, the registry queue's
+   * definitions included), and unchecked otherwise (a bare queue cannot see
+   * another's). One node failing rejects the whole flow with a
+   * `JobDataValidationError` whose `context.flowPath` names the node
+   * (`""` for the top, `children.0.children.1` below it), and nothing is
+   * written.
    */
   async addFlow<TTop extends JobName<TJobs>>(
     node: FlowNodeOf<TData, TJobs, TTop>,
   ): Promise<
     FlowResult<TData, TResult, QueueJobOf<TData, TResult, TJobs, TTop>>
   > {
+    // On a registry-bound queue the node was checked name by name at the call;
+    // the plan reads it as the plain shape it is at runtime.
+    return (await this[ADD_FLOW](node as FlowNode, undefined)) as FlowResult<
+      TData,
+      TResult,
+      QueueJobOf<TData, TResult, TJobs, TTop>
+    >;
+  }
+
+  /**
+   * `addFlow`, with the data checks of nodes on other queues found through
+   * `across` when it is given, else through this queue's own
+   * {@link QUEUE_CHECKS}. The management API passes the queues it resolved.
+   * Internal; see {@link ADD_FLOW}.
+   *
+   * @param node   The flow, as the caller gave it.
+   * @param across Finds a node's check on another queue; `undefined` for
+   * this queue's own lookup.
+   */
+  async [ADD_FLOW](
+    node: FlowNode,
+    across: QueueCheckLookup | undefined,
+  ): Promise<FlowResult> {
     await this.connect();
     this.#requireDriver(
       "addFlow()",
@@ -1659,14 +1743,88 @@ export class BunQueue<
       "markChildRecorded",
     );
 
-    // On a registry-bound queue the node was checked name by name at the call;
-    // the plan below reads it as the plain shape it is at runtime.
-    const plan = this.#planFlow(node as FlowNode, this.name, new Set(), []);
-    return (await this.#addFlowNode(plan, null)) as FlowResult<
-      TData,
-      TResult,
-      QueueJobOf<TData, TResult, TJobs, TTop>
-    >;
+    const plan = this.#planFlow(node, this.name, new Set(), []);
+    // Every node's data, before the first write: one bad node rejects the
+    // whole flow with nothing written. With no schema anywhere this answers
+    // `undefined` without walking the tree, and nothing is awaited.
+    const checking = this.#checkFlow(plan, across ?? this[QUEUE_CHECKS]);
+    if (checking !== undefined) {
+      await checking;
+    }
+    return await this.#addFlowNode(plan, null);
+  }
+
+  /**
+   * Checks the data of every node of a planned flow, each against its own
+   * name's check on its own queue (see `addFlow`); `undefined` when nothing
+   * needs awaiting. A node failing synchronously throws at once; otherwise
+   * the asynchronous checks are awaited together and the first to reject
+   * rejects the flow. The error's `context.flowPath` names the node.
+   *
+   * @param plan   The planned flow.
+   * @param across Finds a node's check on another queue, if this process can.
+   */
+  #checkFlow(
+    plan: PlannedFlowNode,
+    across: QueueCheckLookup | undefined,
+  ): Promise<void> | undefined {
+    if (
+      this[JOB_CHECKS] === undefined &&
+      this.#ownCheck === undefined &&
+      across === undefined
+    ) {
+      return undefined;
+    }
+    const pending: Promise<void>[] = [];
+    // `"warn"` outcomes, logged only once every node has passed: a flow
+    // another node refuses writes nothing, so nothing was written anyway.
+    const warnings: (() => void)[] = [];
+    // The node's path in the flow as indexes, joined only for a node that
+    // has a check: a walk over unchecked nodes builds no strings.
+    const indexes: number[] = [];
+    const visit = (planned: PlannedFlowNode): void => {
+      const { node, queue } = planned;
+      const found =
+        queue === this.name
+          ? this[DATA_CHECK](node.name)
+          : across?.(queue, node.name);
+      if (found !== undefined) {
+        const checking = checkJobDataWrite(
+          found.check,
+          found.policy,
+          node.name,
+          queue,
+          node.data,
+          this.#logger,
+          {
+            flowPath: indexes.map((index) => `children.${index}`).join("."),
+            ...(node.opts?.jobId === undefined
+              ? {}
+              : { jobId: node.opts.jobId }),
+          },
+          warnings,
+        );
+        if (checking !== undefined) {
+          pending.push(checking);
+        }
+      }
+      for (let index = 0; index < planned.children.length; index++) {
+        indexes.push(index);
+        visit(planned.children[index]);
+        indexes.pop();
+      }
+    };
+    try {
+      visit(plan);
+    } catch (error) {
+      // A node failed synchronously; the asynchronous checks still running
+      // must not reject unheard.
+      for (const checking of pending) {
+        checking.catch(() => undefined);
+      }
+      throw error;
+    }
+    return settleChecks(pending, warnings);
   }
 
   /**

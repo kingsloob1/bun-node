@@ -303,7 +303,8 @@ function isValidationError(error: unknown): error is ValidationError {
  *   describes the caller's payload (400, with its message), not a server fault;
  *   a `JobDataValidationError` (the job's data failed its definition's or
  *   queue's schema) is a 400 `VALIDATION` problem, its issues at body paths
- *   (`data.to`). Its issues hold no received values.
+ *   (`data.to`; a flow node's under its `context.flowPath`,
+ *   `children.0.data.to`). Its issues hold no received values.
  * - `"limitsInput"`: a `ConfigError` from `normalizeLimits()` describes the
  *   caller's limits (400, with its message).
  * - `"jobDefaults"`: a `ConfigError` from `queue.setJobDefaults()` or
@@ -345,7 +346,13 @@ export function mapCallSiteError(
   }
   if (site === "jobInput" && error instanceof JobDataValidationError) {
     // The body's `data` failed the job's schema. Reported where it sits in
-    // the request body, as the request validator reports its own issues.
+    // the request body, as the request validator reports its own issues: a
+    // flow node's under its own path (`children.0.data.to`).
+    const { flowPath } = error.context;
+    const data =
+      typeof flowPath === "string" && flowPath !== ""
+        ? `${flowPath}.data`
+        : "data";
     return new ApiError(
       "VALIDATION",
       400,
@@ -354,7 +361,7 @@ export function mapCallSiteError(
         cause: error,
         issues: error.issues.map((issue) => ({
           target: "body",
-          path: issue.path === "" ? "data" : `data.${issue.path}`,
+          path: issue.path === "" ? data : `${data}.${issue.path}`,
           message: issue.message,
         })),
       },

@@ -181,7 +181,15 @@ export interface FlowNode<TData = unknown> {
    */
   queue?: string;
   /** The jobs that must settle before this one runs. */
-  children?: FlowNode[];
+  children?: readonly FlowNode[];
+  /**
+   * For a child: whether its parent may run without its result, so
+   * {@link FlowChildrenValues} types its value `T | undefined`. Read by the
+   * types only; at runtime `opts.ignoreFailure` decides. Left out, a child
+   * with `ignoreFailure` (or options whose `ignoreFailure` is not known to
+   * be `false`) counts as optional; `false` claims the value is there.
+   */
+  optional?: boolean;
 }
 
 /**
@@ -243,6 +251,15 @@ export interface JobTypeEntry {
    * job whose return value nothing reads should say.
    */
   result?: unknown;
+  /**
+   * For a flow parent: what its `job.getChildrenValues()` answers, its
+   * children's results keyed `queue:id`. Build it from the flow's declared
+   * shape with {@link FlowChildrenValues}. Omitted means
+   * `Record<string, unknown>`. A type only: nothing checks the values again
+   * (each child's result was checked at its own completion, under its own
+   * `resultValidation`).
+   */
+  children?: Record<string, unknown>;
 }
 
 /**
@@ -561,11 +578,32 @@ export type AdHocJobName<TJobs, TName extends string> = string extends TName
  * @typeParam TName The names to include; every declared name by default.
  */
 export type TypedJob<TJobs, TName extends JobName<TJobs> = JobName<TJobs>> = {
-  [TEach in TName]: Job<JobDataOf<TJobs, TEach>, JobResultOf<TJobs, TEach>> & {
+  [TEach in TName]: Job<
+    JobDataOf<TJobs, TEach>,
+    JobResultOf<TJobs, TEach>,
+    JobChildrenOf<TJobs, TEach>
+  > & {
     /** The name, as the literal that discriminates this job. */
     readonly name: TEach;
   };
 }[TName];
+
+/**
+ * What a flow parent of `TName` reads from `job.getChildrenValues()`, by the
+ * map: its entry's `children`, or `Record<string, unknown>` when it declares
+ * none.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName One declared name.
+ */
+export type JobChildrenOf<
+  TJobs,
+  TName extends keyof TJobs,
+> = TJobs[TName] extends {
+  children: infer TChildren extends Record<string, unknown>;
+}
+  ? TChildren
+  : Record<string, unknown>;
 
 /**
  * What a handler defined for `TName` is given and must answer with: a job
@@ -645,7 +683,9 @@ export type RegistryFlowNode<
          */
         queue?: undefined;
         /** The jobs that must settle before this one runs. */
-        children?: RegistryFlowChild<TJobs>[];
+        children?: readonly RegistryFlowChild<TJobs>[];
+        /** Whether its parent may run without its result; see {@link FlowNode.optional}. */
+        optional?: boolean;
       } & DataField<JobDataOf<TJobs, TName>>
     : never;
 
@@ -671,6 +711,161 @@ export interface ForeignFlowNode extends FlowNode {
  */
 export type RegistryFlowChild<TJobs> =
   RegistryFlowNode<TJobs> | ForeignFlowNode;
+
+/* --- a flow parent's children, typed --------------------------------- */
+
+/** The children a flow node's type lists, as one union; `never` for none. */
+type FlowChildOf<TNode> = TNode extends { readonly children?: infer TChildren }
+  ? TChildren extends readonly (infer TChild)[]
+    ? TChild
+    : never
+  : never;
+
+/** The queue a flow node's type names, else `TQueue`, the one it inherits. */
+type FlowNodeQueue<TNode, TQueue extends string> = TNode extends {
+  readonly queue: infer TOwn extends string;
+}
+  ? TOwn
+  : TQueue;
+
+/** The `jobId` a flow node's type gives, else `string` (generated). */
+type FlowNodeId<TNode> = TNode extends {
+  readonly opts: { readonly jobId: infer TId extends string };
+}
+  ? TId
+  : string;
+
+/**
+ * The key a child's value is stored under on its parent, `queue:id`, when
+ * both are literals; `${string}:${string}` for every child whose key is
+ * not known until it is added (a generated id, an inherited queue whose name
+ * the type does not carry). One pattern for all of them, never one per
+ * child, so a key matching two children's patterns is never typed as the
+ * intersection of their results.
+ */
+type FlowChildKey<TChild, TQueue extends string> =
+  Record<never, never> extends Record<
+    `${FlowNodeQueue<TChild, TQueue>}:${FlowNodeId<TChild>}`,
+    true
+  >
+    ? `${string}:${string}`
+    : `${FlowNodeQueue<TChild, TQueue>}:${FlowNodeId<TChild>}`;
+
+/**
+ * Whether a child's value may be missing when its parent runs: its
+ * `optional` marker when it is a literal, else whether its options may set
+ * `ignoreFailure` (a literal `true`, or options typed wider than a literal).
+ */
+type FlowChildOptional<TChild> = TChild extends { readonly optional: true }
+  ? true
+  : TChild extends { readonly optional: false }
+    ? false
+    : TChild extends { readonly opts?: infer TOpts }
+      ? "ignoreFailure" extends keyof TOpts
+        ? true extends TOpts["ignoreFailure" & keyof TOpts]
+          ? true
+          : false
+        : false
+      : false;
+
+/**
+ * A child's result by the map: a node on the registry queue (it names no
+ * `queue`, and its parent is there too) has its name's declared result; any
+ * other is `unknown`, as the map does not describe another queue.
+ */
+type FlowChildResult<TChild, TJobs, TOnRegistry extends boolean> = [
+  TOnRegistry,
+] extends [true]
+  ? TChild extends { readonly queue: string }
+    ? unknown
+    : TChild extends { readonly name: infer TName extends JobName<TJobs> }
+      ? JobResultOf<TJobs, TName>
+      : unknown
+  : unknown;
+
+/**
+ * What a flow parent's `job.getChildrenValues()` answers, from the flow's
+ * declared shape: each of the node's children's results, keyed `queue:id`
+ * as they are stored.
+ *
+ * - **Keys.** A child whose queue and `jobId` are both literals in the
+ *   node's type has its own key (`"fetch:orders"`); every other child (a
+ *   generated id, or an inherited queue `TQueue` does not name) is read
+ *   through one `${string}:${string}` index, typed as the union of their
+ *   results.
+ * - **Results.** On a registry flow (`TJobs` declared, the node on the
+ *   registry queue), a child that names no `queue` has its name's declared
+ *   result; a child on another queue, and any child with no map, is
+ *   `unknown`.
+ * - **Optional children** (Q-C9). A child marked `optional: true`, or whose
+ *   options may set `ignoreFailure`, is `T | undefined`: its parent runs
+ *   without it when it fails. `optional: false` claims it is there.
+ *
+ * Declare the flow `as const`, so the names, queues and ids stay literals,
+ * and pass the same object to `addFlow`. Nothing checks these values again
+ * when the parent reads them: each child's result was checked at its own
+ * completion under its own `resultValidation`, and with that `"off"` (the
+ * default) these types are a claim, not a guarantee.
+ *
+ * ```ts
+ * const report = {
+ *   name: "send-report",
+ *   data: { month: "2026-10" },
+ *   children: [
+ *     { name: "totals", data: { month: "2026-10" }, opts: { jobId: "totals-2026-10" } },
+ *     { name: "refunds", data: {}, queue: "fetch", opts: { ignoreFailure: true } },
+ *   ],
+ * } as const;
+ *
+ * interface Jobs {
+ *   totals: { data: { month: string }; result: number };
+ *   "send-report": {
+ *     data: { month: string };
+ *     children: FlowChildrenValues<typeof report, Jobs, "jobs">;
+ *   };
+ * }
+ * // { "jobs:totals-2026-10": number; [key: `${string}:${string}`]: unknown }
+ * ```
+ *
+ * @typeParam TNode The parent's node, as declared (`typeof flow`, or a
+ * child of it).
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TQueue The queue the node is on when its type names none: the
+ * queue `addFlow` is called on (the registry queue's name on a registry
+ * flow). `string` when not given, which leaves its inheriting children's
+ * keys unknown.
+ */
+export type FlowChildrenValues<
+  TNode,
+  TJobs = JobMap,
+  TQueue extends string = string,
+> = {
+  [
+    TChild in FlowChildOf<TNode> as FlowChildKey<
+      TChild,
+      FlowNodeQueue<TNode, TQueue>
+    >
+  ]: true extends FlowChildOptional<TChild>
+    ? | FlowChildResult<
+          TChild,
+          TJobs,
+          string extends keyof TJobs
+            ? false
+            : TNode extends { readonly queue: string }
+              ? false
+              : true
+        >
+      | undefined
+    : FlowChildResult<
+        TChild,
+        TJobs,
+        string extends keyof TJobs
+          ? false
+          : TNode extends { readonly queue: string }
+            ? false
+            : true
+      >;
+};
 
 /**
  * What `addBulk` takes: plain entries with no declared map, exactly as
@@ -786,9 +981,20 @@ export type JobMapResult<TJobs> = {
   [TName in keyof TJobs]: JobResultOf<TJobs, TName>;
 }[keyof TJobs];
 
-/** What a worker calls for each job. */
-export type JobProcessor<TData = unknown, TResult = unknown> = (
-  job: Job<TData, TResult>,
+/**
+ * What a worker calls for each job.
+ *
+ * @typeParam TData The job's payload, as the processor receives it.
+ * @typeParam TResult What the processor answers with.
+ * @typeParam TChildren What the job's `getChildrenValues()` answers; see
+ * {@link JobChildrenOf}.
+ */
+export type JobProcessor<
+  TData = unknown,
+  TResult = unknown,
+  TChildren = Record<string, unknown>,
+> = (
+  job: Job<TData, TResult, TChildren>,
   ctx: ProcessorContext,
 ) => TResult | Promise<TResult>;
 
