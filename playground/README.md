@@ -53,6 +53,18 @@ so the Workers page has two services to group (`index.ts`, `mailer.ts`):
 |---|---|---|
 | `api` | `api.emails.transactional`, `api.reports.monthly`, `api.webhooks.delivery`, `api.checksums.hasher`, `api.previews`, `api.previews.2`, `api.imports.wedged`, `api.notifications.scheduler`, `api.dead-letters.archive` | the simulation's own workers; the emails one sets `stopPersistenceOverridable`, so its Stop dialog offers "until somebody starts it again" |
 | `mailer` | `mailer.emails.bulk`, `mailer.images.thumbs` | a second deployment on the same queues; `thumbs` slowly eats the `images` backlog, so pausing it is visible |
+| `flows` | `flows.jobs` | the schema-checked digest flow (`flows.ts`): the namespace's only registry worker |
+
+A third service, `flows` (`flows.ts`), owns the namespace's registry queue
+(`jobs`) — the main context never starts its registry worker. It defines three
+schema-checked jobs (`fetch-figures`, `render-glance`, `pack-digest`, each
+`data: { month: YYYY-MM }`, the children with `resultValidation: "error"`) and
+seeds one flow, `digest-pack-2026-10`: `waiting-children`, then completed, its
+log line naming the typed children values it packed (`getChildrenValues()`,
+typed from the flow's `as const` declaration). At startup a second flow whose
+child carries a bad month (`2026/10`) is refused with `JobDataValidationError`
+before anything is written; the terminal says so, and no queue shows a job of
+it.
 | `compute` | `compute.renders.render`, `compute.transcodes.transcode`, `compute.thumbnails.thumbnail`, `compute.marathon.leg`, `compute.ledger.post`, `compute.secure-exports.export`, `compute.obinna-queue.obinna-pinger-local-compute`, and the uploads unit's `compute.ingest.ingest`, `compute.captions.caption`, `compute.search-index.index` | **summoned**: child processes the library's `localCompute()` starts when one of those queues has work, each gone again once its queue is idle (or, for `ledger`, once it is released); its Summon card names the attempt |
 
 A worker's **settings** are keyed by that stable key, so a change from the UI
@@ -424,6 +436,7 @@ that detail, until a registration or a Reset clears it.
 - In any run's log, the first `stdout` line prints `apiKey=pk_demo_…`; the stored line has that value redacted.
 - Watch a running run's log on the runner screen: new lines appear as the runner announces them on the live socket, not on a timer.
 - Open a completed `checksums` job and read its `returnValue`: the `pid` is not the playground's, because a child process hashed it.
+- Queues → `jobs`: open `digest-pack-2026-10` — a flow whose every node was checked against its name's schema before anything was written. Its log line is the parent's typed read of its children's results (`getChildrenValues()`, typed from the flow's declaration in `flows.ts`). The terminal's startup lines include the refused one (a bad month: `JobDataValidationError`, nothing written).
 - Open two completed `previews` jobs, one from each worker: `api.previews` reports `mainThread: false` (a `Worker`), `api.previews.2` a different `pid` (a child process) — one file, two targets. Each result's `mode` is the mode its attempt's process reports in `BUN_JOBS_MODE`.
 - Workers page: the State cell of each worker says where it runs. "Child process" on the three child-process workers, "Worker thread" on `api.previews`, "In process" on every function worker. Open `api.previews.2` for its Target card and the processor file it runs.
 - Add job on `imports`, then watch it: a log line from the child, progress stuck at `blocked`, and four seconds later a `JobTimeoutError` — the child was killed, and the worker never paused.
