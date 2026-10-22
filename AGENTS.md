@@ -28,12 +28,12 @@ what order, and the rules that must never be broken.
 
 ## Where the work is (2026-10-22)
 
-- develop is at `bc2b1a5f`. Only two PRs are unmerged: **#515** (bun-validate
-  V5c, flows) and **#517** (its examples check, stacked on it). #515 conflicts
-  with develop in the plan README only.
-- The next work, in the maintainer's order: land V5c, then its small
-  "warn after the write" follow-up, then **V7a** (`@Validate`, request side,
-  in bun-nest). The bun-validate handoff has the brief for each.
+- develop is at `f5b990e5`. **V5c landed**: #515 (bun-validate V5c, flows) and
+  #517 (its examples check) both merged 2026-10-22; no PRs are open.
+- The next work, in the maintainer's order: the small "warn after the write"
+  follow-up (built and gated; its commit, PR and merge are the maintainer's
+  calls), then **V7a** (`@Validate`, request side, in bun-nest). The
+  bun-validate handoff has the brief for each.
 - Every other plan is either complete (NestJS 12 parity) or held until the
   maintainer schedules it. Only PR F of the lint plan is left.
 
@@ -53,7 +53,12 @@ These are the ones a mistake cannot undo:
   develop.
 - **Work in your own `git worktree`**, branched at creation, at a fresh path.
   Never edit, switch or clean the main checkout: it holds the maintainer's
-  own files. Never `git stash`.
+  own files. Never `git stash`. **Suspended while one session works alone**
+  (the maintainer's decision, 2026-10-22, for the Kimi continuation): work on
+  a branch in the main checkout directly, and commit and push the branch —
+  a `wip/` one if unfinished — before switching away from it. The rule
+  returns the moment a second session works on the repository. See
+  [`docs/agentic-setup.md`, "Worktrees and branches"](docs/agentic-setup.md#worktrees-and-branches).
 - **Public API, names and behaviour changes are the maintainer's decision.**
   Each plan lists its open questions and the names awaiting approval. Ask
   each once, with a recommendation, and record the answer in the plan in
@@ -67,6 +72,11 @@ These are the ones a mistake cannot undo:
   polled. Kill only your own processes, by PID. Delete only the test data
   your own run created.
 - **`.env.example` files hold no credentials and no duplicate keys.**
+- **One session still plays every role.** The agent roster is retired, not
+  the duties: the owning package's whole gate before a merge, a CHANGE
+  REPORT (the PR body) for every user-facing change, example fixes in the
+  same merge window, and a playground addition for every finished feature.
+  See [`docs/agentic-setup.md`, "Working alone"](docs/agentic-setup.md#working-alone-the-roles-collapse).
 - **A reproducible Bun bug gets an issue on `oven-sh/bun`**, after a search
   for an existing one and a minimal reproduction with none of our code.
   Document its workaround in [`docs/bun-bugs/`](docs/bun-bugs/README.md).

@@ -615,6 +615,18 @@ the change that needs it:
 
 Several sessions share one `.git`, so git state is shared state.
 
+**Suspended while one session works alone** (the maintainer's decision,
+2026-10-22, for the Kimi continuation after the handoff): the bullets below
+apply when several sessions share the repository. A lone session works on a
+branch in the **main checkout** directly (`git checkout -b <topic>
+origin/develop`), with no worktree. Before switching to another branch it
+commits and pushes the one it is on — a `wip/` branch for unfinished work —
+since no worktree holds it. The main checkout may still hold the user's own
+files (tracked or untracked): leave them alone. `git stash` stays forbidden,
+and every commit, PR and merge is still its own question to the user. The
+bullets below return unchanged the moment a second session works on the
+repository.
+
 - **Work in your own `git worktree`**, never by switching the main checkout:
   `git worktree add -b <branch> ../bun-node-<topic>-<suffix> origin/develop`.
   The main checkout may hold the user's own uncommitted work.
