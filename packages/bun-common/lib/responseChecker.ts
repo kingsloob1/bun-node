@@ -32,6 +32,7 @@ import type {
 import type { IssueFormat } from "./contract/issues";
 import type { Logger, LoggerLike } from "./logging";
 import type {
+  ResponseOutputMode,
   ResponseSchemas,
   ResponseValidationError,
   ResponseValidationMode,
@@ -51,6 +52,13 @@ export interface ResponseCheckerOptions {
   mode?: ResponseValidationMode;
   /** Where a `"warn"` mismatch and a failed check are logged. `noopLogger` by default. */
   logger?: LoggerLike;
+  /**
+   * What a passing buffered JSON body is sent as (V13): `"parsed"` sends the
+   * schema's output (unknown keys the vendor strips, defaults and
+   * transforms applied — the check comes back as a replacement);
+   * `"as-sent"` (the default) leaves it as given.
+   */
+  output?: ResponseOutputMode;
   /**
    * `"generic"` replaces every issue's message with `Invalid value` (plus
    * the vendor's issue code), instead of the default scrub, which withholds
@@ -144,6 +152,8 @@ export interface ResponseChecker {
    */
   check: (
     view: ResponseCheckView,
+    /** Per call: parse nothing (a before-write hook can pass or refuse, never replace, so it checks as-sent). */
+    options?: { output?: ResponseOutputMode },
   ) => ResponseCheckVerdict | Promise<ResponseCheckVerdict>;
 }
 
@@ -174,14 +184,29 @@ export function createResponseChecker(
             ? {}
             : { redactPaths: options.redactPaths }),
         };
-  const gate = new ResponseContractGate(
-    toOutboundDef(responses, "createResponseChecker()"),
-    mode,
-    () => logger,
-    format,
-  );
+  const build = (output: ResponseOutputMode): ResponseContractGate =>
+    new ResponseContractGate(
+      toOutboundDef(responses, "createResponseChecker()"),
+      mode,
+      () => logger,
+      format,
+      output,
+    );
+  /** The gate per output mode (the factory's, and an as-sent one on first override). */
+  const gates = new Map<ResponseOutputMode, ResponseContractGate>();
+  const gateFor = (output: ResponseOutputMode): ResponseContractGate => {
+    let gate = gates.get(output);
+    if (gate === undefined) {
+      gate = build(output);
+      gates.set(output, gate);
+    }
+    return gate;
+  };
   return {
-    check(view: ResponseCheckView) {
+    check(
+      view: ResponseCheckView,
+      checkOptions?: { output?: ResponseOutputMode },
+    ) {
       const contentType =
         view.contentType ??
         view.headers.get("content-type") ??
@@ -201,7 +226,9 @@ export function createResponseChecker(
         statusSet: view.statusSet ?? true,
         typeImplicit: view.typeImplicit ?? view.kind === "json",
       };
-      return gate.commit({ req: view.req }, response, commit);
+      return gateFor(
+        checkOptions?.output ?? options?.output ?? "as-sent",
+      ).commit({ req: view.req }, response, commit);
     },
   };
 }

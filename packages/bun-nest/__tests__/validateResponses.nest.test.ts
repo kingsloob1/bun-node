@@ -12,7 +12,8 @@
  * Covered: every declared-status case (R1–R6), response headers (R7–R8),
  * `reply()` (R9–R13), thrown non-2xx (R14–R16), plain `@Res()` (R17–R18),
  * `StreamableFile` (R19–R20), redirects (R21–R22), `@Sse()` (R23–R25),
- * `variants()` (R26–R29), the `warn`/`off` modes (R30–R31), the global
+ * `variants()` (R26–R29), the `warn`/`off` modes (R30–R31), the parsed output
+ * (V13, R35–R37), the global
  * `ResponseValidationInterceptor` (R32–R33) and, on Nest 12 only, the
  * serializer's placement (R34).
  *
@@ -355,6 +356,58 @@ class HookController {
 @Module({ controllers: [HookController] })
 class HookModule {}
 
+/* ---- the parsed output (V13) -------------------------------------------------- */
+
+/** V13's shape: `id`, a defaulted `role`; zod strips an unknown key. */
+const Packed = z.object({
+  id: z.number(),
+  role: z.string().default("user"),
+});
+
+/** The reply route's table, shared by the decorator and `reply()`. */
+const packedResponses = {
+  201: { content: { "application/json": Packed } },
+} as const;
+
+@Controller()
+class ParsedController {
+  @Validate({
+    responses: { 200: { content: { "application/json": Packed } } },
+    responseValidation: "error",
+    responseOutput: "parsed",
+  })
+  @Get("parsed-return")
+  parsedReturn() {
+    return { id: 1, password: SECRET };
+  }
+
+  @Validate({
+    responses: packedResponses,
+    responseValidation: "error",
+    responseOutput: "parsed",
+  })
+  @Post("parsed-reply")
+  parsedReply() {
+    // The typed body refuses an undeclared key at compile time; the wire
+    // shows the parse: the default applied.
+    return reply<typeof packedResponses>(201, { id: 2 });
+  }
+
+  @Validate({
+    responses: { 200: { content: { "application/json": Packed } } },
+    responseValidation: "error",
+    responseOutput: "parsed",
+  })
+  @Get("parsed-res")
+  parsedRes(@Res() res: RouteRes) {
+    // The before-write hook passes or refuses, never replaces: checked as sent.
+    res.status(200).json({ id: 1, password: SECRET });
+  }
+}
+
+@Module({ controllers: [ParsedController] })
+class ParsedModule {}
+
 /* ---- @Sse() ---------------------------------------------------------- */
 
 const sseResponses = {
@@ -505,6 +558,7 @@ let bare: BunHttpAdapter; // ResponsesModule, no filter (Nest's own 500)
 let hooked: BunHttpAdapter; // HookModule + filter
 let events: BunHttpAdapter; // SseModule + filter
 let watched: BunHttpAdapter; // WatchedModule + global ResponseValidationInterceptor
+let parsed: BunHttpAdapter; // ParsedModule (V13), no filter needed: nothing is refused
 let serialized: BunHttpAdapter | undefined; // SerializerModule (Nest 12 only)
 
 beforeAll(async () => {
@@ -522,6 +576,7 @@ beforeAll(async () => {
     app.useGlobalFilters(new ValidationExceptionFilter());
     app.useGlobalInterceptors(new ResponseValidationInterceptor());
   });
+  parsed = await boot(ParsedModule);
   if (NestSchemaPipe !== undefined) {
     serialized = await boot(serializerModule(), (app) => {
       app.useGlobalFilters(new ValidationExceptionFilter());
@@ -899,6 +954,31 @@ describe("@Validate responses: the warn and off modes (R30–R31)", () => {
     expect(await get(filtered, "/unchecked")).toEqual({
       status: 200,
       body: { id: SECRET, name: "ada" },
+    });
+  });
+});
+
+/* ---- the parsed output (V13) ------------------------------------------------- */
+
+describe('@Validate responses: responseOutput "parsed" (V13, R35–R37)', () => {
+  it("R35: a returned body passes as the schema's output: the key stripped, the default applied", async () => {
+    expect(await get(parsed, "/parsed-return")).toEqual({
+      status: 200,
+      body: { id: 1, role: "user" },
+    });
+  });
+
+  it("R36: a reply()'s body the same", async () => {
+    expect(await post(parsed, "/parsed-reply", {})).toEqual({
+      status: 201,
+      body: { id: 2, role: "user" },
+    });
+  });
+
+  it("R37: a plain @Res() response is checked as sent, never parsed (the hook cannot replace)", async () => {
+    expect(await get(parsed, "/parsed-res")).toEqual({
+      status: 200,
+      body: { id: 1, password: SECRET },
     });
   });
 });

@@ -12,6 +12,7 @@ import type {
 import type { Logger, LoggerLike } from "./logging";
 import type {
   OutboundDef,
+  ResponseOutputMode,
   ResponseSchemas,
   ResponseValidationMode,
 } from "./responseValidation";
@@ -454,6 +455,12 @@ type RouteWithGroup = Route & {
    * router's setting wins over its parent's.
    */
   responseValidation?: ResponseValidationMode;
+  /**
+   * The `responseOutput` of the innermost router (this one or one it was
+   * flattened in from) that set one; carried across a flatten, as
+   * {@link responseValidation} is.
+   */
+  responseOutput?: ResponseOutputMode;
   /**
    * The `commonResponses` of every router the route was flattened in
    * through, outermost first (compiled); carried across a flatten.
@@ -1399,6 +1406,15 @@ export class BunRouter<
        */
       responseValidation?: ResponseValidationMode;
       /**
+       * What a passing buffered JSON body is sent as (V13):
+       * `"parsed"` sends the schema's output, `"as-sent"` (the default) the
+       * handler's value, for the validators on this router's routes that
+       * declare `responses` but no `responseOutput` of their own. The most
+       * specific setting wins, as for {@link responseValidation}. Read at
+       * registration: set it before adding routes.
+       */
+      responseOutput?: ResponseOutputMode;
+      /**
        * Statuses every route on this router may answer without declaring
        * them itself — a validator's own `400`, an auth `401`, the error
        * handler's `500` — in `validate()`'s `responses` form. Merged under
@@ -1441,6 +1457,12 @@ export class BunRouter<
     if (mode !== undefined && !RESPONSE_VALIDATION_MODES.includes(mode)) {
       throw new TypeError(
         `BunRouter: responseValidation must be "off", "warn" or "error"`,
+      );
+    }
+    const output = localOptions?.responseOutput;
+    if (output !== undefined && output !== "as-sent" && output !== "parsed") {
+      throw new TypeError(
+        `BunRouter: responseOutput must be "as-sent" or "parsed"`,
       );
     }
     const common = localOptions?.commonResponses;
@@ -1701,6 +1723,11 @@ export class BunRouter<
     if (mode !== undefined) {
       route.responseValidation = mode;
     }
+    const output =
+      flattenSource?.responseOutput ?? this.localOptions?.responseOutput;
+    if (output !== undefined) {
+      route.responseOutput = output;
+    }
     const inner = flattenSource?.commonResponses;
     const own = this.#commonResponses;
     const common =
@@ -1731,6 +1758,7 @@ export class BunRouter<
       bound ??= [...(callbacks as unknown[])];
       bound[i] = binding.bind({
         mode,
+        output,
         common: common ?? [],
         logger: responseLogger ?? ((): Logger => this.logger),
       });

@@ -12,6 +12,7 @@ import type { Logger } from "./logging";
 import type {
   OutboundDef,
   ResponseBinding,
+  ResponseOutputMode,
   ResponseSchemas,
   ResponseValidationMode,
   RouterResponseSettings,
@@ -385,6 +386,19 @@ export interface BunValidateOptions<
    */
   responseValidation?: ResponseValidationMode;
   /**
+   * What a passing buffered JSON body is sent as (V13): `"parsed"` sends the
+   * schema's **output** — unknown keys the vendor strips, defaults and
+   * transforms applied — for every response, not only those `.variant()`
+   * names. `"as-sent"` (the default) sends the handler's value. Only a
+   * buffered, JSON-classed body is parsed: streams, plain text, binary and
+   * files are out, and a vendor that keeps unknown keys (yup by default,
+   * arktype) strips nothing. Under `"off"` a passing body is still parsed
+   * (the author asked for the output; a failing one goes as it is,
+   * unreported). Unset, the route's router decides (`BunRouter`'s and the
+   * adapter's `responseOutput`), and `"as-sent"` when none does.
+   */
+  responseOutput?: ResponseOutputMode;
+  /**
    * `"generic"` replaces every issue's message with `Invalid value` (plus the
    * vendor's issue code when it has one), rather than the default scrub,
    * which withholds only a message found to quote a received value. The
@@ -723,6 +737,12 @@ export class BunValidate<
         `validate(): responseValidation must be "off", "warn" or "error"`,
       );
     }
+    const output = options.responseOutput;
+    if (output !== undefined && output !== "as-sent" && output !== "parsed") {
+      throw new TypeError(
+        `validate(): responseOutput must be "as-sent" or "parsed"`,
+      );
+    }
     this.#format = issueFormat(options.messages, options.redactPaths);
     const rule = checkProtoKeyRule("validate()", options.stripProtoKeys);
     // The request targets always strip, by Nest 12's rule unless told
@@ -779,14 +799,21 @@ export class BunValidate<
   public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
     const responses = this.#responses;
     const own = this.#options.responseValidation;
-    // `"off"` installs nothing, unless the table declares variants: then the
-    // adjust-only step, so `res.variant()`'s fills and strips still apply
-    // (plan Q-H29).
+    const ownOutput = this.#options.responseOutput;
+    // `"off"` installs nothing, unless the table declares variants (then the
+    // adjust-only step, so `res.variant()`'s fills and strips still apply,
+    // plan Q-H29) or `"parsed"` is set (then the parse step, V13).
     const ownGate =
       responses !== undefined &&
       own !== undefined &&
-      (own !== "off" || declaresVariants(responses))
-        ? new ResponseContractGate(responses, own, defaultLogger, this.#format)
+      (own !== "off" || declaresVariants(responses) || ownOutput === "parsed")
+        ? new ResponseContractGate(
+            responses,
+            own,
+            defaultLogger,
+            this.#format,
+            ownOutput,
+          )
         : undefined;
     const handler = this.#handler(ownGate);
     attachContract(handler, this.#contract);
@@ -800,11 +827,12 @@ export class BunValidate<
     const binding: ResponseBinding = {
       bind: (settings: RouterResponseSettings) => {
         const mode = own ?? settings.mode ?? "off";
+        const output = ownOutput ?? settings.output ?? "as-sent";
         const table =
           settings.common.length === 0
             ? responses
             : mergeOutboundDefs([...settings.common, responses]);
-        if (mode === "off" && !declaresVariants(table)) {
+        if (mode === "off" && !declaresVariants(table) && output !== "parsed") {
           return handler;
         }
         const gate = new ResponseContractGate(
@@ -812,6 +840,7 @@ export class BunValidate<
           mode,
           settings.logger,
           this.#format,
+          output,
         );
         const bound = this.#handler(gate);
         attachContract(bound, contract);

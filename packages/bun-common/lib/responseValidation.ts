@@ -84,6 +84,17 @@ import { serializeCookie } from "./utils/native";
  */
 export type ResponseValidationMode = Policy;
 
+/**
+ * What a passing buffered JSON body is sent as (plan §6's V13, Q5):
+ * `"as-sent"` (the default) sends the value the handler gave; `"parsed"`
+ * sends the schema's **output** — unknown keys the vendor strips, defaults
+ * and transforms applied — for every response, not only those `.variant()`
+ * names. Only a buffered, JSON-classed body is parsed (streams, text, bytes
+ * and files are out); a vendor that keeps unknown keys (yup by default,
+ * arktype) strips nothing.
+ */
+export type ResponseOutputMode = "as-sent" | "parsed";
+
 /** One status's contract in full. Every part is optional; an omitted part is not checked. */
 export interface ResponseSpecObject {
   /**
@@ -1786,6 +1797,11 @@ type GateStream = StreamChecker | SurvivorsCheck;
 interface CommitOut {
   /** The per-chunk check of a `chunks()`/`sse()` stream. */
   stream?: GateStream;
+  /**
+   * Under `responseOutput: "parsed"` (V13): the passing body's schema output
+   * and the input it was read from (reference-compared before replacing).
+   */
+  parsed?: { body: unknown; input: unknown };
 }
 
 /**
@@ -1810,6 +1826,8 @@ interface Outcome {
   readonly adjusted?: Adjusted;
   /** The streamed body's per-chunk check, when it has one. */
   readonly stream?: GateStream;
+  /** Under `responseOutput: "parsed"` (V13): the matched variant's body output and its input. */
+  readonly parsed?: { body: unknown; input: unknown };
   /** A `when`, a `refine` or a schema threw, or a `when` answered a non-boolean: a failed check. */
   readonly failed?: {
     /** What was thrown (logged, never in an issue). */
@@ -1834,8 +1852,10 @@ export class ResponseContractGate implements ResponseGate {
   readonly #table: CompiledTable;
   /** The table in contract form, for merging with an inner validator's. */
   readonly #def: OutboundDef;
-  /** `"warn"` logs and sends; `"error"` refuses; `"off"` only adjusts (`.variant()`). */
+  /** The mode: `"warn"` or `"error"`; `"off"` only for a table declaring variants (the adjust-only step), or with `"parsed"` (the parse-only step). */
   readonly #mode: Policy;
+  /** What a passing buffered JSON body is sent as: the schema's output under `"parsed"` (V13), the handler's value otherwise. */
+  readonly #output: ResponseOutputMode;
   /** The logger, resolved when first needed (the router's, once bound). */
   readonly #logger: () => Logger;
   /** How the schemas' issues are worded (the validator's `messages`, `redactPaths`); `undefined` for the default. */
@@ -1860,12 +1880,14 @@ export class ResponseContractGate implements ResponseGate {
     mode: Policy,
     logger: () => Logger,
     format?: IssueFormat,
+    output?: ResponseOutputMode,
   ) {
     this.#def = def;
     this.#table = compileTable(def, logger);
     this.#mode = mode;
     this.#logger = logger;
     this.#format = format;
+    this.#output = output ?? "as-sent";
   }
 
   /**
@@ -1889,6 +1911,7 @@ export class ResponseContractGate implements ResponseGate {
         inner.#mode === "off" ? this.#mode : inner.#mode,
         inner.#logger,
         strictest(this.#format, inner.#format),
+        inner.#output !== "as-sent" ? inner.#output : this.#output,
       );
       cache.set(inner, combined);
     }
@@ -1964,7 +1987,8 @@ export class ResponseContractGate implements ResponseGate {
         : this.#check(res, response, commit, status, entry, out);
     const reportOnly = this.#mode === "warn" || commit.reportOnly;
     if (!(found instanceof Promise)) {
-      if (found.length === 0) return out.stream;
+      if (found.length === 0)
+        return this.#parsedReplacement(out, response) ?? out.stream;
       if (reportOnly) {
         this.#report(res, status, found, commit.reportOnly);
         out.stream?.markReported();
@@ -1988,7 +2012,7 @@ export class ResponseContractGate implements ResponseGate {
     return found.then(
       (issues) =>
         issues.length === 0
-          ? out.stream
+          ? (this.#parsedReplacement(out, response) ?? out.stream)
           : new ResponseValidationError(issues, status),
       (error: unknown) => {
         this.#failed(res, status, error);
@@ -2066,6 +2090,31 @@ export class ResponseContractGate implements ResponseGate {
     );
   }
 
+  /**
+   * The replacement for a parsed body (V13's `responseOutput: "parsed"`):
+   * the schema's output, re-serialised, when it differs from what was sent.
+   * `undefined` when nothing was parsed or nothing changed.
+   */
+  #parsedReplacement(
+    out: CommitOut,
+    response: Response,
+  ): ResponseReplacement | undefined {
+    const parsed = out.parsed;
+    if (parsed === undefined || parsed.body === parsed.input) {
+      return undefined;
+    }
+    const text = JSON.stringify(parsed.body);
+    return {
+      replacement: new Response(text, {
+        status: response.status,
+        headers: response.headers,
+      }),
+      stream: out.stream,
+      body: parsed.body,
+      text,
+    };
+  }
+
   /** A plain status's issues (V3a's check), then its `refine`. */
   #check(
     res: ResponseGateRequest,
@@ -2132,6 +2181,9 @@ export class ResponseContractGate implements ResponseGate {
     cache: ViewCache | undefined,
     short = false,
   ): Found {
+    // Each candidate's check starts with no parse captured: only the last
+    // checked one's survives (the matched variant's, or the plain status's).
+    out.parsed = undefined;
     if (short) {
       return this.#checkShort(res, response, commit, status, spec, out, cache);
     }
@@ -2240,6 +2292,39 @@ export class ResponseContractGate implements ResponseGate {
     return [];
   }
 
+  /**
+   * The body schema's check under `responseOutput: "parsed"` (V13): on
+   * success its output is captured for the replacement (reference-compared
+   * with the input first). Only ever called for a buffered, JSON-classed
+   * body.
+   */
+  #captureBody(
+    entry: Schema,
+    value: unknown,
+    status: number,
+    mediaType: string,
+    out: CommitOut,
+  ): Found {
+    const outcome = runSchema<unknown, ResponsePart>(
+      entry,
+      value,
+      "body",
+      status,
+      mediaType,
+      this.#format,
+    );
+    const settle = (
+      settled: StandardOutcome<unknown, ResponsePart>,
+    ): ValidationIssue<ResponsePart>[] => {
+      if (settled.ok) {
+        out.parsed = { body: settled.value, input: value };
+        return [];
+      }
+      return settled.issues;
+    };
+    return outcome instanceof Promise ? outcome.then(settle) : settle(outcome);
+  }
+
   /** The body's issues, by kind (`short`: see {@link run}). */
   #checkBody(
     res: ResponseGateRequest,
@@ -2320,6 +2405,15 @@ export class ResponseContractGate implements ResponseGate {
           ),
         ];
       case "json":
+        if (this.#output === "parsed" && isJsonMedia(bare)) {
+          return this.#captureBody(
+            entry,
+            commit.body,
+            status,
+            key.declared,
+            out,
+          );
+        }
         return run(
           entry,
           commit.body,
@@ -2330,6 +2424,21 @@ export class ResponseContractGate implements ResponseGate {
           short,
         );
       case "text":
+        if (this.#output === "parsed" && isJsonMedia(bare)) {
+          const parsed = textValue(bare, String(commit.body));
+          if (!parsed.ok) {
+            return [
+              issue("body", status, "The body is not valid JSON", key.declared),
+            ];
+          }
+          return this.#captureBody(
+            entry,
+            parsed.value,
+            status,
+            key.declared,
+            out,
+          );
+        }
         return runBody(
           entry,
           textValue(bare, String(commit.body)),
@@ -2339,6 +2448,24 @@ export class ResponseContractGate implements ResponseGate {
           short,
         );
       case "bytes":
+        if (this.#output === "parsed" && isJsonMedia(bare)) {
+          const parsed = bytesValue(
+            bare,
+            toBytes(commit.body as ArrayBufferView),
+          );
+          if (!parsed.ok) {
+            return [
+              issue("body", status, "The body is not valid JSON", key.declared),
+            ];
+          }
+          return this.#captureBody(
+            entry,
+            parsed.value,
+            status,
+            key.declared,
+            out,
+          );
+        }
         return runBody(
           entry,
           bytesValue(bare, toBytes(commit.body as ArrayBufferView)),
@@ -2352,6 +2479,28 @@ export class ResponseContractGate implements ResponseGate {
       case "native":
         // Read without consuming what is sent: a Blob (a file's too) reads
         // again; a Response is cloned (Q-H5).
+        if (this.#output === "parsed" && isJsonMedia(bare)) {
+          return readCached(response, commit, cache).then((bytes) => {
+            const parsed = bytesValue(bare, bytes);
+            if (!parsed.ok) {
+              return [
+                issue(
+                  "body",
+                  status,
+                  "The body is not valid JSON",
+                  key.declared,
+                ),
+              ];
+            }
+            return this.#captureBody(
+              entry,
+              parsed.value,
+              status,
+              key.declared,
+              out,
+            );
+          });
+        }
         return readCached(response, commit, cache).then((bytes) =>
           runBody(entry, bytesValue(bare, bytes), status, key, format, short),
         );
@@ -2450,7 +2599,7 @@ export class ResponseContractGate implements ResponseGate {
       outcome = { issues: [], failed: { error } };
     }
     if (!(outcome instanceof Promise)) {
-      return this.#verdict(res, commit, status, outcome, reportOnly);
+      return this.#verdict(res, response, commit, status, outcome, reportOnly);
     }
     const settled = outcome.catch((error: unknown): Outcome => ({
       issues: [],
@@ -2460,18 +2609,19 @@ export class ResponseContractGate implements ResponseGate {
       // Nothing to adjust: sent at once, reported when the check settles,
       // as V3a's "warn" does for a Promise-answering vendor.
       void settled.then((settledOutcome) =>
-        this.#verdict(res, commit, status, settledOutcome, true),
+        this.#verdict(res, response, commit, status, settledOutcome, true),
       );
       return undefined;
     }
     return settled.then((settledOutcome) =>
-      this.#verdict(res, commit, status, settledOutcome, reportOnly),
+      this.#verdict(res, response, commit, status, settledOutcome, reportOnly),
     );
   }
 
   /** Turns a variants outcome into the gate's verdict, reporting what must be. */
   #verdict(
     res: ResponseGateRequest,
+    response: Response,
     commit: ResponseCommit,
     status: number,
     outcome: Outcome,
@@ -2491,6 +2641,21 @@ export class ResponseContractGate implements ResponseGate {
     }
     const issues = outcome.issues;
     if (issues.length === 0) {
+      // V13's `"parsed"`: the matched variant's body output, over any adjust.
+      const parsed = outcome.parsed;
+      if (parsed !== undefined && parsed.body !== parsed.input) {
+        const text = JSON.stringify(parsed.body);
+        const base = outcome.adjusted?.response ?? response;
+        return {
+          replacement: new Response(text, {
+            status: base.status,
+            headers: base.headers,
+          }),
+          stream: outcome.stream,
+          body: parsed.body,
+          text,
+        };
+      }
       return replacementOf(outcome.adjusted, outcome.stream);
     }
     if (reportOnly) {
@@ -2671,11 +2836,17 @@ export class ResponseContractGate implements ResponseGate {
           issues: found,
           adjusted,
           stream: tagStream(out.stream, variant),
+          parsed: out.parsed,
         };
       }
       return andThen(found, (issues): MaybePromise<Outcome> => {
         if (issues.length === 0) {
-          return { issues, adjusted, stream: tagStream(out.stream, variant) };
+          return {
+            issues,
+            adjusted,
+            stream: tagStream(out.stream, variant),
+            parsed: out.parsed,
+          };
         }
         return this.#diagnose(
           res,
@@ -2743,7 +2914,7 @@ export class ResponseContractGate implements ResponseGate {
       }
       // A variant that passes with no per-chunk check (a buffered body, or
       // one whose body is not checked) takes the response as it is.
-      return { issues: [], adjusted };
+      return { issues: [], adjusted, parsed: out.parsed };
     };
     const tryFrom = (from: number): MaybePromise<Outcome> => {
       for (let i = from; i < acceptable.length; i++) {
@@ -3007,8 +3178,30 @@ export class ResponseContractGate implements ResponseGate {
     status: number,
     entry: CompiledEntry | undefined,
     named: string | undefined,
-  ): ResponseStreamCheck | ResponseReplacement | undefined {
-    if (named === undefined || entry?.variants === undefined) return undefined;
+  ): MaybePromise<ResponseStreamCheck | ResponseReplacement | undefined> {
+    if (named === undefined || entry?.variants === undefined) {
+      // V13: `"off"` with `responseOutput: "parsed"` still parses (the author
+      // asked for the output, as for a variant's adjust): a passing buffered
+      // JSON body is sent as its schema's output; a failing one goes as it
+      // is, unreported.
+      if (this.#output !== "parsed" || entry === undefined) return undefined;
+      const out: CommitOut = {};
+      const found = this.#check(
+        res,
+        response,
+        commit,
+        status,
+        entry as CompiledSpec,
+        out,
+      );
+      const settle = (
+        issues: ValidationIssue<ResponsePart>[],
+      ): ResponseStreamCheck | ResponseReplacement | undefined =>
+        issues.length === 0
+          ? (this.#parsedReplacement(out, response) ?? out.stream)
+          : undefined;
+      return found instanceof Promise ? found.then(settle) : settle(found);
+    }
     const variant = entry.byName.get(named);
     if (variant === undefined) return undefined;
     return replacementOf(
@@ -3417,6 +3610,8 @@ export const RESPONSE_BINDING: unique symbol = Symbol.for(
 export interface RouterResponseSettings {
   /** The innermost router's `responseValidation` that set one; `undefined` when none did. */
   readonly mode: ResponseValidationMode | undefined;
+  /** The innermost router's `responseOutput` that set one; `undefined` when none did. */
+  readonly output: ResponseOutputMode | undefined;
   /** The routers' `commonResponses`, outermost first (an adapter's, then a router's). */
   readonly common: readonly OutboundDef[];
   /** The router's logger, resolved when first needed. */

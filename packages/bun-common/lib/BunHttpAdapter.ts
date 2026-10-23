@@ -28,6 +28,7 @@ import type {
 import type { LoggerLike } from "./logging";
 import type {
   ResponseSchemas,
+  ResponseOutputMode,
   ResponseValidationMode,
 } from "./responseValidation";
 import type { ViewEngine } from "./views";
@@ -377,6 +378,13 @@ export class BunHttpAdapter<
        */
       responseValidation?: ResponseValidationMode;
       /**
+       * What a passing buffered JSON body is sent as (V13): `"parsed"` or
+       * `"as-sent"` (the default). Forwarded to the underlying
+       * {@link BunRouter} (it wins over `router.responseOutput`); see that
+       * option.
+       */
+      responseOutput?: ResponseOutputMode;
+      /**
        * Statuses every route may answer without declaring them (a `401`,
        * the error handler's `500`), in `validate()`'s `responses` form,
        * merged under each validator's `responses`. Forwarded to the
@@ -404,6 +412,9 @@ export class BunHttpAdapter<
       ...(options?.views !== undefined ? { views: options.views } : {}),
       ...(options?.responseValidation !== undefined
         ? { responseValidation: options.responseValidation }
+        : {}),
+      ...(options?.responseOutput !== undefined
+        ? { responseOutput: options.responseOutput }
         : {}),
       ...(options?.commonResponses !== undefined
         ? { commonResponses: options.commonResponses }

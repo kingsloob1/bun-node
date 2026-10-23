@@ -344,6 +344,7 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
 | `acceptUndecodableBody` | `boolean` | unset (the default), which refuses | On an adapter, route a request whose body could not be decoded (bad JSON, a corrupt stream, an unsupported `Content-Encoding`) to this router's routes, with `req.bodyDecodingError` set, instead of refusing it before routing. Unset, the router takes its mount's setting; unset all the way up, the adapter refuses. `false` refuses inside an opted-in router. Set it before adding routes. See [Testing without a socket](#testing-without-a-socket). |
 | `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Runtime response checks for the validators on its routes that declare `responses` and no `responseValidation` of their own. A mounted router's setting wins over its parent's. Set it before adding routes. See [Responses](#responses). |
+| `responseOutput` | `"as-sent" \| "parsed"` | unset (`"as-sent"`) | What a passing buffered JSON body is sent as: the schema's output under `"parsed"`, for validators on its routes with no `responseOutput` of their own. A mounted router's wins over its parent's. Set it before adding routes. See [Responses](#responses). |
 | `commonResponses` | `validate()`'s `responses` form | none | Statuses every route may answer without declaring them (an auth `401`, the error handler's `500`), merged under each validator's `responses` per status and part, and under a mounted router's own (the inner winning). Only routes whose validators declare `responses` are checked. See [Responses](#responses). |
 | `views` | `BunViews` | a `BunViews` of its own, made on first read | The views `res.render` uses in every response the router builds: `fetch()`, a `BunWebSocket` dedicated server and, on the adapter, every request and error handler. One instance, so its cache and `locals` are shared. Read it as `router.views`. A mounted sub-router renders with the views of the router serving the request. See [Redirects, views and format](#redirects-views-and-format). |
 
@@ -521,6 +522,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `router` | `BunRouterOptions` | `{ caseSensitive: false, debug: false }` | [Router options](#router-options), merged over those defaults. Matching ignores case by default, as a bare `BunRouter`, bun-nest's adapter and Express do; `{ caseSensitive: true }` opts in. |
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
 | `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Forwarded to the router, over `router.responseValidation`. See [Responses](#responses). |
+| `responseOutput` | `"as-sent" \| "parsed"` | unset (`"as-sent"`) | Forwarded to the router, over `router.responseOutput`. See [Responses](#responses). |
 | `commonResponses` | `validate()`'s `responses` form | none | Forwarded to the router, over `router.commonResponses`. See [Responses](#responses). |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
@@ -1428,6 +1430,7 @@ middleware is built, rather than being ignored. An option given as
 | `formatError` | `{ error: "Validation failed", issues }` | The JSON body `"respond"` sends. |
 | `responses` | none | The route's responses by status, typing the handler's `res`; see [Responses](#responses). |
 | `responseValidation` | the router's, else `"off"` | `"off"`, `"warn"` or `"error"`: whether `responses` is checked at runtime; see [Responses](#responses). |
+| `responseOutput` | the router's, else `"as-sent"` | `"as-sent"` or `"parsed"`: whether a passing buffered JSON body is sent as the schema's output; see [Responses](#responses). |
 | `messages` | unset (the scrub) | `"generic"` replaces every issue's message with `Invalid value` (plus the vendor's issue code when it has one), instead of withholding only a message found to quote the received value. |
 | `redactPaths` | `false` | `true` empties every issue's `path`, for schemas keyed by user data (an e-mail-keyed record, an unknown key's name). |
 | `stripProtoKeys` | `"nest"` | Which prototype-pollution keys are deleted before the schemas run: `"nest"` (Nest 12's rule, a `prototype` or `constructor` field included) or `"minimal"` (only `__proto__`, and a `constructor` holding a `prototype`). See below. |
@@ -1603,6 +1606,19 @@ place, so a synchronous request stays synchronous; yup, an async schema, or a
 body that must be read (a `Blob`, a passed-through `Response`) holds the
 response until the check settles. Use `"error"` in development and tests and
 `"off"` or `"warn"` in production.
+
+**`responseOutput: "parsed"`** (V13) sends a passing buffered JSON body as
+the schema's **output** — unknown keys the vendor strips (zod strips by
+default; yup and arktype keep them, so they strip nothing), defaults and
+transforms applied — for every response, not only those `.variant()` names.
+Set it on the validator, else on its `BunRouter` or adapter (the most
+specific wins, as for `responseValidation`). Only a buffered, JSON-classed
+body is parsed: streams, plain text, binary and files are out. A body is
+re-serialised only when the output differs from what the handler gave.
+Under `"off"` a passing body is still parsed (the author asked for the
+output; a failing one goes as it is, unreported), under `"warn"` a failing
+one goes as it is with its warning, and under `"error"` a failing one is
+refused as ever.
 
 The validator's `messages` and `redactPaths` word the issues its `responses`
 checks report, in a `ResponseValidationError` and in a `"warn"` line alike,

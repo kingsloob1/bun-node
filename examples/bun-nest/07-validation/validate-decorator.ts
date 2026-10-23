@@ -253,6 +253,12 @@ const Confirmation = z
 /** A conflict's explanation. */
 const Problem = z.object({ reason: z.string() });
 
+/** V13's shape: `reference`, a defaulted `channel`; zod strips an unknown key. */
+const Packed = z.object({
+  reference: z.string().min(1),
+  channel: z.string().default("email"),
+});
+
 /**
  * The confirmations' response contract, per status: a bare schema is a JSON
  * body, the full form names the media type. Reused by every route of the
@@ -305,6 +311,17 @@ class ConfirmationsController {
   @Post("conflict")
   conflict(): never {
     throw new HttpException({ reason: "title taken" }, 409);
+  }
+
+  /** `responseOutput: "parsed"` (V13): the wire gets the schema's output. */
+  @Validate({
+    responses: { 201: { content: { "application/json": Packed } } },
+    responseValidation: "error",
+    responseOutput: "parsed",
+  })
+  @Post("parsed")
+  parsed() {
+    return { reference: "BK-4", channel: "email", [SECRET]: 1 };
   }
 
   /** A thrown 409 whose body breaks the 409 declaration becomes a 500. */
@@ -744,6 +761,22 @@ checkEqual(
       ],
     },
   },
+);
+
+/* ------------------------------------------------------------------ */
+step("responseOutput: \"parsed\" (V13): the wire gets the schema's output");
+
+const parsedOut = await call("/confirmations/parsed", post({}));
+show("the handler wrote a key the schema strips, and not the default", parsedOut);
+checkEqual(
+  '"parsed": the output on the wire — the unknown key stripped, the default applied',
+  parsedOut,
+  { status: 201, body: { reference: "BK-4", channel: "email" } },
+);
+check(
+  "the planted secret is in neither the answer nor the parse",
+  !JSON.stringify(parsedOut.body).includes(SECRET),
+  parsedOut.body,
 );
 
 /* ------------------------------------------------------------------ */

@@ -380,6 +380,7 @@ export {
   type ResponseSpecObject,
   ResponseValidationError,
   type ResponseValidationMode,
+  type ResponseOutputMode,
   type SetCookieView,
 } from "./responseValidation";
 export {
