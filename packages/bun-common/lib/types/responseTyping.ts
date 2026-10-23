@@ -9,8 +9,12 @@
  * (`WireInput`, plan §4.12 M1): a `z.date()` field must be a `Date`, a
  * `z.coerce.number()` one a `number`.
  *
- * Types only. Internal: the names are not approved (plan §9); they reach a
- * consumer through `BunResponse`'s signatures.
+ * Types only. `ResponseTypeMap`, `AllowedStatus`, `JsonBodyFor`,
+ * `SendBodyFor`, `DeclaredAbsent`, `InferResponses`, `VariantNames` and
+ * `NarrowVariant` are exported from the package root (approved for
+ * bun-validate V7b, 2026-10-22: bun-nest's `@Validate` response typing is
+ * written in them); the rest reach a consumer through `BunResponse`'s
+ * signatures.
  */
 import type { Readable } from "node:stream";
 import type {

@@ -2000,6 +2000,52 @@ Examples:
 [`message-scrub.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/message-scrub.ts),
 [`synchronous-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/synchronous-validation.ts).
 
+#### Checking responses outside the router: `createResponseChecker`
+
+The engine of `validate()`'s response gate (statuses, headers, cookies,
+media types with wildcards, `variants()` with `when`/discriminant/`refine`
+and the adjust, `chunks()`/`sse()` streams, the value scrub) is also a
+checker on its own, for a transport that can map its response onto a plain
+view — a Nest interceptor, the before-write hook of bun-nest's adapter:
+
+```ts
+import { createResponseChecker } from "@kingsleyweb/bun-common";
+
+const checker = createResponseChecker(
+  { 200: { content: { "application/json": User } }, 404: Problem },
+  { mode: "error" },
+);
+
+const verdict = checker.check({
+  req,                                  // the request being answered (a BunRequest)
+  status: 200,
+  headers: res.getHeaders(),            // a native Headers
+  kind: "json",                         // json | text | bytes | blob | native | redirect | status | stream | empty
+  body: value,
+});
+// undefined: send it. ResponseValidationError: refuse it (500, with issues).
+// A per-chunk check for a chunks()/sse() body: feed each chunk as written.
+// A replacement: a named variant adjusted the response; send the replacement.
+```
+
+- A checker is built once per declaration and reused across requests (the
+  declaration is compiled once). A bad declaration throws a `TypeError` at
+  construction, as it does for `validate()`.
+- The options are the gate's: `mode` (`"off" | "warn" | "error"`, default
+  `"off"`, which only applies a named variant's adjust), `logger`, and the
+  issue wording (`messages`, `redactPaths`), with the same names and meaning
+  as on `validate()`.
+- The view names the request (`req`: a conditional request's freshness 304
+  is exempt without being declared, and a variant's `when` and a `refine`
+  receive it), the final status and headers (any `Set-Cookie`s are read from
+  the headers), the body kind and body, and the variant named, if any.
+- The verdict is `undefined` (send it), a `ResponseValidationError` (refuse
+  it), a per-chunk check for a `chunks()`/`sse()` body (feed each chunk; an
+  `Error` return cuts the stream, already logged), a replacement response
+  (a named variant's adjust), or a Promise of one of these — held only under
+  `"error"` (and `"warn"` for a named variant whose `when` answers a
+  Promise).
+
 #### Writing a transport
 
 A transport is a declaration plus an adapter. The adapter calls a receiver on

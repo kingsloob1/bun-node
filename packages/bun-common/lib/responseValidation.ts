@@ -22,10 +22,10 @@
  */
 import type { BunRequest } from "./BunRequest";
 import type {
-  BunResponse,
   BunResponseChunk,
   ResponseCommit,
   ResponseGate,
+  ResponseGateRequest,
   ResponseReplacement,
   ResponseStreamCheck,
 } from "./BunResponse";
@@ -1901,7 +1901,7 @@ export class ResponseContractGate implements ResponseGate {
    *
    * @param res The response.
    */
-  lateVariant(res: BunResponse): void {
+  lateVariant(res: ResponseGateRequest): void {
     if (this.#warnedLate) return;
     this.#warnedLate = true;
     this.#logger().warn(
@@ -1927,7 +1927,7 @@ export class ResponseContractGate implements ResponseGate {
    * @param commit   What produced it.
    */
   commit(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
   ): MaybePromise<
@@ -2008,7 +2008,7 @@ export class ResponseContractGate implements ResponseGate {
    * @param res   The response.
    * @param error The refusal.
    */
-  undelivered(res: BunResponse, error: Error): void {
+  undelivered(res: ResponseGateRequest, error: Error): void {
     this.#logger().error(
       "response refused by its contract after the pipeline ended; answered 500",
       {
@@ -2021,7 +2021,7 @@ export class ResponseContractGate implements ResponseGate {
   }
 
   /** Where a log line is about: the method and the route's pattern (never the received path). */
-  #where(res: BunResponse): Record<string, unknown> {
+  #where(res: ResponseGateRequest): Record<string, unknown> {
     const req = res.req;
     const route = (req.route as { path?: unknown } | undefined)?.path;
     return {
@@ -2034,7 +2034,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** Logs a mismatch that is only reported. */
   #report(
-    res: BunResponse,
+    res: ResponseGateRequest,
     status: number,
     issues: readonly ValidationIssue<ResponsePart>[],
     errorHandler: boolean,
@@ -2048,7 +2048,7 @@ export class ResponseContractGate implements ResponseGate {
   }
 
   /** Logs a check that threw (a schema's own failure, a body read failing, a `when` or `refine`). */
-  #failed(res: BunResponse, status: number, error: unknown): void {
+  #failed(res: ResponseGateRequest, status: number, error: unknown): void {
     this.#logger().error("response contract check failed", {
       ...this.#where(res),
       status,
@@ -2057,7 +2057,7 @@ export class ResponseContractGate implements ResponseGate {
   }
 
   /** Says once per gate (per route) that a stream is not buffered to check it against a whole-body schema (Q-H4). */
-  #unread(res: BunResponse, status: number): void {
+  #unread(res: ResponseGateRequest, status: number): void {
     if (this.#warnedUnread) return;
     this.#warnedUnread = true;
     this.#logger().warn(
@@ -2068,7 +2068,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** A plain status's issues (V3a's check), then its `refine`. */
   #check(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2123,7 +2123,7 @@ export class ResponseContractGate implements ResponseGate {
    * pass or fail, cheap parts first, stopping at the first that fails.
    */
   #checkParts(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2170,7 +2170,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** {@link #checkParts} with `short`: headers, then cookies, then the body, stopping at the first that fails. */
   #checkShort(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2242,7 +2242,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** The body's issues, by kind (`short`: see {@link run}). */
   #checkBody(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2370,7 +2370,7 @@ export class ResponseContractGate implements ResponseGate {
    * bytes, a `json()` value) is checked as a stream of one chunk.
    */
   #streamBody(
-    res: BunResponse,
+    res: ResponseGateRequest,
     commit: ResponseCommit,
     status: number,
     key: MediaKey,
@@ -2416,7 +2416,7 @@ export class ResponseContractGate implements ResponseGate {
   }
 
   /** Where a stream's mismatches go, for this response. */
-  #reporter(res: BunResponse, commit: ResponseCommit): StreamReporter {
+  #reporter(res: ResponseGateRequest, commit: ResponseCommit): StreamReporter {
     return {
       refuse: this.#mode === "error" && !commit.reportOnly,
       logger: this.#logger,
@@ -2430,7 +2430,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** A variants status's commit: its outcome, then the verdict (held only when it must be). */
   #commitVariants(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2471,7 +2471,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** Turns a variants outcome into the gate's verdict, reporting what must be. */
   #verdict(
-    res: BunResponse,
+    res: ResponseGateRequest,
     commit: ResponseCommit,
     status: number,
     outcome: Outcome,
@@ -2512,7 +2512,7 @@ export class ResponseContractGate implements ResponseGate {
    * it a failed check).
    */
   #variants(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2586,7 +2586,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** The decision once every selected variant's `when` is known: the acceptable ones, and those `when` excluded. */
   #decide(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2719,7 +2719,7 @@ export class ResponseContractGate implements ResponseGate {
    * acceptable variant runs again in full, for its issues.
    */
   #firstMatch(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2826,7 +2826,7 @@ export class ResponseContractGate implements ResponseGate {
    * issue tagged with the variant; with `short`, pass or fail only.
    */
   #checkVariant(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2874,7 +2874,7 @@ export class ResponseContractGate implements ResponseGate {
    * hold) the response matches in full, the leak this exists to catch.
    */
   #diagnose(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -2921,7 +2921,7 @@ export class ResponseContractGate implements ResponseGate {
    */
   #refined(
     refines: readonly Refine[],
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -3001,7 +3001,7 @@ export class ResponseContractGate implements ResponseGate {
 
   /** The adjust-only step under `"off"` (Q-H29): `.variant()`'s fills and strips, no `when`, no check. */
   #adjustOnly(
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
     status: number,
@@ -3029,7 +3029,7 @@ export class ResponseContractGate implements ResponseGate {
    * leaves the response as the handler made it, and is logged.
    */
   #adjust(
-    res: BunResponse,
+    res: ResponseGateRequest,
     set: CompiledVariants,
     variant: CompiledVariant,
     response: Response,
@@ -3393,7 +3393,7 @@ function emptyBodyIssues(
 }
 
 /** Whether the request is conditional (`If-None-Match` or `If-Modified-Since`). */
-function isConditional(res: BunResponse): boolean {
+function isConditional(res: ResponseGateRequest): boolean {
   const req = res.req;
   return (
     !!req.getHeader("if-none-match") || !!req.getHeader("if-modified-since")
