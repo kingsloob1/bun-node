@@ -1825,6 +1825,7 @@ them probe by probe).
 | One parameter, one schema | `new StandardSchemaPipe(schema)` | Nest 11 and 12 |
 | Parameters typed from a schema, one global pipe | `class Dto extends SchemaDto(schema) {}` + `StandardValidationPipe` | Nest 11 and 12 |
 | A route's whole request — body, query, params, headers, cookies | `@Validate({ … })` + `@Validated(part)` | Nest 11 and 12 |
+| A route's responses, per status (body, headers, media type) | `@Validate({ responses })` + `reply()` | Nest 11 and 12 |
 | `{ error, issues }` answers | `ValidationExceptionFilter` (opt-in) | Nest 11 and 12 |
 | Both registered globally | `StandardValidationModule` | Nest 11 and 12 |
 | Nest's own per-parameter schema | `@Body({ schema })` + Nest's `StandardSchemaValidationPipe` | Nest 12 only |
@@ -1894,6 +1895,61 @@ reaches the route's contract.
 `@Validate` works on any adapter: the request is read and written through
 plain properties (Express 5's getter-only `req.query` is defined over). It
 checks HTTP requests only; gateway messages are the gateway pipes' ground.
+
+#### Responses
+
+```ts
+const responses = {
+  201: { headers: z.object({ location: z.string() }), content: { "application/json": User } },
+  409: Problem,                       // shorthand: { content: { "application/json": Problem } }
+  204: null,                          // no body
+} as const;
+
+@Validate({ responses, responseValidation: "error" })
+@Post()
+create() {
+  return reply<typeof responses>(201, user);   // status and body typed from the table
+}
+```
+
+`responses` is the same `ResponseSchemas` table as bun-common's `validate()`
+— per status, `headers`, `cookies` and a `content` map from media type to
+body schema (`null` for no body; `chunks()`, `sse()` and `opaque()` for the
+other body kinds, and `variants()` for several whole responses of one
+status) — and is checked with the same engine (`createResponseChecker` in
+bun-common). `responseValidation` is `"off"` (the default, which only
+applies a named variant's adjust), `"warn"` or `"error"`.
+
+- A returned body is checked in the interceptor against the final status
+  (Nest's own: POST's 201, `@HttpCode`) and the `@Header()` headers, with
+  the status, headers, media type and body all checked. A thrown
+  non-2xx (`HttpException`) is checked against its declared status.
+- `reply(status, body, { headers, variant })` answers per status: the status
+  and body are typed from the route's table (the body is the schema's wire
+  input), the status and headers are applied, and the body is checked — a
+  named variant's literals are filled and its undeclared body fields
+  stripped, as `res.variant()` does on bun-common.
+- What the interceptor cannot see goes through bun-nest's **before-write
+  hook**: a plain `@Res()` route, a `StreamableFile`, a redirect (status and
+  `location` checked, the generated body exempt). On another platform those
+  are checked only as far as the interceptor reaches.
+- `@Sse()` events are checked one by one, in order, against their `sse()`
+  event map: a bad first event is a 500 before anything is written; a later
+  one is refused and reaches the client as Nest's `event: error` (the
+  message is value-free either way).
+- A refusal throws a `ResponseValidationError` (500, with `issues`), which
+  `ValidationExceptionFilter` answers with
+  `{ error: "Response validation failed", issues }`; without the filter the
+  answer is Nest's generic 500.
+- `ResponseValidationInterceptor` checks every route declaring `responses`
+  with its own policy (default `"error"`):
+  `app.useGlobalInterceptors(new ResponseValidationInterceptor())` — one
+  line turns checks on in development.
+- A hand-written stream through `@Res()` is never buffered (a whole-body
+  schema is skipped with one warning); a `chunks()`/`sse()` declaration on
+  one cannot be checked per chunk. A variant's adjust cannot be applied
+  through the hook, so on a plain `@Res()` route set the variant's fields on
+  the response itself.
 
 ### `StandardSchemaPipe`
 

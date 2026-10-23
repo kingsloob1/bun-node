@@ -32,6 +32,8 @@ import {
   Controller,
   createParamDecorator,
   Get,
+  Header,
+  HttpException,
   Module,
   Param,
   Post,
@@ -40,6 +42,7 @@ import {
 import * as yup from "yup";
 import { z } from "zod";
 import {
+  reply,
   SchemaDto,
   StandardSchemaPipe,
   StandardValidationModule,
@@ -307,6 +310,78 @@ class ValidateDecoratorController {
 @Module({ controllers: [ValidateDecoratorController] })
 class ValidateDecoratorModule {}
 
+/* ---- bun-validate V7b: `@Validate`'s responses ----------------------- */
+
+/** A declared user body. */
+const User = z.object({ id: z.number() });
+
+/** The reply route's responses, shared by the decorator and `reply()`. */
+const replyResponses = {
+  201: { content: { "application/json": User } },
+} as const;
+
+/**
+ * `@Validate({ responses })` on the two adapters: the interceptor's
+ * `map()`/`catchError` phase is platform-neutral, so a declared status, a
+ * refused body, a `reply()` and a thrown 409 answer the same on both.
+ */
+@Controller("vr")
+class ValidateResponsesController {
+  @Get("ok")
+  @Validate({
+    responses: { 200: { content: { "application/json": User } } },
+    responseValidation: "error",
+  })
+  ok() {
+    return { id: 1 };
+  }
+
+  @Get("bad")
+  @Validate({
+    responses: { 200: { content: { "application/json": User } } },
+    responseValidation: "error",
+  })
+  bad() {
+    return { id: "not-a-number" };
+  }
+
+  @Post("reply")
+  @Validate({ responses: replyResponses, responseValidation: "error" })
+  replyRoute() {
+    return reply<typeof replyResponses>(201, { id: 2 });
+  }
+
+  @Get("thrown")
+  @Validate({
+    responses: {
+      200: { content: { "application/json": User } },
+      409: z.object({ error: z.string() }),
+    },
+    responseValidation: "error",
+  })
+  thrown() {
+    throw new HttpException({ error: "taken" }, 409);
+  }
+
+  @Get("header")
+  @Header("x-n", "5")
+  @Validate({
+    responses: {
+      200: {
+        headers: z.object({ "x-n": z.coerce.number().int() }),
+        content: { "application/json": User },
+      },
+    },
+    responseValidation: "error",
+  })
+  header() {
+    return { id: 3 };
+  }
+}
+
+@Module({ controllers: [ValidateResponsesController] })
+class ValidateResponsesModule {}
+
 /** A JSON `POST` carrying the API header `vd/parts` requires. */
 const jsonApi = (body: unknown, apiVersion = "1"): RequestInit => ({
   method: "POST",
@@ -382,6 +457,17 @@ export const VALIDATION_GROUPS: ProbeGroup[] = [
         path: "/n12/users-yup-dto",
         init: json(PROTO_BODY),
       },
+    ],
+  },
+  {
+    name: "validate-responses",
+    module: ValidateResponsesModule,
+    probes: [
+      { name: "declared 200 passes", path: "/vr/ok" },
+      { name: "body mismatch refused (500)", path: "/vr/bad" },
+      { name: "reply(201)", path: "/vr/reply", init: json({}) },
+      { name: "thrown 409 declared", path: "/vr/thrown" },
+      { name: "@Header checked", path: "/vr/header" },
     ],
   },
 ];

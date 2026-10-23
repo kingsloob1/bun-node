@@ -1264,6 +1264,18 @@ export interface ResponseStreamCheck {
 }
 
 /**
+ * What a response gate is given: the response's request. A gate reads only
+ * the request (its method, route and headers — a conditional request's
+ * freshness, a variant's `when`, a `refine`'s second argument), never the
+ * response, so a checker outside the router can drive it with any host that
+ * carries one (plan §4.4.2, and V7b's Nest-side checker).
+ */
+export interface ResponseGateRequest {
+  /** The request the response answers. */
+  readonly req: BunRequest;
+}
+
+/**
  * A response gate (`validate()`'s `responses`, plan §4.4.2): consulted once,
  * as the native `Response` is committed, before transforms, waiters and
  * `finish` (for a `write()` stream, as it opens). `undefined` sends it, an
@@ -1277,12 +1289,12 @@ export interface ResponseGate {
   /**
    * Checks the response about to be committed.
    *
-   * @param res      The response.
+   * @param res      The response's request (only `res.req` is read).
    * @param response The native `Response`, built but not yet handed on.
    * @param commit   What produced it.
    */
   commit: (
-    res: BunResponse,
+    res: ResponseGateRequest,
     response: Response,
     commit: ResponseCommit,
   ) =>
@@ -1298,7 +1310,7 @@ export interface ResponseGate {
    * @param res   The response.
    * @param error The refusal.
    */
-  undelivered: (res: BunResponse, error: Error) => void;
+  undelivered: (res: ResponseGateRequest, error: Error) => void;
   /**
    * The gate for a response that this validator and an inner one (a mount's,
    * then a route's) both let through.
@@ -1312,7 +1324,7 @@ export interface ResponseGate {
    *
    * @param res The response.
    */
-  lateVariant?: (res: BunResponse) => void;
+  lateVariant?: (res: ResponseGateRequest) => void;
 }
 
 /** Whether a gate's verdict is an adjusted response to send instead. */

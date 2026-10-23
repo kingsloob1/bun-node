@@ -35,7 +35,9 @@
         "ValidParams",
         "ValidHeaders",
         "ValidCookies",
-        "ValidSignedCookies"
+        "ValidSignedCookies",
+        "reply",
+        "ResponseValidationInterceptor"
       ],
       "types": [
         "BunBeforeWriteBody",
@@ -65,7 +67,8 @@
         "WebSocketClientData",
         "WsAckFunction",
         "UploadExceptionBody",
-        "StandardValidationPipeOptions"
+        "StandardValidationPipeOptions",
+        "ValidateSchemas"
       ],
       "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;"
     },
@@ -127,9 +130,12 @@
         "ValidParams",
         "ValidHeaders",
         "ValidCookies",
-        "ValidSignedCookies"
+        "ValidSignedCookies",
+        "reply",
+        "ResponseValidationInterceptor"
       ],
-      "snippet": "declare const S: { readonly \"~standard\": { readonly version: 1; readonly vendor: string; readonly validate: (value: unknown) => { value: unknown } } };\nexport const _decorator: Equal<ReturnType<typeof m.Validate>, MethodDecorator & ClassDecorator> = true;\nexport const _aliases: ParameterDecorator[] = [m.Validated(\"body\"), m.ValidBody(), m.ValidQuery(), m.ValidParams(), m.ValidHeaders(), m.ValidCookies(), m.ValidSignedCookies()];\nexport const _schemas = m.Validate({ body: S, query: S });"
+      "snippet": "type Out = { a: number };\ndeclare const S: { readonly \"~standard\": { readonly version: 1; readonly vendor: string; readonly validate: (value: unknown) => { value: Out }; readonly types?: { readonly input: unknown; readonly output: Out } } };\ndeclare const R: { readonly 201: { readonly content: { readonly \"application/json\": typeof S } } };\nexport const _replyOk = m.reply<typeof R>(201, { a: 1 });\n// @ts-expect-error an undeclared status is refused\nexport const _replyBadStatus = m.reply<typeof R>(202, { a: 1 });\n// @ts-expect-error a body the status does not declare is refused\nexport const _replyBadBody = m.reply<typeof R>(201, { a: \"x\" });\nexport const _decorator: Equal<ReturnType<typeof m.Validate>, MethodDecorator & ClassDecorator> = true;",
+      "types": ["ValidateSchemas"]
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/interceptors",

@@ -382,6 +382,24 @@ export {
   type ResponseValidationMode,
   type SetCookieView,
 } from "./responseValidation";
+export {
+  createResponseChecker,
+  type ResponseChecker,
+  type ResponseCheckerOptions,
+  type ResponseCheckVerdict,
+  type ResponseCheckView,
+} from "./responseChecker";
+export type { ResponseReplacement, ResponseStreamCheck } from "./BunResponse";
+export type {
+  AllowedStatus,
+  DeclaredAbsent,
+  InferResponses,
+  JsonBodyFor,
+  NarrowVariant,
+  ResponseTypeMap,
+  SendBodyFor,
+  VariantNames,
+} from "./types/responseTyping";
 export type { StandardSchemaV1 } from "./types/standardSchema";
 /* ------------------------------------------------------------------ *
  * The transport-agnostic contract core (`lib/contract/`), also the

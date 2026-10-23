@@ -1,11 +1,15 @@
 /**
- * BunValidate's `@Validate` decorator, the request side (V7a), asserted: one
- * decorator checking a route's request parts (`params`, `query`, `headers`,
- * `cookies`, `signedCookies`, `body`) with Standard Schemas before the
- * handler and before Nest's pipes, the parsed outputs written back in place
- * and recorded on the request's `valid` view, `@Validated(part)` and its six
- * aliases reading it, class- and method-level `@Validate` merging per part,
- * and the Nest 12 skip rule composing with `@Body({ schema })`.
+ * BunValidate's `@Validate` decorator, asserted: the request side (V7a) —
+ * one decorator checking a route's request parts (`params`, `query`,
+ * `headers`, `cookies`, `signedCookies`, `body`) with Standard Schemas
+ * before the handler and before Nest's pipes, the parsed outputs written
+ * back in place and recorded on the request's `valid` view, `@Validated(part)`
+ * and its six aliases reading it, class- and method-level `@Validate` merging
+ * per part, the Nest 12 skip rule composing with `@Body({ schema })` — and
+ * the response side (V7b): `responses` and `responseValidation`, `reply()`,
+ * a thrown non-2xx checked against its declared status, a plain `@Res()`
+ * through the adapter's before-write hook, and `@Sse()` events checked per
+ * event.
  *
  * ```bash
  * bun 07-validation/validate-decorator.ts
@@ -39,10 +43,38 @@
  *   decorator's schema runs exactly once. On Nest 11 (no such pipe)
  *   `@Validate` checks everything itself and those checks sit out on a line
  *   starting `skipped:`.
+ * - With `responses` declared and `responseValidation: "error"` (the default
+ *   is `"off"`), a response breaking its status's declaration is a
+ *   `ResponseValidationError`, a 500: the server's fault, not the client's.
+ *   The filter answers `{ error: "Response validation failed", issues }`,
+ *   each issue with `target: "body"` (or `"status"`) and `key: "<status>"`,
+ *   scrubbed the same way as a request issue.
+ * - `reply<typeof responses>(status, body, { headers })` types the body from
+ *   the status's declaration; the interceptor applies the status and headers
+ *   and checks the body. A status the route never declared (smuggled past
+ *   the types) is refused like any other mismatch.
+ * - A thrown `HttpException` is checked against its own status's declaration:
+ *   a declared 409 passes through unchanged; a 409 whose body breaks its
+ *   schema becomes the 500.
+ * - A plain `@Res()` route sends the response itself, after `map()` ran: the
+ *   adapter's **before-write hook** checks the final status, headers and
+ *   body, and a refusal is a fresh 500 — the response the handler wrote
+ *   (status included) never reaches the client.
+ * - An `@Sse()` route's events are checked one by one against a
+ *   `sse({ ... })` declaration. A refused **first** event fails before the
+ *   headers are committed, so the filters answer a 500; after the commit,
+ *   Nest answers the refusal with its own `event: error` frame. The event
+ *   itself never reaches the client either way.
  */
-import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
-import type { INestApplication, PipeTransform, Type } from "@nestjs/common";
-import { signCookie } from "@kingsleyweb/bun-common";
+import type { BunResponse, StandardSchemaV1 } from "@kingsleyweb/bun-common";
+import type {
+  INestApplication,
+  MessageEvent,
+  PipeTransform,
+  Type,
+} from "@nestjs/common";
+import type { Observable } from "rxjs";
+import { signCookie, sse } from "@kingsleyweb/bun-common";
 import {
   BunHttpAdapter,
   Validate,
@@ -54,18 +86,24 @@ import {
   ValidQuery,
   ValidSignedCookies,
   ValidationExceptionFilter,
+  reply,
 } from "@kingsleyweb/bun-nest";
 import * as nestCommon from "@nestjs/common";
 import {
   Body,
   Controller,
+  Get,
   Headers,
+  HttpException,
   Module,
   Param,
   Post,
   Query,
+  Res,
+  Sse,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { concatMap, from, of } from "rxjs";
 import { z } from "zod";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
@@ -201,7 +239,148 @@ class OrdersController {
   }
 }
 
-@Module({ controllers: [BookingsController, OrdersController] })
+/* ------------------------------------------------------------------ */
+/* The response side (V7b)                                             */
+
+/** A booking confirmation, as the routes answer it (strict: nothing more). */
+const Confirmation = z
+  .object({
+    reference: z.string().min(1),
+    seats: z.number().int().min(1),
+  })
+  .strict();
+
+/** A conflict's explanation. */
+const Problem = z.object({ reason: z.string() });
+
+/**
+ * The confirmations' response contract, per status: a bare schema is a JSON
+ * body, the full form names the media type. Reused by every route of the
+ * controller, and the type argument of `reply()`.
+ */
+const responses = {
+  200: Confirmation,
+  201: { content: { "application/json": Confirmation } },
+  206: Confirmation,
+  409: Problem,
+} as const;
+
+@Controller("confirmations")
+class ConfirmationsController {
+  /** A returned body matching its status's declaration passes. */
+  @Validate({ responses, responseValidation: "error" })
+  @Post()
+  create() {
+    return { reference: "BK-1", seats: 3 };
+  }
+
+  /** The same, with a key the declaration refuses (and never quotes). */
+  @Validate({ responses, responseValidation: "error" })
+  @Post("broken")
+  broken() {
+    return { reference: "BK-1", seats: 3, [SECRET]: 1 };
+  }
+
+  /** `reply()`: the status and headers applied, the body typed and checked. */
+  @Validate({ responses, responseValidation: "error" })
+  @Post("reply")
+  replied() {
+    return reply<typeof responses>(
+      201,
+      { reference: "BK-2", seats: 2 },
+      { headers: { "x-answered": "reply" } },
+    );
+  }
+
+  /** A status the route never declared, smuggled past `reply()`'s types. */
+  @Validate({ responses, responseValidation: "error" })
+  @Post("reply-undeclared")
+  replyUndeclared() {
+    const undeclared = 202 as number as 201;
+    return reply<typeof responses>(undeclared, { reference: "BK-3", seats: 1 });
+  }
+
+  /** A thrown 409 whose body matches the 409 declaration passes through. */
+  @Validate({ responses, responseValidation: "error" })
+  @Post("conflict")
+  conflict(): never {
+    throw new HttpException({ reason: "title taken" }, 409);
+  }
+
+  /** A thrown 409 whose body breaks the 409 declaration becomes a 500. */
+  @Validate({ responses, responseValidation: "error" })
+  @Post("conflict-broken")
+  conflictBroken(): never {
+    throw new HttpException({ reason: 42 }, 409);
+  }
+
+  /** A plain `@Res()`: the before-write hook checks the response as written. */
+  @Validate({ responses, responseValidation: "error" })
+  @Get("manual")
+  manual(@Res() res: BunResponse) {
+    res.status(206).json({ reference: "BK-4", seats: 1 });
+  }
+
+  /** The same, refused: the 200 and its body never reach the client. */
+  @Validate({ responses, responseValidation: "error" })
+  @Get("manual-broken")
+  manualBroken(@Res() res: BunResponse) {
+    res.status(200).json({ reference: "BK-4", seats: "many" });
+  }
+}
+
+/** One `tick` event's data. */
+const Tick = z.object({ n: z.number().int() }).strict();
+
+/** The events' response contract: a 200 event stream of `tick` events. */
+const sseResponses = {
+  200: { content: { "text/event-stream": sse({ tick: Tick }) } },
+} as const;
+
+@Controller("ticks")
+class TicksController {
+  /** One valid `tick` event. */
+  @Validate({ responses: sseResponses, responseValidation: "error" })
+  @Sse()
+  ticks(): Observable<MessageEvent> {
+    return of({ type: "tick", data: { n: 1 } });
+  }
+
+  /** A bad first event: refused before the headers are committed (a 500). */
+  @Validate({ responses: sseResponses, responseValidation: "error" })
+  @Sse("first-broken")
+  firstBroken(): Observable<MessageEvent> {
+    return of({ type: "tick", data: { n: 2, [SECRET]: 1 } });
+  }
+
+  /**
+   * A valid event, then one the declaration refuses, a beat apart as a live
+   * stream's events arrive: the refusal lands after the commit, so Nest
+   * answers it with its own `event: error` frame.
+   */
+  @Validate({ responses: sseResponses, responseValidation: "error" })
+  @Sse("broken")
+  broken(): Observable<MessageEvent> {
+    return from([
+      { type: "tick", data: { n: 1 } },
+      { type: "tick", data: { n: 2, [SECRET]: 1 } },
+    ]).pipe(
+      concatMap(async (event) => {
+        await Bun.sleep(1);
+        return event;
+      }),
+    );
+  }
+}
+
+@Module({
+  controllers: [
+    BookingsController,
+    OrdersController,
+    ConfirmationsController,
+    TicksController,
+  ],
+})
 class AppModule {}
 
 /* ------------------------------------------------------------------ */
@@ -484,6 +663,206 @@ if (NestSchemaPipe === undefined) {
     [1, 0],
   );
 }
+
+/* ------------------------------------------------------------------ */
+step("@Validate responses: a declared body passes, a broken one is a 500");
+
+checkEqual(
+  "a returned body matching its status's declaration passes",
+  await call("/confirmations", post({})),
+  { status: 201, body: { reference: "BK-1", seats: 3 } },
+);
+
+const rawOut = (await Confirmation["~standard"].validate({
+  reference: "BK-1",
+  seats: 3,
+  [SECRET]: 1,
+})) as StandardSchemaV1.FailureResult;
+check(
+  "zod's own message quotes the planted key (what the answer withholds)",
+  rawOut.issues.some((issue) => issue.message.includes(SECRET)),
+  rawOut.issues,
+);
+
+const refusedOut = await call("/confirmations/broken", post({}));
+show("a body breaking the 201 declaration", refusedOut);
+checkEqual("a ResponseValidationError: 500, { error, issues }", refusedOut, {
+  status: 500,
+  body: {
+    error: "Response validation failed",
+    issues: [
+      {
+        target: "body",
+        message: "Invalid value (unrecognized_keys)",
+        path: "",
+        key: "201",
+        mediaType: "application/json",
+      },
+    ],
+  },
+});
+check(
+  "the answer never quotes the planted secret",
+  !JSON.stringify(refusedOut.body).includes(SECRET),
+  refusedOut.body,
+);
+
+/* ------------------------------------------------------------------ */
+step(
+  "reply(): the status applied, the body checked, an undeclared status refused",
+);
+
+const repliedResponse = await fetch(`${url}/confirmations/reply`, post({}));
+const replied = {
+  status: repliedResponse.status,
+  answered: repliedResponse.headers.get("x-answered"),
+  body: await repliedResponse.json(),
+};
+show("reply(201, …, { headers })", replied);
+checkEqual("the status and header applied, the checked body sent", replied, {
+  status: 201,
+  answered: "reply",
+  body: { reference: "BK-2", seats: 2 },
+});
+
+const undeclaredOut = await call("/confirmations/reply-undeclared", post({}));
+show("reply() answering a status the route never declared", undeclaredOut);
+checkEqual(
+  "an undeclared status is refused like any other mismatch",
+  undeclaredOut,
+  {
+    status: 500,
+    body: {
+      error: "Response validation failed",
+      issues: [
+        {
+          target: "status",
+          message: "This status is not declared (200, 201, 206, 409)",
+          path: "",
+          key: "202",
+        },
+      ],
+    },
+  },
+);
+
+/* ------------------------------------------------------------------ */
+step(
+  "A thrown HttpException: a declared 409 passes through, a broken one is a 500",
+);
+
+checkEqual(
+  "a declared 409 passes through unchanged",
+  await call("/confirmations/conflict", post({})),
+  { status: 409, body: { reason: "title taken" } },
+);
+const conflictBroken = await call("/confirmations/conflict-broken", post({}));
+show("a 409 whose body breaks the 409 declaration", conflictBroken);
+checkEqual("refused with a fresh 500", conflictBroken, {
+  status: 500,
+  body: {
+    error: "Response validation failed",
+    issues: [
+      {
+        target: "body",
+        message: "Invalid input: expected string, received number",
+        path: "reason",
+        key: "409",
+        mediaType: "application/json",
+      },
+    ],
+  },
+});
+
+/* ------------------------------------------------------------------ */
+step("A plain @Res() route: the before-write hook checks the final response");
+
+checkEqual(
+  "res.status(206).json(valid) passes as written",
+  await call("/confirmations/manual"),
+  { status: 206, body: { reference: "BK-4", seats: 1 } },
+);
+const manualBroken = await call("/confirmations/manual-broken");
+show("res.status(200).json(bad)", manualBroken);
+checkEqual(
+  "refused with a fresh 500: the 200 never reaches the client",
+  manualBroken,
+  {
+    status: 500,
+    body: {
+      error: "Response validation failed",
+      issues: [
+        {
+          target: "body",
+          message: "Invalid input: expected number, received string",
+          path: "seats",
+          key: "200",
+          mediaType: "application/json",
+        },
+      ],
+    },
+  },
+);
+
+/* ------------------------------------------------------------------ */
+step("@Sse(): each event checked against the sse() declaration");
+
+/** Reads a whole event stream (the route's observable completes). */
+async function streamText(
+  path: string,
+): Promise<{ status: number; body: string }> {
+  const response = await fetch(`${url}${path}`);
+  return { status: response.status, body: await response.text() };
+}
+
+const ticks = await streamText("/ticks");
+show("GET /ticks", ticks);
+checkEqual("a valid event reaches the client", ticks, {
+  status: 200,
+  body: '\nevent: tick\nid: 1\ndata: {"n":1}\n\n',
+});
+
+const firstBroken = await call("/ticks/first-broken");
+show(
+  "a bad first event, refused before the headers are committed",
+  firstBroken,
+);
+checkEqual("a 500 through the filters, the event never sent", firstBroken, {
+  status: 500,
+  body: {
+    error: "Response validation failed",
+    issues: [
+      {
+        target: "body",
+        message: "Invalid value (unrecognized_keys)",
+        path: "tick.data",
+        key: "200",
+        mediaType: "text/event-stream",
+      },
+    ],
+  },
+});
+check(
+  "the 500 never quotes the planted secret",
+  !JSON.stringify(firstBroken.body).includes(SECRET),
+  firstBroken.body,
+);
+
+const ticksBroken = await streamText("/ticks/broken");
+show("a bad event after the commit", ticksBroken);
+checkEqual("the valid event passed", ticksBroken.status, 200);
+check(
+  "the refused one became Nest's event: error frame (its data is Nest's own — 'Internal server error' on 12.2, the scrubbed refusal message before it — never the value)",
+  ticksBroken.body.includes('event: tick\nid: 1\ndata: {"n":1}') &&
+    ticksBroken.body.includes("event: error") &&
+    !ticksBroken.body.includes(SECRET),
+  ticksBroken,
+);
+check(
+  "the refused event itself never reached the client",
+  !ticksBroken.body.includes(SECRET) && !ticksBroken.body.includes('"n":2'),
+  ticksBroken,
+);
 
 for (const app of apps) {
   await app.close();
