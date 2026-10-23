@@ -46,6 +46,7 @@ import type {
   ResponseChecker,
   ResponseCheckerOptions,
   ResponseCheckView,
+  ResponseOutputMode,
   ResponseReplacement,
   ResponseSchemas,
   ResponseStreamCheck,
@@ -99,6 +100,14 @@ export type ValidateSchemas = ValidationSchemas & {
   responses?: ResponseSchemas;
   /** The responses' policy: `"warn"` logs and sends, `"error"` refuses (500), `"off"` (the default) checks nothing but still applies a named variant's adjust. */
   responseValidation?: ResponseValidationMode;
+  /**
+   * What a passing buffered JSON body is sent as (V13): `"parsed"` sends the
+   * schema's output (unknown keys stripped, defaults applied); `"as-sent"`
+   * (the default) sends the handler's value. Only what `map()` sees is
+   * parsed: a plain `@Res()` response (the before-write hook can pass or
+   * refuse, never replace) is checked as sent.
+   */
+  responseOutput?: ResponseOutputMode;
 };
 
 /**
@@ -172,9 +181,20 @@ function checkSchemas(schemas: ValidateSchemas): void {
       }
       continue;
     }
+    if (key === "responseOutput") {
+      if (
+        schemas.responseOutput !== "as-sent" &&
+        schemas.responseOutput !== "parsed"
+      ) {
+        throw new TypeError(
+          '@Validate: responseOutput must be "as-sent" or "parsed"',
+        );
+      }
+      continue;
+    }
     if (!VALIDATE_PARTS.includes(key as ValidatePart)) {
       throw new TypeError(
-        `@Validate: unknown part "${key}"; the parts are ${[...VALIDATE_PARTS, "responses", "responseValidation"].join(", ")}`,
+        `@Validate: unknown part "${key}"; the parts are ${[...VALIDATE_PARTS, "responses", "responseValidation", "responseOutput"].join(", ")}`,
       );
     }
     if (!isStandardSchema(schemas[key as ValidatePart])) {
@@ -543,6 +563,9 @@ class ValidateInterceptor implements NestInterceptor {
       const options: ResponseCheckerOptions = {
         mode: schemas.responseValidation ?? "off",
         logger: this.#logger,
+        ...(schemas.responseOutput === undefined
+          ? {}
+          : { output: schemas.responseOutput }),
       };
       checker = createResponseChecker(schemas.responses!, options);
       this.#checkers.set(handler, checker);
@@ -755,7 +778,11 @@ class ValidateInterceptor implements NestInterceptor {
           return;
         }
         remove();
-        const verdict = await checker.check(hookView(write));
+        const verdict = await checker.check(hookView(write), {
+          // The hook passes or refuses; it cannot replace, so a `"parsed"`
+          // route's hand-written response is checked as sent (never parsed).
+          output: "as-sent",
+        });
         if (verdict instanceof ResponseValidationError) {
           throw verdict;
         }
@@ -1217,10 +1244,16 @@ export function Validate(
   // The route's contract, recorded so documents read every schema — the one
   // bun-common's `validate()` builds for the same parts and responses. The
   // two non-target keys go in its options, not its schemas.
-  const { responses, responseValidation: _mode, ...parts } = schemas;
+  const {
+    responses,
+    responseValidation: _mode,
+    responseOutput,
+    ...parts
+  } = schemas;
   const contract = getContract(
     validate(parts, {
       ...(responses === undefined ? {} : { responses }),
+      ...(responseOutput === undefined ? {} : { responseOutput }),
     }),
   );
   const decorator = (

@@ -933,4 +933,54 @@ checkEqual(
   [503, []],
 );
 
+/* ------------------------------------------------------------------ */
+step('"parsed": a passing body is sent as the schema\'s output (V13)');
+
+/** `id` plus a defaulted `role`; zod strips an unknown key. */
+const Packed = z.object({
+  id: z.number(),
+  role: z.string().default("user"),
+});
+
+const parsedRouter = new BunRouter();
+parsedRouter.get(
+  "/packed",
+  validate(
+    {},
+    {
+      responses: { 200: { content: { "application/json": Packed } } },
+      responseValidation: "error",
+      responseOutput: "parsed",
+    },
+  ),
+  (_req, res) => {
+    res.json({ id: 42, password: "LEAK-ada" });
+  },
+);
+checkEqual(
+  '"parsed": the output on the wire — the unknown key stripped, the default applied',
+  statusAndBody(await call(parsedRouter, "/packed")),
+  [200, { id: 42, role: "user" }],
+);
+
+const asSentRouter = new BunRouter();
+asSentRouter.get(
+  "/packed",
+  validate(
+    {},
+    {
+      responses: { 200: { content: { "application/json": Packed } } },
+      responseValidation: "error",
+    },
+  ),
+  (_req, res) => {
+    res.json({ id: 42, password: "LEAK-ada" });
+  },
+);
+checkEqual(
+  '"as-sent" (the default): the handler\'s value as written (the control)',
+  statusAndBody(await call(asSentRouter, "/packed")),
+  [200, { id: 42, password: "LEAK-ada" }],
+);
+
 summary();

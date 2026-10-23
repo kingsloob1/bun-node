@@ -1918,7 +1918,11 @@ body schema (`null` for no body; `chunks()`, `sse()` and `opaque()` for the
 other body kinds, and `variants()` for several whole responses of one
 status) — and is checked with the same engine (`createResponseChecker` in
 bun-common). `responseValidation` is `"off"` (the default, which only
-applies a named variant's adjust), `"warn"` or `"error"`.
+applies a named variant's adjust), `"warn"` or `"error"`. With
+`responseOutput: "parsed"` (V13), a passing buffered JSON body is sent as
+the schema's **output** (unknown keys the vendor strips, defaults and
+transforms applied) — except on a plain `@Res()` route, whose response the
+before-write hook can only pass or refuse, so it is checked as sent.
 
 - A returned body is checked in the interceptor against the final status
   (Nest's own: POST's 201, `@HttpCode`) and the `@Header()` headers, with
