@@ -59,6 +59,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [Multipart uploads](#multipart-uploads)
   - [WebSockets](#websockets)
     - [Headers on the 101](#headers-on-the-101)
+    - [Validated channels](#validated-channels-definechannel)
   - [Structured logging](#structured-logging)
   - [Native utilities](#native-utilities)
 - [Examples](#examples)
@@ -2669,6 +2670,77 @@ Examples:
 tour
 [`websocket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/websocket-options.ts).
 
+#### Validated channels: `defineChannel`
+
+A **channel** is a WebSocket [contract](#contracts) served on a path: both
+sides keyed by the message's `type`, one part, `data`. One declaration gives
+the upgrade's request checks, every incoming frame's validation, typed and
+checked `send`/`publish`, and the error frames a bad message is answered with.
+
+```ts
+import { defineChannel } from "@kingsleyweb/bun-common";
+import { z } from "zod";
+
+const chat = defineChannel({
+  path: "/rooms/:room",
+  request: { params: z.object({ room: z.string().min(1) }) }, // the upgrade's, checked before the 101
+  receives: { say: z.object({ text: z.string() }), typing: null }, // client → server; null: no data
+  sends: { said: z.object({ by: z.string(), text: z.string() }) }, // server → client
+  messageValidation: { in: "error", out: "error" }, // the defaults
+});
+
+app.get(chat.path, chat.checks()); // the upgrade's checks, before the ws route
+app.ws(
+  chat.path,
+  chat.handler({
+    say(ws, msg) {
+      chat.publish(ws, `room:${roomOf(ws)}`, "said", { by: nameOf(ws), text: msg.text });
+    },
+  }),
+  chat.options((req) => ({ custom: { name: String(req.query.name ?? "anonymous") } })),
+);
+```
+
+- **`checks()` is a route handler, not a `use()` middleware** — a middleware
+  never sees the path's params, and the `request` check reads them — so
+  register it with `get()` **before** the `ws()` route. It checks only
+  upgrade-shaped requests (a plain GET passes through), answering `400` with
+  `{ error, issues }` on a failure; the upgrade never happens. Without a
+  `request` it is a passthrough. `request` takes `validate()`'s targets minus
+  `body` (an upgrade is a GET).
+- **Incoming**: a text frame is parsed as JSON and received through the
+  contract's receiver guard, so the handler's `msg` is the schema's *output*.
+  An invalid frame is answered with an error frame — `{ type: "error", id?,
+  code: "VALIDATION", status: 400, issues }`, the issues value-free — and the
+  socket stays open (`closeOnInvalid: true` closes with `1007` instead). An
+  unknown `type` is answered with `code: "UNKNOWN_MESSAGE"`, a binary frame
+  with `UNSUPPORTED_DATA` unless the channel declares `binary: true` (the
+  client may then send the same JSON envelope as a binary frame, decoded as
+  UTF-8 and checked like a text frame). A socket's frames are handled one at a
+  time, in order, so an async vendor never reorders them.
+- **Outgoing**: `send(ws, type, data)` and `publish(ws, topic, type, data)`
+  are typed by `sends` (each field's wire input) and checked under the `out`
+  policy. Under `"error"` a synchronous vendor's mismatch throws to the caller
+  (an asynchronous one's is logged); nothing is written either way. `publish`
+  is the socket's own `ws.publish`, so the sender is excluded. Writes ride the
+  socket's frame chain, keeping their order against the handling.
+- **The error frame is a declared outbound message** (`type: "error"`) added
+  to `sends` when not declared, so `describeContract` and a generated document
+  see it. `meta` (`replies`, `envelope.idField` — the frame's correlation id,
+  echoed on an error frame — `subprotocol`, `topics`, `fallback`) rides the
+  contract for a typed client and docs; `options()` composes the app's own
+  `onUpgrade` hook and answers the declared subprotocol on the 101.
+- **The pure half is browser-safe**: `channelContract(spec)`, the frame types
+  (`ChannelMessage`, `ChannelErrorFrame`) and `wsTransport` live under
+  `@kingsleyweb/bun-common/contract`, so a channel module can be shared with a
+  browser client. The server binding (`defineChannel`) is on the root entry.
+- A `sends` entry declared with `variants()` throws a `TypeError` at the
+  declaration for now (a frame has one part, `data`; the variants shape for it
+  is an open design point), as do the contract guards for HTTP.
+
+Example:
+[`validated-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/validated-channel.ts).
+
 ### Structured logging
 
 `Logger` is structured, not console-shaped:
@@ -2810,6 +2882,7 @@ Each file is a standalone script whose opening comment says what it shows.
 | `09-websocket` | [`echo-and-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/echo-and-events.ts) | Upgrading through the adapter, every event, client data, ping/pong, backpressure, close codes |
 | `09-websocket` | [`rooms-and-broadcast.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/rooms-and-broadcast.ts) | Auth on upgrade, rooms as pub/sub topics, `ws.publish` versus `server.publish` |
 | `09-websocket` | [`options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/options.ts) | Every WebSocket option, a standalone server, an extra port |
+| `09-websocket` | [`validated-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/validated-channel.ts) | `defineChannel`: upgrade checks, validated frames both ways, error frames, ordering, each asserted |
 | `10-logging` | [`structured-logger.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/10-logging/structured-logger.ts) | `createLogger` options, the six levels, `child`, errors lifted onto the record |
 | `10-logging` | [`sinks.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/10-logging/sinks.ts) | `consoleSink` pretty and JSON, `multiSink`, `collectSink`, custom sinks, test loggers |
 | `10-logging` | [`adapters.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/10-logging/adapters.ts) | pino, bunyan, winston, consola, log4js, tslog, NestJS and console adapters; `resolveLogger` |

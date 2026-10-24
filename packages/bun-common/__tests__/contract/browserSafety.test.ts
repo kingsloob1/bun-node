@@ -72,6 +72,7 @@ describe("the contract subpath in a browser bundle", () => {
     expect(serverMarkersIn(code)).toEqual([]);
     // Its module graph: the core, and bun-common's dependency-free logger.
     expect(modules).toEqual([
+      "contract/channel.ts",
       "contract/describe.ts",
       "contract/guard.ts",
       "contract/index.ts",
