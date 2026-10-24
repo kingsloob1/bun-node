@@ -53,6 +53,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [Validation](#validation)
   - [Contracts](#contracts)
     - [Writing a transport](#writing-a-transport)
+    - [The route model](#the-route-model-listroutes)
   - [CORS](#cors)
   - [Static files](#static-files)
   - [Response compression](#response-compression)
@@ -2128,6 +2129,85 @@ package's tests run this adapter on port 0
 
 Example:
 [`custom-transport.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/custom-transport.ts).
+
+#### The route model: `listRoutes()`
+
+A document generator or a typed client reads a whole router at once through
+`listRoutes(router)` — from the package root, not the browser-safe
+`/contract` entry, because it reads the router:
+
+```ts
+import { bodyPlacement, listRoutes } from "@kingsleyweb/bun-common";
+
+const routes = listRoutes(router); // list the root router (or the adapter)
+// [
+//   {
+//     key: "GET /users/:id",
+//     method: "GET",
+//     path: "/users/:id",
+//     params: ["id"],
+//     contract: { transport: "http", sides: {…}, entries: […] },
+//     responseValidation: "warn",
+//   },
+//   …
+// ]
+```
+
+- **List the root router**: sub-router routes are already flattened into its
+  table, with the mounts' paths joined in. The listing is a **point-in-time
+  read** of the route table — register every route first. `use()` middleware
+  and error handlers are never listed; a `GET` route also answers `HEAD`, and
+  the listing holds no second entry for it. An `all()` route (and `any()`,
+  which may name several verbs) keys as `ALL /path`.
+- **Each entry's `contract` is the effective one** (`describeContract` of
+  `effectiveContract`): for every endpoint the listing synthesizes a concrete
+  request path (params filled with their names) and replays it through the
+  router's own matching, so the middleware a request would meet — a mount's
+  `use()` validator included — merges into the route's contract, outermost
+  first, each row's `origin` naming the layer it came from (the mount path,
+  or the route's key). The route record's `commonResponses` merge under the
+  route's outbound side as the origin `"router commonResponses"` (the route's
+  own declaration of a status wins). A route whose layers carry no contract
+  has `contract: undefined`.
+- **`partial: true`** marks an entry whose middleware could not be replayed:
+  a regex-constrained (`/re/:id(\d+)`) or host-scoped path, where no concrete
+  request can be synthesized. Its contract comes from the route's own
+  callbacks alone.
+- **`responseValidation` / `responseOutput`** on the entry are the route
+  record's — the innermost router's setting. A validator's own per-validator
+  setting wins over it at runtime and is not reflected here.
+- **Channels are listed.** A `defineChannel` channel appears as
+  `GET <path>` — with its `websocket` contract (the `transport` field names
+  it; consumers filter on it) — when its `checks()` are registered, as the
+  channel docs direct (`router.get(channel.path, channel.checks())` before
+  `router.ws(...)`).
+- **`bodyPlacement(row)`** reads a described request-body row into its
+  document placement: `{ mediaType: "application/json", required }` (m6) —
+  the row's own media type when it declares one, and `required: false` when
+  the schema's input accepts `undefined`. The rule, in order: a `null` row
+  (a body declared absent) is not required; a schema whose
+  `~standard.jsonSchema` **input** document constrains nothing is not
+  required (JSON Schema cannot express "may be undefined", so an
+  unconstrained document is the only affirmative answer it can give);
+  otherwise the schema is asked once, `~standard.validate(undefined)` — a
+  synchronous pass means not required, and a failure, a throw or a Promise
+  (an async vendor a synchronous helper cannot wait for) means required.
+- **`RowWireValue<E>`** types what a client sees of one contract row: a
+  body's `Jsonify<WireInput<S>>` (the schema's input, field by field, as JSON
+  serializes it — a `transform`'s field is its input type, a `Date` a
+  string), `null` for a part declared absent, and `string` for every path,
+  query, header or cookie part.
+
+`effectiveContract(layers, options)` is the merge on its own, for a pipeline
+built another way: it collects each layer's contract (`getContract`), merges
+them outermost first (inbound, the outermost declaring a part is the wire
+schema; outbound, the innermost wins), and takes `logger`, `origins` (naming
+a layer for the rows it wins — default the callback's function name, else
+`layer #i`) and `commonResponses` (a router-level table merged under the
+outbound side). It returns `undefined` when no layer carries a contract. When
+the layers carry contracts of more than one transport (a channel under an
+HTTP mount validator), each transport merges on its own and the innermost
+layer's transport gives the result; the others still apply at runtime.
 
 ### CORS
 

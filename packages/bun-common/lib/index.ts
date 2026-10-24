@@ -456,6 +456,16 @@ export {
   defineChannel,
 } from "./channel";
 export {
+  bodyPlacement,
+  type BodyPlacement,
+  effectiveContract,
+  type EffectiveContractOptions,
+  type ListedRoute,
+  listRoutes,
+  type ListRoutesOptions,
+  type RowWireValue,
+} from "./routeModel";
+export {
   channelContract,
   channelErrorFrame,
   type ChannelContract,
