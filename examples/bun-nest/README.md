@@ -69,6 +69,7 @@ Applications listen on port `0`.
 | [`message-formats.ts`](./04-websockets/message-formats.ts) | every packet type on the wire, binary frames, malformed and unroutable frames, exceptions |
 | [`adapter-options.ts`](./04-websockets/adapter-options.ts) | the `websocket` option and `onUpgrade`, auth on upgrade, headers and data on the 101, client data, namespaces, gateway ports, broadcasting, a standalone adapter |
 | [`custom-adapter.ts`](./04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
+| [`validated-gateway.ts`](./04-websockets/validated-gateway.ts) | `@ValidateMessage` (payload + ack), `@Emits` (checked, typed emits), `TypedSocket`, the `VALIDATION` exception frame |
 
 ### 05 — The jobs API module
 

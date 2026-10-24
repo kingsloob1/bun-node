@@ -764,10 +764,13 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("responseOutput: \"parsed\" (V13): the wire gets the schema's output");
+step('responseOutput: "parsed" (V13): the wire gets the schema\'s output');
 
 const parsedOut = await call("/confirmations/parsed", post({}));
-show("the handler wrote a key the schema strips, and not the default", parsedOut);
+show(
+  "the handler wrote a key the schema strips, and not the default",
+  parsedOut,
+);
 checkEqual(
   '"parsed": the output on the wire — the unknown key stripped, the default applied',
   parsedOut,
