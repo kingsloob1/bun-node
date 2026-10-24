@@ -51,6 +51,19 @@ export {
 } from "./model";
 export { documented, recordOf } from "./schemas";
 export {
+  channelContract,
+  channelErrorFrame,
+  type ChannelContract,
+  type ChannelErrorCode,
+  type ChannelErrorFrame,
+  type ChannelMessage,
+  type ChannelMessages,
+  type ChannelMeta,
+  type ChannelRequestSchemas,
+  type ChannelSpec,
+  wsTransport,
+} from "./channel";
+export {
   attachContract,
   defineTransport,
   forwardContract,

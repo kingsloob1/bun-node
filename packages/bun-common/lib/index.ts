@@ -445,6 +445,25 @@ export {
   validateStandard,
   type WireInput,
 } from "./contract/index";
+export {
+  type Channel,
+  type ChannelHandlers,
+  type ChannelSendTypes,
+  defineChannel,
+} from "./channel";
+export {
+  channelContract,
+  channelErrorFrame,
+  type ChannelContract,
+  type ChannelErrorCode,
+  type ChannelErrorFrame,
+  type ChannelMessage,
+  type ChannelMessages,
+  type ChannelMeta,
+  type ChannelRequestSchemas,
+  type ChannelSpec,
+  wsTransport,
+} from "./contract/channel";
 export { requestParsing, type RequestParsingOptions } from "./requestParsing";
 export { createServeStaticHandler, ServeStaticError } from "./serveStatic";
 export {
