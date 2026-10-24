@@ -356,13 +356,14 @@ export function defineChannel<const S extends ChannelSpec>(
     contract: built,
     checks() {
       if (declared.request === undefined) {
-        return (
-          _req: BunRequest,
-          _res: BunResponse,
-          next: NextFunction,
-        ): void => {
-          next();
-        };
+        // Attached either way: the contract on this layer is what a route
+        // listing (`listRoutes`) finds the channel by.
+        return attachContract(
+          (_req: BunRequest, _res: BunResponse, next: NextFunction): void => {
+            next();
+          },
+          contract,
+        );
       }
       // The upgrade's request side, checked only for upgrade-shaped requests
       // (a plain GET to the path is not the channel's business). On a
@@ -371,17 +372,20 @@ export function defineChannel<const S extends ChannelSpec>(
       const middleware = validate(declared.request, {
         onFailure: "respond",
       });
-      return (req: BunRequest, res: BunResponse, next: NextFunction): void => {
-        const upgrade = req.headersObj.get("upgrade");
-        if (
-          typeof upgrade === "string" &&
-          upgrade.toLowerCase() === "websocket"
-        ) {
-          middleware(req, res, next);
-          return;
-        }
-        next();
-      };
+      return attachContract(
+        (req: BunRequest, res: BunResponse, next: NextFunction): void => {
+          const upgrade = req.headersObj.get("upgrade");
+          if (
+            typeof upgrade === "string" &&
+            upgrade.toLowerCase() === "websocket"
+          ) {
+            middleware(req, res, next);
+            return;
+          }
+          next();
+        },
+        contract,
+      );
     },
     options<TCustom = never>(hook?: WebSocketUpgradeHook<TCustom>) {
       const headers =

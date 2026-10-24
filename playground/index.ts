@@ -19,7 +19,12 @@
  * 127.0.0.1 only.
  */
 import process from "node:process";
-import { BunHttpAdapter, getPort, noopLogger } from "@kingsleyweb/bun-common";
+import {
+  BunHttpAdapter,
+  getPort,
+  listRoutes,
+  noopLogger,
+} from "@kingsleyweb/bun-common";
 import {
   BunJobs,
   createDriver,
@@ -135,6 +140,20 @@ summoning.mount(app);
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 app.get("/", (_req, res) => res.redirect(ui.basePath));
+// The route model (bun-validate V12): every route on this adapter with the
+// contract it runs under — the jobs API's routes carry theirs (V4). Schemas
+// don't serialize, so each row is shown without its `schema` (its `vendor`
+// and `encoding` still name it).
+app.get("/playground/routes", (_req, res) => {
+  res.json({
+    routes: listRoutes(app).map((route) => ({
+      ...route,
+      contract:
+        route.contract &&
+        route.contract.entries.map(({ schema: _schema, ...row }) => row),
+    })),
+  });
+});
 // The live-events socket, on the same port: `/meta` names its path.
 api.websocket?.attach(app);
 
