@@ -37,6 +37,8 @@
         "RouterHandler",
         "CorsOptions",
         "StandardSchemaV1",
+        "StandardTypedV1",
+        "StandardJSONSchemaV1",
         "SerializedError",
         "BunServer",
         "StreamChunks",
@@ -191,7 +193,7 @@
     },
     {
       "spelling": "@kingsleyweb/bun-common/lib/types/standardSchema",
-      "types": ["StandardSchemaV1"],
+      "types": ["StandardSchemaV1", "StandardTypedV1", "StandardJSONSchemaV1"],
       "browser": true
     }
   ]

@@ -59,7 +59,7 @@ type Declared<M> = [M] extends [ResponseTypeMap] ? true : false;
  *
  * @internal
  */
-export type AllowedStatus<M> =
+export type AllowedStatus<M = undefined> =
   Declared<M> extends true ? keyof M & number : number;
 
 /**
@@ -82,7 +82,7 @@ type SpecField<M, F extends keyof ResponseTypeSpec> = M[keyof M] extends infer S
  *
  * @internal
  */
-export type JsonBodyFor<M> =
+export type JsonBodyFor<M = undefined> =
   Declared<M> extends true ? SpecField<M, "json"> : BunResponseBody;
 
 /**
@@ -91,7 +91,7 @@ export type JsonBodyFor<M> =
  *
  * @internal
  */
-export type SendBodyFor<M> =
+export type SendBodyFor<M = undefined> =
   Declared<M> extends true ? SpecField<M, "send"> | Response : BunResponseBody;
 
 /** The value type a declared name `N` has in part `P`, across the statuses declaring it. */
@@ -313,7 +313,7 @@ interface PlainSpec<Sp> {
  *
  * @internal
  */
-export type InferResponses<RS> = {
+export type InferResponses<RS = undefined> = {
   [K in keyof RS]: RS[K] extends ResponseVariants<infer T, infer B, infer _V>
     ? VariantsSpec<T, B>
     : PlainSpec<RS[K]>;
@@ -465,7 +465,7 @@ type VariantTypeSpec<Sp, B, N extends string> =
  *
  * @internal
  */
-export type VariantNames<M> = [M] extends [undefined]
+export type VariantNames<M = undefined> = [M] extends [undefined]
   ? never
   : M[keyof M] extends infer S
     ? S extends { variant: infer N extends string }
@@ -479,7 +479,7 @@ export type VariantNames<M> = [M] extends [undefined]
  *
  * @internal
  */
-export type NarrowVariant<M, N extends string> = {
+export type NarrowVariant<M = undefined, N extends string = string> = {
   [
     K in keyof M as [Extract<M[K], { variant: N }>] extends [never] ? never : K
   ]: Filled<Extract<M[K], { variant: N }>>;

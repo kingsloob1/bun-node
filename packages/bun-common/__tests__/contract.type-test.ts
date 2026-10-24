@@ -13,7 +13,11 @@
  */
 /* eslint-disable prettier/prettier */
 import type { Carries, Received, Sent, WireInput } from "../lib/contract/model";
-import type { StandardSchemaV1 } from "../lib/types/standardSchema";
+import type {
+  StandardJSONSchemaV1,
+  StandardSchemaV1,
+  StandardTypedV1,
+} from "../lib/types/standardSchema";
 import type {
   ChildResult,
   GrpcUnary,
@@ -363,6 +367,51 @@ expectType<
 >();
 // @ts-expect-error control 28: documented() needs a JSON Schema object, not a string
 documented("object");
+
+// ------------------------------------------------- the spec 1.1.0 types (AD b0)
+// StandardTypedV1 is the base: Props without a `validate`.
+const typedOnly: StandardTypedV1<string, number> = {
+  "~standard": { version: 1, vendor: "custom" },
+};
+// validate takes the 1.1.0 `options` (a one-argument validate still satisfies it).
+const withOptions: StandardSchemaV1<string, number> = {
+  "~standard": {
+    version: 1,
+    vendor: "custom",
+    validate: (value, options) => ({
+      value: Number(value) + Number(options?.libraryOptions?.base ?? 10) * 0,
+    }),
+  },
+};
+// StandardJSONSchemaV1: the converter's input/output take a target.
+const documentedSchema: StandardJSONSchemaV1<string, number> = {
+  "~standard": {
+    version: 1,
+    vendor: "custom",
+    jsonSchema: {
+      input: (options) => ({ type: "string", "x-target": options.target }),
+      output: () => ({ type: "number" }),
+    },
+  },
+};
+expectType<
+  Equal<StandardJSONSchemaV1.InferOutput<typeof documentedSchema>, number>
+>();
+const badConverter: StandardJSONSchemaV1 = {
+  "~standard": {
+    version: 1,
+    vendor: "custom",
+    jsonSchema: {
+      // @ts-expect-error control 29: a converter method must return a JSON Schema object
+      input: (options) => options.target,
+      output: () => ({}),
+    },
+  },
+};
+void typedOnly;
+void withOptions;
+void documentedSchema;
+void badConverter;
 
 export {
   badRpc,

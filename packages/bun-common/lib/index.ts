@@ -401,7 +401,11 @@ export type {
   SendBodyFor,
   VariantNames,
 } from "./types/responseTyping";
-export type { StandardSchemaV1 } from "./types/standardSchema";
+export type {
+  StandardJSONSchemaV1,
+  StandardSchemaV1,
+  StandardTypedV1,
+} from "./types/standardSchema";
 /* ------------------------------------------------------------------ *
  * The transport-agnostic contract core (`lib/contract/`), also the
  * browser-safe subpath `@kingsleyweb/bun-common/contract`. `ValidationIssue`
