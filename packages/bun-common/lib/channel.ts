@@ -86,7 +86,9 @@ type DataIn<D> = D extends StandardSchemaV1
   : never;
 
 /** A channel's message handlers: one per `receives` type, each given the parsed data (`undefined` for a `null` entry). */
-export type ChannelHandlers<M> = {
+export type ChannelHandlers<
+  M extends Readonly<Record<string, unknown>> = Record<string, never>,
+> = {
   [T in keyof M]?: M[T] extends StandardSchemaV1
     ? (
         ws: ServerWebSocket<never>,
@@ -96,10 +98,14 @@ export type ChannelHandlers<M> = {
 };
 
 /** The message types a channel sends (its `sends` keys, minus the implicit `error`). */
-export type ChannelSendTypes<M> = Exclude<keyof M, "error"> & string;
+export type ChannelSendTypes<M = Record<string, never>> = Exclude<
+  keyof M,
+  "error"
+> &
+  string;
 
 /** A channel: its contract, its route pieces, and its typed sends. */
-export interface Channel<S extends ChannelSpec> {
+export interface Channel<S extends ChannelSpec = ChannelSpec> {
   /** The route path the channel is served on. */
   readonly path: S["path"];
   /** The channel's contract (the `websocket` transport's; `describeContract` reads it). */

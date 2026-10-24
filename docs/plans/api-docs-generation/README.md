@@ -3,10 +3,12 @@
 OpenAPI 3.1 for the HTTP adapter, AsyncAPI 3.0 for the WebSocket adapter,
 across `bun-common`, `bun-nest` and the existing `bun-jobs` prior art.
 
-Status: **plan only**. Nothing here has been implemented. Every claim about
-existing code cites a file; every claim marked **measured** was produced by
-running code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims
-marked **assumed** were not executed.
+Status: **started 2026-10-24** — **(b0) done** (the vendored spec types at
+1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`,
+in bun-common's `lib/types/standardSchema.ts`). Every claim about existing
+code cites a file; every claim marked **measured** was produced by running
+code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims marked
+**assumed** were not executed.
 
 ---
 
