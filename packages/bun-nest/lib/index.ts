@@ -88,6 +88,13 @@ export {
   ResponseValidationInterceptor,
   type ValidateSchemas,
 } from "./validate";
+export {
+  Emits,
+  ValidateMessage,
+  type EmitsEventMap,
+  type EmitsSchemas,
+  type TypedSocket,
+} from "./wsValidation";
 // bun-common's per-route parsing middleware, for `consumer.apply(...)`.
 export {
   requestParsing,

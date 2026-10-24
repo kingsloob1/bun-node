@@ -76,6 +76,7 @@ Underneath, routing is
   - [Replies: `WsResponse`, Promises and Observables](#replies-wsresponse-promises-and-observables)
   - [Acknowledgements](#acknowledgements)
   - [Exceptions](#exceptions)
+  - [Validated gateways](#validated-gateways-validatemessage-emits-typedsocket)
   - [Flow control](#flow-control)
   - [The `websocket` option](#the-websocket-option)
     - [Headers and data on the 101](#headers-and-data-on-the-101)
@@ -1591,6 +1592,67 @@ deep for `JSON.stringify`) is logged through Nest's `Logger` and not sent, as
 on `@nestjs/platform-ws`; the connection stays open. An exception whose
 `cause` cannot be serialised (it echoes the client's message) is sent again
 without it on Nest 12.2 and later, as on platform-ws.
+
+### Validated gateways: `@ValidateMessage`, `@Emits`, `TypedSocket`
+
+One declaration gives a gateway checked payloads, checked acks and checked,
+typed emits, on bun-common's contract core:
+
+```ts
+import { Emits, TypedSocket, ValidateMessage, ValidationExceptionFilter } from "@kingsleyweb/bun-nest";
+import { z } from "zod";
+
+const Say = z.object({ text: z.string().min(1), at: z.coerce.date() });
+const chatEmits = { said: z.object({ from: z.string(), text: z.string() }), typing: null } as const;
+
+@WebSocketGateway()
+@UseFilters(ValidationExceptionFilter)
+@Emits(chatEmits)                                  // server → client, declared
+class ChatGateway {
+  @SubscribeMessage("say")
+  @ValidateMessage(Say, { ack: SayAck })           // client → server, and its ack
+  say(
+    @MessageBody() msg: z.infer<typeof Say>,       // the parsed payload (a Date, not a string)
+    @ConnectedSocket() socket: TypedSocket<typeof chatEmits>,
+  ) {
+    socket.emit("said", { from: "ada", text: msg.text }); // typed, and checked before the write
+    return { saved: true, at: msg.at.toISOString() };     // checked against SayAck
+  }
+}
+```
+
+- **`@ValidateMessage(schema, { ack? })`** stacks an interceptor on the
+  `@SubscribeMessage` handler. A payload failing `schema` throws a
+  `StandardValidationException` (400, value-free issues), which
+  `ValidationExceptionFilter` emits as an `exception` event `{ status, code:
+  "VALIDATION", issues }` — the same frame shape bun-common's channels answer
+  with. The parsed value is written back, so `@MessageBody()` sees the
+  schema's output. With `ack` declared, each non-nullish value the handler
+  returns (a Promise's or Observable's included) is checked against it — a
+  `{ event, data }` (`WsResponse`) is an event, not an ack, and passes
+  through — and the handler's return type is constrained to the ack's wire
+  input at compile time. Synchronous when the vendor is. **Do not combine it
+  with a payload pipe** on the same handler (`@MessageBody(new
+  StandardSchemaPipe(S))`, or Nest 12's `@MessageBody({ schema })`): the
+  interceptor checks first and writes the parsed value back, so the pipe
+  would run the schema a second time on the output — the pipe is the
+  alternative, not a complement.
+- **`@Emits(map)`** declares the server → client events (`{ event: schema }`,
+  a `null` entry carrying no payload — a payload on one throws). Each
+  client's `emit` checks a declared event's payload under `"error"` before
+  the write: a synchronous vendor's mismatch throws to the caller and nothing
+  is sent (an asynchronous vendor's is logged instead, the caller having
+  returned; its writes keep their order). An undeclared event passes
+  unchecked. The map is recorded as metadata (`"bun:validate:emits"`) for
+  documents, and composes with the gateway's own `handleConnection`.
+- **`TypedSocket<typeof map>`** types `@ConnectedSocket()` from the same
+  `as const` map: `emit` rejects an undeclared event or a wrongly typed
+  payload at compile time. (Deriving the map from the class —
+  `TypedSocket<typeof ChatGateway>` — is not expressible in TypeScript: a
+  class decorator's argument is invisible to the type system.)
+
+Example:
+[`validated-gateway.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/validated-gateway.ts).
 
 ### Flow control
 

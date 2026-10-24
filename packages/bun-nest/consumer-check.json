@@ -28,6 +28,8 @@
         "StandardValidationPipe",
         "ValidationExceptionFilter",
         "StandardValidationException",
+        "Emits",
+        "ValidateMessage",
         "Validate",
         "Validated",
         "ValidBody",
@@ -68,7 +70,10 @@
         "WsAckFunction",
         "UploadExceptionBody",
         "StandardValidationPipeOptions",
-        "ValidateSchemas"
+        "ValidateSchemas",
+        "EmitsEventMap",
+        "EmitsSchemas",
+        "TypedSocket"
       ],
       "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;"
     },
