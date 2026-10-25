@@ -1,5 +1,8 @@
+import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import type { BunQueue } from "../../queue/BunQueue";
+import type { Logger } from "../../shared/logger";
 import type { AnyRouteDef } from "./define";
+import { toJsonSchema } from "@kingsleyweb/bun-common";
 import { findRepeat } from "../../queue/repeatControl";
 import { ApiError } from "../errors";
 import { s } from "../schema/builder";
@@ -7,6 +10,46 @@ import { DefinitionListSchema, RepeatableSchema } from "../schemas/jobs";
 import { toRepeatableDto } from "../serialize";
 import { defineRoute } from "./define";
 import { QueueParams, queueTarget, RepeatableParams } from "./support";
+
+/**
+ * The vendors `/definitions` has already reported as unconvertible to JSON
+ * Schema: each is warned about once per process, not once per definition or
+ * request (plan bun-validate V5b).
+ */
+const UNCONVERTIBLE = new Set<string>();
+
+/**
+ * One side of a definition's `schema` as a JSON Schema document, `{}` when no
+ * conversion path could describe it (the warning is logged once per vendor).
+ * Both sides convert with `direction: "input"`: `data` is what a client
+ * sends, and `result` is what it receives, and the wire rule holds the server
+ * to the schema's input (plan §4.12, M2 — there is no
+ * `responseOutput: "parsed"` here).
+ */
+function definitionSide(
+  schema: StandardSchemaV1,
+  logger: Logger,
+  definition: string,
+): Record<string, unknown> {
+  return toJsonSchema(schema, {
+    direction: "input",
+    onWarning: (warning) => {
+      if (UNCONVERTIBLE.has(warning.vendor)) {
+        return;
+      }
+      UNCONVERTIBLE.add(warning.vendor);
+      logger.warn(
+        `A job schema from vendor "${warning.vendor}" could not be converted to JSON Schema; "/definitions" publishes {} for it`,
+        {
+          vendor: warning.vendor,
+          stage: warning.stage,
+          definition,
+          message: warning.message,
+        },
+      );
+    },
+  });
+}
 
 /** The repeatable-series routes, and the definitions list. */
 export function repeatableRoutes(): AnyRouteDef[] {
@@ -129,7 +172,7 @@ export function repeatableRoutes(): AnyRouteDef[] {
       needsJobsSource: true,
       summary: "The job definitions this context knows",
       description:
-        "Each definition's name and options. Handlers are code, and never leave the process.",
+        "Each definition's name and options, and its `schema: { data, result }` as JSON Schema when it declares one (`data` is what a client sends, `result` what it receives; a side whose vendor could not be converted is `{}`). Handlers are code, and never leave the process.",
       tags: ["Jobs"],
       responses: { 200: DefinitionListSchema },
       handler: ({ services }) => ({
@@ -142,6 +185,30 @@ export function repeatableRoutes(): AnyRouteDef[] {
               options: JSON.parse(
                 JSON.stringify(definition.options ?? {}),
               ) as Record<string, unknown>,
+              ...(definition.schema === undefined
+                ? {}
+                : {
+                    schema: {
+                      ...(definition.schema.data === undefined
+                        ? {}
+                        : {
+                            data: definitionSide(
+                              definition.schema.data,
+                              services.config.logger,
+                              definition.name,
+                            ),
+                          }),
+                      ...(definition.schema.result === undefined
+                        ? {}
+                        : {
+                            result: definitionSide(
+                              definition.schema.result,
+                              services.config.logger,
+                              definition.name,
+                            ),
+                          }),
+                    },
+                  }),
             }),
           ),
         },

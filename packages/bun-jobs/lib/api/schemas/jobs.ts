@@ -732,6 +732,28 @@ export const DefinitionListSchema = s.object({
       options: s.record(s.unknown(), {
         description: "The definition's job options, as JSON.",
       }),
+      schema: s.optional(
+        s.object(
+          {
+            data: s.optional(
+              s.record(s.unknown(), {
+                description:
+                  "The data schema as a JSON Schema document, of what a client sends.",
+              }),
+            ),
+            result: s.optional(
+              s.record(s.unknown(), {
+                description:
+                  "The result schema as a JSON Schema document, of what a client receives.",
+              }),
+            ),
+          },
+          {
+            description:
+              "The definition's `schema: { data, result }` as JSON Schema; a side whose vendor could not be converted is `{}`.",
+          },
+        ),
+      ),
     }),
   ),
 });

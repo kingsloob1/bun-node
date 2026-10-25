@@ -182,7 +182,19 @@ export function childrenFixture(
 /** `GET /definitions`. */
 export const definitionsFixture: DefinitionListDto = {
   items: [
-    { name: "send-welcome", options: { attempts: 3 } },
+    {
+      name: "send-welcome",
+      options: { attempts: 3 },
+      schema: {
+        data: {
+          type: "object",
+          properties: { to: { type: "string", format: "email" } },
+          required: ["to"],
+          additionalProperties: false,
+        },
+        result: { type: "object", properties: { id: { type: "string" } } },
+      },
+    },
     { name: "send-digest", options: {} },
   ],
 };

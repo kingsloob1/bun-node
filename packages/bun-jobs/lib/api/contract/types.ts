@@ -819,6 +819,20 @@ export interface DefinitionDto {
   name: string;
   /** The definition's job options, as JSON. */
   options: Record<string, unknown>;
+  /**
+   * The definition's `schema: { data, result }` as JSON Schema documents
+   * (draft 2020-12), each of its input: `data` is what a client sends,
+   * `result` what it receives. Absent when the definition declares no schema;
+   * a side is absent when the definition does not declare it, and `{}` when
+   * no conversion path could describe it (a warning is logged once per
+   * vendor).
+   */
+  schema?: {
+    /** The data schema as a JSON Schema document. */
+    data?: Record<string, unknown>;
+    /** The result schema as a JSON Schema document. */
+    result?: Record<string, unknown>;
+  };
 }
 
 /** `GET /definitions`. */

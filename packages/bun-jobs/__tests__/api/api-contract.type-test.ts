@@ -311,6 +311,19 @@ export type RepeatableOk = Expect<
 export type DefinitionListOk = Expect<
   Matches<Contract.DefinitionListDto, Infer<typeof DefinitionListSchema>>
 >;
+// The `/definitions` item's `schema` (V5b): optional, each side optional, a
+// JSON Schema document per side — the definition's `schema: { data, result }`
+// as served, never its Standard Schemas.
+export type DefinitionItemSchemaOk = Expect<
+  Equal<
+    Contract.DefinitionDto["schema"],
+    | {
+        data?: Record<string, unknown>;
+        result?: Record<string, unknown>;
+      }
+    | undefined
+  >
+>;
 
 // Whole, `sort` included: the schema serves it, defaulted to `"natural"`.
 export type JobListQueryOk = Expect<

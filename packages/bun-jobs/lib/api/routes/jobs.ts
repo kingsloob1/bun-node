@@ -43,6 +43,7 @@ import { JOB_LIST_INCLUDE, JOB_READ_INCLUDE, toJobDto } from "../serialize";
 import { defineRoute } from "./define";
 import { addFlowRoute } from "./flows";
 import {
+  apiDataCheck,
   bulkIds,
   jobNotFound,
   JobParams,
@@ -637,7 +638,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       requires: ["updateJob"],
       summary: "Change a stored job's data, priority or run time",
       description:
-        "Off by default: enabled only when the `actions` allow-list names `jobs.update`. `runAt` moves only a waiting or delayed job; `onlyIn` makes the change conditional on the job's state. 409 means the job was in a state the change cannot apply to.",
+        "Off by default: enabled only when the `actions` allow-list names `jobs.update`. `runAt` moves only a waiting or delayed job; `onlyIn` makes the change conditional on the job's state. 409 means the job was in a state the change cannot apply to. A new `data` is checked against the job's name's `schema` whatever the queue's `dataValidation` policy says — HTTP data never skips the check — and a failure is 400 `VALIDATION` with the issues at their body paths (`data.to`).",
       tags: ["Jobs"],
       params: JobParams,
       body: UpdateBodySchema,
@@ -670,6 +671,16 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         const current = await existingJob(queue, params.id);
         let updated: Job<any, any> | null;
         try {
+          // HTTP data never skips the check: the job's name's schema applies
+          // whatever the queue's `dataValidation` policy says.
+          if (body.data !== undefined) {
+            await apiDataCheck(
+              queue,
+              current.name,
+              body.data,
+              services.config.logger,
+            );
+          }
           updated = await queue.update(params.id, {
             ...(body.data === undefined ? {} : { data: body.data }),
             ...(body.priority === undefined ? {} : { priority: body.priority }),
@@ -944,7 +955,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "Add a job",
       description:
-        "Off by default: enabled only when the `actions` allow-list names `jobs.add`, and only for names in `addableNames` (by default, the defined names). Accepts a safe subset of options. A `jobId` that already exists answers 200 with the existing job and `added: false`. The queue need not exist yet: adding its first job creates it, as `BunQueue.add` does, and it is listed at once. When the API is limited to a configured list of queues, a queue outside that list is still 404 `QUEUE_NOT_FOUND`.",
+        "Off by default: enabled only when the `actions` allow-list names `jobs.add`, and only for names in `addableNames` (by default, the defined names). Accepts a safe subset of options. A `jobId` that already exists answers 200 with the existing job and `added: false`. The queue need not exist yet: adding its first job creates it, as `BunQueue.add` does, and it is listed at once. When the API is limited to a configured list of queues, a queue outside that list is still 404 `QUEUE_NOT_FOUND`. `data` is checked against the name's `schema` whatever the queue's `dataValidation` policy says — HTTP data never skips the check — and a failure is 400 `VALIDATION` with the issues at their body paths (`data.to`).",
       tags: ["Jobs"],
       params: QueueParams,
       body: AddBodySchema,
@@ -970,6 +981,14 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         const { runAt, ...opts } = body.opts ?? {};
         let job: Job<any, any>;
         try {
+          // HTTP data never skips the check: the name's schema applies
+          // whatever the queue's `dataValidation` policy says.
+          await apiDataCheck(
+            queue,
+            body.name,
+            body.data,
+            services.config.logger,
+          );
           job = await queue.add(body.name, body.data, {
             ...opts,
             ...(runAt === undefined ? {} : { runAt: toEpoch(runAt) }),
