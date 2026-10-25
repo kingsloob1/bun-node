@@ -157,11 +157,13 @@ every option.
 ### 13 — API docs
 
 A validated router documents itself: `listRoutes()` lists each endpoint's
-effective contract and `toJsonSchema()` converts every row's schema.
+effective contract and `toJsonSchema()` converts every row's schema;
+`.describe()` adds the prose and `generateOpenApi()` builds the document.
 
 | File | Covers |
 |---|---|
 | [`from-validators.ts`](./13-api-docs/from-validators.ts) | `listRoutes()` + `toJsonSchema()` end to end: request rows converted with `input` (a defaulted field not `required`), a response under `responseOutput: "parsed"` converted with `output`, `documented()` and `withJsonSchema` escape hatches, `liftComponents()` lifting `$defs` into components. See the package README's [Converting a schema to JSON Schema](../../packages/bun-common/README.md#converting-a-schema-to-json-schema-tojsonschema) |
+| [`annotating-routes.ts`](./13-api-docs/annotating-routes.ts) | `.describe()` + `generateOpenApi()` end to end: prose on a validated route, an inline `request` (documents without enforcing) on an unvalidated one, a raw-JSON-Schema body, `hidden`, an optional `:a?` param as two paths, strict vs lenient, and the document served from a route |
 
 ## Checking the examples
 

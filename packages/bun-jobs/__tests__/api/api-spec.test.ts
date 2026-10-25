@@ -22,7 +22,7 @@ import {
   resolveRef,
 } from "../../lib/api/spec/refs";
 import { toAsyncApiSecurityScheme } from "../../lib/api/spec/security";
-import { ConfigError } from "../../lib/index";
+import { ConfigError, JobsError } from "../../lib/index";
 import { apiConfig, openContexts, testRoutes } from "./fixtures";
 
 afterAll(async () => {
@@ -295,6 +295,29 @@ describe("the generated document", () => {
     expect(() =>
       createJobsApi(apiConfig({ docs: { security: [{ bearer: [] }] } })),
     ).toThrow(/declares none/);
+  });
+
+  it("the moved security module's ConfigError is translated back to bun-jobs' own (AD (a))", () => {
+    // `openApiSecurity` moved to bun-common; its ConfigError is bun-common's.
+    // The shim must rethrow bun-jobs' own (a JobsError), same message, the
+    // details carried as the context.
+    let caught: unknown;
+    try {
+      createJobsApi(
+        apiConfig({
+          docs: { securitySchemes: schemes, security: [{ oauth: [] }] },
+        }),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect(caught).toBeInstanceOf(JobsError);
+    expect((caught as ConfigError).code).toBe("CONFIG");
+    expect((caught as ConfigError).message).toMatch(
+      /"oauth".*does not declare/,
+    );
+    expect((caught as ConfigError).context).toEqual({ scheme: "oauth" });
   });
 
   it("defaults servers to basePath, and takes title, version and servers from docs", () => {

@@ -185,6 +185,12 @@ export interface ListedRoute {
   /** The path's parameter names, in order. */
   readonly params: string[];
   /**
+   * The route's position in `router.routes()`. A consumer that needs more
+   * than the listing carries (the terminal callback, for the `.describe()`
+   * doc lookup) reads `router.routes()[routeIndex]` (AD (a)).
+   */
+  readonly routeIndex: number;
+  /**
    * The route's effective contract, described (`describeContract` of
    * {@link effectiveContract}): each row carries the `origin` of the layer it
    * came from. `undefined` when no layer of the route carries one. A
@@ -366,6 +372,7 @@ export function listRoutes(
       method,
       path,
       params: route.params ?? [],
+      routeIndex,
       contract: contract === undefined ? undefined : describeContract(contract),
       ...(route.responseValidation === undefined
         ? {}

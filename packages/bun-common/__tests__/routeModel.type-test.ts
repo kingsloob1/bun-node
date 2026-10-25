@@ -71,6 +71,8 @@ expectType<Equal<ListedRoute["key"], string>>();
 expectType<Equal<ListedRoute["method"], string>>();
 expectType<Equal<ListedRoute["path"], string>>();
 expectType<Equal<ListedRoute["params"], string[]>>();
+// AD (a): the route's position in `router.routes()`, for the `.describe()` lookup.
+expectType<Equal<ListedRoute["routeIndex"], number>>();
 expectType<Equal<ListedRoute["contract"], ContractDescription | undefined>>();
 expectType<
   Equal<ListedRoute["responseValidation"], ResponseValidationMode | undefined>
