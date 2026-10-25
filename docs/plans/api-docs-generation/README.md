@@ -17,7 +17,7 @@ new `lib/docs/` module — no `__schemas` (V1's contracts and V12's
 `ConfigError` (those are (a)'s), and the converter never throws for a content
 problem (`{}` plus a warning). §4.2/§4.3 carry the response-direction
 correction: responses convert with `input` except under V13's
-`responseOutput: "parsed"`. **(a) built 2026-10-25, PR pending** (the
+`responseOutput: "parsed"`. **(a) merged 2026-10-25, #531** (the
 maintainer's decisions of 2026-10-25, all final): `ConfigError` (new in
 bun-common, `lib/errors.ts` — extends `Error`, optional `details` record;
 bun-jobs keeps its own, a `JobsError`, and its `spec/security.ts` shim
@@ -32,16 +32,26 @@ terminal callback), `ListedRoute` gains `routeIndex`, `generateOpenApi` +
 `listRoutes` (§3.3's `DiscoveredRoute` is subsumed — `filter` and
 `operationId` take a `ListedRoute`), `toOpenApiPath` ported with §10.2's
 rules (optional params document as two paths by default, an
-`OpenApiOptions.optionalParams` flag — name awaiting approval — falls back
-to a warning), the OAS 3.1 meta-schema matrix ({none, zod, valibot, arktype,
-yup, mixed} × {none, bearer, apiKey} × {strict, lenient}, emitting
+`OpenApiOptions.optionalParams` flag — name **approved** 2026-10-25 — falls
+back to a warning), the OAS 3.1 meta-schema matrix ({none, zod, valibot,
+arktype, yup, mixed} × {none, bearer, apiKey} × {strict, lenient}, emitting
 `openapi: "3.1.2"` — the version facts re-checked against spec.openapis.org
 2026-10-25: 3.1.2 is the latest 3.1.x; 3.2.x exists and is out of scope),
 the golden fixture, and the type tests. The root `lib/index.ts` re-exports
 the (a) surface as **types only** (§3.1). §6.1's "port `toOpenApiPath`
 verbatim" is corrected: its structure was ported, not the throw sites —
-in bun-common the guards are warnings (strict escalates), per §10.2. The
-`./lib/docs/types` browser entry is deferred to phase (c). Every claim about
+in bun-common the guards are warnings (strict escalates), per §10.2.
+**(c) built 2026-10-25** (the maintainer's decisions of 2026-10-25, all
+final — names: `docsRouter`, `DocsRouterOptions`, `DocsCdnOptions`,
+`docsPageHeaders`, `swaggerUiPage`, `asyncApiUiPage`, `resolveDocsCdn`,
+`ResolvedDocsCdn`, `PinnedAsset`, `AssetIntegrity`, `assetUrl`, and
+bun-common's own `DOCS_CDN` pins copy — with one mid-build change, also
+2026-10-25: §7.1's `ui`/`uiPath`/`asyncapiUiPath` became a single `viewer`
+option of per-spec `{ name, ...options }` declarations, five viewers pinned
+— Scalar the OpenAPI default, the official component the AsyncAPI one; see
+§7.1's as-built note). The `./lib/docs/types` browser entry landed with it
+(deferred here from (a)), carrying `OpenApiDocument` + `JsonSchemaLike` only.
+Every claim about
 existing code cites a file; every claim marked **measured** was produced by
 running code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims
 marked **assumed** were not executed.
@@ -1587,15 +1597,16 @@ export interface DocsRouterOptions {
   /** Where the AsyncAPI JSON is served. Default: `"/asyncapi.json"`. */
   asyncapiPath?: string;
   /**
-   * Serve the HTML viewer pages. **Default: `false`** — they load third-party
+   * The viewer pages. **Default: neither is served** — they load third-party
    * script into an origin that may hold session cookies, and "try it out" is
    * a mutation console. The JSON costs nothing and is always served.
    */
-  ui?: boolean;
-  /** Where the OpenAPI viewer page is served. Default: `"/"`. */
-  uiPath?: string;
-  /** Where the AsyncAPI viewer page is served. Default: `"/asyncapi"`. */
-  asyncapiUiPath?: string;
+  viewer?: {
+    /** The OpenAPI viewer page, at the mount root (`/`). Default: not served. */
+    openapi?: OpenApiViewerName | ViewerConfig<OpenApiViewerName>;
+    /** The AsyncAPI viewer page, at `/asyncapi`. Requires `asyncapi`. Default: not served. */
+    asyncapi?: AsyncApiViewerName | ViewerConfig<AsyncApiViewerName>;
+  };
   /** Page title. Default: the document's `info.title`. */
   title?: string;
   /** CDN pins and mirror base URL. Default: the built-in pins. */
@@ -1609,6 +1620,47 @@ export function docsRouter(options: DocsRouterOptions): BunRouter;
 ```
 
 Mounted like anything else: `app.use("/docs", docsRouter({ openapi }))`.
+
+**As built (2026-10-25, the maintainer's mid-build decision, final):** the
+`ui`/`uiPath`/`asyncapiUiPath` booleans-and-paths above were replaced by the
+single `viewer` option — a per-spec declaration, a viewer name as a string
+(defaults applying) or `{ name, ...options }` with the remaining properties
+passed through to the viewer's own configuration (spread into the init config
+for swagger-ui/Scalar/Redoc, element properties for RapiDoc, the `config`
+object for the AsyncAPI component). The page paths are fixed defaults (`/`
+and `/asyncapi`). The viewers and their pins (bun-common's own `DOCS_CDN`;
+bun-jobs keeps its own pins untouched):
+
+| Viewer | Name | Package @ version | Asset(s) | `requestHeaders` |
+|---|---|---|---|---|
+| Scalar — **OpenAPI default** | `"scalar"` | `@scalar/api-reference@1.76.0` | `dist/browser/standalone.js` | not honoured (no request hook) |
+| Swagger UI | `"swagger-ui"` | `swagger-ui-dist@5.34.0` | `swagger-ui-bundle.js` + `swagger-ui.css` | honoured (`requestInterceptor`) |
+| Redoc | `"redoc"` | `redoc@3.0.1` | `bundles/redoc.standalone.js` — ESM-only since 3.0, so the page pins it through an **import map with `integrity`** and a nonce'd module initialiser | not honoured |
+| RapiDoc | `"rapidoc"` | `rapidoc@11.0.1` | `dist/rapidoc-min.js` (defines `<rapi-doc>`) | not honoured |
+| The official component — **AsyncAPI default** | `"asyncapi"` | `@asyncapi/react-component@3.2.2` | `browser/standalone/index.js` + `styles/default.min.css` | not honoured |
+
+Scalar also serves the AsyncAPI document (`viewer.asyncapi: "scalar"`), but
+its AsyncAPI rendering is upstream work-in-progress — opt-in only, and the
+docs say so. An unknown name is a `ConfigError` at construction, as is a
+`viewer` page without its document or `docsRouter({})` with neither document.
+Each viewer's asset is sha384-pinned on jsDelivr (hashes computed from the
+served bytes 2026-10-25), and every route docsRouter registers is
+`.describe({ hidden: true })`, so a later `generateOpenApi` never documents
+the docs — an as-built addition this design section did not prescribe. The
+AsyncAPI side is not WebSocket-only: it covers any realtime/event-driven
+mechanism OpenAPI cannot document (Kafka, AMQP, MQTT, SSE, …); the document
+is hand-supplied (`AsyncApiDocument` is (e)'s, so the option is typed
+structurally until then). New exported names beyond the approved list,
+recorded for approval: `OpenApiViewerName`, `AsyncApiViewerName`,
+`ViewerConfig` (generic, `Name` defaults to `string`), `scalarPage`,
+`redocPage`, `rapidocPage` (the last three follow the approved
+`swaggerUiPage`/`asyncApiUiPage` pattern), `DocsCdnAssetOverride`, and
+`DocsPage` (the pages' return type — bun-jobs' shim re-exports it).
+`AssetIntegrity.css` and `PinnedAsset.css` became **optional** (Scalar, Redoc
+and RapiDoc bundle their styles); bun-jobs keeps its own css-required copies,
+so its untouched `api-docs.test.ts` still type-checks.
+`resolveDocsCdn(pins, overrides)` takes the pins as a parameter and
+`ResolvedDocsCdn` maps them (`Pins` defaults to `typeof DOCS_CDN`).
 
 ### 7.2 The UI choice
 
@@ -1725,6 +1777,17 @@ et al. — `ListedRoute` instead of the subsumed `DiscoveredRoute`;
 browser entry are the later phases' ((e), (c) — the types entry deferred
 there). The root entry gained the `ConfigError` value and the (a) types, and
 its snippet asserts `RouteDoc` is not `any`.
+
+As built (AD (c), 2026-10-25): the `./lib/docs` cell gained the values
+`docsRouter`, `docsPageHeaders`, `swaggerUiPage`, `scalarPage`, `redocPage`,
+`rapidocPage`, `asyncApiUiPage`, `resolveDocsCdn`, `assetUrl`, `DOCS_CDN` and
+the types `DocsRouterOptions`, `DocsCdnOptions`, `DocsCdnAssetOverride`,
+`ResolvedDocsCdn`, `PinnedAsset`, `AssetIntegrity`, `DocsPage`,
+`OpenApiViewerName`, `AsyncApiViewerName`, `ViewerConfig` (generics with
+defaults, per the consumer-check rule); and the `./lib/docs/types` browser
+entry landed exactly as designed above — `OpenApiDocument` + `JsonSchemaLike`
+only (`AsyncApiDocument` is (e)'s), `browser: true`, `runtime: false` (it is
+type-only). Neither entry has `"peers"`.
 
 No `"peers"` on either, which is the assertion that matters: both must load in
 a consumer with **no** optional peer installed. The existing root entry's
@@ -2219,13 +2282,13 @@ engineer-days for someone who wrote this code.
 
 | Phase | Scope | Ships | Est. |
 |---|---|---|---|
-| **(a) Route metadata + manual annotation → OpenAPI** — **built 2026-10-25, PR pending** | `ConfigError` in bun-common; move `spec/refs.ts` and `spec/security.ts` from bun-jobs (re-export shims left behind); `lib/docs/` with `RouteDoc`, `.describe()`, the `WeakMap` keyed on the terminal callback, ~~`DiscoveredRoute`~~ V12's `listRoutes` (subsumed), path→template with the wildcard/optional/regex rules of §10.2, the generator, `strict`/`lenient` + warnings; OAS 3.1 meta-schema test; golden fixture; type tests; `examples/bun-common/13-api-docs/annotating-routes.ts` | A working OpenAPI 3.1 document from any `BunRouter`, hand-annotated. **bun-jobs unaffected except for two import moves** | **6–8** |
+| **(a) Route metadata + manual annotation → OpenAPI** — **merged 2026-10-25, #531** | `ConfigError` in bun-common; move `spec/refs.ts` and `spec/security.ts` from bun-jobs (re-export shims left behind); `lib/docs/` with `RouteDoc`, `.describe()`, the `WeakMap` keyed on the terminal callback, ~~`DiscoveredRoute`~~ V12's `listRoutes` (subsumed), path→template with the wildcard/optional/regex rules of §10.2, the generator, `strict`/`lenient` + warnings; OAS 3.1 meta-schema test; golden fixture; type tests; `examples/bun-common/13-api-docs/annotating-routes.ts` | A working OpenAPI 3.1 document from any `BunRouter`, hand-annotated. **bun-jobs unaffected except for two import moves** | **6–8** |
 | **(a2) `defineRoute`-style registrar** *(optional, same phase)* | A `routes([...])` helper over `.describe()` for people who prefer bun-jobs' shape | Ergonomics, no new capability | 1–2 |
 | **(b0) Update the vendored spec types** | `lib/types/standardSchema.ts` → `@standard-schema/spec` 1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`. Its own commit, before (b) | The type surface every validator is checked against, current | **0.5–1** |
-| **(b) Standard Schema auto-derivation** — **built 2026-10-25, PR pending** | ~~`__schemas` on the validator middleware~~ (superseded — the contracts of V1 and V12's `listRoutes` already carry the schemas; decided 2026-10-24); the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
+| **(b) Standard Schema auto-derivation** — **merged 2026-10-25, #529** | ~~`__schemas` on the validator middleware~~ (superseded — the contracts of V1 and V12's `listRoutes` already carry the schemas; decided 2026-10-24); the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
 | **(b1) Response contracts** | `responses` on `BunValidateOptions`; `BunResponse` gains `TResponses`, `status()` narrows, `json()` constrains, `protected setStatusRaw` (§3.7); `TypedRouteHandler`/`MountedHandler` thread `TRes`; runtime checking at response finalisation with bun-jobs' `responseMismatch` semantics (§3.5); `responses.type-test.ts` carrying the spike's four negative controls plus the `send()`/helper-escape boundary cases; `generate-verb-overloads.ts --check` must stay green; `consumer-check` re-run for the `BunResponse` surface change | Declared responses **enforced** at compile time and optionally at runtime. Feeds (a)'s document for free | **4–5** |
 | **(b2) Class DTOs** | `useClassDtos` / `fromDto` (§3.6); widen the four `ValidationSchemas` keys and `RouteDoc.request.*` to `StandardSchemaV1 \| DtoClass`; a `"class-validator"` converter reading the injected `toJsonSchema`; class-validator + class-transformer as **devDependencies** of bun-common for the tests; an `experimentalDecorators`-off negative test proving the documented failure | DTO users reach both validation and the document | **2–3** |
-| **(c) Serving and viewing** | `docsRouter()`; move `docs/html.ts` + `docs/cdn.ts` into `lib/docs/viewer.ts` parameterised; CSP/nonce/SRI tests copied from `api-docs.test.ts`; `serving-and-viewing.ts` example. bun-jobs keeps its own pins and routes | Documents served and browsable, off by default | **3–4** |
+| **(c) Serving and viewing** — **built 2026-10-25** | `docsRouter()` (names approved 2026-10-25: `docsRouter`, `DocsRouterOptions`, `DocsCdnOptions`, `docsPageHeaders`, `swaggerUiPage`, `asyncApiUiPage`, `resolveDocsCdn`, `ResolvedDocsCdn`, `PinnedAsset`, `AssetIntegrity`, `assetUrl`, bun-common's own `DOCS_CDN`); `docs/html.ts` + `docs/cdn.ts` moved to `lib/docs/viewer.ts` parameterised (pins injected, `requestHeaders` generalising the CSRF line, the document URL resolved per request from `req.baseUrl`); the `viewer` option with five pinned viewers (§7.1's as-built note — Scalar the OpenAPI default, `"swagger-ui"`/`"redoc"`/`"rapidoc"`, the official component the AsyncAPI default); the `./lib/docs/types` browser-safe entry (`OpenApiDocument` + `JsonSchemaLike`) with its `consumer-check` cell and bundle-safety test; CSP/nonce/SRI tests from `api-docs.test.ts` plus the hidden/`authorize`/`req.baseUrl`/thunk tests; every docs route `.describe({ hidden: true })` (as-built); `serving-and-viewing.ts` example; the playground mount. bun-jobs keeps its own pins, shims and routes (`routes/docs.ts` needed no change); its `api-docs.test.ts` passes unmodified | Documents served and browsable, pages off by default | **3–4** |
 | **(d) bun-nest — verify `@nestjs/swagger`** | Execute `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end; close the §8.6 gaps; `examples/bun-nest/07-openapi/swagger-module.ts`; README section covering the mixed-app caveat and the `@Render` note. Only if execution finds a hole: a `./lib/swagger` helper with `"peers"` | A documented, proven path. **Cheapest phase per unit of value** — and the phase that decides whether (g) is worth building | **2–3** |
 | **(g) bun-nest `@Validate` decorator** | The interceptor (§3.8), following `interceptors.ts`'s mixin shape and reusing `transformUploadException`'s error mapping; method **and** class forms with per-target merge; return-type constraint via `TypedPropertyDescriptor`; `useSwaggerBridge` emitting `ApiBody`/`ApiQuery`/`ApiParam`/`ApiHeader`/`ApiResponse` from the §4 registry at `target: "openapi-3.0"`; the `Infer<>` helper; `decorators.ts` grows from one line to a real module; `consumer-check.json` entry; `examples/bun-nest/08-validate/` | One declaration for validation + response contract + document. **Gate on (d)** — see risk 1h | **5–7** |
 | **(e) AsyncAPI 3.0** | Public WS route accessor on `BunWebSocket`; `WsChannelDoc` + `describeChannel()`; the bun-common generator (servers/channels/parameters/messages/operations); bun-nest's metadata explorer reading `MESSAGE_METADATA`/`GATEWAY_OPTIONS`/`PORT_METADATA` and the `MessageEventTypes` envelope; AsyncAPI 3.0 meta-schema test via `@asyncapi/specs`; examples | AsyncAPI for both adapters | **7–9** |

@@ -53,6 +53,11 @@
       "types": "./dts/docs/index.d.ts",
       "default": "./lib/docs/index.ts"
     },
+    "./lib/docs/types": {
+      "@kingsleyweb/source": "./lib/docs/types.ts",
+      "types": "./dts/docs/types.d.ts",
+      "default": "./lib/docs/types.ts"
+    },
     "./lib/multipart": {
       "@kingsleyweb/source": "./lib/multipart/index.ts",
       "types": "./dts/multipart/index.d.ts",

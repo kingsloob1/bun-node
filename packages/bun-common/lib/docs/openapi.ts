@@ -45,6 +45,7 @@ import type {
 import type { LiftedSchema } from "./lift";
 import type { RouteDoc, RouteResponseDoc } from "./routeDoc";
 import type { OpenApiSecurityScheme } from "./security";
+import type { OpenApiDocument } from "./types";
 import { toJsonSchema } from "./convert";
 import { liftComponents } from "./lift";
 import { danglingRefs, pruneSchemaComponents } from "./refs";
@@ -56,12 +57,7 @@ import { openApiSecurity } from "./security";
  * on purpose: only the version is pinned, and the document is checked against
  * the OpenAPI 3.1 meta-schema in the tests rather than modelled here.
  */
-export interface OpenApiDocument {
-  /** The OpenAPI version. */
-  openapi: "3.1.2";
-  /** Every other top-level field. */
-  [key: string]: unknown;
-}
+export type { OpenApiDocument } from "./types";
 
 /**
  * A problem the generator degraded past in lenient mode (and `strict`

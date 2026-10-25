@@ -55,6 +55,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Writing a transport](#writing-a-transport)
     - [The route model](#the-route-model-listroutes)
     - [Converting a schema to JSON Schema](#converting-a-schema-to-json-schema-tojsonschema)
+    - [Serving and viewing the documents](#serving-and-viewing-the-documents-docsrouter)
   - [CORS](#cors)
   - [Static files](#static-files)
   - [Response compression](#response-compression)
@@ -2288,6 +2289,73 @@ claim warns and disambiguates; two calls on one input deep-equal.
 `documented(json)` and `toStandardSchema(fn, { jsonSchema })` — the escape
 hatches for a part known only as JSON Schema — convert with no registration
 at all, since both publish the document as `~standard.jsonSchema`.
+
+#### Serving and viewing the documents: `docsRouter()`
+
+`docsRouter(options)` — from `@kingsleyweb/bun-common/lib/docs` — is a
+mountable router serving the documents as JSON and, only when asked, a viewer
+page for each:
+
+```ts
+import { docsRouter, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
+
+app.use(
+  "/docs",
+  docsRouter({
+    // A value, or a thunk re-read per request — this one always serves the
+    // router as it is now:
+    openapi: () =>
+      generateOpenApi(app, { title: "My API", version: "1.0.0" }).document,
+    // AsyncAPI covers any realtime or event-driven mechanism OpenAPI cannot
+    // document (WebSocket, Kafka, AMQP, MQTT, SSE, …) — the document is
+    // hand-supplied until the generator lands:
+    asyncapi: eventsDocument,
+    viewer: { openapi: "scalar", asyncapi: "asyncapi" }, // the defaults, shown
+    authorize: requireAuth, // runs before every docs route
+  }),
+);
+```
+
+- **The JSON is always served; the pages are off by default.** The documents
+  sit at `openapiPath` (default `/openapi.json`) and `asyncapiPath` (default
+  `/asyncapi.json` — the route is absent without an `asyncapi` document); a
+  `viewer` entry serves its page at the mount root (`/`) and at `/asyncapi`.
+  The pages load third-party script into an origin that may hold session
+  cookies, and "try it out" is a mutation console — hence opt-in.
+- **A document is a value or a thunk** (`() => document`), the thunk re-read
+  per request, so a mounted router can serve the live document of the router
+  it is mounted on.
+- **`viewer.openapi` / `viewer.asyncapi`** are a viewer's name as a string
+  (defaults applying), or `{ name, ...options }` — the remaining properties
+  passed through to the viewer's own configuration (spread into the init
+  config for Scalar, Swagger UI and Redoc, assigned as element properties for
+  RapiDoc, spread into `config` for the AsyncAPI component). An unknown name
+  is a `ConfigError` at construction, as is a page without its document.
+- **The viewers and their pins** (bun-common's `DOCS_CDN`; each asset an
+  exact version with a sha384 hash on jsDelivr, the page under a
+  `default-src 'none'` CSP with a per-request nonce):
+
+  | Name | Viewer | Pinned |
+  |---|---|---|
+  | `"scalar"` (**OpenAPI default**) | Scalar | `@scalar/api-reference@1.76.0` |
+  | `"swagger-ui"` | Swagger UI | `swagger-ui-dist@5.34.0` |
+  | `"redoc"` | Redoc | `redoc@3.0.1` |
+  | `"rapidoc"` | RapiDoc | `rapidoc@11.0.1` |
+  | `"asyncapi"` (**AsyncAPI default**) | the official component | `@asyncapi/react-component@3.2.2` |
+
+  Scalar can also render the AsyncAPI document (`viewer.asyncapi: "scalar"`),
+  but its AsyncAPI support is upstream work-in-progress — opt in knowingly.
+- **`cdn`** mirrors or air-gaps the assets: `{ baseUrl }` plus per-asset
+  `{ version, integrity }` overrides (exact versions only, `sha384-` hashes —
+  a different version's bytes need your own hashes). Resolved at
+  construction, so a bad pin fails fast rather than on the first request.
+- **`authorize`** is middleware at the front of the router — it covers the
+  JSON and the pages alike.
+- **The docs never document themselves**: every route docsRouter registers is
+  `.describe({ hidden: true })`, so a later `generateOpenApi` over the parent
+  router leaves them out. The pages point at their document resolved per
+  request from `req.baseUrl`, so the router works under any mount without
+  knowing where it is.
 
 ### CORS
 
