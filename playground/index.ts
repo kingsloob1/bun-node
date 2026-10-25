@@ -26,6 +26,7 @@ import {
   noopLogger,
   toJsonSchema,
 } from "@kingsleyweb/bun-common";
+import { generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
 import {
   BunJobs,
   createDriver,
@@ -168,6 +169,17 @@ app.get("/playground/routes", (_req, res) => {
         })),
     })),
   });
+});
+// The OpenAPI document (AD (a)'s generateOpenApi) for everything mounted on
+// this adapter — the jobs API's routes document themselves from their
+// contracts; what cannot be expressed (a wildcard, an `all()` route) is a
+// warning, never an error.
+app.get("/playground/openapi.json", (_req, res) => {
+  const { document, warnings } = generateOpenApi(app, {
+    title: "bun-node playground",
+    version: "1.0.0",
+  });
+  res.json({ document, warnings });
 });
 // The live-events socket, on the same port: `/meta` names its path.
 api.websocket?.attach(app);

@@ -3,6 +3,7 @@ import type { WebSocketHandler } from "bun";
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
 import type { ValidatorMiddleware } from "./BunValidate";
+import type { RouteDoc } from "./docs/routeDoc";
 import type {
   BunWebSocket,
   WebSocketClientData,
@@ -41,6 +42,7 @@ import {
   SocketFreeExchange,
   toFetchResponse,
 } from "./BunResponse";
+import { attachRouteDoc } from "./docs/routeDoc";
 import { resolveLogger } from "./logging";
 import { responseBindingOf, toOutboundDef } from "./responseValidation";
 import {
@@ -5354,6 +5356,48 @@ export class BunRouter<
     }
 
     route.setName(name);
+    return this;
+  }
+
+  /**
+   * Documents the route registered by the immediately preceding verb, `all`,
+   * `any` or `add` call — the shape of {@link setName}:
+   * `router.get("/users/:id", h).describe({ summary: "Read one user" })`.
+   * What a route can declare is {@link RouteDoc}; `generateOpenApi()`
+   * (`@kingsleyweb/bun-common/lib/docs`) reads it.
+   *
+   * Mirrors {@link setName}: it reads the same `#lastRoute`, so it must follow
+   * a verb/`all` registration directly. The doc is stored against the route's
+   * **terminal callback**, which survives `use(subRouter)` flattening, so a
+   * sub-router's routes keep their docs when mounted (both mounts of a
+   * double-mounted sub-router share one doc).
+   *
+   * Calling it twice for one route merges, last write winning per key.
+   *
+   * Hand-written beside `setName`, deliberately outside the generated verb
+   * overloads: it changes no argument position and no handler type.
+   *
+   * @throws TypeError when the previous registration was not a route handler
+   *   (`use`, `group`, `domain`, a mount) — middleware cannot be documented.
+   */
+  describe(doc: RouteDoc): this {
+    const route = this.#lastRoute;
+    if (!route) {
+      throw new TypeError("describe can not describe middleware");
+    }
+    if (typeof doc !== "object" || doc === null || isArray(doc)) {
+      throw new TypeError("describe(): expected a RouteDoc object");
+    }
+    const terminal: unknown = route.callbacks.at(-1);
+    if (
+      typeof terminal !== "function" &&
+      (typeof terminal !== "object" || terminal === null)
+    ) {
+      throw new TypeError(
+        "describe(): the route has no terminal callback to document",
+      );
+    }
+    attachRouteDoc(terminal, doc);
     return this;
   }
 

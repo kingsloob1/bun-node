@@ -5,8 +5,8 @@ across `bun-common`, `bun-nest` and the existing `bun-jobs` prior art.
 
 Status: **started 2026-10-24** — **(b0) done** (the vendored spec types at
 1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`,
-in bun-common's `lib/types/standardSchema.ts`). **(b) built 2026-10-25, PR
-pending**, and shipped *before* (a) as the standalone converter (the
+in bun-common's `lib/types/standardSchema.ts`). **(b) merged 2026-10-25,
+#529**, and shipped *before* (a) as the standalone converter (the
 maintainer's decision of 2026-10-24): `toJsonSchema`, `SchemaDirection`,
 `ConvertContext`, `JsonSchemaConverter`, `JsonSchemaLike`,
 `registerJsonSchemaConverter`, `zodConverter`, `arktypeConverter`,
@@ -17,10 +17,34 @@ new `lib/docs/` module — no `__schemas` (V1's contracts and V12's
 `ConfigError` (those are (a)'s), and the converter never throws for a content
 problem (`{}` plus a warning). §4.2/§4.3 carry the response-direction
 correction: responses convert with `input` except under V13's
-`responseOutput: "parsed"`. Every claim about existing code cites a file;
-every claim marked **measured** was produced by running code against this
-checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims marked **assumed** were not
-executed.
+`responseOutput: "parsed"`. **(a) built 2026-10-25, PR pending** (the
+maintainer's decisions of 2026-10-25, all final): `ConfigError` (new in
+bun-common, `lib/errors.ts` — extends `Error`, optional `details` record;
+bun-jobs keeps its own, a `JobsError`, and its `spec/security.ts` shim
+translates, with an instanceof test), `spec/refs.ts` and `spec/security.ts`
+moved to `lib/docs/` (bun-jobs keeps two-line re-export/translation shims;
+`OpenApiSecurityScheme` re-declared in bun-common, aliased in bun-jobs),
+`RouteDoc`/`RouteResponseDoc` (plus `request.cookies`, §4.11 of the
+bun-validate plan), `.describe()` (a `BunRouter` method beside `setName`,
+hand-written — not in the generated overloads; the WeakMap keyed on the
+terminal callback), `ListedRoute` gains `routeIndex`, `generateOpenApi` +
+`OpenApiOptions`/`OpenApiResult`/`DocWarning`/`OpenApiDocument` over V12's
+`listRoutes` (§3.3's `DiscoveredRoute` is subsumed — `filter` and
+`operationId` take a `ListedRoute`), `toOpenApiPath` ported with §10.2's
+rules (optional params document as two paths by default, an
+`OpenApiOptions.optionalParams` flag — name awaiting approval — falls back
+to a warning), the OAS 3.1 meta-schema matrix ({none, zod, valibot, arktype,
+yup, mixed} × {none, bearer, apiKey} × {strict, lenient}, emitting
+`openapi: "3.1.2"` — the version facts re-checked against spec.openapis.org
+2026-10-25: 3.1.2 is the latest 3.1.x; 3.2.x exists and is out of scope),
+the golden fixture, and the type tests. The root `lib/index.ts` re-exports
+the (a) surface as **types only** (§3.1). §6.1's "port `toOpenApiPath`
+verbatim" is corrected: its structure was ported, not the throw sites —
+in bun-common the guards are warnings (strict escalates), per §10.2. The
+`./lib/docs/types` browser entry is deferred to phase (c). Every claim about
+existing code cites a file; every claim marked **measured** was produced by
+running code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims
+marked **assumed** were not executed.
 
 ---
 
@@ -342,6 +366,12 @@ export interface RouteDoc {
     body?: StandardSchemaV1 | JsonSchemaLike;
     /** Request headers. Emitted as `in: "header"` parameters. */
     headers?: StandardSchemaV1 | JsonSchemaLike;
+    /**
+     * Request cookies. Emitted as `in: "cookie"` parameters.
+     * (Added 2026-10-25 per bun-validate §4.11: AD's `RouteDoc.request`
+     * gains `cookies`.)
+     */
+    cookies?: StandardSchemaV1 | JsonSchemaLike;
   };
   /**
    * Media types the body is accepted as. Default: `["application/json"]`
@@ -526,7 +556,18 @@ export interface OpenApiOptions {
   componentName?: (schema: StandardSchemaV1 | JsonSchemaLike) => string | undefined;
 }
 
-/** A route as the generator sees it, before it becomes an operation. */
+/** A route as the generator sees it, before it becomes an operation.
+ *
+ * **Subsumed (2026-10-25, AD (a) as built):** V12's `ListedRoute`
+ * (`lib/routeModel.ts`) already carries everything here — the method, the
+ * path, the params, the described contract (the `discovered` half), and the
+ * replay — so `filter` and `operationId` take a `ListedRoute` and no
+ * `DiscoveredRoute` exists. What it deliberately does not carry: `template`
+ * (the generator derives templates with `toOpenApiPath`, §10.2's rules) and
+ * `doc` (looked up in the `.describe()` WeakMap by the route's terminal
+ * callback — `router.routes()[routeIndex].callbacks.at(-1)`; `routeIndex`
+ * was added to `ListedRoute` for exactly this).
+ */
 export interface DiscoveredRoute {
   /** The HTTP method, upper-case. `"ALL"` for an `all()` route. */
   method: string;
@@ -1489,7 +1530,7 @@ document and a defensible split.
 |---|---|---|---|
 | `spec/refs.ts` | 101 | **fully** — `collectRefs`, `resolveRef`, `danglingRefs`, `pruneSchemaComponents`, `SCHEMA_REF_PREFIX`. No bun-jobs import at all | **Move to `bun-common/lib/docs/refs.ts`, verbatim.** bun-jobs re-exports from there |
 | `spec/security.ts` | 144 | **nearly** — `openApiSecurity`, `toAsyncApiSecurityScheme`, `OpenApiSecurityScheme`. Only dependency is `ResolvedJobsApiDocsOptions`, and only for `Pick<…, "securitySchemes" \| "security">` | **Move**, widening the parameter to a structural `{ securitySchemes?, security? }`. Keep the `browserNote` strings — they are correct for any browser WebSocket |
-| `spec/openapi.ts` | 383 | **mixed.** Generic: the path→template conversion and its guards, parameter emission from a properties map, `style/explode` for arrays, the `components` + prune + `Problem`-response assembly, the duplicate-operationId and duplicate-`method+path` guards. Specific: `TAG_DESCRIPTIONS`, `routeErrorCodes` + `API_ERROR_STATUS`, the CSRF header/`requireJson` parameters, `x-bun-jobs-action/-mutation/-requires/-csrf`, `packageVersion()`, `AnyRouteDef` | **Rewrite in bun-common against a neutral `DiscoveredRoute`.** Port `toOpenApiPath` verbatim (it is 25 lines and its guards are exactly right); port the parameter/response assembly as a shape, not as code |
+| `spec/openapi.ts` | 383 | **mixed.** Generic: the path→template conversion and its guards, parameter emission from a properties map, `style/explode` for arrays, the `components` + prune + `Problem`-response assembly, the duplicate-operationId and duplicate-`method+path` guards. Specific: `TAG_DESCRIPTIONS`, `routeErrorCodes` + `API_ERROR_STATUS`, the CSRF header/`requireJson` parameters, `x-bun-jobs-action/-mutation/-requires/-csrf`, `packageVersion()`, `AnyRouteDef` | **Rewrite in bun-common against V12's `ListedRoute`** (corrected 2026-10-25: not "a neutral `DiscoveredRoute` — §3.3's is subsumed). Port `toOpenApiPath`'s **structure, not its throw sites** (corrected 2026-10-25 from "verbatim": in bun-common the guards are warnings per §10.2, `strict` escalates; bun-jobs' throwing version stays bun-jobs'); port the parameter/response assembly as a shape, not as code |
 | `spec/asyncapi.ts` | 691 | **no.** Needs `CHANNELS` (`ws/channels.ts`), `QUEUE_EVENTS`/`RUNNER_EVENTS`/`WORKER_EVENTS` (`ws/events.ts`), the nine control-frame schemas (`ws/protocol.ts`), `RATE_BREACH_WINDOW_MS` (`ws/session.ts`), the resolved `websocket` limits, and the contract constants | **Leave.** Write a new, much smaller generator in bun-common from `WsChannelDoc` |
 | `spec/asyncapi-examples.ts` | 506 | **no** — one hand-written example per bun-jobs message | **Leave** |
 | `schema/builder.ts` | 615 | It is bun-jobs' own DSL, whose entire point is "one definition feeds the validator, the TypeScript type and the specs". bun-common's story is Standard Schema from any vendor | **Leave.** Add a 15-line `bunJobsConverter` in bun-common that reads `schema.json` (see §4.2), so the two meet without either moving |
@@ -1674,6 +1715,16 @@ nothing to complain about.
   "browser": true
 }
 ```
+
+As built (AD (a), 2026-10-25): the `./lib/docs` cell carries `generateOpenApi`,
+`toOpenApiPath`, the moved `refs`/`security` utilities, and the types
+`RouteDoc`, `RouteResponseDoc`, `OpenApiOptions`, `OpenApiResult`,
+`DocWarning`, `OpenApiDocument`, `OpenApiSecurity`, `OpenApiSecurityScheme`
+et al. — `ListedRoute` instead of the subsumed `DiscoveredRoute`;
+`generateAsyncApi`/`docsRouter`/`WsChannelDoc` and the `./lib/docs/types`
+browser entry are the later phases' ((e), (c) — the types entry deferred
+there). The root entry gained the `ConfigError` value and the (a) types, and
+its snippet asserts `RouteDoc` is not `any`.
 
 No `"peers"` on either, which is the assertion that matters: both must load in
 a consumer with **no** optional peer installed. The existing root entry's
@@ -2168,7 +2219,7 @@ engineer-days for someone who wrote this code.
 
 | Phase | Scope | Ships | Est. |
 |---|---|---|---|
-| **(a) Route metadata + manual annotation → OpenAPI** | `ConfigError` in bun-common; move `spec/refs.ts` and `spec/security.ts` from bun-jobs (re-export shims left behind); `lib/docs/` with `RouteDoc`, `.describe()`, the `WeakMap` keyed on the terminal callback, `DiscoveredRoute` discovery (`routes()` + pipeline replay), path→template with the wildcard/optional/regex rules of §10.2, the generator, `strict`/`lenient` + warnings; OAS 3.1 meta-schema test; golden fixture; type tests; `examples/bun-common/13-api-docs/annotating-routes.ts` | A working OpenAPI 3.1 document from any `BunRouter`, hand-annotated. **bun-jobs unaffected except for two import moves** | **6–8** |
+| **(a) Route metadata + manual annotation → OpenAPI** — **built 2026-10-25, PR pending** | `ConfigError` in bun-common; move `spec/refs.ts` and `spec/security.ts` from bun-jobs (re-export shims left behind); `lib/docs/` with `RouteDoc`, `.describe()`, the `WeakMap` keyed on the terminal callback, ~~`DiscoveredRoute`~~ V12's `listRoutes` (subsumed), path→template with the wildcard/optional/regex rules of §10.2, the generator, `strict`/`lenient` + warnings; OAS 3.1 meta-schema test; golden fixture; type tests; `examples/bun-common/13-api-docs/annotating-routes.ts` | A working OpenAPI 3.1 document from any `BunRouter`, hand-annotated. **bun-jobs unaffected except for two import moves** | **6–8** |
 | **(a2) `defineRoute`-style registrar** *(optional, same phase)* | A `routes([...])` helper over `.describe()` for people who prefer bun-jobs' shape | Ergonomics, no new capability | 1–2 |
 | **(b0) Update the vendored spec types** | `lib/types/standardSchema.ts` → `@standard-schema/spec` 1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`. Its own commit, before (b) | The type surface every validator is checked against, current | **0.5–1** |
 | **(b) Standard Schema auto-derivation** — **built 2026-10-25, PR pending** | ~~`__schemas` on the validator middleware~~ (superseded — the contracts of V1 and V12's `listRoutes` already carry the schemas; decided 2026-10-24); the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
@@ -2218,8 +2269,9 @@ fully spiked and independently valuable without any of the others.
 **Suggested first commit**, if only one thing is done: ~~the `__schemas`
 property on `BunValidate`'s middleware~~ — overtaken: the contracts of V1 and
 V12's `listRoutes` already carry the schemas (decided 2026-10-24, when (b) was
-built without `__schemas`). The cheapest remaining first step of this plan is
-(a)'s `ConfigError` plus the `lib/docs/` generator skeleton.
+built without `__schemas`). ~~The cheapest remaining first step of this plan is
+(a)'s `ConfigError` plus the `lib/docs/` generator skeleton.~~ — built: (a)
+landed 2026-10-25.
 
 ---
 

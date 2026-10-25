@@ -1,0 +1,189 @@
+{
+  "document": {
+    "openapi": "3.1.2",
+    "info": {
+      "title": "Golden fixture",
+      "version": "1.0.0",
+      "description": "Every feature at once."
+    },
+    "servers": [
+      {
+        "url": "/"
+      }
+    ],
+    "tags": [
+      {
+        "name": "Users"
+      }
+    ],
+    "paths": {
+      "/re/{id}": {
+        "get": {
+          "operationId": "getReById",
+          "summary": "A regex-constrained parameter",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "pattern": "^(?:\\d+)$"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "OK",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      }
+                    },
+                    "required": ["id"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/users/{id}": {
+        "get": {
+          "operationId": "getUsersById",
+          "summary": "Read one user",
+          "tags": ["Users"],
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "verbose",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            {
+              "name": "x-tenant",
+              "in": "header",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "session",
+              "in": "cookie",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "OK",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id"]
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Not Found"
+            }
+          }
+        }
+      },
+      "/users/": {
+        "post": {
+          "operationId": "postUsers",
+          "summary": "Create a user",
+          "tags": ["Users"],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["name"]
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "Created",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "name"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "securitySchemes": {
+        "bearer": {
+          "type": "http",
+          "scheme": "bearer"
+        }
+      }
+    },
+    "security": [
+      {
+        "bearer": []
+      }
+    ]
+  },
+  "warnings": [
+    {
+      "stage": "path",
+      "message": "/files/*rest: a wildcard matches `/`, which an OpenAPI path parameter cannot express — the route is left out of the document",
+      "route": "GET /files/*rest"
+    },
+    {
+      "stage": "operation",
+      "message": "no concrete request path could be synthesized for this route (a regex constraint or host scope), so the middleware before it was not replayed; the document uses the route's own callbacks alone",
+      "route": "GET /re/:id(\\d+)"
+    }
+  ]
+}

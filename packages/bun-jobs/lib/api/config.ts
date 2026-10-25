@@ -9,6 +9,7 @@ import type {
   RouterHandler,
   WebSocketClientData,
 } from "@kingsleyweb/bun-common";
+import type { OpenApiSecurityScheme as BunCommonOpenApiSecurityScheme } from "@kingsleyweb/bun-common/lib/docs/security";
 import type { Server } from "bun";
 import type { BunJobs } from "../BunJobs";
 import type {
@@ -277,44 +278,12 @@ export const DEFAULT_JOBS_API_LIMITS: ResolvedJobsApiLimits = Object.freeze({
 /**
  * An OpenAPI 3.1 security scheme, as `docs.securitySchemes` takes it. Only the
  * fields the AsyncAPI mapping reads are typed; the rest pass through.
+ *
+ * The declaration moved to bun-common in AD (a) (plan
+ * `docs/plans/api-docs-generation/` §6.1); this alias keeps the name where it
+ * was.
  */
-export type OpenApiSecurityScheme =
-  | {
-      /** An API key. */
-      type: "apiKey";
-      /** Where the key is sent. */
-      in: "header" | "query" | "cookie";
-      /** The header, query parameter or cookie name. */
-      name: string;
-      /** Human description. */
-      description?: string;
-    }
-  | {
-      /** An HTTP authentication scheme. */
-      type: "http";
-      /** The scheme, e.g. `"bearer"` or `"basic"`. */
-      scheme: string;
-      /** A hint at the bearer token's format, e.g. `"JWT"`. */
-      bearerFormat?: string;
-      /** Human description. */
-      description?: string;
-    }
-  | {
-      /** OAuth 2. */
-      type: "oauth2";
-      /** The flows, in OpenAPI form. */
-      flows: Record<string, unknown>;
-      /** Human description. */
-      description?: string;
-    }
-  | {
-      /** OpenID Connect discovery. */
-      type: "openIdConnect";
-      /** The discovery document's URL. */
-      openIdConnectUrl: string;
-      /** Human description. */
-      description?: string;
-    };
+export type OpenApiSecurityScheme = BunCommonOpenApiSecurityScheme;
 
 /** Docs endpoints and pages. */
 export interface JobsApiDocsOptions {

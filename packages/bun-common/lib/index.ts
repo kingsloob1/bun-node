@@ -467,9 +467,14 @@ export {
 } from "./routeModel";
 /* ------------------------------------------------------------------ *
  * The Standard Schema → JSON Schema converter (`lib/docs/`, AD phase (b)),
- * also the `./lib/docs` subpath. The document generator it feeds is
- * phase (a).
+ * also the `./lib/docs` subpath. The document generator is phase (a); per
+ * the plan's §3.1 zero-cost rule the root re-exports its *types* only — the
+ * generator and the moved `$ref`/security utilities stay behind the
+ * subpath, so a consumer who never imports it never loads them. `ConfigError`
+ * is the one value: it is thrown by the generator and, translated, by
+ * bun-jobs.
  * ------------------------------------------------------------------ */
+export { ConfigError } from "./errors";
 export {
   arktypeConverter,
   bunJobsConverter,
@@ -489,6 +494,23 @@ export {
   withJsonSchema,
   yupConverter,
   zodConverter,
+} from "./docs/index";
+export type {
+  AsyncApiSecurityScheme,
+  DocWarning,
+  MappedAsyncApiScheme,
+  OpenApiDocument,
+  OpenApiOptions,
+  OpenApiPathOptions,
+  OpenApiPathParam,
+  OpenApiPathResult,
+  OpenApiPathTemplate,
+  OpenApiResult,
+  OpenApiSecurity,
+  OpenApiSecurityOptions,
+  OpenApiSecurityScheme,
+  RouteDoc,
+  RouteResponseDoc,
 } from "./docs/index";
 export {
   channelContract,
