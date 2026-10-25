@@ -1,11 +1,14 @@
 /**
  * The Standard Schema → JSON Schema converter (AD phase (b), plan
- * `docs/plans/api-docs-generation/` §4) and the OpenAPI 3.1 generator (AD
- * phase (a), §3.2/§3.3), published as `@kingsleyweb/bun-common/lib/docs`.
- * {@link generateOpenApi} builds a document from a router's routes (V12's
- * `listRoutes`) and their `.describe()` docs; {@link toJsonSchema},
- * {@link liftComponents} and the vendor converters are the standalone
- * conversion half.
+ * `docs/plans/api-docs-generation/` §4), the OpenAPI 3.1 generator (AD
+ * phase (a), §3.2/§3.3) and the serving/viewing half (AD phase (c), §7),
+ * published as `@kingsleyweb/bun-common/lib/docs`. {@link generateOpenApi}
+ * builds a document from a router's routes (V12's `listRoutes`) and their
+ * `.describe()` docs; {@link toJsonSchema}, {@link liftComponents} and the
+ * vendor converters are the standalone conversion half; {@link docsRouter}
+ * serves the document(s) and the pinned-CDN viewer pages (`./viewer`), off by
+ * default. The browser-safe document types are the `./types` entry (plan risk
+ * 10) — this index pulls the router in, so it is server-side.
  *
  * Nothing here imports a vendor package — the converters are structural
  * (plan risk 1f; `__tests__/docs/packaging.test.ts` proves the import graph).
@@ -63,3 +66,27 @@ export {
   type OpenApiResult,
   toOpenApiPath,
 } from "./openapi";
+export {
+  type AsyncApiViewerName,
+  docsRouter,
+  type DocsRouterOptions,
+  type OpenApiViewerName,
+  type ViewerConfig,
+} from "./router";
+export {
+  type AssetIntegrity,
+  assetUrl,
+  asyncApiUiPage,
+  DOCS_CDN,
+  type DocsCdnAssetOverride,
+  type DocsCdnOptions,
+  docsPageHeaders,
+  type DocsPage,
+  type PinnedAsset,
+  rapidocPage,
+  redocPage,
+  resolveDocsCdn,
+  type ResolvedDocsCdn,
+  scalarPage,
+  swaggerUiPage,
+} from "./viewer";

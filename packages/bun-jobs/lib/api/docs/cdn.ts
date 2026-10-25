@@ -1,6 +1,3 @@
-import type { JobsApiDocsOptions } from "../config";
-import { ConfigError } from "../../shared/errors";
-
 /**
  * The docs pages' third-party assets, pinned.
  *
@@ -14,7 +11,21 @@ import { ConfigError } from "../../shared/errors";
  *
  * A mirror (or an air-gapped copy) is configured through `docs.cdn.baseUrl`,
  * with its own hashes if the mirror re-encodes anything.
+ *
+ * The resolution machinery moved to bun-common in AD (c) (plan
+ * `docs/plans/api-docs-generation/` §6.1): `resolveDocsCdn` and `assetUrl`
+ * here are shims over `@kingsleyweb/bun-common/lib/docs/viewer`, translating
+ * its `ConfigError` back into bun-jobs' own (a `JobsError`), like the
+ * `spec/security.ts` shim. The **pins stay here** — bun-common ships its own
+ * `DOCS_CDN` copy and each package's pins are netted by its own network hash
+ * test (the maintainer's decision, 2026-10-25).
  */
+import { ConfigError as BunCommonConfigError } from "@kingsleyweb/bun-common";
+import { resolveDocsCdn as resolveDocsCdnBase } from "@kingsleyweb/bun-common/lib/docs/viewer";
+import type { JobsApiDocsOptions } from "../config";
+import { ConfigError } from "../../shared/errors";
+
+export { assetUrl } from "@kingsleyweb/bun-common/lib/docs/viewer";
 
 /** The default CDN: jsDelivr's npm mirror. */
 export const DEFAULT_CDN_BASE_URL = "https://cdn.jsdelivr.net/npm";
@@ -84,12 +95,6 @@ export const DOCS_CDN = Object.freeze({
  */
 export const ASYNCAPI_PARSER_RANGE = "^3.6.2";
 
-/** An exact semver: three numbers, optionally a pre-release, and nothing else. */
-const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/;
-
-/** An SRI hash of the digest the pages declare. */
-const SRI_HASH = /^sha384-[\w+/]+={0,2}$/;
-
 /** The CDN assets in use, after `docs.cdn` overrides. */
 export interface ResolvedDocsCdn {
   /** Base URL, without a trailing slash. */
@@ -102,56 +107,6 @@ export interface ResolvedDocsCdn {
   asyncapi: PinnedAsset;
 }
 
-/** Checks one override and merges it over the pin. */
-function resolveAsset(
-  pinned: PinnedAsset,
-  override:
-    | {
-        /** Exact version. */
-        version: string;
-        /** Its hashes. */
-        integrity?: AssetIntegrity;
-      }
-    | undefined,
-  what: string,
-): PinnedAsset {
-  if (!override) {
-    return pinned;
-  }
-  if (
-    typeof override.version !== "string" ||
-    !EXACT_SEMVER.test(override.version)
-  ) {
-    throw new ConfigError(
-      `${what}.version must be an exact version such as "5.32.15", not a range`,
-      { version: override.version },
-    );
-  }
-  const integrity = override.integrity;
-  if (integrity !== undefined) {
-    for (const key of ["js", "css"] as const) {
-      if (
-        typeof integrity[key] !== "string" ||
-        !SRI_HASH.test(integrity[key])
-      ) {
-        throw new ConfigError(
-          `${what}.integrity.${key} must be a "sha384-…" hash`,
-          {
-            value: integrity[key],
-          },
-        );
-      }
-    }
-  }
-  return {
-    ...pinned,
-    version: override.version,
-    // A different version has different bytes, so the pinned hashes cannot
-    // apply: the operator supplies their own, or the page loads without SRI.
-    ...(integrity ? { integrity } : { integrity: undefined }),
-  };
-}
-
 /**
  * The assets the pages will load: the pins, with `docs.cdn` merged over them.
  *
@@ -161,41 +116,12 @@ function resolveAsset(
 export function resolveDocsCdn(
   docs: Pick<JobsApiDocsOptions, "cdn"> | false | undefined,
 ): ResolvedDocsCdn {
-  const cdn = docs === false ? undefined : docs?.cdn;
-  const baseUrl = (cdn?.baseUrl ?? DEFAULT_CDN_BASE_URL).replace(/\/+$/, "");
-  let origin: string;
   try {
-    const url = new URL(baseUrl);
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      throw new Error("not http(s)");
+    return resolveDocsCdnBase(DOCS_CDN, docs === false ? undefined : docs?.cdn);
+  } catch (error) {
+    if (error instanceof BunCommonConfigError) {
+      throw new ConfigError(error.message, error.details);
     }
-    origin = url.origin;
-  } catch {
-    throw new ConfigError("docs.cdn.baseUrl must be an http(s) URL", {
-      baseUrl,
-    });
+    throw error;
   }
-  return {
-    baseUrl,
-    origin,
-    swaggerUi: resolveAsset(
-      DOCS_CDN.swaggerUi,
-      cdn?.swaggerUi,
-      "docs.cdn.swaggerUi",
-    ),
-    asyncapi: resolveAsset(
-      DOCS_CDN.asyncapi,
-      cdn?.asyncapi,
-      "docs.cdn.asyncapi",
-    ),
-  };
-}
-
-/** The URL of one of an asset's files. */
-export function assetUrl(
-  cdn: ResolvedDocsCdn,
-  asset: PinnedAsset,
-  file: "js" | "css",
-): string {
-  return `${cdn.baseUrl}/${asset.package}@${asset.version}/${asset[file]}`;
 }

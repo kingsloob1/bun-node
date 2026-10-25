@@ -34,9 +34,10 @@ import {
   yupConverter,
   zodConverter,
 } from "./converters";
+import type { JsonSchemaLike } from "./types";
 
 /** A JSON Schema document (or fragment), as the converters produce it. */
-export type JsonSchemaLike = Record<string, unknown>;
+export type { JsonSchemaLike } from "./types";
 
 /** Which side of a schema a conversion describes. */
 export type SchemaDirection = "input" | "output";

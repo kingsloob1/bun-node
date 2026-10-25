@@ -26,7 +26,7 @@ import {
   noopLogger,
   toJsonSchema,
 } from "@kingsleyweb/bun-common";
-import { generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
+import { docsRouter, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
 import {
   BunJobs,
   createDriver,
@@ -181,6 +181,24 @@ app.get("/playground/openapi.json", (_req, res) => {
   });
   res.json({ document, warnings });
 });
+// The same document served by AD (c)'s docsRouter, with a viewer page: the
+// thunk re-generates per request, so it is always the adapter as it is now;
+// every docs route is `hidden`, so it never documents itself. The playground's
+// auth is the API's `authorize: () => true` — everything is allowed — so the
+// docs' authorizer does the same (a real host would decide from a session).
+// Redoc rather than the Scalar default, to show a named viewer.
+app.use(
+  "/playground/docs",
+  docsRouter({
+    openapi: () =>
+      generateOpenApi(app, {
+        title: "bun-node playground",
+        version: "1.0.0",
+      }).document,
+    viewer: { openapi: "redoc" },
+    authorize: (_req, _res, next) => next(),
+  }),
+);
 // The live-events socket, on the same port: `/meta` names its path.
 api.websocket?.attach(app);
 
@@ -205,6 +223,7 @@ bun-node playground (${playgroundBackend()} driver)
   Shared unit   ${origin}${ui.basePath}/queues/ingest (uploads: ingest, captions, search-index; controller on the ${summoning.sharedUnitHost === "mailer" ? "mailer context, so this API shows it read-only" : "main context"})
   Units/faults  ${origin}${summoning.basePath}
   API           ${origin}${api.basePath}/meta
+  API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
 `);

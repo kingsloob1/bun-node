@@ -44,6 +44,7 @@ can reach it, so never expose it.
 | `/jobs` | the UI (Overview, Queues, Workers, Providers, Runners, Events, API docs) |
 | `/jobs-api` | the management API, with its live-events socket on the same port |
 | `/playground/compute` | the summoned units: every child process the library's `localCompute()` started for the playground, with its provider status, and buttons that inject a fault into one queue's next unit; every queue's summon status (`GET /jobs-api/summon`), the `onSummonFailed` alerts, and a budget reset (see "Summoning" below) |
+| `/playground/docs` | AD (c)'s `docsRouter`: the adapter's OpenAPI document as JSON (`/playground/docs/openapi.json`, re-generated live per request — the same one `/playground/openapi.json` shows with its warnings) plus a Redoc viewer page; behind the playground's allow-everything auth, and hidden from the document itself |
 | `/` | redirects to `/jobs` |
 
 **Services and workers.** Two `BunJobs` contexts share one driver instance,

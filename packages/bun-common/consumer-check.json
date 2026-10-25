@@ -121,7 +121,7 @@
       "snippet": "const router = new m.BunRouter();\nrouter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _busboyLimits = Expect<IsAny<NonNullable<t.MultiPartOptions[\"limits\"]>>>;\nexport type _acceptsTypes = Expect<IsAny<ReturnType<typeof m.accepts>>>;\nexport type _logFields = Expect<IsAny<Parameters<t.Logger[\"info\"]>[1]>>;\ndeclare const User: t.StandardSchemaV1<{ id: string }>;\nrouter.get(\"/typed\", m.validate({}, { responses: { 200: User } }), (_req, res) => {\n  type Sent = Parameters<typeof res.json>[0];\n  const _sentNotAny: Expect<IsAny<Sent>> = false;\n  const _sentExact: Equal<Sent, { id: string }> = true;\n  // @ts-expect-error an undeclared status, when responses are declared\n  res.status(404);\n  res.status(200).json({ id: \"a\" });\n});\nexport const _refused: Error = new m.ResponseValidationError([], 500);\nconst _nd = m.chunks(User, { framing: \"ndjson\" });\nconst _framing: Equal<typeof _nd.framing, \"ndjson\"> = true;\nrouter.get(\"/events\", m.validate({}, { responses: { 200: { content: { \"text/event-stream\": m.sse({ tick: User }), \"image/png\": m.opaque() } } } }), (_req, res) => {\n  res.send(new ReadableStream());\n  // @ts-expect-error a plain object where only a stream and an opaque image are declared\n  res.json({ id: \"a\" });\n});\nconst _png: t.OpaqueBody<\"image/png\"> = m.opaque(\"image/png\");\nconst _rows: t.ContractEntry[\"nested\"] = undefined;\nrouter.get(\"/logo\", m.validate({}, { responses: { 200: _png } }), (_req, res) => {\n  res.send(new Blob([]));\n  // @ts-expect-error json() where only an opaque image/png is declared (the shorthand)\n  res.json({ id: \"a\" });\n});\nconst _byView = m.validate({}, { responses: { 200: m.variants({ full: { content: { \"application/json\": User } }, empty: { content: null } }, { by: { header: \"x-view\" } }), 404: null } });\nrouter.get(\"/variants\", _byView, (_req, res) => {\n  res.status(200).variant(\"full\").json({ id: \"a\" });\n  // @ts-expect-error a variant the status does not declare\n  res.status(200).variant(\"partial\");\n  // @ts-expect-error a status with no variants\n  res.status(404).variant(\"full\");\n});\nconst _variantField: Equal<t.ValidationIssue[\"variant\"], string | undefined> = true;\nconst _rowVariant: Equal<t.ContractEntry[\"variant\"], string | undefined> = true;\nconst _refine: t.Refine = (r) => (r.variant === undefined ? undefined : [{ part: \"body\", message: \"m\" }]);\nconst _routes: t.ListedRoute[] = m.listRoutes(router);\nconst _eff: t.AnyContract | undefined = m.effectiveContract([]);\nconst _bp = m.bodyPlacement({ side: \"inbound\", part: \"body\", kind: \"value\", encoding: \"body\", schema: null });\nconst _bpRequired: Equal<t.BodyPlacement[\"required\"], boolean> = true;\nconst _bpMedia: Equal<typeof _bp.mediaType, string> = true;\nconst _converted: t.JsonSchemaLike = m.toJsonSchema(User);\nconst _stamped: typeof User = m.withJsonSchema(User, { type: \"object\" });\nconst _lifted: t.LiftedSchema = m.liftComponents(_converted);\nexport type _ctxDirAny = Expect<IsAny<t.ConvertContext[\"direction\"]>>;\nrouter.get(\"/documented\", (_req, res) => res.json({})).describe({ summary: \"Annotated\" });\nconst _routeDoc: t.RouteDoc = { summary: \"s\", request: { cookies: { type: \"object\" } }, responses: { 204: null } };\nexport type _routeDocNotAny = Expect<IsAny<t.RouteDoc[\"request\"]>>;\nexport type _openApiOptionsNotAny = Expect<IsAny<t.OpenApiOptions[\"strict\"]>>;\nexport const _configError: Error = new m.ConfigError(\"bad option\", { option: \"x\" });"
     },
     {
-      "$comment": "AD (b) + AD (a): the Standard Schema → JSON Schema converter and the OpenAPI generator. No peers — the converters are structural, so this entry must load with none installed (plan §8.2/§8.3).",
+      "$comment": "AD (b) + AD (a) + AD (c): the Standard Schema → JSON Schema converter, the OpenAPI generator, and docsRouter with the viewer. No peers — the converters are structural, so this entry must load with none installed (plan §8.2/§8.3).",
       "spelling": "@kingsleyweb/bun-common/lib/docs",
       "values": [
         "toJsonSchema",
@@ -141,7 +141,17 @@
         "pruneSchemaComponents",
         "openApiSecurity",
         "toAsyncApiSecurityScheme",
-        "SCHEMA_REF_PREFIX"
+        "SCHEMA_REF_PREFIX",
+        "docsRouter",
+        "docsPageHeaders",
+        "swaggerUiPage",
+        "scalarPage",
+        "redocPage",
+        "rapidocPage",
+        "asyncApiUiPage",
+        "resolveDocsCdn",
+        "assetUrl",
+        "DOCS_CDN"
       ],
       "types": [
         "SchemaDirection",
@@ -167,9 +177,27 @@
         "OpenApiPathOptions",
         "OpenApiPathParam",
         "OpenApiPathResult",
-        "OpenApiPathTemplate"
+        "OpenApiPathTemplate",
+        "DocsRouterOptions",
+        "DocsCdnOptions",
+        "DocsCdnAssetOverride",
+        "ResolvedDocsCdn",
+        "PinnedAsset",
+        "AssetIntegrity",
+        "DocsPage",
+        "OpenApiViewerName",
+        "AsyncApiViewerName",
+        "ViewerConfig"
       ],
-      "snippet": "declare const S: { \"~standard\": { version: 1; vendor: string; validate: (v: unknown) => { value: unknown } } };\nconst _json: t.JsonSchemaLike = m.toJsonSchema(S, { direction: \"input\" });\nconst _same: typeof S = m.withJsonSchema(S, {});\nconst _dir: Equal<t.SchemaDirection, \"input\" | \"output\"> = true;\nexport type _stageNotAny = Expect<IsAny<t.ConversionWarning[\"stage\"]>>;\nconst _doc: t.RouteDoc = { summary: \"s\", tags: [\"t\"], request: { query: S }, responses: { 200: { schema: S }, 204: null, default: { description: \"d\" } } };\nconst _opts: t.OpenApiOptions = { title: \"t\", version: \"1.0.0\", strict: \"lenient\", optionalParams: \"two-paths\" };\nexport type _warningsNotAny = Expect<IsAny<t.OpenApiResult[\"warnings\"]>>;\nexport type _docWarnStage = Equal<t.DocWarning[\"stage\"], \"path\" | \"request\" | \"response\" | \"operation\" | \"security\">;\nconst _paths = m.toOpenApiPath(\"/users/:id\");\nexport type _templateParams = Expect<IsAny<t.OpenApiPathTemplate[\"params\"]>>;\nconst _sec = m.openApiSecurity({ securitySchemes: { bearer: { type: \"http\", scheme: \"bearer\" } } });\nconst _dangling: string[] = m.danglingRefs(_sec);"
+      "snippet": "declare const S: { \"~standard\": { version: 1; vendor: string; validate: (v: unknown) => { value: unknown } } };\nconst _json: t.JsonSchemaLike = m.toJsonSchema(S, { direction: \"input\" });\nconst _same: typeof S = m.withJsonSchema(S, {});\nconst _dir: Equal<t.SchemaDirection, \"input\" | \"output\"> = true;\nexport type _stageNotAny = Expect<IsAny<t.ConversionWarning[\"stage\"]>>;\nconst _doc: t.RouteDoc = { summary: \"s\", tags: [\"t\"], request: { query: S }, responses: { 200: { schema: S }, 204: null, default: { description: \"d\" } } };\nconst _opts: t.OpenApiOptions = { title: \"t\", version: \"1.0.0\", strict: \"lenient\", optionalParams: \"two-paths\" };\nexport type _warningsNotAny = Expect<IsAny<t.OpenApiResult[\"warnings\"]>>;\nexport type _docWarnStage = Equal<t.DocWarning[\"stage\"], \"path\" | \"request\" | \"response\" | \"operation\" | \"security\">;\nconst _paths = m.toOpenApiPath(\"/users/:id\");\nexport type _templateParams = Expect<IsAny<t.OpenApiPathTemplate[\"params\"]>>;\nconst _sec = m.openApiSecurity({ securitySchemes: { bearer: { type: \"http\", scheme: \"bearer\" } } });\nconst _dangling: string[] = m.danglingRefs(_sec);\nconst _docs = m.docsRouter({ openapi: { openapi: \"3.1.2\", info: { title: \"t\", version: \"1\" }, paths: {} }, viewer: { openapi: { name: \"scalar\", theme: \"purple\" }, asyncapi: \"asyncapi\" }, asyncapi: { asyncapi: \"3.0.0\", info: { title: \"e\", version: \"1\" } }, authorize: (_req, _res, next) => next() });\nexport type _docsRouterNotAny = Expect<IsAny<ReturnType<typeof m.docsRouter>>>;\nexport type _docsRouterOptionsNotAny = Expect<IsAny<t.DocsRouterOptions[\"viewer\"]>>;\nexport type _viewerNameNotAny = Expect<IsAny<t.OpenApiViewerName>>;\nexport type _viewerConfigNotAny = Expect<IsAny<t.ViewerConfig[\"name\"]>>;\nconst _cdn = m.resolveDocsCdn(m.DOCS_CDN, { baseUrl: \"https://assets.example/npm\" });\nconst _assetUrl: string = m.assetUrl(_cdn, m.DOCS_CDN.scalar, \"js\");\nexport type _cdnNotAny = Expect<IsAny<t.ResolvedDocsCdn[\"origin\"]>>;\nexport type _pinsNotAny = Expect<IsAny<t.PinnedAsset[\"integrity\"]>>;"
+    },
+    {
+      "$comment": "AD (c): the browser-safe document types (plan risk 10) — a viewer bundles the types, never the generator. Type-only, so no runtime probe.",
+      "spelling": "@kingsleyweb/bun-common/lib/docs/types",
+      "types": ["OpenApiDocument", "JsonSchemaLike"],
+      "browser": true,
+      "runtime": false,
+      "snippet": "const _document: t.OpenApiDocument = { openapi: \"3.1.2\", info: { title: \"t\", version: \"1\" }, paths: {} };\nconst _schema: t.JsonSchemaLike = { type: \"object\" };\nexport type _openapiVersion = Equal<t.OpenApiDocument[\"openapi\"], \"3.1.2\">;\nexport type _jsonSchemaNotAny = Expect<IsAny<t.JsonSchemaLike>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-common/lib/cors",
