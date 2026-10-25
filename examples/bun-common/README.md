@@ -154,6 +154,15 @@ every option.
 | [`logging-options.ts`](./12-options/logging-options.ts) | every logger option, sink and adapter mapping |
 | [`native-utilities.ts`](./12-options/native-utilities.ts) | every exported helper, with its options and edge cases |
 
+### 13 — API docs
+
+A validated router documents itself: `listRoutes()` lists each endpoint's
+effective contract and `toJsonSchema()` converts every row's schema.
+
+| File | Covers |
+|---|---|
+| [`from-validators.ts`](./13-api-docs/from-validators.ts) | `listRoutes()` + `toJsonSchema()` end to end: request rows converted with `input` (a defaulted field not `required`), a response under `responseOutput: "parsed"` converted with `output`, `documented()` and `withJsonSchema` escape hatches, `liftComponents()` lifting `$defs` into components. See the package README's [Converting a schema to JSON Schema](../../packages/bun-common/README.md#converting-a-schema-to-json-schema-tojsonschema) |
+
 ## Checking the examples
 
 ```bash

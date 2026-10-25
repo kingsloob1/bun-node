@@ -54,6 +54,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [Contracts](#contracts)
     - [Writing a transport](#writing-a-transport)
     - [The route model](#the-route-model-listroutes)
+    - [Converting a schema to JSON Schema](#converting-a-schema-to-json-schema-tojsonschema)
   - [CORS](#cors)
   - [Static files](#static-files)
   - [Response compression](#response-compression)
@@ -2208,6 +2209,85 @@ outbound side). It returns `undefined` when no layer carries a contract. When
 the layers carry contracts of more than one transport (a channel under an
 HTTP mount validator), each transport merges on its own and the innermost
 layer's transport gives the result; the others still apply at runtime.
+
+#### Converting a schema to JSON Schema: `toJsonSchema()`
+
+Any schema a validator accepts can also be read as a JSON Schema document —
+what an OpenAPI generator, a typed client or a forms library consumes. The
+converter lives at the package root and at `@kingsleyweb/bun-common/lib/docs`:
+
+```ts
+import { toJsonSchema } from "@kingsleyweb/bun-common";
+
+toJsonSchema(z.object({ a: z.string(), b: z.number().default(2) }));
+// {
+//   $schema: "https://json-schema.org/draft/2020-12/schema",
+//   type: "object",
+//   properties: { a: { type: "string" }, b: { type: "number", default: 2 } },
+//   required: ["a"],
+// }
+```
+
+The resolution, per schema:
+
+1. **A `withJsonSchema(schema, json)` attachment** — an explicit JSON Schema
+   the author stamped on, which wins over everything automatic. The stamp is
+   the Standard JSON Schema converter on `~standard` (non-enumerable), so
+   `mergeContracts`' comparisons, `bodyPlacement` and the response checks see
+   it too; for a frozen `~standard` a `WeakMap` fallback covers
+   `toJsonSchema` alone.
+2. **The schema's own `~standard.jsonSchema`** — the
+   [Standard Schema](https://standardschema.dev) JSON Schema companion spec,
+   which zod ≥ 4.2 and arktype ≥ 2.1.28 already implement. A throw (the spec
+   allows one, for an unrepresentable type) falls through with a warning.
+3. **A converter for the schema's `~standard.vendor`**: the call's
+   `converters`, else the process registry
+   (`registerJsonSchemaConverter(vendor, converter)` — a registration
+   *replaces* the built-in), else the built-ins: `zodConverter`,
+   `arktypeConverter`, `yupConverter` and `bunJobsConverter`. None imports
+   its vendor — each reads a method the schema object carries
+   (`toJSONSchema`, `toJsonSchema`, `describe()`, `.json`), so nothing here
+   adds a dependency.
+4. **`{}` plus a warning.** The converter never throws for a content
+   problem; warnings go to `options.onWarning` as `ConversionWarning`s
+   (`{ vendor, stage, message }`).
+
+valibot's core carries no converter of its own, so its function is injected
+rather than imported:
+
+```ts
+import { toJsonSchema as valibotToJsonSchema } from "@valibot/to-json-schema";
+
+registerJsonSchemaConverter("valibot", valibotConverter(valibotToJsonSchema));
+// or per call: toJsonSchema(schema, { converters: { valibot: … } })
+```
+
+Two options shape the conversion:
+
+- **`direction`** — `"input"` (the default) describes what a client sends;
+  `"output"` what it receives after parsing. The difference is real: for the
+  object above, `input`'s `required` is `["a"]` (a defaulted field need not
+  be sent) while `output`'s is `["a", "b"]` with `additionalProperties:
+  false`. Requests convert with `input` — and responses too, since the wire
+  carries what was sent, *except* under `responseOutput: "parsed"`, where a
+  response is the schema's output and `"output"` is right.
+- **`dialect`** — `"draft-2020-12"` (the default, OpenAPI 3.1's dialect) or
+  `"openapi-3.0"` (nullable becomes `nullable: true`, and so on), passed
+  through to the schema's own converter as its `target`.
+
+`liftComponents(schema, { name })` post-processes a converted document
+towards an OpenAPI one: `$defs` lifted into `components.schemas` with every
+`#/$defs/X` rewritten to `#/components/schemas/X`, `$schema` stripped (the
+dialect is the document's, stated once), a self-recursive `$ref: "#"`
+rewritten to the root's component (the root is lifted under `name` when any
+root-relative ref appears), and shared subschemas deduped **by identity** —
+two positions holding the same object share one component, while two
+structurally equal but distinct objects never merge. A name two objects
+claim warns and disambiguates; two calls on one input deep-equal.
+
+`documented(json)` and `toStandardSchema(fn, { jsonSchema })` — the escape
+hatches for a part known only as JSON Schema — convert with no registration
+at all, since both publish the document as `~standard.jsonSchema`.
 
 ### CORS
 

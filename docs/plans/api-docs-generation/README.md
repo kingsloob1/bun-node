@@ -5,10 +5,22 @@ across `bun-common`, `bun-nest` and the existing `bun-jobs` prior art.
 
 Status: **started 2026-10-24** — **(b0) done** (the vendored spec types at
 1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`,
-in bun-common's `lib/types/standardSchema.ts`). Every claim about existing
-code cites a file; every claim marked **measured** was produced by running
-code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims marked
-**assumed** were not executed.
+in bun-common's `lib/types/standardSchema.ts`). **(b) built 2026-10-25, PR
+pending**, and shipped *before* (a) as the standalone converter (the
+maintainer's decision of 2026-10-24): `toJsonSchema`, `SchemaDirection`,
+`ConvertContext`, `JsonSchemaConverter`, `JsonSchemaLike`,
+`registerJsonSchemaConverter`, `zodConverter`, `arktypeConverter`,
+`yupConverter`, `bunJobsConverter`, `valibotConverter`, `withJsonSchema`,
+`liftComponents`, `ConversionWarning` (all approved names), in bun-common's
+new `lib/docs/` module — no `__schemas` (V1's contracts and V12's
+`listRoutes` supersede it), no document generator, no `strict` mode and no
+`ConfigError` (those are (a)'s), and the converter never throws for a content
+problem (`{}` plus a warning). §4.2/§4.3 carry the response-direction
+correction: responses convert with `input` except under V13's
+`responseOutput: "parsed"`. Every claim about existing code cites a file;
+every claim marked **measured** was produced by running code against this
+checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims marked **assumed** were not
+executed.
 
 ---
 
@@ -65,6 +77,11 @@ callback[0] carries __schemas: true   same fn identity: true
 
 This is the single highest-leverage change in the plan. Every zod/valibot/
 arktype/yup schema a user already wrote for validation becomes documentation.
+
+**Superseded (2026-10-24, the maintainer's decision):** no `__schemas` ever
+landed. The contracts of bun-validate V1 (`getContract` on the middleware) and
+V12's `listRoutes` already carry the schemas at runtime, so the middleware
+needs nothing new; (b) was built against them.
 
 ### Decision 3 — read `~standard.jsonSchema` first; vendor converters are a **structural** fallback
 
@@ -1211,8 +1228,12 @@ Two measured facts that matter more than they look:
 (An earlier measurement suggested `input()` dropped `required` entirely; it did
 not — that fixture simply had no required property. The real asymmetry is
 `additionalProperties`, and the treatment of defaults, which is exactly right.)
-So requests convert with `input` and responses with `output`. Getting it
-backwards produces a document demanding a field the API fills in itself.
+So requests convert with `input`. **Correction (2026-10-24, the maintainer's
+decision, recorded when (b) was built):** responses convert with `input` too —
+the wire carries what was sent — *except* under V13's `responseOutput:
+"parsed"`, where what the client receives is the schema's output and `output`
+is right. Getting it backwards produces a document demanding a field the API
+fills in itself.
 
 **Coercion is invisible.** `z.coerce.number().int().min(1)` converts to
 `{type:"integer", minimum:1, maximum:9007199254740991}` — nothing says the wire
@@ -1229,7 +1250,11 @@ export type SchemaDirection = "input" | "output";
 
 /** Context a converter is given. */
 export interface ConvertContext {
-  /** `"input"` for requests, `"output"` for responses. */
+  /**
+   * `"input"` for requests, and for responses too — the wire side — except
+   * under V13's `responseOutput: "parsed"`, where a response is the schema's
+   * output and `"output"` is right (the 2026-10-24 correction to §4.2).
+   */
   direction: SchemaDirection;
   /**
    * The dialect the caller wants: `"draft-2020-12"` for an OpenAPI 3.1
@@ -1323,9 +1348,14 @@ export function withJsonSchema<S extends StandardSchemaV1>(
 ): S;
 ```
 
-Implemented as a `WeakMap<StandardSchemaV1, JsonSchemaLike>` checked before
-vendor dispatch — so it works for superstruct, joi, a hand-written
-`toStandardSchema`, and any vendor that ships tomorrow.
+Implemented (as built, 2026-10-25) as a stamp on the schema's `~standard` — a
+non-enumerable `jsonSchema` converter in the spec's shape, so the core's
+existing `jsonSchemaOf` readers (`describeContract`'s comparison,
+`bodyPlacement`, the response checks) see it too — with a
+`WeakMap<StandardSchemaV1, JsonSchemaLike>` fallback for a frozen
+`~standard`, checked before vendor dispatch. Either way it works for
+superstruct, joi, a hand-written `toStandardSchema`, and any vendor that
+ships tomorrow.
 
 ### 4.4 `$ref` and component dedup
 
@@ -2141,7 +2171,7 @@ engineer-days for someone who wrote this code.
 | **(a) Route metadata + manual annotation → OpenAPI** | `ConfigError` in bun-common; move `spec/refs.ts` and `spec/security.ts` from bun-jobs (re-export shims left behind); `lib/docs/` with `RouteDoc`, `.describe()`, the `WeakMap` keyed on the terminal callback, `DiscoveredRoute` discovery (`routes()` + pipeline replay), path→template with the wildcard/optional/regex rules of §10.2, the generator, `strict`/`lenient` + warnings; OAS 3.1 meta-schema test; golden fixture; type tests; `examples/bun-common/13-api-docs/annotating-routes.ts` | A working OpenAPI 3.1 document from any `BunRouter`, hand-annotated. **bun-jobs unaffected except for two import moves** | **6–8** |
 | **(a2) `defineRoute`-style registrar** *(optional, same phase)* | A `routes([...])` helper over `.describe()` for people who prefer bun-jobs' shape | Ergonomics, no new capability | 1–2 |
 | **(b0) Update the vendored spec types** | `lib/types/standardSchema.ts` → `@standard-schema/spec` 1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`. Its own commit, before (b) | The type surface every validator is checked against, current | **0.5–1** |
-| **(b) Standard Schema auto-derivation** | `__schemas` on the validator middleware; the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
+| **(b) Standard Schema auto-derivation** — **built 2026-10-25, PR pending** | ~~`__schemas` on the validator middleware~~ (superseded — the contracts of V1 and V12's `listRoutes` already carry the schemas; decided 2026-10-24); the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
 | **(b1) Response contracts** | `responses` on `BunValidateOptions`; `BunResponse` gains `TResponses`, `status()` narrows, `json()` constrains, `protected setStatusRaw` (§3.7); `TypedRouteHandler`/`MountedHandler` thread `TRes`; runtime checking at response finalisation with bun-jobs' `responseMismatch` semantics (§3.5); `responses.type-test.ts` carrying the spike's four negative controls plus the `send()`/helper-escape boundary cases; `generate-verb-overloads.ts --check` must stay green; `consumer-check` re-run for the `BunResponse` surface change | Declared responses **enforced** at compile time and optionally at runtime. Feeds (a)'s document for free | **4–5** |
 | **(b2) Class DTOs** | `useClassDtos` / `fromDto` (§3.6); widen the four `ValidationSchemas` keys and `RouteDoc.request.*` to `StandardSchemaV1 \| DtoClass`; a `"class-validator"` converter reading the injected `toJsonSchema`; class-validator + class-transformer as **devDependencies** of bun-common for the tests; an `experimentalDecorators`-off negative test proving the documented failure | DTO users reach both validation and the document | **2–3** |
 | **(c) Serving and viewing** | `docsRouter()`; move `docs/html.ts` + `docs/cdn.ts` into `lib/docs/viewer.ts` parameterised; CSP/nonce/SRI tests copied from `api-docs.test.ts`; `serving-and-viewing.ts` example. bun-jobs keeps its own pins and routes | Documents served and browsable, off by default | **3–4** |
@@ -2185,10 +2215,11 @@ engineer-days for someone who wrote this code.
 (b1) is the one I would ship regardless: it is the only item here that is both
 fully spiked and independently valuable without any of the others.
 
-**Suggested first commit**, if only one thing is done: the `__schemas` property
-on `BunValidate`'s middleware. Three lines, no API surface, no behaviour change,
-and it is the prerequisite for the only part of this plan that is genuinely
-automatic.
+**Suggested first commit**, if only one thing is done: ~~the `__schemas`
+property on `BunValidate`'s middleware~~ — overtaken: the contracts of V1 and
+V12's `listRoutes` already carry the schemas (decided 2026-10-24, when (b) was
+built without `__schemas`). The cheapest remaining first step of this plan is
+(a)'s `ConfigError` plus the `lib/docs/` generator skeleton.
 
 ---
 

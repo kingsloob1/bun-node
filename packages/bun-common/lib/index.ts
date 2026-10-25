@@ -465,6 +465,31 @@ export {
   type ListRoutesOptions,
   type RowWireValue,
 } from "./routeModel";
+/* ------------------------------------------------------------------ *
+ * The Standard Schema → JSON Schema converter (`lib/docs/`, AD phase (b)),
+ * also the `./lib/docs` subpath. The document generator it feeds is
+ * phase (a).
+ * ------------------------------------------------------------------ */
+export {
+  arktypeConverter,
+  bunJobsConverter,
+  type ConversionWarning,
+  type ConvertContext,
+  type JsonSchemaConverter,
+  type JsonSchemaDialect,
+  type JsonSchemaLike,
+  liftComponents,
+  type LiftComponentsOptions,
+  type LiftedSchema,
+  registerJsonSchemaConverter,
+  type SchemaDirection,
+  toJsonSchema,
+  type ToJsonSchemaOptions,
+  valibotConverter,
+  withJsonSchema,
+  yupConverter,
+  zodConverter,
+} from "./docs/index";
 export {
   channelContract,
   channelErrorFrame,
