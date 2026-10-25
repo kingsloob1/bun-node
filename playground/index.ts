@@ -24,6 +24,7 @@ import {
   getPort,
   listRoutes,
   noopLogger,
+  toJsonSchema,
 } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
@@ -141,16 +142,30 @@ app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 app.get("/", (_req, res) => res.redirect(ui.basePath));
 // The route model (bun-validate V12): every route on this adapter with the
-// contract it runs under — the jobs API's routes carry theirs (V4). Schemas
-// don't serialize, so each row is shown without its `schema` (its `vendor`
-// and `encoding` still name it).
+// contract it runs under — the jobs API's routes carry theirs (V4). Each
+// row's schema is shown converted to JSON Schema (AD (b)'s toJsonSchema —
+// the jobs API's `s` schemas carry `~standard.jsonSchema`, so they convert
+// on the primary path): requests with `input`, responses with `input` too,
+// except under `responseOutput: "parsed"` (then `output`). A row whose
+// schema converts to nothing gets `{}` and a warning, never an error.
 app.get("/playground/routes", (_req, res) => {
   res.json({
     routes: listRoutes(app).map((route) => ({
       ...route,
       contract:
         route.contract &&
-        route.contract.entries.map(({ schema: _schema, ...row }) => row),
+        route.contract.entries.map(({ schema, ...row }) => ({
+          ...row,
+          jsonSchema:
+            schema == null
+              ? null
+              : toJsonSchema(schema, {
+                  direction:
+                    row.side === "outbound" && route.responseOutput === "parsed"
+                      ? "output"
+                      : "input",
+                }),
+        })),
     })),
   });
 });

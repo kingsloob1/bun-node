@@ -48,6 +48,11 @@
       "types": "./dts/contract/index.d.ts",
       "default": "./lib/contract/index.ts"
     },
+    "./lib/docs": {
+      "@kingsleyweb/source": "./lib/docs/index.ts",
+      "types": "./dts/docs/index.d.ts",
+      "default": "./lib/docs/index.ts"
+    },
     "./lib/multipart": {
       "@kingsleyweb/source": "./lib/multipart/index.ts",
       "types": "./dts/multipart/index.d.ts",
@@ -133,6 +138,7 @@
     "@antfu/eslint-config": "^9.0.0",
     "@types/bun": "^1.4.2",
     "@types/supertest": "^7.2.0",
+    "@valibot/to-json-schema": "1.8.0",
     "arktype": "^2",
     "bun-types": "^1.4.3",
     "eslint": "^10.5.0",

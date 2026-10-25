@@ -3,37 +3,21 @@
  * `documented` (a JSON Schema that documents and never checks), and the
  * markers describeContract reads.
  */
-import type { StandardSchemaV1 } from "../types/standardSchema";
+import type {
+  StandardJSONSchemaV1,
+  StandardSchemaV1,
+} from "../types/standardSchema";
 import type { AnyContract, ContractKind, MaybePromise, Schema } from "./model";
 import { isPromiseLike } from "./model";
 
 /**
- * The options a JSON Schema converter takes, as the Standard JSON Schema
- * spec (`StandardJSONSchemaV1.Options`) defines them. To be replaced by the
- * vendored spec types (AD (b0)); its name is not approved.
- *
- * @internal
- */
-export interface JsonSchemaOptions {
-  /** The JSON Schema dialect wanted: `"draft-2020-12"`, `"draft-07"`, `"openapi-3.0"`, or another. */
-  readonly target: string;
-  /** Vendor-specific options, passed through. */
-  readonly libraryOptions?: Record<string, unknown> | undefined;
-}
-
-/**
  * A Standard JSON Schema converter (`~standard.jsonSchema`): one JSON Schema
- * for what a schema accepts, one for what it produces. To be replaced by the
- * vendored spec types (AD (b0)); its name is not approved.
+ * for what a schema accepts, one for what it produces. The vendored spec's
+ * `StandardJSONSchemaV1.Converter`, under a shorter internal name.
  *
  * @internal
  */
-export interface JsonSchemaConverter {
-  /** The JSON Schema of the schema's input. */
-  readonly input: (options: JsonSchemaOptions) => Record<string, unknown>;
-  /** The JSON Schema of the schema's output. */
-  readonly output: (options: JsonSchemaOptions) => Record<string, unknown>;
-}
+export type JsonSchemaConverter = StandardJSONSchemaV1.Converter;
 
 /**
  * A JSON Schema given to `documented()` or `toStandardSchema()`: one JSON
@@ -217,7 +201,7 @@ function withoutDialect(
 function composeJson(
   members: readonly (readonly [string, JsonSchemaConverter])[],
   direction: "input" | "output",
-  options: JsonSchemaOptions,
+  options: StandardJSONSchemaV1.Options,
 ): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   let dialect: unknown;
