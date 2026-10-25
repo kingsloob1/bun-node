@@ -1,3 +1,6 @@
+import type { BunQueue } from "../../queue/BunQueue";
+import type { Logger } from "../../shared/logger";
+import { checkJobDataWrite, DATA_CHECK } from "../../queue/jobSchema";
 import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { ApiError } from "../errors";
 import { s } from "../schema/builder";
@@ -190,6 +193,35 @@ export function stateConflict(
 /** A time from a request: epoch milliseconds, or an RFC 3339 date-time. */
 export function toEpoch(value: number | string): number {
   return typeof value === "number" ? value : Date.parse(value);
+}
+
+/**
+ * The management API's own data check for one job write (plan bun-validate
+ * §4.8.2): HTTP data never skips the check, so a route runs the name's data
+ * schema under a forced `"error"` policy, whatever the queue's
+ * `dataValidation` says, before the queue's own `add` or `update` repeats it
+ * under its policy. Throws the `JobDataValidationError` that
+ * `mapCallSiteError(error, "jobInput")` maps to the 400 `VALIDATION`
+ * problem. Answers `undefined` at once when the name has no data schema here.
+ */
+export function apiDataCheck(
+  queue: BunQueue<any, any, any>,
+  name: string,
+  data: unknown,
+  logger: Logger,
+): void | Promise<void> {
+  const found = queue[DATA_CHECK](name);
+  if (found === undefined) {
+    return undefined;
+  }
+  return checkJobDataWrite(
+    { ...found.check, enqueue: "error" },
+    "error",
+    name,
+    queue.name,
+    data,
+    logger,
+  );
 }
 
 /** How soon a change reaches a runner registered in another process. */

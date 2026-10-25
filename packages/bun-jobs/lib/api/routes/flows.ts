@@ -5,7 +5,7 @@ import type { ResolvedJobsApiConfig } from "../config";
 import type { AddFlowNodeBody, ProblemIssueDto } from "../contract/types";
 import type { AddFlowResultOut } from "../schemas/jobs";
 import type { AnyRouteDef, RouteServices } from "./define";
-import { ADD_FLOW, DATA_CHECK } from "../../queue/jobSchema";
+import { ADD_FLOW, DATA_CHECK, runJobSchema } from "../../queue/jobSchema";
 import { assertJobId } from "../../queue/options";
 import { ConfigError } from "../../shared/errors";
 import { decide } from "../auth";
@@ -80,6 +80,42 @@ function flowInvalid(issues: ProblemIssueDto[]): ApiError {
 /** A body issue at `path`. */
 function issue(path: string, message: string): ProblemIssueDto {
   return { target: "body", path, message };
+}
+
+/**
+ * Every placed node's data against its own name's schema on its own queue
+ * (plan bun-validate §4.8.2): HTTP data never skips the check, so each node
+ * is checked whatever its queue's `dataValidation` policy says — and a
+ * refusal collects **every** failing node's issues, each at its body path
+ * (`children.1.children.0.data.to`), as `ruleIssues` reports the body's own.
+ * Runs after the queues are resolved, so a configured queue no `BunJobs`
+ * context made is checked with its own `schema` too.
+ */
+async function flowDataIssues(
+  placed: readonly PlacedNode[],
+  instances: ReadonlyMap<string, BunQueue<any, any, any>>,
+): Promise<ProblemIssueDto[]> {
+  const perNode = await mapBounded(placed, async ({ node, path, queue }) => {
+    const schema = instances.get(queue)?.[DATA_CHECK](node.name)?.check.data;
+    if (schema === undefined) {
+      return [];
+    }
+    // JSON has no `undefined`: a node with no data is stored, and read back
+    // by every backend, as `null`, so that is what is checked.
+    const outcome = await runJobSchema(
+      schema,
+      node.data === undefined ? null : node.data,
+      "data",
+    );
+    if (outcome.ok) {
+      return [];
+    }
+    const data = at(path, "data");
+    return outcome.issues.map((found) =>
+      issue(found.path === "" ? data : `${data}.${found.path}`, found.message),
+    );
+  });
+  return perNode.flat();
 }
 
 /**
@@ -242,7 +278,7 @@ export function addFlowRoute(config: ResolvedJobsApiConfig): AnyRouteDef {
     mode: "jobs",
     requires: FLOW_ADD_METHODS,
     summary: "Add a flow: a job and the jobs it waits on",
-    description: `\`BunQueue.addFlow\` over HTTP. Off by default, exactly as adding a job is: enabled only when the \`actions\` allow-list names \`jobs.add\`, never under \`readOnly\`, and only for names in \`addableNames\` (\`features.addFlow\` says whether the backend can add flows at all). Each job takes the options \`POST /queues/{queue}/jobs\` accepts, plus \`ignoreFailure\` on a child, and goes in its own \`queue\` (in the same namespace) or its parent's; the top job goes in the path's queue. \`authorize\` is asked about \`jobs.add\` once for every queue the flow writes to, and a refusal for any of them is 403 naming it in \`context.queue\`. Everything is checked before anything is written. At most ${MAX_FLOW_NODES} jobs, nested at most ${MAX_FLOW_DEPTH} levels (the top job is level 1), \`ignoreFailure\` not on the top job, a \`jobId\` bun-jobs accepts, and no \`queue:id\` twice: each refusal is a 400 \`VALIDATION\` whose issues give the path into the body, e.g. \`children.1.children.0.opts.jobId\`. Only a body that passes those has its names checked: the first job, in body order, whose name is not addable is 403 \`NAME_NOT_ADDABLE\`, as for a single job, with \`context\` \`{ name, queue, path }\`, \`path\` being that job's name, e.g. \`children.1.name\`. Children are added before their parents. 201 when the flow was added; 200 when the top \`jobId\` already existed, which is returned with nothing added below it. As for a single job, a queue need not exist yet, and when the API is limited to a configured list of queues a queue outside it is 404 \`QUEUE_NOT_FOUND\`.`,
+    description: `\`BunQueue.addFlow\` over HTTP. Off by default, exactly as adding a job is: enabled only when the \`actions\` allow-list names \`jobs.add\`, never under \`readOnly\`, and only for names in \`addableNames\` (\`features.addFlow\` says whether the backend can add flows at all). Each job takes the options \`POST /queues/{queue}/jobs\` accepts, plus \`ignoreFailure\` on a child, and goes in its own \`queue\` (in the same namespace) or its parent's; the top job goes in the path's queue. \`authorize\` is asked about \`jobs.add\` once for every queue the flow writes to, and a refusal for any of them is 403 naming it in \`context.queue\`. Everything is checked before anything is written. At most ${MAX_FLOW_NODES} jobs, nested at most ${MAX_FLOW_DEPTH} levels (the top job is level 1), \`ignoreFailure\` not on the top job, a \`jobId\` bun-jobs accepts, and no \`queue:id\` twice: each refusal is a 400 \`VALIDATION\` whose issues give the path into the body, e.g. \`children.1.children.0.opts.jobId\`. Only a body that passes those has its names checked: the first job, in body order, whose name is not addable is 403 \`NAME_NOT_ADDABLE\`, as for a single job, with \`context\` \`{ name, queue, path }\`, \`path\` being that job's name, e.g. \`children.1.name\`. Then every job's \`data\` is checked against its name's \`schema\` (a definition's, else its queue's own), whatever the queue's \`dataValidation\` policy says — HTTP data never skips the check — and a refusal is one 400 \`VALIDATION\` collecting every failing job's issues, each at its body path (\`children.0.data.to\`). Children are added before their parents. 201 when the flow was added; 200 when the top \`jobId\` already existed, which is returned with nothing added below it. As for a single job, a queue need not exist yet, and when the API is limited to a configured list of queues a queue outside it is 404 \`QUEUE_NOT_FOUND\`.`,
     tags: ["Jobs"],
     params: QueueParams,
     body: AddFlowBodySchema,
@@ -303,9 +339,15 @@ export function addFlowRoute(config: ResolvedJobsApiConfig): AnyRouteDef {
       try {
         // Each node's data is checked against its own name's schema on the
         // instance this route resolved for its queue, so a configured queue
-        // no `BunJobs` context made checks with its own `schema` too. A
-        // failure is a `JobDataValidationError` naming the node's
-        // `flowPath`, answered as 400 at that body path.
+        // no `BunJobs` context made checks with its own `schema` too, and
+        // whatever the queue's `dataValidation` policy says: HTTP data never
+        // skips the check. A refusal collects every failing node's issues
+        // into one 400, each at its body path. `addFlow` then repeats the
+        // checks under the queues' own policies as it writes.
+        const dataIssues = await flowDataIssues(placed, instances);
+        if (dataIssues.length > 0) {
+          throw flowInvalid(dataIssues);
+        }
         result = await topQueue![ADD_FLOW](
           toFlowNode(body, true),
           (queue, name) => instances.get(queue)?.[DATA_CHECK](name),
