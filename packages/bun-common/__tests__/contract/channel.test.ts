@@ -141,13 +141,15 @@ describe("channelContract: the meta", () => {
       topics: undefined,
       fallback: undefined,
     });
-    // The contract is named for documents — the path when no name is given.
-    expect(bare.contract.meta).toEqual({ name: "/c" });
+    // The contract is named for documents — the path when no name is given —
+    // and carries the channel meta for the AsyncAPI generator (AD (e)).
+    expect(bare.contract.meta).toEqual({ name: "/c", channel: bare.meta });
   });
 
   it("carries envelope, replies, binary, subprotocol, topics and fallback, and the spec as given", () => {
     const spec = {
       path: "/rooms/:room",
+      request: { params: z.object({ room: z.string() }) },
       receives: { say: Say, typing: null },
       sends: { said: Said },
       envelope: { idField: "correlation" },
@@ -161,6 +163,7 @@ describe("channelContract: the meta", () => {
     const built = channelContract(spec);
     expect(built.meta).toEqual({
       path: "/rooms/:room",
+      request: { params: spec.request.params },
       envelope: { idField: "correlation" },
       replies: { say: "said" },
       binary: true,
@@ -172,6 +175,7 @@ describe("channelContract: the meta", () => {
     expect(built.contract.meta).toEqual({
       name: "chat",
       description: "A validated chat room",
+      channel: built.meta,
     });
   });
 });

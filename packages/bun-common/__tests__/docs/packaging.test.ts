@@ -102,6 +102,8 @@ describe("the lib/docs import graph (plan risk 1f)", () => {
     // is type-only: the runtime graph never loads it, which is the point of
     // the browser-safe entry.)
     expect(modules.filter((module) => module.startsWith("lib/docs/"))).toEqual([
+      "lib/docs/asyncapi.ts",
+      "lib/docs/channelDoc.ts",
       "lib/docs/convert.ts",
       "lib/docs/converters.ts",
       "lib/docs/index.ts",

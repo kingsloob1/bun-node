@@ -267,6 +267,14 @@ export function Emits<const M extends EmitsSchemas>(
  * @ValidateMessage
  * ------------------------------------------------------------------ */
 
+/**
+ * The metadata key a handler's {@link ValidateMessage} declaration is recorded
+ * under — `{ schema, ack }` — for documents (`./gateway-docs.ts` reads it by
+ * its value through `Reflect`, as it does {@link EMITS_METADATA}, NTR's `bun:*`
+ * convention).
+ */
+const MESSAGE_VALIDATE_METADATA = "bun:validate:message";
+
 /** What a handler whose ack is declared may return. */
 type AckReturn<A extends StandardSchemaV1> =
   | WireInput<A>
@@ -358,6 +366,10 @@ class ValidateMessageInterceptor implements NestInterceptor {
  * Synchronous when the vendor is. Do not combine with a payload pipe on the
  * same handler (the pipe would re-run the schema on the parsed value).
  *
+ * The declaration is also recorded as metadata (the key is
+ * `"bun:validate:message"`, the value `{ schema, ack }`) — `gatewayAsyncApi`
+ * (`./gateway-docs.ts`) documents the pair from it.
+ *
  * @param schema  The client → server payload's schema.
  * @param options `ack`: the schema of the handler's answer.
  */
@@ -389,6 +401,12 @@ export function ValidateMessage(
   }
   return (target, key, descriptor) => {
     UseInterceptors(new ValidateMessageInterceptor(schema, options?.ack))(
+      target,
+      key,
+      descriptor,
+    );
+    // Recorded for documents (gatewayAsyncApi reads the payload/ack schemas).
+    SetMetadata(MESSAGE_VALIDATE_METADATA, { schema, ack: options?.ack })(
       target,
       key,
       descriptor,

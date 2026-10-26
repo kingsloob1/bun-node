@@ -30,6 +30,8 @@ import {
   isFunction,
   isObject,
 } from "./utils/native";
+import type { WsChannelDoc } from "./docs/channelDoc";
+import { attachChannelDoc } from "./docs/channelDoc";
 import {
   mergeUpgradeHeaders,
   routeUpgradeHook,
@@ -1235,6 +1237,46 @@ export class BunWebSocket<
    */
   public hasRouteHandler(path: string): boolean {
     return this._routeHandlers.has(path);
+  }
+
+  /**
+   * The live WebSocket routes, for a document generator (AD (e),
+   * `lib/docs/asyncapi.ts`): one entry per pattern with at least one handler,
+   * fresh copies — the mutable maps are never exposed. A pattern whose
+   * handlers were all removed (see {@link removeRouteHandler}) is absent, as
+   * is one never registered. A channel declared with `defineChannel`
+   * documents itself through its contract; a bare `ws()` route reaches a
+   * document only through this listing (plus {@link describeChannel}).
+   */
+  public wsRoutes(): readonly { path: string; handlers: number }[] {
+    return [...this._routeHandlers.entries()].map(([path, handlers]) => ({
+      path,
+      handlers: handlers.length,
+    }));
+  }
+
+  /**
+   * Attaches channel documentation ({@link WsChannelDoc}) to a registered
+   * WebSocket route, for the AsyncAPI generator — documentation only, exactly
+   * as `BunRouter.describe()` is for HTTP: nothing reads it at request time,
+   * and it never changes what the route accepts. For a bare `ws()` route it
+   * replaces the honest-but-useless stub (one unconstrained message each way)
+   * with the declared messages; on a `defineChannel` channel — which
+   * documents itself from its contract — the generator ignores it with a
+   * warning.
+   *
+   * @param path The route pattern exactly as it was registered (a live one —
+   *   documenting a path with no live handler is a `TypeError`).
+   * @param doc The channel's documentation.
+   */
+  public describeChannel(path: string, doc: WsChannelDoc): this {
+    if (!this._routeHandlers.has(path)) {
+      throw new TypeError(
+        `describeChannel("${path}"): the path has no live WebSocket route handler`,
+      );
+    }
+    attachChannelDoc(this, path, doc);
+    return this;
   }
 
   /**

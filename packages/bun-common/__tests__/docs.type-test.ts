@@ -7,9 +7,14 @@
  */
 import { z } from "zod";
 import { BunRouter } from "../lib/BunRouter";
+import { BunWebSocket } from "../lib/BunWebSocket";
+import type { ContractMeta } from "../lib/contract/model";
 import { toStandardSchema, validate } from "../lib/BunValidate";
 import type { StandardSchemaV1 } from "../lib/types/standardSchema";
 import type {
+  AsyncApiDocument,
+  AsyncApiResult,
+  AsyncApiWalkEntry,
   ConversionWarning,
   ConvertContext,
   DocWarning,
@@ -25,11 +30,13 @@ import type {
   RouteResponseDoc,
   SchemaDirection,
   ToJsonSchemaOptions,
+  WsMessageDoc,
 } from "../lib/docs/index";
 import {
   arktypeConverter,
   bunJobsConverter,
   danglingRefs,
+  generateAsyncApi,
   generateOpenApi,
   liftComponents,
   openApiSecurity,
@@ -315,3 +322,113 @@ export const _usesA = [
   _securityParts,
 ];
 export type _typesA = [_chains, _securitySchemes];
+
+/* ------------------------------------------------------------------ *
+ * AD (e): `generateAsyncApi`, `wsRoutes()`, `describeChannel()` and the
+ * widened `ContractMeta`.
+ * ------------------------------------------------------------------ */
+
+/* generateAsyncApi's shape: a BunRouter or a BunWebSocket source. */
+const asyncRouter = new BunRouter();
+const asyncSocket = new BunWebSocket({
+  newInstance: false,
+  getServer: () => undefined,
+  router: asyncRouter,
+});
+const asyncResult: AsyncApiResult = generateAsyncApi(asyncRouter, {
+  title: "Events",
+  version: "1.0.0",
+});
+const _asyncFromSocket: AsyncApiResult = generateAsyncApi(asyncSocket, {
+  title: "Events",
+  version: "1.0.0",
+});
+const _asyncDocument: AsyncApiDocument = asyncResult.document;
+const _asyncVersion: Expect<Equal<AsyncApiDocument["asyncapi"], "3.0.0">> =
+  true;
+const _asyncWarnings: readonly DocWarning[] = asyncResult.warnings;
+// @ts-expect-error title is required
+generateAsyncApi(asyncRouter, { version: "1.0.0" });
+// @ts-expect-error strict is a closed union
+generateAsyncApi(asyncRouter, { title: "t", version: "1", strict: "hard" });
+// @ts-expect-error the source is a router or a socket, not a string
+generateAsyncApi("/rooms", { title: "t", version: "1" });
+generateAsyncApi(asyncRouter, {
+  title: "Events",
+  version: "1.0.0",
+  description: "d",
+  info: { contact: { name: "team" } },
+  servers: { app: { host: "localhost:4000", protocol: "wss" } },
+  securitySchemes: { bearer: { type: "http", scheme: "bearer" } },
+  security: [{ bearer: [] }],
+  strict: "lenient",
+  filter: (entry) => entry.kind !== "ws" && entry.path !== "/internal",
+  converters: {
+    acme: (s, ctx) => (ctx.direction === "input" ? {} : undefined),
+  },
+  componentName: (s) => (typeof s === "object" ? undefined : undefined),
+});
+type _walkEntryKinds = Expect<
+  Equal<AsyncApiWalkEntry["kind"], "channel" | "sse" | "ws">
+>;
+
+/* wsRoutes(): a read-only listing of `{ path, handlers }`. */
+const _wsRoutes: readonly { path: string; handlers: number }[] =
+  asyncSocket.wsRoutes();
+// @ts-expect-error the listing is read-only
+asyncSocket.wsRoutes().push({ path: "/x", handlers: 1 });
+// @ts-expect-error wsRoutes takes no path (that is hasRouteHandler)
+asyncSocket.wsRoutes("/a");
+
+/* describeChannel(): returns `this`, takes a WsChannelDoc. */
+const _described: BunWebSocket = asyncSocket.describeChannel("/rooms/:room", {
+  title: "Chat",
+  description: "d",
+  subprotocol: "chat.v1",
+  receives: {
+    say: {
+      summary: "s",
+      payload: IdParams,
+      contentType: "application/json",
+      examples: { one: { id: "u_1" } },
+      reply: "said",
+    },
+  },
+  sends: { said: { payload: { type: "object" } } },
+});
+const _wsMessageDoc: WsMessageDoc = { payload: { type: "string" } };
+// @ts-expect-error a doc is required
+asyncSocket.describeChannel("/rooms/:room");
+// @ts-expect-error the payload is a Standard Schema or a raw JSON Schema object
+const _badPayload: WsMessageDoc = { payload: 42 };
+void _badPayload;
+
+/* The ContractMeta widening: `channel` carries a ChannelMeta. */
+const _meta: ContractMeta = {
+  name: "chat",
+  channel: {
+    path: "/rooms/:room",
+    envelope: { idField: "id" },
+    replies: { say: "said" },
+    binary: false,
+    subprotocol: undefined,
+    topics: undefined,
+    fallback: undefined,
+  },
+};
+// @ts-expect-error the channel meta is a ChannelMeta
+const _badMeta: ContractMeta = { channel: { envelope: "id" } };
+
+export const _usesE = [
+  asyncResult,
+  _asyncFromSocket,
+  _asyncDocument,
+  _asyncVersion,
+  _asyncWarnings,
+  _wsRoutes,
+  _described,
+  _wsMessageDoc,
+  _meta,
+  _badMeta,
+];
+export type _typesE = [_walkEntryKinds];

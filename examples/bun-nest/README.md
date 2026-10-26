@@ -90,6 +90,12 @@ Applications listen on port `0`.
 |---|---|
 | [`swagger-module.ts`](./08-openapi/swagger-module.ts) | `@nestjs/swagger` on `BunHttpAdapter`, asserted: a DTO-class `@Body()` and `@ApiResponse()` scanned into the document, `SwaggerModule.setup("api", …)` answering the JSON document, the UI page with and without the trailing slash and the UI's own bundled assets over a real socket, a mutating route beside the docs, and the controls (an adapter-registered route served but undocumented, a changed `DocumentBuilder` title visible). Skips with a `skipped:` line where `@nestjs/swagger` is not installed. See the package README's [OpenAPI with `@nestjs/swagger`](../../packages/bun-nest/README.md#openapi-with-nestjsswagger) |
 
+### 09 — AsyncAPI
+
+| File | Shows |
+|---|---|
+| [`gateway-docs.ts`](./09-asyncapi/gateway-docs.ts) | `gatewayAsyncApi(app)` end to end: a booted app's gateways discovered from their Nest metadata (path + namespace → the channel, a `@WebSocketGateway(port)` → its server), every documented payload the socket.io `EVENT` envelope with the `@ValidateMessage` schema at `data[1]` (an undecorated handler documenting `{}` — the control), the declared `ack` as the `reply`'s ACK packet, the `@Emits` map and the fixed CONNECT/DISCONNECT/ERROR/exception frames as the send operations, and the document served through bun-common's `docsRouter` with the AsyncAPI viewer page. Skips with a `skipped:` line where `@nestjs/websockets` or zod is not installed |
+
 ### 07 — Validation
 
 | File | Shows |

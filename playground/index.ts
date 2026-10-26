@@ -30,7 +30,7 @@ import {
   useClassDtos,
   validate,
 } from "@kingsleyweb/bun-common";
-import { docsRouter, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
+import { docsRouter, generateAsyncApi, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
 import { plainToInstance } from "class-transformer";
 import {
   IsInt,
@@ -248,6 +248,9 @@ app.use(playgroundRoutes.mount, playgroundRoutes.router);
 // auth is the API's `authorize: () => true` — everything is allowed — so the
 // docs' authorizer does the same (a real host would decide from a session).
 // Redoc rather than the Scalar default, to show a named viewer.
+// The AsyncAPI half (AD (e)): the chat channel documents itself — the
+// upgrade's room param, the frames in their envelope, the `say`→`said` reply,
+// the implicit error frame.
 app.use(
   "/playground/docs",
   docsRouter({
@@ -256,7 +259,12 @@ app.use(
         title: "bun-node playground",
         version: "1.0.0",
       }).document,
-    viewer: { openapi: "redoc" },
+    asyncapi: () =>
+      generateAsyncApi(app, {
+        title: "bun-node playground (events)",
+        version: "1.0.0",
+      }).document,
+    viewer: { openapi: "redoc", asyncapi: "asyncapi" },
     authorize: (_req, _res, next) => next(),
   }),
 );
@@ -284,7 +292,7 @@ bun-node playground (${playgroundBackend()} driver)
   Shared unit   ${origin}${ui.basePath}/queues/ingest (uploads: ingest, captions, search-index; controller on the ${summoning.sharedUnitHost === "mailer" ? "mailer context, so this API shows it read-only" : "main context"})
   Units/faults  ${origin}${summoning.basePath}
   API           ${origin}${api.basePath}/meta
-  API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page)
+  API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page; the chat channel's AsyncAPI document at /playground/docs/asyncapi.json, its viewer at /playground/docs/asyncapi)
   Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 

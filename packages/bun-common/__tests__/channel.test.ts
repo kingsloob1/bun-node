@@ -619,7 +619,12 @@ describe("defineChannel: the contract it carries", () => {
     const chat = makeChat();
     const described = describeContract(chat.contract.contract);
     expect(described.transport).toBe("websocket");
-    expect(described.meta).toEqual({ name: "/rooms/:room" });
+    // The meta carries the channel's ChannelMeta too (AD (e)) — the AsyncAPI
+    // generator's reach into the upgrade side and the channel's extensions.
+    expect(described.meta).toEqual({
+      name: "/rooms/:room",
+      channel: chat.contract.meta,
+    });
     expect(described.sides.inbound).toEqual({
       declared: true,
       keys: ["say", "typing"],

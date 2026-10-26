@@ -8,7 +8,7 @@
  * into the bundle of any bundler that does not erase type-only imports. This
  * entry is type-only and imports nothing, so its graph is exactly this file
  * (`__tests__/docs/browserSafety.test.ts` proves it, with a negative
- * control). `AsyncApiDocument` joins it in phase (e), with its generator.
+ * control). `AsyncApiDocument` joined it in phase (e), with its generator.
  */
 
 /** A JSON Schema document (or fragment), as the converters produce it. */
@@ -22,6 +22,20 @@ export type JsonSchemaLike = Record<string, unknown>;
 export interface OpenApiDocument {
   /** The OpenAPI version. */
   openapi: "3.1.2";
+  /** Every other top-level field. */
+  [key: string]: unknown;
+}
+
+/**
+ * An AsyncAPI 3.0 document, as `generateAsyncApi` builds it (AD (e), matching
+ * bun-jobs' emit — plan §9.1's 3.1.0 question was decided for 3.0.0,
+ * 2026-10-26). Typed loosely on purpose, as {@link OpenApiDocument} is: only
+ * the version is pinned, and the document is checked against the official
+ * AsyncAPI 3.0.0 schema (`@asyncapi/specs`) in the tests.
+ */
+export interface AsyncApiDocument {
+  /** The AsyncAPI version. */
+  asyncapi: "3.0.0";
   /** Every other top-level field. */
   [key: string]: unknown;
 }

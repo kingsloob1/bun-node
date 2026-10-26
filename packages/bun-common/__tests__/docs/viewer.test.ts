@@ -8,7 +8,7 @@
 import { describe, expect, it } from "bun:test";
 import process from "node:process";
 import { BunRouter } from "../../lib/BunRouter";
-import type { OpenApiDocument } from "../../lib/docs/types";
+import type { AsyncApiDocument, OpenApiDocument } from "../../lib/docs/types";
 import { ConfigError } from "../../lib/errors";
 import type { DocsRouterOptions } from "../../lib/docs/router";
 import { docsRouter } from "../../lib/docs/router";
@@ -29,7 +29,7 @@ const OPENAPI_DOCUMENT: OpenApiDocument = {
 };
 
 /** A minimal AsyncAPI 3.0.0 document (hand-supplied until phase (e)). */
-const ASYNCAPI_DOCUMENT = {
+const ASYNCAPI_DOCUMENT: AsyncApiDocument = {
   asyncapi: "3.0.0",
   info: { title: "The Events API", version: "1.0.0" },
   channels: {

@@ -508,7 +508,12 @@ export {
   zodConverter,
 } from "./docs/index";
 export type {
+  AsyncApiDocument,
+  AsyncApiOptions,
+  AsyncApiResult,
   AsyncApiSecurityScheme,
+  AsyncApiServerOptions,
+  AsyncApiWalkEntry,
   DocWarning,
   MappedAsyncApiScheme,
   OpenApiDocument,
@@ -523,6 +528,8 @@ export type {
   OpenApiSecurityScheme,
   RouteDoc,
   RouteResponseDoc,
+  WsChannelDoc,
+  WsMessageDoc,
 } from "./docs/index";
 export {
   channelContract,

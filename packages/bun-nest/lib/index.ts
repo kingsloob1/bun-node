@@ -48,6 +48,7 @@ export {
   type WsResponseTransform,
 } from "./BunWebSocketAdapter";
 export { UploadedFile, UploadedFiles } from "./decorators";
+export { gatewayAsyncApi, type GatewayAsyncApiOptions } from "./gateway-docs";
 export {
   AnyFilesInterceptor,
   FileFieldsInterceptor,
