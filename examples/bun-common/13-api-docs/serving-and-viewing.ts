@@ -33,7 +33,7 @@ app
   .describe({ summary: "List users", responses: { 200: null } });
 
 /* ------------------------------------------------------------------ */
-step("app.use(\"/docs\", docsRouter({ openapi: () => …document, viewer }))");
+step('app.use("/docs", docsRouter({ openapi: () => …document, viewer }))');
 
 // The thunk is re-read per request, so the served document is always the
 // router as it is now. `authorize` runs before every docs route — the
@@ -51,7 +51,10 @@ app.use(
     },
     // The viewer pages opt in per document. Scalar is the OpenAPI default;
     // this shows the non-default form with a pass-through option.
-    viewer: { openapi: { name: "swagger-ui", docExpansion: "list" }, asyncapi: "asyncapi" },
+    viewer: {
+      openapi: { name: "swagger-ui", docExpansion: "list" },
+      asyncapi: "asyncapi",
+    },
     authorize: (_req, _res, next) => next(),
   }),
 );
@@ -97,7 +100,7 @@ check(
   "the page loads the pinned Swagger UI bundle with its SRI hash",
   html.includes("swagger-ui-dist@5.34.0/swagger-ui-bundle.js") &&
     html.includes("integrity=") &&
-    html.includes("crossorigin=\"anonymous\""),
+    html.includes('crossorigin="anonymous"'),
 );
 check(
   "the pass-through option reached SwaggerUIBundle's config",
@@ -120,7 +123,12 @@ step("the docs routes never document themselves");
 
 const paths = Object.keys(document.paths as object);
 checkEqual("the document holds only the app's route", paths, ["/users"]);
-for (const docs of ["/docs/openapi.json", "/docs/asyncapi.json", "/docs/", "/docs/asyncapi"]) {
+for (const docs of [
+  "/docs/openapi.json",
+  "/docs/asyncapi.json",
+  "/docs/",
+  "/docs/asyncapi",
+]) {
   check(`${docs} is absent`, !paths.includes(docs));
 }
 

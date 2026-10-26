@@ -27,6 +27,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Router options](#router-options)
     - [Sub-routers, groups and domains](#sub-routers-groups-and-domains)
     - [Named routes and the route cache](#named-routes-and-the-route-cache)
+    - [Declaring routes as data](#declaring-routes-as-data-defineroutes)
   - [Typed routes](#typed-routes)
   - [BunHttpAdapter](#bunhttpadapter)
     - [Adapter options](#adapter-options)
@@ -416,6 +417,49 @@ advanced integration.
 
 Example:
 [`route-cache.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/route-cache.ts).
+
+#### Declaring routes as data: `defineRoutes()`
+
+A group of routes can be declared as **data** — an object whose every property
+is one named definition — instead of statements:
+
+```ts
+import { defineRoutes, validate } from "@kingsleyweb/bun-common";
+import { z } from "zod";
+
+export const users = defineRoutes("/users", (r) => ({
+  getUser: r.get("/:id", validate({ params: z.object({ id: z.string() }) }), (req, res) => {
+    res.json({ id: req.params.id });
+  }),
+  createUser: r.post("/", validate({ body: NewUser }), (req, res) => {
+    res.status(201).json(req.body);
+  }),
+}));
+
+app.use(users.mount, users.router); // mounts as an ordinary sub-router
+```
+
+The builder's verb methods (`get`, `post`, `put`, `delete`, `patch`, `all`)
+mirror the router's own — `(path, handler)` and `(path, validator, handler)` —
+and type the handler exactly as a direct call would: `req.params` from the
+path literal (the mount's params included), `req.query`/`req.body` from the
+validator. Each call registers on the registry's own fresh router (the
+returned `router`, which takes no options) and answers a `RouteDef` carrying
+the method, the full path and the callbacks. Each **property name becomes the
+route's `operationId`**, recorded through `.describe()`'s own store, so its
+rules apply unchanged: a duplicate operation id is a `ConfigError` from
+`generateOpenApi`, and a route registered without the registry keeps the
+derived one. `mount` and `router` are reserved property names.
+
+The registry exists **for inference**: `RoutesOf<typeof users>` is a pure type
+that reads the return into the flat route map a typed client is built over,
+keyed `"VERB /full/path"`, each entry answering `params`, `query`, `body` and
+`responses`. It is not *instead of* generation — statement-style routes remain
+the default and the generated documents read a registry's routes like any
+others, with their operations already named and no annotation needed.
+
+Example:
+[`define-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/define-routes.ts).
 
 ### Typed routes
 

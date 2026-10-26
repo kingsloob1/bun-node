@@ -21,6 +21,7 @@
 import process from "node:process";
 import {
   BunHttpAdapter,
+  defineRoutes,
   getPort,
   listRoutes,
   noopLogger,
@@ -142,45 +143,52 @@ summoning.mount(app);
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 app.get("/", (_req, res) => res.redirect(ui.basePath));
-// The route model (bun-validate V12): every route on this adapter with the
-// contract it runs under — the jobs API's routes carry theirs (V4). Each
-// row's schema is shown converted to JSON Schema (AD (b)'s toJsonSchema —
-// the jobs API's `s` schemas carry `~standard.jsonSchema`, so they convert
-// on the primary path): requests with `input`, responses with `input` too,
-// except under `responseOutput: "parsed"` (then `output`). A row whose
-// schema converts to nothing gets `{}` and a warning, never an error.
-app.get("/playground/routes", (_req, res) => {
-  res.json({
-    routes: listRoutes(app).map((route) => ({
-      ...route,
-      contract:
-        route.contract &&
-        route.contract.entries.map(({ schema, ...row }) => ({
-          ...row,
-          jsonSchema:
-            schema == null
-              ? null
-              : toJsonSchema(schema, {
-                  direction:
-                    row.side === "outbound" && route.responseOutput === "parsed"
-                      ? "output"
-                      : "input",
-                }),
-        })),
-    })),
-  });
-});
-// The OpenAPI document (AD (a)'s generateOpenApi) for everything mounted on
-// this adapter — the jobs API's routes document themselves from their
-// contracts; what cannot be expressed (a wildcard, an `all()` route) is a
-// warning, never an error.
-app.get("/playground/openapi.json", (_req, res) => {
-  const { document, warnings } = generateOpenApi(app, {
-    title: "bun-node playground",
-    version: "1.0.0",
-  });
-  res.json({ document, warnings });
-});
+// The playground's own small route group, declared through defineRoutes
+// (AD (a2)): the property names are the routes' operationIds in the document
+// below, with no .describe() annotation. Mounted as an ordinary sub-router.
+const playgroundRoutes = defineRoutes("/playground", (r) => ({
+  // The route model (bun-validate V12): every route on this adapter with the
+  // contract it runs under — the jobs API's routes carry theirs (V4). Each
+  // row's schema is shown converted to JSON Schema (AD (b)'s toJsonSchema —
+  // the jobs API's `s` schemas carry `~standard.jsonSchema`, so they convert
+  // on the primary path): requests with `input`, responses with `input` too,
+  // except under `responseOutput: "parsed"` (then `output`). A row whose
+  // schema converts to nothing gets `{}` and a warning, never an error.
+  routes: r.get("/routes", (_req, res) => {
+    res.json({
+      routes: listRoutes(app).map((route) => ({
+        ...route,
+        contract:
+          route.contract &&
+          route.contract.entries.map(({ schema, ...row }) => ({
+            ...row,
+            jsonSchema:
+              schema == null
+                ? null
+                : toJsonSchema(schema, {
+                    direction:
+                      row.side === "outbound" &&
+                      route.responseOutput === "parsed"
+                        ? "output"
+                        : "input",
+                  }),
+          })),
+      })),
+    });
+  }),
+  // The OpenAPI document (AD (a)'s generateOpenApi) for everything mounted on
+  // this adapter — the jobs API's routes document themselves from their
+  // contracts; what cannot be expressed (a wildcard, an `all()` route) is a
+  // warning, never an error.
+  openapi: r.get("/openapi.json", (_req, res) => {
+    const { document, warnings } = generateOpenApi(app, {
+      title: "bun-node playground",
+      version: "1.0.0",
+    });
+    res.json({ document, warnings });
+  }),
+}));
+app.use(playgroundRoutes.mount, playgroundRoutes.router);
 // The same document served by AD (c)'s docsRouter, with a viewer page: the
 // thunk re-generates per request, so it is always the adapter as it is now;
 // every docs route is `hidden`, so it never documents itself. The playground's

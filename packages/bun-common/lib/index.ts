@@ -583,6 +583,7 @@ export type {
   RouterVerbMethod,
   ValidationShape,
 } from "./types/routeTyping";
+export { defineRoutes, type RouteDef, type RoutesOf } from "./defineRoutes";
 export {
   acceptUndecodableBody,
   awaitPipelineOrStream,
