@@ -174,7 +174,7 @@ and a `QUERY` route answers `QUERY` only (no `HEAD` or `GET` fallback). Nest
 | `useMethod(method, [path], ...handlers)` | middleware that runs for one method only (prefix match) |
 | `group(path, routerOrCallbackOrHandlers)` | routes under a path prefix |
 | `domain(host, routerOrCallbackOrHandlers)` | routes for a host pattern |
-| `ws(path, handler, customDataFn?)` | a WebSocket upgrade route (see [WebSockets](#websockets)) |
+| `ws(path, …middleware, handler, options?)` | a WebSocket upgrade route, with a middleware chain (see [WebSockets](#websockets)) |
 
 #### Path syntax
 
@@ -2823,11 +2823,42 @@ tour
 
 ### WebSockets
 
-`adapter.ws(path, handler, options?)` registers an upgrade route on the
-adapter's built-in `BunWebSocket`. `handler` is Bun's `WebSocketHandler`
-(`open`, `message`, `close`, `drain`, `ping`, `pong`). The upgrade route is an
-ordinary route, so middleware registered ahead of it runs first;
-authentication belongs there.
+`adapter.ws(path, …middleware, handler, options?)` registers an upgrade route
+on the adapter's built-in `BunWebSocket`. `handler` is Bun's
+`WebSocketHandler` (`open`, `message`, `close`, `drain`, `ping`, `pong`). The
+upgrade route is an ordinary route, so middleware registered ahead of it runs
+first; authentication belongs there.
+
+**Middleware in the call.** Every *function* between `path` and `handler` is
+middleware, run in order before the upgrade answers:
+
+```ts
+app.ws(
+  "/chat/:room",
+  (req, res, next) => {
+    if (!req.user) {
+      res.status(401).send("sign in first"); // the upgrade never happens
+      return;
+    }
+    next();
+  },
+  { message(ws, msg) { /* … */ } },
+);
+```
+
+The chain is a real `GET` route on the router `ws()` was called on, registered
+ahead of the upgrade route — so `req.params` is bound for it (`:room` above),
+which a `use()` middleware never gets, and a `BunValidate` middleware in the
+chain types the middleware that follows it, as on `get()` and friends. Being a
+`GET` route, the chain runs for a **plain GET** to the path too: the auth
+middleware above answers one with a `401`, not a `404`; a middleware that
+passes the request through (`next()`) leaves it to whatever matches next, or
+a `404`. The chain registered with a path is one route however often the path
+is registered: a live path keeps its first call's middleware (as the upgrade
+route keeps its first options), and `removeRouteHandler()` stands the chain
+aside together with the socket route — no middleware is left answering plain
+GETs once the handlers are gone — while registering the path again revives
+both with the new call's middleware and options.
 
 `options` is a `WebSocketRouteOptions`; its one field today is `onUpgrade`.
 `onUpgrade(req, res)` (a `WebSocketUpgradeHook`) runs once per upgrade and may
@@ -2907,11 +2938,12 @@ whether anything was removed. `path` is the pattern as registered
 (`/chat/:room`). Once a path has no handler left, an upgrade request to it is
 no longer upgraded and goes on to the next matching route, or a 404; the
 upgrade route stays in the router, standing aside, and registering the path
-again revives it, with that call's options. A path has one upgrade route
-however often it is registered, and a live one keeps the options it was first
-registered with. Sockets already open stay open — closing them is yours —
-and their later events reach only the handlers still registered (the
-instance's own events are still emitted).
+again revives it, with that call's options. The middleware chain of a `ws()`
+call stands aside with it, and revives with the new call's middleware. A path
+has one upgrade route however often it is registered, and a live one keeps
+the options it was first registered with. Sockets already open stay open —
+closing them is yours — and their later events reach only the handlers still
+registered (the instance's own events are still emitted).
 
 ```ts
 const echo = { message: (ws, msg) => ws.send(msg) };
@@ -3016,8 +3048,10 @@ app.use("/live", (req, res, next) => {
 A **function** as the third argument of `ws()` or `setRouteHandler()` is the
 deprecated `customDataToWsClientFn` mapping, and nothing else: whatever it
 returns becomes `ws.data.custom`, whatever its shape — even
-`{ data: "x", custom: 1 }` is stored as `custom` as is. It still works, and
-`TCustom` is still inferred from its return value; move to
+`{ data: "x", custom: 1 }` is stored as `custom` as is. In a middleware chain
+it keeps that meaning in its position — the function *after* the handler:
+`ws(path, …middleware, handler, customDataFn)`. It still works, and `TCustom`
+is still inferred from its return value; move to
 `{ onUpgrade: (req) => ({ custom: … }) }`.
 
 Examples:
@@ -3046,9 +3080,9 @@ const chat = defineChannel({
   messageValidation: { in: "error", out: "error" }, // the defaults
 });
 
-app.get(chat.path, chat.checks()); // the upgrade's checks, before the ws route
 app.ws(
   chat.path,
+  chat.checks(), // the upgrade's checks, in the chain
   chat.handler({
     say(ws, msg) {
       chat.publish(ws, `room:${roomOf(ws)}`, "said", { by: nameOf(ws), text: msg.text });
@@ -3058,11 +3092,13 @@ app.ws(
 );
 ```
 
-- **`checks()` is a route handler, not a `use()` middleware** — a middleware
-  never sees the path's params, and the `request` check reads them — so
-  register it with `get()` **before** the `ws()` route. It checks only
-  upgrade-shaped requests (a plain GET passes through), answering `400` with
-  `{ error, issues }` on a failure; the upgrade never happens. Without a
+- **`checks()` rides the `ws()` middleware chain** (a route handler's
+  `req.params` are bound for the chain, and the `request` check reads them —
+  a `use()` middleware never sees the path's params). Registering it as a GET
+  route handler instead — `app.get(chat.path, chat.checks())` before a plain
+  `app.ws(chat.path, …)` — is equivalent and stays valid. Either way it checks
+  only upgrade-shaped requests (a plain GET passes through), answering `400`
+  with `{ error, issues }` on a failure; the upgrade never happens. Without a
   `request` it is a passthrough. `request` takes `validate()`'s targets minus
   `body` (an upgrade is a GET).
 - **Incoming**: a text frame is parsed as JSON and received through the

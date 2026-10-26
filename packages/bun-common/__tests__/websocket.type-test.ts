@@ -19,7 +19,10 @@ import type {
   WebSocketUpgradeResult,
 } from "../lib/BunWebSocket";
 import type { BunResponse, ParamsDictionary } from "../lib/index";
+import type { StandardSchemaV1 } from "../lib/types/standardSchema";
+import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRouter } from "../lib/BunRouter";
+import { validate } from "../lib/BunValidate";
 import { BunWebSocket } from "../lib/BunWebSocket";
 
 type Equal<X, Y> =
@@ -263,14 +266,14 @@ router.ws(
 
 // Negative controls: TypeScript reports a failed overload set on the call.
 const noop = { message() {} };
+// @ts-expect-error `custom` must be the declared type
 router.ws<Session>("/hook", noop, {
-  // @ts-expect-error `custom` must be the declared type
   onUpgrade: () => ({ custom: { userId: 1 } }),
 });
 // @ts-expect-error `headers` must be a HeadersInit
 router.ws<Session>("/hook", noop, { onUpgrade: () => ({ headers: 42 }) });
+// @ts-expect-error `data` must be a whole WebSocketClientData
 router.ws<Session>("/hook", noop, {
-  // @ts-expect-error `data` must be a whole WebSocketClientData
   onUpgrade: () => ({ data: { path: "/x" } }),
 });
 // @ts-expect-error an unknown per-route option
@@ -283,6 +286,138 @@ router.ws<Session>("/hook", noop, () => ({ userId: 1 }));
 router.ws<Session>("/hook", noop, () => ({
   custom: { userId: "u", roles: [] },
 }));
+
+/* --- middleware chains: a validator types the middleware that follows it --- */
+
+declare const QuerySchema: StandardSchemaV1<unknown, { page: number }>;
+declare const ParamsSchema: StandardSchemaV1<unknown, { id: number }>;
+
+// Params come from the path literal, as on the verb methods.
+router.ws(
+  "/ws/:id",
+  (_req, _res, next) => {
+    type _p = Expect<Equal<typeof _req.params, { id: string }>>;
+    next();
+  },
+  { message() {} },
+);
+
+const queryCheck = validate({ query: QuerySchema });
+const paramsCheck = validate({ params: ParamsSchema });
+
+router.ws(
+  "/ws/:id",
+  queryCheck,
+  (_req, _res, next) => {
+    // The whole point: `page` is a number here, not `unknown`.
+    type _q = Expect<Equal<typeof _req.query, { page: number }>>;
+    type _p = Expect<Equal<typeof _req.params, { id: string }>>;
+    next();
+  },
+  { message() {} },
+);
+
+// A validator's params override the path's, as on the verbs.
+router.ws(
+  "/ws/:id",
+  paramsCheck,
+  (_req, _res, next) => {
+    type _p = Expect<Equal<typeof _req.params, { id: number }>>;
+    next();
+  },
+  { message() {} },
+);
+
+// Plain middleware ahead of the validator, up to the generated arity.
+router.ws(
+  "/ws/:id",
+  (_req, _res, next) => next(),
+  (_req, _res, next) => next(),
+  queryCheck,
+  (_req, _res, next) => {
+    type _q = Expect<Equal<typeof _req.query, { page: number }>>;
+    next();
+  },
+  { message() {} },
+);
+
+// Validators type the HTTP middleware, not the socket handler: with no
+// options hook, `custom` stays `unknown`.
+router.ws("/ws/:id", queryCheck, (_req, _res, next) => next(), {
+  open(_socket) {
+    type _custom = Expect<Equal<typeof _socket.data.custom, unknown>>;
+  },
+  message() {},
+});
+
+// …and `TCustom` is still inferred from the options through a chain.
+router.ws(
+  "/ws/:id",
+  (_req, _res, next) => next(),
+  {
+    open(_socket) {
+      type _custom = Expect<
+        Equal<typeof _socket.data.custom, { userId: string }>
+      >;
+    },
+    message() {},
+  },
+  { onUpgrade: () => ({ custom: { userId: "1" } }) },
+);
+
+// On the adapter, `TCustom` defaults to the adapter's data type.
+new BunHttpAdapter<Session>().ws(
+  "/ws/:id",
+  queryCheck,
+  (_req, _res, next) => {
+    type _q = Expect<Equal<typeof _req.query, { page: number }>>;
+    next();
+  },
+  {
+    open(_socket) {
+      type _custom = Expect<Equal<typeof _socket.data.custom, Session>>;
+    },
+    message() {},
+  },
+);
+
+router.ws(
+  "/ws/:id",
+  queryCheck,
+  (_req, _res, next) => {
+    // @ts-expect-error the validator made `page` a number
+    const bad: string = _req.query.page;
+    next();
+    return bad;
+  },
+  { message() {} },
+);
+
+// @ts-expect-error middleware are functions; a string fits no position
+router.ws("/ws/:id", (_req, _res, next) => next(), "nope", noop);
+
+// @ts-expect-error the options' hook custom must be a Session, chain or not
+router.ws<Session>("/ws/:id", (_req, _res, next) => next(), noop, {
+  onUpgrade: () => ({ custom: { userId: 1 } }),
+});
+
+// @ts-expect-error a chain still needs the handler object
+router.ws("/ws/:id", (_req, _res, next) => next());
+
+// A chain with the deprecated mapping function still types `custom` from it.
+router.ws(
+  "/legacy",
+  (_req, _res, next) => next(),
+  {
+    open(_socket) {
+      type _custom = Expect<
+        Equal<typeof _socket.data.custom, { room: string }>
+      >;
+    },
+    message() {},
+  },
+  () => ({ room: "lobby" }),
+);
 
 void ws.setRouteHandler(
   "/rooms/:id",

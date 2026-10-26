@@ -1225,6 +1225,19 @@ export class BunWebSocket<
   }
 
   /**
+   * Whether `path` has at least one live route handler: `false` before the
+   * pattern is ever registered, and again once {@link removeRouteHandler} has
+   * removed its last handler — the state in which the upgrade layer (and a
+   * `ws()` route's middleware chain) stands aside.
+   *
+   * @param path The route pattern exactly as it was registered, e.g.
+   *   `/rooms/:id`.
+   */
+  public hasRouteHandler(path: string): boolean {
+    return this._routeHandlers.has(path);
+  }
+
+  /**
    * Unregisters a WebSocket route's handler — the counterpart of
    * {@link setRouteHandler} (and so of `router.ws()`). With every handler of
    * `path` gone, an upgrade request to it is no longer upgraded: it goes on
