@@ -71,6 +71,46 @@ held as devDependencies only; every schema position widened (the six
 never where a synchronous schema is required; bun-nest deliberately
 untouched. §3.6's header block carries the measured corrections (the
 `whitelist` note was wrong; `toJsonSchema` returns `object`).
+**(e) built 2026-10-26** (the maintainer's decisions of 2026-10-26, all final
+— names `generateAsyncApi`, `AsyncApiOptions`, `AsyncApiResult`,
+`AsyncApiDocument`, `WsChannelDoc`, `WsMessageDoc`, `describeChannel`,
+`wsRoutes()`, `gatewayAsyncApi` in bun-nest's `lib/gateway-docs.ts`, the
+extensions `x-bun-common-schema` (on parameters — AsyncAPI 3.0 parameters
+carry no `schema` keyword), `x-bun-common-sse`, `x-bun-common-sse-fallback`,
+`x-bun-common-subprotocol`, `x-bun-common-binary`, `x-bun-common-topics`):
+the AsyncAPI 3.0 generator. `wsRoutes()`/`describeChannel()` on
+`BunWebSocket` (the read-only listing never exposes the mutable maps;
+`describeChannel` enriches a **bare** `ws()` route's stub — §5.1's
+re-scoping, below); `ContractMeta` gained an optional `channel` field and
+`ChannelMeta` an optional `request` (the upgrade's schemas ride the contract
+meta — the generator's only reach), `channelContract()` passing both
+through; `generateAsyncApi(source: BunRouter | BunWebSocket, options)` in
+`lib/docs/asyncapi.ts` (channels keyed on the contract's transport name, so a
+future broker transport maps without redesign; a channel's message payloads
+documented as the `{ type, id?, data }` frame envelope, bun-jobs'
+`eventEnvelope` precedent; replies as `operation.reply`; the implicit error
+frame marked as the framework's; an SSE GET — a contract body of kind `"sse"`
+— one channel with an `http` GET binding; `strict`/`lenient` as
+`generateOpenApi`, a duplicate channel id always a `ConfigError`);
+`docsRouter`'s structural `AsyncApiDocumentLike` replaced by
+`./types`' `AsyncApiDocument` (a deliberate, announced tightening — the real
+type satisfies the structural one); bun-nest's `gatewayAsyncApi(app)`
+discovering gateways with `DiscoveryService` (built on the app's
+`ModulesContainer` — the workspace's Nest 12.2.0 does not auto-register the
+DiscoveryModule, and resolving an unregistered token through `app.get` is
+avoided deliberately) + `MetadataScanner`, the socket.io `EVENT` envelope the
+documented payload with `@ValidateMessage`'s schema at `data[1]` (recorded
+under the new `"bun:validate:message"` metadata key, two lines in
+`wsValidation.ts`), the `ack` as the reply's ACK packet, the `@Emits` map the
+send operations, the CONNECT/DISCONNECT/ERROR frames and the `exception`
+event fixed on every channel, a wildcard gateway route warning as unmappable.
+Emitting `asyncapi: "3.0.0"` — §9.1's 3.1.0 question decided for 3.0.0,
+matching bun-jobs. Every document validates against the official
+`@asyncapi/specs` 3.0.0 schema (ajv's draft-07 build, the embedded draft-07
+`$schema` definition deleted first — bun-jobs' own workarounds).
+The examples: `examples/bun-common/13-api-docs/asyncapi-channels.ts`,
+`examples/bun-nest/09-asyncapi/gateway-docs.ts`; the playground's docs router
+serves the chat channel's AsyncAPI document.
 Every claim about
 existing code cites a file; every claim marked **measured** was produced by
 running code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims
@@ -1531,6 +1571,16 @@ direction-less transport hard to describe — and bun-common's is direction-less
 
 ### 5.1 bun-common `BunWebSocket`
 
+**Re-scoped as built (AD (e), 2026-10-26):** since bun-validate's V8 landed
+`defineChannel` (2026-10-24), a declared channel documents **itself** — its
+contract carries the messages and the meta, and the table below's "does not
+exist" rows are exactly what the contract supplies. `WsChannelDoc` therefore
+shrinks to its §11-(e) role: enriching a **raw `ws()` route's** stub (a route
+`BunWebSocket` knows only as a path with lifecycle handlers), docs-only, as
+`RouteDoc` is for HTTP. The interface below shipped as designed; the table's
+"the only channel source; needs a new public accessor" row shipped as
+`wsRoutes()`, the read-only listing a bare route reaches a document through.
+
 | bun-common concept | AsyncAPI 3.0 element | Notes |
 |---|---|---|
 | `setRouteHandler(path, …)` / `router.ws(path, …)` key | `channels.<id>.address` | the only channel source; needs a **new public accessor** on `BunWebSocket` |
@@ -2003,7 +2053,9 @@ the sources before vendoring:
   changes — `asyncapi: '3.0.0'` → `'3.1.0'` verbatim, its one headline
   addition being ROS 2 bindings. bun-jobs emits `3.0.0`; phase (e) should
   decide deliberately whether to match it or move to 3.1.0, and the two
-  packages should agree.
+  packages should agree. **Decided 2026-10-26 (the maintainer's decision):
+  emit `3.0.0`, matching bun-jobs** — nothing in 3.1.0 is used, and the two
+  packages' documents agree.
 
 Copy bun-jobs' two workarounds verbatim, with its comments:
 
@@ -2417,7 +2469,7 @@ engineer-days for someone who wrote this code.
 | **(c) Serving and viewing** — **merged 2026-10-25, #532** | `docsRouter()` (names approved 2026-10-25: `docsRouter`, `DocsRouterOptions`, `DocsCdnOptions`, `docsPageHeaders`, `swaggerUiPage`, `asyncApiUiPage`, `resolveDocsCdn`, `ResolvedDocsCdn`, `PinnedAsset`, `AssetIntegrity`, `assetUrl`, bun-common's own `DOCS_CDN`); `docs/html.ts` + `docs/cdn.ts` moved to `lib/docs/viewer.ts` parameterised (pins injected, `requestHeaders` generalising the CSRF line, the document URL resolved per request from `req.baseUrl`); the `viewer` option with five pinned viewers (§7.1's as-built note — Scalar the OpenAPI default, `"swagger-ui"`/`"redoc"`/`"rapidoc"`, the official component the AsyncAPI default); the `./lib/docs/types` browser-safe entry (`OpenApiDocument` + `JsonSchemaLike`) with its `consumer-check` cell and bundle-safety test; CSP/nonce/SRI tests from `api-docs.test.ts` plus the hidden/`authorize`/`req.baseUrl`/thunk tests; every docs route `.describe({ hidden: true })` (as-built); `serving-and-viewing.ts` example; the playground mount. bun-jobs keeps its own pins, shims and routes (`routes/docs.ts` needed no change); its `api-docs.test.ts` passes unmodified | Documents served and browsable, pages off by default | **3–4** |
 | **(d) bun-nest — verify `@nestjs/swagger`** — **merged 2026-10-26, #533** | Executed `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end (`__tests__/swagger.nest.test.ts`, differential against platform-express; the checkout's Nest 12.2.0 with swagger 12.0.4, and the 11.2.7 and 12.0.0 nest-matrix columns, swagger pinned per major by `NEST_PACKAGE_OVERRIDES`); the §8.6 gaps closed with measured answers; `examples/bun-nest/08-openapi/swagger-module.ts`; the README section (recipe, mixed-app caveat, `setGlobalPrefix`, the `@Render` note, the two-bundles note). **No hole found**, so no `./lib/swagger` helper | A documented, proven path. **Cheapest phase per unit of value** — and the phase that decides whether (g) is worth building | **2–3** |
 | **(g) bun-nest swagger bridge** *(the validation half shipped: `@Validate` landed in bun-validate's V7a/V7b)* | What remains is `useSwaggerBridge` alone (§3.8.2): emitting `ApiBody`/`ApiQuery`/`ApiParam`/`ApiHeader`/`ApiResponse` from `@Validate`'s schemas through the §4 registry at `target: "openapi-3.0"`, the decorators injected structurally. ~~The interceptor, the decorator's method/class forms, the return-type constraint, the `Infer<>` helper, `examples/bun-nest/08-validate/`~~ — shipped with V7a/V7b (`07-validation/`) | One declaration for validation + response contract + document. **Gate on (d)** — see risk 1h | **2–3** |
-| **(e) AsyncAPI 3.0** | Public WS route accessor on `BunWebSocket`; `WsChannelDoc` + `describeChannel()`; the bun-common generator (servers/channels/parameters/messages/operations); bun-nest's metadata explorer reading `MESSAGE_METADATA`/`GATEWAY_OPTIONS`/`PORT_METADATA` and the `MessageEventTypes` envelope; AsyncAPI 3.0 meta-schema test via `@asyncapi/specs`; examples | AsyncAPI for both adapters | **7–9** |
+| **(e) AsyncAPI 3.0** — **built 2026-10-26** (the maintainer's decisions of 2026-10-26, all final; the names recorded in the status header) | Public WS route accessor on `BunWebSocket` (`wsRoutes()`, read-only); `WsChannelDoc` + `describeChannel()` (re-scoped: raw-`ws()` enrichment — `defineChannel` documents itself); the bun-common generator `generateAsyncApi` (servers/channels/parameters/messages/operations; the frame-envelope payloads; the SSE channels and the `x-bun-common-sse-fallback` cross-reference); bun-nest's `gatewayAsyncApi` metadata explorer reading `GATEWAY_OPTIONS`/`PORT_METADATA`/`MESSAGE_METADATA`, the `MessageEventTypes` envelope and the new `"bun:validate:message"` metadata; the AsyncAPI 3.0.0 meta-schema test via `@asyncapi/specs`; examples | AsyncAPI for both adapters | **7–9** |
 | **(f) Generic self-hosted viewer** *(deferred, separate decision)* | Extract `bun-jobs-ui/app/screens/docs/{schema,http}` into `@kingsleyweb/bun-api-docs-ui`; migrate bun-jobs-ui onto it; keep its golden WS fixtures as the net | An offline, CSP-strict viewer and one fewer fork | **10–14** |
 
 **Why this order** (it differs from the suggested one in one place):

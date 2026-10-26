@@ -10,7 +10,7 @@ import { BunRouter } from "../../lib/BunRouter";
 import { ConfigError } from "../../lib/errors";
 import { generateOpenApi } from "../../lib/docs/openapi";
 import { docsRouter } from "../../lib/docs/router";
-import type { OpenApiDocument } from "../../lib/docs/types";
+import type { AsyncApiDocument, OpenApiDocument } from "../../lib/docs/types";
 
 /** A minimal OpenAPI document. */
 const OPENAPI_DOCUMENT: OpenApiDocument = {
@@ -20,7 +20,7 @@ const OPENAPI_DOCUMENT: OpenApiDocument = {
 };
 
 /** A minimal AsyncAPI 3.0.0 document. */
-const ASYNCAPI_DOCUMENT = {
+const ASYNCAPI_DOCUMENT: AsyncApiDocument = {
   asyncapi: "3.0.0",
   info: { title: "The Events API", version: "1.0.0" },
 };

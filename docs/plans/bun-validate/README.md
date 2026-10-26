@@ -2286,7 +2286,7 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 | **Group 4** | **Client and docs hooks** | | | | |
 | 17 | **AD (b0)** spec types 1.1.0 | as AD | — | 0.5–1 d (AD) | 11 |
 | 18 | **V12** route listing and the route model's inputs | router layers carry contracts; `listRoutes(router)` → `{ key, method, path, params, contract (effective), doc }[]`, which TC PR-M1 serialises; `effectiveContract`; the `wire` mapping and one agreed `Jsonify`; AD's `RouteDoc` and TC's `ModelRoute` gain cookies, response headers and media types; §4.12's M2, M6, m4, m6; **from V3c**: `oneOf` per media type, variant-only headers and cookies `required: false` with a note, the `x-variants` extension, and the client's union discriminated by status and discriminant (§4.4.6) | V3a, V3c, (b0) | 3 d **+** AD (a)/(b) 10–14 d (AD) | 11; 99 reviews the route model |
-| 19 | **AD (e)** AsyncAPI | channels, SSE and broker contracts through `describeContract` | V8, V11, V12 | AD's estimate | 11 |
+| 19 | **AD (e)** AsyncAPI — **built 2026-10-26, without V11** (the document side of SSE was V3b's: an SSE GET's contract body of kind `"sse"` is already described with its events, and that is all the generator reads; brokers remain out of scope) | channels and SSE contracts through `describeContract` (`ContractMeta` gained `channel`, `ChannelMeta` the upgrade's `request`); `wsRoutes()` + `describeChannel()` for bare `ws()` routes; bun-nest's `gatewayAsyncApi` over the gateways' metadata | V8, V12 | AD's estimate | 11 |
 
 **New in this plan**: V0 0.5 + V1 4.5 + V2 2 + V3a 5 + V3b 2.5 + V3c 5 + V6
 2.5 + V7a 3 + V7b 4 + V8 delta 1 + V9 delta 0.5 + V11 2.5 + V4 2.5 + V5a 3.5 +

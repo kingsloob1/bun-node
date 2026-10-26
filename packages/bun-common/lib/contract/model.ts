@@ -11,6 +11,7 @@
  */
 import type { LoggerLike } from "../logging";
 import type { StandardSchemaV1 } from "../types/standardSchema";
+import type { ChannelMeta } from "./channel";
 
 // ---------------------------------------------------------------------------
 // Declarations
@@ -176,6 +177,15 @@ export interface ContractMeta {
   readonly name?: string;
   /** Prose for the generated document. */
   readonly description?: string;
+  /**
+   * A channel's meta (AD (e), approved 2026-10-26): present on a contract
+   * `channelContract()` built — the path, envelope, replies, binary,
+   * subprotocol, topics, SSE fallback and upgrade request schemas
+   * ({@link ChannelMeta}), which a contract's rows alone do not carry. A
+   * document generator reads it to tell a `websocket` contract is a channel
+   * and to document its upgrade side.
+   */
+  readonly channel?: ChannelMeta;
 }
 
 /**

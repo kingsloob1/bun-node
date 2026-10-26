@@ -1,10 +1,13 @@
 /**
  * The Standard Schema → JSON Schema converter (AD phase (b), plan
  * `docs/plans/api-docs-generation/` §4), the OpenAPI 3.1 generator (AD
- * phase (a), §3.2/§3.3) and the serving/viewing half (AD phase (c), §7),
+ * phase (a), §3.2/§3.3), the AsyncAPI 3.0 generator (AD phase (e), §5) and
+ * the serving/viewing half (AD phase (c), §7),
  * published as `@kingsleyweb/bun-common/lib/docs`. {@link generateOpenApi}
  * builds a document from a router's routes (V12's `listRoutes`) and their
- * `.describe()` docs; {@link toJsonSchema}, {@link liftComponents} and the
+ * `.describe()` docs; {@link generateAsyncApi} builds one from its WebSocket
+ * channels and SSE endpoints (plus `BunWebSocket.wsRoutes()`'s bare routes
+ * and their `describeChannel()` docs); {@link toJsonSchema}, {@link liftComponents} and the
  * vendor converters are the standalone conversion half; {@link docsRouter}
  * serves the document(s) and the pinned-CDN viewer pages (`./viewer`), off by
  * default. The browser-safe document types are the `./types` entry (plan risk
@@ -66,6 +69,16 @@ export {
   type OpenApiResult,
   toOpenApiPath,
 } from "./openapi";
+export {
+  type AsyncApiDocument,
+  type AsyncApiOptions,
+  type AsyncApiResult,
+  type AsyncApiServerOptions,
+  type AsyncApiWalkEntry,
+  generateAsyncApi,
+  type WsChannelDoc,
+  type WsMessageDoc,
+} from "./asyncapi";
 export {
   type AsyncApiViewerName,
   docsRouter,

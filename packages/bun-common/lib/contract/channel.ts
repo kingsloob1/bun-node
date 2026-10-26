@@ -46,6 +46,13 @@ export type ChannelMessages = Readonly<Record<string, StandardSchemaV1 | null>>;
 export interface ChannelMeta {
   /** The route path the channel is served on. */
   readonly path: string;
+  /**
+   * The upgrade request's schemas, when declared (AD (e)): the contract's rows
+   * carry only the messages, so a document generator reaches the checked
+   * upgrade side (`params`/`query`/`headers`/`cookies`/`signedCookies`)
+   * through here.
+   */
+  readonly request?: ChannelRequestSchemas;
   /** The envelope: the frame's correlation field, `"id"` by default. */
   readonly envelope: { readonly idField: string };
   /** An inbound type to the outbound type answering it, where one does. */
@@ -231,6 +238,7 @@ export function channelContract<const S extends ChannelSpec>(
   }
   const meta: ChannelMeta = {
     path: spec.path,
+    ...(spec.request === undefined ? {} : { request: spec.request }),
     envelope: { idField: spec.envelope?.idField ?? "id" },
     replies: spec.replies ?? {},
     binary: spec.binary === true,
@@ -240,7 +248,15 @@ export function channelContract<const S extends ChannelSpec>(
   };
   const contract = wsTransport.contract(
     { inbound: receives, outbound: sends },
-    { name: spec.meta?.name ?? spec.path, description: spec.meta?.description },
+    {
+      name: spec.meta?.name ?? spec.path,
+      description: spec.meta?.description,
+      // The channel meta rides on the contract (AD (e)): `describeContract`'s
+      // meta carries it, which is how the AsyncAPI generator reads the
+      // upgrade side, replies, subprotocol, topics and SSE fallback of a
+      // channel it finds through a route listing.
+      channel: meta,
+    },
   );
   return { contract, meta, spec };
 }

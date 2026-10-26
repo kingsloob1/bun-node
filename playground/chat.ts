@@ -17,9 +17,13 @@
  *
  * A room name that fails the params schema (`/playground/chat/Lobby`) is
  * answered 400, never 101. The channel is in `/playground/routes` (as
- * `GET /playground/chat/:room` with its `websocket` contract) and skipped by
- * the OpenAPI document, which documents HTTP only — one collected warning
- * per generation, in the response's `warnings` array, never logged.
+ * `GET /playground/chat/:room` with its `websocket` contract), in the
+ * playground's **AsyncAPI** document (`/playground/docs/asyncapi.json` — AD
+ * (e)'s `generateAsyncApi` reads it from the contract: the upgrade's params,
+ * the envelope payloads, the `say`→`said` reply, the implicit error frame),
+ * and skipped by the OpenAPI document, which documents HTTP only — one
+ * collected warning per OpenAPI generation, in the response's `warnings`
+ * array, never logged.
  */
 import type { ServerWebSocket } from "bun";
 import type {

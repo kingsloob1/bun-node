@@ -30,7 +30,7 @@ import type { BunResponse } from "../BunResponse";
 import { BunRouter } from "../BunRouter";
 import { ConfigError } from "../errors";
 import type { RouterHandler } from "../types/general";
-import type { OpenApiDocument } from "./types";
+import type { AsyncApiDocument, OpenApiDocument } from "./types";
 import type { DocsCdnOptions, DocsPage } from "./viewer";
 import {
   asyncApiUiPage,
@@ -41,16 +41,6 @@ import {
   scalarPage,
   swaggerUiPage,
 } from "./viewer";
-
-/**
- * An AsyncAPI document handed to {@link docsRouter}, typed structurally until
- * phase (e) lands the generator and its `AsyncApiDocument` type: an object
- * whose `info.title`, when a string, titles the viewer page.
- */
-interface AsyncApiDocumentLike extends Record<string, unknown> {
-  /** `info.title` titles the AsyncAPI viewer page. */
-  info?: { title?: unknown } & Record<string, unknown>;
-}
 
 /**
  * The viewers an OpenAPI page can use. `"scalar"` is the default — docsRouter
@@ -89,9 +79,12 @@ export interface DocsRouterOptions {
   /**
    * The AsyncAPI document, or a function returning one. Default: none, and
    * the route (and its page) is absent. Any realtime/event-driven API OpenAPI
-   * cannot document belongs here — not only WebSocket.
+   * cannot document belongs here — not only WebSocket. AD (e) tightened this
+   * from a structural `AsyncApiDocumentLike` to the generator's own
+   * `AsyncApiDocument` (a deliberate, announced tightening: the real type
+   * satisfies the structural one — pin the literal, `asyncapi: "3.0.0"`).
    */
-  asyncapi?: AsyncApiDocumentLike | (() => AsyncApiDocumentLike);
+  asyncapi?: AsyncApiDocument | (() => AsyncApiDocument);
   /** Where the OpenAPI JSON is served, under the mount. Default: `"/openapi.json"`. */
   openapiPath?: string;
   /** Where the AsyncAPI JSON is served. Default: `"/asyncapi.json"`. */
