@@ -54,7 +54,6 @@ import type {
   StandardOutcome,
   StandardSchemaV1,
   ValidationIssue,
-  ValidationSchemas,
   VariantNames,
 } from "@kingsleyweb/bun-common";
 import type { BunBeforeWriteContext, BunHttpAdapter } from "./BunHttpAdapter";
@@ -90,12 +89,17 @@ type ValidatePart =
 
 /**
  * The `schemas` argument of {@link Validate}: the request parts to check
- * (bun-common's `ValidationSchemas`), the responses to check
+ * (bun-common's `ValidationSchemas` shape, but **Standard Schemas only** —
+ * bun-nest takes no DTO classes: AD (b2) is bun-common-only, and a DTO keeps
+ * its native `@nestjs/swagger` path (AD (d)); `checkSchemas` refuses one at
+ * decoration), the responses to check
  * (`responses`, the same `ResponseSchemas` as bun-common's `validate()`),
  * and the responses' policy (`responseValidation`, default `"off"`, as
  * `validate()`'s).
  */
-export type ValidateSchemas = ValidationSchemas & {
+export type ValidateSchemas = {
+  [K in ValidatePart]?: StandardSchemaV1;
+} & {
   /** The response contract, per status — checked in the interceptor and, for what `map()` cannot see (plain `@Res()`, `StreamableFile`, redirects), the adapter's before-write hook. */
   responses?: ResponseSchemas;
   /** The responses' policy: `"warn"` logs and sends, `"error"` refuses (500), `"off"` (the default) checks nothing but still applies a named variant's adjust. */

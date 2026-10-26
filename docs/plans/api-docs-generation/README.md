@@ -53,12 +53,24 @@ option of per-spec `{ name, ...options }` declarations, five viewers pinned
 (deferred here from (a)), carrying `OpenApiDocument` + `JsonSchemaLike` only.
 **(d) merged 2026-10-26, #533** — `@nestjs/swagger` verified end-to-end
 against `BunHttpAdapter`, no hole found, so no `./lib/swagger` helper.
-**(a2) built 2026-10-26**: the registrar as `defineRoutes(mount, build)` (the
+**(a2) merged 2026-10-26, #534**: the registrar as `defineRoutes(mount, build)` (the
 rename to the typed-client plan's §8.5 shape; names `defineRoutes`,
 `RoutesOf`, `RouteDef` approved 2026-10-25/26), a helper over `.describe()`
 at bun-common's root — every definition's property name is its route's
 `operationId`, and `RoutesOf` (a pure type) reads the return into the flat
 route map, for inference (TC's D3), not instead of generation.
+**(b2) built 2026-10-26** (the maintainer's decisions of 2026-10-26, all
+final — names `DtoClass`, `ClassValidatorAdapter`, `ClassDtoOptions`,
+`useClassDtos`, `fromDto`, vendor string `"class-validator"`): class DTOs in
+bun-common's `lib/classDto.ts`, the libraries injected (`useClassDtos`) and
+held as devDependencies only; every schema position widened (the six
+`ValidationSchemas` keys, `ResponseSpec`, `RouteDoc.request.*`,
+`RouteResponseDoc.schema`); the unregistered-adapter case a deliberate
+`ConfigError` naming `useClassDtos`; documents through a registered
+`"class-validator"` converter and a `WeakMap` back to the class; async-only,
+never where a synchronous schema is required; bun-nest deliberately
+untouched. §3.6's header block carries the measured corrections (the
+`whitelist` note was wrong; `toJsonSchema` returns `object`).
 Every claim about
 existing code cites a file; every claim marked **measured** was produced by
 running code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims
@@ -757,10 +769,62 @@ drift it is reporting.
 
 ### 3.6 Class DTOs (class-validator / class-transformer)
 
-`toStandardSchema` (`BunValidate.ts:345`) already exists for exactly this. A
+**As built (2026-10-26, phase (b2))** — the maintainer's decisions of
+2026-10-26, all final: names `DtoClass`, `ClassValidatorAdapter`,
+`ClassDtoOptions`, `useClassDtos`, `fromDto`, vendor string
+`"class-validator"`, in bun-common's `lib/classDto.ts` (root-exported).
+Corrections to the sketch below, each **measured** on class-validator
+0.15.1 / class-transformer 0.5.1 / class-validator-jsonschema 5.2.0 under
+Bun 1.4.4:
+
+- `ValidationSchemas` has **six** keys, not four (V2 added
+  cookies/signedCookies); all six widened, as did `ResponseSpec`'s schema
+  positions (the status shorthand, `content` maps, `headers`/`cookies`) —
+  (b1) having merged long before made that mandatory — and
+  `ValidatedShapeFor`/`InferValidatedShape` learn `DtoClass<T>` → output `T`,
+  input `unknown`. A declared status's `res.json()` takes the instance.
+- The adapter is `{ plainToInstance, validate }` alone: `getMetadataStorage`
+  is dropped — the JSON-Schema producer is injected whole as
+  `ClassDtoOptions.toJsonSchema`. Its return is typed `object`, not
+  `JsonSchemaLike`: `targetConstructorToSchema`'s `SchemaObject` has no
+  index signature, so the sketch's signature would have forced every
+  consumer to cast.
+- The `whitelist` note in the sketch is **wrong as measured**:
+  `whitelist: true` strips undeclared properties from the instance (an
+  `extra` key does not survive `validate(instance, { whitelist: true })`).
+  The default stays `{ whitelist: true, forbidNonWhitelisted: false }`;
+  `validate: { whitelist: false }` keeps extras.
+- A class in a schema slot with no adapter registered did not die in
+  `checkContractDef` (BunValidate builds its contract unchecked) but at
+  request time (`TypeError: undefined is not an object`); it is now a
+  deliberate `ConfigError` naming `useClassDtos`, thrown when the validator
+  (or the document) is built.
+- Test isolation is an **internal, unexported reset**:
+  `resetClassDtos()` in `lib/classDto.ts` (never re-exported from the root),
+  which also removes the `"class-validator"` converter through an internal
+  `unregisterJsonSchemaConverter` — the converter is not a built-in, so
+  re-registering cannot restore it. Chosen over a per-call override because
+  the registration is module-global by design.
+- DTO validation is always async (class-validator's API), so a DTO must not
+  sit where a synchronous schema is required (the WebSocket upgrade check,
+  `defineChannel`) — documented, with no sync rejection mechanism.
+- bun-nest gets **nothing** (deliberate): a DTO keeps its native
+  `@nestjs/swagger` path (phase (d)); `@Validate`'s `ValidateSchemas` keeps
+  its request parts Standard-Schema-only. Note the opposite directions of
+  `useClassDtos` (class → Standard Schema) and bun-nest's `SchemaDto`
+  (Standard Schema → class).
+- `class-validator-jsonschema`'s nested classes emit `#/definitions/…` refs
+  with no definitions block — dangling in the generated document unless the
+  caller merges them. Documented; the tests and example keep documented DTOs
+  flat.
+
+`toStandardSchema` (`BunValidate.ts`'s one-off wrapper for a plain validate
+function, with `jsonSchema`) already exists for exactly this and stays the
+escape hatch for non-class validators — `fromDto` cross-references it rather
+than duplicating it. A
 DTO class becomes a Standard Schema in one wrapper, so **every target that
 accepts a schema accepts a class constructor**, with no change to
-`ValidationSchemas`' four keys beyond widening their type.
+`ValidationSchemas`' six keys beyond widening their type.
 
 ```ts
 /** A DTO class: a constructor `plainToInstance` can build. */
@@ -797,16 +861,18 @@ export interface ClassDtoOptions {
    * Passed to class-validator's `validate`. Defaults to
    * `{ whitelist: true, forbidNonWhitelisted: false }`.
    *
-   * Note `whitelist` governs *errors*, not the instance:
-   * `plainToInstance` keeps undeclared properties regardless (**measured** —
-   * an `extra` key survived `whitelist: true`). To strip them, use
-   * `transform: { excludeExtraneousValues: true }` with `@Expose()`.
+   * ~~Note `whitelist` governs *errors*, not the instance:
+   * `plainToInstance` keeps undeclared properties regardless~~ — **wrong as
+   * measured on 0.15.1** (the (b2) build, 2026-10-26): `whitelist: true`
+   * strips undeclared properties from the instance; an `extra` key does not
+   * survive. `validate: { whitelist: false }` keeps them.
    */
   validate?: Record<string, unknown>;
   /**
    * Converts a DTO class to JSON Schema for the generated document — e.g.
    * `class-validator-jsonschema`'s `targetConstructorToSchema`. Without it a
-   * DTO validates correctly and documents as `{}` plus a warning.
+   * DTO validates correctly and documents as `{}` plus a warning. (As built,
+   * the return is typed `object`: `SchemaObject` has no index signature.)
    */
   toJsonSchema?: (cls: DtoClass) => JsonSchemaLike;
 }
@@ -840,8 +906,9 @@ export function useClassDtos(
 export function fromDto<T>(cls: DtoClass<T>, options?: ClassDtoOptions): StandardSchemaV1<unknown, T>;
 ```
 
-`ValidationSchemas`' four keys widen from `StandardSchemaV1` to
-`StandardSchemaV1 | DtoClass`, and so do `RouteDoc.request.*` and
+`ValidationSchemas`' four keys (six since V2 — the header block's
+corrections apply to this sketch throughout) widen from `StandardSchemaV1`
+to `StandardSchemaV1 | DtoClass`, and so do `RouteDoc.request.*` and
 `RouteResponseDoc.schema`. Discrimination is trivial and unambiguous: a
 Standard Schema has `~standard`, a DTO is a function.
 
@@ -2116,9 +2183,14 @@ Ordered by how much they can hurt.
    stated requirement, and it is the strongest argument for keeping Standard
    Schema the primary path. Secondary, smaller: `design:type` erases
    `string[]` to `Array` and optionality entirely (both **measured**), so
-   `@IsString({ each: true })` and `@IsOptional()` remain mandatory; and
-   `whitelist: true` does not strip undeclared properties from the instance
-   (**measured**) — that needs `excludeExtraneousValues` + `@Expose()`.
+   `@IsString({ each: true })` and `@IsOptional()` remain mandatory. And the
+   `whitelist` aside here was **wrong as measured** on the installed
+   class-validator 0.15.1 (re-measured for (b2), 2026-10-26): `whitelist:
+   true` *does* strip undeclared properties from the instance — which the
+   default leans on, and `validate: { whitelist: false }` opts out of. Also
+   measured for (b2): Bun reads the decorator flags from the **cwd's**
+   tsconfig (oven-sh/bun#28605), so the stage-3 fixture runs with its own
+   directory as the cwd.
 
 1f. **Neither class-validator, class-transformer, `reflect-metadata` nor
    `@nestjs/swagger` may become a dependency or a declaration import.** All
@@ -2337,11 +2409,11 @@ engineer-days for someone who wrote this code.
 | Phase | Scope | Ships | Est. |
 |---|---|---|---|
 | **(a) Route metadata + manual annotation → OpenAPI** — **merged 2026-10-25, #531** | `ConfigError` in bun-common; move `spec/refs.ts` and `spec/security.ts` from bun-jobs (re-export shims left behind); `lib/docs/` with `RouteDoc`, `.describe()`, the `WeakMap` keyed on the terminal callback, ~~`DiscoveredRoute`~~ V12's `listRoutes` (subsumed), path→template with the wildcard/optional/regex rules of §10.2, the generator, `strict`/`lenient` + warnings; OAS 3.1 meta-schema test; golden fixture; type tests; `examples/bun-common/13-api-docs/annotating-routes.ts` | A working OpenAPI 3.1 document from any `BunRouter`, hand-annotated. **bun-jobs unaffected except for two import moves** | **6–8** |
-| **(a2) `defineRoute`-style registrar** *(optional, same phase)* — **built 2026-10-26** | A `routes([...])` helper over `.describe()` for people who prefer bun-jobs' shape — built as **`defineRoutes(mount, build)`** (the rename to the typed-client plan's §8.5 shape, and its names, approved 2026-10-25/26: `defineRoutes`, `RoutesOf`, `RouteDef`, the return's `.mount`/`.router` fields, the six common verbs on the builder, no options on the inner router). `lib/defineRoutes.ts` at bun-common's root (`RoutesOf` ships now, pure type, TC's packaging table expects it there); each definition registers on a fresh `BunRouter` and its property name becomes the `operationId` through `.describe()`'s own store; `app.use(users.mount, users.router)` mounts it as an ordinary sub-router. No router or overload change — `generate-verb-overloads.ts --check` stays green | Ergonomics, no new capability; the registry exists **for inference** (TC's D3), not instead of generation | 1–2 |
+| **(a2) `defineRoute`-style registrar** *(optional, same phase)* — **merged 2026-10-26, #534** | A `routes([...])` helper over `.describe()` for people who prefer bun-jobs' shape — built as **`defineRoutes(mount, build)`** (the rename to the typed-client plan's §8.5 shape, and its names, approved 2026-10-25/26: `defineRoutes`, `RoutesOf`, `RouteDef`, the return's `.mount`/`.router` fields, the six common verbs on the builder, no options on the inner router). `lib/defineRoutes.ts` at bun-common's root (`RoutesOf` ships now, pure type, TC's packaging table expects it there); each definition registers on a fresh `BunRouter` and its property name becomes the `operationId` through `.describe()`'s own store; `app.use(users.mount, users.router)` mounts it as an ordinary sub-router. No router or overload change — `generate-verb-overloads.ts --check` stays green | Ergonomics, no new capability; the registry exists **for inference** (TC's D3), not instead of generation | 1–2 |
 | **(b0) Update the vendored spec types** | `lib/types/standardSchema.ts` → `@standard-schema/spec` 1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`. Its own commit, before (b) | The type surface every validator is checked against, current | **0.5–1** |
 | **(b) Standard Schema auto-derivation** — **merged 2026-10-25, #529** | ~~`__schemas` on the validator middleware~~ (superseded — the contracts of V1 and V12's `listRoutes` already carry the schemas; decided 2026-10-24); the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
 | **(b1) Response contracts** | `responses` on `BunValidateOptions`; `BunResponse` gains `TResponses`, `status()` narrows, `json()` constrains, `protected setStatusRaw` (§3.7); `TypedRouteHandler`/`MountedHandler` thread `TRes`; runtime checking at response finalisation with bun-jobs' `responseMismatch` semantics (§3.5); `responses.type-test.ts` carrying the spike's four negative controls plus the `send()`/helper-escape boundary cases; `generate-verb-overloads.ts --check` must stay green; `consumer-check` re-run for the `BunResponse` surface change | Declared responses **enforced** at compile time and optionally at runtime. Feeds (a)'s document for free | **4–5** |
-| **(b2) Class DTOs** | `useClassDtos` / `fromDto` (§3.6); widen the four `ValidationSchemas` keys and `RouteDoc.request.*` to `StandardSchemaV1 \| DtoClass`; a `"class-validator"` converter reading the injected `toJsonSchema`; class-validator + class-transformer as **devDependencies** of bun-common for the tests; an `experimentalDecorators`-off negative test proving the documented failure | DTO users reach both validation and the document | **2–3** |
+| **(b2) Class DTOs** — **built 2026-10-26** (names approved 2026-10-26, all final; as-built corrections in §3.6's header block) | `useClassDtos` / `fromDto` (§3.6); widen the **six** `ValidationSchemas` keys (V2 made them six), `ResponseSpec`'s schema positions, and `RouteDoc.request.*`/`RouteResponseDoc.schema` to `StandardSchemaV1 \| DtoClass`; a `"class-validator"` converter reading the injected `toJsonSchema` through a `WeakMap<StandardSchemaV1, DtoClass>`; class-validator 0.15.1 + class-transformer 0.5.1 + class-validator-jsonschema 5.2.0 as **devDependencies** of bun-common for the tests (pinned exact); an unregistered adapter is a `ConfigError` naming `useClassDtos`; test isolation by the internal, unexported `resetClassDtos()` (with an internal `unregisterJsonSchemaConverter`); the `experimentalDecorators`-off negative test proving the documented crash (a child-process fixture with its own tsconfig, run as `bun dto.ts` with the fixture dir as cwd — Bun reads tsconfig from the cwd, oven-sh/bun#28605) plus its control; bun-nest untouched on purpose | DTO users reach both validation and the document | **2–3** |
 | **(c) Serving and viewing** — **merged 2026-10-25, #532** | `docsRouter()` (names approved 2026-10-25: `docsRouter`, `DocsRouterOptions`, `DocsCdnOptions`, `docsPageHeaders`, `swaggerUiPage`, `asyncApiUiPage`, `resolveDocsCdn`, `ResolvedDocsCdn`, `PinnedAsset`, `AssetIntegrity`, `assetUrl`, bun-common's own `DOCS_CDN`); `docs/html.ts` + `docs/cdn.ts` moved to `lib/docs/viewer.ts` parameterised (pins injected, `requestHeaders` generalising the CSRF line, the document URL resolved per request from `req.baseUrl`); the `viewer` option with five pinned viewers (§7.1's as-built note — Scalar the OpenAPI default, `"swagger-ui"`/`"redoc"`/`"rapidoc"`, the official component the AsyncAPI default); the `./lib/docs/types` browser-safe entry (`OpenApiDocument` + `JsonSchemaLike`) with its `consumer-check` cell and bundle-safety test; CSP/nonce/SRI tests from `api-docs.test.ts` plus the hidden/`authorize`/`req.baseUrl`/thunk tests; every docs route `.describe({ hidden: true })` (as-built); `serving-and-viewing.ts` example; the playground mount. bun-jobs keeps its own pins, shims and routes (`routes/docs.ts` needed no change); its `api-docs.test.ts` passes unmodified | Documents served and browsable, pages off by default | **3–4** |
 | **(d) bun-nest — verify `@nestjs/swagger`** — **merged 2026-10-26, #533** | Executed `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end (`__tests__/swagger.nest.test.ts`, differential against platform-express; the checkout's Nest 12.2.0 with swagger 12.0.4, and the 11.2.7 and 12.0.0 nest-matrix columns, swagger pinned per major by `NEST_PACKAGE_OVERRIDES`); the §8.6 gaps closed with measured answers; `examples/bun-nest/08-openapi/swagger-module.ts`; the README section (recipe, mixed-app caveat, `setGlobalPrefix`, the `@Render` note, the two-bundles note). **No hole found**, so no `./lib/swagger` helper | A documented, proven path. **Cheapest phase per unit of value** — and the phase that decides whether (g) is worth building | **2–3** |
 | **(g) bun-nest swagger bridge** *(the validation half shipped: `@Validate` landed in bun-validate's V7a/V7b)* | What remains is `useSwaggerBridge` alone (§3.8.2): emitting `ApiBody`/`ApiQuery`/`ApiParam`/`ApiHeader`/`ApiResponse` from `@Validate`'s schemas through the §4 registry at `target: "openapi-3.0"`, the decorators injected structurally. ~~The interceptor, the decorator's method/class forms, the return-type constraint, the `Infer<>` helper, `examples/bun-nest/08-validate/`~~ — shipped with V7a/V7b (`07-validation/`) | One declaration for validation + response contract + document. **Gate on (d)** — see risk 1h | **2–3** |

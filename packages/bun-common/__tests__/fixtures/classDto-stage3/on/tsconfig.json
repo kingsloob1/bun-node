@@ -1,0 +1,9 @@
+{
+  // The control: `experimentalDecorators` (and `emitDecoratorMetadata`) on, as
+  // the DTO path requires and this repo's tsconfig.base.json sets. Bun reads
+  // this file when `bun dto.ts` runs with this directory as the cwd.
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  }
+}

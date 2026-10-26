@@ -21,6 +21,7 @@
  * `lib/responseBodies.ts`.
  */
 import type { BunRequest } from "./BunRequest";
+import type { DtoClass } from "./classDto";
 import type {
   BunResponseChunk,
   ResponseCommit,
@@ -54,6 +55,7 @@ import type {
 } from "./responseBodies";
 import type { StandardSchemaV1 } from "./types/standardSchema";
 import { ContractError } from "./contract/guard";
+import { fromDto, isDtoClass } from "./classDto";
 import { andThen, runSchema, toIssues } from "./contract/issues";
 import { bareMediaType, compileMediaMap } from "./contract/media";
 import { isPromiseLike, VARIANTS, variantsOf } from "./contract/model";
@@ -103,14 +105,14 @@ export interface ResponseSpecObject {
    * even when Bun sets it implicitly. `Set-Cookie` is not here: it is
    * {@link cookies}.
    */
-  readonly headers?: StandardSchemaV1;
+  readonly headers?: StandardSchemaV1 | DtoClass;
   /**
    * The `Set-Cookie`s, as an object keyed by cookie name, each a
    * {@link SetCookieView} (`{ value, httpOnly, secure, partitioned, sameSite?,
    * path?, domain?, maxAge?, expires?, priority? }`). A name set twice is its
    * last line.
    */
-  readonly cookies?: StandardSchemaV1;
+  readonly cookies?: StandardSchemaV1 | DtoClass;
   /**
    * The body, by media type (`"application/json"`, `"text/*"`, `"*\/*"`):
    * matched case-insensitively with parameters stripped on both sides, the
@@ -138,7 +140,7 @@ export interface ResponseSpecObject {
  * `opaque(mediaType)` (whose media type would be a second one), or `null`.
  */
 type ContentValue =
-  | (StandardSchemaV1 & {
+  | ((StandardSchemaV1 | DtoClass) & {
       /** Only `opaque(mediaType)` sets it; a `content` map's value never does. */
       readonly mediaType?: undefined;
     })
@@ -146,11 +148,13 @@ type ContentValue =
 
 /**
  * One status's contract: a schema (shorthand for `{ content: {
- * "application/json": schema } }`), `opaque(mediaType)` (shorthand for `{
+ * "application/json": schema } }`; a DTO class (AD (b2)) validates and
+ * documents as one too), `opaque(mediaType)` (shorthand for `{
  * content: { [mediaType]: opaque() } }`), `null` (no body), or the full
  * {@link ResponseSpecObject}.
  */
-export type ResponseSpec = StandardSchemaV1 | null | ResponseSpecObject;
+export type ResponseSpec =
+  StandardSchemaV1 | DtoClass | null | ResponseSpecObject;
 
 /**
  * The declared responses, by status code (100–599). A status not listed is a
@@ -364,6 +368,11 @@ function toParts(
     // `opaque("image/png")`: exactly `{ content: { "image/png": opaque() } }`.
     return { body: { [shorthand]: opaque() } };
   }
+  // A DTO class (AD (b2)) is its `fromDto` Standard Schema from here on;
+  // without a registered adapter that is the ConfigError naming useClassDtos.
+  if (isDtoClass(spec)) {
+    return { body: { "application/json": fromDto(spec) } };
+  }
   if (isSchema(spec)) return { body: { "application/json": spec as Schema } };
   if (!isPlainObject(spec)) {
     throw new TypeError(
@@ -398,7 +407,10 @@ function toParts(
           `${at}.content: expected an object keyed by media type, or null`,
         );
       }
-      for (const [media, schema] of Object.entries(value)) {
+      const content: Record<string, unknown> = {};
+      for (const [media, given] of Object.entries(value)) {
+        const schema = isDtoClass(given) ? fromDto(given) : given;
+        content[media] = schema;
         if (schema !== null && !isSchema(schema)) {
           throw new TypeError(
             `${at}.content[${JSON.stringify(media)}]: expected a Standard Schema, chunks(), sse(), opaque() or null`,
@@ -411,14 +423,15 @@ function toParts(
           );
         }
       }
-      compileMediaMap(value, `${at}.content`);
-      parts.body = value as Record<string, Schema | null>;
+      compileMediaMap(content, `${at}.content`);
+      parts.body = content as Record<string, Schema | null>;
       continue;
     }
-    if (!isSchema(value)) {
+    const part = isDtoClass(value) ? fromDto(value) : value;
+    if (!isSchema(part)) {
       throw new TypeError(`${at}.${name}: expected a Standard Schema`);
     }
-    parts[name as "headers" | "cookies"] = value as Schema;
+    parts[name as "headers" | "cookies"] = part as Schema;
   }
   return parts;
 }

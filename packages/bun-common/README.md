@@ -1442,6 +1442,7 @@ validation library. Every library below is tested against:
 |---|---|
 | zod 4, yup 1.7, valibot 1, arktype 2 | native: pass the schema directly |
 | superstruct 2, joi, a hand-written check | wrap with `toStandardSchema(validateFn, { vendor })` |
+| class-validator 0.15 + class-transformer (DTO classes) | injected through `useClassDtos` — see [Class DTOs](#class-dtos-useclassdtos) |
 
 Targets are `headers`, `cookies`, `signedCookies`, `params`, `query` and
 `body`, validated and reported in that order, so a cheap header or session
@@ -1559,6 +1560,90 @@ Validators chain: each one replaces `req.query` wholesale, so a later schema
 receives the earlier one's output. arktype does not accept a bound after a
 morph: `"string.integer.parse >= 1"` is a parse error, so express the range
 inside the definition.
+
+#### Class DTOs: `useClassDtos()`
+
+A class-validator / class-transformer DTO class works **wherever a schema is
+accepted** — every request target, a `responses` status, `.describe()`'s
+`request.*` and response `schema` — once the libraries are injected, since
+bun-common neither depends on nor peers with them:
+
+```ts
+import "reflect-metadata"; // first: class-transformer reads metadata through it
+import { plainToInstance } from "class-transformer";
+import { IsInt, Min, validate as classValidate } from "class-validator";
+import { targetConstructorToSchema } from "class-validator-jsonschema";
+import { useClassDtos, validate } from "@kingsleyweb/bun-common";
+
+useClassDtos(
+  { plainToInstance, validate: classValidate },
+  { toJsonSchema: (cls) => targetConstructorToSchema(cls) },
+); // once, at startup
+
+class SearchQuery {
+  @IsInt()
+  @Min(1)
+  page!: number;
+}
+
+router.get("/search", validate({ query: SearchQuery }), (req, res) => {
+  req.query.page; // a number — the class instance, typed as SearchQuery
+});
+```
+
+The defaults are chosen for the wire: `plainToInstance` runs with
+`{ enableImplicitConversion: true }`, which is what makes a DTO usable on
+`query` and `params`, where every value arrives as a string (`"42"` → `42`
+for an `@IsInt()` property — measured). `validate` runs with
+`{ whitelist: true, forbidNonWhitelisted: false }`: **`whitelist` strips
+undeclared properties from the instance** (measured on class-validator
+0.15.1 — an `extra` key does not survive); pass
+`useClassDtos(adapter, { validate: { whitelist: false } })` to keep them, or
+per class through `fromDto(cls, { validate: … })`. `ClassDtoOptions` carries
+`transform`, `validate` and `toJsonSchema`; without the last a DTO validates
+correctly and documents as `{}` plus a warning.
+
+Issues arrive in the same flattened shape as any vendor's — one per failed
+constraint, a `@ValidateNested` child's under its property's dotted path
+(`body.address.city`).
+
+The requirements, stated as requirements:
+
+- **`experimentalDecorators` must be on** (with `emitDecoratorMetadata` for
+  the implicit conversion and `@Type()`). Under TypeScript 5+ standard
+  decorators class-validator crashes at class-definition time — measured:
+  `TypeError: undefined is not an object` from its `ValidateBy`. A consumer
+  on stage-3 decorators cannot use the DTO path at all; Standard Schema is
+  the primary path for a reason. Bun reads the flags from the **working
+  directory's** tsconfig (oven-sh/bun#28605), so start the app from the
+  directory whose tsconfig sets them.
+- **`reflect-metadata` imported before the DTO module** — without it,
+  implicit conversion throws `Reflect.getMetadata is not a function`.
+- **`useClassDtos` before any validator wrapping a class is built.** A DTO
+  class in a schema slot with no adapter registered throws a `ConfigError`
+  naming `useClassDtos` — deliberate, where it used to die at request time
+  with a `TypeError`.
+
+Two limits to know. DTO validation is **always asynchronous**
+(class-validator's `validate` returns a Promise), so a DTO must not be used
+where a synchronous schema is required: the WebSocket upgrade check and
+`defineChannel`. And a DTO's JSON Schema comes from the injected
+`toJsonSchema` — class-validator-jsonschema's `targetConstructorToSchema`
+emits nested classes as `#/definitions/…` refs without the definitions
+block, so nest freely for validation but keep documented DTOs flat, or merge
+the definitions yourself.
+
+`fromDto(cls, options?)` is the one-off form: the same wrapper, for a caller
+who wants the Standard Schema explicitly (its `~standard.vendor` is
+`"class-validator"`). It is the same escape-hatch family as
+`toStandardSchema(fn, { jsonSchema })`, which remains the way to wrap a
+plain validate function.
+
+In **bun-nest** none of this exists, deliberately: a DTO keeps its native
+`@nestjs/swagger` path (verified end-to-end in AD phase (d)), which produces
+a named component. Note the direction, opposite to bun-nest's `SchemaDto`:
+`SchemaDto(schema)` turns a Standard Schema *into* a class for Nest's pipes;
+`useClassDtos` turns a class-validator class *into* a Standard Schema.
 
 #### Responses
 

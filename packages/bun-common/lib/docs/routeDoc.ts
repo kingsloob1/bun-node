@@ -14,6 +14,7 @@
  * This module is imported by `BunRouter.ts`, so it must not import the
  * generator (`./openapi`) or the router itself — types only, no runtime edge.
  */
+import type { DtoClass } from "../classDto";
 import type { StandardSchemaV1 } from "../types/standardSchema";
 import type { JsonSchemaLike } from "./convert";
 
@@ -21,8 +22,12 @@ import type { JsonSchemaLike } from "./convert";
 export interface RouteResponseDoc {
   /** Required by OpenAPI. Default: the status's reason phrase. */
   description?: string;
-  /** The body schema, any Standard Schema or a raw JSON Schema. */
-  schema?: StandardSchemaV1 | JsonSchemaLike;
+  /**
+   * The body schema: any Standard Schema, a raw JSON Schema, or a DTO class
+   * (AD (b2)) — wrapped with `fromDto` for conversion, so a document from a
+   * DTO needs `useClassDtos` to have run.
+   */
+  schema?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
   /** Media type. Default: `"application/json"`. */
   mediaType?: string;
   /** Response headers, by name. Default: none. */
@@ -75,15 +80,15 @@ export interface RouteDoc {
    */
   request?: {
     /** Path parameters. Keys must be names the path declares. */
-    params?: StandardSchemaV1 | JsonSchemaLike;
+    params?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
     /** Query string. */
-    query?: StandardSchemaV1 | JsonSchemaLike;
+    query?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
     /** Request body, for the media types in {@link RouteDoc.requestMediaTypes}. */
-    body?: StandardSchemaV1 | JsonSchemaLike;
+    body?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
     /** Request headers. Emitted as `in: "header"` parameters. */
-    headers?: StandardSchemaV1 | JsonSchemaLike;
+    headers?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
     /** Request cookies. Emitted as `in: "cookie"` parameters (plan §4.11). */
-    cookies?: StandardSchemaV1 | JsonSchemaLike;
+    cookies?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
   };
   /**
    * Media types the body is accepted as. Default: `["application/json"]`
@@ -116,8 +121,8 @@ export interface RouteDoc {
    * and `strict` mode (see `OpenApiOptions.strict`) rejects it.
    */
   responses?: Readonly<
-    Record<number, RouteResponseDoc | StandardSchemaV1 | null> & {
-      default?: RouteResponseDoc | StandardSchemaV1 | null;
+    Record<number, RouteResponseDoc | StandardSchemaV1 | DtoClass | null> & {
+      default?: RouteResponseDoc | StandardSchemaV1 | DtoClass | null;
     }
   >;
   /**

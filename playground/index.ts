@@ -18,6 +18,7 @@
  * included, so it must never be exposed beyond your machine. It listens on
  * 127.0.0.1 only.
  */
+import "reflect-metadata";
 import process from "node:process";
 import {
   BunHttpAdapter,
@@ -26,8 +27,18 @@ import {
   listRoutes,
   noopLogger,
   toJsonSchema,
+  useClassDtos,
+  validate,
 } from "@kingsleyweb/bun-common";
 import { docsRouter, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
+import { plainToInstance } from "class-transformer";
+import {
+  IsInt,
+  IsString,
+  Min,
+  validate as classValidate,
+} from "class-validator";
+import { targetConstructorToSchema } from "class-validator-jsonschema";
 import {
   BunJobs,
   createDriver,
@@ -146,7 +157,44 @@ app.get("/", (_req, res) => res.redirect(ui.basePath));
 // The playground's own small route group, declared through defineRoutes
 // (AD (a2)): the property names are the routes' operationIds in the document
 // below, with no .describe() annotation. Mounted as an ordinary sub-router.
+// The playground's own small route group, declared through defineRoutes
+// (AD (a2)): the property names are the routes' operationIds in the document
+// below, with no .describe() annotation. Mounted as an ordinary sub-router.
+//
+// AD (b2): one DTO-validated endpoint. The class-validator /
+// class-transformer surface is injected, never imported by bun-common;
+// `useClassDtos` runs once here, before the validator is built, and the
+// `toJsonSchema` injection is what the OpenAPI document reads for the DTO.
+useClassDtos(
+  { plainToInstance, validate: classValidate },
+  { toJsonSchema: (cls) => targetConstructorToSchema(cls) },
+);
+
+/** The `/playground/dto-search` query: every wire value arrives as a string. */
+class DtoSearchQuery {
+  @IsInt()
+  @Min(1)
+  page!: number;
+
+  @IsString()
+  q!: string;
+}
+
 const playgroundRoutes = defineRoutes("/playground", (r) => ({
+  // A class DTO on `query` (AD (b2)): "42" arrives as the number 42 on a
+  // SearchQuery instance (implicit conversion), a failing query answers 400
+  // with the issues, and the route documents itself in openapi.json.
+  dtoSearch: r.get(
+    "/dto-search",
+    validate({ query: DtoSearchQuery }, { onFailure: "respond" }),
+    (req, res) => {
+      res.json({
+        page: req.query.page,
+        q: req.query.q,
+        instance: req.query instanceof DtoSearchQuery,
+      });
+    },
+  ),
   // The route model (bun-validate V12): every route on this adapter with the
   // contract it runs under — the jobs API's routes carry theirs (V4). Each
   // row's schema is shown converted to JSON Schema (AD (b)'s toJsonSchema —
@@ -232,6 +280,7 @@ bun-node playground (${playgroundBackend()} driver)
   Units/faults  ${origin}${summoning.basePath}
   API           ${origin}${api.basePath}/meta
   API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page)
+  Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
 `);

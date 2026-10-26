@@ -122,6 +122,10 @@ describe("the lib/docs import graph (plan risk 1f)", () => {
       "arktype",
       "yup",
       "superstruct",
+      "class-validator",
+      "class-transformer",
+      "class-validator-jsonschema",
+      "reflect-metadata",
     ];
     for (const vendor of vendors) {
       expect(
@@ -150,5 +154,35 @@ describe("the lib/docs import graph (plan risk 1f)", () => {
     expect(modules.some((module) => module.includes("node_modules/zod"))).toBe(
       true,
     );
+  });
+
+  it("AD (b2): lib/classDto.ts pulls in neither class-validator, class-transformer nor reflect-metadata", async () => {
+    const modules = await moduleGraph(join(LIB, "classDto.ts"));
+    expect(modules).toContain("lib/classDto.ts");
+    // The adapter is injected: the module must not even transitively import
+    // the libraries it adapts (risk 1f — they are devDependencies, so an
+    // accidental import would bundle fine here and break a consumer).
+    const vendors = [
+      "class-validator",
+      "class-transformer",
+      "class-validator-jsonschema",
+      "reflect-metadata",
+    ];
+    for (const vendor of vendors) {
+      expect(
+        modules.some((module) => module.includes(`node_modules/${vendor}/`)),
+        vendor,
+      ).toBe(false);
+    }
+    // Same dependency-closure rule as the docs graph.
+    const closure = dependencyClosure();
+    const foreign = [
+      ...new Set(
+        modules
+          .filter((module) => module.includes("node_modules"))
+          .map(packageName),
+      ),
+    ].filter((name) => !closure.has(name));
+    expect(foreign).toEqual([]);
   });
 });
