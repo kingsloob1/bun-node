@@ -211,9 +211,26 @@ export function defineTransport<const T extends TransportSpec>(
 }
 
 /**
+ * The reflect-metadata polyfill's API, when it is loaded (a Nest application's
+ * always is). bun-common neither imports nor types it: the structural view
+ * keeps this module usable where the polyfill is absent.
+ */
+const reflectMeta = Reflect as unknown as {
+  getMetadata?: (key: unknown, target: object) => unknown;
+  defineMetadata?: (key: unknown, value: unknown, target: object) => void;
+};
+
+/**
  * Makes `contract` reachable from `target` through {@link getContract}: a
  * non-enumerable property, so code that enumerates the target sees nothing
  * new. Attaching again replaces it. Returns `target`, typed as carrying it.
+ *
+ * When the reflect-metadata polyfill is loaded, the contract is ALSO written
+ * as metadata under the same symbol, so a framework that copies metadata when
+ * it wraps a handler (NestJS's `RouterExplorer.copyMetadataToCallback`) keeps
+ * it attached to the wrapper — without one, a Nest controller method's
+ * contract would stay behind on the unwrapped method, invisible to
+ * `listRoutes` and the document generators.
  *
  * @param target   What carries the contract: a handler, a layer, a definition.
  * @param contract The contract to carry.
@@ -228,6 +245,7 @@ export function attachContract<X extends object, C>(
     writable: false,
     configurable: true,
   });
+  reflectMeta.defineMetadata?.(CONTRACT, contract, target);
   return target as X & Carries<C>;
 }
 
@@ -235,15 +253,25 @@ export function attachContract<X extends object, C>(
  * The contract `carrier` carries: typed when its type says which, otherwise
  * `AnyContract | undefined` (anything without one, primitives included).
  *
+ * Reads the own property first, then — when the reflect-metadata polyfill is
+ * loaded — the metadata under the same symbol (what a framework's metadata
+ * copy carries onto a wrapped handler; see {@link attachContract}).
+ *
  * @param carrier A handler, a layer, a definition, or a contract itself.
  */
 export function getContract<C>(carrier: Carries<C>): C;
 export function getContract(carrier: unknown): AnyContract | undefined;
 export function getContract(carrier: unknown): unknown {
-  return (typeof carrier === "object" || typeof carrier === "function") &&
-    carrier !== null
-    ? (carrier as Partial<Carries<unknown>>)[CONTRACT]
-    : undefined;
+  if (
+    (typeof carrier !== "object" && typeof carrier !== "function") ||
+    carrier === null
+  ) {
+    return undefined;
+  }
+  return (
+    (carrier as Partial<Carries<unknown>>)[CONTRACT] ??
+    reflectMeta.getMetadata?.(CONTRACT, carrier)
+  );
 }
 
 /**

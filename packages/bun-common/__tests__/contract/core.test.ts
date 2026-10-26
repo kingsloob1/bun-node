@@ -24,6 +24,7 @@ import {
 } from "../../lib/contract/transport";
 import { createTestLogger } from "../../lib/logging";
 import { broker, flow, http, jobs } from "./fixtures";
+import "reflect-metadata";
 
 /** A hand-rolled Standard Schema, sync or async, whose input is `unknown`. */
 function custom<T>(
@@ -561,6 +562,17 @@ describe("carrying a contract (C20, M5)", () => {
     expect(getContract(forwardContract(wrapper, inner))).toBe(route);
     const bare = () => undefined;
     expect(getContract(forwardContract(bare, () => undefined))).toBeUndefined();
+  });
+
+  it("survives a framework's metadata-copying handler wrap (NestJS's copyMetadataToCallback)", () => {
+    // reflect-metadata is imported by this file, so the polyfill is up.
+    const handler = attachContract(() => undefined, route);
+    // Exactly NestJS's copy: every metadata key, onto the wrapper.
+    const wrapper = () => undefined;
+    for (const key of Reflect.getMetadataKeys(handler)) {
+      Reflect.defineMetadata(key, Reflect.getMetadata(key, handler), wrapper);
+    }
+    expect(getContract(wrapper)).toBe(route);
   });
 });
 
