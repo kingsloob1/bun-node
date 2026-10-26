@@ -17,7 +17,8 @@ bun run-all.ts 04 10               # only folders 04-* and 10-*
 ```
 
 No install step: `@nestjs/core`, `@nestjs/common`, `@nestjs/websockets`,
-`reflect-metadata`, `rxjs`, `zod`, `yup` and `@nestjs/microservices` (for `07-validation`) and — for the `@kingsleyweb/bun-nest/jobs`
+`reflect-metadata`, `rxjs`, `zod`, `yup`, `@nestjs/microservices` (for `07-validation`),
+`@nestjs/swagger` (for `08-openapi`) and — for the `@kingsleyweb/bun-nest/jobs`
 examples — `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-jobs-ui` resolve from the repo's root `node_modules`
 (`@nestjs/platform-express` resolves from there too; only
 `03-file-uploads/module-options.ts` imports it, to show its `MulterModule`
@@ -82,6 +83,12 @@ Applications listen on port `0`.
 | File | Shows |
 |---|---|
 | [`mount.ts`](./06-jobs-ui/mount.ts) | `jobsUi()` from `@kingsleyweb/bun-jobs-ui` over the API `BunJobsApiModule` built (`app.get(BUN_JOBS_API)`), mounted with `adapter.use()` (no cast) and served with and without a socket, a page `authorize` sharing the API's session, and what a global prefix does not touch. More in [`../bun-jobs-ui`](../bun-jobs-ui) |
+
+### 07 — OpenAPI
+
+| File | Shows |
+|---|---|
+| [`swagger-module.ts`](./08-openapi/swagger-module.ts) | `@nestjs/swagger` on `BunHttpAdapter`, asserted: a DTO-class `@Body()` and `@ApiResponse()` scanned into the document, `SwaggerModule.setup("api", …)` answering the JSON document, the UI page with and without the trailing slash and the UI's own bundled assets over a real socket, a mutating route beside the docs, and the controls (an adapter-registered route served but undocumented, a changed `DocumentBuilder` title visible). Skips with a `skipped:` line where `@nestjs/swagger` is not installed. See the package README's [OpenAPI with `@nestjs/swagger`](../../packages/bun-nest/README.md#openapi-with-nestjsswagger) |
 
 ### 07 — Validation
 

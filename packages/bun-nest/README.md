@@ -90,6 +90,7 @@ Underneath, routing is
   - [`ValidationExceptionFilter`](#validationexceptionfilter)
   - [`StandardValidationModule`](#standardvalidationmodule)
   - [Issues carry no received value](#issues-carry-no-received-value)
+- [OpenAPI with `@nestjs/swagger`](#openapi-with-nestjsswagger)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
@@ -2251,6 +2252,100 @@ Compared with Nest 12.2.0's own pipe (`@Body({ schema })` and the global
   with a Promise for every vendor; ours answer zod, valibot and arktype
   synchronously, and with a Promise only for an async vendor (yup).
 
+## OpenAPI with `@nestjs/swagger`
+
+`@nestjs/swagger` works on `BunHttpAdapter` as-is — verified end-to-end
+(api-docs-generation phase (d), `__tests__/swagger.nest.test.ts`): the same
+module booted on this adapter and on `@nestjs/platform-express` scans a
+**byte-identical** document and answers every probe alike, on the checkout's
+Nest 12.2.0 with `@nestjs/swagger` 12.0.4 and in the nest-matrix columns
+11.2.7 (swagger 11.4.6) and 12.0.0. Nothing in this package imports it, so it
+stays your dependency, matched to your Nest major:
+
+```bash
+bun add @nestjs/swagger    # 12.0.x for Nest 12, 11.4.x for Nest 11
+```
+
+```ts
+import { ApiProperty, ApiResponse, DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
+
+class CreateUserDto {
+  @ApiProperty() name!: string;
+  @ApiProperty() age!: number;
+}
+
+const app = await NestFactory.create(AppModule, new BunHttpAdapter());
+const document = SwaggerModule.createDocument(
+  app,
+  new DocumentBuilder().setTitle("Users API").setVersion("1.0").build(),
+);
+SwaggerModule.setup("api", app, document);
+await app.listen(0);
+```
+
+That serves the document at `/api-json` (and `/api-yaml`), the Swagger UI
+page at `/api`, `/api/` and `/api/index.html`, and the UI's assets —
+`swagger-ui-bundle.js` included — below `/api`, all beside your routes.
+Everything `setup()` needs from the adapter is the express-shaped surface
+this adapter already has: `getType()` answers `"express"`, so the express
+branch runs (`useStaticAssets(path, { prefix })`, verb registrations,
+`getRequestUrl()`); the fastify branch, and `set`/`enable`/`engine`/`render`,
+are never touched.
+
+### What the scanner sees, and what it does not
+
+`@nestjs/swagger` reads **Nest metadata only**. Measured:
+
+- A route registered directly on the adapter (`adapter.get("/direct", …)`),
+  a mounted bun-common router and the jobs API module's mounted routes are
+  all **served but never documented**. The docs routes above are registered
+  the same way, so they are not in the document either.
+- The scanner's document is built from controllers only; an app also
+  mounting `BunJobsApiModule` and a `@WebSocketGateway` scans exactly the
+  same — the container is Nest's own, untouched by the adapter.
+- bun-common's `listRoutes`/`generateOpenApi` look at the other side of the
+  same wall: the router's whole table, controllers included, but with no DTO
+  metadata (each such route warns it has no declared responses). One sharp
+  edge, measured: run `generateOpenApi` over a router that also serves
+  `SwaggerModule.setup`'s routes and it throws a `ConfigError` — the docs
+  mount's `GET /api`, `GET /api/` and static `GET /api` share the default
+  operation id `getApi`. Filter the docs mount out
+  (`filter: (route) => !route.path.startsWith("/api")`) or generate from a
+  router that does not hold it. A mixed app that needs both documents serves
+  both; merging them is your code, not ours.
+
+### `setGlobalPrefix`
+
+With `app.setGlobalPrefix("v1")`, measured on both adapters:
+
+- the **document's** paths carry the prefix (`/v1/users/{id}`) — the scanner
+  applies it;
+- the **docs routes** do not: `/api-json` and `/api` stay where they were
+  unless you pass `SwaggerModule.setup("api", app, document, {
+  useGlobalPrefix: true })`, which moves them to `/v1/api-json` and
+  `/v1/api` (the bundle included);
+- `listRoutes`/`generateOpenApi` see the prefixed controller paths either
+  way (`GET /v1/users/:id`): Nest bakes the prefix into the routes it
+  registers.
+
+### `@Render`, beside the docs
+
+Unrelated to swagger but next to it in any app that serves pages: `render`
+goes through the [view-engine subsystem](#views-render-and-resrender)
+(`setBaseViewsDir`/`setViewEngine`/`engine`). With no engine registered and
+no extension on the view, `@Render("index")` answers Nest's 500
+(`{"statusCode":500,"message":"Internal server error"}`) — measured the same
+on `@nestjs/platform-express`.
+
+### Two bundles, two origins
+
+The UI above is `@nestjs/swagger`'s **own bundled** `swagger-ui-dist` copy,
+served from `node_modules` through `useStaticAssets`. bun-common's
+`docsRouter()` is a different thing: it serves its **own pinned** viewer
+assets from a CDN, for a document `generateOpenApi` built. The two never
+share a route or an origin; an app can mount both and each renders the
+document it was given.
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -2409,6 +2504,7 @@ describes the conventions they share.
 | `04-websockets` | [`custom-adapter.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
 | `05-jobs-api` | [`module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/05-jobs-api/module.ts) | `BunJobsApiModule.forRoot`, `@InjectJobsApi()`, authorized requests against the mounted API, and what `app.close()` closes |
 | `06-jobs-ui` | [`mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts) | the bun-jobs management UI, `jobsUi()`, mounted beside `BunJobsApiModule` with `adapter.use()` and served with and without a socket |
+| `08-openapi` | [`swagger-module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/08-openapi/swagger-module.ts) | [OpenAPI with `@nestjs/swagger`](#openapi-with-nestjsswagger): `createDocument` + `SwaggerModule.setup` on `BunHttpAdapter`, the JSON document, the UI page and its bundled assets, a mutating route beside the docs |
 | `07-validation` | [`standard-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/standard-validation.ts) | [Validation](#validation): `StandardValidationModule` with a `SchemaDto` body, `StandardSchemaPipe` on a query and a param, `ValidationExceptionFilter` over HTTP, WebSocket and a microservice, a gateway's `@UsePipes(...StandardValidationModule.gatewayPipes())` (and the double run a plain `@UsePipes` gives on Nest 12), `stripProtoKeys`, Nest 12's `@Body({ schema })` beside them, `forRoot({ messages })` |
 
 **Option tours** exercise every option of one part of the API and assert the

@@ -9,5 +9,8 @@
     "lint": "bun lint",
     "format": "bun fmt",
     "format:check": "bun fmt --check"
+  },
+  "devDependencies": {
+    "@nestjs/swagger": "12.0.4"
   }
 }

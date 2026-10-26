@@ -25,6 +25,7 @@ import {
   judgeRunAll,
   main,
   matrixDir,
+  NEST_PACKAGE_OVERRIDES,
   parseArgs,
   parseBunTest,
   parseCheck,
@@ -276,6 +277,43 @@ describe("rewriteManifest", () => {
       "@nestjs/websockets@11.2.7",
     ]);
     expect(config.entries).toEqual([]);
+  });
+
+  it("consults NEST_PACKAGE_OVERRIDES before the blanket @nestjs/* pin", () => {
+    // @nestjs/swagger's line is not Nest's (api-docs-generation phase d):
+    // an 11 column pins swagger 11.4.6, a 12 column 12.0.4, never the
+    // column's own version.
+    const withSwagger: Manifest = {
+      name: "x",
+      devDependencies: {
+        "@nestjs/common": "^12.2.0",
+        "@nestjs/swagger": "12.0.4",
+        zod: "^4",
+      },
+    };
+    const eleven = rewriteManifest(withSwagger, "11.2.7");
+    expect(eleven.manifest.devDependencies).toEqual({
+      "@nestjs/common": "11.2.7",
+      "@nestjs/swagger": "11.4.6",
+      zod: "^4",
+    });
+    expect(eleven.changes).toContain(
+      "devDependencies @nestjs/swagger: 12.0.4 -> 11.4.6",
+    );
+    // A 12 column pins 12.0.4 — already the manifest's range, so no change.
+    const twelve = rewriteManifest(withSwagger, "12.0.0");
+    expect(twelve.manifest.devDependencies!["@nestjs/swagger"]).toBe("12.0.4");
+    expect(twelve.changes.filter((c) => c.includes("swagger"))).toEqual([]);
+    expect(twelve.manifest.devDependencies!["@nestjs/common"]).toBe("12.0.0");
+    // A major nobody named falls back to the blanket pin.
+    expect(
+      rewriteManifest(withSwagger, "13.1.0").manifest.devDependencies![
+        "@nestjs/swagger"
+      ],
+    ).toBe("13.1.0");
+    expect(NEST_PACKAGE_OVERRIDES["@nestjs/swagger"]!("11.1.20")).toBe(
+      "11.4.6",
+    );
   });
 });
 
