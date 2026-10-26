@@ -629,13 +629,17 @@ const answered = await postFlow("jobs", {
 });
 show("POST /queues/jobs/flows", answered.body);
 checkEqual(
-  "400 VALIDATION, the issue at the first refused node's body path",
+  "400 VALIDATION collecting EVERY refused node's issue, each at its body path",
   [
     answered.status,
     answered.body.code,
     answered.body.issues?.map((issue) => `${issue.target}:${issue.path}`),
   ],
-  [400, "VALIDATION", ["body:children.0.data.to"]],
+  [
+    400,
+    "VALIDATION",
+    ["body:children.0.data.to", "body:children.1.children.0.data.to"],
+  ],
 );
 const deep = await postFlow("jobs", {
   name: "monthly-report",
