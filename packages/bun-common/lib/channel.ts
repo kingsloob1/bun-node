@@ -14,15 +14,21 @@
  *   messageValidation: { in: "error", out: "warn" },
  * });
  *
- * router.get(chat.path, chat.checks());   // the upgrade's request side (only when `request` is declared)
- * router.ws(chat.path, chat.handler({
- *   say(ws, msg) { chat.publish(ws, ws.data.params.room, "said", { by: "…", text: msg.text }); },
- * }));
+ * router.ws(
+ *   chat.path,
+ *   chat.checks(),                  // the upgrade's request side (only when `request` is declared)
+ *   chat.handler({
+ *     say(ws, msg) { chat.publish(ws, ws.data.params.room, "said", { by: "…", text: msg.text }); },
+ *   }),
+ *   chat.options(),
+ * );
  * ```
  *
- * (`chat.checks()` is a GET route handler, not a `use()` middleware: a
- * middleware never sees the path's params, and this one must — the upgrade's
- * `params` check reads them. Register it before the `ws()` route.)
+ * (`chat.checks()` is middleware in the `ws()` chain — a route handler's
+ * `req.params` are bound for the chain, a `use()` middleware's are not, and
+ * the upgrade's `params` check reads them. The two-call form —
+ * `router.get(chat.path, chat.checks())` registered before a plain
+ * `router.ws(chat.path, …)` — is equivalent and stays valid.)
  *
  * - **Incoming**: a text frame is parsed as JSON and received through the
  *   contract's receiver guard; an invalid frame is answered with an error
@@ -111,17 +117,18 @@ export interface Channel<S extends ChannelSpec = ChannelSpec> {
   /** The channel's contract (the `websocket` transport's; `describeContract` reads it). */
   readonly contract: ChannelContract<S>;
   /**
-   * The upgrade request's route handler (register it with
-   * `router.get(chat.path, chat.checks())` **before** the `ws()` route — a
-   * route handler's `req.params` are bound, a `use()` middleware's are not):
-   * checks the channel's `request` schemas (filling `req.valid`) before the
-   * upgrade answers 101, answering 400 itself on a failure. Plain requests
-   * to the path pass through untouched. A passthrough when no `request` is
-   * declared.
+   * The upgrade request's route handler, for the `ws()` chain —
+   * `router.ws(chat.path, chat.checks(), chat.handler(…), chat.options())` —
+   * or registered with `router.get(chat.path, chat.checks())` **before** a
+   * plain `ws()` route (a route handler's `req.params` are bound, a `use()`
+   * middleware's are not): checks the channel's `request` schemas (filling
+   * `req.valid`) before the upgrade answers 101, answering 400 itself on a
+   * failure. Plain requests to the path pass through untouched. A passthrough
+   * when no `request` is declared.
    */
   checks: () => (req: BunRequest, res: BunResponse, next: NextFunction) => void;
   /**
-   * The route options for `router.ws()` (its third argument): the channel's
+   * The route options for `router.ws()` (its trailing argument): the channel's
    * upgrade hook — composing `hook`, the app's own — carrying the channel's
    * subprotocol, when one is declared. `TCustom` is the hook's `custom` type;
    * the channel itself does not read it.

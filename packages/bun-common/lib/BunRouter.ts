@@ -1011,6 +1011,22 @@ export interface ServeHooks<R> {
  */
 type CachedPipelines = Record<string, MatchedLayer[]>;
 
+/**
+ * The middleware chain one `ws(path, …middleware, handler)` call registered —
+ * see {@link BunRouter.ws}.
+ */
+interface WsMiddlewareChain {
+  /** The `BunWebSocket` whose handler map decides the chain's liveness. */
+  socket: BunWebSocket<unknown>;
+  /**
+   * The chain route's live callbacks array — `[guard, …middleware, terminal]`.
+   * A re-registration after `removeRouteHandler` splices the middleware span
+   * in place, so the route (which cannot be removed) keeps its place in the
+   * table.
+   */
+  callbacks: RouterCallback[];
+}
+
 /** Returned by `#run` when the pipeline parked on an unfinished layer. */
 const PARKED: unique symbol = Symbol("parked");
 
@@ -1235,6 +1251,14 @@ export class BunRouter<
    */
   #ownLogger = false;
   private _bunWebSocket?: BunWebSocket;
+
+  /**
+   * The middleware chain of each `ws(path, …middleware, handler)` call, by
+   * route pattern — see {@link ws}. A chain's route is never removed from the
+   * route table (a router route cannot be removed); its guard stands it aside
+   * while the pattern has no live handler.
+   */
+  #wsMiddlewareChains = new Map<string, WsMiddlewareChain>();
 
   /** Router-wide `101` headers — see {@link webSocketUpgradeHeaders}. */
   #webSocketUpgradeHeaders: Headers | undefined = undefined;
@@ -1845,6 +1869,27 @@ export class BunRouter<
    * which is not necessarily this one; a {@link BunHttpAdapter} attaches its
    * own. The upgrade route is in place when this returns.
    *
+   * **Middleware.** Every *function* between `path` and `handler` is
+   * middleware: `ws(path, …middleware, handler, options?)` registers the chain
+   * as a real `GET` route on this router, ahead of the upgrade route — so the
+   * middleware runs before the upgrade answers, and `req.params` is bound for
+   * it, which a `use()` middleware never gets. A middleware that responds (a
+   * `401` from an auth check) ends the request; one that calls `next()` hands
+   * on. Being a `GET` route, the chain runs for a **plain GET** to the path
+   * too: an auth middleware refuses it there (a `401`, not a `404`), and one
+   * that passes it through leaves the request to whatever matches next, or a
+   * `404`. A `ValidatorMiddleware` in the chain types the middleware that
+   * follows it, as on the verb methods.
+   *
+   * {@link BunWebSocket.removeRouteHandler} stands the chain aside with the
+   * socket route: while `path` has no live handler the chain's first callback
+   * skips the rest (`next("route")`), so no middleware is left answering plain
+   * GETs. Registering the path again revives both — the chain with the new
+   * call's middleware, the upgrade route with the new call's options — while a
+   * pattern that is still live keeps the middleware and options it was first
+   * registered with. A path has one middleware route however often it is
+   * registered.
+   *
    * `options.onUpgrade` is the route's {@link WebSocketUpgradeHook}: its
    * `custom` becomes `ws.data.custom`, its `headers` go out on the `101`, and
    * its `data` replaces `ws.data` (with `route`/`params`/`port` filled in from
@@ -1867,7 +1912,8 @@ export class BunRouter<
    * @param options Per-route {@link WebSocketRouteOptions}. Default: none.
    * @throws Error when no `BunWebSocket` is attached — registering a route
    *   that could never upgrade would otherwise fail silently.
-   * @throws TypeError when `handler` is not a handler object.
+   * @throws TypeError when `handler` is not a handler object, or an argument
+   *   fits none of the chain's positions.
    */
   ws<TCustom = unknown>(
     path: string,
@@ -1878,7 +1924,8 @@ export class BunRouter<
    * Registers a WebSocket route whose third argument maps the upgrade request
    * to `ws.data.custom`. The function's result is always `custom`, whatever
    * its shape — `{ data, headers }` included — and `TCustom` is inferred from
-   * it.
+   * it. With middleware the mapping function still comes *after* the handler:
+   * `ws(path, …middleware, handler, customDataToWsClientFn)`.
    *
    * @deprecated Pass `{ onUpgrade }` returning `{ custom }` instead.
    */
@@ -1887,12 +1934,135 @@ export class BunRouter<
     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
     customDataToWsClientFn: WebSocketCustomDataFn<TCustom>,
   ): this;
+  /* --- typed middleware-chain overloads (hand-written, mirroring the
+   * generated verb blocks': one shape position, the validator immediately
+   * before the typed middleware — see scripts/generate-verb-overloads.ts) --- */
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    handler7: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  ws<TPath extends string, TCustom = unknown, TShape = EmptyShape>(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    handler7: RouterHandler,
+    handler8: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  /**
+   * The chain form without validator typing: the functions before the handler
+   * object are middleware, the trailing argument (when given) the options or
+   * the deprecated mapping function. (A tuple union rather than one optional
+   * trailing element: TypeScript allows no optional element after a rest.)
+   */
   ws<TCustom = unknown>(
     path: string,
-    handler: WebSocketHandler<WebSocketClientData<TCustom>>,
-    fnOrOptions?:
-      WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
-  ): this {
+    ...chain:
+      | [
+          ...middleware: RouterHandler[],
+          handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+        ]
+      | [
+          ...middleware: RouterHandler[],
+          handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+          fnOrOptions:
+            WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
+        ]
+  ): this;
+  ws<TCustom = unknown>(path: string, ...args: unknown[]): this {
     const bunWebSocket = this.getBunWebsocket() as
       BunWebSocket<TCustom> | undefined;
     if (!bunWebSocket) {
@@ -1902,8 +2072,51 @@ export class BunRouter<
           "the route on a BunHttpAdapter.",
       );
     }
-    if (!isObject(handler)) {
+
+    // After `path`: every function up to the first object is middleware, the
+    // first object is the handler, and one trailing argument is allowed — an
+    // object the route's options, a function the deprecated
+    // `customDataToWsClientFn`.
+    const middleware: RouterHandler[] = [];
+    let handler: WebSocketHandler<WebSocketClientData<TCustom>> | undefined;
+    let fnOrOptions:
+      | WebSocketRouteOptions<TCustom>
+      | WebSocketCustomDataFn<TCustom>
+      | undefined;
+    for (const arg of args) {
+      if (handler === undefined) {
+        if (isFunction(arg)) {
+          middleware.push(arg as RouterHandler);
+          continue;
+        }
+        if (isObject(arg)) {
+          handler = arg as WebSocketHandler<WebSocketClientData<TCustom>>;
+          continue;
+        }
+        throw new TypeError(
+          `ws("${path}"): expected a middleware function or the handler ` +
+            `object, got ${arg === null ? "null" : typeof arg}.`,
+        );
+      }
+      if (fnOrOptions !== undefined || (!isObject(arg) && !isFunction(arg))) {
+        throw new TypeError(
+          `ws("${path}"): unexpected argument after the handler — one ` +
+            "trailing options object (or deprecated mapping function) is " +
+            "allowed.",
+        );
+      }
+      fnOrOptions = arg as
+        WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>;
+    }
+    if (handler === undefined) {
       throw new TypeError(`ws("${path}"): the handler must be an object.`);
+    }
+
+    // The chain route goes in first, so its layers run ahead of the upgrade
+    // route's. A call without middleware registers nothing — unless the path
+    // has a chain from before, which a revival then replaces with none.
+    if (middleware.length > 0 || this.#wsMiddlewareChains.has(path)) {
+      this.#setWsMiddlewareChain(path, middleware, bunWebSocket);
     }
 
     // `setRouteHandler` is async but registers the route before its first
@@ -1922,6 +2135,77 @@ export class BunRouter<
       });
 
     return this;
+  }
+
+  /**
+   * Registers (or revives) the `GET` middleware route of a {@link ws} call.
+   * One route per path, whose callbacks are `[guard, …middleware, terminal]`:
+   *
+   * - the **guard** stands the whole route aside (`next("route")`) while the
+   *   pattern has no live handler — after `removeRouteHandler`, so no
+   *   middleware is left answering plain GETs once the socket route is gone;
+   * - the **terminal** `next()` hands a passed-through request on, to the
+   *   upgrade route for an upgrade and to a later route or a 404 for a plain
+   *   GET.
+   *
+   * A live pattern keeps the chain it was registered with, as the upgrade
+   * route keeps its first options. A re-registration after removal replaces
+   * the route's middleware in place — the route itself cannot be removed —
+   * and clears the matched-pipeline cache, whose layers captured the old
+   * chain's callbacks.
+   */
+  #setWsMiddlewareChain(
+    path: string,
+    middleware: RouterHandler[],
+    bunWebSocket: BunWebSocket<unknown>,
+  ): void {
+    const existing = this.#wsMiddlewareChains.get(path);
+    if (existing !== undefined) {
+      if (bunWebSocket.hasRouteHandler(path)) {
+        // Live: another handler joins the pattern, and the chain stays as it
+        // was registered — as the upgrade route keeps its first options.
+        return;
+      }
+      existing.socket = bunWebSocket;
+      existing.callbacks.splice(
+        1,
+        existing.callbacks.length - 2,
+        ...middleware,
+      );
+      this.clearRouteCache();
+      return;
+    }
+
+    const chain: WsMiddlewareChain = { socket: bunWebSocket, callbacks: [] };
+    const guard: RouterHandler = (_req, _res, next) => {
+      if (chain.socket.hasRouteHandler(path)) {
+        next();
+        return;
+      }
+      next("route");
+    };
+    const terminal: RouterHandler = (_req, _res, next) => {
+      next();
+    };
+    chain.callbacks = [guard, ...middleware, terminal];
+
+    // An endpoint, so the pipeline binds `req.params` for the chain (a
+    // verb-less layer's are never bound).
+    this.#pendingEndpoint = true;
+    this.setRoute({
+      path,
+      method: "GET",
+      callbacks: chain.callbacks,
+    });
+    // A `ws()` route is not nameable: a following `setName()` keeps failing,
+    // as after a merge.
+    this.#lastRoute = null;
+    // `setRoute` (its response-settings binding) may have re-created the
+    // callbacks array; the splice on revival must hit the route's own.
+    const routes = this.routes();
+    chain.callbacks = routes[routes.length - 1]
+      .callbacks as unknown as RouterCallback[];
+    this.#wsMiddlewareChains.set(path, chain);
   }
 
   addRoute(method: string, ...callbacks: RouterHandler[]): this;

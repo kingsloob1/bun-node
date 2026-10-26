@@ -23,9 +23,9 @@
  *   (the default) a synchronous vendor's mismatch throws to the caller and
  *   nothing is written.
  * - **The upgrade** is a GET, so its `params`/`query`/`headers`/`cookies` are
- *   checked by `checks()` — a route handler registered with `get()` **before**
- *   the `ws()` route (a `use()` middleware never sees the path's params) —
- *   and a failure is a 400, never a 101.
+ *   checked by `checks()` — in the `ws()` chain ahead of the handler (a
+ *   `use()` middleware never sees the path's params) — and a failure is a
+ *   400, never a 101.
  */
 import type { ServerWebSocket } from "bun";
 import type {
@@ -124,7 +124,7 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("The route: checks first, then the WebSocket route");
+step("The route: one ws() call — checks, handler, options");
 
 const adapter = new BunHttpAdapter<Session>(0);
 
@@ -144,11 +144,12 @@ adapter.webSocketAdapter.on("close", (ws) => {
   }
 });
 
-// The upgrade's request checks — a GET route handler, before the ws route.
-adapter.get(chat.path, chat.checks());
-
+// The chain runs before the upgrade answers; `checks()` is the upgrade's
+// request side. (A `get(chat.path, chat.checks())` before a plain `ws()`
+// call is the equivalent two-call form.)
 adapter.ws(
   chat.path,
+  chat.checks(),
   chat.handler({
     say(ws, msg) {
       // `msg` is the parsed data: `{ text: string }`, typed and checked.

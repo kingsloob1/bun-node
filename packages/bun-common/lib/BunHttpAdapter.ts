@@ -3,6 +3,7 @@ import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { EtagOption, SocketFreeExchange } from "./BunResponse";
 import type { FetchInput, ServeHooks } from "./BunRouter";
+import type { ValidatorMiddleware } from "./BunValidate";
 import { drainAndStop, validateCloseDrainTimeout } from "./serverDrain";
 import type {
   CorsOptions as BunCorsOptions,
@@ -15,7 +16,9 @@ import type {
   BunServer,
   BunWebSocketHandlerType,
   BunWebSocketServerType,
+  EmptyShape,
   matchedRoute,
+  MountedHandler,
   NextFunction,
   RouterErrorMiddlewareHandler,
   RouterHandler,
@@ -1000,16 +1003,178 @@ export class BunHttpAdapter<
     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
     customDataToWsClientFn: WebSocketCustomDataFn<TCustom>,
   ): this;
+  /* --- typed middleware-chain overloads (hand-written, mirroring
+   * BunRouter.ws's) --- */
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    handler7: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  override ws<
+    TPath extends string,
+    TCustom = customWebsocketDataType,
+    TShape = EmptyShape,
+  >(
+    path: TPath,
+    handler1: RouterHandler,
+    handler2: RouterHandler,
+    handler3: RouterHandler,
+    handler4: RouterHandler,
+    handler5: RouterHandler,
+    handler6: RouterHandler,
+    handler7: RouterHandler,
+    handler8: RouterHandler,
+    validator: ValidatorMiddleware<TShape>,
+    handler: MountedHandler<"", EmptyShape, TPath, TShape>,
+    wsHandler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
   override ws<TCustom = customWebsocketDataType>(
     path: string,
-    handler: WebSocketHandler<WebSocketClientData<TCustom>>,
-    fnOrOptions?:
-      WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
+    ...chain:
+      | [
+          ...middleware: RouterHandler[],
+          handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+        ]
+      | [
+          ...middleware: RouterHandler[],
+          handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+          fnOrOptions:
+            WebSocketRouteOptions<TCustom> | WebSocketCustomDataFn<TCustom>,
+        ]
+  ): this;
+  override ws<TCustom = customWebsocketDataType>(
+    path: string,
+    ...args: unknown[]
   ): this {
+    // The base re-parses the chain; the cast is its wide overload's tuple.
     return super.ws(
       path,
-      handler,
-      fnOrOptions as WebSocketRouteOptions<TCustom>,
+      ...(args as [
+        ...middleware: RouterHandler[],
+        handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+      ]),
     );
   }
 
