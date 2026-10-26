@@ -52,6 +52,7 @@ import {
   playgroundDriver,
   removeTempData,
 } from "./backend";
+import { mountChatChannel } from "./chat";
 import { startMailer } from "./mailer";
 import { startFlows } from "./flows";
 import { startRunners } from "./runners";
@@ -151,6 +152,10 @@ const ui = jobsUi({
 const app = new BunHttpAdapter();
 // The summoned units' control page (`/playground/compute`) goes on this adapter.
 summoning.mount(app);
+// The validated chat channel (bun-validate V8, chat.ts): one `ws()` call —
+// `app.ws(chat.path, chat.checks(), chat.handler(…), chat.options(…))` — at
+// `/playground/chat/:room`.
+mountChatChannel(app);
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 app.get("/", (_req, res) => res.redirect(ui.basePath));
@@ -281,6 +286,7 @@ bun-node playground (${playgroundBackend()} driver)
   API           ${origin}${api.basePath}/meta
   API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page)
   Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
+  Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
 `);
