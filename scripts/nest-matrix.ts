@@ -11,7 +11,8 @@
  * ```
  *
  * `--prepare` copies this checkout (no `node_modules`, `.git`, `dts`, `dist`)
- * to `<base>/<version>/`, pins every `@nestjs/*` dependency to the version,
+ * to `<base>/<version>/`, pins every `@nestjs/*` dependency to the version
+ * (`NEST_PACKAGE_OVERRIDES` first: `@nestjs/swagger`'s line is not Nest's),
  * widens bun-nest's peer range so the version is admitted, runs `bun install`
  * and asserts the copy resolves `@kingsleyweb/*` from itself and exactly one
  * `@nestjs/core`, at the version. It installs, so it is not a heavy run.
@@ -70,6 +71,29 @@ export const OWN_PACKAGES = [
   "@kingsleyweb/bun-jobs",
   "@kingsleyweb/bun-jobs-ui",
 ] as const;
+
+/**
+ * `@nestjs/*` packages whose line does not move with Nest's, and the version
+ * a column pins them to instead of the column's own. Consulted before the
+ * blanket pin in {@link rewriteManifest} and before the version assertion in
+ * {@link assertResolution}.
+ *
+ * `@nestjs/swagger` (api-docs-generation phase (d); decision of 2026-10-25)
+ * releases off Nest's cadence: the last 11.x is 11.4.6 — the version plan
+ * `docs/plans/api-docs-generation` §8.6 read — so an 11 column pins it to
+ * 11.4.6, not to e.g. 11.2.7, and a 12 column pins it to 12.0.4, the checkout's
+ * own. A column of a major nobody named falls back to the blanket pin.
+ */
+export const NEST_PACKAGE_OVERRIDES: Readonly<
+  Record<string, (version: string) => string>
+> = {
+  "@nestjs/swagger": (version) =>
+    version.startsWith("11.")
+      ? "11.4.6"
+      : version.startsWith("12.")
+        ? "12.0.4"
+        : version,
+};
 
 /** Directories (relative to a copy) from which `@nestjs/core` must resolve to one copy. */
 export const NEST_CONSUMERS = [
@@ -338,8 +362,10 @@ export function widenRange(range: string, version: string): string {
 
 /**
  * Pins every `@nestjs/*` in `dependencies` and `devDependencies` to exactly
- * `version` and, with `widenPeers`, widens the `@nestjs/*` peer ranges that do
- * not admit it. Pure: answers a new manifest and the list of changes.
+ * `version` — or to the package's {@link NEST_PACKAGE_OVERRIDES} entry, which
+ * is consulted first — and, with `widenPeers`, widens the `@nestjs/*` peer
+ * ranges that do not admit it. Pure: answers a new manifest and the list of
+ * changes.
  */
 export function rewriteManifest(
   manifest: Manifest,
@@ -352,9 +378,11 @@ export function rewriteManifest(
     const deps = out[field];
     if (!deps) continue;
     for (const [name, range] of Object.entries(deps)) {
-      if (!name.startsWith("@nestjs/") || range === version) continue;
-      deps[name] = version;
-      changes.push(`${field} ${name}: ${range} -> ${version}`);
+      if (!name.startsWith("@nestjs/")) continue;
+      const pin = NEST_PACKAGE_OVERRIDES[name]?.(version) ?? version;
+      if (range === pin) continue;
+      deps[name] = pin;
+      changes.push(`${field} ${name}: ${range} -> ${pin}`);
     }
   }
   if (options.widenPeers && out.peerDependencies) {
@@ -1000,6 +1028,29 @@ export function assertResolution(version: string, dir: string): CheckResult[] {
         );
       else resolved++;
     }
+  }
+  // A package whose line does not move with Nest's (NEST_PACKAGE_OVERRIDES)
+  // resolves at its override, not at the column's version — assert that where
+  // the copy's bun-nest declares it.
+  const bunNestManifest = JSON.parse(
+    readFileSync(join(dir, "packages", "bun-nest", "package.json"), "utf8"),
+  ) as Manifest;
+  const declared = new Set([
+    ...Object.keys(bunNestManifest.dependencies ?? {}),
+    ...Object.keys(bunNestManifest.devDependencies ?? {}),
+  ]);
+  for (const [name, override] of Object.entries(NEST_PACKAGE_OVERRIDES)) {
+    if (!declared.has(name)) continue;
+    const pin = override(version);
+    const r = resolvePackage(name, join(dir, "packages", "bun-nest"));
+    if (!r) {
+      problems.push(`${name} unresolved from packages/bun-nest`);
+      continue;
+    }
+    if (r.version !== pin)
+      problems.push(`${name} is ${r.version}, not its override ${pin}`);
+    else if (!r.path.startsWith(`${dir}${sep}`))
+      problems.push(`${name} resolves outside the copy: ${r.path}`);
   }
   if (corePaths.size > 1)
     problems.push(

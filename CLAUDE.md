@@ -495,7 +495,10 @@ HEAVY_TICKET=<session>-nest-matrix /tmp/claude-1000/bun-node-heavy-run.sh \
 A copy lives at `~/bun-node-nest-matrix/<version>/` (`--dir` or
 `NEST_MATRIX_DIR`), never under a dot segment such as `~/.cache`: Express's
 `send` refuses every file there, failing two expressCompat probes on both
-majors. `--run` runs bun-nest's suite, a bare `bun --check` in bun-nest,
+majors. `--prepare` pins every `@nestjs/*` to the column's version except the
+few whose line is not Nest's: the script's `NEST_PACKAGE_OVERRIDES` is
+consulted first (`@nestjs/swagger` pins 11.4.6 in an 11 column, 12.0.4 in a
+12 one — api-docs-generation phase (d)). `--run` runs bun-nest's suite, a bare `bun --check` in bun-nest,
 `examples/bun-nest`, bun-jobs-ui's `nest.nest.test.ts` and consumer-check
 (its consumer pinned to the column's Nest, its work in
 `<base>/cc-<version>/`), one line per check with counts, full output in

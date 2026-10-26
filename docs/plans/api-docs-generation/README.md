@@ -1138,9 +1138,12 @@ Where it cannot reach, stated plainly:
   the one place in the plan where 3.0 is the right target, and it is why §4's
   `ConvertContext.dialect` must not be hard-coded to 2020-12 after all — widen
   it to `"draft-2020-12" | "openapi-3.0"`.
-- **`SwaggerModule` was not executed against this.** Everything above is
-  design against a read of `@nestjs/swagger@11.4.6`'s `dist/`. Phase (d) must
-  prove it.
+- **`SwaggerModule` now proven against the adapter.** Phase (d) executed it
+  (2026-10-25, §8.6): setup end-to-end on `BunHttpAdapter`, the scanned
+  document byte-identical to platform-express's. What remains unexecuted is
+  only the bridge's own piece above: `registerComponent`'s named-component
+  hoist, which no public `SwaggerModule` API was found for — that is (g)'s to
+  prove or redesign.
 
 #### 3.8.3 What the decorator can and cannot type — spiked
 
@@ -1808,34 +1811,49 @@ documented recommendation, not a dependency: it is not a peer bun-nest needs,
 and adding it would put a Swagger-shaped API in a package whose job is the
 adapter. If a helper does prove necessary it belongs at `./lib/swagger` with
 `"peers": ["@nestjs/swagger"]` in `consumer-check.json`, exactly the shape
-`./jobs` already uses for `@kingsleyweb/bun-jobs`.
+`./jobs` already uses for `@kingsleyweb/bun-jobs`. Phase (d) executed the
+verification (§8.6, 2026-10-25) and found **no hole**: no helper was built,
+and the recommendation is what the package README ships.
 
 ### 8.6 The `@nestjs/swagger` verification — the bun-nest half is mostly "verify + document"
 
-`@nestjs/swagger` is **not installed in this repo** (`node_modules/@nestjs/`
-holds only `common`, `core`, `websockets`; `bun.lock` has no `swagger`).
-It was read from the global Bun cache at **11.4.6**
-(`~/.bun/install/cache/@nestjs/swagger@11.4.6@@@1/dist/`).
+**Executed 2026-10-25 (phase (d))** — the verification below is no longer a
+read: `packages/bun-nest/__tests__/swagger.nest.test.ts` boots a real Nest app
+on `BunHttpAdapter` and on `@nestjs/platform-express`, and
+`examples/bun-nest/08-openapi/swagger-module.ts` carries the recipe. What the
+first read found is kept here with its citations refreshed to today.
 
-An exhaustive grep of that `dist/` for `httpAdapter.` / `getHttpAdapter()` /
-`useStaticAssets` gives the **complete** adapter surface `SwaggerModule.setup()`
-needs — four members:
+`@nestjs/swagger` is a **devDependency of `packages/bun-nest` and
+`examples/bun-nest`** (12.0.4, pinned; the maintainer's decision of
+2026-10-25 — no peer entry, no declaration import, and no direct
+`swagger-ui-dist`: swagger bundles its own, 5.34.0 at 12.0.4). The checkout
+runs it against Nest 12.2.0; the nest-matrix columns run 11.2.7 with swagger
+**11.4.6** and 12.0.0 with 12.0.4 (its line is not Nest's, so
+`scripts/nest-matrix.ts`'s `NEST_PACKAGE_OVERRIDES` pins it per major, ahead
+of the blanket `@nestjs/*` pin).
 
-| Swagger call | Site | bun-nest |
+An exhaustive grep of the `dist/` that executes — 12.0.4 on the checkout,
+11.4.6 in the 11 column — for `httpAdapter.` / `getHttpAdapter()` /
+`useStaticAssets` gives the **complete** adapter surface
+`SwaggerModule.setup()` needs — four members, unchanged between the two
+versions (12.0.4's sites cited; 11.4.6's identical in kind):
+
+| Swagger call | Site (12.0.4) | bun-nest |
 |---|---|---|
-| `httpAdapter.getType()` | `swagger-module.js:104`, `swagger-scanner.js:25` | **`BunHttpAdapter.ts:1266` returns `"express"`** — so every fastify branch is skipped and the express path is taken throughout |
-| `app.useStaticAssets(path, { prefix })` | `swagger-module.js:112` (express branch) | **`BunHttpAdapter.ts:1172`**, `(path: string, options: ServeStaticOptions)`, reading `options.prefix` — exactly that signature |
-| `httpAdapter.get(path, handler)` | `:146, :160, :197, :198, :199, :203, :210, :221` | **`:1622`** → `registerVerb("get", …)` → `BunRouter.get` |
-| `httpAdapter.getRequestUrl(req)` | `:190` | **`:1188`**, returns `request.originalUrl` (path + search) |
+| `httpAdapter.getType()` | `swagger-module.js:111`, `swagger-scanner.js:25` | **`BunHttpAdapter.ts:3325` returns `"express"`** — so every fastify branch is skipped and the express path is taken throughout |
+| `app.useStaticAssets(path, { prefix })` | `swagger-module.js:123` (express branch) | **`BunHttpAdapter.ts:3145`**, `(path: string, options: ServeStaticOptions)`, reading `options.prefix` — exactly that signature |
+| `httpAdapter.get(path, handler)` | `:157, :171, :208, :209, :210, :214, :221, :232` | **`:3718`** → `registerVerb("get", …)` (`:3526`) → `BunRouter.get` |
+| `httpAdapter.getRequestUrl(req)` | `:201` | **`:3204`**, returns `request.originalUrl` (path + search) |
 
 Plus two members on the raw response, because Swagger's handlers bypass Nest's
-pipeline: `res.type(mime)` (`BunResponse.ts:839`) and `res.send(string)`
-(`:1122`). Both exist.
+pipeline: `res.type(mime)` (`BunResponse.ts:2938`) and `res.send(string)`
+(`:3303`). Both exist.
 
 It never calls `set()`, `enable()`, `engine()`, `setViewEngine()`, `render()`,
 `reply()`, `status()`, `setHeader()`, `isHeadersSent()`, `use()` or
-`getInstance()` — which matters, because `set`/`enable`/`disable`/`engine` do
-**not exist** on `BunHttpAdapter` and `setViewEngine` (`:3036`) is a no-op stub.
+`getInstance()`. When this surface was first read that mattered because those
+members did not exist on `BunHttpAdapter`; the view-engine subsystem has
+landed since, so they now do — and the express path still never touches them.
 
 Two residual risks were flagged and both are now **measured green**:
 
@@ -1848,22 +1866,39 @@ Two residual risks were flagged and both are now **measured green**:
 so (1) `BunRouter`'s path regex ends `/?$`, making `/api/` equivalent to `/api`
 rather than falling through to the static handler, and (2) a handler that calls
 `res.send()` without `next()` terminates the pipeline — the second route did not
-also run.
+also run. The end-to-end run re-measured both, plus what the read could not see:
+the `${finalPath}/LICENSE` route's thrown `NotFoundException` answers a JSON
+**404** on both adapters (not a hang, not a 500), and `@Render("index")` with no
+engine registered answers Nest's 500 `{"statusCode":500,"message":"Internal
+server error"}` on both.
 
-Remaining gaps to close in phase (d), none of them blocking:
+The gaps above are all **closed or answered, 2026-10-25**:
 
-1. `swagger-ui-dist` is not in the repo; the example needs it as a devDependency.
-2. End-to-end `SwaggerModule.setup()` has **not** been executed. Phase (d)'s
-   first task is an example that does, under `examples/bun-nest/`.
-3. `@nestjs/swagger` reads Nest metadata only, so a route registered directly
-   on the adapter (`adapter.get(...)`) is invisible to it — and a route in a
-   Nest controller is invisible to bun-common's `generateOpenApi` unless the
-   path survives `setGlobalPrefix` (**assumed**, unverified). A mixed app needs
-   both documents, or one merged by hand. Say so in the README rather than
-   building a merger.
-4. `@Render()` on a bun-nest app sends a raw file (`render`, `:1105`, is
-   `Bun.file`, not a template engine) — unrelated to Swagger but worth a note
-   beside it.
+1. ~~`swagger-ui-dist` is not in the repo~~ — closed by the decision:
+   `@nestjs/swagger` bundles its own copy (5.34.0 at 12.0.4) and serves it
+   through `useStaticAssets`; nothing imports `swagger-ui-dist` directly.
+2. ~~End-to-end `SwaggerModule.setup()` has not been executed~~ — executed:
+   `__tests__/swagger.nest.test.ts` (12 tests, differential against
+   platform-express, `createDocument` outputs byte-identical) and
+   `examples/bun-nest/08-openapi/swagger-module.ts`, on the checkout (Nest
+   12.2.0, swagger 12.0.4) and in the nest-matrix columns 11.2.7 (swagger
+   11.4.6) and 12.0.0. **No hole found** — no `./lib/swagger` fallback was
+   needed.
+3. The mixed-app assumption is now **measured** (the test's prefix probes):
+   a route registered directly on the adapter is served but never appears in
+   swagger's document, and a Nest controller's route **does** survive
+   `setGlobalPrefix` into bun-common's view — Nest bakes the prefix into the
+   registration, so `listRoutes` sees `GET /v1/users/:id`. The README carries
+   the caveat, including one sharp edge the read missed: `generateOpenApi`
+   over a router that also holds swagger's docs routes throws `ConfigError`
+   (`GET /api`, `GET /api/` and the static mount's `GET /api` share the
+   default operation id `getApi`) — filter the docs mount out or generate
+   from a router that does not hold it.
+4. ~~`@Render()` sends a raw file~~ — **stale**, corrected: `render`
+   (`BunHttpAdapter.ts:2928`) has gone through the view-engine subsystem
+   (`setBaseViewsDir`/`setViewEngine`/`engine`) since that landed; with no
+   engine registered, `@Render("index")` answers the same Nest 500 as
+   platform-express (asserted in the test, noted in the README).
 
 ---
 
@@ -2006,7 +2041,7 @@ before merge. New folders:
 - `examples/bun-nest/08-validate/` (phase g) — `route-decorator.ts`,
   `controller-scope.ts`, `swagger-bridge.ts`, plus `10-options/validate-options.ts`
   per the repo's one-file-per-options-interface convention.
-- `examples/bun-nest/07-openapi/swagger-module.ts` — the end-to-end
+- `examples/bun-nest/08-openapi/swagger-module.ts` — the end-to-end
   `SwaggerModule.setup()` proof from §8.6, skipping visibly
   (`skipped: …`) when `@nestjs/swagger` or `swagger-ui-dist` is absent.
 
@@ -2099,11 +2134,15 @@ Ordered by how much they can hurt.
    (`target, key, index`) has no type link to the parameter. The `Infer<typeof
    Schema>` helper is the answer and it is a genuine ergonomic cost — one
    `typeof` per parameter — that the README must show rather than gloss.
-   **Open question:** is the decorator worth building for a team already happy
-   with DTO classes and `ValidationPipe`? The honest pitch is the *response*
-   half and the swagger bridge, not the request half. If phase (d) finds
-   `@nestjs/swagger` + `ValidationPipe` already satisfying, phase (g) should be
-   dropped rather than shipped for symmetry.
+   **Open question:** is `useSwaggerBridge` worth building for a team already
+   happy with DTO classes and `ValidationPipe`? (`@Validate` itself shipped in
+   bun-validate's V7a/V7b; this question now attaches to the bridge alone.)
+   The honest pitch for the bridge is one declaration feeding both validation
+   and the document — and phase (d) has now **shown** (2026-10-25, §8.6) that
+   `@nestjs/swagger` on `BunHttpAdapter` covers the DTO path whole. What it
+   does not cover is a Standard Schema target: `@Validate({ body: zodSchema })`
+   validates and documents as nothing. If that gap is not worth a bridge to
+   the maintainer, (g) should be dropped rather than shipped for symmetry.
 
 1i. **`@Validate` and a Nest `ValidationPipe` can both own a target.** The
    interceptor runs first, so the pipe sees the parsed value; for a DTO that
@@ -2260,12 +2299,19 @@ Ordered by how much they can hurt.
     throw** on an unsupported target (measured), though the spec says it
     should, so a successful return is not proof the dialect was honoured.
 
-17. **Unverified.** Stated plainly: (a) `SwaggerModule.setup()` has not been
-    executed against `BunHttpAdapter` — the four-method surface is verified by
-    reading `@nestjs/swagger@11.4.6`'s `dist/`, the behaviour is inferred;
-    (b) whether Nest controller paths in `BunRouter.routes()` already carry
-    `setGlobalPrefix`; (c) whether `@nestjs/swagger`'s scanner needs anything
-    from `app.container` that bun-nest's adapter influences; (d) the OpenAPI
+17. **Unverified.** Stated plainly: ~~(a) `SwaggerModule.setup()` has not been
+    executed against `BunHttpAdapter`~~ — **verified 2026-10-25** (phase (d),
+    §8.6): executed end-to-end, document byte-identical to platform-express's,
+    every probe answering alike, on 12.0.4/Nest 12.2.0, 11.4.6/Nest 11.2.7 and
+    12.0.4/Nest 12.0.0; ~~(b) whether Nest controller paths in
+    `BunRouter.routes()` already carry `setGlobalPrefix`~~ — **measured
+    2026-10-25: yes**, `listRoutes` sees `GET /v1/users/:id` (Nest bakes the
+    prefix into the registration); ~~(c) whether `@nestjs/swagger`'s scanner
+    needs anything from `app.container` that bun-nest's adapter influences~~ —
+    **measured 2026-10-25: no**, the scanner reads Nest's own container
+    (`container.getModules()`, `isGlobalModule`) and `app.config`; an app
+    mounting the jobs API module and a WebSocket gateway scans exactly the
+    controllers; (d) the OpenAPI
     3.1.2 / AsyncAPI 3.1.0 version facts in §9.1 are from research, not from a
     fetch I performed — re-check them against `spec.openapis.org` and
     `@asyncapi/specs` before vendoring; (e) TypeBox is widely claimed to ship
@@ -2288,9 +2334,9 @@ engineer-days for someone who wrote this code.
 | **(b) Standard Schema auto-derivation** — **merged 2026-10-25, #529** | ~~`__schemas` on the validator middleware~~ (superseded — the contracts of V1 and V12's `listRoutes` already carry the schemas; decided 2026-10-24); the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
 | **(b1) Response contracts** | `responses` on `BunValidateOptions`; `BunResponse` gains `TResponses`, `status()` narrows, `json()` constrains, `protected setStatusRaw` (§3.7); `TypedRouteHandler`/`MountedHandler` thread `TRes`; runtime checking at response finalisation with bun-jobs' `responseMismatch` semantics (§3.5); `responses.type-test.ts` carrying the spike's four negative controls plus the `send()`/helper-escape boundary cases; `generate-verb-overloads.ts --check` must stay green; `consumer-check` re-run for the `BunResponse` surface change | Declared responses **enforced** at compile time and optionally at runtime. Feeds (a)'s document for free | **4–5** |
 | **(b2) Class DTOs** | `useClassDtos` / `fromDto` (§3.6); widen the four `ValidationSchemas` keys and `RouteDoc.request.*` to `StandardSchemaV1 \| DtoClass`; a `"class-validator"` converter reading the injected `toJsonSchema`; class-validator + class-transformer as **devDependencies** of bun-common for the tests; an `experimentalDecorators`-off negative test proving the documented failure | DTO users reach both validation and the document | **2–3** |
-| **(c) Serving and viewing** — **built 2026-10-25** | `docsRouter()` (names approved 2026-10-25: `docsRouter`, `DocsRouterOptions`, `DocsCdnOptions`, `docsPageHeaders`, `swaggerUiPage`, `asyncApiUiPage`, `resolveDocsCdn`, `ResolvedDocsCdn`, `PinnedAsset`, `AssetIntegrity`, `assetUrl`, bun-common's own `DOCS_CDN`); `docs/html.ts` + `docs/cdn.ts` moved to `lib/docs/viewer.ts` parameterised (pins injected, `requestHeaders` generalising the CSRF line, the document URL resolved per request from `req.baseUrl`); the `viewer` option with five pinned viewers (§7.1's as-built note — Scalar the OpenAPI default, `"swagger-ui"`/`"redoc"`/`"rapidoc"`, the official component the AsyncAPI default); the `./lib/docs/types` browser-safe entry (`OpenApiDocument` + `JsonSchemaLike`) with its `consumer-check` cell and bundle-safety test; CSP/nonce/SRI tests from `api-docs.test.ts` plus the hidden/`authorize`/`req.baseUrl`/thunk tests; every docs route `.describe({ hidden: true })` (as-built); `serving-and-viewing.ts` example; the playground mount. bun-jobs keeps its own pins, shims and routes (`routes/docs.ts` needed no change); its `api-docs.test.ts` passes unmodified | Documents served and browsable, pages off by default | **3–4** |
-| **(d) bun-nest — verify `@nestjs/swagger`** | Execute `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end; close the §8.6 gaps; `examples/bun-nest/07-openapi/swagger-module.ts`; README section covering the mixed-app caveat and the `@Render` note. Only if execution finds a hole: a `./lib/swagger` helper with `"peers"` | A documented, proven path. **Cheapest phase per unit of value** — and the phase that decides whether (g) is worth building | **2–3** |
-| **(g) bun-nest `@Validate` decorator** | The interceptor (§3.8), following `interceptors.ts`'s mixin shape and reusing `transformUploadException`'s error mapping; method **and** class forms with per-target merge; return-type constraint via `TypedPropertyDescriptor`; `useSwaggerBridge` emitting `ApiBody`/`ApiQuery`/`ApiParam`/`ApiHeader`/`ApiResponse` from the §4 registry at `target: "openapi-3.0"`; the `Infer<>` helper; `decorators.ts` grows from one line to a real module; `consumer-check.json` entry; `examples/bun-nest/08-validate/` | One declaration for validation + response contract + document. **Gate on (d)** — see risk 1h | **5–7** |
+| **(c) Serving and viewing** — **merged 2026-10-25, #532** | `docsRouter()` (names approved 2026-10-25: `docsRouter`, `DocsRouterOptions`, `DocsCdnOptions`, `docsPageHeaders`, `swaggerUiPage`, `asyncApiUiPage`, `resolveDocsCdn`, `ResolvedDocsCdn`, `PinnedAsset`, `AssetIntegrity`, `assetUrl`, bun-common's own `DOCS_CDN`); `docs/html.ts` + `docs/cdn.ts` moved to `lib/docs/viewer.ts` parameterised (pins injected, `requestHeaders` generalising the CSRF line, the document URL resolved per request from `req.baseUrl`); the `viewer` option with five pinned viewers (§7.1's as-built note — Scalar the OpenAPI default, `"swagger-ui"`/`"redoc"`/`"rapidoc"`, the official component the AsyncAPI default); the `./lib/docs/types` browser-safe entry (`OpenApiDocument` + `JsonSchemaLike`) with its `consumer-check` cell and bundle-safety test; CSP/nonce/SRI tests from `api-docs.test.ts` plus the hidden/`authorize`/`req.baseUrl`/thunk tests; every docs route `.describe({ hidden: true })` (as-built); `serving-and-viewing.ts` example; the playground mount. bun-jobs keeps its own pins, shims and routes (`routes/docs.ts` needed no change); its `api-docs.test.ts` passes unmodified | Documents served and browsable, pages off by default | **3–4** |
+| **(d) bun-nest — verify `@nestjs/swagger`** — **built 2026-10-25** | Executed `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end (`__tests__/swagger.nest.test.ts`, differential against platform-express; the checkout's Nest 12.2.0 with swagger 12.0.4, and the 11.2.7 and 12.0.0 nest-matrix columns, swagger pinned per major by `NEST_PACKAGE_OVERRIDES`); the §8.6 gaps closed with measured answers; `examples/bun-nest/08-openapi/swagger-module.ts`; the README section (recipe, mixed-app caveat, `setGlobalPrefix`, the `@Render` note, the two-bundles note). **No hole found**, so no `./lib/swagger` helper | A documented, proven path. **Cheapest phase per unit of value** — and the phase that decides whether (g) is worth building | **2–3** |
+| **(g) bun-nest swagger bridge** *(the validation half shipped: `@Validate` landed in bun-validate's V7a/V7b)* | What remains is `useSwaggerBridge` alone (§3.8.2): emitting `ApiBody`/`ApiQuery`/`ApiParam`/`ApiHeader`/`ApiResponse` from `@Validate`'s schemas through the §4 registry at `target: "openapi-3.0"`, the decorators injected structurally. ~~The interceptor, the decorator's method/class forms, the return-type constraint, the `Infer<>` helper, `examples/bun-nest/08-validate/`~~ — shipped with V7a/V7b (`07-validation/`) | One declaration for validation + response contract + document. **Gate on (d)** — see risk 1h | **2–3** |
 | **(e) AsyncAPI 3.0** | Public WS route accessor on `BunWebSocket`; `WsChannelDoc` + `describeChannel()`; the bun-common generator (servers/channels/parameters/messages/operations); bun-nest's metadata explorer reading `MESSAGE_METADATA`/`GATEWAY_OPTIONS`/`PORT_METADATA` and the `MessageEventTypes` envelope; AsyncAPI 3.0 meta-schema test via `@asyncapi/specs`; examples | AsyncAPI for both adapters | **7–9** |
 | **(f) Generic self-hosted viewer** *(deferred, separate decision)* | Extract `bun-jobs-ui/app/screens/docs/{schema,http}` into `@kingsleyweb/bun-api-docs-ui`; migrate bun-jobs-ui onto it; keep its golden WS fixtures as the net | An offline, CSP-strict viewer and one fewer fork | **10–14** |
 
@@ -2317,12 +2363,12 @@ engineer-days for someone who wrote this code.
   than retrofitting it after (c)–(e) ship.
 - **(b2) after (b1), not before**, because `responses` must accept a DTO on the
   day DTOs land, and widening `ValidationSchemas` once is cheaper than twice.
-- **(g) is gated on (d)**, deliberately. (d) will show whether `@nestjs/swagger`
-  plus a `ValidationPipe` already covers what a bun-nest user wants. If it
-  does, (g) should be dropped, not shipped for symmetry — risk 1h. If (g) is
-  built, it must come after (b1)/(b2)/(d) because it is a thin shell over all
-  three: the interceptor is `BunValidate` plus Nest wiring, and the swagger
-  bridge is §4's registry plus a dialect argument.
+- **(g) is gated on (d)**, deliberately — and since `@Validate`'s validation
+  half shipped in bun-validate's V7a/V7b, "(g)" now means `useSwaggerBridge`
+  alone. (d) will show whether `@nestjs/swagger` plus a `ValidationPipe`
+  already covers what a bun-nest user wants. If it does, the bridge should be
+  dropped, not shipped for symmetry — risk 1h. If it is built, it is a thin
+  shell: §4's registry plus a dialect argument.
 
 **Revised total** for the enforcement work the maintainer asked for — (b1) +
 (b2) + (g) — is **11–15 days**, of which (g) is the half most likely to be cut.
