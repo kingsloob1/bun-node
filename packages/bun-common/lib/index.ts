@@ -351,6 +351,18 @@ export {
   type ValidationTarget,
   type ValidatorMiddleware,
 } from "./BunValidate";
+/* ------------------------------------------------------------------ *
+ * Class DTOs (`lib/classDto.ts`, AD phase (b2)): a class-validator /
+ * class-transformer DTO anywhere a schema is accepted, the libraries
+ * injected through `useClassDtos` — never a dependency of the package.
+ * ------------------------------------------------------------------ */
+export {
+  type ClassDtoOptions,
+  type ClassValidatorAdapter,
+  type DtoClass,
+  fromDto,
+  useClassDtos,
+} from "./classDto";
 export {
   type ChunkFraming,
   chunks,

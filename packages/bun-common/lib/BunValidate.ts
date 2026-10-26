@@ -1,5 +1,6 @@
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
+import type { DtoClass } from "./classDto";
 import type { IssueFormat, RunOptions } from "./contract/issues";
 import type {
   AnyContract,
@@ -23,6 +24,7 @@ import type { EmptyShape } from "./types/routeTyping";
 import type { StandardSchemaV1 } from "./types/standardSchema";
 import type { JsonValue } from "./utils/native";
 import { exemptResponseFromGate, installResponseGate } from "./BunResponse";
+import { fromDto, isDtoClass } from "./classDto";
 import { httpTransport } from "./contract/http";
 import { runSchema, validateStandard } from "./contract/issues";
 import { checkProtoKeyRule } from "./contract/protoKeys";
@@ -71,18 +73,18 @@ const VALIDATION_TARGETS: readonly ValidationTarget[] = [
 /** Schemas to apply, keyed by target. Every one is optional. */
 export interface ValidationSchemas {
   /** Validates `req.params` — the values matched out of the path. */
-  params?: StandardSchemaV1;
+  params?: StandardSchemaV1 | DtoClass;
   /** Validates `req.query` — note every value starts as a string. */
-  query?: StandardSchemaV1;
+  query?: StandardSchemaV1 | DtoClass;
   /** Validates `req.body`. Requires body parsing to be enabled. */
-  body?: StandardSchemaV1;
+  body?: StandardSchemaV1 | DtoClass;
   /**
    * Validates the request headers as a plain object, keyed by **lower-case**
    * name (a schema keyed `"Content-Type"` never matches). Never written back:
    * the parsed value is on `req.valid.headers`, and `req.headers` stays the
    * raw view the body parsers, `accepts` and `type-is` read.
    */
-  headers?: StandardSchemaV1;
+  headers?: StandardSchemaV1 | DtoClass;
   /**
    * Validates `req.cookies`: the unsigned cookies, a `j:` cookie already
    * JSON-decoded. Written back, like `query`. Cannot require a signature —
@@ -90,14 +92,14 @@ export interface ValidationSchemas {
    * With `parseCookies: false` (and nothing assigned `req.cookies`) the
    * schema is given `{}`.
    */
-  cookies?: StandardSchemaV1;
+  cookies?: StandardSchemaV1 | DtoClass;
   /**
    * Validates `req.signedCookies`: only cookies whose signature a secret
    * verified, a tampered one as `false`; an unsigned or forged one is absent.
    * The way to require a signature. Written back. Given `{}` with
    * `parseCookies: false`, as `cookies` is.
    */
-  signedCookies?: StandardSchemaV1;
+  signedCookies?: StandardSchemaV1 | DtoClass;
 }
 
 /**
@@ -121,10 +123,16 @@ export interface ValidationTargetValues {
   signedCookies: NonNullable<BunRequest["signedCookies"]>;
 }
 
-/** The output type of a target's schema, or `unknown` when it has none. */
+/**
+ * The output type of a target's schema, or `unknown` when it has none. A
+ * DTO class outputs its instance: `DtoClass<T>` → `T` (its input is
+ * `unknown` — a validator is handed whatever arrived).
+ */
 export type ValidationSchemaOutput<T> = T extends StandardSchemaV1
   ? StandardSchemaV1.InferOutput<T>
-  : unknown;
+  : T extends DtoClass<infer U>
+    ? U
+    : unknown;
 
 /**
  * The targets `S` gives a schema — the only ones a hook can be attached to.
@@ -178,7 +186,9 @@ type TargetResult<
  */
 export type InferValidatedShape<S extends ValidationSchemas, H = unknown> = {
   [
-    K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1 ? K : never
+    K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1 | DtoClass
+      ? K
+      : never
   ]: TargetResult<S, H, K>;
 };
 
@@ -640,7 +650,9 @@ export function toStandardSchema<TInput, TOutput>(
  * because Standard Schema is a spec the schema object itself implements.
  * Verified against zod 4, yup 1.7, valibot 1 and arktype 2, each passed in
  * directly; a library without `~standard` (superstruct 2) is wrapped with
- * {@link toStandardSchema}.
+ * {@link toStandardSchema}, and a class-validator DTO class is accepted
+ * directly once `useClassDtos` has injected the libraries (AD (b2) — see
+ * `lib/classDto.ts`).
  *
  * The produced middleware is an ordinary router handler, so it works on
  * `BunRouter`, `bun-common`'s adapter and `bun-nest`'s adapter alike.
@@ -663,6 +675,12 @@ export class BunValidate<
 > {
   /** Targets that have a schema, in a fixed order for predictable reporting. */
   readonly #targets: ValidationTarget[];
+  /**
+   * The schemas with any DTO class already wrapped by `fromDto` (AD (b2)) —
+   * what the targets, the contract and the handler run against.
+   * `#options.schemas` keeps what the caller passed.
+   */
+  readonly #schemas: ValidationSchemas;
   /** The options given, with every behavioural default filled in. */
   readonly #options: Required<
     Pick<BunValidateOptions<S, H, R, RS>, "onFailure" | "status" | "abortEarly">
@@ -719,11 +737,26 @@ export class BunValidate<
       (target) => !!options.schemas[target],
     );
 
+    // A DTO class in any slot is wrapped as its Standard Schema here, once
+    // (AD (b2)): the contract, the handler and the generated documents then
+    // all see the same schema. With no adapter registered, fromDto throws a
+    // ConfigError naming useClassDtos — deliberate, where a bare class used
+    // to die at request time with a TypeError. DTO validation is always
+    // async (class-validator's API), which the handler already tolerates.
+    const schemas: ValidationSchemas = { ...options.schemas };
+    for (const target of VALIDATION_TARGETS) {
+      const given = schemas[target];
+      if (isDtoClass(given)) {
+        schemas[target] = fromDto(given);
+      }
+    }
+    this.#schemas = schemas;
+
     // Only real Standard Schemas reach the contract; anything else truthy
     // still fails at request time, exactly as it did before the core.
     const inbound: Record<string, StandardSchemaV1> = {};
     for (const target of this.#targets) {
-      const schema = options.schemas[target];
+      const schema = schemas[target];
       if (isSchema(schema)) inbound[target] = schema;
     }
     const mode = options.responseValidation;
@@ -857,8 +890,11 @@ export class BunValidate<
   #handler(
     gate: ResponseContractGate | undefined,
   ): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
-    const { onFailure, status, abortEarly, replace, schemas, formatError } =
+    const { onFailure, status, abortEarly, replace, formatError } =
       this.#options;
+    // The wrapped view: a DTO class reached the handler as its `fromDto`
+    // Standard Schema.
+    const schemas = this.#schemas;
     // Erased for the loop, which handles every target through one code path:
     // each hook only ever receives its own target's raw value and its own
     // schema's output, which is what `ValidationHooks<S>` promised the caller.
@@ -944,7 +980,8 @@ export class BunValidate<
       const run = (from: number): unknown => {
         for (let i = from; i < targets.length; i++) {
           const target = targets[i];
-          const schema = schemas[target];
+          // Wrapped at construction: no DtoClass survives into the run.
+          const schema = schemas[target] as StandardSchemaV1 | undefined;
           if (!schema) {
             continue;
           }

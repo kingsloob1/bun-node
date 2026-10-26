@@ -1,0 +1,6 @@
+{
+  // A consumer on TypeScript 5+ standard decorators: no `experimentalDecorators`,
+  // no `emitDecoratorMetadata`. Bun reads this file when `bun dto.ts` runs with
+  // this directory as the cwd.
+  "compilerOptions": {}
+}

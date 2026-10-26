@@ -32,6 +32,8 @@
 import type { ContractEntry } from "../contract/describe";
 import { isSchema } from "../contract/transport";
 import type { BunRouter } from "../BunRouter";
+import type { DtoClass } from "../classDto";
+import { fromDto, isDtoClass } from "../classDto";
 import { ConfigError } from "../errors";
 import type { LoggerLike } from "../logging";
 import type { ListedRoute } from "../routeModel";
@@ -726,13 +728,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /** A `.describe()` response entry, normalised to the object form. */
 function normalizeResponseDoc(
-  spec: RouteResponseDoc | StandardSchemaV1 | null,
+  spec: RouteResponseDoc | StandardSchemaV1 | DtoClass | null,
 ): RouteResponseDoc | null {
   if (spec === null) return null;
-  // A bare Standard Schema is the shorthand for `{ schema }`. A bare plain
-  // object reads as a RouteResponseDoc — a raw JSON Schema goes under
-  // `schema:` (the two cannot be told apart safely).
-  if (isSchema(spec)) return { schema: spec };
+  // A bare Standard Schema (or a DTO class, AD (b2)) is the shorthand for
+  // `{ schema }`. A bare plain object reads as a RouteResponseDoc — a raw
+  // JSON Schema goes under `schema:` (the two cannot be told apart safely).
+  if (isSchema(spec) || isDtoClass(spec)) return { schema: spec };
   return spec;
 }
 
@@ -878,18 +880,22 @@ export function generateOpenApi(
   /**
    * Converts one schema and shapes it for the document. A schema named by
    * `options.componentName` (or carrying `$id`/`title`) is emitted once under
-   * `components.schemas` and referenced; anything else inlines.
+   * `components.schemas` and referenced; anything else inlines. A raw DTO
+   * class (AD (b2)) is wrapped with `fromDto` first, so the registry's
+   * `"class-validator"` converter reaches the class through the WeakMap —
+   * and an unregistered adapter is the ConfigError naming `useClassDtos`.
    */
   const emitSchema = (
-    schema: StandardSchemaV1 | JsonSchemaLike,
+    schema: StandardSchemaV1 | JsonSchemaLike | DtoClass,
     direction: SchemaDirection,
     where: string,
     route: string | undefined,
   ): JsonSchemaLike => {
+    const given = isDtoClass(schema) ? fromDto(schema) : schema;
     let json: JsonSchemaLike;
-    if (isSchema(schema)) {
+    if (isSchema(given)) {
       // `isSchema` narrows to its guard, not StandardSchemaV1 — cast back.
-      json = toJsonSchema(schema as StandardSchemaV1, {
+      json = toJsonSchema(given as StandardSchemaV1, {
         direction,
         ...(options.converters === undefined
           ? {}
@@ -897,14 +903,14 @@ export function generateOpenApi(
         onWarning: (warning) =>
           warn("operation", `${where}: ${warning.message}`, route),
       });
-    } else if (isPlainObject(schema)) {
-      json = structuredClone(schema);
+    } else if (isPlainObject(given)) {
+      json = structuredClone(given);
     } else {
       warn("operation", `${where}: not a schema; emitted {}`, route);
       json = {};
     }
     const name =
-      options.componentName?.(schema) ??
+      options.componentName?.(given) ??
       (typeof json.$id === "string" ? json.$id : undefined) ??
       (typeof json.title === "string" ? json.title : undefined);
     const lifted = liftComponents(json, {
@@ -950,13 +956,14 @@ export function generateOpenApi(
 
   /** The converted form of a `.describe()`/contract schema, for comparison. */
   const canonicalOf = (
-    schema: StandardSchemaV1 | JsonSchemaLike,
+    schema: StandardSchemaV1 | JsonSchemaLike | DtoClass,
     direction: SchemaDirection,
   ): string => {
-    if (isSchema(schema)) {
+    const given = isDtoClass(schema) ? fromDto(schema) : schema;
+    if (isSchema(given)) {
       // `isSchema` narrows to its guard, not StandardSchemaV1 — cast back.
       return canonicalJson(
-        toJsonSchema(schema as StandardSchemaV1, {
+        toJsonSchema(given as StandardSchemaV1, {
           direction,
           ...(options.converters === undefined
             ? {}
@@ -964,7 +971,7 @@ export function generateOpenApi(
         }),
       );
     }
-    return canonicalJson(schema);
+    return canonicalJson(given);
   };
 
   /* ---------------------------------------------------------------- *
@@ -1092,7 +1099,7 @@ export function generateOpenApi(
           route.key,
         );
       }
-      return isSchema(given)
+      return isSchema(given) || isDtoClass(given)
         ? emitSchema(given, "input", `request.${target}`, route.key)
         : structuredClone(given);
     };
@@ -1381,7 +1388,7 @@ export function generateOpenApi(
 
 /** What {@link buildResponses} takes along, to keep its signature readable. */
 type EmitSchema = (
-  schema: StandardSchemaV1 | JsonSchemaLike,
+  schema: StandardSchemaV1 | JsonSchemaLike | DtoClass,
   direction: SchemaDirection,
   where: string,
   route: string | undefined,
@@ -1404,7 +1411,7 @@ function buildResponses(
   direction: SchemaDirection,
   emitSchema: EmitSchema,
   canonicalOf: (
-    schema: StandardSchemaV1 | JsonSchemaLike,
+    schema: StandardSchemaV1 | JsonSchemaLike | DtoClass,
     direction: SchemaDirection,
   ) => string,
   warn: Warn,

@@ -137,15 +137,28 @@ const builtins: Readonly<Record<string, JsonSchemaConverter>> = {
 /**
  * Registers a converter for a `~standard.vendor`, replacing any built-in one.
  * Process-wide; prefer {@link ToJsonSchemaOptions.converters} for a per-call
- * override. There is deliberately no unregister: pass a per-call converter to
- * step around a registration, and tests restore by re-registering the
- * built-in (they are exported for exactly this).
+ * override. There is deliberately no public unregister: pass a per-call
+ * converter to step around a registration, and tests restore by
+ * re-registering the built-in (they are exported for exactly this). The one
+ * internal exception is {@link unregisterJsonSchemaConverter}, for
+ * `useClassDtos`' test reset — the `"class-validator"` converter is not a
+ * built-in, so nothing can be re-registered to remove it.
  */
 export function registerJsonSchemaConverter(
   vendor: string,
   converter: JsonSchemaConverter,
 ): void {
   registry.set(vendor, converter);
+}
+
+/**
+ * Removes a registered converter. Internal, for `lib/classDto.ts`'s test
+ * reset; never re-exported from `lib/docs/index.ts` or the package root.
+ *
+ * @internal
+ */
+export function unregisterJsonSchemaConverter(vendor: string): void {
+  registry.delete(vendor);
 }
 
 /**

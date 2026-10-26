@@ -22,6 +22,7 @@ import type {
   BunResponseChunk,
   CookieValue,
 } from "../BunResponse";
+import type { DtoClass } from "../classDto";
 import type { WireInput } from "../contract/model";
 import type { ResponseVariants } from "../responseBodies";
 import type { EmptyShape } from "./routeTyping";
@@ -200,7 +201,8 @@ type MediaClass<K> =
 
 /**
  * A status's content map: `opaque(mediaType)` is that media type, never
- * read; any other bare schema is a JSON body; `undefined`: unchecked.
+ * read; any other bare schema — or a DTO class (AD (b2)) — is a JSON body;
+ * `undefined`: unchecked.
  */
 type ContentOf<Sp> = Sp extends null
   ? null
@@ -208,9 +210,11 @@ type ContentOf<Sp> = Sp extends null
     ? { [K in M]: OpaqueDecl }
     : Sp extends StandardSchemaV1
       ? { "application/json": Sp }
-      : Sp extends { content: infer C }
-        ? C
-        : undefined;
+      : Sp extends DtoClass
+        ? { "application/json": Sp }
+        : Sp extends { content: infer C }
+          ? C
+          : undefined;
 
 /** A `chunks()` or `sse()` declaration (a stream checked chunk by chunk, or event by event). */
 interface StreamDecl {
@@ -239,6 +243,17 @@ type StreamBody =
 type StreamSend =
   StreamBody | string | ArrayBufferView | ArrayBufferLike | Blob;
 
+/**
+ * What a sender is held to for one declared schema: a DTO class's instance
+ * (the handler built it; AD (b2)), a schema's {@link WireInput} otherwise.
+ */
+type WireOf<V> =
+  V extends DtoClass<infer T>
+    ? T
+    : V extends StandardSchemaV1
+      ? WireInput<V>
+      : never;
+
 /** What `json()` takes for a content map: the bodies of its JSON (or wildcard) keys. */
 type JsonOf<C> = C extends null
   ? never
@@ -248,8 +263,8 @@ type JsonOf<C> = C extends null
         [K in keyof C]: MediaClass<K> extends "json" | "any"
           ? C[K] extends StreamDecl
             ? never
-            : C[K] extends StandardSchemaV1
-              ? WireInput<C[K]>
+            : C[K] extends StandardSchemaV1 | DtoClass
+              ? WireOf<C[K]>
               : never
           : never;
       }[keyof C];
@@ -265,10 +280,10 @@ type SendOne<K, V> = V extends null
     ? BunResponseBody
     : V extends StreamDecl
       ? StreamSend
-      : V extends StandardSchemaV1
+      : V extends StandardSchemaV1 | DtoClass
         ? MediaClass<K> extends "json" | "text"
-          ? WireInput<V>
-          : WireInput<V> | Blob | ArrayBufferView | ArrayBufferLike
+          ? WireOf<V>
+          : WireOf<V> | Blob | ArrayBufferView | ArrayBufferLike
         : never;
 
 /** What `send()` takes for a content map: every media key's body. */
@@ -279,14 +294,18 @@ type SendOf<C> = C extends null
     : { [K in keyof C]: SendOne<K, C[K]> }[keyof C];
 
 /** Declared response headers: lower-case name to the value. */
-type HeadersOf<Sp> = Sp extends { headers: infer H extends StandardSchemaV1 }
-  ? WireInput<H>
+type HeadersOf<Sp> = Sp extends {
+  headers: infer H extends StandardSchemaV1 | DtoClass;
+}
+  ? WireOf<H>
   : EmptyShape;
 
 /** Declared `Set-Cookie`s: name to the value `res.cookie()` takes. */
-type CookiesOf<Sp> = Sp extends { cookies: infer C extends StandardSchemaV1 }
+type CookiesOf<Sp> = Sp extends {
+  cookies: infer C extends StandardSchemaV1 | DtoClass;
+}
   ? {
-      [N in keyof WireInput<C>]: WireInput<C>[N] extends { value: infer V }
+      [N in keyof WireOf<C>]: WireOf<C>[N] extends { value: infer V }
         ? V
         : never;
     }
