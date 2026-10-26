@@ -602,10 +602,19 @@ const accepted = await call("POST", "/queues/jobs/jobs", {
 checkEqual("good data is added: 201", accepted.status, 201);
 
 const listed = await call<DefinitionListDto>("GET", "/definitions");
+const listedItem = listed.body.items.find(
+  (item) => item.name === "sendWelcome",
+);
 checkEqual(
-  "GET /definitions serves the plain options, never the schema",
-  listed.body.items.find((item) => item.name === "sendWelcome"),
+  "GET /definitions serves the plain options, never among them the schema",
+  listedItem && { name: listedItem.name, options: listedItem.options },
   { name: "sendWelcome", options: { attempts: 5 } },
+);
+check(
+  "and publishes the definition's JSON Schema (V5b)",
+  listedItem?.schema?.data?.type === "object" &&
+    typeof listedItem.schema.data.properties === "object",
+  listedItem?.schema,
 );
 
 /* ------------------------------------------------------------------ */
