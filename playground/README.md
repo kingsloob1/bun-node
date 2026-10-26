@@ -15,6 +15,7 @@ PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts     # seed only, no new jobs
 PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgroup (Linux, cgroup v2)
 PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
 PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
+bun playground/nest-gateway.ts                           # the validated Nest gateway (V9), on its own port (PORT_NEST, default 4001)
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -45,7 +46,21 @@ can reach it, so never expose it.
 | `/jobs-api` | the management API, with its live-events socket on the same port |
 | `/playground/compute` | the summoned units: every child process the library's `localCompute()` started for the playground, with its provider status, and buttons that inject a fault into one queue's next unit; every queue's summon status (`GET /jobs-api/summon`), the `onSummonFailed` alerts, and a budget reset (see "Summoning" below) |
 | `/playground/docs` | AD (c)'s `docsRouter`: the adapter's OpenAPI document as JSON (`/playground/docs/openapi.json`, re-generated live per request — the same one `/playground/openapi.json` shows with its warnings) plus a Redoc viewer page; behind the playground's allow-everything auth, and hidden from the document itself |
+| `/playground/chat/:room` | a validated WebSocket chat channel (bun-validate V8's `defineChannel`, `chat.ts`), mounted with one `ws()` call: the upgrade's room name is checked against the channel's `request` schema (a bad one — `/playground/chat/Lobby` — is a 400, never a 101), every text frame is parsed and checked against its `type` (`say` with data, `typing` without; an invalid frame is answered with a value-free `VALIDATION` error frame, an unknown type with `UNKNOWN_MESSAGE`), and `send`/`publish` are typed and checked. It appears in `/playground/routes` as `GET /playground/chat/:room` with its `websocket` contract's rows; OpenAPI documents HTTP only, so each document generation collects one "skipped" warning for it (in the response's `warnings` array — never logged, however often the docs thunk regenerates). Poke it: `bunx wscat -c 'ws://localhost:4000/playground/chat/lobby?name=ada'`, then `{"type":"say","data":{"text":"hi"}}` |
 | `/` | redirects to `/jobs` |
+
+**A validated Nest gateway, on its own port** (`nest-gateway.ts`, bun-validate
+V9). The playground is not a Nest app, so `index.ts` never imports this file;
+run it directly and it boots a minimal Nest app on `PORT_NEST` (default 4001),
+with one gateway using `@ValidateMessage(Say, { ack: SayAck })` (the payload
+checked, the parsed value written back to `@MessageBody()`, each returned ack
+checked) and `@Emits` + `TypedSocket` (the server's events declared and
+checked, `typing` a `null` entry taking no payload), the
+`ValidationExceptionFilter` emitting every refusal as an `exception` frame
+(`{ status: 400, code: "VALIDATION", issues }`, value-free). It speaks the
+adapter's packet format — `{"type":2,"namespace":"/","data":["say",{"text":"hi"}],"id":1}`
+is answered with a `said` event and a `{"type":3,"id":1,…}` ack; the header of
+`nest-gateway.ts` has a `bun -e` one-liner.
 
 **Services and workers.** Two `BunJobs` contexts share one driver instance,
 so the Workers page has two services to group (`index.ts`, `mailer.ts`):
@@ -459,5 +474,7 @@ that detail, until a registration or a Reset clears it.
 - Open a completed `renders` job and a completed `obinna-queue` job: `env.hostSecret: "kept out"` beside `hostEnv: "inherited"`.
 - `tail -f playground/.data/units-*.log`: every media unit's output, as `output: { file }` appends it.
 - `PLAYGROUND_DRIVER=sqlite` and restart: everything is still there.
+- Connect two WebSocket clients to `/playground/chat/lobby?name=ada` and `?name=bob` (the banner's URL): ada's `{"type":"say","data":{"text":"hi"}}` reaches bob by `publish` and ada by `send`; `{"type":"say","data":{"text":42}}` is answered with a `VALIDATION` error frame whose issues never carry the bad value, and the socket stays open; `/playground/chat/Lobby` never upgrades (400).
+- `bun playground/nest-gateway.ts` beside the playground, then send it `{"type":2,"namespace":"/","data":["say",{"text":"hi"}],"id":1}`: a `said` event and the ack come back checked; `"data":["say",{"text":42}]` earns an `exception` frame, no ack.
 
 Ctrl+C stops it cleanly (it waits up to 2 s for a running report).
