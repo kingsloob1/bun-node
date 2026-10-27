@@ -58,21 +58,36 @@ decisions, all answered 2026-10-27:
 PRs: PR-C1 first (the core, the memory driver, the conformance kit, V10),
 then the plan's order; PR-C8–C11 per the above.
 
-**PR-C1 built 2026-10-27** (branch `feat/bun-cache-c1-core`, awaiting the
-maintainer's commit): the package skeleton (the dts recipe, consumer-check,
-the packaging test, the typecheck entry), the core (`createCache`, the header,
-the codecs, compression, namespaces and versions, long-key hashing,
-single-flight `getOrSet`/`wrap` with the lock, SWR/SIE/soft and hard
-timeouts/`refreshAhead`/`earlyExpiry`/jitter/negative caching, tags in index
-mode with the fence — plus the stamps-mode read check, pulled forward so the
-kit proves both modes — counters, events, `stats()`, the failure policy and
-circuit, V10's `validate`), the memory driver, the conformance kit with
-`faulty` and `fakeClock`, the README, `examples/bun-cache/`, and the
-playground's `/playground/cache/*` demo. Two additions to the approved §21
-surface, both noted in the PR: `CacheDriver.getCounter` (so `get` on a
-counter key can answer, §3.8) and `CacheDriver.onEviction` (so the memory
-driver's caps reach the `evict` event). `onLockTimeout: "throw"` throws
-`LoaderTimeoutError` (the approved names list no lock error).
+**PR-C1 merged 2026-10-27, #544**: the package skeleton (the dts recipe,
+consumer-check, the packaging test, the typecheck entry), the core
+(`createCache`, the header, the codecs, compression, namespaces and versions,
+long-key hashing, single-flight `getOrSet`/`wrap` with the lock, SWR/SIE/soft
+and hard timeouts/`refreshAhead`/`earlyExpiry`/jitter/negative caching, tags
+in index mode with the fence — plus the stamps-mode read check, pulled
+forward so the kit proves both modes — counters, events, `stats()`, the
+failure policy and circuit, V10's `validate`), the memory driver, the
+conformance kit with `faulty` and `fakeClock`, the README,
+`examples/bun-cache/`, and the playground's `/playground/cache/*` demo. Two
+additions to the approved §21 surface, both noted in the PR:
+`CacheDriver.getCounter` (so `get` on a counter key can answer, §3.8) and
+`CacheDriver.onEviction` (so the memory driver's caps reach the `evict`
+event). `onLockTimeout: "throw"` throws `LoaderTimeoutError` (the approved
+names list no lock error).
+
+**PR-C2 in progress** (branch `feat/bun-cache-c2-file-driver`; the file
+driver, stamp-mode tags, and the kit's two deferred passes — the two-process
+pass and the bus-gap case — enabled). **Issue found 2026-10-27, being fixed:**
+the file driver's increment deadlocks under contention — the conformance
+kit's "increment is atomic under 200 concurrent callers" times out at its
+5 s cap, and its "two processes increment the same counter exactly" leaves
+the cross-process worker hanging until killed (the plain two-process lock
+case passes). The driver's verify-read-back instrumentation (a phantom
+create was measured under a 200-way herd: an acquire returned success while
+the file at the path held another holder's content) could not be reproduced
+in a pure `link()` loop over 200k cycles, so it is **not** a Bun-runtime bug
+and no `oven-sh/bun` issue was filed — the bug is ours, in the
+increment-under-contention lock path. Two agent runs hit the 2-hour ceiling
+on it before the deadlock was pinned.
 
 ### Contents
 
