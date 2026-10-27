@@ -43,6 +43,20 @@ export interface ConformanceOptions {
    * driver's advertised `capabilities.maxEntryBytes`, capped at 1 MiB.
    */
   maxEntryBytes?: number;
+  /**
+   * How the two-process pass builds the same driver in a child process
+   * (§6.2): the child imports `module`, calls its `export` with `options`,
+   * and must get a driver on the same backend. Required when the driver
+   * advertises `multiProcess`; a `multiProcess: true` claim without it fails
+   * the pass rather than skipping it.
+   */
+  crossProcess?: ConformanceCrossProcess;
+  /**
+   * Forces a gap in a polled bus's log (a compaction, a truncation). Required
+   * when the driver advertises `bus: "poll"`; the bus-gap case fails without
+   * it.
+   */
+  busGap?: () => unknown | Promise<unknown>;
   /** Cases to skip, each with a reason printed in the skip line. */
   skip?: readonly {
     /** The case id, e.g. `"increment"`. */
@@ -50,6 +64,16 @@ export interface ConformanceOptions {
     /** Why, for the report. */
     reason: string;
   }[];
+}
+
+/** How the kit's two-process pass builds the driver's twin in a child process. */
+export interface ConformanceCrossProcess {
+  /** The absolute path of the module the child imports for the factory. */
+  module: string;
+  /** The export the factory lives under; defaults to `"default"`. */
+  export?: string;
+  /** The options the child passes to the factory — the same backend as the driver's. */
+  options?: unknown;
 }
 
 /** Deterministic bytes of `size`, cycling every byte value. */
@@ -78,6 +102,76 @@ function entry(
 /** Waits for `ms` of real time. */
 async function wait(ms: number): Promise<void> {
   await Bun.sleep(ms);
+}
+
+/** Waits until `condition` holds, checking every 10 ms; throws after `timeoutMs`. */
+async function waitFor(
+  what: string,
+  condition: () => boolean,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out waiting for: ${what}`);
+    }
+    await wait(10);
+  }
+}
+
+/** The kit's cross-process cases: the child side, spawned with the job. */
+async function spawnWorker(job: {
+  /** The harness the caller gave the kit. */
+  harness: ConformanceCrossProcess;
+  /** What to do. */
+  op: "increment" | "lock" | "stamps";
+  /** The namespace to work in. */
+  ns: string;
+  /** The key (increment, lock). */
+  key?: string;
+  /** The tag (stamps). */
+  tag?: string;
+  /** How many increments or lock attempts. */
+  count?: number;
+  /** The owner prefix (lock). */
+  ownerPrefix?: string;
+}): Promise<{ results?: number[]; acquired?: number; winners?: string[] }> {
+  const workerPath = new URL("./crossprocess-worker.ts", import.meta.url)
+    .pathname;
+  const child = Bun.spawn({
+    cmd: [
+      process.execPath,
+      workerPath,
+      JSON.stringify({
+        module: job.harness.module,
+        export: job.harness.export,
+        options: job.harness.options,
+        op: job.op,
+        ns: job.ns,
+        key: job.key,
+        tag: job.tag,
+        count: job.count,
+        ownerPrefix: job.ownerPrefix,
+      }),
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(
+      `the cross-process worker exited ${exitCode}: ${stderr.trim()}`,
+    );
+  }
+  return JSON.parse(stdout) as {
+    results?: number[];
+    acquired?: number;
+    winners?: string[];
+  };
 }
 
 /**
@@ -453,20 +547,125 @@ export async function runCacheDriverConformance(
           at: Date.now(),
         };
         await driver.publish!(message);
-        await wait(20);
+        await waitFor("the published message", () => received.length === 1);
         expect(received).toEqual([message]);
         await unsubscribe();
         await driver.publish!({ ...message, at: Date.now() });
-        await wait(20);
+        await wait(300);
         expect(received.length).toBe(1);
       },
     );
 
-    // The two-process pass (increment, lock and the fence from two processes,
-    // bun-jobs' spawn.ts pattern) lands with the first driver that advertises
-    // multiProcess — the file driver, PR-C2 (§6.2). Until then the case is a
-    // visible skip for every driver, advertised or not, so no `multiProcess:
-    // true` claim goes unchecked without anyone noticing.
-    test.skip("cross-process pass — skipped: the two-process harness lands with the first multi-process driver (PR-C2)", () => {});
+    kase(
+      "multiprocess.increment",
+      "two processes increment the same counter exactly",
+      driver.capabilities.multiProcess && driver.capabilities.atomicIncrement,
+      async () => {
+        const harness = options.crossProcess;
+        expect(
+          harness,
+          "the driver advertises multiProcess: give the kit `crossProcess` ({ module, export, options }) so the pass can spawn a second process",
+        ).toBeDefined();
+        const namespace = ns();
+        const child = spawnWorker({
+          harness: harness!,
+          op: "increment",
+          ns: namespace,
+          key: "c",
+          count: 100,
+        });
+        const mine = await Promise.all(
+          Array.from(
+            { length: 100 },
+            async () => await driver.increment!(namespace, "c", 1, null),
+          ),
+        );
+        const theirs = await child;
+        const all = [...mine, ...(theirs.results ?? [])];
+        expect(new Set(all).size).toBe(200);
+        expect(Math.max(...all)).toBe(200);
+        expect(Math.min(...all)).toBe(1);
+      },
+    );
+
+    kase(
+      "multiprocess.lock",
+      "two processes contending a lock take it exactly once",
+      driver.capabilities.multiProcess && driver.capabilities.lock,
+      async () => {
+        const harness = options.crossProcess;
+        expect(
+          harness,
+          "the driver advertises multiProcess: give the kit `crossProcess` ({ module, export, options }) so the pass can spawn a second process",
+        ).toBeDefined();
+        const namespace = ns();
+        const child = spawnWorker({
+          harness: harness!,
+          op: "lock",
+          ns: namespace,
+          key: "k",
+          count: 25,
+          ownerPrefix: "c-",
+        });
+        const mine = await Promise.all(
+          Array.from({ length: 25 }, (_, index) =>
+            driver.acquireLock!(namespace, "k", `p-${index}`, 60_000),
+          ),
+        );
+        const theirs = await child;
+        expect(mine.filter(Boolean).length + (theirs.acquired ?? 0)).toBe(1);
+        // Release whoever won, by every name tried on either side.
+        for (let index = 0; index < 25; index++) {
+          await driver.releaseLock!(namespace, "k", `p-${index}`);
+          await driver.releaseLock!(namespace, "k", `c-${index}`);
+        }
+      },
+    );
+
+    kase(
+      "multiprocess.stamps",
+      "a stamp written by another process is visible here",
+      driver.capabilities.multiProcess,
+      async () => {
+        const harness = options.crossProcess;
+        expect(
+          harness,
+          "the driver advertises multiProcess: give the kit `crossProcess` ({ module, export, options }) so the pass can spawn a second process",
+        ).toBeDefined();
+        const namespace = ns();
+        const tag = `tag-${process.pid}`;
+        await spawnWorker({
+          harness: harness!,
+          op: "stamps",
+          ns: namespace,
+          tag,
+        });
+        const stamps = await driver.getStamps(namespace, [tag]);
+        expect(stamps.has(tag)).toBe(true);
+      },
+    );
+
+    kase(
+      "bus.gap",
+      "a gap in the polled log is signalled to subscribers",
+      driver.capabilities.bus === "poll",
+      async () => {
+        const gap = options.busGap;
+        expect(
+          gap,
+          "the driver advertises a polled bus: give the kit `busGap` (a function that forces a gap in its log)",
+        ).toBeDefined();
+        let gaps = 0;
+        const unsubscribe = await driver.subscribe!(
+          () => {},
+          () => {
+            gaps++;
+          },
+        );
+        await gap!();
+        await waitFor("the gap to be signalled", () => gaps > 0);
+        await unsubscribe();
+      },
+    );
   });
 }

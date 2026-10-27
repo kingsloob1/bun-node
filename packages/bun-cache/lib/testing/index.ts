@@ -10,6 +10,7 @@ export { fakeClock } from "./clock";
 export type { FakeClock } from "./clock";
 export { runCacheDriverConformance } from "./conformance";
 export type {
+  ConformanceCrossProcess,
   ConformanceFactory,
   ConformanceInstance,
   ConformanceOptions,
