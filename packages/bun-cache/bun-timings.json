@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/core/stale.test.ts": 740,
+    "__tests__/core/flight.test.ts": 475,
+    "__tests__/testing/helpers.test.ts": 408,
+    "__tests__/core/cache.test.ts": 382,
+    "__tests__/core/policy.test.ts": 364,
+    "__tests__/core/validate.test.ts": 360,
+    "__tests__/drivers/memory.test.ts": 342,
+    "__tests__/core/tags.test.ts": 335,
+    "__tests__/drivers/simple.test.ts": 333,
+    "__tests__/core/codec.test.ts": 329,
+    "__tests__/core/events.test.ts": 314,
+    "__tests__/core/header.test.ts": 293,
+    "__tests__/core/counters.test.ts": 275,
+    "__tests__/packaging.test.ts": 51
+  }
+}

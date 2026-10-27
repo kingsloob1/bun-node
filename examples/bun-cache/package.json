@@ -1,0 +1,13 @@
+{
+  "name": "bun-node-examples-bun-cache",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runnable, commented examples for @kingsleyweb/bun-cache: the core API, getOrSet and staleness, typed caches and runtime-checked reads",
+  "scripts": {
+    "all": "bun run-all.ts",
+    "lint": "bun lint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
+  }
+}

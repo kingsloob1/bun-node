@@ -289,7 +289,13 @@ describe("build-declarations copies", () => {
       join(ROOT, "scripts/build-declarations.ts"),
       "utf8",
     );
-    for (const pkg of ["bun-nest", "bun-jobs", "bun-jobs-ui"]) {
+    for (const pkg of [
+      "bun-nest",
+      "bun-jobs",
+      "bun-jobs-ui",
+      "bun-api-docs-ui",
+      "bun-cache",
+    ]) {
       const theirs = await readFile(
         join(ROOT, "..", pkg, "scripts/build-declarations.ts"),
         "utf8",
