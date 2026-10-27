@@ -58,6 +58,22 @@ decisions, all answered 2026-10-27:
 PRs: PR-C1 first (the core, the memory driver, the conformance kit, V10),
 then the plan's order; PR-C8–C11 per the above.
 
+**PR-C1 built 2026-10-27** (branch `feat/bun-cache-c1-core`, awaiting the
+maintainer's commit): the package skeleton (the dts recipe, consumer-check,
+the packaging test, the typecheck entry), the core (`createCache`, the header,
+the codecs, compression, namespaces and versions, long-key hashing,
+single-flight `getOrSet`/`wrap` with the lock, SWR/SIE/soft and hard
+timeouts/`refreshAhead`/`earlyExpiry`/jitter/negative caching, tags in index
+mode with the fence — plus the stamps-mode read check, pulled forward so the
+kit proves both modes — counters, events, `stats()`, the failure policy and
+circuit, V10's `validate`), the memory driver, the conformance kit with
+`faulty` and `fakeClock`, the README, `examples/bun-cache/`, and the
+playground's `/playground/cache/*` demo. Two additions to the approved §21
+surface, both noted in the PR: `CacheDriver.getCounter` (so `get` on a
+counter key can answer, §3.8) and `CacheDriver.onEviction` (so the memory
+driver's caps reach the `evict` event). `onLockTimeout: "throw"` throws
+`LoaderTimeoutError` (the approved names list no lock error).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

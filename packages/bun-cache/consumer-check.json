@@ -1,0 +1,76 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-cache writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-cache` from the repo root. Every spelling here worked at some point; removing one hides a regression.",
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-cache",
+      "values": [
+        "createCache",
+        "memoryDriver",
+        "fromSimpleDriver",
+        "CacheDriverError",
+        "CircuitOpenError",
+        "LoaderTimeoutError",
+        "UnsupportedOperationError",
+        "EntryTooLargeError"
+      ],
+      "types": [
+        "Cache",
+        "CreateCacheOptions",
+        "CacheDriver",
+        "CacheDriverCapabilities",
+        "StoredEntry",
+        "TagFence",
+        "BusMessage",
+        "Codec",
+        "CacheEventMap",
+        "CacheEvent",
+        "CacheStats",
+        "CacheSchemaFrom",
+        "CacheEntry",
+        "SetOptions",
+        "GetOrSetOptions",
+        "CacheLoader"
+      ],
+      "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib",
+      "values": ["createCache", "memoryDriver"],
+      "types": ["Cache", "CacheDriver"]
+    },
+    {
+      "$comment": "The conformance kit and the fault-injection/clock helpers (plan §6.2, §13.1). It imports bun:test, so a consumer checks it with Bun's types.",
+      "spelling": "@kingsleyweb/bun-cache/testing",
+      "values": ["runCacheDriverConformance", "faulty", "fakeClock"],
+      "types": [
+        "ConformanceFactory",
+        "ConformanceOptions",
+        "FaultOptions",
+        "FaultyDriver",
+        "FakeClock",
+        "CacheDriver",
+        "StoredEntry"
+      ],
+      "snippet": "declare const driver: t.CacheDriver;\nconst wrapped: t.FaultyDriver = m.faulty(driver, { failOn: [\"get\"] });\nwrapped.setFaults({ down: true });\nvoid m.runCacheDriverConformance(\"memory\", () => ({ driver: wrapped }));\nexport type _clockNotAny = Expect<IsAny<ReturnType<typeof m.fakeClock>>>;\nconst clock = m.fakeClock();\nclock.advance(1000);\nexport type _nowReturns = Equal<ReturnType<typeof clock.now>, number>;\nexport type _storedEntryNotAny = Expect<IsAny<t.StoredEntry>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/testing",
+      "values": ["runCacheDriverConformance", "faulty", "fakeClock"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/drivers",
+      "values": ["memoryDriver"],
+      "types": ["MemoryDriverOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/core/cache",
+      "values": ["createCache"],
+      "types": ["CreateCacheOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/index",
+      "values": ["createCache"]
+    }
+  ],
+  "workspaceDependencies": ["packages/bun-common"]
+}

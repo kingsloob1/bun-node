@@ -15,12 +15,12 @@
  *
  * Each project runs through Bun's type checker (Bun ≥ 1.4.3; the repo's
  * development floor is 1.4.4, for `bun lint` and `bun fmt`), which reports
- * the same errors as `tsc --noEmit` on every core: measured on all 17
- * projects, the same verdict as the tsc version of this script in 7–10 s
- * against 109–112 s (the user's decision, 2026-10-10). The projects run one
- * after another rather than at once: each check already uses every core, and
- * 17 of them together saved about 2 s while putting 17 × 16 threads on a
- * shared machine.
+ * the same errors as `tsc --noEmit` on every core: measured when this script
+ * moved to `bun check`, the same verdict as the tsc version of this script
+ * in 7–10 s against 109–112 s (the user's decision, 2026-10-10). The projects
+ * run one after another rather than at once: each check already uses every
+ * core, and running them together saved about 2 s while putting 17 × 16
+ * threads on a shared machine.
  *
  * It runs `bun --check` in the project's directory, not `bun check -p`:
  * `bun check` runs the nearest `package.json`'s `check` script when there is
@@ -49,12 +49,14 @@ export const PROJECTS = [
   "packages/bun-jobs-ui/tsconfig.json",
   "packages/bun-jobs-ui/app/tsconfig.json",
   "packages/bun-api-docs-ui/tsconfig.json",
+  "packages/bun-cache/tsconfig.json",
   "benchmarks/tsconfig.json",
   "playground/tsconfig.json",
   "examples/bun-jobs/tsconfig.json",
   "examples/bun-common/tsconfig.json",
   "examples/bun-nest/tsconfig.json",
   "examples/bun-jobs-ui/tsconfig.json",
+  "examples/bun-cache/tsconfig.json",
   "packages/bun-jobs-ui/__tests__/app/pkg/tsconfig.json",
   // The repo's view of `templates/compute-provider/`, whose own config is a
   // plugin author's (no source condition). Needs `bun install` there first.

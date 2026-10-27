@@ -86,7 +86,7 @@ These are the ones a mistake cannot undo:
 From [`CLAUDE.md`](CLAUDE.md), "Dev workflow", which has the details:
 
 ```bash
-bun scripts/typecheck.ts        # every project (18), with bun check — must be clean
+bun scripts/typecheck.ts        # every project (21), with bun check — must be clean
 # in each changed package or examples directory:
 bun run check && bun run lint && bun run format:check && bun run test
 ```

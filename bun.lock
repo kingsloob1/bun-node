@@ -55,6 +55,27 @@
         "@types/bun",
       ],
     },
+    "packages/bun-cache": {
+      "name": "@kingsleyweb/bun-cache",
+      "version": "0.1.0",
+      "dependencies": {
+        "@kingsleyweb/bun-common": "^2.2.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.4.2",
+        "bun-types": "^1.4.3",
+        "typescript": "^6.0.3",
+        "zod": "^4",
+      },
+      "peerDependencies": {
+        "@types/bun": ">=1.4.2",
+        "typescript": "^5.9.3 || ^6.0.0",
+      },
+      "optionalPeers": [
+        "@types/bun",
+        "typescript",
+      ],
+    },
     "packages/bun-common": {
       "name": "@kingsleyweb/bun-common",
       "version": "2.2.0",
@@ -556,6 +577,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@kingsleyweb/bun-api-docs-ui": ["@kingsleyweb/bun-api-docs-ui@workspace:packages/bun-api-docs-ui"],
+
+    "@kingsleyweb/bun-cache": ["@kingsleyweb/bun-cache@workspace:packages/bun-cache"],
 
     "@kingsleyweb/bun-common": ["@kingsleyweb/bun-common@workspace:packages/bun-common"],
 
