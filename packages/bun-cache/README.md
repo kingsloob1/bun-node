@@ -29,9 +29,17 @@ What has landed (PR-C1), and is documented below:
 - the **memory driver**, and the **conformance kit** for custom drivers
   (`@kingsleyweb/bun-cache/testing`)
 
-Next, in the plan's order: the file driver (PR-C2), SQLite (PR-C3), SQL
-(PR-C4), Redis (PR-C5), MongoDB (PR-C6), S3 (PR-C7), then the multi-tier L1/L2
-bus (PR-T1). The HTTP utilities (`cacheResponse`) and the Nest module follow.
+And (PR-C2):
+
+- the **file driver**: one directory, one file per entry, for several
+  processes on one host — with stamp-mode tags, atomic renames, `O_EXCL`
+  lock files, a sweeper with size caps, and the polled bus log
+- the kit's **two-process pass** and **bus-gap case**, enabled for every
+  driver that advertises `multiProcess` or a polled bus
+
+Next, in the plan's order: SQLite (PR-C3), SQL (PR-C4), Redis (PR-C5),
+MongoDB (PR-C6), S3 (PR-C7), then the multi-tier L1/L2 bus (PR-T1). The HTTP
+utilities (`cacheResponse`) and the Nest module follow.
 
 ## Quick start
 
@@ -444,7 +452,50 @@ drivers lands with the first built-in one, PR-C2.)
 |---|---|---|---|---|---|---|
 | memory | PR-C1 | lazy + sweep | yes | in process | index, atomic fence | in-process |
 | custom (`fromSimpleDriver`) | PR-C1 | declared | no | no | stamps | no |
-| file, SQLite, Postgres, MySQL/MariaDB, Redis, MongoDB, S3 | PR-C2 to PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
+| file | PR-C2 | lazy + sweep | yes, under a lock file | `O_EXCL` file | stamps, checked on read | polled log |
+| SQLite, Postgres, MySQL/MariaDB, Redis, MongoDB, S3 | PR-C3 to PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
+
+## The file driver
+
+```ts
+import { createCache, fileDriver } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: fileDriver({ root: "/var/lib/myapp/cache" }),
+});
+```
+
+One directory, one file per entry, for several processes on one host (a
+durable single-machine cache that survives restarts, and the first
+`multiProcess` driver). The layout (§7.2 of the plan):
+
+```
+<root>/<seg ns>/e/<hh>/<sha256(key)>.bce   entry: file header + encoded bytes
+<root>/<seg ns>/s/<sha256(tag)>            tag stamp
+<root>/<seg ns>/n/<sha256(key)>.cnt        counter
+<root>/<seg ns>/l/<sha256(key)>.lock       per-key lock file
+<root>/bus.log                             append-only bus log
+```
+
+- **Writes are atomic**: a temp file renamed into place, so a reader never
+  sees a torn entry. Sharding is one level of 256 directories by default
+  (`shard: 0 | 1 | 2`).
+- **Tags are stamps mode**: `invalidateTags` writes one stamp file per tag;
+  the read-side check invalidates and the sweeper reclaims the space.
+- **Locks** are `O_EXCL` lock files (created with full content via a hard
+  link), stale after their TTL, and broken only when *positively read* as
+  stale — a lock that merely fails to read in the churn of a herd is probed,
+  never moved (see `#judgeLock` in the source for the race this avoids).
+- **Expiry and caps**: lazy on read, plus the sweeper — expired entries from
+  their 14-byte file header, then `maxEntries`/`maxBytes` oldest-first by
+  modification time (age order, not LRU).
+- **The bus** is a polled append-only `bus.log` (default 250 ms); a
+  compaction past `maxBusLogBytes` (1 MiB) signals a gap to subscribers.
+- **Durability and limits**: POSIX local filesystems only — never NFS
+  (lock-file semantics do not survive it). Writes are slow next to SQLite
+  (about 5k/s against 20k/s, measured for the plan); prefer SQLite for small
+  values on one host when it lands (PR-C3). There is no cross-machine story:
+  use a shared driver (SQL, Redis) for that.

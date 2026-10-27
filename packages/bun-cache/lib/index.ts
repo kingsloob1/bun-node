@@ -1,8 +1,8 @@
 /**
  * `@kingsleyweb/bun-cache`: caching over pluggable drivers (plan
- * `docs/plans/bun-cache/`). PR-C1 ships the core, the memory driver and the
- * conformance kit (`@kingsleyweb/bun-cache/testing`); the file, SQLite, SQL,
- * MongoDB, Redis and S3 drivers follow the plan's order.
+ * `docs/plans/bun-cache/`). The core, the memory and file drivers and the
+ * conformance kit (`@kingsleyweb/bun-cache/testing`) have landed; the SQLite,
+ * SQL, MongoDB, Redis and S3 drivers follow the plan's order.
  *
  * ```ts
  * import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
@@ -55,3 +55,5 @@ export type {
 } from "./core/types";
 export { memoryDriver } from "./drivers/memory";
 export type { MemoryDriverOptions } from "./drivers/memory";
+export { fileDriver } from "./drivers/file";
+export type { FileDriverOptions } from "./drivers/file";

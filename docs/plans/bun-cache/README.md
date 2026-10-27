@@ -74,20 +74,37 @@ additions to the approved §21 surface, both noted in the PR:
 event). `onLockTimeout: "throw"` throws `LoaderTimeoutError` (the approved
 names list no lock error).
 
-**PR-C2 in progress** (branch `feat/bun-cache-c2-file-driver`; the file
-driver, stamp-mode tags, and the kit's two deferred passes — the two-process
-pass and the bus-gap case — enabled). **Issue found 2026-10-27, being fixed:**
-the file driver's increment deadlocks under contention — the conformance
-kit's "increment is atomic under 200 concurrent callers" times out at its
-5 s cap, and its "two processes increment the same counter exactly" leaves
-the cross-process worker hanging until killed (the plain two-process lock
-case passes). The driver's verify-read-back instrumentation (a phantom
-create was measured under a 200-way herd: an acquire returned success while
-the file at the path held another holder's content) could not be reproduced
-in a pure `link()` loop over 200k cycles, so it is **not** a Bun-runtime bug
-and no `oven-sh/bun` issue was filed — the bug is ours, in the
-increment-under-contention lock path. Two agent runs hit the 2-hour ceiling
-on it before the deadlock was pinned.
+**PR-C2 built 2026-10-27** (branch `feat/bun-cache-c2-file-driver`, awaiting
+the maintainer's commit): the file driver (the §7.2 layout — sharded `.bce`
+entries, atomic tmp+rename writes, `O_EXCL` lock files created with full
+content via hard link, stamp-mode tags, counters under the per-key lock, the
+sweeper with mtime caps, the polled `bus.log`), and the kit's two passes C1
+deferred: the two-process pass (a spawned worker, `crossProcess` in the kit's
+options — increments 100+100 exact from two processes, a 25+25-way lock taken
+once, cross-process stamp visibility) and the bus-gap case (`busGap` hook).
+README file-driver section and matrix row, `examples/bun-cache/04-drivers/`,
+no playground item (the plan's PG row is PR-H1's).
+
+**The herd bug, found and fixed 2026-10-27** (the issue the previous status
+noted). The lock file's stale-break raced its own restore: judge a lock
+stale, `rename` it aside, judge it live, and `rename` it back — and POSIX
+rename *replaces*, so the restore could overwrite a fresh lock a contender
+linked meanwhile; the orphaned release then failed on owner mismatch and the
+herd stalled for the TTL (5 s, past the test's 5 s cap), or double-held and
+lost increments (~1/2,000). The fix: restore with `link` (exclusive, never
+overwrites), compare the aside's content with what was judged before
+touching it, and — the load-bearing rule — **only ever judge a lock stale
+from a positive read of lapsed content**: a lock that merely fails to read
+in the churn of a herd (an ENOENT in the gap between the holder's release
+and a successor's create, `stat` a beat later saying "exists" for the
+successor) is probed, never moved (`#judgeLock`). The counter lock's TTL
+moved 5 s → 10 s: an op is milliseconds, so a live lock is never positively
+stale, and the break only ever fires on a genuinely dead holder. No Bun
+anomaly: 3.6 M `readFile`s of a continuously-held lock are clean, so the
+"spurious ENOENT" theory died and no `oven-sh/bun` issue was filed; the bug
+was ours. Proof: the two contention cases and the 200-increment stress green
+deterministically across 15+ runs (12/12 in-process and 8/8 cross-process
+stress rounds exact) after the fix, where they failed every run before.
 
 ### Contents
 
