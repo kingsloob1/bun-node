@@ -1798,7 +1798,7 @@ Three candidates, and the repo has already built two of them.
 |---|---|---|---|
 | **CDN viewer pages** — copy bun-jobs' `docs/html.ts` + `docs/cdn.ts` (pinned `swagger-ui-dist@5.32.15` and `@asyncapi/react-component@3.1.8` on jsDelivr, sha384 SRI, `default-src 'none'` CSP with a per-request nonce) | zero in the package; ~1 MB fetched by the browser | **no**, unless `cdn.baseUrl` points at a mirror | **Ship this in phase (c).** 420 lines, already written, already tested against the live CDN hashes. Off by default |
 | **Reuse `jobsUi()`** | — | — | **No.** `jobsUi()` is `@kingsleyweb/bun-jobs-ui`, whose `UiConfig` (`lib/shared/config.ts`) is jobs-shaped (`websocket`, `sections: {manage, docs}`, `apiBase`) and whose app has a whole management UI beside the docs. Mounting it to read an arbitrary OpenAPI document would mean carrying the jobs screens |
-| **A generic self-hosted viewer** — generalise `packages/bun-jobs-ui/app/screens/docs/**` (6,806 lines; largest lazy chunk measured at 66.7 KiB / 21.2 KiB gzipped on 2026-09-21, `__tests__/server/budget.test.ts`) into a new `@kingsleyweb/bun-api-docs-ui` | ~67 KiB lazy, self-hosted with its own sha384 SRI and `default-src 'self'` CSP | **yes** | **The right long-term answer, and the wrong thing to build first.** `schema/` (resolve + SchemaTree + Prose, ~1,000 lines) is already written as dialect-agnostic 2020-12 rendering and would lift cleanly; `http/model.ts` (465) is plain OpenAPI 3.1 and would generalise; `ws/model.ts` (1,152) is bound to `x-bun-jobs-*` and would not. Defer to a phase (f) |
+| **A generic self-hosted viewer** — generalise `packages/bun-jobs-ui/app/screens/docs/**` (6,806 lines; largest lazy chunk measured at 66.7 KiB / 21.2 KiB gzipped on 2026-09-21, `__tests__/server/budget.test.ts`) into a new `@kingsleyweb/bun-api-docs-ui` | ~67 KiB lazy, self-hosted with its own sha384 SRI and `default-src 'self'` CSP | **yes** | **The right long-term answer, and the wrong thing to build first.** (Built later as phase (f); the row's analysis held.) `schema/` (resolve + SchemaTree + Prose, ~1,000 lines) is already written as dialect-agnostic 2020-12 rendering and would lift cleanly; `http/model.ts` (465) is plain OpenAPI 3.1 and would generalise; `ws/model.ts` (1,152) is bound to `x-bun-jobs-*` and would not. Defer to a phase (f) |
 
 **Constraint that decides it:** the two existing CSPs are incompatible. The CDN
 pages need `default-src 'none'; script-src 'nonce-…' <cdn>; style-src <cdn>
@@ -1806,19 +1806,18 @@ pages need `default-src 'none'; script-src 'nonce-…' <cdn>; style-src <cdn>
 `default-src 'self'; script-src 'self' 'nonce-…'; style-src 'self'` with no
 inline styles at all (`bun-jobs-ui/lib/shell.ts:73-88`). A single shared viewer
 must pick one. Phase (c) picks the CDN one because it is 420 lines and already
-green; phase (f) replaces it with the stricter self-hosted one and keeps the
-CDN pages as an option.
+green; phase (f) — scheduled, and built (2026-10-26/27, F1 #541 and F2) —
+added the stricter self-hosted one as `docsRouter`'s `"self-hosted"` viewer
+and keeps the CDN pages as an option.
 
 ### 7.3 Relationship to bun-jobs-ui
 
-None, initially, and deliberately. The one thing worth doing now is *not
-diverging*: if a generic viewer is built later, it should be extracted from
-`bun-jobs-ui/app/screens/docs/schema/` and `http/`, and bun-jobs-ui should
-consume it rather than keeping a fork. Phase (f) would carry that migration,
-and bun-jobs-ui's three golden AsyncAPI fixtures
+None at first, deliberately — and then exactly this: phase (f) extracted the
+screens into `@kingsleyweb/bun-api-docs-ui` and bun-jobs-ui consumes them
+rather than keeping a fork (F2's migration). The golden AsyncAPI fixtures
 (`__tests__/app/docs/ws/fixtures/*.json`, kept fresh by
 `__tests__/app/pkg/docs-ws.integration.test.ts` with `UPDATE_WS_FIXTURES=1`)
-are the regression net for it.
+were the regression net for it: unchanged through the migration.
 
 ---
 
@@ -2470,7 +2469,7 @@ engineer-days for someone who wrote this code.
 | **(d) bun-nest — verify `@nestjs/swagger`** — **merged 2026-10-26, #533** | Executed `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end (`__tests__/swagger.nest.test.ts`, differential against platform-express; the checkout's Nest 12.2.0 with swagger 12.0.4, and the 11.2.7 and 12.0.0 nest-matrix columns, swagger pinned per major by `NEST_PACKAGE_OVERRIDES`); the §8.6 gaps closed with measured answers; `examples/bun-nest/08-openapi/swagger-module.ts`; the README section (recipe, mixed-app caveat, `setGlobalPrefix`, the `@Render` note, the two-bundles note). **No hole found**, so no `./lib/swagger` helper | A documented, proven path. **Cheapest phase per unit of value** — and the phase that decides whether (g) is worth building | **2–3** |
 | **(g) bun-nest swagger bridge** *(the validation half shipped: `@Validate` landed in bun-validate's V7a/V7b)* | What remains is `useSwaggerBridge` alone (§3.8.2): emitting `ApiBody`/`ApiQuery`/`ApiParam`/`ApiHeader`/`ApiResponse` from `@Validate`'s schemas through the §4 registry at `target: "openapi-3.0"`, the decorators injected structurally. ~~The interceptor, the decorator's method/class forms, the return-type constraint, the `Infer<>` helper, `examples/bun-nest/08-validate/`~~ — shipped with V7a/V7b (`07-validation/`) | One declaration for validation + response contract + document. **Gate on (d)** — see risk 1h | **2–3** |
 | **(e) AsyncAPI 3.0** — **built 2026-10-26** (the maintainer's decisions of 2026-10-26, all final; the names recorded in the status header) | Public WS route accessor on `BunWebSocket` (`wsRoutes()`, read-only); `WsChannelDoc` + `describeChannel()` (re-scoped: raw-`ws()` enrichment — `defineChannel` documents itself); the bun-common generator `generateAsyncApi` (servers/channels/parameters/messages/operations; the frame-envelope payloads; the SSE channels and the `x-bun-common-sse-fallback` cross-reference); bun-nest's `gatewayAsyncApi` metadata explorer reading `GATEWAY_OPTIONS`/`PORT_METADATA`/`MESSAGE_METADATA`, the `MessageEventTypes` envelope and the new `"bun:validate:message"` metadata; the AsyncAPI 3.0.0 meta-schema test via `@asyncapi/specs`; examples | AsyncAPI for both adapters | **7–9** |
-| **(f) Generic self-hosted viewer** *(deferred, separate decision)* | Extract `bun-jobs-ui/app/screens/docs/{schema,http}` into `@kingsleyweb/bun-api-docs-ui`; migrate bun-jobs-ui onto it; keep its golden WS fixtures as the net | An offline, CSP-strict viewer and one fewer fork | **10–14** |
+| **(f) Generic self-hosted viewer** — **built 2026-10-26/27** (F1: `@kingsleyweb/bun-api-docs-ui`, the package, merged #541; F2: the `"self-hosted"` `docsRouter` viewer + bun-jobs-ui's migration) | Extracted `bun-jobs-ui/app/screens/docs/**` into `@kingsleyweb/bun-api-docs-ui` (the models read `x-*` extensions through a configurable prefix list, `["x-bun-common", "x-bun-jobs"]` by default); the `"self-hosted"` viewer name on `docsRouter` serves the package's bundle from the mount's own origin (optional peer, SRI over the local bytes, the strict self-only CSP); bun-jobs-ui renders the package's screens with its seams injected (the Events-console links, the contract's address rules, the permission probe, the limits vocabulary); the golden WS fixtures kept netting, unchanged | An offline, CSP-strict viewer and one fewer fork | **10–14** |
 
 **Why this order** (it differs from the suggested one in one place):
 

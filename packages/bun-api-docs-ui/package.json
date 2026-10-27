@@ -32,7 +32,42 @@
       "types": "./dts/*.d.ts",
       "default": "./lib/*.ts"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./embed": {
+      "@kingsleyweb/source": "./app/embed.ts",
+      "types": "./app/embed.ts",
+      "default": "./app/embed.ts"
+    },
+    "./embed/routing": {
+      "@kingsleyweb/source": "./app/routing.ts",
+      "types": "./app/routing.ts",
+      "default": "./app/routing.ts"
+    },
+    "./embed/router": {
+      "@kingsleyweb/source": "./app/router.tsx",
+      "types": "./app/router.tsx",
+      "default": "./app/router.tsx"
+    },
+    "./embed/context": {
+      "@kingsleyweb/source": "./app/context.ts",
+      "types": "./app/context.ts",
+      "default": "./app/context.ts"
+    },
+    "./embed/permissions": {
+      "@kingsleyweb/source": "./app/screens/docs/permissions.ts",
+      "types": "./app/screens/docs/permissions.ts",
+      "default": "./app/screens/docs/permissions.ts"
+    },
+    "./embed/client": {
+      "@kingsleyweb/source": "./app/api/client.ts",
+      "types": "./app/api/client.ts",
+      "default": "./app/api/client.ts"
+    },
+    "./embed/errors": {
+      "@kingsleyweb/source": "./app/api/errors.ts",
+      "types": "./app/api/errors.ts",
+      "default": "./app/api/errors.ts"
+    }
   },
   "main": "lib/index.ts",
   "types": "dts/index.d.ts",
@@ -41,6 +76,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "files": [
+    "app",
     "dist",
     "dts",
     "lib"

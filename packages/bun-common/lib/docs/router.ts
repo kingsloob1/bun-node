@@ -32,6 +32,7 @@ import { ConfigError } from "../errors";
 import type { RouterHandler } from "../types/general";
 import type { AsyncApiDocument, OpenApiDocument } from "./types";
 import type { DocsCdnOptions, DocsPage } from "./viewer";
+import { registerSelfHostedViewer } from "./selfHosted";
 import {
   asyncApiUiPage,
   DOCS_CDN,
@@ -45,15 +46,18 @@ import {
 /**
  * The viewers an OpenAPI page can use. `"scalar"` is the default — docsRouter
  * is a new, opt-in surface, so the modern default is free of compat weight.
+ * `"self-hosted"` is `@kingsleyweb/bun-api-docs-ui`'s own viewer, served from
+ * this origin (an optional peer — see `./selfHosted`).
  */
-export type OpenApiViewerName = "scalar" | "swagger-ui" | "redoc" | "rapidoc";
+export type OpenApiViewerName =
+  "scalar" | "swagger-ui" | "redoc" | "rapidoc" | "self-hosted";
 
 /**
  * The viewers an AsyncAPI page can use. `"asyncapi"` (the official component)
  * is the default; `"scalar"` renders the AsyncAPI document too, but its
  * AsyncAPI support is upstream work-in-progress — opt in knowingly.
  */
-export type AsyncApiViewerName = "asyncapi" | "scalar";
+export type AsyncApiViewerName = "asyncapi" | "scalar" | "self-hosted";
 
 /**
  * One viewer page's declaration: the viewer's name as a string (defaults
@@ -162,8 +166,13 @@ const OPENAPI_VIEWERS: readonly OpenApiViewerName[] = [
   "swagger-ui",
   "redoc",
   "rapidoc",
+  "self-hosted",
 ];
-const ASYNCAPI_VIEWERS: readonly AsyncApiViewerName[] = ["asyncapi", "scalar"];
+const ASYNCAPI_VIEWERS: readonly AsyncApiViewerName[] = [
+  "asyncapi",
+  "scalar",
+  "self-hosted",
+];
 
 /**
  * A mountable router serving the documents and, optionally, the viewer pages.
@@ -265,7 +274,41 @@ export function docsRouter(options: DocsRouterOptions): BunRouter {
       .describe({ hidden: true });
   }
 
-  if (openApiViewer !== undefined && openApi !== undefined) {
+  // The self-hosted viewer registers its own routes (pages, client-route
+  // fallbacks and the bundle under `/assets/`); the CDN names render below.
+  if (
+    openApiViewer?.name === "self-hosted" ||
+    asyncApiViewer?.name === "self-hosted"
+  ) {
+    registerSelfHostedViewer(
+      router,
+      {
+        openapi:
+          openApiViewer?.name === "self-hosted" && openApi !== undefined
+            ? {
+                document: openApi,
+                path: openapiPath,
+                options: openApiViewer.options,
+              }
+            : undefined,
+        asyncapi:
+          asyncApiViewer?.name === "self-hosted" && asyncApi !== undefined
+            ? {
+                document: asyncApi,
+                path: asyncapiPath,
+                options: asyncApiViewer.options,
+              }
+            : undefined,
+      },
+      options.title,
+    );
+  }
+
+  if (
+    openApiViewer !== undefined &&
+    openApiViewer.name !== "self-hosted" &&
+    openApi !== undefined
+  ) {
     const viewer = openApiViewer;
     router
       .get("/", (req: BunRequest, res: BunResponse) => {
@@ -288,7 +331,11 @@ export function docsRouter(options: DocsRouterOptions): BunRouter {
       })
       .describe({ hidden: true });
   }
-  if (asyncApiViewer !== undefined && asyncApi !== undefined) {
+  if (
+    asyncApiViewer !== undefined &&
+    asyncApiViewer.name !== "self-hosted" &&
+    asyncApi !== undefined
+  ) {
     const viewer = asyncApiViewer;
     router
       .get("/asyncapi", (req: BunRequest, res: BunResponse) => {

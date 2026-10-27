@@ -27,9 +27,11 @@ published packages under `packages/`:
 - **`@kingsleyweb/bun-api-docs-ui`** — a self-hosted viewer for one
   OpenAPI 3.1 or AsyncAPI 3.0 document, extracted from bun-jobs-ui's docs
   screens (AD (f) F1): `docsUi()` serves the bundled app (React and
-  TanStack Query are bundled, never peers) under a strict self-only CSP.
-  Its `check` is `bun check && bun check -p app`; only the DOM-free root
-  project is in `scripts/typecheck.ts`.
+  TanStack Query are bundled, never peers) under a strict self-only CSP;
+  bun-jobs-ui's docs section renders the package's screens (F2), and
+  `docsRouter`'s `"self-hosted"` viewer (bun-common, optional peer) serves
+  its bundle. Its `check` is `bun check && bun check -p app`; only the
+  DOM-free root project is in `scripts/typecheck.ts`.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
 typecheck (`bun run check`), and `bun lint` plus `bun fmt --check` against

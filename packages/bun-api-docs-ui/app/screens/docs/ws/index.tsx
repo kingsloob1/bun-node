@@ -6,8 +6,10 @@
  */
 import type { KeyboardEvent } from "react";
 import type { SpecDocument } from "../../../api/docs";
+import type { PermissionProbe } from "../permissions";
 import type { LimitInfo } from "./format";
-import type { WsNavGroup } from "./model";
+import type { WsConsole, WsPaneOptions } from "./items";
+import type { WsAddressOptions, WsNavGroup } from "./model";
 import { useMemo, useRef } from "react";
 import { EmptyState } from "../../../components/EmptyState";
 import { Field } from "../../../components/Field";
@@ -44,10 +46,18 @@ interface WsSidebarProps {
   query: string;
   /** Sets the search. */
   onQuery: (query: string) => void;
+  /** The docs section's path within the host app ("" for a standalone viewer). */
+  pathBase: string;
 }
 
 /** The sidebar: a search box, then the connection's panels, channels, operations and messages. */
-function WsSidebar({ groups, selected, query, onQuery }: WsSidebarProps) {
+function WsSidebar({
+  groups,
+  selected,
+  query,
+  onQuery,
+  pathBase,
+}: WsSidebarProps) {
   const shown = filterGroups(groups, query);
   const navRef = useRef<HTMLElement>(null);
   const links = () =>
@@ -111,7 +121,7 @@ function WsSidebar({ groups, selected, query, onQuery }: WsSidebarProps) {
               {group.items.map((item) => (
                 <li key={item.slug}>
                   <Link
-                    to={itemPath(item.slug, query)}
+                    to={itemPath(item.slug, query, pathBase)}
                     className="ws-nav-link"
                     activeMatch="exact"
                     data-selected={item.slug === selected ? "true" : undefined}
@@ -142,6 +152,14 @@ export interface WsReferenceProps {
   defaultSubprotocol?: string;
   /** Labels and meanings for the limits, when the embedding viewer knows them. */
   limitsInfo?: Readonly<Record<string, LimitInfo>>;
+  /** The console the try-it cards open (bun-jobs-ui's Events console), when the host has one. */
+  console?: WsConsole;
+  /** Answers "does the caller hold this permission" (the have/lack markers). */
+  probe?: PermissionProbe;
+  /** The host's contract for the try-it's address fields. */
+  address?: WsAddressOptions;
+  /** The docs section's path within the host app ("" for a standalone viewer). */
+  pathBase?: string;
 }
 
 /** The reference for a loaded document. */
@@ -150,7 +168,17 @@ export function WsReference({
   extensions,
   defaultSubprotocol,
   limitsInfo,
+  console: consoleOptions,
+  probe,
+  address,
+  pathBase = "",
 }: WsReferenceProps) {
+  const paneOptions: WsPaneOptions = {
+    console: consoleOptions,
+    probe,
+    address,
+    pathBase,
+  };
   const doc = useMemo(
     () => readWsDoc(spec, { extensions, defaultSubprotocol }),
     [spec, extensions, defaultSubprotocol],
@@ -171,7 +199,7 @@ export function WsReference({
         description={
           <>
             This document has nothing called <code>{slug}</code>.{" "}
-            <Link to="/ws">Back to the connection</Link>.
+            <Link to={`${pathBase}/ws`}>Back to the connection</Link>.
           </>
         }
       />
@@ -185,6 +213,7 @@ export function WsReference({
             root={spec}
             channel={selection.channel}
             limitsInfo={limitsInfo}
+            {...paneOptions}
           />
         );
         break;
@@ -193,6 +222,7 @@ export function WsReference({
           <OperationPane
             doc={doc}
             operation={selection.operation}
+            {...paneOptions}
           />
         );
         break;
@@ -202,6 +232,7 @@ export function WsReference({
             doc={doc}
             root={spec}
             message={selection.message}
+            {...paneOptions}
           />
         );
         break;
@@ -239,6 +270,7 @@ export function WsReference({
           selected={selection ? slug : ""}
           query={query}
           onQuery={setQuery}
+          pathBase={pathBase}
         />
         <section
           className="ws-main"

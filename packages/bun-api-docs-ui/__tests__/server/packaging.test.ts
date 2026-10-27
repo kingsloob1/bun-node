@@ -75,7 +75,15 @@ describe("package.json exports", () => {
   });
 
   it("maps every types target to the dts/ mirror of its lib/ source", () => {
-    for (const [, { types, default: source }] of conditional) {
+    for (const [key, { types, default: source }] of conditional) {
+      // `./embed` and its subpaths are the browser screens for a host app:
+      // TS source (the types ARE the source), no dts mirror. See
+      // consumer-check.json's $comment.
+      if (key === "./embed" || key.startsWith("./embed/")) {
+        expect(types).toBe(source);
+        expect(types).toMatch(/^\.\/app\//);
+        continue;
+      }
       expect(types).toBe(
         source.replace(/^\.\/lib\//, "./dts/").replace(/\.ts$/, ".d.ts"),
       );

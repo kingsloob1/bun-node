@@ -150,7 +150,7 @@ describe("the HTTP reference", () => {
     );
     expect(within(view).getByTestId("op-csrf").textContent).toContain(CSRF);
     expect(within(view).getByTestId("op-csrf").textContent).toContain(
-      "try-it sends it",
+      "The app sends it.",
     );
     const parameters = within(view).getByTestId("op-parameters");
     expect(parameters.textContent).toContain("queue");

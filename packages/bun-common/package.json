@@ -116,13 +116,17 @@
   },
   "peerDependencies": {
     "@types/bun": ">=1.4.2",
-    "typescript": "^5.9.3 || ^6.0.0"
+    "typescript": "^5.9.3 || ^6.0.0",
+    "@kingsleyweb/bun-api-docs-ui": "^0.1.0"
   },
   "peerDependenciesMeta": {
     "@types/bun": {
       "optional": true
     },
     "typescript": {
+      "optional": true
+    },
+    "@kingsleyweb/bun-api-docs-ui": {
       "optional": true
     }
   },
@@ -162,7 +166,8 @@
     "typescript": "^6.0.3",
     "valibot": "^1",
     "yup": "^1",
-    "zod": "^4"
+    "zod": "^4",
+    "@kingsleyweb/bun-api-docs-ui": "^0.1.0"
   },
   "gitHead": "58f50ad7df6fde1d9853b1a23b7b2f8a3967b8a1"
 }

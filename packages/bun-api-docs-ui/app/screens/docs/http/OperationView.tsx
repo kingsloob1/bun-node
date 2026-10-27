@@ -1,3 +1,4 @@
+import type { PermissionProbe } from "../permissions";
 import type { SchemaRoot } from "../schema/resolve";
 import type { DocOperation, DocParameter, DocResponse } from "./model";
 import { Badge } from "../../../components/Badge";
@@ -16,6 +17,12 @@ export interface OperationViewProps {
   root: SchemaRoot;
   /** Opens a component schema (`#/components/schemas/X`) in the side panel. */
   onRef: (ref: string, name: string) => void;
+  /** Answers "does the caller hold this permission" (the have/lack badge). Absent: the permission renders plainly. */
+  probe?: PermissionProbe;
+  /** Whether the API is read-only (a mutation's panel and marker say so). Defaults to `false`. */
+  readOnly?: boolean;
+  /** After a successful mutation (the host refreshes what it shows). */
+  onChanged?: () => void;
 }
 
 /** A method badge. */
@@ -218,8 +225,19 @@ function ResponseItem({
  * it needs, whether it is a mutation, its CSRF rules and driver requirements,
  * its parameters, body and responses (schemas as trees), and its try-it panel.
  */
-export function OperationView({ operation, root, onRef }: OperationViewProps) {
+export function OperationView({
+  operation,
+  root,
+  onRef,
+  probe,
+  readOnly = false,
+  onChanged,
+}: OperationViewProps) {
   const config = useDocsUiConfig();
+  const held =
+    operation.action === undefined || probe === undefined
+      ? undefined
+      : probe(operation.action);
   const csrf = operation.csrf;
   return (
     <article
@@ -259,16 +277,30 @@ export function OperationView({ operation, root, onRef }: OperationViewProps) {
         aria-label="Access"
         role="group"
       >
-        {operation.action !== undefined && (
-          <Badge
-            tone="neutral"
-            title="The permission the API's authorize hook is asked about."
-          >
-            <span data-testid="op-permission">
-              Needs <code>{operation.action}</code>
-            </span>
-          </Badge>
-        )}
+        {operation.action !== undefined &&
+          (probe === undefined ? (
+            <Badge
+              tone="neutral"
+              title="The permission the API's authorize hook is asked about."
+            >
+              <span data-testid="op-permission">
+                Needs <code>{operation.action}</code>
+              </span>
+            </Badge>
+          ) : (
+            <Badge
+              tone={held ? "success" : "danger"}
+              title="From the caller's permissions. authorize may still decide per target."
+            >
+              <span
+                data-testid="op-permission"
+                data-allowed={String(held ?? false)}
+              >
+                {held ? "You have " : "You lack "}
+                <code>{operation.action}</code>
+              </span>
+            </Badge>
+          ))}
         <Badge
           tone={operation.mutation ? "warning" : "neutral"}
           title={
@@ -281,6 +313,10 @@ export function OperationView({ operation, root, onRef }: OperationViewProps) {
             {operation.mutation ? "Mutation" : "Read"}
           </span>
         </Badge>
+        {/* Only for a stale or foreign document: a read-only API documents no mutation (see tryItGate). */}
+        {operation.mutation && readOnly && (
+          <Badge tone="danger">Refused: the API is read-only</Badge>
+        )}
         {operation.requires.length > 0 && (
           <span
             className="http-requires"
@@ -305,8 +341,8 @@ export function OperationView({ operation, root, onRef }: OperationViewProps) {
               Every mutation must carry the <code>{csrf.header}</code> header,
               with any non-empty value.{" "}
               {config.csrfHeader === csrf.header
-                ? "The viewer's try-it sends it."
-                : "This viewer is not configured to send it."}
+                ? "The app sends it."
+                : "This UI is not configured to send it."}
             </p>
           )}
           {csrf.requireJson && (
@@ -362,6 +398,9 @@ export function OperationView({ operation, root, onRef }: OperationViewProps) {
         key={operation.id}
         operation={operation}
         root={root}
+        readOnly={readOnly}
+        probe={probe}
+        onChanged={onChanged}
       />
     </article>
   );

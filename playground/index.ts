@@ -300,6 +300,27 @@ const wsDocs = docsUi({
 });
 app.use(apiDocs.basePath, apiDocs.router);
 app.use(wsDocs.basePath, wsDocs.router);
+// The same two documents once more, as docsRouter's "self-hosted" viewer
+// (AD (f) F2): the package's bundle served from this origin by bun-common —
+// no separate docsUi() mount, the viewer is one `viewer` name away from the
+// CDN pages above.
+app.use(
+  "/playground/self-hosted-docs",
+  docsRouter({
+    openapi: () =>
+      generateOpenApi(app, {
+        title: "bun-node playground",
+        version: "1.0.0",
+      }).document,
+    asyncapi: () =>
+      generateAsyncApi(app, {
+        title: "bun-node playground (events)",
+        version: "1.0.0",
+      }).document,
+    viewer: { openapi: "self-hosted", asyncapi: "self-hosted" },
+    authorize: (_req, _res, next) => next(),
+  }),
+);
 // The live-events socket, on the same port: `/meta` names its path.
 api.websocket?.attach(app);
 
@@ -326,6 +347,7 @@ bun-node playground (${playgroundBackend()} driver)
   API           ${origin}${api.basePath}/meta
   API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page; the chat channel's AsyncAPI document at /playground/docs/asyncapi.json, its viewer at /playground/docs/asyncapi)
   Self-hosted  ${origin}/playground/api-docs  (bun-api-docs-ui: the same OpenAPI document, bundled viewer, no CDN)  ·  events: ${origin}/playground/ws-docs
+  docsRouter SH ${origin}/playground/self-hosted-docs  (docsRouter's "self-hosted" viewer: the package's bundle served by bun-common)  ·  events: ${origin}/playground/self-hosted-docs/asyncapi
   Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 

@@ -143,7 +143,7 @@ describe("WsDocsScreen", () => {
         }),
       ],
       [
-        "not stated; the client default",
+        "not stated; the configured default",
         editedFixture((document) => {
           delete document.servers.api["x-bun-jobs-subprotocol"];
           delete document.channels.connection["x-bun-jobs-subprotocol"];
