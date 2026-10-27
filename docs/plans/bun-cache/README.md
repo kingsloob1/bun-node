@@ -29,6 +29,35 @@ unless it says otherwise. The evidence is in
 [`evidence/`](evidence/README.md), and each measurement
 there can be re-run with one command.
 
+### Status
+
+**Scheduled 2026-10-27** (the user's decision; this plan was held until then),
+with a scope extension the same day: beyond the nine built-in drivers, four
+**cloud drivers** join — **Azure Blob Storage, Upstash (the successor of the
+discontinued Vercel KV; its `KV_REST_API_*` mapping documented), Cloudflare
+KV, and Cloudflare D1** — appended after PR-C7 as PR-C8 to PR-C11. Its
+decisions, all answered 2026-10-27:
+
+- The §21 names table approved as written, plus `azureBlobDriver`,
+  `upstashDriver`, `cloudflareKvDriver`, `cloudflareD1Driver`.
+- One package: the cloud drivers are fetch/Bun-built-in only, so they live in
+  `packages/bun-cache` at the root — no new packages, no per-driver subpaths.
+- The default codec is structured clone (Q5); V10's names approved
+  (`createCache`'s `validate` option, `CacheSchemaFrom`) — V10 lands inside
+  PR-C1, as bun-validate's §6 row 16 says.
+- **Real tests, no mocks**: miniflare/workerd for the Cloudflare drivers
+  (a dev-only dependency), containers for the rest (Azurite for Azure joins
+  `setup-databases.ts`; SeaweedFS serves S3, shared with bun-jobs' PR-S0).
+- Three spikes approved, each before its driver PR: whether the D1 REST API
+  can express the fence's one-transaction rule; whether `redisDriver` over
+  `rediss://…upstash.io` already works (mooting a REST driver); whether
+  Azurite covers the Lease Blob and conditional-write paths.
+- This file is updated and pushed after every milestone (the user's rule,
+  2026-10-27).
+
+PRs: PR-C1 first (the core, the memory driver, the conformance kit, V10),
+then the plan's order; PR-C8–C11 per the above.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
