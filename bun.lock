@@ -20,6 +20,41 @@
         "typescript": "^6.0.3",
       },
     },
+    "packages/bun-api-docs-ui": {
+      "name": "@kingsleyweb/bun-api-docs-ui",
+      "version": "0.1.0",
+      "dependencies": {
+        "@kingsleyweb/bun-common": "^2.2.0",
+      },
+      "devDependencies": {
+        "@antfu/eslint-config": "^9.0.0",
+        "@happy-dom/global-registrator": "^20.0.0",
+        "@kingsleyweb/bun-jobs": "^2.2.0",
+        "@tanstack/react-query": "^5.90.0",
+        "@testing-library/dom": "^10.4.0",
+        "@testing-library/react": "^16.3.0",
+        "@types/bun": "^1.4.2",
+        "@types/react": "^19.2.0",
+        "@types/react-dom": "^19.2.0",
+        "bun-types": "^1.4.3",
+        "eslint": "^10.5.0",
+        "eslint-config-prettier": "^10.0.1",
+        "eslint-plugin-prettier": "^5.5.6",
+        "eslint-plugin-react-hooks": "^7.0.0",
+        "eslint-plugin-react-refresh": "^0.5.2",
+        "happy-dom": "^20.0.0",
+        "prettier": "^3.8.4",
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0",
+        "typescript": "^6.0.3",
+      },
+      "peerDependencies": {
+        "@types/bun": ">=1.4.2",
+      },
+      "optionalPeers": [
+        "@types/bun",
+      ],
+    },
     "packages/bun-common": {
       "name": "@kingsleyweb/bun-common",
       "version": "2.2.0",
@@ -515,6 +550,8 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@kingsleyweb/bun-api-docs-ui": ["@kingsleyweb/bun-api-docs-ui@workspace:packages/bun-api-docs-ui"],
 
     "@kingsleyweb/bun-common": ["@kingsleyweb/bun-common@workspace:packages/bun-common"],
 

@@ -30,7 +30,11 @@ import {
   useClassDtos,
   validate,
 } from "@kingsleyweb/bun-common";
-import { docsRouter, generateAsyncApi, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
+import {
+  docsRouter,
+  generateAsyncApi,
+  generateOpenApi,
+} from "@kingsleyweb/bun-common/lib/docs";
 import { plainToInstance } from "class-transformer";
 import {
   IsInt,
@@ -46,6 +50,7 @@ import {
   JOBS_API_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { docsUi } from "@kingsleyweb/bun-api-docs-ui";
 import {
   isCrossProcess,
   playgroundBackend,
@@ -268,6 +273,33 @@ app.use(
     authorize: (_req, _res, next) => next(),
   }),
 );
+// The same two documents in the self-hosted viewer (AD (f) F1): docsUi()
+// bundles its own React app (nothing from a CDN, a strict self-only CSP),
+// serving each thunk's document itself at <basePath>/document.json. `dev`
+// rebuilds from the source on disk, for the same reason the jobs UI's does.
+const apiDocs = docsUi({
+  document: () =>
+    generateOpenApi(app, {
+      title: "bun-node playground",
+      version: "1.0.0",
+    }).document,
+  basePath: "/playground/api-docs",
+  logger: noopLogger,
+  dev: true,
+});
+const wsDocs = docsUi({
+  document: () =>
+    generateAsyncApi(app, {
+      title: "bun-node playground (events)",
+      version: "1.0.0",
+    }).document,
+  basePath: "/playground/ws-docs",
+  title: "bun-node playground (events)",
+  logger: noopLogger,
+  dev: true,
+});
+app.use(apiDocs.basePath, apiDocs.router);
+app.use(wsDocs.basePath, wsDocs.router);
 // The live-events socket, on the same port: `/meta` names its path.
 api.websocket?.attach(app);
 
@@ -293,6 +325,7 @@ bun-node playground (${playgroundBackend()} driver)
   Units/faults  ${origin}${summoning.basePath}
   API           ${origin}${api.basePath}/meta
   API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page; the chat channel's AsyncAPI document at /playground/docs/asyncapi.json, its viewer at /playground/docs/asyncapi)
+  Self-hosted  ${origin}/playground/api-docs  (bun-api-docs-ui: the same OpenAPI document, bundled viewer, no CDN)  ·  events: ${origin}/playground/ws-docs
   Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 

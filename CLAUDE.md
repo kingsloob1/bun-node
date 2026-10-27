@@ -24,12 +24,18 @@ published packages under `packages/`:
   viewer for bun-jobs' management API (`createJobsApi`), prebuilt into
   `dist/` and served by a `jobsUi()` router. See
   [bun-jobs-ui](#bun-jobs-ui-phase-3-ui) below.
+- **`@kingsleyweb/bun-api-docs-ui`** — a self-hosted viewer for one
+  OpenAPI 3.1 or AsyncAPI 3.0 document, extracted from bun-jobs-ui's docs
+  screens (AD (f) F1): `docsUi()` serves the bundled app (React and
+  TanStack Query are bundled, never peers) under a strict self-only CSP.
+  Its `check` is `bun check && bun check -p app`; only the DOM-free root
+  project is in `scripts/typecheck.ts`.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
 typecheck (`bun run check`), and `bun lint` plus `bun fmt --check` against
 the root `bunfig.toml` (the [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
 gate since PR E). Bun runs the shipped `.ts`
-source directly (`main` is `lib/index.ts`; no JS is emitted). All four
+source directly (`main` is `lib/index.ts`; no JS is emitted). All five
 packages also ship built declarations in `dts/` and point `types` at them —
 see [Packaging types](#packaging-types-declarations-ship-sources-ship-alongside).
 

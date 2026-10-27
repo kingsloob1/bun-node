@@ -1,0 +1,14 @@
+{
+  // The browser bundle. Compiler options come from the repo root's
+  // `tsconfig.base.json`; this adds only the DOM libs, the types and `include`.
+  //
+  // The viewer's own code never touches a server-only API. `types: ["bun"]` is
+  // for the tests in `__tests__/app`, which run under `bun:test`. The browser
+  // code never uses a Bun global.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["bun"]
+  },
+  "include": ["./**/*", "../lib/shared/**/*", "../__tests__/app/**/*"]
+}
