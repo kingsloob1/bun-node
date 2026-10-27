@@ -62,9 +62,6 @@ export default antfu({
     // so unused directives are not reported in these files. It goes when
     // ESLint does.
     files: [
-      "app/screens/docs/schema/Prose.tsx",
-      "app/screens/docs/ws/InlineText.tsx",
-      "app/screens/docs/ws/items.tsx",
       "app/screens/job/ErrorDetails.tsx",
       "app/screens/job/JobScreen.tsx",
       "app/screens/queues/panels/SummonPanel.tsx",

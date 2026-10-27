@@ -1,5 +1,7 @@
 /** The HTTP API reference (OpenAPI 3.1): `/http` and `/http/:operationId` under the mount. */
+import type { DocsClient } from "../../../api/client";
 import type { SpecDocument } from "../../../api/docs";
+import type { PermissionProbe } from "../permissions";
 import type { DocInfo, DocTagGroup } from "./model";
 import { useMemo, useState } from "react";
 import { createDocsClient } from "../../../api/client";
@@ -30,10 +32,10 @@ import { OperationView } from "./OperationView";
 import { Sidebar } from "./Sidebar";
 import "./http.css";
 
-/** The app path of an operation, keeping a search. */
-function operationHref(operationId: string, query: string): string {
+/** The app path of an operation, keeping a search; `base` is the docs section's path within the host app ("" for a standalone viewer). */
+function operationHref(operationId: string, query: string, base = ""): string {
   const search = query ? `?q=${encodeURIComponent(query)}` : "";
-  return `/http/${encodeURIComponent(operationId)}${search}`;
+  return `${base}/http/${encodeURIComponent(operationId)}${search}`;
 }
 
 /** The document's title, version, description and servers. */
@@ -103,6 +105,7 @@ function Overview({
   groups,
   query,
   onRef,
+  pathBase,
 }: {
   /** The document. */
   doc: SpecDocument;
@@ -112,6 +115,8 @@ function Overview({
   query: string;
   /** Opens a component schema. */
   onRef: (ref: string, name: string) => void;
+  /** The docs section's path within the host app. */
+  pathBase: string;
 }) {
   const names = componentSchemaNames(doc);
   return (
@@ -127,7 +132,7 @@ function Overview({
           <ul className="http-overview-ops">
             {group.operations.map((operation) => (
               <li key={operation.id}>
-                <Link to={operationHref(operation.id, query)}>
+                <Link to={operationHref(operation.id, query, pathBase)}>
                   <code>{operation.method}</code> {operation.path}
                 </Link>
                 {operation.summary && (
@@ -210,10 +215,28 @@ export interface HttpReferenceProps {
   doc: SpecDocument;
   /** The extension prefixes to read; defaults to the configured ones. */
   extensions?: readonly string[];
+  /** The client the try-it panel sends with. Default: built on the document's resolved first server. */
+  client?: DocsClient;
+  /** Answers "does the caller hold this permission" (the have/lack badge and the try-it gate). */
+  probe?: PermissionProbe;
+  /** Whether the API is read-only. Defaults to `false`. */
+  readOnly?: boolean;
+  /** After a successful mutation (the host refreshes what it shows). */
+  onChanged?: () => void;
+  /** The docs section's path within the host app ("" for a standalone viewer). */
+  pathBase?: string;
 }
 
 /** The loaded reference: sidebar, info or operation, and the schema panel. */
-export function HttpReference({ doc, extensions }: HttpReferenceProps) {
+export function HttpReference({
+  doc,
+  extensions,
+  client: clientOverride,
+  probe,
+  readOnly = false,
+  onChanged,
+  pathBase = "",
+}: HttpReferenceProps) {
   const config = useDocsUiConfig();
   const prefixes = extensions ?? config.extensions;
   const { operationId } = useParams<{ operationId?: string }>();
@@ -243,12 +266,13 @@ export function HttpReference({ doc, extensions }: HttpReferenceProps) {
   const fetcher = useDocsFetch();
   const client = useMemo(
     () =>
+      clientOverride ??
       createDocsClient({
         base: serverBase,
         csrfHeader: config.csrfHeader,
         fetch: fetcher,
       }),
-    [serverBase, config.csrfHeader, fetcher],
+    [clientOverride, serverBase, config.csrfHeader, fetcher],
   );
 
   return (
@@ -264,7 +288,7 @@ export function HttpReference({ doc, extensions }: HttpReferenceProps) {
           groups={visible}
           query={query}
           onQuery={(next) => setQuery(next)}
-          hrefOf={(id) => operationHref(id, query)}
+          hrefOf={(id) => operationHref(id, query, pathBase)}
         />
         <div className="http-docs-main">
           {operationId === undefined ? (
@@ -278,6 +302,7 @@ export function HttpReference({ doc, extensions }: HttpReferenceProps) {
                 groups={groups}
                 query={query}
                 onRef={openRef}
+                pathBase={pathBase}
               />
             </>
           ) : selected ? (
@@ -287,13 +312,16 @@ export function HttpReference({ doc, extensions }: HttpReferenceProps) {
                 operation={selected}
                 root={doc}
                 onRef={openRef}
+                probe={probe}
+                readOnly={readOnly}
+                onChanged={onChanged}
               />
             </DocsClientContext>
           ) : (
             <EmptyState
               title="No such operation"
               description={`This document has no operation "${operationId}".`}
-              action={<Link to="/http">All operations</Link>}
+              action={<Link to={`${pathBase}/http`}>All operations</Link>}
             />
           )}
         </div>

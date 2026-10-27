@@ -74,6 +74,7 @@
       "devDependencies": {
         "@antfu/eslint-config": "^9.0.0",
         "@asyncapi/specs": "6.11.1",
+        "@kingsleyweb/bun-api-docs-ui": "^0.1.0",
         "@types/bun": "^1.4.2",
         "@types/supertest": "^7.2.0",
         "@valibot/to-json-schema": "1.8.0",
@@ -97,10 +98,12 @@
         "zod": "^4",
       },
       "peerDependencies": {
+        "@kingsleyweb/bun-api-docs-ui": "^0.1.0",
         "@types/bun": ">=1.4.2",
         "typescript": "^5.9.3 || ^6.0.0",
       },
       "optionalPeers": [
+        "@kingsleyweb/bun-api-docs-ui",
         "@types/bun",
         "typescript",
       ],
@@ -149,6 +152,7 @@
       "devDependencies": {
         "@antfu/eslint-config": "^9.0.0",
         "@happy-dom/global-registrator": "^20.0.0",
+        "@kingsleyweb/bun-api-docs-ui": "^0.1.0",
         "@kingsleyweb/bun-jobs": "^2.2.0",
         "@kingsleyweb/bun-nest": "^2.2.0",
         "@nestjs/common": "^12.2.0",

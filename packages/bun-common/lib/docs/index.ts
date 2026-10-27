@@ -9,8 +9,10 @@
  * channels and SSE endpoints (plus `BunWebSocket.wsRoutes()`'s bare routes
  * and their `describeChannel()` docs); {@link toJsonSchema}, {@link liftComponents} and the
  * vendor converters are the standalone conversion half; {@link docsRouter}
- * serves the document(s) and the pinned-CDN viewer pages (`./viewer`), off by
- * default. The browser-safe document types are the `./types` entry (plan risk
+ * serves the document(s) and the viewer pages, off by default: the pinned-CDN
+ * ones (`./viewer`), and `"self-hosted"` (`./selfHosted`) — the
+ * `@kingsleyweb/bun-api-docs-ui` bundle served from this origin, an optional
+ * peer. The browser-safe document types are the `./types` entry (plan risk
  * 10) — this index pulls the router in, so it is server-side.
  *
  * Nothing here imports a vendor package — the converters are structural
@@ -86,6 +88,13 @@ export {
   type OpenApiViewerName,
   type ViewerConfig,
 } from "./router";
+export {
+  registerSelfHostedViewer,
+  SELF_HOSTED_PACKAGE,
+  type SelfHostedDocument,
+  type SelfHostedRegistration,
+  type SelfHostedViewerOptions,
+} from "./selfHosted";
 export {
   type AssetIntegrity,
   assetUrl,

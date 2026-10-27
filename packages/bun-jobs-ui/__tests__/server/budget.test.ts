@@ -20,9 +20,15 @@ import { buildAssets } from "../../lib/assets";
  *   state, the contract's constant arrays). The user decided to raise it
  *   rather than move the Overview's range control and queue table out of the
  *   entry.
- * - Chunks, unchanged since M6 (entry then 290.2 KiB / 92.7 KiB gzipped): the
- *   largest lazy chunk is the API docs, 66.7 KiB (21.2 KiB gzipped) on
- *   2026-09-21, still under its limit.
+ * - Chunks, raised 2026-10-27 (the AD (f) F2 migration): the API docs chunk
+ *   is the package's screens now (`@kingsleyweb/bun-api-docs-ui/embed`),
+ *   measured 92.0 KiB (29.9 KiB gzipped), up from 66.7 KiB (21.2 KiB
+ *   gzipped) on 2026-09-21. Why it grew: the package's screens bundle the
+ *   package's own copies of the shared components (Card, Dialog, JsonView,
+ *   …), which the entry chunk also carries — one copy per package until a
+ *   dedupe is decided. The models, schema renderer and screens themselves
+ *   are the same code, now shared. The alternative (the host's components
+ *   injected into the package) was declined for F2 as too invasive.
  *
  * To raise one deliberately: run `bun scripts/build.ts --out <tmp dir>`,
  * which prints every file's size and gzipped size, set the limit about 10%
@@ -35,9 +41,9 @@ export const BUNDLE_BUDGET = {
   /** The entry module gzipped (`Bun.gzipSync`, default level), in bytes. */
   entryGzipBytes: 112 * 1024,
   /** Any other JavaScript file of the build (a lazy screen or a shared chunk), minified, in bytes. */
-  chunkBytes: 73 * 1024,
+  chunkBytes: 101 * 1024,
   /** Any other JavaScript file gzipped, in bytes. */
-  chunkGzipBytes: 23 * 1024,
+  chunkGzipBytes: 33 * 1024,
 } as const;
 
 /** Formats bytes as KiB with one decimal, for failure messages. */

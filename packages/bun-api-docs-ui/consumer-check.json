@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-api-docs-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-api-docs-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. bun-common is a runtime dependency, so it is packed alongside.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-api-docs-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-api-docs-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. bun-common is a runtime dependency, so it is packed alongside. The `./embed` entry (the browser screens, for a host app that bundles them) is NOT here: it is TSX with CSS side-effect imports and React types, shipped as source \u2014 a bundler-only surface, covered in-repo by bun-jobs-ui consuming it. The server-side surface is all below.",
   "workspaceDependencies": ["packages/bun-common"],
   "entries": [
     {
@@ -52,6 +52,17 @@
       "values": ["DOCS_UI_CONFIG_ELEMENT_ID", "DEFAULT_EXTENSION_PREFIXES"],
       "types": ["DocsUiConfig", "DocsUiTheme"],
       "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/hosted",
+      "values": [
+        "resolveHostedAssets",
+        "createNonce",
+        "createShellRenderer",
+        "cspHeader",
+        "ASSET_CACHE_CONTROL"
+      ],
+      "types": ["UiAssets", "UiAsset"]
     }
   ]
 }

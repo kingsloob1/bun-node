@@ -1,5 +1,6 @@
 import type { RawResponse } from "../../../api/client";
 import type { JsonEditorState } from "../../../components/jsonParse";
+import type { PermissionProbe } from "../permissions";
 import type { SchemaRoot } from "../schema/resolve";
 import type { DocOperation, DocParameter } from "./model";
 import type { FieldValue, InputKind, TryItRequest, TryItValues } from "./tryIt";
@@ -54,6 +55,12 @@ export interface TryItPanelProps {
   operation: DocOperation;
   /** The document, for `$ref`s in parameter and body schemas. */
   root: SchemaRoot;
+  /** Whether the API is read-only (the panel is off for mutations). Defaults to `false`. */
+  readOnly?: boolean;
+  /** Answers "does the caller hold this permission" (the panel is off when it is lacked). Absent: every operation may be tried. */
+  probe?: PermissionProbe;
+  /** After a successful mutation (the host refreshes what it shows). */
+  onChanged?: () => void;
 }
 
 /** Hints per input kind. */
@@ -359,7 +366,13 @@ function Snippets({
  * exactly as the snippets promise. Mutations ask first; destructive ones
  * need the operation id typed.
  */
-export function TryItPanel({ operation, root }: TryItPanelProps) {
+export function TryItPanel({
+  operation,
+  root,
+  readOnly = false,
+  probe,
+  onChanged,
+}: TryItPanelProps) {
   const api = useDocsClient();
   const config = useDocsUiConfig();
   const parameters = formParameters(operation);
@@ -378,8 +391,14 @@ export function TryItPanel({ operation, root }: TryItPanelProps) {
   const [result, setResult] = useState<TryItResult | null>(null);
 
   // A standalone viewer knows neither the API's read-only setting nor the
-  // caller's permissions; the API's answer stays final either way.
-  const gate = tryItGate(operation, { readOnly: false, permitted: true });
+  // caller's permissions (no `probe`); the API's answer stays final either way.
+  const gate = tryItGate(operation, {
+    readOnly,
+    permitted:
+      operation.action === undefined || probe === undefined
+        ? true
+        : probe(operation.action) === true,
+  });
   const disabled = !gate.enabled || pending;
 
   const built = useMemo(
@@ -402,6 +421,10 @@ export function TryItPanel({ operation, root }: TryItPanelProps) {
         body: request.body,
       });
       setResult({ ok: true, response });
+      if (operation.mutation && response.ok) {
+        // The host shows what this changed.
+        onChanged?.();
+      }
     } catch (error) {
       setResult({ ok: false, error, ms: performance.now() - started });
     } finally {
@@ -500,7 +523,7 @@ export function TryItPanel({ operation, root }: TryItPanelProps) {
             data-testid="tryit-csrf"
           >
             {config.csrfHeader === csrfParameter.name
-              ? `The ${csrfParameter.name} header is added by the viewer's client.`
+              ? `The ${csrfParameter.name} header is added by the app's client.`
               : config.csrfHeader
                 ? `The API asks for ${csrfParameter.name}, but this UI sends ${config.csrfHeader}: the API will refuse this with 403 CSRF_REJECTED.`
                 : `The API asks for ${csrfParameter.name}, but this UI is configured with no CSRF header: the API will refuse this with 403 CSRF_REJECTED.`}
@@ -564,7 +587,7 @@ export function TryItPanel({ operation, root }: TryItPanelProps) {
         description={
           destructive
             ? "This changes the real API and cannot be undone."
-            : "This changes the real API."
+            : "This changes the real API, as the app's own buttons would."
         }
         variant={destructive ? "danger" : "default"}
         confirmLabel={`Send ${operation.method}`}

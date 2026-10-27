@@ -1,23 +1,10 @@
-import { formatNumber } from "../../../format";
+import type { LimitInfo } from "@kingsleyweb/bun-api-docs-ui/embed";
 
 /**
  * How the limits panel reads each `x-bun-jobs-limits` entry: a label, what it
- * means, and its unit. A limit the document adds later is still listed, by
- * its name, as a plain number.
+ * means, and its unit. The vocabulary is this API's own; the rendering is the
+ * package's (`wsFormat.formatLimit`), with this as its `limitsInfo`.
  */
-
-/** A limit's unit. */
-export type LimitUnit = "bytes" | "ms" | "count" | "per-second";
-
-/** How one limit reads. */
-export interface LimitInfo {
-  /** Its label. */
-  label: string;
-  /** What it means. */
-  meaning: string;
-  /** Its unit. */
-  unit: LimitUnit;
-}
 
 /** The known limits. */
 export const LIMIT_INFO: Readonly<Record<string, LimitInfo>> = {
@@ -82,46 +69,3 @@ export const LIMIT_INFO: Readonly<Record<string, LimitInfo>> = {
     unit: "ms",
   },
 };
-
-/** `1,048,576 bytes (1 MiB)`. */
-export function formatBytes(value: number): string {
-  const units = ["KiB", "MiB", "GiB"];
-  let scaled = value;
-  let unit = "";
-  for (const next of units) {
-    if (scaled < 1024 || scaled % 1024 !== 0) {
-      break;
-    }
-    scaled /= 1024;
-    unit = next;
-  }
-  return unit === ""
-    ? `${formatNumber(value)} bytes`
-    : `${formatNumber(value)} bytes (${formatNumber(scaled)} ${unit})`;
-}
-
-/** `25,000 ms (25 s)`, `300,000 ms (5 min)`. */
-export function formatMs(value: number): string {
-  const plain = `${formatNumber(value)} ms`;
-  if (value >= 60_000 && value % 60_000 === 0) {
-    return `${plain} (${formatNumber(value / 60_000)} min)`;
-  }
-  if (value >= 1000 && value % 1000 === 0) {
-    return `${plain} (${formatNumber(value / 1000)} s)`;
-  }
-  return plain;
-}
-
-/** A limit's value in its unit. */
-export function formatLimit(name: string, value: number): string {
-  switch (LIMIT_INFO[name]?.unit) {
-    case "bytes":
-      return formatBytes(value);
-    case "ms":
-      return formatMs(value);
-    case "per-second":
-      return `${formatNumber(value)} / s`;
-    default:
-      return formatNumber(value);
-  }
-}

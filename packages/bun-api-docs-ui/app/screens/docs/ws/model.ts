@@ -90,9 +90,9 @@ export function refName(ref: unknown): string | undefined {
     : last.replaceAll("~1", "/").replaceAll("~0", "~");
 }
 
-/** The app path of an item, keeping the search. */
-export function itemPath(slug: string, query = ""): string {
-  return `/ws/${encodeURIComponent(slug)}${query ? `?${new URLSearchParams({ q: query }).toString()}` : ""}`;
+/** The app path of an item, keeping the search; `base` is the docs section's path within the host app ("" for a standalone viewer). */
+export function itemPath(slug: string, query = "", base = ""): string {
+  return `${base}/ws/${encodeURIComponent(slug)}${query ? `?${new URLSearchParams({ q: query }).toString()}` : ""}`;
 }
 
 /** The kinds of sidebar item. */
@@ -976,6 +976,171 @@ export function channelPermissions(doc: WsDoc, channel: string): string[] {
       ),
     ),
   ];
+}
+
+/** The event types a channel carries (`completed`, ...), de-duplicated, in order. */
+export function channelEventTypes(doc: WsDoc, channel: WsChannel): string[] {
+  const types = channel.messages.flatMap((key) => {
+    const message = doc.messages.find((candidate) => candidate.key === key);
+    return message?.event ? [message.event.type] : [];
+  });
+  return [...new Set(types)];
+}
+
+/**
+ * How an embedding app applies its own contract to the try-it machinery:
+ * bun-jobs-ui passes its name rule and job-id escaping; a standalone viewer
+ * passes nothing (the document's own schemas decide, and values fill
+ * unescaped).
+ */
+export interface WsAddressOptions {
+  /**
+   * Fallback validation for a parameter the document gives no
+   * `<prefix>-schema`: why the value is refused, or `null` when it passes.
+   * Default: anything passes.
+   */
+  nameRule?: (name: string, value: string) => string | null;
+  /**
+   * Friendlier refusal wordings for known schema patterns, by the pattern
+   * string (bun-jobs words its contract's pattern). Default: `Must match
+   * <pattern>.`
+   */
+  patternText?: Readonly<Record<string, string>>;
+  /**
+   * Escapes a value for a filled address (bun-jobs escapes job ids with its
+   * contract's `encodeJobId`). Default: identity.
+   */
+  escapeValue?: (name: string, value: string) => string;
+}
+
+/** Compiles a JSON Schema `pattern` (ECMA-262, unicode), or `undefined` when it does not compile. */
+function compilePattern(pattern: string): RegExp | undefined {
+  try {
+    return new RegExp(pattern, "u");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Why a value is refused by a parameter's `<prefix>-schema` (its `pattern`,
+ * `minLength` and `maxLength`; lengths in code points, as JSON Schema counts
+ * them), or `null` when it passes. A pattern that does not compile is skipped
+ * rather than refusing everything.
+ */
+function schemaProblem(
+  schema: Json,
+  value: string,
+  options?: WsAddressOptions,
+): string | null {
+  const length = [...value].length;
+  const max = num(schema.maxLength);
+  if (max !== undefined && length > max) {
+    return `At most ${max} characters (this is ${length}).`;
+  }
+  const min = num(schema.minLength);
+  if (min !== undefined && length < min) {
+    return `At least ${min} characters.`;
+  }
+  const pattern = str(schema.pattern);
+  const compiled = pattern === undefined ? undefined : compilePattern(pattern);
+  if (compiled && !compiled.test(value)) {
+    return (
+      (pattern === undefined ? undefined : options?.patternText?.[pattern]) ??
+      `Must match ${pattern}.`
+    );
+  }
+  return null;
+}
+
+/**
+ * Why a parameter value is refused, or `null` when it is fine (or empty).
+ * The document's `<prefix>-schema` decides when it gives one; otherwise the
+ * options' `nameRule` decides, when the embedding app has one.
+ */
+export function parameterProblem(
+  name: string,
+  value: string,
+  schema?: Json,
+  options?: WsAddressOptions,
+): string | null {
+  if (value === "") {
+    return null;
+  }
+  if (schema !== undefined) {
+    return schemaProblem(schema, value, options);
+  }
+  return options?.nameRule?.(name, value) ?? null;
+}
+
+/** The parameters' schemas by name, for {@link fillAddress}. */
+export function parameterSchemas(
+  parameters: readonly WsParameter[],
+): Record<string, Json | undefined> {
+  return Object.fromEntries(
+    parameters.map((parameter) => [parameter.name, parameter.schema]),
+  );
+}
+
+/**
+ * An address template filled from parameter values: `queue/{queue}/job/{jobId}`
+ * with each value escaped by the options' `escapeValue`. `null` while a value
+ * is missing or refused by {@link parameterProblem} (under `schemas`, the
+ * document's, when it gives them).
+ */
+export function fillAddress(
+  address: string,
+  values: Readonly<Record<string, string>>,
+  schemas: Readonly<Record<string, Json | undefined>> = {},
+  options?: WsAddressOptions,
+): string | null {
+  let complete = true;
+  const filled = address.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+    const value = values[name] ?? "";
+    if (
+      value === "" ||
+      parameterProblem(name, value, schemas[name], options) !== null
+    ) {
+      complete = false;
+      return "";
+    }
+    return options?.escapeValue?.(name, value) ?? value;
+  });
+  return complete ? filled : null;
+}
+
+/**
+ * Why a channel's try-it cannot be opened yet: each empty or refused
+ * parameter, in template order. Empty when it can.
+ */
+export function tryProblems(
+  channel: WsChannel,
+  values: Readonly<Record<string, string>>,
+  options?: WsAddressOptions,
+): string[] {
+  return channel.parameters.flatMap((parameter) => {
+    const value = values[parameter.name] ?? "";
+    if (value === "") {
+      return [`${parameter.name}: fill it in.`];
+    }
+    const problem = parameterProblem(
+      parameter.name,
+      value,
+      parameter.schema,
+      options,
+    );
+    return problem === null ? [] : [`${parameter.name}: ${problem}`];
+  });
+}
+
+/**
+ * Whether a channel is something to subscribe to, and so has a try-it at
+ * all: a logical channel name. The connection is the transport the others
+ * travel over, and an address that is a socket path (`/...`) is not a
+ * channel name either; neither gets a try-it, not even a disabled one.
+ */
+export function channelSubscribable(channel: WsChannel): boolean {
+  return !channel.isConnection && !channel.address.startsWith("/");
 }
 
 /**
