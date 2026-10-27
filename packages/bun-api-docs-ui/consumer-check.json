@@ -1,0 +1,57 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-api-docs-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-api-docs-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. bun-common is a runtime dependency, so it is packed alongside.",
+  "workspaceDependencies": ["packages/bun-common"],
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui",
+      "values": [
+        "docsUi",
+        "ASSET_CACHE_CONTROL",
+        "DEFAULT_BASE_PATH",
+        "DEFAULT_TITLE",
+        "DOCUMENT_SUBPATH",
+        "DEFAULT_EXTENSION_PREFIXES",
+        "DOCS_UI_CONFIG_ELEMENT_ID"
+      ],
+      "types": [
+        "DocsUi",
+        "DocsUiOptions",
+        "DocsUiAuthorize",
+        "DocsUiAuthorizeContext",
+        "DocsUiAuthorizeResult",
+        "DocsUiDocumentThunk",
+        "DocsUiConfig",
+        "DocsUiTheme"
+      ],
+      "snippet": "const ui = m.docsUi({ document: \"/jobs-api/openapi.json\", basePath: \"/docs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/index",
+      "values": ["docsUi", "DOCS_UI_CONFIG_ELEMENT_ID"],
+      "types": ["DocsUiOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/index.ts",
+      "values": ["docsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/index.js",
+      "values": ["docsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/docsUi",
+      "values": ["docsUi", "DEFAULT_BASE_PATH"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/types",
+      "types": ["DocsUi", "DocsUiOptions"],
+      "runtime": false
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/shared/config",
+      "values": ["DOCS_UI_CONFIG_ELEMENT_ID", "DEFAULT_EXTENSION_PREFIXES"],
+      "types": ["DocsUiConfig", "DocsUiTheme"],
+      "browser": true
+    }
+  ]
+}

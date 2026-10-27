@@ -18,7 +18,8 @@
     "packages/bun-common",
     "packages/bun-nest",
     "packages/bun-jobs",
-    "packages/bun-jobs-ui"
+    "packages/bun-jobs-ui",
+    "packages/bun-api-docs-ui"
   ],
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
