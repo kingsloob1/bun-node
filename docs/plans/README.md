@@ -174,6 +174,11 @@ blindly.
   over pluggable drivers, with HTTP and Nest utilities.
   - [`bun-jobs-s3-driver.md`](bun-cache/bun-jobs-s3-driver.md) — bun-jobs on
     S3: a driver, a blob store, or an archive.
+  - [`encryption.md`](bun-cache/encryption.md) — at-rest encryption
+    (AES-256-GCM with a key per entry, rotation, key providers, user
+    ciphers), keyed hashing of keys, namespaces and tags, and pluggable
+    compression (`br`, `deflate`, user compressors) as one chain of
+    transforms.
   - Evidence: [`bun-cache/evidence/`](bun-cache/evidence/README.md) — spikes
     on Bun 1.4.3 for a caching package: Bun's `S3Client` on the wire against
     a recording stub (no metadata, no conditional writes, `Content-Type`
@@ -191,6 +196,14 @@ blindly.
     a claim-once path on S3; pickup latency against poll interval (corrected
     after review); a cost model per design; the pinned SeaweedFS test
     server's startup time; the AWS SDK's presigned signed headers.
+    [`encryption/`](bun-cache/evidence/encryption/README.md), on Bun
+    1.4.4-canary.1+a0cc096ce: what Bun offers for encryption (`node:crypto`
+    has AES-GCM but no ChaCha20-Poly1305; `crypto.subtle` has both),
+    **measured** at 100 B to 1 MiB against bun-cache's own encode and zstd
+    path; nonce sources (`getRandomValues` 0.04 µs, `randomBytes` 2.8 µs);
+    HMAC and HKDF costs; a swap, tamper, tag-strip and replay attack run on
+    the real `createCache`; zstd, gzip, deflate and Brotli at four sizes on
+    JSON, HTML and incompressible bytes, sync and async.
 - **[`api-docs-generation/`](api-docs-generation/README.md)** — auto-generated
   API documentation: OpenAPI 3.1 for the HTTP adapter, AsyncAPI 3.0 for the
   WebSocket adapter.

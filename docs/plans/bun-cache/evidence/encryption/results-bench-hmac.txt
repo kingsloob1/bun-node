@@ -1,0 +1,15 @@
+Bun 1.4.4 (a0cc096ce); median of 5 runs, µs per op; digest as base64url (43 chars)
+
+| name | Bun.CryptoHasher HMAC | createHmac | subtle.sign (awaited) | plain SHA-256 (CryptoHasher, today's long keys) | Bun.hash (wyhash, not keyed) |
+|---|---|---|---|---|---|
+| tag (12 B) | 0.44 | 0.68 | 11.94 | 0.43 | 0.123 |
+| key (40 B) | 0.52 | 0.68 | 11.96 | 0.43 | 0.124 |
+| HTTP key (200 B) | 0.61 | 0.85 | 11.74 | 0.57 | 0.125 |
+
+| one-time derivation | ms per call |
+|---|---|
+| HKDF-SHA-256 → 32 B, node hkdfSync | 0.0011 |
+| HKDF-SHA-256 → 32 B, subtle deriveBits | 0.0145 |
+| scrypt N=2^14, r=8, p=1 (16 MiB) | 43.8 |
+| scrypt N=2^15, r=8, p=1 (32 MiB) | 84.7 |
+| scrypt N=2^17, r=8, p=1 (128 MiB) | 315.8 |
