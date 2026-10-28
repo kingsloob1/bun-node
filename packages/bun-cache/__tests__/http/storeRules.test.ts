@@ -421,7 +421,7 @@ describe("the lifetime", () => {
     );
   });
 
-  test("PR-H1 never serves stale: past freshUntil is a miss, inside the window or not", async () => {
+  test("without revalidate, a stale entry is answered once and the next request refreshes it (§9.4)", async () => {
     setSystemTime(new Date("2026-10-28T10:00:00Z"));
     const cache = makeHttpCache();
     const router = new BunRouter();
@@ -435,8 +435,17 @@ describe("the lifetime", () => {
     await router.fetch("/r");
     await written;
     setSystemTime(new Date("2026-10-28T10:00:11Z"));
-    const response = await router.fetch("/r");
-    expect(response.headers.get("x-cache")).toBe("MISS");
-    expect(await response.text()).toBe("2");
+    const stale = await router.fetch("/r");
+    expect(stale.headers.get("x-cache")).toBe("STALE");
+    expect(stale.headers.get("age")).toBe("11");
+    expect(await stale.text()).toBe("1");
+    expect(runs).toBe(1);
+    const refreshed = nextSet(cache);
+    const next = await router.fetch("/r");
+    expect(next.headers.get("x-cache")).toBe("MISS");
+    expect(await next.text()).toBe("2");
+    await refreshed;
+    expect((await router.fetch("/r")).headers.get("x-cache")).toBe("HIT");
+    expect(runs).toBe(2);
   });
 });

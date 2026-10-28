@@ -1,0 +1,4 @@
+# bun 1.4.4-canary.1+a0cc096ce, 2026-10-28T17:26Z, load 3.95
+1. tap over res.write(): first chunk at 5 ms, end at 405 ms, body "one two", copy "one two"
+2. tap, client aborted: handler stream cancelled = true
+3. tee, client aborted: handler stream cancelled = false, pulled 9 more chunks in 500 ms

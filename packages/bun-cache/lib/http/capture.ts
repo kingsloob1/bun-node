@@ -150,3 +150,99 @@ export function withHeader(
     });
   }
 }
+
+/** What a {@link tapStream}'s copy came to. */
+export type TappedBody =
+  /** The whole body, the stream having ended within the limit. */
+  | Uint8Array
+  /** The stream outgrew the limit: what was sent is whole, but nothing is kept. */
+  | "too-large"
+  /** The stream errored, or its reader cancelled it (the client left). */
+  | "failed";
+
+/**
+ * A pull-through copy of a streamed body, for `streams: { buffer }` (plan
+ * §9.4): `stream` hands every chunk on as it arrives, keeping a copy of at
+ * most `maxBytes`. `bytes` settles with the copy once the source ends, or
+ * with `"too-large"` as soon as the copy outgrows `maxBytes`.
+ *
+ * With `beforeClose`, the end of `stream` waits for it (after `bytes` has
+ * settled): the cache holds the client's last read until what it decided
+ * for the copy (the entry, or the hit-for-miss mark) is written, so a
+ * request that arrives after the client saw the end finds it.
+ *
+ * Deliberately not `body.tee()`: a tee's second branch keeps pulling the
+ * source at its own pace, so a slow client stops back-pressuring the
+ * handler and a client that leaves no longer cancels its stream (measured:
+ * an endless stream kept being pulled after the client aborted,
+ * `docs/plans/bun-cache/evidence/stream-tap.ts`). Here the client's reads
+ * drive the source, and its cancel reaches it.
+ */
+export function tapStream(
+  source: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  beforeClose?: () => Promise<unknown>,
+): {
+  /** The stream to send in the source's place. */
+  stream: ReadableStream<Uint8Array>;
+  /** The copy, once the source has ended, errored or been cancelled. */
+  bytes: Promise<TappedBody>;
+} {
+  const reader = source.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let overflow = false;
+  let resolveBytes: (value: TappedBody) => void = () => {};
+  const bytes = new Promise<TappedBody>((resolve) => {
+    resolveBytes = resolve;
+  });
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        let read: Awaited<ReturnType<typeof reader.read>>;
+        try {
+          read = await reader.read();
+        } catch (error) {
+          resolveBytes("failed");
+          controller.error(error);
+          return;
+        }
+        if (read.done) {
+          if (!overflow) {
+            const out = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of chunks) {
+              out.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+            resolveBytes(out);
+          }
+          if (beforeClose !== undefined) {
+            await beforeClose().catch(() => {});
+          }
+          controller.close();
+          return;
+        }
+        const chunk = read.value;
+        if (!overflow) {
+          size += chunk.byteLength;
+          if (size > maxBytes) {
+            overflow = true;
+            chunks.length = 0;
+            // Known now: the decision need not wait for the stream's end.
+            resolveBytes("too-large");
+          } else {
+            chunks.push(chunk.slice());
+          }
+        }
+        controller.enqueue(chunk);
+      },
+      async cancel(reason) {
+        resolveBytes("failed");
+        await reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, bytes };
+}

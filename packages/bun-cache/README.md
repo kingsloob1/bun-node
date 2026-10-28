@@ -102,8 +102,18 @@ And (PR-C8):
   reads everything it needs from the listing
   ([The Azure Blob Storage driver](#the-azure-blob-storage-driver))
 
-Next, in the plan's order: stale serving over HTTP
-(PR-H2) and the Nest interceptor (PR-N2).
+And (PR-H2):
+
+- **stale serving over HTTP**: `cacheResponse()` answers a stale entry
+  `STALE` inside its stale-while-revalidate window while one background
+  replay of the request through the router's `fetch()` refreshes it, and
+  inside its stale-if-error window when the handler fails or outlasts
+  `hardTimeout`; `streams: { buffer }` stores streamed responses
+  ([Stale serving over HTTP](#stale-serving-over-http))
+
+Next, in the plan's order: the Cloudflare drivers (PR-C10, PR-C11), pluggable
+compression (PR-Z1), the Nest interceptor (PR-N2), then encryption (PR-E1 to
+PR-E3).
 
 ## Quick start
 
@@ -1461,7 +1471,9 @@ status is in `statuses` (by default RFC 9110's heuristically cacheable set:
   `must-revalidate` answer, unless the key varies on the identity
   (`varyBy: ["authorization"]`, or a `key` function);
 - no `Set-Cookie` from the handler, unless `allowSetCookie`;
-- a buffered body (a stream is not stored; PR-H2 adds `streams: { buffer }`);
+- a buffered body, or a stream under `streams: { buffer }` that ends within
+  the buffer (`text/event-stream` never; see
+  [Stale serving over HTTP](#stale-serving-over-http));
 - a lifetime: `ttl` in ms (which overrides the freshness headers, not the
   refusals above), or with `ttl: "headers"` (the default)
   `Surrogate-Control: max-age`, then `s-maxage`, then `max-age`, then
@@ -1472,8 +1484,8 @@ Never stored: hop-by-hop fields, `Content-Length`, `Age`, the status header,
 handler left as it was (a request id, a CORS origin, a session cookie) —
 that middleware sets its own on every hit. A response's
 `stale-while-revalidate=` and `stale-if-error=` are kept with the entry
-(zeroed by `must-revalidate` or `proxy-revalidate`) for PR-H2; until then an
-entry past its freshness is a miss.
+(zeroed by `must-revalidate` or `proxy-revalidate`): see
+[Stale serving over HTTP](#stale-serving-over-http).
 
 **Hits** get the stored status and headers, `Age` (RFC 9111 §5.1: the
 response's own plus its time in the cache), and the body through
@@ -1482,9 +1494,10 @@ response's own plus its time in the cache), and the body through
 the handler set none; `etag: false` turns that off). A conditional request
 that **misses** still produces the full response for the cache (the
 handler sees `req.fresh === false`), and is answered `304` from it. The
-`X-Cache` header (`statusHeader`, or `false`) says `HIT`, `MISS`, `BYPASS`
-(`bypass(req)`, or a request's `no-store` under `honorRequest`) or
-`UNCACHEABLE` (answered, not stored).
+`X-Cache` header (`statusHeader`, or `false`) says `HIT`, `MISS`, `STALE`
+(past its freshness, inside a stale window), `BYPASS` (`bypass(req)`, or a
+request's `no-store` under `honorRequest`) or `UNCACHEABLE` (answered, not
+stored).
 
 **HEAD** is answered from the GET entry, without a body; a HEAD miss runs the
 GET handler and stores nothing. A `POST`, `PUT`, `PATCH` or `DELETE` through
@@ -1546,3 +1559,97 @@ or `no-cache` is not shared.
 | `coalesce` | `true` | or `false`, or `{ wait }` (10 s) |
 | `uncacheableTtl` | 30 s | the hit-for-miss mark; `0` disables |
 | `etag` | `true` | compute an `ETag` when there is none |
+| `staleWhileRevalidate` | the response's | ms answered `STALE` past freshness while refreshing |
+| `staleIfError` | the response's | ms answered `STALE` past freshness when the handler fails |
+| `hardTimeout` | none | ms to wait for the handler when a stale-if-error answer exists |
+| `revalidate` | none | the router or adapter a refresh replays through |
+| `streams` | `"skip"` | or `{ buffer: bytes }`: store streams that end within it |
+
+### Stale serving over HTTP
+
+```ts
+const app = new BunHttpAdapter();
+const pages = cacheResponse(cache, {
+  revalidate: app,                 // what a refresh replays the request through
+  staleIfError: 600_000,           // or the response's stale-if-error=
+  hardTimeout: 2_000,              // a slow handler counts as a failure, when a stale answer exists
+});
+app.get("/posts/:id", pages, async (req, res) => {
+  res.setHeader("Cache-Control", "max-age=60, stale-while-revalidate=300");
+  res.json(await loadPost(req.params.id));
+});
+```
+
+An entry past its freshness is kept for the longer of its two windows
+(RFC 5861): the route's `staleWhileRevalidate` and `staleIfError` (ms) when
+set, the response's `stale-while-revalidate=` and `stale-if-error=`
+otherwise, and never under `must-revalidate` or `proxy-revalidate`. A stale
+answer carries `X-Cache: STALE` and its `Age`; no `Warning` (RFC 9111 dropped
+it).
+
+**Stale-while-revalidate.** Inside the window a request is answered from
+the stale entry at once, and **one** background replay refreshes it:
+
+- **The replay** is a `GET` of the same URL through `revalidate.fetch()` —
+  the router or adapter you pass, the outermost one, so it routes as the
+  request did — with no socket. It carries the host, the `varyBy` headers
+  and the response's `Vary` headers, nothing else of the client's request
+  (no cookie or credential the key does not vary on, no conditional), and
+  an internal `x-bun-cache-revalidate` header: this process's random token
+  and the id of a replay the middleware is waiting on. Only a request
+  carrying both is a replay; anything else with that header is an ordinary
+  request, and an id is used once.
+- **One per key**: the replay loads through the core's single-flight, so a
+  burst of stale answers starts one, a miss arriving meanwhile waits for it,
+  and a replay started while a miss is running joins that miss.
+- **Its write is fenced** like a miss's: an invalidation that lands while it
+  runs drops it.
+- **A replay that fails** — a 5xx, an answer that bypassed the transforms,
+  nothing within `coalesce.wait` (or `hardTimeout`, when shorter) — stores
+  nothing: the stale entry stays, and the key's next replay waits 10 s. One
+  whose answer may no longer be stored (`no-store`, `private`, a cookie…)
+  replaces the entry with the hit-for-miss mark, as a miss would.
+- **Without `revalidate`**, a stale entry is answered once, and the next
+  request for it refreshes it (and waits for the handler).
+- **What it costs**: the stale entry is read once more before the
+  single-flight on a miss, so `stats()` counts a miss (or a stale hit) per
+  read, not per request.
+- **The key must be reproducible from those headers.** With a `key`
+  function that reads anything else, the replay lands on another key:
+  nothing is stored, and the stale entry is answered until its window ends.
+- A `HEAD` inside the window is answered stale and refreshed as a `GET`.
+  A request whose `Cache-Control` bounds the age it accepts (`max-age`,
+  `min-fresh`, `only-if-cached`, `no-cache`, under `honorRequest`) is never
+  answered stale.
+
+**Stale-if-error.** Past stale-while-revalidate and inside the
+stale-if-error window, a request runs the handler as a miss, holding on to
+the stale entry: when the pipeline answers a **5xx** (an error handler's
+answer counts), the stale response goes out instead, `STALE`, with the
+headers middleware ahead of the cache set, and the entry is kept; coalesced
+followers get it too. With **`hardTimeout`**, a handler that has not
+answered in time is answered stale the same way, and its late answer is
+dropped (bun-common sends nothing once a response went out) and not stored.
+An unhandled error is answered by the adapter outside the pipeline and
+cannot be rescued. Without a stale entry, a 5xx goes through and
+`hardTimeout` does nothing.
+
+**Streams.** By default (`streams: "skip"`) a streamed answer is sent and
+not stored. With `streams: { buffer: maxBytes }` its body is swapped for a
+pull-through copy: each chunk goes to the client as it arrives (the first
+byte is not held back), the client's reads drive the handler's stream and
+its disconnect cancels it, and the copy is stored once the stream ends
+within `maxBytes` (and the cache's `maxEntryBytes`). A stream that outgrows
+the buffer is sent whole and not stored; with coalescing (the default) its
+key is marked uncacheable (hit-for-miss) as soon as the copy outgrows the
+buffer. One that fails or whose client leaves is not stored.
+`text/event-stream` is never stored. The stream's **end reaches the client
+only once what was decided is written** — the entry, or the mark (at most
+`coalesce.wait`) — so a request that arrives after the client saw the end
+finds it. A buffered stream's `X-Cache` is `MISS`: it goes out with the
+first byte, before the size is known — also under the mark, where the
+stream is still copied and replaces the mark if it fits, as any storable
+answer does. Coalesced followers wait for the stream to end. The copy is not a
+`tee()`: a tee's second branch keeps pulling, so a slow client stops
+back-pressuring the handler and a client that leaves no longer stops it
+(measured: `docs/plans/bun-cache/evidence/stream-tap.ts`).
