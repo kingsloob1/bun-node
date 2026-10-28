@@ -29,7 +29,7 @@ import {
  * then skipped, so the run shows one named, explained failure rather than a
  * storm of connection errors.
  */
-function reportUnreachable(
+export function reportUnreachable(
   /** Backend name, as it appears in the test titles. */
   name: string,
   /** The variable that pointed at it, so the reader knows what to fix. */
@@ -48,7 +48,7 @@ function reportUnreachable(
 }
 
 /** Registers the visible skip for a backend with no URL. */
-function reportNotConfigured(name: string, variable: string): void {
+export function reportNotConfigured(name: string, variable: string): void {
   describe.skip(`backend ${name}: not configured`, () => {
     it(`set ${variable} (bun scripts/setup-databases.ts --print-env) to run it`, () => {});
   });

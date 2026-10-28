@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.1.0",
   "private": false,
-  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters) over memory, file, SQLite, Postgres, MySQL and MariaDB drivers today, with MongoDB, Redis and S3 to follow, an HTTP response cache for bun-common (./http), and a conformance kit for custom drivers",
+  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL and MariaDB drivers today, with MongoDB, Redis and S3 to follow, an HTTP response cache for bun-common (./http), and a conformance kit for custom drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-cache#readme",
@@ -28,7 +28,9 @@
     "mysql",
     "mariadb",
     "http",
-    "response-cache"
+    "response-cache",
+    "multi-tier",
+    "redis"
   ],
   "exports": {
     ".": {
@@ -65,6 +67,11 @@
       "@kingsleyweb/source": "./lib/drivers/index.ts",
       "types": "./dts/drivers/index.d.ts",
       "default": "./lib/drivers/index.ts"
+    },
+    "./lib/bus": {
+      "@kingsleyweb/source": "./lib/bus/index.ts",
+      "types": "./dts/bus/index.d.ts",
+      "default": "./lib/bus/index.ts"
     },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",

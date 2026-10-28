@@ -34,12 +34,13 @@ const DEFAULT_JOBS = 4;
  * pool has drained.
  *
  * Some examples measure timing — poll cadences, lock expiry, process startup —
- * rather than only behaviour, so a starved one reads as broken. None here has
- * needed that yet; an example that flakes under the pool and passes alone
- * belongs on this list. Keep it short and each entry earned — it is not a
+ * rather than only behaviour, so a starved one reads as broken.
+ * `06-tiers/two-processes.ts` asserts on the time an invalidation takes to
+ * reach another process, within a generous bound; an example that flakes
+ * under the pool and passes alone belongs on this list too. Keep it short and each entry earned — it is not a
  * place to park a flake whose real cause is a bug.
  */
-const RUN_ALONE: string[] = [];
+const RUN_ALONE: string[] = ["06-tiers/two-processes.ts"];
 
 /**
  * Pooled examples known to take a while, started first so the pool is not left

@@ -16,7 +16,9 @@
         "EntryTooLargeError",
         "postgresDriver",
         "mysqlDriver",
-        "mariadbDriver"
+        "mariadbDriver",
+        "pgBus",
+        "redisBus"
       ],
       "types": [
         "Cache",
@@ -42,9 +44,12 @@
         "MysqlDriverOptions",
         "SqlCacheDriverOptions",
         "SqlConnectionOptions",
-        "SqlCacheTable"
+        "SqlCacheTable",
+        "CacheBus",
+        "PgBusOptions",
+        "RedisBusOptions"
       ],
-      "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;"
+      "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;\nconst tiered = m.createCache({ driver: m.memoryDriver(), l1: { maxEntries: 10, ttl: 1000, clone: true }, bus: \"auto\" });\nexport type _l1Hits = Equal<NonNullable<ReturnType<typeof tiered.stats>[\"l1\"]>[\"hits\"], number>;\nexport const _l2Read: Promise<unknown> = tiered.get(\"k\", { tier: \"l2\" });\nconst bus: t.CacheBus = m.redisBus({ url: \"redis://127.0.0.1:6379\", prefix: \"app\" });\nexport type _busNotAny = Expect<IsAny<typeof bus>>;\nexport const _pg: t.CacheBus = m.pgBus(\"postgres://localhost/app\");\nexport type _redisOptionsNotAny = Expect<IsAny<t.RedisBusOptions>>;\nexport type _pgOptionsNotAny = Expect<IsAny<t.PgBusOptions>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-cache/lib",
@@ -106,6 +111,11 @@
         "MysqlDriverOptions",
         "SqlCacheTable"
       ]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/bus",
+      "values": ["redisBus", "pgBus"],
+      "types": ["RedisBusOptions", "PgBusOptions"]
     },
     {
       "spelling": "@kingsleyweb/bun-cache/lib/core/cache",

@@ -22,6 +22,7 @@ import {
   LoaderTimeoutError,
   UnsupportedOperationError,
 } from "./errors";
+import { BusLink, driverBus } from "./bus";
 import { CacheEvents } from "./events";
 import type { Flight } from "./flight";
 import { FlightMap } from "./flight";
@@ -33,9 +34,12 @@ import {
   NO_FRESH_UNTIL,
 } from "./header";
 import { checkNamespace, fullNamespace, storedKey } from "./keys";
+import { L1Store } from "./l1";
 import { CacheStatsCounter } from "./stats";
 import type {
+  BusMessage,
   Cache,
+  CacheBus,
   CacheDriver,
   CacheEntry,
   CacheEvent,
@@ -90,6 +94,12 @@ const DEFAULTS = {
   lockWaitTimeout: 5_000,
   /** How many entries one sweep pass reclaims at most. */
   sweepLimit: 1_000,
+  /** `l1.maxEntries` (§4.1). */
+  l1MaxEntries: 10_000,
+  /** `l1.maxBytes`: 64 MiB of decoded payload (§4.1). */
+  l1MaxBytes: 64 * 1024 * 1024,
+  /** `l1.ttl`: the staleness bound with the bus down or absent (§4.3). */
+  l1Ttl: 30_000,
 } as const;
 
 /** The failure policy warns at most once per this many ms per cache (§3.14). */
@@ -119,6 +129,10 @@ interface DecodedValue {
   tags: readonly string[];
   /** The stored size, in bytes. */
   bytes: number;
+  /** The decoded payload's size, in bytes (before compression): what it costs the L1 tier. */
+  size: number;
+  /** A counter read through `getCounter` (§3.8): never copied into L1. */
+  counter?: boolean;
 }
 
 /** The outcome of the read pipeline. */
@@ -135,6 +149,8 @@ interface Decoded {
   negative: boolean;
   /** The entry's header. */
   header: EntryHeader;
+  /** The decoded payload's size, in bytes (after decompression). */
+  size: number;
 }
 
 /** The resolved `lock` option. */
@@ -190,6 +206,12 @@ interface SharedState {
   sweepTimer: ReturnType<typeof setInterval> | undefined;
   /** Whether `close()` has run. */
   closed: boolean;
+  /** The L1 tier, when `l1` is set (§4.1). */
+  l1: L1Store<DecodedValue> | undefined;
+  /** The bus link, when the cache has a bus (§4.2). */
+  bus: BusLink | undefined;
+  /** When the last bus-failure warning was logged (throttled like the driver's). */
+  lastBusWarnAt: number;
 }
 
 /** The cache implementation; one instance per namespace view, over shared state. */
@@ -479,7 +501,7 @@ class CacheImpl<
       payload = Bun.gunzipSync(payload.slice());
     }
     if ((header.flags & ENTRY_FLAGS.negative) !== 0) {
-      return { value: undefined, negative: true, header };
+      return { value: undefined, negative: true, header, size: 0 };
     }
     const codec = codecById(header.codecId, this.#state.customCodec);
     if (codec === undefined) {
@@ -494,7 +516,7 @@ class CacheImpl<
     ) {
       value = new TextDecoder().decode(value as Uint8Array);
     }
-    return { value, negative: false, header };
+    return { value, negative: false, header, size: payload.byteLength };
   }
 
   /* ---------------------------------------------------------------- */
@@ -542,6 +564,8 @@ class CacheImpl<
               loadMs: 0,
               tags: [],
               bytes: 0,
+              size: 0,
+              counter: true,
             },
           };
         }
@@ -634,11 +658,78 @@ class CacheImpl<
       loadMs: header.loadMs,
       tags: raw.tags,
       bytes: raw.value.byteLength,
+      size: decoded.size,
     };
     if (freshUntil !== null && now > freshUntil) {
       return { kind: "stale", entry };
     }
     return { kind: "fresh", entry };
+  }
+
+  /**
+   * The tiered read (§4.1): L1, then the driver. A fresh L1 copy answers at
+   * once; otherwise the driver's read is copied into L1 when it is fresh (and
+   * not a counter), unless an invalidation covering it landed while it was in
+   * flight (`L1Store.fill`). `tier: "l2"` reads the driver and leaves L1 alone.
+   */
+  async #read(
+    key: string,
+    stored: string,
+    tier: "l2" | undefined,
+  ): Promise<{ read: ReadOutcome; tier: "l1" | "l2" }> {
+    const state = this.#state;
+    const l1 = state.l1;
+    if (l1 === undefined || tier === "l2") {
+      return { read: await this.#readStored(key, stored), tier: "l2" };
+    }
+    const copy = l1.get(this.#ns, stored, state.now());
+    if (copy !== undefined) {
+      l1.counts.hits++;
+      return { read: { kind: "fresh", entry: copy }, tier: "l1" };
+    }
+    l1.counts.misses++;
+    const token = l1.begin();
+    try {
+      const read = await this.#readStored(key, stored);
+      this.#fillL1(stored, read, token);
+      return { read, tier: "l2" };
+    } finally {
+      l1.end();
+    }
+  }
+
+  /** Copies a fresh driver read into L1 (never a counter, never a stale entry). */
+  #fillL1(stored: string, read: ReadOutcome, token: number): void {
+    const l1 = this.#state.l1;
+    if (
+      l1 !== undefined &&
+      read.kind === "fresh" &&
+      read.entry.counter !== true
+    ) {
+      l1.fill(
+        this.#ns,
+        stored,
+        read.entry,
+        read.entry.size,
+        token,
+        this.#state.now(),
+      );
+    }
+  }
+
+  /** Publishes on the bus, when the cache has one (§4.2); never throws — a failure is an `error` event. */
+  async #publish(
+    message: Omit<BusMessage, "namespace" | "at" | "origin">,
+  ): Promise<void> {
+    const bus = this.#state.bus;
+    if (bus === undefined) {
+      return;
+    }
+    await bus.publish({
+      ...message,
+      namespace: this.#ns,
+      at: this.#state.now(),
+    });
   }
 
   /* ---------------------------------------------------------------- */
@@ -699,6 +790,15 @@ class CacheImpl<
       staleIfError: number;
       /** Whether this is a negative marker. */
       negative: boolean;
+      /** `"l2"`: write the driver only; this process's L1 copy is dropped, not replaced. */
+      tier?: "l2";
+      /**
+       * A load's L1 token, taken when its loader started (`L1Store.begin`):
+       * an invalidation that landed during the load then keeps its value out
+       * of L1 — on a stamps-mode driver nothing else would, since there is no
+       * driver fence there. Absent: the write takes its own.
+       */
+      l1Token?: number;
     },
   ): Promise<boolean> {
     const state = this.#state;
@@ -751,19 +851,87 @@ class CacheImpl<
       init.tags.length > 0 && state.driver.capabilities.tags === "index"
         ? { tags: init.tags, createdAt: init.createdAt }
         : undefined;
-    const result = await this.#op(
-      "set",
-      async () => await state.driver.set(this.#ns, entry, fence),
-      "fenced" as const,
-    );
-    if (result === "fenced") {
-      this.#reportFenced(key, init.tags, "fence");
-      return false;
+    // §4.1's write order: L2, then L1, then the bus. The token is taken
+    // before the L2 write, so an invalidation that lands while it runs keeps
+    // this value out of L1 (which write L2 kept last is unknowable here).
+    const l1 = state.l1;
+    const own = l1 !== undefined && init.l1Token === undefined;
+    const token = init.l1Token ?? (own ? l1.begin() : 0);
+    try {
+      const result = await this.#op(
+        "set",
+        async () => await state.driver.set(this.#ns, entry, fence),
+        "fenced" as const,
+      );
+      if (result === "fenced") {
+        // Fenced, or failed: L2 kept what it had, and so does every other
+        // process's L1 — only this process's copy, if any, is dropped.
+        l1?.afterWrite(this.#ns, stored, undefined, 0, token, state.now());
+        this.#reportFenced(key, init.tags, "fence");
+        return false;
+      }
+      state.stats.sets++;
+      state.stats.bytesWritten += bytes.byteLength;
+      this.#emit("set", { key, namespace: this.#ns, bytes: bytes.byteLength });
+      if (l1 !== undefined) {
+        const [copy, size] = this.#l1CopyOfWrite(key, bytes, entry, init);
+        l1.afterWrite(this.#ns, stored, copy, size, token, state.now());
+      }
+      await this.#publish({ type: "set", keys: [stored] });
+      return true;
+    } finally {
+      if (own) {
+        l1.end();
+      }
     }
-    state.stats.sets++;
-    state.stats.bytesWritten += bytes.byteLength;
-    this.#emit("set", { key, namespace: this.#ns, bytes: bytes.byteLength });
-    return true;
+  }
+
+  /**
+   * What L1 holds for a value this process just wrote: the **decoded** bytes,
+   * so an L1 hit gives what an L2 read would (`codec: "json"` turns a `Date`
+   * into a string in both) and never the caller's own object. Nothing when the
+   * call asked for `tier: "l2"`, or when `validate` covers the key — the next
+   * read validates it on its way in.
+   */
+  #l1CopyOfWrite(
+    key: string,
+    bytes: Uint8Array,
+    entry: StoredEntry,
+    init: {
+      /** When the value's loader started. */
+      createdAt: number;
+      /** The load's duration. */
+      loadMs: number;
+      /** The per-call tier. */
+      tier?: "l2";
+    },
+  ): [DecodedValue | undefined, number] {
+    if (init.tier === "l2" || this.#validatorFor(key) !== undefined) {
+      return [undefined, 0];
+    }
+    try {
+      const decoded = this.#decodeValue(bytes, key);
+      const freshUntil =
+        decoded.header.freshUntil === NO_FRESH_UNTIL
+          ? null
+          : decoded.header.freshUntil;
+      return [
+        {
+          value: decoded.value,
+          negative: decoded.negative,
+          createdAt: init.createdAt,
+          freshUntil,
+          expiresAt: entry.expiresAt,
+          loadMs: init.loadMs,
+          tags: entry.tags,
+          bytes: bytes.byteLength,
+          size: decoded.size,
+        },
+        decoded.size,
+      ];
+    } catch {
+      return [undefined, 0];
+    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -921,6 +1089,9 @@ class CacheImpl<
     }
 
     const loadStarted = state.now();
+    // The L1 token is the load's, not the write's: an invalidation that lands
+    // while the loader runs keeps its value out of L1 (see `#write`).
+    const l1Token = state.l1?.begin();
     const hardTimeout = options.hardTimeout ?? state.options.hardTimeout;
     const softTimeout = options.softTimeout ?? state.options.softTimeout;
     let settled = false;
@@ -928,6 +1099,9 @@ class CacheImpl<
     let softTimer: ReturnType<typeof setTimeout> | undefined;
 
     const finish = (): void => {
+      if (l1Token !== undefined) {
+        state.l1?.end();
+      }
       if (softTimer !== undefined) {
         clearTimeout(softTimer);
       }
@@ -1074,6 +1248,8 @@ class CacheImpl<
                 staleIfError:
                   options.staleIfError ?? state.options.staleIfError ?? 0,
                 negative: value === undefined,
+                tier: options.tier,
+                l1Token,
               });
             }
             if (context.background && storedValue) {
@@ -1373,11 +1549,16 @@ class CacheImpl<
 
   async get<K extends Extract<keyof Schema, string>>(
     key: K,
+    options?: { tier?: "l2" },
   ): Promise<Schema[K] | undefined> {
-    const read = await this.#readStored(key, this.#storedKey(key));
+    const { read, tier } = await this.#read(
+      key,
+      this.#storedKey(key),
+      options?.tier,
+    );
     if (read.kind === "fresh") {
       this.#state.stats.hits++;
-      this.#emit("hit", { key, namespace: this.#ns });
+      this.#emit("hit", { key, namespace: this.#ns, tier });
       return read.entry.value as Schema[K] | undefined;
     }
     this.#state.stats.misses++;
@@ -1387,8 +1568,13 @@ class CacheImpl<
 
   async getEntry<K extends Extract<keyof Schema, string>>(
     key: K,
+    options?: { tier?: "l2" },
   ): Promise<CacheEntry<Schema[K]> | undefined> {
-    const read = await this.#readStored(key, this.#storedKey(key));
+    const { read, tier } = await this.#read(
+      key,
+      this.#storedKey(key),
+      options?.tier,
+    );
     if (read.kind === "miss") {
       this.#state.stats.misses++;
       this.#emit("miss", { key, namespace: this.#ns });
@@ -1396,7 +1582,7 @@ class CacheImpl<
     }
     if (read.kind === "fresh") {
       this.#state.stats.hits++;
-      this.#emit("hit", { key, namespace: this.#ns });
+      this.#emit("hit", { key, namespace: this.#ns, tier });
     } else {
       this.#state.stats.staleHits++;
       this.#emit("stale-hit", { key, namespace: this.#ns });
@@ -1413,41 +1599,89 @@ class CacheImpl<
     };
   }
 
-  async has<K extends Extract<keyof Schema, string>>(key: K): Promise<boolean> {
-    const read = await this.#readStored(key, this.#storedKey(key));
+  async has<K extends Extract<keyof Schema, string>>(
+    key: K,
+    options?: { tier?: "l2" },
+  ): Promise<boolean> {
+    const { read } = await this.#read(key, this.#storedKey(key), options?.tier);
     return read.kind === "fresh";
   }
 
   async getMany<K extends Extract<keyof Schema, string>>(
     keys: readonly K[],
+    options?: { tier?: "l2" },
   ): Promise<(Schema[K] | undefined)[]> {
     const state = this.#state;
     const stored = keys.map((key) => this.#storedKey(key));
-    const raws = await this.#op<(StoredEntry | undefined)[] | typeof FAILED>(
-      "getMany",
-      async () => await state.driver.getMany(this.#ns, stored),
-      FAILED,
-    );
-    return await Promise.all(
-      keys.map(async (key, index) => {
-        // A failed batch is a miss for every key, without per-key retries —
-        // they would each count against the circuit.
-        const read =
-          raws === FAILED || raws[index] === undefined
-            ? raws === FAILED
-              ? ({ kind: "miss" } as const)
-              : await this.#readStored(key, stored[index])
-            : await this.#decodeStored(key, stored[index], raws[index]);
-        if (read.kind === "fresh") {
-          state.stats.hits++;
-          this.#emit("hit", { key, namespace: this.#ns });
-          return read.entry.value as Schema[K] | undefined;
-        }
-        state.stats.misses++;
-        this.#emit("miss", { key, namespace: this.#ns });
+    const l1 = options?.tier === "l2" ? undefined : state.l1;
+    /** Each key's L1 copy, when L1 has a fresh one. */
+    const copies = stored.map((key) => {
+      if (l1 === undefined) {
         return undefined;
-      }),
+      }
+      const copy = l1.get(this.#ns, key, state.now());
+      if (copy === undefined) {
+        l1.counts.misses++;
+      } else {
+        l1.counts.hits++;
+      }
+      return copy;
+    });
+    /** The indexes L1 could not answer, in order: the driver's batch. */
+    const wanted = keys.flatMap((_key, index) =>
+      copies[index] === undefined ? [index] : [],
     );
+    const token = l1?.begin() ?? 0;
+    try {
+      const raws =
+        wanted.length === 0
+          ? []
+          : await this.#op<(StoredEntry | undefined)[] | typeof FAILED>(
+              "getMany",
+              async () =>
+                await state.driver.getMany(
+                  this.#ns,
+                  wanted.map((index) => stored[index]),
+                ),
+              FAILED,
+            );
+      const rawFor = new Map<number, StoredEntry | undefined>();
+      if (raws !== FAILED) {
+        wanted.forEach((index, at) => rawFor.set(index, raws[at]));
+      }
+      return await Promise.all(
+        keys.map(async (key, index) => {
+          const copy = copies[index];
+          if (copy !== undefined) {
+            state.stats.hits++;
+            this.#emit("hit", { key, namespace: this.#ns, tier: "l1" });
+            return copy.value as Schema[K] | undefined;
+          }
+          // A failed batch is a miss for every key, without per-key retries —
+          // they would each count against the circuit.
+          const raw = rawFor.get(index);
+          const read =
+            raws === FAILED
+              ? ({ kind: "miss" } as const)
+              : raw === undefined
+                ? await this.#readStored(key, stored[index])
+                : await this.#decodeStored(key, stored[index], raw);
+          if (l1 !== undefined) {
+            this.#fillL1(stored[index], read, token);
+          }
+          if (read.kind === "fresh") {
+            state.stats.hits++;
+            this.#emit("hit", { key, namespace: this.#ns, tier: "l2" });
+            return read.entry.value as Schema[K] | undefined;
+          }
+          state.stats.misses++;
+          this.#emit("miss", { key, namespace: this.#ns });
+          return undefined;
+        }),
+      );
+    } finally {
+      l1?.end();
+    }
   }
 
   async set<K extends Extract<keyof Schema, string>>(
@@ -1467,6 +1701,7 @@ class CacheImpl<
       staleIfError:
         options?.staleIfError ?? this.#state.options.staleIfError ?? 0,
       negative: false,
+      tier: options?.tier,
     });
   }
 
@@ -1554,6 +1789,9 @@ class CacheImpl<
       async () => await this.#state.driver.delete(this.#ns, [stored]),
       0,
     );
+    // §4.1: L2, then L1, then the bus.
+    this.#state.l1?.invalidateKeys(this.#ns, [stored]);
+    await this.#publish({ type: "delete", keys: [stored] });
     if (count > 0) {
       this.#state.stats.deletes += count;
       this.#emit("delete", { key, namespace: this.#ns });
@@ -1574,6 +1812,8 @@ class CacheImpl<
       async () => await this.#state.driver.delete(this.#ns, stored),
       0,
     );
+    this.#state.l1?.invalidateKeys(this.#ns, stored);
+    await this.#publish({ type: "delete", keys: stored });
     this.#state.stats.deletes += count;
     return count;
   }
@@ -1585,6 +1825,8 @@ class CacheImpl<
       async () => await this.#state.driver.clear(this.#ns),
       undefined,
     );
+    this.#state.l1?.invalidateNamespace(this.#ns);
+    await this.#publish({ type: "clear" });
   }
 
   async invalidateTags(
@@ -1632,6 +1874,8 @@ class CacheImpl<
         state.stampCache.set(`${this.#ns}\n${tag}`, { at: now, expires });
       }
     }
+    state.l1?.invalidateTags(this.#ns, tags);
+    await this.#publish({ type: "invalidate-tags", tags });
     this.#emit("invalidate", { namespace: this.#ns, tags });
   }
 
@@ -1658,11 +1902,11 @@ class CacheImpl<
     options: GetOrSetOptions<Tag> = {},
   ): Promise<Schema[K] | undefined> {
     const stored = this.#storedKey(key);
-    const read = await this.#readStored(key, stored);
+    const { read, tier } = await this.#read(key, stored, options.tier);
     const now = this.#state.now();
     if (read.kind === "fresh") {
       this.#state.stats.hits++;
-      this.#emit("hit", { key, namespace: this.#ns });
+      this.#emit("hit", { key, namespace: this.#ns, tier });
       this.#maybeEagerRefresh(
         key,
         stored,
@@ -1796,7 +2040,22 @@ class CacheImpl<
   }
 
   stats(options?: { reset?: boolean }): CacheStats {
-    return this.#state.stats.stats(options);
+    const snapshot = this.#state.stats.stats(options);
+    const l1 = this.#state.l1;
+    if (l1 !== undefined) {
+      snapshot.l1 = { ...l1.counts, entries: l1.entries, bytes: l1.bytes };
+      if (options?.reset === true) {
+        l1.counts = {
+          hits: 0,
+          misses: 0,
+          backfills: 0,
+          invalidations: 0,
+          evictions: 0,
+          flushes: 0,
+        };
+      }
+    }
+    return snapshot;
   }
 
   async close(): Promise<void> {
@@ -1809,6 +2068,10 @@ class CacheImpl<
       clearInterval(state.sweepTimer);
       state.sweepTimer = undefined;
     }
+    // The bus first: its queued publishes go out, and the driver's own bus
+    // is unsubscribed before the driver closes under it.
+    await state.bus?.close();
+    state.l1?.clear();
     await state.driver.close();
   }
 
@@ -1971,6 +2234,9 @@ export function createCache(
     validators,
     sweepTimer: undefined,
     closed: false,
+    l1: resolveL1(options.l1),
+    bus: undefined,
+    lastBusWarnAt: 0,
   };
   const namespace = fullNamespace(
     options.namespace ?? DEFAULTS.namespace,
@@ -1982,5 +2248,122 @@ export function createCache(
     state.stats.evictions++;
     state.events.emit("evict", { key, namespace: ns, reason });
   });
+  state.bus = linkBus(state);
+  state.bus?.start();
   return cache as Cache<Record<string, unknown>, string>;
+}
+
+/** Resolves the `l1` option into a store; `undefined` without one. */
+function resolveL1(
+  l1: CreateCacheOptions["l1"],
+): L1Store<DecodedValue> | undefined {
+  if (l1 === undefined) {
+    return undefined;
+  }
+  const given = l1 === true ? {} : l1;
+  const positive = (
+    name: string,
+    value: number | undefined,
+    fallback: number,
+  ) => {
+    const resolved = value ?? fallback;
+    if (!(resolved > 0)) {
+      throw new RangeError(
+        `createCache: l1.${name} must be a positive number, got ${String(value)}`,
+      );
+    }
+    return resolved;
+  };
+  return new L1Store<DecodedValue>({
+    maxEntries: positive("maxEntries", given.maxEntries, DEFAULTS.l1MaxEntries),
+    maxBytes: positive("maxBytes", given.maxBytes, DEFAULTS.l1MaxBytes),
+    ttl: positive("ttl", given.ttl, DEFAULTS.l1Ttl),
+    clone: given.clone ?? false,
+  });
+}
+
+/**
+ * The cache's bus (§4.2), from the `bus` option — `"auto"` (the default with
+ * an `l1`) is the driver's own — wired to the L1 and the tag-stamp cache;
+ * `undefined` when there is none.
+ */
+function linkBus(state: SharedState): BusLink | undefined {
+  const option = state.options.bus ?? (state.l1 === undefined ? false : "auto");
+  if (option === false) {
+    return undefined;
+  }
+  const bus: CacheBus | undefined =
+    option === "auto" ? driverBus(state.driver) : option;
+  if (bus === undefined) {
+    if (state.l1 !== undefined) {
+      state.logger.info(
+        `cache: the "${state.driver.name}" driver has no bus, so an L1 copy can be stale for up to l1.ttl (${state.l1.options.ttl} ms) after another process changes it`,
+      );
+    }
+    return undefined;
+  }
+  const flush = (): void => {
+    state.l1?.flush();
+    state.stampCache.clear();
+  };
+  // L1 serves nothing until the bus listens (or fails to): see `L1Store`.
+  state.l1?.disarm();
+  return new BusLink(bus, option !== "auto", {
+    onMessage: (message) => {
+      applyBusMessage(state, message, flush);
+    },
+    onFlush: flush,
+    onError: (error) => {
+      // A bus that cannot subscribe leaves L1 bounded by `l1.ttl` (§4.3).
+      state.l1?.arm();
+      state.events.emit("error", {
+        phase: "bus",
+        driver: bus.name,
+        error,
+      });
+      const now = Date.now();
+      if (now - state.lastBusWarnAt >= WARN_EVERY_MS) {
+        state.lastBusWarnAt = now;
+        state.logger.warn(`cache bus "${bus.name}" failed`, { error });
+      }
+    },
+  });
+}
+
+/** Applies another cache's bus message: drops L1 copies, and pushes tag invalidations into the stamp cache (§3.6, §4.2). */
+function applyBusMessage(
+  state: SharedState,
+  message: BusMessage,
+  flush: () => void,
+): void {
+  const ns = message.namespace;
+  if (typeof ns !== "string") {
+    // Not a message this package wrote: the only safe reading is "anything".
+    flush();
+    return;
+  }
+  switch (message.type) {
+    case "set":
+    case "delete":
+      if (message.keys === undefined) {
+        state.l1?.invalidateNamespace(ns);
+      } else {
+        state.l1?.invalidateKeys(ns, message.keys);
+      }
+      return;
+    case "invalidate-tags": {
+      const tags = message.tags ?? [];
+      state.l1?.invalidateTags(ns, tags);
+      // The next stamps-mode read of these tags asks the driver again.
+      for (const tag of tags) {
+        state.stampCache.delete(`${ns}\n${tag}`);
+      }
+      return;
+    }
+    case "clear":
+      state.l1?.invalidateNamespace(ns);
+      return;
+    default:
+      flush();
+  }
 }

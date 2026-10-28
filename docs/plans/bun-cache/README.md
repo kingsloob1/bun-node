@@ -191,7 +191,7 @@ driver unchanged under the new kit, 8 of 8 runs clean.
   form (RFC 9111 says a sender SHOULD NOT generate the token form). Compile
   errors: `public` with `private`, and `noStore` with **any** lifetime
   (`maxAge`, `sMaxAge`, `staleWhileRevalidate`, `staleIfError`, `immutable`
-  — the plan named `maxAge`; widened, a question for the user);
+  — the plan named `maxAge`; widened, and kept by the user's decision);
   `noStore` with `mustUnderstand` is allowed, as RFC 9111 §5.2.2.3
   recommends. The same rules throw at run time (`RangeError` for a
   lifetime that is not a non-negative safe integer; `TypeError` for a
@@ -326,8 +326,8 @@ most 63 characters, no two alike; index names `ix_<table>_<suffix>`,
 shortened with a hash of the table name past 63; the Postgres channel and
 advisory-lock keys hash the entries/tags/stamps/locks names, so they are
 distinct per table set (`lib/drivers/sql-tables.ts`, shared). The key type
-is `SqlCacheTable` (bun-jobs' `SqlTable`), **awaiting the user's
-approval**. **`syncSchema?: boolean | SchemaSyncOptions`** — runs the sync
+is `SqlCacheTable` (bun-jobs' `SqlTable`), approved by the user the same
+day. **`syncSchema?: boolean | SchemaSyncOptions`** — runs the sync
 after the tables are created (on connect; on SQLite, when a connection
 first creates them), with the core's `SchemaSyncOptions`; a no-op while
 there is one schema version, and, as in bun-jobs, its report is not
@@ -423,7 +423,7 @@ the sync tests; letting Postgres take a `bus` name fails its refusal test.
   the ownership rule, instance-vs-class matching, the duplicate-name check —
   each failing its test (1–2 fails each).
 
-**PR-H1 built 2026-10-28** (branch `feat/bun-cache-h1-http`):
+**PR-H1 merged 2026-10-28, #553**:
 `@kingsleyweb/bun-cache/http` — `cacheResponse()`, `coalesceRequests()`,
 `addCacheTags()` — on bun-common's `addResponseTransform(t, { first: true })`,
 `parseCacheControl()`, `fresh()` and `etag()`, with **bun-common unchanged**
@@ -492,6 +492,110 @@ written:
   load starting in the same millisecond as an invalidation is dropped.
   bun-nest's adapter is not exercised here (bun-cache cannot depend on
   bun-nest); it routes through the same `BunRouter`.
+
+**PR-T1 built 2026-10-28** (branch `feat/bun-cache-t1-tiers`, this PR): multi-tier caching (§4, R13, R14). `createCache`'s
+`l1` (`true` or `{ maxEntries, maxBytes, ttl, clone }`, defaults 10,000,
+64 MiB of decoded payload, 30 s, `false`) and `bus` (`"auto"` | `false` |
+`CacheBus`; `"auto"` by default with an `l1`, `false` without), the per-call
+`tier: "l2"`, `CacheBus`, `redisBus` and `pgBus` (`lib/bus/`, root-exported,
+`./lib/bus`). How it is built, and where it departs from or adds to §4:
+
+- **L1 holds decoded entries, fresh ones only** (`lib/core/l1.ts`): held
+  until min(`freshUntil`, the L2 `expiresAt`, now + `l1.ttl`), so backfill
+  copies the L2 entry's expiry (R14) and L1 never serves a stale value — a
+  stale L1 copy falls through to L2, which owns §3.5's windows (§4.1 left
+  this open). LRU over a `Map`, with `maxEntries`/`maxBytes` and a per-
+  namespace tag index. Counters never enter L1. A write holds the value
+  **decoded from the bytes it just wrote**, so an L1 hit equals an L2 read
+  (`codec: "json"`: a `Date` reads back as a string from both) and the
+  caller's later mutation of its argument is not seen; a key `validate`
+  covers is not copied on write (the next read validates it in).
+- **A coherence guard §4 did not have: generations.** A read that fetched
+  the old value from L2 just before another process's write would otherwise
+  copy it into L1 *after* that write's message and serve it until
+  `l1.ttl`. Every invalidation (key, tag, namespace, all) bumps a
+  generation while an L2 read or write is in flight; a backfill or a
+  write's own copy compares with the generation it captured before its L2
+  operation and is dropped when something covering it changed meanwhile
+  (two race tests, with a gated driver; the mutant with the guard off fails
+  both). **A load's guard starts when its loader starts**, not at its
+  write: on a stamps-mode driver (file) there is no driver fence, and a
+  loader that began before another process's `invalidateTags` otherwise put
+  its value into its own L1 while L2's read check already refused it (found
+  in review; the test fails with the token taken at write time).
+- **L1 arms once the bus listens.** With a bus, L1 serves and holds nothing
+  until the first subscribe settles: on success through a flush; on failure
+  as is (bounded by `l1.ttl`), with an `error` event (`phase: "bus"`, a new
+  literal) and a retry with backoff, whose success flushes. The first
+  version flushed on subscribe and wiped writes made in the cache's first
+  microtasks.
+- **Messages carry an `origin`** (one id per `createCache`; a new optional
+  `BusMessage` field), so a cache skips its own messages and keeps its own
+  write in L1; every other cache — in this process or another — acts on
+  them. Messages carry keys or tags, never values (R13). Publishes are
+  batched per microtask (keys merged per namespace, at most 100 a message);
+  `set` resolves once its message is out; a failed publish is an `error`
+  event, never a throw. Postgres's oversized-payload `clear` keeps the
+  origin.
+- **A gap flushes the whole L1 and the tag-stamp cache** (§4.2). A bus
+  `invalidate-tags` message also deletes those tags from the receiver's
+  stamp cache, so on a stamps-mode driver an invalidation reaches the other
+  processes before `tagStampCacheMs` (R12's push), L1 or not.
+- **A cache with a bus and no `l1` still publishes** (and receives stamp
+  pushes), so a writer-only process keeps the others' L1s coherent; without
+  `l1` the bus defaults to off, so existing single-tier caches open no
+  listener and publish nothing.
+- **`pgBus`** is the Postgres driver's own `LISTEN`/`NOTIFY` code, extracted
+  to `lib/drivers/pg-notify.ts` and used by both; its default channel is
+  the driver's for the same `prefix`/`tables`, so the two interoperate
+  (tested). Options `url`/`connection`/`sql`/`max`/`channel`/`prefix`/
+  `tables` (`PgBusOptions`). **`redisBus`** publishes on the given or its
+  own `RedisClient` and subscribes on a `duplicate()`; Bun reconnects a
+  dropped connection but never resubscribes it (bun-jobs' finding,
+  re-measured), so `onconnect` sends a raw `SUBSCRIBE` and reports a gap; a
+  connection Bun gave up on is revived every 2 s. Options `url`/`client`/
+  `prefix` (default `bun-cache`, channel `<prefix>:bus`)/`channel`
+  (`RedisBusOptions`). The subscriber names itself
+  (`CLIENT SETNAME bun-cache-bus-<pid>-<id>`), which is how the tests find
+  and kill exactly their own connection.
+- **Stats and events per tier** (§3.12): `stats().l1` = `hits`, `misses`,
+  `backfills`, `invalidations`, `evictions`, `flushes`, `entries`, `bytes`
+  (present only with an L1; the top-level `hits` include L1's); the `hit`
+  event gains `tier: "l1" | "l2"`. L1's own LRU evictions are counted, not
+  evented (`evict` stays the driver's).
+- **Public API additions, all additive** (for PR-H1): an optional
+  `{ tier?: "l2" }` second parameter on `get`, `getEntry`, `has`,
+  `getMany`; `tier` on `SetOptions` (so `GetOrSetOptions`).
+
+**Measured (§4.3).** Two processes — the test and a spawned worker with an
+explicit environment — share an L2, each with its own L1; every round first
+checks the reader serves the old value from L1, then times the writer's
+`set` resolving to the reader's first read of the new value
+(`performance.timeOrigin + now()` in both), 15 rounds per pass at random
+phases of the poll. Quiet machine: Postgres `LISTEN`/`NOTIFY` p50
+0.34–0.38 ms, max 0.68–0.81 ms; an SQLite file with `redisBus` p50
+0.10–0.13 ms, max 0.28–0.57 ms (3 runs each). Loaded (1-minute load 29 on
+16 cores): Postgres p50 0.8–9 ms, max 5–18 ms; Redis p50 0.5–1.9 ms, max
+10–15 ms; an SQLite file's polled bus (250 ms) p50 79–137 ms, max 218–234 ms
+— up to one poll, as §4.3 says. A gap is seen and flushed on all three: SQLite
+rows pruned past the reader, the reader's Redis connection killed by id,
+its Postgres `LISTEN` backend terminated (Bun reconnected it in about
+250 ms and re-ran `onlisten`). The control, `bus: false`: the reader served
+its copy until `l1.ttl` (600 ms) and then read the new value.
+Negative controls, each failing its test: the origin filter removed (6),
+`set` not published (11), a fresh TTL on backfill (2), the guard off (2),
+stale copies held (1), a gap not flushing (4, including the three
+two-process passes), counters backfilled (1), the caller's object held (1),
+no Redis resubscribe (1), no stamp push (1), no arming (1), `tier: "l2"`
+ignored (1), a Postgres reconnect not reported (2), a local delete not
+dropping its own copy (1, after a test was added for it), a load's token
+taken at its write (1).
+Gate (Bun 1.4.4-canary.1+a0cc096ce, every test URL set): bun-cache suite
+420 pass, 26 skip (the kit's unadvertised cases), 0 fail, and the same
+under `--randomize --seed=1`, `=2`, `=3`; check 142 files clean, lint 0
+errors, format clean; `bun scripts/typecheck.ts` 21 projects clean;
+consumer-check 48/48 cells, 8/8 runtime imports; `examples/bun-cache` 5
+passed, 1 skipped on memory, `sql.ts` 65 checks with the SQL URLs.
 
 ### Contents
 
