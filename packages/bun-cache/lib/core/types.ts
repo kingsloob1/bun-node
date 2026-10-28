@@ -349,12 +349,135 @@ export interface CacheCompressor {
 }
 
 /* ------------------------------------------------------------------ */
+/* At-rest encryption (the encryption plan)                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One key of the built-in cipher's ring (the encryption plan's §5): exactly
+ * 32 bytes, as a `Uint8Array` or a string that decodes to 32 bytes as hex,
+ * base64 or base64url (`openssl rand -base64 32`). Anything else is a
+ * `TypeError` at `createCache`. There are no passphrases.
+ */
+export interface CacheKey {
+  /**
+   * Written into every entry this key seals, so a read picks its key
+   * directly: 1–32 characters of `A-Z a-z 0-9 . _ -`, unique in the ring.
+   * A date (`"2026-10"`) is a good id. It is not secret.
+   */
+  id: string;
+  /** The 32 key bytes, or their hex, base64 or base64url spelling. Secret: never logged or put in an event. */
+  key: string | Uint8Array;
+}
+
+/** The built-in cipher's keys: the **first** seals new entries, and **every** key opens the entries written with it. Not empty; ids unique. */
+export type CacheKeyRing = readonly CacheKey[];
+
+/**
+ * What the core hands a {@link CacheCipher} with each seal and open: the
+ * entry's plaintext names and the AAD it built from them.
+ */
+export interface CacheCipherContext {
+  /** The full namespace, plaintext (`app@v3:users`). */
+  namespace: string;
+  /** The full key, plaintext. */
+  key: string;
+  /**
+   * The additional authenticated data the core built (the encryption plan's
+   * §4.5): a label, the namespace, the key, `encrypt.aad` and the envelope's
+   * first four bytes. The cipher **must** authenticate it, so that an entry
+   * moved to another key or namespace does not open;
+   * `runCacheCipherConformance` fails a cipher that does not.
+   */
+  aad: Uint8Array;
+}
+
+/**
+ * A user cipher (the encryption plan's §6), given as
+ * {@link CacheEncryptOptions.cipher} in place of the built-in
+ * `"aes-256-gcm"`: a KMS, an HSM, a library cipher. Its key management is its
+ * own. Either function may be synchronous or return a promise; the core
+ * awaits only a returned promise. Check one with `runCacheCipherConformance`
+ * from `@kingsleyweb/bun-cache/testing`.
+ */
+export interface CacheCipher {
+  /**
+   * Stored in each entry's envelope: an integer in 128–255 (1–127 are the
+   * package's). Entries keep the id they were sealed with, so a new cipher
+   * takes a new id and the old one goes in {@link CacheEncryptOptions.previous}
+   * while its entries live.
+   */
+  id: number;
+  /**
+   * Seals `plaintext`, authenticating `context.aad`. The output is stored
+   * after the envelope's four-byte prefix, as it is: it carries the cipher's
+   * own key id, nonce and tag. Two seals of one input must differ (a random
+   * nonce).
+   */
+  seal: (
+    plaintext: Uint8Array,
+    context: CacheCipherContext,
+  ) => Uint8Array | Promise<Uint8Array>;
+  /** Opens what {@link seal} wrote, and **throws** when it does not authenticate (a changed byte, `aad`, namespace or key). A throw is a miss. */
+  open: (
+    sealed: Uint8Array,
+    context: CacheCipherContext,
+  ) => Uint8Array | Promise<Uint8Array>;
+}
+
+/**
+ * `createCache`'s `encrypt` option (the encryption plan's §10): every entry is
+ * sealed — its header, full key, payload, tags and hard expiry — with
+ * AES-256-GCM under a key derived per entry, or with a user cipher. Order on
+ * write: encode → compress → encrypt; on read the reverse. Counters stay
+ * plaintext integers (the backend adds to them), and names (keys,
+ * namespaces, tags) stay in clear in the store.
+ */
+export interface CacheEncryptOptions {
+  /**
+   * The built-in cipher's keys: the first seals, all open. Or a function
+   * answering them, or a promise of them (a KMS, Vault): called on first use
+   * — operations wait for it, a read at most `timeout` — then every
+   * `keyRefresh` ms, and early (at most once per 10 s) when a read meets an
+   * unknown key id. A rejection, or an invalid ring, is an `error` event and
+   * the previous ring stays. Required unless `cipher` is a {@link CacheCipher};
+   * refused beside one.
+   */
+  keys?: CacheKeyRing | (() => CacheKeyRing | Promise<CacheKeyRing>);
+  /** Re-call a `keys` function after this many ms (checked as operations run). Default: never after the first answer; an unknown key id still triggers one refresh per 10 s. Only with a `keys` function. */
+  keyRefresh?: number;
+  /** `"aes-256-gcm"` (the default: `node:crypto`, a key per entry by HKDF from a random 128-bit salt, a 96-bit nonce) or a user {@link CacheCipher}. */
+  cipher?: "aes-256-gcm" | CacheCipher;
+  /** User ciphers that still open: entries sealed by an earlier {@link CacheCipher} stay readable after `cipher` moves on. Ids 128–255, unique. */
+  previous?: readonly CacheCipher[];
+  /**
+   * Extra context bound into every entry's AAD — an environment (`"prod"`),
+   * an app id — so an entry written by a cache with another `aad` does not
+   * open here, even under the same key. At most 1 KiB. Default: none.
+   */
+  aad?: string | Uint8Array;
+  /**
+   * Read entries written without encryption, during a migration. Writes are
+   * always sealed. Off by default, and best left off: while it is on,
+   * anyone who can write to the store can plant a plaintext value the cache
+   * serves.
+   */
+  acceptUnencrypted?: boolean;
+}
+
+/* ------------------------------------------------------------------ */
 /* Events and statistics (§3.12)                                      */
 /* ------------------------------------------------------------------ */
 
-/** The phases an `error` event reports. */
+/** The phases an `error` event reports. `"encrypt"`: a write could not seal (it resolved `false`); `"decrypt"`: an entry did not open (a miss; its error is a `CacheDecryptError`). */
 export type CacheErrorPhase =
-  "driver" | "decode" | "validate" | "refresh" | "lock" | "bus";
+  | "driver"
+  | "decode"
+  | "validate"
+  | "refresh"
+  | "lock"
+  | "bus"
+  | "encrypt"
+  | "decrypt";
 
 /** Why a `fenced` event's write was dropped: the driver's tag fence, or a local delete/clear/invalidation that forgot the flight (§3.4, §3.6). */
 export type CacheFencedReason = "fence" | "local";
@@ -367,9 +490,16 @@ export interface CacheEventMap {
     namespace: string;
     /** Which tier served it: `"l1"`, the process's own memory tier (§4.1), or `"l2"`, the driver. Always `"l2"` without an L1. */
     tier: "l1" | "l2";
+    /** The id of the ring key that sealed the entry, on an encrypted cache's built-in cipher: watch an old key drain before dropping it. Absent otherwise. */
+    keyId?: string;
   };
   /** A stale entry was served (inside its stale-while-revalidate window, or after a soft timeout). */
-  "stale-hit": { key: string; namespace: string };
+  "stale-hit": {
+    key: string;
+    namespace: string;
+    /** As on `hit`: the id of the ring key that sealed the entry, when there is one. */
+    keyId?: string;
+  };
   /** A read found nothing usable (absent, expired, undecodable, invalidated, or refused by `validate`). */
   miss: { key: string; namespace: string };
   /** An entry was stored. */
@@ -806,6 +936,14 @@ export interface CreateCacheOptions {
   maxEntryBytes?: number;
   /** Keys longer than this many bytes are stored as `#` + their SHA-256 (§3.7). Defaults to 200. */
   maxKeyLength?: number;
+  /**
+   * At-rest encryption (the encryption plan): every entry sealed, bound to
+   * its namespace and key, with its tags and hard expiry sealed too. An entry
+   * that does not open is a miss with an `error` event (`phase: "decrypt"`),
+   * and is **not** deleted; a write that cannot seal resolves `false`. Off by
+   * default.
+   */
+  encrypt?: CacheEncryptOptions;
 
   /** Default stale-while-revalidate window, in ms (§3.5). Defaults to 0. */
   staleWhileRevalidate?: number;

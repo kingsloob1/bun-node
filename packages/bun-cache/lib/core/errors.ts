@@ -140,3 +140,46 @@ export class EntryTooLargeError extends Error {
     this.limit = limit;
   }
 }
+
+/**
+ * An entry did not open on an encrypted cache (the encryption plan's §4.6).
+ * Never thrown, not even under `strict`: the read is a miss, and this is the
+ * `error` event's `error` (`phase: "decrypt"`). The entry is **not** deleted —
+ * a process missing a peer's new key would otherwise wipe its entries during
+ * a rollout. Its message names the reason and the key id only, never key
+ * material or plaintext.
+ */
+export class CacheDecryptError extends Error {
+  /**
+   * Why it did not open: `"auth"` — the tag failed (a changed byte, a wrong
+   * key under a known id, an entry moved to another key, namespace or `aad`);
+   * `"unknown-key"` — no ring key has the entry's key id (after one refresh
+   * of a `keys` function); `"unencrypted"` — the bytes are not an envelope
+   * and `acceptUnencrypted` is off; `"malformed"` — an envelope that does not
+   * parse; `"cipher"` — the entry's cipher is not configured here, or a user
+   * cipher threw.
+   */
+  readonly reason:
+    "auth" | "unknown-key" | "unencrypted" | "malformed" | "cipher";
+  /** The key id the envelope names, when it names one (the built-in cipher's entries). */
+  readonly keyId: string | undefined;
+
+  constructor(init: {
+    /** Why the entry did not open. */
+    reason: CacheDecryptError["reason"];
+    /** The envelope's key id, when it has one. */
+    keyId?: string;
+    /** What a user cipher threw, when it threw. */
+    cause?: unknown;
+  }) {
+    super(
+      `cache entry did not open (${init.reason}${
+        init.keyId === undefined ? "" : `, key id "${init.keyId}"`
+      })`,
+      init.cause === undefined ? undefined : { cause: init.cause },
+    );
+    this.name = "CacheDecryptError";
+    this.reason = init.reason;
+    this.keyId = init.keyId;
+  }
+}

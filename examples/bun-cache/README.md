@@ -22,6 +22,7 @@ root `node_modules`; `03-typed` uses zod from the same place.
 | Folder | What it shows |
 |---|---|
 | `01-core` | `basics.ts` — set/get/has/delete, `getEntry`, TTL expiry, tags, counters, namespaces, events, stats |
+| `01-core` | `encryption.ts` — `encrypt` proved from the stored bytes (no plaintext, key or full key in them, +67 B for an untagged entry), key rotation with `keyId` on hits and an old-key entry that is a miss with a `decrypt` error and never deleted, a wrong key under `strict`, tampered, moved and swapped entries (and the unencrypted control), `aad`, tags and expiry sealed, an async key provider called once, `acceptUnencrypted` migration, a cache without `encrypt` reading sealed entries as misses and never deleting them, plain-integer counters, and a user `CacheCipher` (AES-CTR + HMAC: Bun has no ChaCha20-Poly1305) |
 | `01-core` | `compression.ts` — the stored bytes as proof: zstd above 16 KiB and nothing below, `gzip`/`br`/`deflate` (format 1 vs 2, compressor ids), `level` and the option `TypeError`s, mixed algorithms in one store, per-call `compress: false`, a sync and an async user compressor with `previous`, and planted decompression bombs (zstd, gzip, br, deflate) read as misses with a `decode` error |
 | `02-loading` | `getorset.ts` — the single-flight under a burst, `wrap`, stale-while-revalidate, stale-if-error, negative caching |
 | `03-typed` | `validated.ts` — a typed schema, and `validate` (V10): a failing value is a miss with an `error` event |

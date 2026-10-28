@@ -134,8 +134,16 @@ And (PR-C11):
   counters, locks, the `maxEntries` cap, values up to 1,000,000 bytes, no bus
   ([The Cloudflare D1 driver](#the-cloudflare-d1-driver))
 
-Next, in the plan's order: the Nest interceptor (PR-N2), then encryption (PR-E1
-to PR-E3).
+And (PR-E1):
+
+- **encryption at rest**: `encrypt` seals every entry — header, full key,
+  payload, tags and hard expiry — with AES-256-GCM under a key per entry,
+  bound to its namespace and key; key rings with rotation, `keys` functions
+  for a KMS, user ciphers with their conformance kit, and a failed open read
+  as a miss, never deleted ([Encryption at rest](#encryption-at-rest))
+
+Next, in the plan's order: the Nest interceptor (PR-N2), then name hashing
+(PR-E2) and the encryption docs and playground (PR-E3).
 
 ## Quick start
 
@@ -386,6 +394,219 @@ of phase `"decode"`, and is deleted. A key longer than `maxKeyLength` bytes
 (default 200) is stored as `#` + its SHA-256, with the full key kept in the
 entry's header: a hash collision reads as a miss, never as the wrong value.
 
+## Encryption at rest
+
+`encrypt` seals every entry before it reaches the driver, so a dump of
+Redis, a database backup, an S3 bucket or the file driver's directory does
+not show the values, and a writer to the store cannot make the cache serve
+a forged or misplaced one.
+
+```ts
+const cache = createCache({
+  driver: redisDriver({ url }),
+  encrypt: {
+    keys: [
+      { id: "2026-10", key: process.env.CACHE_KEY_2026_10! }, // the first seals
+      { id: "2026-09", key: process.env.CACHE_KEY_2026_09! }, // still opens
+    ],
+    aad: "prod", // optional: bound into every entry
+  },
+});
+```
+
+The built-in cipher is **AES-256-GCM** through `node:crypto`, with **a key
+per entry**: HKDF-SHA-256 derives a key from each ring key once, and each
+write derives its own from that and a random 128-bit salt, with a random
+96-bit nonce. A cache writing 10,000 entries a second would reach GCM's
+limit of 2^32 random nonces per key in five days; with a key per entry it
+never does. The order on write is **encode → compress → encrypt**, and the
+reverse on read, so the cipher sees the compressed bytes and the
+decompression cap still applies after decrypting.
+
+**What is sealed.** The whole entry: its header (with the full key and the
+timestamps), its payload, and copies of its **tags** and **hard expiry**. The
+cache trusts those copies over the driver's clear ones:
+
+- raising an entry's expiry in the store gains nothing: it expires when the
+  sealed copy says;
+- stripping its tags in the store (or its rows in a tag index) gains
+  nothing: an encrypted cache checks its sealed tags against the
+  invalidation stamps on **every** driver, so an `invalidateTags` still
+  misses it. (On an index driver this adds one stamp read per tagged read,
+  cached in process for `tagStampCacheMs`, 1 s by default; an entry written
+  in the same millisecond as an invalidation of its tag reads as a miss, as
+  on a stamps driver.)
+
+Each entry is bound to its place by the AEAD's additional data: the full
+namespace, the full key, `aad`, and the envelope's own prefix. An entry
+copied to another key, another namespace or a cache with another `aad`
+does not open.
+
+**What it does not hide.** Keys, namespaces and tags are stored as written
+(name hashing is a later PR). Each entry's size (±1 byte), when it was
+written, when it expires and how often it is read stay visible. **Counters**
+are plaintext integers, so that the backend can add to them atomically.
+And a writer to the store can always delete entries, or **replay an older
+ciphertext of the same key** — served, but never fresher or longer-lived
+than when it was written, since its freshness and expiry are sealed with
+it. A compromised app process holds the keys; nothing here helps there.
+
+### Keys
+
+A key is exactly **32 bytes**: a `Uint8Array`, or a string of 32 bytes as
+hex, base64 or base64url. Generate one with `openssl rand -base64 32`.
+Anything else, a passphrase included, is a `TypeError` at `createCache`
+(whose message never shows the value). An id is 1–32 characters of
+`A-Z a-z 0-9 . _ -`, unique in the ring; it is written into every entry, so
+a read picks its key directly. The **first** key seals; **every** key opens.
+
+**Rotating a key**, without a cold cache:
+
+1. Deploy `[old, new]` everywhere: every process can now open the new key's
+   entries, and writes still use the old one.
+2. Deploy `[new, old]`: new writes use the new key.
+3. After the longest TTL plus its stale window, deploy `[new]`.
+
+Skipping step 1 costs only misses while the deploy rolls: an entry that does
+not open is never deleted. The `keyId` on `hit` and `stale-hit` events shows
+when the old key stops being read.
+
+**A key from a KMS or Vault.** `keys` may be a function, sync or async; the
+cache never talks to a KMS itself. The usual pattern is an envelope key: the
+KMS decrypts a data key once, and the function answers it.
+
+```ts
+import { DecryptCommand, KMSClient } from "@aws-sdk/client-kms";
+
+const kms = new KMSClient({});
+const cache = createCache({
+  driver,
+  timeout: 2_000,
+  encrypt: {
+    keys: async () => {
+      const { Plaintext } = await kms.send(
+        new DecryptCommand({ CiphertextBlob: Buffer.from(process.env.CACHE_DATA_KEY!, "base64") }),
+      );
+      return [{ id: process.env.CACHE_KEY_ID!, key: Plaintext! }];
+    },
+    keyRefresh: 300_000, // optional: ask again every 5 min
+  },
+});
+```
+
+- It is called on first use, and operations wait for it — a read at most
+  the cache's `timeout`, then it is a miss; a write resolves `false`.
+- With `keyRefresh`, it is called again in the background that many ms after
+  its last answer, as operations run.
+- A read that meets an **unknown key id** calls it once more, at most once
+  per 10 s, so a process learns a peer's new key without a restart.
+- A rejection, or an answer that is not a valid ring, is an `error` event
+  (`phase: "encrypt"` on a write, `"decrypt"` on a read) and the previous
+  ring stays: an answer is validated whole, never half-applied. With no ring
+  yet, writes resolve `false` and reads miss, and a later operation tries
+  again (at most once a second).
+
+### When an entry does not open
+
+It is a **miss**, with an `error` event of `phase: "decrypt"` whose `error`
+is a `CacheDecryptError` with a `reason` and the entry's `keyId`:
+
+| `reason` | Meaning |
+|---|---|
+| `"auth"` | The tag failed: a changed byte, the wrong key under a known id, an entry moved to another key, namespace or `aad` |
+| `"unknown-key"` | No ring key has the entry's key id (after one refresh of a `keys` function) |
+| `"unencrypted"` | Not an envelope, and `acceptUnencrypted` is off |
+| `"malformed"` | An envelope that does not parse |
+| `"cipher"` | The entry's cipher is not configured here — including a cache with **no `encrypt` at all** reading a sealed entry — or a user cipher threw |
+
+It is **never thrown**, not even under `strict`, and the entry is **not
+deleted** — during a key rollout, a process without the new key would
+otherwise delete every entry its peers wrote. The same holds for a process
+missing `encrypt` altogether (a configuration not rolled out yet): a cache
+without encryption recognises a sealed entry by its `"BE"` magic and reads
+it as a miss with this event (`"cipher"`), where any other bytes it cannot
+decode are deleted. The next `set` or load — an explicit write of the app's,
+on either kind of cache — overwrites it; an encrypted cache then reads that
+plain entry as `"unencrypted"`, again without deleting it. A `warn` is logged at most once per 10 s per reason, naming
+the key id, never key material or values.
+
+A write that cannot seal (no ring yet, a user cipher that threw) resolves
+`false` with an `error` event of `phase: "encrypt"`, and throws only under
+`strict`. Nothing is ever stored unencrypted.
+
+`maxEntryBytes`, a driver's own limit, `oversize`, the `set` event's
+`bytes` and `stats().bytesWritten` all count the **sealed** size: 49 bytes
+plus the key id's length, plus 11 and the tags (2 + length each), over the
+plain entry — 67 bytes for an untagged entry under the id `2026-10`.
+
+**Migrating an existing cache.** `acceptUnencrypted: true` reads entries
+written before encryption was turned on; every write is still sealed. Leave
+it off afterwards: while it is on, anyone who can write to the store can
+plant a plaintext value the cache serves.
+
+### User ciphers
+
+`encrypt: { cipher }` replaces the built-in with a `CacheCipher` —
+`{ id: 128–255, seal(plaintext, context), open(sealed, context) }`, either
+function sync or returning a promise — for an HSM, a KMS that encrypts, or a
+library cipher. `context` is `{ namespace, key, aad }`, and the cipher
+**must** authenticate `context.aad`: it is what binds an entry to its place.
+`open` throws when the bytes do not authenticate. Its keys are its own
+business, so `keys` beside it is a `TypeError`. Entries keep the cipher id
+they were sealed with: a new cipher takes a new id, and the old one goes in
+`previous: [oldCipher]` while its entries live (`previous` works beside the
+built-in's `keys` too). An entry whose cipher is not configured is a miss
+(`"cipher"`).
+
+Check one with the conformance kit, in its own test file:
+
+```ts
+import { runCacheCipherConformance } from "@kingsleyweb/bun-cache/testing";
+
+runCacheCipherConformance("kms-cipher", kmsCipher);
+```
+
+It asserts a round trip at 0 B, 100 B, 70 KB and 1 MiB; no plaintext in the
+sealed bytes; two seals of one input differing; and that a flipped bit, a
+truncation, and a changed `aad`, namespace or key are each refused — then
+round-trips a value through a real `createCache`. A cipher that ignores the
+AAD fails it.
+
+### The cost
+
+Measured on the real cache (i9-11900H, Bun 1.4.4, at a load of 3; the
+plan's `evidence/encryption/bench-e1-overhead.ts`), µs per operation, the
+median of five rounds:
+
+| Value | memory `set` | memory `get` | Redis (loopback) `set` | Redis `get` |
+|---|---|---|---|---|
+| 100 B | 3.5 → 7.3 | 2.9 → 6.8 | 41 → 49 | 27 → 33 |
+| 4 KiB | 35 → 41 | 21 → 26 | 92 → 106 | 48 → 57 |
+| 70 KB | 729 → 703 | 379 → 399 | 867 → 875 | 450 → 478 |
+| 1 MiB | 11,837 → 12,216 | 5,284 → 5,390 | 12,734 → 12,507 | 5,418 → 5,637 |
+
+About 4 µs per small operation, which a networked store's round trip
+mostly hides, and within the noise from 70 KB up, where the cipher sees the
+compressed bytes. Sealing and opening alone take about 2.6 µs each at 100 B.
+
+### The format
+
+For a reader in another language (HKDF-SHA-256, HMAC-SHA-256 and
+AES-256-GCM are in every standard library):
+
+```
+envelope   = "BE" | u8 1 (version) | u8 cipher id (1 = aes-256-gcm; 128–255 a user cipher) | …
+built-in … = u8 key id length L (1–32) | key id (UTF-8) | 16-byte salt | 12-byte nonce | ciphertext | 16-byte GCM tag
+user     … = whatever the cipher's seal answered
+sealed body = u8 1 | f64 LE expiresAt (-1: none) | u16 LE tag count | per tag: u16 LE length, UTF-8 | the entry (format 1 or 2, above)
+
+K      = HKDF-SHA-256(ikm = ring key, salt = empty, info = "bun-cache/enc/1/aes-256-gcm", 32 bytes)
+K_salt = HMAC-SHA-256(K, "entry" | salt | 0x01)
+AAD    = "bun-cache/enc/1" 0x00 | full namespace 0x00 | full key 0x00 | aad 0x00 | envelope bytes up to the ciphertext
+```
+
+The AAD of a user cipher's entry ends with the envelope's first four bytes.
+
 ## Namespaces and versions
 
 Every key is stored under the cache's `namespace` (default `"cache"`).
@@ -442,7 +663,10 @@ because it costs a schema run per hit.
 `lock-wait`, `lock-timeout`, `evict`, `oversize`, `error` (with `phase` and
 `driver`), `circuit-open` and `circuit-close`. A `hit` says which `tier`
 served it (`"l1"` or `"l2"`; always `"l2"` without an L1), and a bus failure
-is an `error` with `phase: "bus"`. Listeners are synchronous and
+is an `error` with `phase: "bus"`. On an encrypted cache, `hit` and
+`stale-hit` carry the `keyId` that sealed the entry, and an entry that does
+not open, or a write that cannot seal, is an `error` with `phase: "decrypt"`
+or `"encrypt"` ([Encryption at rest](#encryption-at-rest)). Listeners are synchronous and
 isolated: a throwing one is logged and never breaks the operation. `on`
 returns an unsubscribe function.
 
@@ -761,6 +985,8 @@ KILL`), and the bus-gap case then runs for it too.
 
 `@kingsleyweb/bun-cache/testing` also ships:
 
+- **`runCacheCipherConformance(name, cipher)`** — the contract a user
+  cipher keeps ([User ciphers](#user-ciphers)).
 - **`faulty(inner, { failRate, failOn, hangMs, lagMs, down })`** — a
   fault-injection wrapper: fail every operation, fail named operations, hold
   them open, or slow them. `driver.setFaults({...})` changes the faults
