@@ -493,7 +493,7 @@ written:
   bun-nest's adapter is not exercised here (bun-cache cannot depend on
   bun-nest); it routes through the same `BunRouter`.
 
-**PR-T1 built 2026-10-28** (branch `feat/bun-cache-t1-tiers`, this PR): multi-tier caching (§4, R13, R14). `createCache`'s
+**PR-T1 merged 2026-10-28, #554**: multi-tier caching (§4, R13, R14). `createCache`'s
 `l1` (`true` or `{ maxEntries, maxBytes, ttl, clone }`, defaults 10,000,
 64 MiB of decoded payload, 30 s, `false`) and `bus` (`"auto"` | `false` |
 `CacheBus`; `"auto"` by default with an `l1`, `false` without), the per-call
@@ -597,7 +597,7 @@ errors, format clean; `bun scripts/typecheck.ts` 21 projects clean;
 consumer-check 48/48 cells, 8/8 runtime imports; `examples/bun-cache` 5
 passed, 1 skipped on memory, `sql.ts` 65 checks with the SQL URLs.
 
-**PR-C5 built 2026-10-28** (branch `feat/bun-cache-c5-redis`): `redisDriver`
+**PR-C5 merged 2026-10-28, #555**: `redisDriver`
 over Bun's `RedisClient` (§7.7), on develop after PR-T1, whose `redisBus` is
 the driver's bus — no second copy. What it does, and where it departs from
 §7.7:
@@ -691,6 +691,98 @@ the driver's bus — no second copy. What it does, and where it departs from
   `RedisDriverOptions`, and its options `client`, `prefix`, `cluster`,
   `firstConnectTimeout`, `connectionTimeout`, `maxRetries`, `autoReconnect`
   (`url`/`connection` as on SQL).
+
+**PR-C6 built 2026-10-28** (branch `feat/bun-cache-c6-mongodb`):
+`mongoDriver` (§7.6), `lib/drivers/mongo.ts`, root-exported with the types
+`MongoDriverOptions`, `MongoCacheCollection` and `MongoClientLike`.
+`mongodb` is an **optional peer** (`>=6`) and a devDependency (`^6`),
+exactly bun-jobs' pair, loaded by `import()` of a `string`-typed specifier
+and spoken to through structural `*Like` types (after bun-jobs'
+`mongo-driver.ts`), so no declaration names it; a type test checks a real
+`MongoClient` is assignable to `MongoClientLike` (typing `db()` fully makes
+it unassignable: the control). `databaseFromUrl` is copied from bun-jobs'
+`shared/connection.ts` with an origin comment and a drift test; the URL
+builder is C4's copy. **Measured on the local server** (mongo:7, 7.0.41):
+**standalone** (`hello.setName` unset), change streams refused (code 40573),
+`ttlMonitorSleepSecs` 60, `maxBsonObjectSize` 16 MiB. So both bus paths are
+tested: the tailable one on 127.0.0.1:27017, the change-stream one (and the
+tailable one again, forced by an internal `busMode`) on a temporary
+single-node replica set of the agent's own (127.0.0.1:27018, test commands
+on, removed afterwards). What it does, and where it departs from §7.6:
+
+- **Collections** `<p>entries` (`{ _id: { ns, k }, v?, n?, exp: Date|null,
+  tags, ca, w }`), `<p>stamps`, `<p>locks`, `<p>bus` (capped), prefix
+  `bun_cache_`; **`collections`** names any outright (bun-jobs' option
+  name; `prefix` stays C4's name, not bun-jobs' `collectionPrefix`). Indexes:
+  TTL `exp_1` (`expireAfterSeconds: 0`) on entries, stamps and locks, and
+  `_id.ns_1_tags_1` (multikey). §7.6's table put `n` as a `Long`: it is a
+  plain number (MongoDB widens an int to a long past 32 bits; tested past
+  2³¹). `ca` and `w` are beyond §7.6: the write time (the cap's order, a
+  counter's `createdAt`) and a per-write id.
+- **`syncSchema`**: creates a missing index (reported, `applied` unless
+  `dryRun`) and drops only names on `RETIRED_INDEXES` (empty); an
+  operator's own index is never dropped (tested; a mutant dropping undefined
+  indexes fails it). `[]` today. The `syncSchema` option runs it on connect.
+- **Expiry**: reads filter `exp` (the TTL monitor's minute); `sweep`
+  deletes expired entries up to its `limit`, then the cap; stamps and locks
+  are left to the TTL index.
+- **The fence: check-then-write with a take-back** (an addition): read the
+  stamps, write with a fresh `w`, read them again; a stamp at or after the
+  load's start → `deleteOne({ _id, w })` and `"fenced"`. `deleteByTags`
+  stamps before it deletes. Every interleaving then ends with no
+  pre-invalidation value stored, leaving a window of about one round trip in
+  which a reader can see it (`fence: "check-then-write"`, as §7.10 says).
+  Deterministic tests for the interleaving (the whole invalidation between
+  the check and the write), the order, and the `w` guard; the 60-round race
+  test of C4 passes, but **does not discriminate on MongoDB locally**: with
+  the re-check removed it still passed (the window never opened), so the
+  deterministic test is the control.
+- **Counters**: one `findOneAndUpdate` with an update pipeline
+  (`$replaceWith` of `$cond(live counter, add, new counter)`), upserting —
+  §7.6's `$inc` cannot reset an expired counter or replace an entry in the
+  same operation. **Locks** as §7.6.
+- **The bus** (§4.2): publish is an upsert stamping a server `Timestamp`
+  (`$currentDate`) into the capped collection, which holds a sentinel (a
+  tailable cursor on an empty capped collection is dead at once, measured).
+  On a replica set or `mongos`, a **change stream** started at the server's
+  `operationTime` (so `subscribe` resolves at once and misses nothing after
+  it), resumed from its own token after a loss the client does not resume
+  itself (measured: `killCursors`, code 237, is not resumed by the client);
+  history lost (286), an unusable token (260, 280) or an invalidation (the
+  collection dropped) start it from now and report a gap. On a standalone
+  server, a **tailable awaitData cursor** filtered `ts > <last read>`; a
+  lost cursor is reopened after its last read, and a gap reported when
+  `CappedPositionLost` (136) says it was overrun or when the oldest
+  document is past its last read (dropped and recreated). Messages are
+  stored whole, `origin` included; one over 64 KiB becomes a `clear` of its
+  namespace, keeping the origin. Option `busSize` (default 16 MiB, at least
+  4096) sizes the capped collection when the driver creates it.
+- **`maxEntries`: built** (§3.9; the user had SQL get it) — with
+  `entry-cap.ts`'s semantics through its `entryCapExcess`: entries only,
+  nearest expiry first (`exp, ca, ns, k`), then unexpiring oldest write;
+  at most `limit` a pass; `onEviction` (`"cap"`); each victim deleted only
+  if still the chosen write (`w`); two processes take turns through a lock
+  document (3 rounds of two processes sweeping at once leave exactly 15 of
+  40 and report 25 evictions; with per-process lock keys, that test fails).
+  It counts and sorts without an index of its own: a scan per pass.
+- **The kit's bus-gap case** for a pushed bus (C5's gating, kept as the one
+  implementation): MongoDB passes `busGap` (the bus collection dropped under
+  the subscriber), and sqlSuite now gives Postgres one too (its `LISTEN`
+  backend terminated), where C5 gave none for fear the reconnect would
+  outlast the kit's 5 s — measured, 20 of 20 runs of the case passed, plus
+  every full-suite run.
+- **Gate after rebasing onto PR-C5** (Bun 1.4.4-canary.1+a0cc096ce, every
+  URL, MongoDB standalone): bun-cache 609 pass, 28 skip, 0 fail, the same
+  under `--randomize --seed=1`, `=2`, `=3`; without URLs 359 pass, 31 skip;
+  the MongoDB file 52 pass, 1 skip (57 pass, 1 skip on the replica set,
+  6 of 6 rounds, before the rebase); check 163 files clean, lint 0 errors;
+  `bun scripts/typecheck.ts` 21 projects clean; consumer-check 60/60 cells,
+  10/10 runtime imports with no `mongodb` installed; scripts 178 pass;
+  `examples/bun-cache` 16 passed, 2 skipped on memory.
+- `setup-databases.ts` prints `BUN_CACHE_TEST_MONGODB_URL=mongodb://127.0.0.1:27017/bun_cache_test`
+  (MongoDB creates the database on first write: nothing to create); the
+  suite falls back to `BUN_JOBS_TEST_MONGODB_URL`, uses collections
+  `bun_cache_test_<pid>_…` and drops exactly those.
 
 ### Contents
 

@@ -156,9 +156,12 @@ describe("this package's optional peers", () => {
     }
   });
 
-  // The only peers are the environment's types; no entry needs either.
+  // The peers are the environment's types and `mongodb`, which the MongoDB
+  // driver loads at run time through a string-typed `import()` and speaks to
+  // through structural types: no declaration imports it, so no entry needs
+  // any of them (consumer-check proves it with none installed).
   it("needs no peer for any entry", () => {
-    expect(optional).toEqual(new Set(["@types/bun", "typescript"]));
+    expect(optional).toEqual(new Set(["@types/bun", "mongodb", "typescript"]));
     for (const entry of checkConfig.entries ?? [])
       expect(entry.peers ?? []).toEqual([]);
   });

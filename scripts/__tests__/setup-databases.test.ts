@@ -840,7 +840,14 @@ describe("bun-cache's database", () => {
     expect(PLANS.mysql.cacheUrl!(options)).toEndWith(
       "/bun_cache_test?allowPublicKeyRetrieval=true",
     );
-    expect(PLANS.mongodb.cacheEnvVar).toBeUndefined();
+  });
+
+  it("is on the MongoDB server too, which creates it on first write: no statements", () => {
+    expect(PLANS.mongodb.cacheEnvVar).toBe("BUN_CACHE_TEST_MONGODB_URL");
+    expect(PLANS.mongodb.cacheUrl!(options)).toBe(
+      "mongodb://127.0.0.1:27017/bun_cache_test",
+    );
+    expect(cacheDatabaseStatements("mongodb", options, "native")).toEqual([]);
   });
 
   it("on Redis is bun-jobs' test database: a variable of its own, nothing to create", () => {
@@ -904,6 +911,7 @@ describe("bun-cache's database", () => {
       "export BUN_CACHE_TEST_POSTGRES_URL=postgres://bunjobs:bunjobs@127.0.0.1:5432/bun_cache_test",
       "export BUN_CACHE_TEST_MARIADB_URL=mariadb://bunjobs:bunjobs@127.0.0.1:3306/bun_cache_test",
       "export BUN_CACHE_TEST_MYSQL_URL=mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_cache_test?allowPublicKeyRetrieval=true",
+      "export BUN_CACHE_TEST_MONGODB_URL=mongodb://127.0.0.1:27017/bun_cache_test",
     ]);
   });
 });

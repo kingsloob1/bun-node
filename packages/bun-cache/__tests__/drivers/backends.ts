@@ -79,6 +79,27 @@ export function sqlBackends(): SqlBackend[] {
   ];
 }
 
+/**
+ * The MongoDB server bun-cache's suite runs against (`mongodb.test.ts`):
+ * `BUN_CACHE_TEST_MONGODB_URL`, falling back to `BUN_JOBS_TEST_MONGODB_URL`,
+ * under the same rules as the SQL backends. Each run's collections carry the
+ * prefix `bun_cache_test_<pid>_` and are dropped by name.
+ */
+export function mongoBackend(): {
+  /** The variable that points at it (the bun-cache one, even when the URL came from the fallback). */
+  variable: string;
+  /** The URL, when one is set. */
+  url: string | undefined;
+} {
+  return {
+    variable: "BUN_CACHE_TEST_MONGODB_URL",
+    url:
+      process.env.BUN_CACHE_TEST_MONGODB_URL ||
+      process.env.BUN_JOBS_TEST_MONGODB_URL ||
+      undefined,
+  };
+}
+
 /** The run's table prefix: its own tables, dropped by {@link dropTables}. */
 export function runPrefix(suffix = ""): string {
   return `bun_cache_test_${process.pid}_${suffix}`;

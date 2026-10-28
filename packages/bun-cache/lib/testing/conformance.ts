@@ -57,7 +57,9 @@ export interface ConformanceOptions {
    * a dropped subscriber connection (Redis: `CLIENT KILL` of it), since
    * whatever is published while it reconnects is lost. Required when the
    * driver advertises `bus: "poll"`, where the bus-gap case fails without it;
-   * optional for `bus: "push"`, where giving it runs the case.
+   * optional for `bus: "push"`, where giving it runs the case (MongoDB:
+   * the bus collection dropped under the subscriber; Postgres: its `LISTEN`
+   * backend terminated).
    */
   busGap?: () => unknown | Promise<unknown>;
   /** Cases to skip, each with a reason printed in the skip line. */

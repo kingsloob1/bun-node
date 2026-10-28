@@ -76,8 +76,19 @@ And (PR-C5):
 - the kit's bus-gap case also runs for a pushed bus, given a way to force a
   gap (`busGap`)
 
-Next, in the plan's order: MongoDB (PR-C6), S3 (PR-C7), then stale serving
-over HTTP (PR-H2) and the Nest interceptor (PR-N2).
+And (PR-C6):
+
+- the **MongoDB driver** over the `mongodb` package (an optional peer): TTL
+  indexes with reads that filter expiry themselves, a tag index with a
+  check-then-write fence that takes itself back, `$inc`-style counters in one
+  update, lock documents, the optional `maxEntries` cap, and a bus — a change
+  stream on a replica set, a tailable cursor on a capped collection on a
+  standalone server ([The MongoDB driver](#the-mongodb-driver))
+- the kit's **bus-gap case** runs for a pushed bus too, when the test gives
+  it a way to force a loss (`busGap`)
+
+Next, in the plan's order: S3 (PR-C7), then stale serving over HTTP
+(PR-H2) and the Nest interceptor (PR-N2).
 
 ## Quick start
 
@@ -408,7 +419,7 @@ process that receives one drops its copies. The next read goes to L2.
 
 | `bus` | What it is |
 |---|---|
-| `"auto"` (the default with an `l1`) | the driver's own: pub/sub on Redis (`redisBus`'s channel for the driver's prefix); `LISTEN`/`NOTIFY` on Postgres; a polled table on SQLite, MySQL and MariaDB, a polled log on the file driver (every 250 ms by default, `busPollInterval`); in-process on the memory driver. A driver with none: no bus |
+| `"auto"` (the default with an `l1`) | the driver's own: pub/sub on Redis (`redisBus`'s channel for the driver's prefix); `LISTEN`/`NOTIFY` on Postgres; a change stream (replica set) or a tailable cursor on a capped collection (standalone) on MongoDB; a polled table on SQLite, MySQL and MariaDB, a polled log on the file driver (every 250 ms by default, `busPollInterval`); in-process on the memory driver. A driver with none: no bus |
 | `redisBus(url \| { url, client, prefix, channel })` | Redis pub/sub on the channel `<prefix>:bus` (`bun-cache:bus` by default), on its own connection |
 | `pgBus(url \| { url, connection, sql, channel, prefix, tables })` | Postgres `LISTEN`/`NOTIFY`, the Postgres driver's code; by default on the channel a `postgresDriver` with the same `prefix`/`tables` uses, so the two interoperate |
 | a `CacheBus` of your own | `{ name, publish, subscribe, close }` |
@@ -657,7 +668,8 @@ KILL`), and the bus-gap case then runs for it too.
 | Postgres | PR-C4 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one statement under a namespace advisory lock) | `LISTEN`/`NOTIFY` |
 | MySQL / MariaDB | PR-C4 | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table |
 | Redis | PR-C5 | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) |
-| MongoDB, S3 | PR-C6, PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
+| MongoDB | PR-C6 | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection |
+| S3 | PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -973,6 +985,99 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
   so the layout will not change when it is. A primary behind a stable
   address (a managed service, a proxy) works; Sentinel does not (Bun has no
   Sentinel support, oven-sh/bun#38515).
+
+## The MongoDB driver
+
+```ts
+import { createCache, mongoDriver } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: mongoDriver({ url: "mongodb://db:27017/app" }),
+});
+// or mongoDriver({ connection: { host: "db", database: "app" } }),
+//    mongoDriver({ client: existingMongoClient, database: "app" })  // never closed by the driver
+```
+
+One set of collections in a database every process and host can reach (§7.6
+of the plan). **`mongodb` is an optional peer** (`>=6`): install it with
+`bun add mongodb`. The driver loads it on first connect, and its types are
+structural (`MongoClientLike`), so a project that never builds a
+`mongoDriver` needs neither the package nor its types, and a real
+`MongoClient` passed as `client` type-checks. The collections, under the
+prefix (`prefix`, `bun_cache_` by default) unless `collections` names them:
+
+```
+<p>entries { _id: { ns, k }, v?: Binary, n?: number, exp: Date | null, tags, ca, w }  entries and counters
+<p>stamps  { _id: { ns, tag }, at, exp }                                            invalidation stamps
+<p>locks   { _id: { ns, k }, owner, exp }                                           lock documents
+<p>bus     capped, 16 MiB (busSize): { _id, ts, m }                                 the bus
+```
+
+**Collection names.** `prefix` names them all (`<prefix>entries`, …);
+`collections` names any of them outright — `mongoDriver({ url, collections:
+{ entries: "app_cache" } })` — and a name given that way is used as-is and
+ignores the prefix (the others keep it), as bun-jobs' MongoDB driver does.
+Names are letters, digits, `_`, `.` and `-`, starting with a letter or `_`,
+never `system.…`, at most 120 characters, and no two may share one; anything
+else throws. The keys are the `MongoCacheCollection` type. The database is
+`database`, else `connection.database`, else the URL's path, else
+`bun_cache`.
+
+**Schema.** Connecting creates the indexes, once per driver: a TTL index on
+`exp` (`expireAfterSeconds: 0`) on entries, stamps and locks, and the tag
+index `{ "_id.ns": 1, tags: 1 }` (multikey). Nothing is ever dropped on
+connect. `syncSchema()` creates any index that has gone missing and drops
+**only** the indexes on the driver's `RETIRED_INDEXES` list — MongoDB names
+an index after its key pattern, so one this driver no longer defines is
+indistinguishable from one an operator added, and an index of yours is never
+touched. The list is empty and connect creates every index, so today it
+answers `[]`; `dryRun` reports without applying. The `syncSchema` option runs
+it on connect, as on the SQL drivers.
+
+- **Connections**: a `url`, `connection` fields, or an existing `client`
+  (never closed by the driver), with `clientOptions` for a client the driver
+  builds. Every collection reads from the **primary**, whatever the client's
+  read preference: the reads that decide writes (the fence, a lock) must not
+  see a lagging secondary.
+- **Expiry**: the TTL monitor deletes what expired, but it runs **once a
+  minute** (`ttlMonitorSleepSecs: 60`), so every read filters `exp` itself;
+  the core's sweeper also deletes expired entries (up to its `limit` a pass).
+- **The fence is check-then-write, with a take-back.** A write whose load
+  began before `invalidateTags` reads the stamps, writes, and reads them
+  again; if a stamp appeared meanwhile, it deletes its own write (only that
+  write — a newer one is left) and is reported as `fenced`. The invalidation
+  writes its stamps before it deletes, so no interleaving leaves a
+  pre-invalidation value stored; what remains is a window of about one round
+  trip in which a reader can see it (`capabilities.fence:
+  "check-then-write"`).
+- **Counters** are integers, added on the server by one update, and may go
+  below zero (MongoDB widens a 32-bit value to 64 bits as it grows); a
+  fractional step throws a `TypeError`.
+- **Keys are exact**, of any length: MongoDB has no index-key limit, so
+  nothing is hashed here (the core still hashes keys past `maxKeyLength`).
+- **`maxEntries`** (opt-in; no cap by default), with the SQL drivers'
+  semantics: at sweep time, the excess is evicted — **nearest to expiry
+  first**, then the entries with no expiry, oldest write first — at most the
+  sweep's `limit` a pass, each as an `evict` event (reason `"cap"`); counters
+  are never counted or evicted, and two processes sweeping at once take turns
+  through a lock document. It counts and sorts without an index of its own,
+  so a pass scans the collection.
+- **The bus** is a capped collection (`busSize`, 16 MiB by default when the
+  driver creates it; an existing one must be capped). On a **replica set** or
+  through `mongos` subscribers read a **change stream**, resumed from its
+  token after a resumable loss (a killed cursor, a dropped connection), so
+  nothing is missed; a stream whose history is gone, or that was invalidated
+  (the collection dropped), starts again from now and reports a **gap**. On
+  a **standalone** server, which refuses change streams, subscribers tail
+  the collection with an awaitData cursor positioned by a server timestamp;
+  a lost cursor is reopened after the last message it read, and a gap is
+  reported when messages it had not read may have been overwritten (it fell
+  `busSize` behind) or the collection was dropped. A message over 64 KiB is
+  sent as a `clear` of its namespace.
+- **Limits**: an entry is at most the server's `maxBsonObjectSize` (16 MiB)
+  less 64 KiB, read on connect as `capabilities.maxEntryBytes`. The server
+  must be MongoDB 4.2 or later (the counter's update pipeline, unbounded
+  index keys); the suite runs on 7.0, standalone and as a replica set.
 
 ## HTTP response caching
 
