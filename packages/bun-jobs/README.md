@@ -2688,7 +2688,7 @@ it fires on the first empty pass, before a dead worker's locks have lapsed.
 **Exit 0 is deliberate.** Several platforms restart a non-zero exit (Fly and
 Railway by default, ACI even under `Never`), so only a `run()` that failed —
 a driver it could not connect to — exits `1`. On an unreachable Redis the
-first connect fails fast: about 1 s by default, tuned by `firstConnectTimeout`
+first connect fails fast: about 5 s by default, tuned by `firstConnectTimeout`
 in the Redis driver's options.
 
 **Signals.**
@@ -8291,8 +8291,8 @@ The `redis` fields:
 
 - The host defaults to `127.0.0.1:6379`; `rediss` is used with TLS.
 - `keyPrefix` defaults to `bun-jobs`.
-- **A Redis that is not there is reported in about a second.** The first
-  connect is bounded by `firstConnectTimeout` (ms, default `1000`) and fails
+- **A Redis that is not there is reported in about five seconds.** The first
+  connect is bounded by `firstConnectTimeout` (ms, default `5000`) and fails
   with a `DriverError`, `"redis driver failed during connect"`, whose cause
   names the server. That covers `connect()`, the first operation, and so
   `BunQueueWorker.run()` and `BunQueue.add()`. Bun's own client retries a
