@@ -64,7 +64,20 @@ const DELEGATE = [
   "Delegate=yes",
 ];
 
-const hasUserns = process.platform === "linux" && works([...UNSHARE, "true"]);
+/**
+ * Whether a process in the namespace can really start a child as another user,
+ * which is what the test below needs. `unshare` alone is not proof: with
+ * `kernel.apparmor_restrict_unprivileged_userns=1` it runs, but the namespace
+ * has no capabilities, so changing the uid fails with EPERM.
+ */
+const hasUserns =
+  process.platform === "linux" &&
+  works([
+    ...UNSHARE,
+    process.execPath,
+    "-e",
+    "const r = Bun.spawnSync(['true'], { uid: 65534, gid: 0 }); process.exit(r.success ? 0 : 1)",
+  ]);
 const hasDelegation =
   process.platform === "linux" &&
   existsSync("/sys/fs/cgroup/cgroup.controllers") &&
@@ -244,7 +257,7 @@ describe("uid and gid", () => {
   }, 30_000);
 
   it.skipIf(!hasUserns)(
-    "runs the child as another user, with the privilege to (needs unshare --map-root-user)",
+    "runs the child as another user, with the privilege to (needs unprivileged user namespaces with setuid; AppArmor's apparmor_restrict_unprivileged_userns blocks it)",
     async () => {
       // gid 0 in the namespace is this user's own group outside it, so the
       // child can still read the package's files through the group bits.
