@@ -60,6 +60,8 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [CORS](#cors)
   - [Static files](#static-files)
   - [Response compression](#response-compression)
+    - [Writing a response transform](#writing-a-response-transform)
+  - [Cache-Control](#cache-control)
   - [Multipart uploads](#multipart-uploads)
   - [WebSockets](#websockets)
     - [Headers on the 101](#headers-on-the-101)
@@ -2632,10 +2634,126 @@ Also exported: `isCompressible`, `rankEncodings`, `resolveEncodingOrder`,
 `dictionaryCompressionSupported`, `SUPPORTED_COMPRESSION_ENCODINGS`, and
 `addResponseTransform` on `BunResponse` for writing transforms of your own.
 
+#### Writing a response transform
+
+`res.addResponseTransform({ transform, flush? })` hooks the native `Response`
+as it is produced: `transform(response, { res, body })` runs synchronously and
+returns the `Response` to send (the same one when nothing changes). `body` is
+the buffered text, bytes or `Blob` the response was built from, and is
+`undefined` for a stream, a 204, 205 or 304, or once an earlier transform
+replaced the `Response`. Transforms run in registration order, each given
+the previous one's result, so one registered after `compression()` sees the
+compressed `Response` with no `body`.
+
+`res.addResponseTransform(transform, { first: true })` puts the transform at
+the front of the list instead, so it sees the response as produced wherever
+`compression()` sits. A response cache captures this way: with
+`compression()` registered before the cache, a cached answer sent without
+`next()` is still compressed, and a miss is captured uncompressed and then
+compressed. Several `first` transforms run newest first. A response
+validation gate (`validate()`'s `responses`) decides before any transform
+runs, so a transform only ever sees a response the gate let through, with
+`responseOutput: "parsed"` its parsed body.
+
 Examples:
 [`compression.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/07-cors-and-static/compression.ts),
 tour
 [`compression-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/compression-options.ts).
+
+### Cache-Control
+
+`cacheControl(directives, options?)` is a middleware that sets
+`Cache-Control` from a typed object, and `formatCacheControl(directives)`
+builds the header value alone. The directives are RFC 9111's response
+directives, plus `stale-while-revalidate` and `stale-if-error` (RFC 5861)
+and `immutable` (RFC 8246). **Lifetimes are in seconds**, as the header is,
+not milliseconds.
+
+```ts
+import { cacheControl, formatCacheControl } from "@kingsleyweb/bun-common";
+
+router.get("/assets/*file", cacheControl({ public: true, maxAge: 31_536_000, immutable: true }), h);
+router.get("/feed", cacheControl({ sMaxAge: 60, staleWhileRevalidate: 30, staleIfError: 600 }), h);
+router.get("/me", cacheControl({ private: true, noStore: true }), h);
+
+formatCacheControl({ private: ["Set-Cookie"], maxAge: 0, mustRevalidate: true });
+// 'private="Set-Cookie", max-age=0, must-revalidate'
+```
+
+| Directive | Header | Value |
+|---|---|---|
+| `public` | `public` | `boolean`. Not with `private`. |
+| `private` | `private`, `private="…"` | `boolean`, or field names for the qualified form. Not with `public`. |
+| `noCache` | `no-cache`, `no-cache="…"` | `boolean`, or field names for the qualified form. |
+| `noStore` | `no-store` | `boolean`. Not with any lifetime (`maxAge`, `sMaxAge`, `staleWhileRevalidate`, `staleIfError`, `immutable`). |
+| `maxAge` | `max-age=N` | Seconds. |
+| `sMaxAge` | `s-maxage=N` | Seconds, for shared caches. |
+| `staleWhileRevalidate` | `stale-while-revalidate=N` | Seconds. |
+| `staleIfError` | `stale-if-error=N` | Seconds. |
+| `mustRevalidate` | `must-revalidate` | `boolean`. |
+| `proxyRevalidate` | `proxy-revalidate` | `boolean`. |
+| `mustUnderstand` | `must-understand` | `boolean`. RFC 9111 recommends it with `noStore`, which is allowed. |
+| `noTransform` | `no-transform` | `boolean`. `compression()` honours it too. |
+| `immutable` | `immutable` | `boolean`. |
+
+- **Contradictions are compile errors**: `public` with `private`, and
+  `noStore` with a lifetime. A flag held in a `boolean` variable counts as
+  possibly set, so spread the one that applies:
+  `...(isPublic ? { public: true } : { private: true })`.
+- **Bad values throw**, for code the types did not check: a `RangeError` for
+  a lifetime that is negative, fractional or not a number; a `TypeError` for
+  a contradiction, an unknown key (`max_age`), a flag that is not a boolean,
+  or an empty or malformed field-name list.
+- Directives are written in a fixed order; `false` and `undefined` ones are
+  left out. Field names use the quoted form even for one name, as RFC 9111
+  asks.
+- `cacheControl()` formats once, when it is called, so a bad directive (or
+  none at all) throws when the route is built. Each request then gets the
+  header, replacing one an earlier layer set; the handler can still change
+  it. A response already sent is left alone.
+- `options.surrogateControl` also sets `Surrogate-Control` from the same kind
+  of directives, for a CDN that reads it (Fastly, Akamai) and strips it
+  before the client: `cacheControl({ maxAge: 0 }, { surrogateControl: {
+  maxAge: 3600 } })`.
+
+#### Parsing
+
+`parseCacheControl(value)` reads a `Cache-Control` value, a request's or a
+response's, into a `ParsedCacheControl`: the same keys as
+`CacheControlDirectives` where they overlap, plus the request directives
+`maxStale` (seconds, or `true` for `max-stale` with no value: any age),
+`minFresh` and `onlyIfCached`. A present flag is `true`; an absent directive
+is left out. It never throws: `null`, `undefined` and `""` give `{}`.
+
+```ts
+import { parseCacheControl } from "@kingsleyweb/bun-common";
+
+parseCacheControl('public, Max-Age="60", stale-while-revalidate=30');
+// { public: true, maxAge: 60, staleWhileRevalidate: 30 }
+parseCacheControl(req.get("cache-control"));
+// e.g. { maxStale: true, onlyIfCached: true }
+```
+
+It follows RFC 9111 §5.2:
+
+- Names are case-insensitive, and an argument may be a token or a quoted
+  string, whichever form the directive asks senders to use.
+  `private="…"` and `no-cache="…"` give their field names as written.
+- A lifetime past 2147483648 reads as 2147483648 (§1.2.2).
+- A directive written twice keeps its first occurrence and is listed in
+  `duplicates` (§4.2.1).
+- A malformed argument is read the most restrictive way and listed in
+  `invalid` (§4.2.1: treat invalid freshness as stale). `max-age=soon` reads
+  `0`; an empty or malformed field list reads as the unqualified form; a flag
+  given an argument reads `true`.
+- An unknown directive is kept in `extensions` by its lower-cased name
+  (`community="UCI"` gives `{ community: "UCI" }`), rather than dropped; a
+  cache ignores it (§5.2.3), but a reader that knows it can act on it.
+- Contradictions are kept as they arrived (`public` beside `private`): the
+  reader honours the most restrictive (§4.2.1).
+
+`parseCacheControl(formatCacheControl(d))` gives back `d` for any `d` with
+no `false` or `undefined` entries.
 
 ### Multipart uploads
 

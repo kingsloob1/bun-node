@@ -583,6 +583,18 @@ export type {
   BunResponseTransformBody,
   BunResponseTransformContext,
 } from "./BunResponse";
+/* ------------------------------------------------------------------ *
+ * Cache-Control (`lib/cacheControl.ts`) — typed RFC 9111 / 5861 / 8246
+ * response directives, formatted as a header value or set by a middleware.
+ * ------------------------------------------------------------------ */
+export {
+  cacheControl,
+  type CacheControlDirectives,
+  type CacheControlOptions,
+  formatCacheControl,
+  parseCacheControl,
+  type ParsedCacheControl,
+} from "./cacheControl";
 export type { ServeStaticPrecompressedOptions } from "./types/general";
 export type { ExtractRouteParams, ParamsDictionary } from "./types/routeParams";
 export {
