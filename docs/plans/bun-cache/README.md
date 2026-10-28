@@ -597,6 +597,101 @@ errors, format clean; `bun scripts/typecheck.ts` 21 projects clean;
 consumer-check 48/48 cells, 8/8 runtime imports; `examples/bun-cache` 5
 passed, 1 skipped on memory, `sql.ts` 65 checks with the SQL URLs.
 
+**PR-C5 built 2026-10-28** (branch `feat/bun-cache-c5-redis`): `redisDriver`
+over Bun's `RedisClient` (§7.7), on develop after PR-T1, whose `redisBus` is
+the driver's bus — no second copy. What it does, and where it departs from
+§7.7:
+
+- **Keys** `<p>:{<ns>}:e|n|t|s|l:<key or tag>`, prefix `bun-cache` (§21). The
+  namespace is **always** in a hash tag, so a later cluster mode keeps the
+  layout, and goes through the file driver's `encodeSegment` (copied from
+  bun-jobs in PR-C2), so it never holds `}` or `:` and `sweep` can read a
+  key's namespace back from its name — without it a namespace spelling
+  `}:t:` made its tag set read as another namespace's, and the sweep dropped
+  its live members (the negative control). Glob characters in `SCAN`
+  patterns are escaped (a prefix `g*` cleared `gz`'s keys without it).
+- **An entry is one string, a frame**: `1 <expiresAt|-> <tags JSON>\n` and
+  the bytes, so one `getBuffer` answers the whole `StoredEntry`. *Measured*:
+  Bun's client sends a `Uint8Array` argument (to `set`, `send`, `eval`)
+  byte-exact, but every reply except `getBuffer`'s is a JS string, lossy for
+  bytes that are not UTF-8 (`eval`, `send("GET")`, `mget` all mangled a
+  256-byte value), so no script returns a value. A counter is a hash
+  (`n`, `x` expiry, `c` created at) under its own key; a write of either kind
+  drops the other (last writer wins, as on SQL).
+- **Lua for the atomic paths** (`EVALSHA`, `EVAL` on `NOSCRIPT`; after
+  bun-jobs' `#run`, with the SHA-1 computed locally instead of read back from
+  `SCRIPT LOAD` — an adaptation, not a copy, so no drift test): `set` (fence
+  check against the stamps, the old frame's tag memberships removed, the
+  write, `PEXPIREAT`, `SADD`s), `delete`, `touch` (rewrites the frame's
+  header and the key's expiry), `deleteByTags` (every stamp, then every
+  member and the sets, one script), `increment` (create with its expiry, or
+  `HINCRBY`), the lock's take (absent or already ours, `SET … PX`) and
+  compare-and-delete. `clear` is `SCAN` + `UNLINK` in batches (not atomic, as
+  §7.7 says); like SQL it leaves stamps and locks.
+- **Departure: tag sets and stamps carry no Redis TTL** (§7.7 had `PEXPIRE`
+  extended to the longest member and `PX tagStampTtl`). Under the
+  `volatile-lru` policy §3.9 recommends, a TTL'd tag set could be evicted
+  while its entries live on (an invalidation would then miss them), and a
+  stamp while the load it must fence is running. With no TTL, `volatile-*`
+  never evicts them. A stamp holds `"<at> <until>"`, filtered on read;
+  `sweep` prunes lapsed stamps, tag-set members whose entry is gone (expired
+  or evicted) and empty sets, walking the prefix with `SCAN` (≤ 100 calls a
+  pass, resumed by the next). Entries and counters expire natively; the kit's
+  `expiry.sweep` case is skipped with that reason. No `maxEntries` on Redis
+  (§3.9: no cap by default; `volatile-lru` documented, with why `allkeys-*`
+  is unsafe here).
+- **Cluster, measured**: on a three-node local cluster
+  (`redis-cli --cluster create`, Redis 8.0.5), `new RedisClient` against one
+  node failed 5 of 6 keys with `MOVED <slot> <node>`, and `EVAL` on same-slot
+  keys of another node with `MOVED`: Bun's client follows no redirects, and
+  `RedisOptions` has no cluster option (open feature request
+  oven-sh/bun#22947). So **`cluster: true` throws a `TypeError`** naming the
+  issue, and a connect to a node reporting `cluster_enabled:1` fails with
+  the same explanation. A missing feature, not a bug: nothing filed.
+- **Connections**, after bun-jobs' Redis driver: `url`, `connection`
+  (through the copied `resolveConnectionUrl`, `redis`/`rediss`, port 6379),
+  or a `client` (never closed; its bus duplicate is). The first connect is
+  bounded by `firstConnectTimeout` (1 s): *measured*, a refused port took Bun
+  31.2 s to fail without it. `connectionTimeout`, `maxRetries` and
+  `autoReconnect` pass through to Bun.
+- **The bus**: `redisBus({ client, prefix })` on the driver's own client:
+  channel `<prefix>:bus`, T1's message shape (`origin` included), a reconnect
+  of the subscriber reported as a gap. A separate `redisBus` with the same
+  prefix interoperates (tested both ways).
+- **The kit**: the bus-gap case now also runs for `bus: "push"` when the
+  caller gives `busGap` (Redis: `CLIENT KILL` of the bus's subscriber,
+  found by its `CLIENT SETNAME`); a polled bus still must. Postgres gives
+  none, so its count is unchanged.
+- **Tests on database 15**, not §13.2's 13: database 13 became the
+  examples', and 15 is the repository's test database (agentic-setup). Keys
+  are under `bun-cache-test:<pid>-<time>`, deleted at the end by a `SCAN` of
+  exactly the run's prefixes. `setup-databases.ts --print-env` prints
+  `BUN_CACHE_TEST_REDIS_URL` (database 15; no database to create, so no
+  `cacheUrl`).
+- **Gate** (Bun 1.4.4-canary.1+a0cc096ce, Redis 8.0.5, the Redis, Postgres,
+  MySQL and MariaDB URLs set): bun-cache 556 pass, 28 skip, 0 fail, the same
+  under `--randomize --seed=1`, `=2`, `=3`; without URLs 358 pass, 30 skip;
+  the Redis file 39 pass, 2 skip (the kit's `expiry.sweep`, native expiry;
+  `tags.stamps`, not advertised); check 160 files clean, lint 0 errors,
+  format clean; `bun scripts/typecheck.ts` 21 projects clean; consumer-check
+  60/60 cells, 10/10 runtime imports; scripts 177 pass;
+  `examples/bun-cache` 15 passed, 2 skipped on memory. The first run found
+  `sqlSuite.ts` passing its MySQL `busGap` to Postgres too, which the kit's
+  new push-bus gating then ran (1 fail); it now goes to MySQL and MariaDB
+  only. Negative controls, each failing its test (1–2 fails): old tag
+  memberships kept, the fence skipped (the race test needed a second
+  connection to catch it), increment as read-then-write, the namespace not
+  encoded (caught by a forged `}:t:` namespace through `sweep`), the prefix
+  not glob-escaped, no `NOSCRIPT` fallback, a lock not refreshed for its
+  owner, the cluster check removed, `sweep` pruning nothing, no read-side
+  expiry filter, an unbounded first connect, `touch` keeping the old header,
+  `clear` taking stamps and locks, a no-op `busGap`; the kit's gating
+  reverted (the case skips); `setup-databases.ts` without the variable (2).
+- **New names, awaiting the user's approval** (not in §21):
+  `RedisDriverOptions`, and its options `client`, `prefix`, `cluster`,
+  `firstConnectTimeout`, `connectionTimeout`, `maxRetries`, `autoReconnect`
+  (`url`/`connection` as on SQL).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

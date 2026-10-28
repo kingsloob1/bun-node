@@ -67,8 +67,17 @@ And (PR-T1):
   driver's expiry, a flush on every bus gap, and `{ tier: "l2" }` to bypass
   it per call ([Multi-tier](#multi-tier))
 
-Next, in the plan's order: Redis (PR-C5), MongoDB (PR-C6), S3 (PR-C7), then
-stale serving over HTTP (PR-H2) and the Nest interceptor (PR-N2).
+And (PR-C5):
+
+- the **Redis driver** over Bun's built-in `RedisClient`: native expiry,
+  counters, locks and the tag index with its fence in Lua scripts, and its
+  bus is `redisBus` on the driver's own connection
+  ([The Redis driver](#the-redis-driver))
+- the kit's bus-gap case also runs for a pushed bus, given a way to force a
+  gap (`busGap`)
+
+Next, in the plan's order: MongoDB (PR-C6), S3 (PR-C7), then stale serving
+over HTTP (PR-H2) and the Nest interceptor (PR-N2).
 
 ## Quick start
 
@@ -399,7 +408,7 @@ process that receives one drops its copies. The next read goes to L2.
 
 | `bus` | What it is |
 |---|---|
-| `"auto"` (the default with an `l1`) | the driver's own: `LISTEN`/`NOTIFY` on Postgres; a polled table on SQLite, MySQL and MariaDB, a polled log on the file driver (every 250 ms by default, `busPollInterval`); in-process on the memory driver. A driver with none: no bus |
+| `"auto"` (the default with an `l1`) | the driver's own: pub/sub on Redis (`redisBus`'s channel for the driver's prefix); `LISTEN`/`NOTIFY` on Postgres; a polled table on SQLite, MySQL and MariaDB, a polled log on the file driver (every 250 ms by default, `busPollInterval`); in-process on the memory driver. A driver with none: no bus |
 | `redisBus(url \| { url, client, prefix, channel })` | Redis pub/sub on the channel `<prefix>:bus` (`bun-cache:bus` by default), on its own connection |
 | `pgBus(url \| { url, connection, sql, channel, prefix, tables })` | Postgres `LISTEN`/`NOTIFY`, the Postgres driver's code; by default on the channel a `postgresDriver` with the same `prefix`/`tables` uses, so the two interoperate |
 | a `CacheBus` of your own | `{ name, publish, subscribe, close }` |
@@ -611,7 +620,9 @@ the same backend), and the kit runs increments, a contended lock and stamp
 visibility from two processes. Both sides are released together from a start
 barrier and the increments run in interleaved waves, so the two genuinely
 overlap. A driver with a polled bus also gives `busGap`, a function that
-forces a gap in its log.
+forces a gap in its log; a driver with a pushed bus may give one that drops
+its subscriber connection (the Redis driver's test kills it with `CLIENT
+KILL`), and the bus-gap case then runs for it too.
 
 ## Testing helpers
 
@@ -645,7 +656,8 @@ forces a gap in its log.
 | SQLite | PR-C3 | filtered on read + sweep, indexed `exp` | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one transaction) | polled table |
 | Postgres | PR-C4 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one statement under a namespace advisory lock) | `LISTEN`/`NOTIFY` |
 | MySQL / MariaDB | PR-C4 | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table |
-| Redis, MongoDB, S3 | PR-C5 to PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
+| Redis | PR-C5 | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) |
+| MongoDB, S3 | PR-C6, PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -877,6 +889,90 @@ one.
 - **Limits**: an entry is at most `max_allowed_packet` less 64 KiB on MySQL
   and MariaDB (read from the server on connect, as
   `capabilities.maxEntryBytes`), and 1 GB on Postgres.
+
+## The Redis driver
+
+```ts
+import { createCache, redisDriver } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: redisDriver({ url: process.env.REDIS_URL }), // redis:// or rediss://
+});
+// or redisDriver({ connection: { host: "cache", port: 6379, database: 2, password } }),
+//    redisDriver({ client: existingClient })  // never closed by the driver
+```
+
+One Redis every process and host can reach, over Bun's built-in
+`RedisClient` (§7.7 of the plan). Every key is under the prefix (`prefix`,
+`bun-cache` by default; not empty, no `{` or `}`) and the namespace, wrapped
+in a hash tag and encoded so it never holds `}` or `:` (any string is a safe
+namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
+
+```
+<p>:{<ns>}:e:<key>   STRING  the entry: a header line (expiry, tags) and its bytes; PEXPIREAT
+<p>:{<ns>}:n:<key>   HASH    a counter (value, expiry, created at); PEXPIREAT
+<p>:{<ns>}:t:<tag>   SET     the keys carrying the tag
+<p>:{<ns>}:s:<tag>   STRING  the tag's invalidation stamp, "<at> <until>"
+<p>:{<ns>}:l:<key>   STRING  a lock's owner; PX
+<p>:bus              the bus channel
+```
+
+- **Atomic in Lua**: a write with the tag fence (check the stamps, replace
+  the old tag memberships, write) is one script, and so is `deleteByTags`
+  (every stamp, then every member and the sets), so a write whose load began
+  before an invalidation is refused or deleted, never kept. So are
+  `increment`, `touch`, `delete` and the lock's take and release. Scripts run
+  by `EVALSHA` and are sent again with `EVAL` when the server answers
+  `NOSCRIPT` (after a restart or a `SCRIPT FLUSH`).
+- **Expiry is native**: an entry's and a counter's keys expire with
+  `PEXPIREAT`, and reads also treat a passed expiry as a miss. There is
+  nothing for the core's sweeper to reclaim but what has no TTL — tag-set
+  members whose entry is gone, empty tag sets and lapsed stamps — which
+  `sweep` prunes, walking the prefix with `SCAN` (at most 100 calls a pass,
+  resuming where the last one stopped).
+- **A memory cap**: there is none by default; Redis is sized by its operator.
+  To bound it, run the server with `maxmemory` and **`maxmemory-policy
+  volatile-lru`** (or `volatile-ttl`): Redis then evicts entries that have an
+  expiry, least recently used first, and never touches the keys that have
+  none. Tag sets and stamps deliberately have no Redis TTL, so that an
+  eviction can never take a tag set while its entries live on (an
+  invalidation would miss them) or a stamp while a load it must fence is
+  still running. An entry written without a TTL is never evicted under
+  these policies. A counter with an expiry can be evicted, which resets it.
+  Avoid `allkeys-*` policies, which can evict tag sets and stamps.
+- **Counters** are integers, added in Redis, and may go below zero; a
+  fractional step throws a `TypeError`. A counter and an entry never share a
+  key: the last writer wins.
+- **`clear()`** deletes the namespace's entries, counters and tag sets by
+  `SCAN` in batches, so it is not atomic: a write landing during it may
+  survive. Stamps and locks stay.
+- **Bytes**: values are written as given and read with `getBuffer`; Bun's
+  other replies are strings, which would not round-trip bytes that are not
+  UTF-8. An entry is at most 511 MiB (Redis's 512 MB string, less room for
+  the header); the core's `maxEntryBytes` (4 MiB) applies first.
+- **The bus** is `redisBus` on the driver's client and prefix: pub/sub on
+  `<prefix>:bus`, subscribed on a `duplicate()` of the client, a reconnect of
+  that connection reported as a gap (every L1 flushes). A `redisBus` with the
+  same prefix shares the channel. Pub/sub ignores the database number, so two
+  deployments on one server need different prefixes to keep their buses
+  apart.
+- **Connections**: a `url`, `connection` fields (`host`, `port`, `user`,
+  `password`, `database`, `tls`), or an existing `client` (never closed by
+  the driver; its options are its own). The first connect of a client the
+  driver builds is bounded by `firstConnectTimeout` (1 s; `0` for none):
+  without it, Bun retries a refused connection for about 31 s before an
+  operation fails. `connectionTimeout`, `maxRetries` and `autoReconnect` are
+  Bun's own, passed through. After a drop, Bun reconnects; once it gives up,
+  the next operation starts again.
+- **Redis Cluster is not supported yet**: Bun's `RedisClient` does not
+  follow the cluster's `MOVED` and `ASK` redirects
+  ([oven-sh/bun#22947](https://github.com/oven-sh/bun/issues/22947)) —
+  measured on a three-node cluster, every key on another node failed with
+  `MOVED`. `cluster: true` throws, and connecting to a cluster node fails
+  with the same explanation. The keys are hash-tagged by namespace already,
+  so the layout will not change when it is. A primary behind a stable
+  address (a managed service, a proxy) works; Sentinel does not (Bun has no
+  Sentinel support, oven-sh/bun#38515).
 
 ## HTTP response caching
 

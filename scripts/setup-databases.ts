@@ -17,6 +17,8 @@ import process from "node:process";
  * Postgres, MariaDB and MySQL also get a database of bun-cache's own
  * ({@link CACHE_DATABASE}, `BUN_CACHE_TEST_*_URL`), on the same server, user
  * and password as bun-jobs', created only when connecting to it fails.
+ * bun-cache's Redis suite uses bun-jobs' test database (15) instead, its keys
+ * under a per-run prefix: `--print-env` names it `BUN_CACHE_TEST_REDIS_URL`.
  *
  * ```bash
  * bun scripts/setup-databases.ts              # install what is missing, configure what is not
@@ -866,9 +868,17 @@ interface ServicePlan {
   envVar: string;
   /** The URL the suites should use once it is ready. */
   url: (options: Options) => string;
-  /** The variable bun-cache's suites read, on the servers that have a bun-cache database. */
+  /**
+   * The variable bun-cache's suites read for this server. Printed by
+   * `--print-env` with {@link cacheUrl}, or with {@link url} on a server where
+   * bun-cache has no database of its own (Redis).
+   */
   cacheEnvVar?: string;
-  /** The URL of bun-cache's database ({@link CACHE_DATABASE}): bun-jobs' URL with the other database. */
+  /**
+   * The URL of bun-cache's database ({@link CACHE_DATABASE}): bun-jobs' URL
+   * with the other database. Only on the servers where the script creates
+   * that database (the SQL ones).
+   */
   cacheUrl?: (options: Options) => string;
   /** Whether its binaries are present. */
   installed: () => boolean;
@@ -1820,6 +1830,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     envVar: "BUN_JOBS_TEST_REDIS_URL",
     // Database 15, so a test run cannot disturb anything on database 0.
     url: () => "redis://127.0.0.1:6379/15",
+    // bun-cache's suite shares database 15 (the repository's test database),
+    // its keys under a per-run prefix; there is no database to create.
+    cacheEnvVar: "BUN_CACHE_TEST_REDIS_URL",
     installed: () => has("redis-server") || has("redis-cli"),
     packages: {
       apt: ["redis-server"],
@@ -2611,10 +2624,9 @@ function printEnv(options: Options): void {
   for (const service of options.services) {
     const plan = PLANS[service];
     console.log(`export ${plan.envVar}=${colour.cyan(plan.url(options))}`);
-    if (plan.cacheEnvVar && plan.cacheUrl) {
-      console.log(
-        `export ${plan.cacheEnvVar}=${colour.cyan(plan.cacheUrl(options))}`,
-      );
+    if (plan.cacheEnvVar) {
+      const url = plan.cacheUrl ?? plan.url;
+      console.log(`export ${plan.cacheEnvVar}=${colour.cyan(url(options))}`);
     }
   }
 

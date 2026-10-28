@@ -148,32 +148,44 @@ export async function registerSqlSuite(
         export: backend.exportName,
         options: kitOptions,
       },
-      busGap: async () => {
-        // A stretch of the log the subscriber never saw: a row far past the
-        // next `seq`, which is what a prune (or a lost insert) looks like.
-        // An ordinary row first: a subscriber that started on an empty table
-        // takes its first row as the start of the sequence, so the jump must
-        // come after one.
-        const sql = rawClient(backend);
-        try {
-          await sql.unsafe(
-            `INSERT INTO ${kitOptions.prefix}bus (at, msg) VALUES (?, ?)`,
-            [
-              Date.now(),
-              JSON.stringify({ type: "clear", namespace: "before-gap", at: 0 }),
-            ],
-          );
-          await sql.unsafe(
-            `INSERT INTO ${kitOptions.prefix}bus (seq, at, msg) SELECT COALESCE(MAX(seq), 0) + 1000, ?, ? FROM ${kitOptions.prefix}bus`,
-            [
-              Date.now(),
-              JSON.stringify({ type: "clear", namespace: "gap", at: 0 }),
-            ],
-          );
-        } finally {
-          await sql.close();
-        }
-      },
+      // The polled bus (MySQL, MariaDB) must prove its gap; Postgres is
+      // pushed, and its reconnect gap has a test of its own below (a
+      // terminated LISTEN backend, whose reconnect can outlast the kit's
+      // 5 s), so it gives none.
+      ...(name === "postgres"
+        ? {}
+        : {
+            busGap: async () => {
+              // A stretch of the log the subscriber never saw: a row far past the
+              // next `seq`, which is what a prune (or a lost insert) looks like.
+              // An ordinary row first: a subscriber that started on an empty table
+              // takes its first row as the start of the sequence, so the jump must
+              // come after one.
+              const sql = rawClient(backend);
+              try {
+                await sql.unsafe(
+                  `INSERT INTO ${kitOptions.prefix}bus (at, msg) VALUES (?, ?)`,
+                  [
+                    Date.now(),
+                    JSON.stringify({
+                      type: "clear",
+                      namespace: "before-gap",
+                      at: 0,
+                    }),
+                  ],
+                );
+                await sql.unsafe(
+                  `INSERT INTO ${kitOptions.prefix}bus (seq, at, msg) SELECT COALESCE(MAX(seq), 0) + 1000, ?, ? FROM ${kitOptions.prefix}bus`,
+                  [
+                    Date.now(),
+                    JSON.stringify({ type: "clear", namespace: "gap", at: 0 }),
+                  ],
+                );
+              } finally {
+                await sql.close();
+              }
+            },
+          }),
     },
   );
 

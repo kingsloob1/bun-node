@@ -52,9 +52,12 @@ export interface ConformanceOptions {
    */
   crossProcess?: ConformanceCrossProcess;
   /**
-   * Forces a gap in a polled bus's log (a compaction, a truncation). Required
-   * when the driver advertises `bus: "poll"`; the bus-gap case fails without
-   * it.
+   * Forces a gap in the driver's bus: on a polled bus, a stretch of its log
+   * the subscriber never sees (a compaction, a truncation); on a pushed bus,
+   * a dropped subscriber connection (Redis: `CLIENT KILL` of it), since
+   * whatever is published while it reconnects is lost. Required when the
+   * driver advertises `bus: "poll"`, where the bus-gap case fails without it;
+   * optional for `bus: "push"`, where giving it runs the case.
    */
   busGap?: () => unknown | Promise<unknown>;
   /** Cases to skip, each with a reason printed in the skip line. */
@@ -750,8 +753,10 @@ export async function runCacheDriverConformance(
 
     kase(
       "bus.gap",
-      "a gap in the polled log is signalled to subscribers",
-      driver.capabilities.bus === "poll",
+      "a gap in the bus is signalled to subscribers",
+      // A polled bus must prove it; a pushed one can, given a way to force a gap.
+      driver.capabilities.bus === "poll" ||
+        (driver.capabilities.bus === "push" && options.busGap !== undefined),
       async () => {
         const gap = options.busGap;
         expect(

@@ -160,3 +160,37 @@ export async function redisReachError(url: string): Promise<Error | undefined> {
     client.close();
   }
 }
+
+/**
+ * Deletes every key under one of this run's Redis prefixes (`<prefix>:…`).
+ * The prefix carries the run's pid and a timestamp, so the `SCAN` it walks
+ * matches this run's keys and nobody else's: the exact set it created, never a
+ * sweep of a shared prefix. Glob characters in it are escaped.
+ */
+export async function deleteRedisPrefix(
+  url: string,
+  prefix: string,
+): Promise<number> {
+  const client = new RedisClient(url);
+  const pattern = `${prefix.replace(/[*?[\]\\]/g, (char) => `\\${char}`)}:*`;
+  let cursor = "0";
+  let deleted = 0;
+  try {
+    do {
+      const [next, found] = await client.scan(
+        cursor,
+        "MATCH",
+        pattern,
+        "COUNT",
+        1_000,
+      );
+      cursor = String(next);
+      if (found.length > 0) {
+        deleted += await client.unlink(...found);
+      }
+    } while (cursor !== "0");
+  } finally {
+    client.close();
+  }
+  return deleted;
+}
