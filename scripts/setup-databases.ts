@@ -24,6 +24,10 @@ import process from "node:process";
  * bun-cache's Redis suite uses bun-jobs' test database (15) instead, its keys
  * under a per-run prefix: `--print-env` names it `BUN_CACHE_TEST_REDIS_URL`.
  *
+ * S3 is SeaweedFS in a container ({@link S3_CONTAINER_IMAGE}), the one S3 test
+ * server both packages share, with a bucket each (`bun-jobs-test`,
+ * {@link S3_CACHE_BUCKET}), created by a signed `PUT` when absent.
+ *
  * ```bash
  * bun scripts/setup-databases.ts              # install what is missing, configure what is not
  * bun scripts/setup-databases.ts --dry-run    # print the plan, change nothing
@@ -46,6 +50,7 @@ const SERVICES = [
   "mysql",
   "mongodb",
   "mongodb-rs",
+  "s3",
 ] as const;
 
 /** One of the servers this script knows how to provide. */
@@ -121,6 +126,34 @@ export const POSTGRES_DATA_ROOT = "/var/lib/postgresql";
  * data can touch the other's.
  */
 export const CACHE_DATABASE = "bun_cache_test";
+
+/**
+ * The S3 test server: SeaweedFS, pinned. MinIO was the first choice, but its
+ * images could not be pulled and its repository is archived; SeaweedFS
+ * honours every conditional header the drivers rely on
+ * (`docs/plans/bun-cache/bun-jobs-s3-driver.md` §3.2, §7).
+ */
+export const S3_CONTAINER_IMAGE = "chrislusf/seaweedfs:4.48";
+
+/**
+ * The S3 server's access key and secret: test-only values for a server bound
+ * to 127.0.0.1. Given to the container as `AWS_ACCESS_KEY_ID` and
+ * `AWS_SECRET_ACCESS_KEY`, which makes SeaweedFS check every request's
+ * signature (without them it accepts any), so the suites prove their signing.
+ */
+export const S3_ACCESS_KEY = "test";
+
+/** The S3 server's secret key; see {@link S3_ACCESS_KEY}. */
+export const S3_SECRET_KEY = "test";
+
+/** bun-jobs' S3 bucket (`BUN_JOBS_TEST_S3_URL`). Bucket names allow no `_`, hence not `bun_jobs_test`. */
+export const S3_BUCKET = "bun-jobs-test";
+
+/** bun-cache's S3 bucket (`BUN_CACHE_TEST_S3_URL`). */
+export const S3_CACHE_BUCKET = "bun-cache-test";
+
+/** Why the last S3 request failed, for the summary. */
+let lastS3Error = "";
 
 /**
  * The core count {@link MAX_CONNECTIONS} and {@link POSTGRES_MAX_CONNECTIONS}
@@ -2252,7 +2285,225 @@ export const PLANS: Record<Service, ServicePlan> = {
     configure: async () => true,
     configureNote: () => "the container's replica set rs0 is initiated",
   },
+
+  s3: {
+    service: "s3",
+    port: 8333,
+    envVar: "BUN_JOBS_TEST_S3_URL",
+    // The S3 driver's URL form: credentials, endpoint and bucket; `scheme=http`
+    // because the test server speaks plain HTTP on loopback.
+    url: () => s3TestUrl(S3_BUCKET),
+    cacheEnvVar: "BUN_CACHE_TEST_S3_URL",
+    cacheUrl: () => s3TestUrl(S3_CACHE_BUCKET),
+    // A container, so there are no binaries on the host to look for.
+    installed: () => false,
+    packages: {},
+    unit: () => "seaweedfs",
+    readyTimeout: 60_000,
+    dockerOnly:
+      "SeaweedFS has no distribution package, so the S3 test server runs as a container",
+    container: () => ({
+      name: "bun-jobs-s3",
+      image: S3_CONTAINER_IMAGE,
+      port: 8333,
+      env: {
+        AWS_ACCESS_KEY_ID: S3_ACCESS_KEY,
+        AWS_SECRET_ACCESS_KEY: S3_SECRET_KEY,
+      },
+      // The data stays in the image's /data volume: never a bind mount, and
+      // never the host's /tmp, which snap Docker cannot use.
+      args: ["server", "-s3", "-dir=/data"],
+    }),
+    // Bun's S3Client cannot create a bucket, and the image makes none: a
+    // signed `PUT` once the server answers. Safe to repeat: a bucket already
+    // there (ours) is left alone.
+    initContainer: async (options) => {
+      log.cmd([`(signed PUT /${S3_BUCKET} over 127.0.0.1:8333)`]);
+      if (options.dryRun) {
+        return true;
+      }
+      // SeaweedFS answers S3 a few seconds after its port opens (3.8–6 s,
+      // measured for the plan).
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (await ensureS3Bucket(s3TestUrl(S3_BUCKET), false)) {
+          log.did(`the ${S3_BUCKET} bucket is there`);
+          return true;
+        }
+        await Bun.sleep(1_000);
+      }
+      log.bad(`could not create the ${S3_BUCKET} bucket: ${lastS3Error}`);
+      return false;
+    },
+    // Ready means a signed request over the suites' credentials finds the
+    // bucket: a `HEAD`, which never creates anything.
+    configured: async () =>
+      (await portOpen(8333)) &&
+      (await ensureS3Bucket(s3TestUrl(S3_BUCKET), true)),
+    configure: () => Promise.resolve(true),
+    configureNote: () => `created the ${S3_BUCKET} bucket`,
+  },
 };
+
+/* ------------------------------------------------------------------ *
+ * S3 (SeaweedFS)
+ * ------------------------------------------------------------------ */
+
+/** The S3 test URL for a bucket, in the S3 driver's form. */
+export function s3TestUrl(bucket: string): string {
+  return `s3://${S3_ACCESS_KEY}:${S3_SECRET_KEY}@127.0.0.1:8333/${bucket}?scheme=http`;
+}
+
+/** The endpoint, bucket and credentials in an S3 test URL (the driver's `s3://` form). */
+export function parseS3TestUrl(url: string): {
+  /** `scheme://host:port`. */
+  endpoint: string;
+  /** The bucket. */
+  bucket: string;
+  /** The access key. */
+  accessKeyId: string;
+  /** The secret key. */
+  secretAccessKey: string;
+} {
+  const parsed = new URL(url);
+  const scheme = parsed.searchParams.get("scheme") ?? "https";
+  return {
+    endpoint: `${scheme}://${parsed.host}`,
+    bucket: decodeURIComponent(parsed.pathname.slice(1)),
+    accessKeyId: decodeURIComponent(parsed.username),
+    secretAccessKey: decodeURIComponent(parsed.password),
+  };
+}
+
+/** HMAC-SHA256. */
+function hmacSha256(key: string | Uint8Array, data: string): Uint8Array {
+  const hasher = new Bun.CryptoHasher("sha256", key);
+  hasher.update(data);
+  return hasher.digest();
+}
+
+/**
+ * Signs a request with AWS Signature Version 4 (`UNSIGNED-PAYLOAD`, every
+ * header given signed). Copied from bun-cache's
+ * `packages/bun-cache/lib/drivers/s3-sign.ts` (`signS3Request`), cut to what
+ * the bucket requests need: nothing in `scripts/` loads a workspace package.
+ * Bun's `S3Client` cannot create a bucket, hence a signed `fetch`.
+ */
+export function signS3(
+  credentials: { accessKeyId: string; secretAccessKey: string },
+  method: string,
+  url: URL,
+  date = new Date(),
+  region = "us-east-1",
+  payloadHash = "UNSIGNED-PAYLOAD",
+): Record<string, string> {
+  const stamp = date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const day = stamp.slice(0, 8);
+  const headers: Record<string, string> = {
+    host: url.host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": stamp,
+  };
+  const names = Object.keys(headers).sort();
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(
+    [
+      method,
+      url.pathname,
+      url.search.slice(1),
+      names.map((name) => `${name}:${headers[name]}\n`).join(""),
+      names.join(";"),
+      payloadHash,
+    ].join("\n"),
+  );
+  const scope = `${day}/${region}/s3/aws4_request`;
+  const key = hmacSha256(
+    hmacSha256(
+      hmacSha256(hmacSha256(`AWS4${credentials.secretAccessKey}`, day), region),
+      "s3",
+    ),
+    "aws4_request",
+  );
+  const signer = new Bun.CryptoHasher("sha256", key);
+  signer.update(
+    ["AWS4-HMAC-SHA256", stamp, scope, hasher.digest("hex")].join("\n"),
+  );
+  const { host: _host, ...send } = headers;
+  return {
+    ...send,
+    authorization: `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signer.digest("hex")}`,
+  };
+}
+
+/** Whether a bucket-create answer means the bucket is there and ours: 200, or 409 `BucketAlreadyOwnedByYou`. */
+export function bucketCreated(status: number, body: string): boolean {
+  return (
+    status === 200 ||
+    (status === 409 && body.includes("<Code>BucketAlreadyOwnedByYou</Code>"))
+  );
+}
+
+/**
+ * Whether the bucket in an S3 test URL is usable over its credentials: a
+ * signed `HEAD`, then — when it is absent and `lookOnly` is false — a signed
+ * `PUT` to create it. Never deletes or empties a bucket.
+ */
+async function ensureS3Bucket(
+  url: string,
+  lookOnly: boolean,
+): Promise<boolean> {
+  const target = parseS3TestUrl(url);
+  const bucketUrl = new URL(`${target.endpoint}/${target.bucket}`);
+  try {
+    const head = await fetch(bucketUrl, {
+      method: "HEAD",
+      headers: signS3(target, "HEAD", bucketUrl),
+    });
+    if (head.ok) {
+      lastS3Error = "";
+      return true;
+    }
+    if (head.status !== 404 || lookOnly) {
+      lastS3Error = `HEAD /${target.bucket} answered ${head.status}`;
+      return false;
+    }
+    const created = await fetch(bucketUrl, {
+      method: "PUT",
+      headers: signS3(target, "PUT", bucketUrl),
+    });
+    const body = await created.text();
+    if (bucketCreated(created.status, body)) {
+      lastS3Error = "";
+      return true;
+    }
+    lastS3Error = `PUT /${target.bucket} answered ${created.status} ${/<Code>([^<]+)/.exec(body)?.[1] ?? ""}`;
+    return false;
+  } catch (error) {
+    lastS3Error = error instanceof Error ? error.message : String(error);
+    return false;
+  }
+}
+
+/** bun-cache's bucket ({@link S3_CACHE_BUCKET}), on an S3 server that is ready for bun-jobs: created when absent. */
+async function ensureCacheBucket(
+  plan: ServicePlan,
+  options: Options,
+): Promise<{ note: string; failed: boolean }> {
+  const url = plan.cacheUrl!(options);
+  if (await ensureS3Bucket(url, true)) {
+    log.skip(`the ${S3_CACHE_BUCKET} bucket (bun-cache) is already usable`);
+    return { note: `${S3_CACHE_BUCKET} ready`, failed: false };
+  }
+  log.cmd([`(signed PUT /${S3_CACHE_BUCKET} over 127.0.0.1:${plan.port})`]);
+  if (options.dryRun) {
+    return { note: `${S3_CACHE_BUCKET} once created`, failed: false };
+  }
+  if (!(await ensureS3Bucket(url, false))) {
+    log.bad(`could not create the ${S3_CACHE_BUCKET} bucket: ${lastS3Error}`);
+    return { note: `${S3_CACHE_BUCKET} not created`, failed: true };
+  }
+  log.did(`created the ${S3_CACHE_BUCKET} bucket (bun-cache)`);
+  return { note: `created ${S3_CACHE_BUCKET}`, failed: false };
+}
 
 /**
  * Adds MongoDB's own apt repository, which Ubuntu and Debian need because
@@ -2405,6 +2656,9 @@ async function ensureCacheDatabase(
 ): Promise<{ note: string; failed: boolean }> {
   if (!plan.cacheUrl) {
     return { note: "", failed: false };
+  }
+  if (plan.service === "s3") {
+    return await ensureCacheBucket(plan, options);
   }
   const db = options.cacheDatabase;
   if (plan.service === "mongodb" || plan.service === "mongodb-rs") {
@@ -2646,7 +2900,7 @@ async function setupServer(
       return {
         service: plan.service,
         ready,
-        note: `the container did not become usable${lastSqlError ? `: ${lastSqlError}` : ""}`,
+        note: `the container did not become usable${lastSqlError || lastS3Error ? `: ${lastSqlError || lastS3Error}` : ""}`,
       };
     }
 

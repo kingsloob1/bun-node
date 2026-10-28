@@ -1,4 +1,4 @@
-/** The built-in drivers. PR-C1 shipped memory, PR-C2 file, PR-C3 SQLite, PR-C4 Postgres, MySQL and MariaDB, PR-C5 Redis, PR-C6 MongoDB; the rest follow the plan's order (§20.1). */
+/** The built-in drivers. PR-C1 shipped memory, PR-C2 file, PR-C3 SQLite, PR-C4 Postgres, MySQL and MariaDB, PR-C5 Redis, PR-C6 MongoDB, PR-C7 S3; the rest follow the plan's order (§20.1). */
 export { fileDriver } from "./file";
 export type { FileDriverOptions } from "./file";
 export { memoryDriver } from "./memory";
@@ -11,6 +11,8 @@ export { postgresDriver } from "./postgres";
 export type { PostgresDriverOptions } from "./postgres";
 export { redisDriver } from "./redis";
 export type { RedisDriverOptions } from "./redis";
+export { s3Driver } from "./s3";
+export type { S3DriverOptions } from "./s3";
 export type { SqlCacheDriverOptions } from "./sql-base";
 export type { SqlConnectionOptions } from "./sql-connection";
 export type { SqlCacheTable } from "./sql-tables";
