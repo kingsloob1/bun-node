@@ -1,0 +1,2 @@
+RedisClient.connect(): min 549 p50 577 max 918 ms (n=10)
+driver.connect() (default firstConnectTimeout): 0/10 failed; ok: 760, 761, 764, 765, 767, 768, 779, 837, 853, 864 ms

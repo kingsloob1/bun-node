@@ -1,0 +1,15 @@
+INFO stats: total_commands_processed:232 | instantaneous_ops_per_sec:2 | max_ops_per_sec:10000
+INFO commandstats (first 300): ""
+--- expiry offset by horizon (PEXPIRETIME - requested)
++1000 ms: 0, 0, 0, 0
++60000 ms: 0, 0, 0, 0
++3600000 ms: 2, 0, 1, 2
++86400000 ms: 0, 1, 0, 1
++2592000000 ms: 0, 2, 0, 0
+--- PX relative: PTTL right after SET PX 60000
+59788, 59788, 59788, 59787
+--- cross-connection read-your-writes (write on a, read on b at once)
+stale reads on b: 0/30
+stale reads on b after a Lua write on a: 0/30
+INFO stats after: total_commands_processed:256 | instantaneous_ops_per_sec:4 | max_ops_per_sec:10000
+deleted 80 keys

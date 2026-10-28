@@ -66,9 +66,12 @@ export const DEFAULT_REDIS_PREFIX = "bun-cache";
  * After bun-jobs' `FIRST_CONNECT_TIMEOUT_MS` (redis-driver.ts@c4fdaf01): Bun
  * retries a refused first connect for its whole reconnect budget (measured
  * here: 31.2 s on a refused port), so an unreachable Redis would take half a
- * minute to report.
+ * minute to report. 5 s, not bun-jobs' 1 s: a managed Redis in another
+ * region takes most of a second to connect over TLS (Upstash from West
+ * Africa: 549–1004 ms, three round trips of ~300 ms), so 1 s refused a
+ * healthy server about as often as not.
  */
-const FIRST_CONNECT_TIMEOUT_MS = 1_000;
+const FIRST_CONNECT_TIMEOUT_MS = 5_000;
 
 /** How many keys one `SCAN` call asks for, in `clear` and `sweep`. */
 const SCAN_COUNT = 1_000;
@@ -104,11 +107,13 @@ export interface RedisDriverOptions extends ConnectionInput {
   cluster?: boolean;
   /**
    * How long the first connect may take, in ms, before it fails naming the
-   * server. Defaults to `1000`; `0` removes the bound. Within it Bun still
+   * server. Defaults to `5000`; `0` removes the bound. Within it Bun still
    * retries a refusal, so a server a moment late is reached. Without it, a
    * refused port takes Bun's whole retry budget (31 s, measured) to fail.
-   * Not applied to a supplied `client`. After bun-jobs' Redis driver option
-   * of the same name.
+   * Leave room for a distant server: a TLS connect is three round trips
+   * (about 1 s to a managed Redis in another region, measured). Not applied
+   * to a supplied `client`. After bun-jobs' Redis driver option of the same
+   * name.
    */
   firstConnectTimeout?: number;
   /** Bun's `connectionTimeout` (ms per connection attempt; a timed-out attempt is not retried), passed through. Bun's default (10 s) when absent. Ignored with `client`. */

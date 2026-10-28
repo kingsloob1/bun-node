@@ -1,0 +1,35 @@
+  get miss: 1 [GET]
+  set new, no tags: 5 [EVALSHA GET UNLINK SET PEXPIREAT]
+  get hit: 1 [GET]
+  set overwrite, 2 tags (old had none): 8 [EVALSHA GET UNLINK UNLINK SET PEXPIREAT SADD SADD]
+  set overwrite, 2 tags, fenced load (2 tags): 12 [EVALSHA GET GET GET SREM SREM UNLINK UNLINK SET PEXPIREAT SADD SADD]
+  getMany 3 keys: 3 [GET GET GET]
+  touch: 4 [EVALSHA GET SET PEXPIREAT]
+  increment new: 6 [EVALSHA HMGET GET UNLINK HSET PEXPIREAT]
+  increment existing: 3 [EVALSHA HMGET HINCRBY]
+  getCounter: 1 [HMGET]
+  acquireLock: 3 [EVALSHA GET SET]
+  releaseLock: 3 [EVALSHA GET DEL]
+  deleteByTags 1 tag, 1 member (2 tags): 8 [EVALSHA SET SMEMBERS GET SREM SREM UNLINK UNLINK]
+  getStamps 2 tags: 6 [MGET EVALSHA GET UNLINK SET PEXPIREAT]
+  delete 1 entry + 1 absent: 6 [EVALSHA GET UNLINK UNLINK GET UNLINK]
+  publish: 1 [PUBLISH]
+total 114
+GET 25
+UNLINK 20
+EVALSHA 18
+SET 11
+PEXPIREAT 7
+SCAN 5
+HMGET 4
+SADD 4
+SREM 4
+HELLO 3
+SELECT 3
+HSET 2
+DEL 2
+SMEMBERS 2
+INFO 1
+HINCRBY 1
+MGET 1
+PUBLISH 1

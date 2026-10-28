@@ -21,6 +21,7 @@ build, typecheck or lint it ([`../../README.md`](../../README.md) explains why).
 | `codec-crossprocess.ts` | Whether a `bun:jsc` `serialize` buffer of a Blob, a File, a Date and a Map decodes in a second process (a same-process round trip cannot tell copied bytes from a handle) | `bun codec-crossprocess.ts` |
 | `typed-slot/` | Whether a cache middleware typed `RouterHandler & { readonly __shape?: never }` turns misplacement between `validate()` and the handler into a type error, against a plain `RouterHandler` | `cd typed-slot && bunx tsc -p .` |
 | `keyv-compat/` | A recording Keyv store under cache-manager 7.2.9 with Keyv 5.6.0 and with Keyv 6.1.0: what the store receives (envelope, TTL, namespace, `clear`), and whether `wrap()` and `ttl()` work | `cd keyv-compat/v5 && bun install && cp ../probe.ts . && bun probe.ts` (same for `v6`) |
+| `upstash-spike.md`, `upstash-spike/` | Whether `redisDriver` works on Upstash over `rediss://` (2026-10-28): latency, which commands exist, expiry exactness, a bus gap without `CLIENT KILL`, commands per operation (from `MONITOR`), and the first run's failures classified. The URL is a credential and is in no file | `BUN_CACHE_TEST_UPSTASH_REDIS_URL=… bun upstash-spike/probe.ts` (each script says what it measures) |
 | `results-*.txt`, `keyv-compat/results.txt` | The captured output of each script | — |
 
 ## Before running

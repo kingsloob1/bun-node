@@ -1,0 +1,4 @@
+QUIT -> OK
+onconnect fired: 1 after 813 ms; connected=true
+delivered after reconnect: [ "after" ]
+onclose Connection closed
