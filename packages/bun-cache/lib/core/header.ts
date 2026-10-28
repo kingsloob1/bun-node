@@ -42,10 +42,15 @@ export const ENTRY_FLAGS = {
 /** The fixed part's length: magic, format, codec, flags, three f64, one u32. */
 const FIXED_LENGTH = 2 + 1 + 1 + 1 + 8 + 8 + 8 + 4;
 
-/** Thrown by {@link decodeEntry} when the bytes are not a bun-cache entry; the core turns it into a miss plus an `error` event with `phase: "decode"`. */
+/** Thrown by {@link decodeEntry} when the bytes are not a bun-cache entry, and by `decompressBounded` when a payload decodes past the entry limit; the core turns it into a miss plus an `error` event with `phase: "decode"`. */
 export class EntryDecodeError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    /** What is wrong with the bytes. */
+    message: string,
+    /** The standard `cause`: the decompressor's own error, for a payload over the limit. */
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
     this.name = "EntryDecodeError";
   }
 }

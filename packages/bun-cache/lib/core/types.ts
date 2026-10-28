@@ -356,7 +356,7 @@ export interface CacheEventMap {
   "lock-timeout": { key: string; namespace: string };
   /** The driver evicted an entry (the memory driver's LRU and size caps). */
   evict: { key: string; namespace: string; reason: string };
-  /** A `set` encoded above `maxEntryBytes` and was skipped (§3.9). */
+  /** A `set` encoded above `maxEntryBytes`, stored or before compression, and was skipped (§3.9); `bytes` is the larger of the two sizes. */
   oversize: { key: string; namespace: string; bytes: number; limit: number };
   /** Something failed: a driver operation, a decode, a `validate` refusal, a background refresh. */
   error: {
@@ -739,7 +739,7 @@ export interface CreateCacheOptions {
   codec?: "structured" | "json" | "raw" | Codec;
   /** Compress entries whose encoded size passes the threshold (§3.11); `false` disables. Defaults to zstd above 16 KiB. */
   compress?: false | CompressOptions;
-  /** The encoded size cap per entry, in bytes; defaults to 4 MiB, capped by the driver's own limit. Oversize writes resolve `false` with an `oversize` event. */
+  /** The size cap per entry, in bytes; defaults to 4 MiB, capped by the driver's own limit. It holds both the stored entry and its payload before compression: oversize writes resolve `false` with an `oversize` event, and a read decompresses no further (a stored entry that would is a miss, with an `error` event of phase `"decode"`). */
   maxEntryBytes?: number;
   /** Keys longer than this many bytes are stored as `#` + their SHA-256 (§3.7). Defaults to 200. */
   maxKeyLength?: number;

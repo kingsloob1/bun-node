@@ -1173,6 +1173,13 @@ built, and where it departs from or adds to §9.4:
   MongoDB replica-set bus cases (`__tests__/drivers/mongodb.test.ts`) timed
   out in 2 of 6 full runs and 1 of 3 runs of that file alone (load 7–16).
 
+**The decompression cap (the encryption plan's Q18; the user's decision
+2026-10-28, a separate PR)**: a read decompresses no further than the entry
+limit (node:zlib's `maxOutputLength`; Bun's decoders take none), so a planted
+bomb is a miss plus an `error` event of phase `"decode"` and is deleted, as
+any undecodable entry; writes hold the payload before compression to the
+same limit (`lib/core/decompress.ts`, `decompress.test.ts`).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

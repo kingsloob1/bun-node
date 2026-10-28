@@ -23,6 +23,7 @@ import {
   UnsupportedOperationError,
 } from "./errors";
 import { BusLink, driverBus } from "./bus";
+import { decompressBounded } from "./decompress";
 import { CacheEvents } from "./events";
 import type { Flight } from "./flight";
 import { FlightMap } from "./flight";
@@ -438,21 +439,28 @@ class CacheImpl<
   /* encode / decode                                                   */
   /* ---------------------------------------------------------------- */
 
-  /** Encodes a value into the payload bytes and the header's codec/flags fields. */
+  /** Encodes a value into the payload bytes, the header's codec/flags fields, and the payload's size before compression (`decodedBytes`, which a read decompresses back to). */
   #encodeValue(
     value: unknown,
     negative: boolean,
-  ): { codecId: number; flags: number; payload: Uint8Array } {
+  ): {
+    codecId: number;
+    flags: number;
+    payload: Uint8Array;
+    decodedBytes: number;
+  } {
     const state = this.#state;
     if (negative) {
       return {
         codecId: state.codec.id,
         flags: ENTRY_FLAGS.negative,
         payload: new Uint8Array(0),
+        decodedBytes: 0,
       };
     }
     let flags = 0;
     let payload = state.codec.encode(value);
+    const decodedBytes = payload.byteLength;
     if (state.codec.id === CODEC_IDS.raw && typeof value === "string") {
       flags |= ENTRY_FLAGS.rawString;
     }
@@ -481,10 +489,19 @@ class CacheImpl<
           compress.algorithm === "gzip" ? ENTRY_FLAGS.gzip : ENTRY_FLAGS.zstd;
       }
     }
-    return { codecId: state.codec.id, flags, payload };
+    return { codecId: state.codec.id, flags, payload, decodedBytes };
   }
 
-  /** Decodes a stored entry's bytes. Throws (→ a miss with an `error` event) on any corruption, a key mismatch, or an unknown codec. */
+  /** The per-entry byte limit: `maxEntryBytes` (default 4 MiB), capped by the driver's own. Writes hold the stored entry and its uncompressed payload to it; reads decompress no further. */
+  #entryLimit(): number {
+    const state = this.#state;
+    return Math.min(
+      state.options.maxEntryBytes ?? DEFAULTS.maxEntryBytes,
+      state.driver.capabilities.maxEntryBytes ?? Number.POSITIVE_INFINITY,
+    );
+  }
+
+  /** Decodes a stored entry's bytes. Throws (→ a miss with an `error` event) on any corruption, a key mismatch, an unknown codec, or a payload that decompresses past the entry limit. */
   #decodeValue(bytes: Uint8Array, key: string): Decoded {
     const { header, payload: rawPayload } = decodeEntry(bytes);
     if (header.key !== key) {
@@ -494,12 +511,14 @@ class CacheImpl<
         "the stored entry's key does not match (a long-key hash collision)",
       );
     }
-    let payload = rawPayload;
-    if ((header.flags & ENTRY_FLAGS.zstd) !== 0) {
-      payload = Bun.zstdDecompressSync(payload.slice());
-    } else if ((header.flags & ENTRY_FLAGS.gzip) !== 0) {
-      payload = Bun.gunzipSync(payload.slice());
-    }
+    // Never past the entry limit: a planted bomb is refused, not materialised
+    // (Q18). What this cache writes always fits (`#write` holds the
+    // uncompressed payload to the same limit).
+    const payload = decompressBounded(
+      header.flags,
+      rawPayload,
+      this.#entryLimit(),
+    );
     if ((header.flags & ENTRY_FLAGS.negative) !== 0) {
       return { value: undefined, negative: true, header, size: 0 };
     }
@@ -803,7 +822,10 @@ class CacheImpl<
   ): Promise<boolean> {
     const state = this.#state;
     const now = state.now();
-    const { codecId, flags, payload } = this.#encodeValue(value, init.negative);
+    const { codecId, flags, payload, decodedBytes } = this.#encodeValue(
+      value,
+      init.negative,
+    );
     const freshUntil = init.ttl === null ? NO_FRESH_UNTIL : now + init.ttl;
     const expiresAt =
       init.ttl === null
@@ -821,16 +843,17 @@ class CacheImpl<
       },
       payload,
     );
-    const limit = Math.min(
-      state.options.maxEntryBytes ?? DEFAULTS.maxEntryBytes,
-      state.driver.capabilities.maxEntryBytes ?? Number.POSITIVE_INFINITY,
-    );
-    if (bytes.byteLength > limit) {
-      const error = new EntryTooLargeError(key, bytes.byteLength, limit);
+    // The stored entry and the payload it decompresses to are both held to
+    // the limit, since a read decompresses no further (`#decodeValue`): a
+    // value that compresses under it but decodes past it is never written.
+    const limit = this.#entryLimit();
+    const size = Math.max(bytes.byteLength, decodedBytes);
+    if (size > limit) {
+      const error = new EntryTooLargeError(key, size, limit);
       this.#emit("oversize", {
         key,
         namespace: this.#ns,
-        bytes: bytes.byteLength,
+        bytes: size,
         limit,
       });
       if (state.options.strict === true) {
