@@ -26,6 +26,7 @@
         "Codec",
         "CacheEventMap",
         "CacheEvent",
+        "CacheFencedReason",
         "CacheStats",
         "CacheSchemaFrom",
         "CacheEntry",

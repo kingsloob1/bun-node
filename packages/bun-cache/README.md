@@ -99,9 +99,14 @@ window) with `stale: true`.
 `getOrSet` is single-flight in process, always: 1000 concurrent misses run the
 loader once, and every caller awaits the same promise. A loader that throws
 rejects every waiter with the one error and is never cached; the next call
-runs the loader again. A `delete`, `invalidateTags` or `clear` landing
+runs the loader again. A `delete`, `deleteMany`, `invalidateTags`, `clear`
+or `increment` on the same cache, in the load's own namespace, landing
 mid-flight forgets the flight: later callers load afresh, and the forgotten
-load's write is dropped (or refused by the tag fence, below).
+load's write is dropped, its caller still getting the value. The drop is
+reported like the tag fence's (below): a `fenced` event with
+`reason: "local"`, carrying the load's own tags (empty when it had none), and
+one more in `stats().fenced`. A background refresh that is forgotten reports
+the same, in place of its `refresh` event.
 
 - **Cancellation is collective.** `getOrSet(key, loader, { signal })` rejects
   the caller that aborted; the loader's own `signal` aborts only when *every*
@@ -150,9 +155,14 @@ How invalidation works depends on the driver (§3.6 of the plan):
 
 - **`tags: "index"`** (the memory driver): entries are deleted eagerly, and a
   write whose loader started *before* the invalidation is refused by the
-  **fence** — the `fenced` event fires, and the loader's caller still gets its
-  value. A stamp at the entry's own millisecond counts as newer: Date.now()
-  cannot order two events within one ms, so the safe side wins.
+  **fence** — the `fenced` event fires with `reason: "fence"`, and the
+  loader's caller still gets its value. The fence is what catches an
+  invalidation from another cache on the same driver (another process, in
+  production); one on the same cache has already forgotten the flight, so its
+  drop reports `reason: "local"` instead (above). Either way `tags` is the
+  dropped entry's own, and `stats().fenced` counts it. A stamp at the entry's
+  own millisecond counts as newer: Date.now() cannot order two events within
+  one ms, so the safe side wins.
 - **`tags: "stamps"`** (custom drivers via `fromSimpleDriver`, the file and
   S3 drivers later): `invalidateTags` writes only a stamp per tag, and a read
   of a tagged entry compares its age against the stamps — an entry older than
@@ -256,17 +266,18 @@ because it costs a schema run per hit.
 
 ## Events, statistics, logging
 
-`cache.on(event, listener)` — `hit`, `stale-hit`, `miss`, `set`, `fenced`,
-`delete`, `invalidate`, `load` (with its duration and a `shared` flag),
-`refresh`, `stale-if-error`, `lock-wait`, `lock-timeout`, `evict`, `oversize`,
-`error` (with `phase` and `driver`), `circuit-open` and `circuit-close`.
-Listeners are synchronous and isolated: a throwing one is logged and never
-breaks the operation. `on` returns an unsubscribe function.
+`cache.on(event, listener)` — `hit`, `stale-hit`, `miss`, `set`, `fenced`
+(with a `reason`, `"fence"` or `"local"`), `delete`, `invalidate`, `load`
+(with its duration and a `shared` flag), `refresh`, `stale-if-error`,
+`lock-wait`, `lock-timeout`, `evict`, `oversize`, `error` (with `phase` and
+`driver`), `circuit-open` and `circuit-close`. Listeners are synchronous and
+isolated: a throwing one is logged and never breaks the operation. `on`
+returns an unsubscribe function.
 
-`cache.stats()` counts `hits`, `staleHits`, `misses`, `sets`, `deletes`,
-`loads`, `loadErrors`, `lockWaits`, `evictions`, `bytesRead`, `bytesWritten`,
-plus `hitRate` and load-duration percentiles over a rolling 60 s window.
-`stats({ reset: true })` reads and zeroes them.
+`cache.stats()` counts `hits`, `staleHits`, `misses`, `sets`, `fenced`,
+`deletes`, `loads`, `loadErrors`, `lockWaits`, `evictions`, `bytesRead`,
+`bytesWritten`, plus `hitRate` and load-duration percentiles over a rolling
+60 s window. `stats({ reset: true })` reads and zeroes them.
 
 `logger` accepts any `LoggerLike` (bun-common's `resolveLogger`): a Logger, a
 sink, or a pino/winston/Nest-shaped logger. The default is a no-op.

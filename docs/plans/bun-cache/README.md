@@ -164,8 +164,7 @@ rounds; 1000+1000 two-process increments exact in 10 of 10 runs (a
 timestamp-barrier stress, where the mutant was inexact 6 of 6); the file
 driver unchanged under the new kit, 8 of 8 runs clean.
 
-**PR-H0 built 2026-10-28** (branch `feat/bun-common-h0-cache-control`, off
-develop `4ec90b1e`, awaiting the maintainer's commit), in bun-common:
+**PR-H0 merged 2026-10-28, #548**, in bun-common:
 
 - **`res.addResponseTransform(t, { first: true })`** puts the transform at
   the front of the list (§9.7); several `first` transforms run newest first.
@@ -250,6 +249,23 @@ develop `4ec90b1e`, awaiting the maintainer's commit), in bun-common:
   (1 fail), the types unconstrained (10 unused `@ts-expect-error`s), the
   run-time contradiction checks removed (8 fail), the `headersSent` guard
   removed (1 fail), unknown keys accepted (1 fail).
+
+**Local fence reported, built 2026-10-28** (branch
+`fix/bun-cache-local-fenced`, the user's decision of 2026-10-28). A
+`delete`, `deleteMany`, `clear`, `invalidateTags` or `increment` on the same
+cache, in the load's own namespace, that lands mid-load forgets the flight, and
+the core drops its write before the driver (§3.4); until now that drop was
+silent — no event, no stat — and only an invalidation from another cache
+reached the driver's fence and emitted `fenced`. Now both are reported: the
+`fenced` payload gains `reason: "fence" | "local"` (type `CacheFencedReason`),
+`tags` is the dropped entry's own in both (empty for an untagged load, which
+is still reported: the flight check is the core's fence for what the
+driver's cannot see), and `CacheStats` gains `fenced`, counting both.
+Background refreshes (SWR, `refreshAhead`, early expiry) report the same, in
+place of their `refresh` event. Which writes are dropped is unchanged; a
+lock-timeout self-load (§3.4, never stored by design) is not reported. The
+new names (`reason`, `CacheFencedReason`, the `fenced` stat) were approved
+by the user the same day (§21).
 
 ### Contents
 
@@ -598,6 +614,9 @@ value = header + payload
   `clear` that lands while a load is running **forgets** that key's flight.
   Callers arriving afterwards start a new load instead of joining one whose
   result is already stale, and the old flight's write is fenced or dropped.
+  A dropped write is reported like a fenced one: the `fenced` event with
+  `reason: "local"` (the driver's fence reports `"fence"`), and the `fenced`
+  stat (Status, "Local fence reported").
 - **A flight deletes only itself.** Its map entry is removed only if it is
   still the flight's own entry.
 - **Cancellation.** `getOrSet(key, loader, { signal })`: the loader receives
@@ -669,7 +688,8 @@ longest TTL, capped at 24 h). What else happens depends on the driver's
 
 **The fence.** A `set` with tags whose `createdAt` (when its loader started)
 is before any of its tags' stamps is **refused**. The refusal is reported as
-the `fenced` event, and the loader's value is still returned to the caller.
+the `fenced` event (`reason: "fence"`), and the loader's value is still
+returned to the caller.
 Without the fence, this interleaving resurrects data that was just
 invalidated:
 
@@ -800,7 +820,7 @@ The L1 tier never compresses (§4). The per-backend limits that bound
 - **Listeners.** Synchronous and isolated: a throwing listener is logged and
   never breaks the operation.
 - **`stats()`.** Counts per tier: `hits`, `staleHits`, `misses`, `sets`,
-  `deletes`, `loads`, `loadErrors`, `lockWaits`, `evictions`, `bytesRead`,
+  `fenced`, `deletes`, `loads`, `loadErrors`, `lockWaits`, `evictions`, `bytesRead`,
   `bytesWritten`. Plus `hitRate`, and load-duration percentiles over a
   rolling 60 s window. `stats({ reset: true })` reads and zeroes them.
 - **Logging.** `logger: LoggerLike`, resolved once with `resolveLogger`
@@ -2569,6 +2589,7 @@ Every new public name.
 | `tags: "index" \| "stamps"`, `fence`, `bus`, `ttl: "native" \| "sweep"`, `atomicIncrement`, `lock`, `multiProcess` | capability fields | `CacheDriverCapabilities` | — |
 | `CacheDriverError`, `CircuitOpenError`, `LoaderTimeoutError`, `UnsupportedOperationError`, `EntryTooLargeError`, `CacheNotReadyError` | error classes | root, bun-nest | `EntryTooLargeError` is thrown only under `strict` |
 | events: `hit`, `stale-hit`, `miss`, `set`, `fenced`, `delete`, `invalidate`, `load`, `refresh`, `stale-if-error`, `lock-wait`, `lock-timeout`, `evict`, `oversize`, `uncacheable`, `error`, `circuit-open`, `circuit-close`, `member-down`, `member-up`, `member-dirty` | event names | `Cache.on` | — |
+| `reason: "fence" \| "local"`, `CacheFencedReason`; `fenced` | event field, type; stat | the `fenced` payload; `CacheStats` | *approved by the user 2026-10-28 (Local fence reported)*: `reason` after `evict`'s field of that name |
 | `runCacheDriverConformance`, `faulty`, `fakeClock` | functions | `./testing` | after `runProviderConformance` |
 | `cacheResponse`, `coalesceRequests`, `addCacheTags` | functions | `./http` | not `cache()`: too generic beside the router's route-match cache (`getCacheKey`, `clearRouteCache`) |
 | `varyBy`, `query`, `host`, `bypass`, `statusHeader`, `honorRequest`, `allowSetCookie`, `statuses`, `omitHeaders`, `invalidateOnUnsafe`, `streams`, `revalidate`, `coalesce`, `uncacheableTtl`, `etag` | options | `cacheResponse` | — |
