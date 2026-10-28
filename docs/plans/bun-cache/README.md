@@ -698,7 +698,7 @@ commands on) and `--print-env` names it `BUN_CACHE_TEST_MONGODB_RS_URL`, so
 `mongodb.test.ts` runs its whole suite there too and the change-stream bus,
 resume and gap are tested routinely rather than on a temporary container.
 
-**PR-C6 built 2026-10-28** (branch `feat/bun-cache-c6-mongodb`):
+**PR-C6 merged 2026-10-28, #556**:
 `mongoDriver` (§7.6), `lib/drivers/mongo.ts`, root-exported with the types
 `MongoDriverOptions`, `MongoCacheCollection` and `MongoClientLike`.
 `mongodb` is an **optional peer** (`>=6`) and a devDependency (`^6`),
@@ -789,6 +789,42 @@ on, removed afterwards). What it does, and where it departs from §7.6:
   (MongoDB creates the database on first write: nothing to create); the
   suite falls back to `BUN_JOBS_TEST_MONGODB_URL`, uses collections
   `bun_cache_test_<pid>_…` and drops exactly those.
+
+**Upstash spike, 2026-10-28** (branch `spike/upstash-redis`; evidence
+[`evidence/upstash-spike.md`](evidence/upstash-spike.md)): **`redisDriver`
+over `rediss://…upstash.io` works.** With no change to the driver's commands,
+the kit and every Redis test pass against a free-tier Upstash database in
+`us-east-1` from Lagos: 39 pass, 3 skip, 0 fail in 112.8 s, about 2,390
+billed commands (counted with `MONITOR`). Every command the driver sends
+exists there; `CLIENT KILL` does not, and only the test harness used it.
+Measured: a round trip ~300 ms (50 pipelined commands in 330 ms), a TLS
+connect 549–1004 ms, `PEXPIRETIME` a few ms off the `PEXPIREAT` sent
+(-35 to +22; `PXAT` the same, so not a fix; the frame's exact `expiresAt`
+makes it harmless), a write on one connection read on another at once 60 of
+60 times, and a gap forced by `QUIT` on the subscriber reconnected and
+reported. The coordinator's first run (13 fails, 2 errors) was the harness:
+5 s timeouts against 15–60 sequential round trips, the kit's `touch` entry
+expiring in 100 ms before the touch arrived, a 60 ms counter TTL, exact
+`PEXPIRETIME` assertions, `CLIENT KILL`, and two errors from the kit's
+cleanup closing the driver under a timed-out test. Changes: **the
+`firstConnectTimeout` default 1 s → 5 s** (it refused a healthy Upstash
+connect about as often as not; a 550 ms-each-way relay test fails at 1 s);
+the kit's `touch` entry expires in 60 s; the Redis tests are a lane-driven
+`redisSuite.ts`, with `redis.test.ts` (local, unchanged values) and an
+opt-in `upstash.test.ts` on `BUN_CACHE_TEST_UPSTASH_REDIS_URL` (120 s test
+timeout, 3 s short TTLs, 100 ms expiry tolerance, 20 race rounds, the bus
+gap by `QUIT`); README "Upstash and other managed Redis" (latency, the
+per-operation command cost, optimistic-volatile eviction reaching tag sets,
+the 10 MB request limit, the global script lock). **The user's decisions (2026-10-28):**
+- **PR-C9 (`upstashDriver` over REST) is deferred.** Its only audience is a
+  Bun process with HTTPS-only egress, and the edge runtimes the REST API
+  serves cannot run bun-cache. Upstash is `redisDriver` with its `rediss://`
+  URL; the REST driver is built only if someone needs HTTPS-only egress.
+- **`firstConnectTimeout` defaults to 5 s**, and bun-jobs' Redis driver gets
+  the same fix in a follow-up PR.
+- **An opt-in Upstash `allow-key-locking` mode is to be built now**, in its
+  own PR: the scripts already keep their keys in one namespace's hash tag,
+  so Upstash can lock just that namespace instead of the whole database.
 
 ### Contents
 

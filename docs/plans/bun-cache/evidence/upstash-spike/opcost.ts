@@ -1,0 +1,36 @@
+// One of each driver operation, separated by ECHO markers, so MONITOR's stream can be split per op.
+import { RedisClient } from "bun";
+import { RedisCacheDriver } from "../../../../../packages/bun-cache/lib/drivers/redis";
+import { deleteRedisPrefix } from "../../../../../packages/bun-cache/__tests__/drivers/backends";
+const url = process.env.BUN_CACHE_TEST_UPSTASH_REDIS_URL ?? process.env.REDIS_PROBE_URL!;
+const prefix = `bun-cache-probe:${process.pid}-opcost`;
+const d = new RedisCacheDriver({ url, prefix });
+const marker = new RedisClient(url);
+await marker.connect();
+await d.connect();
+const mark = async (name: string) => { await marker.send("ECHO", [`@@${name}`]); };
+const e = (key: string, tags: string[] = [], exp: number | null = Date.now() + 60_000) => ({ key, value: new Uint8Array([1, 2, 3]), expiresAt: exp, tags });
+await d.set("ns", e("warm")); // load scripts (EVAL after NOSCRIPT) before measuring
+await d.increment("ns", "warmc", 1, null); await d.touch("ns", "warm", null); await d.delete("ns", ["warm", "warmc"]);
+await d.acquireLock("ns", "wl", "o", 1000); await d.releaseLock("ns", "wl", "o"); await d.deleteByTags("ns", ["warm"], Date.now() + 1000);
+await mark("get miss"); await d.get("ns", "k");
+await mark("set new, no tags"); await d.set("ns", e("k"));
+await mark("get hit"); await d.get("ns", "k");
+await mark("set overwrite, 2 tags (old had none)"); await d.set("ns", e("k", ["a", "b"]));
+await mark("set overwrite, 2 tags, fenced load (2 tags)"); await d.set("ns", e("k", ["a", "b"]), { tags: ["a", "b"], createdAt: Date.now() });
+await mark("getMany 3 keys"); await d.getMany("ns", ["k", "x", "y"]);
+await mark("touch"); await d.touch("ns", "k", Date.now() + 120_000);
+await mark("increment new"); await d.increment("ns", "c", 1, Date.now() + 60_000);
+await mark("increment existing"); await d.increment("ns", "c", 1, null);
+await mark("getCounter"); await d.getCounter("ns", "c");
+await mark("acquireLock"); await d.acquireLock("ns", "l", "me", 30_000);
+await mark("releaseLock"); await d.releaseLock("ns", "l", "me");
+await mark("deleteByTags 1 tag, 1 member (2 tags)"); await d.deleteByTags("ns", ["a"], Date.now() + 60_000);
+await mark("getStamps 2 tags"); await d.getStamps("ns", ["a", "b"]);
+await d.set("ns", e("k2"));
+await mark("delete 1 entry + 1 absent"); await d.delete("ns", ["k2", "nope"]);
+await mark("publish"); await d.publish({ type: "delete", namespace: "ns", keys: ["k"], at: Date.now() });
+await mark("end");
+await d.close();
+await deleteRedisPrefix(url, prefix);
+marker.close();

@@ -971,9 +971,11 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
 - **Connections**: a `url`, `connection` fields (`host`, `port`, `user`,
   `password`, `database`, `tls`), or an existing `client` (never closed by
   the driver; its options are its own). The first connect of a client the
-  driver builds is bounded by `firstConnectTimeout` (1 s; `0` for none):
+  driver builds is bounded by `firstConnectTimeout` (5 s; `0` for none):
   without it, Bun retries a refused connection for about 31 s before an
-  operation fails. `connectionTimeout`, `maxRetries` and `autoReconnect` are
+  operation fails. A TLS connect to a Redis in another region takes most of
+  a second (measured to Upstash: 549–1004 ms), which is why the bound is not
+  tighter. `connectionTimeout`, `maxRetries` and `autoReconnect` are
   Bun's own, passed through. After a drop, Bun reconnects; once it gives up,
   the next operation starts again.
 - **Redis Cluster is not supported yet**: Bun's `RedisClient` does not
@@ -1085,6 +1087,64 @@ it on connect, as on the SQL drivers.
   scripts/setup-databases.ts` starts the replica set as a docker container
   on 27018 and `--print-env` prints both URLs. An unset variable skips its
   suite visibly; one set but unreachable fails.
+
+### Upstash and other managed Redis
+
+`redisDriver({ url: "rediss://default:<password>@<name>.upstash.io:6379" })`
+works on [Upstash](https://upstash.com) over its Redis protocol endpoint:
+the conformance kit and every Redis test pass against it (measured
+2026-10-28, `docs/plans/bun-cache/evidence/upstash-spike.md`). What differs
+from a Redis next to the app:
+
+- **Every command is a round trip** to the database's region (about 300 ms
+  from West Africa to `us-east-1`; Upstash quotes under 1 ms in the same
+  region). Put the app in the database's region, and use an `l1` for hot
+  keys. Concurrent operations share one connection, pipelined (50 `GET`s in
+  330 ms).
+- **It bills per command**, a Lua script as one plus every `redis.call`
+  inside it. What each operation costs, counted with `MONITOR`:
+
+  | Operation | Commands |
+  |---|---|
+  | `get`, a hit or a miss; `getCounter`; `getStamps` (one `MGET`) | 1 |
+  | `getMany` | 1 per key |
+  | `set`, a new key, no tags | 5 |
+  | `set`, each tag | +1 |
+  | `set` replacing an entry | +1, and +1 per old tag |
+  | `set` with the fence | +1 per fenced tag |
+  | `touch` | 4 |
+  | `increment` (an existing counter / a new one) | 3 / 6 |
+  | `acquireLock`, `releaseLock` | 3 each |
+  | `delete` | 1, plus 2 per absent key, 3 per entry, and 1 per tag it carried |
+  | `deleteByTags` | 1, plus 3 per tag, plus 2 per member and 1 per tag it carried |
+  | `publish` (the bus) | 1 |
+
+  `clear` and `sweep` walk the whole database with `SCAN`, 1,000 keys a
+  call.
+- **Eviction is off by default** there, and writes fail at the plan's size
+  limit. Turned on, Upstash evicts keys with a TTL first, then any key —
+  tag sets and stamps included — so under memory pressure an invalidation
+  can miss entries whose tag set was evicted (as with `allkeys-*` above).
+- **Requests are at most 10 MB** on the free and pay-as-you-go plans: keep
+  `maxEntryBytes` (4 MiB by default) under it.
+- **No `CLIENT KILL`**: the driver never sends it. Replication across
+  Upstash's replicas is asynchronous, and consistency is causal per
+  connection only; the fence is unaffected (it runs in a script, on the
+  primary), and a write on one connection was read back on another at once
+  30 times in 30.
+- **Scripts take Upstash's global lock** (no other command runs meanwhile),
+  and a key a script names outside `KEYS` that has gone cold to disk is
+  loaded with that lock held. The driver's scripts name one key of their
+  namespace's hash tag; Upstash's `allow-key-locking` flag would lock only
+  that tag, but plain Redis refuses the flag, so the driver does not set it.
+
+**Testing against it.** This package's Upstash lane
+(`__tests__/drivers/upstash.test.ts`) runs the kit and the Redis tests
+against the database `BUN_CACHE_TEST_UPSTASH_REDIS_URL` names, and skips,
+visibly, when it is unset. The URL holds the database's password: export it
+for one run, never commit it. One run takes about two minutes and some
+2,400 billed commands (of the free plan's 500,000 a month), and deletes the
+keys it wrote.
 
 ## HTTP response caching
 

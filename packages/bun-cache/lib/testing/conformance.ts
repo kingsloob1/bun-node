@@ -471,9 +471,12 @@ export async function runCacheDriverConformance(
       async () => {
         const namespace = ns();
         expect(await driver.touch!(namespace, "missing", null)).toBe(false);
+        // An expiry far enough off to outlive the round trips before the
+        // touch: at 100 ms, a remote server (Upstash, ~300 ms a round trip)
+        // had expired the entry by then, and the touch rightly missed it.
         await driver.set(
           namespace,
-          entry("k", 5, { expiresAt: Date.now() + 100 }),
+          entry("k", 5, { expiresAt: Date.now() + 60_000 }),
         );
         expect(await driver.touch!(namespace, "k", null)).toBe(true);
         expect((await driver.get(namespace, "k"))?.expiresAt).toBeNull();

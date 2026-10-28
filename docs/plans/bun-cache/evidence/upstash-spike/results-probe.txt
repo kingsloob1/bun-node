@@ -1,0 +1,59 @@
+upstash connect ms 1004.7
+latency PING: p50 296.3 ms, min 295.8, max 345.7 (n=20)
+latency GET: p50 296.0 ms, min 295.5, max 320.3 (n=20)
+latency SET: p50 305.9 ms, min 296.4, max 358.3 (n=20)
+ok   SCRIPT LOAD: string "e0e1f9fabfc9d4800c877a703b823ac0578ff8db"
+latency EVALSHA: p50 296.9 ms, min 296.1, max 582.1 (n=20)
+latency 50 pipelined GETs: 330.0 ms total
+--- availability
+ok   TIME: object [ "1793203694", "853388" ]
+ok   INFO cluster: string "# Cluster\r\ncluster_enabled:0\r\nlocal_member:us-east-1-r208\r\nprimary_member:us-east-1-r204\r\nprimary_candidates:us-east-1-r"
+ok   INFO server (version line): string "upstash_version:1.19.4 | redis_version:8.4.0 | redis_mode:standalone"
+ok   CLIENT SETNAME: string "OK"
+ok   CLIENT GETNAME: string "probe-name"
+ok   CLIENT ID: number 20
+ok   CLIENT LIST: string "id=20 addr=<redacted> laddr=<redacted> db=0 name=probe-name lib-name= lib-ver=\n"
+ok   CLIENT LIST TYPE pubsub: string "id=20 addr=<redacted> laddr=<redacted> db=0 name=probe-name lib-name= lib-ver=\n"
+FAIL CLIENT KILL ID 999999: ERR Command is not available: 'CLIENT KILL'. See https://upstash.com/docs/redis/overall/rediscompatibility for details
+ok   SCRIPT FLUSH: object [ 1 ]
+ok   UNLINK: number 0
+ok   SCAN MATCH: object [ "0", [ "bun-cache-probe:549562-mvsb5xm8:{p}:a" ] ]
+ok   MSET: string "OK"
+ok   MGET: object [ "1", "2", null ]
+ok   HSET: number 3
+ok   HMGET: object [ "1", "-", "5" ]
+ok   HINCRBY: number 5
+ok   PERSIST: number 0
+ok   EXISTS: boolean true
+ok   PTTL: number -1
+ok   getBuffer: object <Buffer 31>
+ok   set bytes + getBuffer exact: boolean true
+ok   Lua cjson: string "[1,2]"
+ok   Lua redis.pcall err table: string "table"
+ok   Lua UNLINK: number 1
+ok   Lua tonumber return: number 7
+ok   Lua HINCRBY return: number 7
+ok   Lua string.match/find: string "[\"a\"]"
+ok   Lua bytes arg: boolean true
+ok   Lua keys not declared (base .. 'e:' .. key): string "v"
+--- expiry exactness (PEXPIRETIME - requested, ms)
+SET+PEXPIREAT: -16, -17, -16, 11, -35, -16, -16, -16
+SET PXAT: -12, -13, -12, -12, -12, -13, -13, -13
+Lua SET + PEXPIREAT: -12, -13, -13, -13, -13, -13, -13, -13
+Lua SET PXAT: -13, -12, -13, -13, -13, -12, -13, -12
+   in-script PEXPIRETIME - at = -12
+   in-script PEXPIRETIME - at = -13
+   in-script PEXPIRETIME - at = -13
+   in-script PEXPIRETIME - at = -13
+   in-script PEXPIRETIME - at = -12
+   in-script PEXPIRETIME - at = -12
+   in-script PEXPIRETIME - at = -12
+   in-script PEXPIRETIME - at = -12
+Lua SET + PEXPIREAT, PEXPIRETIME in Lua: -12, -13, -13, -13, -12, -12, -12, -12
+server TIME - local midpoint: -66.8 ms (rtt 410 ms)
+100 ms entry readable after set: false (now - at = 723 ms)
+--- pub/sub
+ok   sub CLIENT SETNAME: string "OK"
+publish → message: 301.4 ms
+ok   CLIENT LIST TYPE pubsub (with a subscriber): string "id=20 addr=<redacted> laddr=<redacted> db=0 name=probe-name lib-name= lib-ver=\nid=21 addr=<redacted>"
+deleted 46 keys

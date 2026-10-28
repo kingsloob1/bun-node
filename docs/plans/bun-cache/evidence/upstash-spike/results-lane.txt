@@ -1,0 +1,82 @@
+# The Upstash lane, final run (2026-10-28), redacted
+bun test v1.4.4-canary.1 (a0cc096ce)
+
+ 39 pass
+ 3 skip
+ 0 fail
+ 213 expect() calls
+Ran 42 tests across 1 file. [112.80s]
+test exit 0
+
+# Commands counted by MONITOR during the run
+total 2446
+EVALSHA 698
+HMGET 426
+HINCRBY 401
+GET 365
+UNLINK 162
+SET 104
+SADD 50
+SMEMBERS 43
+HELLO 39
+SREM 27
+SCAN 22
+PEXPIREAT 18
+INFO 17
+HSET 14
+EXISTS 13
+SUBSCRIBE 7
+PUBLISH 7
+UNSUBSCRIBE 6
+MGET 4
+DEL 4
+MSET 4
+PTTL 4
+PEXPIRETIME 3
+SCARD 3
+EVAL 3
+PING 2
+
+# Per-test durations (junit), slowest first
+  11.81s  two processes contending a lock take it exactly once
+   9.45s  any namespace is safe: look-alikes never share keys, and one that spells the key structure (`}:t:`) cannot mislead the sweep
+   9.45s  the fence holds under a concurrent invalidation: a pre-invalidation write never survives it
+   6.51s  counters: below zero, replacing an entry, replaced by a set, restarting once expired
+   4.83s  round-trips bytes of every size
+   4.62s  a cache over the driver: getOrSet, tags, counters, and an L1 kept coherent by the driver's bus
+   4.28s  the key layout: a frame per entry with native expiry, a set per tag, a hash per counter, stamps and tag sets without a TTL
+   3.95s  sweep prunes tag sets of entries gone underneath (expired, evicted) and lapsed stamps, and keeps live ones
+   3.92s  the bus is redisBus's: a separate redisBus on the same prefix hears the driver, and the driver hears it
+   3.24s  two processes increment the same counter exactly
+   2.83s  keys are exact: case, spaces, colons and braces make different keys
+   2.82s  touch rewrites an entry's expiry in its frame and on the key, and a counter's
+   2.81s  a prefix with glob characters matches only itself
+   2.58s  an existing client is used and never closed; the bus's duplicate is
+   2.39s  clear takes entries, counters and tag sets; stamps and locks stay
+   2.36s  an expired entry is a miss everywhere, even before Redis reclaims it
+   1.72s  a published message reaches a subscriber; an unsubscribed one does not
+   1.63s  a script the server forgot (NOSCRIPT) is sent again with EVAL
+   1.49s  clear empties its namespace only
+   1.49s  tags: "index" deletes by tag across shared keys
+   1.34s  a stamp written by another process is visible here
+   1.32s  a lock contended by 50 callers is taken exactly once, and lapses
+   1.26s  a gap in the bus is signalled to subscribers
+   1.09s  an overwrite drops the old tags: invalidating one the entry no longer carries leaves it
+   0.86s  touch extends an entry's expiry and reports misses
+   0.86s  a lock re-taken by its owner is refreshed, not refused, and lapses natively
+   0.86s  delete counts what it removed
+   0.85s  the fence refuses a write older than its tag's stamp
+   0.64s  getMany answers in the keys' order, with holes
+   0.64s  a second set replaces the value and the tags
+   0.64s  a counter's expiry is set at creation only
+   0.56s  cluster: true, and a connection to a cluster node, fail naming oven-sh/bun#22947
+   0.42s  an expired entry reads as a miss
+   0.42s  tags: "index" writes a stamp per invalidated tag
+   0.42s  an entry with no expiry survives
+   0.37s  increment is atomic under 200 concurrent callers
+   0.30s  an unreachable server fails the first connect within firstConnectTimeout, naming it
+   0.21s  reads an unknown key as undefined
+   0.00s  options are checked before anything connects
+   0.00s  tags: "stamps" round-trips stamps and leaves entries to the core's read check — skipped: not advertised in capabilities
+   0.00s  sweep reclaims expired entries and keeps live ones — skipped: expiry is native (PEXPIREAT): Redis reclaims expired entries itself, and sweep prunes only tag sets and stamps (covered in the specifics)
+   0.00s  a distant server, whose first connect takes over a second, is reached within the default firstConnectTimeout

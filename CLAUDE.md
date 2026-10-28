@@ -369,6 +369,13 @@ set (`rs0`) that `setup-databases.ts` runs as its own docker container,
 `mongo:7`, test commands on): that is where the change-stream bus and its
 resume and gap cases run, since the standalone server on 27017 refuses change
 streams. The variable has no bun-jobs fallback.
+`BUN_CACHE_TEST_UPSTASH_REDIS_URL` is an **opt-in** lane
+(`__tests__/drivers/upstash.test.ts`): the Redis driver's kit and tests
+against a managed Upstash database over `rediss://`. It is a credential:
+export it for one run, never write it into a file in the repository, and
+redact it from any log kept. Each run is billed (about two minutes and
+2,400 commands), so it is run deliberately, not in every gate; unset, the
+lane skips visibly.
 
 **A sweep needs the URLs as well as the driver, on every backend including
 `memory`.** Three examples name a server of their own whatever `EXAMPLE_DRIVER`

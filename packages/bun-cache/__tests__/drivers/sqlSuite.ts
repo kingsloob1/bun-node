@@ -48,9 +48,16 @@ export function reportUnreachable(
 }
 
 /** Registers the visible skip for a backend with no URL. */
-export function reportNotConfigured(name: string, variable: string): void {
+export function reportNotConfigured(
+  /** Backend name, as it appears in the test titles. */
+  name: string,
+  /** The variable that would point at it. */
+  variable: string,
+  /** Where its value comes from, in the skip line. Defaults to `bun scripts/setup-databases.ts --print-env`. */
+  source = "bun scripts/setup-databases.ts --print-env",
+): void {
   describe.skip(`backend ${name}: not configured`, () => {
-    it(`set ${variable} (bun scripts/setup-databases.ts --print-env) to run it`, () => {});
+    it(`set ${variable} (${source}) to run it`, () => {});
   });
 }
 
