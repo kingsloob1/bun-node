@@ -1,9 +1,9 @@
 /**
  * `@kingsleyweb/bun-cache`: caching over pluggable drivers (plan
  * `docs/plans/bun-cache/`). The core, the memory, file, SQLite, Postgres,
- * MySQL and MariaDB drivers and the conformance kit
- * (`@kingsleyweb/bun-cache/testing`) have landed; the MongoDB, Redis and S3
- * drivers follow the plan's order.
+ * MySQL and MariaDB drivers, the multi-tier L1 with its buses (`redisBus`,
+ * `pgBus`) and the conformance kit (`@kingsleyweb/bun-cache/testing`) have
+ * landed; the MongoDB, Redis and S3 drivers follow the plan's order.
  *
  * ```ts
  * import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
@@ -27,6 +27,7 @@ export { fromSimpleDriver } from "./core/simple";
 export type {
   BusMessage,
   Cache,
+  CacheBus,
   CacheCounterKeys,
   CacheDriver,
   CacheDriverCapabilities,
@@ -68,3 +69,5 @@ export type { MysqlDriverOptions } from "./drivers/mysql";
 export type { SqlCacheDriverOptions } from "./drivers/sql-base";
 export type { SqlConnectionOptions } from "./drivers/sql-connection";
 export type { SqlCacheTable } from "./drivers/sql-tables";
+export { pgBus, redisBus } from "./bus/index";
+export type { PgBusOptions, RedisBusOptions } from "./bus/index";

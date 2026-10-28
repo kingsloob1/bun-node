@@ -52,13 +52,18 @@ export interface CacheDriverCapabilities {
   tags: "index" | "stamps";
   /** For `tags: "index"`: whether `set` with a fence is one atomic operation, or a check followed by a write. */
   fence: "atomic" | "check-then-write";
-  /** How the multi-tier bus delivers (later PRs): pushed, polled, or not at all. */
+  /** How the multi-tier bus (§4.2) delivers: pushed, polled, or not at all. With `"none"`, a cache's `bus: "auto"` finds no bus. */
   bus: "push" | "poll" | "none";
   /** The backend's own per-entry byte limit, when it has one; the core's `maxEntryBytes` is capped by it. */
   maxEntryBytes?: number;
 }
 
-/** A message on the multi-tier bus (§4.2; the bus itself is a later PR). Carries keys, never values. */
+/**
+ * A message on the multi-tier bus (§4.2): what changed in the shared tier, so
+ * other processes drop their L1 copies. Carries keys, never values (R13), so
+ * nothing stale or oversized can arrive by it. A driver or a {@link CacheBus}
+ * carries it as it is (JSON), every field included.
+ */
 export interface BusMessage {
   /** What changed. */
   type: "set" | "delete" | "invalidate-tags" | "clear";
@@ -70,6 +75,37 @@ export interface BusMessage {
   tags?: readonly string[];
   /** When it happened, epoch ms. */
   at: number;
+  /**
+   * Which cache published it: an id per `createCache` call, so a cache skips
+   * its own messages (its L1 is already up to date) and acts on every other
+   * cache's, in this process or another. Absent on a message from a publisher
+   * that sets none; such a message is always acted on.
+   */
+  origin?: string;
+}
+
+/**
+ * The multi-tier bus on its own (§4.2), separable from the driver: `bus:
+ * redisBus(url)` or `bus: pgBus(url)` on `createCache` replaces the driver's
+ * own bus — S3 as the shared tier with a Redis bus, for instance. Delivery is
+ * at most once; a subscriber that may have missed messages is told so through
+ * `onGap`, and flushes its whole L1.
+ */
+export interface CacheBus {
+  /** The bus's name, for events and logs (`"redis"`, `"postgres"`). */
+  readonly name: string;
+  /** Publishes a message to every subscriber, this process's included. */
+  publish: (message: BusMessage) => Promise<void>;
+  /**
+   * Subscribes; answers an unsubscribe function. `onGap` is called whenever
+   * messages may have been lost — a reconnect, a pruned or truncated log.
+   */
+  subscribe: (
+    onMessage: (message: BusMessage) => void,
+    onGap: () => void,
+  ) => Promise<() => Promise<void>>;
+  /** Closes what the bus created (never a client it was given). Idempotent; the cache's `close()` calls it. */
+  close: () => Promise<void>;
 }
 
 /** Options for {@link CacheDriver.syncSchema}. */
@@ -191,7 +227,7 @@ export interface CacheDriver {
 
   /** Deletes expired rows, at most `limit` of them; answers how many went. Called by the core on `sweepInterval`. Optional. */
   sweep?: (now: number, limit: number) => Promise<number>;
-  /** Publishes a bus message (the multi-tier bus is a later PR). Optional. */
+  /** Publishes a bus message (§4.2); a cache's `bus: "auto"` uses it with {@link subscribe}. Optional. */
   publish?: (message: BusMessage) => Promise<void>;
   /** Subscribes to the bus; answers an unsubscribe function. `onGap` signals a missed stretch of the log. Optional. */
   subscribe?: (
@@ -264,7 +300,7 @@ export interface CompressOptions {
 
 /** The phases an `error` event reports. */
 export type CacheErrorPhase =
-  "driver" | "decode" | "validate" | "refresh" | "lock";
+  "driver" | "decode" | "validate" | "refresh" | "lock" | "bus";
 
 /** Why a `fenced` event's write was dropped: the driver's tag fence, or a local delete/clear/invalidation that forgot the flight (§3.4, §3.6). */
 export type CacheFencedReason = "fence" | "local";
@@ -272,7 +308,12 @@ export type CacheFencedReason = "fence" | "local";
 /** The events a cache emits (§3.12). Listeners are synchronous and isolated: a throwing one is logged, never breaks the operation. */
 export interface CacheEventMap {
   /** A read found a fresh entry. */
-  hit: { key: string; namespace: string };
+  hit: {
+    key: string;
+    namespace: string;
+    /** Which tier served it: `"l1"`, the process's own memory tier (§4.1), or `"l2"`, the driver. Always `"l2"` without an L1. */
+    tier: "l1" | "l2";
+  };
   /** A stale entry was served (inside its stale-while-revalidate window, or after a soft timeout). */
   "stale-hit": { key: string; namespace: string };
   /** A read found nothing usable (absent, expired, undecodable, invalidated, or refused by `validate`). */
@@ -378,6 +419,29 @@ export interface CacheStats {
   hitRate: number;
   /** Load-duration percentiles over a rolling 60 s window. */
   loadDurations: CacheLoadDurations;
+  /**
+   * The L1 tier's own counts (§4.1, §3.12), present only when the cache has
+   * an L1. The top-level `hits` include L1's; `hits - l1.hits` were served by
+   * the driver.
+   */
+  l1?: {
+    /** Fresh reads L1 served. */
+    hits: number;
+    /** Reads L1 could not serve, which went on to the driver (`tier: "l2"` reads are not counted). */
+    misses: number;
+    /** Entries copied into L1 from a driver read. */
+    backfills: number;
+    /** L1 entries dropped because their key, tag or namespace changed (here, or on the bus). */
+    invalidations: number;
+    /** L1 entries dropped to stay under `l1.maxEntries` / `l1.maxBytes`. */
+    evictions: number;
+    /** Whole-L1 flushes: a bus gap, or the bus (re)subscribing. */
+    flushes: number;
+    /** Entries L1 holds now (not reset by `reset`). */
+    entries: number;
+    /** The decoded payload bytes L1 holds now (not reset by `reset`). */
+    bytes: number;
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -416,6 +480,13 @@ export interface SetOptions<Tag extends string = string> {
   staleIfError?: number;
   /** Spread this entry's TTL by up to ± this fraction (`0.1` = ±10%), so bulk-written entries do not expire together. Defaults to the cache's `jitter` (0). */
   jitter?: number;
+  /**
+   * `"l2"`: this call bypasses the L1 tier (§4.3) — it neither reads nor
+   * fills L1, so it sees the driver's value, not a copy another process may
+   * not have invalidated yet. A write still drops this process's L1 copy and
+   * publishes on the bus. A no-op without an L1.
+   */
+  tier?: "l2";
 }
 
 /** How a cross-process lock wait behaves (§3.4). */
@@ -533,16 +604,34 @@ export interface Cache<
   /** Reads a fresh value; `undefined` on a miss. A stale entry is a miss here — `getEntry` exposes it. */
   get: <K extends Extract<keyof Schema, string>>(
     key: K,
+    options?: {
+      /** `"l2"`: read the driver, bypassing (and not filling) the L1 tier (§4.3). */
+      tier?: "l2";
+    },
   ) => Promise<Schema[K] | undefined>;
   /** Reads an entry with its metadata, stale ones included (within their hard expiry). */
   getEntry: <K extends Extract<keyof Schema, string>>(
     key: K,
+    options?: {
+      /** `"l2"`: read the driver, bypassing (and not filling) the L1 tier (§4.3). */
+      tier?: "l2";
+    },
   ) => Promise<CacheEntry<Schema[K]> | undefined>;
   /** Whether a fresh entry (or a live counter) exists. */
-  has: <K extends Extract<keyof Schema, string>>(key: K) => Promise<boolean>;
+  has: <K extends Extract<keyof Schema, string>>(
+    key: K,
+    options?: {
+      /** `"l2"`: read the driver, bypassing (and not filling) the L1 tier (§4.3). */
+      tier?: "l2";
+    },
+  ) => Promise<boolean>;
   /** Reads several keys, in order, `undefined` per miss. */
   getMany: <K extends Extract<keyof Schema, string>>(
     keys: readonly K[],
+    options?: {
+      /** `"l2"`: read the driver, bypassing (and not filling) the L1 tier (§4.3). */
+      tier?: "l2";
+    },
   ) => Promise<(Schema[K] | undefined)[]>;
 
   /** Writes a value; `false` when the write was skipped (oversize, fenced, or a driver failure under the default policy). */
@@ -626,7 +715,7 @@ export interface Cache<
   /** The counters (§3.12); `stats({ reset: true })` reads and zeroes them. */
   stats: (options?: { reset?: boolean }) => CacheStats;
 
-  /** Stops the sweeper and closes the driver. Idempotent. */
+  /** Stops the sweeper, unsubscribes from the bus, and closes the driver and an explicit bus. Idempotent. */
   close: () => Promise<void>;
   /** Creates or migrates the driver's schema; `[]` when the driver has nothing to sync. */
   syncSchema: (options?: SchemaSyncOptions) => Promise<SchemaChange[]>;
@@ -698,6 +787,53 @@ export interface CreateCacheOptions {
    * ({@link CacheSchemaFrom}).
    */
   validate?: Record<string, StandardSchemaV1>;
+
+  /**
+   * The L1 tier (§4.1): a per-process memory tier over the driver, holding
+   * **decoded values**, so a hit skips both the round trip and the decode.
+   * `true` for the defaults. Off by default.
+   *
+   * - **Values are shared, not copied**: a hit returns the object L1 holds,
+   *   so a caller that mutates it mutates every later hit's value in this
+   *   process (and not the driver's). `clone: true` returns a
+   *   `structuredClone` instead. Mutating a cached value is a bug with or
+   *   without L1.
+   * - **Only fresh copies**: an entry is held until the first of its
+   *   freshness, its driver expiry and `ttl` — copied from the driver's entry
+   *   on a read, never a fresh TTL (R14), so a stale value is never served
+   *   from L1; the stale windows (§3.5) are the driver's.
+   * - **Counters never enter L1** (§3.8): an increment is the driver's alone.
+   * - **Kept coherent by the bus** (`bus`): another cache's write or
+   *   invalidation drops this process's copy once its message arrives; a bus
+   *   gap flushes the whole tier. With no bus, a copy can be stale for up to
+   *   `ttl` (§4.3).
+   */
+  l1?:
+    | true
+    | {
+        /** At most this many entries; the least recently used go first. Defaults to 10,000. */
+        maxEntries?: number;
+        /** At most this many decoded payload bytes (the codec's bytes, before compression). Defaults to 64 MiB. */
+        maxBytes?: number;
+        /** The longest an entry is held, in ms — the staleness bound when the bus is down or absent (§4.3). Defaults to 30,000. */
+        ttl?: number;
+        /** Return a `structuredClone` of each hit (and store a clone of each value), so callers cannot mutate L1's copy. Defaults to `false`. */
+        clone?: boolean;
+      };
+  /**
+   * The bus that keeps L1s coherent (§4.2): `"auto"` uses the driver's own
+   * (Postgres `LISTEN`/`NOTIFY`, the polled SQLite/MySQL/MariaDB/file logs,
+   * the memory driver's in-process one) when it has one; a {@link CacheBus}
+   * (`redisBus(url)`, `pgBus(url)`) replaces it, and is closed by the
+   * cache's `close()`; `false` uses none. Defaults to `"auto"` with an `l1`,
+   * `false` without.
+   *
+   * A cache with a bus and no `l1` still **publishes** its writes and
+   * invalidations, so a process that writes the shared tier keeps the other
+   * processes' L1s coherent without holding one itself; it also receives
+   * other caches' tag invalidations into its tag-stamp cache (§3.6).
+   */
+  bus?: "auto" | false | CacheBus;
 
   /** The logger; a `LoggerLike`, resolved once with bun-common's `resolveLogger`. Defaults to a no-op. */
   logger?: LoggerLike;

@@ -34,3 +34,7 @@ root `node_modules`; `03-typed` uses zod from the same place.
 | `05-http` | `coalescing.ts` — a burst of ten runs the handler once (one `MISS`, nine `HIT`); a `private` answer runs ten times |
 | `05-http` | `coalesce-requests.ts` — `coalesceRequests()` with no store: five GETs, one run; cookies run alone; nothing kept |
 | `05-http` | `compression.ts` — `compression()` ahead of the cache: one stored copy, gzip per request on a hit |
+| `06-tiers` | `l1.ts` — an L1 memory tier over a shared driver, kept coherent by the driver's bus: backfill, writes/deletes/tags/`clear` dropping the other copy, `tier: "l2"`, counters never in L1, `clone` |
+| `06-tiers` | `staleness.ts` — `l1.ttl` as the staleness bound with `bus: false`, and the same write with the bus |
+| `06-tiers` | `two-processes.ts` — a second process with its own L1: the measured invalidation window (SQLite polled bus; Postgres `LISTEN`/`NOTIFY` with `EXAMPLE_POSTGRES_URL`; `redisBus` with `EXAMPLE_REDIS_URL`) and a forced gap flushing the L1. Runs alone |
+| `06-tiers` | `separate-bus.ts` — `redisBus` / `pgBus` over an SQLite L2 whose own bus polls every minute (`EXAMPLE_REDIS_URL` / `EXAMPLE_POSTGRES_URL`; skips when neither is set) |

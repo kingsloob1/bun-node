@@ -59,9 +59,16 @@ And (PR-H1):
   for bun-common's `BunRouter` and both HTTP adapters, `coalesceRequests()`
   and `addCacheTags()` — see [HTTP response caching](#http-response-caching)
 
-Next, in the plan's order: the multi-tier L1/L2 bus (PR-T1), Redis (PR-C5),
-MongoDB (PR-C6), S3 (PR-C7), then stale serving over HTTP (PR-H2) and the
-Nest interceptor (PR-N2).
+And (PR-T1):
+
+- **multi-tier caching**: an L1 memory tier per process over the shared
+  driver, holding decoded values, kept coherent by a bus — the driver's own,
+  or `redisBus` / `pgBus` on their own — with backfill that keeps the
+  driver's expiry, a flush on every bus gap, and `{ tier: "l2" }` to bypass
+  it per call ([Multi-tier](#multi-tier))
+
+Next, in the plan's order: Redis (PR-C5), MongoDB (PR-C6), S3 (PR-C7), then
+stale serving over HTTP (PR-H2) and the Nest interceptor (PR-N2).
 
 ## Quick start
 
@@ -291,14 +298,18 @@ because it costs a schema run per hit.
 (with a `reason`, `"fence"` or `"local"`), `delete`, `invalidate`, `load`
 (with its duration and a `shared` flag), `refresh`, `stale-if-error`,
 `lock-wait`, `lock-timeout`, `evict`, `oversize`, `error` (with `phase` and
-`driver`), `circuit-open` and `circuit-close`. Listeners are synchronous and
+`driver`), `circuit-open` and `circuit-close`. A `hit` says which `tier`
+served it (`"l1"` or `"l2"`; always `"l2"` without an L1), and a bus failure
+is an `error` with `phase: "bus"`. Listeners are synchronous and
 isolated: a throwing one is logged and never breaks the operation. `on`
 returns an unsubscribe function.
 
 `cache.stats()` counts `hits`, `staleHits`, `misses`, `sets`, `fenced`,
 `deletes`, `loads`, `loadErrors`, `lockWaits`, `evictions`, `bytesRead`,
 `bytesWritten`, plus `hitRate` and load-duration percentiles over a rolling
-60 s window. `stats({ reset: true })` reads and zeroes them.
+60 s window. `stats({ reset: true })` reads and zeroes them. With an L1,
+`stats().l1` adds its own counts ([Multi-tier](#multi-tier)); the top-level
+`hits` include L1's.
 
 `logger` accepts any `LoggerLike` (bun-common's `resolveLogger`): a Logger, a
 sink, or a pino/winston/Nest-shaped logger. The default is a no-op.
@@ -321,6 +332,137 @@ the cooldown probes (and closes) it. A bypassed cache can stampede the
 origin, so the in-process single-flight keeps working while the circuit is
 open. Counters are the exception: a failed `increment` throws even without
 `strict`, because there is no honest fallback value.
+
+## Multi-tier
+
+An **L1** memory tier per process over the shared driver (the **L2**), for
+the reads that would otherwise cost a round trip and a decode each:
+
+```ts
+import { createCache, postgresDriver } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: postgresDriver({ url }), // L2: shared by every process
+  l1: { maxEntries: 10_000, maxBytes: 64 << 20, ttl: 30_000 }, // per process
+  // bus: "auto" — the default with an l1: the driver's own bus
+});
+
+await cache.get("user:42");                    // L1, else L2 (copied into L1)
+await cache.get("user:42", { tier: "l2" });    // L2 only: never a copy
+```
+
+**What L1 holds.** Decoded values, so an L1 hit costs neither the round trip
+nor the decode. `l1: true` takes the defaults below.
+
+| `l1` option | Default | What it does |
+|---|---|---|
+| `maxEntries` | 10,000 | at most this many entries; the least recently used go first |
+| `maxBytes` | 64 MiB | at most this many decoded payload bytes (the codec's bytes, before compression) |
+| `ttl` | 30,000 ms | the longest an entry is held: the staleness bound when the bus is down or absent |
+| `clone` | `false` | return a `structuredClone` of each hit, and hold a clone of each value |
+
+- **Values are shared, not copied.** With `clone: false`, an L1 hit returns
+  the object L1 holds: a caller that mutates it changes what every later hit
+  in that process returns (and not what L2 holds). `clone: true` costs a
+  `structuredClone` per hit and per copy. Mutating a cached value is a bug
+  with or without L1.
+- **A write holds what an L2 read would return**: the value is decoded from
+  the bytes just written. With `codec: "json"`, a `Date` set in reads back as
+  a string from L1 too, and a later change to the object passed to `set` is
+  not seen.
+- **Only fresh copies.** An entry is held until the first of its freshness,
+  the L2 entry's expiry, and `l1.ttl`. A copy taken from L2 keeps the L2
+  entry's expiry, never a fresh TTL (plan R14), so a copy never outlives the entry
+  it copies. A stale value is never served from L1: the stale windows
+  (`staleWhileRevalidate`, `staleIfError`) are L2's.
+- **Counters never enter L1**: an `increment` is L2's alone (plan §3.8).
+- **`validate`**: a value written to a key a schema covers is not copied on
+  write; the next read validates it on its way into L1.
+- **`{ tier: "l2" }`** on `get`, `getEntry`, `has`, `getMany`, `set` and
+  `getOrSet` bypasses L1 for that call: it neither reads nor fills it. A write
+  with it still drops this process's copy and publishes.
+
+**The order of operations** (plan §4.1):
+
+| Operation | Order |
+|---|---|
+| Read | L1 → L2 → loader. A fresh L2 hit is copied into L1 |
+| Write (`set`, a loader's value, a refresh) | L2, then L1, then publish `set` with the key. A write the fence refused, or that failed, writes no L1 and publishes nothing |
+| `delete`, `deleteMany`, `clear`, `invalidateTags` | L2, then L1, then publish |
+| `increment` | L2 only |
+
+### The bus
+
+Other processes learn of a change through the **bus**: a message carries the
+namespace and the keys or tags that changed — **never a value** (plan R13) — and a
+process that receives one drops its copies. The next read goes to L2.
+
+| `bus` | What it is |
+|---|---|
+| `"auto"` (the default with an `l1`) | the driver's own: `LISTEN`/`NOTIFY` on Postgres; a polled table on SQLite, MySQL and MariaDB, a polled log on the file driver (every 250 ms by default, `busPollInterval`); in-process on the memory driver. A driver with none: no bus |
+| `redisBus(url \| { url, client, prefix, channel })` | Redis pub/sub on the channel `<prefix>:bus` (`bun-cache:bus` by default), on its own connection |
+| `pgBus(url \| { url, connection, sql, channel, prefix, tables })` | Postgres `LISTEN`/`NOTIFY`, the Postgres driver's code; by default on the channel a `postgresDriver` with the same `prefix`/`tables` uses, so the two interoperate |
+| a `CacheBus` of your own | `{ name, publish, subscribe, close }` |
+| `false` | none: an L1 copy can be stale for up to `l1.ttl` |
+
+An explicit bus replaces the driver's — an S3 or file L2 with a Redis bus —
+and the cache's `close()` closes it. A cache with a bus and **no** `l1` still
+publishes its writes and invalidations, so a process that only writes keeps
+the others' L1s coherent; without `l1` the bus defaults to off, so such a
+writer needs `bus: "auto"` (or one of its own).
+
+- **A cache skips its own messages**: each message carries its publisher's
+  `origin`, an id per `createCache` call.
+- **Gaps flush.** Whenever messages may have been lost — a reconnect (Redis,
+  Postgres), rows pruned before a polled subscriber read them, a truncated
+  log — the whole L1 is flushed: what was missed is unknowable, and L1 is
+  only a copy (BentoCache's rule). A flush also clears the tag-stamp cache.
+- **L1 starts once the bus listens.** Until the bus's first subscribe
+  settles, L1 serves and holds nothing: messages published before it were
+  never received. If that subscribe fails, L1 starts anyway (bounded by
+  `l1.ttl`), an `error` event with `phase: "bus"` fires, and the subscribe is
+  retried with backoff; the success flushes L1.
+- **A copy taken while an invalidation lands is dropped.** A read that
+  fetched the old value just before another process's write, and would copy
+  it into L1 just after that write's message, is detected and not copied;
+  so is a loaded value whose loader started before an invalidation of its
+  key or tags arrived (on the file driver, which has no write fence, this
+  is what keeps it out of L1).
+- **Publishes are batched** per microtask (keys merged per namespace); `set`
+  resolves once its message is out. A publish that fails is an `error` event,
+  never a throw.
+- **Tag stamps.** On a stamps-mode driver (file), another cache's
+  `invalidateTags` reaches this cache's stamp cache through the bus, L1 or
+  not, instead of waiting out `tagStampCacheMs`.
+- **Pub/sub ignores Redis's database number**: two deployments on one server
+  share a bus unless their `prefix` or `channel` differs.
+
+### Consistency, stated plainly
+
+- **In the writing process: read-your-writes.** A write and an invalidation
+  reach L1 before they resolve.
+- **In other processes:** stale until the bus delivers. Measured between two
+  processes on this repository's machine, from the writer's `set` resolving
+  to the reader's first read of the new value (15 rounds each, at random
+  phases of the poll):
+
+  | L2 and bus | Quiet machine | Loaded (1-minute load 29 on 16 cores) |
+  |---|---|---|
+  | Postgres, `LISTEN`/`NOTIFY` | p50 0.35 ms, max 0.8 ms | p50 0.8–9 ms, max 5–18 ms |
+  | SQLite file + `redisBus` | p50 0.12 ms, max 0.6 ms | p50 0.5–1.9 ms, max 10–15 ms |
+  | SQLite file, polled bus (250 ms) | — | p50 79–137 ms, max 218–234 ms: up to one poll |
+
+  With the bus down or absent: up to `l1.ttl`.
+- **When a write and a read race**, another process can read the old value
+  from its L1 between the L2 write and the message's delivery. That is the
+  price of L1. A read that cannot accept it uses `{ tier: "l2" }`.
+- **Never**: a value no tier wrote; a value restored after `invalidateTags`
+  by a loader that started before it (the fence covers both tiers); a copy
+  that outlives the L2 entry it copies.
+
+`stats().l1` counts `hits`, `misses` (reads that went on to L2; `tier: "l2"`
+reads are not counted), `backfills`, `invalidations`, `evictions` and
+`flushes`, and reports what it holds now, `entries` and `bytes`.
 
 ## Custom drivers
 

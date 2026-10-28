@@ -16,7 +16,7 @@
  * by `sqlSuite.ts`.
  */
 import process from "node:process";
-import { SQL } from "bun";
+import { RedisClient, SQL } from "bun";
 import type { CacheDriver } from "../../lib/index";
 import { mariadbDriver, mysqlDriver, postgresDriver } from "../../lib/index";
 import type { MysqlDriverOptions } from "../../lib/drivers/mysql";
@@ -120,5 +120,43 @@ export async function reachError(
   } finally {
     await driver.close().catch(() => undefined);
     await dropTables(backend, runPrefix("probe_")).catch(() => undefined);
+  }
+}
+
+/**
+ * The Redis server the bus tests run against (§13.2): `BUN_CACHE_TEST_REDIS_URL`,
+ * falling back to `BUN_JOBS_TEST_REDIS_URL`. Pub/sub ignores the database
+ * number, so each run's channels carry its pid and a timestamp instead, and
+ * leave nothing behind.
+ */
+export function redisBackend(): {
+  /** The variable that points at it. */
+  variable: string;
+  /** The URL, when one is set. */
+  url: string | undefined;
+} {
+  return {
+    variable: "BUN_CACHE_TEST_REDIS_URL",
+    url:
+      process.env.BUN_CACHE_TEST_REDIS_URL ||
+      process.env.BUN_JOBS_TEST_REDIS_URL ||
+      undefined,
+  };
+}
+
+/** Connects once to the Redis server at `url` (within 3 s); answers the failure, not a boolean. */
+export async function redisReachError(url: string): Promise<Error | undefined> {
+  const client = new RedisClient(url, {
+    connectionTimeout: 3_000,
+    autoReconnect: false,
+  });
+  try {
+    await client.connect();
+    await client.send("PING", []);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  } finally {
+    client.close();
   }
 }

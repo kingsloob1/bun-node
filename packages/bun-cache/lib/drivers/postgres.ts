@@ -29,7 +29,6 @@
  *   cold. It applies when the tables are created; existing tables keep what
  *   they were created as.
  */
-import { Buffer } from "node:buffer";
 import type {
   BusMessage,
   CacheDriver,
@@ -44,13 +43,8 @@ import { SqlCacheDriverBase } from "./sql-base";
 import type { SqlCacheTable } from "./sql-tables";
 import { sqlCacheIndexName, sqlCacheStoreKey } from "./sql-tables";
 import { withLockRetry } from "./sql-connection";
-
-/**
- * The largest `NOTIFY` payload sent as is, in bytes. Postgres refuses 8,000
- * and above ("payload string too long", measured for the plan); a message
- * past this becomes a `clear` of its namespace.
- */
-const MAX_NOTIFY_PAYLOAD_BYTES = 7_900;
+import type { PgSubscription } from "./pg-notify";
+import { pgChannel, pgListen, pgNotify, pgUnlistenAll } from "./pg-notify";
 
 /** `postgresDriver()`'s options. */
 export interface PostgresDriverOptions extends SqlCacheDriverOptions {
@@ -91,7 +85,7 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
   /** The `maxEntries` sweep's statements (`entry-cap.ts`). */
   readonly #cap: EntryCapStatements;
   /** Live `LISTEN` registrations, removed by `close()`. */
-  readonly #subscriptions = new Set<{ unlisten: () => Promise<void> }>();
+  readonly #subscriptions = new Set<PgSubscription>();
 
   constructor(
     /** The options: a URL, connection fields or a client. */ options: PostgresDriverOptions,
@@ -103,7 +97,7 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
       "locks",
     ]);
     this.#unlogged = options.unlogged ?? false;
-    this.channel = `bun_cache_${Bun.hash(sqlCacheStoreKey(this.tables)).toString(36)}`;
+    this.channel = pgChannel(this.tables);
     this.#cap = entryCapStatements(this.tables.entries, "$1", " FOR UPDATE");
   }
 
@@ -519,60 +513,24 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
   /* ---------------------------------------------------------------- */
 
   async publish(message: BusMessage): Promise<void> {
-    let payload = JSON.stringify(message);
-    if (Buffer.byteLength(payload) > MAX_NOTIFY_PAYLOAD_BYTES) {
-      // Too many keys for one notification: every subscriber drops the whole
-      // namespace instead, which is always a safe reading of "these changed".
-      const flush: BusMessage = {
-        type: "clear",
-        namespace: message.namespace,
-        at: message.at,
-      };
-      payload = JSON.stringify(flush);
-    }
-    await this.sql.notify(this.channel, payload);
+    await pgNotify(this.sql, this.channel, message);
   }
 
   async subscribe(
     onMessage: (message: BusMessage) => void,
     onGap: () => void,
   ): Promise<() => Promise<void>> {
-    let listening = false;
-    const subscription = await this.sql.listen(
+    return await pgListen(
+      this.sql,
       this.channel,
-      (payload) => {
-        let message: BusMessage;
-        try {
-          message = JSON.parse(payload) as BusMessage;
-        } catch {
-          // Not ours (another client NOTIFYing the channel): nothing to act on.
-          return;
-        }
-        onMessage(message);
-      },
-      () => {
-        // Runs once the LISTEN is acknowledged, and again after every
-        // reconnect: anything notified while it was down is lost — a gap.
-        if (listening) {
-          onGap();
-        }
-        listening = true;
-      },
+      onMessage,
+      onGap,
+      this.#subscriptions,
     );
-    this.#subscriptions.add(subscription);
-    return async () => {
-      if (this.#subscriptions.delete(subscription)) {
-        await subscription.unlisten();
-      }
-    };
   }
 
   protected async stopBus(): Promise<void> {
-    const subscriptions = [...this.#subscriptions];
-    this.#subscriptions.clear();
-    for (const subscription of subscriptions) {
-      await subscription.unlisten().catch(() => undefined);
-    }
+    await pgUnlistenAll(this.#subscriptions);
   }
 }
 
