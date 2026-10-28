@@ -1,0 +1,5 @@
+combined flags: GET and DEL KEYS[1], UNLINK a key of KEYS[1]'s tag -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+combined flags: UNLINK a key of another hash tag -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+SCRIPT LOAD/EVALSHA combined -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+UNLINK exact probe keys -> 2
+left under probe prefix (EXISTS on the 3 names) -> 0

@@ -826,6 +826,30 @@ the 10 MB request limit, the global script lock). **The user's decisions (2026-1
   own PR: the scripts already keep their keys in one namespace's hash tag,
   so Upstash can lock just that namespace instead of the whole database.
 
+**Upstash key locking built, 2026-10-28** (branch
+`feat/bun-cache-redis-key-locking`): `redisDriver`'s **`keyLocking: true`**
+(not a §21 name; approved below) starts every script with
+`#!lua flags=allow-key-locking`, under its own SHA-1. Measured
+([`evidence/upstash-spike.md`](evidence/upstash-spike.md), Follow-up): Upstash
+(1.19.4) runs a flagged script, accepts a key outside `KEYS` only when its
+hash tag is one `KEYS` locked, and refuses another tag's ("Dynamic keys are
+not allowed …"); local Redis 8.0.5 refuses the flag ("Unexpected flag in
+script shebang"), so it is opt-in and the driver's error names the option.
+All nine scripts already keep to `KEYS[1]`'s tag (no script changed), which
+every local run now enforces with an instrumented `EVAL`. The Upstash lane
+with `BUN_CACHE_TEST_UPSTASH_KEY_LOCKING=1`, once: 40 pass, 5 skip, 0 fail in
+115.4 s. README "Upstash and other managed Redis" documents it.
+**The user's decisions (2026-10-28):** the name `keyLocking` (flat, as
+built) is approved; and the four scripts that only read and remove
+(`delete`, `releaseLock`, `sweep`'s tag-set and stamp prunes) add
+`allow-oom` in key-locking mode (`#!lua flags=allow-key-locking,allow-oom`,
+each its own SHA-1), so a full database can still be freed — a flagged
+script without it is refused whole when out of memory. Nothing that writes
+gets it (`deleteByTags` writes stamps). Upstash accepts the combined flags
+and still refuses another tag's key (measured); its behaviour when full is
+not measured. The lane, key-locked, again after the change: 40 pass, 5 skip,
+0 fail in 112.1 s.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

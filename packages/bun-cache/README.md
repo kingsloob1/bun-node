@@ -935,7 +935,9 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
   before an invalidation is refused or deleted, never kept. So are
   `increment`, `touch`, `delete` and the lock's take and release. Scripts run
   by `EVALSHA` and are sent again with `EVAL` when the server answers
-  `NOSCRIPT` (after a restart or a `SCRIPT FLUSH`).
+  `NOSCRIPT` (after a restart or a `SCRIPT FLUSH`). On Upstash,
+  `keyLocking: true` runs them under a namespace's lock instead of the
+  database's ([below](#upstash-and-other-managed-redis)).
 - **Expiry is native**: an entry's and a counter's keys expire with
   `PEXPIREAT`, and reads also treat a passed expiry as a miss. There is
   nothing for the core's sweeper to reclaim but what has no TTL — tag-set
@@ -1132,17 +1134,52 @@ from a Redis next to the app:
   connection only; the fence is unaffected (it runs in a script, on the
   primary), and a write on one connection was read back on another at once
   30 times in 30.
-- **Scripts take Upstash's global lock** (no other command runs meanwhile),
-  and a key a script names outside `KEYS` that has gone cold to disk is
-  loaded with that lock held. The driver's scripts name one key of their
-  namespace's hash tag; Upstash's `allow-key-locking` flag would lock only
-  that tag, but plain Redis refuses the flag, so the driver does not set it.
+- **Scripts take Upstash's global lock** by default (no other command runs
+  meanwhile), and a key a script names outside `KEYS` that has gone cold to
+  disk is loaded with that lock held. `keyLocking: true` lifts that (below).
+
+**`keyLocking`: Upstash's per-key script locking.**
+
+```ts
+redisDriver({ url: process.env.UPSTASH_REDIS_URL, keyLocking: true });
+```
+
+Every script the driver runs then starts with `#!lua flags=allow-key-locking`,
+so Upstash locks only the hash tag of the script's keys — the namespace's,
+`{<ns>}` — instead of the whole database: scripts on other namespaces, and
+plain commands on other keys, run alongside it, and a cold key is loaded
+holding only that namespace's lock. Writes to one namespace still run one at
+a time. Use it on Upstash when several namespaces, or other applications
+sharing the database, write at once. Upstash refuses a key outside a flagged
+script's locked hash tags ("Dynamic keys are not allowed …", measured); every
+script here keeps to its namespace's tag, which the Upstash lane checks with
+the option on and every local test run enforces on a plain Redis.
+
+**`allow-oom` on the scripts that only remove.** A script with a shebang and
+without `allow-oom` is refused whole while the server is out of memory,
+where an unflagged one runs until a command that would grow memory. So
+`delete`, `releaseLock` and `sweep`'s two prunes (a tag set's members, a
+lapsed stamp) — every command in them a read or a removal — declare
+`#!lua flags=allow-key-locking,allow-oom`, and a full database can still be
+freed through them. Nothing that writes carries it: not `set`, `touch`,
+`increment` or `acquireLock`, nor `deleteByTags`, which writes a stamp per
+tag before it deletes. Upstash accepts the combined flags and still locks
+by key (measured); what it does when actually full is not measured (that
+needs a full scratch database).
+
+**Upstash only.** Plain Redis rejects the flag (Redis 8.0.5: "Unexpected flag
+in script shebang: allow-key-locking"; Redis 6 has no script flags), so the
+option is off by default. Set against such a server, the first write fails
+with `redisDriver: keyLocking is set, and <host:port> refused Upstash's
+allow-key-locking script flag (…)`; reads that need no script (`get`,
+`getMany`, a counter, the stamps) still answer.
 
 **Testing against it.** This package's Upstash lane
 (`__tests__/drivers/upstash.test.ts`) runs the kit and the Redis tests
 against the database `BUN_CACHE_TEST_UPSTASH_REDIS_URL` names, and skips,
-visibly, when it is unset. The URL holds the database's password: export it
-for one run, never commit it. One run takes about two minutes and some
+visibly, when it is unset; with `BUN_CACHE_TEST_UPSTASH_KEY_LOCKING=1` as
+well, every driver it builds sets `keyLocking: true`. The URL holds the
+database's password: export it for one run, never commit it. One run takes about two minutes and some
 2,400 billed commands (of the free plan's 500,000 a month), and deletes the
 keys it wrote.
 

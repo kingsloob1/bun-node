@@ -13,6 +13,12 @@
  * `PEXPIRETIME` reads a few ms off the `PEXPIREAT` sent, so expiry is checked
  * within 100 ms; and the fence race runs 20 rounds, not 60.
  *
+ * **Key locking**: with `BUN_CACHE_TEST_UPSTASH_KEY_LOCKING=1` as well, every
+ * driver the lane builds sets `keyLocking`, so the kit and the specifics run
+ * under Upstash's `allow-key-locking` script flag (titled
+ * `upstash, keyLocking`). Unset, the lane runs the default, global-lock
+ * scripts.
+ *
  * Upstash bills each command (a Lua script as one plus each `redis.call`
  * inside), so run this lane deliberately, not in every gate. Its keys are
  * this run's prefix, deleted at the end like the local lane's.
@@ -25,6 +31,9 @@ import { reportNotConfigured, reportUnreachable } from "./sqlSuite";
 
 /** The variable that names the Upstash database. */
 const VARIABLE = "BUN_CACHE_TEST_UPSTASH_REDIS_URL";
+
+/** `1` runs the lane with `keyLocking` on. */
+const KEY_LOCKING_VARIABLE = "BUN_CACHE_TEST_UPSTASH_KEY_LOCKING";
 
 const url = process.env[VARIABLE] || undefined;
 if (url === undefined) {
@@ -39,12 +48,15 @@ if (url === undefined) {
   if (unreachable !== undefined) {
     reportUnreachable("upstash", VARIABLE, unreachable);
   } else {
+    const keyLocking = process.env[KEY_LOCKING_VARIABLE] === "1";
     await registerRedisSuite(url, {
-      name: "upstash",
+      name: keyLocking ? "upstash, keyLocking" : "upstash",
       busGap: "quit",
       expiryToleranceMs: 100,
       shortTtlMs: 3_000,
       raceRounds: 20,
+      keyLocking,
+      acceptsKeyLocking: true,
     });
   }
 }

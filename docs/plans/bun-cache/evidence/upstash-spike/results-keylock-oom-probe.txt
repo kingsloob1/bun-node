@@ -1,0 +1,6 @@
+combined flags: GET and DEL KEYS[1], UNLINK a key of KEYS[1]'s tag -> ["1",1]
+combined flags: UNLINK a key of another hash tag -> ERROR ERR Error running script: @user_script:1: ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is set. Key was: bun-cache-keylock-oom-probe:797606:{b}:dyn stack traceback: 	[G]: in function 'call' 	@user_script:1: in main chunk 	[G]: ?
+SCRIPT LOAD combined -> sha matches local SHA-1: true
+EVALSHA combined -> 0
+UNLINK exact probe keys -> 0
+left under probe prefix (EXISTS on the 3 names) -> 0
