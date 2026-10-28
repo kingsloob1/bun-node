@@ -849,7 +849,7 @@ and still refuses another tag's key (measured); its behaviour when full is
 not measured. The lane, key-locked, again after the change: 40 pass, 5 skip,
 0 fail in 112.1 s.
 
-**PR-C7 built 2026-10-28** (branch `feat/bun-cache-c7-s3`, on develop
+**PR-C7 merged 2026-10-28, #560** (branch `feat/bun-cache-c7-s3`, on develop
 `36f7d784`, after PR-C6 #556, the replica set #557 and the Upstash spike
 #558): `s3Driver` over
 Bun's `S3Client` (§7.8), and SeaweedFS in `setup-databases.ts`. bun-jobs' S3
@@ -1104,7 +1104,7 @@ does, and where it departs from the S3 driver it mirrors:
   memory, and `04-drivers/s3.ts` on SeaweedFS 35 checks passed. The container
   measured empty after every run.
 
-**PR-H2 built 2026-10-28** (branch `feat/bun-cache-h2-http-stale`, on
+**PR-H2 merged 2026-10-28, #563** (branch `feat/bun-cache-h2-http-stale`, on
 develop `251a64f1`): stale serving over HTTP and buffered streams in
 `./http` (§9.4), with **bun-common and the core unchanged**. How it is
 built, and where it departs from or adds to §9.4:
@@ -1179,6 +1179,194 @@ limit (node:zlib's `maxOutputLength`; Bun's decoders take none), so a planted
 bomb is a miss plus an `error` event of phase `"decode"` and is deleted, as
 any undecodable entry; writes hold the payload before compression to the
 same limit (`lib/core/decompress.ts`, `decompress.test.ts`).
+
+**Cloudflare spike, 2026-10-28** (on PR-C10's branch; evidence
+[`evidence/cloudflare-spike.md`](evidence/cloudflare-spike.md), no account
+used). bun-cache runs in a Bun process, so the Cloudflare drivers reach KV and
+D1 over HTTP. Findings, measured with miniflare 4.20260730.0 (workerd
+2026-07-30) from Bun unless marked as Cloudflare's documentation:
+
+- **miniflare serves the Worker bindings, not the REST API.** Its REST-shaped
+  "local explorer" (`unsafeLocalExplorer`) is not faithful: it ignores
+  `expiration_ttl` and accepts a 30 s TTL, runs a D1 batch one statement at
+  a time (a failed batch kept its first insert), has no D1 `/query`, no KV
+  bulk write or delete, and checks no token. What works: a small Worker
+  answering the REST API's KV and D1 data paths over real bindings, run by
+  miniflare (ready in ~0.1 s, 42 MiB). workerd enforces KV's limits (TTL ≥
+  60 s, 512-byte keys, 1,024-byte metadata, 25 MiB values; native expiry at
+  60.15 s) but not its eventual consistency or its one-write-per-second-per-key
+  429.
+- **The REST API is capped at 1,200 requests per five minutes per user or
+  token** (docs), shared with Wrangler and the dashboard, then 429 for five
+  minutes: four operations a second. So the same Worker, deployed by the
+  user, is the production transport, and one client speaks to either.
+- **D1's fence needs no REST transaction**: every write can be one statement,
+  with triggers keeping the tag index and doing the invalidation's deletes.
+  A fenced write raced against an invalidation: 0 survivors of 60; the
+  check-then-write mutant 60/60 and 59/60. 200 concurrent increments exact,
+  50 lock contenders 1 winner. D1 refuses `BEGIN`; the binding's batch
+  rolled back, the statement-by-statement control did not; whether a REST
+  batch is a transaction is undocumented. Parameters are strings (SQLite's
+  affinity copes); values go as `unhex(?)`/`hex(v)`, so 1,000,000 bytes an
+  entry under D1's 2,000,000-byte string limit (the local server allows
+  2,200,000).
+
+**The user's decisions (2026-10-28), all as the spike recommended:**
+`miniflare` (exact `4.20260730.0`) is a devDependency of bun-cache; both
+transports through one client, the README recommending the Worker for
+production; the Worker ships as the subpath **`./cloudflare-worker`**; the
+names: options `accountId`, `apiToken`, `namespaceId`, `databaseId`,
+`endpoint`, `prefix` (with `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`
+read when absent), types `CloudflareKvDriverOptions`,
+`CloudflareD1DriverOptions`, the Worker secret `BUN_CACHE_PROXY_TOKEN`, the
+test variables `BUN_CACHE_TEST_CLOUDFLARE_{ACCOUNT_ID,API_TOKEN,
+KV_NAMESPACE_ID,D1_DATABASE_ID,PROXY_URL,PROXY_TOKEN}`; KV values as raw
+bytes with `getMany` as parallel `GET`s; no counters or locks on KV; a
+test-only switch emulating KV's per-key 429; D1's bus `"none"` and a
+1,000,000-byte cap (PR-C11); and the user provides live-lane credentials
+before PR-C10 merges (the lane is opt-in and skips visibly; the coordinator
+wires the credentials in through a private file, never the repository).
+
+**PR-C10 built 2026-10-28** (branch `feat/bun-cache-c10-cloudflare-kv`, on
+develop `ec3eb55a`, with the spike's evidence): `cloudflareKvDriver`, and
+the pieces PR-C11's D1 driver reuses.
+
+- **The client** (`lib/cloudflare/client.ts`, internal): the REST API at
+  `https://api.cloudflare.com/client/v4/accounts/<accountId>`, or a Worker at
+  `endpoint`; a bearer token either way. The environment's
+  `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` are read for the REST API
+  only: **with an `endpoint`, `apiToken` must be given** (the Worker's secret),
+  so a real API token is never sent to a Worker URL; an `endpoint` must be
+  `https:`, or `http:` to a loopback host. **Pacing**: on the REST API a
+  sliding window of 1,200 requests per 300 s (the documented budget) queues
+  this process's requests rather than trip the block; none for a Worker.
+  **429s**: retried after `Retry-After` (else a jittered backoff from 1 s),
+  at most 6 attempts; a `Retry-After` past 10 s (the five-minute block) fails
+  at once and every later request fails without being sent until it passes.
+  A bulk write's `unsuccessful_keys` are retried the same way. KV's 60 s
+  floor: `expiration_ttl = max(60, ceil(seconds left))`, relative so the
+  client's clock never trips Cloudflare's "60 s in the future" check. D1:
+  `d1Query`/`d1Raw`, one statement or a batch, string parameters. Bodies are
+  read, never cancelled, below 64 KiB: a cancelled body made workerd log
+  "Connection reset by peer" in every run.
+- **The Worker** (`lib/cloudflare/worker.ts`, the subpath
+  `./cloudflare-worker`): imports nothing, web-standard APIs only, so
+  wrangler bundles it as it is (`export { default } from
+  "@kingsleyweb/bun-cache/cloudflare-worker"`). It answers the subset of the
+  REST API the drivers use, in its shapes: KV `values` (`GET`, a raw `PUT`
+  with `expiration`/`expiration_ttl`, `DELETE`), `keys`, `bulk`, `bulk/get`,
+  `bulk/delete`; D1 `query` and `raw` (string parameters only, one statement
+  each, a batch as `DB.batch()`), with the REST API's
+  `/client/v4/accounts/<id>` prefix accepted and ignored. **The path names a
+  binding, not an id** (*a decision of the build*: a Worker cannot learn a
+  binding's namespace id), so with an `endpoint` the driver's `namespaceId`
+  is the binding name (`CACHE_KV` in the README's `wrangler.toml`; D1's
+  `CACHE_DB`). It answers only for KV and D1 bindings (an R2 bucket, the
+  secret or any other variable is "not found"), refuses every request when
+  `BUN_CACHE_PROXY_TOKEN` is unset, compares the token in constant time, and
+  passes KV's own status through (414, 413, 429). Not served: KV metadata
+  and multipart writes, and no `expiration` header on a read (the driver
+  needs neither).
+- **`cloudflareKvDriver`** (`lib/drivers/cloudflare-kv.ts`): keys
+  `<p>/<ns>/e/<sha256(key)>` and `<p>/<ns>/s/<sha256(tag)>` (prefix
+  `bun-cache`, at most 200 bytes; the namespace through `encodeSegment`); a
+  value is a frame ("BK", format 1, `expiresAt`, tags) and the core's bytes.
+  `get` one `GET`; `getMany` parallel `GET`s, 16 at a time; `set` one raw
+  `PUT`; `setMany` one bulk write per 10,000 (base64 on the wire); `delete`
+  a read per key (the count) and one bulk delete; `clear` lists and
+  bulk-deletes (stamps stay); stamps are read and written forward in one
+  `bulk/get` and one bulk write (KV has no compare-and-swap). Capabilities:
+  `multiProcess`, `ttl: "native"`, `tags: "stamps"`, `bus: "none"`,
+  `maxEntryBytes` 24 MiB; no `increment`, locks, `touch` (the core rewrites
+  an entry itself) or `sweep`.
+- **Tests, no account**: `__tests__/cloudflare/harness.ts` bundles the shipped
+  Worker (behind `test-worker.ts`, a front only the tests deploy) with
+  `Bun.build` and runs it in miniflare on port 0, in memory, one per file,
+  with `cf: false` (*measured*: outside `bun test` miniflare otherwise fetches
+  `workers.cloudflare.com/cf.json` and writes `./.wrangler/` in the working
+  directory). The front's **test-only switches**: KV's per-key write rate
+  (`BUN_CACHE_TEST_KV_WRITE_RATE`), a 429 for everything with a chosen
+  `Retry-After` (the five-minute block), and request counters.
+  `cloudflare-kv.test.ts` (39 pass, 12 skip: the kit's counter, lock,
+  index-tag, sweep, touch and bus cases, not advertised): the kit with its
+  two-process pass, and specifics (layout, frame, the floor read back from KV's listing,
+  expiry exact under 60 s, bulk, delete counts, `clear` past one page,
+  stamps forward, the 429 retries, the core over it: `increment` refused,
+  `lock` warning once, no sweeper). `client.test.ts` (15) and
+  `worker.test.ts` (17, with **D1's smoke test**: a schema, bytes through
+  `unhex`/`hex`, string parameters, `/raw`, a batch rolled back, `BEGIN`
+  refused). **The live lane** `cloudflare-kv-live.test.ts` on
+  `BUN_CACHE_TEST_CLOUDFLARE_*`: the REST API and a deployed Worker, each
+  skipped visibly when unset, a named failure when half set or unreachable;
+  the kit plus the floor, the per-key 429 and stamps through `bulk/get`; keys
+  under the run's prefix, deleted by exact listing. Run against a local
+  Worker standing in for a deployed one: 13 pass, 13 skip.
+- **Negative controls**, each failing its tests: no 60 s floor (6), 429s not
+  retried (6), a long `Retry-After` slept through (times out), the
+  environment's token sent to a Worker (1), `http:` to any host (1), no
+  pacing (1), stamps last-writer-wins (1), `delete` counting unread keys (2),
+  a read ignoring the frame's expiry (3), `clear` taking one page (1); in the
+  Worker: any token accepted (1), an R2 bucket taken for KV (1), a D1 batch
+  run statement by statement (1), non-string parameters accepted (1), no
+  secret meaning no auth (1), binding statuses flattened to 400 (1), the
+  REST prefix stripped anywhere in the path (1).
+- **New names beyond the approved ones, approved by the user on
+  2026-10-28**: the type `BunCacheWorkerEnv` (the Worker's `env`, exported by
+  `./cloudflare-worker`) and the driver's name string `"cloudflare-kv"`; and
+  the binding-name meaning of `namespaceId`/`databaseId` with an `endpoint`.
+  The deep-only `CloudflareKvCacheDriver` class and the client module follow
+  the S3 driver's precedent (not in the barrel).
+- **Gate** (Bun 1.4.4-canary.1+a0cc096ce, every local URL, on develop
+  `251a64f1`): `bun scripts/typecheck.ts` 21 projects clean; bun-cache check
+  178 files clean, lint 0 errors, format clean; suite 790 pass, 50 skip, 0
+  fail; `--randomize --seed=1` and `=2` the same, `=3` 789 pass, 1 fail
+  twice — `mongodb.test.ts`'s change-stream history-lost case, which fails
+  4 of 6 runs alone on develop `251a64f1` too: its `failCommand` fail point
+  on `getMore` is server-wide, so any other client of the shared replica
+  set can take its one hit (an `appName` filter would scope it; not fixed
+  here); consumer-check 76 of 76 cells, 12 of 12 runtime imports;
+  `examples/bun-cache` 15 passed, 5 skipped; `bun-timings.json` refreshed;
+  `--frozen-lockfile` clean after the lock change (miniflare's
+  `@cspotcode/source-map-support` pins `@jridgewell/trace-mapping` 0.3.9,
+  which Bun now hoists; 0.3.31 stays nested where it was asked for).
+- **Rebased onto develop `ec3eb55a`** (after PR-C8 #562, the encryption
+  plan #561, PR-H2 #563, the decompression cap #564 and #565), keeping both
+  sides of every conflict. The canary on this machine moved from
+  `a0cc096ce` to `11c367163` meanwhile. Gate on `11c367163`, every local URL
+  (Azure's included): `bun scripts/typecheck.ts` 21 projects clean;
+  bun-cache check 189 files clean, lint 0 errors, format clean (118 files),
+  root format clean (2,199); suite 898 pass, 55 skip, 0 fail;
+  `--randomize --seed=1` 898 pass, 55 skip, 0 fail; consumer-check 76 of 76
+  cells, 12 of 12 runtime imports; `bun-timings.json` regenerated;
+  `--frozen-lockfile` clean (the lock is develop's plus miniflare's tree).
+  Runs at loads of 30–68 failed elsewhere (MongoDB, SQLite and file-driver
+  timing cases, and the MongoDB change-stream case above, which failed on a
+  develop worktree in the same window too) and once here: **under `bun test
+  --parallel`, a test that times out makes Bun SIGTERM the file's workerd**,
+  though miniflare started it at the top level and no test did, so the rest
+  of the file failed with `ECONNREFUSED` (the log says "killed 2 dangling
+  processes"). Reduced to a Bun-only repro (a top-level `Bun.spawn` is killed
+  under `--parallel` and survives without it) and added to the existing
+  [oven-sh/bun#46373](https://github.com/oven-sh/bun/issues/46373) (which
+  covers `beforeAll`). Workaround: the three Cloudflare test files set a
+  30 s default timeout, with a comment naming the issue.
+- **The live lane, run on the user's account (2026-10-28)**, against a test
+  namespace and the deployed Worker (this
+  `worker.ts`): **REST API and Worker together 24 pass, 26 skip, 0 fail**
+  (the Worker lane 13 pass, 12 skip; the REST lane 11 pass, 14 skip), every
+  key deleted after. The first run failed the REST lane's kit `delete` and
+  `clear` cases: they read a key right after deleting it, and through the
+  REST API a deleted key kept being served — **measured: 52 s** for a delete,
+  0.7 s for an overwrite, against about 0.4 s for both through the Worker.
+  That is KV's eventual consistency, so the REST lane skips those two cases
+  with that reason (the Worker lane runs them); the README states the
+  figures. Three quick writes to one key drew no 429 on either transport.
+  The first run's clean-up hook also outran bun's 5 s hook default (now
+  120 s). **The 500 the coordinator saw** from the deployed Worker on a
+  missing key is gone (404 `10009` on both path forms, the REST prefix
+  included): `worker.ts` answers 500 only when `BUN_CACHE_PROXY_TOKEN` is
+  unset, so the secret was not yet active when it was probed.
+
 
 ### Contents
 
@@ -3524,6 +3712,11 @@ Every new public name.
 | `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache` | interceptor, decorators | bun-nest `./cache` | `@nestjs/cache-manager`'s names, where they exist (Q9) |
 | `bun_cache_` (SQL, MongoDB), `bun-cache` (Redis, file, S3) | default prefixes | drivers | the package name |
 | `BUN_CACHE_TEST_<X>_URL`, `BUN_CACHE_TEST_S3_URL` | env variables | tests, `setup-databases.ts` | beside `BUN_JOBS_TEST_*` |
+| `./cloudflare-worker` | subpath | bun-cache | *approved by the user 2026-10-28 (the Cloudflare spike)*: the Worker the Cloudflare drivers' `endpoint` points at |
+| `accountId`, `apiToken`, `namespaceId`, `databaseId`, `endpoint`, `prefix`; `CloudflareKvDriverOptions`, `CloudflareD1DriverOptions` | options; types | `cloudflareKvDriver`, `cloudflareD1Driver` | *approved by the user 2026-10-28*; `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` (Wrangler's names) read when absent, for the REST API only |
+| `BUN_CACHE_PROXY_TOKEN` | Worker secret | `./cloudflare-worker` | *approved by the user 2026-10-28* |
+| `BUN_CACHE_TEST_CLOUDFLARE_{ACCOUNT_ID,API_TOKEN,KV_NAMESPACE_ID,D1_DATABASE_ID,PROXY_URL,PROXY_TOKEN}` | env variables | the opt-in live lanes | *approved by the user 2026-10-28* |
+| `BunCacheWorkerEnv`; `"cloudflare-kv"` | type; driver name | `./cloudflare-worker`; `cloudflareKvDriver` | *built in PR-C10, approved by the user 2026-10-28*: the Worker's `env` (its secret and bindings), and the driver's `name`, after `"s3"` |
 
 ---
 

@@ -1,0 +1,3 @@
+max text param length: 2200000
+max zeroblob length: 2200000
+max hex(blob) result blob length: 1099999

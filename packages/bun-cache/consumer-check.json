@@ -22,7 +22,8 @@
         "redisBus",
         "redisDriver",
         "s3Driver",
-        "azureBlobDriver"
+        "azureBlobDriver",
+        "cloudflareKvDriver"
       ],
       "types": [
         "Cache",
@@ -58,9 +59,10 @@
         "RedisDriverOptions",
         "S3DriverOptions",
         "AzureBlobDriverOptions",
-        "AzureBlobConnection"
+        "AzureBlobConnection",
+        "CloudflareKvDriverOptions"
       ],
-      "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;\nconst tiered = m.createCache({ driver: m.memoryDriver(), l1: { maxEntries: 10, ttl: 1000, clone: true }, bus: \"auto\" });\nexport type _l1Hits = Equal<NonNullable<ReturnType<typeof tiered.stats>[\"l1\"]>[\"hits\"], number>;\nexport const _l2Read: Promise<unknown> = tiered.get(\"k\", { tier: \"l2\" });\nconst bus: t.CacheBus = m.redisBus({ url: \"redis://127.0.0.1:6379\", prefix: \"app\" });\nexport type _busNotAny = Expect<IsAny<typeof bus>>;\nexport const _pg: t.CacheBus = m.pgBus(\"postgres://localhost/app\");\nexport type _redisOptionsNotAny = Expect<IsAny<t.RedisBusOptions>>;\nexport type _pgOptionsNotAny = Expect<IsAny<t.PgBusOptions>>;\nexport const _redis: t.CacheDriver = m.redisDriver({ url: \"redis://127.0.0.1:6379/0\", prefix: \"app\", firstConnectTimeout: 500 });\nexport type _redisDriverOptionsNotAny = Expect<IsAny<t.RedisDriverOptions>>;\nconst mongo = m.mongoDriver({ url: \"mongodb://127.0.0.1:27017/app\", collections: { entries: \"app_cache\" }, maxEntries: 1000 });\nexport type _mongoIsDriver = Equal<typeof mongo extends t.CacheDriver ? true : false, true>;\nexport type _mongoCollection = Equal<t.MongoCacheCollection, \"entries\" | \"stamps\" | \"locks\" | \"bus\">;\nexport type _mongoClientNotAny = Expect<IsAny<t.MongoClientLike>>;\nexport const _s3: t.CacheDriver = m.s3Driver({ url: \"s3://key:secret@127.0.0.1:8333/bucket?scheme=http\", prefix: \"app\", maxEntries: 1000, conditionalWrites: true });\nexport const _s3Connection: t.S3DriverOptions = { connection: { bucket: \"b\", region: \"eu-west-1\" }, maxBytes: 1 << 30 };\nexport type _s3DriverOptionsNotAny = Expect<IsAny<t.S3DriverOptions>>;\nexport const _azure: t.CacheDriver = m.azureBlobDriver({ url: \"azure://acct:a2V5@acct.blob.core.windows.net/cache\", prefix: \"app\", maxEntries: 1000 });\nexport const _azureConnection: t.AzureBlobDriverOptions = { connection: { connectionString: \"UseDevelopmentStorage=true\", container: \"c\" }, maxBytes: 1 << 30 };\nexport type _azureConnectionNotAny = Expect<IsAny<t.AzureBlobConnection>>;"
+      "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;\nconst tiered = m.createCache({ driver: m.memoryDriver(), l1: { maxEntries: 10, ttl: 1000, clone: true }, bus: \"auto\" });\nexport type _l1Hits = Equal<NonNullable<ReturnType<typeof tiered.stats>[\"l1\"]>[\"hits\"], number>;\nexport const _l2Read: Promise<unknown> = tiered.get(\"k\", { tier: \"l2\" });\nconst bus: t.CacheBus = m.redisBus({ url: \"redis://127.0.0.1:6379\", prefix: \"app\" });\nexport type _busNotAny = Expect<IsAny<typeof bus>>;\nexport const _pg: t.CacheBus = m.pgBus(\"postgres://localhost/app\");\nexport type _redisOptionsNotAny = Expect<IsAny<t.RedisBusOptions>>;\nexport type _pgOptionsNotAny = Expect<IsAny<t.PgBusOptions>>;\nexport const _redis: t.CacheDriver = m.redisDriver({ url: \"redis://127.0.0.1:6379/0\", prefix: \"app\", firstConnectTimeout: 500 });\nexport type _redisDriverOptionsNotAny = Expect<IsAny<t.RedisDriverOptions>>;\nconst mongo = m.mongoDriver({ url: \"mongodb://127.0.0.1:27017/app\", collections: { entries: \"app_cache\" }, maxEntries: 1000 });\nexport type _mongoIsDriver = Equal<typeof mongo extends t.CacheDriver ? true : false, true>;\nexport type _mongoCollection = Equal<t.MongoCacheCollection, \"entries\" | \"stamps\" | \"locks\" | \"bus\">;\nexport type _mongoClientNotAny = Expect<IsAny<t.MongoClientLike>>;\nexport const _s3: t.CacheDriver = m.s3Driver({ url: \"s3://key:secret@127.0.0.1:8333/bucket?scheme=http\", prefix: \"app\", maxEntries: 1000, conditionalWrites: true });\nexport const _s3Connection: t.S3DriverOptions = { connection: { bucket: \"b\", region: \"eu-west-1\" }, maxBytes: 1 << 30 };\nexport type _s3DriverOptionsNotAny = Expect<IsAny<t.S3DriverOptions>>;\nexport const _azure: t.CacheDriver = m.azureBlobDriver({ url: \"azure://acct:a2V5@acct.blob.core.windows.net/cache\", prefix: \"app\", maxEntries: 1000 });\nexport const _azureConnection: t.AzureBlobDriverOptions = { connection: { connectionString: \"UseDevelopmentStorage=true\", container: \"c\" }, maxBytes: 1 << 30 };\nexport type _azureConnectionNotAny = Expect<IsAny<t.AzureBlobConnection>>;\nexport const _kv: t.CacheDriver = m.cloudflareKvDriver({ accountId: \"acc\", apiToken: \"tok\", namespaceId: \"ns\", prefix: \"app\" });\nexport const _kvWorker: t.CloudflareKvDriverOptions = { endpoint: \"https://bun-cache.example.workers.dev\", apiToken: \"secret\", namespaceId: \"CACHE_KV\" };\nexport type _kvOptionsNotAny = Expect<IsAny<t.CloudflareKvDriverOptions>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-cache/lib",
@@ -105,6 +107,20 @@
       "types": ["CacheResponseOptions"]
     },
     {
+      "$comment": "The Worker the Cloudflare drivers' endpoint points at, which users deploy (plan Status, PR-C10). It runs on Cloudflare's runtime, so it is checked as a browser entry: no Node or Bun types in its graph, and it imports nothing.",
+      "spelling": "@kingsleyweb/bun-cache/cloudflare-worker",
+      "browser": true,
+      "values": ["default"],
+      "types": ["BunCacheWorkerEnv"],
+      "snippet": "export type _fetchNotAny = Expect<IsAny<typeof m.default.fetch>>;\nexport const _answer: Promise<Response> = m.default.fetch(new Request(\"https://bun-cache.example.workers.dev/storage/kv/namespaces/CACHE_KV/keys\"), { BUN_CACHE_PROXY_TOKEN: \"secret\", CACHE_KV: {} });\nconst env: t.BunCacheWorkerEnv = { BUN_CACHE_PROXY_TOKEN: \"secret\" };\nexport type _envSecret = Equal<typeof env.BUN_CACHE_PROXY_TOKEN, string | undefined>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/cloudflare/worker",
+      "browser": true,
+      "values": ["default"],
+      "types": ["BunCacheWorkerEnv"]
+    },
+    {
       "spelling": "@kingsleyweb/bun-cache/lib/drivers",
       "values": [
         "memoryDriver",
@@ -116,7 +132,8 @@
         "redisDriver",
         "mongoDriver",
         "s3Driver",
-        "azureBlobDriver"
+        "azureBlobDriver",
+        "cloudflareKvDriver"
       ],
       "types": [
         "MemoryDriverOptions",
@@ -130,7 +147,8 @@
         "MongoCacheCollection",
         "S3DriverOptions",
         "AzureBlobDriverOptions",
-        "AzureBlobConnection"
+        "AzureBlobConnection",
+        "CloudflareKvDriverOptions"
       ]
     },
     {

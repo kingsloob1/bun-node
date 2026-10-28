@@ -1,0 +1,2 @@
+first invalidation (INSERT path): counted 1 meta.changes 3 left 0
+second invalidation (DO UPDATE path): counted 2 meta.changes 5 left 0

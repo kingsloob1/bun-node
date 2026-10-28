@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.1.0",
   "private": false,
-  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3 and Azure Blob Storage drivers, an HTTP response cache for bun-common (./http), and a conformance kit for custom drivers",
+  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage and Cloudflare KV drivers, an HTTP response cache for bun-common (./http), and a conformance kit for custom drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-cache#readme",
@@ -34,7 +34,10 @@
     "redis",
     "s3",
     "azure",
-    "azure-blob-storage"
+    "azure-blob-storage",
+    "cloudflare",
+    "cloudflare-kv",
+    "workers-kv"
   ],
   "exports": {
     ".": {
@@ -66,6 +69,11 @@
       "@kingsleyweb/source": "./lib/http/index.ts",
       "types": "./dts/http/index.d.ts",
       "default": "./lib/http/index.ts"
+    },
+    "./cloudflare-worker": {
+      "@kingsleyweb/source": "./lib/cloudflare/worker.ts",
+      "types": "./dts/cloudflare/worker.d.ts",
+      "default": "./lib/cloudflare/worker.ts"
     },
     "./lib/drivers": {
       "@kingsleyweb/source": "./lib/drivers/index.ts",
@@ -145,6 +153,7 @@
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "bun-types": "^1.4.3",
+    "miniflare": "4.20260730.0",
     "mongodb": "^6",
     "typescript": "^6.0.3",
     "zod": "^4"
