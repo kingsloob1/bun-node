@@ -114,10 +114,14 @@ export interface CacheResponseOptions {
    * `private` and the rest still apply); or `"headers"`, which reads
    * `Surrogate-Control: max-age`, then `s-maxage`, then `max-age`, then
    * `Expires` (Fastly's precedence) less the response's own `Age`, and does
-   * not store a response that has none. Defaults to `"headers"`, so a route
-   * caches what its `Cache-Control` (bun-common's `cacheControl()`) says.
+   * not store a response that has none; or `"headers-or-cache"`, which reads
+   * the same headers and, for a response that has none, falls back to the
+   * cache's own TTL (`createCache`'s `ttl`: a number, a function of the
+   * value, or `null`, never stale) instead of not storing it. Defaults to
+   * `"headers"`, so a route caches what its `Cache-Control` (bun-common's
+   * `cacheControl()`) says.
    */
-  ttl?: number | "headers";
+  ttl?: number | "headers" | "headers-or-cache";
   /**
    * Tags for every entry this route stores, beside the path's own tag and
    * any `addCacheTags()` added: a list, or a function of the request and
@@ -276,7 +280,9 @@ export type CacheResponseMiddleware = RouterHandler & {
    * Drops every entry stored for a path — all queries, all variants —
    * through the path's own tag. Takes a path (`"/posts/7"`), an absolute
    * URL, a `Request` or a `BunRequest`; with `host: true` it needs the host,
-   * so a bare path throws a `TypeError`.
+   * so a bare path throws a `TypeError`. Resolves once the entries are
+   * dropped; writes this middleware still had in flight for the path are
+   * dropped again, in the background, once they land.
    */
   invalidate: (target: string | Request | BunRequest) => Promise<void>;
 };
@@ -359,7 +365,7 @@ interface StaleEntry {
   vary: readonly string[];
   /** The stored response. */
   response: StoredResponse;
-  /** The frame as stored at `key`, which coalesced followers decode. */
+  /** The frame at `key`, carrying the entry's `freshUntil` (re-encoded when the stored one differs): what coalesced followers decode. Never written back. */
   frame: Uint8Array;
   /** When it stopped being fresh (the core entry's `freshUntil`), epoch ms; the windows count from here. */
   freshUntil: number;
@@ -459,7 +465,7 @@ export function cacheResponse(
   options: CacheResponseOptions = {},
 ): CacheResponseMiddleware {
   const ttl = options.ttl ?? "headers";
-  if (ttl !== "headers") {
+  if (ttl !== "headers" && ttl !== "headers-or-cache") {
     duration("ttl", ttl);
   }
   const statusHeader =
@@ -552,12 +558,69 @@ export function cacheResponse(
   /** Invalidations started by this middleware and not finished, by tag: a GET for the path waits for them. */
   const pending = new Map<string, Promise<void>>();
 
-  /** Invalidates `tags`, tracked in {@link pending} until it settles. */
+  /**
+   * The writes this middleware has in flight, by the path's tag: a capture's,
+   * from the moment its transform runs until what it stores (an entry, a
+   * marker, or nothing) is written — at most `wait`. An invalidation of the
+   * path runs again once they have settled: a plain `set` (an uncoalesced
+   * miss) is fenced only against invalidations after it was issued, and a
+   * streamed body's is issued when the stream ends, so without the second
+   * pass it could put back what the invalidation just dropped.
+   */
+  const writing = new Map<string, Set<Promise<void>>>();
+
+  /** Tracks `settled`, a capture's write, under `tag` until it settles or `wait` passes. */
+  const trackWrite = (tag: string, settled: Promise<void>): void => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const capped = Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, wait);
+        timer.unref?.();
+      }),
+    ]).finally(() => {
+      clearTimeout(timer);
+    });
+    let writes = writing.get(tag);
+    if (writes === undefined) {
+      writes = new Set();
+      writing.set(tag, writes);
+    }
+    const own = writes;
+    own.add(capped);
+    void capped.then(() => {
+      own.delete(capped);
+      if (own.size === 0 && writing.get(tag) === own) {
+        writing.delete(tag);
+      }
+    });
+  };
+
+  /**
+   * Invalidates `tags`, tracked in {@link pending} until it settles; and
+   * again, in the background, once the writes in flight under them have
+   * settled (see {@link writing}). The caller waits for the first pass only.
+   */
   const invalidateTracked = (tags: readonly string[]): Promise<void> => {
+    const inflight: Promise<void>[] = [];
+    for (const tag of tags) {
+      for (const write of writing.get(tag) ?? []) {
+        inflight.push(write);
+      }
+    }
     const done = cache.invalidateTags(tags).catch(() => {
       // The failure policy has reported it (an `error` event); a strict
       // cache's throw must not become an unhandled rejection here.
     });
+    if (inflight.length > 0) {
+      void Promise.all([done, ...inflight])
+        .then(async () => {
+          await cache.invalidateTags(tags);
+        })
+        .catch(() => {
+          // Reported by the failure policy, as above.
+        });
+    }
     for (const tag of tags) {
       pending.set(tag, done);
     }
@@ -722,6 +785,9 @@ export function cacheResponse(
             // answer, or a late one bun-common already refuses to send.
             return conditional ? answerConditional(req, response) : response;
           }
+          // From here the outcome is always reported: an invalidation of
+          // the path waits for what it writes.
+          trackWrite(exchange.tag, handled.promise);
           const now = Date.now();
           if (
             stale !== undefined &&
@@ -850,7 +916,10 @@ export function cacheResponse(
                     headers: decision.headers,
                     storedAt: now,
                     age: decision.age,
-                    freshUntil: now + decision.ttl,
+                    // Under the cache's own TTL the core decides;
+                    // the entry's `freshUntil` is read back on a hit.
+                    freshUntil:
+                      decision.ttl === undefined ? null : now + decision.ttl,
                     staleWhileRevalidate: decision.staleWhileRevalidate,
                     staleIfError: decision.staleIfError,
                   },
@@ -1081,22 +1150,40 @@ export function cacheResponse(
       key: string,
       variant: Variant | undefined,
       vary: readonly string[],
-      response: StoredResponse,
-    ): Lookup =>
-      !at.stale || at.freshUntil === null
-        ? { kind: "hit", response }
-        : {
-            kind: "stale",
-            entry: {
-              base: exchange.base,
-              key,
-              variant,
-              vary,
-              response,
-              frame: at.raw,
-              freshUntil: at.freshUntil,
-            },
-          };
+      stored: StoredResponse,
+    ): Lookup => {
+      // The core entry decides when a response goes stale: under the cache's
+      // own TTL (`"headers-or-cache"`) the stored response does not know
+      // (`freshUntil: null`), and a cache's `jitter` moves it. What is
+      // answered — and a stale frame handed to coalesced followers, which
+      // read `X-Cache` from it — carries the entry's.
+      const response =
+        stored.meta.freshUntil === at.freshUntil
+          ? stored
+          : { ...stored, meta: { ...stored.meta, freshUntil: at.freshUntil } };
+      if (!at.stale || at.freshUntil === null) {
+        return { kind: "hit", response };
+      }
+      let frame = at.raw;
+      if (response !== stored) {
+        frame =
+          at.frame.kind === "vary"
+            ? encodeVary({ ...at.frame.record, response })
+            : encodeResponse(response);
+      }
+      return {
+        kind: "stale",
+        entry: {
+          base: exchange.base,
+          key,
+          variant,
+          vary,
+          response,
+          frame,
+          freshUntil: at.freshUntil,
+        },
+      };
+    };
     const base = await read(exchange.base);
     if (base === undefined) {
       return { kind: "miss", key: exchange.base, variant: undefined };

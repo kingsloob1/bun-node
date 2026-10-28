@@ -667,6 +667,89 @@ describe("stale-if-error (§9.4)", () => {
   });
 });
 
+describe("X-Cache under either lifetime: the header's, or the cache's own", () => {
+  /**
+   * `/r` under `ttl` mode `mode`, over a cache whose own TTL is 10 s: the
+   * first answer is fresh 10 s either way (`max-age=10` for `"headers"`,
+   * nothing for `"headers-or-cache"`), with the route's stale windows.
+   */
+  function lifetimeFixture(mode: "headers" | "headers-or-cache") {
+    const cache = makeHttpCache({ ttl: 10_000 });
+    const router = new BunRouter();
+    let runs = 0;
+    let fail: Promise<void> | undefined;
+    router.get(
+      "/r",
+      cacheResponse(cache, {
+        ttl: mode,
+        staleWhileRevalidate: 30_000,
+        staleIfError: 600_000,
+      }),
+      async (_req, res) => {
+        runs++;
+        if (fail !== undefined) {
+          await fail;
+          throw new Error("origin down");
+        }
+        if (mode === "headers") {
+          res.setHeader("Cache-Control", "max-age=10");
+        }
+        res.send(`body ${runs}`);
+      },
+    );
+    router.use(((_err, _req, res, _next) => {
+      res.status(503).send("down");
+    }) satisfies RouterErrorMiddlewareHandler);
+    return {
+      cache,
+      router,
+      runs: () => runs,
+      failAfter: (gate: Promise<void>) => {
+        fail = gate;
+      },
+    };
+  }
+
+  for (const mode of ["headers", "headers-or-cache"] as const) {
+    test(`direct: HIT while fresh, STALE inside the window (ttl: "${mode}")`, async () => {
+      const f = lifetimeFixture(mode);
+      at(0);
+      const written = nextSet(f.cache);
+      await f.router.fetch("/r");
+      await written;
+      at(5);
+      expect((await f.router.fetch("/r")).headers.get("x-cache")).toBe("HIT");
+      at(20);
+      expect((await f.router.fetch("/r")).headers.get("x-cache")).toBe("STALE");
+    });
+
+    test(`coalesced followers of a failing leader read STALE, not HIT (ttl: "${mode}")`, async () => {
+      const f = lifetimeFixture(mode);
+      at(0);
+      const written = nextSet(f.cache);
+      await f.router.fetch("/r");
+      await written;
+      const gate = createDeferred<void>();
+      f.failAfter(gate.promise);
+      // Past stale-while-revalidate, inside stale-if-error: misses that
+      // coalesce behind one failing leader, which keeps the stale entry.
+      at(100);
+      const responses = Array.from(
+        { length: 4 },
+        async () => await f.router.fetch("/r"),
+      );
+      await Bun.sleep(5);
+      gate.resolve();
+      for (const response of await Promise.all(responses)) {
+        expect(response.status).toBe(200);
+        expect(response.headers.get("x-cache")).toBe("STALE");
+        expect(await response.text()).toBe("body 1");
+      }
+      expect(f.runs()).toBe(2);
+    });
+  }
+});
+
 describe("coalescing beside a replay (§9.4, §9.5)", () => {
   test("a miss arriving while a replay runs joins it: one handler run", async () => {
     const f = fixture({ staleIfError: 0 });

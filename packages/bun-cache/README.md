@@ -1760,7 +1760,14 @@ status is in `statuses` (by default RFC 9110's heuristically cacheable set:
 - a lifetime: `ttl` in ms (which overrides the freshness headers, not the
   refusals above), or with `ttl: "headers"` (the default)
   `Surrogate-Control: max-age`, then `s-maxage`, then `max-age`, then
-  `Expires` less `Date`, minus the response's own `Age`.
+  `Expires` less `Date`, minus the response's own `Age`. With
+  `ttl: "headers-or-cache"` the same headers are read, and a response that
+  has none is stored under the cache's own TTL (`createCache`'s `ttl`: a
+  number, a function of the value, or `null` for no expiry) instead of not
+  at all; a header's lifetime still wins, a lifetime of `0` included, and
+  every refusal above still applies. Either way, `HIT` or `STALE` is judged
+  by the entry's own freshness (what the core decided, `jitter` included),
+  on a coalesced follower's answer too.
 
 Never stored: hop-by-hop fields, `Content-Length`, `Age`, the status header,
 `omitHeaders`, and any header a middleware **ahead** of the cache set and the
@@ -1789,7 +1796,12 @@ for a same-host `Location` or `Content-Location` (RFC 9111 §4.4;
 `invalidateOnUnsafe: false` turns it off); a `GET` in the same process waits
 for that invalidation before it reads. Every entry carries its path's tag,
 so `pages.invalidate(path | url | request)` drops a path's queries and
-variants; the `tags` option (a list, or `(req, res) => tags`) and
+variants. Either invalidation also runs a second time, in the background,
+once the writes this middleware had in flight for the path have landed (at
+most `coalesce.wait`): an uncoalesced write, or one whose body is still
+being read (a stream, a sent file), is issued after the invalidation and no
+fence covers it, so without the second pass it could put back what was just
+dropped; the `tags` option (a list, or `(req, res) => tags`) and
 `addCacheTags(res, ...tags)` from the handler add more for
 `cache.invalidateTags()`.
 
@@ -1826,7 +1838,7 @@ or `no-cache` is not shared.
 
 | Option | Default | |
 |---|---|---|
-| `ttl` | `"headers"` | ms, or the freshness headers |
+| `ttl` | `"headers"` | ms; the freshness headers; or `"headers-or-cache"`, the headers else the cache's TTL |
 | `tags` | none | a list, or `(req, res) => tags` |
 | `varyBy` | none | request headers in the key |
 | `query` | `"all"` | `"all"`, names to keep, or `false` |
