@@ -33,6 +33,7 @@ export type {
   CacheErrorPhase,
   CacheEvent,
   CacheEventMap,
+  CacheFencedReason,
   CacheLoader,
   CacheLoaderContext,
   CacheLoadDurations,

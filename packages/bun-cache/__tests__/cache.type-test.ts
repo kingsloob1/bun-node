@@ -12,6 +12,8 @@ import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import { z } from "zod";
 import type {
   CacheEntry,
+  CacheEventMap,
+  CacheFencedReason,
   CacheSchemaFrom,
   CreateCacheOptions,
 } from "../lib/index";
@@ -158,3 +160,14 @@ type _json = Expect<
 >;
 void json;
 void validated;
+
+/* --- the `fenced` event says which mechanism dropped the write ------- */
+
+type _fencedReason = Expect<
+  Equal<CacheEventMap["fenced"]["reason"], CacheFencedReason>
+>;
+type _fencedReasons = Expect<Equal<CacheFencedReason, "fence" | "local">>;
+untyped.on("fenced", ({ reason }) => {
+  // @ts-expect-error -- a closed union: a reason outside it is a compile error
+  void (reason === "remote");
+});

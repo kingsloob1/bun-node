@@ -40,6 +40,7 @@ import type {
   CacheEntry,
   CacheEvent,
   CacheEventMap,
+  CacheFencedReason,
   CacheLoader,
   CacheLockOptions,
   CacheSchema,
@@ -227,6 +228,21 @@ class CacheImpl<
   /** Emits an event. */
   #emit<E extends CacheEvent>(event: E, payload: CacheEventMap[E]): void {
     this.#state.events.emit(event, payload);
+  }
+
+  /**
+   * Reports a loaded value that was not stored because an invalidation won
+   * the race: the `fenced` event and the `fenced` stat, the same for the
+   * driver's tag fence and for a flight a local delete/clear/invalidation
+   * forgot (§3.4, §3.6).
+   */
+  #reportFenced(
+    key: string,
+    tags: readonly Tag[],
+    reason: CacheFencedReason,
+  ): void {
+    this.#state.stats.fenced++;
+    this.#emit("fenced", { key, namespace: this.#ns, tags, reason });
   }
 
   /**
@@ -741,7 +757,7 @@ class CacheImpl<
       "fenced" as const,
     );
     if (result === "fenced") {
-      this.#emit("fenced", { key, namespace: this.#ns, tags: init.tags });
+      this.#reportFenced(key, init.tags, "fence");
       return false;
     }
     state.stats.sets++;
@@ -1028,8 +1044,12 @@ class CacheImpl<
             let storedValue = false;
             // A delete, clear or invalidateTags that landed while we loaded
             // forgot this flight (§3.4): its write is dropped — the fence
-            // covers tagged keys, this covers the rest.
+            // covers tagged keys, this covers the rest — and reported like a
+            // fenced one, so listeners and stats see every dropped write.
             const forgotten = state.flights.get(flightKey) !== flight;
+            if (stores && forgotten) {
+              this.#reportFenced(key, options.tags ?? [], "local");
+            }
             if (stores && !forgotten) {
               storedValue = await this.#write(key, stored, value, {
                 ttl: this.#ttlForLoad(value, options),

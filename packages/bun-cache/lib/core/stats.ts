@@ -26,6 +26,8 @@ export class CacheStatsCounter {
   misses = 0;
   /** Entries stored. */
   sets = 0;
+  /** Loaded values dropped because an invalidation won the race (`fenced` events). */
+  fenced = 0;
   /** Keys deleted. */
   deletes = 0;
   /** Loader runs. */
@@ -88,6 +90,7 @@ export class CacheStatsCounter {
       staleHits: this.staleHits,
       misses: this.misses,
       sets: this.sets,
+      fenced: this.fenced,
       deletes: this.deletes,
       loads: this.loads,
       loadErrors: this.loadErrors,
@@ -108,6 +111,7 @@ export class CacheStatsCounter {
       this.staleHits = 0;
       this.misses = 0;
       this.sets = 0;
+      this.fenced = 0;
       this.deletes = 0;
       this.loads = 0;
       this.loadErrors = 0;

@@ -266,6 +266,9 @@ export interface CompressOptions {
 export type CacheErrorPhase =
   "driver" | "decode" | "validate" | "refresh" | "lock";
 
+/** Why a `fenced` event's write was dropped: the driver's tag fence, or a local delete/clear/invalidation that forgot the flight (§3.4, §3.6). */
+export type CacheFencedReason = "fence" | "local";
+
 /** The events a cache emits (§3.12). Listeners are synchronous and isolated: a throwing one is logged, never breaks the operation. */
 export interface CacheEventMap {
   /** A read found a fresh entry. */
@@ -276,8 +279,26 @@ export interface CacheEventMap {
   miss: { key: string; namespace: string };
   /** An entry was stored. */
   set: { key: string; namespace: string; bytes: number };
-  /** A write was refused by the tag fence (§3.6). The value is still returned to its loader's caller. */
-  fenced: { key: string; namespace: string; tags: readonly string[] };
+  /**
+   * A loaded value was not stored because an invalidation won the race
+   * (§3.4, §3.6). The value is still returned to its loader's caller.
+   */
+  fenced: {
+    key: string;
+    namespace: string;
+    /** The tags the dropped entry would have carried (empty for an untagged write). */
+    tags: readonly string[];
+    /**
+     * Who refused the write. `"fence"`: the driver's tag fence — one of
+     * `tags` was invalidated after the load started, by any cache on the
+     * driver, in this process or another. `"local"`: a `delete`,
+     * `deleteMany`, `clear`, `invalidateTags` or `increment` on this cache,
+     * in the load's own namespace, ran while the load ran and forgot the
+     * flight; the write is dropped before it reaches the driver, tagged or
+     * not, and whichever tags were invalidated.
+     */
+    reason: CacheFencedReason;
+  };
   /** A key was deleted. */
   delete: { key: string; namespace: string };
   /** Tags were invalidated. */
@@ -337,6 +358,8 @@ export interface CacheStats {
   misses: number;
   /** Entries stored. */
   sets: number;
+  /** Loaded values not stored because an invalidation won the race: every `fenced` event, whatever its `reason`. */
+  fenced: number;
   /** Keys deleted (delete, deleteMany, clear, tag invalidation). */
   deletes: number;
   /** Loader runs. */
