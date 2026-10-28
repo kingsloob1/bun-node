@@ -239,4 +239,25 @@ describe("this package's optional peers", () => {
     );
     expect(peersOf("@kingsleyweb/bun-nest")).toEqual([]);
   });
+
+  it("scopes @kingsleyweb/bun-cache to the cache subpath, never the root or the tokens", () => {
+    const peersOf = (spelling: string) =>
+      checkConfig.entries?.find((e) => e.spelling === spelling)?.peers ?? [];
+    expect(optional.has("@kingsleyweb/bun-cache")).toBe(true);
+    expect(peersOf("@kingsleyweb/bun-nest/cache")).toEqual([
+      "@kingsleyweb/bun-cache",
+    ]);
+    expect(peersOf("@kingsleyweb/bun-nest/lib/cache")).toEqual([
+      "@kingsleyweb/bun-cache",
+    ]);
+    expect(peersOf("@kingsleyweb/bun-nest")).toEqual([]);
+    // The tokens and the error import nothing, so they are checked without it.
+    expect(
+      checkConfig.entries?.find(
+        (e) => e.spelling === "@kingsleyweb/bun-nest/lib/cache/tokens",
+      ),
+    ).toBeDefined();
+    expect(peersOf("@kingsleyweb/bun-nest/lib/cache/tokens")).toEqual([]);
+    expect(peersOf("@kingsleyweb/bun-nest/lib/cache/errors")).toEqual([]);
+  });
 });

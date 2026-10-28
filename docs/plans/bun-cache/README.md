@@ -204,7 +204,7 @@ driver unchanged under the new kit, 8 of 8 runs clean.
   as built; (2) `CacheControlOptions` and `surrogateControl` approved; (3)
   the parser is public in bun-common now, as **`parseCacheControl`** (name
   approved). Its result type, **`ParsedCacheControl`**, is a further new
-  name, built and awaiting approval.
+  name, approved by the user the same day.
 - **`parseCacheControl(value)`** reads a request's or a response's header
   (PR-H1's `ttl: "headers"`, must-revalidate check and `honorRequest`
   consume it), under `CacheControlDirectives`' keys plus the request-only
@@ -266,8 +266,7 @@ lock-timeout self-load (§3.4, never stored by design) is not reported. The
 new names (`reason`, `CacheFencedReason`, the `fenced` stat) were approved
 by the user the same day (§21).
 
-**PR-C4 built 2026-10-28** (branch `feat/bun-cache-c4-sql`, awaiting the
-maintainer's commit): `postgresDriver`, `mysqlDriver` and `mariadbDriver`
+**PR-C4 merged 2026-10-28, #551**: `postgresDriver`, `mysqlDriver` and `mariadbDriver`
 over Bun's `SQL` (§7.4, §7.5), sharing `lib/drivers/sql-base.ts`; the
 tables are SQLite's shape (`entries` with `tg` and `ca` meaning the same as
 C3's, `tags`, `stamps (… at, exp)`, `locks`, and `bus` on MySQL and
@@ -337,6 +336,92 @@ every engine; an unshortened long index name fails on MySQL (identifier too
 long) and on Postgres (silently truncated, losing the suffix); a
 prefix-only channel fails the two-table-sets test; the option ignored fails
 the sync tests; letting Postgres take a `bus` name fails its refusal test.
+
+**PR-N1 built 2026-10-28** (branch `feat/bun-nest-n1-cache`), bun-nest's
+`./cache` subpath (§10.1, §10.2, §10.5), on Nest 11 and 12:
+
+- **`BunCacheModule.forRoot` / `forRootAsync`** (`name`, `isGlobal`; async
+  with `imports`, `inject`, `useFactory`, sync or async) take `createCache`'s
+  options or `{ cache }`; each provides its cache under `getCacheToken(name)`
+  (`BUN_CACHE` for the unnamed one) and its options (`BUN_CACHE_OPTIONS` for
+  the unnamed one), exports both, and `@InjectCache(name?)` injects it. The
+  tokens are `Symbol.for` symbols in `tokens.ts`, which imports nothing.
+- **Ownership:** a cache the module created is closed at
+  **`onApplicationShutdown`**, never one passed as `{ cache }`. *Departure
+  from §10.1's `onModuleDestroy`*: `app.close()` runs
+  `onModuleDestroy → beforeApplicationShutdown → dispose() → onApplicationShutdown`
+  (`nest-application-context.js:159-162`, Nest 12.2.0), and `dispose()` is
+  where the HTTP server drains in-flight requests that may still use the
+  cache. Measured: a provider's `onModuleDestroy` still writes (`set` → `true`)
+  and the driver's `close` has run 0 times at `beforeApplicationShutdown`, 1
+  time after `close()`; with the close moved to `onModuleDestroy`, that test
+  fails.
+- **The registry:** one per application (a static internal module every
+  `BunCacheModule` imports, so Nest builds it once per app), where each module
+  registers its cache by name in `onModuleInit`; a second cache under one name
+  fails the bootstrap. A decorated method resolves its cache on each call from
+  `this`: Nest's `DiscoveryService` is scanned once initialisation has begun
+  (and again on a miss); a static instance is matched by identity, so two
+  applications in one process never share a cache through one class, and a
+  request-scoped or transient one by its class (two live applications
+  registering the same such class is reported as ambiguous). Anything else
+  throws **`CacheNotReadyError`** (`cacheName`, `method`) saying why. One
+  message covers "before init", "`new`ed" and "after close": an application
+  whose bootstrap failed leaves its registry uninitialised for good, so the
+  first version's "still initialising" heuristic misreported in a seeded run.
+- **`@Cacheable`** goes through `getOrSet` (single-flight, lock, SWR, SIE and
+  the timeouts pass through); **`@CachePut`** always runs and `set`s, its key
+  and tags computed after the method (so an id the method assigns is seen),
+  `undefined` deleting the key; **`@CacheEvict`** deletes `key`, invalidates
+  `tags` or `clear`s (`all`), after success or `beforeInvocation`, and
+  refuses to decorate without one of the three (its default key would name
+  the evicting method). `condition(...args)` before; `unless(result,
+  ...args)` after. Keys: a function typed against the method's parameters, a
+  positional template (`{0}`, `{1.page}`, `{{`/`}}`; malformed throws at
+  decoration; out of range, `undefined` or an object throws on the call), or
+  `ClassName.method:` + SHA-256 of a sorted-keys serialisation (`Map`/`Set`
+  in insertion order, documented). Errors and `undefined`: a throw rejects
+  every joiner and caches nothing (SIE serves stale); `undefined` is not
+  cached unless `cacheUndefined`; `null` is. Only `Promise`-returning
+  instance methods type-check; static methods throw at decoration; the
+  wrapper keeps the name, length and `reflect-metadata` entries.
+- **`unless` needed a core hook**: the loader context gains **`noStore()`**
+  (a new name, approved by the user on 2026-10-28), which sets the same `stores = false` the
+  lock-timeout self-load uses — every joiner gets the value, nothing is
+  written, no `set` or `fenced`; on a background refresh the stale entry
+  stays. Without it the only routes were a sentinel throw (counted as a load
+  error, and replaced by the stale value under `staleIfError`) or a
+  self-`delete` (reported as `fenced`).
+- **Typing:** `A` (the parameters) is inferred from an annotated `key`; the
+  other function options take `NonNullable<A>` so an `unless: (r: T) => …`
+  with no parameters, or a shorter `condition`, cannot shrink `A` (measured:
+  without it, `unless`'s `[]` won and the key's `(q: string)` became a
+  compile error); the method must be `(...args: [...A, ...never[]]) =>
+  Promise<R>`.
+- **Packaging** exactly as `./jobs`: `./cache` and `./lib/cache` exports,
+  `@kingsleyweb/bun-cache` an optional peer (`^0.1.0`) and a devDependency,
+  `consumer-check.json` entries with `peers` (and `./lib/cache/tokens`,
+  `./lib/cache/errors` without), `workspaceDependencies` + bun-cache;
+  `scripts/nest-matrix.ts` asserts bun-cache resolves inside a copy.
+  Measured: exporting `BunCacheModule` from the root makes `build:types` fail
+  `checkPeerScopes` on the four `dts/cache/*.d.ts`; the isolation test loads
+  the barrel and the tokens/errors leaves with bun-cache absent, while
+  `lib/cache/index.ts` fails naming it.
+- Gate (Bun 1.4.4-canary.1+a0cc096ce, off develop `cec41cfe`): bun-nest
+  check clean (372 files), lint 0 errors, format clean, suite 1307 pass, 7
+  skip, 0 fail, and the same under `--randomize --seed=1` and `=2` (the new
+  files: 15 + 33 + 10 tests and a type test); bun-cache check clean (116),
+  lint 0 errors, suite 212 pass, 22 skip, 0 fail, the same under seeds 1 and
+  2; `bun scripts/typecheck.ts` 21 projects clean; consumer-check 102 of 102
+  cells OK, 17 runtime imports (the four new spellings among them); scripts
+  172 pass; `examples/bun-nest` 34 of 34; the Nest 11.2.7 column 7 of 7
+  checks (suite 1205 pass, 126 skip, 0 fail; consumer-check 102/102).
+  Negative controls: `noStore()` a no-op (2 fail), the decorator's
+  constraint loosened (5 unused `@ts-expect-error`), and eleven runtime
+  mutations — `unless`, either `condition`, `beforeInvocation`, CachePut's
+  key timing and its `undefined` delete, the metadata copy, the close hook,
+  the ownership rule, instance-vs-class matching, the duplicate-name check —
+  each failing its test (1–2 fails each).
 
 ### Contents
 
@@ -2671,6 +2756,9 @@ Every new public name.
 | `toKeyvStore` | function | `./keyv` | says what it returns |
 | `BunCacheModule`, `forRoot`, `forRootAsync`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS` | module, decorator, tokens | bun-nest `./cache` | follow `BunJobsApiModule` and `InjectJobsApi` |
 | `Cacheable`, `CacheEvict`, `CachePut` (`key`, `ttl`, `tags`, `cache`, `condition`, `unless`, `beforeInvocation`, `all`) | method decorators | bun-nest `./cache` | Spring's names (Q9) |
+| `noStore()` | loader-context method | `CacheLoaderContext` (`getOrSet`'s loader) | *built in PR-N1, approved by the user 2026-10-28*: keeps a loaded value out of the cache (`@Cacheable`'s `unless`); after `Cache-Control: no-store` |
+| `name`, `isGlobal`; `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions` | module options; types | bun-nest `./cache` | *built in PR-N1, approved by the user 2026-10-28*: `name` is §10.1's; `isGlobal` is Nest's own (`ConfigModule`, `CacheModule`); the types after `BunJobsApiModuleOptions` |
+| `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`; `cacheName`, `method` | types; error fields | bun-nest `./cache`; `CacheNotReadyError` | *built in PR-N1, approved by the user 2026-10-28* |
 | `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache` | interceptor, decorators | bun-nest `./cache` | `@nestjs/cache-manager`'s names, where they exist (Q9) |
 | `bun_cache_` (SQL, MongoDB), `bun-cache` (Redis, file, S3) | default prefixes | drivers | the package name |
 | `BUN_CACHE_TEST_<X>_URL`, `BUN_CACHE_TEST_S3_URL` | env variables | tests, `setup-databases.ts` | beside `BUN_JOBS_TEST_*` |

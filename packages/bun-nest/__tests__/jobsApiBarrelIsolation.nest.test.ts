@@ -1,5 +1,5 @@
 /**
- * The barrel must not reach `@kingsleyweb/bun-jobs`.
+ * The barrel must not reach `@kingsleyweb/bun-jobs` or `@kingsleyweb/bun-cache`.
  *
  * Bun executes `@kingsleyweb/bun-nest`'s shipped `.ts` sources, and the
  * consumer type-checks its `dts/` declarations. If the barrel re-exported the
@@ -12,7 +12,7 @@
  * `Bun.loadedModules`, and a plugin's `onResolve` observes nothing for a
  * dynamic import, so both would make the test vacuous. Instead the package is
  * copied to a scratch directory whose `node_modules` holds everything the
- * barrel needs and deliberately **not** bun-jobs, and each entry point is
+ * barrel needs and deliberately **not** bun-jobs or bun-cache, and each entry point is
  * imported in its own process. The barrel must load; the jobs subpath must
  * fail naming the missing package — which is what makes the first assertion
  * mean something.
@@ -39,7 +39,7 @@ afterAll(async () => {
 
 /**
  * A copy of this package outside the workspace, with every dependency the
- * barrel needs linked in — except `@kingsleyweb/bun-jobs`.
+ * barrel needs linked in — except `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-cache`.
  */
 async function isolatedCopy(): Promise<string> {
   const root = `${tmpdir()}/bun-nest-isolation-${crypto.randomUUID()}`;
@@ -103,7 +103,7 @@ async function importInIsolation(
 }
 
 describe("barrel isolation", () => {
-  it("loads the barrel with bun-jobs absent, and only the subpath needs it", async () => {
+  it("loads the barrel with bun-jobs and bun-cache absent, and only their subpaths need them", async () => {
     const pkg = await isolatedCopy();
 
     // The barrel: must load with no bun-jobs anywhere.
@@ -120,5 +120,15 @@ describe("barrel isolation", () => {
     const jobs = await importInIsolation(`${pkg}/lib/jobs/index.ts`);
     expect(jobs.ok).toBe(false);
     expect(jobs.message).toContain("@kingsleyweb/bun-jobs");
+
+    // The same for bun-cache: the copy has none, so the cache subpath fails
+    // naming it, while its tokens and error — importing nothing — load.
+    const cache = await importInIsolation(`${pkg}/lib/cache/index.ts`);
+    expect(cache.ok).toBe(false);
+    expect(cache.message).toContain("@kingsleyweb/bun-cache");
+    for (const leaf of ["tokens", "errors"]) {
+      const loaded = await importInIsolation(`${pkg}/lib/cache/${leaf}.ts`);
+      expect({ leaf, ...loaded }).toEqual({ leaf, ok: true, message: "" });
+    }
   }, 30_000);
 });

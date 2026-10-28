@@ -856,7 +856,7 @@ class CacheImpl<
     const driver = state.driver;
     /** Set when this process holds the lock (and must release it). */
     let lockOwner: string | undefined;
-    /** Whether the loaded value is stored — false after a lock-timeout self-load (§3.4). */
+    /** Whether the loaded value is stored — false after a lock-timeout self-load (§3.4), or once the loader called `noStore()`. */
     let stores = true;
     try {
       const lock = this.#resolveLock(options);
@@ -999,7 +999,14 @@ class CacheImpl<
 
     let loaderPromise: Promise<unknown>;
     try {
-      loaderPromise = Promise.resolve(loader({ signal: flight.signal }));
+      loaderPromise = Promise.resolve(
+        loader({
+          signal: flight.signal,
+          noStore: () => {
+            stores = false;
+          },
+        }),
+      );
     } catch (error) {
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- rejects with what the loader threw, unchanged
       loaderPromise = Promise.reject(error);

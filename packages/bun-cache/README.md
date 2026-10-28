@@ -127,6 +127,13 @@ the same, in place of its `refresh` event.
   `LoaderTimeoutError` (`"throw"`). On a driver without locks, `lock` logs one
   warning per cache and the in-process flight still applies.
 
+- **A loader can refuse to store its own value**: it receives
+  `{ signal, noStore }`, and calling `noStore()` returns the value to every
+  caller sharing the flight while writing nothing — no `set`, no `fenced`
+  event; a background refresh that calls it leaves the stale entry as it was.
+  For a value only the loader can judge (bun-nest's `@Cacheable({ unless })`
+  uses it); a plain negative is simpler as `undefined`.
+
 **Negative caching.** A loader's `undefined` is not cached (it reads as a
 miss). `cacheUndefined: true` stores a marker — `has` then answers `true` —
 and `negativeTtl` gives it its own TTL. `null` is a value and is cached.

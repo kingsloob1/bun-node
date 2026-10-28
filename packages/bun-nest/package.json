@@ -3,7 +3,7 @@
   "type": "module",
   "version": "2.2.0",
   "private": false,
-  "description": "NestJS on Bun: an HTTP adapter matching @nestjs/platform-express, multer-style file upload interceptors and a WebSocket adapter for @WebSocketGateway, built on @kingsleyweb/bun-common",
+  "description": "NestJS on Bun: an HTTP adapter matching @nestjs/platform-express, multer-style file upload interceptors, a WebSocket adapter for @WebSocketGateway, and caching modules and decorators over @kingsleyweb/bun-cache, built on @kingsleyweb/bun-common",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-nest#readme",
@@ -32,6 +32,11 @@
       "types": "./dts/index.d.ts",
       "default": "./lib/index.ts"
     },
+    "./cache": {
+      "@kingsleyweb/source": "./lib/cache/index.ts",
+      "types": "./dts/cache/index.d.ts",
+      "default": "./lib/cache/index.ts"
+    },
     "./jobs": {
       "@kingsleyweb/source": "./lib/jobs/index.ts",
       "types": "./dts/jobs/index.d.ts",
@@ -41,6 +46,11 @@
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
       "default": "./lib/index.ts"
+    },
+    "./lib/cache": {
+      "@kingsleyweb/source": "./lib/cache/index.ts",
+      "types": "./dts/cache/index.d.ts",
+      "default": "./lib/cache/index.ts"
     },
     "./lib/jobs": {
       "@kingsleyweb/source": "./lib/jobs/index.ts",
@@ -94,6 +104,7 @@
     "format:check": "bun fmt --check"
   },
   "peerDependencies": {
+    "@kingsleyweb/bun-cache": "^0.1.0",
     "@kingsleyweb/bun-jobs": "^2.2.0",
     "@nestjs/common": "^11.1.20 || ^12.0.0",
     "@nestjs/core": "^11.1.20 || ^12.0.0",
@@ -104,6 +115,9 @@
     "typescript": "^5.9.3 || ^6.0.0"
   },
   "peerDependenciesMeta": {
+    "@kingsleyweb/bun-cache": {
+      "optional": true
+    },
     "@kingsleyweb/bun-jobs": {
       "optional": true
     },
@@ -125,6 +139,7 @@
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
+    "@kingsleyweb/bun-cache": "^0.1.0",
     "@kingsleyweb/bun-jobs": "^2.2.0",
     "@nestjs/common": "^12.2.0",
     "@nestjs/core": "^12.2.0",

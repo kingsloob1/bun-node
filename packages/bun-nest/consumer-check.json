@@ -1,6 +1,10 @@
 {
   "$comment": "Import spellings a consumer of @kingsleyweb/bun-nest writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-nest` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has them, and every other entry in one that has none.",
-  "workspaceDependencies": ["packages/bun-common", "packages/bun-jobs"],
+  "workspaceDependencies": [
+    "packages/bun-common",
+    "packages/bun-jobs",
+    "packages/bun-cache"
+  ],
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-nest",
@@ -104,6 +108,44 @@
     {
       "spelling": "@kingsleyweb/bun-nest/lib/jobs/tokens",
       "values": ["BUN_JOBS_API", "BUN_JOBS_API_OPTIONS"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/cache",
+      "peers": ["@kingsleyweb/bun-cache"],
+      "values": [
+        "BunCacheModule",
+        "InjectCache",
+        "Cacheable",
+        "CacheEvict",
+        "CachePut",
+        "CacheNotReadyError",
+        "BUN_CACHE",
+        "BUN_CACHE_OPTIONS",
+        "getCacheToken"
+      ],
+      "types": [
+        "BunCacheModuleOptions",
+        "BunCacheModuleAsyncOptions",
+        "CacheableOptions",
+        "CacheEvictOptions",
+        "CachePutOptions",
+        "Cache",
+        "CreateCacheOptions"
+      ],
+      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunCacheModule.forRoot>>>;\nexport type _cacheNotAny = Expect<IsAny<t.Cache>>;\nexport const _token: symbol = m.getCacheToken(\"reports\");\ndeclare const ok: TypedPropertyDescriptor<(id: number, q: { page: number }) => Promise<string>>;\nm.Cacheable({ key: (id: number) => `u:${id}`, unless: (r: string) => r === \"\" })({}, \"find\", ok);\ndeclare const wrongParams: TypedPropertyDescriptor<(id: string) => Promise<string>>;\n// @ts-expect-error a key function typed for other parameters is refused\nm.Cacheable({ key: (id: number) => `u:${id}` })({}, \"find\", wrongParams);\ndeclare const notAsync: TypedPropertyDescriptor<(id: number) => string>;\n// @ts-expect-error a method that does not return a Promise is refused\nm.Cacheable()({}, \"find\", notAsync);\nm.CacheEvict({ tags: (id: number) => [`u:${id}`], beforeInvocation: true })({}, \"update\", ok);"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/cache",
+      "peers": ["@kingsleyweb/bun-cache"],
+      "values": ["BunCacheModule", "Cacheable", "BUN_CACHE"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/cache/tokens",
+      "values": ["BUN_CACHE", "BUN_CACHE_OPTIONS", "getCacheToken"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/cache/errors",
+      "values": ["CacheNotReadyError"]
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/BunHttpAdapter",

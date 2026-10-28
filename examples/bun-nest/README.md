@@ -19,7 +19,7 @@ bun run-all.ts 04 10               # only folders 04-* and 10-*
 No install step: `@nestjs/core`, `@nestjs/common`, `@nestjs/websockets`,
 `reflect-metadata`, `rxjs`, `zod`, `yup`, `@nestjs/microservices` (for `07-validation`),
 `@nestjs/swagger` (for `08-openapi`) and — for the `@kingsleyweb/bun-nest/jobs`
-examples — `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-jobs-ui` resolve from the repo's root `node_modules`
+examples — `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-jobs-ui` (and, for `11-cache`, `@kingsleyweb/bun-cache`) resolve from the repo's root `node_modules`
 (`@nestjs/platform-express` resolves from there too; only
 `03-file-uploads/module-options.ts` imports it, to show its `MulterModule`
 feeding bun-nest's interceptors). The legacy
@@ -115,6 +115,16 @@ every option of one part of the API and checks what happens with
 | [`interceptor-options.ts`](./10-options/interceptor-options.ts) | every file interceptor and its options; `MulterModule.register({ limits: { files: 1, fileSize: 1000 } })` under a route's `fileSize: 8` (the route's 413, the module's `files` kept on Nest 12 and replaced on 11), and `mergeUploadOptions()` itself |
 | [`websocket-adapter-options.ts`](./10-options/websocket-adapter-options.ts) | every WebSocket adapter method, option and message type; flow control as platform-ws 12.2.0: `maxConcurrentMessages` (the rest wait in order, the client unread meanwhile), `maxSendBufferSize` (a client reading none of a flood terminated) and the `backpressureLimit` it sets; a throwing exception filter's `ERROR` packet; on Nest 12.2.0, an exception resent without an unserialisable `cause` |
 | [`jobs-api-module-options.ts`](./10-options/jobs-api-module-options.ts) | every `BunJobsApiModule` option, a malformed JSON body (the API asks `authorize`, then answers its own 400 `INVALID_JSON` or 403; a controller beside it keeps Nest's 400), and the rules for sharing a server between its live-events socket and a gateway |
+
+### 11 — The cache module
+
+`@kingsleyweb/bun-nest/cache`: `@kingsleyweb/bun-cache` as a Nest module with
+caching decorators for service methods. Asserted with
+[`shared/check.ts`](./shared/check.ts), like the tours.
+
+| File | Shows |
+|---|---|
+| [`module-and-decorators.ts`](./11-cache/module-and-decorators.ts) | `BunCacheModule.forRoot` (a global cache the module creates and owns) and a named `forRootAsync` (`inject` + `useFactory` returning `{ cache }`, one the module never closes); `@InjectCache()` and `@InjectCache("reports")` and `getCacheToken`; `@Cacheable` (two calls, one run; ten concurrent calls, one run); `@CacheEvict` by tag; `@CachePut` keyed by an id the method assigns, then a `@Cacheable` hit; `unless` (returned, not stored); a template key `"page:{0}:{1.size}"`; `CacheNotReadyError` before the application starts and after it closes; at `app.close()` the owned cache closed once and the passed-in one not |
 
 ## Checking the examples
 

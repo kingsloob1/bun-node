@@ -15,6 +15,7 @@ Underneath, routing is
 | `@nestjs/platform-express`'s `ExpressAdapter` | [`BunHttpAdapter`](#bunhttpadapter) |
 | `@nestjs/platform-express`'s `FileInterceptor`, `FilesInterceptor`, … | [the file upload interceptors](#file-upload-interceptors) exported here |
 | `@nestjs/platform-socket.io`'s `IoAdapter` (or `@nestjs/platform-ws`) | [`BunWebSocketAdapter`](#bunwebsocketadapter), over Bun's native WebSockets |
+| `@nestjs/cache-manager`'s `CacheModule` and `CACHE_MANAGER` | [`BunCacheModule`](#the-cache-module) and `@InjectCache()`, over `@kingsleyweb/bun-cache`, with `@Cacheable`, `@CachePut` and `@CacheEvict` for service methods |
 
 **Requirements**
 
@@ -95,6 +96,10 @@ Underneath, routing is
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
   - [Installing bun-jobs is what makes the subpath compile](#installing-bun-jobs-is-what-makes-the-subpath-compile)
+- [The cache module](#the-cache-module)
+  - [Modules, names and shutdown](#modules-names-and-shutdown)
+  - [`@Cacheable`, `@CachePut`, `@CacheEvict`](#cacheable-cacheput-cacheevict)
+  - [Installing bun-cache is what makes the subpath compile](#installing-bun-cache-is-what-makes-the-subpath-compile)
 - [Exported API](#exported-api)
 - [Examples](#examples)
 - [Related packages](#related-packages)
@@ -2440,15 +2445,161 @@ failure is the missing peer, not a bad specifier. The barrel's 0 is the point
 of the split, and the declaration build enforces it: it fails if any entry
 other than the jobs subpath can reach a declaration that imports bun-jobs.
 
+## The cache module
+
+[`@kingsleyweb/bun-cache`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-cache/README.md)'s
+caches, provided to a Nest application by a module, with caching decorators
+for service methods. It lives on its own entry point,
+**`@kingsleyweb/bun-nest/cache`**, never in the barrel, and needs
+`@kingsleyweb/bun-cache` installed (an optional peer):
+
+```ts
+import { memoryDriver, sqliteDriver } from "@kingsleyweb/bun-cache";
+import { BunCacheModule, Cacheable, CacheEvict, InjectCache } from "@kingsleyweb/bun-nest/cache";
+import type { Cache } from "@kingsleyweb/bun-nest/cache";
+
+@Module({
+  imports: [
+    BunCacheModule.forRoot({ driver: memoryDriver(), ttl: 60_000, isGlobal: true }),
+    BunCacheModule.forRootAsync({
+      name: "reports",
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({ driver: sqliteDriver({ path: config.get("CACHE_DB") }) }),
+    }),
+  ],
+})
+export class AppModule {}
+
+@Injectable()
+export class UsersService {
+  constructor(@InjectCache() private readonly cache: Cache) {}
+
+  @Cacheable({ key: (id: number) => `user:${id}`, ttl: 60_000, tags: (id) => [`user:${id}`] })
+  async findUser(id: number): Promise<User> { … }
+
+  @CacheEvict({ tags: (id: number) => [`user:${id}`] })
+  async updateUser(id: number, patch: Partial<User>): Promise<User> { … }
+}
+```
+
+### Modules, names and shutdown
+
+- **`forRoot(options)`** takes `createCache`'s options (the module creates the
+  cache) or `{ cache }`, a cache made elsewhere, plus `name` and `isGlobal`.
+  **`forRootAsync({ name?, isGlobal?, imports?, inject?, useFactory })`**
+  builds the same from a factory, sync or async.
+- **The default cache** (no `name`) is provided under `BUN_CACHE` and injected
+  with `@InjectCache()`; its options under `BUN_CACHE_OPTIONS`. **A named
+  cache** is provided under `getCacheToken(name)` and injected with
+  `@InjectCache(name)`. Both tokens are exported from the module; `isGlobal`
+  makes them injectable everywhere without importing it.
+- **One cache per name per application.** The decorators find caches by name
+  across the whole application, so a second module registering the same name
+  fails the bootstrap.
+- **The module closes only what it created**, at `onApplicationShutdown`; a
+  cache passed in as `{ cache }` is yours to close. It closes there, not at
+  `onModuleDestroy`, because `app.close()` runs
+  `onModuleDestroy → beforeApplicationShutdown → dispose() → onApplicationShutdown`,
+  and `dispose()` is where the HTTP server drains the requests still in
+  flight, which may still use the cache.
+
+### `@Cacheable`, `@CachePut`, `@CacheEvict`
+
+Spring's names and semantics, on service methods:
+
+| Decorator | What it does |
+|---|---|
+| `@Cacheable(options?)` | returns the cached value for the key, or runs the method through the cache's `getOrSet` and stores its result. Concurrent calls with one key share one run (single-flight), and `getOrSet`'s options apply: `ttl`, `staleWhileRevalidate`, `staleIfError`, `lock`, `softTimeout`, `hardTimeout`, `refreshAhead`, `cacheUndefined`, … |
+| `@CachePut(options?)` | always runs the method, then stores its result (`set`'s options: `ttl`, `tags`, …) |
+| `@CacheEvict(options)` | after the method succeeded, deletes `key`, invalidates `tags`, or with `all: true` clears the cache's namespace; `beforeInvocation: true` evicts before it runs, so a method that throws still evicts. It needs at least one of `key`, `tags` and `all` |
+
+Every decorator takes `key`, `cache` (a cache's `name`; the default cache
+otherwise) and `condition(...args)`, which decides before the method runs
+whether to use the cache at all. `@Cacheable` and `@CachePut` also take
+`unless(result, ...args)`, which decides after it ran whether **not** to store
+the result. `tags` is an array or a function of the arguments.
+
+**Keys.**
+
+- **A function** of the method's arguments. Its parameter types are checked
+  against the method's: `key: (id: string) => …` on a method taking a
+  `number` is a compile error. The other function options (`tags`,
+  `condition`, `unless`) are typed from the same parameters, so annotate
+  `key` and leave them bare.
+- **A template**, positional: `"orgs:{0}:page:{1.page}"` reads the first
+  argument and the second's `page`; `{{` and `}}` write a brace. Parameter
+  names are not available at run time, so `{id}` is refused when the class is
+  defined. A placeholder that is out of range, `undefined`, or an object
+  throws on the call, rather than letting calls share a key.
+- **The default**, with no `key`: `ClassName.method:` plus a SHA-256 of the
+  arguments, serialised with plain objects' keys sorted. A `Map` or a `Set` is
+  serialised in insertion order, which is not stable: pass `key` when the
+  arguments are such objects.
+
+**What gets cached.**
+
+| The method… | `@Cacheable` | `@CachePut` |
+|---|---|---|
+| resolves a value | stored, returned | stored, returned |
+| resolves `null` | stored (`null` is a value) | stored |
+| resolves `undefined` | not stored (a miss reads as `undefined`), unless `cacheUndefined` | the key is **deleted**, so a later read answers what the method returned |
+| resolves, and `unless` says `true` | not stored; the result still reaches every caller sharing the run | not stored; the entry already there is left |
+| throws | every caller sharing the run gets the error, nothing is stored, and the next call runs again; inside `staleIfError`, the stale value is served instead | nothing is stored; the error is rethrown |
+
+`@CachePut` computes its key and tags **after** the method ran, so a key read
+from an argument the method fills in (an assigned id) sees it.
+
+**Typing.** Only methods returning a `Promise` type-check: a cached value can
+only come back asynchronously, and the wrapper always returns one.
+
+**How a method finds its cache.** Decorators run when the class is defined,
+before any container exists, so the wrapper looks its cache up on each call:
+from the instance (`this`) to the application that created it, then by name.
+Two applications in one process (two test apps, an HTTP app beside a
+microservice) never share a cache through one class. A request-scoped or
+transient provider is matched by its class. Where the cache cannot be found
+the call throws **`CacheNotReadyError`** (with `cacheName` and `method`),
+saying why: called before `app.init()` (from a constructor or a provider
+factory), on an instance made with `new`, after the application closed,
+without its `this`, or naming a cache no module registered.
+
+**Not supported:**
+
+- static methods: decorating one throws when the class is defined;
+- controller handlers: a handler's return value is not the response, and the
+  HTTP interceptor (`BunCacheInterceptor`, a later release) is the tool for
+  routes;
+- standard (TC39) decorators: like Nest's own, these are
+  `experimentalDecorators` decorators.
+
+The wrapper keeps the method's name, length and `reflect-metadata` entries,
+so Nest decorators applied before it (below it in the source) still read
+their metadata.
+
+### Installing bun-cache is what makes the subpath compile
+
+`@kingsleyweb/bun-cache` is an *optional* peer, and only the `./cache`
+subpath's declarations import it. The barrel never reaches it: the consumer
+check type-checks and imports `@kingsleyweb/bun-nest` in a project without
+bun-cache installed, and the declaration build fails if any entry other than
+`./cache` (and `./lib/cache`) can reach a declaration that imports it. At
+runtime the subpath fails with "Cannot find module `@kingsleyweb/bun-cache`",
+while `@kingsleyweb/bun-nest/lib/cache/tokens` and `…/lib/cache/errors`,
+which import nothing, load without it.
+
 ## Exported API
 
 Everything below is exported from the package root; see
-[`lib/index.ts`](./lib/index.ts). The one exception is
+[`lib/index.ts`](./lib/index.ts). The two exceptions are
 [the jobs API module](#the-jobs-api-module), which is exported **only** from
-`@kingsleyweb/bun-nest/jobs` (equivalently `@kingsleyweb/bun-nest/lib/jobs`).
+`@kingsleyweb/bun-nest/jobs` (equivalently `@kingsleyweb/bun-nest/lib/jobs`),
+and [the cache module](#the-cache-module), exported **only** from
+`@kingsleyweb/bun-nest/cache` (equivalently `@kingsleyweb/bun-nest/lib/cache`).
 
 | Group | Exports |
 |---|---|
+| Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`; types `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
