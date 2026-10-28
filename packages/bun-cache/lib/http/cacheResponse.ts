@@ -10,9 +10,13 @@
  * while the handler runs drops the write rather than resurrecting the old
  * response.
  *
- * Stale serving over HTTP (stale-while-revalidate, stale-if-error) and
- * buffered streams are PR-H2's (§9.4): entries keep the windows the response
- * gave, but PR-H1 treats anything past its freshness as a miss.
+ * Past its freshness, an entry is served stale (§9.4) inside the windows the
+ * route or the response gave (RFC 5861): inside stale-while-revalidate it is
+ * answered `STALE` at once while one background replay of the request,
+ * through the router's socket-free `fetch()`, refreshes it; inside
+ * stale-if-error it answers a miss whose handler fails (a 5xx, or no answer
+ * within `hardTimeout`). A streamed response can be stored with
+ * `streams: { buffer }`.
  */
 import type {
   BunRequest,
@@ -26,15 +30,17 @@ import {
   etag as etagOf,
   parseCacheControl,
 } from "@kingsleyweb/bun-common";
-import type { Cache, GetOrSetOptions } from "../core/types";
+import type { Cache, CacheLoaderContext, GetOrSetOptions } from "../core/types";
+import type { TappedBody } from "./capture";
 import {
   answerConditional,
   captureBody,
   maskConditional,
   snapshotHeaders,
+  tapStream,
   withHeader,
 } from "./capture";
-import type { StoredResponse } from "./frame";
+import type { Frame, StoredResponse } from "./frame";
 import {
   decodeFrame,
   encodeResponse,
@@ -53,6 +59,7 @@ import {
 } from "./key";
 import type { PresetHeaders, Refusal, StoreDecision } from "./policy";
 import { decideStore } from "./policy";
+import { drain, replayIdOf, replayRequest } from "./replay";
 import { responseTags } from "./tags";
 
 /**
@@ -70,8 +77,33 @@ const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const DEFAULT_WAIT = 10_000;
 /** How long a key stays uncacheable (hit-for-miss) by default, in ms. */
 const DEFAULT_UNCACHEABLE_TTL = 30_000;
+/**
+ * After a failed replay, how long before the key's next one, in ms: the
+ * core's `failSafeBackoff` default, so a failing origin sees one replay per
+ * key per 10 s instead of one per stale answer.
+ */
+const REPLAY_BACKOFF = 10_000;
+/** The most keys an in-process key set (replay backoff, refresh-next) holds before it is cleared. */
+const MAX_TRACKED_KEYS = 10_000;
 
-/** The `X-Cache` values (plan §21). `STALE` is PR-H2's. */
+/** Whether `status` is an origin error, which stale-if-error answers for (RFC 5861 §4: 500, 502, 503, 504; here every 5xx). */
+function isErrorStatus(status: number): boolean {
+  return status >= 500 && status <= 599;
+}
+
+/** Adds `key` to `set`, clearing the set first when it is full. */
+function track(set: Set<string>, key: string): void {
+  if (set.size >= MAX_TRACKED_KEYS) {
+    set.clear();
+  }
+  set.add(key);
+}
+
+/**
+ * The `X-Cache` values (plan §21): `HIT` fresh from the cache; `MISS` run
+ * and stored; `STALE` past its freshness, inside a stale window; `BYPASS`
+ * not looked up; `UNCACHEABLE` run and not stored.
+ */
 export type CacheStatus = "HIT" | "MISS" | "STALE" | "BYPASS" | "UNCACHEABLE";
 
 /** `cacheResponse()`'s options (plan §9.1). Durations are in ms. */
@@ -175,6 +207,58 @@ export interface CacheResponseOptions {
    * request with 304. Defaults to `true`.
    */
   etag?: boolean;
+  /**
+   * The stale-while-revalidate window, in ms: once an entry is past its
+   * freshness, it is answered `STALE` for this long while one background
+   * replay (`revalidate`) refreshes it. In place of the response's
+   * `stale-while-revalidate=` (RFC 5861 §3), which applies when this is not
+   * set. Never under `must-revalidate` or `proxy-revalidate`. Defaults to
+   * the response's, or 0.
+   */
+  staleWhileRevalidate?: number;
+  /**
+   * The stale-if-error window, in ms: once an entry is past its freshness,
+   * a miss whose handler answers 5xx (an error handler's answer counts; an
+   * unhandled error, answered outside the pipeline, does not) or does not
+   * answer within `hardTimeout` gets the stale entry instead, `STALE`, and
+   * the entry is kept. In place of the response's `stale-if-error=`
+   * (RFC 5861 §4); the same rule. Defaults to the response's, or 0.
+   */
+  staleIfError?: number;
+  /**
+   * With a stale entry inside its stale-if-error window, how long a miss
+   * waits for the handler before answering stale, in ms; the handler's late
+   * answer is dropped (and not stored). Also caps a background replay.
+   * Defaults to none: the handler is waited for.
+   */
+  hardTimeout?: number;
+  /**
+   * What a stale-while-revalidate refresh replays the request through: the
+   * outermost router or adapter the route is on (a `BunRouter`, either
+   * `BunHttpAdapter`), whose `fetch()` runs the whole pipeline without a
+   * socket, so the replay routes as the request did. The replay is a `GET`
+   * of the same URL carrying only the headers the key reads (`varyBy` and
+   * the response's `Vary`), and an internal `x-bun-cache-revalidate` token
+   * no client can forge. Without it, a stale entry is answered once, and the
+   * next request for it refreshes it (waiting for the handler).
+   */
+  revalidate?: {
+    /** Runs a request through the pipeline: `BunRouter.fetch()` or an adapter's. */
+    fetch: (request: Request) => Promise<Response>;
+  };
+  /**
+   * Streamed responses: `"skip"` does not store them; `{ buffer: maxBytes }`
+   * copies the stream as it is sent, without delaying its first byte, and
+   * stores it when it ends within `maxBytes` (the cache's `maxEntryBytes`
+   * still applies). `text/event-stream` is never stored. Coalesced
+   * followers wait for the stream to end. Defaults to `"skip"`.
+   */
+  streams?:
+    | "skip"
+    | {
+        /** The most bytes a stream may come to and still be stored. */
+        buffer: number;
+      };
 }
 
 /**
@@ -222,9 +306,22 @@ type Outcome =
   | {
       /** Not storable. */
       ok: false;
-      /** Why; `undefined` when the capture itself failed (a throwing `tags` function, an unreadable body). */
+      /** Why; `undefined` when the capture itself failed (a throwing `tags` function, an unreadable body, a buffered stream that failed). */
       reason: Refusal | undefined;
+      /** The status the pipeline produced. */
+      status: number;
+      /** Whether the capture answered the stale entry in its place (stale-if-error). */
+      servedStale: boolean;
     };
+
+/** Whether a refused outcome is a failure, after which a stale entry is kept: an error status, or a capture that failed. */
+function isFailure(outcome: Extract<Outcome, { ok: false }>): boolean {
+  return (
+    outcome.servedStale ||
+    outcome.reason === undefined ||
+    isErrorStatus(outcome.status)
+  );
+}
 
 /** A request being served, with what every path needs. */
 interface Exchange {
@@ -248,6 +345,63 @@ interface Variant {
   vary: string[];
   /** This request's values. */
   values: string[];
+}
+
+/** A stale entry a request found: past its freshness, inside the core's hard expiry (freshness plus the longer window). */
+interface StaleEntry {
+  /** The base key of the request. */
+  base: string;
+  /** The key the entry is stored at: the base key, or a variant key. */
+  key: string;
+  /** The variant, when `key` is a variant key. */
+  variant: Variant | undefined;
+  /** The request headers the response varies on (its vary record's), which a replay carries. */
+  vary: readonly string[];
+  /** The stored response. */
+  response: StoredResponse;
+  /** The frame as stored at `key`, which coalesced followers decode. */
+  frame: Uint8Array;
+  /** When it stopped being fresh (the core entry's `freshUntil`), epoch ms; the windows count from here. */
+  freshUntil: number;
+}
+
+/** A running capture's state. */
+interface CaptureHandle {
+  /** Set once the transform has run: the pipeline produced a response on this `res`. */
+  transformed: boolean;
+  /** Set to give the capture up: the transform then passes the response through (answering a conditional request) and reports nothing. */
+  abandoned: boolean;
+  /** Called when the transform runs. */
+  onTransformed: (() => void) | undefined;
+}
+
+/** A background replay a middleware is waiting on, by its id. */
+interface Replay {
+  /** The base key the replayed request must produce. */
+  base: string;
+  /** The key it refreshes. */
+  key: string;
+  /** The variant, when `key` is a variant key. */
+  variant: Variant | undefined;
+  /** The replayed request's exchange, once it arrives. */
+  exchange: Exchange | undefined;
+  /** The replayed request's capture, once it arrives. */
+  handle: CaptureHandle | undefined;
+  /** Reports the capture's outcome; `undefined` when the replay produced nothing to store. */
+  settle: (outcome: Outcome | undefined) => void;
+}
+
+/** The core options of every `getOrSet` the middleware makes: the core's own staleness machinery off, since a background refresh there would call the loader with no request to run. `ttl`, `tags` and the windows are filled by the loader before it resolves. */
+function loadOptions(): GetOrSetOptions {
+  return {
+    staleWhileRevalidate: 0,
+    staleIfError: 0,
+    softTimeout: 0,
+    hardTimeout: 0,
+    refreshAhead: 0,
+    earlyExpiry: { beta: 0 },
+    cacheUndefined: false,
+  };
 }
 
 /** Whether two string lists are equal, element by element. */
@@ -344,6 +498,56 @@ export function cacheResponse(
   const computeEtag = options.etag ?? true;
   const invalidateOnUnsafe = options.invalidateOnUnsafe ?? true;
   const honorRequest = options.honorRequest ?? false;
+  const routeSwr =
+    options.staleWhileRevalidate === undefined
+      ? undefined
+      : duration("staleWhileRevalidate", options.staleWhileRevalidate);
+  const routeSie =
+    options.staleIfError === undefined
+      ? undefined
+      : duration("staleIfError", options.staleIfError);
+  const hardTimeout =
+    options.hardTimeout === undefined || options.hardTimeout === 0
+      ? undefined
+      : duration("hardTimeout", options.hardTimeout);
+  const revalidate = options.revalidate;
+  if (
+    revalidate !== undefined &&
+    (typeof revalidate !== "object" ||
+      revalidate === null ||
+      typeof revalidate.fetch !== "function")
+  ) {
+    throw new TypeError(
+      "cacheResponse(): revalidate must be a router or adapter (an object with fetch())",
+    );
+  }
+  const streams = options.streams ?? "skip";
+  let streamBuffer: number | undefined;
+  if (streams !== "skip") {
+    if (
+      typeof streams !== "object" ||
+      streams === null ||
+      typeof streams.buffer !== "number" ||
+      !Number.isFinite(streams.buffer) ||
+      streams.buffer <= 0
+    ) {
+      throw new TypeError(
+        'cacheResponse(): streams must be "skip" or { buffer: bytes } with a positive buffer',
+      );
+    }
+    streamBuffer = streams.buffer;
+  }
+  /** How long a background replay may take before it counts as failed, in ms. */
+  const replayBudget = Math.min(wait, hardTimeout ?? Number.POSITIVE_INFINITY);
+
+  /** Keys being refreshed by a background replay now: one replay per key. */
+  const revalidating = new Set<string>();
+  /** Keys whose last replay failed, and when the next may start (epoch ms). */
+  const replayBackoff = new Map<string, number>();
+  /** Without `revalidate`: keys answered stale once, whose next request refreshes them. */
+  const refreshNext = new Set<string>();
+  /** The background replays waiting on their request, by id. */
+  const replays = new Map<string, Replay>();
 
   /** Invalidations started by this middleware and not finished, by tag: a GET for the path waits for them. */
   const pending = new Map<string, Promise<void>>();
@@ -374,6 +578,73 @@ export function cacheResponse(
     }
   };
 
+  /** A stored response's `Age` at `now`, in seconds: its own when stored plus its time in the cache (RFC 9111 §4.2.3). */
+  const ageOf = (stored: StoredResponse, now: number): number =>
+    stored.meta.age +
+    Math.max(0, Math.floor((now - stored.meta.storedAt) / 1000));
+
+  /** Whether `entry` is inside its stale-while-revalidate window at `now`. */
+  const withinSwr = (entry: StaleEntry, now: number): boolean => {
+    const window = entry.response.meta.staleWhileRevalidate;
+    return window > 0 && now <= entry.freshUntil + window;
+  };
+
+  /** Whether `entry` is inside its stale-if-error window at `now`. */
+  const withinSie = (entry: StaleEntry, now: number): boolean => {
+    const window = entry.response.meta.staleIfError;
+    return window > 0 && now <= entry.freshUntil + window;
+  };
+
+  /**
+   * A stored response as a native `Response`, marked `STALE`: what the
+   * transform answers in place of `failed`, a 5xx. The headers middleware
+   * ahead of the cache set (`preset`, still on `failed` unchanged) are kept,
+   * as a hit through `res` keeps them.
+   */
+  const staleAnswer = (
+    stored: StoredResponse,
+    now: number,
+    failed: Response,
+    preset: PresetHeaders,
+  ): Response => {
+    const { meta, body } = stored;
+    const headers = new Headers();
+    for (const [name, value] of preset) {
+      if (name === "set-cookie") {
+        for (const line of failed.headers.getSetCookie()) {
+          if (value.includes(line)) {
+            headers.append(name, line);
+          }
+        }
+      } else if (
+        typeof value === "string" &&
+        failed.headers.get(name) === value
+      ) {
+        headers.set(name, value);
+      }
+    }
+    const storedCookies = meta.headers.some(([name]) => name === "set-cookie");
+    if (storedCookies) {
+      headers.delete("set-cookie");
+    }
+    for (const [name, value] of meta.headers) {
+      if (name === "set-cookie") {
+        headers.append(name, value);
+      } else {
+        headers.set(name, value);
+      }
+    }
+    headers.set("age", String(ageOf(stored, now)));
+    if (statusHeader !== false) {
+      headers.set(statusHeader, "STALE");
+    }
+    return new Response(body.byteLength === 0 ? null : body, {
+      status: meta.status,
+      statusText: meta.statusText,
+      headers,
+    });
+  };
+
   /** The tags of an entry: the path's, the route's and the handler's. */
   const tagsFor = (exchange: Exchange): string[] => {
     const tags = new Set<string>([exchange.tag]);
@@ -396,19 +667,80 @@ export function cacheResponse(
    * `exchange.res`, and reports it through `onOutcome` (once). Registers
    * the transform first (§9.7); records the headers set so far; masks a
    * conditional request so the full response is produced, and answers its
-   * 304 here.
+   * 304 here. With `stale`, a 5xx inside its stale-if-error window is
+   * answered with the stale entry instead (§9.4). With `streams: { buffer }`,
+   * a streamed body is swapped for a copying tap, whose end reaches the
+   * client only once the promise `onOutcome` returns has settled (at most
+   * `wait`): return the write, so a request after the end finds it.
    */
   const capture = (
     exchange: Exchange,
-    onOutcome: (outcome: Outcome) => void,
-  ): void => {
+    onOutcome: (outcome: Outcome) => Promise<unknown> | undefined,
+    stale?: StaleEntry,
+  ): CaptureHandle => {
     const { req, res } = exchange;
+    /** Settles once the outcome has been reported and what `onOutcome` returned has settled. */
+    const handled = createDeferred<void>();
+    const report = (outcome: Outcome): void => {
+      let done: Promise<unknown> | undefined;
+      try {
+        done = onOutcome(outcome);
+      } catch {
+        done = undefined;
+      }
+      void Promise.resolve(done).then(
+        () => handled.resolve(),
+        () => handled.resolve(),
+      );
+    };
+    /** What a tapped stream's end waits for: the outcome handled, or `wait`. */
+    const beforeClose = async (): Promise<void> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        handled.promise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, wait);
+          timer.unref?.();
+        }),
+      ]);
+      clearTimeout(timer);
+    };
+    const handle: CaptureHandle = {
+      transformed: false,
+      abandoned: false,
+      onTransformed: undefined,
+    };
     const preset: PresetHeaders = snapshotHeaders(res);
     const conditional = maskConditional(req);
     res.addResponseTransform(
       {
         transform: (response, context) => {
+          handle.transformed = true;
+          handle.onTransformed?.();
+          if (handle.abandoned) {
+            // Given up (the hard timeout answered stale): this is that
+            // answer, or a late one bun-common already refuses to send.
+            return conditional ? answerConditional(req, response) : response;
+          }
           const now = Date.now();
+          if (
+            stale !== undefined &&
+            isErrorStatus(response.status) &&
+            withinSie(stale, now)
+          ) {
+            if (context.body === undefined) {
+              // A streamed error nobody will read.
+              void response.body?.cancel().catch(() => {});
+            }
+            report({
+              ok: false,
+              reason: "status",
+              status: response.status,
+              servedStale: true,
+            });
+            const answer = staleAnswer(stale.response, now, response, preset);
+            return conditional ? answerConditional(req, answer) : answer;
+          }
           let decided = decideStore(response, preset, {
             statuses,
             ttl,
@@ -417,16 +749,44 @@ export function cacheResponse(
             statusHeader: statusHeaderName,
             authorization: req.getHeader("authorization") !== null,
             identityKeyed,
+            staleWhileRevalidate: routeSwr,
+            staleIfError: routeSie,
             now,
           });
+          let out = response;
           let body: Uint8Array | Promise<Uint8Array> | undefined;
+          /** Set when a buffered stream outgrew the buffer: refused as `"stream"`, not as a failure. */
+          let tooLarge = false;
           if (decided.ok) {
             body = captureBody(response, context);
             if (body === undefined) {
-              decided = { ok: false, reason: "stream" };
+              const source = response.body;
+              const eventStream = (response.headers.get("content-type") ?? "")
+                .toLowerCase()
+                .startsWith("text/event-stream");
+              if (
+                streamBuffer === undefined ||
+                source === null ||
+                eventStream
+              ) {
+                decided = { ok: false, reason: "stream" };
+              } else {
+                const tapped = tapStream(source, streamBuffer, beforeClose);
+                out = new Response(tapped.stream, {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers,
+                });
+                body = tapped.bytes.then((bytes: TappedBody) => {
+                  if (bytes instanceof Uint8Array) {
+                    return bytes;
+                  }
+                  tooLarge = bytes === "too-large";
+                  throw new Error(`the stream ${bytes}`);
+                });
+              }
             }
           }
-          let out = response;
           let tags: string[] | undefined;
           if (decided.ok) {
             try {
@@ -460,11 +820,12 @@ export function cacheResponse(
           }
 
           if (!decided.ok || tags === undefined || body === undefined) {
-            onOutcome(
-              decided.ok
-                ? { ok: false, reason: undefined }
-                : { ok: false, reason: decided.reason },
-            );
+            report({
+              ok: false,
+              reason: decided.ok ? undefined : decided.reason,
+              status: response.status,
+              servedStale: false,
+            });
             return out;
           }
           const decision = decided;
@@ -475,10 +836,10 @@ export function cacheResponse(
                 computeEtag &&
                 !decision.headers.some(([name]) => name === "etag")
               ) {
-                // A Blob body, read only now.
+                // A Blob or streamed body, read only now.
                 decision.headers.push(["etag", etagOf(bytes)]);
               }
-              onOutcome({
+              report({
                 ok: true,
                 decision,
                 tags: entryTags,
@@ -497,13 +858,20 @@ export function cacheResponse(
                 },
               });
             },
-            () => onOutcome({ ok: false, reason: undefined }),
+            () =>
+              report({
+                ok: false,
+                reason: tooLarge ? "stream" : undefined,
+                status: response.status,
+                servedStale: false,
+              }),
           );
           return out;
         },
       },
       { first: true },
     );
+    return handle;
   };
 
   /** The frame to store at a key for a storable outcome; `undefined` when the variant no longer matches. */
@@ -529,38 +897,14 @@ export function cacheResponse(
   };
 
   /**
-   * Runs the handler without coalescing, and stores its answer with a plain
-   * `set` when it may be stored (a marker is never written here: it expires,
-   * and the next coalesced miss decides again).
+   * Answers from a stored response: status, headers, `Age`, the status
+   * header, then the bytes through `res.send` (which answers 304 itself).
    */
-  const runAndStore = (
+  const serveStored = (
     exchange: Exchange,
-    key: string,
-    variant: Variant | undefined,
+    stored: StoredResponse,
+    status: "HIT" | "STALE",
   ): void => {
-    capture(exchange, (outcome) => {
-      if (!outcome.ok) {
-        return;
-      }
-      const frame = frameFor(exchange, outcome, variant);
-      if (frame === undefined) {
-        void cache.delete(exchange.base).catch(() => {});
-        return;
-      }
-      void cache
-        .set(key, frame, {
-          ttl: outcome.decision.ttl,
-          tags: outcome.tags,
-          staleWhileRevalidate: outcome.decision.staleWhileRevalidate,
-          staleIfError: outcome.decision.staleIfError,
-        })
-        .catch(() => {});
-    });
-    exchange.next();
-  };
-
-  /** Answers from a stored response: status, headers, `Age`, the status header, then the bytes through `res.send` (which answers 304 itself). */
-  const serveHit = (exchange: Exchange, stored: StoredResponse): void => {
     const { res } = exchange;
     const { meta, body } = stored;
     res.status(meta.status);
@@ -578,44 +922,212 @@ export function cacheResponse(
     if (cookies.length > 0) {
       res.setHeader("Set-Cookie", cookies);
     }
-    const resident = Math.max(
-      0,
-      Math.floor((Date.now() - meta.storedAt) / 1000),
-    );
-    res.setHeader("Age", String(meta.age + resident));
-    markStatus(res, "HIT");
+    res.setHeader("Age", String(ageOf(stored, Date.now())));
+    markStatus(res, status);
     res.send(body);
   };
 
+  /**
+   * With a stale entry inside its stale-if-error window and a `hardTimeout`,
+   * answers the stale entry when the handler has not answered in time, and
+   * gives the capture up (the late answer is not stored; bun-common does not
+   * send it). `onFire` runs after the stale answer.
+   */
+  const armHardTimeout = (
+    exchange: Exchange,
+    handle: CaptureHandle,
+    stale: StaleEntry | undefined,
+    onFire?: () => void,
+  ): void => {
+    if (
+      hardTimeout === undefined ||
+      stale === undefined ||
+      !withinSie(stale, Date.now())
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (handle.transformed || exchange.res.headersSent) {
+        return;
+      }
+      handle.abandoned = true;
+      serveStored(exchange, stale.response, "STALE");
+      onFire?.();
+    }, hardTimeout);
+    timer.unref?.();
+    handle.onTransformed = () => clearTimeout(timer);
+  };
+
+  /**
+   * Stores a storable outcome at `key` with a plain `set` (a vary change
+   * drops the base key's record instead, to be relearnt). Resolves once
+   * written; never rejects.
+   */
+  const storeOutcome = async (
+    exchange: Exchange,
+    key: string,
+    variant: Variant | undefined,
+    outcome: Extract<Outcome, { ok: true }>,
+  ): Promise<void> => {
+    const frame = frameFor(exchange, outcome, variant);
+    if (frame === undefined) {
+      await cache.delete(exchange.base).catch(() => {});
+      return;
+    }
+    await cache
+      .set(key, frame, {
+        ttl: outcome.decision.ttl,
+        tags: outcome.tags,
+        staleWhileRevalidate: outcome.decision.staleWhileRevalidate,
+        staleIfError: outcome.decision.staleIfError,
+      })
+      .catch(() => {});
+  };
+
+  /**
+   * Runs the handler without coalescing, and stores its answer with a plain
+   * `set` when it may be stored (a marker is never written here: it expires,
+   * and the next coalesced miss decides again; a failure writes nothing, so
+   * a stale entry stays).
+   */
+  const runAndStore = (
+    exchange: Exchange,
+    key: string,
+    variant: Variant | undefined,
+    stale: StaleEntry | undefined,
+  ): void => {
+    const handle = capture(
+      exchange,
+      (outcome) =>
+        outcome.ok ? storeOutcome(exchange, key, variant, outcome) : undefined,
+      stale,
+    );
+    armHardTimeout(exchange, handle, stale);
+    exchange.next();
+  };
+
+  /** `HIT`, or `STALE` for a response a coalesced follower got past its freshness (a leader that kept the stale entry). */
+  const statusOf = (stored: StoredResponse): "HIT" | "STALE" =>
+    stored.meta.freshUntil !== null && Date.now() >= stored.meta.freshUntil
+      ? "STALE"
+      : "HIT";
+
   /** A read's result. */
   type Lookup =
-    | { kind: "hit"; response: StoredResponse }
-    | { kind: "uncacheable" }
-    | { kind: "miss"; key: string; variant: Variant | undefined };
+    | {
+        /** A fresh entry. */
+        kind: "hit";
+        /** Its response. */
+        response: StoredResponse;
+      }
+    | {
+        /** A stale entry, inside the core's hard expiry. */
+        kind: "stale";
+        /** The entry. */
+        entry: StaleEntry;
+      }
+    | {
+        /** The hit-for-miss marker. */
+        kind: "uncacheable";
+      }
+    | {
+        /** Nothing usable. */
+        kind: "miss";
+        /** The key a stored answer goes to. */
+        key: string;
+        /** The variant, when `key` is a variant key. */
+        variant: Variant | undefined;
+      };
 
-  /** Reads a request's entry: the base key, then its variant when the base key holds a vary record. */
+  /** One key's frame, stale ones included (`getEntry`). */
+  const read = async (
+    key: string,
+  ): Promise<
+    | {
+        /** The decoded frame. */
+        frame: Frame;
+        /** The frame as stored. */
+        raw: Uint8Array;
+        /** Whether the core entry is past its freshness. */
+        stale: boolean;
+        /** The core entry's `freshUntil`. */
+        freshUntil: number | null;
+      }
+    | undefined
+  > => {
+    const entry = await cache.getEntry(key);
+    if (entry === undefined || !(entry.value instanceof Uint8Array)) {
+      return undefined;
+    }
+    const frame = decodeFrame(entry.value);
+    return frame === undefined
+      ? undefined
+      : {
+          frame,
+          raw: entry.value,
+          stale: entry.stale,
+          freshUntil: entry.freshUntil,
+        };
+  };
+
+  /**
+   * Reads a request's entry: the base key, then its variant when the base
+   * key holds a vary record. Stale entries are read too (inside the core's
+   * hard expiry, freshness plus the longer window); a stale marker is a miss.
+   */
   const lookup = async (exchange: Exchange): Promise<Lookup> => {
-    const frame = decodeFrame(await cache.get(exchange.base));
-    if (frame === undefined) {
+    const found = (
+      at: NonNullable<Awaited<ReturnType<typeof read>>>,
+      key: string,
+      variant: Variant | undefined,
+      vary: readonly string[],
+      response: StoredResponse,
+    ): Lookup =>
+      !at.stale || at.freshUntil === null
+        ? { kind: "hit", response }
+        : {
+            kind: "stale",
+            entry: {
+              base: exchange.base,
+              key,
+              variant,
+              vary,
+              response,
+              frame: at.raw,
+              freshUntil: at.freshUntil,
+            },
+          };
+    const base = await read(exchange.base);
+    if (base === undefined) {
       return { kind: "miss", key: exchange.base, variant: undefined };
     }
-    if (frame.kind === "response") {
-      return { kind: "hit", response: frame.response };
-    }
+    const { frame } = base;
     if (frame.kind === "uncacheable") {
-      return { kind: "uncacheable" };
+      return base.stale
+        ? { kind: "miss", key: exchange.base, variant: undefined }
+        : { kind: "uncacheable" };
+    }
+    if (frame.kind === "response") {
+      return found(base, exchange.base, undefined, [], frame.response);
     }
     const { record } = frame;
     const values = headerValues(exchange.req, record.vary);
     if (sameList(values, record.values)) {
-      return { kind: "hit", response: record.response };
+      return found(
+        base,
+        exchange.base,
+        undefined,
+        record.vary,
+        record.response,
+      );
     }
     const key = variantKey(exchange.base, record.vary, values);
-    const variant = decodeFrame(await cache.get(key));
-    if (variant?.kind === "response") {
-      return { kind: "hit", response: variant.response };
+    const variant: Variant = { vary: record.vary, values };
+    const own = await read(key);
+    if (own?.frame.kind === "response") {
+      return found(own, key, variant, record.vary, own.frame.response);
     }
-    return { kind: "miss", key, variant: { vary: record.vary, values } };
+    return { kind: "miss", key, variant };
   };
 
   /**
@@ -624,12 +1136,17 @@ export function cacheResponse(
    * `options`' `ttl`, `tags` and windows first, which the core reads at
    * write time. Gives up after `wait` (an answer that bypassed the
    * transforms never arrives), and stores a late answer with a plain `set`.
+   * With a stale entry, a failure (a 5xx, the hard timeout) keeps it: the
+   * load stores nothing and hands the stale frame to the followers.
    */
   const lead = (
     exchange: Exchange,
     key: string,
     variant: Variant | undefined,
     writeOptions: GetOrSetOptions,
+    context: CacheLoaderContext,
+    stale: StaleEntry | undefined,
+    written: Promise<void>,
   ): Promise<Uint8Array | undefined> => {
     const deferred = createDeferred<Uint8Array | undefined>();
     let settled = false;
@@ -638,123 +1155,328 @@ export function cacheResponse(
       deferred.resolve(undefined);
     }, wait);
     timer.unref?.();
-    capture(exchange, (outcome) => {
-      if (settled) {
-        // Gave up waiting: the late answer is stored the uncoalesced way.
-        if (outcome.ok) {
-          const frame = frameFor(exchange, outcome, variant);
-          if (frame !== undefined) {
-            void cache
-              .set(key, frame, {
-                ttl: outcome.decision.ttl,
-                tags: outcome.tags,
-                staleWhileRevalidate: outcome.decision.staleWhileRevalidate,
-                staleIfError: outcome.decision.staleIfError,
-              })
-              .catch(() => {});
-          }
-        }
-        return;
-      }
+    /** Keeps the stale entry: nothing stored, followers answered from it. */
+    const keepStale = (entry: StaleEntry): void => {
       settled = true;
       clearTimeout(timer);
-      if (outcome.ok) {
-        const frame = frameFor(exchange, outcome, variant);
-        if (frame === undefined) {
-          // The response's Vary changed under its base key: relearn it.
-          void cache.delete(exchange.base).catch(() => {});
-          deferred.resolve(undefined);
-          return;
+      context.noStore();
+      deferred.resolve(entry.frame);
+    };
+    const handle = capture(
+      exchange,
+      (outcome) => {
+        if (settled) {
+          // Gave up waiting: the late answer is stored the uncoalesced way.
+          return outcome.ok
+            ? storeOutcome(exchange, key, variant, outcome)
+            : undefined;
         }
-        writeOptions.ttl = outcome.decision.ttl;
-        writeOptions.tags = outcome.tags;
-        writeOptions.staleWhileRevalidate =
-          outcome.decision.staleWhileRevalidate;
-        writeOptions.staleIfError = outcome.decision.staleIfError;
-        deferred.resolve(frame);
-        return;
+        if (!outcome.ok && stale !== undefined && isFailure(outcome)) {
+          keepStale(stale);
+          return written;
+        }
+        settled = true;
+        clearTimeout(timer);
+        if (outcome.ok) {
+          const frame = frameFor(exchange, outcome, variant);
+          if (frame === undefined) {
+            // The response's Vary changed under its base key: relearn it.
+            const relearnt = cache.delete(exchange.base).catch(() => {});
+            deferred.resolve(undefined);
+            return relearnt;
+          }
+          writeOptions.ttl = outcome.decision.ttl;
+          writeOptions.tags = outcome.tags;
+          writeOptions.staleWhileRevalidate =
+            outcome.decision.staleWhileRevalidate;
+          writeOptions.staleIfError = outcome.decision.staleIfError;
+          deferred.resolve(frame);
+          return written;
+        }
+        if (
+          outcome.reason !== undefined &&
+          outcome.reason !== "authorization" &&
+          uncacheableTtl > 0
+        ) {
+          writeOptions.ttl = uncacheableTtl;
+          writeOptions.tags = [exchange.tag];
+          deferred.resolve(encodeUncacheable());
+          return written;
+        }
+        deferred.resolve(undefined);
+        return undefined;
+      },
+      stale,
+    );
+    armHardTimeout(exchange, handle, stale, () => {
+      if (!settled && stale !== undefined) {
+        keepStale(stale);
       }
-      if (
-        outcome.reason !== undefined &&
-        outcome.reason !== "authorization" &&
-        uncacheableTtl > 0
-      ) {
-        writeOptions.ttl = uncacheableTtl;
-        writeOptions.tags = [exchange.tag];
-        deferred.resolve(encodeUncacheable());
-        return;
-      }
-      deferred.resolve(undefined);
     });
     exchange.next();
     return deferred.promise;
   };
 
   /**
-   * A GET through the core's single-flight: a fresh entry answers; the
-   * first miss leads (runs the handler, stores its answer); the misses that
-   * arrive meanwhile wait for it and answer from what it stored.
+   * A miss through the core's single-flight: the first leads (runs the
+   * handler, stores its answer); the misses that arrive meanwhile wait for
+   * it and answer from what it stored (or the stale entry it kept). An entry
+   * someone refreshed since the lookup is answered as it is.
    */
   const coalesced = async (
     exchange: Exchange,
     key: string,
     variant: Variant | undefined,
+    stale: StaleEntry | undefined,
   ): Promise<void> => {
     let leading = false;
-    // Neutralise the core's own staleness machinery for this call: PR-H1
-    // answers stale entries as misses, and a background refresh would call
-    // the loader with no request to run. `ttl`, `tags` and the windows are
-    // filled by the leader before its load resolves (`lead`).
-    const writeOptions: GetOrSetOptions = {
-      staleWhileRevalidate: 0,
-      staleIfError: 0,
-      softTimeout: 0,
-      hardTimeout: 0,
-      refreshAhead: 0,
-      earlyExpiry: { beta: 0 },
-      cacheUndefined: false,
-    };
+    const writeOptions = loadOptions();
+    /** Settles once the flight has settled: for a leader, after the core wrote what it loaded (a buffered stream's end waits for it). */
+    const written = createDeferred<void>();
     let value: unknown;
     try {
       value = await cache.getOrSet(
         key,
-        async () => {
+        async (context) => {
           leading = true;
-          return await lead(exchange, key, variant, writeOptions);
+          return await lead(
+            exchange,
+            key,
+            variant,
+            writeOptions,
+            context,
+            stale,
+            written.promise,
+          );
         },
         writeOptions,
       );
     } catch {
       // A strict cache's driver failure: serve the request uncached.
       value = undefined;
+    } finally {
+      written.resolve();
     }
     if (leading) {
       return;
     }
     const frame = decodeFrame(value);
     if (frame === undefined || frame.kind === "uncacheable") {
-      runAndStore(exchange, key, variant);
+      runAndStore(exchange, key, variant, stale);
       return;
     }
     if (frame.kind === "response") {
-      serveHit(exchange, frame.response);
+      serveStored(exchange, frame.response, statusOf(frame.response));
       return;
     }
     if (variant !== undefined) {
       // A vary record at a variant key: not one we wrote. Treat as a miss.
-      runAndStore(exchange, key, variant);
+      runAndStore(exchange, key, variant, stale);
       return;
     }
     const { record } = frame;
     const values = headerValues(exchange.req, record.vary);
     if (sameList(values, record.values)) {
-      serveHit(exchange, record.response);
+      serveStored(exchange, record.response, statusOf(record.response));
       return;
     }
-    await coalesced(exchange, variantKey(exchange.base, record.vary, values), {
-      vary: record.vary,
-      values,
+    await coalesced(
+      exchange,
+      variantKey(exchange.base, record.vary, values),
+      {
+        vary: record.vary,
+        values,
+      },
+      undefined,
+    );
+  };
+
+  /**
+   * The load of a background replay (§9.4), inside the core's `getOrSet` so
+   * it shares the key's single-flight with any miss: sends `request` through
+   * `revalidate.fetch()` and waits for the middleware to capture what the
+   * pipeline produced for it. A storable answer is stored with the core's
+   * fence (an invalidation during the replay drops it); one the response
+   * forbids storing leaves the hit-for-miss marker, as a miss would; a
+   * failure (a 5xx, nothing captured, past `replayBudget`) keeps the stale
+   * entry and holds the key's next replay back for {@link REPLAY_BACKOFF}.
+   */
+  const replayLoad = async (
+    id: string,
+    request: Request,
+    entry: StaleEntry,
+    writeOptions: GetOrSetOptions,
+    context: CacheLoaderContext,
+  ): Promise<Uint8Array | undefined> => {
+    const target = revalidate!;
+    const settledOutcome = createDeferred<Outcome | undefined>();
+    const replay: Replay = {
+      base: entry.base,
+      key: entry.key,
+      variant: entry.variant,
+      exchange: undefined,
+      handle: undefined,
+      settle: settledOutcome.resolve,
+    };
+    replays.set(id, replay);
+    const budget = new AbortController();
+    const timer = setTimeout(() => budget.abort(), replayBudget);
+    timer.unref?.();
+    const overBudget = new Promise<undefined>((resolve) => {
+      budget.signal.addEventListener("abort", () => resolve(undefined), {
+        once: true,
+      });
     });
+    let outcome: Outcome | undefined;
+    try {
+      const fetched = target.fetch(request);
+      const response = await Promise.race([fetched, overBudget]);
+      if (response === undefined) {
+        // Past the budget: whatever arrives later is read by nobody.
+        void fetched.then(
+          (late) => late.body?.cancel().catch(() => {}),
+          () => {},
+        );
+      } else {
+        await drain(response, budget.signal);
+        outcome =
+          replay.handle?.transformed === true
+            ? await Promise.race([settledOutcome.promise, overBudget])
+            : undefined;
+      }
+    } catch {
+      outcome = undefined;
+    } finally {
+      clearTimeout(timer);
+      budget.abort();
+      replays.delete(id);
+    }
+    const replayed = replay.exchange;
+    if (outcome?.ok === true && replayed !== undefined) {
+      const frame = frameFor(replayed, outcome, entry.variant);
+      if (frame === undefined) {
+        // The response's Vary changed under its base key: relearn it.
+        void cache.delete(entry.base).catch(() => {});
+        context.noStore();
+        return undefined;
+      }
+      writeOptions.ttl = outcome.decision.ttl;
+      writeOptions.tags = outcome.tags;
+      writeOptions.staleWhileRevalidate = outcome.decision.staleWhileRevalidate;
+      writeOptions.staleIfError = outcome.decision.staleIfError;
+      return frame;
+    }
+    if (
+      outcome !== undefined &&
+      !outcome.ok &&
+      replayed !== undefined &&
+      !isFailure(outcome) &&
+      outcome.reason !== "authorization" &&
+      uncacheableTtl > 0
+    ) {
+      writeOptions.ttl = uncacheableTtl;
+      writeOptions.tags = [replayed.tag];
+      return encodeUncacheable();
+    }
+    if (replayBackoff.size >= MAX_TRACKED_KEYS) {
+      replayBackoff.clear();
+    }
+    replayBackoff.set(entry.key, Date.now() + REPLAY_BACKOFF);
+    context.noStore();
+    return entry.frame;
+  };
+
+  /** Starts the background replay that refreshes `entry`, unless one is running for its key or the key is backing off after a failed one. */
+  const startReplay = (req: BunRequest, entry: StaleEntry): void => {
+    const key = entry.key;
+    if (revalidating.has(key)) {
+      return;
+    }
+    const until = replayBackoff.get(key);
+    if (until !== undefined) {
+      if (Date.now() < until) {
+        return;
+      }
+      replayBackoff.delete(key);
+    }
+    revalidating.add(key);
+    const id = crypto.randomUUID();
+    const request = replayRequest(
+      req,
+      [...new Set([...varyBy, ...entry.vary])],
+      id,
+    );
+    const writeOptions = loadOptions();
+    void cache
+      .getOrSet(
+        key,
+        async (context) =>
+          await replayLoad(id, request, entry, writeOptions, context),
+        writeOptions,
+      )
+      .catch(() => {
+        // A strict cache's driver failure: the stale entry stays.
+      })
+      .finally(() => {
+        revalidating.delete(key);
+      });
+  };
+
+  /**
+   * Answers a stale entry inside its stale-while-revalidate window, and
+   * starts its refresh: a background replay with `revalidate`; without it,
+   * the key is marked so its next request refreshes it — unless it already
+   * was, and then this request refreshes (answers `false`, and the caller
+   * runs it as a miss). `refresh: false` (a HEAD, which stores nothing)
+   * neither marks nor refreshes.
+   */
+  const answerStale = (
+    exchange: Exchange,
+    entry: StaleEntry,
+    refresh: boolean,
+  ): boolean => {
+    if (revalidate !== undefined) {
+      startReplay(exchange.req, entry);
+    } else if (refresh) {
+      if (refreshNext.delete(entry.key)) {
+        return false;
+      }
+      track(refreshNext, entry.key);
+    }
+    serveStored(exchange, entry.response, "STALE");
+    return true;
+  };
+
+  /**
+   * A background replay's request, arriving through the pipeline: when it
+   * still maps to the key it refreshes, its response is captured and handed
+   * to the waiting {@link replayLoad} — not through `getOrSet`, whose
+   * flight that load already holds.
+   */
+  const serveReplay = (exchange: Exchange, replay: Replay): void => {
+    const key =
+      replay.variant === undefined
+        ? exchange.base
+        : variantKey(
+            exchange.base,
+            replay.variant.vary,
+            headerValues(exchange.req, replay.variant.vary),
+          );
+    if (exchange.base !== replay.base || key !== replay.key) {
+      // The key reads something the replay does not carry (a `key`
+      // function's header): this answer is for another key.
+      replay.settle(undefined);
+      exchange.next();
+      return;
+    }
+    replay.exchange = exchange;
+    // No wait at a buffered stream's end here: the replay's load, which
+    // holds the flight, is what reads that end.
+    replay.handle = capture(exchange, (outcome) => {
+      replay.settle(outcome);
+      return undefined;
+    });
+    exchange.next();
   };
 
   /** A request whose 2xx/3xx answer invalidates its path, and a same-host `Location`/`Content-Location`. */
@@ -847,12 +1569,30 @@ export function cacheResponse(
       anonymousOnly: req.getHeader("authorization") !== null && !identityKeyed,
     };
 
+    if (method === "GET") {
+      const id = replayIdOf(req);
+      const replay = id === undefined ? undefined : replays.get(id);
+      if (replay !== undefined) {
+        replays.delete(id!);
+        serveReplay(exchange, replay);
+        return;
+      }
+    }
+
     if (method === "HEAD") {
       // HEAD reads GET's entry; a miss runs the GET handler, unstored: its
-      // body may be cut short (§9.3).
+      // body may be cut short (§9.3). A stale entry inside its
+      // stale-while-revalidate window is answered and refreshed as a GET's.
       const found = await lookup(exchange);
       if (found.kind === "hit") {
-        serveHit(exchange, found.response);
+        serveStored(exchange, found.response, "HIT");
+        return;
+      }
+      if (
+        found.kind === "stale" &&
+        withinSwr(found.entry, Date.now()) &&
+        answerStale(exchange, found.entry, false)
+      ) {
         return;
       }
       markStatus(res, "MISS");
@@ -864,49 +1604,82 @@ export function cacheResponse(
       // `no-cache`: run the handler, store its answer, read nothing. The
       // variant is unknown without a read, so a varying answer is stored
       // as the base key's first variant.
-      runAndStore(exchange, exchange.base, undefined);
+      runAndStore(exchange, exchange.base, undefined, undefined);
       return;
     }
 
+    const found = await lookup(exchange);
     const parsed = directives?.parsed;
     if (
-      exchange.anonymousOnly ||
-      !coalescing ||
       parsed?.maxAge !== undefined ||
       parsed?.minFresh !== undefined ||
       parsed?.onlyIfCached === true
     ) {
-      const found = await lookup(exchange);
+      // The client bounds the age it accepts: never a stale answer.
       if (found.kind === "hit") {
         const meta = found.response.meta;
         const now = Date.now();
-        const age =
-          meta.age + Math.max(0, Math.floor((now - meta.storedAt) / 1000));
-        const tooOld = parsed?.maxAge !== undefined && age > parsed.maxAge;
+        const tooOld =
+          parsed.maxAge !== undefined &&
+          ageOf(found.response, now) > parsed.maxAge;
         const tooClose =
-          parsed?.minFresh !== undefined &&
+          parsed.minFresh !== undefined &&
           meta.freshUntil !== null &&
           meta.freshUntil - now < parsed.minFresh * 1000;
         if (!tooOld && !tooClose) {
-          serveHit(exchange, found.response);
+          serveStored(exchange, found.response, "HIT");
           return;
         }
       }
-      if (parsed?.onlyIfCached === true) {
+      if (parsed.onlyIfCached === true) {
         // RFC 9111 §5.2.1.7: nothing stored that fits, and no forwarding.
         markStatus(res, "MISS");
         res.status(504).send("");
         return;
       }
-      runAndStore(
-        exchange,
-        found.kind === "miss" ? found.key : exchange.base,
-        found.kind === "miss" ? found.variant : undefined,
-      );
+      if (found.kind === "miss") {
+        runAndStore(exchange, found.key, found.variant, undefined);
+      } else if (found.kind === "stale") {
+        runAndStore(exchange, found.entry.key, found.entry.variant, undefined);
+      } else {
+        runAndStore(exchange, exchange.base, undefined, undefined);
+      }
       return;
     }
 
-    await coalesced(exchange, exchange.base, undefined);
+    if (found.kind === "hit") {
+      serveStored(exchange, found.response, "HIT");
+      return;
+    }
+    if (found.kind === "uncacheable") {
+      // Hit-for-miss: run side by side, no coalescing.
+      runAndStore(exchange, exchange.base, undefined, undefined);
+      return;
+    }
+    let key: string;
+    let variant: Variant | undefined;
+    let stale: StaleEntry | undefined;
+    if (found.kind === "stale") {
+      if (
+        withinSwr(found.entry, Date.now()) &&
+        answerStale(exchange, found.entry, true)
+      ) {
+        return;
+      }
+      // Past stale-while-revalidate (or refreshing it now): a miss that
+      // keeps the stale entry for stale-if-error.
+      stale = found.entry;
+      key = stale.key;
+      variant = stale.variant;
+    } else {
+      key = found.key;
+      variant = found.variant;
+    }
+    if (exchange.anonymousOnly || !coalescing) {
+      runAndStore(exchange, key, variant, stale);
+      return;
+    }
+    await coalesced(exchange, key, variant, stale);
   };
 
   const invalidate = async (

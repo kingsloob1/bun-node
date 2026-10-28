@@ -57,11 +57,11 @@ export interface StoredResponseMeta {
   /**
    * The stale-while-revalidate window after `freshUntil`, in ms, as the
    * route or the response's `stale-while-revalidate=` gave it; 0 under
-   * `must-revalidate`, `proxy-revalidate` or `no-cache`. PR-H1 never serves
-   * stale: this is PR-H2's to read.
+   * `must-revalidate` or `proxy-revalidate`. A stale entry inside it is
+   * answered `STALE` while a background replay refreshes it.
    */
   staleWhileRevalidate: number;
-  /** The stale-if-error window, in ms, under the same rules as `staleWhileRevalidate`. PR-H2's to read. */
+  /** The stale-if-error window, in ms, under the same rules as `staleWhileRevalidate`: a stale entry inside it answers a failed miss. */
   staleIfError: number;
 }
 

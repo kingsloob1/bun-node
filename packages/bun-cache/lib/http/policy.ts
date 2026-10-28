@@ -40,7 +40,8 @@ export type Refusal =
   | "private"
   /**
    * `Cache-Control: no-cache`, unqualified (§5.2.2.4): storable, but every
-   * reuse needs a revalidation PR-H1 cannot make, so it is not stored.
+   * reuse needs a conditional revalidation this cache does not make, so it
+   * is not stored.
    */
   | "no-cache"
   /** The request had `Authorization` and nothing allowed a shared cache to store the answer (§3.5). */
@@ -49,7 +50,11 @@ export type Refusal =
   | "set-cookie"
   /** `Vary: *` (§4.1). */
   | "vary"
-  /** The body was streamed (or replaced by a transform ahead of the cache), so there are no bytes to store. */
+  /**
+   * The body was streamed and `streams` is `"skip"`, or it was
+   * `text/event-stream`, or it outgrew `streams.buffer` (or a transform ahead
+   * of the cache replaced it), so there are no bytes to store.
+   */
   | "stream"
   /** No lifetime: `ttl: "headers"` and no freshness information, or a lifetime of 0 or less once `Age` is taken off. */
   | "lifetime";
@@ -70,6 +75,10 @@ export interface StorePolicy {
   authorization: boolean;
   /** Whether the key varies on the requester's identity (`varyBy: ["authorization"]`, or a `key` function). */
   identityKeyed: boolean;
+  /** The route's stale-while-revalidate window in ms, in place of the response's directive; `undefined` takes the directive. */
+  staleWhileRevalidate: number | undefined;
+  /** The route's stale-if-error window in ms, in place of the response's directive; `undefined` takes the directive. */
+  staleIfError: number | undefined;
   /** The clock, epoch ms. */
   now: number;
 }
@@ -84,9 +93,13 @@ export interface StoreDecision {
   ttl: number;
   /** The response's own `Age`, in seconds. */
   age: number;
-  /** The stale-while-revalidate window the response gives, in ms (PR-H2's to use). */
+  /**
+   * The stale-while-revalidate window, in ms: the route's, else the
+   * response's `stale-while-revalidate=` (RFC 5861 §3); 0 under
+   * `must-revalidate` or `proxy-revalidate`, which forbid serving it stale.
+   */
   staleWhileRevalidate: number;
-  /** The stale-if-error window the response gives, in ms (PR-H2's to use). */
+  /** The stale-if-error window, in ms: the route's, else the response's `stale-if-error=` (RFC 5861 §4); 0 under the same rule. */
   staleIfError: number;
   /** The request headers the response varies on (its `Vary`), lower-cased and sorted. */
   vary: string[];
@@ -288,8 +301,10 @@ export function decideStore(
     age,
     staleWhileRevalidate: revalidate
       ? 0
-      : (cc.staleWhileRevalidate ?? 0) * 1000,
-    staleIfError: revalidate ? 0 : (cc.staleIfError ?? 0) * 1000,
+      : (policy.staleWhileRevalidate ?? (cc.staleWhileRevalidate ?? 0) * 1000),
+    staleIfError: revalidate
+      ? 0
+      : (policy.staleIfError ?? (cc.staleIfError ?? 0) * 1000),
     vary,
   };
 }

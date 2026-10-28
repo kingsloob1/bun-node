@@ -38,6 +38,10 @@ root `node_modules`; `03-typed` uses zod from the same place.
 | `05-http` | `coalescing.ts` — a burst of ten runs the handler once (one `MISS`, nine `HIT`); a `private` answer runs ten times |
 | `05-http` | `coalesce-requests.ts` — `coalesceRequests()` with no store: five GETs, one run; cookies run alone; nothing kept |
 | `05-http` | `compression.ts` — `compression()` ahead of the cache: one stored copy, gzip per request on a hit |
+| `05-http` | `stale-while-revalidate.ts` — `max-age=1, stale-while-revalidate=60`: a `STALE` answer with the old body, one background replay (ten stale requests, one run), then a `HIT` with the new body; without `revalidate` the next request refreshes it |
+| `05-http` | `stale-if-error.ts` — a failing handler (error handler answers 503) is replaced by the stale `200` inside `staleIfError`, the 503 goes through past it; `hardTimeout` answers stale before a slow handler does |
+| `05-http` | `replay-token.ts` — a made-up `x-bun-cache-revalidate` header is an ordinary request: `HIT` on a fresh entry, `STALE` on a stale one |
+| `05-http` | `streams.ts` — streamed answers are `UNCACHEABLE` by default; `streams: { buffer }` stores one that ends within it (`MISS` then `HIT`), a longer one is sent whole and not stored |
 | `06-tiers` | `l1.ts` — an L1 memory tier over a shared driver, kept coherent by the driver's bus: backfill, writes/deletes/tags/`clear` dropping the other copy, `tier: "l2"`, counters never in L1, `clone` |
 | `06-tiers` | `staleness.ts` — `l1.ttl` as the staleness bound with `bus: false`, and the same write with the bus |
 | `06-tiers` | `two-processes.ts` — a second process with its own L1: the measured invalidation window (SQLite polled bus; Postgres `LISTEN`/`NOTIFY` with `EXAMPLE_POSTGRES_URL`; `redisBus` with `EXAMPLE_REDIS_URL`) and a forced gap flushing the L1. Runs alone |

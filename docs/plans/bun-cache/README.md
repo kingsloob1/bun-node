@@ -998,8 +998,7 @@ seconds. What Azurite does not emulate: Azure's 15-minute limit on a
 request's age (a 20-minute-old signature passes), the GUID rule for lease ids
 (`owner-1` is accepted), and any `x-ms-version` newer than it knows (400).
 
-**PR-C8 built 2026-10-28** (branch `feat/bun-cache-c8-azure`, on develop
-`251a64f1`, after PR-C7 #560): `azureBlobDriver` (approved name) over `fetch`
+**PR-C8 merged 2026-10-28, #562** (after PR-C7 #560): `azureBlobDriver` (approved name) over `fetch`
 with its own Shared Key signer, and Azurite in `setup-databases.ts`. What it
 does, and where it departs from the S3 driver it mirrors:
 
@@ -1104,6 +1103,75 @@ does, and where it departs from the S3 driver it mirrors:
   root format check 2178 files; `examples/bun-cache` 15 passed, 5 skipped on
   memory, and `04-drivers/s3.ts` on SeaweedFS 35 checks passed. The container
   measured empty after every run.
+
+**PR-H2 built 2026-10-28** (branch `feat/bun-cache-h2-http-stale`, on
+develop `251a64f1`): stale serving over HTTP and buffered streams in
+`./http` (§9.4), with **bun-common and the core unchanged**. How it is
+built, and where it departs from or adds to §9.4:
+
+- **Reads see stale entries.** The middleware reads with `getEntry`
+  (stale entries live to the core's hard expiry, freshness plus the longer
+  window) and decides; every load still goes through the core's `getOrSet`,
+  so writes keep the tag fence and the local fence. The windows: the route's
+  `staleWhileRevalidate`/`staleIfError` options, else the response's
+  directives, 0 under `must-revalidate`/`proxy-revalidate`. A miss costs one
+  more read than in H1 (`stats()` counts per read).
+- **Stale-while-revalidate.** Answered `STALE` (with `Age`, no `Warning`),
+  then one background replay: a `GET` of the same URL through
+  `revalidate.fetch()` carrying the host, the `varyBy` and `Vary` headers,
+  and `x-bun-cache-revalidate: <per-process token>.<replay id>`. A request
+  is a replay only with this process's token (constant-time compare) **and**
+  an id the middleware is waiting on; each id is used once. The replay loads
+  **inside `getOrSet`** (its loader sends the request and waits for the
+  middleware's capture of it, taken outside `getOrSet`), so it shares the
+  key's flight with misses both ways and its write is fenced. A failed
+  replay (5xx, nothing captured, past `coalesce.wait`/`hardTimeout`) keeps
+  the stale entry and holds the key's next replay back 10 s (the core's
+  `failSafeBackoff` default); an answer that may no longer be stored writes
+  the hit-for-miss mark. The replay must map to the same key (a `key`
+  function reading other headers: nothing stored). Without `revalidate`: a
+  stale entry is answered once, and the next request refreshes it. HEAD in
+  the window: stale, refreshed as a GET. `honorRequest`'s `max-age`/
+  `min-fresh`/`only-if-cached` are never answered stale.
+- **Stale-if-error.** Past SWR and inside SIE, the request runs as a miss
+  holding the stale entry: a 5xx through the pipeline is replaced in the
+  transform by the stale response (keeping the headers middleware ahead
+  set; a conditional request still gets its 304); `hardTimeout` (a route
+  option, §9.4's prose) answers stale through `res` when the handler has not
+  answered, abandoning the capture so the late answer is neither sent nor
+  stored. The load calls `noStore()` and hands the stale frame to the
+  followers (answered `STALE`). A failure never overwrites a stale entry.
+- **Streams: a pull-through copy, not `tee()`** (the spike,
+  [`evidence/stream-tap.ts`](evidence/stream-tap.ts)): through a served
+  adapter the swapped body delivered its first chunk at 5 ms of a 405 ms
+  `res.write()` stream; but under `tee()` the copy branch kept pulling an
+  endless stream after the client aborted (9 chunks in 500 ms, never
+  cancelled), where the tap cancelled it. Stored when the stream ends within
+  `buffer`; past it, sent whole and (coalesced) the key marked uncacheable
+  the moment the copy outgrows it; `text/event-stream` never. The stream's
+  end is held until that entry or mark is written (at most `coalesce.wait`),
+  so a request after the client saw the end finds it — found by the
+  examples: the mark was written after the end, and lost the race to the
+  next request 5 of 5 times. Its `X-Cache` is `MISS` from the first byte,
+  under the mark too (the stream is still copied, and a fitting one replaces
+  the mark).
+- **Names**: `staleWhileRevalidate`, `staleIfError` and `hardTimeout` on
+  `cacheResponse()` are not in §21's `cacheResponse` row (they are core
+  names there, and §9.1/§9.4 use them on the route) — awaiting the user's
+  approval; `revalidate`'s type is inline (`{ fetch(request) }`), no new name.
+- **Tests**: `__tests__/http/stale.test.ts` (28) and `streams.test.ts` (11);
+  H1's "never serves stale" case became the degraded-mode case. 21 negative
+  controls, each failing its test (1–7 fails).
+- **Gate** (Bun 1.4.4-canary.1+a0cc096ce, every `BUN_CACHE_TEST_*` URL
+  set): bun-cache 756 pass, 36 skip, 0 fail, the same under
+  `--randomize --seed=1` and `=2` (757 pass after the stream fix, which
+  added a test; `=2` then failed only in the MongoDB replica-set cases); `__tests__/http` 15/15 repeat runs and
+  40/40 eight-wide runs clean; check 172 files clean, lint 0 errors, format
+  clean; `bun scripts/typecheck.ts` 21 projects clean; consumer-check 60/60
+  cells, 10/10 runtime imports; `examples/bun-cache` 15 passed, 5 skipped on
+  memory; `bun-timings.json` refreshed. Seen meanwhile, unrelated: the
+  MongoDB replica-set bus cases (`__tests__/drivers/mongodb.test.ts`) timed
+  out in 2 of 6 full runs and 1 of 3 runs of that file alone (load 7–16).
 
 ### Contents
 
@@ -2539,7 +2607,11 @@ never delays the response. A write error goes to the failure policy (§3.14).
     transform with one branch of `response.body.tee()` and reads the other
     branch into memory, storing it only if the stream ends within
     `maxBytes`. That is [I] until PR-H2's spike shows the transform can
-    swap the body without delaying the first byte.
+    swap the body without delaying the first byte. *(PR-H2's spike,
+    [`evidence/stream-tap.ts`](evidence/stream-tap.ts): it can — the first
+    chunk at 5 ms of a 405 ms stream — but not with `tee()`, whose second
+    branch keeps pulling after the client leaves; built as a pull-through
+    copy instead. See Status, "PR-H2 built".)*
   - `text/event-stream` is never stored.
 - **Stale-while-revalidate.** A stale hit is served at once; then the
   middleware replays the request in the background through `fetch()`:
