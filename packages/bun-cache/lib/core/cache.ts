@@ -17,7 +17,10 @@ import { validateStandard } from "@kingsleyweb/bun-common/contract";
 import { codecById, CODEC_IDS, resolveCodec } from "./codecs";
 import type { ResolvedCompression } from "./compression";
 import { decompressEntry, isPromiseLike, resolveCompress } from "./compression";
+import type { OpenedEntry } from "./encrypt";
+import { EntryEncryption, envelopeKeyId, isEnvelope } from "./encrypt";
 import {
+  CacheDecryptError,
   CacheDriverError,
   CircuitOpenError,
   EntryTooLargeError,
@@ -139,6 +142,26 @@ interface DecodedValue {
   counter?: boolean;
   /** The stored payload was not compressed: a rewrite (the fail-safe backoff) keeps it so, honouring a per-call `compress: false`. */
   uncompressed?: boolean;
+  /** The ring key id that sealed the entry, on an encrypted cache's built-in cipher (the `hit` event's `keyId`). */
+  keyId?: string;
+}
+
+/**
+ * A stored entry past its envelope: the core entry's bytes, and the hard
+ * expiry and tags the core trusts — the sealed copies on an encrypted cache,
+ * the driver's own otherwise.
+ */
+interface Unsealed {
+  /** The core entry's bytes (lib/core/header.ts). */
+  bytes: Uint8Array;
+  /** The hard expiry, epoch ms; `null` when never. */
+  expiresAt: number | null;
+  /** The entry's tags. */
+  tags: readonly string[];
+  /** The ring key id, for the built-in cipher's entries. */
+  keyId: string | undefined;
+  /** Whether it came out of an envelope (its tags and expiry are the sealed copies). */
+  sealed: boolean;
 }
 
 /** The outcome of the read pipeline. */
@@ -232,6 +255,10 @@ interface SharedState {
   bus: BusLink | undefined;
   /** When the last bus-failure warning was logged (throttled like the driver's). */
   lastBusWarnAt: number;
+  /** The entry encryption, when `encrypt` is set (the encryption plan). */
+  encryption: EntryEncryption | undefined;
+  /** When each encryption failure reason (`CacheDecryptError.reason`, or `"encrypt"`) was last logged: at most once per 10 s each. */
+  lastCryptoWarnAt: Map<string, number>;
 }
 
 /** The cache implementation; one instance per namespace view, over shared state. */
@@ -580,6 +607,126 @@ class CacheImpl<
   }
 
   /* ---------------------------------------------------------------- */
+  /* encryption (the encryption plan)                                  */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Takes a stored entry out of its envelope (§4.3, §4.6): the core entry's
+   * bytes, with the sealed expiry and tags the core trusts over the driver's
+   * clear copies. Without encryption, or for a plain entry under
+   * `acceptUnencrypted`, the stored entry as it is. `undefined` when it does
+   * not open — a miss, after an `error` event (`phase: "decrypt"`) and a
+   * throttled warning; the entry is never deleted for it. That includes a
+   * sealed entry read by a cache **without** `encrypt` (reason `"cipher"`):
+   * a process missing the configuration must not wipe its peers' entries
+   * during a rollout. Synchronous unless a `keys` function or a user cipher
+   * answers a promise.
+   */
+  #open(
+    key: string,
+    raw: StoredEntry,
+  ): Unsealed | undefined | Promise<Unsealed | undefined> {
+    const encryption = this.#state.encryption;
+    const plain: Unsealed = {
+      bytes: raw.value,
+      expiresAt: raw.expiresAt,
+      tags: raw.tags,
+      keyId: undefined,
+      sealed: false,
+    };
+    if (encryption === undefined) {
+      if (isEnvelope(raw.value)) {
+        // Sealed by an encrypted cache: no cipher is configured here to open
+        // it. Never a decode failure, which would delete it (§4.6, Q8).
+        this.#reportCrypto(
+          "decrypt",
+          key,
+          new CacheDecryptError({
+            reason: "cipher",
+            keyId: envelopeKeyId(raw.value),
+          }),
+        );
+        return undefined;
+      }
+      return plain;
+    }
+    const done = (opened: OpenedEntry | undefined): Unsealed =>
+      opened === undefined
+        ? plain
+        : {
+            bytes: opened.entry,
+            expiresAt: opened.expiresAt,
+            tags: opened.tags,
+            keyId: opened.keyId,
+            sealed: true,
+          };
+    const failed = (error: unknown): undefined => {
+      this.#reportCrypto("decrypt", key, error);
+      return undefined;
+    };
+    try {
+      const opened = encryption.open(this.#ns, key, raw.value);
+      return isPromiseLike(opened)
+        ? Promise.resolve(opened).then(done, failed)
+        : done(opened);
+    } catch (error) {
+      return failed(error);
+    }
+  }
+
+  /**
+   * Seals an encoded entry for the driver (§4.3), with the expiry and tags it
+   * is stored under; the entry itself without encryption. Throws (or
+   * rejects) when it cannot seal.
+   */
+  #seal(
+    key: string,
+    bytes: Uint8Array,
+    expiresAt: number | null,
+    tags: readonly string[],
+  ): Uint8Array | Promise<Uint8Array> {
+    const encryption = this.#state.encryption;
+    return encryption === undefined
+      ? bytes
+      : encryption.seal(this.#ns, key, bytes, expiresAt, tags);
+  }
+
+  /**
+   * Reports an encryption failure: an `error` event of its phase, and a
+   * `warn` at most once per 10 s per reason, naming the key id at most —
+   * never key material or plaintext (§4.6).
+   */
+  #reportCrypto(
+    phase: "encrypt" | "decrypt",
+    key: string | undefined,
+    error: unknown,
+  ): void {
+    const state = this.#state;
+    this.#emit("error", {
+      ...(key === undefined ? {} : { key }),
+      namespace: this.#ns,
+      phase,
+      driver: state.driver.name,
+      error,
+    });
+    const reason = error instanceof CacheDecryptError ? error.reason : phase;
+    const now = Date.now();
+    if (now - (state.lastCryptoWarnAt.get(reason) ?? 0) >= WARN_EVERY_MS) {
+      state.lastCryptoWarnAt.set(reason, now);
+      state.logger.warn(
+        phase === "decrypt"
+          ? `cache: an entry did not open (${reason}${
+              error instanceof CacheDecryptError && error.keyId !== undefined
+                ? `, key id "${error.keyId}"`
+                : ""
+            }); read as a miss`
+          : "cache: a write could not be sealed; it was not stored",
+        { error },
+      );
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /* the read pipeline                                                 */
   /* ---------------------------------------------------------------- */
 
@@ -646,12 +793,30 @@ class CacheImpl<
     state.stats.bytesRead += raw.value.byteLength;
     if (raw.expiresAt !== null && raw.expiresAt <= now) {
       // Past its hard expiry: a miss, and reclaim the space in the background.
+      // On an encrypted cache this is the driver's clear copy: lowering it
+      // only deletes, which anyone who can write the store can do anyway.
+      this.#deleteInBackground(stored);
+      return { kind: "miss" };
+    }
+    const opening = this.#open(key, raw);
+    const unsealed = isPromiseLike(opening) ? await opening : opening;
+    if (unsealed === undefined) {
+      // It did not open: a miss, and NOT deleted (the encryption plan's §4.6).
+      return { kind: "miss" };
+    }
+    if (
+      unsealed.sealed &&
+      unsealed.expiresAt !== null &&
+      unsealed.expiresAt <= now
+    ) {
+      // The sealed expiry is the one that counts: a raised clear copy gains
+      // nothing. Authenticated and past it, so reclaimed.
       this.#deleteInBackground(stored);
       return { kind: "miss" };
     }
     let decoded: Decoded;
     try {
-      const result = this.#decodeValue(raw.value, key);
+      const result = this.#decodeValue(unsealed.bytes, key);
       decoded = isPromiseLike(result) ? await result : result;
     } catch (error) {
       // An entry that fails to decode is a miss; it is deleted (§3.2).
@@ -666,12 +831,20 @@ class CacheImpl<
       return { kind: "miss" };
     }
     const { header } = decoded;
+    const tags = unsealed.tags;
     // The stamps-mode read check (§3.6): an entry older than one of its
-    // tags' invalidation stamps is a miss, whatever the bytes say.
-    if (state.driver.capabilities.tags === "stamps" && raw.tags.length > 0) {
-      const stamps = await this.#stampsFor(raw.tags);
+    // tags' invalidation stamps is a miss, whatever the bytes say. On an
+    // encrypted cache it runs on every driver, with the sealed tags: an index
+    // driver writes stamps in `deleteByTags` too, so an entry whose clear
+    // tags (or tag index) were stripped in the store still misses after an
+    // invalidation (the encryption plan's §4.3).
+    if (
+      tags.length > 0 &&
+      (state.driver.capabilities.tags === "stamps" || unsealed.sealed)
+    ) {
+      const stamps = await this.#stampsFor(tags);
       let invalidated = false;
-      for (const tag of raw.tags) {
+      for (const tag of tags) {
         const at = stamps.get(tag);
         // A stamp at the entry's own millisecond counts as newer: Date.now()
         // cannot order two events within one ms, so the safe side wins (a
@@ -715,13 +888,16 @@ class CacheImpl<
       negative: decoded.negative,
       createdAt: header.createdAt,
       freshUntil,
-      expiresAt: raw.expiresAt,
+      expiresAt: unsealed.expiresAt,
       loadMs: header.loadMs,
-      tags: raw.tags,
+      tags,
       bytes: raw.value.byteLength,
       size: decoded.size,
       uncompressed: header.compressor === COMPRESSOR_IDS.none,
     };
+    if (unsealed.keyId !== undefined) {
+      entry.keyId = unsealed.keyId;
+    }
     if (freshUntil !== null && now > freshUntil) {
       return { kind: "stale", entry };
     }
@@ -891,21 +1067,28 @@ class CacheImpl<
     const limit = this.#entryLimit();
     const entrySize = Math.max(bytes.byteLength, encoded.plain.byteLength);
     if (entrySize > limit) {
-      const error = new EntryTooLargeError(key, entrySize, limit);
-      this.#emit("oversize", {
-        key,
-        namespace: this.#ns,
-        bytes: entrySize,
-        limit,
-      });
+      return this.#oversize(key, entrySize, limit);
+    }
+    // encode → compress → encrypt: the cipher sees the compressed entry. A
+    // write that cannot seal stores nothing (the encryption plan's §4.6).
+    let sealed: Uint8Array;
+    try {
+      const sealing = this.#seal(key, bytes, expiresAt, init.tags);
+      sealed = isPromiseLike(sealing) ? await sealing : sealing;
+    } catch (error) {
+      this.#reportCrypto("encrypt", key, error);
       if (state.options.strict === true) {
         throw error;
       }
       return false;
     }
+    // The limit holds the sealed size too: it is what the driver receives.
+    if (sealed.byteLength > limit) {
+      return this.#oversize(key, sealed.byteLength, limit);
+    }
     const entry: StoredEntry = {
       key: stored,
-      value: bytes,
+      value: sealed,
       expiresAt,
       tags: init.tags,
     };
@@ -936,8 +1119,12 @@ class CacheImpl<
         return false;
       }
       state.stats.sets++;
-      state.stats.bytesWritten += bytes.byteLength;
-      this.#emit("set", { key, namespace: this.#ns, bytes: bytes.byteLength });
+      state.stats.bytesWritten += sealed.byteLength;
+      this.#emit("set", {
+        key,
+        namespace: this.#ns,
+        bytes: sealed.byteLength,
+      });
       if (l1 !== undefined) {
         // The codec's bytes, never the caller's own (the raw codec passes a
         // Uint8Array through): the stored copy's payload when uncompressed,
@@ -962,6 +1149,15 @@ class CacheImpl<
         l1.end();
       }
     }
+  }
+
+  /** Reports an entry over the limit: an `oversize` event, and `false` — or `EntryTooLargeError` under `strict` (§3.9). */
+  #oversize(key: string, bytes: number, limit: number): false {
+    this.#emit("oversize", { key, namespace: this.#ns, bytes, limit });
+    if (this.#state.options.strict === true) {
+      throw new EntryTooLargeError(key, bytes, limit);
+    }
+    return false;
   }
 
   /**
@@ -1007,6 +1203,7 @@ class CacheImpl<
           bytes: entry.value.byteLength,
           size: decoded.size,
           uncompressed: header.compressor === COMPRESSOR_IDS.none,
+          keyId: envelopeKeyId(entry.value),
         },
         decoded.size,
       ];
@@ -1230,7 +1427,10 @@ class CacheImpl<
         }
         settled = true;
         state.stats.staleHits++;
-        this.#emit("stale-hit", { key, namespace: this.#ns });
+        this.#emit(
+          "stale-hit",
+          withKeyId({ key, namespace: this.#ns }, staleEntry.keyId),
+        );
         deferred.resolve(staleEntry.value);
       }, softTimeout);
       softTimer.unref?.();
@@ -1453,37 +1653,43 @@ class CacheImpl<
         hardExpiry !== null
           ? Math.min(now + backoff, hardExpiry)
           : now + backoff;
+      const encoding = this.#encodeValue(
+        staleEntry.value,
+        staleEntry.negative,
+        staleEntry.uncompressed === true ? false : undefined,
+      );
+      const { codecId, flags, compressor, payload } = isPromiseLike(encoding)
+        ? await encoding
+        : encoding;
+      // Sealed outside the driver operation: a cipher's failure is not the
+      // driver's, and must not count against its circuit.
+      const sealing = this.#seal(
+        key,
+        encodeEntry(
+          {
+            codecId,
+            flags,
+            compressor,
+            createdAt: staleEntry.createdAt,
+            freshUntil: capped,
+            loadMs: staleEntry.loadMs,
+            key,
+          },
+          payload,
+        ),
+        staleEntry.expiresAt,
+        staleEntry.tags,
+      );
+      const value = isPromiseLike(sealing) ? await sealing : sealing;
       await this.#op(
         "set",
-        async () => {
-          const encoding = this.#encodeValue(
-            staleEntry.value,
-            staleEntry.negative,
-            staleEntry.uncompressed === true ? false : undefined,
-          );
-          const { codecId, flags, compressor, payload } = isPromiseLike(
-            encoding,
-          )
-            ? await encoding
-            : encoding;
-          return await state.driver.set(this.#ns, {
+        async () =>
+          await state.driver.set(this.#ns, {
             key: stored,
-            value: encodeEntry(
-              {
-                codecId,
-                flags,
-                compressor,
-                createdAt: staleEntry.createdAt,
-                freshUntil: capped,
-                loadMs: staleEntry.loadMs,
-                key,
-              },
-              payload,
-            ),
+            value,
             expiresAt: staleEntry.expiresAt,
             tags: staleEntry.tags,
-          });
-        },
+          }),
         "fenced" as const,
       );
     } catch (error) {
@@ -1647,7 +1853,10 @@ class CacheImpl<
     );
     if (read.kind === "fresh") {
       this.#state.stats.hits++;
-      this.#emit("hit", { key, namespace: this.#ns, tier });
+      this.#emit(
+        "hit",
+        withKeyId({ key, namespace: this.#ns, tier }, read.entry.keyId),
+      );
       return read.entry.value as Schema[K] | undefined;
     }
     this.#state.stats.misses++;
@@ -1671,10 +1880,16 @@ class CacheImpl<
     }
     if (read.kind === "fresh") {
       this.#state.stats.hits++;
-      this.#emit("hit", { key, namespace: this.#ns, tier });
+      this.#emit(
+        "hit",
+        withKeyId({ key, namespace: this.#ns, tier }, read.entry.keyId),
+      );
     } else {
       this.#state.stats.staleHits++;
-      this.#emit("stale-hit", { key, namespace: this.#ns });
+      this.#emit(
+        "stale-hit",
+        withKeyId({ key, namespace: this.#ns }, read.entry.keyId),
+      );
     }
     const { entry } = read;
     return {
@@ -1743,7 +1958,10 @@ class CacheImpl<
           const copy = copies[index];
           if (copy !== undefined) {
             state.stats.hits++;
-            this.#emit("hit", { key, namespace: this.#ns, tier: "l1" });
+            this.#emit(
+              "hit",
+              withKeyId({ key, namespace: this.#ns, tier: "l1" }, copy.keyId),
+            );
             return copy.value as Schema[K] | undefined;
           }
           // A failed batch is a miss for every key, without per-key retries —
@@ -1760,7 +1978,13 @@ class CacheImpl<
           }
           if (read.kind === "fresh") {
             state.stats.hits++;
-            this.#emit("hit", { key, namespace: this.#ns, tier: "l2" });
+            this.#emit(
+              "hit",
+              withKeyId(
+                { key, namespace: this.#ns, tier: "l2" },
+                read.entry.keyId,
+              ),
+            );
             return read.entry.value as Schema[K] | undefined;
           }
           state.stats.misses++;
@@ -1825,18 +2049,28 @@ class CacheImpl<
       undefined,
     );
     if (raw !== undefined && (raw.expiresAt === null || raw.expiresAt > now)) {
+      // On an encrypted cache, the sealed expiry and tags (§4.3).
+      const opening = this.#open(key, raw);
+      const unsealed = isPromiseLike(opening) ? await opening : opening;
+      if (
+        unsealed === undefined ||
+        (unsealed.expiresAt !== null && unsealed.expiresAt <= now)
+      ) {
+        return false;
+      }
       try {
-        const decoding = this.#decodeValue(raw.value, key);
+        const decoding = this.#decodeValue(unsealed.bytes, key);
         const decoded = isPromiseLike(decoding) ? await decoding : decoding;
         // Keep the stale window's width; slide the freshness (a driver-level
         // `touch` cannot: `freshUntil` lives in the header, §3.2).
         const window =
-          raw.expiresAt !== null && decoded.header.freshUntil !== NO_FRESH_UNTIL
-            ? Math.max(0, raw.expiresAt - decoded.header.freshUntil)
+          unsealed.expiresAt !== null &&
+          decoded.header.freshUntil !== NO_FRESH_UNTIL
+            ? Math.max(0, unsealed.expiresAt - decoded.header.freshUntil)
             : 0;
         return await this.#write(key, stored, decoded.value, {
           ttl,
-          tags: raw.tags as readonly Tag[],
+          tags: unsealed.tags as readonly Tag[],
           createdAt: decoded.header.createdAt,
           loadMs: decoded.header.loadMs,
           staleWhileRevalidate: window,
@@ -1957,6 +2191,11 @@ class CacheImpl<
         0,
       );
       state.stats.deletes += count;
+      if (state.encryption !== undefined) {
+        // An encrypted cache checks the sealed tags' stamps on every driver
+        // (`#decodeStored`): this process sees the invalidation at once.
+        this.#cacheStamps(tags, now);
+      }
     } else {
       await this.#op(
         "setStamps",
@@ -1964,16 +2203,21 @@ class CacheImpl<
         undefined,
       );
       // This process sees the invalidation at once, cache or no cache.
-      const expires =
-        Date.now() +
-        (state.options.tagStampCacheMs ?? DEFAULTS.tagStampCacheMs);
-      for (const tag of tags) {
-        state.stampCache.set(`${this.#ns}\n${tag}`, { at: now, expires });
-      }
+      this.#cacheStamps(tags, now);
     }
     state.l1?.invalidateTags(this.#ns, tags);
     await this.#publish({ type: "invalidate-tags", tags });
     this.#emit("invalidate", { namespace: this.#ns, tags });
+  }
+
+  /** Puts this process's own invalidation of `tags` at `at` into the tag-stamp cache (§3.6). */
+  #cacheStamps(tags: readonly string[], at: number): void {
+    const state = this.#state;
+    const expires =
+      Date.now() + (state.options.tagStampCacheMs ?? DEFAULTS.tagStampCacheMs);
+    for (const tag of tags) {
+      state.stampCache.set(`${this.#ns}\n${tag}`, { at, expires });
+    }
   }
 
   /** The stamp TTL: the cache's longest entry lifetime, capped at 24 h (§3.6). */
@@ -2003,7 +2247,10 @@ class CacheImpl<
     const now = this.#state.now();
     if (read.kind === "fresh") {
       this.#state.stats.hits++;
-      this.#emit("hit", { key, namespace: this.#ns, tier });
+      this.#emit(
+        "hit",
+        withKeyId({ key, namespace: this.#ns, tier }, read.entry.keyId),
+      );
       this.#maybeEagerRefresh(
         key,
         stored,
@@ -2024,7 +2271,10 @@ class CacheImpl<
         now <= read.entry.freshUntil + swr
       ) {
         this.#state.stats.staleHits++;
-        this.#emit("stale-hit", { key, namespace: this.#ns });
+        this.#emit(
+          "stale-hit",
+          withKeyId({ key, namespace: this.#ns }, read.entry.keyId),
+        );
         this.#backgroundRefresh(
           key,
           stored,
@@ -2240,6 +2490,14 @@ class CacheImpl<
   }
 }
 
+/** A `hit` or `stale-hit` payload, with the entry's ring key id when it has one (an encrypted entry's), and without the field otherwise. */
+function withKeyId<T extends object>(
+  payload: T,
+  keyId: string | undefined,
+): T & { keyId?: string } {
+  return keyId === undefined ? payload : { ...payload, keyId };
+}
+
 /** Rejects a waiter's promise when its own signal aborts; the flight itself aborts only when every waiter has (§3.4). */
 function withCallerSignal<T>(
   promise: Promise<T>,
@@ -2331,7 +2589,27 @@ export function createCache(
     l1: resolveL1(options.l1),
     bus: undefined,
     lastBusWarnAt: 0,
+    encryption: undefined,
+    lastCryptoWarnAt: new Map(),
   };
+  if (options.encrypt !== undefined) {
+    state.encryption = new EntryEncryption(options.encrypt, {
+      now,
+      timeout: options.timeout,
+      onProviderError: (error, phase) => {
+        state.events.emit("error", {
+          phase,
+          driver: options.driver.name,
+          error,
+        });
+        const at = Date.now();
+        if (at - (state.lastCryptoWarnAt.get("keys") ?? 0) >= WARN_EVERY_MS) {
+          state.lastCryptoWarnAt.set("keys", at);
+          logger.warn("cache: the encrypt.keys function failed", { error });
+        }
+      },
+    });
+  }
   const namespace = fullNamespace(
     options.namespace ?? DEFAULTS.namespace,
     options.version,

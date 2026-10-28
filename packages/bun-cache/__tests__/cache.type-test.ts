@@ -14,7 +14,9 @@ import type {
 } from "@kingsleyweb/bun-common";
 import { z } from "zod";
 import type {
+  CacheCipher,
   CacheCompressor,
+  CacheDecryptError,
   CacheEntry,
   CacheEventMap,
   CacheFencedReason,
@@ -206,3 +208,61 @@ void compressed.set("k", 1, { compress: false });
 void compressed.getOrSet("k", () => 1, { compress: false });
 // @ts-expect-error -- per call, compression can only be turned off
 void compressed.set("k", 1, { compress: true });
+
+/* --- encryption: keys, a keys function, user ciphers, the events ----- */
+
+void createCache({
+  driver: memoryDriver(),
+  encrypt: {
+    keys: [{ id: "2026-10", key: "base64 or hex string" }],
+    aad: "prod",
+    acceptUnencrypted: false,
+  },
+});
+// A keys function may be sync or async (a KMS).
+void createCache({
+  driver: memoryDriver(),
+  encrypt: { keys: () => [{ id: "a", key: new Uint8Array(32) }] },
+});
+void createCache({
+  driver: memoryDriver(),
+  encrypt: {
+    keys: async () => await Promise.resolve([{ id: "a", key: "k" }]),
+    keyRefresh: 300_000,
+  },
+});
+const sealing: CacheCipher = {
+  id: 200,
+  seal: (plaintext) => plaintext,
+  open: async (sealed) => await Promise.resolve(sealed),
+};
+void createCache({
+  driver: memoryDriver(),
+  encrypt: { cipher: sealing, previous: [sealing] },
+});
+void createCache({
+  driver: memoryDriver(),
+  // @ts-expect-error -- the built-in is "aes-256-gcm"; others are a CacheCipher
+  encrypt: { cipher: "chacha20-poly1305", keys: [] },
+});
+type _contextAad = Expect<
+  Equal<Parameters<CacheCipher["seal"]>[1]["aad"], Uint8Array>
+>;
+type _reason = Expect<
+  Equal<
+    CacheDecryptError["reason"],
+    "auth" | "unknown-key" | "unencrypted" | "malformed" | "cipher"
+  >
+>;
+type _hitKeyId = Expect<
+  Equal<CacheEventMap["hit"]["keyId"], string | undefined>
+>;
+type _staleKeyId = Expect<
+  Equal<CacheEventMap["stale-hit"]["keyId"], string | undefined>
+>;
+type _phases = Expect<
+  Equal<
+    Extract<CacheEventMap["error"]["phase"], "encrypt" | "decrypt">,
+    "encrypt" | "decrypt"
+  >
+>;

@@ -47,6 +47,39 @@ the cap and held to it. Departures, each a question in the PR: a second
 `decompress` argument, `maxOutputLength`; a `level` beside a user compressor
 refused.
 
+**PR-E1 built (2026-10-28)**, on develop `d41aa084` (after PR-Z1 and the
+Cloudflare drivers): the `"BE"` envelope and the built-in `"aes-256-gcm"`
+with a key per entry (`lib/core/encrypt.ts`); rings, `keys` functions with
+`keyRefresh` and the unknown-id refresh; `aad`; the sealed tags and expiry,
+trusted over the driver's; `CacheDecryptError` and the `"encrypt"`/`"decrypt"`
+phases, with no deletion on failure; `acceptUnencrypted`; `CacheCipher` with
+`previous`; `runCacheCipherConformance`; `keyId` on `hit` and `stale-hit`;
+the README's "Encryption at rest". Every §11 test but `rawDump` (PR-E2), each
+with its negative control. Decisions the plan left open, each a question in
+the PR:
+- **The tag-stamp check runs on every driver** for an encrypted cache, not
+  only on stamps drivers: an index driver's tag index lives apart from the
+  entry (SQL `tags`, Redis tag sets), so stripping it there must still miss.
+  It costs one stamp read per tagged read, cached for `tagStampCacheMs`.
+- **A failed `keys` call is retried** by a later operation at most once per
+  second; `keyRefresh` is checked as operations run (no timer) and is
+  refused beside a static ring.
+
+The user kept both (2026-10-28). One fix followed, found by the examples
+agent: a cache **without** `encrypt` read a sealed entry as a decode failure
+and deleted it, so one process missing the configuration during a rollout
+would wipe its peers' encrypted entries (against Q8). It now recognises the
+`"BE"` magic and reads the entry as a miss with an `error` event
+(`phase: "decrypt"`, `CacheDecryptError` reason `"cipher"`, the key id when
+well-formed), never deleting it; its own `set` or load still overwrites it,
+as any write of the app's does. No new name or reason.
+
+Measured on the real cache ([`bench-e1-overhead.ts`](evidence/encryption/bench-e1-overhead.ts)):
+`set`/`get` +3.9/+4.0 µs at 100 B on the memory driver (+8.4/+6.0 µs on
+loopback Redis), +5.8/+4.6 µs at 4 KiB, and within the noise from 70 KB up.
+Seal and open alone take about 2.6 µs each at 100 B, against §3.2's 1.8 and
+1.9 µs for the bare cipher: the envelope's body, AAD and copies.
+
 Written 2026-10-28 against `develop` at `251a64f1` (#560). **No product code
 was changed.** Every `file:line` is at `251a64f1`, relative to
 `packages/bun-cache/` unless it says otherwise. The marks are the main

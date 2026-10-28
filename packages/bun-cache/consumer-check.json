@@ -24,7 +24,8 @@
         "s3Driver",
         "azureBlobDriver",
         "cloudflareKvDriver",
-        "cloudflareD1Driver"
+        "cloudflareD1Driver",
+        "CacheDecryptError"
       ],
       "types": [
         "Cache",
@@ -64,9 +65,15 @@
         "AzureBlobDriverOptions",
         "AzureBlobConnection",
         "CloudflareKvDriverOptions",
-        "CloudflareD1DriverOptions"
+        "CloudflareD1DriverOptions",
+        "CacheEncryptOptions",
+        "CacheKey",
+        "CacheKeyRing",
+        "CacheCipher",
+        "CacheCipherContext",
+        "CacheErrorPhase"
       ],
-      "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;\nconst tiered = m.createCache({ driver: m.memoryDriver(), l1: { maxEntries: 10, ttl: 1000, clone: true }, bus: \"auto\" });\nexport type _l1Hits = Equal<NonNullable<ReturnType<typeof tiered.stats>[\"l1\"]>[\"hits\"], number>;\nexport const _l2Read: Promise<unknown> = tiered.get(\"k\", { tier: \"l2\" });\nconst bus: t.CacheBus = m.redisBus({ url: \"redis://127.0.0.1:6379\", prefix: \"app\" });\nexport type _busNotAny = Expect<IsAny<typeof bus>>;\nexport const _pg: t.CacheBus = m.pgBus(\"postgres://localhost/app\");\nexport type _redisOptionsNotAny = Expect<IsAny<t.RedisBusOptions>>;\nexport type _pgOptionsNotAny = Expect<IsAny<t.PgBusOptions>>;\nexport const _redis: t.CacheDriver = m.redisDriver({ url: \"redis://127.0.0.1:6379/0\", prefix: \"app\", firstConnectTimeout: 500 });\nexport type _redisDriverOptionsNotAny = Expect<IsAny<t.RedisDriverOptions>>;\nconst mongo = m.mongoDriver({ url: \"mongodb://127.0.0.1:27017/app\", collections: { entries: \"app_cache\" }, maxEntries: 1000 });\nexport type _mongoIsDriver = Equal<typeof mongo extends t.CacheDriver ? true : false, true>;\nexport type _mongoCollection = Equal<t.MongoCacheCollection, \"entries\" | \"stamps\" | \"locks\" | \"bus\">;\nexport type _mongoClientNotAny = Expect<IsAny<t.MongoClientLike>>;\nexport const _s3: t.CacheDriver = m.s3Driver({ url: \"s3://key:secret@127.0.0.1:8333/bucket?scheme=http\", prefix: \"app\", maxEntries: 1000, conditionalWrites: true });\nexport const _s3Connection: t.S3DriverOptions = { connection: { bucket: \"b\", region: \"eu-west-1\" }, maxBytes: 1 << 30 };\nexport type _s3DriverOptionsNotAny = Expect<IsAny<t.S3DriverOptions>>;\nexport const _azure: t.CacheDriver = m.azureBlobDriver({ url: \"azure://acct:a2V5@acct.blob.core.windows.net/cache\", prefix: \"app\", maxEntries: 1000 });\nexport const _azureConnection: t.AzureBlobDriverOptions = { connection: { connectionString: \"UseDevelopmentStorage=true\", container: \"c\" }, maxBytes: 1 << 30 };\nexport type _azureConnectionNotAny = Expect<IsAny<t.AzureBlobConnection>>;\nexport const _kv: t.CacheDriver = m.cloudflareKvDriver({ accountId: \"acc\", apiToken: \"tok\", namespaceId: \"ns\", prefix: \"app\" });\nexport const _kvWorker: t.CloudflareKvDriverOptions = { endpoint: \"https://bun-cache.example.workers.dev\", apiToken: \"secret\", namespaceId: \"CACHE_KV\" };\nexport type _kvOptionsNotAny = Expect<IsAny<t.CloudflareKvDriverOptions>>;\nexport const _d1: t.CacheDriver = m.cloudflareD1Driver({ accountId: \"acc\", apiToken: \"tok\", databaseId: \"db\", prefix: \"app_\", tables: { entries: \"app_cache\" }, maxEntries: 1000, syncSchema: true });\nexport const _d1Worker: t.CloudflareD1DriverOptions = { endpoint: \"https://bun-cache.example.workers.dev\", apiToken: \"secret\", databaseId: \"CACHE_DB\" };\nexport type _d1OptionsNotAny = Expect<IsAny<t.CloudflareD1DriverOptions>>;"
+      "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;\nconst tiered = m.createCache({ driver: m.memoryDriver(), l1: { maxEntries: 10, ttl: 1000, clone: true }, bus: \"auto\" });\nexport type _l1Hits = Equal<NonNullable<ReturnType<typeof tiered.stats>[\"l1\"]>[\"hits\"], number>;\nexport const _l2Read: Promise<unknown> = tiered.get(\"k\", { tier: \"l2\" });\nconst bus: t.CacheBus = m.redisBus({ url: \"redis://127.0.0.1:6379\", prefix: \"app\" });\nexport type _busNotAny = Expect<IsAny<typeof bus>>;\nexport const _pg: t.CacheBus = m.pgBus(\"postgres://localhost/app\");\nexport type _redisOptionsNotAny = Expect<IsAny<t.RedisBusOptions>>;\nexport type _pgOptionsNotAny = Expect<IsAny<t.PgBusOptions>>;\nexport const _redis: t.CacheDriver = m.redisDriver({ url: \"redis://127.0.0.1:6379/0\", prefix: \"app\", firstConnectTimeout: 500 });\nexport type _redisDriverOptionsNotAny = Expect<IsAny<t.RedisDriverOptions>>;\nconst mongo = m.mongoDriver({ url: \"mongodb://127.0.0.1:27017/app\", collections: { entries: \"app_cache\" }, maxEntries: 1000 });\nexport type _mongoIsDriver = Equal<typeof mongo extends t.CacheDriver ? true : false, true>;\nexport type _mongoCollection = Equal<t.MongoCacheCollection, \"entries\" | \"stamps\" | \"locks\" | \"bus\">;\nexport type _mongoClientNotAny = Expect<IsAny<t.MongoClientLike>>;\nexport const _s3: t.CacheDriver = m.s3Driver({ url: \"s3://key:secret@127.0.0.1:8333/bucket?scheme=http\", prefix: \"app\", maxEntries: 1000, conditionalWrites: true });\nexport const _s3Connection: t.S3DriverOptions = { connection: { bucket: \"b\", region: \"eu-west-1\" }, maxBytes: 1 << 30 };\nexport type _s3DriverOptionsNotAny = Expect<IsAny<t.S3DriverOptions>>;\nexport const _azure: t.CacheDriver = m.azureBlobDriver({ url: \"azure://acct:a2V5@acct.blob.core.windows.net/cache\", prefix: \"app\", maxEntries: 1000 });\nexport const _azureConnection: t.AzureBlobDriverOptions = { connection: { connectionString: \"UseDevelopmentStorage=true\", container: \"c\" }, maxBytes: 1 << 30 };\nexport type _azureConnectionNotAny = Expect<IsAny<t.AzureBlobConnection>>;\nexport const _kv: t.CacheDriver = m.cloudflareKvDriver({ accountId: \"acc\", apiToken: \"tok\", namespaceId: \"ns\", prefix: \"app\" });\nexport const _kvWorker: t.CloudflareKvDriverOptions = { endpoint: \"https://bun-cache.example.workers.dev\", apiToken: \"secret\", namespaceId: \"CACHE_KV\" };\nexport type _kvOptionsNotAny = Expect<IsAny<t.CloudflareKvDriverOptions>>;\nexport const _d1: t.CacheDriver = m.cloudflareD1Driver({ accountId: \"acc\", apiToken: \"tok\", databaseId: \"db\", prefix: \"app_\", tables: { entries: \"app_cache\" }, maxEntries: 1000, syncSchema: true });\nexport const _d1Worker: t.CloudflareD1DriverOptions = { endpoint: \"https://bun-cache.example.workers.dev\", apiToken: \"secret\", databaseId: \"CACHE_DB\" };\nexport type _d1OptionsNotAny = Expect<IsAny<t.CloudflareD1DriverOptions>>;\nconst sealed = m.createCache({ driver: m.memoryDriver(), encrypt: { keys: [{ id: \"2026-10\", key: new Uint8Array(32) }], aad: \"prod\" } });\nexport type _sealedNotAny = Expect<IsAny<typeof sealed>>;\nexport const _provider: t.CacheEncryptOptions = { keys: async () => [{ id: \"k1\", key: \"a\".repeat(64) }], keyRefresh: 300_000 };\nexport const _ring: t.CacheKeyRing = [{ id: \"a\", key: new Uint8Array(32) } satisfies t.CacheKey];\ndeclare const userCipher: t.CacheCipher;\nexport const _withCipher = m.createCache({ driver: m.memoryDriver(), encrypt: { cipher: userCipher, previous: [userCipher], acceptUnencrypted: false } });\nexport type _cipherContextAad = Equal<t.CacheCipherContext[\"aad\"], Uint8Array>;\nexport type _decryptReason = Equal<InstanceType<typeof m.CacheDecryptError>[\"reason\"], \"auth\" | \"unknown-key\" | \"unencrypted\" | \"malformed\" | \"cipher\">;\nexport const _phase: t.CacheErrorPhase = \"decrypt\";\nexport type _hitKeyId = Equal<t.CacheEventMap[\"hit\"][\"keyId\"], string | undefined>;"
     },
     {
       "spelling": "@kingsleyweb/bun-cache/lib",
@@ -76,7 +83,12 @@
     {
       "$comment": "The conformance kit and the fault-injection/clock helpers (plan \u00a76.2, \u00a713.1). It imports bun:test, so a consumer checks it with Bun's types.",
       "spelling": "@kingsleyweb/bun-cache/testing",
-      "values": ["runCacheDriverConformance", "faulty", "fakeClock"],
+      "values": [
+        "runCacheDriverConformance",
+        "faulty",
+        "fakeClock",
+        "runCacheCipherConformance"
+      ],
       "types": [
         "ConformanceFactory",
         "ConformanceOptions",
@@ -85,13 +97,20 @@
         "FakeClock",
         "CacheDriver",
         "StoredEntry",
-        "ConformanceCrossProcess"
+        "ConformanceCrossProcess",
+        "CacheCipher",
+        "CacheCipherContext"
       ],
-      "snippet": "declare const driver: t.CacheDriver;\nconst wrapped: t.FaultyDriver = m.faulty(driver, { failOn: [\"get\"] });\nwrapped.setFaults({ down: true });\nvoid m.runCacheDriverConformance(\"memory\", () => ({ driver: wrapped }));\nexport type _clockNotAny = Expect<IsAny<ReturnType<typeof m.fakeClock>>>;\nconst clock = m.fakeClock();\nclock.advance(1000);\nexport type _nowReturns = Equal<ReturnType<typeof clock.now>, number>;\nexport type _storedEntryNotAny = Expect<IsAny<t.StoredEntry>>;"
+      "snippet": "declare const driver: t.CacheDriver;\nconst wrapped: t.FaultyDriver = m.faulty(driver, { failOn: [\"get\"] });\nwrapped.setFaults({ down: true });\nvoid m.runCacheDriverConformance(\"memory\", () => ({ driver: wrapped }));\nexport type _clockNotAny = Expect<IsAny<ReturnType<typeof m.fakeClock>>>;\nconst clock = m.fakeClock();\nclock.advance(1000);\nexport type _nowReturns = Equal<ReturnType<typeof clock.now>, number>;\nexport type _storedEntryNotAny = Expect<IsAny<t.StoredEntry>>;\ndeclare const cipher: t.CacheCipher;\nm.runCacheCipherConformance(\"my-cipher\", cipher);\nexport type _cipherCtxNotAny = Expect<IsAny<t.CacheCipherContext>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-cache/lib/testing",
-      "values": ["runCacheDriverConformance", "faulty", "fakeClock"]
+      "values": [
+        "runCacheDriverConformance",
+        "faulty",
+        "fakeClock",
+        "runCacheCipherConformance"
+      ]
     },
     {
       "$comment": "The HTTP response cache (plan \u00a79): cacheResponse, coalesceRequests and addCacheTags for bun-common's BunRouter. Its declarations import bun-common, a runtime dependency.",

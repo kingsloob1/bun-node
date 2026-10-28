@@ -18,6 +18,7 @@
  */
 export { createCache } from "./core/cache";
 export {
+  CacheDecryptError,
   CacheDriverError,
   CircuitOpenError,
   EntryTooLargeError,
@@ -29,15 +30,20 @@ export type {
   BusMessage,
   Cache,
   CacheBus,
+  CacheCipher,
+  CacheCipherContext,
   CacheCompressor,
   CacheCounterKeys,
   CacheDriver,
   CacheDriverCapabilities,
+  CacheEncryptOptions,
   CacheEntry,
   CacheErrorPhase,
   CacheEvent,
   CacheEventMap,
   CacheFencedReason,
+  CacheKey,
+  CacheKeyRing,
   CacheLoader,
   CacheLoaderContext,
   CacheLoadDurations,
