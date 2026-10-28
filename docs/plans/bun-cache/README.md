@@ -2266,6 +2266,16 @@ only a copy. This is BentoCache's rule for its bus [W, §11].
   backfilled from a stale L2 entry as if it were fresh. Backfill copies
   `freshUntil` too.
 
+
+- **A driver eviction does not drop L1 copies** (measured by the playground's
+  cache lab, 2026-10-28: with a 64-entry memory driver, `l1.entries` reached
+  103). An entry the shared driver evicts for space (`maxEntries`,
+  `maxBytes`) stays in each process's L1 until its own L1 lifetime (`l1.ttl`,
+  default 30 s) or its freshness ends, whichever comes first. The value is
+  still valid. An eviction is about space, not freshness, and invalidations
+  still reach every L1 through the bus. Publishing every eviction on the bus
+  was weighed and declined (the user's decision, 2026-10-28): it adds bus
+  traffic for no gain in correctness.
 ---
 
 ## 5. Redundant drivers
