@@ -250,8 +250,7 @@ driver unchanged under the new kit, 8 of 8 runs clean.
   run-time contradiction checks removed (8 fail), the `headersSent` guard
   removed (1 fail), unknown keys accepted (1 fail).
 
-**Local fence reported, built 2026-10-28** (branch
-`fix/bun-cache-local-fenced`, the user's decision of 2026-10-28). A
+**Local fence reported, merged 2026-10-28, #549** (the user's decision of 2026-10-28). A
 `delete`, `deleteMany`, `clear`, `invalidateTags` or `increment` on the same
 cache, in the load's own namespace, that lands mid-load forgets the flight, and
 the core drops its write before the driver (§3.4); until now that drop was
@@ -266,6 +265,78 @@ place of their `refresh` event. Which writes are dropped is unchanged; a
 lock-timeout self-load (§3.4, never stored by design) is not reported. The
 new names (`reason`, `CacheFencedReason`, the `fenced` stat) were approved
 by the user the same day (§21).
+
+**PR-C4 built 2026-10-28** (branch `feat/bun-cache-c4-sql`, awaiting the
+maintainer's commit): `postgresDriver`, `mysqlDriver` and `mariadbDriver`
+over Bun's `SQL` (§7.4, §7.5), sharing `lib/drivers/sql-base.ts`; the
+tables are SQLite's shape (`entries` with `tg` and `ca` meaning the same as
+C3's, `tags`, `stamps (… at, exp)`, `locks`, and `bus` on MySQL and
+MariaDB), prefix `bun_cache_`, `VARCHAR(255)` keys in `utf8mb4_0900_bin`
+(MySQL) and `utf8mb4_nopad_bin` (MariaDB), names past 255 characters
+stored as `#` + SHA-256 on all three; `LISTEN`/`NOTIFY` on Postgres (a
+payload over 7,900 bytes becomes a `clear` of its namespace; a reconnect,
+seen as `onlisten` running again, is a gap), the polled `<p>bus` on MySQL
+and MariaDB (a `seq` hole that outlives max(1 s, 4 × poll) is a gap;
+pruned by `busRetention`); `unlogged`; `syncSchema()` answering `[]`;
+`maxEntries` through C3's `entry-cap.ts`, copied byte-for-byte (one
+transaction; two processes' sweeps serialised by an advisory lock on
+Postgres and a lock row on MySQL and MariaDB). §8.3's copies are in
+`lib/drivers/sql-connection.ts` with origin comments
+(`bun-jobs/lib/shared/connection.ts@4ec90b1e`, `sql/dialect.ts`,
+`sql/sql-driver.ts`), and the drift test imports bun-jobs' source by
+relative path and compares behaviour. **Departures from §7.4/§7.5, each
+measured.** (1) The fence as one statement is not enough under a
+concurrent invalidation: both statements' snapshots can predate the
+other's commit, and a pre-invalidation write survived the invalidation in
+roughly every round where the two started together (60-round race test:
+rounds 0, 6, 9, 12, 15 … survived, 3 of 3 runs on Postgres; 56/60 and
+60/60 on MySQL with no delay). So a fenced write holds a shared advisory
+lock on its namespace and `deleteByTags` an exclusive one (Postgres), and
+on MySQL/MariaDB the write reads the stamps `LOCK IN SHARE MODE` in a
+`REPEATABLE READ` transaction; with them, 0 survivors in every run. On
+MariaDB 11.8 the race test passed even without the locking read (0 of 360
+rounds; InnoDB's deadlock-and-retry appears to serialise it there), so that
+control discriminates on MySQL only. (2) MySQL/MariaDB writes that touch the
+tag index are one transaction (entry upsert + tag-row replacement), since a
+crash or a concurrent writer between the statements could leave an entry
+with no tag rows. (3) `LAST_INSERT_ID(expr)` is unsigned: a counter going
+below zero failed with "Out of range value for column 'n'", so the value
+goes through `^ 0` and back through `CAST(… AS SIGNED)` (measured on both).
+(4) The test variables fall back to `BUN_JOBS_TEST_*_URL` as §13.2 says, but
+`setup-databases.ts` now also creates a database of bun-cache's own,
+`bun_cache_test`, on the three servers (`BUN_CACHE_TEST_*_URL`), and each
+run uses tables `bun_cache_test_<pid>_…`, dropped by name at the end.
+The kit passes in full on all three engines (Postgres 40 pass, 2 skip: the
+stamps case and the polled-bus gap case, not advertised; MySQL and MariaDB
+40 pass, 1 skip), including the two-process pass and, on MySQL/MariaDB,
+the bus-gap case. `oven-sh/bun#27102` (a MySQL query after a
+reserve/release not holding the loop) did not reproduce on
+1.4.4-canary.1+a0cc096ce in a minimal script; the kit's worker holds the
+loop open anyway, as bun-jobs' kit does, until a stable Bun fixes it.
+
+**PR-C4 follow-up, the user's decisions of 2026-10-28.** The SQL drivers'
+option and type names are approved as built (`prefix`, `url`,
+`connection`, `sql`, `max`, `maxEntries`, `busPollInterval`,
+`busRetention`, `unlogged`; `PostgresDriverOptions`, `MysqlDriverOptions`,
+`SqlCacheDriverOptions`, `SqlConnectionOptions`). Two options added to all
+four SQL-family drivers (SQLite included), after bun-jobs' SQL driver:
+**`tables`** — exact names per table (`entries`, `tags`, `stamps`, `locks`,
+and `bus` except on Postgres, which refuses it: its bus is
+`LISTEN`/`NOTIFY`), used as-is and ignoring `prefix`; SQL identifiers of at
+most 63 characters, no two alike; index names `ix_<table>_<suffix>`,
+shortened with a hash of the table name past 63; the Postgres channel and
+advisory-lock keys hash the entries/tags/stamps/locks names, so they are
+distinct per table set (`lib/drivers/sql-tables.ts`, shared). The key type
+is `SqlCacheTable` (bun-jobs' `SqlTable`), **awaiting the user's
+approval**. **`syncSchema?: boolean | SchemaSyncOptions`** — runs the sync
+after the tables are created (on connect; on SQLite, when a connection
+first creates them), with the core's `SchemaSyncOptions`; a no-op while
+there is one schema version, and, as in bun-jobs, its report is not
+returned by `connect()`. Measured: ignoring `tables` fails the name tests on
+every engine; an unshortened long index name fails on MySQL (identifier too
+long) and on Postgres (silently truncated, losing the suffix); a
+prefix-only channel fails the two-table-sets test; the option ignored fails
+the sync tests; letting Postgres take a `bus` name fails its refusal test.
 
 ### Contents
 

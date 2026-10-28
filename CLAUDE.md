@@ -356,6 +356,14 @@ ordinary names appear everywhere.
 alone does nothing, so `EXAMPLE_MYSQL_URL=… bun run-all.ts` is a memory run that
 looks like a MySQL one.
 
+**examples/bun-cache** reads the same URL names but needs no driver variable:
+`04-drivers/sql.ts` runs on each SQL engine whose `EXAMPLE_POSTGRES_URL`,
+`EXAMPLE_MYSQL_URL` or `EXAMPLE_MARIADB_URL` is set, names the ones it skipped,
+and skips visibly with none (a set but unreachable URL fails). bun-cache's own
+suites read `BUN_CACHE_TEST_POSTGRES_URL`, `…_MYSQL_URL` and `…_MARIADB_URL`
+(database `bun_cache_test`; `bun scripts/setup-databases.ts --print-env`
+prints them), falling back to the `BUN_JOBS_TEST_*_URL`s.
+
 **A sweep needs the URLs as well as the driver, on every backend including
 `memory`.** Three examples name a server of their own whatever `EXAMPLE_DRIVER`
 says — `08-drivers/postgres-and-mysql.ts`, `08-drivers/redis.ts` and

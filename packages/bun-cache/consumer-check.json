@@ -13,7 +13,10 @@
         "CircuitOpenError",
         "LoaderTimeoutError",
         "UnsupportedOperationError",
-        "EntryTooLargeError"
+        "EntryTooLargeError",
+        "postgresDriver",
+        "mysqlDriver",
+        "mariadbDriver"
       ],
       "types": [
         "Cache",
@@ -34,7 +37,12 @@
         "GetOrSetOptions",
         "CacheLoader",
         "FileDriverOptions",
-        "SqliteDriverOptions"
+        "SqliteDriverOptions",
+        "PostgresDriverOptions",
+        "MysqlDriverOptions",
+        "SqlCacheDriverOptions",
+        "SqlConnectionOptions",
+        "SqlCacheTable"
       ],
       "snippet": "interface User { id: number; name: string }\nconst cache = m.createCache({ driver: m.memoryDriver() });\nexport type _cacheNotAny = Expect<IsAny<typeof cache>>;\nexport type _getNotAny = Expect<IsAny<ReturnType<typeof cache.get>>>;\nconst typed = m.createCache<{ [k: `user:${number}`]: User; \"config\": { dark: boolean }; [k: `hits:${string}`]: number }>({ driver: m.memoryDriver() });\nexport type _userOut = Equal<Awaited<ReturnType<typeof typed.get<`user:${number}`>>>, User | undefined>;\ndeclare const schema: t.CacheSchemaFrom<{ \"user:*\": import(\"@kingsleyweb/bun-common\").StandardSchemaV1<unknown, User> }>;\nexport type _schemaKey = Equal<keyof typeof schema, `user:${string}`>;\nexport const _driverError: Error = new m.CacheDriverError({ driver: \"memory\", op: \"get\", cause: new Error(\"x\") });\nconst simple = m.fromSimpleDriver({ get: async (_ns, _key) => undefined, set: async () => {}, delete: async () => true });\nexport type _simpleIsDriver = Equal<typeof simple extends t.CacheDriver ? true : false, true>;"
     },
@@ -65,11 +73,21 @@
     },
     {
       "spelling": "@kingsleyweb/bun-cache/lib/drivers",
-      "values": ["memoryDriver", "fileDriver", "sqliteDriver"],
+      "values": [
+        "memoryDriver",
+        "fileDriver",
+        "sqliteDriver",
+        "postgresDriver",
+        "mysqlDriver",
+        "mariadbDriver"
+      ],
       "types": [
         "MemoryDriverOptions",
         "FileDriverOptions",
-        "SqliteDriverOptions"
+        "SqliteDriverOptions",
+        "PostgresDriverOptions",
+        "MysqlDriverOptions",
+        "SqlCacheTable"
       ]
     },
     {

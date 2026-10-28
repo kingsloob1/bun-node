@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.1.0",
   "private": false,
-  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters) with a memory driver today and file, SQLite, SQL, MongoDB, Redis and S3 drivers to follow, plus a conformance kit for custom drivers",
+  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters) over memory, file, SQLite, Postgres, MySQL and MariaDB drivers today, with MongoDB, Redis and S3 to follow, plus a conformance kit for custom drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-cache#readme",
@@ -23,7 +23,10 @@
     "tags",
     "single-flight",
     "stale-while-revalidate",
-    "memory"
+    "memory",
+    "postgres",
+    "mysql",
+    "mariadb"
   ],
   "exports": {
     ".": {

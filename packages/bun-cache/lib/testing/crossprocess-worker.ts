@@ -118,9 +118,23 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error: unknown) => {
-  console.error(
-    error instanceof Error ? (error.stack ?? error.message) : error,
-  );
-  process.exit(1);
-});
+// Holds the event loop open until `main` settles. On Bun's MySQL and MariaDB
+// clients, once a connection has been reserved and released (the SQL
+// drivers' counters do exactly that), the next query may not keep the loop
+// alive, and a script running under `void main()` exits 0 mid-query with
+// nothing printed: oven-sh/bun#27102 (reproduced on 1.4.3; a minimal
+// reserve/release or `begin()` script did not reproduce it on
+// 1.4.4-canary.1+a0cc096ce, but the floor is 1.4.2). bun-jobs' kit does the
+// same (`runScript` in `lib/provider/testing/spawn.ts`). Remove the timer
+// once a stable Bun ships the fix.
+const keepAlive = setInterval(() => {}, 1 << 30);
+void main()
+  .catch((error: unknown) => {
+    console.error(
+      error instanceof Error ? (error.stack ?? error.message) : error,
+    );
+    process.exit(1);
+  })
+  .finally(() => {
+    clearInterval(keepAlive);
+  });

@@ -45,9 +45,17 @@ And (PR-C3):
 - the kit's two-process pass now starts both sides at a barrier, so it
   overlaps even for a driver as fast as SQLite
 
-Next, in the plan's order: SQL (PR-C4), Redis (PR-C5),
-MongoDB (PR-C6), S3 (PR-C7), then the multi-tier L1/L2 bus (PR-T1). The HTTP
-utilities (`cacheResponse`) and the Nest module follow.
+And (PR-C4):
+
+- the **Postgres, MySQL and MariaDB drivers** over Bun's built-in `SQL`:
+  shared by every process and host that reaches the database — a tag index
+  with an atomic fence that holds under a concurrent invalidation, counters
+  that add in the database, lock rows, the optional `maxEntries` cap, and a
+  bus (`LISTEN`/`NOTIFY` on Postgres, a polled table on MySQL and MariaDB)
+
+Next, in the plan's order: Redis (PR-C5), MongoDB (PR-C6), S3 (PR-C7), then
+the multi-tier L1/L2 bus (PR-T1). The HTTP utilities (`cacheResponse`) and
+the Nest module follow.
 
 ## Quick start
 
@@ -480,7 +488,9 @@ forces a gap in its log.
 | custom (`fromSimpleDriver`) | PR-C1 | declared | no | no | stamps | no |
 | file | PR-C2 | lazy + sweep | yes, under a lock file | `O_EXCL` file | stamps, checked on read | polled log |
 | SQLite | PR-C3 | filtered on read + sweep, indexed `exp` | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one transaction) | polled table |
-| Postgres, MySQL/MariaDB, Redis, MongoDB, S3 | PR-C4 to PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
+| Postgres | PR-C4 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one statement under a namespace advisory lock) | `LISTEN`/`NOTIFY` |
+| MySQL / MariaDB | PR-C4 | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table |
+| Redis, MongoDB, S3 | PR-C5 to PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -550,6 +560,24 @@ prefixes on one file are two separate stores):
 <p>bus     (seq AUTOINCREMENT, at, msg)                                  the polled bus
 ```
 
+**Table names.** `prefix` names them all (`<prefix>entries`, …); `tables`
+names any of them outright, for an existing schema that was not named here —
+`sqliteDriver({ path, tables: { entries: "app_cache" } })` — and a name given
+that way is used as-is and ignores the prefix (the others keep it), as
+bun-jobs' SQL driver does. Every name is an SQL identifier of at most 63
+characters, and no two tables may share one; anything else throws. Index
+names follow the tables (`ix_<table>_exp`, `ix_<table>_key`, shortened with a
+hash past 63 characters). The table keys are the `SqlCacheTable` type.
+
+**Schema.** The tables are created automatically on first use, with
+`CREATE TABLE IF NOT EXISTS` (and `CREATE INDEX IF NOT EXISTS`), once per
+connection; nothing is ever dropped. `syncSchema()` answers `[]`: there is
+one schema version, so there is nothing to migrate yet. The `syncSchema`
+option (`true`, or the `SchemaSyncOptions` to pass) runs it when the tables
+are created — **a no-op until the schema first changes**; set it now so later
+migrations run on connect. As in bun-jobs, connecting does not return the
+sync's report: `await driver.syncSchema({ dryRun: true })` reads one.
+
 - **One connection per file per process.** Every `sqliteDriver` on the same
   file (after `path.resolve`) shares one `Database`; the last `close()`
   closes it. `bun:sqlite` is synchronous, so nothing in the process ever
@@ -590,3 +618,107 @@ prefixes on one file are two separate stores):
   filesystem). Every call blocks the event loop while it runs — about
   2.5 µs per small hit, about 100 µs per 10 KB one (measured for the plan) —
   so keep values over ~100 KB in another driver.
+
+## The Postgres, MySQL and MariaDB drivers
+
+```ts
+import {
+  createCache,
+  mariadbDriver,
+  mysqlDriver,
+  postgresDriver,
+} from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: postgresDriver({ url: process.env.DATABASE_URL }),
+});
+// or mysqlDriver({ url: "mysql://app:secret@db:3306/app" }),
+//    mariadbDriver({ connection: { host: "db", user: "app", password, database: "app" } }),
+//    postgresDriver({ sql: existingClient })  // never closed by the driver
+```
+
+One set of tables in a database every process and host can reach, over Bun's
+built-in `SQL` (§7.4 and §7.5 of the plan). The tables, under the prefix
+(`prefix`, `bun_cache_` by default; letters, digits and `_`, at most 48
+characters) unless `tables` names them:
+
+```
+<p>entries (ns, k, v bytes, n BIGINT, exp BIGINT, ca BIGINT, tg TEXT)  entries and counters (ca: written/created at)
+<p>tags    (ns, tag, k)                                               the tag index
+<p>stamps  (ns, tag, at, exp)                                         invalidation stamps
+<p>locks   (ns, k, owner, exp)                                        lock rows
+<p>bus     (seq AUTO_INCREMENT, at, msg)                              MySQL and MariaDB: the polled bus
+```
+
+**Table names.** `prefix` names them all (`<prefix>entries`, …); `tables`
+names any of them outright, for an existing schema that was not named here —
+`postgresDriver({ url, tables: { entries: "app_cache" } })` — and a name
+given that way is used as-is and ignores the prefix (the others keep it), as
+bun-jobs' SQL driver does. Every name is an SQL identifier of at most 63
+characters (Postgres's limit, one under MySQL's), and no two tables may share
+one; anything else throws. `bus` can be named on MySQL and MariaDB only:
+Postgres's bus is `LISTEN`/`NOTIFY`, and `postgresDriver` refuses a `bus`
+name. Index names follow the tables (`ix_<table>_exp`, `ix_<table>_key`,
+`ix_<table>_at`, shortened with a hash past 63 characters). The `LISTEN`
+channel and the advisory-lock keys are derived from the entries, tags,
+stamps and locks table names, so two drivers on the same tables share them
+and two on different tables never do. The table keys are the `SqlCacheTable`
+type.
+
+**Schema.** The tables are created automatically on first use, with
+`CREATE TABLE IF NOT EXISTS` (and `IF NOT EXISTS` indexes on Postgres; the
+indexes are inline in `CREATE TABLE` on MySQL and MariaDB), once per driver;
+nothing is ever dropped. `syncSchema()` answers `[]`: there is one schema
+version, so there is nothing to migrate yet. The `syncSchema` option
+(`true`, or the `SchemaSyncOptions` to pass) runs it on connect, after the
+tables are created — **a no-op until the schema first changes**; set it now
+so later migrations run on connect. As in bun-jobs, `connect()` does not
+return the sync's report: `await driver.syncSchema({ dryRun: true })` reads
+one.
+
+- **Connections**: a `url`, `connection` fields, or an existing `sql` client
+  (never closed by the driver; the driver closes only what it built). `max`
+  sizes the pool of a client the driver builds. On MySQL and MariaDB,
+  `allowPublicKeyRetrieval` — the URL parameter or the connection field — is
+  taken out of the URL and passed as the client option, because **Bun
+  ignores it in a URL**; prefer TLS outside a trusted network.
+- **Keys are exact**: MySQL's and MariaDB's columns are `VARCHAR(255)` in a
+  binary collation (`utf8mb4_0900_bin`, `utf8mb4_nopad_bin`), so `"a"`,
+  `"A"` and `"a "` are three keys. A namespace, key, tag or lock owner longer
+  than 255 characters is stored as `#` + its SHA-256, on all three engines.
+- **The fence is airtight under a concurrent invalidation.** A write whose
+  load began before `invalidateTags` either commits before the invalidation
+  deletes (and is deleted) or sees its stamp (and is refused), never neither:
+  on Postgres the write holds a shared advisory lock on its namespace and the
+  invalidation an exclusive one; on MySQL and MariaDB the write reads the
+  stamps `LOCK IN SHARE MODE` inside a `REPEATABLE READ` transaction, and the
+  invalidation upserts them first. Writes that touch the tag index on MySQL
+  and MariaDB are one transaction; on Postgres one statement.
+- **Counters** are integers (`BIGINT`), added in the database, and may go
+  below zero; a fractional step throws a `TypeError`.
+- **Expiry**: reads filter out expired rows and never write; the core's
+  sweeper deletes them (with their tag rows, expired stamps, lapsed locks
+  and, on MySQL and MariaDB, bus rows past `busRetention`).
+- **`maxEntries`** (opt-in; no cap by default — the database is sized by its
+  operator): after the expired delete, one transaction evicts the excess —
+  **nearest to expiry first**, then the entries with no expiry, oldest write
+  first — each with its tag rows, at most the sweep's `limit` per pass. Each
+  eviction is an `evict` event (reason `"cap"`) and counts in
+  `stats().evictions`. It is enforced at sweep time, so the table can briefly
+  exceed the cap between sweeps; it counts every namespace under the prefix
+  together; counters are never counted or evicted. Two processes sweeping at
+  once take turns (an advisory lock on Postgres, a lock row on MySQL and
+  MariaDB), so the excess is evicted exactly once.
+- **The bus**: Postgres uses `LISTEN`/`NOTIFY` on a channel named after the
+  prefix; a message too big for a notification (8,000 bytes) is sent as a
+  `clear` of its namespace, and a reconnect of the listening connection is
+  reported as a gap. MySQL and MariaDB poll `<p>bus` every `busPollInterval`
+  (250 ms); a hole in its sequence that outlives about a second — rows
+  pruned while a subscriber lagged, or an insert that never committed — is
+  reported as a gap.
+- **`unlogged: true`** (Postgres) creates `UNLOGGED` tables: faster writes,
+  emptied after a crash and **not replicated to standbys**, so a failover
+  starts cold. It applies when the tables are created.
+- **Limits**: an entry is at most `max_allowed_packet` less 64 KiB on MySQL
+  and MariaDB (read from the server on connect, as
+  `capabilities.maxEntryBytes`), and 1 GB on Postgres.

@@ -2,7 +2,8 @@
  * The SQLite driver (plan §7.3): one database file over `bun:sqlite`, shared
  * by every process on the host that opens the same file.
  *
- * **Tables** (`<p>` is the prefix, `bun_cache_` by default):
+ * **Tables** (`<p>` is the prefix, `bun_cache_` by default; the `tables`
+ * option names any of them outright, `sql-tables.ts`):
  *
  * ```sql
  * <p>entries (ns, k, v BLOB, n INTEGER, exp INTEGER, tg TEXT, ca INTEGER)  -- PRIMARY KEY (ns, k)
@@ -55,6 +56,12 @@ import type {
 } from "../core/types";
 import { entryCapExcess, entryCapStatements } from "./entry-cap";
 import type { EntryCapStatements } from "./entry-cap";
+import type { SqlCacheTable } from "./sql-tables";
+import {
+  resolveSqlCacheTables,
+  SQL_CACHE_TABLES,
+  sqlCacheIndexName,
+} from "./sql-tables";
 
 /** The default table prefix (§21). */
 const DEFAULT_PREFIX = "bun_cache_";
@@ -91,6 +98,26 @@ export interface SqliteDriverOptions {
   database?: Database;
   /** The table-name prefix, an SQL identifier. Defaults to `"bun_cache_"`. Two prefixes on one file are two separate stores. */
   prefix?: string;
+  /**
+   * Exact table names, for an existing schema that was not named here (as
+   * bun-jobs' SQL driver takes them): `{ entries: "app_cache" }`. Given
+   * as-is, so a name set this way ignores `prefix`; the tables not named keep
+   * `<prefix><table>`. Each must be an SQL identifier of at most 63
+   * characters, and no two tables may share a name; anything else throws.
+   * Index names are derived from the table names (`ix_<table>_…`, shortened
+   * with a hash past 63 characters).
+   */
+  tables?: Partial<Record<SqlCacheTable, string>>;
+  /**
+   * Run {@link CacheDriver.syncSchema} when the tables are created on a
+   * connection (first use, or `connect()`): `true` with the default options,
+   * or the options to pass. Off by default. **A no-op until the schema first
+   * changes**: there is one schema version today, so a sync finds nothing to
+   * do — set it now so later migrations run on connect. As in bun-jobs, its
+   * report is not returned by `connect()`; call `syncSchema({ dryRun: true })`
+   * to read one.
+   */
+  syncSchema?: boolean | SchemaSyncOptions;
   /** The bus table's poll interval, in ms. Defaults to 250 (§4.2). */
   busPollInterval?: number;
   /**
@@ -129,7 +156,7 @@ interface SharedConnection {
  */
 const connections = new Map<string, SharedConnection>();
 
-/** The prefixes whose tables were created on each connection, so DDL runs once per connection. */
+/** The table sets (`#storeKey`) whose tables were created on each connection, so DDL runs once per connection. */
 const preparedSchemas = new WeakMap<Database, Set<string>>();
 
 /** A valid SQL identifier prefix: letters, digits and underscores, not starting with a digit. */
@@ -187,9 +214,9 @@ interface CounterRow {
   ca: number;
 }
 
-/** The SQL statements, built once per driver for its prefix. */
+/** The SQL statements, built once per driver for its table set. */
 interface Statements {
-  /** The DDL, run once per connection and prefix. */
+  /** The DDL, run once per connection and table set. */
   schema: string[];
   /** Reads a live entry. */
   get: string;
@@ -241,20 +268,20 @@ interface Statements {
   cap: EntryCapStatements;
 }
 
-/** Builds a prefix's statements. The prefix is validated before this runs. */
-function buildStatements(prefix: string): Statements {
-  const entries = `"${prefix}entries"`;
-  const tags = `"${prefix}tags"`;
-  const stamps = `"${prefix}stamps"`;
-  const locks = `"${prefix}locks"`;
-  const bus = `"${prefix}bus"`;
+/** Builds a table set's statements. The names are validated before this runs. */
+function buildStatements(names: Record<SqlCacheTable, string>): Statements {
+  const entries = `"${names.entries}"`;
+  const tags = `"${names.tags}"`;
+  const stamps = `"${names.stamps}"`;
+  const locks = `"${names.locks}"`;
+  const bus = `"${names.bus}"`;
   const tagged = `SELECT k FROM ${tags} WHERE ns = ?1 AND tag IN (SELECT value FROM json_each(?2))`;
   return {
     schema: [
       `CREATE TABLE IF NOT EXISTS ${entries} (ns TEXT NOT NULL, k TEXT NOT NULL, v BLOB, n INTEGER, exp INTEGER, tg TEXT, ca INTEGER, PRIMARY KEY (ns, k)) WITHOUT ROWID`,
-      `CREATE INDEX IF NOT EXISTS "ix_${prefix}entries_exp" ON ${entries} (exp) WHERE exp IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS "${sqlCacheIndexName(names.entries, "exp")}" ON ${entries} (exp) WHERE exp IS NOT NULL`,
       `CREATE TABLE IF NOT EXISTS ${tags} (ns TEXT NOT NULL, tag TEXT NOT NULL, k TEXT NOT NULL, PRIMARY KEY (ns, tag, k)) WITHOUT ROWID`,
-      `CREATE INDEX IF NOT EXISTS "ix_${prefix}tags_key" ON ${tags} (ns, k)`,
+      `CREATE INDEX IF NOT EXISTS "${sqlCacheIndexName(names.tags, "key")}" ON ${tags} (ns, k)`,
       `CREATE TABLE IF NOT EXISTS ${stamps} (ns TEXT NOT NULL, tag TEXT NOT NULL, at INTEGER NOT NULL, exp INTEGER NOT NULL, PRIMARY KEY (ns, tag)) WITHOUT ROWID`,
       `CREATE TABLE IF NOT EXISTS ${locks} (ns TEXT NOT NULL, k TEXT NOT NULL, owner TEXT NOT NULL, exp INTEGER NOT NULL, PRIMARY KEY (ns, k)) WITHOUT ROWID`,
       `CREATE TABLE IF NOT EXISTS ${bus} (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, msg TEXT NOT NULL)`,
@@ -314,10 +341,13 @@ class SqliteDriver implements CacheDriver {
   > &
     SqliteDriverOptions;
 
-  /** The table prefix. */
-  readonly #prefix: string;
+  /** The resolved table names (`prefix` and `tables`). */
+  readonly #tables: Record<SqlCacheTable, string>;
 
-  /** The prefix's statements. */
+  /** What identifies this table set on a connection: every table's name. */
+  readonly #storeKey: string;
+
+  /** The table set's statements. */
   readonly #sql: Statements;
 
   /** The clock (the `now` option, or `Date.now`). */
@@ -372,8 +402,15 @@ class SqliteDriver implements CacheDriver {
       busRetention: DEFAULT_BUS_RETENTION_MS,
       ...options,
     };
-    this.#prefix = prefix;
-    this.#sql = buildStatements(prefix);
+    this.#tables = resolveSqlCacheTables(
+      "sqliteDriver",
+      prefix,
+      options.tables,
+    );
+    this.#storeKey = SQL_CACHE_TABLES.map((table) => this.#tables[table]).join(
+      ",",
+    );
+    this.#sql = buildStatements(this.#tables);
     this.#now = options.now ?? Date.now;
     const file = database === undefined ? path! : database.filename;
     const inMemory = file === ":memory:" || file === "";
@@ -419,13 +456,19 @@ class SqliteDriver implements CacheDriver {
       prepared = new Set();
       preparedSchemas.set(db, prepared);
     }
-    if (!prepared.has(this.#prefix)) {
+    if (!prepared.has(this.#storeKey)) {
+      const sync = this.#options.syncSchema ?? false;
       db.transaction(() => {
         for (const statement of this.#sql.schema) {
           db.run(statement);
         }
+        // After the tables exist, not instead of creating them: a sync
+        // compares against what is there (bun-jobs' order).
+        if (sync !== false) {
+          this.migrateSchema(db, sync === true ? {} : sync);
+        }
       }).immediate();
-      prepared.add(this.#prefix);
+      prepared.add(this.#storeKey);
     }
     return db;
   }
@@ -848,7 +891,7 @@ class SqliteDriver implements CacheDriver {
     onMessage: (message: BusMessage) => void,
     onGap: () => void,
   ): Promise<() => Promise<void>> {
-    const busTable = `${this.#prefix}bus`;
+    const busTable = this.#tables.bus;
     /** The highest `seq` ever assigned (`sqlite_sequence`), 0 before the first publish. */
     const head = (db: Database): number =>
       db.query<{ seq: number }, [string]>(this.#sql.busHead).get(busTable)
@@ -916,9 +959,19 @@ class SqliteDriver implements CacheDriver {
     };
   }
 
-  /** The schema is new; there is nothing to sync (§7.4). The tables are created on first use. */
-  syncSchema(_options?: SchemaSyncOptions): Promise<SchemaChange[]> {
-    return Promise.resolve([]);
+  /** Creates the tables if they are missing, then syncs them: `[]` until the schema first changes (§7.4). */
+  async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
+    return await this.#run((db) => this.migrateSchema(db, options));
+  }
+
+  /**
+   * The sync itself, on the connection, synchronous like everything in
+   * `bun:sqlite` (the table creation runs it under the `syncSchema` option).
+   * Internal. There is one schema version, so there is nothing to change:
+   * `[]`.
+   */
+  migrateSchema(_db: Database, _options: SchemaSyncOptions): SchemaChange[] {
+    return [];
   }
 }
 
