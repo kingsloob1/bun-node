@@ -100,10 +100,8 @@ describe("unsafe methods (RFC 9111 §4.4)", () => {
     });
     expect((await get("/posts/1")).status).toBe("HIT");
     await router.fetch("/posts/1", { method: "PUT" });
-    // The core's fence refuses a load that starts in the same millisecond as
-    // an invalidation (its tie goes to the invalidation), so the GET that
-    // is to be stored starts a little later.
-    await Bun.sleep(2);
+    // The GET right after is stored: it waits for the PUT's invalidation,
+    // which resolves only past its stamps' millisecond (§3.6).
     const written = nextSet(cache);
     expect((await get("/posts/1")).status).toBe("MISS");
     await written;

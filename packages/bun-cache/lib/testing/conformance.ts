@@ -526,8 +526,13 @@ export async function runCacheDriverConformance(
         expect(typeof driver.deleteByTags).toBe("function");
         const before = Date.now();
         await driver.deleteByTags!(namespace, ["x"], Date.now() + 60_000);
+        const after = Date.now();
         const stamps = await driver.getStamps(namespace, ["x", "unset"]);
         expect(stamps.get("x")).toBeGreaterThanOrEqual(before);
+        // Stamped with the clock while the call ran, never later: the core's
+        // `invalidateTags` waits out the millisecond it read after the call,
+        // so a load that starts once it resolved is not fenced (§3.6).
+        expect(stamps.get("x")).toBeLessThanOrEqual(after);
         expect(stamps.has("unset")).toBe(false);
       },
     );
@@ -540,6 +545,7 @@ export async function runCacheDriverConformance(
         const namespace = ns();
         expect(typeof driver.deleteByTags).toBe("function");
         await driver.deleteByTags!(namespace, ["t"], Date.now() + 60_000);
+        const at = (await driver.getStamps(namespace, ["t"])).get("t")!;
         // A load that started before the invalidation is refused.
         const stale = await driver.set(
           namespace,
@@ -548,14 +554,22 @@ export async function runCacheDriverConformance(
         );
         expect(stale).toBe("fenced");
         expect(await driver.get(namespace, "k")).toBeUndefined();
-        // One that started after it is stored. (The fence counts a stamp at
-        // the load's own millisecond as newer — Date.now() cannot order two
-        // events within one ms — so the fresh load starts a tick later.)
-        await wait(2);
+        // So is one that started in the stamp's own millisecond: a stamp
+        // records only the millisecond, so it cannot tell a load that began
+        // before the invalidation from one that began after it, and the
+        // safe side wins.
+        const tie = await driver.set(
+          namespace,
+          entry("k", 5, { tags: ["t"] }),
+          { tags: ["t"], createdAt: at },
+        );
+        expect(tie).toBe("fenced");
+        expect(await driver.get(namespace, "k")).toBeUndefined();
+        // One that started a millisecond later is stored.
         const fresh = await driver.set(
           namespace,
           entry("k", 5, { tags: ["t"] }),
-          { tags: ["t"], createdAt: Date.now() },
+          { tags: ["t"], createdAt: at + 1 },
         );
         expect(fresh).toBe("stored");
       },

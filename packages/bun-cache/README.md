@@ -264,8 +264,15 @@ How invalidation works depends on the driver (§3.6 of the plan):
   production); one on the same cache has already forgotten the flight, so its
   drop reports `reason: "local"` instead (above). Either way `tags` is the
   dropped entry's own, and `stats().fenced` counts it. A stamp at the entry's
-  own millisecond counts as newer: Date.now() cannot order two events within
-  one ms, so the safe side wins.
+  own millisecond counts as newer: a stamp records only the millisecond, so
+  it cannot tell a load that began before the invalidation from one that
+  began after it, and the safe side wins. So that this never costs a load
+  that follows an invalidation, `invalidateTags` resolves only once the clock
+  has passed its stamps' millisecond (about a millisecond at most, nothing
+  when the driver call took one): a `getOrSet`, `set` or HTTP request that
+  starts after it resolved, in this process or another on the same clock, is
+  stored. Another process's invalidation landing in a load's own millisecond
+  still fences it.
 - **`tags: "stamps"`** (custom drivers via `fromSimpleDriver`, the file and
   S3 drivers later): `invalidateTags` writes only a stamp per tag, and a read
   of a tagged entry compares its age against the stamps — an entry older than

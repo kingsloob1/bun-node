@@ -65,7 +65,6 @@ const b = createCache({ driver: fileDriver({ root }), namespace: "example" });
 await a.set("doc:1", "v1", { tags: ["docs"] });
 await b.invalidateTags(["docs"]);
 checkEqual("b's stamp invalidates a's entry", await a.get("doc:1"), undefined);
-await Bun.sleep(2); // a stamp counts as newer than an entry of its own ms
 await a.set("doc:1", "v2", { tags: ["docs"] });
 checkEqual("a fresh write survives", await b.get("doc:1"), "v2");
 await a.close();

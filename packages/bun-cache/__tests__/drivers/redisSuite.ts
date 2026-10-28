@@ -754,10 +754,8 @@ export async function registerRedisSuite(
         expect(await two.get("k")).toEqual({ n: 1 });
         await Bun.sleep(10);
       }
+      // The reload right after the invalidation is stored (§3.6).
       await one.invalidateTags(["g"]);
-      // The fence counts a stamp at the load's own millisecond as newer (the
-      // kit's note), so the reload starts a tick later and is stored.
-      await Bun.sleep(2);
       expect(await one.getOrSet("k", load, { tags: ["g"] })).toEqual({ n: 2 });
       // Two's L1 copy was dropped by the bus message, not served stale.
       await waitFor(
