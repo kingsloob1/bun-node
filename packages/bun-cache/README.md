@@ -37,7 +37,15 @@ And (PR-C2):
 - the kit's **two-process pass** and **bus-gap case**, enabled for every
   driver that advertises `multiProcess` or a polled bus
 
-Next, in the plan's order: SQLite (PR-C3), SQL (PR-C4), Redis (PR-C5),
+And (PR-C3):
+
+- the **SQLite driver** over `bun:sqlite`: one connection per file per
+  process, WAL, a tag index with an atomic fence, lock rows, counters, and a
+  polled bus table — the fast choice for several processes on one host
+- the kit's two-process pass now starts both sides at a barrier, so it
+  overlaps even for a driver as fast as SQLite
+
+Next, in the plan's order: SQL (PR-C4), Redis (PR-C5),
 MongoDB (PR-C6), S3 (PR-C7), then the multi-tier L1/L2 bus (PR-T1). The HTTP
 utilities (`cacheResponse`) and the Nest module follow.
 
@@ -421,8 +429,15 @@ delete counts, namespace-scoped `clear`, tag invalidation in both modes with
 the fence's race, 200 concurrent increments, a 50-way contended lock, and bus
 delivery. Each case is gated on the driver's `capabilities`: an advertised
 capability that fails its case fails the suite; one not advertised is
-reported as skipped, with its name. (The two-process pass for `multiProcess`
-drivers lands with the first built-in one, PR-C2.)
+reported as skipped, with its name.
+
+A driver that advertises `multiProcess` also gives the kit `crossProcess`
+(`{ module, export, options }`: how a child process builds the same driver on
+the same backend), and the kit runs increments, a contended lock and stamp
+visibility from two processes. Both sides are released together from a start
+barrier and the increments run in interleaved waves, so the two genuinely
+overlap. A driver with a polled bus also gives `busGap`, a function that
+forces a gap in its log.
 
 ## Testing helpers
 
@@ -453,7 +468,8 @@ drivers lands with the first built-in one, PR-C2.)
 | memory | PR-C1 | lazy + sweep | yes | in process | index, atomic fence | in-process |
 | custom (`fromSimpleDriver`) | PR-C1 | declared | no | no | stamps | no |
 | file | PR-C2 | lazy + sweep | yes, under a lock file | `O_EXCL` file | stamps, checked on read | polled log |
-| SQLite, Postgres, MySQL/MariaDB, Redis, MongoDB, S3 | PR-C3 to PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
+| SQLite | PR-C3 | filtered on read + sweep, indexed `exp` | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one transaction) | polled table |
+| Postgres, MySQL/MariaDB, Redis, MongoDB, S3 | PR-C4 to PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -497,5 +513,69 @@ durable single-machine cache that survives restarts, and the first
 - **Durability and limits**: POSIX local filesystems only — never NFS
   (lock-file semantics do not survive it). Writes are slow next to SQLite
   (about 5k/s against 20k/s, measured for the plan); prefer SQLite for small
-  values on one host when it lands (PR-C3). There is no cross-machine story:
-  use a shared driver (SQL, Redis) for that.
+  values on one host. There is no cross-machine story: use a shared driver
+  (SQL, Redis) for that.
+
+## The SQLite driver
+
+```ts
+import { createCache, sqliteDriver } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: sqliteDriver({ path: "/var/lib/myapp/cache.db" }),
+});
+```
+
+One database file over `bun:sqlite`, shared by every process on the host
+that opens it (§7.3 of the plan). Five tables, under the prefix
+(`bun_cache_` by default; `prefix` must be an SQL identifier, and two
+prefixes on one file are two separate stores):
+
+```
+<p>entries (ns, k, v BLOB, n INTEGER, exp INTEGER, tg TEXT, ca INTEGER)  entries and counters (ca: written/created at)
+<p>tags    (ns, tag, k)                                                  the tag index
+<p>stamps  (ns, tag, at, exp)                                            invalidation stamps
+<p>locks   (ns, k, owner, exp)                                           lock rows
+<p>bus     (seq AUTOINCREMENT, at, msg)                                  the polled bus
+```
+
+- **One connection per file per process.** Every `sqliteDriver` on the same
+  file (after `path.resolve`) shares one `Database`; the last `close()`
+  closes it. `bun:sqlite` is synchronous, so nothing in the process ever
+  waits on itself for the write lock.
+- **Pragmas**: `journal_mode=WAL`, `synchronous=NORMAL` and a deliberately
+  small `busy_timeout=50`. SQLite's busy handler sleeps in the calling
+  thread — the event loop — so the waiting for another process's write is
+  done in JavaScript instead, retrying `SQLITE_BUSY` with jittered backoff
+  for up to 10 s.
+- **Atomic by transaction.** Each write is one synchronous
+  `BEGIN IMMEDIATE` transaction: the fence check with the entry and its tag
+  rows; the tag-index delete with the stamps; a counter's `RETURNING` upsert.
+- **Locks** are one conditional upsert whose `WHERE` is the staleness check
+  (`exp <= now`), evaluated under the write lock: there is no read-then-break
+  step, so a stale break can never replace a live lock.
+- **Expiry**: reads filter out expired rows and never write; the core's
+  sweeper deletes them through the partial `exp` index (with their tag rows,
+  expired stamps and lapsed locks).
+- **`maxEntries`** (opt-in; no cap by default — the database is sized by its
+  operator): the same sweep pass, in the same transaction, evicts the excess
+  — **nearest to expiry first**, then the entries with no expiry, oldest
+  write first — each with its tag rows, at most the sweep's `limit` per
+  pass. Each eviction is an `evict` event (reason `"cap"`) and counts in
+  `stats().evictions`. It is enforced at sweep time, so the table can briefly
+  exceed the cap between sweeps. The cap counts every namespace under the
+  prefix together. Counters are not entries: never counted, never evicted
+  (that would silently reset a rate-limit window). Two processes sweeping one
+  file at once evict exactly the excess: each pass counts and evicts inside
+  one `BEGIN IMMEDIATE` transaction.
+- **The bus** is the `<p>bus` table, polled every `busPollInterval` (250 ms)
+  and pruned by age (`busRetention`, 60 s). A subscriber further behind than
+  that, or a reset table, sees a gap.
+- **An existing database**: `sqliteDriver({ database })` uses a `Database`
+  you opened, never closes it, and sets no pragma on it — give it
+  `journal_mode=WAL` yourself if several processes share the file.
+  `path: ":memory:"` is a private in-process store (`multiProcess: false`).
+- **Limits**: one host (SQLite's locking does not survive a network
+  filesystem). Every call blocks the event loop while it runs — about
+  2.5 µs per small hit, about 100 µs per 10 KB one (measured for the plan) —
+  so keep values over ~100 KB in another driver.

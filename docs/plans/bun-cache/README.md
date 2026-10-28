@@ -106,6 +106,66 @@ was ours. Proof: the two contention cases and the 200-increment stress green
 deterministically across 15+ runs (12/12 in-process and 8/8 cross-process
 stress rounds exact) after the fix, where they failed every run before.
 
+**PR-C3 built 2026-10-28** (branch `feat/bun-cache-c3-sqlite`, awaiting the
+maintainer's commit): `sqliteDriver` over `bun:sqlite` (§7.3) — one
+connection per file per process through a module-level registry
+(ref-counted; `:memory:` never shared, and then `multiProcess: false`), WAL,
+`synchronous=NORMAL`, `busy_timeout=50` with `SQLITE_BUSY` retried in JS for
+up to 10 s; every write one synchronous `BEGIN IMMEDIATE` transaction; tags
+in index mode with the atomic fence; counters as a `RETURNING` upsert; locks
+as one conditional upsert (`… DO UPDATE … WHERE exp <= now OR owner =
+excluded.owner RETURNING owner`), so the stale judgment and the take are one
+statement under the write lock and the herd bug's two failure modes (judging
+from a failed read; a break overwriting a fresh lock) have no step to occur
+in; reads filter `exp > now` and never write; `sweep` deletes through the
+partial `exp` index, with tag rows, stamps, locks and old bus rows; the
+polled `<p>bus` table pruned by age (`busRetention`, 60 s), a gap being a
+`sqlite_sequence` head past the last seen `seq` with the next row missing,
+or a head that went backwards; `syncSchema()` answers `[]` (§7.4).
+Three columns beyond §7.3's DDL: `entries.tg` (the entry's tags as JSON, so
+a hit is one row), `entries.ca` (a counter's creation time, which
+`getCounter` returns, and an entry's write time, which orders the cap's
+unexpiring victims), and `stamps.exp` (a stamp's `until`). Driver options
+(not §21 names, like the file driver's; kept, the user's decision of
+2026-10-28): `path`, `database` (an existing `Database`, never closed, no
+pragma set), `prefix`, `busPollInterval`, `busRetention`, `maxEntries`.
+**The optional `maxEntries` sweeper (§3.9's SQL row) is in C3** (the user's
+decision, 2026-10-28): opt-in, no cap by default; enforced by `sweep` in the
+same `BEGIN IMMEDIATE` transaction as the expired delete, so the table can
+briefly exceed it between sweeps; at most the sweep's `limit` evictions a
+pass; victims nearest to expiry first (`exp IS NOT NULL ORDER BY exp`), then
+the unexpiring ones oldest write first (`ORDER BY ca`), ties on `(ns, k)`;
+each with its tag rows; reported through `onEviction` (reason `"cap"`) after
+the commit, so the core emits `evict` and counts `stats().evictions`.
+Counters are not entries (never counted, never evicted: one would silently
+reset a rate-limit window, §3.8), nor are locks, stamps or bus rows. The
+statements are a dialect-neutral helper, `lib/drivers/entry-cap.ts`, for
+PR-C4 to reuse: select the victims, then delete them by key, in one
+transaction — because MySQL refuses `LIMIT` in an `IN` subquery and has no
+`DELETE … RETURNING` — with `$1` and `FOR UPDATE` on Postgres, `FOR UPDATE`
+on MySQL and MariaDB, and `COUNT(*)` read through `Number()` (Postgres
+answers a `bigint` as a string); no `NULL` is ever sorted, so Postgres's
+`NULLS LAST` default does not change the order. Measured: two processes
+writing 20 entries each and sweeping one file at once under a cap of 15
+leave exactly 15 and report 25 evictions between them (3 of 3 rounds per
+run); with the count read outside the transaction, that test fails 4 of 4
+runs; reversed order, unexpiring-first, counters counted, counters
+evictable, kept tag rows and unreported evictions each fail their test. The kit passes in full (33 pass, 1 skip: the stamps-mode
+case, not advertised). **A kit finding, fixed in this PR**: the two-process
+pass never overlapped for a fast driver — the parent's 100 increments (about
+1 ms) were over while the child was still starting (about 50 ms), and an
+SQLite increment mutated into a plain read-then-write with no transaction
+passed it. The worker now connects, prints `{"ready":true}` and waits at a
+start barrier the kit releases as it starts its own side, and both sides
+increment in ten waves with a zero-delay yield: the same mutant fails it
+16 of 16 runs (2 of 5 with 1 ms sleeps between waves; 0 without the
+barrier). Measured on the real driver: the five two-process tests (the
+kit's increment, lock and stamps; a stale lock under a 25+25 herd, five
+rounds; the fence against another process's stamp) clean in 15 of 15
+rounds; 1000+1000 two-process increments exact in 10 of 10 runs (a
+timestamp-barrier stress, where the mutant was inexact 6 of 6); the file
+driver unchanged under the new kit, 8 of 8 runs clean.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
