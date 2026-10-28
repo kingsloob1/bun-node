@@ -3,7 +3,7 @@
  * and prints how far the read raised the peak RSS, so nothing else the test
  * runner did can hide the growth under an earlier high-water mark.
  *
- * Usage: `bun bomb-rss-worker.ts <zstd|gzip> <MiB> <maxEntryBytes>`. Prints
+ * Usage: `bun bomb-rss-worker.ts <zstd|gzip|br|deflate> <MiB> <maxEntryBytes>`. Prints
  * one JSON line: `{ value, phase, cause, growthMiB }`.
  */
 import process from "node:process";
@@ -29,7 +29,12 @@ cache.on("error", (event) => {
   cause = ((event.error as Error).cause as { code?: unknown } | undefined)
     ?.code;
 });
-await plantEntry(driver, "bomb", bomb.flag, bomb.build(Number(mib)));
+await plantEntry(
+  driver,
+  "bomb",
+  bomb.compressor,
+  await bomb.build(Number(mib)),
+);
 Bun.gc(true);
 // `maxRSS` is the process's high-water mark, in KiB on Linux.
 const before = process.resourceUsage().maxRSS;

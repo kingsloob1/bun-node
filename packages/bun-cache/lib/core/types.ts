@@ -4,6 +4,7 @@
  * and the typed-cache machinery (§3.13, bun-validate's V10).
  */
 import type {
+  CompressionEncoding,
   Jsonify,
   LoggerLike,
   StandardSchemaV1,
@@ -284,14 +285,67 @@ export interface Codec {
   decode: (bytes: Uint8Array) => unknown;
 }
 
-/** How entries are compressed once their encoded size passes a threshold (§3.11). */
+/**
+ * How entries are compressed once their encoded size passes a threshold
+ * (§3.11; the encryption plan's §8). Every built-in algorithm always
+ * decompresses, whatever this says, so changing `algorithm` needs no flush.
+ */
 export interface CompressOptions {
-  /** The algorithm; defaults to `"zstd"`. */
-  algorithm?: "zstd" | "gzip";
-  /** Compress at or above this many encoded bytes; defaults to 16 KiB. An entry is compressed only when that makes it smaller. */
+  /**
+   * The algorithm: `"zstd"` (the default), `"gzip"`, `"br"` (Brotli) or
+   * `"deflate"` (**raw** DEFLATE, RFC 1951 — not the zlib-wrapped form HTTP's
+   * `deflate` means; the bytes never reach HTTP), or a user
+   * {@link CacheCompressor}. `"br"`, `"deflate"` and a user compressor write
+   * a format-2 entry header, which a process on a version before them reads
+   * as a miss: only the deploy that turns one on sees those misses.
+   */
+  algorithm?: CompressionEncoding | CacheCompressor;
+  /** Compress at or above this many encoded bytes; defaults to 16 KiB for every algorithm. An entry is compressed only when that makes it smaller. */
   threshold?: number;
-  /** The algorithm's level (zstd 1–22, gzip 0–9); the library's default when unset. */
+  /**
+   * The built-in algorithm's level: zstd 1–22 (default 3), gzip 0–9
+   * (default 6), `br` quality 0–11 (default 4, as bun-common's response
+   * compression: Brotli's own 11 is two orders of magnitude slower), deflate
+   * 0–9 (default 6). Outside the range, or beside a user compressor, it is a
+   * `TypeError` at `createCache`.
+   */
   level?: number;
+  /**
+   * User compressors that still decompress: entries written by an earlier
+   * {@link CacheCompressor} stay readable after `algorithm` moves on. Without
+   * one, such an entry is a miss (an `error` event with `phase: "decode"`).
+   * Ids must be 128–255 and differ from each other and from `algorithm`'s.
+   */
+  previous?: readonly CacheCompressor[];
+}
+
+/**
+ * A user compressor (the encryption plan's §8.4), given as
+ * {@link CompressOptions.algorithm} — a dictionary-trained zstd through
+ * `node:zlib`, say. Either function may be synchronous or return a promise;
+ * the core awaits only a returned promise, so a synchronous one pays nothing
+ * for the option.
+ */
+export interface CacheCompressor {
+  /**
+   * Stored in each compressed entry's header: an integer in 128–255 (0–127 are
+   * the package's). Entries keep the id they were written with, so a new
+   * compressor takes a new id, and the old one goes in
+   * {@link CompressOptions.previous} while its entries live.
+   */
+  id: number;
+  /** Compresses an encoded payload. A result no smaller than the input is discarded, and the payload stored uncompressed. */
+  compress: (bytes: Uint8Array) => Uint8Array | Promise<Uint8Array>;
+  /**
+   * Reverses {@link compress}. `maxOutputLength` is the cap the core enforces
+   * on every decompression (`maxEntryBytes`): stop and throw past it, so a
+   * planted entry cannot expand to gigabytes. A longer result is refused
+   * anyway, as a miss, but only after it was built.
+   */
+  decompress: (
+    bytes: Uint8Array,
+    maxOutputLength: number,
+  ) => Uint8Array | Promise<Uint8Array>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -487,6 +541,15 @@ export interface SetOptions<Tag extends string = string> {
    * publishes on the bus. A no-op without an L1.
    */
   tier?: "l2";
+  /**
+   * `false`: store this value uncompressed, whatever the cache's `compress`
+   * says — for bytes already compressed (images, archives), where gzip,
+   * deflate and Brotli would spend up to 20 ms per MiB before discarding
+   * their result, and for a value mixing a secret with attacker-chosen text,
+   * whose compressed length would leak the secret (the CRIME/BREACH class).
+   * A `touch` or a fail-safe rewrite keeps such an entry uncompressed.
+   */
+  compress?: false;
 }
 
 /** How a cross-process lock wait behaves (§3.4). */

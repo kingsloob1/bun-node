@@ -15,6 +15,8 @@ import {
 import type { ValidationIssue } from "@kingsleyweb/bun-common/contract";
 import { validateStandard } from "@kingsleyweb/bun-common/contract";
 import { codecById, CODEC_IDS, resolveCodec } from "./codecs";
+import type { ResolvedCompression } from "./compression";
+import { decompressEntry, isPromiseLike, resolveCompress } from "./compression";
 import {
   CacheDriverError,
   CircuitOpenError,
@@ -23,12 +25,12 @@ import {
   UnsupportedOperationError,
 } from "./errors";
 import { BusLink, driverBus } from "./bus";
-import { decompressBounded } from "./decompress";
 import { CacheEvents } from "./events";
 import type { Flight } from "./flight";
 import { FlightMap } from "./flight";
 import type { EntryHeader } from "./header";
 import {
+  COMPRESSOR_IDS,
   decodeEntry,
   encodeEntry,
   ENTRY_FLAGS,
@@ -41,6 +43,7 @@ import type {
   BusMessage,
   Cache,
   CacheBus,
+  CacheCompressor,
   CacheDriver,
   CacheEntry,
   CacheEvent,
@@ -134,6 +137,8 @@ interface DecodedValue {
   size: number;
   /** A counter read through `getCounter` (§3.8): never copied into L1. */
   counter?: boolean;
+  /** The stored payload was not compressed: a rewrite (the fail-safe backoff) keeps it so, honouring a per-call `compress: false`. */
+  uncompressed?: boolean;
 }
 
 /** The outcome of the read pipeline. */
@@ -141,6 +146,20 @@ type ReadOutcome =
   | { kind: "fresh"; entry: DecodedValue }
   | { kind: "stale"; entry: DecodedValue }
   | { kind: "miss" };
+
+/** What the encoder produced: the header's codec, flags and compressor fields, and the payload. */
+interface Encoded {
+  /** The codec id. */
+  codecId: number;
+  /** The flags, without compression bits (the header writes those). */
+  flags: number;
+  /** The compressor id; `COMPRESSOR_IDS.none` when stored uncompressed. */
+  compressor: number;
+  /** The payload as stored: compressed when `compressor` says so. */
+  payload: Uint8Array;
+  /** The codec's bytes before compression, which the L1 copy decodes without decompressing. */
+  plain: Uint8Array;
+}
 
 /** What the decoder produced. */
 interface Decoded {
@@ -172,10 +191,10 @@ interface SharedState {
   codec: Codec;
   /** The cache's custom codec, when `codec` was one — entries written with it decode too. */
   customCodec: Codec | undefined;
-  /** The compression options; `undefined` when disabled. */
-  compress:
-    | { algorithm: "zstd" | "gzip"; threshold: number; level?: number }
-    | undefined;
+  /** How new entries are compressed; `undefined` when `compress: false`. */
+  compress: ResolvedCompression | undefined;
+  /** The user compressors that decompress, by id (`compress.algorithm`'s and `compress.previous`'s). */
+  userCompressors: ReadonlyMap<number, CacheCompressor>;
   /** The resolved options. */
   options: CreateCacheOptions;
   /** The logger. */
@@ -439,57 +458,64 @@ class CacheImpl<
   /* encode / decode                                                   */
   /* ---------------------------------------------------------------- */
 
-  /** Encodes a value into the payload bytes, the header's codec/flags fields, and the payload's size before compression (`decodedBytes`, which a read decompresses back to). */
+  /**
+   * Encodes a value into the payload bytes and the header's codec, flags and
+   * compressor fields, keeping the payload before compression (`plain`, which
+   * a read decompresses back to). Synchronous unless a user compressor answers
+   * a promise; `compress: false` (per call) stores the payload uncompressed.
+   */
   #encodeValue(
     value: unknown,
     negative: boolean,
-  ): {
-    codecId: number;
-    flags: number;
-    payload: Uint8Array;
-    decodedBytes: number;
-  } {
+    compress?: false,
+  ): Encoded | Promise<Encoded> {
     const state = this.#state;
     if (negative) {
+      const empty = new Uint8Array(0);
       return {
         codecId: state.codec.id,
         flags: ENTRY_FLAGS.negative,
-        payload: new Uint8Array(0),
-        decodedBytes: 0,
+        compressor: COMPRESSOR_IDS.none,
+        payload: empty,
+        plain: empty,
       };
     }
     let flags = 0;
-    let payload = state.codec.encode(value);
-    const decodedBytes = payload.byteLength;
+    const plain = state.codec.encode(value);
     if (state.codec.id === CODEC_IDS.raw && typeof value === "string") {
       flags |= ENTRY_FLAGS.rawString;
     }
-    const compress = state.compress;
-    if (compress !== undefined && payload.byteLength >= compress.threshold) {
-      const compressed =
-        compress.algorithm === "gzip"
-          ? Bun.gzipSync(
-              payload.slice(),
-              compress.level === undefined
-                ? undefined
-                : {
-                    level: compress.level as
-                      0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
-                  },
-            )
-          : Bun.zstdCompressSync(
-              payload.slice(),
-              compress.level === undefined
-                ? undefined
-                : { level: compress.level },
-            );
-      if (compressed.byteLength < payload.byteLength) {
-        payload = compressed;
-        flags |=
-          compress.algorithm === "gzip" ? ENTRY_FLAGS.gzip : ENTRY_FLAGS.zstd;
-      }
+    const uncompressed: Encoded = {
+      codecId: state.codec.id,
+      flags,
+      compressor: COMPRESSOR_IDS.none,
+      payload: plain,
+      plain,
+    };
+    const algorithm = state.compress;
+    if (
+      compress === false ||
+      algorithm === undefined ||
+      plain.byteLength < algorithm.threshold
+    ) {
+      return uncompressed;
     }
-    return { codecId: state.codec.id, flags, payload, decodedBytes };
+    // A copy: a codec may answer a view into a larger buffer.
+    const compressed = algorithm.compress(plain.slice());
+    const choose = (bytes: Uint8Array): Encoded => {
+      if (!(bytes instanceof Uint8Array)) {
+        throw new TypeError(
+          "a user compressor's compress must answer a Uint8Array",
+        );
+      }
+      // Compressed only when that makes it smaller (§3.11).
+      return bytes.byteLength < plain.byteLength
+        ? { ...uncompressed, compressor: algorithm.id, payload: bytes }
+        : uncompressed;
+    };
+    return isPromiseLike(compressed)
+      ? Promise.resolve(compressed).then(choose)
+      : choose(compressed);
   }
 
   /** The per-entry byte limit: `maxEntryBytes` (default 4 MiB), capped by the driver's own. Writes hold the stored entry and its uncompressed payload to it; reads decompress no further. */
@@ -501,8 +527,13 @@ class CacheImpl<
     );
   }
 
-  /** Decodes a stored entry's bytes. Throws (→ a miss with an `error` event) on any corruption, a key mismatch, an unknown codec, or a payload that decompresses past the entry limit. */
-  #decodeValue(bytes: Uint8Array, key: string): Decoded {
+  /**
+   * Decodes a stored entry's bytes. Throws (→ a miss with an `error` event)
+   * on any corruption, a key mismatch, an unknown codec or compressor, or a
+   * payload that decompresses past the entry limit. Synchronous unless a
+   * user compressor answers a promise.
+   */
+  #decodeValue(bytes: Uint8Array, key: string): Decoded | Promise<Decoded> {
     const { header, payload: rawPayload } = decodeEntry(bytes);
     if (header.key !== key) {
       // The key was hashed for storage and this entry's full key differs: a
@@ -511,14 +542,24 @@ class CacheImpl<
         "the stored entry's key does not match (a long-key hash collision)",
       );
     }
-    // Never past the entry limit: a planted bomb is refused, not materialised
-    // (Q18). What this cache writes always fits (`#write` holds the
-    // uncompressed payload to the same limit).
-    const payload = decompressBounded(
-      header.flags,
+    // Never past the entry limit, whatever the compressor: a planted bomb is
+    // refused, not materialised (Q18). What this cache writes always fits
+    // (`#write` holds the uncompressed payload to the same limit).
+    const payload = decompressEntry(
+      header.compressor,
       rawPayload,
       this.#entryLimit(),
+      this.#state.userCompressors,
     );
+    return isPromiseLike(payload)
+      ? Promise.resolve(payload).then((plain) =>
+          this.#decodePayload(header, plain),
+        )
+      : this.#decodePayload(header, payload);
+  }
+
+  /** Decodes an entry's uncompressed payload with the codec its header names. */
+  #decodePayload(header: EntryHeader, payload: Uint8Array): Decoded {
     if ((header.flags & ENTRY_FLAGS.negative) !== 0) {
       return { value: undefined, negative: true, header, size: 0 };
     }
@@ -610,7 +651,8 @@ class CacheImpl<
     }
     let decoded: Decoded;
     try {
-      decoded = this.#decodeValue(raw.value, key);
+      const result = this.#decodeValue(raw.value, key);
+      decoded = isPromiseLike(result) ? await result : result;
     } catch (error) {
       // An entry that fails to decode is a miss; it is deleted (§3.2).
       this.#deleteInBackground(stored);
@@ -678,6 +720,7 @@ class CacheImpl<
       tags: raw.tags,
       bytes: raw.value.byteLength,
       size: decoded.size,
+      uncompressed: header.compressor === COMPRESSOR_IDS.none,
     };
     if (freshUntil !== null && now > freshUntil) {
       return { kind: "stale", entry };
@@ -811,6 +854,8 @@ class CacheImpl<
       negative: boolean;
       /** `"l2"`: write the driver only; this process's L1 copy is dropped, not replaced. */
       tier?: "l2";
+      /** `false`: store the payload uncompressed (the per-call option). */
+      compress?: false;
       /**
        * A load's L1 token, taken when its loader started (`L1Store.begin`):
        * an invalidation that landed during the load then keeps its value out
@@ -822,38 +867,35 @@ class CacheImpl<
   ): Promise<boolean> {
     const state = this.#state;
     const now = state.now();
-    const { codecId, flags, payload, decodedBytes } = this.#encodeValue(
-      value,
-      init.negative,
-    );
+    const encoding = this.#encodeValue(value, init.negative, init.compress);
+    const encoded = isPromiseLike(encoding) ? await encoding : encoding;
     const freshUntil = init.ttl === null ? NO_FRESH_UNTIL : now + init.ttl;
     const expiresAt =
       init.ttl === null
         ? null
         : freshUntil +
           Math.max(init.staleWhileRevalidate, init.staleIfError, 0);
-    const bytes = encodeEntry(
-      {
-        codecId,
-        flags,
-        createdAt: init.createdAt,
-        freshUntil,
-        loadMs: init.loadMs,
-        key,
-      },
-      payload,
-    );
+    const header: EntryHeader = {
+      codecId: encoded.codecId,
+      flags: encoded.flags,
+      compressor: encoded.compressor,
+      createdAt: init.createdAt,
+      freshUntil,
+      loadMs: init.loadMs,
+      key,
+    };
+    const bytes = encodeEntry(header, encoded.payload);
     // The stored entry and the payload it decompresses to are both held to
     // the limit, since a read decompresses no further (`#decodeValue`): a
     // value that compresses under it but decodes past it is never written.
     const limit = this.#entryLimit();
-    const size = Math.max(bytes.byteLength, decodedBytes);
-    if (size > limit) {
-      const error = new EntryTooLargeError(key, size, limit);
+    const entrySize = Math.max(bytes.byteLength, encoded.plain.byteLength);
+    if (entrySize > limit) {
+      const error = new EntryTooLargeError(key, entrySize, limit);
       this.#emit("oversize", {
         key,
         namespace: this.#ns,
-        bytes: size,
+        bytes: entrySize,
         limit,
       });
       if (state.options.strict === true) {
@@ -897,7 +939,20 @@ class CacheImpl<
       state.stats.bytesWritten += bytes.byteLength;
       this.#emit("set", { key, namespace: this.#ns, bytes: bytes.byteLength });
       if (l1 !== undefined) {
-        const [copy, size] = this.#l1CopyOfWrite(key, bytes, entry, init);
+        // The codec's bytes, never the caller's own (the raw codec passes a
+        // Uint8Array through): the stored copy's payload when uncompressed,
+        // else a copy of the bytes the compressor was given.
+        const plain =
+          encoded.compressor === COMPRESSOR_IDS.none
+            ? bytes.subarray(bytes.byteLength - encoded.payload.byteLength)
+            : encoded.plain.slice();
+        const [copy, size] = this.#l1CopyOfWrite(
+          key,
+          header,
+          plain,
+          entry,
+          init,
+        );
         l1.afterWrite(this.#ns, stored, copy, size, token, state.now());
       }
       await this.#publish({ type: "set", keys: [stored] });
@@ -912,13 +967,15 @@ class CacheImpl<
   /**
    * What L1 holds for a value this process just wrote: the **decoded** bytes,
    * so an L1 hit gives what an L2 read would (`codec: "json"` turns a `Date`
-   * into a string in both) and never the caller's own object. Nothing when the
-   * call asked for `tier: "l2"`, or when `validate` covers the key — the next
-   * read validates it on its way in.
+   * into a string in both) and never the caller's own object. Decoded from
+   * the payload before compression, so it never decompresses (nor awaits a
+   * user compressor). Nothing when the call asked for `tier: "l2"`, or when
+   * `validate` covers the key — the next read validates it on its way in.
    */
   #l1CopyOfWrite(
     key: string,
-    bytes: Uint8Array,
+    header: EntryHeader,
+    plain: Uint8Array,
     entry: StoredEntry,
     init: {
       /** When the value's loader started. */
@@ -933,7 +990,7 @@ class CacheImpl<
       return [undefined, 0];
     }
     try {
-      const decoded = this.#decodeValue(bytes, key);
+      const decoded = this.#decodePayload(header, plain);
       const freshUntil =
         decoded.header.freshUntil === NO_FRESH_UNTIL
           ? null
@@ -947,8 +1004,9 @@ class CacheImpl<
           expiresAt: entry.expiresAt,
           loadMs: init.loadMs,
           tags: entry.tags,
-          bytes: bytes.byteLength,
+          bytes: entry.value.byteLength,
           size: decoded.size,
+          uncompressed: header.compressor === COMPRESSOR_IDS.none,
         },
         decoded.size,
       ];
@@ -1272,6 +1330,7 @@ class CacheImpl<
                   options.staleIfError ?? state.options.staleIfError ?? 0,
                 negative: value === undefined,
                 tier: options.tier,
+                compress: options.compress,
                 l1Token,
               });
             }
@@ -1397,16 +1456,23 @@ class CacheImpl<
       await this.#op(
         "set",
         async () => {
-          const { codecId, flags, payload } = this.#encodeValue(
+          const encoding = this.#encodeValue(
             staleEntry.value,
             staleEntry.negative,
+            staleEntry.uncompressed === true ? false : undefined,
           );
+          const { codecId, flags, compressor, payload } = isPromiseLike(
+            encoding,
+          )
+            ? await encoding
+            : encoding;
           return await state.driver.set(this.#ns, {
             key: stored,
             value: encodeEntry(
               {
                 codecId,
                 flags,
+                compressor,
                 createdAt: staleEntry.createdAt,
                 freshUntil: capped,
                 loadMs: staleEntry.loadMs,
@@ -1725,6 +1791,7 @@ class CacheImpl<
         options?.staleIfError ?? this.#state.options.staleIfError ?? 0,
       negative: false,
       tier: options?.tier,
+      compress: options?.compress,
     });
   }
 
@@ -1759,7 +1826,8 @@ class CacheImpl<
     );
     if (raw !== undefined && (raw.expiresAt === null || raw.expiresAt > now)) {
       try {
-        const decoded = this.#decodeValue(raw.value, key);
+        const decoding = this.#decodeValue(raw.value, key);
+        const decoded = isPromiseLike(decoding) ? await decoding : decoding;
         // Keep the stale window's width; slide the freshness (a driver-level
         // `touch` cannot: `freshUntil` lives in the header, §3.2).
         const window =
@@ -1774,6 +1842,12 @@ class CacheImpl<
           staleWhileRevalidate: window,
           staleIfError: 0,
           negative: decoded.negative,
+          // An entry stored uncompressed (a per-call `compress: false`, or
+          // under the threshold) stays so.
+          compress:
+            decoded.header.compressor === COMPRESSOR_IDS.none
+              ? false
+              : undefined,
         });
       } catch {
         return false;
@@ -2219,14 +2293,10 @@ export function createCache(
   const now = options.now ?? Date.now;
   const logger = resolveLogger(options.logger, noopLogger);
   const codec = resolveCodec(options.codec);
-  const compress =
-    options.compress === false
-      ? undefined
-      : {
-          algorithm: options.compress?.algorithm ?? ("zstd" as const),
-          threshold: options.compress?.threshold ?? DEFAULTS.compressThreshold,
-          level: options.compress?.level,
-        };
+  const compress = resolveCompress(
+    options.compress,
+    DEFAULTS.compressThreshold,
+  );
   const validators = {
     exact: new Map<string, StandardSchemaV1>(),
     prefixes: [] as { prefix: string; schema: StandardSchemaV1 }[],
@@ -2242,7 +2312,8 @@ export function createCache(
     driver: options.driver,
     codec,
     customCodec: typeof options.codec === "object" ? options.codec : undefined,
-    compress,
+    compress: compress.write,
+    userCompressors: compress.user,
     options,
     logger,
     now,

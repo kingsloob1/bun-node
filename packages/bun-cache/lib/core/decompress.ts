@@ -17,16 +17,49 @@
  * declares its content size (`Bun.zstdCompressSync` and node:zlib's both
  * write it), so a declared size is held to the output — which also refuses a
  * frame declaring more than the cap before anything is decoded.
+ *
+ * Brotli and raw DEFLATE (PR-Z1) go through the same node:zlib bound
+ * (`brotliDecompressSync`, `inflateRawSync`); a user compressor is handed the
+ * cap and held to it by the core (`compression.ts`, with {@link overLimit}).
  */
 import { kMaxLength } from "node:buffer";
-import { gunzipSync, zstdDecompressSync } from "node:zlib";
-import { ENTRY_FLAGS, EntryDecodeError } from "./header";
+import {
+  brotliDecompressSync,
+  gunzipSync,
+  inflateRawSync,
+  zstdDecompressSync,
+} from "node:zlib";
+import { COMPRESSOR_IDS, EntryDecodeError } from "./header";
+
+/** The node:zlib decoder of each built-in compressor id. */
+const DECODERS: ReadonlyMap<
+  number,
+  (payload: Uint8Array, options: { maxOutputLength: number }) => Uint8Array
+> = new Map([
+  [COMPRESSOR_IDS.zstd, zstdDecompressSync],
+  [COMPRESSOR_IDS.gzip, gunzipSync],
+  [COMPRESSOR_IDS.br, brotliDecompressSync],
+  [COMPRESSOR_IDS.deflate, inflateRawSync],
+]);
 
 /**
- * Decompresses an entry's payload as its header `flags` say — zstd, gzip, or
- * neither (the payload is returned as it is) — producing at most `cap` bytes.
+ * The `maxOutputLength` a decoder is given for `cap`: node:zlib rejects a
+ * limit of 0, so a cap under 1 asks for 1 byte and the caller's check refuses
+ * it; a non-finite cap is `buffer.kMaxLength`.
+ */
+export function outputLimit(cap: number): number {
+  return Number.isFinite(cap)
+    ? Math.min(Math.max(Math.floor(cap), 1), kMaxLength)
+    : kMaxLength;
+}
+
+/**
+ * Decompresses an entry's payload as its header's compressor id says — zstd,
+ * gzip, Brotli, raw DEFLATE, or none (the payload is returned as it is) —
+ * producing at most `cap` bytes. A user compressor's id (128–255) is the
+ * core's to decode (`compression.ts`); here it is an error.
  *
- * @param flags The header's flags byte; only its compression bits are read.
+ * @param compressor The header's compressor id (`EntryHeader.compressor`).
  * @param payload The stored payload.
  * @param cap The most bytes the decoded payload may hold: the cache's entry
  *   limit (`maxEntryBytes`, capped by the driver's own). A non-finite cap
@@ -35,30 +68,28 @@ import { ENTRY_FLAGS, EntryDecodeError } from "./header";
  *   decoding the rest; node:zlib's own error for a corrupt payload.
  */
 export function decompressBounded(
-  flags: number,
+  compressor: number,
   payload: Uint8Array,
   cap: number,
 ): Uint8Array {
-  const decode =
-    (flags & ENTRY_FLAGS.zstd) !== 0
-      ? zstdDecompressSync
-      : (flags & ENTRY_FLAGS.gzip) !== 0
-        ? gunzipSync
-        : undefined;
-  if (decode === undefined) {
+  if (compressor === COMPRESSOR_IDS.none) {
     return payload;
+  }
+  const decode = DECODERS.get(compressor);
+  if (decode === undefined) {
+    throw new EntryDecodeError(
+      `compressor id ${compressor} is not a built-in one`,
+    );
   }
   const bounded = Number.isFinite(cap);
   const declared =
-    decode === zstdDecompressSync ? zstdContentSize(payload) : undefined;
+    compressor === COMPRESSOR_IDS.zstd ? zstdContentSize(payload) : undefined;
   if (bounded && declared !== undefined && declared > cap) {
     throw overLimit(cap);
   }
   // node:zlib rejects a limit of 0; a 1-byte limit plus the check below
   // covers it (and a negative cap, which refuses everything).
-  const maxOutputLength = bounded
-    ? Math.min(Math.max(Math.floor(cap), 1), kMaxLength)
-    : kMaxLength;
+  const maxOutputLength = outputLimit(cap);
   let output: Uint8Array;
   try {
     output = decode(payload, { maxOutputLength });
@@ -128,8 +159,8 @@ function zstdContentSize(payload: Uint8Array): number | undefined {
   }
 }
 
-/** The error a payload that decodes past `cap` throws. */
-function overLimit(cap: number, cause?: unknown): EntryDecodeError {
+/** The error a payload that decodes past `cap` throws (a user compressor's answer too). */
+export function overLimit(cap: number, cause?: unknown): EntryDecodeError {
   return new EntryDecodeError(
     `the entry decompresses past the ${cap}-byte limit (maxEntryBytes)`,
     cause === undefined ? undefined : { cause },

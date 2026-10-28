@@ -34,6 +34,8 @@
         "TagFence",
         "BusMessage",
         "Codec",
+        "CompressOptions",
+        "CacheCompressor",
         "CacheEventMap",
         "CacheEvent",
         "CacheFencedReason",

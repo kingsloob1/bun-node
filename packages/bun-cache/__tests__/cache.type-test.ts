@@ -8,9 +8,13 @@
  * Checked by `bun run check`, not by `bun test` (`--check` never reads a
  * `*.type-test.ts`).
  */
-import type { StandardSchemaV1 } from "@kingsleyweb/bun-common";
+import type {
+  CompressionEncoding,
+  StandardSchemaV1,
+} from "@kingsleyweb/bun-common";
 import { z } from "zod";
 import type {
+  CacheCompressor,
   CacheEntry,
   CacheEventMap,
   CacheFencedReason,
@@ -171,3 +175,34 @@ untyped.on("fenced", ({ reason }) => {
   // @ts-expect-error -- a closed union: a reason outside it is a compile error
   void (reason === "remote");
 });
+
+/* --- compression: bun-common's spellings, user compressors, per call -- */
+
+// The algorithm names are bun-common's `CompressionEncoding`, so the two
+// cannot drift (the encryption plan's §8.5).
+type _algorithm = Expect<
+  Equal<
+    NonNullable<Exclude<CreateCacheOptions["compress"], false>>["algorithm"],
+    CompressionEncoding | CacheCompressor | undefined
+  >
+>;
+const compressed = createCache({
+  driver: memoryDriver(),
+  compress: {
+    algorithm: {
+      id: 128,
+      compress: (bytes) => bytes,
+      // Either function may answer a promise.
+      decompress: async (bytes, maxOutputLength: number) =>
+        await Promise.resolve(bytes.subarray(0, maxOutputLength)),
+    },
+    previous: [],
+  },
+});
+void createCache({ driver: memoryDriver(), compress: { algorithm: "br" } });
+// @ts-expect-error -- "br" is the name, as in HTTP, not "brotli"
+void createCache({ driver: memoryDriver(), compress: { algorithm: "brotli" } });
+void compressed.set("k", 1, { compress: false });
+void compressed.getOrSet("k", () => 1, { compress: false });
+// @ts-expect-error -- per call, compression can only be turned off
+void compressed.set("k", 1, { compress: true });
