@@ -18,6 +18,9 @@ import process from "node:process";
  * ({@link CACHE_DATABASE}, `BUN_CACHE_TEST_*_URL`), on the same server, user
  * and password as bun-jobs', created only when connecting to it fails;
  * MongoDB's (`BUN_CACHE_TEST_MONGODB_URL`) is created by its first write.
+ * `mongodb-rs` is a single-node MongoDB replica set (`BUN_CACHE_TEST_MONGODB_RS_URL`),
+ * always a container on 27018 beside the standalone server, so bun-cache's change-stream
+ * bus is tested routinely; it initiates the set once, on a fresh container.
  * bun-cache's Redis suite uses bun-jobs' test database (15) instead, its keys
  * under a per-run prefix: `--print-env` names it `BUN_CACHE_TEST_REDIS_URL`.
  *
@@ -36,7 +39,14 @@ import process from "node:process";
  * ------------------------------------------------------------------ */
 
 /** The servers this script knows how to provide. */
-const SERVICES = ["redis", "postgres", "mariadb", "mysql", "mongodb"] as const;
+const SERVICES = [
+  "redis",
+  "postgres",
+  "mariadb",
+  "mysql",
+  "mongodb",
+  "mongodb-rs",
+] as const;
 
 /** One of the servers this script knows how to provide. */
 type Service = (typeof SERVICES)[number];
@@ -865,8 +875,11 @@ interface ServicePlan {
   service: Service;
   /** Port it listens on. */
   port: number;
-  /** Environment variable the suites read. */
-  envVar: string;
+  /**
+   * Environment variable bun-jobs' suites read. Absent on a server only
+   * bun-cache uses (the MongoDB replica set).
+   */
+  envVar?: string;
   /** The URL the suites should use once it is ready. */
   url: (options: Options) => string;
   /**
@@ -923,6 +936,14 @@ interface ServicePlan {
    * up early reports a server as broken that is merely still starting.
    */
   readyTimeout?: number;
+  /**
+   * One-time setup of a freshly started container that the image does not do
+   * itself (the MongoDB replica set's `rs.initiate`), run in docker mode after
+   * the container is up and before waiting for {@link configured}. It must be
+   * safe to run again on a container that already did it. Resolves whether it
+   * succeeded.
+   */
+  initContainer?: (options: Options) => Promise<boolean>;
 }
 
 /**
@@ -1824,6 +1845,31 @@ async function ensurePostgresLimit(
   );
 }
 
+/** The port the MongoDB replica-set container listens on and is published at. */
+const MONGO_RS_PORT = 27_018;
+
+/** The MongoDB replica-set container's name. */
+const MONGO_RS_CONTAINER = "bun-cache-mongodb-rs";
+
+/**
+ * The `docker exec` that initiates the replica set `rs0` of one member,
+ * `127.0.0.1:27018`, unless it already is one (`rs.status()` throws on a
+ * server that is not yet initiated), so running it again is harmless.
+ */
+export function mongoRsInitArgv(): string[] {
+  return [
+    "docker",
+    "exec",
+    MONGO_RS_CONTAINER,
+    "mongosh",
+    "--port",
+    String(MONGO_RS_PORT),
+    "--quiet",
+    "--eval",
+    `try { rs.status() } catch (e) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:${MONGO_RS_PORT}" }] }) }`,
+  ];
+}
+
 /** Every server, in the order they are set up. */
 export const PLANS: Record<Service, ServicePlan> = {
   redis: {
@@ -2127,6 +2173,85 @@ export const PLANS: Record<Service, ServicePlan> = {
     manualHint:
       "MongoDB is not in the Ubuntu or Debian repositories; this adds its official one. --docker avoids that entirely.",
   },
+
+  "mongodb-rs": {
+    service: "mongodb-rs",
+    port: MONGO_RS_PORT,
+    // bun-cache only: bun-jobs has no use for a replica set.
+    cacheEnvVar: "BUN_CACHE_TEST_MONGODB_RS_URL",
+    url: (options) => PLANS["mongodb-rs"].cacheUrl!(options),
+    // The member is named 127.0.0.1:27018 in the replica-set config, so the
+    // host reaches it by the name the server hands back: all four spellings
+    // (none, `replicaSet=rs0`, `directConnection=true`, both) connected and
+    // wrote (measured). `replicaSet=rs0` is kept because it makes the driver
+    // check it reached that set, and it has no `&` to trip a pasted `export`.
+    cacheUrl: (options) =>
+      `mongodb://127.0.0.1:${MONGO_RS_PORT}/${options.cacheDatabase}?replicaSet=rs0`,
+    // A container, so there are no binaries on the host to look for.
+    installed: () => false,
+    packages: {},
+    unit: () => "mongod",
+    dockerOnly:
+      "a replica set needs a mongod of its own beside the standalone one on 27017, so it runs as a container on 27018",
+    container: () => ({
+      name: MONGO_RS_CONTAINER,
+      // The standalone server's image: the same major version.
+      image: "mongo:7",
+      // Published and listening on the same port, because the member's name
+      // in the replica-set config has to be reachable from the host too.
+      port: MONGO_RS_PORT,
+      env: {},
+      args: [
+        "--replSet",
+        "rs0",
+        "--bind_ip_all",
+        "--port",
+        String(MONGO_RS_PORT),
+        // bun-cache's history-lost case injects a failure with
+        // `configureFailPoint`, which only a server started with this
+        // accepts; without it that case skips. Fixed at creation.
+        "--setParameter",
+        "enableTestCommands=1",
+      ],
+    }),
+    initContainer: async (options) => {
+      const argv = mongoRsInitArgv();
+      log.cmd(argv);
+      if (options.dryRun) {
+        return true;
+      }
+      // mongod accepts connections a moment after its port opens.
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if ((await run(argv)).ok) {
+          log.did("the replica set rs0 is initiated");
+          return true;
+        }
+        await Bun.sleep(1_000);
+      }
+      log.bad("could not initiate the replica set rs0");
+      return false;
+    },
+    // A real answer from the server, not an open port: a primary of rs0.
+    configured: async () => {
+      if (!(await portOpen(MONGO_RS_PORT))) {
+        return false;
+      }
+      const result = await run([
+        "docker",
+        "exec",
+        MONGO_RS_CONTAINER,
+        "mongosh",
+        "--port",
+        String(MONGO_RS_PORT),
+        "--quiet",
+        "--eval",
+        "if (!db.hello().isWritablePrimary) quit(1)",
+      ]);
+      return result.ok;
+    },
+    configure: async () => true,
+    configureNote: () => "the container's replica set rs0 is initiated",
+  },
 };
 
 /**
@@ -2282,7 +2407,7 @@ async function ensureCacheDatabase(
     return { note: "", failed: false };
   }
   const db = options.cacheDatabase;
-  if (plan.service === "mongodb") {
+  if (plan.service === "mongodb" || plan.service === "mongodb-rs") {
     // MongoDB creates a database on its first write: nothing to make.
     return { note: `${db} on first write`, failed: false };
   }
@@ -2500,7 +2625,11 @@ async function setupServer(
 
     const spec = plan.container(options);
     const existed = (await containerState(spec.name)) !== "";
-    const started = await ensureContainer(spec, options);
+    let started = await ensureContainer(spec, options);
+
+    if (started && plan.initContainer) {
+      started = await plan.initContainer(options);
+    }
 
     // A database image publishes its port before it has finished creating the
     // user it was told to create, so being reachable is not the same as being
@@ -2631,7 +2760,9 @@ function printEnv(options: Options): void {
 
   for (const service of options.services) {
     const plan = PLANS[service];
-    console.log(`export ${plan.envVar}=${colour.cyan(plan.url(options))}`);
+    if (plan.envVar) {
+      console.log(`export ${plan.envVar}=${colour.cyan(plan.url(options))}`);
+    }
     if (plan.cacheEnvVar) {
       const url = plan.cacheUrl ?? plan.url;
       console.log(`export ${plan.cacheEnvVar}=${colour.cyan(url(options))}`);

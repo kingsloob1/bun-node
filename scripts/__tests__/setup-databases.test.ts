@@ -24,6 +24,7 @@ import {
   mariadbLimitCnf,
   MAX_CONNECTIONS,
   MAX_CONNECTIONS_CEILING,
+  mongoRsInitArgv,
   maxConnectionsArg,
   nativeLimitSteps,
   parseArgs,
@@ -850,6 +851,53 @@ describe("bun-cache's database", () => {
     expect(cacheDatabaseStatements("mongodb", options, "native")).toEqual([]);
   });
 
+  it("is on the MongoDB replica set too, a container of its own on 27018 that bun-jobs has no variable for", () => {
+    const plan = PLANS["mongodb-rs"];
+    expect(plan.envVar).toBeUndefined();
+    expect(plan.cacheEnvVar).toBe("BUN_CACHE_TEST_MONGODB_RS_URL");
+    expect(plan.cacheUrl!(options)).toBe(
+      "mongodb://127.0.0.1:27018/bun_cache_test?replicaSet=rs0",
+    );
+    expect(plan.dockerOnly).toBeString();
+    expect(plan.port).toBe(27018);
+    expect(cacheDatabaseStatements("mongodb-rs", options, "container")).toEqual(
+      [],
+    );
+  });
+
+  it("runs the replica set as mongo:7 with --replSet rs0, published and listening on 27018, with the open-file limit", () => {
+    const argv = dockerRunArgv(PLANS["mongodb-rs"].container(options));
+    expect(argv).toContain("127.0.0.1:27018:27018");
+    expect(argv).toContain(`nofile=65536:65536`);
+    expect(argv.slice(argv.indexOf("mongo:7"))).toEqual([
+      "mongo:7",
+      "--replSet",
+      "rs0",
+      "--bind_ip_all",
+      "--port",
+      "27018",
+      "--setParameter",
+      "enableTestCommands=1",
+    ]);
+    expect(PLANS["mongodb-rs"].container(options).image).toBe(
+      PLANS.mongodb.container(options).image,
+    );
+  });
+
+  it("initiates rs0 with one member the host can reach, and only when rs.status() fails", () => {
+    const argv = mongoRsInitArgv();
+    expect(argv.slice(0, 4)).toEqual([
+      "docker",
+      "exec",
+      "bun-cache-mongodb-rs",
+      "mongosh",
+    ]);
+    const script = argv.at(-1)!;
+    expect(script).toStartWith("try { rs.status() } catch");
+    expect(script).toContain('host: "127.0.0.1:27018"');
+    expect(script).toContain('_id: "rs0"');
+  });
+
   it("on Redis is bun-jobs' test database: a variable of its own, nothing to create", () => {
     expect(PLANS.redis.cacheEnvVar).toBe("BUN_CACHE_TEST_REDIS_URL");
     expect(PLANS.redis.cacheUrl).toBeUndefined();
@@ -912,6 +960,7 @@ describe("bun-cache's database", () => {
       "export BUN_CACHE_TEST_MARIADB_URL=mariadb://bunjobs:bunjobs@127.0.0.1:3306/bun_cache_test",
       "export BUN_CACHE_TEST_MYSQL_URL=mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_cache_test?allowPublicKeyRetrieval=true",
       "export BUN_CACHE_TEST_MONGODB_URL=mongodb://127.0.0.1:27017/bun_cache_test",
+      "export BUN_CACHE_TEST_MONGODB_RS_URL=mongodb://127.0.0.1:27018/bun_cache_test?replicaSet=rs0",
     ]);
   });
 });
