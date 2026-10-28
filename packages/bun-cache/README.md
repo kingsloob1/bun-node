@@ -53,9 +53,15 @@ And (PR-C4):
   that add in the database, lock rows, the optional `maxEntries` cap, and a
   bus (`LISTEN`/`NOTIFY` on Postgres, a polled table on MySQL and MariaDB)
 
-Next, in the plan's order: Redis (PR-C5), MongoDB (PR-C6), S3 (PR-C7), then
-the multi-tier L1/L2 bus (PR-T1). The HTTP utilities (`cacheResponse`) and
-the Nest module follow.
+And (PR-H1):
+
+- the **HTTP response cache**, `@kingsleyweb/bun-cache/http`: `cacheResponse()`
+  for bun-common's `BunRouter` and both HTTP adapters, `coalesceRequests()`
+  and `addCacheTags()` — see [HTTP response caching](#http-response-caching)
+
+Next, in the plan's order: the multi-tier L1/L2 bus (PR-T1), Redis (PR-C5),
+MongoDB (PR-C6), S3 (PR-C7), then stale serving over HTTP (PR-H2) and the
+Nest interceptor (PR-N2).
 
 ## Quick start
 
@@ -729,3 +735,154 @@ one.
 - **Limits**: an entry is at most `max_allowed_packet` less 64 KiB on MySQL
   and MariaDB (read from the server on connect, as
   `capabilities.maxEntryBytes`), and 1 GB on Postgres.
+
+## HTTP response caching
+
+```ts
+import { cacheControl, compression } from "@kingsleyweb/bun-common";
+import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
+import { addCacheTags, cacheResponse } from "@kingsleyweb/bun-cache/http";
+
+const cache = createCache({ driver: memoryDriver(), namespace: "http" });
+const pages = cacheResponse(cache, { ttl: 60_000 });
+
+app.use(compression());                           // before the cache: hits are compressed too
+app.get("/posts/:id", pages, validate({ params: PostParams }), async (req, res) => {
+  addCacheTags(res, `post:${req.params.id}`);
+  res.json(await loadPost(req.params.id));
+});
+app.use("/blog", cacheResponse(cache));           // a subtree; TTL from Cache-Control
+// TTL from the header cacheControl() sets: after the cache, because headers
+// set by a middleware ahead of the cache are never stored.
+app.get("/feed", cacheResponse(cache), cacheControl({ sMaxAge: 60 }), feed);
+
+await cache.invalidateTags(["post:7"]);           // after an edit
+await pages.invalidate("/posts/7");               // or one path, every query and variant
+```
+
+`cacheResponse(cache, options)` is ordinary `(req, res, next)` middleware for
+bun-common's `BunRouter`, so it works on both HTTP adapters. A **hit** answers
+from the cache and does **not** call `next()`; a **miss** runs the rest of the
+pipeline and stores what it produced, when it may.
+
+**Where to put it.** Before `validate()` — between `validate()` and the
+handler it takes the validator's typed slot and the handler's validated
+`req.query`/`req.body` types are lost — and after anything that must run on
+every request (authentication, rate limits, request ids): a hit runs nothing
+behind it. Put `compression()` **ahead** of it: misses are captured
+uncompressed and hits are compressed per request. In Nest, guards and
+interceptors do not run before router middleware, so use the interceptor
+(PR-N2) for anything behind a guard.
+
+**The cache.** Pass an untyped cache (`createCache()` with no schema) with a
+codec that keeps bytes — `"structured"`, the default, or `"raw"`: a response
+is stored as one framed `Uint8Array`. A JSON cache is refused by the types,
+and if forced, every request is a miss (never a broken answer). A namespace
+of its own (`namespace: "http"`) keeps it apart: an unsafe request's
+invalidation forgets the in-flight loads of the whole namespace.
+
+**The key** is `GET` (HEAD shares GET's entry), the host with `host: true`,
+the path (the full `originalUrl`, mount included), the query sorted by name
+(`query: "all"`, a list of names to keep, or `false`), and the `varyBy`
+request headers — or your `key(req)` in place of all but `GET`. A response's
+own `Vary` is learned per URL: the first answer stores a record naming the
+headers (and carries that first variant), and every other combination of
+values gets an entry of its own. `Vary: *` is never stored.
+
+**What is stored** (RFC 9111 §3, for a shared cache): only a `GET` whose
+status is in `statuses` (by default RFC 9110's heuristically cacheable set:
+200, 203, 204, 300, 301, 308, 404, 405, 410, 414, 501) and
+
+- no `no-store` (unless `must-understand`, for a status the cache stores),
+  no unqualified `private`, and no unqualified `no-cache` (its reuse needs a
+  revalidation this cache does not make); the qualified `private="X"` and
+  `no-cache="X"` withhold just those fields;
+- for a request with `Authorization`, a `public`, `s-maxage` or
+  `must-revalidate` answer, unless the key varies on the identity
+  (`varyBy: ["authorization"]`, or a `key` function);
+- no `Set-Cookie` from the handler, unless `allowSetCookie`;
+- a buffered body (a stream is not stored; PR-H2 adds `streams: { buffer }`);
+- a lifetime: `ttl` in ms (which overrides the freshness headers, not the
+  refusals above), or with `ttl: "headers"` (the default)
+  `Surrogate-Control: max-age`, then `s-maxage`, then `max-age`, then
+  `Expires` less `Date`, minus the response's own `Age`.
+
+Never stored: hop-by-hop fields, `Content-Length`, `Age`, the status header,
+`omitHeaders`, and any header a middleware **ahead** of the cache set and the
+handler left as it was (a request id, a CORS origin, a session cookie) —
+that middleware sets its own on every hit. A response's
+`stale-while-revalidate=` and `stale-if-error=` are kept with the entry
+(zeroed by `must-revalidate` or `proxy-revalidate`) for PR-H2; until then an
+entry past its freshness is a miss.
+
+**Hits** get the stored status and headers, `Age` (RFC 9111 §5.1: the
+response's own plus its time in the cache), and the body through
+`res.send()` — so a matching `If-None-Match` or `If-Modified-Since` gets a
+`304`, and every stored response has an `ETag` (computed from the body when
+the handler set none; `etag: false` turns that off). A conditional request
+that **misses** still produces the full response for the cache (the
+handler sees `req.fresh === false`), and is answered `304` from it. The
+`X-Cache` header (`statusHeader`, or `false`) says `HIT`, `MISS`, `BYPASS`
+(`bypass(req)`, or a request's `no-store` under `honorRequest`) or
+`UNCACHEABLE` (answered, not stored).
+
+**HEAD** is answered from the GET entry, without a body; a HEAD miss runs the
+GET handler and stores nothing. A `POST`, `PUT`, `PATCH` or `DELETE` through
+the middleware that gets a 2xx or 3xx drops every entry for its path, and
+for a same-host `Location` or `Content-Location` (RFC 9111 §4.4;
+`invalidateOnUnsafe: false` turns it off); a `GET` in the same process waits
+for that invalidation before it reads. Every entry carries its path's tag,
+so `pages.invalidate(path | url | request)` drops a path's queries and
+variants; the `tags` option (a list, or `(req, res) => tags`) and
+`addCacheTags(res, ...tags)` from the handler add more for
+`cache.invalidateTags()`.
+
+**Coalescing** (`coalesce`, on by default). Identical misses run the handler
+once: the first leads, and the rest wait — through the core's single-flight,
+so the write gets the core's tag fence too (an invalidation that lands while
+the handler runs drops the write instead of storing a stale answer). A
+follower waits at most `coalesce: { wait }` (10 s by default) and then runs
+the handler itself; a leader whose answer bypasses the response transforms
+— an unhandled error, the adapter's bare 404 — holds its followers that
+long. When the leader's answer may not be stored (`private`, a cookie, a
+5xx…), the key is marked uncacheable for `uncacheableTtl` (30 s; Varnish's
+hit-for-miss) and its requests run side by side meanwhile; a storable answer
+replaces the mark at once. Requests with `Authorization` (and a key that
+does not vary on identity) are never coalesced.
+
+**The request's own `Cache-Control`** is ignored by default, as CDNs do, so
+a client cannot push its load onto the origin. `honorRequest: true` honours
+`no-store` (bypass), `no-cache`, `Pragma: no-cache` and `max-age=0`
+(run the handler and store its answer), `max-age=N`, `min-fresh=N`, and
+`only-if-cached` (a `504` on a miss).
+
+**Limits.** An unhandled error and the adapter's bare 404 are answered on a
+fresh response, outside the transforms: they are never stored (§9.2 of the
+plan). The write never delays the response, so a request arriving right
+after a miss may miss too.
+
+**`coalesceRequests({ key?, wait? })`** is the coalescing alone, with no
+store: identical in-flight `GET`s share one run, and each follower gets a
+copy of the leader's buffered answer through its own `res.send()`. Requests
+with `Cookie` or `Authorization` run on their own unless your `key` includes
+the identity, and an answer that sets a cookie or is `private`, `no-store`
+or `no-cache` is not shared.
+
+| Option | Default | |
+|---|---|---|
+| `ttl` | `"headers"` | ms, or the freshness headers |
+| `tags` | none | a list, or `(req, res) => tags` |
+| `varyBy` | none | request headers in the key |
+| `query` | `"all"` | `"all"`, names to keep, or `false` |
+| `host` | `false` | the host in the key and the path tag |
+| `key` | none | `(req) => string`, replacing host, path, query, `varyBy` |
+| `bypass` | none | `(req) => boolean`: no read, no store |
+| `statusHeader` | `"X-Cache"` | or `false` |
+| `honorRequest` | `false` | the request's `Cache-Control` |
+| `allowSetCookie` | `false` | store (and replay) the handler's cookies |
+| `statuses` | RFC 9110's set | the statuses stored |
+| `omitHeaders` | none | response headers never stored |
+| `invalidateOnUnsafe` | `true` | unsafe 2xx/3xx drops the path |
+| `coalesce` | `true` | or `false`, or `{ wait }` (10 s) |
+| `uncacheableTtl` | 30 s | the hit-for-miss mark; `0` disables |
+| `etag` | `true` | compute an `ETag` when there is none |

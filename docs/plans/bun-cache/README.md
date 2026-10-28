@@ -337,7 +337,7 @@ long) and on Postgres (silently truncated, losing the suffix); a
 prefix-only channel fails the two-table-sets test; the option ignored fails
 the sync tests; letting Postgres take a `bus` name fails its refusal test.
 
-**PR-N1 built 2026-10-28** (branch `feat/bun-nest-n1-cache`), bun-nest's
+**PR-N1 merged 2026-10-28, #552**: bun-nest's
 `./cache` subpath (§10.1, §10.2, §10.5), on Nest 11 and 12:
 
 - **`BunCacheModule.forRoot` / `forRootAsync`** (`name`, `isGlobal`; async
@@ -422,6 +422,76 @@ the sync tests; letting Postgres take a `bus` name fails its refusal test.
   key timing and its `undefined` delete, the metadata copy, the close hook,
   the ownership rule, instance-vs-class matching, the duplicate-name check —
   each failing its test (1–2 fails each).
+
+**PR-H1 built 2026-10-28** (branch `feat/bun-cache-h1-http`):
+`@kingsleyweb/bun-cache/http` — `cacheResponse()`, `coalesceRequests()`,
+`addCacheTags()` — on bun-common's `addResponseTransform(t, { first: true })`,
+`parseCacheControl()`, `fresh()` and `etag()`, with **bun-common unchanged**
+(bun-common was already bun-cache's runtime dependency, so `./http`'s
+declarations import nothing undeclared). What it does, beyond §9.1–§9.5 as
+written:
+
+- **Coalescing is the core's `getOrSet`**: the leader's loader calls
+  `next()` and resolves with the captured frame, so the write gets the tag
+  fence with `createdAt` at the handler's start and the local fence (an
+  invalidation mid-handler drops the write, `fenced` with `reason:
+  "local"`). The leader fills the call's `ttl`, `tags` and windows before
+  resolving — the core reads options after the loader (a comment in
+  `runLeader` now says http relies on it; a test pins it, and fails when the
+  assignment is removed). Per call, the core's own staleness machinery is
+  neutralised (`staleWhileRevalidate`/`softTimeout`/`hardTimeout`/
+  `refreshAhead` 0, `earlyExpiry: { beta: 0 }`), since a background refresh
+  would call the loader with no request. A leader gives up after
+  `coalesce.wait` (10 s): an unhandled error and the adapter's bare 404
+  bypass the transforms, and would otherwise hold the flight for ever.
+- **Stored form**: one framed `Uint8Array` per key (`lib/http/frame.ts`):
+  a response, a **vary record** (the response's `Vary` headers plus the first
+  variant, embedded, so the base key's leader is fenced like any other), or
+  the **hit-for-miss marker**. Needs a byte-keeping codec (`structured`,
+  `raw`); a JSON cache is refused by the types and, forced, only ever misses
+  (tested).
+- **Headers a middleware ahead set and the handler left unchanged are not
+  stored** (a request id, a CORS origin, a session cookie): they are that
+  middleware's to set on each hit. Cookies set ahead do not make a response
+  uncacheable either.
+- **A conditional miss** masks `req.fresh` for the handler (Varnish strips
+  the conditional headers on a miss), so the full response is stored, and
+  the transform answers the client's 304 itself. Without it a handler that
+  sets any header answered 304 and nothing was stored (the negative
+  control).
+- **RFC 9111 details**: `must-understand` overrides `no-store` for a stored
+  status (§5.2.2.3); qualified `private="…"`/`no-cache="…"` withhold only
+  their fields; unqualified `no-cache` is not stored (reuse needs a
+  revalidation H1 cannot make); `Authorization` allows `public`, `s-maxage`
+  or `must-revalidate` (§3.5) and is never coalesced; `Age` is carried and
+  subtracted from the header lifetime; an unparsable `Expires` is past
+  (§5.3); unsafe methods also invalidate a same-host `Location` /
+  `Content-Location` (§4.4), and a GET in the same process waits for that
+  invalidation. `honorRequest` also covers `max-age=N`, `min-fresh` and
+  `only-if-cached` (504).
+- **PR-H2 hooks**: the frame and the core entry keep the response's
+  `stale-while-revalidate=`/`stale-if-error=` windows (0 under
+  `must-revalidate`/`proxy-revalidate`); H1 treats anything past freshness as
+  a miss. `streams`, `revalidate`, route-level `staleWhileRevalidate`/
+  `staleIfError`, the internal `x-bun-cache-revalidate` replay and `STALE`
+  are H2's.
+- **Departure: no slot brand (§9.6).** `__shape?: never` cannot be used:
+  bun-common's verb overloads read it in the validator slot whatever
+  precedes it, so it also breaks the ordinary `get(path, pages, handler)`
+  (`res.send("x")` stops compiling, `req.query` is `never`; the spike's
+  case 4 only touched `req.params`). `cacheResponse()` returns a plain
+  `RouterHandler & { invalidate }`; the misplacement is documented, and
+  `__tests__/http.type-test.ts` records cases 1–3 plus the brand's failure.
+- **Measured**: 93 new tests in `__tests__/http/` (router `fetch()`,
+  bun-common's adapter `fetch()`, one served adapter with a streamed route),
+  15 of 15 repeat runs and 40 of 40 runs eight-wide clean; 25 runtime
+  negative controls, each failing its suite (1–6 failures), plus the type
+  test's. Two behaviours worth
+  knowing: the write never delays the response, so a request right behind a
+  miss can miss too; and the core's fence ties to the invalidation, so a
+  load starting in the same millisecond as an invalidation is dropped.
+  bun-nest's adapter is not exercised here (bun-cache cannot depend on
+  bun-nest); it routes through the same `BunRouter`.
 
 ### Contents
 

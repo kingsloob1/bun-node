@@ -1058,6 +1058,10 @@ class CacheImpl<
               this.#reportFenced(key, options.tags ?? [], "local");
             }
             if (stores && !forgotten) {
+              // `options` is read here, after the loader, not when the call
+              // started: `cacheResponse()` (lib/http) fills `ttl`, `tags` and
+              // the windows from the response its loader captured, and
+              // `__tests__/http/` pins that down.
               storedValue = await this.#write(key, stored, value, {
                 ttl: this.#ttlForLoad(value, options),
                 tags: options.tags ?? [],
