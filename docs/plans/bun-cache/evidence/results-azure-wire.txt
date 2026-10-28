@@ -1,0 +1,109 @@
+Bun 1.4.4 (a0cc096ce); endpoint http://127.0.0.1:10000/devstoreaccount1, container bun-cache-test
+
+## signing
+  PUT with the right key: 201
+  GET with a wrong key: 403 AuthorizationFailure Server failed to authenticate the request. Make sure the value of the Authorization header is formed correctly including the signature.
+  GET unsigned (private container): 403 AuthorizationFailure
+  GET (control): 200
+  GET signed 20 min ago (Azure refuses past 15 min): 200
+  GET with x-ms-version 2099-01-01: 400 InvalidHeaderValue The API version 2099-01-01 is not supported by Azurite. Please upgrade Azurite to latest version and retry. If you are using Azurite in Visual Studio, please check you have installed latest Visual Studio patch. Azurite command line parameter "--skipApiVersionCheck" or Visual Studio Code configuration "Skip Api Version Check" can skip this error. 
+  x-ms-version 2021-12-02: 200
+  x-ms-version 2025-01-05: 200
+  x-ms-version 2025-11-05: 200
+  x-ms-version 2026-02-06: 200
+  odd blob name PUT / GET: 201 / 200 odd
+
+## put, get, head: ETag, Content-Type with parameters, metadata
+  PUT status, etag, last-modified: [201,"\"0x1DE02A7D6D77360\"","Wed, 28 Oct 2026 17:14:41 GMT"]
+  GET content-type: application/x-bun-cache; exp=1760000000000; at=1759999999000
+  GET etag: "0x1DE02A7D6D77360"
+  GET x-ms-meta-exp: 1760000000000
+  GET body: hello
+  HEAD content-type, length: ["application/x-bun-cache; exp=1760000000000; at=1759999999000","5"]
+  GET missing: 404 BlobNotFound
+  GET x-ms-range 0-2: 206 hel
+  GET Range 1-2 (signed standard header): 206 el
+
+## conditional PUT and DELETE
+  create If-None-Match:* (absent): 201
+  create If-None-Match:* (present): 409 BlobAlreadyExists
+  body after: 1
+  If-Match current etag: 201
+  If-Match stale etag: 412 ConditionNotMet
+  If-Match on a missing blob: 412 ConditionNotMet
+  If-Match:* on present: 201
+  DELETE If-Match stale: 412 ConditionNotMet
+  DELETE If-Match current: 202
+  DELETE missing: 404 BlobNotFound
+  DELETE missing with If-Match: 412 ConditionNotMet
+
+## concurrent conditional writes to one blob
+  5 creates If-None-Match:* (6 ms): {"201":1,"409 BlobAlreadyExists":4}
+  5 swaps If-Match same etag (6 ms): {"201":1,"412 ConditionNotMet":4}
+  50 creates If-None-Match:* (60 ms): {"201":1,"409 BlobAlreadyExists":49}
+  50 swaps If-Match same etag (51 ms): {"201":1,"412 ConditionNotMet":49}
+  200 CAS increments from 20 workers (4150 ms): {"value":"200","conflicts":2424}
+
+## Lease Blob
+  acquire on a missing blob: 404 BlobNotFound
+  acquire duration 5: 400 InvalidHeaderValue
+  acquire duration 14: 400 InvalidHeaderValue
+  acquire duration 61: 400 InvalidHeaderValue
+  acquire 15 s as A: 201 lease-id=true
+  acquire as B while A holds: 409 LeaseAlreadyPresent
+  acquire again as A (re-acquire): 201
+  renew as A: 200
+  renew as B: 409 LeaseIdMismatchWithLeaseOperation
+  PUT without the lease id: 412 LeaseIdMissing
+  PUT with A's lease id: 201
+  PUT with B's lease id: 412 LeaseIdMismatchWithBlobOperation
+  DELETE without the lease id: 412 LeaseIdMissing
+  GET while leased (no id needed): 200
+  HEAD lease state/status/duration: ["leased","locked","fixed"]
+  release as B: 409 LeaseIdMismatchWithLeaseOperation
+  release as A: 200
+  release as A again: 409 LeaseIdMismatchWithLeaseOperation
+  acquire infinite (-1) as A: 201
+  break, period 0: 202 lease-time=0
+  acquire as B after the break: 201
+  break, period 2 s: 202 lease-time=2
+  acquire as A during the break period: 409 LeaseAlreadyPresent
+  acquire as A after the break period: 201
+  change A -> B: 200
+  release as B: 200
+  non-GUID proposed id: 201
+  50 concurrent acquires (40 ms): {"201":1,"409 LeaseAlreadyPresent":49}
+  a 15 s lease taken by another id after (ms): 15137 (61 tries)
+  state after: ["leased","fixed"]
+
+## List Blobs: prefix, paging, what each item carries
+  pages of 2 for 5 blobs: 3
+  names: ["p/a","p/b","p/c","p/d","p/e"]
+  first page XML (one Blob):
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?><EnumerationResults ServiceEndpoint="http://127.0.0.1:10000/devstoreaccount1" ContainerName="bun-cache-test"><Prefix>bun-cache-probe/841353-mvsdjybi/p/</Prefix><Marker/><MaxResults>2</MaxResults><Blobs>
+    <Blob><Name>bun-cache-probe/841353-mvsdjybi/p/a</Name><Properties><Creation-Time>Wed, 28 Oct 2026 17:15:03 GMT</Creation-Time><Last-Modified>Wed, 28 Oct 2026 17:15:03 GMT</Last-Modified><Etag>0x269A50193BDDF40</Etag><Content-Length>3</Content-Length><Content-Type>application/x-bun-cache; exp=1793207763173; at=1793207703173</Content-Type><Content-MD5>KgrAmcq2oEBMW4H1TSc35A==</Content-MD5><BlobType>BlockBlob</BlobType><LeaseStatus>unlocked</LeaseStatus><LeaseState>available</LeaseState><ServerEncrypted>true</ServerEncrypted><AccessTier>Hot</AccessTier><AccessTierInferred>true</AccessTierInferred><AccessTierChangeTime>Wed, 28 Oct 2026 17:15:03 GMT</AccessTierChangeTime></Properties><Metadata><exp>9</exp></Metadata></Blob><Blob><Name>bun-cache-probe/841353-mvsdjybi/p/b</Name><Properties><Creation-Time>Wed, 28 Oct 2026 17:15:03 GMT</Creation-Time><Last-Modified>Wed, 28 Oct 2026 17:15:03 GMT</Last-Modified><Etag>0x2262F44F80E59C0</Etag><Content-Length>3</Content-Length><Content-Type>application/x-bun-cache; exp=1793207763208; at=1793207703208</Content-Type><Content-MD5>m44Rtsb6mDcVDw2uXchjdQ==</Content-MD5><BlobType>BlockBlob</BlobType><LeaseStatus>unlocked</LeaseStatus><LeaseState>available</LeaseState><ServerEncrypted>true</ServerEncrypted><AccessTier>Hot</AccessTier><AccessTierInferred>true</AccessTierInferred><AccessTi
+  maxresults 6000: 200
+
+## sizes and limits
+  64 MiB single Put Blob: 201 in 270 ms
+  read back length: 67108864
+  metadata name with '-': 400 InvalidMetadata
+
+## batch delete (Blob Batch)
+  POST ?comp=batch with an empty body: 202
+
+## ETags from a listing, escaping in a listing, leases against conditions
+  listing Etag vs HEAD ETag: ["0x1D62137C64B56A0","\"0x1D62137C64B56A0\""]
+  DELETE If-Match <listing etag, unquoted>: 202
+  DELETE If-Match <listing etag, quoted>: 202
+  a name with & < > ' " in the listing: bun-cache-probe/841353-mvsdjybi/q/a&amp;b&lt;c&gt;'"
+  If-None-Match:* on a leased blob: 409 BlobAlreadyExists
+  If-Match current, no lease id, on a leased blob: 412 LeaseIdMissing
+  ETag before and after taking a lease: ["\"0x25A473E88A09200\"","\"0x25A473E88A09200\""]
+  Last-Modified of two writes 300 ms apart: ["Wed, 28 Oct 2026 17:15:03 GMT","Wed, 28 Oct 2026 17:15:03 GMT"]
+  ETags of the same two writes: ["\"0x2310BF9D7B668A0\"","\"0x25B2027DCF9E5C0\""]
+  100 sequential GETs (ms each): 0.95
+  100 sequential PUTs (ms each): 1.70
+
+## cleanup: exactly the blobs under this run's prefix
+  deleted: 18

@@ -94,6 +94,14 @@ And (PR-C7):
   `maxBytes` caps, and counters and locks on S3's conditional writes, which
   it signs itself ([The S3 driver](#the-s3-driver))
 
+And (PR-C8):
+
+- the **Azure Blob Storage driver**, `azureBlobDriver`, over `fetch` with its
+  own Shared Key signing (no Azure SDK): the S3 driver's layout and stamp-mode
+  tags, counters and locks on Azure's conditional writes, and a sweeper that
+  reads everything it needs from the listing
+  ([The Azure Blob Storage driver](#the-azure-blob-storage-driver))
+
 Next, in the plan's order: stale serving over HTTP
 (PR-H2) and the Nest interceptor (PR-N2).
 
@@ -677,6 +685,7 @@ KILL`), and the bus-gap case then runs for it too.
 | Redis | PR-C5 | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) |
 | MongoDB | PR-C6 | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection |
 | S3 | PR-C7 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) |
+| Azure Blob Storage | PR-C8 | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -1293,6 +1302,99 @@ sweeper reads an expiry with a `HEAD`, not a `GET`.
   listings; other stores differ. Tested here against SeaweedFS 4.48 only
   (`bun scripts/setup-databases.ts`). An entry holds up to 5 GiB less a MiB
   (one `PUT`); the core's `maxEntryBytes` (4 MiB) applies first.
+
+## The Azure Blob Storage driver
+
+```ts
+import { azureBlobDriver, createCache } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: azureBlobDriver({ url: process.env.CACHE_AZURE_URL }),
+  // azure://<accountName>:<accountKey>@<host>[:<port>][/<path>]/<container>[?scheme=http]
+  // e.g. azure://myacct:KEY%3D%3D@myacct.blob.core.windows.net/cache — percent-encode the key's /, + and =
+});
+// or azureBlobDriver({ connection: { connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING, container: "cache" } })
+// or azureBlobDriver({ connection: { accountName, accountKey, container, endpoint? } })
+```
+
+A blob container every process and host can reach, over `fetch`: Bun has no
+Azure client, and the driver signs its own requests with the account key
+(Shared Key) rather than take the Azure SDK. Like S3, it suits large values,
+long TTLs and few reads per key — every read is a billed operation — so for
+hot small keys put an [L1](#multi-tier) in front of it, with a bus of its own
+(`bus: redisBus(url)` or `pgBus(url)`; Azure Blob Storage has none).
+
+The layout, the frame and the types are [the S3 driver's](#the-s3-driver):
+one block blob per entry or counter (`<p>/<ns>/e/<hh>/<sha256(key)>`), stamp
+and lock blobs beside them, and each blob's `Content-Type` carrying its kind,
+expiry and write time (`application/x-bun-cache; exp=…; at=…`). Azure keeps
+those parameters and returns them in List Blobs, so the sweeper learns every
+blob's expiry from the listing alone.
+
+- **Reads and writes**: `get` is one Get Blob, `set` one Put Blob, `delete`
+  one Delete Blob per key (Azure answers 202 or 404, so the count needs
+  nothing more). `clear()` lists the namespace's entries and deletes them page
+  by page — not atomic; stamps and locks stay.
+- **Tags are stamps mode**, as on S3: one stamp blob per invalidated tag, a
+  stamp only ever moves forward, and the core's read check does the
+  invalidating.
+- **Counters and locks are compare-and-swaps on conditional writes**, which
+  Azure's API has always had: create with `If-None-Match: *` (a lost race
+  answers 409 `BlobAlreadyExists`), replace or delete with `If-Match: <etag>`
+  (412). `increment` batches one key's calls in a process into one write; a
+  lock is read first (a live lock held by someone else costs one Get Blob),
+  created with `If-None-Match: *`, refreshed by its owner or taken over from a
+  holder whose expiry has passed with `If-Match`, and released by a
+  conditional Delete Blob. Lock expiry compares the holders' clocks: keep
+  them in sync (NTP).
+  - **Not Lease Blob**, Azure's own lock: a lease lasts 15 to 60 seconds or
+    for ever, and a cache lock's TTL is anything from a second up, so a
+    holder that died would keep a one-second lock for fifteen, and one longer
+    than a minute cannot be expressed without a renewer. (Leases are judged by
+    the server's clock, which is their one advantage.)
+- **Expiry**: lazy on read (an expired entry is a miss, and its blob is
+  deleted in the background, only if it is still the blob that was read), plus
+  the core's sweeper: it pages through the prefix (5,000 blobs a listing) and
+  deletes expired entries, counters, stamps and locks, each with `If-Match`
+  on the ETag the listing gave, so a blob rewritten meanwhile stays. Give each
+  cache's blobs a prefix of their own: the sweeper walks everything under it.
+- **Caps**: `maxEntries` and `maxBytes` evict the oldest writes first, enforced
+  by the sweeper (so the container can briefly exceed them); counters are
+  never counted or evicted. Age order, not LRU.
+- **A lifecycle management rule is the backstop**, for blobs no sweeper
+  reaches. It deletes by age, so make it longer than your longest TTL and
+  than `tagStampTtl` (at most 24 h):
+
+  ```json
+  { "rules": [{ "enabled": true, "name": "bun-cache-backstop", "type": "Lifecycle",
+      "definition": { "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["cache/bun-cache/"] },
+                      "actions": { "baseBlob": { "delete": { "daysAfterModificationGreaterThan": 7 } } } } }] }
+  ```
+
+  (`az storage account management-policy create --account-name <a>
+  --resource-group <g> --policy @rule.json`; `prefixMatch` starts with the
+  container's name.)
+- **Soft delete and versioning** keep what the cache deletes, billed, for
+  their retention: turn them off for a cache's account or container, or
+  expect deleted entries to linger there.
+- **Connections**: `url`; or `connection` with Azure's `connectionString`
+  (the portal's `DefaultEndpointsProtocol=…;AccountName=…;AccountKey=…`, or
+  `BlobEndpoint=…`, or `UseDevelopmentStorage=true` for a local Azurite) and
+  a `container`, or with `accountName`, `accountKey`, `container` and an
+  `endpoint` (default `https://<accountName>.blob.core.windows.net`); the URL
+  wins over the fields, which win over the connection string. **Shared Key
+  only**: a SAS token and Microsoft Entra ID are not supported yet. The
+  container must exist (the driver never creates one); `connect()` names it
+  when it is missing. There is nothing to close.
+- **No retries of its own**: a throttled request (503 `ServerBusy`) fails, and
+  the cache's [failure policy](#the-failure-policy) takes over. A conditional
+  write is never retried blindly, since one that landed but whose answer was
+  lost would be applied twice.
+- **Tested against Azurite 3.37.0** (`bun scripts/setup-databases.ts`), which
+  checks the signatures and honours every condition the driver uses; **real
+  Azure is untested**. Azurite does not enforce Azure's 15-minute limit on a
+  request's age. An entry holds up to 5000 MiB less a MiB (one Put Blob); the
+  core's `maxEntryBytes` (4 MiB) applies first.
 
 ## HTTP response caching
 

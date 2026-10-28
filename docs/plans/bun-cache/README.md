@@ -978,6 +978,133 @@ writes the first SigV4 signer. What it does, and where it departs from §7.8:
 [`evidence/encryption/`](evidence/encryption/README.md). It proposes PR-Z1,
 PR-E1, PR-E2 and PR-E3, and awaits the user's answers to its §13.
 
+**Azure spike, 2026-10-28** (evidence
+[`evidence/azure-spike.md`](evidence/azure-spike.md), `azure-spike/wire.ts`;
+Azurite 3.37.0, blob service only; **no Azure account, so real Azure is
+untested**): **Azurite covers both paths.** It checks Shared Key signatures (a
+wrong key answers 403), honours `If-None-Match: *` and `If-Match` on Put Blob
+and Delete Blob with Azure's documented codes — a create-only write that
+loses answers **409 `BlobAlreadyExists`**, not 412; a stale `If-Match` 412
+`ConditionNotMet`; Delete Blob 202 or 404 — and picks exactly one winner of
+5 and of 50 concurrent conditional writers, in milliseconds (no SeaweedFS-style
+serialisation). Lease Blob is emulated whole: acquire, renew, release, break
+(with a period), change, the 15–60 s or infinite range (5, 14, 61 → 400), the
+conflicts (409 `LeaseAlreadyPresent`, `LeaseIdMismatchWithLeaseOperation`;
+412 `LeaseIdMissing` for a write without the id), one winner of 50
+acquirers, and a 15 s lease lapsing at 15.14–15.16 s. List Blobs pages by
+`NextMarker` and carries each blob's `Content-Type` **with its parameters**
+and an unquoted ETag that `If-Match` accepts; `Last-Modified` has whole
+seconds. What Azurite does not emulate: Azure's 15-minute limit on a
+request's age (a 20-minute-old signature passes), the GUID rule for lease ids
+(`owner-1` is accepted), and any `x-ms-version` newer than it knows (400).
+
+**PR-C8 built 2026-10-28** (branch `feat/bun-cache-c8-azure`, on develop
+`251a64f1`, after PR-C7 #560): `azureBlobDriver` (approved name) over `fetch`
+with its own Shared Key signer, and Azurite in `setup-databases.ts`. What it
+does, and where it departs from the S3 driver it mirrors:
+
+- **One format with S3**: the S3 driver's frame, `Content-Type` scheme
+  (`application/x-bun-cache[-counter|-stamp|-lock]; exp=…; at=…`), stamp and
+  lock bodies and namespace segment moved into `lib/drivers/blob-frame.ts`,
+  which both drivers import (the S3 file unchanged after the move: 45 pass,
+  5 skip). Layout `<p>/<ns>/{e/<hh>/,s/,l/}<sha256>` in one blob container,
+  prefix `bun-cache`.
+- **`lib/drivers/azure-sign.ts`**: the 2009-09-19-and-later string to sign
+  (verb, eleven standard headers with `Content-Length` empty at zero, the
+  `x-ms-*` headers, `/<account><path>` and the sorted, decoded query), HMAC
+  under the base64-decoded key, `x-ms-version: 2025-01-05`; bodies sent as
+  bytes so `fetch` adds no unsigned `Content-Type`. Microsoft publishes no
+  worked signature with a key, so the tests check the **documented strings to
+  sign and canonicalized resources** (Get Container Metadata, Create Container
+  with `Content-Length: 0`, the multi-valued `include`, the secondary
+  endpoint, the emulator's doubled account), an independent `node:crypto`
+  HMAC, and Azurite's verifier.
+- **Counters and locks on conditional writes, not leases**: increments
+  batched per key in a process (one compare-and-swap per batch; 200
+  unbatched contenders lost ~2,400 races on Azurite), locks read first,
+  created with `If-None-Match: *`, refreshed or taken over with `If-Match`,
+  released by a conditional Delete Blob, queued per lock blob in a process. A
+  lease's 15–60 s range cannot express the cache's lock TTL (1 s up; the
+  kit's lapsed-lock cases use tens of ms).
+- **Departures from S3, each because Azure allows it**: `delete` is one
+  request per key (202/404; S3 needs a `HEAD`); the sweeper reads kind,
+  expiry and write time **from the listing alone** (no `HEAD`s, no memo, no
+  ranged-`GET` fallback) and deletes with `If-Match` on the listed ETag; the
+  lazy delete of an expired entry is conditional on the ETag it read (S3's is
+  plain, losing a write that lands in between — a tested control here); no
+  `conditionalWrites` option and no probe (Azure's API has always honoured
+  the conditions, and there is no credential-less client); no `client`
+  option (there is no Bun client); no retries (a conditional write retried
+  after a lost answer would apply twice). `maxEntries`/`maxBytes` as S3
+  (oldest `at` first, entries only); cap evictions not reported through
+  `onEviction`, as S3.
+- **Connections**: `url` `azure://<accountName>:<accountKey>@<host>[:<port>][/<path>]/<container>[?scheme=http]`
+  (the blob endpoint is everything before the last path segment, so
+  Azurite's path-style `…/devstoreaccount1/<container>` and Azure's
+  `<account>.blob.core.windows.net/<container>` read alike), or `connection`
+  (`AzureBlobConnection`: `connectionString` — Azure's own, including
+  `UseDevelopmentStorage=true`; SAS refused — `accountName`, `accountKey`,
+  `endpoint`, `container`); the URL wins over the fields, which win over the
+  string. Shared Key only (SAS and Entra ID not built). The container must
+  exist; `connect()` names a missing one.
+- **`setup-databases.ts`**: service `azure`, container-only, `bun-cache-azurite`
+  on `127.0.0.1:10000`, `mcr.microsoft.com/azure-storage/azurite:3.37.0
+  azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data`,
+  `--ulimit nofile=65536:65536` (65536 measured inside), no bind mount; the
+  blob container `bun-cache-test` made in `initContainer` by a Shared Key
+  `PUT` (201, or 409 `ContainerAlreadyExists`); readiness is Get Container
+  Properties. `--print-env` prints
+  `BUN_CACHE_TEST_AZURE_URL=azure://devstoreaccount1:<key, percent-encoded>@127.0.0.1:10000/devstoreaccount1/bun-cache-test?scheme=http`
+  (Azurite's published development account; no `BUN_JOBS_TEST_*` fallback:
+  bun-jobs has no Azure driver). Created here on the first run; a second
+  run reports it set up.
+- **Tests** (`__tests__/drivers/azure.test.ts`): the signer, the URL,
+  connection-string and option rules and the listing parser without a
+  server; on `BUN_CACHE_TEST_AZURE_URL` the kit with its two-process pass and
+  22 specifics, blobs under `bun-cache-test/<pid>-<time>/…` deleted by exact
+  prefix (the container measured empty after runs). Unset: a visible skip; set
+  and unreachable: one named failure. The file: 49 pass, 5 skip (the
+  unadvertised `tags.index`, fence and bus cases), 0 fail.
+- **Negative controls**, each failing its test (1–4 fails): unsorted query
+  names; `Content-Length: 0` signed as `0`; query values not decoded (these
+  three also turn the live suite into the named unreachable failure: Azurite
+  refuses the signature); a lock created without `If-None-Match`; a takeover
+  without `If-Match`; `increment` without a condition; a batch handing every
+  caller the final value; the lazy delete without its ETag; the sweeper's
+  delete without its ETag; caps newest first; caps counting counters; caps by
+  `Last-Modified` instead of `at`; a release without the owner check; stamps
+  last-writer-wins; the sweeper skipping stamps and locks; the sweep `limit`
+  ignored; no `NextMarker` loop; `delete` counting a 404; no entity decoding;
+  no dot-segment escape; a lapsed counter kept; `clear` taking stamps and
+  locks; `touch` keeping the old type; `clear` re-listing from the start until
+  empty, which never finishes past a blob it cannot delete (one leased by
+  someone else: 412) — `clear` now pages by marker. In the script: the account once in the
+  resource, any 409 taken as created, no Azure cache line, a `/tmp` location,
+  the key used as text.
+- **New names, awaiting the user's approval** (not in §21):
+  `AzureBlobDriverOptions` and its options `url`, `connection`, `prefix`,
+  `maxEntries`, `maxBytes`; `AzureBlobConnection` (`connectionString`,
+  `accountName`, `accountKey`, `endpoint`, `container`); the `azure://` URL
+  form and its `scheme` parameter; the driver's `name` `"azure-blob"`;
+  `BUN_CACHE_TEST_AZURE_URL` (§21 has `BUN_CACHE_TEST_<X>_URL`), the
+  container `bun-cache-azurite` and the blob container `bun-cache-test`.
+- **Gate** (Bun 1.4.4-canary.1+a0cc096ce, Azurite 3.37.0, every test URL set
+  — Redis, Postgres, MySQL, MariaDB, MongoDB, the replica set, S3, Azure; on
+  develop `251a64f1`): bun-cache `bun run test:timings` 767 pass, 41 skip,
+  0 fail (`bun-timings.json` refreshed; `azure.test.ts` ~3.8 s);
+  `--randomize --seed=2` 767 pass, 41 skip, 0 fail; `--seed=1` and `=3` each
+  failed once, in the MongoDB replica set's "history is lost" bus case (a 5 s
+  wait for the gap, at a load of ~8 from other sessions; code this PR does not
+  touch), which passed alone 3 of 3 and in the first round's same seeds, and
+  both seeds re-run clean, 767 pass, 41 skip, 0 fail; the Azure file 49 pass,
+  5 skip; the S3 file after the move 45 pass, 5 skip; check 173 files clean,
+  lint 0 errors (no warnings in the new files), format clean;
+  `bun scripts/typecheck.ts` 21 projects clean; consumer-check 60/60 cells,
+  10/10 runtime imports; scripts lint 0 errors, format clean, tests 191 pass;
+  root format check 2178 files; `examples/bun-cache` 15 passed, 5 skipped on
+  memory, and `04-drivers/s3.ts` on SeaweedFS 35 checks passed. The container
+  measured empty after every run.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -2222,6 +2349,7 @@ template.
 | MongoDB | TTL index (60 s monitor [M]) + lazy | `$inc` | `findOneAndUpdate` | index, check-then-write fence | change stream or tailable capped collection | 16 MB document [W] | `mongodb` (optional peer) |
 | Redis | native `PXAT` | `INCRBY` | `SET NX PX` + compare-and-delete | index, atomic fence (Lua) | pub/sub [M] | 512 MB string [W] | — (`RedisClient`) |
 | S3 | lazy + sweep (+ bucket lifecycle) | **no** | **no** (maybe conditional `PUT` [U]) | stamps, checked on read | none | 5 GB single `PUT` [W] | — (`S3Client`) |
+| Azure Blob Storage (PR-C8) | lazy + sweep (+ lifecycle management rule) | compare-and-swap (`If-Match`) [M] | conditional Put Blob, compare-and-delete [M] (not leases: 15–60 s) | stamps, checked on read | none | 5000 MiB single Put Blob [W] | — (`fetch`, Shared Key) |
 | custom | declared | declared | declared | declared | declared | declared | theirs |
 
 ---
