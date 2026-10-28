@@ -692,6 +692,12 @@ the driver's bus — no second copy. What it does, and where it departs from
   `firstConnectTimeout`, `connectionTimeout`, `maxRetries`, `autoReconnect`
   (`url`/`connection` as on SQL).
 
+**MongoDB replica set (2026-10-28)**: `scripts/setup-databases.ts` runs a
+single-node replica set (`bun-cache-mongodb-rs`, `mongo:7`, 27018, test
+commands on) and `--print-env` names it `BUN_CACHE_TEST_MONGODB_RS_URL`, so
+`mongodb.test.ts` runs its whole suite there too and the change-stream bus,
+resume and gap are tested routinely rather than on a temporary container.
+
 **PR-C6 built 2026-10-28** (branch `feat/bun-cache-c6-mongodb`):
 `mongoDriver` (§7.6), `lib/drivers/mongo.ts`, root-exported with the types
 `MongoDriverOptions`, `MongoCacheCollection` and `MongoClientLike`.

@@ -100,6 +100,26 @@ export function mongoBackend(): {
   };
 }
 
+/**
+ * The single-node MongoDB replica set the change-stream bus is tested on
+ * (`mongodb.test.ts` runs its whole suite there too): only
+ * `BUN_CACHE_TEST_MONGODB_RS_URL`, with no bun-jobs fallback, because bun-jobs
+ * has no replica set. `bun scripts/setup-databases.ts` provides it (a docker
+ * container on 27018). The same rules as {@link mongoBackend}: unset skips
+ * visibly, set but unreachable fails.
+ */
+export function mongoRsBackend(): {
+  /** The variable that points at it. */
+  variable: string;
+  /** The URL, when one is set. */
+  url: string | undefined;
+} {
+  return {
+    variable: "BUN_CACHE_TEST_MONGODB_RS_URL",
+    url: process.env.BUN_CACHE_TEST_MONGODB_RS_URL || undefined,
+  };
+}
+
 /** The run's table prefix: its own tables, dropped by {@link dropTables}. */
 export function runPrefix(suffix = ""): string {
   return `bun_cache_test_${process.pid}_${suffix}`;

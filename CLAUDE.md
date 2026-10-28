@@ -362,7 +362,13 @@ looks like a MySQL one.
 and skips visibly with none (a set but unreachable URL fails). bun-cache's own
 suites read `BUN_CACHE_TEST_POSTGRES_URL`, `…_MYSQL_URL` and `…_MARIADB_URL`
 (database `bun_cache_test`; `bun scripts/setup-databases.ts --print-env`
-prints them), falling back to the `BUN_JOBS_TEST_*_URL`s.
+prints them), falling back to the `BUN_JOBS_TEST_*_URL`s. Its MongoDB suite
+runs a second time on `BUN_CACHE_TEST_MONGODB_RS_URL`, a single-node replica
+set (`rs0`) that `setup-databases.ts` runs as its own docker container,
+`bun-cache-mongodb-rs`, on 27018 (always docker, even without `--docker`;
+`mongo:7`, test commands on): that is where the change-stream bus and its
+resume and gap cases run, since the standalone server on 27017 refuses change
+streams. The variable has no bun-jobs fallback.
 
 **A sweep needs the URLs as well as the driver, on every backend including
 `memory`.** Three examples name a server of their own whatever `EXAMPLE_DRIVER`

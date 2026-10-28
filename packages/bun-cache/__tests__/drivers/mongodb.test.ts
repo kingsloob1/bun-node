@@ -1,7 +1,8 @@
 /**
  * The MongoDB driver (plan §7.6): the conformance kit — with its two-process
  * pass and the bus-gap case — plus the behaviours specific to MongoDB, on the
- * server `BUN_CACHE_TEST_MONGODB_URL` (or `BUN_JOBS_TEST_MONGODB_URL`) names.
+ * server `BUN_CACHE_TEST_MONGODB_URL` (or `BUN_JOBS_TEST_MONGODB_URL`) names, and
+ * again on the replica set `BUN_CACHE_TEST_MONGODB_RS_URL` names.
  *
  * The bus reads a change stream on a replica set and a tailable cursor on a
  * standalone server; the bus cases run in every mode the server has (a
@@ -26,7 +27,7 @@ import {
   MongoCacheDriver,
 } from "../../lib/drivers/mongo";
 import { runCacheDriverConformance } from "../../lib/testing/index";
-import { mongoBackend, runPrefix } from "./backends";
+import { mongoBackend, mongoRsBackend, runPrefix } from "./backends";
 
 describe("drift: bun-cache's copied databaseFromUrl behaves like bun-jobs'", () => {
   test("the same database for every URL shape", () => {
@@ -45,7 +46,15 @@ describe("drift: bun-cache's copied databaseFromUrl behaves like bun-jobs'", () 
   });
 });
 
-const backend = mongoBackend();
+/**
+ * The servers this file runs against: the standalone one (the bus tails a
+ * capped collection) and the replica set (the bus reads a change stream, and
+ * both modes are tested there). Each is its own suite, titled by `label`.
+ */
+const backends = [
+  { label: "mongodb", ...mongoBackend() },
+  { label: "mongodb-rs", ...mongoRsBackend() },
+];
 
 /** An entry for the specifics. */
 function entry(
@@ -86,29 +95,31 @@ async function reachError(url: string): Promise<Error | undefined> {
   }
 }
 
-if (backend.url === undefined) {
-  describe.skip("backend mongodb: not configured", () => {
-    it(`set ${backend.variable} (bun scripts/setup-databases.ts --print-env) to run it`, () => {});
-  });
-} else {
-  const unreachable = await reachError(backend.url);
-  if (unreachable !== undefined) {
-    // bun-jobs' `reportUnreachable`, as the SQL suites have it.
-    describe("backend mongodb: unreachable", () => {
-      it(`connects to the server ${backend.variable} points at`, () => {
-        throw new Error(
-          `${backend.variable} (or its BUN_JOBS_TEST_* fallback) is set, but the mongodb server it names could not be reached, so every mongodb test would have been skipped and the run would still have been green. Start the server (bun scripts/setup-databases.ts), fix the URL, or unset the variable to skip mongodb deliberately.\n  ${unreachable.message}`,
-          { cause: unreachable },
-        );
-      });
+for (const backend of backends) {
+  if (backend.url === undefined) {
+    describe.skip(`backend ${backend.label}: not configured`, () => {
+      it(`set ${backend.variable} (bun scripts/setup-databases.ts --print-env) to run it`, () => {});
     });
   } else {
-    await registerMongoSuite(backend.url);
+    const unreachable = await reachError(backend.url);
+    if (unreachable !== undefined) {
+      // bun-jobs' `reportUnreachable`, as the SQL suites have it.
+      describe(`backend ${backend.label}: unreachable`, () => {
+        it(`connects to the server ${backend.variable} points at`, () => {
+          throw new Error(
+            `${backend.variable} (or its BUN_JOBS_TEST_* fallback) is set, but the ${backend.label} server it names could not be reached, so every ${backend.label} test would have been skipped and the run would still have been green. Start the server (bun scripts/setup-databases.ts), fix the URL, or unset the variable to skip ${backend.label} deliberately.\n  ${unreachable.message}`,
+            { cause: unreachable },
+          );
+        });
+      });
+    } else {
+      await registerMongoSuite(backend.url, backend.label);
+    }
   }
 }
 
 /** Registers the whole suite against a reachable server. */
-async function registerMongoSuite(url: string): Promise<void> {
+async function registerMongoSuite(url: string, label: string): Promise<void> {
   const raw = new MongoClient(url);
   await raw.connect();
   const db = raw.db(databaseFromUrl(url) ?? "bun_cache");
@@ -174,7 +185,7 @@ async function registerMongoSuite(url: string): Promise<void> {
   // server reports (`maxEntryBytes`).
   await kitDriver.connect!();
   await runCacheDriverConformance(
-    "mongodb",
+    label,
     () => ({ driver: kitDriver, cleanup: async () => await kitDriver.close() }),
     {
       crossProcess: {
@@ -191,7 +202,7 @@ async function registerMongoSuite(url: string): Promise<void> {
     },
   );
 
-  describe("mongodb collection names and schema sync", () => {
+  describe(`${label} collection names and schema sync`, () => {
     test("names its collections by prefix or outright: a `collections` name is used as given", async () => {
       const entries = named("legacy_docs");
       const options = { collections: { entries } };
@@ -336,7 +347,7 @@ async function registerMongoSuite(url: string): Promise<void> {
     });
   });
 
-  describe("mongodb maxEntries (§3.9)", () => {
+  describe(`${label} maxEntries (§3.9)`, () => {
     /** The entries left in a prefix's collection, `ns:k`, sorted (counters excluded). */
     const keysIn = async (value: string): Promise<string[]> =>
       (
@@ -512,7 +523,7 @@ async function registerMongoSuite(url: string): Promise<void> {
     });
   });
 
-  describe("mongodb specifics", () => {
+  describe(`${label} specifics`, () => {
     const driver = make("spec_");
     const ns = `spec-${process.pid}`;
 
@@ -769,7 +780,7 @@ async function registerMongoSuite(url: string): Promise<void> {
   });
 
   for (const mode of busModes) {
-    describe(`mongodb bus (${mode})`, () => {
+    describe(`${label} bus (${mode})`, () => {
       test("a second driver instance receives what the first publishes; two collection sets are two buses", async () => {
         const a = make("bus_", { busMode: mode });
         const b = make("bus_", { busMode: mode });

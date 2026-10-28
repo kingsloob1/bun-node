@@ -1078,6 +1078,13 @@ it on connect, as on the SQL drivers.
   less 64 KiB, read on connect as `capabilities.maxEntryBytes`. The server
   must be MongoDB 4.2 or later (the counter's update pipeline, unbounded
   index keys); the suite runs on 7.0, standalone and as a replica set.
+  **Testing**: `mongodb.test.ts` runs its whole suite against
+  `BUN_CACHE_TEST_MONGODB_URL` (a standalone server: the tailable bus) and
+  again against `BUN_CACHE_TEST_MONGODB_RS_URL` (a single-node replica set:
+  the change-stream bus, both modes, resume and gap). `bun
+  scripts/setup-databases.ts` starts the replica set as a docker container
+  on 27018 and `--print-env` prints both URLs. An unset variable skips its
+  suite visibly; one set but unreachable fails.
 
 ## HTTP response caching
 
