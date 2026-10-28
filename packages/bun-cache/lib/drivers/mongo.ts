@@ -1404,18 +1404,18 @@ export class MongoCacheDriver implements CacheDriver {
   }
 
   /**
-   * Opens a change stream on the bus collection: after `resumeAfter` (the
-   * token a lost stream had read up to), or else at the server's operation
-   * time now — so a message published once `subscribe` has resolved is in
-   * it, however long the stream takes to establish. The client itself
-   * resumes across the errors it labels resumable.
+   * Opens a change stream on the bus collection: from `from` (where a lost
+   * stream had got to, its {@link BusSource.resumeFrom}), or else at the
+   * server's operation time now — so a message published once `subscribe`
+   * has resolved is in it, however long the stream takes to establish. The
+   * client itself resumes across the errors it labels resumable.
    */
   async #openStream(
     bus: CollectionLike<BusDoc>,
-    resumeAfter?: unknown,
+    from?: DocLike,
   ): Promise<BusSource> {
-    let start: DocLike = { resumeAfter };
-    if (resumeAfter === undefined) {
+    let start = from;
+    if (start === undefined) {
       const { operationTime } = await (await this.#db()).command({ ping: 1 });
       start =
         operationTime === undefined
@@ -1433,20 +1433,28 @@ export class MongoCacheDriver implements CacheDriver {
       ],
       { maxAwaitTimeMS: BUS_AWAIT_MS, ...start },
     );
-    let token = resumeAfter;
+    // Where this stream has got to: the token of the last change or batch it
+    // answered, else the point it opened at. A read that fails still reads
+    // the token, since one read is the aggregate and a getMore together: when
+    // the getMore fails, the aggregate's batch token is already there.
+    let token: unknown;
+    const opened = Object.keys(start).length === 0 ? undefined : start;
     return {
       source: stream,
       next: async () => {
-        const change = await stream.tryNext();
-        token = stream.resumeToken ?? token;
-        return change === null
-          ? stream.closed
-            ? "closed"
-            : null
-          : (change.fullDocument as BusDoc);
+        try {
+          const change = await stream.tryNext();
+          return change === null
+            ? stream.closed
+              ? "closed"
+              : null
+            : (change.fullDocument as BusDoc);
+        } finally {
+          token = stream.resumeToken ?? token;
+        }
       },
       lastTs: () => undefined,
-      resumeToken: () => token,
+      resumeFrom: () => (token === undefined ? opened : { resumeAfter: token }),
     };
   }
 
@@ -1487,7 +1495,7 @@ export class MongoCacheDriver implements CacheDriver {
         return doc;
       },
       lastTs: () => lastTs,
-      resumeToken: () => undefined,
+      resumeFrom: () => undefined,
     };
   }
 
@@ -1538,15 +1546,14 @@ export class MongoCacheDriver implements CacheDriver {
             // When it cannot — the history is gone, the token is unusable,
             // the stream was invalidated (its collection dropped) — the
             // stream starts again from now, and the stretch between is a gap.
-            const token = current.resumeToken();
+            // A stream lost before its first read answered resumes from the
+            // point it opened at.
+            const from = current.resumeFrom();
             const resumable =
               lost !== undefined &&
-              token !== undefined &&
+              from !== undefined &&
               !CHANGE_STREAM_FATAL.has(codeOf(lost) ?? 0);
-            current = await this.#openStream(
-              bus,
-              resumable ? token : undefined,
-            );
+            current = await this.#openStream(bus, resumable ? from : undefined);
             subscription.source = current.source;
             if (!resumable) {
               onGap();
@@ -1600,8 +1607,13 @@ interface BusSource {
   next: () => Promise<BusDoc | null | "closed">;
   /** The tailing cursor's last timestamp read (`undefined` for a change stream). */
   lastTs: () => unknown;
-  /** The change stream's resume token (`undefined` for a tailing cursor, or before the stream has answered). */
-  resumeToken: () => unknown;
+  /**
+   * Where a change stream resumes from: `{ resumeAfter }` with the token of
+   * the last change or batch it answered, else the `startAtOperationTime` it
+   * opened at. `undefined` for a tailing cursor, or a stream opened with
+   * neither.
+   */
+  resumeFrom: () => DocLike | undefined;
 }
 
 /**

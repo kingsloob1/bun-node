@@ -15,7 +15,14 @@
  * URL is set but unreachable fails, naming the variable.
  */
 import process from "node:process";
-import { afterAll, describe, expect, it, test } from "bun:test";
+import {
+  afterAll,
+  describe,
+  expect,
+  it,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import { MongoClient } from "mongodb";
 import * as jobsConnection from "../../../bun-jobs/lib/shared/connection";
 import type { BusMessage, StoredEntry } from "../../lib/index";
@@ -28,6 +35,14 @@ import {
 } from "../../lib/drivers/mongo";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import { mongoBackend, mongoRsBackend, runPrefix } from "./backends";
+
+// Every case here is a fixed amount of work against a server other runs
+// share, and none asserts on how long it takes: a wait that matters names
+// what never came, with its own bound. bun:test's 5 s was a deadline they
+// were never meant to meet under load. Measured with 8 copies of this file
+// on one server at loads of 25-65: two processes sweeping 15.9 s, the fence
+// race 15.2 s, and a second process's start alone past 5 s.
+setDefaultTimeout(30_000);
 
 describe("drift: bun-cache's copied databaseFromUrl behaves like bun-jobs'", () => {
   test("the same database for every URL shape", () => {
@@ -125,12 +140,18 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
   const db = raw.db(databaseFromUrl(url) ?? "bun_cache");
   const hello = await db.command({ hello: 1 });
   const replicaSet = typeof hello.setName === "string";
-  /** Whether the server takes `configureFailPoint` (test commands on). */
+  /**
+   * Whether the server takes `configureFailPoint` (test commands on). Read,
+   * never probed by configuring one: `failCommand` is one fail point for the
+   * whole server, so setting it here, even `mode: "off"`, would disarm the
+   * one another run of this file (another copy's, another worktree's) has
+   * just armed.
+   */
   const failPoints = await raw
     .db("admin")
-    .command({ configureFailPoint: "failCommand", mode: "off" })
+    .command({ getParameter: 1, enableTestCommands: 1 })
     .then(
-      () => true,
+      (reply) => reply.enableTestCommands === true,
       () => false,
     );
   const busModes: ("change-stream" | "tailable")[] = replicaSet
@@ -166,17 +187,27 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
     return driver;
   };
 
-  afterAll(async () => {
-    // `close` is idempotent, so the ones a test closed are no-ops.
-    await Promise.all(made.map(async (driver) => await driver.close()));
-    for (const name of owned) {
-      await db
-        .collection(name)
-        .drop()
-        .catch(() => undefined);
-    }
-    await raw.close();
-  });
+  afterAll(
+    async () => {
+      // `close` is idempotent, so the ones a test closed are no-ops.
+      await Promise.all(made.map(async (driver) => await driver.close()));
+      // Side by side: one at a time, the hundred-odd drops took past
+      // bun:test's 5 s with 8 copies of this file on one loaded server, and
+      // the hook was cut short with collections still there (side by side:
+      // at most 1.1 s, measured the same way).
+      await Promise.all(
+        [...owned].map(
+          async (name) =>
+            await db
+              .collection(name)
+              .drop()
+              .catch(() => undefined),
+        ),
+      );
+      await raw.close();
+    },
+    { timeout: 30_000 },
+  );
 
   // The kit, on its own collections.
   const kitOptions = { url, prefix: prefix("kit_") };
@@ -620,6 +651,9 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
       // invalidation of its tag. Whichever lands first, nothing may be left:
       // either the write was fenced (or took itself back), or the
       // invalidation deleted it.
+      // Its own driver: the cases after this one patch `driver`'s methods,
+      // and a round still in flight here must never call into a patch.
+      const racer = make("specrace_");
       const raceNs = `race-${process.pid}`;
       const survivors: number[] = [];
       for (let round = 0; round < 60; round++) {
@@ -627,20 +661,21 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
         const tag = `t${round}`;
         const startedAt = Date.now() - 1;
         await Promise.all([
-          driver.set(raceNs, entry(key, [1], [tag]), {
+          racer.set(raceNs, entry(key, [1], [tag]), {
             tags: [tag],
             createdAt: startedAt,
           }),
           (async () => {
             await Bun.sleep(round % 3);
-            await driver.deleteByTags(raceNs, [tag], Date.now() + 60_000);
+            await racer.deleteByTags(raceNs, [tag], Date.now() + 60_000);
           })(),
         ]);
-        if ((await driver.get(raceNs, key)) !== undefined) {
+        if ((await racer.get(raceNs, key)) !== undefined) {
           survivors.push(round);
         }
       }
       expect(survivors).toEqual([]);
+      await racer.close();
     });
 
     test("an invalidation between the fence's check and its write: the write takes itself back", async () => {
@@ -960,6 +995,9 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
           // Another process overwrites the 4 KiB collection many times over
           // while this one's event loop is blocked (spawnSync), so the
           // cursor's place is gone by its next getMore: CappedPositionLost.
+          // One bulk write, one command: 400 upserts one at a time each
+          // waited for the replica set's journal, and took 17-20 s of the
+          // case's 20 s with 8 copies of this file on one loaded server.
           const burst = Bun.spawnSync({
             cmd: [
               process.execPath,
@@ -968,9 +1006,7 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
                const c = new MongoClient(${JSON.stringify(url)});
                await c.connect();
                const bus = c.db(${JSON.stringify(db.databaseName)}).collection(${JSON.stringify(`${runPrefix("busrun_")}bus`)});
-               for (let i = 0; i < 400; i++) {
-                 await bus.updateOne({ _id: "burst-" + i }, { $setOnInsert: { m: { type: "clear", namespace: "burst", at: i } }, $currentDate: { ts: { $type: "timestamp" } } }, { upsert: true });
-               }
+               await bus.bulkWrite(Array.from({ length: 400 }, (_, i) => ({ updateOne: { filter: { _id: "burst-" + i }, update: { $setOnInsert: { m: { type: "clear", namespace: "burst", at: i } }, $currentDate: { ts: { $type: "timestamp" } } }, upsert: true } })));
                await c.close();`,
             ],
             cwd: new URL("../..", import.meta.url).pathname,
@@ -989,9 +1025,57 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
 
       if (mode === "change-stream") {
         (failPoints ? test : test.skip)(
+          `a stream lost on its very first read resumes from where it opened: no gap${failPoints ? "" : " — skipped: the server's test commands are off (configureFailPoint)"}`,
+          async () => {
+            // The first read is the stream's aggregate and its first getMore
+            // in one call, so a loss there comes before any read has
+            // answered. It must resume from where the stream opened (or the
+            // token the aggregate left), not restart from now with a gap.
+            // Armed before subscribing, for this driver's client alone: an
+            // error the client does not resume over itself (BadValue), so
+            // the driver's own resume is what is tested.
+            const appName = runPrefix("busfirst");
+            const bus = make("busfirst_", {
+              busMode: mode,
+              clientOptions: { appName },
+            });
+            const writer = make("busfirst_", { busMode: mode });
+            let gaps = 0;
+            const received: string[] = [];
+            await raw.db("admin").command({
+              configureFailPoint: "failCommand",
+              mode: { times: 1 },
+              data: { failCommands: ["getMore"], errorCode: 2, appName },
+            });
+            const unsubscribe = await bus.subscribe(
+              (message) => {
+                received.push(message.namespace);
+              },
+              () => {
+                gaps++;
+              },
+            );
+            await writer.publish({ type: "clear", namespace: "one", at: 0 });
+            await waitFor("the message", () => received.includes("one"));
+            await writer.publish({ type: "clear", namespace: "two", at: 1 });
+            await waitFor("the next message", () => received.includes("two"));
+            expect(received).toEqual(["one", "two"]);
+            expect(gaps).toBe(0);
+            await unsubscribe();
+            await Promise.all([bus.close(), writer.close()]);
+          },
+        );
+
+        (failPoints ? test : test.skip)(
           `a change stream whose history is lost reports a gap, then delivers again${failPoints ? "" : " — skipped: the server's test commands are off (configureFailPoint)"}`,
           async () => {
-            const bus = make("bushist_", { busMode: mode });
+            // Its own client name, so the fail point below fails this
+            // driver's getMore and no other run's.
+            const appName = runPrefix("bushist");
+            const bus = make("bushist_", {
+              busMode: mode,
+              clientOptions: { appName },
+            });
             let gaps = 0;
             const received: string[] = [];
             const unsubscribe = await bus.subscribe(
@@ -1007,13 +1091,37 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
               received.includes("first"),
             );
             // ChangeStreamHistoryLost: not resumable, so the client gives up
-            // and the driver must reopen and say so.
-            await raw.db("admin").command({
-              configureFailPoint: "failCommand",
-              mode: { times: 1 },
-              data: { failCommands: ["getMore"], errorCode: 286 },
-            });
-            await waitFor("the gap", () => gaps > 0, 10_000);
+            // and the driver must reopen and say so. The fail point is one
+            // per server, shared with every other run on it, and the last to
+            // configure it wins. So it names this driver's client; a publish
+            // ends the getMore in flight, so the next one (the one that
+            // fails) follows in milliseconds rather than after the driver's
+            // 1 s await; and it is armed again while no gap has come, in
+            // case another run replaced it in between.
+            const gapped = (): boolean => gaps > 0;
+            const deadline = Date.now() + 15_000;
+            let armed = 0;
+            while (!gapped()) {
+              if (Date.now() > deadline) {
+                throw new Error(
+                  `Timed out waiting for: the gap (fail point armed ${armed} times)`,
+                );
+              }
+              await raw.db("admin").command({
+                configureFailPoint: "failCommand",
+                mode: { times: 1 },
+                data: { failCommands: ["getMore"], errorCode: 286, appName },
+              });
+              await bus.publish({
+                type: "clear",
+                namespace: `nudge-${armed++}`,
+                at: 0,
+              });
+              const since = Date.now();
+              while (!gapped() && Date.now() - since < 2_000) {
+                await Bun.sleep(10);
+              }
+            }
             await bus.publish({ type: "clear", namespace: "later", at: 1 });
             await waitFor("delivery after the gap", () =>
               received.includes("later"),
@@ -1021,7 +1129,10 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
             await unsubscribe();
             await bus.close();
           },
-          20_000,
+          // Past the 15 s of re-arming and the 5 s wait for delivery, so the
+          // failure names what never came. Measured with 8 and 12 copies of
+          // this file on one server: the gap within 4.1 s (at most 3 arms).
+          30_000,
         );
       }
     });

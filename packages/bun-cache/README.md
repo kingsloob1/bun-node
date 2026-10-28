@@ -1185,7 +1185,8 @@ it on connect, as on the SQL drivers.
 - **The bus** is a capped collection (`busSize`, 16 MiB by default when the
   driver creates it; an existing one must be capped). On a **replica set** or
   through `mongos` subscribers read a **change stream**, resumed from its
-  token after a resumable loss (a killed cursor, a dropped connection), so
+  token after a resumable loss (a killed cursor, a dropped connection), or
+  from where it opened when it was lost before its first read answered, so
   nothing is missed; a stream whose history is gone, or that was invalidated
   (the collection dropped), starts again from now and reports a **gap**. On
   a **standalone** server, which refuses change streams, subscribers tail

@@ -244,6 +244,16 @@ async function startWorker(job: {
   };
 }
 
+/**
+ * How long a case that starts a second process may take, ms. Most of it is
+ * the worker's start (a fresh `bun`, the driver's module, a connection):
+ * well under a second on a quiet machine, but past bun:test's default 5 s
+ * with the machine's load at 60 (measured, 8 copies of the MongoDB suite at
+ * once beside other runs). Timed out, the case's worker is killed with the
+ * one the next case starts, so one slow start failed the cases after it too.
+ */
+const CROSS_PROCESS_TIMEOUT_MS = 30_000;
+
 /** Runs a started worker to completion right away (no side of the caller's to overlap). */
 async function runWorker(
   job: Parameters<typeof startWorker>[0],
@@ -311,13 +321,15 @@ export async function runCacheDriverConformance(
 
     /**
      * Registers a case, or its visible skip: a capability the driver does not
-     * advertise, or a case the caller named in `options.skip`.
+     * advertise, or a case the caller named in `options.skip`. `timeoutMs` is
+     * the case's own bound, bun:test's default (5 s) when omitted.
      */
     function kase(
       id: string,
       title: string,
       advertised: boolean,
       run: () => void | Promise<void>,
+      timeoutMs?: number,
     ): void {
       const reason = skipped.get(id);
       if (reason !== undefined) {
@@ -328,7 +340,7 @@ export async function runCacheDriverConformance(
         test.skip(`${title} — skipped: not advertised in capabilities`, () => {});
         return;
       }
-      test(title, run);
+      test(title, run, timeoutMs);
     }
 
     const maxEntryBytes = Math.min(
@@ -696,6 +708,7 @@ export async function runCacheDriverConformance(
         expect(Math.max(...all)).toBe(200);
         expect(Math.min(...all)).toBe(1);
       },
+      CROSS_PROCESS_TIMEOUT_MS,
     );
 
     kase(
@@ -731,6 +744,7 @@ export async function runCacheDriverConformance(
           await driver.releaseLock!(namespace, "k", `c-${index}`);
         }
       },
+      CROSS_PROCESS_TIMEOUT_MS,
     );
 
     kase(
@@ -754,6 +768,7 @@ export async function runCacheDriverConformance(
         const stamps = await driver.getStamps(namespace, [tag]);
         expect(stamps.has(tag)).toBe(true);
       },
+      CROSS_PROCESS_TIMEOUT_MS,
     );
 
     kase(
