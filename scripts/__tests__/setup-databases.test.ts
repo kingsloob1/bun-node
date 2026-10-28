@@ -840,8 +840,13 @@ describe("bun-cache's database", () => {
     expect(PLANS.mysql.cacheUrl!(options)).toEndWith(
       "/bun_cache_test?allowPublicKeyRetrieval=true",
     );
-    expect(PLANS.redis.cacheEnvVar).toBeUndefined();
     expect(PLANS.mongodb.cacheEnvVar).toBeUndefined();
+  });
+
+  it("on Redis is bun-jobs' test database: a variable of its own, nothing to create", () => {
+    expect(PLANS.redis.cacheEnvVar).toBe("BUN_CACHE_TEST_REDIS_URL");
+    expect(PLANS.redis.cacheUrl).toBeUndefined();
+    expect(PLANS.redis.url(options)).toBe("redis://127.0.0.1:6379/15");
   });
 
   it("is created conditionally, and never dropped", () => {
@@ -895,6 +900,7 @@ describe("bun-cache's database", () => {
       .split("\n")
       .filter((line) => line.startsWith("export BUN_CACHE_TEST_"));
     expect(exports).toEqual([
+      "export BUN_CACHE_TEST_REDIS_URL=redis://127.0.0.1:6379/15",
       "export BUN_CACHE_TEST_POSTGRES_URL=postgres://bunjobs:bunjobs@127.0.0.1:5432/bun_cache_test",
       "export BUN_CACHE_TEST_MARIADB_URL=mariadb://bunjobs:bunjobs@127.0.0.1:3306/bun_cache_test",
       "export BUN_CACHE_TEST_MYSQL_URL=mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_cache_test?allowPublicKeyRetrieval=true",
