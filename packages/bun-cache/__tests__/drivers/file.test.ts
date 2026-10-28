@@ -7,7 +7,14 @@
  * Test data: one temporary directory per run, made by this file and deleted
  * by this file alone.
  */
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -36,7 +43,16 @@ await runCacheDriverConformance(
     },
     busGap: async () => {
       // Truncating the log is exactly what a compaction does to a subscriber
-      // whose offset is past the new end.
+      // whose offset is past the new end. The subscriber's offset must be
+      // past 0 first: when this case runs before anything was published
+      // (`--randomize --seed=3`), the log is empty, and truncating an empty
+      // log changes nothing a subscriber can see. So a line is appended and
+      // read (several 25 ms polls) before the truncation.
+      await appendFile(
+        join(dir, "bus.log"),
+        `${JSON.stringify({ type: "clear", namespace: "before-gap", at: 0 })}\n`,
+      );
+      await Bun.sleep(150);
       await writeFile(join(dir, "bus.log"), "");
     },
   },

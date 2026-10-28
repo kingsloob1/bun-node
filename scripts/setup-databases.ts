@@ -14,6 +14,10 @@ import process from "node:process";
  *     fails, so an existing database, user or password is left alone;
  *   - nothing is ever dropped, reset or overwritten.
  *
+ * Postgres, MariaDB and MySQL also get a database of bun-cache's own
+ * ({@link CACHE_DATABASE}, `BUN_CACHE_TEST_*_URL`), on the same server, user
+ * and password as bun-jobs', created only when connecting to it fails.
+ *
  * ```bash
  * bun scripts/setup-databases.ts              # install what is missing, configure what is not
  * bun scripts/setup-databases.ts --dry-run    # print the plan, change nothing
@@ -98,6 +102,14 @@ export const POSTGRES_CONTAINER_IMAGE = "postgres:16-alpine";
 export const POSTGRES_DATA_ROOT = "/var/lib/postgresql";
 
 /**
+ * The database bun-cache's SQL suites use on the Postgres, MariaDB and MySQL
+ * servers (`BUN_CACHE_TEST_*_URL`), beside bun-jobs' `bun_jobs_test`: same
+ * server, user and password, its own database, so neither package's test
+ * data can touch the other's.
+ */
+export const CACHE_DATABASE = "bun_cache_test";
+
+/**
  * The core count {@link MAX_CONNECTIONS} and {@link POSTGRES_MAX_CONNECTIONS}
  * were measured on. Every test suite runs `bun test --parallel`, one worker
  * per core, and each bun-jobs worker holds its own connections, so the
@@ -165,6 +177,8 @@ interface Options {
   password: string;
   /** Database this script creates. */
   database: string;
+  /** bun-cache's database on the SQL servers ({@link CACHE_DATABASE}). */
+  cacheDatabase: string;
   /** User this script creates. */
   user: string;
   /**
@@ -228,6 +242,7 @@ export function parseArgs(argv: string[]): Options {
     assumeYes: false,
     password: "bunjobs",
     database: "bun_jobs_test",
+    cacheDatabase: CACHE_DATABASE,
     user: "bunjobs",
     maxConnections: defaultMaxConnections(),
     postgresMaxConnections: defaultPostgresMaxConnections(),
@@ -267,6 +282,8 @@ export function parseArgs(argv: string[]): Options {
       options.password = arg.slice("--password=".length);
     } else if (arg.startsWith("--database=")) {
       options.database = arg.slice("--database=".length);
+    } else if (arg.startsWith("--cache-database=")) {
+      options.cacheDatabase = arg.slice("--cache-database=".length);
     } else if (arg.startsWith("--user=")) {
       options.user = arg.slice("--user=".length);
     } else if (arg.startsWith("--max-connections=")) {
@@ -296,7 +313,8 @@ export function parseArgs(argv: string[]): Options {
 /** Prints usage. */
 function printHelp(): void {
   console.log(`
-Provision the database servers the bun-jobs integration suites need.
+Provision the database servers the bun-jobs and bun-cache integration
+suites need.
 
 Usage
   bun scripts/setup-databases.ts [options]
@@ -312,6 +330,9 @@ Options
   --user=NAME       User to create (default: bunjobs)
   --password=PASS   Password for that user (default: bunjobs)
   --database=NAME   Database to create (default: bun_jobs_test)
+  --cache-database=NAME
+                    bun-cache's database on Postgres, MariaDB and MySQL
+                    (default: ${CACHE_DATABASE})
   --max-connections=N
                     The max_connections MariaDB and MySQL should have at
                     least. A server already at or above it is left alone;
@@ -845,6 +866,10 @@ interface ServicePlan {
   envVar: string;
   /** The URL the suites should use once it is ready. */
   url: (options: Options) => string;
+  /** The variable bun-cache's suites read, on the servers that have a bun-cache database. */
+  cacheEnvVar?: string;
+  /** The URL of bun-cache's database ({@link CACHE_DATABASE}): bun-jobs' URL with the other database. */
+  cacheUrl?: (options: Options) => string;
   /** Whether its binaries are present. */
   installed: () => boolean;
   /** Packages to install, per manager. */
@@ -1835,6 +1860,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     envVar: "BUN_JOBS_TEST_POSTGRES_URL",
     url: (options) =>
       `postgres://${options.user}:${options.password}@127.0.0.1:5432/${options.database}`,
+    cacheEnvVar: "BUN_CACHE_TEST_POSTGRES_URL",
+    cacheUrl: (options) =>
+      `postgres://${options.user}:${options.password}@127.0.0.1:5432/${options.cacheDatabase}`,
     installed: () => has("postgres") || has("pg_ctl") || has("initdb"),
     packages: {
       apt: ["postgresql"],
@@ -1913,6 +1941,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     envVar: "BUN_JOBS_TEST_MARIADB_URL",
     url: (options) =>
       `mariadb://${options.user}:${options.password}@127.0.0.1:3306/${options.database}`,
+    cacheEnvVar: "BUN_CACHE_TEST_MARIADB_URL",
+    cacheUrl: (options) =>
+      `mariadb://${options.user}:${options.password}@127.0.0.1:3306/${options.cacheDatabase}`,
     installed: () => has("mariadbd") || has("mysqld") || has("mariadb"),
     packages: {
       apt: ["mariadb-server"],
@@ -2007,6 +2038,11 @@ export const PLANS: Record<Service, ServicePlan> = {
       // ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED. That asymmetry is why this
       // URL looks broken when probed by hand and works in the suites.
       `mysql://${options.user}:${options.password}@127.0.0.1:3307/${options.database}?allowPublicKeyRetrieval=true`,
+    cacheEnvVar: "BUN_CACHE_TEST_MYSQL_URL",
+    // The same parameter, for the same reason: bun-cache's driver takes it out
+    // of the URL as bun-jobs' does.
+    cacheUrl: (options) =>
+      `mysql://${options.user}:${options.password}@127.0.0.1:3307/${options.cacheDatabase}?allowPublicKeyRetrieval=true`,
     // A container, so there are no binaries on the host to look for.
     installed: () => false,
     packages: {},
@@ -2170,6 +2206,153 @@ interface Outcome {
   ready: boolean;
   /** What the script did, for the summary. */
   note: string;
+  /** Whether bun-cache's database could not be made usable, on a server that has one. */
+  cacheFailed?: boolean;
+}
+
+/**
+ * The statements that create bun-cache's database ({@link CACHE_DATABASE}) on
+ * a SQL server and give the suites' user all of it. Each is conditional
+ * (`IF NOT EXISTS`, or Postgres's `\gexec` over a `NOT EXISTS` check when
+ * run through `psql`), so an existing database keeps its tables. `host` says
+ * how they are run: through the server's own client as its administrator on
+ * a native install, or over SQL as the root account of this script's
+ * container — where Postgres cannot use `\gexec` and the caller checks
+ * `pg_database` first. Empty for a server with no bun-cache database.
+ */
+export function cacheDatabaseStatements(
+  service: Service,
+  options: Pick<Options, "cacheDatabase" | "user">,
+  host: LimitHost,
+): string[] {
+  const db = options.cacheDatabase;
+  const user = options.user;
+  if (service === "postgres") {
+    return host === "native"
+      ? [
+          `SELECT 'CREATE DATABASE ${db} OWNER ${user}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${db}') \\gexec`,
+        ]
+      : [`CREATE DATABASE ${db} OWNER ${user}`];
+  }
+  if (service === "mariadb" || service === "mysql") {
+    // The image creates its user for '%'; a native MariaDB has the
+    // 'localhost' twin `configure` made too.
+    const hosts = host === "native" ? ["%", "localhost"] : ["%"];
+    return [
+      `CREATE DATABASE IF NOT EXISTS \`${db}\``,
+      ...hosts.map(
+        (from) => `GRANT ALL PRIVILEGES ON \`${db}\`.* TO '${user}'@'${from}'`,
+      ),
+    ];
+  }
+  return [];
+}
+
+/**
+ * Makes bun-cache's database usable on a server that is ready for bun-jobs:
+ * nothing when connecting to it already works; otherwise the
+ * {@link cacheDatabaseStatements}, run as the server's administrator, then a
+ * real connection over the suites' URL. Returns a note for the summary, and
+ * whether it failed.
+ */
+async function ensureCacheDatabase(
+  plan: ServicePlan,
+  host: LimitHost,
+  platform: Platform,
+  options: Options,
+): Promise<{ note: string; failed: boolean }> {
+  if (!plan.cacheUrl) {
+    return { note: "", failed: false };
+  }
+  const db = options.cacheDatabase;
+  const url = plan.cacheUrl(options);
+  if (await sqlReachable(url)) {
+    log.skip(`the ${db} database (bun-cache) is already usable`);
+    return { note: `${db} ready`, failed: false };
+  }
+  const statements = cacheDatabaseStatements(plan.service, options, host);
+
+  if (host === "container") {
+    const rootUrl = plan.containerRootUrl?.(options);
+    if (!rootUrl) {
+      log.bad(`no root account known; run as root: ${statements.join(" ")}`);
+      return { note: `${db} not created`, failed: true };
+    }
+    for (const statement of statements) {
+      log.cmd([`(as root, over 127.0.0.1:${plan.port})`, statement]);
+    }
+    if (!options.dryRun) {
+      let error: string | null = null;
+      if (plan.service === "postgres") {
+        // No \gexec over SQL, and CREATE DATABASE cannot run inside a DO
+        // block: check, then create.
+        try {
+          const sql = await openSql(rootUrl);
+          try {
+            const rows = await sql.unsafe<unknown[]>(
+              "SELECT 1 FROM pg_database WHERE datname = $1",
+              [db],
+            );
+            if (rows.length === 0) {
+              await sql.unsafe(statements[0]).simple();
+            }
+          } finally {
+            await sql.close();
+          }
+        } catch (caught) {
+          error = caught instanceof Error ? caught.message : String(caught);
+        }
+      } else {
+        for (const statement of statements) {
+          error ??= await raiseOverSql(rootUrl, statement);
+        }
+      }
+      if (error) {
+        log.bad(`could not create ${db} as root: ${error}`);
+        return { note: `${db} not created`, failed: true };
+      }
+    }
+  } else if (plan.service === "postgres") {
+    for (const statement of statements) {
+      const argv = postgresAdminArgv(platform, statement);
+      log.cmd(["psql", "-c", `${statement.slice(0, 58)}...`]);
+      if (options.dryRun) {
+        continue;
+      }
+      const result = await run(argv);
+      if (!result.ok) {
+        log.bad(tail(result.stderr, 2));
+        return { note: `${db} not created`, failed: true };
+      }
+    }
+  } else {
+    const client = has("mariadb") ? "mariadb" : has("mysql") ? "mysql" : null;
+    const argv = elevate(platform, [client ?? "mariadb", "-u", "root"]);
+    log.cmd([...argv, "<", `(create the ${db} database)`]);
+    if (!options.dryRun) {
+      if (!client) {
+        log.bad(`no mariadb or mysql client found, so ${db} cannot be created`);
+        return { note: `${db} not created`, failed: true };
+      }
+      const result = await run(argv, {
+        input: `${statements.join(";\n")};`,
+      });
+      if (!result.ok) {
+        log.bad(tail(result.stderr, 2));
+        return { note: `${db} not created`, failed: true };
+      }
+    }
+  }
+
+  if (options.dryRun) {
+    return { note: `${db} once created`, failed: false };
+  }
+  if (!(await sqlReachable(url))) {
+    log.bad(`${db} is still not usable over its URL: ${lastSqlError}`);
+    return { note: `${db} not usable`, failed: true };
+  }
+  log.did(`created the ${db} database (bun-cache)`);
+  return { note: `created ${db}`, failed: false };
 }
 
 /**
@@ -2213,8 +2396,38 @@ function withLimit(note: string, limit: string): string {
   return limit ? `${note}; ${limit}` : note;
 }
 
-/** Installs and configures one server, skipping whatever is already done. */
+/**
+ * {@link setupServer}, then bun-cache's database on a server that has one and
+ * came up ready.
+ */
 async function setupService(
+  plan: ServicePlan,
+  platform: Platform,
+  options: Options,
+): Promise<Outcome> {
+  const outcome = await setupServer(plan, platform, options);
+  if (!outcome.ready || !plan.cacheUrl) {
+    return outcome;
+  }
+  // The same reading of where it runs as the limit check's: this script's
+  // container when one is running (or the server is container-only), a
+  // native install otherwise.
+  const name = plan.container(options).name;
+  const state = platform.docker ? await containerState(name) : "";
+  const host: LimitHost =
+    plan.dockerOnly || state === "running" || options.mode === "docker"
+      ? "container"
+      : "native";
+  const cache = await ensureCacheDatabase(plan, host, platform, options);
+  return {
+    ...outcome,
+    note: withLimit(outcome.note, cache.note),
+    cacheFailed: cache.failed,
+  };
+}
+
+/** Installs and configures one server, skipping whatever is already done. */
+async function setupServer(
   plan: ServicePlan,
   platform: Platform,
   options: Options,
@@ -2398,11 +2611,16 @@ function printEnv(options: Options): void {
   for (const service of options.services) {
     const plan = PLANS[service];
     console.log(`export ${plan.envVar}=${colour.cyan(plan.url(options))}`);
+    if (plan.cacheEnvVar && plan.cacheUrl) {
+      console.log(
+        `export ${plan.cacheEnvVar}=${colour.cyan(plan.cacheUrl(options))}`,
+      );
+    }
   }
 
   console.log(
     colour.dim(
-      "\n  Then: cd packages/bun-jobs && bun test" +
+      "\n  Then: cd packages/bun-jobs && bun test (or packages/bun-cache)" +
         "\n  A suite whose variable is unset skips, visibly. One whose variable is set\n  but whose server cannot be reached fails, so missing coverage cannot pass.",
     ),
   );
@@ -2465,6 +2683,15 @@ async function main(): Promise<void> {
   const ready = outcomes.filter((outcome) => outcome.ready);
   if (ready.length > 0) {
     printEnv({ ...options, services: ready.map((outcome) => outcome.service) });
+  }
+
+  if (outcomes.some((outcome) => outcome.cacheFailed)) {
+    console.log(
+      colour.dim(
+        `\n  bun-cache's ${options.cacheDatabase} database could not be made usable on every server; see above.`,
+      ),
+    );
+    process.exitCode = 1;
   }
 
   if (ready.length < outcomes.length) {

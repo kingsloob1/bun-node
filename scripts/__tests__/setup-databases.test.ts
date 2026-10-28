@@ -5,10 +5,13 @@ import type {
   Runner,
 } from "../setup-databases";
 import { availableParallelism } from "node:os";
+import process from "node:process";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
   applyPostgresLimit,
   BASELINE_CORES,
+  CACHE_DATABASE,
+  cacheDatabaseStatements,
   connectionsForCores,
   defaultMaxConnections,
   defaultPostgresMaxConnections,
@@ -806,5 +809,95 @@ describe("applyPostgresLimit", () => {
     expect(f.statements).toEqual([]);
     expect(f.commands).toEqual([]);
     expect(note).toContain("pinned by the container's command line");
+  });
+});
+
+describe("bun-cache's database", () => {
+  const options = parseArgs([]);
+
+  it("is bun_cache_test by default, and --cache-database renames it", () => {
+    expect(CACHE_DATABASE).toBe("bun_cache_test");
+    expect(options.cacheDatabase).toBe("bun_cache_test");
+    expect(parseArgs(["--cache-database=other"]).cacheDatabase).toBe("other");
+    // bun-jobs' own database is untouched by it.
+    expect(parseArgs(["--cache-database=other"]).database).toBe(
+      "bun_jobs_test",
+    );
+  });
+
+  it("lives on the SQL servers, beside bun-jobs': same host, port, user and query, its own database", () => {
+    for (const service of ["postgres", "mariadb", "mysql"] as const) {
+      const plan = PLANS[service];
+      expect(plan.cacheEnvVar).toBe(
+        `BUN_CACHE_TEST_${service.toUpperCase()}_URL`,
+      );
+      const cacheUrl = plan.cacheUrl!(options);
+      expect(cacheUrl).toBe(
+        plan.url(options).replace("/bun_jobs_test", "/bun_cache_test"),
+      );
+    }
+    // MySQL's needs the same allowPublicKeyRetrieval as bun-jobs'.
+    expect(PLANS.mysql.cacheUrl!(options)).toEndWith(
+      "/bun_cache_test?allowPublicKeyRetrieval=true",
+    );
+    expect(PLANS.redis.cacheEnvVar).toBeUndefined();
+    expect(PLANS.mongodb.cacheEnvVar).toBeUndefined();
+  });
+
+  it("is created conditionally, and never dropped", () => {
+    const all = [
+      ...cacheDatabaseStatements("postgres", options, "native"),
+      ...cacheDatabaseStatements("postgres", options, "container"),
+      ...cacheDatabaseStatements("mariadb", options, "native"),
+      ...cacheDatabaseStatements("mysql", options, "container"),
+    ];
+    expect(all.some((statement) => /DROP|TRUNCATE/i.test(statement))).toBe(
+      false,
+    );
+    // psql: \gexec over a NOT EXISTS check; over SQL the caller checks
+    // pg_database first (CREATE DATABASE has no IF NOT EXISTS).
+    expect(cacheDatabaseStatements("postgres", options, "native")).toEqual([
+      "SELECT 'CREATE DATABASE bun_cache_test OWNER bunjobs' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'bun_cache_test') \\gexec",
+    ]);
+    expect(cacheDatabaseStatements("postgres", options, "container")).toEqual([
+      "CREATE DATABASE bun_cache_test OWNER bunjobs",
+    ]);
+    expect(cacheDatabaseStatements("mysql", options, "container")).toEqual([
+      "CREATE DATABASE IF NOT EXISTS `bun_cache_test`",
+      "GRANT ALL PRIVILEGES ON `bun_cache_test`.* TO 'bunjobs'@'%'",
+    ]);
+    // A native MariaDB has the 'localhost' user `configure` made, too.
+    expect(cacheDatabaseStatements("mariadb", options, "native")).toEqual([
+      "CREATE DATABASE IF NOT EXISTS `bun_cache_test`",
+      "GRANT ALL PRIVILEGES ON `bun_cache_test`.* TO 'bunjobs'@'%'",
+      "GRANT ALL PRIVILEGES ON `bun_cache_test`.* TO 'bunjobs'@'localhost'",
+    ]);
+    expect(cacheDatabaseStatements("redis", options, "native")).toEqual([]);
+  });
+
+  it("--print-env prints the BUN_CACHE_TEST_* variables beside bun-jobs'", async () => {
+    const child = Bun.spawn({
+      cmd: [
+        process.execPath,
+        new URL("../setup-databases.ts", import.meta.url).pathname,
+        "--print-env",
+      ],
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      child.exited,
+    ]);
+    expect(code).toBe(0);
+    const exports = out
+      .split("\n")
+      .filter((line) => line.startsWith("export BUN_CACHE_TEST_"));
+    expect(exports).toEqual([
+      "export BUN_CACHE_TEST_POSTGRES_URL=postgres://bunjobs:bunjobs@127.0.0.1:5432/bun_cache_test",
+      "export BUN_CACHE_TEST_MARIADB_URL=mariadb://bunjobs:bunjobs@127.0.0.1:3306/bun_cache_test",
+      "export BUN_CACHE_TEST_MYSQL_URL=mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_cache_test?allowPublicKeyRetrieval=true",
+    ]);
   });
 });

@@ -26,3 +26,4 @@ root `node_modules`; `03-typed` uses zod from the same place.
 | `03-typed` | `validated.ts` — a typed schema, and `validate` (V10): a failing value is a miss with an `error` event |
 | `04-drivers` | `file.ts` — the file driver: durability across instances, stamp-mode tags, the sweeper and its caps |
 | `04-drivers` | `sqlite.ts` — the SQLite driver: durability, eager tag deletion and the fence, the polled bus, and two processes sharing a counter and a lock |
+| `04-drivers` | `sql.ts` — the Postgres, MySQL and MariaDB drivers on each server whose `EXAMPLE_*_URL` is set: `getOrSet`, tags and counters below zero, exact keys, two instances sharing data and the bus, `maxEntries` evicting nearest-to-expiry first, an existing `sql` client, `?allowPublicKeyRetrieval=true`, Postgres `unlogged` |

@@ -619,3 +619,126 @@ describe("sqliteDriver maxEntries (§3.9)", () => {
     }
   });
 });
+
+describe("sqliteDriver table names and schema sync", () => {
+  /** The tables and indexes a file holds. */
+  const objectsIn = (path: string): { type: string; name: string }[] =>
+    inspect(path, (db) =>
+      db
+        .query<{ type: string; name: string }, []>(
+          "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all(),
+    );
+
+  test("names its tables, by prefix or outright: a `tables` name is used as given and ignores the prefix", async () => {
+    const path = join(dir, "named.db");
+    const named = sqliteDriver({
+      path,
+      prefix: "app_",
+      tables: { entries: "legacy_cache_rows", bus: "legacy_bus" },
+    });
+    await named.set("ns", entry("k", 3, ["t"]));
+    const tables = objectsIn(path)
+      .filter((object) => object.type === "table")
+      .map((object) => object.name);
+    expect(tables).toEqual([
+      "app_locks",
+      "app_stamps",
+      "app_tags",
+      "legacy_bus",
+      "legacy_cache_rows",
+    ]);
+    expect(
+      inspect(
+        path,
+        (db) =>
+          db.query<{ k: string }, []>("SELECT k FROM legacy_cache_rows").all()
+            .length,
+      ),
+    ).toBe(1);
+    // The prefix alone names other tables: that driver cannot see the row.
+    const prefixed = sqliteDriver({ path, prefix: "app_" });
+    expect(await prefixed.get("ns", "k")).toBeUndefined();
+    // The same `tables` reads it back, and its bus is its own.
+    const again = sqliteDriver({
+      path,
+      prefix: "app_",
+      tables: { entries: "legacy_cache_rows", bus: "legacy_bus" },
+    });
+    expect((await again.get("ns", "k"))?.value).toHaveLength(3);
+    await Promise.all([named.close(), prefixed.close(), again.close()]);
+  });
+
+  test("index names follow the table names and stay within 63 characters", async () => {
+    const path = join(dir, "long-names.db");
+    const long = "t".repeat(63);
+    const driver = sqliteDriver({ path, tables: { entries: long } });
+    await driver.connect!();
+    const indexes = objectsIn(path)
+      .filter((object) => object.type === "index")
+      .map((object) => object.name);
+    expect(indexes).toContain("ix_bun_cache_tags_key");
+    const exp = indexes.find((name) => name.endsWith("_exp"))!;
+    expect(exp.length).toBeLessThanOrEqual(63);
+    expect(exp.startsWith(`ix_${"t".repeat(20)}`)).toBe(true);
+    await driver.close();
+  });
+
+  test("a bad `tables` name throws", () => {
+    const path = join(dir, "bad-names.db");
+    const bad: Record<string, string>[] = [
+      { entries: "bad-name" },
+      { entries: "x; DROP TABLE y" },
+      { entries: "9lives" },
+      { entries: "t".repeat(64) },
+      { entries: "same", tags: "same" },
+      { entries: "bun_cache_tags" },
+      { jobs: "nope" },
+    ];
+    for (const tables of bad) {
+      expect(() => sqliteDriver({ path, tables })).toThrow(TypeError);
+    }
+  });
+
+  test("syncSchema: runs when the tables are created on a connection when set, never when unset", async () => {
+    const calls: unknown[] = [];
+    const spyOn = (driver: ReturnType<typeof sqliteDriver>) => {
+      const target = driver as unknown as {
+        migrateSchema: (db: Database, options: unknown) => unknown;
+      };
+      const original = target.migrateSchema.bind(driver);
+      target.migrateSchema = (db, options) => {
+        calls.push(options);
+        return original(db, options);
+      };
+    };
+    const off = sqliteDriver({ path: join(dir, "sync-off.db") });
+    spyOn(off);
+    await off.connect!();
+    expect(calls).toEqual([]);
+    await off.close();
+
+    const on = sqliteDriver({
+      path: join(dir, "sync-on.db"),
+      syncSchema: true,
+    });
+    spyOn(on);
+    // First use creates the tables, and the sync runs with them, once.
+    await on.set("ns", entry("k", 1));
+    await on.connect!();
+    expect(calls).toEqual([{}]);
+    await on.close();
+
+    const dry = sqliteDriver({
+      path: join(dir, "sync-dry.db"),
+      syncSchema: { dryRun: true },
+    });
+    spyOn(dry);
+    await dry.connect!();
+    expect(calls).toEqual([{}, { dryRun: true }]);
+    // One schema version: nothing to change, whether asked on connect or not.
+    expect(await dry.syncSchema!()).toEqual([]);
+    await dry.close();
+  });
+});
