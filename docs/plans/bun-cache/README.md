@@ -826,8 +826,7 @@ the 10 MB request limit, the global script lock). **The user's decisions (2026-1
   own PR: the scripts already keep their keys in one namespace's hash tag,
   so Upstash can lock just that namespace instead of the whole database.
 
-**Upstash key locking built, 2026-10-28** (branch
-`feat/bun-cache-redis-key-locking`): `redisDriver`'s **`keyLocking: true`**
+**Upstash key locking merged 2026-10-28, #559**: `redisDriver`'s **`keyLocking: true`**
 (not a §21 name; approved below) starts every script with
 `#!lua flags=allow-key-locking`, under its own SHA-1. Measured
 ([`evidence/upstash-spike.md`](evidence/upstash-spike.md), Follow-up): Upstash
@@ -849,6 +848,129 @@ gets it (`deleteByTags` writes stamps). Upstash accepts the combined flags
 and still refuses another tag's key (measured); its behaviour when full is
 not measured. The lane, key-locked, again after the change: 40 pass, 5 skip,
 0 fail in 112.1 s.
+
+**PR-C7 built 2026-10-28** (branch `feat/bun-cache-c7-s3`, on develop
+`36f7d784`, after PR-C6 #556, the replica set #557 and the Upstash spike
+#558): `s3Driver` over
+Bun's `S3Client` (§7.8), and SeaweedFS in `setup-databases.ts`. bun-jobs' S3
+work (PR-S0) had not landed, so this PR provisions the shared server and
+writes the first SigV4 signer. What it does, and where it departs from §7.8:
+
+- **Layout** `<p>/<ns>/e/<hh>/<sha256(key)>` (an entry **or a counter**: the
+  frame's kind byte says which, so the last writer wins for free and `delete`
+  counts one object), `<p>/<ns>/s/<sha256(tag)>` (stamps), and
+  `<p>/<ns>/l/<sha256(key)>` (locks, new); prefix `bun-cache` (§21), the
+  namespace through `encodeSegment` with an escape for an all-dots segment
+  (a URL resolves `.`/`..`; the negative control lost a namespace). Every
+  object's `Content-Type` carries its kind, expiry and **write time**:
+  `application/x-bun-cache; exp=<ms>; at=<ms>` (and `…-counter`, `…-stamp`,
+  `…-lock`). *Measured*: SeaweedFS keeps the parameters through `stat()`,
+  but a listing's `lastModified` has whole seconds, so the caps order by
+  `at` (without it, the caps test evicts the wrong entry).
+- **Plain reads and writes through `S3Client`** (`get` one `GET`, `set` one
+  `PUT`; `delete` a `HEAD` and a `DELETE` per key, since S3 answers a
+  `DELETE` alike either way); **the conditional ones through
+  `lib/drivers/s3-sign.ts`**, a SigV4 header signer and `fetch` — the answer
+  of `bun-jobs-s3-driver.md` §3.1 (Bun sends no conditional header and
+  answers no write ETag; oven-sh/bun#17339). It reproduces AWS's three
+  published example signatures (GET object, PUT object, ListObjects).
+- **Departure: counters and locks are in** (§7.8 and §7.10 had "no"; the
+  [U] on conditional `PUT` is now measured). `increment` is a compare-and-swap
+  (`If-Match`, or `If-None-Match: *` to create), its calls on one key in one
+  process batched into one write; a lock is read first, created with
+  `If-None-Match: *`, refreshed by its owner or taken over from a positively
+  lapsed holder with `If-Match`, released by a conditional `DELETE`. Before
+  the first such operation the driver probes the store (a create-only `PUT`
+  twice must answer 412) and refuses with a named error otherwise.
+  `conditionalWrites: false` turns them off (`atomicIncrement`/`lock`
+  `false`); a `client` alone (Bun's client does not expose its credentials)
+  defaults to off. **Stamps move forward only** when conditional writes are
+  on (read, then a compare-and-swap to the later `at` and `until`): a plain
+  `PUT` is last-writer-wins, so of two invalidations a moment apart the older
+  could land last (the file driver has that window; S3's latency widens it).
+- **SeaweedFS 4.48 serialises concurrent conditional writes to one object**
+  (*measured*): each loser answers 412 about a second after the one before
+  (5 contenders 3 s, 50 contenders 10 s), where one at a time they take ~1 ms.
+  So the lock path reads first (a live foreign lock costs one `GET`, no
+  write — on AWS that also avoids the billed failed `PUT`s) and queues per
+  key in the process; 50 in-process contenders went from 10 s to 27 ms, and
+  the kit's lock cases from timeouts to passes. Two processes on one hot key
+  still pay the server's second.
+- **The sweeper** walks the prefix, `HEAD`s each object for its `exp` — and
+  remembers it by ETag and `lastModified` (up to 100,000 objects), so a pass
+  over unchanged objects costs only the listing — and deletes expired
+  entries, counters, stamps and locks (at most `limit`), each with
+  `If-Match` on the ETag it judged; then `maxEntries`/`maxBytes` (§3.9),
+  oldest `at` first, entries only (counters are never counted or evicted, as
+  in C3). A store that drops the type's parameters falls back to a 12-byte
+  ranged `GET` of the frame. *Departures*: no `lastModified + maxTtl`
+  shortcut (there is no such option in §21; the memo does the saving), the
+  sweeper does not reclaim stamp-invalidated entries before their expiry
+  (as the file driver), and cap evictions are not reported through
+  `onEviction` (the object names hold hashes; as the file driver). The
+  README documents a bucket lifecycle rule as the backstop, longer than the
+  longest TTL and `tagStampTtl`.
+- **No bus** (§7.10): `bus: "none"`; an L1 takes `redisBus`/`pgBus`.
+  `syncSchema()` answers `[]`.
+- **`setup-databases.ts`**: service `s3`, container-only (`dockerOnly`),
+  `bun-jobs-s3` on `127.0.0.1:8333`, `chrislusf/seaweedfs:4.48 server -s3
+  -dir=/data`, `--ulimit nofile=65536:65536`, no bind mount. *Departure from
+  §13.2*: it runs with `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` set (test
+  values `test`/`test`), which makes SeaweedFS **check signatures** — without
+  them it accepts any, and the signer would go untested (*measured*: a wrong
+  secret answers `SignatureDoesNotMatch`; a test asserts it). The bucket is
+  made in #557's `initContainer` hook — a signed `PUT` retried until the
+  server answers (409 `BucketAlreadyOwnedByYou` counts, `BucketAlreadyExists`
+  does not) — and readiness is a signed `HEAD`, which creates nothing;
+  bun-cache's bucket is created on the cache-database step. A minimal
+  signer is copied into the script (nothing in `scripts/` loads a workspace
+  package). `--print-env` prints
+  `BUN_JOBS_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-jobs-test?scheme=http`
+  and `BUN_CACHE_TEST_S3_URL=…/bun-cache-test?scheme=http` (*departure*:
+  `?scheme=http`, since the URL form defaults to `https`). Created here in
+  4.2 s; a second run reports it set up.
+- **The URL form** (new): `s3://<accessKeyId>:<secretAccessKey>@<host>[:<port>]/<bucket>`
+  with `?region=` and `?scheme=http` (Apache Arrow's parameter names);
+  `connection` is Bun's own `S3Options`; anything left out comes from
+  `S3_*`/`AWS_*` as Bun's client reads them, and the region follows Bun's
+  rule (*measured* with `presign()`: `auto` for a custom endpoint, the AWS
+  endpoint's own, else `us-east-1`).
+- **Tests** (`__tests__/drivers/s3.test.ts`): the signer's vectors, the URL,
+  environment and option rules and a fake store that ignores conditions,
+  without a server; then on `BUN_CACHE_TEST_S3_URL` (falling back to
+  `BUN_JOBS_TEST_S3_URL`) the kit with its two-process pass and 18
+  specifics, objects under `bun-cache-test/<pid>-<time>/…` deleted by exact
+  prefix at the end (both buckets measured empty after runs). Unset: a
+  visible skip; set and unreachable: one named failure.
+- **Negative controls**, each failing its test (1–4 fails): `s3Encode` as
+  `encodeURIComponent`; an unsorted canonical query; a lock created without
+  `If-None-Match`; a takeover without `If-Match`; `increment` as a plain
+  read-then-write; a batch handing every caller the final value; a probe that
+  never refuses; a lapsed counter not restarted; a release without the owner
+  check; stamps last-writer-wins; a stamp merge dropping the later `at`; the
+  sweeper's memo off; no ranged-`GET` fallback; caps newest first; caps
+  counting counters; no `at=`; the sweeper skipping stamps and locks; the
+  sweep `limit` ignored; no dot-segment escape; `getStamps` returning lapsed
+  stamps; `clear` taking stamps and locks; `touch` keeping the old type; lazy
+  expiry without the delete; `delete` counting without its `HEAD`; and in
+  the script: no S3 cache line (2), no signature-checking credentials, a
+  `BucketAlreadyExists` taken as ours. Without the per-key lock queue the
+  three lock tests time out (SeaweedFS's serialisation).
+- **New names, awaiting the user's approval** (not in §21):
+  `S3DriverOptions`, its options `connection` (Bun's `S3Options`, not the
+  SQL drivers' type), `client` (as Redis's), `prefix`, `maxEntries`,
+  `maxBytes`, **`conditionalWrites`**; the URL form and its `scheme`/`region`
+  parameters; the persisted media types `application/x-bun-cache[-counter|
+  -stamp|-lock]` with `exp`/`at`; `BUN_JOBS_TEST_S3_URL` and the buckets
+  `bun-jobs-test`/`bun-cache-test`; the container `bun-jobs-s3` (§13.2's).
+- **Gate** (Bun 1.4.4-canary.1+a0cc096ce, SeaweedFS 4.48, every test URL
+  set, the MongoDB replica set included; on develop `36f7d784`): bun-cache
+  711 pass, 35 skip, 0 fail, the same under `--randomize --seed=1`, `=2`,
+  `=3`; the S3 file 45 pass, 5 skip (the unadvertised bus and `tags.index`
+  cases); check 168 files clean, lint 0 errors, format clean;
+  `bun scripts/typecheck.ts` 21 projects clean; consumer-check 60/60 cells,
+  10/10 runtime imports; scripts 186 pass; `examples/bun-cache` 15 passed,
+  4 skipped on memory; `bun-timings.json` refreshed with every URL.
 
 ### Contents
 

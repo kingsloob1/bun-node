@@ -41,6 +41,15 @@ import {
   postgresRestartArgv,
   runLimitSteps,
   UsageError,
+  bucketCreated,
+  parseS3TestUrl,
+  S3_ACCESS_KEY,
+  S3_BUCKET,
+  S3_CACHE_BUCKET,
+  S3_CONTAINER_IMAGE,
+  S3_SECRET_KEY,
+  s3TestUrl,
+  signS3,
 } from "../setup-databases";
 
 // Importing the script must not provision anything: it runs `main` only under
@@ -961,6 +970,100 @@ describe("bun-cache's database", () => {
       "export BUN_CACHE_TEST_MYSQL_URL=mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_cache_test?allowPublicKeyRetrieval=true",
       "export BUN_CACHE_TEST_MONGODB_URL=mongodb://127.0.0.1:27017/bun_cache_test",
       "export BUN_CACHE_TEST_MONGODB_RS_URL=mongodb://127.0.0.1:27018/bun_cache_test?replicaSet=rs0",
+      "export BUN_CACHE_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-cache-test?scheme=http",
     ]);
+    expect(out).toContain(
+      "export BUN_JOBS_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-jobs-test?scheme=http",
+    );
+  });
+});
+
+describe("the S3 server (SeaweedFS)", () => {
+  const options = parseArgs([]);
+
+  it("is a pinned SeaweedFS container on 8333, checking signatures, its data in the image's volume", () => {
+    const plan = PLANS.s3;
+    expect(plan.dockerOnly).toContain("container");
+    expect(plan.installed()).toBe(false);
+    const spec = plan.container(options);
+    expect(spec.image).toBe(S3_CONTAINER_IMAGE);
+    expect(S3_CONTAINER_IMAGE).toBe("chrislusf/seaweedfs:4.48");
+    const argv = dockerRunArgv(spec);
+    expect(argv).toContain("bun-jobs-s3");
+    expect(argv).toContain("127.0.0.1:8333:8333");
+    expect(argv).toContain("nofile=65536:65536");
+    // The credentials by environment make SeaweedFS verify every signature.
+    expect(argv).toContain(`AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY}`);
+    expect(argv).toContain(`AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY}`);
+    expect(argv.slice(argv.indexOf(spec.image))).toEqual([
+      spec.image,
+      "server",
+      "-s3",
+      "-dir=/data",
+    ]);
+    // Nothing of /tmp, which snap Docker cannot use, and no bind mount.
+    expect(argv.some((arg) => arg.includes("/tmp"))).toBe(false);
+    expect(argv).not.toContain("--volume");
+  });
+
+  it("gives each package its own bucket, in the S3 driver's URL form", () => {
+    expect(PLANS.s3.envVar).toBe("BUN_JOBS_TEST_S3_URL");
+    expect(PLANS.s3.cacheEnvVar).toBe("BUN_CACHE_TEST_S3_URL");
+    expect(PLANS.s3.url(options)).toBe(s3TestUrl(S3_BUCKET));
+    expect(PLANS.s3.cacheUrl!(options)).toBe(
+      "s3://test:test@127.0.0.1:8333/bun-cache-test?scheme=http",
+    );
+    expect(S3_CACHE_BUCKET).toBe("bun-cache-test");
+    expect(parseS3TestUrl(PLANS.s3.url(options))).toEqual({
+      endpoint: "http://127.0.0.1:8333",
+      bucket: "bun-jobs-test",
+      accessKeyId: "test",
+      secretAccessKey: "test",
+    });
+    // No SQL statements: its bucket is made by a signed request.
+    expect(cacheDatabaseStatements("s3", options, "container")).toEqual([]);
+  });
+
+  it("makes its bucket in the container's one-time setup, which a dry run only prints", async () => {
+    expect(PLANS.s3.initContainer).toBeFunction();
+    const fetched = spyOn(globalThis, "fetch");
+    try {
+      expect(await PLANS.s3.initContainer!(parseArgs(["--dry-run"]))).toBe(
+        true,
+      );
+      expect(fetched).not.toHaveBeenCalled();
+    } finally {
+      fetched.mockRestore();
+    }
+    expect(parseArgs(["--only=s3"]).services).toEqual(["s3"]);
+  });
+
+  it("signs the bucket requests with SigV4: AWS's published GET Bucket example", () => {
+    const headers = signS3(
+      {
+        accessKeyId: "AKIAIOSFODNN7EXAMPLE",
+        secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      },
+      "GET",
+      new URL("https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J"),
+      new Date("2013-05-24T00:00:00Z"),
+      "us-east-1",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    expect(headers.authorization).toBe(
+      "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7",
+    );
+  });
+
+  it("takes a bucket that is already ours as created, and nothing else", () => {
+    expect(bucketCreated(200, "")).toBe(true);
+    expect(
+      bucketCreated(409, "<Error><Code>BucketAlreadyOwnedByYou</Code></Error>"),
+    ).toBe(true);
+    // Somebody else's bucket of that name is not ours to use.
+    expect(
+      bucketCreated(409, "<Error><Code>BucketAlreadyExists</Code></Error>"),
+    ).toBe(false);
+    expect(bucketCreated(403, "")).toBe(false);
   });
 });

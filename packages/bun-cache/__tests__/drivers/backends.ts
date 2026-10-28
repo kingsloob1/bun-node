@@ -16,11 +16,17 @@
  * by `sqlSuite.ts`.
  */
 import process from "node:process";
-import { RedisClient, SQL } from "bun";
+import { RedisClient, S3Client, SQL } from "bun";
 import type { CacheDriver } from "../../lib/index";
-import { mariadbDriver, mysqlDriver, postgresDriver } from "../../lib/index";
+import {
+  mariadbDriver,
+  mysqlDriver,
+  postgresDriver,
+  s3Driver,
+} from "../../lib/index";
 import type { MysqlDriverOptions } from "../../lib/drivers/mysql";
 import type { PostgresDriverOptions } from "../../lib/drivers/postgres";
+import { parseS3Url } from "../../lib/drivers/s3";
 import { sqlClientOptions } from "../../lib/drivers/sql-connection";
 
 /** One SQL server backend. */
@@ -234,4 +240,67 @@ export async function deleteRedisPrefix(
     client.close();
   }
   return deleted;
+}
+
+/**
+ * The S3 server the S3 driver's suite runs against (§13.2):
+ * `BUN_CACHE_TEST_S3_URL`, falling back to `BUN_JOBS_TEST_S3_URL` — SeaweedFS
+ * from `bun scripts/setup-databases.ts`, whose `--print-env` prints both. The
+ * URL is the driver's own form, `s3://<key>:<secret>@<host>:<port>/<bucket>?scheme=http`.
+ */
+export function s3Backend(): {
+  /** The variable that points at it. */
+  variable: string;
+  /** The URL, when one is set. */
+  url: string | undefined;
+} {
+  return {
+    variable: "BUN_CACHE_TEST_S3_URL",
+    url:
+      process.env.BUN_CACHE_TEST_S3_URL ||
+      process.env.BUN_JOBS_TEST_S3_URL ||
+      undefined,
+  };
+}
+
+/** Lists the bucket once through the driver (within 5 s); answers the failure, not a boolean. */
+export async function s3ReachError(url: string): Promise<Error | undefined> {
+  try {
+    const driver = s3Driver({
+      url,
+      prefix: `bun-cache-test/${process.pid}-probe`,
+    });
+    await Promise.race([
+      driver.connect!(),
+      Bun.sleep(5_000).then(() => {
+        throw new Error("no answer within 5 s");
+      }),
+    ]);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+/**
+ * Deletes every object under one of this run's S3 prefixes (`<prefix>/…`).
+ * The prefix carries the run's pid and a timestamp, so the listing it walks
+ * holds this run's objects and nobody else's: the exact set it created, never
+ * a sweep of a shared prefix.
+ */
+export async function deleteS3Prefix(
+  url: string,
+  prefix: string,
+): Promise<number> {
+  const client = new S3Client(parseS3Url(url));
+  let deleted = 0;
+  for (;;) {
+    const page = await client.list({ prefix: `${prefix}/`, maxKeys: 1000 });
+    const keys = (page.contents ?? []).map((object) => object.key);
+    if (keys.length === 0) {
+      return deleted;
+    }
+    await Promise.all(keys.map(async (key) => await client.delete(key)));
+    deleted += keys.length;
+  }
 }

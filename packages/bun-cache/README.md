@@ -87,7 +87,14 @@ And (PR-C6):
 - the kit's **bus-gap case** runs for a pushed bus too, when the test gives
   it a way to force a loss (`busGap`)
 
-Next, in the plan's order: S3 (PR-C7), then stale serving over HTTP
+And (PR-C7):
+
+- the **S3 driver** over Bun's built-in `S3Client`: stamp-mode tags,
+  expiry in each object's `Content-Type` for the sweeper, `maxEntries` and
+  `maxBytes` caps, and counters and locks on S3's conditional writes, which
+  it signs itself ([The S3 driver](#the-s3-driver))
+
+Next, in the plan's order: stale serving over HTTP
 (PR-H2) and the Nest interceptor (PR-N2).
 
 ## Quick start
@@ -669,7 +676,7 @@ KILL`), and the bus-gap case then runs for it too.
 | MySQL / MariaDB | PR-C4 | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table |
 | Redis | PR-C5 | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) |
 | MongoDB | PR-C6 | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection |
-| S3 | PR-C7 | per the plan | per the plan | per the plan | per the plan | per the plan |
+| S3 | PR-C7 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -1182,6 +1189,110 @@ well, every driver it builds sets `keyLocking: true`. The URL holds the
 database's password: export it for one run, never commit it. One run takes about two minutes and some
 2,400 billed commands (of the free plan's 500,000 a month), and deletes the
 keys it wrote.
+
+## The S3 driver
+
+```ts
+import { createCache, redisBus, s3Driver } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: s3Driver({ url: process.env.CACHE_S3_URL }),
+  // s3://<accessKeyId>:<secretAccessKey>@<host>[:<port>]/<bucket>[?region=…][&scheme=http]
+});
+// or s3Driver({ connection: { bucket: "my-cache", region: "eu-west-1" } }) — Bun's own S3Options;
+//    what it leaves out is read from S3_* / AWS_* like Bun's client does
+// or s3Driver({ client: existingS3Client, connection: { … } })
+```
+
+A bucket every process and host can reach, over Bun's built-in `S3Client`
+(§7.8 of the plan). It suits large values, long TTLs and few reads per key:
+every read is a billed request, so for hot small keys put an
+[L1](#multi-tier) in front of it, with a bus of its own (`bus:
+redisBus(url)` or `pgBus(url)`; S3 has none).
+
+```
+<p>/<ns>/e/<hh>/<sha256(key)>   an entry or a counter: a header (expiry, tags) and the bytes
+<p>/<ns>/s/<sha256(tag)>        a tag's invalidation stamp
+<p>/<ns>/l/<sha256(key)>        a lock
+```
+
+`<p>` is the prefix (`prefix`, `bun-cache` by default), `<ns>` the namespace
+encoded so it never adds a `/`. Every object's `Content-Type` carries its
+kind, expiry and write time (`application/x-bun-cache; exp=…; at=…`), so the
+sweeper reads an expiry with a `HEAD`, not a `GET`.
+
+- **Reads and writes**: `get` is one `GET`, `set` one `PUT`. `delete` is a
+  `HEAD` and a `DELETE` per key (S3 answers a `DELETE` the same whether or
+  not the object existed, and the count needs to know). `clear()` lists the
+  namespace's entries and deletes them page by page — not atomic; stamps and
+  locks stay.
+- **Tags are stamps mode**: `invalidateTags` writes one stamp object per
+  tag, whatever the number of entries, and the core's read check does the
+  invalidating (eager deletion would cost a listing plus requests per key).
+- **Counters and locks need conditional writes** — `If-None-Match: *` (create
+  only) and `If-Match: <etag>` (compare-and-swap) — which S3 has (AWS since
+  2024) and Bun's client cannot send yet
+  ([oven-sh/bun#17339](https://github.com/oven-sh/bun/issues/17339)), so the
+  driver signs those requests itself (SigV4, `fetch`). `increment` is a
+  compare-and-swap on the counter's object; calls on one key in one process
+  join a batch, so 200 concurrent increments cost a few writes. A lock is
+  read first (a live lock held by someone else costs one `GET`), created with
+  `If-None-Match: *`, refreshed by its owner or taken over from a holder whose
+  expiry has passed with `If-Match`, and released by a conditional `DELETE`.
+  Before the first of these the driver checks the store answers a repeated
+  create-only `PUT` with 412, and throws otherwise.
+  - **Which stores**: AWS S3 and S3 Express, Cloudflare R2, MinIO, Ceph RGW,
+    Tigris and SeaweedFS document or honour both conditions; Backblaze B2
+    rejects them, and Google Cloud Storage's XML API needs other headers. On
+    such a store pass `conditionalWrites: false`: `increment` is then
+    unsupported and `getOrSet` loads without a cross-process lock. R2 and GCS
+    accept one write per second per key, which a busy counter exceeds. A
+    release is a conditional `DELETE`, which MinIO ignores and R2 does not
+    list: there, a holder releasing after its lock lapsed and was taken over
+    deletes the new holder's lock. Tigris's global buckets are eventually
+    consistent, so two processes can both take a lock there.
+    (`docs/plans/bun-cache/bun-jobs-s3-driver.md` §3.3 has the sources.)
+  - **SeaweedFS** (the repository's test server) serialises concurrent
+    conditional writes to one object: each loser answers only after waiting
+    about a second longer than the one before (measured, 4.48: five at once
+    took 3 s, fifty 10 s), while one at a time they take a millisecond. The
+    driver's batching and its per-key lock queue keep a process's own calls
+    from contending; two processes on one hot lock still pay it.
+  - Lock expiry compares the holders' clocks: keep them in sync (NTP).
+- **Expiry**: lazy on read (an expired entry is a miss, and its object is
+  deleted in the background), plus the core's sweeper: it walks the prefix
+  and deletes expired entries, counters, stamps and locks, each only if
+  unchanged since it was judged. It `HEAD`s an object once and remembers its
+  expiry while the listing shows it unchanged (up to 100,000 objects), so a
+  pass over a quiet bucket costs its listing pages. Give each cache's objects
+  a prefix of their own: the sweeper walks everything under it.
+- **Caps**: `maxEntries` and `maxBytes` evict the oldest writes first, enforced
+  by the sweeper (so the bucket can briefly exceed them); counters are never
+  counted or evicted. Age order, not LRU — recording each read would cost a
+  write per read.
+- **A lifecycle rule is the backstop**, for objects no sweeper reaches (no
+  cache running, a prefix abandoned). It expires by age, so make it longer
+  than your longest TTL and than `tagStampTtl` (at most 24 h), or it deletes
+  live entries and stamps:
+
+  ```json
+  { "Rules": [{ "ID": "bun-cache-backstop", "Status": "Enabled",
+                "Filter": { "Prefix": "bun-cache/" }, "Expiration": { "Days": 7 } }] }
+  ```
+
+  (`aws s3api put-bucket-lifecycle-configuration --bucket <b>
+  --lifecycle-configuration file://rule.json`; rules work in whole days.)
+- **Connections**: `url`, `connection` (Bun's `S3Options`, passed to the
+  client as given; `url` wins over its fields), or `client` (Bun's client
+  does not expose its credentials, so the signed requests still need `url`
+  or `connection`, or the `S3_*`/`AWS_*` environment; without them
+  `conditionalWrites` defaults to `false`). There is nothing to close.
+  Region: given, else from the environment, else as Bun's client picks it
+  (`auto` for a custom endpoint, the AWS endpoint's own, else `us-east-1`).
+- **Consistency**: AWS S3 is strongly consistent for reads, writes and
+  listings; other stores differ. Tested here against SeaweedFS 4.48 only
+  (`bun scripts/setup-databases.ts`). An entry holds up to 5 GiB less a MiB
+  (one `PUT`); the core's `maxEntryBytes` (4 MiB) applies first.
 
 ## HTTP response caching
 
