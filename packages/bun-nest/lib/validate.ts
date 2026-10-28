@@ -626,6 +626,12 @@ class ValidateInterceptor implements NestInterceptor {
    * status, the `@Header()` headers and the body against the route's
    * `responses`. A refused response throws a `ResponseValidationError`;
    * a variant's adjust comes back as a replacement and is applied.
+   *
+   * A response already sent when the value arrives is not checked: the
+   * value is not what was sent, and Nest's `reply()` will not send it. That
+   * is a hit `BunCacheInterceptor` (inside this interceptor) answered from
+   * the cache — checked when it was stored — or a stale answer it gave on a
+   * hard timeout.
    */
   async #checkReturned(
     context: ExecutionContext,
@@ -633,6 +639,9 @@ class ValidateInterceptor implements NestInterceptor {
     value: unknown,
   ): Promise<unknown> {
     const res = context.switchToHttp().getResponse<NestResponseView>();
+    if (res.headersSent === true) {
+      return value;
+    }
     const req = context.switchToHttp().getRequest();
     let body = value;
     let variant: string | undefined;
@@ -831,6 +840,8 @@ interface NestResponseView {
   set: (name: string, value: string) => unknown;
   /** A snapshot of the headers set so far, `set-cookie` an array of lines. */
   getHeaders: () => Record<string, string | string[]>;
+  /** Whether the response has been committed (bun-common's and Express's `headersSent`). */
+  readonly headersSent?: boolean;
 }
 
 /** The final headers as a native `Headers`, each `Set-Cookie` its own line. */

@@ -121,9 +121,15 @@
         "CacheNotReadyError",
         "BUN_CACHE",
         "BUN_CACHE_OPTIONS",
-        "getCacheToken"
+        "getCacheToken",
+        "BunCacheInterceptor",
+        "CacheKey",
+        "CacheTTL",
+        "CacheTags",
+        "NoCache"
       ],
       "types": [
+        "BunCacheInterceptorOptions",
         "BunCacheModuleOptions",
         "BunCacheModuleAsyncOptions",
         "CacheableOptions",
@@ -132,12 +138,17 @@
         "Cache",
         "CreateCacheOptions"
       ],
-      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunCacheModule.forRoot>>>;\nexport type _cacheNotAny = Expect<IsAny<t.Cache>>;\nexport const _token: symbol = m.getCacheToken(\"reports\");\ndeclare const ok: TypedPropertyDescriptor<(id: number, q: { page: number }) => Promise<string>>;\nm.Cacheable({ key: (id: number) => `u:${id}`, unless: (r: string) => r === \"\" })({}, \"find\", ok);\ndeclare const wrongParams: TypedPropertyDescriptor<(id: string) => Promise<string>>;\n// @ts-expect-error a key function typed for other parameters is refused\nm.Cacheable({ key: (id: number) => `u:${id}` })({}, \"find\", wrongParams);\ndeclare const notAsync: TypedPropertyDescriptor<(id: number) => string>;\n// @ts-expect-error a method that does not return a Promise is refused\nm.Cacheable()({}, \"find\", notAsync);\nm.CacheEvict({ tags: (id: number) => [`u:${id}`], beforeInvocation: true })({}, \"update\", ok);"
+      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunCacheModule.forRoot>>>;\nexport type _cacheNotAny = Expect<IsAny<t.Cache>>;\nexport const _token: symbol = m.getCacheToken(\"reports\");\ndeclare const ok: TypedPropertyDescriptor<(id: number, q: { page: number }) => Promise<string>>;\nm.Cacheable({ key: (id: number) => `u:${id}`, unless: (r: string) => r === \"\" })({}, \"find\", ok);\ndeclare const wrongParams: TypedPropertyDescriptor<(id: string) => Promise<string>>;\n// @ts-expect-error a key function typed for other parameters is refused\nm.Cacheable({ key: (id: number) => `u:${id}` })({}, \"find\", wrongParams);\ndeclare const notAsync: TypedPropertyDescriptor<(id: number) => string>;\n// @ts-expect-error a method that does not return a Promise is refused\nm.Cacheable()({}, \"find\", notAsync);\nm.CacheEvict({ tags: (id: number) => [`u:${id}`], beforeInvocation: true })({}, \"update\", ok);\nexport const _interceptor = m.BunCacheInterceptor.with({ cache: \"pages\", varyBy: [\"accept-language\"], revalidate: false });\nm.CacheTTL(async () => 1_000);\nm.CacheKey((ctx) => ctx.getType());\nm.CacheTags(\"posts\", \"lists\");\nm.NoCache();\n// @ts-expect-error the key is @CacheKey's, not an option\nm.BunCacheInterceptor.with({ key: () => \"k\" });"
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/cache",
       "peers": ["@kingsleyweb/bun-cache"],
-      "values": ["BunCacheModule", "Cacheable", "BUN_CACHE"]
+      "values": [
+        "BunCacheModule",
+        "Cacheable",
+        "BUN_CACHE",
+        "BunCacheInterceptor"
+      ]
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/cache/tokens",

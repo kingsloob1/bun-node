@@ -7,8 +7,10 @@
 import { describe, expect, test } from "bun:test";
 import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
 import { BunRouter } from "@kingsleyweb/bun-common";
+import type { CacheDriver } from "../../lib/index";
 import type { CacheResponseOptions } from "../../lib/http/index";
 import { addCacheTags, cacheResponse } from "../../lib/http/index";
+import { createCache, memoryDriver } from "../../lib/index";
 import { frameAt, keyFor, makeHttpCache, nextSet } from "./helpers";
 
 /** `/posts/:id` (GET, counted, tagged `post:<id>`) and its unsafe twins under one `cacheResponse`, mounted with `use`. */
@@ -248,5 +250,84 @@ describe("invalidation on demand", () => {
   test("addCacheTags() refuses an empty tag", () => {
     const res = {} as BunResponse;
     expect(() => addCacheTags(res, "")).toThrow(TypeError);
+  });
+});
+
+describe("an invalidation and a write in flight", () => {
+  /** A cache whose driver takes `lagMs` over every write, as a networked one does. */
+  function slowWriteCache(lagMs: number) {
+    const inner = memoryDriver();
+    const driver = new Proxy(inner, {
+      get(target, property, receiver) {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (property === "set" && typeof value === "function") {
+          return async (...args: Parameters<CacheDriver["set"]>) => {
+            await Bun.sleep(lagMs);
+            return await inner.set(...args);
+          };
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return createCache({ driver, sweepInterval: 0 });
+  }
+
+  /** A body that ends `afterMs` after it starts: its bytes, and so its write, come after the response. */
+  function lateBody(text: string, afterMs: number): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+      async start(controller) {
+        await Bun.sleep(afterMs);
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    });
+  }
+
+  for (const coalesce of [false, true]) {
+    test(`invalidate() also drops a write in flight for the path (a streamed body, coalesce: ${String(coalesce)})`, async () => {
+      const cache = slowWriteCache(20);
+      const router = new BunRouter();
+      const pages = cacheResponse(cache, {
+        ttl: 60_000,
+        coalesce,
+        streams: { buffer: 1024 },
+      });
+      let runs = 0;
+      router.get("/r", pages, (_req, res) => {
+        runs++;
+        res.send(lateBody(`#${runs}`, 30));
+      });
+      // The answer has started; its body, and then its write, are to come.
+      const first = await router.fetch("/r");
+      await pages.invalidate("/r");
+      expect(await first.text()).toBe("#1");
+      await Bun.sleep(80);
+      expect(await frameAt(cache, keyFor("/r"))).toBeUndefined();
+      expect(await (await router.fetch("/r")).text()).toBe("#2");
+    });
+  }
+
+  test("an unsafe method's invalidation also drops a GET's write in flight", async () => {
+    const cache = slowWriteCache(40);
+    const router = new BunRouter();
+    const pages = cacheResponse(cache, {
+      ttl: 60_000,
+      coalesce: false,
+      streams: { buffer: 1024 },
+    });
+    router.use("/r", pages);
+    let runs = 0;
+    router.get("/r", (_req, res) => {
+      runs++;
+      res.send(lateBody(`#${runs}`, 30));
+    });
+    router.post("/r", (_req, res) => {
+      res.send("ok");
+    });
+    const first = await router.fetch("/r");
+    await router.fetch("/r", { method: "POST" });
+    expect(await first.text()).toBe("#1");
+    await Bun.sleep(80);
+    expect(await frameAt(cache, keyFor("/r"))).toBeUndefined();
   });
 });

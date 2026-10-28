@@ -1,7 +1,8 @@
 /**
  * `@kingsleyweb/bun-nest/cache` — `@kingsleyweb/bun-cache` in NestJS: the
- * module, the injection decorator, and caching decorators for service
- * methods (plan `docs/plans/bun-cache/` §10.1, §10.2).
+ * module, the injection decorator, caching decorators for service methods,
+ * and an interceptor caching routes' responses (plan `docs/plans/bun-cache/`
+ * §10.1–§10.3).
  *
  * This subpath, and only this subpath, depends on `@kingsleyweb/bun-cache`
  * (an optional peer). The package barrel never reaches it, so a Nest app
@@ -40,6 +41,14 @@ export {
   type CachePutOptions,
 } from "./decorators";
 export { CacheNotReadyError } from "./errors";
+export {
+  BunCacheInterceptor,
+  type BunCacheInterceptorOptions,
+  CacheKey,
+  CacheTags,
+  CacheTTL,
+  NoCache,
+} from "./interceptor";
 export { BUN_CACHE, BUN_CACHE_OPTIONS, getCacheToken } from "./tokens";
 
 /**

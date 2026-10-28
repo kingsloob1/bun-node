@@ -1367,6 +1367,126 @@ the pieces PR-C11's D1 driver reuses.
   included): `worker.ts` answers 500 only when `BUN_CACHE_PROXY_TOKEN` is
   unset, so the secret was not yet active when it was probed.
 
+**PR-N2 built 2026-10-28** (branch `feat/bun-nest-n2-cache-interceptor`,
+rebased on develop `e52f45ce`): `BunCacheInterceptor`, `@CacheKey`,
+`@CacheTTL`, `@CacheTags` and `@NoCache` in bun-nest's `./cache` (§10.3,
+§10.4), on Nest 11 and 12, with bun-common unchanged and two small additions
+to bun-cache's `./http` (below). **The user's answers, 2026-10-28:**
+`BunCacheInterceptor.with(options)` and `BunCacheInterceptorOptions`
+(with `cache`) approved; the four departures below accepted; and, against the
+recommendation, **without `@CacheTTL` the interceptor falls back to the
+cache's own TTL** when the response's headers give no lifetime (as
+`@nestjs/cache-manager` falls back to its store's) — built as below. How it
+is built, and where it departs from §10.3:
+
+- **It wraps the public `cacheResponse()`**, run inside Nest's pipeline on
+  the route's own `BunRequest`/`BunResponse`: the middleware's `next` is a
+  miss (`next.handle()`, and its transform captures whatever answers on the
+  response — `reply()`, an exception filter, a `@Res()` handler); the
+  middleware resolving without `next` is a hit, answered on the response,
+  and the interceptor returns `of(undefined)`, which Nest's `reply()` finds
+  already sent. So keys, `Vary`, refuse-to-store, `ETag`/`304`, `Age`,
+  coalescing, hit-for-miss, SWR, SIE, streams, `HEAD` and unsafe-method
+  invalidation are H1/H2's code. Not its internals: they are unexported, and
+  their shared state (a replay waiting for its request, an invalidation a
+  `GET` waits for) lives in the middleware's closure. Instances are kept per
+  interceptor, one per (TTL, keyed or not); `@CacheKey`/`@CacheTags`
+  functions read their `ExecutionContext` through a request-keyed `WeakMap`;
+  an unsafe request runs through every instance.
+- **Departures**: the **response** is cached, not the handler's value (so
+  §10.3's deferred `forResponses()` is the only mode; interceptors outside it
+  see `undefined` on a hit); **`@Res()` routes are cached** (the capture is on
+  the response); **only `GET`**, also under `@CacheKey` (cache-manager caches
+  any method under a key); **HTTP only** (rpc/ws pass through); `@Sse()`
+  routes pass through untouched.
+- **Defaults beside cacheResponse's**: `statuses` `[200, 203, 204]` (no
+  exception's answer stored, a `NotFoundException`'s 404 included);
+  `revalidate` the application's adapter (`HttpAdapterHost`), whose `fetch()`
+  replays through Nest's whole pipeline — guards included, so behind a guard
+  needing credentials the replay is refused and the entry refreshes after its
+  window; `ttl` `"headers-or-cache"` (the user's decision above).
+  `@CacheTTL(0)` stores nothing (measured).
+- **bun-cache `./http`, for the fallback: `ttl: "headers-or-cache"`** on
+  `cacheResponse()` — the freshness headers as `"headers"` reads them, and for
+  a response with none, the cache's own TTL (the core's default for a `set`
+  with no `ttl`: a number, a function of the value, or `null`) instead of a
+  refusal. A header's lifetime wins (a `0` too, so not stored); every refusal
+  still applies. The stored frame's `freshUntil` is then `null` (the frame's
+  existing "unknown/never" value), and a hit takes it from the core entry, so
+  `honorRequest`'s `min-fresh` still judges it. The `Cache` has no accessor
+  for its TTL, and none was added. A new literal of an existing option,
+  **approved by the user 2026-10-28**.
+- **`X-Cache` from the entry's freshness** (a defect found building the
+  fallback, fixed in this PR at the user's request). A coalesced follower
+  reads `HIT` or `STALE` from the frame it is handed, and a stale frame a
+  failing leader handed on (stale-if-error, a failed replay) said `HIT` under
+  the cache's own TTL, its `freshUntil` being `null`. Of the two ways — record
+  the resolved expiry in the stored frame, or take freshness from the core
+  entry — only the second is possible: the core resolves the TTL (a function
+  of the value, `jitter`) inside `set`, after the frame is encoded. So every
+  read takes the **entry's** `freshUntil` (`lookup`'s `found()`): the response
+  answered carries it, and a stale entry's frame is re-encoded with it when
+  the stored one differs (under the cache's TTL, or moved by `jitter`), and
+  that is the frame handed to followers. Never written back. Measured: the
+  coalesced cache-TTL case read `HIT` before (bun-cache 1 fail, bun-nest
+  1 fail), `STALE` after; direct and header-TTL cases pass both ways.
+- **`@nestjs/cache-manager`'s** `cache_module:cache_key` and
+  `cache_module:cache_ttl` are read when ours are absent (§10.4); a test sets
+  them by those strings.
+- **The before-write hook** (nestjs-12-parity PR-6c) runs after the capture,
+  so a refusing hook refuses an answer already being stored: one adapter hook,
+  in phase `"error"` (where the refusal's fresh answer is seen), calls the
+  middleware's `invalidate()` for a request the interceptor cached.
+- **bun-cache `./http`, for that drop (the residual of the first build)**:
+  a write issued *after* an invalidation is not covered by the core's fence
+  (a plain `set`'s fence starts when it is issued; a stamps driver's read
+  check likewise), and an uncoalesced capture issues its `set` only once the
+  body is read — for a sent file, after the refusal (measured: with the drop
+  only, the refused 3 MiB file was a `HIT` next, 3 of 3 runs). Now each
+  capture registers its write in flight under the path's tag from the moment
+  its transform runs, and `invalidate()` and the unsafe-method invalidation
+  drop the path **again**, in the background, once those writes have landed
+  (at most `coalesce.wait`). The caller waits for the first pass only: the
+  first build awaited the writes, and a streamed body not yet read then held
+  `invalidate()` for the whole `wait`.
+- **`@Validate`**: with `@Validate` outside the cache, its `map()` check got
+  the hit's `undefined` and raised a `ResponseValidationError` nobody saw (the
+  client had the HIT; a recording filter caught it). `ValidateInterceptor`
+  now skips a response already sent (`lib/validate.ts`, one guard). Both
+  orders are tested; an answer `@Validate` refuses is never stored.
+- **Names beyond §21**, all approved by the user 2026-10-28:
+  `BunCacheInterceptor.with(options)` (a mixin factory, as
+  `FileInterceptor(…)`), `BunCacheInterceptorOptions` with its `cache` option
+  (a cache's name), and `cacheResponse()`'s `ttl: "headers-or-cache"`.
+- **Tests**: `__tests__/cacheInterceptor.nest.test.ts` (41, served through
+  the adapter's `fetch()`, memory driver; a slow-write driver for the late
+  write) and `cacheInterceptor.type-test.ts`; bun-cache
+  `__tests__/http/storeRules.test.ts` (`"headers-or-cache"`: 5),
+  `methods.test.ts` (writes in flight: 3) and `stale.test.ts` (`X-Cache`
+  under either lifetime, direct and coalesced: 4). Negative controls: 11 on the
+  interceptor (1–18 fails each), the type test's (3 unused
+  `@ts-expect-error`), the default back to `"headers"` (1), and on bun-cache
+  the fallback read as `"headers"` (3), the fallback overriding a header
+  lifetime (1), the hit's `freshUntil` not filled (1), and the write tracking
+  removed (2 in bun-cache, the sent-file test in bun-nest 3 of 3), the
+  entry's freshness not taken (2 in bun-cache, 1 in bun-nest).
+- **Gate**, rebased on `e52f45ce` (Bun 1.4.4-canary.1+11c367163): bun-nest
+  check 406 files clean, lint 0 errors, format clean, suite 1349 pass, 7
+  skip, 0 fail (`bun-timings.json` refreshed; a first run had 1 fail, a 5 s
+  timeout in the untouched `undecodableBodyOptIn.nest.test.ts` at load 31,
+  which passed 3 of 3 alone and in the next full run), the same under
+  `--randomize --seed=1`; bun-cache with all eight `BUN_CACHE_TEST_*` URLs
+  (Azure, S3 and the MongoDB replica set among them) 961 pass, 55 skip, 0
+  fail, the same under `--randomize --seed=1`, check 191 files clean, lint 0
+  errors, format clean; `bun scripts/typecheck.ts` 21 projects clean;
+  consumer-check bun-nest 102/102 cells, 17/17 runtime imports, bun-cache
+  76/76, 12/12; `examples/bun-nest` 35 of 35; `examples/bun-cache` 20
+  passed, 6 skipped on memory. The Nest 11.2.7 column ran on the first build
+  (on a0cc096ce): 7 of 7 checks (suite 1242 pass, 126 skip, 0 fail;
+  `bun --check` 402 files; examples 35/35; consumer-check 102/102, 17/17);
+  the interceptor's Nest-facing code (ModuleRef, `HttpAdapterHost`,
+  `mixin`, the metadata, the adapter hook) did not change since, so it was
+  not re-run.
 
 **PR-C11 built 2026-10-28** (branch `feat/bun-cache-c11-cloudflare-d1`, on
 develop `acb8f4fc`): `cloudflareD1Driver` (approved name), on PR-C10's client
@@ -3785,6 +3905,7 @@ Every new public name.
 | `runCacheDriverConformance`, `faulty`, `fakeClock` | functions | `./testing` | after `runProviderConformance` |
 | `cacheResponse`, `coalesceRequests`, `addCacheTags` | functions | `./http` | not `cache()`: too generic beside the router's route-match cache (`getCacheKey`, `clearRouteCache`) |
 | `varyBy`, `query`, `host`, `bypass`, `statusHeader`, `honorRequest`, `allowSetCookie`, `statuses`, `omitHeaders`, `invalidateOnUnsafe`, `streams`, `revalidate`, `coalesce`, `uncacheableTtl`, `etag` | options | `cacheResponse` | — |
+| `ttl: "headers-or-cache"` | option value | `cacheResponse` | *built in PR-N2, approved by the user 2026-10-28*: the headers' lifetime, else the cache's own TTL (the interceptor's default) |
 | `X-Cache` values `HIT`, `MISS`, `STALE`, `BYPASS`, `UNCACHEABLE` | header | `cacheResponse`, interceptor | nginx's and Nest's convention |
 | `x-bun-cache-revalidate` | internal header | `cacheResponse` | carries the per-process replay token |
 | `cacheControl`, `formatCacheControl`, `CacheControlDirectives` | function, type | bun-common | the header's name |
@@ -3796,6 +3917,7 @@ Every new public name.
 | `name`, `isGlobal`; `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions` | module options; types | bun-nest `./cache` | *built in PR-N1, approved by the user 2026-10-28*: `name` is §10.1's; `isGlobal` is Nest's own (`ConfigModule`, `CacheModule`); the types after `BunJobsApiModuleOptions` |
 | `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`; `cacheName`, `method` | types; error fields | bun-nest `./cache`; `CacheNotReadyError` | *built in PR-N1, approved by the user 2026-10-28* |
 | `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache` | interceptor, decorators | bun-nest `./cache` | `@nestjs/cache-manager`'s names, where they exist (Q9) |
+| `BunCacheInterceptor.with(options)`, `BunCacheInterceptorOptions` (`cache`) | static mixin factory, type, option | bun-nest `./cache` | *built in PR-N2, approved by the user 2026-10-28*: after `FileInterceptor(…)`; `cache` is the decorators' name for a cache's `name` |
 | `bun_cache_` (SQL, MongoDB), `bun-cache` (Redis, file, S3) | default prefixes | drivers | the package name |
 | `BUN_CACHE_TEST_<X>_URL`, `BUN_CACHE_TEST_S3_URL` | env variables | tests, `setup-databases.ts` | beside `BUN_JOBS_TEST_*` |
 | `./cloudflare-worker` | subpath | bun-cache | *approved by the user 2026-10-28 (the Cloudflare spike)*: the Worker the Cloudflare drivers' `endpoint` points at |

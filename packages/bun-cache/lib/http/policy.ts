@@ -56,15 +56,15 @@ export type Refusal =
    * of the cache replaced it), so there are no bytes to store.
    */
   | "stream"
-  /** No lifetime: `ttl: "headers"` and no freshness information, or a lifetime of 0 or less once `Age` is taken off. */
+  /** No lifetime: `ttl: "headers"` and no freshness information, or a lifetime of 0 or less once `Age` is taken off (also under `"headers-or-cache"`: a header's lifetime wins). */
   | "lifetime";
 
 /** What {@link decideStore} is told about the route and the request. */
 export interface StorePolicy {
   /** The storable statuses. */
   statuses: ReadonlySet<number>;
-  /** The route's TTL in ms, or `"headers"`. */
-  ttl: number | "headers";
+  /** The route's TTL in ms, `"headers"`, or `"headers-or-cache"` (the headers, else the cache's own TTL). */
+  ttl: number | "headers" | "headers-or-cache";
   /** Whether a response that sets a cookie is stored (with its cookies). */
   allowSetCookie: boolean;
   /** Lower-cased header names never stored. */
@@ -89,8 +89,8 @@ export interface StoreDecision {
   ok: true;
   /** The header lines to store, `[lower-cased name, value]`. */
   headers: [string, string][];
-  /** The fresh-for, in ms (more than 0). */
-  ttl: number;
+  /** The fresh-for, in ms (more than 0); `undefined` for the cache's own TTL (`ttl: "headers-or-cache"` and no freshness header). */
+  ttl: number | undefined;
   /** The response's own `Age`, in seconds. */
   age: number;
   /**
@@ -265,17 +265,18 @@ export function decideStore(
   }
 
   const age = deltaSeconds(headers.get("age")) ?? 0;
-  let ttl: number;
-  if (policy.ttl === "headers") {
+  let ttl: number | undefined;
+  if (policy.ttl === "headers" || policy.ttl === "headers-or-cache") {
     const lifetime = headerLifetime(headers, cc, policy.now);
-    if (lifetime === undefined) {
+    if (lifetime !== undefined) {
+      ttl = Math.round((lifetime - age) * 1000);
+    } else if (policy.ttl === "headers") {
       return { ok: false, reason: "lifetime" };
     }
-    ttl = Math.round((lifetime - age) * 1000);
   } else {
     ttl = policy.ttl;
   }
-  if (!(ttl > 0)) {
+  if (ttl !== undefined && !(ttl > 0)) {
     return { ok: false, reason: "lifetime" };
   }
 

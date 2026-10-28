@@ -16,6 +16,7 @@ Underneath, routing is
 | `@nestjs/platform-express`'s `FileInterceptor`, `FilesInterceptor`, … | [the file upload interceptors](#file-upload-interceptors) exported here |
 | `@nestjs/platform-socket.io`'s `IoAdapter` (or `@nestjs/platform-ws`) | [`BunWebSocketAdapter`](#bunwebsocketadapter), over Bun's native WebSockets |
 | `@nestjs/cache-manager`'s `CacheModule` and `CACHE_MANAGER` | [`BunCacheModule`](#the-cache-module) and `@InjectCache()`, over `@kingsleyweb/bun-cache`, with `@Cacheable`, `@CachePut` and `@CacheEvict` for service methods |
+| `@nestjs/cache-manager`'s `CacheInterceptor`, `@CacheKey()`, `@CacheTTL()` | [`BunCacheInterceptor`](#the-cache-interceptor), with `@CacheKey`, `@CacheTTL`, `@CacheTags` and `@NoCache` (it reads cache-manager's `@CacheKey()`/`@CacheTTL()` too) |
 
 **Requirements**
 
@@ -99,6 +100,7 @@ Underneath, routing is
 - [The cache module](#the-cache-module)
   - [Modules, names and shutdown](#modules-names-and-shutdown)
   - [`@Cacheable`, `@CachePut`, `@CacheEvict`](#cacheable-cacheput-cacheevict)
+  - [The cache interceptor](#the-cache-interceptor)
   - [Installing bun-cache is what makes the subpath compile](#installing-bun-cache-is-what-makes-the-subpath-compile)
 - [Exported API](#exported-api)
 - [Examples](#examples)
@@ -2449,7 +2451,8 @@ other than the jobs subpath can reach a declaration that imports bun-jobs.
 
 [`@kingsleyweb/bun-cache`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-cache/README.md)'s
 caches, provided to a Nest application by a module, with caching decorators
-for service methods. It lives on its own entry point,
+for service methods and an interceptor caching routes' responses. It lives on
+its own entry point,
 **`@kingsleyweb/bun-nest/cache`**, never in the barrel, and needs
 `@kingsleyweb/bun-cache` installed (an optional peer):
 
@@ -2567,15 +2570,137 @@ without its `this`, or naming a cache no module registered.
 **Not supported:**
 
 - static methods: decorating one throws when the class is defined;
-- controller handlers: a handler's return value is not the response, and the
-  HTTP interceptor (`BunCacheInterceptor`, a later release) is the tool for
-  routes;
+- controller handlers: a handler's return value is not the response, and
+  [the cache interceptor](#the-cache-interceptor) is the tool for routes;
 - standard (TC39) decorators: like Nest's own, these are
   `experimentalDecorators` decorators.
 
 The wrapper keeps the method's name, length and `reflect-metadata` entries,
 so Nest decorators applied before it (below it in the source) still read
 their metadata.
+
+### The cache interceptor
+
+`BunCacheInterceptor` caches a route's **responses**. It runs
+[`@kingsleyweb/bun-cache/http`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-cache/README.md)'s
+`cacheResponse()` inside Nest's pipeline, on the route's own `BunRequest` and
+`BunResponse`, so it is the same response cache as on a router — keys,
+`Vary` variants, the refuse-to-store rules, `ETag` and `304`, `Age`,
+`X-Cache`, coalescing, hit-for-miss, stale-while-revalidate, stale-if-error,
+`HEAD` and the invalidation of unsafe methods — with one difference that is
+the reason it exists: it runs **after Nest's guards**. Router middleware runs
+before them, so a route behind a guard is cached here.
+
+```ts
+import { BunCacheInterceptor, CacheKey, CacheTags, CacheTTL, NoCache } from "@kingsleyweb/bun-nest/cache";
+
+@UseGuards(AuthGuard)
+@UseInterceptors(BunCacheInterceptor)
+@CacheTTL(30_000)
+@Controller("posts")
+export class PostsController {
+  @CacheTags("posts")
+  @Get()
+  list(@Query("page") page = "1") { … }       // one entry per query string
+
+  @CacheKey((ctx) => `post:${ctx.switchToHttp().getRequest().params.id}`)
+  @CacheTTL(async (ctx) => (await isHot(ctx)) ? 5_000 : 60_000)
+  @Get(":id")
+  one(@Param("id") id: string) { … }
+
+  @NoCache()
+  @Get("drafts")
+  drafts() { … }
+
+  @Post()
+  create(@Body() body: NewPost) { … }          // a 2xx drops the cached GET /posts
+}
+```
+
+| Decorator | What it sets (on a handler, or a controller; the handler's wins) |
+|---|---|
+| `@CacheKey(key)` | the key, a string or a function of the `ExecutionContext`, in place of the path, the query and `varyBy` (the response's own `Vary` still applies). A key also lets a request carrying `Authorization` be stored: it is taken to cover the requester's identity, so put the user in the key on a per-user route |
+| `@CacheTTL(ms)` | how long an answer stays fresh, in **ms**: a number, or a function of the `ExecutionContext`, sync or async. It overrides the freshness headers and the cache's TTL, not the refusals (`no-store`, `private`). `0` stores nothing |
+| `@CacheTags(...tags)` | tags for the stored answers, strings or one function of the `ExecutionContext`, beside the path's own tag; `addCacheTags(res, …)` from `@kingsleyweb/bun-cache/http` adds more from the handler. `cache.invalidateTags([tag])` drops them |
+| `@NoCache()` | leaves the route out: no read, no store, no invalidation |
+
+**Options.** `BunCacheInterceptor.with(options)` makes an interceptor class
+with `cacheResponse()`'s options (`ttl`, `varyBy`, `query`, `host`, `bypass`,
+`statusHeader`, `honorRequest`, `allowSetCookie`, `statuses`, `omitHeaders`,
+`invalidateOnUnsafe`, `coalesce`, `uncacheableTtl`, `etag`,
+`staleWhileRevalidate`, `staleIfError`, `hardTimeout`, `streams`, `revalidate`)
+plus `cache`, a cache's `name` (the default cache otherwise). They are checked
+when the class is made. Three defaults differ from `cacheResponse()`'s:
+
+- **`ttl`** is `"headers-or-cache"` (below);
+- **`statuses`** is `[200, 203, 204]`, so no exception's answer is stored (a
+  `NotFoundException`'s 404 included);
+- **`revalidate`** is the application's HTTP adapter, whose socket-free
+  `fetch()` replays a stale-while-revalidate refresh through Nest's whole
+  pipeline. `false` turns the replay off: a stale entry is answered once and
+  the next request refreshes it.
+
+`ttl` defaults to `"headers-or-cache"`: without `@CacheTTL` (or
+`with({ ttl })`), an answer's own `Cache-Control`/`Expires` lifetime is
+used — `@Header("Cache-Control", "max-age=60")` or bun-common's
+`cacheControl()` — and when it has none, the cache's own TTL
+(`BunCacheModule.forRoot({ ttl })`, `createCache`'s; with none set, no
+expiry), as `@nestjs/cache-manager`'s interceptor falls back to its store's.
+The refusals apply either way: `no-store`, `private`, a cookie, `statuses`.
+`with({ ttl: "headers" })` stores only what the headers give a lifetime.
+
+```ts
+@UseInterceptors(BunCacheInterceptor.with({ cache: "pages", varyBy: ["accept-language"], staleWhileRevalidate: 60_000 }))
+```
+
+**How it fits Nest's pipeline.**
+
+- **A hit** answers from the cache before the handler: the pipes, the handler
+  and every interceptor **inside** this one do not run. Interceptors outside
+  it see the value `undefined` (the response is already sent, and Nest's
+  `reply()` leaves it), so a serialising or wrapping interceptor outside it
+  must tolerate `undefined`. Guards run first, always.
+- **What is stored is the response** — status, headers, bytes — captured
+  where the answer is committed, whatever produced it: Nest's `reply()`, an
+  exception filter, or a **`@Res()` handler's** own `res.json()`, which is
+  therefore cached too.
+- **Exceptions** are answered by Nest's filters on the same response, and are
+  not stored (`statuses`). With a stale entry inside `staleIfError`, a 5xx a
+  filter answers is replaced by the stale answer, `X-Cache: STALE`.
+- **`@Validate`.** Written **above** `@UseInterceptors(BunCacheInterceptor)`,
+  `@Validate`'s interceptor runs inside the cache's: a hit skips the request
+  checks, and an invalid request can still be answered from an entry another
+  request stored under the same key (a `@CacheKey` that ignores the query, say).
+  Written **below** it, `@Validate` runs first: request checks on every
+  request, and its response check skips a response already sent (the hit).
+  Either way, an answer `@Validate` refuses is a 500 and never stored.
+- **A before-write hook** (bun-nest's `addBeforeWriteHook`, which `@Validate`
+  uses on `@Res()`, `StreamableFile` and redirect routes) runs after the
+  answer is captured; when one refuses it, the interceptor drops the path's
+  stored entries, and drops them again once the write in flight lands
+  (`cacheResponse`'s `invalidate()` does so), so the refused answer is never
+  served from the cache — a sent file's, read back after the refusal, too.
+- **Never cached**: `@Sse()` routes (passed through untouched), a
+  `StreamableFile` or any streamed answer unless `streams: { buffer }` says
+  so, and anything the response's `Cache-Control` refuses. A request with
+  `Authorization` is stored only under a `@CacheKey` or an answer that allows
+  it (`public`, `s-maxage`), per RFC 9111 §3.5.
+- **Only `GET`** is cached (and `HEAD`, from `GET`'s entry), also under a
+  `@CacheKey` — `@nestjs/cache-manager` caches any method under one. A
+  `POST`, `PUT`, `PATCH` or `DELETE` the interceptor sees that answers 2xx or
+  3xx drops its path's entries. Only HTTP: in a microservice or a gateway the
+  interceptor passes through.
+- **A stale-while-revalidate replay** carries only the headers the key reads,
+  and goes through the guards: behind a guard that needs credentials it is
+  refused, and the entry is refreshed by the first request after the window
+  instead.
+- **It needs this package's `BunHttpAdapter`**: on another platform's response
+  it throws.
+
+**From `@nestjs/cache-manager`.** Its `@CacheKey()` and `@CacheTTL()` write
+metadata this interceptor reads (`cache_module:cache_key`,
+`cache_module:cache_ttl`) when ours are absent, so a controller moving from
+its `CacheInterceptor` keeps them; `@CacheTTL()` is in ms in both.
 
 ### Installing bun-cache is what makes the subpath compile
 
@@ -2599,7 +2724,7 @@ and [the cache module](#the-cache-module), exported **only** from
 
 | Group | Exports |
 |---|---|
-| Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`; types `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported |
+| Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |

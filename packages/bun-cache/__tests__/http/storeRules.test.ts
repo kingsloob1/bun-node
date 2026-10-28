@@ -449,3 +449,127 @@ describe("the lifetime", () => {
     expect(runs).toBe(2);
   });
 });
+
+describe('ttl: "headers-or-cache"', () => {
+  /** Serves `/r` once under `"headers-or-cache"` over a cache whose own TTL is `cacheTtl`, and answers the entry it stored (if any) and the runs. */
+  async function serve(
+    handler: (req: BunRequest, res: BunResponse) => void,
+    cacheTtl: number | null | ((value: unknown) => number | null),
+    /** Whether the response writes something (an entry or a marker). */
+    writes = true,
+  ) {
+    setSystemTime(new Date("2026-10-28T10:00:00Z"));
+    const cache = makeHttpCache({ ttl: cacheTtl });
+    const router = new BunRouter();
+    let runs = 0;
+    router.get(
+      "/r",
+      cacheResponse(cache, { ttl: "headers-or-cache" }),
+      (req, res) => {
+        runs++;
+        handler(req, res);
+      },
+    );
+    const written = writes ? nextSet(cache) : Bun.sleep(5);
+    const first = await router.fetch("/r");
+    await written;
+    const second = await router.fetch("/r");
+    return {
+      first,
+      second,
+      runs,
+      entry: await cache.getEntry(keyFor("/r")),
+      frame: await frameAt(cache, keyFor("/r")),
+    };
+  }
+
+  test("no freshness header: stored with the cache's own TTL", async () => {
+    const result = await serve((_req, res) => {
+      res.send("x");
+    }, 90_000);
+    expect(result.runs).toBe(1);
+    expect(result.first.headers.get("x-cache")).toBe("MISS");
+    expect(result.second.headers.get("x-cache")).toBe("HIT");
+    expect(result.entry?.freshUntil).toBe(
+      Date.parse("2026-10-28T10:00:00Z") + 90_000,
+    );
+  });
+
+  test("the cache's TTL as a function, and null (never stale)", async () => {
+    const computed = await serve(
+      (_req, res) => {
+        res.send("x");
+      },
+      () => 5_000,
+    );
+    expect(computed.entry?.freshUntil).toBe(
+      Date.parse("2026-10-28T10:00:00Z") + 5_000,
+    );
+    const forever = await serve((_req, res) => {
+      res.send("x");
+    }, null);
+    expect(forever.runs).toBe(1);
+    expect(forever.entry?.freshUntil).toBeNull();
+  });
+
+  test("a header's lifetime wins over the cache's TTL", async () => {
+    const result = await serve((_req, res) => {
+      res.setHeader("Cache-Control", "max-age=30");
+      res.send("x");
+    }, 90_000);
+    expect(result.entry?.freshUntil).toBe(
+      Date.parse("2026-10-28T10:00:00Z") + 30_000,
+    );
+    // A lifetime of 0 from the headers is a lifetime: not stored.
+    const zero = await serve((_req, res) => {
+      res.setHeader("Cache-Control", "max-age=0");
+      res.send("x");
+    }, 90_000);
+    expect(zero.runs).toBe(2);
+    expect(zero.frame?.kind).toBe("uncacheable");
+  });
+
+  test("the refusals still apply: private, no-store, a cookie", async () => {
+    for (const set of [
+      (res: BunResponse) => res.setHeader("Cache-Control", "private"),
+      (res: BunResponse) => res.setHeader("Cache-Control", "no-store"),
+      (res: BunResponse) => res.setHeader("Set-Cookie", "a=1"),
+    ]) {
+      const result = await serve((_req, res) => {
+        set(res);
+        res.send("x");
+      }, 90_000);
+      expect(result.runs).toBe(2);
+      expect(result.first.headers.get("x-cache")).toBe("UNCACHEABLE");
+      expect(result.frame?.kind).toBe("uncacheable");
+    }
+  });
+
+  test("a hit's min-fresh is judged against the entry's freshness (honorRequest)", async () => {
+    setSystemTime(new Date("2026-10-28T10:00:00Z"));
+    const cache = makeHttpCache({ ttl: 10_000 });
+    const router = new BunRouter();
+    let runs = 0;
+    router.get(
+      "/r",
+      cacheResponse(cache, { ttl: "headers-or-cache", honorRequest: true }),
+      (_req, res) => {
+        runs++;
+        res.send("x");
+      },
+    );
+    const written = nextSet(cache);
+    await router.fetch("/r");
+    await written;
+    const fine = await router.fetch("/r", {
+      headers: { "cache-control": "min-fresh=5" },
+    });
+    expect(fine.headers.get("x-cache")).toBe("HIT");
+    // 10 s fresh left is less than 20: the handler runs.
+    const tooClose = await router.fetch("/r", {
+      headers: { "cache-control": "min-fresh=20" },
+    });
+    expect(tooClose.headers.get("x-cache")).toBe("MISS");
+    expect(runs).toBe(2);
+  });
+});
