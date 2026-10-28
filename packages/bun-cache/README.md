@@ -126,8 +126,16 @@ And (PR-Z1):
   `compress: false`, every one decompressed no further than `maxEntryBytes`
   ([Compression and limits](#compression-and-limits))
 
-Next, in the plan's order: the Cloudflare D1 driver (PR-C11), the Nest
-interceptor (PR-N2), then encryption (PR-E1 to PR-E3).
+And (PR-C11):
+
+- the **Cloudflare D1 driver**, over the same two transports: the SQLite
+  driver's design with every write one statement — triggers keep the tag
+  index and do the invalidations, so the fence holds without transactions —
+  counters, locks, the `maxEntries` cap, values up to 1,000,000 bytes, no bus
+  ([The Cloudflare D1 driver](#the-cloudflare-d1-driver))
+
+Next, in the plan's order: the Nest interceptor (PR-N2), then encryption (PR-E1
+to PR-E3).
 
 ## Quick start
 
@@ -786,6 +794,7 @@ KILL`), and the bus-gap case then runs for it too.
 | S3 | PR-C7 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) |
 | Azure Blob Storage | PR-C8 | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) |
 | Cloudflare KV | PR-C10 | native (`expiration_ttl`, at least 60 s) + filtered on read | no | no | stamps, checked on read (eventually consistent) | none (`redisBus` / `pgBus`) |
+| Cloudflare D1 | PR-C11 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index (triggers), atomic fence (one statement) | none (`redisBus` / `pgBus`) |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -1608,6 +1617,77 @@ bytes.
   deleting it, which KV's REST API answers stale for up to a minute. The spike
   behind this design is
   [`docs/plans/bun-cache/evidence/cloudflare-spike.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/evidence/cloudflare-spike.md).
+
+## The Cloudflare D1 driver
+
+```ts
+import { cloudflareD1Driver, createCache } from "@kingsleyweb/bun-cache";
+
+// Production: through the bun-cache Worker (see the KV driver's section).
+const cache = createCache({
+  driver: cloudflareD1Driver({
+    endpoint: "https://bun-cache.<you>.workers.dev",
+    apiToken: process.env.BUN_CACHE_PROXY_TOKEN, // the Worker's secret
+    databaseId: "CACHE_DB", // the binding's name in wrangler.toml
+  }),
+});
+
+// Development, CI, light traffic: straight to the REST API.
+cloudflareD1Driver({
+  accountId: "…", // or CLOUDFLARE_ACCOUNT_ID
+  apiToken: "…", // or CLOUDFLARE_API_TOKEN: a token with D1: Edit
+  databaseId: "…", // the database's id
+});
+```
+
+A D1 database, reached from a Bun process over HTTP, by the same two
+transports as [the KV driver](#the-cloudflare-kv-driver): the REST API
+(nothing to deploy, **1,200 requests per five minutes per token**) or the
+bun-cache Worker with the database bound (`d1_databases` in its
+`wrangler.toml`; no such cap — **use it in production**).
+
+D1 is SQLite in a Durable Object, so this is [the SQLite
+driver](#the-sqlite-driver)'s design — its tables (`<prefix>entries`,
+`tags`, `stamps`, `locks`; no bus table), a tag index with an atomic fence,
+counters as a `RETURNING` upsert, locks as one conditional upsert, expiry
+filtered on read and reclaimed by the sweeper — with what HTTP changes:
+
+- **Every write is one statement.** D1 refuses `BEGIN`, so no write relies on
+  a transaction. **Triggers** keep the tag index (it follows each entry's
+  tags on insert, update and delete) and make a stamp an invalidation (writing
+  one deletes its tag's entries, in the same statement). The fence is the
+  write's own `WHERE NOT EXISTS`. D1 runs one statement at a time, so a
+  fenced write and an invalidation are ordered whole: a write of a load that
+  started before an invalidation never survives it (0 of 60 in the spike, 0
+  of 20 against Cloudflare's own D1 on each transport; a check, then a
+  write, lets most of them through).
+- **Values travel as hex** (`unhex(?)`, `hex(v)`). D1 caps a string at
+  2,000,000 bytes, so an entry holds at most **1,000,000 bytes**
+  (`maxEntryBytes`, below the core's 4 MiB default); a larger one is refused
+  with `EntryTooLargeError` before anything is sent.
+- **Parameters are strings** (the REST API's rule), which SQLite's type
+  affinity stores and compares as numbers.
+- **Requests**: `get` is one; `getMany` one per ten keys; `set` one;
+  `setMany` one per 50 entries; `delete` one; `invalidateTags` one (its
+  count read just before the invalidation, in the same request); `clear`
+  one; `sweep` one or two.
+- **No bus** (`bus: "none"`): a polled table over the REST API would spend
+  the token's budget, and every poll's rows read are billed. An
+  [L1](#multi-tier) takes `redisBus` / `pgBus`.
+- **Options**: `prefix` (an SQL identifier, `bun_cache_` by default),
+  `tables` (exact names, as the SQL drivers take them; no `bus`),
+  `maxEntries` (enforced by the sweep, nearest to expiry first, then the
+  oldest unexpiring; counters never), `syncSchema` (a no-op until the schema
+  first changes). The tables, indexes and triggers are created on first use,
+  each `IF NOT EXISTS`.
+- **Cost**: D1 bills rows read and written; the triggers add the tag rows'
+  writes to each tagged `set` and invalidation.
+- **Tested** against real D1 in workerd (the shipped Worker under miniflare,
+  every test run) and, in the opt-in live lane
+  (`__tests__/drivers/cloudflare-d1-live.test.ts`), against Cloudflare's D1
+  through both transports. There, a failed two-statement batch rolled back
+  its first statement through the REST API as well as the Worker: a batch is
+  one transaction on both (the driver does not rely on it).
 
 ## HTTP response caching
 

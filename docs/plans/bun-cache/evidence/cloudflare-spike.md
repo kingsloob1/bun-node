@@ -339,6 +339,8 @@ exceed.
 
 ## Questions for the user
 
+**PR-C11 (2026-10-28), live**: through the REST API, a failed two-statement batch rolled back its first statement, so a REST batch is one transaction too (the driver does not rely on it).
+
 **Answered by the user on 2026-10-28: all nine as recommended** (the plan's
 Status records it). PR-C10 built on them; the D1 driver is PR-C11.
 
