@@ -29,6 +29,7 @@ const manifest = (await Bun.file(join(ROOT, "package.json")).json()) as {
   files: string[];
   main: string;
   types: string;
+  dependencies: Record<string, string>;
   peerDependenciesMeta: Record<string, { optional?: boolean }>;
 };
 
@@ -116,6 +117,28 @@ describe("package.json exports", () => {
         (entry) => entry.spelling === "@kingsleyweb/bun-cache/testing",
       ),
     ).toBe(true);
+  });
+
+  it("checks the ./http subpath, the response cache", () => {
+    expect(manifest.exports["./http"]).toEqual({
+      "@kingsleyweb/source": "./lib/http/index.ts",
+      types: "./dts/http/index.d.ts",
+      default: "./lib/http/index.ts",
+    });
+    expect(
+      checkConfig.entries?.some(
+        (entry) => entry.spelling === "@kingsleyweb/bun-cache/http",
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("this package's runtime dependencies", () => {
+  // ./http's declarations import bun-common's router types; a declaration
+  // must never import an undeclared package, so bun-common stays a runtime
+  // dependency (plan §14.1), not a peer or a devDependency.
+  it("declares bun-common, which ./http's declarations import", () => {
+    expect(manifest.dependencies["@kingsleyweb/bun-common"]).toBeDefined();
   });
 });
 

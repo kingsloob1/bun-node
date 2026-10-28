@@ -72,6 +72,23 @@
       "values": ["runCacheDriverConformance", "faulty", "fakeClock"]
     },
     {
+      "$comment": "The HTTP response cache (plan \u00a79): cacheResponse, coalesceRequests and addCacheTags for bun-common's BunRouter. Its declarations import bun-common, a runtime dependency.",
+      "spelling": "@kingsleyweb/bun-cache/http",
+      "values": ["cacheResponse", "coalesceRequests", "addCacheTags"],
+      "types": [
+        "CacheResponseOptions",
+        "CacheResponseMiddleware",
+        "CacheStatus",
+        "CoalesceRequestsOptions"
+      ],
+      "snippet": "import type { BunRouter, BunResponse } from \"@kingsleyweb/bun-common\";\nimport { createCache, memoryDriver } from \"@kingsleyweb/bun-cache\";\nconst cache = createCache({ driver: memoryDriver() });\nconst pages = m.cacheResponse(cache, { ttl: 60_000, varyBy: [\"accept-language\"], tags: (req) => [req.originalUrl] });\nexport type _pagesNotAny = Expect<IsAny<typeof pages>>;\nexport type _invalidate = Equal<ReturnType<typeof pages.invalidate>, Promise<void>>;\ndeclare const router: BunRouter;\nrouter.get(\"/posts/:id\", pages, (_req, res) => { res.send(\"ok\"); });\nrouter.use(\"/feed\", m.coalesceRequests({ wait: 5_000 }));\ndeclare const res: BunResponse;\nm.addCacheTags(res, \"post:1\");\nexport const _status: t.CacheStatus = \"HIT\";\nexport const _options: t.CacheResponseOptions = { ttl: \"headers\", honorRequest: true, coalesce: { wait: 1_000 } };"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/http",
+      "values": ["cacheResponse", "coalesceRequests", "addCacheTags"],
+      "types": ["CacheResponseOptions"]
+    },
+    {
       "spelling": "@kingsleyweb/bun-cache/lib/drivers",
       "values": [
         "memoryDriver",
