@@ -972,6 +972,12 @@ writes the first SigV4 signer. What it does, and where it departs from §7.8:
   10/10 runtime imports; scripts 186 pass; `examples/bun-cache` 15 passed,
   4 skipped on memory; `bun-timings.json` refreshed with every URL.
 
+**At-rest encryption, name hashing and pluggable compression, planned
+2026-10-28** (approved in principle by the user the same day): the sub-plan
+[`encryption.md`](encryption.md), with its evidence in
+[`evidence/encryption/`](evidence/encryption/README.md). It proposes PR-Z1,
+PR-E1, PR-E2 and PR-E3, and awaits the user's answers to its §13.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

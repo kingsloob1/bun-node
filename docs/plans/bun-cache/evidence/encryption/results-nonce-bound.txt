@@ -1,0 +1,6 @@
+| writes/s | reach 2^32 seals | P(any nonce repeat) after 1 year, 96-bit random | after 1 year, 128-bit salt + derived key |
+|---|---|---|---|
+| 100 | 497.1 d | 6.3e-11 | 1.5e-20 |
+| 1,000 | 49.7 d | 6.3e-9 | 1.5e-18 |
+| 10,000 | 5.0 d | 6.3e-7 | 1.5e-16 |
+| 100,000 | 11.9 h | 6.3e-5 | 1.5e-14 |

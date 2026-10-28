@@ -1,0 +1,21 @@
+Bun 1.4.4 (a0cc096ce); µs per awaited op, median of 5; ~63 B and ~5071 B JSON values
+
+| driver | value | set plain | set sealed | get plain | get sealed |
+|---|---|---|---|---|---|
+| memory | 100 B | 4.0 | 9.8 | 3.6 | 7.0 |
+| memory | 4 KiB | 26.1 | 29.9 | 12.8 | 21.9 |
+| sqlite (WAL, file) | 100 B | 35.1 | 37.5 | 6.5 | 11.1 |
+| sqlite (WAL, file) | 4 KiB | 106.0 | 174.6 | 57.5 | 60.7 |
+
+Two more runs minutes later (load 5.9, peers active): the spread is the noise
+
+| driver | value | set plain | set sealed | get plain | get sealed |
+|---|---|---|---|---|---|
+| memory | 100 B | 4.7 | 12.9 | 3.6 | 7.5 |
+| memory | 4 KiB | 114.6 | 231.1 | 45.2 | 81.4 |
+| sqlite (WAL, file) | 100 B | 49.9 | 40.5 | 6.9 | 10.9 |
+| sqlite (WAL, file) | 4 KiB | 95.4 | 97.4 | 34.4 | 37.6 |
+| memory | 100 B | 3.1 | 7.1 | 7.7 | 16.8 |
+| memory | 4 KiB | 59.8 | 46.5 | 18.4 | 24.7 |
+| sqlite (WAL, file) | 100 B | 36.8 | 40.8 | 7.2 | 12.0 |
+| sqlite (WAL, file) | 4 KiB | 123.0 | 122.9 | 39.8 | 46.7 |

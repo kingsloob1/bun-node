@@ -1,0 +1,28 @@
+sanity: round trips, node↔subtle AES-GCM cross-open, tamper detected
+Bun 1.4.4 (a0cc096ce), 16 threads, load 3.64 3.51 4.37; 5 rounds of ≥150/4 ms, medians
+
+## 1. Seal and open, random bytes: µs per op wall / CPU µs per op (CPU > wall = other threads worked)
+
+| candidate | op | 100 B | 4096 B | 70000 B | 1048576 B |
+|---|---|---|---|---|---|
+| node AES-256-GCM, Buffer key | seal | 1.03 / 1.10 | 2.24 / 2.82 | 20.3 / 27.3 | 309 / 404 |
+| node AES-256-GCM, Buffer key | open | 1.14 / 1.17 | 1.89 / 2.11 | 16.0 / 20.1 | 173 / 219 |
+| node AES-256-GCM, KeyObject | seal | 1.02 / 1.06 | 2.17 / 2.56 | 20.6 / 27.8 | 298 / 385 |
+| node AES-256-GCM + per-entry HMAC key | seal | 1.76 / 1.83 | 3.38 / 3.94 | 29.5 / 40.3 | 403 / 531 |
+| node AES-256-GCM + per-entry HMAC key | open | 1.90 / 1.96 | 2.59 / 2.78 | 14.6 / 18.1 | 179 / 226 |
+| node AES-256-GCM behind `await` | seal | 1.39 / 1.43 | 2.53 / 2.89 | 19.8 / 26.3 | 321 / 416 |
+| subtle AES-GCM, awaited one by one | seal | 11.8 / 16.0 | 15.0 / 19.6 | 42.3 / 53.1 | 554 / 667 |
+| subtle AES-GCM, awaited one by one | open | 11.5 / 16.1 | 14.3 / 18.8 | 35.2 / 42.7 | 418 / 478 |
+| subtle AES-GCM, 64 in flight | seal | 4.07 / 12.3 | 6.15 / 16.9 | 26.0 / 66.3 | 496 / 1413 |
+| subtle AES-GCM + per-entry importKey | seal | 17.8 / 23.2 | 19.4 / 24.7 | 60.0 / 70.6 | 609 / 724 |
+| subtle ChaCha20-Poly1305, one by one | seal | 14.7 / 19.7 | 19.6 / 24.9 | 89.0 / 101 | 1140 / 1243 |
+| subtle ChaCha20-Poly1305, one by one | open | 11.8 / 16.6 | 16.3 / 21.4 | 72.8 / 82.1 | 851 / 925 |
+
+## 2. Against bun-cache's own write and read path (bun:jsc + zstd ≥ 16 KiB), µs per op wall
+
+| JSON size | encoded+compressed bytes | encode+zstd | + seal (node GCM) | seal share | decode | open + decode | open share |
+|---|---|---|---|---|---|---|---|
+| 63 B | 83 B | 1.06 | 2.38 | 56% | 0.60 | 1.89 | 68% |
+| 4164 B | 2193 B | 13.1 | 16.2 | 19% | 8.36 | 10.8 | 23% |
+| 70042 B | 2403 B (zstd) | 286 | 312 | 8% | 143 | 140 | -2% |
+| 1048807 B | 29328 B (zstd) | 4392 | 4486 | 2% | 1979 | 1926 | -3% |

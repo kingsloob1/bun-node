@@ -1,0 +1,10 @@
+--- bun
+randomBytes(12)               3.052 µs/op
+randomBytes(1024)             3.404 µs/op
+randomFillSync(Uint8Array 12) 2.874 µs/op
+getRandomValues(Uint8Array12) 0.045 µs/op
+--- node v24.2.0
+randomBytes(12)               3.391 µs/op
+randomBytes(1024)             7.445 µs/op
+randomFillSync(Uint8Array 12) 5.787 µs/op
+getRandomValues(Uint8Array12) 4.724 µs/op

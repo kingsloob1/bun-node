@@ -1,0 +1,18 @@
+Bun 1.4.4 (a0cc096ce); the real createCache, memoryDriver and fileDriver
+
+| attack | a safe cache would answer | bun-cache answered |
+|---|---|---|
+| A1 codec encryption: swap payloads of user:1 and user:2 | bob/user | {"name":"alice","role":"admin"} |
+| A2 codec encryption: swap across namespaces tenant-a/tenant-b | tenant b | {"tenant":"a","total":100} |
+| B0a control, the envelope without AAD: swap user:1 and user:2 (caught by the full key inside) | miss | miss |
+| B0b control, the envelope without AAD: copy tenant-a's entry over tenant-b's | miss | {"tenant":"a","total":100} |
+| B1 envelope + AAD: swap user:1 and user:2 | miss | miss |
+| B2 envelope + AAD: copy tenant-a's entry over tenant-b's | miss | miss |
+| B3 envelope: flip one ciphertext bit | miss | miss |
+| B4 rotation: written under 2026-09, read with [2026-10, 2026-09] | dave | {"name":"dave"} |
+| B5 wrong key under the same id | miss | miss |
+| B6 key id unknown to this process | miss | miss |
+| B7 plaintext in the stored bytes ('erin') | absent | "absent" |
+| C1 today (tags in the clear): strip org:7, then invalidateTags(org:7) | miss | {"org":7} |
+| C2 tags inside the envelope: the same | miss | miss |
+| D1 replay price:1's older ciphertext over its newer one | 250 (not preventable) | {"cents":100} |

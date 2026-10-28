@@ -1,0 +1,12 @@
+Bun 1.4.4 (a0cc096ce); median of 5 × 200000, µs per op
+
+| step | µs |
+|---|---|
+| randomBytes(12) | 2.81 |
+| crypto.getRandomValues(new Uint8Array(12)) | 0.04 |
+| randomFillSync(new Uint8Array(12)) | 2.82 |
+| 12 bytes from a 48 KiB pool refilled by getRandomValues | 0.05 |
+| GCM seal 100 B, fixed nonce (cipher alone) | 0.82 |
+| GCM seal 100 B, randomBytes nonce | 3.72 |
+| GCM seal 100 B, getRandomValues nonce | 0.86 |
+| GCM seal 100 B, pooled nonce | 0.94 |

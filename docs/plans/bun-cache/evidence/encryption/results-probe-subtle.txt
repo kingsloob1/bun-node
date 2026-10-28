@@ -1,0 +1,9 @@
+OK AES-GCM 27
+OK ChaCha20-Poly1305 27
+NO AES-OCB NotSupportedError Unrecognized algorithm name
+OK AES-CTR 11
+NO AES-KW SyntaxError Unsupported key usage for an AES key
+HMAC OK 32
+HKDF OK 32
+importKey ChaCha20-Poly1305 NO raw The algorithm is not supported
+importKey ChaCha20-Poly1305 OK raw-secret
