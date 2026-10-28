@@ -131,6 +131,19 @@ describe("package.json exports", () => {
       ),
     ).toBe(true);
   });
+
+  it("checks the ./cloudflare-worker subpath, the Worker users deploy, as a browser entry", () => {
+    expect(manifest.exports["./cloudflare-worker"]).toEqual({
+      "@kingsleyweb/source": "./lib/cloudflare/worker.ts",
+      types: "./dts/cloudflare/worker.d.ts",
+      default: "./lib/cloudflare/worker.ts",
+    });
+    const entry = checkConfig.entries?.find(
+      (each) => each.spelling === "@kingsleyweb/bun-cache/cloudflare-worker",
+    );
+    // `browser` is consumer-check.ts's field; the build's CheckConfig does not read it.
+    expect((entry as { browser?: boolean } | undefined)?.browser).toBe(true);
+  });
 });
 
 describe("this package's runtime dependencies", () => {

@@ -1,0 +1,57 @@
+# D1 probe (proxy runs batch items one by one, like miniflare's explorer)
+
+## 1. SQL surface
+BEGIN TRANSACTION -> ERROR D1_ERROR: To execute a transaction, please use the state.storage.transaction() or state.storage.transactionSync() APIs instead of the SQL BEGIN TRANSACTION or SAVEPOINT statements. The JavaScript API is safer because it will automatically roll back on exceptions, and because it interacts correctly with Durable Objects' automatic atomic write coalescing.
+SAVEPOINT -> ERROR D1_ERROR: To execute a transaction, please use the state.storage.transaction() or state.storage.transactionSync() APIs instead of the SQL BEGIN TRANSACTION or SAVEPOINT statements. The JavaScript API is safer because it will automatically roll back on exceptions, and because it interacts correctly with Durable Objects' automatic atomic write coalescing.
+two statements in one sql string -> {"results":[{"b":2}],"success":true,"meta":{"served_by":"miniflare.db","duration":0,"changes":0,"last_row_id":0,"changed_db":false,"size_after":4096,"rows_read":0,"rows_written":0}}
+total_changes() -> {"results":[{"t":1}],"success":true,"meta":{"served_by":"miniflare.db","duration":0,"changes":0,"last_row_id":2,"changed_db":false,"size_after":8192,"rows_read":0,"rows_written":0}}
+unhex/hex -> {"results":[{"h":"00FF41","t":"blob"}],"success":true,"meta":{"served_by":"miniflare.db","duration":0,"changes":0,"last_row_id":2,"changed_db":false,"size_after":8192,"rows_read":0,"rows_written":0}}
+blob as JSON -> {"results":[{"b":[0,255,65]}],"success":true,"meta":{"served_by":"miniflare.db","duration":1,"changes":0,"last_row_id":2,"changed_db":false,"size_after":8192,"rows_read":0,"rows_written":0}}
+json_each over a param -> {"results":[{"value":"a"},{"value":"b"}],"success":true,"meta":{"served_by":"miniflare.db","duration":0,"changes":0,"last_row_id":2,"changed_db":false,"size_after":8192,"rows_read":2,"rows_written":0}}
+string param vs integer column -> [{"t":"integer","gt":1,"sum":1699999999995}]
+NULLIF('', '') for a null -> ERROR D1_ERROR: near "isnull": syntax error at offset 33: SQLITE_ERROR
+
+## 2. Schema with triggers (tag rows follow entries.tg; a stamp deletes its tag's entries)
+DDL as one batch -> 11
+
+## 3. Entries
+set (all 256 byte values) stored: true
+byte-exact read back: true tg: ["a","b"]
+tag rows via trigger: [{"tag":"a","k":"k1"},{"tag":"b","k":"k1"}]
+tag rows after re-tag: [{"tag":"c","k":"k1"}]
+value of 1048576 bytes -> {"equal":true,"ms":208}
+value of 1999000 bytes -> ERROR D1_ERROR: string or blob too big: SQLITE_TOOBIG
+value of 2000100 bytes -> ERROR D1_ERROR: string or blob too big: SQLITE_TOOBIG
+
+## 4. The fence, one statement
+invalidate meta.changes (stamp + trigger deletes?): 3 rows_written: 3
+entry gone after the stamp (trigger delete): true tag rows left: {
+  c: 0,
+}
+pre-invalidation load (createdAt before stamp) stored: false
+post-invalidation load (createdAt after stamp) stored: true
+untagged write unaffected: true
+race, one statement + trigger, survivors of 60: 0
+race, mutant check-then-write, survivors of 60: 59
+
+## 5. Counters and locks
+200 concurrent increments: final 200 distinct returns 200 ms 202
+increment by -3 (string '-3'): {
+  n: 197,
+}
+50 contenders on a free lock, winners: 1
+takeover after expiry wins: true
+
+## 6. Is a batch one transaction?
+batch [insert 1, insert into a missing table] -> ERROR D1_ERROR: no such table: missing: SQLITE_ERROR
+row 1 after the failed batch: {
+  c: 1,
+}
+batch [insert 2, insert 2 again (constraint)] -> ERROR D1_ERROR: UNIQUE constraint failed: atom.id: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_PRIMARYKEY)
+row 2 after the failed batch: {
+  c: 1,
+}
+
+## 7. Round trip through the proxy (local workerd)
+get p50 0.95 ms, p99 3.78 ms (n=200)
+fenced set p50 0.96 ms, p99 3.04 ms (n=200)

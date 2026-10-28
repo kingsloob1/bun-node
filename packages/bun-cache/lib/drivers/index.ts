@@ -1,4 +1,4 @@
-/** The built-in drivers. PR-C1 shipped memory, PR-C2 file, PR-C3 SQLite, PR-C4 Postgres, MySQL and MariaDB, PR-C5 Redis, PR-C6 MongoDB, PR-C7 S3, PR-C8 Azure Blob Storage; the rest follow the plan's order (§20.1). */
+/** The built-in drivers. PR-C1 shipped memory, PR-C2 file, PR-C3 SQLite, PR-C4 Postgres, MySQL and MariaDB, PR-C5 Redis, PR-C6 MongoDB, PR-C7 S3, PR-C8 Azure Blob Storage, PR-C10 Cloudflare KV; the rest follow the plan's order (§20.1). */
 export { fileDriver } from "./file";
 export type { FileDriverOptions } from "./file";
 export { memoryDriver } from "./memory";
@@ -15,6 +15,8 @@ export { azureBlobDriver } from "./azure";
 export type { AzureBlobConnection, AzureBlobDriverOptions } from "./azure";
 export { s3Driver } from "./s3";
 export type { S3DriverOptions } from "./s3";
+export { cloudflareKvDriver } from "./cloudflare-kv";
+export type { CloudflareKvDriverOptions } from "./cloudflare-kv";
 export type { SqlCacheDriverOptions } from "./sql-base";
 export type { SqlConnectionOptions } from "./sql-connection";
 export type { SqlCacheTable } from "./sql-tables";

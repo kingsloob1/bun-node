@@ -1,0 +1,5 @@
+ready 95 ms, workerd RSS 42 MiB, dispose 5 ms
+ready 96 ms, workerd RSS 42 MiB, dispose 5 ms
+ready 97 ms, workerd RSS 42 MiB, dispose 5 ms
+ready 104 ms, workerd RSS 42 MiB, dispose 4 ms
+ready 98 ms, workerd RSS 42 MiB, dispose 6 ms

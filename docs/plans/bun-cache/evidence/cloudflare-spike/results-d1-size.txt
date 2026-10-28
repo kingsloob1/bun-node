@@ -1,0 +1,10 @@
+999999 hex param ok {"len":999999,"hl":1999998}
+999999 hex(v) read ok 999999
+1000000 hex param ok {"len":1000000,"hl":2000000}
+1000000 hex(v) read ok 1000000
+1000001 hex param ok {"len":1000001,"hl":2000002}
+1000001 hex(v) read ok 1000001
+1999999 two halves ok, len 1999999 read bytes 1999999
+2000000 two halves ok, len 2000000 read bytes 2000000
+2000001 two halves ok, len 2000001 read bytes 2000001
+NULLIF('', '') is null: {"n":1}

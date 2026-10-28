@@ -1,0 +1,43 @@
+# KV probe
+
+## 1. Writes the binding refuses (workerd's local KV)
+expiration_ttl=59 -> 400 KV PUT failed: 400 Invalid expiration_ttl of 59. Expiration TTL must be at least 60.
+expiration_ttl=60 -> 200 ok
+expiration = now+30 s -> 400 KV PUT failed: 400 Invalid expiration of 1793207685. Expiration times must be at least 60 seconds in the future.
+expiration = now+61 s -> 200 ok
+key of 512 bytes -> 200 ok
+key of 513 bytes -> 400 KV PUT failed: 414 UTF-8 encoded length of 513 exceeds key length limit of 512.
+metadata of 1024 bytes JSON -> 200 ok
+metadata of 1025 bytes JSON -> 400 KV PUT failed: 413 Metadata length of 1025 exceeds limit of 1024.
+value of 25 MiB -> 200 ok
+value of 25 MiB + 1 -> 400 KV PUT failed: 413 Value length of 26214401 exceeds limit of 26214400.
+5 writes to one key within ~10 ms, statuses: 200,200,200,200,200 (Cloudflare: 1 write/s/key, else 429)
+
+## 2. Reads
+raw GET byte-exact: true expiration header: 1793211256
+missing key status: 404
+bulk/get of a binary value as text: length 256 of 256; byte-exact after UTF-8 encode: false ; missing -> null
+bulk/get of a base64 text value, decoded byte-exact: true
+bulk/get of 101 keys: 400
+write then read at once, fresh: 100 of 100 (local KV is one store; Cloudflare's is eventually consistent, up to 60 s)
+
+## 3. List and bulk
+bulk write of 1500 (base64, ttl 3600): {"successful_key_count":1500,"unsuccessful_keys":[]}
+list by prefix: 1500 keys in 2 pages of <= 1000, 1500 with expiration
+bulk delete: {"successful_key_count":1500,"unsuccessful_keys":[]}
+
+## 4. Round trips through the proxy (local workerd)
+put 1 KiB p50 0.90 ms p99 1.95; get p50 1.15 ms p99 2.73 (n=200)
+
+## 5. miniflare's local explorer (/cdn-cgi/explorer/api), the REST-shaped surface it ships
+list namespaces: 200 {"success":true,"errors":[],"messages":[],"result":[{"id":"kv-1","title":"KV"}],"result_info":{"count":1}}
+PUT ?expiration_ttl=60: 200
+…its expiration in a listing: {"name":"explorer-ttl"}
+PUT ?expiration_ttl=30 (Cloudflare refuses < 60): 200
+D1 /raw batch [create, insert 1, insert 1 again]: 500
+…rows left after the failed batch: [[1]]
+D1 /query: 404
+explorer with a wrong token: 200 (it checks none)
+
+## 6. Native expiry
+expiration_ttl=60: gone after 60151 ms

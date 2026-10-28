@@ -111,7 +111,15 @@ And (PR-H2):
   `hardTimeout`; `streams: { buffer }` stores streamed responses
   ([Stale serving over HTTP](#stale-serving-over-http))
 
-Next, in the plan's order: the Cloudflare drivers (PR-C10, PR-C11), pluggable
+And (PR-C10):
+
+- the **Cloudflare KV driver**, over HTTP from a Bun process: the REST API
+  with an API token, or the bun-cache Worker
+  (`@kingsleyweb/bun-cache/cloudflare-worker`, which you deploy) with its
+  secret — KV's own expiry (its 60 s floor absorbed), stamp-mode tags, no
+  counters, locks or bus ([The Cloudflare KV driver](#the-cloudflare-kv-driver))
+
+Next, in the plan's order: the Cloudflare D1 driver (PR-C11), pluggable
 compression (PR-Z1), the Nest interceptor (PR-N2), then encryption (PR-E1 to
 PR-E3).
 
@@ -699,6 +707,7 @@ KILL`), and the bus-gap case then runs for it too.
 | MongoDB | PR-C6 | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection |
 | S3 | PR-C7 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) |
 | Azure Blob Storage | PR-C8 | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) |
+| Cloudflare KV | PR-C10 | native (`expiration_ttl`, at least 60 s) + filtered on read | no | no | stamps, checked on read (eventually consistent) | none (`redisBus` / `pgBus`) |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
@@ -1408,6 +1417,118 @@ blob's expiry from the listing alone.
   Azure is untested**. Azurite does not enforce Azure's 15-minute limit on a
   request's age. An entry holds up to 5000 MiB less a MiB (one Put Blob); the
   core's `maxEntryBytes` (4 MiB) applies first.
+
+## The Cloudflare KV driver
+
+```ts
+import { cloudflareKvDriver, createCache } from "@kingsleyweb/bun-cache";
+
+// Production: through the bun-cache Worker you deploy (below).
+const cache = createCache({
+  driver: cloudflareKvDriver({
+    endpoint: "https://bun-cache.<you>.workers.dev",
+    apiToken: process.env.BUN_CACHE_PROXY_TOKEN, // the Worker's secret
+    namespaceId: "CACHE_KV", // the binding's name in wrangler.toml
+  }),
+});
+
+// Development, CI, light traffic: straight to the REST API.
+cloudflareKvDriver({
+  accountId: "…", // or CLOUDFLARE_ACCOUNT_ID
+  apiToken: "…", // or CLOUDFLARE_API_TOKEN: a token with Workers KV Storage: Edit
+  namespaceId: "…", // the namespace's id
+});
+```
+
+A Workers KV namespace, reached from a Bun process over HTTP — bun-cache
+runs in your server, not in a Worker. Two transports, one client, the same
+request shapes:
+
+- **The REST API** needs nothing deployed, but Cloudflare allows it **1,200
+  requests per five minutes per user or token**, shared with Wrangler and the
+  dashboard, and blocks the token for five minutes past that. That is four
+  cache operations a second. The client paces itself under the budget so
+  this process never trips it alone (it queues instead), and fails at once,
+  without sending, while a block lasts.
+- **The bun-cache Worker** has no such cap: it reads and writes through its
+  KV binding. **Use it in production.** It is part of this package:
+
+  ```ts
+  // src/index.ts of a Worker project
+  export { default } from "@kingsleyweb/bun-cache/cloudflare-worker";
+  ```
+
+  ```toml
+  # wrangler.toml
+  name = "bun-cache"
+  main = "src/index.ts"
+  compatibility_date = "2026-07-01"
+  kv_namespaces = [{ binding = "CACHE_KV", id = "<namespace id>" }]
+  d1_databases = [{ binding = "CACHE_DB", database_name = "cache", database_id = "<database id>" }]
+  ```
+
+  Then `wrangler secret put BUN_CACHE_PROXY_TOKEN` and `wrangler deploy`.
+  The Worker answers only requests carrying that secret as a bearer token
+  (with no secret set it refuses everything), and only for its KV and D1
+  bindings, named in the path. The driver's `apiToken` is then the secret,
+  given explicitly: `CLOUDFLARE_API_TOKEN` is never sent to a Worker URL. An
+  `endpoint` must be `https:` (`http:` only to a loopback host).
+
+```
+<p>/<ns>/e/<sha256(key)>   an entry: a header (expiry, tags) and the bytes
+<p>/<ns>/s/<sha256(tag)>   a tag's invalidation stamp
+```
+
+`<p>` is the prefix (`prefix`, `bun-cache` by default), `<ns>` the namespace
+encoded so it never adds a `/`; keys are hashed, so none passes KV's 512
+bytes.
+
+- **Expiry is KV's own**, with every write's `expiration_ttl`, which KV
+  refuses under **60 s**. A shorter TTL is still exact: the entry's header
+  holds its expiry, every read checks it, and KV reclaims the key up to a
+  minute later. No sweeper runs.
+- **Reads and writes**: `get` is one `GET` of the raw bytes, `getMany`
+  parallel `GET`s (KV's bulk read refuses binary values), `setMany` one bulk
+  write per 10,000 entries. `delete` reads each key first (KV answers a
+  delete alike either way, and the count needs to know), then one bulk
+  delete. `clear()` lists the namespace's entries and deletes them — not
+  atomic; stamps stay.
+- **Tags are stamps mode**: `invalidateTags` writes one stamp per tag, and
+  the core's read check does the invalidating. KV has no compare-and-swap,
+  so a stamp is read and written forward (the later time kept), which
+  narrows but cannot close the window where two invalidations of one tag
+  from two places land out of order.
+- **No counters, no locks, no bus.** KV has neither an atomic increment nor
+  a conditional write: `increment` throws `UnsupportedOperationError`, and
+  `getOrSet`'s `lock` logs one warning and keeps the in-process
+  single-flight, so a stampede across processes is bounded by their number.
+  An [L1](#multi-tier) needs a bus of its own (`redisBus` / `pgBus`).
+- **KV is eventually consistent.** A write, a delete or an invalidation is
+  usually seen at once where it was made, and may take **a minute or more**
+  elsewhere (a reader that saw the old value, or no value, recently waits
+  longest); the stamp cache (`tagStampCacheMs`) adds its own second. Use it
+  where serving a value a minute stale is acceptable. Measured on
+  2026-10-28 from Lagos: through the REST API a deleted key was still served
+  for 52 s (an overwrite showed in 0.7 s); through the Worker both showed in
+  about 0.4 s — one more reason to use the Worker.
+- **One write per second per key.** KV answers 429 to a second write to a key
+  within a second; the client waits out `Retry-After` and retries, up to six
+  attempts, so a hot key refreshed from many processes costs latency, not
+  errors. (In the live lane, three writes to one key in quick succession were
+  all accepted on both transports; the documented limit is handled anyway.)
+- **Limits and cost**: 25 MiB per value (the driver's `maxEntryBytes` is
+  24 MiB, leaving room for the header; the core's own 4 MiB applies first);
+  the free plan allows 100,000 reads and 1,000 writes a day.
+- **Tested** against real KV in workerd: the shipped Worker run by
+  [miniflare](https://www.npmjs.com/package/miniflare) on every test run, no
+  account needed. Local KV is one store — it is never eventually
+  consistent — and it does not limit writes per key, so the tests' own front
+  emulates the 429. The REST API and Cloudflare's own KV run in an opt-in
+  live lane (`__tests__/drivers/cloudflare-kv-live.test.ts`), where the REST
+  API skips the kit's `delete` and `clear` cases: they read a key right after
+  deleting it, which KV's REST API answers stale for up to a minute. The spike
+  behind this design is
+  [`docs/plans/bun-cache/evidence/cloudflare-spike.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/evidence/cloudflare-spike.md).
 
 ## HTTP response caching
 

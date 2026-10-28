@@ -1,0 +1,7 @@
+{
+  "name": "bun-cache-cloudflare-spike",
+  "private": true,
+  "dependencies": {
+    "miniflare": "4.20260730.0"
+  }
+}
