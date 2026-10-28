@@ -9,8 +9,9 @@
  * - **`upstash.test.ts`**: an opt-in managed Redis across the internet,
  *   `BUN_CACHE_TEST_UPSTASH_REDIS_URL` (a `rediss://…upstash.io` URL; never
  *   committed). Each command is a round trip of ~300 ms there, it has no
- *   `CLIENT KILL`, and its `PEXPIRETIME` sits a few ms off the `PEXPIREAT`
- *   sent: {@link RedisLane} carries those differences, nothing else.
+ *   `CLIENT KILL`, its `PEXPIRETIME` sits a few ms off the `PEXPIREAT`
+ *   sent, and it takes the `keyLocking` flag local Redis refuses:
+ *   {@link RedisLane} carries those differences, nothing else.
  *
  * Test data: every key carries this run's prefix
  * (`bun-cache-test:<pid>-<time>`), and the end of the file deletes exactly the
@@ -48,16 +49,70 @@ export interface RedisLane {
   shortTtlMs: number;
   /** Rounds of the fence-against-invalidation race (three round trips each). */
   raceRounds: number;
+  /**
+   * Whether every driver the suite builds sets `keyLocking` (Upstash's
+   * `allow-key-locking` script flag), so the kit and the specifics run
+   * key-locked. Only on a server that accepts the flag.
+   */
+  keyLocking: boolean;
+  /**
+   * Whether the server accepts the `allow-key-locking` script flag: Upstash
+   * does; Redis refuses it ("Unexpected flag in script shebang", Redis
+   * 8.0.5, measured), and the suite then checks the driver says so.
+   */
+  acceptsKeyLocking: boolean;
 }
 
-/** The local server's lane: exact expiry, 60 ms TTLs, 60 race rounds. */
+/** The local server's lane: exact expiry, 60 ms TTLs, 60 race rounds, no key locking (Redis refuses the flag). */
 export const LOCAL_REDIS_LANE: RedisLane = {
   name: "redis",
   busGap: "client-kill",
   expiryToleranceMs: 0,
   shortTtlMs: 60,
   raceRounds: 60,
+  keyLocking: false,
+  acceptsKeyLocking: false,
 };
+
+/**
+ * A script made to enforce Upstash's `allow-key-locking` rule on any Redis:
+ * every key a `redis.call`/`redis.pcall` names must share a hash tag with a
+ * key in `KEYS` (Upstash: "Dynamic keys are not allowed in Lua scripts when
+ * 'allow-key-locking' flag is set", measured 2026-10-28), else the script
+ * fails with `KEYLOCK`. The key is a command's first argument, and every
+ * argument of `UNLINK`, `DEL` and `EXISTS` — the commands the driver's
+ * scripts send. A hash tag is what is between the first `{` and the first
+ * `}` after it, when not empty; otherwise the whole key.
+ */
+function enforceKeyLockingRule(source: string): string {
+  const prelude = `
+local function __kl_tag(k)
+  local s = string.find(k, '{', 1, true)
+  if s then
+    local e = string.find(k, '}', s + 1, true)
+    if e and e > s + 1 then return string.sub(k, s + 1, e - 1) end
+  end
+  return k
+end
+local __kl_locked = {}
+for _, k in ipairs(KEYS) do __kl_locked[__kl_tag(k)] = true end
+local function __kl_check(cmd, ...)
+  local args = {...}
+  local n = 1
+  local c = string.upper(cmd)
+  if c == 'UNLINK' or c == 'DEL' or c == 'EXISTS' then n = #args end
+  for i = 1, n do
+    if not __kl_locked[__kl_tag(args[i])] then error('KEYLOCK a key outside the locked hash tags: ' .. args[i]) end
+  end
+end
+local function __kl_call(cmd, ...) __kl_check(cmd, ...) return redis.call(cmd, ...) end
+local function __kl_pcall(cmd, ...) __kl_check(cmd, ...) return redis.pcall(cmd, ...) end
+`;
+  const body = source
+    .replaceAll("redis.call(", "__kl_call(")
+    .replaceAll("redis.pcall(", "__kl_pcall(");
+  return `${prelude}\n${body}`;
+}
 
 /** An entry for the specifics. */
 function entry(
@@ -209,6 +264,7 @@ export async function registerRedisSuite(
     const driver = new RedisCacheDriver({
       url,
       prefix: prefix(suffix),
+      keyLocking: lane.keyLocking,
       ...extra,
     });
     opened.push(driver);
@@ -226,7 +282,11 @@ export async function registerRedisSuite(
     helper.close();
   });
 
-  const kitOptions = { url, prefix: prefix("kit") };
+  const kitOptions = {
+    url,
+    prefix: prefix("kit"),
+    keyLocking: lane.keyLocking,
+  };
   // Without CLIENT KILL, the gap is a QUIT sent on the bus's own subscriber
   // connection, so the kit's driver runs on a client whose duplicate() (the
   // bus subscribes on one) is kept. The driver never closes a given client.
@@ -236,6 +296,7 @@ export async function registerRedisSuite(
     lane.busGap === "quit"
       ? new RedisCacheDriver({
           prefix: kitOptions.prefix,
+          keyLocking: lane.keyLocking,
           client: proxied(kitClient, {
             duplicate: async () => {
               kitSubscriber = await kitClient.duplicate();
@@ -573,6 +634,7 @@ export async function registerRedisSuite(
       const forgetful = new RedisCacheDriver({
         client: wrapped,
         prefix: prefix("noscript"),
+        keyLocking: lane.keyLocking,
       });
       expect(await forgetful.set(ns, entry("k", [1], ["t"]))).toBe("stored");
       expect(await forgetful.increment(ns, "c", 2, null)).toBe(2);
@@ -588,6 +650,7 @@ export async function registerRedisSuite(
           },
         }),
         prefix: prefix("noscript"),
+        keyLocking: lane.keyLocking,
       });
       await expect(failing.set(ns, entry("k", [1]))).rejects.toThrow(
         "something else",
@@ -603,6 +666,7 @@ export async function registerRedisSuite(
       const shared = new RedisCacheDriver({
         client,
         prefix: prefix("shared"),
+        keyLocking: lane.keyLocking,
       });
       await shared.set(ns, entry("k", [1]));
       const received: BusMessage[] = [];
@@ -751,6 +815,190 @@ export async function registerRedisSuite(
       15_000,
     );
 
+    test.skipIf(lane.keyLocking)(
+      "every script keeps to its KEYS' hash tag (Upstash's allow-key-locking rule, enforced on this server)",
+      async () => {
+        // Each script reaches EVAL (EVALSHA answers NOSCRIPT) made to fail on
+        // a key outside the hash tags of its KEYS, as Upstash refuses one
+        // under the flag. Every script and branch runs below.
+        const client = new RedisClient(url);
+        const sources = new Set<string>();
+        const enforced = new RedisCacheDriver({
+          prefix: prefix("keylock-rule"),
+          client: proxied(client, {
+            evalsha: async () => {
+              throw new Error("NOSCRIPT No matching script. Please use EVAL.");
+            },
+            eval: async (
+              source: string,
+              numkeys: number,
+              ...rest: string[]
+            ) => {
+              sources.add(source);
+              return await client.eval(
+                enforceKeyLockingRule(source),
+                numkeys,
+                ...rest,
+              );
+            },
+          }),
+        });
+        try {
+          // The rule bites: the same wrapping refuses a key of another tag
+          // and lets one of KEYS' tag through.
+          const ruled = enforceKeyLockingRule(
+            "return redis.call('EXISTS', ARGV[1])",
+          );
+          await expect(
+            client.eval(
+              ruled,
+              1,
+              `${enforced.prefix}:{a}:x`,
+              `${enforced.prefix}:{b}:x`,
+            ),
+          ).rejects.toThrow(/KEYLOCK/);
+          expect(
+            await client.eval(
+              ruled,
+              1,
+              `${enforced.prefix}:{a}:x`,
+              `${enforced.prefix}:{a}:y`,
+            ),
+          ).toBe(0);
+
+          const space = `${ns}-keylock`;
+          const now = Date.now();
+          // set: new, tagged, fenced against an older stamp; replacing an
+          // entry with old tags; replacing a counter.
+          await enforced.setStamps(space, ["f"], now - 10, now + 60_000);
+          expect(
+            await enforced.set(space, entry("a", [1], ["red", "f"]), {
+              tags: ["f"],
+              createdAt: now,
+            }),
+          ).toBe("stored");
+          expect(await enforced.set(space, entry("a", [2], ["blue"]))).toBe(
+            "stored",
+          );
+          await enforced.increment(space, "c", 1, null);
+          await enforced.set(space, entry("c", [3], ["red"]));
+          // increment: new, existing, over an entry.
+          await enforced.increment(space, "n", 2, now + 60_000);
+          expect(await enforced.increment(space, "n", 3, now + 60_000)).toBe(5);
+          expect(await enforced.increment(space, "c", 4, null)).toBe(4);
+          // touch: an entry, a counter, nothing.
+          expect(await enforced.touch(space, "a", now + 30_000)).toBe(true);
+          expect(await enforced.touch(space, "n", null)).toBe(true);
+          expect(await enforced.touch(space, "none", null)).toBe(false);
+          // deleteByTags over members carrying other tags; delete of an
+          // entry, a counter and an absent key.
+          await enforced.set(space, entry("b", [4], ["red", "green"]));
+          await enforced.set(space, entry("d", [5], ["green"]));
+          expect(
+            await enforced.deleteByTags(space, ["blue", "green"], now + 60_000),
+          ).toBe(3);
+          await enforced.set(space, entry("e", [6], ["red"]));
+          expect(await enforced.delete(space, ["e", "n", "absent"])).toBe(2);
+          // locks: taken, re-taken, released.
+          expect(await enforced.acquireLock(space, "l", "me", 60_000)).toBe(
+            true,
+          );
+          expect(await enforced.acquireLock(space, "l", "me", 60_000)).toBe(
+            true,
+          );
+          expect(await enforced.releaseLock(space, "l", "me")).toBe(true);
+          // sweep: a tag set of a gone entry, and a lapsed stamp.
+          await enforced.set(space, entry("gone", [7], ["purple"]));
+          await helper.unlink(keyOf(enforced, space, "e", "gone"));
+          await enforced.setStamps(space, ["old"], now - 120_000, now - 60_000);
+          expect(
+            await enforced.sweep(Date.now(), 1_000),
+          ).toBeGreaterThanOrEqual(2);
+          // All nine scripts ran under the rule.
+          expect(sources.size).toBe(9);
+        } finally {
+          await enforced.close();
+          client.close();
+        }
+      },
+    );
+
+    test.skipIf(lane.acceptsKeyLocking)(
+      "keyLocking on a server that refuses the flag: the first script fails naming the option; reads still answer",
+      async () => {
+        const refused = make("keylock-refused", { keyLocking: true });
+        const failure = await refused
+          .set(ns, entry("k", [1], ["t"]))
+          .then(() => undefined)
+          .catch((error: unknown) => error as Error);
+        expect(failure?.message).toMatch(
+          /^redisDriver: keyLocking is set, and .* refused Upstash's allow-key-locking script flag \(.*Unexpected flag in script shebang: allow-key-locking.*\)\. The flag is Upstash's: plain Redis rejects it\. Remove keyLocking for this server\.$/,
+        );
+        expect(await refused.get(ns, "k")).toBeUndefined();
+        expect(await refused.getCounter(ns, "c")).toBeUndefined();
+        // Nothing was written.
+        expect(await helper.exists(keyOf(refused, ns, "e", "k"))).toBe(false);
+      },
+    );
+
+    test.skipIf(!lane.keyLocking)(
+      "keyLocking: every script the driver sends carries the flag (and allow-oom where it only removes) and runs, and the server honours it (a key-locked script reaching another hash tag is refused)",
+      async () => {
+        const client = new RedisClient(url);
+        const sources: string[] = [];
+        const locked = new RedisCacheDriver({
+          prefix: prefix("keylock-on"),
+          keyLocking: true,
+          client: proxied(client, {
+            evalsha: async () => {
+              throw new Error("NOSCRIPT No matching script. Please use EVAL.");
+            },
+            eval: async (
+              source: string,
+              numkeys: number,
+              ...rest: string[]
+            ) => {
+              sources.push(source);
+              return await client.eval(source, numkeys, ...rest);
+            },
+          }),
+        });
+        try {
+          const space = `${ns}-keylock-on`;
+          expect(await locked.set(space, entry("k", [1], ["t"]))).toBe(
+            "stored",
+          );
+          expect(await locked.increment(space, "c", 2, null)).toBe(2);
+          expect(
+            await locked.deleteByTags(space, ["t"], Date.now() + 60_000),
+          ).toBe(1);
+          // A script that only removes runs with allow-oom as well.
+          expect(await locked.delete(space, ["c"])).toBe(1);
+          expect(
+            sources.map((source) => source.slice(0, source.indexOf("\n"))),
+          ).toEqual([
+            "#!lua flags=allow-key-locking",
+            "#!lua flags=allow-key-locking",
+            "#!lua flags=allow-key-locking",
+            "#!lua flags=allow-key-locking,allow-oom",
+          ]);
+          // Upstash honours the flag rather than ignoring it: a key outside
+          // the locked hash tags is refused.
+          await expect(
+            client.eval(
+              "#!lua flags=allow-key-locking\nreturn redis.call('EXISTS', ARGV[1])",
+              1,
+              `${locked.prefix}:{a}:x`,
+              `${locked.prefix}:{b}:x`,
+            ),
+          ).rejects.toThrow(/Dynamic keys are not allowed/);
+        } finally {
+          await locked.close();
+          client.close();
+        }
+      },
+    );
+
     test("cluster: true, and a connection to a cluster node, fail naming oven-sh/bun#22947", async () => {
       expect(() => redisDriver({ url, cluster: true })).toThrow(
         /Redis Cluster is not supported yet.*22947/,
@@ -764,6 +1012,7 @@ export async function registerRedisSuite(
               : await client.send(command, args),
         }),
         prefix: prefix("cluster"),
+        keyLocking: lane.keyLocking,
       });
       await expect(clusterNode.get(ns, "k")).rejects.toThrow(/22947/);
       await clusterNode.close();

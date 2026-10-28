@@ -126,6 +126,41 @@ with the 1 s default ("no connection to 127.0.0.1:… within 1000ms").
   other key it touches shares that tag — but plain Redis rejects the unknown
   flag, so it would have to be an option.
 
+## Follow-up: `keyLocking` (2026-10-28)
+
+The user decided to build the opt-in mode (Status). `keylock-probe.ts`, run
+once against the same database and once against the local Redis 8.0.5
+(`results-keylock-probe.txt`, `results-keylock-probe-local.txt`; the Upstash
+run read the URL from another variable name, otherwise the same script):
+
+| A script with `#!lua flags=allow-key-locking` that… | Upstash 1.19.4 | Redis 8.0.5 |
+|---|---|---|
+| writes `KEYS[1]` | OK | "Unexpected flag in script shebang: allow-key-locking" |
+| also writes a key outside `KEYS` with `KEYS[1]`'s hash tag | OK | the same refusal |
+| writes a key of another hash tag (with or without `KEYS`) | "Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is set. Key was: …" | the same refusal |
+| reads keys named by `SMEMBERS` of `KEYS[1]`, same tag | OK | the same refusal |
+| loaded by `SCRIPT LOAD`, run by `EVALSHA` | OK; the digest is the source's SHA-1 | the same refusal |
+
+| `#!lua flags=allow-key-locking,allow-oom`: `GET` and `DEL` of `KEYS[1]`, `UNLINK` of a key with its tag | OK | the same refusal |
+| the same flags, `UNLINK` of a key of another hash tag | "Dynamic keys are not allowed …" (still key-locked) | the same refusal |
+| the same flags, `SCRIPT LOAD` then `EVALSHA` | OK; the digest is the source's SHA-1 | the same refusal |
+
+(The last three rows: `keylock-oom-probe.ts`, `results-keylock-oom-probe.txt`
+and `results-keylock-oom-probe-local.txt`, run once each after the user's
+decision to give `allow-oom` to the scripts that only remove. The probe does
+not fill the database: **what `allow-oom` changes on Upstash when it is out
+of memory is not measured**; that needs a full scratch database, never the
+shared one.)
+
+Unflagged, a key of another tag is accepted on both. So Upstash enforces its
+documented rule (a key outside `KEYS` must share a locked hash tag), which
+every driver script meets: each passes a `<p>:{<ns>}:` key as `KEYS[1]` and
+touches only keys of that base. The lane with the option on, once:
+**40 pass, 5 skip, 0 fail in 115.4 s** (the two kit skips; the distant-server
+test; the local-only rule-enforcement and refusal tests). Again after
+`allow-oom` was added to the four scripts that only remove: **40 pass,
+5 skip, 0 fail in 112.1 s**.
+
 ## Is a REST `upstashDriver` (PR-C9) still worth building?
 
 Not as the way to use Upstash: `redisDriver` over `rediss://` passes the whole

@@ -38,6 +38,18 @@
  * - **The bus** is `redisBus` (lib/bus/redis.ts) on this driver's client and
  *   prefix: the same channel, `<p>:bus`, the same JSON messages, a reconnect
  *   reported as a gap. A `redisBus` with the same prefix shares it.
+ * - **Upstash's key locking** (`keyLocking: true`): every script carries
+ *   `#!lua flags=allow-key-locking`, so Upstash locks the hash tags of its
+ *   `KEYS` instead of the whole database. Upstash accepts a key a script
+ *   names outside `KEYS` only when its hash tag is one `KEYS` locked
+ *   ("Dynamic keys are not allowed … Key was: …" otherwise; measured
+ *   2026-10-28), and every script here passes a key of its namespace's tag as
+ *   `KEYS[1]` and touches only keys of that tag. Plain Redis refuses the flag
+ *   ("Unexpected flag in script shebang", Redis 8.0.5, measured), so it is
+ *   opt-in, and the refusal is reported naming the option. The four scripts
+ *   that only read and remove (`delete`, the lock's release, and the sweep's
+ *   two prunes) also carry `allow-oom`, so a full database can still be
+ *   freed; nothing that writes does.
  * - **Cluster**: Bun's `RedisClient` does not follow Redis Cluster's `MOVED`
  *   and `ASK` redirects (oven-sh/bun#22947; measured on a three-node cluster:
  *   every key on another node fails with `MOVED`). So `cluster: true` throws,
@@ -116,6 +128,21 @@ export interface RedisDriverOptions extends ConnectionInput {
    * name.
    */
   firstConnectTimeout?: number;
+  /**
+   * Upstash's per-key script locking: every script the driver runs declares
+   * `#!lua flags=allow-key-locking`, so Upstash runs it under the lock of
+   * one namespace's hash tag (`{<ns>}`) instead of its global lock, and
+   * scripts on other namespaces, and plain commands, run alongside it.
+   * Defaults to `false`. **Upstash only**: plain Redis rejects the flag
+   * (Redis 8.0.5, measured; Redis 6 has no script flags at all), and the
+   * first script then fails naming this option; reads that need no script (`get`, `getMany`, `getCounter`,
+   * `getStamps`) still work. Locking stops at the namespace: two writes to
+   * one namespace still run one after the other. The scripts that only
+   * remove data (`delete`, `releaseLock`, `sweep`'s prunes) also declare
+   * `allow-oom`, since a flagged script without it is refused whole while
+   * the server is out of memory.
+   */
+  keyLocking?: boolean;
   /** Bun's `connectionTimeout` (ms per connection attempt; a timed-out attempt is not retried), passed through. Bun's default (10 s) when absent. Ignored with `client`. */
   connectionTimeout?: number;
   /** Bun's `maxRetries` for a dropped connection, passed through. Bun's default (20, about 31 s) when absent. Ignored with `client`. */
@@ -126,13 +153,44 @@ export interface RedisDriverOptions extends ConnectionInput {
   now?: () => number;
 }
 
-/** A Lua script with its digest, so `EVALSHA` can be tried first. */
-interface Script {
+/** A script's text with its digest, so `EVALSHA` can be tried first. */
+interface ScriptText {
   /** The source. */
   source: string;
   /** Its SHA-1, hex: what `EVALSHA` names it by. */
   sha: string;
 }
+
+/** A Lua script, plain and with Upstash's key-locking flag (`keyLocking`). */
+interface Script extends ScriptText {
+  /**
+   * The same script after its key-locking shebang
+   * ({@link KEY_LOCKING_SHEBANG}, or {@link KEY_LOCKING_FREEING_SHEBANG} for
+   * a script that only removes data): another digest, so `EVALSHA` never
+   * confuses the two.
+   */
+  keyLocked: ScriptText;
+}
+
+/**
+ * The shebang `keyLocking` puts first in a script: Upstash's
+ * `allow-key-locking` flag (Redis 7's script-flag syntax), so Upstash locks
+ * the hash tags of the script's `KEYS` rather than the whole database.
+ */
+const KEY_LOCKING_SHEBANG = "#!lua flags=allow-key-locking\n";
+
+/**
+ * The shebang of a key-locked script that only removes data: also
+ * `allow-oom`. A script with a shebang and without `allow-oom` is refused
+ * whole while the server is out of memory (Redis 7's flag semantics), where
+ * an unflagged script runs until a command that may grow memory; so without
+ * it, key locking would refuse the very deletes that free memory. Given only
+ * to scripts whose every command is a read or a removal (`GET`, `EXISTS`,
+ * `SMEMBERS`, `SCARD`, `SREM`, `UNLINK`, `DEL`, none of them refused out of
+ * memory anyway), so it never lets a write grow a full database. Upstash's
+ * behaviour when full is not measured (it needs a full scratch database).
+ */
+const KEY_LOCKING_FREEING_SHEBANG = "#!lua flags=allow-key-locking,allow-oom\n";
 
 /**
  * Helpers every script carries. `dropEntry` deletes one entry and its tag
@@ -165,18 +223,35 @@ local function dropEntry(base, key)
 end
 `;
 
-/** A script from its body, with the shared helpers prepended. */
-function script(body: string): Script {
-  const source = `${LUA_HELPERS}\n${body}`;
+/** A script's text and its SHA-1. */
+function scriptText(source: string): ScriptText {
   const hasher = new Bun.CryptoHasher("sha1");
   hasher.update(source);
   return { source, sha: hasher.digest("hex") };
 }
 
 /**
+ * A script from its body, with the shared helpers prepended, plain and
+ * key-locked. Every script passes a key of the namespace's hash tag as
+ * `KEYS[1]` and touches only keys of that tag (`base` is `<p>:{<ns>}:`),
+ * which is what Upstash's `allow-key-locking` requires of a key outside
+ * `KEYS`. `freesOnly` marks a script that only reads and removes data, whose
+ * key-locked text also carries `allow-oom` ({@link KEY_LOCKING_FREEING_SHEBANG}).
+ */
+function script(body: string, freesOnly = false): Script {
+  const source = `${LUA_HELPERS}\n${body}`;
+  const shebang = freesOnly ? KEY_LOCKING_FREEING_SHEBANG : KEY_LOCKING_SHEBANG;
+  return {
+    ...scriptText(source),
+    keyLocked: scriptText(`${shebang}${source}`),
+  };
+}
+
+/**
  * `set`: KEYS[1] the entry; ARGV base, key, frame, expiresAt ('' none), now,
  * fence createdAt ('' none), then a count and the fence's tags, then a count
- * and the entry's tags. Answers 1 stored, 0 fenced.
+ * and the entry's tags. Answers 1 stored, 0 fenced. Not `allow-oom`: it
+ * writes the entry and its tag memberships.
  */
 const SET = script(`
 local base, key, frame, exp, now, fenceAt = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5]), ARGV[6]
@@ -205,8 +280,13 @@ end
 return 1
 `);
 
-/** `delete`: ARGV base, then the keys. Answers how many entries and counters went. */
-const DELETE = script(`
+/**
+ * `delete`: ARGV base, then the keys. Answers how many entries and counters
+ * went. `allow-oom` when key-locked: it only reads frames (`GET`) and removes
+ * (`SREM`, `UNLINK`).
+ */
+const DELETE = script(
+  `
 local base = ARGV[1]
 local n = 0
 for i = 2, #ARGV do
@@ -214,11 +294,15 @@ for i = 2, #ARGV do
   n = n + redis.call('UNLINK', base .. 'n:' .. ARGV[i])
 end
 return n
-`);
+`,
+  true,
+);
 
 /**
  * `touch`: KEYS[1] the entry; ARGV base, key, expiresAt ('' none). Rewrites
  * an entry's frame header and its expiry, or a counter's; 0 when neither.
+ * Not `allow-oom`: it rewrites the frame (`SET`) and the counter (`HSET`),
+ * whose expiry can grow from `-` to thirteen digits.
  */
 const TOUCH = script(`
 local base, key, exp = ARGV[1], ARGV[2], ARGV[3]
@@ -246,7 +330,10 @@ return 0
 /**
  * `deleteByTags`: KEYS[1] the first tag's set; ARGV base, at, until, then the
  * tags. Writes every stamp first, then deletes every member of every tag set
- * and the sets: one script, so no fenced write interleaves.
+ * and the sets: one script, so no fenced write interleaves. Not
+ * `allow-oom`, though it mostly deletes: it writes a stamp per tag (`SET`),
+ * new keys, and the stamp is what fences a stale load, so it is written or
+ * nothing is (unflagged, out of memory, the first stamp's `SET` fails too).
  */
 const DELETE_BY_TAGS = script(`
 local base, at, untl = ARGV[1], ARGV[2], ARGV[3]
@@ -268,6 +355,7 @@ return n
  * `increment`: KEYS[1] the counter; ARGV base, key, by, expiresAt ('' none),
  * now. A live counter is added to; otherwise the counter is created with its
  * expiry (and an entry under the key is dropped: the last writer wins).
+ * Not `allow-oom`: it creates and adds to the counter (`HSET`, `HINCRBY`).
  */
 const INCREMENT = script(`
 local base, key, by, exp, now = ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5]
@@ -286,7 +374,7 @@ if exp ~= '' then redis.call('PEXPIREAT', nk, exp) end
 return tonumber(by)
 `);
 
-/** `acquireLock`: KEYS[1] the lock; ARGV owner, ttl ms. Taken when absent or already ours (a re-acquire refreshes it). */
+/** `acquireLock`: KEYS[1] the lock; ARGV owner, ttl ms. Taken when absent or already ours (a re-acquire refreshes it). Not `allow-oom`: it writes the lock (`SET`). */
 const ACQUIRE_LOCK = script(`
 local held = redis.call('GET', KEYS[1])
 if held == false or held == ARGV[1] then
@@ -296,17 +384,21 @@ end
 return 0
 `);
 
-/** `releaseLock`: KEYS[1] the lock; ARGV owner. Compare-and-delete. */
-const RELEASE_LOCK = script(`
+/** `releaseLock`: KEYS[1] the lock; ARGV owner. Compare-and-delete. `allow-oom` when key-locked: `GET` and `DEL` only, so a full database can still free a lock. */
+const RELEASE_LOCK = script(
+  `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   redis.call('DEL', KEYS[1])
   return 1
 end
 return 0
-`);
+`,
+  true,
+);
 
-/** `sweep`, a tag set: KEYS[1] the set; ARGV base. Drops members whose entry is gone, and the set once empty. */
-const PRUNE_TAG_SET = script(`
+/** `sweep`, a tag set: KEYS[1] the set; ARGV base. Drops members whose entry is gone, and the set once empty. `allow-oom` when key-locked: `SMEMBERS`, `EXISTS`, `SCARD` read; `SREM`, `DEL` remove. */
+const PRUNE_TAG_SET = script(
+  `
 local n = 0
 for _, key in ipairs(redis.call('SMEMBERS', KEYS[1])) do
   if redis.call('EXISTS', ARGV[1] .. 'e:' .. key) == 0 then
@@ -316,17 +408,22 @@ for _, key in ipairs(redis.call('SMEMBERS', KEYS[1])) do
 end
 if redis.call('SCARD', KEYS[1]) == 0 then redis.call('DEL', KEYS[1]) end
 return n
-`);
+`,
+  true,
+);
 
-/** `sweep`, a stamp: KEYS[1] the stamp; ARGV now. Deletes it once lapsed (read and delete in one step, so a fresh stamp written meanwhile stays). */
-const PRUNE_STAMP = script(`
+/** `sweep`, a stamp: KEYS[1] the stamp; ARGV now. Deletes it once lapsed (read and delete in one step, so a fresh stamp written meanwhile stays). `allow-oom` when key-locked: `GET` and `DEL` only. */
+const PRUNE_STAMP = script(
+  `
 local stamp = redis.call('GET', KEYS[1])
 if not stamp then return 0 end
 local untl = string.match(stamp, '^%S+ (%S+)$')
 if untl and tonumber(untl) > tonumber(ARGV[1]) then return 0 end
 redis.call('DEL', KEYS[1])
 return 1
-`);
+`,
+  true,
+);
 
 /** Escapes Redis glob characters (`*?[]\`) so a prefix matches only itself in `SCAN … MATCH`. */
 function globEscape(text: string): string {
@@ -387,6 +484,8 @@ export class RedisCacheDriver implements CacheDriver {
   readonly #firstConnectTimeout: number;
   /** `host:port`, for connect errors. */
   readonly #endpoint: string;
+  /** Whether scripts run key-locked (`keyLocking`). */
+  readonly #keyLocking: boolean;
   /** The connect in flight, shared; cleared when it settles. */
   #connecting: Promise<void> | undefined;
   /** Whether the client has connected once (and passed the cluster check). */
@@ -418,6 +517,7 @@ export class RedisCacheDriver implements CacheDriver {
     }
     this.#firstConnectTimeout = firstConnectTimeout;
     this.#now = options.now ?? Date.now;
+    this.#keyLocking = options.keyLocking === true;
     this.#ownsClient = options.client === undefined;
     if (options.client !== undefined) {
       this.#client = options.client;
@@ -582,23 +682,50 @@ export class RedisCacheDriver implements CacheDriver {
    * it again. After bun-jobs' `RedisDriver.#run` (redis-driver.ts@c4fdaf01),
    * with the digest computed here rather than read back from `SCRIPT LOAD`.
    * An argument may be bytes: Bun sends a `Uint8Array` as is (measured).
+   * With `keyLocking`, the key-locked text runs, and a server that refuses
+   * its flag fails naming the option.
    */
   async #run(
     which: Script,
     keys: readonly string[],
     args: readonly (string | Uint8Array)[],
   ): Promise<unknown> {
+    const text = this.#keyLocking ? which.keyLocked : which;
     // Bun's declarations say `string | number`; its client also takes a
     // `Uint8Array` and sends the bytes unchanged (measured, PR-C5).
     const rest = [...keys, ...args] as unknown as string[];
     try {
-      return await this.#client.evalsha(which.sha, keys.length, ...rest);
+      return await this.#client.evalsha(text.sha, keys.length, ...rest);
     } catch (error) {
       if (!/NOSCRIPT/i.test(error instanceof Error ? error.message : "")) {
-        throw error;
+        throw this.#scriptError(error);
       }
     }
-    return await this.#client.eval(which.source, keys.length, ...rest);
+    try {
+      return await this.#client.eval(text.source, keys.length, ...rest);
+    } catch (error) {
+      throw this.#scriptError(error);
+    }
+  }
+
+  /**
+   * A script's failure, as is, unless `keyLocking` is on and the server
+   * refused the flag: Redis 7 and later answer "Unexpected flag in script
+   * shebang" (Redis 8.0.5, measured), Redis 6 cannot compile the `#!` line.
+   * That is reported naming the option, the server's message kept.
+   */
+  #scriptError(error: unknown): unknown {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      !this.#keyLocking ||
+      !/Unexpected flag in script shebang|near '#'/i.test(message)
+    ) {
+      return error;
+    }
+    return new Error(
+      `redisDriver: keyLocking is set, and ${this.#endpoint} refused Upstash's allow-key-locking script flag (${message}). The flag is Upstash's: plain Redis rejects it. Remove keyLocking for this server.`,
+      { cause: error },
+    );
   }
 
   /** Builds an entry's frame: `1 <expiresAt|-> <tags JSON>\n` + the bytes. */

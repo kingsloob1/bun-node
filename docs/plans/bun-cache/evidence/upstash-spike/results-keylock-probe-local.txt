@@ -1,0 +1,10 @@
+undefined redis_version:8.0.5
+flagged, KEYS[1] only -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+flagged, dynamic key with KEYS[1]'s hash tag -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+flagged, dynamic key of another hash tag -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+flagged, no KEYS, dynamic key -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+flagged, SMEMBERS-derived keys with KEYS[1]'s tag -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+unflagged, dynamic key of another hash tag (control) -> "OK"
+SCRIPT LOAD/EVALSHA flagged -> ERROR ERR Unexpected flag in script shebang: allow-key-locking
+UNLINK exact probe keys -> 2
+left under probe prefix (EXISTS on the 4 names) -> 0

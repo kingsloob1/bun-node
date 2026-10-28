@@ -1,0 +1,11 @@
+upstash_version:1.19.4 redis_version:8.4.0
+flagged, KEYS[1] only -> "OK"
+flagged, dynamic key with KEYS[1]'s hash tag -> "OK"
+flagged, dynamic key of another hash tag -> ERROR ERR Error running script: @user_script:1: ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is set. Key was: bun-cache-keylock-probe:666508:{b}:dyn stack traceback: 	[G]: in function 'call' 	@user_script:1: in main chunk 	[G]: ?
+flagged, no KEYS, dynamic key -> ERROR ERR Error running script: @user_script:1: ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is set. Key was: bun-cache-keylock-probe:666508:{b}:dyn stack traceback: 	[G]: in function 'call' 	@user_script:1: in main chunk 	[G]: ?
+flagged, SMEMBERS-derived keys with KEYS[1]'s tag -> 1
+unflagged, dynamic key of another hash tag (control) -> "OK"
+SCRIPT LOAD flagged -> sha matches local SHA-1: true
+EVALSHA flagged -> "x"
+UNLINK exact probe keys -> 4
+left under probe prefix (EXISTS on the 4 names) -> 0
