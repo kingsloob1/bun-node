@@ -2,6 +2,7 @@ import type { QueueRef } from "../lib/index";
 import type { TcpProxy } from "./helpers/tcpProxy";
 import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
+import type { Socket } from "bun";
 import { RedisClient as BunRedis } from "bun";
 import { afterEach, describe, expect, it } from "bun:test";
 import {
@@ -23,7 +24,7 @@ import { closedPort, silentServer, startTcpProxy } from "./helpers/tcpProxy";
  * 50 ms to a 2 s cap — 31.2 s measured — before its first `connect()`
  * rejects. The driver used to take that policy unchosen, so a worker pointed
  * at a Redis that was down took half a minute to say so; these check it now
- * says so in about `firstConnectTimeout` (1 s), without giving up the retrying
+ * says so in about `firstConnectTimeout` (1 s in these, 5 s by default), without giving up the retrying
  * that carries a running driver through a Redis restart.
  *
  * The outage tests never touch the shared server: a TCP proxy stands between
@@ -83,7 +84,10 @@ function expectConnectError(error: unknown, endpoint: string): void {
 describe("redis connect: an unreachable server fails fast", () => {
   it("connect() rejects in about a second on a refused port, not ~31s", async () => {
     const port = closedPort();
-    const driver = driverFor({ url: `redis://127.0.0.1:${port}` });
+    const driver = driverFor({
+      url: `redis://127.0.0.1:${port}`,
+      firstConnectTimeout: 1_000,
+    });
 
     const { ms, error } = await rejection(driver.connect());
 
@@ -95,7 +99,7 @@ describe("redis connect: an unreachable server fails fast", () => {
   });
 
   it("the first operation, without connect(), fails as fast", async () => {
-    const driver = driverFor({ url: refusedUrl() });
+    const driver = driverFor({ url: refusedUrl(), firstConnectTimeout: 1_000 });
     const { ms, error } = await rejection(driver.listQueues("ns"));
     expect(error).toBeInstanceOf(DriverError);
     expect(ms).toBeLessThan(3_000);
@@ -104,7 +108,10 @@ describe("redis connect: an unreachable server fails fast", () => {
   it("a connection attempt that hangs is bounded too, not just a refusal", async () => {
     const silent = silentServer();
     cleanups.push(silent.stop);
-    const driver = driverFor({ url: `redis://127.0.0.1:${silent.port}` });
+    const driver = driverFor({
+      url: `redis://127.0.0.1:${silent.port}`,
+      firstConnectTimeout: 1_000,
+    });
 
     const { ms, error } = await rejection(driver.connect());
     expectConnectError(error, `127.0.0.1:${silent.port}`);
@@ -113,7 +120,7 @@ describe("redis connect: an unreachable server fails fast", () => {
   });
 
   it("BunQueueWorker.run() rejects within the bound, and can run again", async () => {
-    const driver = driverFor({ url: refusedUrl() });
+    const driver = driverFor({ url: refusedUrl(), firstConnectTimeout: 1_000 });
     const worker = new BunQueueWorker("q", async () => null, {
       driver,
       namespace: testNamespace("ff"),
@@ -132,7 +139,7 @@ describe("redis connect: an unreachable server fails fast", () => {
   });
 
   it("BunQueue.add() rejects within the bound", async () => {
-    const driver = driverFor({ url: refusedUrl() });
+    const driver = driverFor({ url: refusedUrl(), firstConnectTimeout: 1_000 });
     const queue = new BunQueue("q", {
       driver,
       namespace: testNamespace("ff"),
@@ -146,11 +153,90 @@ describe("redis connect: an unreachable server fails fast", () => {
   });
 
   it("ping() answers false within the bound", async () => {
-    const driver = driverFor({ url: refusedUrl() });
+    const driver = driverFor({ url: refusedUrl(), firstConnectTimeout: 1_000 });
     const started = performance.now();
     expect(await driver.ping()).toBe(false);
     expect(performance.now() - started).toBeLessThan(3_000);
   });
+});
+
+/**
+ * A TCP relay in front of the test server that holds every chunk `delayMs`
+ * each way, so a local Redis answers like a distant one. Answers the relayed
+ * URL (same credentials and database) and a `stop()`.
+ */
+function delayedRelay(
+  url: string,
+  delayMs: number,
+): { url: string; stop: () => void } {
+  const target = new globalThis.URL(url);
+  /** Per inbound connection: the upstream socket once open, and what arrived before it. */
+  interface Relay {
+    /** The connection to the real server. */
+    upstream?: Socket<undefined>;
+    /** Chunks from the client that arrived before `upstream` opened. */
+    pending: Uint8Array[];
+  }
+  const server = Bun.listen<Relay>({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      async open(client) {
+        client.data = { pending: [] };
+        const upstream = await Bun.connect({
+          hostname: target.hostname,
+          port: Number(target.port || 6379),
+          socket: {
+            data(_socket, chunk) {
+              const copy = new Uint8Array(chunk);
+              setTimeout(() => client.write(copy), delayMs);
+            },
+            close() {
+              client.end();
+            },
+          },
+        });
+        client.data.upstream = upstream;
+        for (const chunk of client.data.pending) {
+          upstream.write(chunk);
+        }
+      },
+      data(client, chunk) {
+        const copy = new Uint8Array(chunk);
+        setTimeout(() => {
+          if (client.data.upstream === undefined) {
+            client.data.pending.push(copy);
+          } else {
+            client.data.upstream.write(copy);
+          }
+        }, delayMs);
+      },
+      close(client) {
+        client.data.upstream?.end();
+      },
+    },
+  });
+  const relayed = new globalThis.URL(url);
+  relayed.hostname = "127.0.0.1";
+  relayed.port = String(server.port);
+  return { url: relayed.toString(), stop: () => server.stop(true) };
+}
+
+describe.skipIf(!URL)("redis connect: a distant server", () => {
+  it("whose first connect takes over a second is reached within the default firstConnectTimeout", async () => {
+    // 550 ms each way: Bun's connect (HELLO and SELECT, pipelined) takes one
+    // round trip, 1.1 s here — what a TLS connect to a managed Redis in
+    // another region measured (Upstash: 549–1004 ms). The old 1 s default
+    // refused it.
+    const relay = delayedRelay(URL!, 550);
+    cleanups.push(relay.stop);
+    const driver = driverFor({ url: relay.url });
+
+    const started = performance.now();
+    await driver.connect();
+    expect(performance.now() - started).toBeGreaterThan(1_000);
+    expect(await driver.ping()).toBe(true);
+  }, 15_000);
 });
 
 describe("redis connect: the options reach the client", () => {
@@ -399,7 +485,7 @@ describe.skipIf(!URL)("redis connect: a drop after connecting recovers", () => {
 
   it("an operation during an outage waits for the reconnect, not the first-connect bound", async () => {
     const { proxy, url } = proxied();
-    const driver = driverFor({ url });
+    const driver = driverFor({ url, firstConnectTimeout: 1_000 });
     const ns = testNamespace("ffw");
     cleanups.push(async () => await driver.purge(ns));
     await driver.connect();
@@ -437,7 +523,7 @@ describe.skipIf(!URL)(
       const client = new BunRedis(url);
       cleanups.push(() => client.close());
       await client.connect();
-      const driver = driverFor({ url, client });
+      const driver = driverFor({ url, client, firstConnectTimeout: 1_000 });
       await driver.connect();
       proxy.cut();
       await Bun.sleep(50);

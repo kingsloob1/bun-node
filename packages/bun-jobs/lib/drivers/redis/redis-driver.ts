@@ -319,10 +319,13 @@ const MAX_BLOCK_SECONDS = 5;
  * Bun's own policy retries a refused first connect for its whole reconnect
  * budget — 20 retries, 50 ms doubling to a 2 s cap, 31.2 s measured — so an
  * unreachable Redis took half a minute to report where a refused Postgres
- * takes milliseconds. A second still absorbs a server that is a moment late:
- * Bun retries a refusal within it.
+ * takes milliseconds. Five seconds still reports it promptly and absorbs a
+ * server that is a moment late (Bun retries a refusal within it), and a slow
+ * one: a TLS connect to a managed Redis in another region takes 0.55–1.0 s
+ * (Upstash, measured), so the 1 s this was refused a healthy server about as
+ * often as not.
  */
-const FIRST_CONNECT_TIMEOUT_MS = 1_000;
+const FIRST_CONNECT_TIMEOUT_MS = 5_000;
 
 /** `firstConnectTimeout` checked: a positive number of ms, or `0` (unbounded). */
 function resolveFirstConnectTimeout(value: number | undefined): number {
@@ -564,9 +567,11 @@ export interface RedisDriverOptions extends ConnectionInput {
   /**
    * How long the driver's first connect may take, in ms, before it fails with
    * a `DriverError` (`"redis driver failed during connect"`). Defaults to
-   * `1000`, so an unreachable server is reported in about a second, as a
-   * refused Postgres is, rather than after Bun's whole retry budget — about 31
-   * seconds on a refused port.
+   * `5000`, so an unreachable server is reported in about five seconds rather
+   * than after Bun's whole retry budget — about 31 seconds on a refused port.
+   * Not 1 s: a TLS connect to a managed Redis in another region takes
+   * 0.55–1.0 s (Upstash, measured), which a 1 s bound refused about half the
+   * time.
    *
    * It bounds a connection that has **never** succeeded: the command
    * connection's first connect, and each blocking or pub/sub connection's.
