@@ -285,9 +285,12 @@ smaller. `compress: false` disables it.
 Every entry is capped at `maxEntryBytes` (default 4 MiB, or the driver's own
 limit when smaller). An oversized `set` resolves `false` and emits `oversize`
 (it does not throw, unless `strict: true`); in `getOrSet` the value is
-returned uncached. A key longer than `maxKeyLength` bytes (default 200) is
-stored as `#` + its SHA-256, with the full key kept in the entry's header: a
-hash collision reads as a miss, never as the wrong value.
+returned uncached. The limit also holds the value before compression, and a
+read never decompresses past it, so an entry planted in the store that would
+expand further (a decompression bomb) reads as a miss with an `error` event
+of phase `"decode"`, and is deleted. A key longer than `maxKeyLength` bytes
+(default 200) is stored as `#` + its SHA-256, with the full key kept in the
+entry's header: a hash collision reads as a miss, never as the wrong value.
 
 ## Namespaces and versions
 

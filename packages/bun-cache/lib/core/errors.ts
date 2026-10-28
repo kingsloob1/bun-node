@@ -110,14 +110,15 @@ export class UnsupportedOperationError extends Error {
 }
 
 /**
- * An entry encoded above `maxEntryBytes`. Not thrown by default — an
+ * An entry encoded above `maxEntryBytes`, as stored or before compression
+ * (a read decompresses no further). Not thrown by default — an
  * oversized `set` resolves `false` and emits `oversize` (plan §3.9); thrown
  * only under `strict: true`.
  */
 export class EntryTooLargeError extends Error {
   /** The cache key. */
   readonly key: string;
-  /** The encoded size, in bytes. */
+  /** The encoded size, in bytes: the stored entry's, or its payload's before compression when that is larger. */
   readonly bytes: number;
   /** The limit that was exceeded, in bytes. */
   readonly limit: number;
@@ -125,7 +126,7 @@ export class EntryTooLargeError extends Error {
   constructor(
     /** The cache key. */
     key: string,
-    /** The encoded size, in bytes. */
+    /** The encoded size, in bytes: the stored entry's, or its payload's before compression when that is larger. */
     bytes: number,
     /** The limit that was exceeded, in bytes. */
     limit: number,
