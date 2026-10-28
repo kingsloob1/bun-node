@@ -369,7 +369,12 @@ set (`rs0`) that `setup-databases.ts` runs as its own docker container,
 `mongo:7`, test commands on): that is where the change-stream bus and its
 resume and gap cases run, since the standalone server on 27017 refuses change
 streams. The variable has no bun-jobs fallback. Its S3 suite reads
-`BUN_CACHE_TEST_S3_URL`, falling back to `BUN_JOBS_TEST_S3_URL`.
+`BUN_CACHE_TEST_S3_URL`, falling back to `BUN_JOBS_TEST_S3_URL`. Its Azure
+Blob Storage suite reads `BUN_CACHE_TEST_AZURE_URL` (no bun-jobs fallback):
+Azurite, which `setup-databases.ts` runs as its own docker container,
+`bun-cache-azurite`, on 10000 (always docker; the blob service only, with its
+`bun-cache-test` blob container), in the driver's `azure://` form with
+Azurite's published development account and key.
 `BUN_CACHE_TEST_UPSTASH_REDIS_URL` is an **opt-in** lane
 (`__tests__/drivers/upstash.test.ts`): the Redis driver's kit and tests
 against a managed Upstash database over `rediss://`. It is a credential:

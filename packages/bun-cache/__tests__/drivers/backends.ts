@@ -19,11 +19,14 @@ import process from "node:process";
 import { RedisClient, S3Client, SQL } from "bun";
 import type { CacheDriver } from "../../lib/index";
 import {
+  azureBlobDriver,
   mariadbDriver,
   mysqlDriver,
   postgresDriver,
   s3Driver,
 } from "../../lib/index";
+import { parseBlobList, resolveAzureTarget } from "../../lib/drivers/azure";
+import { azureFetch } from "../../lib/drivers/azure-sign";
 import type { MysqlDriverOptions } from "../../lib/drivers/mysql";
 import type { PostgresDriverOptions } from "../../lib/drivers/postgres";
 import { parseS3Url } from "../../lib/drivers/s3";
@@ -302,5 +305,78 @@ export async function deleteS3Prefix(
     }
     await Promise.all(keys.map(async (key) => await client.delete(key)));
     deleted += keys.length;
+  }
+}
+
+/**
+ * The Azure Blob Storage server the Azure driver's suite runs against:
+ * `BUN_CACHE_TEST_AZURE_URL` — Azurite from `bun scripts/setup-databases.ts`,
+ * whose `--print-env` prints it (bun-jobs has no Azure driver, so there is no
+ * `BUN_JOBS_TEST_*` fallback). The URL is the driver's own form,
+ * `azure://<account>:<key>@<host>:<port>/<account>/<container>?scheme=http`.
+ */
+export function azureBackend(): {
+  /** The variable that points at it. */
+  variable: string;
+  /** The URL, when one is set. */
+  url: string | undefined;
+} {
+  return {
+    variable: "BUN_CACHE_TEST_AZURE_URL",
+    url: process.env.BUN_CACHE_TEST_AZURE_URL || undefined,
+  };
+}
+
+/** Lists the blob container once through the driver (within 5 s); answers the failure, not a boolean. */
+export async function azureReachError(url: string): Promise<Error | undefined> {
+  try {
+    const driver = azureBlobDriver({
+      url,
+      prefix: `bun-cache-test/${process.pid}-probe`,
+    });
+    await Promise.race([
+      driver.connect!(),
+      Bun.sleep(5_000).then(() => {
+        throw new Error("no answer within 5 s");
+      }),
+    ]);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+/**
+ * Deletes every blob under one of this run's Azure prefixes (`<prefix>/…`).
+ * The prefix carries the run's pid and a timestamp, so the listing it walks
+ * holds this run's blobs and nobody else's: the exact set it created, never a
+ * sweep of a shared prefix.
+ */
+export async function deleteAzurePrefix(
+  url: string,
+  prefix: string,
+): Promise<number> {
+  const target = resolveAzureTarget({ url });
+  let deleted = 0;
+  for (;;) {
+    const response = await azureFetch(target, {
+      method: "GET",
+      blob: "",
+      query: { restype: "container", comp: "list", prefix: `${prefix}/` },
+    });
+    const { blobs } = parseBlobList(await response.text());
+    if (blobs.length === 0) {
+      return deleted;
+    }
+    await Promise.all(
+      blobs.map(async (blob) => {
+        const gone = await azureFetch(target, {
+          method: "DELETE",
+          blob: blob.name,
+        });
+        await gone.body?.cancel();
+      }),
+    );
+    deleted += blobs.length;
   }
 }

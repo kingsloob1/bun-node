@@ -4,6 +4,8 @@ import type {
   PostgresLimitState,
   Runner,
 } from "../setup-databases";
+import { Buffer } from "node:buffer";
+import { createHmac } from "node:crypto";
 import { availableParallelism } from "node:os";
 import process from "node:process";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
@@ -50,6 +52,14 @@ import {
   S3_SECRET_KEY,
   s3TestUrl,
   signS3,
+  AZURE_ACCOUNT,
+  AZURE_ACCOUNT_KEY,
+  AZURE_CACHE_CONTAINER,
+  AZURE_CONTAINER_IMAGE,
+  azureContainerCreated,
+  azureTestUrl,
+  parseAzureTestUrl,
+  signAzure,
 } from "../setup-databases";
 
 // Importing the script must not provision anything: it runs `main` only under
@@ -971,6 +981,7 @@ describe("bun-cache's database", () => {
       "export BUN_CACHE_TEST_MONGODB_URL=mongodb://127.0.0.1:27017/bun_cache_test",
       "export BUN_CACHE_TEST_MONGODB_RS_URL=mongodb://127.0.0.1:27018/bun_cache_test?replicaSet=rs0",
       "export BUN_CACHE_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-cache-test?scheme=http",
+      `export BUN_CACHE_TEST_AZURE_URL=azure://devstoreaccount1:${encodeURIComponent(AZURE_ACCOUNT_KEY)}@127.0.0.1:10000/devstoreaccount1/bun-cache-test?scheme=http`,
     ]);
     expect(out).toContain(
       "export BUN_JOBS_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-jobs-test?scheme=http",
@@ -1065,5 +1076,113 @@ describe("the S3 server (SeaweedFS)", () => {
       bucketCreated(409, "<Error><Code>BucketAlreadyExists</Code></Error>"),
     ).toBe(false);
     expect(bucketCreated(403, "")).toBe(false);
+  });
+});
+
+describe("the Azure Blob Storage server (Azurite)", () => {
+  const options = parseArgs([]);
+
+  it("is a pinned Azurite container on 10000, blob service only, its data in the image's volume", () => {
+    const plan = PLANS.azure;
+    expect(plan.dockerOnly).toContain("container");
+    expect(plan.installed()).toBe(false);
+    const spec = plan.container(options);
+    expect(spec.image).toBe(AZURE_CONTAINER_IMAGE);
+    expect(AZURE_CONTAINER_IMAGE).toBe(
+      "mcr.microsoft.com/azure-storage/azurite:3.37.0",
+    );
+    const argv = dockerRunArgv(spec);
+    expect(argv).toContain("bun-cache-azurite");
+    expect(argv).toContain("127.0.0.1:10000:10000");
+    expect(argv).toContain("nofile=65536:65536");
+    expect(argv.slice(argv.indexOf(spec.image))).toEqual([
+      spec.image,
+      "azurite-blob",
+      "--blobHost",
+      "0.0.0.0",
+      "--blobPort",
+      "10000",
+      "--location",
+      "/data",
+    ]);
+    // Nothing of /tmp, which snap Docker cannot use, and no bind mount.
+    expect(argv.some((arg) => arg.includes("/tmp"))).toBe(false);
+    expect(argv).not.toContain("--volume");
+  });
+
+  it("is bun-cache's alone, printed in the driver's URL form with the published development account", () => {
+    expect(PLANS.azure.envVar).toBeUndefined();
+    expect(PLANS.azure.cacheEnvVar).toBe("BUN_CACHE_TEST_AZURE_URL");
+    expect(PLANS.azure.cacheUrl).toBeUndefined();
+    expect(PLANS.azure.url(options)).toBe(azureTestUrl(AZURE_CACHE_CONTAINER));
+    expect(AZURE_CACHE_CONTAINER).toBe("bun-cache-test");
+    expect(AZURE_ACCOUNT).toBe("devstoreaccount1");
+    expect(parseAzureTestUrl(PLANS.azure.url(options))).toEqual({
+      endpoint: "http://127.0.0.1:10000/devstoreaccount1",
+      container: "bun-cache-test",
+      account: "devstoreaccount1",
+      key: AZURE_ACCOUNT_KEY,
+    });
+    expect(cacheDatabaseStatements("azure", options, "container")).toEqual([]);
+    expect(parseArgs(["--only=azure"]).services).toEqual(["azure"]);
+  });
+
+  it("makes its blob container in the container's one-time setup, which a dry run only prints", async () => {
+    expect(PLANS.azure.initContainer).toBeFunction();
+    const fetched = spyOn(globalThis, "fetch");
+    try {
+      expect(await PLANS.azure.initContainer!(parseArgs(["--dry-run"]))).toBe(
+        true,
+      );
+      expect(fetched).not.toHaveBeenCalled();
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("signs with Shared Key: the documented string to sign, path-style, under the base64-decoded key", () => {
+    const url = new URL(
+      "http://127.0.0.1:10000/devstoreaccount1/bun-cache-test?restype=container",
+    );
+    const headers = signAzure(
+      { account: AZURE_ACCOUNT, key: AZURE_ACCOUNT_KEY },
+      "PUT",
+      url,
+      new Date("2026-10-28T12:00:00Z"),
+    );
+    // Verb, eleven empty standard headers, the x-ms-* ones, then the
+    // resource with the account twice (the emulator's path style).
+    const stringToSign =
+      "PUT\n\n\n\n\n\n\n\n\n\n\n\n" +
+      "x-ms-date:Wed, 28 Oct 2026 12:00:00 GMT\nx-ms-version:2025-01-05\n" +
+      "/devstoreaccount1/devstoreaccount1/bun-cache-test\nrestype:container";
+    const expected = createHmac(
+      "sha256",
+      Buffer.from(AZURE_ACCOUNT_KEY, "base64"),
+    )
+      .update(stringToSign)
+      .digest("base64");
+    expect(headers).toEqual({
+      "x-ms-date": "Wed, 28 Oct 2026 12:00:00 GMT",
+      "x-ms-version": "2025-01-05",
+      authorization: `SharedKey devstoreaccount1:${expected}`,
+    });
+  });
+
+  it("takes a blob container that already exists as created, and nothing else", () => {
+    expect(azureContainerCreated(201, "")).toBe(true);
+    expect(
+      azureContainerCreated(
+        409,
+        "<Error><Code>ContainerAlreadyExists</Code></Error>",
+      ),
+    ).toBe(true);
+    expect(
+      azureContainerCreated(
+        409,
+        "<Error><Code>ContainerBeingDeleted</Code></Error>",
+      ),
+    ).toBe(false);
+    expect(azureContainerCreated(403, "")).toBe(false);
   });
 });

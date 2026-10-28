@@ -1,8 +1,8 @@
 /**
  * `@kingsleyweb/bun-cache`: caching over pluggable drivers (plan
  * `docs/plans/bun-cache/`). The core, the memory, file, SQLite, Postgres,
- * MySQL, MariaDB, Redis, MongoDB and S3 drivers, the multi-tier L1 with its
- * buses (`redisBus`, `pgBus`) and the conformance kit
+ * MySQL, MariaDB, Redis, MongoDB, S3 and Azure Blob Storage drivers, the
+ * multi-tier L1 with its buses (`redisBus`, `pgBus`) and the conformance kit
  * (`@kingsleyweb/bun-cache/testing`) have landed.
  *
  * ```ts
@@ -73,6 +73,11 @@ export { redisDriver } from "./drivers/redis";
 export type { RedisDriverOptions } from "./drivers/redis";
 export { s3Driver } from "./drivers/s3";
 export type { S3DriverOptions } from "./drivers/s3";
+export { azureBlobDriver } from "./drivers/azure";
+export type {
+  AzureBlobConnection,
+  AzureBlobDriverOptions,
+} from "./drivers/azure";
 export { pgBus, redisBus } from "./bus/index";
 export type { PgBusOptions, RedisBusOptions } from "./bus/index";
 export { mongoDriver } from "./drivers/mongo";

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { Buffer } from "node:buffer";
 import { availableParallelism } from "node:os";
 import process from "node:process";
 
@@ -28,6 +29,11 @@ import process from "node:process";
  * server both packages share, with a bucket each (`bun-jobs-test`,
  * {@link S3_CACHE_BUCKET}), created by a signed `PUT` when absent.
  *
+ * Azure Blob Storage is Azurite in a container ({@link AZURE_CONTAINER_IMAGE}),
+ * blob service only, for bun-cache's `azureBlobDriver`
+ * (`BUN_CACHE_TEST_AZURE_URL`), with its blob container
+ * {@link AZURE_CACHE_CONTAINER} created by a Shared Key-signed `PUT` when absent.
+ *
  * ```bash
  * bun scripts/setup-databases.ts              # install what is missing, configure what is not
  * bun scripts/setup-databases.ts --dry-run    # print the plan, change nothing
@@ -51,6 +57,7 @@ const SERVICES = [
   "mongodb",
   "mongodb-rs",
   "s3",
+  "azure",
 ] as const;
 
 /** One of the servers this script knows how to provide. */
@@ -154,6 +161,35 @@ export const S3_CACHE_BUCKET = "bun-cache-test";
 
 /** Why the last S3 request failed, for the summary. */
 let lastS3Error = "";
+
+/**
+ * The Azure Blob Storage test server: Azurite, Microsoft's emulator, pinned,
+ * blob service only. It checks every request's Shared Key signature, so the
+ * suite proves the driver's signing (`docs/plans/bun-cache/evidence/azure-spike.md`).
+ */
+export const AZURE_CONTAINER_IMAGE =
+  "mcr.microsoft.com/azure-storage/azurite:3.37.0";
+
+/**
+ * Azurite's built-in development account and key. Microsoft publishes both
+ * (the "well-known" emulator credentials, in Azurite's README and Azure's
+ * docs): they are not a secret, and work only against an emulator, here
+ * bound to 127.0.0.1.
+ */
+export const AZURE_ACCOUNT = "devstoreaccount1";
+
+/** Azurite's published development key; see {@link AZURE_ACCOUNT}. */
+export const AZURE_ACCOUNT_KEY =
+  "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+
+/** bun-cache's blob container (`BUN_CACHE_TEST_AZURE_URL`). Container names allow no `_`. */
+export const AZURE_CACHE_CONTAINER = "bun-cache-test";
+
+/** The Blob service REST version the script's requests ask for. */
+const AZURE_API_VERSION = "2025-01-05";
+
+/** Why the last Azure request failed, for the summary. */
+let lastAzureError = "";
 
 /**
  * The core count {@link MAX_CONNECTIONS} and {@link POSTGRES_MAX_CONNECTIONS}
@@ -2342,6 +2378,72 @@ export const PLANS: Record<Service, ServicePlan> = {
     configure: () => Promise.resolve(true),
     configureNote: () => `created the ${S3_BUCKET} bucket`,
   },
+
+  azure: {
+    service: "azure",
+    port: 10_000,
+    // bun-cache only: bun-jobs has no Azure driver. The URL is
+    // azureBlobDriver's form, printed as BUN_CACHE_TEST_AZURE_URL (no
+    // `cacheUrl`: the blob container is bun-cache's alone).
+    cacheEnvVar: "BUN_CACHE_TEST_AZURE_URL",
+    url: () => azureTestUrl(AZURE_CACHE_CONTAINER),
+    // A container, so there are no binaries on the host to look for.
+    installed: () => false,
+    packages: {},
+    unit: () => "azurite",
+    readyTimeout: 60_000,
+    dockerOnly:
+      "Azurite, the Azure Storage emulator, has no distribution package, so the Azure test server runs as a container",
+    container: () => ({
+      name: "bun-cache-azurite",
+      image: AZURE_CONTAINER_IMAGE,
+      port: 10_000,
+      env: {},
+      // The blob service alone, on all of the container's interfaces (the
+      // port is published on the host's loopback only). Its data stays in
+      // the image's /data volume: never a bind mount, and never the host's
+      // /tmp, which snap Docker cannot use.
+      args: [
+        "azurite-blob",
+        "--blobHost",
+        "0.0.0.0",
+        "--blobPort",
+        "10000",
+        "--location",
+        "/data",
+      ],
+    }),
+    // The image makes no blob container: a signed `PUT` once the server
+    // answers. Safe to repeat: one already there is left alone.
+    initContainer: async (options) => {
+      log.cmd([
+        `(Shared Key PUT /${AZURE_ACCOUNT}/${AZURE_CACHE_CONTAINER}?restype=container over 127.0.0.1:10000)`,
+      ]);
+      if (options.dryRun) {
+        return true;
+      }
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (
+          await ensureAzureContainer(azureTestUrl(AZURE_CACHE_CONTAINER), false)
+        ) {
+          log.did(`the ${AZURE_CACHE_CONTAINER} blob container is there`);
+          return true;
+        }
+        await Bun.sleep(1_000);
+      }
+      log.bad(
+        `could not create the ${AZURE_CACHE_CONTAINER} blob container: ${lastAzureError}`,
+      );
+      return false;
+    },
+    // Ready means a signed request over the suite's credentials finds the
+    // blob container: Get Container Properties, which creates nothing.
+    configured: async () =>
+      (await portOpen(10_000)) &&
+      (await ensureAzureContainer(azureTestUrl(AZURE_CACHE_CONTAINER), true)),
+    configure: () => Promise.resolve(true),
+    configureNote: () => `created the ${AZURE_CACHE_CONTAINER} blob container`,
+  },
 };
 
 /* ------------------------------------------------------------------ *
@@ -2503,6 +2605,132 @@ async function ensureCacheBucket(
   }
   log.did(`created the ${S3_CACHE_BUCKET} bucket (bun-cache)`);
   return { note: `created ${S3_CACHE_BUCKET}`, failed: false };
+}
+
+/* ------------------------------------------------------------------ *
+ * Azure Blob Storage (Azurite)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The Azure test URL for a blob container, in `azureBlobDriver`'s form:
+ * `azure://<account>:<key>@<host>:<port>/<account>/<container>?scheme=http`
+ * — Azurite's blob endpoint is path-style, `http://127.0.0.1:10000/<account>`,
+ * and the key is percent-encoded (it holds `/` and `=`).
+ */
+export function azureTestUrl(container: string): string {
+  return `azure://${AZURE_ACCOUNT}:${encodeURIComponent(AZURE_ACCOUNT_KEY)}@127.0.0.1:10000/${AZURE_ACCOUNT}/${container}?scheme=http`;
+}
+
+/** The blob endpoint, container and credentials in an Azure test URL (the driver's `azure://` form). */
+export function parseAzureTestUrl(url: string): {
+  /** `scheme://host:port[/path]`, the blob endpoint. */
+  endpoint: string;
+  /** The blob container. */
+  container: string;
+  /** The account name. */
+  account: string;
+  /** The account key, base64. */
+  key: string;
+} {
+  const parsed = new URL(url);
+  const scheme = parsed.searchParams.get("scheme") ?? "https";
+  const path = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  const container = decodeURIComponent(path.pop() ?? "");
+  return {
+    endpoint: `${scheme}://${parsed.host}${path.length > 0 && path[0] !== "" ? `/${path.join("/")}` : ""}`,
+    container,
+    account: decodeURIComponent(parsed.username),
+    key: decodeURIComponent(parsed.password),
+  };
+}
+
+/**
+ * Signs a Blob service request with Shared Key (the 2009-09-19 and later
+ * string to sign; every header empty but the `x-ms-*` ones). Copied from
+ * bun-cache's `packages/bun-cache/lib/drivers/azure-sign.ts`
+ * (`signAzureRequest`), cut to the bodiless requests a blob container needs:
+ * nothing in `scripts/` loads a workspace package.
+ */
+export function signAzure(
+  credentials: { account: string; key: string },
+  method: string,
+  url: URL,
+  date = new Date(),
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "x-ms-date": date.toUTCString(),
+    "x-ms-version": AZURE_API_VERSION,
+  };
+  const canonicalHeaders = Object.keys(headers)
+    .sort()
+    .map((name) => `${name}:${headers[name]}\n`)
+    .join("");
+  const query = [...url.searchParams]
+    .map(([name, value]) => [name.toLowerCase(), value] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([name, value]) => `\n${name}:${value}`)
+    .join("");
+  const stringToSign = `${method}\n${"\n".repeat(11)}${canonicalHeaders}/${credentials.account}${url.pathname}${query}`;
+  const signer = new Bun.CryptoHasher(
+    "sha256",
+    Buffer.from(credentials.key, "base64"),
+  );
+  signer.update(stringToSign);
+  return {
+    ...headers,
+    authorization: `SharedKey ${credentials.account}:${signer.digest("base64")}`,
+  };
+}
+
+/** Whether a container-create answer means the container is there: 201, or 409 `ContainerAlreadyExists`. */
+export function azureContainerCreated(status: number, body: string): boolean {
+  return (
+    status === 201 ||
+    (status === 409 && body.includes("<Code>ContainerAlreadyExists</Code>"))
+  );
+}
+
+/**
+ * Whether the blob container in an Azure test URL is usable over its
+ * credentials: Get Container Properties, then — when it is absent and
+ * `lookOnly` is false — Create Container. Never deletes or empties one.
+ */
+async function ensureAzureContainer(
+  url: string,
+  lookOnly: boolean,
+): Promise<boolean> {
+  const target = parseAzureTestUrl(url);
+  const containerUrl = new URL(
+    `${target.endpoint}/${target.container}?restype=container`,
+  );
+  try {
+    const head = await fetch(containerUrl, {
+      method: "HEAD",
+      headers: signAzure(target, "HEAD", containerUrl),
+    });
+    if (head.ok) {
+      lastAzureError = "";
+      return true;
+    }
+    if (head.status !== 404 || lookOnly) {
+      lastAzureError = `HEAD /${target.container} answered ${head.status} ${head.headers.get("x-ms-error-code") ?? ""}`;
+      return false;
+    }
+    const created = await fetch(containerUrl, {
+      method: "PUT",
+      headers: signAzure(target, "PUT", containerUrl),
+    });
+    const body = await created.text();
+    if (azureContainerCreated(created.status, body)) {
+      lastAzureError = "";
+      return true;
+    }
+    lastAzureError = `PUT /${target.container} answered ${created.status} ${/<Code>([^<]+)/.exec(body)?.[1] ?? ""}`;
+    return false;
+  } catch (error) {
+    lastAzureError = error instanceof Error ? error.message : String(error);
+    return false;
+  }
 }
 
 /**
@@ -2900,7 +3128,7 @@ async function setupServer(
       return {
         service: plan.service,
         ready,
-        note: `the container did not become usable${lastSqlError || lastS3Error ? `: ${lastSqlError || lastS3Error}` : ""}`,
+        note: `the container did not become usable${lastSqlError || lastS3Error || lastAzureError ? `: ${lastSqlError || lastS3Error || lastAzureError}` : ""}`,
       };
     }
 
