@@ -1,20 +1,21 @@
 {
   "version": 1,
   "files": {
-    "__tests__/drivers/file.test.ts": 1008,
-    "__tests__/core/stale.test.ts": 561,
-    "__tests__/drivers/memory.test.ts": 474,
-    "__tests__/core/flight.test.ts": 258,
-    "__tests__/testing/helpers.test.ts": 205,
-    "__tests__/core/validate.test.ts": 173,
-    "__tests__/core/policy.test.ts": 163,
-    "__tests__/core/tags.test.ts": 163,
-    "__tests__/core/codec.test.ts": 146,
-    "__tests__/core/events.test.ts": 136,
-    "__tests__/core/header.test.ts": 131,
-    "__tests__/core/counters.test.ts": 118,
-    "__tests__/drivers/simple.test.ts": 117,
-    "__tests__/core/cache.test.ts": 113,
-    "__tests__/packaging.test.ts": 23
+    "__tests__/drivers/file.test.ts": 1023,
+    "__tests__/drivers/sqlite.test.ts": 838,
+    "__tests__/core/stale.test.ts": 566,
+    "__tests__/drivers/memory.test.ts": 484,
+    "__tests__/core/flight.test.ts": 271,
+    "__tests__/testing/helpers.test.ts": 223,
+    "__tests__/core/validate.test.ts": 204,
+    "__tests__/drivers/simple.test.ts": 188,
+    "__tests__/core/policy.test.ts": 161,
+    "__tests__/core/events.test.ts": 152,
+    "__tests__/core/tags.test.ts": 149,
+    "__tests__/core/cache.test.ts": 141,
+    "__tests__/core/counters.test.ts": 134,
+    "__tests__/core/codec.test.ts": 130,
+    "__tests__/core/header.test.ts": 121,
+    "__tests__/packaging.test.ts": 11
   }
 }

@@ -1,7 +1,7 @@
 /**
  * `@kingsleyweb/bun-cache`: caching over pluggable drivers (plan
- * `docs/plans/bun-cache/`). The core, the memory and file drivers and the
- * conformance kit (`@kingsleyweb/bun-cache/testing`) have landed; the SQLite,
+ * `docs/plans/bun-cache/`). The core, the memory, file and SQLite drivers and
+ * the conformance kit (`@kingsleyweb/bun-cache/testing`) have landed; the
  * SQL, MongoDB, Redis and S3 drivers follow the plan's order.
  *
  * ```ts
@@ -57,3 +57,5 @@ export { memoryDriver } from "./drivers/memory";
 export type { MemoryDriverOptions } from "./drivers/memory";
 export { fileDriver } from "./drivers/file";
 export type { FileDriverOptions } from "./drivers/file";
+export { sqliteDriver } from "./drivers/sqlite";
+export type { SqliteDriverOptions } from "./drivers/sqlite";

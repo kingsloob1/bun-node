@@ -119,8 +119,36 @@ async function waitFor(
   }
 }
 
-/** The kit's cross-process cases: the child side, spawned with the job. */
-async function spawnWorker(job: {
+/** What a cross-process worker answers. */
+interface WorkerResult {
+  /** The values its increments answered (`increment`). */
+  results?: number[];
+  /** How many of its lock attempts won (`lock`). */
+  acquired?: number;
+  /** The owners whose attempts won (`lock`). */
+  winners?: string[];
+}
+
+/** A started cross-process worker, waiting at the start barrier. */
+interface WorkerHandle {
+  /** Releases the barrier: the worker starts its operation now. */
+  go: () => void;
+  /** The worker's answer, once it has finished and exited. */
+  result: Promise<WorkerResult>;
+}
+
+/**
+ * Spawns the kit's cross-process worker with a job and waits until it is
+ * **ready** — its driver built and connected — at the start barrier. The
+ * caller releases it with `go()` and starts its own side in the same tick, so
+ * the two processes genuinely overlap.
+ *
+ * The barrier is load-bearing: without it, a fast driver (SQLite: ~10 µs an
+ * increment) finished the parent's whole side while the child was still
+ * starting (~50 ms), and the two-process case passed against an increment
+ * that was a plain read-then-write with no transaction (measured, PR-C3).
+ */
+async function startWorker(job: {
   /** The harness the caller gave the kit. */
   harness: ConformanceCrossProcess;
   /** What to do. */
@@ -135,7 +163,7 @@ async function spawnWorker(job: {
   count?: number;
   /** The owner prefix (lock). */
   ownerPrefix?: string;
-}): Promise<{ results?: number[]; acquired?: number; winners?: string[] }> {
+}): Promise<WorkerHandle> {
   const workerPath = new URL("./crossprocess-worker.ts", import.meta.url)
     .pathname;
   const child = Bun.spawn({
@@ -154,24 +182,101 @@ async function spawnWorker(job: {
         ownerPrefix: job.ownerPrefix,
       }),
     ],
+    stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(
-      `the cross-process worker exited ${exitCode}: ${stderr.trim()}`,
-    );
-  }
-  return JSON.parse(stdout) as {
-    results?: number[];
-    acquired?: number;
-    winners?: string[];
+  const stderr = new Response(child.stderr).text();
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  /** The worker's next stdout line; `undefined` once it has closed stdout. */
+  const nextLine = async (): Promise<string | undefined> => {
+    for (;;) {
+      const newline = buffered.indexOf("\n");
+      if (newline !== -1) {
+        const line = buffered.slice(0, newline);
+        buffered = buffered.slice(newline + 1);
+        return line;
+      }
+      const { done, value } = await reader.read();
+      if (done) {
+        const rest = buffered;
+        buffered = "";
+        return rest === "" ? undefined : rest;
+      }
+      buffered += decoder.decode(value, { stream: true });
+    }
   };
+  /** Throws the worker's failure, with its stderr. */
+  const failed = async (): Promise<never> => {
+    void child.stdin.end();
+    const exitCode = await child.exited;
+    throw new Error(
+      `the cross-process worker exited ${exitCode}: ${(await stderr).trim()}`,
+    );
+  };
+  const ready = await nextLine();
+  if (
+    ready === undefined ||
+    (JSON.parse(ready) as { ready?: boolean }).ready !== true
+  ) {
+    return await failed();
+  }
+  return {
+    go: () => {
+      void child.stdin.write("go\n");
+      void child.stdin.end();
+    },
+    result: (async () => {
+      const line = await nextLine();
+      const exitCode = await child.exited;
+      if (exitCode !== 0 || line === undefined) {
+        return await failed();
+      }
+      return JSON.parse(line) as WorkerResult;
+    })(),
+  };
+}
+
+/** Runs a started worker to completion right away (no side of the caller's to overlap). */
+async function runWorker(
+  job: Parameters<typeof startWorker>[0],
+): Promise<WorkerResult> {
+  const worker = await startWorker(job);
+  worker.go();
+  return await worker.result;
+}
+
+/**
+ * `count` increments in ten waves, yielding to the event loop between them,
+ * so the two sides of the two-process case interleave wave by wave instead
+ * of one burst finishing before the other is scheduled. The worker runs the
+ * same shape. Measured with an SQLite increment mutated into a plain
+ * read-then-write (no transaction): caught 16 of 16 runs with zero-delay
+ * waves, 2 of 5 with 1 ms sleeps between them, 0 without the barrier.
+ */
+async function incrementInWaves(
+  driver: CacheDriver,
+  ns: string,
+  key: string,
+  count: number,
+): Promise<number[]> {
+  const out: number[] = [];
+  const perWave = Math.ceil(count / 10);
+  for (let done = 0; done < count; done += perWave) {
+    const wave = Math.min(perWave, count - done);
+    out.push(
+      ...(await Promise.all(
+        Array.from(
+          { length: wave },
+          async () => await driver.increment!(ns, key, 1, null),
+        ),
+      )),
+    );
+    await wait(0);
+  }
+  return out;
 }
 
 /**
@@ -567,20 +672,17 @@ export async function runCacheDriverConformance(
           "the driver advertises multiProcess: give the kit `crossProcess` ({ module, export, options }) so the pass can spawn a second process",
         ).toBeDefined();
         const namespace = ns();
-        const child = spawnWorker({
+        const child = await startWorker({
           harness: harness!,
           op: "increment",
           ns: namespace,
           key: "c",
           count: 100,
         });
-        const mine = await Promise.all(
-          Array.from(
-            { length: 100 },
-            async () => await driver.increment!(namespace, "c", 1, null),
-          ),
-        );
-        const theirs = await child;
+        // Both sides start in this tick: the worker at the barrier's release.
+        child.go();
+        const mine = await incrementInWaves(driver, namespace, "c", 100);
+        const theirs = await child.result;
         const all = [...mine, ...(theirs.results ?? [])];
         expect(new Set(all).size).toBe(200);
         expect(Math.max(...all)).toBe(200);
@@ -599,7 +701,7 @@ export async function runCacheDriverConformance(
           "the driver advertises multiProcess: give the kit `crossProcess` ({ module, export, options }) so the pass can spawn a second process",
         ).toBeDefined();
         const namespace = ns();
-        const child = spawnWorker({
+        const child = await startWorker({
           harness: harness!,
           op: "lock",
           ns: namespace,
@@ -607,12 +709,13 @@ export async function runCacheDriverConformance(
           count: 25,
           ownerPrefix: "c-",
         });
+        child.go();
         const mine = await Promise.all(
           Array.from({ length: 25 }, (_, index) =>
             driver.acquireLock!(namespace, "k", `p-${index}`, 60_000),
           ),
         );
-        const theirs = await child;
+        const theirs = await child.result;
         expect(mine.filter(Boolean).length + (theirs.acquired ?? 0)).toBe(1);
         // Release whoever won, by every name tried on either side.
         for (let index = 0; index < 25; index++) {
@@ -634,7 +737,7 @@ export async function runCacheDriverConformance(
         ).toBeDefined();
         const namespace = ns();
         const tag = `tag-${process.pid}`;
-        await spawnWorker({
+        await runWorker({
           harness: harness!,
           op: "stamps",
           ns: namespace,

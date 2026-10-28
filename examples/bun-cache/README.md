@@ -25,3 +25,4 @@ root `node_modules`; `03-typed` uses zod from the same place.
 | `02-loading` | `getorset.ts` — the single-flight under a burst, `wrap`, stale-while-revalidate, stale-if-error, negative caching |
 | `03-typed` | `validated.ts` — a typed schema, and `validate` (V10): a failing value is a miss with an `error` event |
 | `04-drivers` | `file.ts` — the file driver: durability across instances, stamp-mode tags, the sweeper and its caps |
+| `04-drivers` | `sqlite.ts` — the SQLite driver: durability, eager tag deletion and the fence, the polled bus, and two processes sharing a counter and a lock |
