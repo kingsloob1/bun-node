@@ -29,6 +29,7 @@ export type {
   BusMessage,
   Cache,
   CacheBus,
+  CacheCompressor,
   CacheCounterKeys,
   CacheDriver,
   CacheDriverCapabilities,

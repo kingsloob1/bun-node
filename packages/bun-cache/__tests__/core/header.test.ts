@@ -4,6 +4,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  COMPRESSOR_IDS,
   decodeEntry,
   encodeEntry,
   ENTRY_FLAGS,
@@ -19,7 +20,8 @@ describe("the entry header", () => {
     const bytes = encodeEntry(
       {
         codecId: 1,
-        flags: ENTRY_FLAGS.zstd | ENTRY_FLAGS.negative,
+        flags: ENTRY_FLAGS.negative,
+        compressor: COMPRESSOR_IDS.zstd,
         createdAt: 1_700_000_000_000,
         freshUntil: 1_700_000_060_000,
         loadMs: 42.5,
@@ -30,7 +32,8 @@ describe("the entry header", () => {
     const { header, payload: readPayload } = decodeEntry(bytes);
     expect(header).toEqual({
       codecId: 1,
-      flags: ENTRY_FLAGS.zstd | ENTRY_FLAGS.negative,
+      flags: ENTRY_FLAGS.negative,
+      compressor: COMPRESSOR_IDS.zstd,
       createdAt: 1_700_000_000_000,
       freshUntil: 1_700_000_060_000,
       loadMs: 42.5,
@@ -44,6 +47,7 @@ describe("the entry header", () => {
       {
         codecId: 1,
         flags: 0,
+        compressor: COMPRESSOR_IDS.none,
         createdAt: 0,
         freshUntil: NO_FRESH_UNTIL,
         loadMs: 0,
@@ -66,6 +70,7 @@ describe("the entry header", () => {
       {
         codecId: 1,
         flags: 0,
+        compressor: COMPRESSOR_IDS.none,
         createdAt: 0,
         freshUntil: NO_FRESH_UNTIL,
         loadMs: 0,

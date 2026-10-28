@@ -6,11 +6,16 @@
  * could.
  */
 import { Buffer } from "node:buffer";
-import { constants, crc32, deflateRawSync } from "node:zlib";
+import {
+  constants,
+  crc32,
+  createBrotliCompress,
+  deflateRawSync,
+} from "node:zlib";
 import type { CacheDriver } from "../../lib/index";
 import {
+  COMPRESSOR_IDS,
   encodeEntry,
-  ENTRY_FLAGS,
   NO_FRESH_UNTIL,
 } from "../../lib/core/header";
 
@@ -35,6 +40,50 @@ export function zstdBomb(mib: number): Uint8Array {
     bomb.set(frame, i * frame.byteLength);
   }
   return bomb;
+}
+
+/**
+ * A raw DEFLATE payload (PR-Z1's `"deflate"`) decoding to `mib` MiB of zeros:
+ * the same full-flushed one-MiB blocks as {@link gzipBomb}, repeated, then an
+ * empty final block, with no wrapper.
+ */
+export function deflateBomb(mib: number): Uint8Array {
+  const blocks = deflateRawSync(new Uint8Array(MiB), {
+    finishFlush: constants.Z_FULL_FLUSH,
+  });
+  return Buffer.concat([
+    ...Array.from({ length: mib }, () => blocks),
+    deflateRawSync(new Uint8Array(0)),
+  ]);
+}
+
+/**
+ * A Brotli payload (PR-Z1's `"br"`) decoding to `mib` MiB of zeros, streamed
+ * through one compressor a MiB at a time (the same zeroed MiB each time), so
+ * the expansion is never held: a Brotli stream cannot be concatenated as
+ * DEFLATE blocks can, and node:zlib's Brotli has no synchronous streaming.
+ */
+export async function brBomb(mib: number): Promise<Uint8Array> {
+  const compressor = createBrotliCompress({
+    params: { [constants.BROTLI_PARAM_QUALITY]: 4 },
+  });
+  const chunks: Uint8Array[] = [];
+  compressor.on("data", (chunk: Uint8Array) => {
+    chunks.push(chunk);
+  });
+  const done = new Promise<void>((resolve, reject) => {
+    compressor.on("end", resolve);
+    compressor.on("error", reject);
+  });
+  const zeros = new Uint8Array(MiB);
+  for (let i = 0; i < mib; i++) {
+    if (!compressor.write(zeros)) {
+      await new Promise((resolve) => compressor.once("drain", resolve));
+    }
+  }
+  compressor.end();
+  await done;
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -67,15 +116,16 @@ export function gzipBomb(mib: number): Uint8Array {
 }
 
 /**
- * Writes a well-formed entry for `key` whose payload is `payload`, flagged
- * with `flag` (`ENTRY_FLAGS.zstd` or `.gzip`), straight into `driver` under
+ * Writes a well-formed entry for `key` whose payload is `payload`,
+ * compressed with `compressor` (a `COMPRESSOR_IDS` value; format 1 for zstd
+ * and gzip, format 2 for br and deflate), straight into `driver` under
  * the default namespace — the cache's own codec ("raw", id 3) would answer
  * the decoded bytes, so only the cap stands between a read and the bomb.
  */
 export async function plantEntry(
   driver: CacheDriver,
   key: string,
-  flag: number,
+  compressor: number,
   payload: Uint8Array,
 ): Promise<void> {
   await driver.set("cache", {
@@ -83,7 +133,8 @@ export async function plantEntry(
     value: encodeEntry(
       {
         codecId: 3,
-        flags: flag,
+        flags: 0,
+        compressor,
         createdAt: Date.now(),
         freshUntil: NO_FRESH_UNTIL,
         loadMs: 0,
@@ -96,18 +147,24 @@ export async function plantEntry(
   });
 }
 
-/** One kind of bomb: its algorithm's name, the header flag, and its builder. */
+/** One kind of bomb: its algorithm's name, the header's compressor id, and its builder. */
 export interface BombKind {
   /** The compression algorithm. */
-  algorithm: "zstd" | "gzip";
-  /** The header flag that marks a payload compressed with it. */
-  flag: number;
+  algorithm: "zstd" | "gzip" | "br" | "deflate";
+  /** The header's compressor id for a payload compressed with it. */
+  compressor: number;
   /** Builds a payload decoding to this many MiB. */
-  build: (mib: number) => Uint8Array;
+  build: (mib: number) => Uint8Array | Promise<Uint8Array>;
 }
 
-/** Both compression flags, with the bomb builder for each. */
+/** Every built-in compressor, with the bomb builder for each. */
 export const BOMBS: BombKind[] = [
-  { algorithm: "zstd", flag: ENTRY_FLAGS.zstd, build: zstdBomb },
-  { algorithm: "gzip", flag: ENTRY_FLAGS.gzip, build: gzipBomb },
+  { algorithm: "zstd", compressor: COMPRESSOR_IDS.zstd, build: zstdBomb },
+  { algorithm: "gzip", compressor: COMPRESSOR_IDS.gzip, build: gzipBomb },
+  { algorithm: "br", compressor: COMPRESSOR_IDS.br, build: brBomb },
+  {
+    algorithm: "deflate",
+    compressor: COMPRESSOR_IDS.deflate,
+    build: deflateBomb,
+  },
 ];

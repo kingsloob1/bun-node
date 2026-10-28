@@ -119,9 +119,15 @@ And (PR-C10):
   secret — KV's own expiry (its 60 s floor absorbed), stamp-mode tags, no
   counters, locks or bus ([The Cloudflare KV driver](#the-cloudflare-kv-driver))
 
-Next, in the plan's order: the Cloudflare D1 driver (PR-C11), pluggable
-compression (PR-Z1), the Nest interceptor (PR-N2), then encryption (PR-E1 to
-PR-E3).
+And (PR-Z1):
+
+- **pluggable compression**: `"br"` and raw `"deflate"` beside zstd and
+  gzip, user compressors (sync or async) with `previous`, and a per-call
+  `compress: false`, every one decompressed no further than `maxEntryBytes`
+  ([Compression and limits](#compression-and-limits))
+
+Next, in the plan's order: the Cloudflare D1 driver (PR-C11), the Nest
+interceptor (PR-N2), then encryption (PR-E1 to PR-E3).
 
 ## Quick start
 
@@ -286,9 +292,81 @@ shared with non-Bun readers wants `codec: "json"`. And because JSON is lossy,
 
 ## Compression and limits
 
-`compress: { algorithm: "zstd" | "gzip", threshold, level? }` — the default
-is zstd above 16 KiB, and an entry is compressed only when that makes it
+`compress: { algorithm, threshold?, level?, previous? }` — the default is
+zstd above 16 KiB, and an entry is compressed only when that makes it
 smaller. `compress: false` disables it.
+
+| `algorithm` | Default `level` | Range | Implementation |
+|---|---|---|---|
+| `"zstd"` (default) | 3 | 1–22 | `Bun.zstdCompressSync` |
+| `"gzip"` | 6 | 0–9 | `Bun.gzipSync` |
+| `"br"` (Brotli) | 4 | 0–11 | `node:zlib` `brotliCompressSync` (quality) |
+| `"deflate"` | 6 | 0–9 | `Bun.deflateSync`: **raw** DEFLATE |
+| a `CacheCompressor` | — | — | your `compress` and `decompress` |
+
+- **Which one.** zstd stays the default: on JSON it matches Brotli 4's ratio
+  in a quarter to a third of the time, and on bytes that do not compress (an
+  image, an archive) it gives up in 27 µs at 70 KB where gzip and deflate
+  spend 1.3 ms. Brotli wins on small text, through its built-in dictionary,
+  which matters only with a threshold far under 16 KiB. Its quality defaults
+  to 4, as bun-common's response compression does: Brotli's own default, 11,
+  takes 90 ms for 70 KB. At a 4 KiB threshold, zstd saves 3.8× for 17 µs.
+- **`"deflate"` is raw DEFLATE** (RFC 1951), not the zlib-wrapped form HTTP's
+  `Content-Encoding: deflate` means: these bytes never reach HTTP. It is the
+  same ratio, six bytes shorter.
+- **`level`** is the one knob, and is checked: a level outside its range, or
+  a `level` beside a user compressor, is a `TypeError` at `createCache`. The
+  threshold is 16 KiB for every algorithm.
+- **Changing `algorithm` needs no flush.** Each entry's header names its
+  compressor, and every built-in always decompresses.
+- **Per call, `compress: false`** on `set`, `setMany`, `getOrSet` and `wrap`
+  stores that value uncompressed: for bytes already compressed, where gzip,
+  deflate and Brotli spend up to 20 ms per MiB before the "only if smaller"
+  rule discards their work. It is also the answer to a **compression
+  oracle**: a value that mixes a secret with text an attacker chooses leaks
+  the secret through its compressed size, byte by byte (the CRIME and BREACH
+  attacks). A `touch` keeps such an entry uncompressed.
+
+**User compressors.** A `CacheCompressor` is
+`{ id: 128–255, compress(bytes), decompress(bytes, maxOutputLength) }`, and
+either function may return a promise (the cache awaits only one that does).
+A dictionary-trained zstd, for one (Bun's native zstd takes no dictionary):
+
+```ts
+import type { CacheCompressor } from "@kingsleyweb/bun-cache";
+import type { ZstdOptions } from "node:zlib";
+import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
+
+const dictionary = await Bun.file("cache.dict").bytes();
+// Bun's node:zlib honours `dictionary`; @types/node does not declare it yet.
+const withDictionary = (options: ZstdOptions = {}) =>
+  ({ ...options, dictionary }) as ZstdOptions;
+const zstdDict: CacheCompressor = {
+  id: 128,
+  compress: (bytes) => zstdCompressSync(bytes, withDictionary()),
+  decompress: (bytes, maxOutputLength) =>
+    zstdDecompressSync(bytes, withDictionary({ maxOutputLength })),
+};
+const cache = createCache({ driver, compress: { algorithm: zstdDict } });
+```
+
+The id is stored in every entry it compressed, so a new compressor takes a
+new id, and the old one goes in `previous` while its entries live:
+`compress: { algorithm: zstdDict2, previous: [zstdDict] }`. An entry whose
+compressor the cache does not know is a miss, is deleted, and fires `error`
+with `phase: "decode"`, as an unknown codec is. Ids outside 128–255, and two
+compressors with one id, are a `TypeError`.
+
+**The header format.** An entry with no compression, zstd or gzip is written
+as it always was (format 1); `br`, `deflate` and user compressors need a
+compressor-id byte, so they write **format 2**. A process on a version
+before format 2 reads such an entry as a miss and deletes it, so during the
+rolling deploy that turns Brotli on, old and new processes miss each other's
+entries; once every process runs the new version, nothing more changes.
+
+**The decompression cap holds for every compressor.** The built-ins stop at
+the entry limit (below); a user compressor is handed it as
+`maxOutputLength`, and its answer is refused past it anyway.
 
 Every entry is capped at `maxEntryBytes` (default 4 MiB, or the driver's own
 limit when smaller). An oversized `set` resolves `false` and emits `oversize`

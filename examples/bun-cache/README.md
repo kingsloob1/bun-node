@@ -22,6 +22,7 @@ root `node_modules`; `03-typed` uses zod from the same place.
 | Folder | What it shows |
 |---|---|
 | `01-core` | `basics.ts` — set/get/has/delete, `getEntry`, TTL expiry, tags, counters, namespaces, events, stats |
+| `01-core` | `compression.ts` — the stored bytes as proof: zstd above 16 KiB and nothing below, `gzip`/`br`/`deflate` (format 1 vs 2, compressor ids), `level` and the option `TypeError`s, mixed algorithms in one store, per-call `compress: false`, a sync and an async user compressor with `previous`, and planted decompression bombs (zstd, gzip, br, deflate) read as misses with a `decode` error |
 | `02-loading` | `getorset.ts` — the single-flight under a burst, `wrap`, stale-while-revalidate, stale-if-error, negative caching |
 | `03-typed` | `validated.ts` — a typed schema, and `validate` (V10): a failing value is a miss with an `error` event |
 | `04-drivers` | `file.ts` — the file driver: durability across instances, stamp-mode tags, the sweeper and its caps |

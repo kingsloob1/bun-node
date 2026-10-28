@@ -36,6 +36,17 @@ decided:
   because their tags are sealed in the envelope. For plain caches it is
   documented, not hardened.
 
+**PR-Z1 built (2026-10-28)**, stacked on the decompression cap (#564): `"br"`
+and raw `"deflate"`, `CacheCompressor` (sync or async) with
+`compress.previous`, the per-call `compress: false`, and entry format 2
+(written only for `br`, `deflate` or a user compressor; develop's own entries
+pinned as byte fixtures). Every compressor goes through #564's bound:
+`decompressBounded` takes the header's compressor id and decodes br and
+deflate with node:zlib's `maxOutputLength`, and a user compressor is handed
+the cap and held to it. Departures, each a question in the PR: a second
+`decompress` argument, `maxOutputLength`; a `level` beside a user compressor
+refused.
+
 Written 2026-10-28 against `develop` at `251a64f1` (#560). **No product code
 was changed.** Every `file:line` is at `251a64f1`, relative to
 `packages/bun-cache/` unless it says otherwise. The marks are the main

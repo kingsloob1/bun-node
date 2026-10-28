@@ -14,10 +14,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { afterAll, describe, expect, test } from "bun:test";
+import { brotliCompressSync } from "node:zlib";
 import { decompressBounded } from "../../lib/core/decompress";
 import {
+  COMPRESSOR_IDS,
   decodeEntry,
-  ENTRY_FLAGS,
   EntryDecodeError,
 } from "../../lib/core/header";
 import type { CacheDriver, CacheEventMap } from "../../lib/index";
@@ -59,7 +60,7 @@ describe.each(DRIVERS)(
   ({ make }) => {
     test.each(BOMBS)(
       "a $algorithm bomb reads as a miss, with an error event, and is deleted",
-      async ({ flag, build }) => {
+      async ({ compressor, build }) => {
         const driver = make();
         const cache = createCache({
           driver,
@@ -71,7 +72,7 @@ describe.each(DRIVERS)(
         cache.on("error", (event) => {
           errors.push(event);
         });
-        await plantEntry(driver, "bomb", flag, build(8));
+        await plantEntry(driver, "bomb", compressor, await build(8));
         expect(await cache.get("bomb")).toBeUndefined();
         expect(errors).toHaveLength(1);
         expect(errors[0]).toMatchObject({
@@ -94,7 +95,7 @@ describe.each(DRIVERS)(
 
     test.each(BOMBS)(
       "getOrSet over a $algorithm bomb loads and replaces it",
-      async ({ flag, build }) => {
+      async ({ compressor, build }) => {
         const driver = make();
         const cache = createCache({
           driver,
@@ -102,7 +103,7 @@ describe.each(DRIVERS)(
           maxEntryBytes: LIMIT,
           sweepInterval: 0,
         });
-        await plantEntry(driver, "bomb", flag, build(8));
+        await plantEntry(driver, "bomb", compressor, await build(8));
         expect(await cache.getOrSet("bomb", async () => "loaded")).toBe(
           "loaded",
         );
@@ -114,7 +115,7 @@ describe.each(DRIVERS)(
 );
 
 describe("entries at the limit", () => {
-  for (const algorithm of ["zstd", "gzip"] as const) {
+  for (const algorithm of ["zstd", "gzip", "br", "deflate"] as const) {
     test(`a ${algorithm}-compressed entry decoding to exactly the limit still reads`, async () => {
       const driver = memoryDriver();
       const cache = createCache({
@@ -129,7 +130,7 @@ describe("entries at the limit", () => {
       // It was stored compressed, so the read below decompresses to the limit.
       const stored = await driver.get("cache", "k");
       const { header, payload } = decodeEntry(stored!.value);
-      expect(header.flags & ENTRY_FLAGS[algorithm]).not.toBe(0);
+      expect(header.compressor).toBe(COMPRESSOR_IDS[algorithm]);
       expect(payload.byteLength).toBeLessThan(LIMIT / 10);
       expect(await cache.get("k")).toEqual(value);
       await cache.close();
@@ -167,10 +168,16 @@ describe("decompressBounded", () => {
     expect(decompressBounded(0, data, 10)).toBe(data);
   });
 
+  test("a user compressor's id is not a built-in one", () => {
+    expect(() => decompressBounded(200, data, 10)).toThrow(EntryDecodeError);
+  });
+
   test("decodes up to and including the cap, refuses one byte past it", () => {
     for (const [flag, packed] of [
-      [ENTRY_FLAGS.zstd, Bun.zstdCompressSync(data)],
-      [ENTRY_FLAGS.gzip, Bun.gzipSync(data)],
+      [COMPRESSOR_IDS.zstd, Bun.zstdCompressSync(data)],
+      [COMPRESSOR_IDS.gzip, Bun.gzipSync(data)],
+      [COMPRESSOR_IDS.br, brotliCompressSync(data)],
+      [COMPRESSOR_IDS.deflate, Bun.deflateSync(data)],
     ] as const) {
       expect(decompressBounded(flag, packed, 1000)).toEqual(data);
       expect(() => decompressBounded(flag, packed, 999)).toThrow(
@@ -189,7 +196,7 @@ describe("decompressBounded", () => {
     const frame = Bun.zstdCompressSync(new Uint8Array(1024 * 1024));
     let thrown: unknown;
     try {
-      decompressBounded(ENTRY_FLAGS.zstd, frame, LIMIT);
+      decompressBounded(COMPRESSOR_IDS.zstd, frame, LIMIT);
     } catch (error) {
       thrown = error;
     }
@@ -204,12 +211,16 @@ describe("decompressBounded", () => {
     // Inside the magic, inside the frame header, inside the blocks.
     for (const cut of [3, 6, packed.byteLength >> 1, packed.byteLength - 1]) {
       expect(() =>
-        decompressBounded(ENTRY_FLAGS.zstd, packed.subarray(0, cut), 1 << 20),
+        decompressBounded(
+          COMPRESSOR_IDS.zstd,
+          packed.subarray(0, cut),
+          1 << 20,
+        ),
       ).toThrow(EntryDecodeError);
     }
     // Something that is not a zstd frame at all.
     expect(() =>
-      decompressBounded(ENTRY_FLAGS.zstd, new Uint8Array(16), 1 << 20),
+      decompressBounded(COMPRESSOR_IDS.zstd, new Uint8Array(16), 1 << 20),
     ).toThrow(EntryDecodeError);
   });
 
@@ -221,7 +232,7 @@ describe("decompressBounded", () => {
     ]) {
       let thrown: unknown;
       try {
-        decompressBounded(ENTRY_FLAGS.gzip, corrupt, 1 << 20);
+        decompressBounded(COMPRESSOR_IDS.gzip, corrupt, 1 << 20);
       } catch (error) {
         thrown = error;
       }
@@ -245,11 +256,11 @@ describe("decompressBounded", () => {
     expect(await cache.set("k", new Uint8Array(8192).fill(9))).toBe(true);
     const stored = await driver.get("cache", "k");
     const { header, payload } = decodeEntry(stored!.value);
-    expect(header.flags & ENTRY_FLAGS.zstd).not.toBe(0);
+    expect(header.compressor).toBe(COMPRESSOR_IDS.zstd);
     await plantEntry(
       driver,
       "k",
-      ENTRY_FLAGS.zstd,
+      COMPRESSOR_IDS.zstd,
       payload.subarray(0, payload.byteLength - 1),
     );
     expect(await cache.get("k")).toBeUndefined();
