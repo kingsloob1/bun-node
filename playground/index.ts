@@ -158,9 +158,11 @@ const ui = jobsUi({
 const app = new BunHttpAdapter();
 // The summoned units' control page (`/playground/compute`) goes on this adapter.
 summoning.mount(app);
-// The bun-cache demo (`/playground/cache/*`, cache.ts): a cached report with a
-// 10 s TTL and a 30 s stale window, its stats, and tag invalidation.
-const cacheDemo = mountCacheDemo(app);
+// The bun-cache lab (`/playground/cache`, cache.ts): routes behind
+// cacheResponse() showing X-Cache, invalidation by path and tag, live stats,
+// and one cache switchable between drivers, compression and an L1 tier; plus
+// PR-C1's cached report (`/playground/cache/report`).
+const cacheDemo = await mountCacheDemo(app);
 // The validated chat channel (bun-validate V8, chat.ts): one `ws()` call —
 // `app.ws(chat.path, chat.checks(), chat.handler(…), chat.options(…))` — at
 // `/playground/chat/:room`.
@@ -353,7 +355,8 @@ bun-node playground (${playgroundBackend()} driver)
   Self-hosted  ${origin}/playground/api-docs  (bun-api-docs-ui: the same OpenAPI document, bundled viewer, no CDN)  ·  events: ${origin}/playground/ws-docs
   docsRouter SH ${origin}/playground/self-hosted-docs  (docsRouter's "self-hosted" viewer: the package's bundle served by bun-common)  ·  events: ${origin}/playground/self-hosted-docs/asyncapi
   Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
-  Cache demo    ${origin}/playground/cache/report  (bun-cache PR-C1: a 250 ms report, cached 10 s + 30 s stale — fire ten at once, one build; stats at …/cache/stats; POST …/cache/invalidate)
+  Cache lab     ${origin}/playground/cache  (bun-cache: cached routes with X-Cache HIT/MISS/STALE/BYPASS/UNCACHEABLE, Age and timing, SWR and stale-if-error, invalidation by path and tag, live stats; switch driver, compression, L1)
+  Cache report  ${origin}/playground/cache/report  (PR-C1's getOrSet demo: a 250 ms report, cached 10 s + 30 s stale — fire ten at once, one build)
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
@@ -384,7 +387,9 @@ async function shutdown(): Promise<void> {
     await mailer.stop();
     await flows.stop();
     await stopRunners();
-    await cacheDemo.cache.close();
+    // Closes the cache and removes the data its current driver holds (the
+    // drivers switched away from were cleaned at the switch).
+    await cacheDemo.stop();
     await api.close();
     await app.close();
     await jobs.close();

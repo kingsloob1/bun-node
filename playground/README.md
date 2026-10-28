@@ -16,6 +16,7 @@ PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgrou
 PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
 PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
 bun playground/nest-gateway.ts                           # the validated Nest gateway (V9), on its own port (PORT_NEST, default 4001)
+bun playground/cache-smoke.ts                            # the cache lab's smoke check (see "The cache lab")
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -47,7 +48,7 @@ can reach it, so never expose it.
 | `/playground/compute` | the summoned units: every child process the library's `localCompute()` started for the playground, with its provider status, and buttons that inject a fault into one queue's next unit; every queue's summon status (`GET /jobs-api/summon`), the `onSummonFailed` alerts, and a budget reset (see "Summoning" below) |
 | `/playground/docs` | AD (c)'s `docsRouter`: the adapter's OpenAPI document as JSON (`/playground/docs/openapi.json`, re-generated live per request — the same one `/playground/openapi.json` shows with its warnings) plus a Redoc viewer page, and AD (e)'s AsyncAPI document of the chat channel (`/playground/docs/asyncapi.json`, its official-component viewer at `/playground/docs/asyncapi`); behind the playground's allow-everything auth, and hidden from the document itself |
 | `/playground/chat/:room` | a validated WebSocket chat channel (bun-validate V8's `defineChannel`, `chat.ts`), mounted with one `ws()` call: the upgrade's room name is checked against the channel's `request` schema (a bad one — `/playground/chat/Lobby` — is a 400, never a 101), every text frame is parsed and checked against its `type` (`say` with data, `typing` without; an invalid frame is answered with a value-free `VALIDATION` error frame, an unknown type with `UNKNOWN_MESSAGE`), and `send`/`publish` are typed and checked. It appears in `/playground/routes` as `GET /playground/chat/:room` with its `websocket` contract's rows; OpenAPI documents HTTP only, so each OpenAPI generation still collects one "skipped" warning for it — but the channel is fully present in the **AsyncAPI** document (`/playground/docs/asyncapi.json`: the `playground-chat` channel — its room parameter's checked schema as `x-bun-common-schema`, its frames as envelope payloads, the `say`→`said` reply, the implicit `error` frame). Poke it: `bunx wscat -c 'ws://localhost:4000/playground/chat/lobby?name=ada'`, then `{"type":"say","data":{"text":"hi"}}` |
-| `/playground/cache/report` | the bun-cache demo (PR-C1, `cache.ts`): a report that takes 250 ms to build, cached for 10 s with a 30 s stale window through `getOrSet` — the response's `cache` field says `miss`/`hit`/`stale`; fire ten requests at once and the report builds once. `GET /playground/cache/stats` shows the counters, `POST /playground/cache/invalidate` drops the tag |
+| `/playground/cache` | the bun-cache lab (`cache.ts`, see "The cache lab" below): routes behind `cacheResponse()` showing `X-Cache`, `Age` and timing, stale-while-revalidate and stale-if-error, invalidation by path and by tag, live `cache.stats()`, and one cache switchable between drivers, compression algorithms and an L1 tier. PR-C1's `getOrSet` demo stays on the same cache: `GET /playground/cache/report` (250 ms to build, cached 10 s with a 30 s stale window; its `cache` field says `miss`/`hit`/`stale`; ten at once build once), `GET /playground/cache/stats`, `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`) |
 | `/` | redirects to `/jobs` |
 
 **A validated Nest gateway, on its own port** (`nest-gateway.ts`, bun-validate
@@ -435,6 +436,80 @@ keeps its state (`PLAYGROUND_DRIVER=sqlite`, a server), the next start's
 Summon panel may show one failure and a last outcome of `unavailable` with
 that detail, until a registration or a Reset clears it.
 
+## The cache lab
+
+`/playground/cache` (`cache.ts`, the page in `cache-page.ts`, the drivers in
+`cache-drivers.ts`) is bun-cache on the playground's adapter. Each button
+calls a route with `fetch` and shows the answer's `X-Cache`, `Age` and time;
+the counters below refresh every second; the History table keeps the last 30
+calls. Every cached route takes about 120 ms to build, so a `MISS` and a `HIT`
+differ in time as well.
+
+| Route | `cacheResponse()` options | What you see |
+|---|---|---|
+| `GET /playground/cache/http/item/:id` | `ttl: 15_000`, `tags: ["items"]`, `addCacheTags(res, "item:<id>")`, `bypass` on `?bypass` | `MISS`, then `HIT` with a growing `Age`; `?bypass` is `BYPASS` (no read, no store) |
+| `POST /playground/cache/http/item/:id` | the same middleware | an unsafe method that succeeds drops every entry for its path (`invalidateOnUnsafe`, RFC 9111 §4.4): the next GET is a `MISS` |
+| `GET /playground/cache/http/swr` | `ttl: 2_000`, `staleWhileRevalidate: 60_000`, `revalidate: { fetch: app.fetch }` | after 2 s, `STALE` (the old build) while one background replay through the adapter's `fetch()` refreshes it; the next GET is a `HIT` on the new build |
+| `GET /playground/cache/http/sie` | `ttl: 2_000`, `staleIfError: 60_000` | tick "origin failing" (`POST /playground/cache/sie?failing=true`) and wait 2 s: the route's 503 is replaced by the stale copy, `STALE` and 200; untick and it is a `MISS` again |
+| `GET /playground/cache/http/private` | `ttl: 15_000` | the handler sets `Cache-Control: private`: `UNCACHEABLE` every time |
+| `GET /playground/cache/http/big` | `ttl: 15_000` | about 64 KiB of text: compare `bytesWritten` across compression settings (44,522 bytes off; about 1,170 zstd, 1,320 br, 2,750 gzip and deflate) |
+
+The controls: **invalidate by path** (`POST /playground/cache/invalidate-path?path=…`,
+the middleware's `invalidate(path)`: every query and variant of the path) and
+**by tag** (`POST /playground/cache/invalidate?tag=…`, `cache.invalidateTags`);
+**fence a load** (`POST /playground/cache/fence`: a 300 ms `getOrSet` whose key
+is deleted at 100 ms; its write is dropped and `stats().fenced` counts one,
+reason `local`); **fill 100** (`POST /playground/cache/fill?count=100`, against
+the 64-entry cap the lab gives every driver that takes one: the memory driver
+evicts at once, file, SQLite, the SQL servers, MongoDB, S3 and Azure on their
+sweep, every 2 s here; Redis has no cap, its server's `maxmemory` policy
+evicts); **reset counters** (`stats({ reset: true })`). `GET /playground/cache/state`
+is the page's JSON: the configuration, every driver and why one is
+unavailable, every driver opened this run, and `stats()` (with `l1` when the
+L1 tier is on).
+
+**Switching** (`POST /playground/cache/config?driver=&compress=&l1=`) builds a
+new cache, closes the old one and removes exactly its data. It starts on
+`memory`, `zstd`, L1 on. Compression is `off`, `zstd`, `gzip`, `br` or
+`deflate`, at a 1 KiB threshold so the demo's responses reach it. The drivers:
+
+- `memory`, `file` and `sqlite`, always. The file and SQLite data live in
+  `playground/.data/cache-<pid>/`, removed when the playground stops (and by
+  the next start, if it was killed first).
+- `postgres`, `mysql`, `mariadb`, `redis`, `mongodb`, `s3` and `azure` when
+  their variable is set: the `BUN_CACHE_TEST_*_URL` ones
+  `bun scripts/setup-databases.ts --print-env` prints, so
+  `eval "$(bun scripts/setup-databases.ts --print-env)" && bun playground/index.ts`
+  offers them all. An unset one is listed, greyed, naming its variable; a set
+  one whose server does not answer within 10 s refuses the switch (502) and
+  the lab stays where it was. Each opening gets a prefix naming the process and
+  the opening (`bun_cache_playground_<pid>_<n>_` tables and collections,
+  `bun-cache-playground-<pid>-<n>` Redis keys, `bun-cache-playground/<pid>-<n>`
+  objects and blobs), and its cleanup drops those tables and collections by
+  name and deletes the keys, objects and blobs a listing of the prefix finds.
+  Nothing else on a server is read or written. A playground killed with
+  SIGKILL leaves a server opening's data behind (only the local directory is
+  swept on the next start).
+- Cloudflare KV and D1 are listed as unavailable: they need miniflare or an
+  account (`examples/bun-cache/04-drivers/`).
+
+There is no Nest route behind `BunCacheInterceptor` here: the playground is
+not a Nest app (`nest-gateway.ts` is a separate WebSocket-only entry), and
+`examples/bun-nest` covers the interceptor.
+
+**The smoke check**, `bun playground/cache-smoke.ts` (with the server
+variables exported to cover them too): starts the playground on `PORT=0`,
+drives every control through `fetch` on every available driver, asserts the
+`X-Cache` sequences (`MISS`, `HIT`, `BYPASS`, `UNCACHEABLE`, `STALE` for both
+windows, a `MISS` after each invalidation), the fence, the evictions, the L1
+stats and the compression sizes, stops it with SIGINT, and checks that every
+process of its tree is gone and that nothing is left where any opening kept
+its data. With all seven servers set it makes 593 checks in about 80 seconds
+(215 on memory, file and SQLite alone). On a driver whose write lags its response (Azure's several
+round trips) the request right behind a `MISS` can miss too (the write never
+delays the response); the check waits up to 5 s for the `HIT` and reports how
+many such misses it saw.
+
 ## Things to try
 
 - Open the Overview after a minute: Jobs, Queues, Runners and Workers all show real numbers over the range.
@@ -476,6 +551,7 @@ that detail, until a registration or a Reset clears it.
 - `tail -f playground/.data/units-*.log`: every media unit's output, as `output: { file }` appends it.
 - `PLAYGROUND_DRIVER=sqlite` and restart: everything is still there.
 - Connect two WebSocket clients to `/playground/chat/lobby?name=ada` and `?name=bob` (the banner's URL): ada's `{"type":"say","data":{"text":"hi"}}` reaches bob by `publish` and ada by `send`; `{"type":"say","data":{"text":42}}` is answered with a `VALIDATION` error frame whose issues never carry the bad value, and the socket stays open; `/playground/chat/Lobby` never upgrades (400).
+- Open `/playground/cache`: GET item/1 twice (`MISS` in about 120 ms, then `HIT` in a few), invalidate tag `item:1`, GET again (`MISS`). GET swr, wait 2 s, GET twice (`STALE`, then `HIT` on build 2). Switch to `sqlite` with `br` and watch "Drivers opened this run" record the memory cache's removal.
 - `bun playground/nest-gateway.ts` beside the playground, then send it `{"type":2,"namespace":"/","data":["say",{"text":"hi"}],"id":1}`: a `said` event and the ack come back checked; `"data":["say",{"text":42}]` earns an `exception` frame, no ack.
 
 Ctrl+C stops it cleanly (it waits up to 2 s for a running report).
