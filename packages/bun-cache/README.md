@@ -532,7 +532,7 @@ that opens it (§7.3 of the plan). Five tables, under the prefix
 prefixes on one file are two separate stores):
 
 ```
-<p>entries (ns, k, v BLOB, n INTEGER, exp INTEGER, tg TEXT, ca INTEGER)  entries and counters
+<p>entries (ns, k, v BLOB, n INTEGER, exp INTEGER, tg TEXT, ca INTEGER)  entries and counters (ca: written/created at)
 <p>tags    (ns, tag, k)                                                  the tag index
 <p>stamps  (ns, tag, at, exp)                                            invalidation stamps
 <p>locks   (ns, k, owner, exp)                                           lock rows
@@ -557,6 +557,17 @@ prefixes on one file are two separate stores):
 - **Expiry**: reads filter out expired rows and never write; the core's
   sweeper deletes them through the partial `exp` index (with their tag rows,
   expired stamps and lapsed locks).
+- **`maxEntries`** (opt-in; no cap by default — the database is sized by its
+  operator): the same sweep pass, in the same transaction, evicts the excess
+  — **nearest to expiry first**, then the entries with no expiry, oldest
+  write first — each with its tag rows, at most the sweep's `limit` per
+  pass. Each eviction is an `evict` event (reason `"cap"`) and counts in
+  `stats().evictions`. It is enforced at sweep time, so the table can briefly
+  exceed the cap between sweeps. The cap counts every namespace under the
+  prefix together. Counters are not entries: never counted, never evicted
+  (that would silently reset a rate-limit window). Two processes sweeping one
+  file at once evict exactly the excess: each pass counts and evicts inside
+  one `BEGIN IMMEDIATE` transaction.
 - **The bus** is the `<p>bus` table, polled every `busPollInterval` (250 ms)
   and pruned by age (`busRetention`, 60 s). A subscriber further behind than
   that, or a reset table, sees a gap.

@@ -14,7 +14,8 @@
  *
  * An entry row holds `v` (the core's opaque bytes) and `n IS NULL`; a counter
  * row holds `n` and no `v` (§3.8). `tg` is the entry's tags as JSON, so a hit
- * is one row; the tag index answers `deleteByTags`.
+ * is one row; the tag index answers `deleteByTags`. `ca` is when the row was
+ * written (an entry) or created (a counter).
  *
  * **One connection per file per process** (§7.3): `bun:sqlite` is fully
  * synchronous, so every driver on the same file in this process shares one
@@ -52,6 +53,8 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { entryCapExcess, entryCapStatements } from "./entry-cap";
+import type { EntryCapStatements } from "./entry-cap";
 
 /** The default table prefix (§21). */
 const DEFAULT_PREFIX = "bun_cache_";
@@ -96,6 +99,18 @@ export interface SqliteDriverOptions {
    * cache flushes its L1). Defaults to 60,000.
    */
   busRetention?: number;
+  /**
+   * At most this many entries in this prefix's table (every namespace
+   * together); no cap by default (§3.9: the database is sized by its
+   * operator). Enforced by `sweep`, in the same transaction as the expired
+   * delete — so between sweeps the table can briefly exceed it — and at most
+   * the sweep's `limit` evictions per pass. The victims are the entries
+   * **nearest to expiry first**, then those with no expiry, oldest write
+   * first; each goes with its tag rows and is reported as an `evict` event
+   * (reason `"cap"`). Counters are not entries and are never evicted (one
+   * would silently reset a rate-limit window, §3.8). A positive integer.
+   */
+  maxEntries?: number;
   /** The clock, epoch ms. Internal: for tests. Defaults to `Date.now`. */
   now?: () => number;
 }
@@ -222,6 +237,8 @@ interface Statements {
   busRows: string;
   /** The namespace-scoped deletes `clear` runs. */
   clear: string[];
+  /** The `maxEntries` sweep's statements (`entry-cap.ts`). */
+  cap: EntryCapStatements;
 }
 
 /** Builds a prefix's statements. The prefix is validated before this runs. */
@@ -243,7 +260,7 @@ function buildStatements(prefix: string): Statements {
       `CREATE TABLE IF NOT EXISTS ${bus} (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, msg TEXT NOT NULL)`,
     ],
     get: `SELECT v, exp, tg FROM ${entries} WHERE ns = ?1 AND k = ?2 AND n IS NULL AND (exp IS NULL OR exp > ?3)`,
-    upsertEntry: `INSERT INTO ${entries} (ns, k, v, n, exp, tg, ca) VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL) ON CONFLICT (ns, k) DO UPDATE SET v = excluded.v, n = NULL, exp = excluded.exp, tg = excluded.tg, ca = NULL`,
+    upsertEntry: `INSERT INTO ${entries} (ns, k, v, n, exp, tg, ca) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6) ON CONFLICT (ns, k) DO UPDATE SET v = excluded.v, n = NULL, exp = excluded.exp, tg = excluded.tg, ca = excluded.ca`,
     deleteEntry: `DELETE FROM ${entries} WHERE ns = ?1 AND k = ?2 RETURNING tg`,
     deleteTagRows: `DELETE FROM ${tags} WHERE ns = ?1 AND k = ?2`,
     insertTagRows: `INSERT OR IGNORE INTO ${tags} (ns, tag, k) SELECT ?1, value, ?2 FROM json_each(?3)`,
@@ -276,6 +293,7 @@ function buildStatements(prefix: string): Statements {
     publish: `INSERT INTO ${bus} (at, msg) VALUES (?1, ?2)`,
     busHead: `SELECT seq FROM sqlite_sequence WHERE name = ?1`,
     busRows: `SELECT seq, msg FROM ${bus} WHERE seq > ?1 ORDER BY seq LIMIT ?2`,
+    cap: entryCapStatements(entries, "?1"),
     clear: [entries, tags, stamps, locks].map(
       (table) => `DELETE FROM ${table} WHERE ns = ?1`,
     ),
@@ -317,6 +335,13 @@ class SqliteDriver implements CacheDriver {
   /** When this driver last pruned the bus, epoch ms (pruning runs at most once a second per driver). */
   #lastPrune = 0;
 
+  /** The `onEviction` listeners, told of each `maxEntries` eviction after its sweep commits. */
+  readonly #evictListeners: ((
+    ns: string,
+    key: string,
+    reason: string,
+  ) => void)[] = [];
+
   constructor(
     /** The options; `path` or `database` is required. */
     options: SqliteDriverOptions,
@@ -331,6 +356,15 @@ class SqliteDriver implements CacheDriver {
     if (!PREFIX_PATTERN.test(prefix) || prefix.length > 48) {
       throw new TypeError(
         `sqliteDriver: prefix ${JSON.stringify(prefix)} must be an SQL identifier (letters, digits, underscores; at most 48 characters)`,
+      );
+    }
+    const { maxEntries } = options;
+    if (
+      maxEntries !== undefined &&
+      !(Number.isSafeInteger(maxEntries) && maxEntries > 0)
+    ) {
+      throw new TypeError(
+        `sqliteDriver: maxEntries must be a positive integer, got ${String(maxEntries)}`,
       );
     }
     this.#options = {
@@ -495,13 +529,14 @@ class SqliteDriver implements CacheDriver {
   }
 
   /** Writes one entry and its tag rows; the caller holds the transaction. */
-  #writeEntry(db: Database, ns: string, entry: StoredEntry): void {
+  #writeEntry(db: Database, ns: string, entry: StoredEntry, now: number): void {
     db.query(this.#sql.upsertEntry).run(
       ns,
       entry.key,
       entry.value,
       entry.expiresAt,
       entry.tags.length === 0 ? null : JSON.stringify(entry.tags),
+      now,
     );
     // Replacing: the old tags go, the new ones come.
     db.query(this.#sql.deleteTagRows).run(ns, entry.key);
@@ -531,7 +566,7 @@ class SqliteDriver implements CacheDriver {
           return "fenced" as const;
         }
       }
-      this.#writeEntry(db, ns, entry);
+      this.#writeEntry(db, ns, entry, now);
       return "stored" as const;
     });
   }
@@ -541,9 +576,10 @@ class SqliteDriver implements CacheDriver {
       return;
     }
     // One transaction for the batch: ~14× the single-statement rate [M §7.3].
+    const now = this.#now();
     await this.#write((db) => {
       for (const entry of entries) {
-        this.#writeEntry(db, ns, entry);
+        this.#writeEntry(db, ns, entry, now);
       }
     });
   }
@@ -720,7 +756,7 @@ class SqliteDriver implements CacheDriver {
   /* ---------------------------------------------------------------- */
 
   async sweep(now: number, limit: number): Promise<number> {
-    return await this.#write((db) => {
+    const { expired, evicted } = await this.#write((db) => {
       const removed = db
         .query<{ ns: string; k: string; tg: string | null }, [number, number]>(
           this.#sql.sweepEntries,
@@ -734,8 +770,60 @@ class SqliteDriver implements CacheDriver {
       db.query(this.#sql.sweepStamps).run(now);
       db.query(this.#sql.sweepLocks).run(now);
       db.query(this.#sql.pruneBus).run(now - this.#options.busRetention);
-      return removed.length;
+      return { expired: removed.length, evicted: this.#evictToCap(db, limit) };
     });
+    // Reported only once the transaction committed: a rolled-back sweep
+    // evicted nothing.
+    for (const victim of evicted) {
+      for (const listener of this.#evictListeners) {
+        listener(victim.ns, victim.k, "cap");
+      }
+    }
+    return expired;
+  }
+
+  /**
+   * The `maxEntries` cap (§3.9), inside the sweep's transaction: evicts the
+   * excess, at most `limit`, nearest to expiry first, then the entries with
+   * no expiry, oldest write first — each with its tag rows — and answers the
+   * victims. The pattern and its portability are `entry-cap.ts`'s.
+   */
+  #evictToCap(db: Database, limit: number): { ns: string; k: string }[] {
+    const { maxEntries } = this.#options;
+    if (maxEntries === undefined) {
+      return [];
+    }
+    const count =
+      db.query<{ c: number }, []>(this.#sql.cap.count).get()?.c ?? 0;
+    let excess = entryCapExcess(count, maxEntries, limit);
+    const victims: { ns: string; k: string }[] = [];
+    for (const phase of [
+      this.#sql.cap.withExpiry,
+      this.#sql.cap.withoutExpiry,
+    ]) {
+      if (excess === 0) {
+        break;
+      }
+      const rows = db
+        .query<{ ns: string; k: string; tg: string | null }, [number]>(phase)
+        .all(excess);
+      for (const row of rows) {
+        db.query(this.#sql.deleteEntry).run(row.ns, row.k);
+        if (row.tg !== null) {
+          db.query(this.#sql.deleteTagRows).run(row.ns, row.k);
+        }
+        victims.push({ ns: row.ns, k: row.k });
+      }
+      excess -= rows.length;
+    }
+    return victims;
+  }
+
+  /** Registers a listener for `maxEntries` evictions (reason `"cap"`); the core turns them into `evict` events. */
+  onEviction(
+    listener: (ns: string, key: string, reason: string) => void,
+  ): void {
+    this.#evictListeners.push(listener);
   }
 
   /* ---------------------------------------------------------------- */

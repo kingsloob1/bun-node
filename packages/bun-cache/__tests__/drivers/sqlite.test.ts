@@ -438,3 +438,184 @@ describe("sqliteDriver specifics", () => {
     await cache.close();
   });
 });
+
+describe("sqliteDriver maxEntries (§3.9)", () => {
+  /** The entry rows left in a file's default-prefix table, `ns:k`, sorted. */
+  const keysIn = (path: string): string[] =>
+    inspect(path, (db) =>
+      db
+        .query<{ ns: string; k: string }, []>(
+          "SELECT ns, k FROM bun_cache_entries WHERE n IS NULL ORDER BY ns, k",
+        )
+        .all()
+        .map((row) => `${row.ns}:${row.k}`),
+    );
+
+  test("a sweep evicts down to the cap, nearest to expiry first, then the oldest unexpiring write; counters stay", async () => {
+    const path = join(dir, "cap-order.db");
+    let now = 1_000_000;
+    const driver = sqliteDriver({ path, maxEntries: 3, now: () => now });
+    const evicted: string[] = [];
+    driver.onEviction!((ns, key, reason) => {
+      evicted.push(`${ns}:${key}:${reason}`);
+    });
+    const put = async (
+      key: string,
+      expiresAt: number | null,
+    ): Promise<void> => {
+      await driver.set("ns", { ...entry(key, 1), expiresAt });
+      now++; // a distinct write time per entry
+    };
+    // The counter is the oldest row of all: an eviction that took counters
+    // would take it first among the unexpiring rows.
+    await driver.increment!("ns", "hits", 1, null);
+    now++;
+    await put("a", now + 30_000);
+    await put("b", now + 10_000);
+    await put("c", null);
+    await put("d", now + 20_000);
+    await put("e", null);
+    await put("f", null);
+    // Six entries over a cap of three, and nothing expired: b, d, a go — the
+    // soonest to expire — and the unexpiring three stay.
+    expect(await driver.sweep!(now, 1_000)).toBe(0);
+    expect(evicted).toEqual(["ns:b:cap", "ns:d:cap", "ns:a:cap"]);
+    expect(keysIn(path)).toEqual(["ns:c", "ns:e", "ns:f"]);
+    // Counters are not entries: never counted, never evicted.
+    expect((await driver.getCounter!("ns", "hits"))?.value).toBe(1);
+    // One more unexpiring entry: the oldest write among them (c) goes.
+    await put("g", null);
+    await driver.sweep!(now, 1_000);
+    expect(evicted.at(-1)).toBe("ns:c:cap");
+    expect(keysIn(path)).toEqual(["ns:e", "ns:f", "ns:g"]);
+    expect((await driver.getCounter!("ns", "hits"))?.value).toBe(1);
+    // Under the cap, a sweep evicts nothing.
+    await driver.sweep!(now, 1_000);
+    expect(evicted).toHaveLength(4);
+    await driver.close();
+  });
+
+  test("the cap counts every namespace, takes the tag rows with each victim, and evicts at most `limit` per pass", async () => {
+    const path = join(dir, "cap-tags.db");
+    let now = 2_000_000;
+    const driver = sqliteDriver({ path, maxEntries: 2, now: () => now });
+    for (const [ns, key] of [
+      ["one", "k1"],
+      ["two", "k2"],
+      ["one", "k3"],
+      ["two", "k4"],
+      ["one", "k5"],
+    ] as const) {
+      await driver.set(ns, entry(key, 1, ["t", `t-${key}`]));
+      now++;
+    }
+    // Three over the cap, one eviction allowed per pass.
+    await driver.sweep!(now, 1);
+    expect(keysIn(path)).toEqual(["one:k3", "one:k5", "two:k2", "two:k4"]);
+    await driver.sweep!(now, 10);
+    expect(keysIn(path)).toEqual(["one:k5", "two:k4"]);
+    const tagged = inspect(path, (db) =>
+      db
+        .query<{ k: string }, []>(
+          "SELECT DISTINCT k FROM bun_cache_tags ORDER BY k",
+        )
+        .all()
+        .map((row) => row.k),
+    );
+    expect(tagged).toEqual(["k4", "k5"]);
+    // And an invalidation sees only the survivors.
+    expect(await driver.deleteByTags!("one", ["t"], now + 60_000)).toBe(1);
+    await driver.close();
+  });
+
+  test("through the cache: each eviction is an `evict` event and counts in stats()", async () => {
+    const driver = sqliteDriver({
+      path: join(dir, "cap-cache.db"),
+      maxEntries: 2,
+    });
+    const cache = createCache({ driver, sweepInterval: 0 });
+    const events: string[] = [];
+    cache.on("evict", (event) => {
+      events.push(event.reason);
+    });
+    for (let index = 0; index < 5; index++) {
+      await cache.set(`k${index}`, index, { ttl: 60_000 + index });
+    }
+    await driver.sweep!(Date.now(), 1_000);
+    expect(events).toEqual(["cap", "cap", "cap"]);
+    expect(cache.stats().evictions).toBe(3);
+    expect(await cache.get("k0")).toBeUndefined();
+    expect(await cache.get("k4")).toBe(4);
+    await cache.close();
+  });
+
+  test("two processes sweeping one file at once hold the cap exactly — no double eviction", async () => {
+    for (let round = 0; round < 3; round++) {
+      const path = join(dir, `cap-xproc-${round}.db`);
+      const driver = sqliteDriver({ path, maxEntries: 15 });
+      let evicted = 0;
+      driver.onEviction!(() => {
+        evicted++;
+      });
+      for (let index = 0; index < 20; index++) {
+        await driver.set("p", entry(`parent-${index}`, 1, ["parent"]));
+      }
+      const child = Bun.spawn({
+        cmd: [
+          process.execPath,
+          new URL("./sqlite-cap-worker.ts", import.meta.url).pathname,
+          path,
+          "20",
+          "c",
+          "15",
+        ],
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const reader = child.stdout.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      while (!text.includes("\n")) {
+        const { done, value } = await reader.read();
+        if (done) {
+          throw new Error(
+            `worker exited before ready: ${await new Response(child.stderr).text()}`,
+          );
+        }
+        text += decoder.decode(value, { stream: true });
+      }
+      // Both sweep at once: one transaction waits for the other's commit.
+      void child.stdin.end();
+      await driver.sweep!(Date.now(), 1_000);
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        text += decoder.decode(value, { stream: true });
+      }
+      expect(await child.exited).toBe(0);
+      const theirs = (
+        JSON.parse(text.trim().split("\n").at(-1)!) as { evicted: number }
+      ).evicted;
+      expect(keysIn(path)).toHaveLength(15);
+      expect(evicted + theirs).toBe(25);
+      await driver.close();
+    }
+  });
+
+  test("no cap by default; a bad cap throws", async () => {
+    const path = join(dir, "cap-none.db");
+    const driver = sqliteDriver({ path });
+    for (let index = 0; index < 50; index++) {
+      await driver.set("ns", entry(`k${index}`, 1));
+    }
+    await driver.sweep!(Date.now(), 1_000);
+    expect(keysIn(path)).toHaveLength(50);
+    await driver.close();
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => sqliteDriver({ path, maxEntries: bad })).toThrow(TypeError);
+    }
+  });
+});
