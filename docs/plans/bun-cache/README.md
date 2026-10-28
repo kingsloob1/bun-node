@@ -74,8 +74,7 @@ additions to the approved §21 surface, both noted in the PR:
 event). `onLockTimeout: "throw"` throws `LoaderTimeoutError` (the approved
 names list no lock error).
 
-**PR-C2 built 2026-10-27** (branch `feat/bun-cache-c2-file-driver`, awaiting
-the maintainer's commit): the file driver (the §7.2 layout — sharded `.bce`
+**PR-C2 merged 2026-10-27, #546**: the file driver (the §7.2 layout — sharded `.bce`
 entries, atomic tmp+rename writes, `O_EXCL` lock files created with full
 content via hard link, stamp-mode tags, counters under the per-key lock, the
 sweeper with mtime caps, the polled `bus.log`), and the kit's two passes C1
@@ -106,8 +105,7 @@ was ours. Proof: the two contention cases and the 200-increment stress green
 deterministically across 15+ runs (12/12 in-process and 8/8 cross-process
 stress rounds exact) after the fix, where they failed every run before.
 
-**PR-C3 built 2026-10-28** (branch `feat/bun-cache-c3-sqlite`, awaiting the
-maintainer's commit): `sqliteDriver` over `bun:sqlite` (§7.3) — one
+**PR-C3 merged 2026-10-28, #547**: `sqliteDriver` over `bun:sqlite` (§7.3) — one
 connection per file per process through a module-level registry
 (ref-counted; `:memory:` never shared, and then `multiProcess: false`), WAL,
 `synchronous=NORMAL`, `busy_timeout=50` with `SQLITE_BUSY` retried in JS for
@@ -165,6 +163,93 @@ rounds; the fence against another process's stamp) clean in 15 of 15
 rounds; 1000+1000 two-process increments exact in 10 of 10 runs (a
 timestamp-barrier stress, where the mutant was inexact 6 of 6); the file
 driver unchanged under the new kit, 8 of 8 runs clean.
+
+**PR-H0 built 2026-10-28** (branch `feat/bun-common-h0-cache-control`, off
+develop `4ec90b1e`, awaiting the maintainer's commit), in bun-common:
+
+- **`res.addResponseTransform(t, { first: true })`** puts the transform at
+  the front of the list (§9.7); several `first` transforms run newest first.
+  It builds a new list rather than `unshift`ing, so a run in progress keeps
+  the list it started with: measured, an in-place `unshift` from inside a
+  running transform re-ran that transform, and looped forever when it added
+  one each time. The validation gate (V3a–V3c, V13) sits in the same commit
+  point but decides **before** any transform runs (`BunResponse.ts`'s
+  `response` setter), so `first` cannot reorder it: a `first` capture sees
+  the gate's `"parsed"` body, and on a refusal only the error handler's
+  answer. With `compression()` registered before it, a `first` capture sees
+  `Content-Encoding: null` and the buffered body while the client gets gzip
+  that decodes back; without `first` it sees `gzip` and `body: undefined`
+  (the control). Read, not measured: bun-nest's before-write `capture`
+  transform is registered at response creation (`BunHttpAdapter.ts`), so a
+  later `first` transform runs ahead of it, and it still sees the `Blob`
+  body unless that transform replaces the `Response`.
+- **`cacheControl(directives, options?)`, `formatCacheControl(directives)`,
+  `CacheControlDirectives`** in `lib/cacheControl.ts`, exported from the
+  barrel and `consumer-check.json`: RFC 9111 §5.2.2's ten response
+  directives, RFC 5861's two stale windows and RFC 8246's `immutable`, in
+  seconds, written in a fixed order; the qualified `private="…"` and
+  `no-cache="…"` forms take field-name lists and always use the quoted
+  form (RFC 9111 says a sender SHOULD NOT generate the token form). Compile
+  errors: `public` with `private`, and `noStore` with **any** lifetime
+  (`maxAge`, `sMaxAge`, `staleWhileRevalidate`, `staleIfError`, `immutable`
+  — the plan named `maxAge`; widened, a question for the user);
+  `noStore` with `mustUnderstand` is allowed, as RFC 9111 §5.2.2.3
+  recommends. The same rules throw at run time (`RangeError` for a
+  lifetime that is not a non-negative safe integer; `TypeError` for a
+  contradiction, an unknown key, a non-boolean flag, an empty or non-token
+  field list), and `cacheControl()` formats once, when called, so a bad
+  directive or none fails when the route is built. `noTransform` keeps
+  `compression()` off the body (measured). Beyond §21: `CacheControlOptions`
+  and its `surrogateControl` option (sets `Surrogate-Control`).
+- **The user's answers, 2026-10-28:** (1) `noStore` forbids every lifetime,
+  as built; (2) `CacheControlOptions` and `surrogateControl` approved; (3)
+  the parser is public in bun-common now, as **`parseCacheControl`** (name
+  approved). Its result type, **`ParsedCacheControl`**, is a further new
+  name, built and awaiting approval.
+- **`parseCacheControl(value)`** reads a request's or a response's header
+  (PR-H1's `ttl: "headers"`, must-revalidate check and `honorRequest`
+  consume it), under `CacheControlDirectives`' keys plus the request-only
+  `maxStale` (seconds, or `true` with no value), `minFresh` and
+  `onlyIfCached`. RFC 9111 §5.2: names case-insensitive, token or
+  quoted-string arguments (quoted-pairs unescaped, commas inside quotes
+  kept), `delta-seconds` capped at 2147483648 (§1.2.2). §4.2.1: a
+  duplicate keeps its first occurrence (listed in `duplicates`); a
+  malformed argument is read the most restrictive way — a lifetime `0`
+  (stale), a field list the unqualified form, a flag with an argument
+  `true` — and listed in `invalid`; contradictions are kept for the reader
+  to resolve. §5.2.3: unknown directives go to a null-prototype
+  `extensions` map by lower-cased name rather than being dropped. It never
+  throws (5000 seeded random strings). `parseCacheControl(formatCacheControl(d))`
+  equals `d` for 8 hand-picked sets and 1000 seeded random ones the types
+  allow; 19 real-world headers (CDN, framework and API responses, browser
+  and client requests, RFC 9111 §5.2.3's `community="UCI"`) read as
+  expected. Negative controls: no cap (1 fail), last occurrence wins (2),
+  case-sensitive names (5), unknown directives dropped (3), a comma ending a
+  quoted-string (4), a malformed lifetime read as 60 instead of 0 (12), a
+  plain-object `extensions` (1).
+- Gate (Bun 1.4.4-canary.1+a0cc096ce), after the parser: bun-common check
+  clean (193 files), lint 0 errors, format clean, suite 2992 pass, 20 skip,
+  0 fail, and the same under `--randomize --seed=1` and `=2`; the new files
+  12 + 50 + 80 tests and a type test. The rest of this gate ran before the
+  parser, which touched no `BunResponse` code; typecheck and consumer-check
+  ran again after it, with the same results. `bun scripts/typecheck.ts` 21 projects clean, after a
+  frozen reinstall in `templates/compute-provider/` (its hardlinked
+  bun-common copy did not have the new file: CLAUDE.md's 1.4.4-canary note).
+  consumer-check 134 OK cells, 20 runtime imports, 0 broken. bun-nest suite
+  1248 pass, 7 skip, 0 fail. `examples/bun-common` 71/71,
+  `examples/bun-nest` 34/34. Nest 11.2.7 column 7 of 7 checks (suite 1146
+  pass, 126 skip, 0 fail; consumer-check 78/78). bun-jobs `bun run check`
+  765 files clean; `test:seeded` (seed 2417390620) 5778 pass, 611 skip,
+  1 fail: `spawn-hardening.test.ts`'s "runs the child as another user",
+  which has failed in every seeded run on this machine since 2026-10-24,
+  on other trees too — `kernel.apparmor_restrict_unprivileged_userns=1`
+  makes `setresuid` in the namespace fail (`unshare --map-root-user
+  --map-auto setpriv --reuid=65534 …` gives EPERM with no Bun involved),
+  while the test's `hasUserns` guard only checks that `unshare` runs.
+  Negative controls: `first` ignored (5 of 12 fail), an in-place `unshift`
+  (1 fail), the types unconstrained (10 unused `@ts-expect-error`s), the
+  run-time contradiction checks removed (8 fail), the `headersSent` guard
+  removed (1 fail), unknown keys accepted (1 fail).
 
 ### Contents
 

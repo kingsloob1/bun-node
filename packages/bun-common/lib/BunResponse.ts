@@ -2773,9 +2773,37 @@ export class BunResponse<
    * Transforms run synchronously in registration order, each given the
    * previous one's result; one added after the response was produced never
    * runs. Returns the response.
+   *
+   * With `{ first: true }` the transform goes to the front of the list
+   * instead, so it sees the `Response` (and `context.body`) as produced,
+   * before any transform registered earlier — `compression()`'s among them.
+   * A response cache captures that way: placed after `compression()`, it
+   * stores the uncompressed body, and a cached answer it sends still passes
+   * through compression's transform. Several `first` transforms run
+   * newest first. The response validation gate is unaffected either way: it
+   * decides before any transform runs.
    */
-  public addResponseTransform(transform: BunResponseTransform): this {
-    (this.#responseTransforms ??= []).push(transform);
+  public addResponseTransform(
+    transform: BunResponseTransform,
+    options?: {
+      /**
+       * Run ahead of every transform registered so far, rather than after
+       * them. A later `first` transform runs ahead of this one in turn.
+       * Defaults to `false` (registration order).
+       */
+      first?: boolean;
+    },
+  ): this {
+    const transforms = this.#responseTransforms;
+    if (transforms === undefined) {
+      this.#responseTransforms = [transform];
+    } else if (options?.first === true) {
+      // A new list, not an `unshift`: a run in progress (a transform adding
+      // one) keeps the list it started with, and never sees itself shift.
+      this.#responseTransforms = [transform, ...transforms];
+    } else {
+      transforms.push(transform);
+    }
     return this;
   }
 
