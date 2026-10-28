@@ -468,6 +468,14 @@ export interface GetOrSetOptions<
 export interface CacheLoaderContext {
   /** Aborts when every waiting caller aborted, or on the hard timeout. */
   signal: AbortSignal;
+  /**
+   * Keeps this load's value out of the cache: it is still returned to every
+   * caller sharing the flight, and nothing is written (no `set`, no
+   * `fenced`). On a background refresh the stale entry stays as it was.
+   * For a value only the loader can judge (Spring's `unless`, a response
+   * that says `no-store`); a negative is simpler as `undefined`.
+   */
+  noStore: () => void;
 }
 
 /** A `getOrSet` loader: produces the value, or `undefined` for a negative (not cached unless `cacheUndefined`). */

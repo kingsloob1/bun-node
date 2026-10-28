@@ -272,3 +272,64 @@ describe("getOrSet: the cross-process lock (§3.4)", () => {
     await a.close();
   });
 });
+
+describe("getOrSet: the loader's noStore() (§3.4)", () => {
+  test("every caller sharing the flight gets the value, and nothing is stored", async () => {
+    const { cache } = makeCache();
+    const events: string[] = [];
+    for (const event of ["set", "fenced", "load"] as const) {
+      cache.on(event, () => events.push(event));
+    }
+    let loads = 0;
+    const results = await Promise.all(
+      Array.from({ length: 5 }, async () =>
+        cache.getOrSet("k", async ({ noStore }) => {
+          loads++;
+          await sleep(5);
+          noStore();
+          return "uncacheable";
+        }),
+      ),
+    );
+    expect(loads).toBe(1);
+    expect(results).toEqual(Array.from({ length: 5 }, () => "uncacheable"));
+    expect(await cache.has("k")).toBe(false);
+    expect(events).toEqual(["load"]);
+    expect(cache.stats()).toMatchObject({ sets: 0, fenced: 0, loads: 1 });
+    // Nothing stored, so the next call loads again, and stores this time.
+    expect(
+      await cache.getOrSet("k", async () => {
+        loads++;
+        return "kept";
+      }),
+    ).toBe("kept");
+    expect(loads).toBe(2);
+    expect(await cache.get("k")).toBe("kept");
+    await cache.close();
+  });
+
+  test("a background refresh that calls noStore() leaves the stale entry as it was", async () => {
+    const { cache, clock } = makeCache({
+      ttl: 1_000,
+      staleWhileRevalidate: 5_000,
+    });
+    await cache.set("k", "v1");
+    clock.advance(2_000);
+    const refreshes: string[] = [];
+    cache.on("refresh", ({ key }) => refreshes.push(key));
+    let ran = false;
+    const value = await cache.getOrSet("k", async ({ noStore }) => {
+      ran = true;
+      noStore();
+      return "v2";
+    });
+    expect(value).toBe("v1");
+    await sleep(20); // the background refresh lands, and stores nothing
+    expect(ran).toBe(true);
+    expect(refreshes).toEqual([]);
+    const entry = await cache.getEntry("k");
+    expect(entry?.value).toBe("v1");
+    expect(entry?.stale).toBe(true);
+    await cache.close();
+  });
+});
