@@ -1206,7 +1206,7 @@ D1 over HTTP. Findings, measured with miniflare 4.20260730.0 (workerd
   check-then-write mutant 60/60 and 59/60. 200 concurrent increments exact,
   50 lock contenders 1 winner. D1 refuses `BEGIN`; the binding's batch
   rolled back, the statement-by-statement control did not; whether a REST
-  batch is a transaction is undocumented. Parameters are strings (SQLite's
+  batch is a transaction is undocumented (answered live in PR-C11: it is). Parameters are strings (SQLite's
   affinity copes); values go as `unhex(?)`/`hex(v)`, so 1,000,000 bytes an
   entry under D1's 2,000,000-byte string limit (the local server allows
   2,200,000).
@@ -1227,7 +1227,7 @@ test-only switch emulating KV's per-key 429; D1's bus `"none"` and a
 before PR-C10 merges (the lane is opt-in and skips visibly; the coordinator
 wires the credentials in through a private file, never the repository).
 
-**PR-C10 built 2026-10-28** (branch `feat/bun-cache-c10-cloudflare-kv`, on
+**PR-C10 merged 2026-10-28, #566** (branch `feat/bun-cache-c10-cloudflare-kv`, on
 develop `ec3eb55a`, with the spike's evidence): `cloudflareKvDriver`, and
 the pieces PR-C11's D1 driver reuses.
 
@@ -1367,6 +1367,92 @@ the pieces PR-C11's D1 driver reuses.
   included): `worker.ts` answers 500 only when `BUN_CACHE_PROXY_TOKEN` is
   unset, so the secret was not yet active when it was probed.
 
+
+**PR-C11 built 2026-10-28** (branch `feat/bun-cache-c11-cloudflare-d1`, on
+develop `acb8f4fc`): `cloudflareD1Driver` (approved name), on PR-C10's client
+and Worker, which already served D1 (`d1Query`, `/query`, `/raw`).
+
+- **The SQLite driver's design, every write one statement** (the spike's
+  answer to the fence question). The tables are `lib/drivers/sqlite.ts`'s
+  (`entries` with `tg` and `ca`, `tags`, `stamps`, `locks`; **no `bus`**:
+  `tables.bus` is refused, as on Postgres), created on first use with two
+  indexes and **five triggers**, each `IF NOT EXISTS`:
+  - the tag index follows `entries.tg` on insert, on an update of `tg` and on
+    delete, so `set`, `delete`, `increment` over an entry (its `tg` becomes
+    null) and the sweeps carry their tag rows in their own statement;
+  - writing a stamp (insert or update) deletes its tag's entries, so
+    `deleteByTags` is one statement. Its count is a `SELECT` sent first in the
+    same request: exact when the batch is a transaction (both transports,
+    measured below), possibly short otherwise; it only feeds the
+    `invalidate` figure. On this driver `setStamps` therefore invalidates too
+    (the core calls it only in stamps mode; documented on the method).
+  - the fence is the write's own `INSERT … SELECT … WHERE NOT EXISTS (…
+    stamps …) … RETURNING 1`.
+  Counters are the SQLite `RETURNING` upsert, locks its one conditional
+  upsert, `delete` one `DELETE … RETURNING k` over a JSON key list.
+- **Wire details**: parameters are strings (`NULLIF(?, '')` for a null);
+  values go as `unhex(?)` and come back as `hex(v)`; **an entry holds at
+  most 1,000,000 bytes** (`maxEntryBytes`, D1's 2,000,000-byte string limit
+  halved), refused with `EntryTooLargeError` before anything is sent;
+  `getMany` is one `IN` query per ten keys (each value up to 2 MB of hex in
+  the answer), `setMany` one batch per 50 entries or ~8 MB of hex, `clear`
+  one batch of four deletes, `sweep` one batch (entries up to the limit,
+  stamps, locks) plus, with `maxEntries`, one statement.
+- **`maxEntries`** (the SQL drivers' option): `entry-cap.ts`'s order and
+  count, as **one statement** — `DELETE … WHERE (ns, k) IN (SELECT … ORDER
+  BY exp IS NULL, exp, ca, ns, k LIMIT max(0, min(count − max, limit)))
+  RETURNING ns, k` — because its select-then-delete needs a transaction;
+  SQLite takes the subquery in `LIMIT` (measured). *A finding*: without
+  `CAST(? AS INTEGER)` the cap evicted one past the sweep's limit, since a
+  parameter is a string and `min()` ranks any number below any string
+  (`min(2, '1')` is 2); the cap test caught it.
+- **Options** (all the SQL drivers' approved names): `accountId`,
+  `apiToken`, `databaseId` (the binding's name with an `endpoint`),
+  `endpoint`, `prefix` (`bun_cache_`), `tables`, `syncSchema` (`[]`, one
+  schema version), `maxEntries`. Capabilities `multiProcess`, `ttl:
+  "sweep"`, `atomicIncrement`, `lock`, `tags: "index"`, `fence: "atomic"`,
+  `bus: "none"`, `maxEntryBytes` 1,000,000.
+- **Tests**: `cloudflare-d1.test.ts` against the shipped Worker in miniflare
+  (46 pass, 3 skip: the kit's stamps-mode and two bus cases, not
+  advertised) — the kit with its two-process pass; **the race** (a fenced
+  write of a pre-invalidation load against a concurrent invalidation, 60
+  rounds, 0 survivors) **with its control** (a check, then a write, in two
+  requests, lets some survive, asserted); the triggers' tag rows; every
+  byte value, an empty value, 1,000,000 bytes and the refusal of one more;
+  string parameters landing as integers; `getMany` order and chunking;
+  50 lock contenders, one winner; the sweeper and the cap (counters created
+  first, so a cap that counted or chose them shows); the core's `evict`
+  event. **The live lane** `cloudflare-d1-live.test.ts`, on the REST API and
+  the deployed Worker (`CACHE_DB`), each skipped visibly when unset: the kit,
+  the race (20 rounds), 1,000,000 bytes, and whether a failed batch rolls
+  back; every table is the run's (`bct<pid>_<time>_…`) and is dropped at the
+  end.
+- **The live lane, run on the user's test database (2026-10-28)**: **44
+  pass, 6 skip, 0 fail** in 116 s across both transports, 0 survivors of the
+  race on each; afterwards the database held only Cloudflare's own
+  `_cf_KV` table. **The spike's open question is answered**: a failed
+  two-statement batch rolled back its first statement through the REST API
+  as well as through the Worker — a REST batch is one transaction. The
+  driver still does not rely on it.
+- **Negative controls**, each failing its tests: the fence's `WHERE NOT
+  EXISTS` dropped (2), the fence as a check, then a write (the race, 1),
+  stamps that do not invalidate (5), a re-tag keeping old tag rows (2), a
+  delete keeping its tag rows (4), the cap without its `CAST`s (1), choosing
+  counters (1), counting counters (1), newest first (2), no 1,000,000-byte
+  check (1), `getMany` in the database's order (2), a lock taken from a live
+  holder (6), an expired counter that keeps adding (1), values written as
+  text rather than `unhex` (12).
+- **Names beyond the approved ones**, awaiting the user: the driver's name
+  string `"cloudflare-d1"` (after `"cloudflare-kv"`). The deep-only
+  `CloudflareD1CacheDriver` class and `D1_MAX_ENTRY_BYTES` follow the other
+  drivers' precedent (not in the barrel).
+- **Gate** (Bun 1.4.4-canary.1+11c367163, every local URL, on develop
+  `acb8f4fc`): `bun scripts/typecheck.ts` 21 projects clean; bun-cache check
+  192 files clean, lint 0 errors, format clean (121 files), root format clean
+  (2,202); suite 944 pass, 60 skip, 0 fail (the first run, at load ~21, timed
+  out 7 MongoDB, MySQL and SQLite cases; the re-run and the timings run were
+  clean); `--randomize --seed=1` 944 pass, 60 skip, 0 fail; consumer-check 76
+  of 76 cells, 12 of 12 runtime imports; `bun-timings.json` regenerated.
 
 ### Contents
 
@@ -3717,6 +3803,7 @@ Every new public name.
 | `BUN_CACHE_PROXY_TOKEN` | Worker secret | `./cloudflare-worker` | *approved by the user 2026-10-28* |
 | `BUN_CACHE_TEST_CLOUDFLARE_{ACCOUNT_ID,API_TOKEN,KV_NAMESPACE_ID,D1_DATABASE_ID,PROXY_URL,PROXY_TOKEN}` | env variables | the opt-in live lanes | *approved by the user 2026-10-28* |
 | `BunCacheWorkerEnv`; `"cloudflare-kv"` | type; driver name | `./cloudflare-worker`; `cloudflareKvDriver` | *built in PR-C10, approved by the user 2026-10-28*: the Worker's `env` (its secret and bindings), and the driver's `name`, after `"s3"` |
+| `"cloudflare-d1"` | driver name | `cloudflareD1Driver` | *built in PR-C11, awaiting approval*: the driver's `name`, after `"cloudflare-kv"` |
 
 ---
 
