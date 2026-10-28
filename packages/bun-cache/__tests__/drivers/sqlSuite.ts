@@ -129,7 +129,9 @@ export async function registerSqlSuite(
     }
   });
 
-  // The kit, on its own tables.
+  // The kit, on its own tables. On MySQL and MariaDB the bus-gap case
+  // forces a gap in the polled log; on Postgres it drops the LISTEN
+  // connection.
   const kitOptions = {
     url,
     prefix: prefix("kit_"),
@@ -148,44 +150,48 @@ export async function registerSqlSuite(
         export: backend.exportName,
         options: kitOptions,
       },
-      // The polled bus (MySQL, MariaDB) must prove its gap; Postgres is
-      // pushed, and its reconnect gap has a test of its own below (a
-      // terminated LISTEN backend, whose reconnect can outlast the kit's
-      // 5 s), so it gives none.
-      ...(name === "postgres"
-        ? {}
-        : {
-            busGap: async () => {
-              // A stretch of the log the subscriber never saw: a row far past the
-              // next `seq`, which is what a prune (or a lost insert) looks like.
-              // An ordinary row first: a subscriber that started on an empty table
-              // takes its first row as the start of the sequence, so the jump must
-              // come after one.
-              const sql = rawClient(backend);
-              try {
-                await sql.unsafe(
-                  `INSERT INTO ${kitOptions.prefix}bus (at, msg) VALUES (?, ?)`,
-                  [
-                    Date.now(),
-                    JSON.stringify({
-                      type: "clear",
-                      namespace: "before-gap",
-                      at: 0,
-                    }),
-                  ],
-                );
-                await sql.unsafe(
-                  `INSERT INTO ${kitOptions.prefix}bus (seq, at, msg) SELECT COALESCE(MAX(seq), 0) + 1000, ?, ? FROM ${kitOptions.prefix}bus`,
-                  [
-                    Date.now(),
-                    JSON.stringify({ type: "clear", namespace: "gap", at: 0 }),
-                  ],
-                );
-              } finally {
-                await sql.close();
-              }
-            },
-          }),
+      busGap: async () => {
+        if (name === "postgres") {
+          // Postgres's bus is pushed: a gap is its LISTEN connection lost
+          // (notifications sent while it is down are gone). Terminating it
+          // makes Bun reconnect and re-run `onlisten`, which the driver
+          // reports as the gap.
+          const sql = rawClient(backend);
+          try {
+            await sql.unsafe(
+              "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND query ILIKE 'LISTEN%' AND datname = current_database() AND query LIKE $1",
+              [`%${(kitDriver as PostgresCacheDriver).channel}%`],
+            );
+          } finally {
+            await sql.close();
+          }
+          return;
+        }
+        // A stretch of the log the subscriber never saw: a row far past the
+        // next `seq`, which is what a prune (or a lost insert) looks like.
+        // An ordinary row first: a subscriber that started on an empty table
+        // takes its first row as the start of the sequence, so the jump must
+        // come after one.
+        const sql = rawClient(backend);
+        try {
+          await sql.unsafe(
+            `INSERT INTO ${kitOptions.prefix}bus (at, msg) VALUES (?, ?)`,
+            [
+              Date.now(),
+              JSON.stringify({ type: "clear", namespace: "before-gap", at: 0 }),
+            ],
+          );
+          await sql.unsafe(
+            `INSERT INTO ${kitOptions.prefix}bus (seq, at, msg) SELECT COALESCE(MAX(seq), 0) + 1000, ?, ? FROM ${kitOptions.prefix}bus`,
+            [
+              Date.now(),
+              JSON.stringify({ type: "clear", namespace: "gap", at: 0 }),
+            ],
+          );
+        } finally {
+          await sql.close();
+        }
+      },
     },
   );
 

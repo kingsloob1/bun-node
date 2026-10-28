@@ -16,7 +16,8 @@ import process from "node:process";
  *
  * Postgres, MariaDB and MySQL also get a database of bun-cache's own
  * ({@link CACHE_DATABASE}, `BUN_CACHE_TEST_*_URL`), on the same server, user
- * and password as bun-jobs', created only when connecting to it fails.
+ * and password as bun-jobs', created only when connecting to it fails;
+ * MongoDB's (`BUN_CACHE_TEST_MONGODB_URL`) is created by its first write.
  * bun-cache's Redis suite uses bun-jobs' test database (15) instead, its keys
  * under a per-run prefix: `--print-env` names it `BUN_CACHE_TEST_REDIS_URL`.
  *
@@ -104,8 +105,8 @@ export const POSTGRES_CONTAINER_IMAGE = "postgres:16-alpine";
 export const POSTGRES_DATA_ROOT = "/var/lib/postgresql";
 
 /**
- * The database bun-cache's SQL suites use on the Postgres, MariaDB and MySQL
- * servers (`BUN_CACHE_TEST_*_URL`), beside bun-jobs' `bun_jobs_test`: same
+ * The database bun-cache's suites use on the Postgres, MariaDB, MySQL and
+ * MongoDB servers (`BUN_CACHE_TEST_*_URL`), beside bun-jobs' `bun_jobs_test`: same
  * server, user and password, its own database, so neither package's test
  * data can touch the other's.
  */
@@ -179,7 +180,7 @@ interface Options {
   password: string;
   /** Database this script creates. */
   database: string;
-  /** bun-cache's database on the SQL servers ({@link CACHE_DATABASE}). */
+  /** bun-cache's database on the SQL and MongoDB servers ({@link CACHE_DATABASE}). */
   cacheDatabase: string;
   /** User this script creates. */
   user: string;
@@ -333,8 +334,8 @@ Options
   --password=PASS   Password for that user (default: bunjobs)
   --database=NAME   Database to create (default: bun_jobs_test)
   --cache-database=NAME
-                    bun-cache's database on Postgres, MariaDB and MySQL
-                    (default: ${CACHE_DATABASE})
+                    bun-cache's database on Postgres, MariaDB, MySQL and
+                    MongoDB (default: ${CACHE_DATABASE})
   --max-connections=N
                     The max_connections MariaDB and MySQL should have at
                     least. A server already at or above it is left alone;
@@ -877,7 +878,8 @@ interface ServicePlan {
   /**
    * The URL of bun-cache's database ({@link CACHE_DATABASE}): bun-jobs' URL
    * with the other database. Only on the servers where the script creates
-   * that database (the SQL ones).
+   * that database (the SQL ones), and on MongoDB, which creates it itself on
+   * the first write.
    */
   cacheUrl?: (options: Options) => string;
   /** Whether its binaries are present. */
@@ -2097,6 +2099,8 @@ export const PLANS: Record<Service, ServicePlan> = {
     port: 27017,
     envVar: "BUN_JOBS_TEST_MONGODB_URL",
     url: (options) => `mongodb://127.0.0.1:27017/${options.database}`,
+    cacheEnvVar: "BUN_CACHE_TEST_MONGODB_URL",
+    cacheUrl: (options) => `mongodb://127.0.0.1:27017/${options.cacheDatabase}`,
     installed: () => has("mongod"),
     packages: {
       // Ubuntu and Debian do not ship MongoDB; `configureMongoRepo` adds its
@@ -2278,6 +2282,10 @@ async function ensureCacheDatabase(
     return { note: "", failed: false };
   }
   const db = options.cacheDatabase;
+  if (plan.service === "mongodb") {
+    // MongoDB creates a database on its first write: nothing to make.
+    return { note: `${db} on first write`, failed: false };
+  }
   const url = plan.cacheUrl(options);
   if (await sqlReachable(url)) {
     log.skip(`the ${db} database (bun-cache) is already usable`);

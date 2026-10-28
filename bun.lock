@@ -64,15 +64,18 @@
       "devDependencies": {
         "@types/bun": "^1.4.2",
         "bun-types": "^1.4.3",
+        "mongodb": "^6",
         "typescript": "^6.0.3",
         "zod": "^4",
       },
       "peerDependencies": {
         "@types/bun": ">=1.4.2",
+        "mongodb": ">=6",
         "typescript": "^5.9.3 || ^6.0.0",
       },
       "optionalPeers": [
         "@types/bun",
+        "mongodb",
         "typescript",
       ],
     },
