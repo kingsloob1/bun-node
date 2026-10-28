@@ -112,6 +112,9 @@ const DEFAULTS = {
 /** The failure policy warns at most once per this many ms per cache (§3.14). */
 const WARN_EVERY_MS = 10_000;
 
+/** How long `invalidateTags` waits, in real nanoseconds, for `Date.now()` to pass its stamps' millisecond before it gives up (§3.6): twice the tick, for a `Date` a test froze. */
+const PASS_STAMPS_CAP_NS = 2_000_000;
+
 /** The `#op` fallback marking a failed driver read, distinct from a real miss (a miss still checks for a counter; a failure must not — the probe would reset the circuit's failure count). */
 const FAILED = Symbol("cache:driver-failed");
 
@@ -2205,9 +2208,56 @@ class CacheImpl<
       // This process sees the invalidation at once, cache or no cache.
       this.#cacheStamps(tags, now);
     }
+    // Every stamp the call wrote is at or before this reading: a driver's
+    // `deleteByTags` stamps with its clock while the call runs, and
+    // `setStamps` was given `now`.
+    const stampedBy = state.now();
     state.l1?.invalidateTags(this.#ns, tags);
     await this.#publish({ type: "invalidate-tags", tags });
+    await this.#passStamps(stampedBy);
     this.#emit("invalidate", { namespace: this.#ns, tags });
+  }
+
+  /**
+   * Waits until the clock has moved past `stampedBy`, the millisecond by
+   * which an invalidation's stamps were written (§3.6). The fence counts a
+   * stamp at a load's own millisecond as newer, since a stamp records only
+   * the millisecond; without the wait, a load starting in that millisecond
+   * after `invalidateTags` resolved would be fenced although it cannot hold
+   * a pre-invalidation value. With it, every load that starts afterwards,
+   * in this process or in one on the same clock that heard of it afterwards,
+   * has a later `createdAt` than the stamps, and the fence's rule stays as
+   * it was. About a millisecond at most, and nothing when the driver call
+   * and the publish took one already.
+   *
+   * Never a hang under a test's clock: an injected `now` (`fakeClock()`)
+   * moves when its test says so, so nothing waits; bun:test's
+   * `jest.useFakeTimers()` freezes even `Bun.nanoseconds()` and holds
+   * `Bun.sleep`, so one that does not move in a thousand reads returns at
+   * once; and a
+   * `Date` frozen alone (`setSystemTime`, or fake timers that leave Bun's
+   * own clock and sleep alone) gives up after {@link PASS_STAMPS_CAP_NS} of
+   * real time. `Bun.sleep`, not `setTimeout`: fake timers replace the latter.
+   * Giving up only keeps the same-millisecond tie, as before.
+   */
+  async #passStamps(stampedBy: number): Promise<void> {
+    if (this.#state.options.now !== undefined || Date.now() > stampedBy) {
+      return;
+    }
+    const start = Bun.nanoseconds();
+    let running = false;
+    for (let reads = 0; reads < 1_000 && !running; reads++) {
+      running = Bun.nanoseconds() !== start;
+    }
+    if (!running) {
+      return;
+    }
+    while (
+      Date.now() <= stampedBy &&
+      Bun.nanoseconds() - start < PASS_STAMPS_CAP_NS
+    ) {
+      await Bun.sleep(1);
+    }
   }
 
   /** Puts this process's own invalidation of `tags` at `at` into the tag-stamp cache (§3.6). */

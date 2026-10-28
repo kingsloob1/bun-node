@@ -489,7 +489,8 @@ written:
   test's. Two behaviours worth
   knowing: the write never delays the response, so a request right behind a
   miss can miss too; and the core's fence ties to the invalidation, so a
-  load starting in the same millisecond as an invalidation is dropped.
+  load starting in the same millisecond as an invalidation is dropped
+  (no longer, after it: Status, "The fence's millisecond").
   bun-nest's adapter is not exercised here (bun-cache cannot depend on
   bun-nest); it routes through the same `BunRouter`.
 
@@ -1576,6 +1577,60 @@ and Worker, which already served D1 (`d1Query`, `/query`, `/raw`).
   clean); `--randomize --seed=1` 944 pass, 60 skip, 0 fail; consumer-check 76
   of 76 cells, 12 of 12 runtime imports; `bun-timings.json` regenerated.
 
+**The fence's millisecond, built 2026-10-28** (the user's decision of
+2026-10-28; branch `fix/bun-cache-fence-resolution`). A load that started in
+the same millisecond as an invalidation, after it had completed (a `GET`
+right behind the `POST` that invalidated, or a `getOrSet` right after
+`invalidateTags`), was fenced: the answer was served, the entry not stored.
+Now `invalidateTags` resolves only once the clock has passed the millisecond
+its stamps were written in (`#passStamps`, after the driver call and the
+publish, before the `invalidate` event), so every load and `set` that starts
+after it resolved — in this process, or in one on the same clock that heard
+of it afterwards — has a later `createdAt` than the stamps and is stored.
+- **Not a sequence, and no format change.** A per-process sequence cannot do
+  it: the fence compares persisted milliseconds inside the driver, and one
+  stamp row per tag cannot say whether its millisecond came from this
+  process's completed invalidation or from another process's in the load's
+  own millisecond — excusing the one excuses the other. Raising the load's
+  `createdAt` is the same weakening. Sub-millisecond stamps would change
+  the stored stamp on all thirteen drivers, and across processes only the
+  wall clock in milliseconds is shared (`performance.timeOrigin + now()`
+  drifts from it after a clock step). So the fence's rule (`at >=
+  createdAt`), the read check and every stored format are unchanged, and
+  another process's stamp in a load's own millisecond still fences it.
+- **Cost**: at most about a millisecond per `invalidateTags`, and nothing
+  when the driver call and the publish took one (measured on this machine:
+  waiting for `Date.now()` to tick with `Bun.sleep(1)`, mean 1.06 ms, max
+  1.18 ms over 300 rounds). Under a test's clock it never hangs: an injected
+  `now` (`fakeClock()`) skips it; bun:test's `jest.useFakeTimers()`
+  freezes `Bun.nanoseconds()` and holds `Bun.sleep` (measured), so a
+  `Bun.nanoseconds()` that does not move returns at once; a `Date` frozen
+  alone (`setSystemTime`) gives up after 2 ms of real time, keeping the old
+  tie.
+- **The kit** now pins the driver side for every driver: `deleteByTags`
+  stamps no later than the clock read after the call
+  (`tags.index.stamps`), and a write whose `createdAt` equals the stamp is
+  fenced while one a millisecond later is stored (`tags.index.fence`,
+  replacing its 2 ms wait).
+- **Sleeps removed** that existed only for this: `__tests__/http/methods.test.ts`
+  (PUT, then GET), `__tests__/drivers/redisSuite.ts` (the bus case),
+  `examples/bun-cache/05-http/invalidation.ts` (four, and the header note)
+  and `examples/bun-cache/04-drivers/file.ts`.
+- **Gate** (Bun 1.4.4-canary.1+11c367163, every local URL, on develop
+  `17cc3ab8`): `bun scripts/typecheck.ts` 21 projects clean; bun-cache check
+  204 files clean, lint 0 errors, format clean (133 files), root format clean
+  (2,225); suite 1145 pass, 60 skip, 0 fail; `--randomize --seed=1` 1145
+  pass, 60 skip, 0 fail; `--seed=2` 1144/60/1 (KV's 300 ms TTL case, a timing
+  case with no tags: 39 of 39 on three seed-2 re-runs of the file), then 1145
+  pass, 60 skip, 0 fail on a full re-run; bun-nest's cache tests 100 pass, its
+  suite 1349 pass, 7 skip, 0 fail; examples/bun-cache `run-all.ts` with every
+  `EXAMPLE_*_URL` 31 of 31 (the first run, at load ~12, failed `04-drivers/s3.ts`
+  in its untagged sweep step; 5 of 5 alone afterwards, 31 of 31 on the re-run).
+  Negative controls: the wait removed (12–13 fail; example 05 3 of 3), the
+  fence or the read check at `>` (4 each), `createdAt` raised a millisecond
+  (6), a driver stamping late (9), no frozen-clock check or no cap (a hang
+  each).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -2005,6 +2060,15 @@ invalidated:
 1. Request A misses and starts a slow loader.
 2. `invalidateTags(["org:7"])` deletes everything tagged `org:7`.
 3. A's loader finishes and writes its **pre-invalidation** value.
+
+**The fence's millisecond.** A stamp records only the millisecond, so a
+stamp at a load's own `createdAt` counts as newer (the fence is `at >=
+createdAt` on every driver, and so is the stamps-mode read check): it cannot
+tell a load that began before the invalidation from one that began after it
+in the same millisecond. So that a load which follows an invalidation is not
+dropped for sharing its millisecond, `invalidateTags` resolves only once the
+clock has passed the millisecond its stamps were written in (Status, "The
+fence's millisecond"). The stamp format and the fence's rule are unchanged.
 
 **Where the fence is atomic.** On SQL and SQLite it is one conditional
 statement (`INSERT … SELECT … WHERE NOT EXISTS (SELECT 1 FROM stamps …)`). On

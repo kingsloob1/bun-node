@@ -10,9 +10,8 @@
  * - Every entry carries its path's tag, so a path drops with all its queries.
  * - A `POST`/`PUT`/`PATCH`/`DELETE` with a 2xx/3xx answer drops its path; a
  *   4xx or 5xx one does not.
- * - The core's fence drops a write whose load started in the same
- *   millisecond as an invalidation, so each step sleeps 2 ms before the next
- *   load — a real server's requests are never that close together.
+ * - A load right after an invalidation is stored: `invalidateTags` resolves
+ *   only once its millisecond has passed, so the steps run back to back.
  */
 import { BunRouter } from "@kingsleyweb/bun-common";
 import { addCacheTags, cacheResponse } from "@kingsleyweb/bun-cache/http";
@@ -58,7 +57,6 @@ step("a tag the handler added");
 
 await warm();
 await cache.invalidateTags(["post:1"]);
-await Bun.sleep(2);
 checkEqual("after invalidateTags(['post:1'])", await get(), "MISS");
 
 /* ------------------------------------------------------------------ */
@@ -70,14 +68,12 @@ checkEqual(
   (await router.fetch("/posts/1", { method: "PUT" })).status,
   422,
 );
-await Bun.sleep(2);
 checkEqual("…and leaves the entry alone", await get(), "HIT");
 checkEqual(
   "a POST (201) answers",
   (await router.fetch("/posts/1", { method: "POST" })).status,
   201,
 );
-await Bun.sleep(2);
 checkEqual("…and drops it", await get(), "MISS");
 
 /* ------------------------------------------------------------------ */
@@ -85,7 +81,6 @@ step("pages.invalidate(path)");
 
 await warm();
 await pages.invalidate("/posts/1");
-await Bun.sleep(2);
 checkEqual("after pages.invalidate('/posts/1')", await get(), "MISS");
 
 summary();
