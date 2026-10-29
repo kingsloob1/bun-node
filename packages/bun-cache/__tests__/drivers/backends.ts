@@ -471,19 +471,30 @@ export async function redisRawDump(
         1_000,
       );
       cursor = String(next);
-      for (const key of found) {
+      // The batch's keys are read concurrently, which the client pipelines:
+      // one after another, two round trips a key at Upstash's ~300 ms ran the
+      // raw-dump case past its 30 s.
+      const values = await Promise.all(
+        found.map(async (key): Promise<unknown> => {
+          const type = await client.type(key);
+          if (type === "string") {
+            return await client.getBuffer(key);
+          }
+          if (type === "hash") {
+            return await client.hgetall(key);
+          }
+          if (type === "set") {
+            return await client.smembers(key);
+          }
+          return type === "none" ? undefined : await client.send("DUMP", [key]);
+        }),
+      );
+      found.forEach((key, index) => {
         out.push(key);
-        const type = await client.type(key);
-        if (type === "string") {
-          rawChunks(await client.getBuffer(key), out);
-        } else if (type === "hash") {
-          rawChunks(await client.hgetall(key), out);
-        } else if (type === "set") {
-          rawChunks(await client.smembers(key), out);
-        } else if (type !== "none") {
-          rawChunks(await client.send("DUMP", [key]), out);
+        if (values[index] !== undefined) {
+          rawChunks(values[index], out);
         }
-      }
+      });
     } while (cursor !== "0");
   } finally {
     client.close();

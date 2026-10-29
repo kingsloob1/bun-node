@@ -124,7 +124,15 @@ function entry(
   return { key, value: new Uint8Array(bytes), expiresAt, tags };
 }
 
-/** Waits until `condition` holds, checking every 10 ms; throws after `timeoutMs`. */
+/**
+ * The bound of a specific that waits with {@link waitFor}, in ms: beyond the
+ * wait's 5 s, so a message that never comes fails the test with the wait's
+ * own message, not bun:test's timeout (its default is 5 s too) and the
+ * wait's error landing after it, as an unhandled error between tests.
+ */
+const WAITING_TEST_TIMEOUT_MS = 15_000;
+
+/** Waits until `condition` holds, checking every 10 ms; throws after `timeoutMs`; a test that calls it takes {@link WAITING_TEST_TIMEOUT_MS}. */
 async function waitFor(
   what: string,
   condition: () => boolean,
@@ -685,90 +693,104 @@ export async function registerRedisSuite(
       client.close();
     });
 
-    test("the bus is redisBus's: a separate redisBus on the same prefix hears the driver, and the driver hears it", async () => {
-      const busPrefix = prefix("bus");
-      const a = make("bus");
-      const separate = redisBus({ url, prefix: busPrefix });
-      const heardBySeparate: BusMessage[] = [];
-      const heardByDriver: BusMessage[] = [];
-      await separate.subscribe(
-        (message) => heardBySeparate.push(message),
-        () => {},
-      );
-      await a.subscribe(
-        (message) => heardByDriver.push(message),
-        () => {},
-      );
-      const fromDriver: BusMessage = {
-        type: "invalidate-tags",
-        namespace: "app",
-        tags: ["users"],
-        at: Date.now(),
-        origin: "driver",
-      };
-      await a.publish(fromDriver);
-      const fromBus: BusMessage = {
-        type: "delete",
-        namespace: "app",
-        keys: ["k"],
-        at: Date.now(),
-        origin: "bus",
-      };
-      await separate.publish(fromBus);
-      await waitFor(
-        "both messages on both sides",
-        () => heardBySeparate.length === 2 && heardByDriver.length === 2,
-      );
-      expect(heardBySeparate).toEqual([fromDriver, fromBus]);
-      expect(heardByDriver).toEqual([fromDriver, fromBus]);
-      expect((a.bus as CacheBus & { channel: string }).channel).toBe(
-        `${busPrefix}:bus`,
-      );
-      await separate.close();
-    });
+    test(
+      "the bus is redisBus's: a separate redisBus on the same prefix hears the driver, and the driver hears it",
+      async () => {
+        const busPrefix = prefix("bus");
+        const a = make("bus");
+        const separate = redisBus({ url, prefix: busPrefix });
+        const heardBySeparate: BusMessage[] = [];
+        const heardByDriver: BusMessage[] = [];
+        await separate.subscribe(
+          (message) => heardBySeparate.push(message),
+          () => {},
+        );
+        await a.subscribe(
+          (message) => heardByDriver.push(message),
+          () => {},
+        );
+        const fromDriver: BusMessage = {
+          type: "invalidate-tags",
+          namespace: "app",
+          tags: ["users"],
+          at: Date.now(),
+          origin: "driver",
+        };
+        await a.publish(fromDriver);
+        const fromBus: BusMessage = {
+          type: "delete",
+          namespace: "app",
+          keys: ["k"],
+          at: Date.now(),
+          origin: "bus",
+        };
+        await separate.publish(fromBus);
+        await waitFor(
+          "both messages on both sides",
+          () => heardBySeparate.length === 2 && heardByDriver.length === 2,
+        );
+        expect(heardBySeparate).toEqual([fromDriver, fromBus]);
+        expect(heardByDriver).toEqual([fromDriver, fromBus]);
+        expect((a.bus as CacheBus & { channel: string }).channel).toBe(
+          `${busPrefix}:bus`,
+        );
+        await separate.close();
+      },
+      WAITING_TEST_TIMEOUT_MS,
+    );
 
-    test("a cache over the driver: getOrSet, tags, counters, and an L1 kept coherent by the driver's bus", async () => {
-      const space = `cache-${process.pid}`;
-      const one = createCache({
-        driver: make("cache"),
-        namespace: space,
-        sweepInterval: 0,
-        l1: true,
-      });
-      const two = createCache({
-        driver: make("cache"),
-        namespace: space,
-        sweepInterval: 0,
-        l1: true,
-      });
-      let loads = 0;
-      const load = async () => {
-        loads++;
-        return { n: loads };
-      };
-      expect(await one.getOrSet("k", load, { tags: ["g"] })).toEqual({ n: 1 });
-      expect(await two.getOrSet("k", load, { tags: ["g"] })).toEqual({ n: 1 });
-      // Two's L1 fills once its bus subscription is up (until then a read
-      // goes to the driver and is not copied): read until it holds k.
-      for (let tries = 0; (two.stats().l1?.entries ?? 0) === 0; tries++) {
-        expect(tries).toBeLessThan(200);
-        expect(await two.get("k")).toEqual({ n: 1 });
-        await Bun.sleep(10);
-      }
-      // The reload right after the invalidation is stored (§3.6).
-      await one.invalidateTags(["g"]);
-      expect(await one.getOrSet("k", load, { tags: ["g"] })).toEqual({ n: 2 });
-      // Two's L1 copy was dropped by the bus message, not served stale.
-      await waitFor(
-        "two's L1 to drop k",
-        () => (two.stats().l1?.invalidations ?? 0) > 0,
-      );
-      expect(await two.get("k")).toEqual({ n: 2 });
-      expect(await one.increment("hits", 5)).toBe(5);
-      expect(await two.get("hits")).toBe(5);
-      await one.close();
-      await two.close();
-    });
+    test(
+      "a cache over the driver: getOrSet, tags, counters, and an L1 kept coherent by the driver's bus",
+      async () => {
+        const space = `cache-${process.pid}`;
+        const one = createCache({
+          driver: make("cache"),
+          namespace: space,
+          sweepInterval: 0,
+          l1: true,
+        });
+        const two = createCache({
+          driver: make("cache"),
+          namespace: space,
+          sweepInterval: 0,
+          l1: true,
+        });
+        let loads = 0;
+        const load = async () => {
+          loads++;
+          return { n: loads };
+        };
+        expect(await one.getOrSet("k", load, { tags: ["g"] })).toEqual({
+          n: 1,
+        });
+        expect(await two.getOrSet("k", load, { tags: ["g"] })).toEqual({
+          n: 1,
+        });
+        // Two's L1 fills once its bus subscription is up (until then a read
+        // goes to the driver and is not copied): read until it holds k.
+        for (let tries = 0; (two.stats().l1?.entries ?? 0) === 0; tries++) {
+          expect(tries).toBeLessThan(200);
+          expect(await two.get("k")).toEqual({ n: 1 });
+          await Bun.sleep(10);
+        }
+        // The reload right after the invalidation is stored (§3.6).
+        await one.invalidateTags(["g"]);
+        expect(await one.getOrSet("k", load, { tags: ["g"] })).toEqual({
+          n: 2,
+        });
+        // Two's L1 copy was dropped by the bus message, not served stale.
+        await waitFor(
+          "two's L1 to drop k",
+          () => (two.stats().l1?.invalidations ?? 0) > 0,
+        );
+        expect(await two.get("k")).toEqual({ n: 2 });
+        expect(await one.increment("hits", 5)).toBe(5);
+        expect(await two.get("hits")).toBe(5);
+        await one.close();
+        await two.close();
+      },
+      WAITING_TEST_TIMEOUT_MS,
+    );
 
     test("an unreachable server fails the first connect within firstConnectTimeout, naming it", async () => {
       // A port nothing listens on: bound once by the OS, then released.

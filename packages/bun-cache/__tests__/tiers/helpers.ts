@@ -222,11 +222,16 @@ export function countingDriver(inner: CacheDriver): CacheDriver & {
   });
 }
 
-/** Waits until `condition` holds, checking every 5 ms; throws after `timeoutMs`. */
+/**
+ * Waits until `condition` holds, checking every 5 ms; throws after
+ * `timeoutMs`. The default stays under bun:test's 5 s test timeout, so a wait
+ * that runs out fails its test with this message rather than after it; a
+ * longer wait comes with a longer test timeout.
+ */
 export async function waitFor(
   what: string,
   condition: () => boolean | Promise<boolean>,
-  timeoutMs = 5_000,
+  timeoutMs = 3_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {

@@ -72,11 +72,16 @@ function entry(
   return { key, value: new Uint8Array(bytes), expiresAt, tags };
 }
 
-/** Waits until `condition` holds, checking every 10 ms; throws after `timeoutMs`. */
+/**
+ * Waits until `condition` holds, checking every 10 ms; throws after
+ * `timeoutMs`. The default stays under bun:test's 5 s test timeout, so a wait
+ * that runs out fails its test with this message rather than after it; a
+ * longer wait comes with a longer test timeout.
+ */
 async function waitFor(
   what: string,
   condition: () => boolean,
-  timeoutMs = 5_000,
+  timeoutMs = 3_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
