@@ -33,6 +33,10 @@ export interface TierJob {
     | { kind: "pg"; url: string; channel: string };
   /** `l1.ttl`, in ms. */
   l1Ttl?: number;
+  /** `softPurge` (R21): the reader checks stale stamps on its tagged reads. */
+  softPurge?: boolean;
+  /** `tagStampCacheMs`: long in the soft-purge case, so only the bus can refresh the reader's stamp copy. */
+  tagStampCacheMs?: number;
 }
 
 /** One command from the parent. */
@@ -43,6 +47,7 @@ interface Command {
   op:
     | "armed"
     | "get"
+    | "getEntry"
     | "set"
     | "delete"
     | "invalidateTags"
@@ -55,6 +60,8 @@ interface Command {
   value?: unknown;
   /** Tags (`set`, `invalidateTags`). */
   tags?: string[];
+  /** `invalidateTags`' mode. */
+  mode?: "delete" | "stale";
   /** `watch`'s patience, in ms. */
   timeoutMs?: number;
 }
@@ -105,12 +112,18 @@ async function perform(
       const value = await cache.get(key);
       return { value, tier: lastTier.tier };
     }
+    case "getEntry": {
+      const entry = await cache.getEntry(key);
+      return entry === undefined
+        ? undefined
+        : { value: entry.value, stale: entry.stale };
+    }
     case "set":
       return await cache.set(key, command.value, { tags: command.tags });
     case "delete":
       return await cache.delete(key);
     case "invalidateTags":
-      await cache.invalidateTags(command.tags ?? []);
+      await cache.invalidateTags(command.tags ?? [], { mode: command.mode });
       return true;
     case "watch": {
       const deadline = Date.now() + (command.timeoutMs ?? 10_000);
@@ -152,6 +165,10 @@ async function main(): Promise<void> {
     l1: job.l1Ttl === undefined ? true : { ttl: job.l1Ttl },
     bus: makeBus(job),
     sweepInterval: 0,
+    ...(job.softPurge === undefined ? {} : { softPurge: job.softPurge }),
+    ...(job.tagStampCacheMs === undefined
+      ? {}
+      : { tagStampCacheMs: job.tagStampCacheMs }),
   });
   const lastTier: { tier: "l1" | "l2" | undefined } = { tier: undefined };
   cache.on("hit", (hit) => {

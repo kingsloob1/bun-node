@@ -39,7 +39,13 @@ import {
   ENTRY_FLAGS,
   NO_FRESH_UNTIL,
 } from "./header";
-import { checkNamespace, fullNamespace, storedKey } from "./keys";
+import {
+  checkNamespace,
+  checkTags,
+  fullNamespace,
+  STALE_STAMP_PREFIX,
+  storedKey,
+} from "./keys";
 import { L1Store } from "./l1";
 import type { NameHasher } from "./names";
 import { resolveNameHasher } from "./names";
@@ -123,6 +129,14 @@ const FAILED = Symbol("cache:driver-failed");
 /** The reserved namespace a sweep's lock lives under. */
 const SWEEP_NAMESPACE = "__bun_cache__";
 
+/** A stored tag's stale-stamp name (see `STALE_STAMP_PREFIX`, lib/core/keys.ts). */
+function staleStampName(storedTag: string): string {
+  return `${STALE_STAMP_PREFIX}${storedTag}`;
+}
+
+/** The most fail-safe backoffs a cache remembers in process for soft-purged entries; the oldest is forgotten first. */
+const SOFT_BACKOFF_MAX = 10_000;
+
 /** A decoded stored entry, inside the core. */
 interface DecodedValue {
   /** The decoded value; `undefined` for a negative marker. */
@@ -151,6 +165,10 @@ interface DecodedValue {
   uncompressed?: boolean;
   /** The ring key id that sealed the entry, on an encrypted cache's built-in cipher (the `hit` event's `keyId`). */
   keyId?: string;
+  /** When a soft purge (a stale stamp) made the entry stale, epoch ms; absent when none applies. Its `freshUntil` is already capped at it. */
+  softPurgedAt?: number;
+  /** The latest stale stamp covering the entry, epoch ms (a backoff given under it stands until a later one, `#softBackoffFor`). */
+  lastPurgedAt?: number;
 }
 
 /**
@@ -245,8 +263,18 @@ interface SharedState {
   lastWarnAt: number;
   /** Whether the one `lock`-without-`capabilities.lock` warning has been logged. */
   warnedLock: boolean;
-  /** The in-process tag-stamp cache for stamps-mode drivers, `${ns}\n${tag}` → the stamp and when this copy expires. */
+  /** The in-process tag-stamp cache for stamps-mode drivers, `${ns}\n${tag}` → the stamp and when this copy expires (a stale stamp's name starts with `STALE_STAMP_PREFIX`). */
   stampCache: Map<string, { at: number; expires: number }>;
+  /**
+   * The fail-safe backoffs given to soft-purged entries after a failed
+   * refresh, `${ns}\n${stored key}` → the entry's `createdAt`, the latest
+   * stale stamp it was given under, and the backoff's end (§3.5). In process: the rewrite a plain entry gets would be capped
+   * again by its stale stamp. At most {@link SOFT_BACKOFF_MAX}, oldest first out.
+   */
+  softBackoff: Map<
+    string,
+    { createdAt: number; purgedAt: number; until: number }
+  >;
   /** The `validate` map, split for matching: exact keys, and trailing-`*` prefixes in declaration order. */
   validators: {
     exact: Map<string, StandardSchemaV1>;
@@ -338,6 +366,17 @@ class CacheImpl<
     return names === undefined || tags.length === 0
       ? tags
       : names.tags(this.#ns, tags);
+  }
+
+  /** Refuses plaintext tags a cache cannot store as given (`checkTags`); under `hashNames` every tag is stored as a hash, so none is refused. */
+  #checkTags(tags: readonly string[] | undefined): void {
+    if (
+      tags !== undefined &&
+      tags.length > 0 &&
+      this.#state.names === undefined
+    ) {
+      checkTags(tags);
+    }
   }
 
   /** The key a log line names: the stored form under `encrypt.hashNames` (logs are often stored), else the key (the encryption plan's §7.1). */
@@ -899,24 +938,58 @@ class CacheImpl<
     // driver writes stamps in `deleteByTags` too, so an entry whose clear
     // tags (or tag index) were stripped in the store still misses after an
     // invalidation (the encryption plan's §4.3).
-    if (
-      tags.length > 0 &&
-      (state.driver.capabilities.tags === "stamps" || unsealed.sealed)
-    ) {
-      const stamps = await this.#stampsFor(storedTags);
-      let invalidated = false;
-      for (const tag of storedTags) {
-        const at = stamps.get(tag);
-        // A stamp at the entry's own millisecond counts as newer: Date.now()
-        // cannot order two events within one ms, so the safe side wins (a
-        // wrongly-missed entry is reloaded; a wrongly-served one is stale).
-        if (at !== undefined && at >= header.createdAt) {
-          invalidated = true;
-          break;
+    //
+    // The soft-purge check (R21) rides the same `getStamps` call: a stale
+    // stamp (`invalidateTags(…, { mode: "stale" })`) at or after the entry's
+    // `createdAt` caps its freshness at the stamp — stale, never missing. It
+    // runs only on a cache with `softPurge: true` (the user's decision of
+    // 2026-10-29): without it no stale name is ever asked for, so no cache
+    // pays for soft purge unless it opts in — encrypted and stamps-mode
+    // caches included, though they read their ordinary stamps here anyway.
+    const ordinaryCheck =
+      state.driver.capabilities.tags === "stamps" || unsealed.sealed;
+    const staleCheck = this.#softPurgeSupported();
+    let softPurgedAt: number | undefined;
+    let lastPurgedAt: number | undefined;
+    if (tags.length > 0 && (ordinaryCheck || staleCheck)) {
+      const names = ordinaryCheck ? [...storedTags] : [];
+      if (staleCheck) {
+        for (const tag of storedTags) {
+          names.push(staleStampName(tag));
         }
       }
-      if (invalidated) {
-        return { kind: "miss" };
+      const stamps = await this.#stampsFor(names);
+      if (ordinaryCheck) {
+        let invalidated = false;
+        for (const tag of storedTags) {
+          const at = stamps.get(tag);
+          // A stamp at the entry's own millisecond counts as newer: Date.now()
+          // cannot order two events within one ms, so the safe side wins (a
+          // wrongly-missed entry is reloaded; a wrongly-served one is stale).
+          if (at !== undefined && at >= header.createdAt) {
+            invalidated = true;
+            break;
+          }
+        }
+        if (invalidated) {
+          return { kind: "miss" };
+        }
+      }
+      if (staleCheck) {
+        for (const tag of storedTags) {
+          const at = stamps.get(staleStampName(tag));
+          // The same millisecond rule: a stale stamp at the entry's own
+          // millisecond makes it stale. The earliest such stamp caps it; the
+          // latest decides whether a backoff given since still stands.
+          if (at !== undefined && at >= header.createdAt) {
+            if (softPurgedAt === undefined || at < softPurgedAt) {
+              softPurgedAt = at;
+            }
+            if (lastPurgedAt === undefined || at > lastPurgedAt) {
+              lastPurgedAt = at;
+            }
+          }
+        }
       }
     }
     // V10: a stored value that fails its schema is a miss and is deleted,
@@ -942,8 +1015,30 @@ class CacheImpl<
       }
       value = outcome.value;
     }
-    const freshUntil =
+    let freshUntil =
       header.freshUntil === NO_FRESH_UNTIL ? null : header.freshUntil;
+    // A soft-purged entry is stale from the stale stamp on: its freshness is
+    // only ever lowered (an entry already stale keeps its own `freshUntil`),
+    // and its hard expiry is untouched, so the stale windows count from the
+    // purge. A fail-safe backoff this process gave it after a failed refresh
+    // (`#pushFailSafeBackoff`) pushes that freshness forward again.
+    let softFresh = false;
+    if (softPurgedAt !== undefined) {
+      freshUntil =
+        freshUntil === null ? softPurgedAt : Math.min(freshUntil, softPurgedAt);
+      // The backoff stands in for the rewrite a plain entry gets, whose
+      // `freshUntil` the stale stamp would cap again (its `createdAt` is kept).
+      const backoff = this.#softBackoffFor(
+        stored,
+        header.createdAt,
+        lastPurgedAt!,
+        now,
+      );
+      if (backoff !== undefined) {
+        freshUntil = backoff;
+        softFresh = true;
+      }
+    }
     const entry: DecodedValue = {
       value,
       negative: decoded.negative,
@@ -959,6 +1054,13 @@ class CacheImpl<
     };
     if (unsealed.keyId !== undefined) {
       entry.keyId = unsealed.keyId;
+    }
+    if (softPurgedAt !== undefined) {
+      entry.softPurgedAt = softPurgedAt;
+      entry.lastPurgedAt = lastPurgedAt;
+      // Stale from the stamp's own millisecond: a read in the purge's
+      // millisecond (a frozen test clock) already sees it stale.
+      return softFresh ? { kind: "fresh", entry } : { kind: "stale", entry };
     }
     if (freshUntil !== null && now > freshUntil) {
       return { kind: "stale", entry };
@@ -1732,6 +1834,23 @@ class CacheImpl<
         hardExpiry !== null
           ? Math.min(now + backoff, hardExpiry)
           : now + backoff;
+      if (staleEntry.softPurgedAt !== undefined) {
+        // A soft-purged entry: rewritten with its `createdAt` kept, its
+        // stale stamp would cap it again, so the backoff is this process's
+        // (a refresh elsewhere is not held back; documented).
+        const backoffs = state.softBackoff;
+        const id = this.#flightKey(stored);
+        backoffs.delete(id);
+        if (backoffs.size >= SOFT_BACKOFF_MAX) {
+          backoffs.delete(backoffs.keys().next().value!);
+        }
+        backoffs.set(id, {
+          createdAt: staleEntry.createdAt,
+          purgedAt: staleEntry.lastPurgedAt ?? staleEntry.softPurgedAt,
+          until: capped,
+        });
+        return;
+      }
       const encoding = this.#encodeValue(
         staleEntry.value,
         staleEntry.negative,
@@ -2081,6 +2200,7 @@ class CacheImpl<
     value: Schema[K],
     options?: SetOptions<Tag>,
   ): Promise<boolean> {
+    this.#checkTags(options?.tags);
     return await this.#write(key, this.#storedKey(key), value, {
       ttl: this.#resolveTtl(value, options),
       tags: options?.tags ?? [],
@@ -2244,14 +2364,25 @@ class CacheImpl<
     tags: readonly Tag[],
     options?: { mode?: "delete" | "stale" },
   ): Promise<void> {
-    if (options?.mode === "stale") {
+    const mode = options?.mode ?? "delete";
+    if (mode !== "delete" && mode !== "stale") {
+      throw new TypeError(
+        `invalidateTags' mode must be "delete" or "stale" (got ${JSON.stringify(mode)})`,
+      );
+    }
+    if (mode === "stale" && !this.#softPurgeSupported()) {
       throw new UnsupportedOperationError(
         this.#state.driver.name,
         'invalidateTags mode "stale"',
-        "a soft purge ships in a later PR (plan §3.6, R21)",
+        "a soft purge needs createCache's softPurge: true, which checks the stale stamps on tagged reads (plan §3.6, R21)",
       );
     }
+    this.#checkTags(tags);
     if (tags.length === 0) {
+      return;
+    }
+    if (mode === "stale") {
+      await this.#softPurge(tags);
       return;
     }
     const state = this.#state;
@@ -2297,7 +2428,82 @@ class CacheImpl<
     state.l1?.invalidateTags(this.#storedNs, storedTags);
     await this.#publish({ type: "invalidate-tags", tags: storedTags });
     await this.#passStamps(stampedBy);
-    this.#emit("invalidate", { namespace: this.#ns, tags });
+    this.#emit("invalidate", { namespace: this.#ns, tags, mode: "delete" });
+  }
+
+  /**
+   * Whether this cache can soft-purge (R21): only with `softPurge: true`,
+   * which is what makes its tagged reads check the stale stamps — on every
+   * driver, encrypted or not.
+   */
+  #softPurgeSupported(): boolean {
+    return this.#state.options.softPurge === true;
+  }
+
+  /**
+   * `invalidateTags(tags, { mode: "stale" })` (R21, §3.6): writes each tag's
+   * stale stamp (`setStamps` of its stale-stamp name, in the namespace), so a
+   * read of an entry created at or before it serves it stale — within its
+   * stale windows, counted from the purge — and a refresh replaces it.
+   * Nothing is deleted and no entry is rewritten, so it works alike on every
+   * driver and under encryption (on a cache with `softPurge: true`). The flights are forgotten, L1 copies dropped
+   * and the bus told, as for a delete: a load that began before the purge
+   * still stores, but its `createdAt` predates the stamp, so it reads stale.
+   */
+  async #softPurge(tags: readonly Tag[]): Promise<void> {
+    const state = this.#state;
+    const storedTags = this.#storedTags(tags);
+    const staleNames = storedTags.map(staleStampName);
+    state.flights.forgetAll(`${this.#storedNs}\n`);
+    const now = state.now();
+    const until = now + this.#tagStampTtl();
+    await this.#op(
+      "setStamps",
+      async () =>
+        await state.driver.setStamps(this.#storedNs, staleNames, now, until),
+      undefined,
+    );
+    // This process sees the purge at once, cache or no cache.
+    this.#cacheStamps(staleNames, now);
+    const stampedBy = state.now();
+    state.l1?.invalidateTags(this.#storedNs, storedTags);
+    // The same message as a delete: every receiver drops its L1 copies and
+    // its cached stamps of the tags, the stale ones included.
+    await this.#publish({ type: "invalidate-tags", tags: storedTags });
+    await this.#passStamps(stampedBy);
+    this.#emit("invalidate", { namespace: this.#ns, tags, mode: "stale" });
+  }
+
+  /**
+   * The end of the fail-safe backoff this process gave a soft-purged entry
+   * (`#pushFailSafeBackoff`), while it lasts, is still that entry's (the same
+   * `createdAt`) and no soft purge came after it (`lastPurgedAt`, the latest
+   * stale stamp covering the entry); forgets one that does not stand.
+   */
+  #softBackoffFor(
+    stored: string,
+    createdAt: number,
+    lastPurgedAt: number,
+    now: number,
+  ): number | undefined {
+    const backoffs = this.#state.softBackoff;
+    if (backoffs.size === 0) {
+      return undefined;
+    }
+    const id = this.#flightKey(stored);
+    const backoff = backoffs.get(id);
+    if (backoff === undefined) {
+      return undefined;
+    }
+    if (
+      backoff.createdAt !== createdAt ||
+      backoff.purgedAt < lastPurgedAt ||
+      backoff.until < now
+    ) {
+      backoffs.delete(id);
+      return undefined;
+    }
+    return backoff.until;
   }
 
   /**
@@ -2374,6 +2580,7 @@ class CacheImpl<
     loader: CacheLoader<Schema[K]>,
     options: GetOrSetOptions<Tag> = {},
   ): Promise<Schema[K] | undefined> {
+    this.#checkTags(options.tags);
     const stored = this.#storedKey(key);
     const state = this.#state;
     const flightKey = this.#flightKey(stored);
@@ -2761,6 +2968,7 @@ export function createCache(
     lastWarnAt: 0,
     warnedLock: false,
     stampCache: new Map(),
+    softBackoff: new Map(),
     validators,
     sweepTimer: undefined,
     closed: false,
@@ -2962,9 +3170,12 @@ function applyBusMessage(
     case "invalidate-tags": {
       const tags = message.tags ?? [];
       state.l1?.invalidateTags(ns, tags);
-      // The next stamps-mode read of these tags asks the driver again.
+      // The next stamps-mode read of these tags asks the driver again: for
+      // the ordinary stamps and the stale ones (a soft purge sends the same
+      // message as a delete).
       for (const tag of tags) {
         state.stampCache.delete(`${ns}\n${tag}`);
+        state.stampCache.delete(`${ns}\n${STALE_STAMP_PREFIX}${tag}`);
       }
       return;
     }

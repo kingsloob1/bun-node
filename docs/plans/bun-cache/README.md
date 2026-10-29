@@ -1841,6 +1841,78 @@ Shared Key, a SAS, a `credential` or a `token`.
   renewed and retried. `__tests__/azure.type-test.ts`: a copy of
   `@azure/core-auth`'s and `@azure/identity`'s declarations is assignable.
 
+**PR-C1b built 2026-10-29** (branch `feat/bun-cache-c1b-soft-purge`, on
+develop `372ba931`): the soft purge, `invalidateTags(tags, { mode:
+"stale" })` (§3.6, R21). **It departs from §3.6's "rewrites `freshUntil` to
+now"** (the user's decision of 2026-10-29, design C of the design check):
+nothing is rewritten. A soft purge writes one **stale stamp** per tag, and a
+read caps the freshness of an entry created at or before it. Why not the
+rewrite: under `encrypt` `freshUntil` is inside the sealed entry, so every
+tagged entry would need opening and resealing; stamps-mode drivers (file,
+S3, Azure, Cloudflare KV) have no tag index to find the entries by; and a
+rewrite in the store would put the header's layout into every driver (§3.2:
+the driver never decodes it). A spike showed the rewrite was feasible on
+Postgres, MySQL, MariaDB, SQLite and Redis (Lua), but not on MongoDB, and it
+would have been a second mechanism beside the stamps the encrypted and
+stamps-mode paths need anyway. How it is built:
+
+- **The stale stamp** is `setStamps` of `"\u0001" + the tag's stored name`
+  in the tag's own namespace, so it rides the same `getStamps` call (and the
+  same `tagStampCacheMs` copy) as the ordinary stamps; no driver changed, no
+  driver-contract change. It cannot collide: a plaintext tag starting with
+  U+0001 is refused (`TypeError`, on `set`, `getOrSet` and
+  `invalidateTags`), a built-in `hashNames` name is 32 hex characters, and a
+  user `hashNames.hash` answering a tag name that starts with U+0001 is
+  refused.
+- **The read rule**: a stale stamp at or after the entry's `createdAt` caps
+  its `freshUntil` at the stamp (the earliest such stamp), so it is stale,
+  never missing; freshness is only ever lowered; the hard expiry is not
+  shortened (the user's decision). The stale windows count from the purge.
+- **Where it runs**: only on a cache with the new **`softPurge: true`**
+  (approved 2026-10-29; default `false`), on every driver, encrypted or not
+  — the user's decision of 2026-10-29, after the build found that "always"
+  on encrypted and stamps-mode caches made every one of them read the stale
+  stamps on every tagged read (on a stamps-mode driver each stamp is a file
+  or an object), whether or not it ever soft-purged. No cache pays unless it
+  opts in: without the option no read asks for a stale name (asserted with a
+  recording driver, on a stamps-mode driver and under encrypt), and
+  `mode: "stale"` throws `UnsupportedOperationError` naming the option (the
+  core's convention for a mode it cannot honour; a mode that is neither is a
+  `TypeError`). The cost of the option: its tagged reads check the stale
+  stamps, one stamp lookup per tag per `tagStampCacheMs` per process — a new
+  lookup on a plaintext index-mode cache, one more name in the ordinary
+  stamps' call (one more stamp file or object on a stamps-mode driver)
+  elsewhere.
+- **The fence**: no write is refused. A load that began before the purge
+  stores, and reads stale (its `createdAt` predates the stamp); one on the
+  purging cache is dropped, as the purge forgets its flights. A fresh
+  pre-purge value is never resurrected.
+- **failSafeBackoff**: the usual backoff rewrites the entry with its
+  `createdAt` kept, which the stale stamp would cap again, so a soft-purged
+  entry's backoff is kept in process (at most 10,000, oldest out), ended by a
+  later soft purge.
+- **L1 and the bus**: L1 copies of the tags are dropped and the generation
+  guard bumped, as for a delete; the bus message is a delete's
+  (`invalidate-tags`, unchanged), and receivers drop their stamp copies of
+  both names.
+- **Events and stats**: `invalidate` gains `mode` (approved 2026-10-29);
+  `deletes` is not counted in stale mode.
+- **Rolling deploys** (documented): a process on an older version reads no
+  stale stamps and serves soft-purged entries as fresh until they expire.
+- **Tests**: the conformance kit's `soft-purge`, `soft-purge.option` and
+  `soft-purge.encrypted` cases on every driver (with `softPurge: true`
+  throughout, and the option case asserting the refusal and that no read
+  asks for a stale name without it, plain and encrypted; the encrypted
+  raw-dump case soft-purges too);
+  `__tests__/core/softPurge.test.ts` (the option rule, the read rule, SWR,
+  SIE, no window, the fence in one cache and across two, the backoff, L1,
+  events, stats, the reserved names, encrypt + `hashNames`); a two-process
+  case in `tiers/crossprocess.test.ts` on SQLite, SQLite with `redisBus` and
+  Postgres; `__tests__/http/softPurge.test.ts` (`cacheResponse` STALE after
+  a soft purge, SWR and SIE). The README's CDN recipe sends
+  `Fastly-Soft-Purge: 1` for a stale-mode invalidation (Cloudflare has none:
+  a hard purge there). Negative controls and the gate: see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -2290,7 +2362,12 @@ stamp whatever order the writes landed in. §7.10 gives each driver's row.
 **Modes.** `invalidateTags(tags, { mode: "stale" })` marks entries stale
 instead of deleting them. It rewrites `freshUntil` to now and keeps the
 `staleIfError` window, which is Fastly's soft purge. It is a later PR, on
-SQL, memory and Redis first.
+SQL, memory and Redis first. *(Built in PR-C1b, 2026-10-29, differently and
+on every driver: no rewrite; a stale stamp per tag, and a read caps the
+freshness of an entry created at or before it, so encryption, stamps-mode
+drivers and the drivers' ignorance of the header all hold. Every cache
+opts in with `softPurge: true`, and pays nothing without it. See Status,
+"PR-C1b built".)*
 
 **Why not lazy everywhere?** Lazy stamps (cacheable 2.5, BentoCache,
 FusionCache, HybridCache; Symfony's tag versions) make invalidation O(1) on
@@ -3746,7 +3823,7 @@ now" idea is already folded into the section named.
 | R18 | `X-Cache` status values (HIT, MISS, STALE, BYPASS, UNCACHEABLE) | nginx, `@nestjs/cache-manager` | **Adopt now**, PR-H1, N2 | §9.1, §10.3 | Debuggability |
 | R19 | Spring's decorator semantics (`condition`, `unless`, evict after success by default, `all`) | Spring Cache | **Adopt now**, PR-N1 | §10.2 | Proven ergonomics, and familiar to Nest users from Java |
 | R20 | Cache-key versioning per cache (`version`) | Django `VERSION` | **Adopt now**, PR-C1 | §3.7 | Deploying a shape change without a flush |
-| R21 | Soft purge: `invalidateTags(…, { mode: "stale" })` | Fastly, Varnish xkey, Next.js `revalidateTag` | **Later** (PR-C1b) | §3.6 | Useful with stale-if-error, but not needed to ship |
+| R21 | Soft purge: `invalidateTags(…, { mode: "stale" })` | Fastly, Varnish xkey, Next.js `revalidateTag` | **Later** (PR-C1b; built 2026-10-29) | §3.6 | Useful with stale-if-error, but not needed to ship |
 | R22 | An auto-recovery queue for failed L2 and bus writes (last per key, newest wins) | FusionCache | **Later** | §4 | Rejoin-empty and flush-on-gap cover correctness; this only narrows the window |
 | R23 | Named lifetime profiles (`life: "minutes"`) | Next.js `cacheLife` | **Later** | §3.1 | Sugar over `ttl`, `staleWhileRevalidate` and `staleIfError`; add once real configurations show which presets people want |
 | R24 | Recyclable per-entry versions (`version` inside the entry) | Rails | **Later** | §3.7 | The per-cache version covers deploys; per-entry versions serve model-driven keys, which can wait |
@@ -4181,7 +4258,9 @@ Every new public name.
 | `get`, `getEntry`, `has`, `getMany`, `set`, `setMany`, `touch`, `delete`, `deleteMany`, `clear`, `invalidateTags`, `getOrSet`, `wrap`, `increment`, `decrement`, `namespace`, `on`, `stats`, `close`, `syncSchema` | methods | `Cache` | the vocabulary of `Map`, cache-manager and BentoCache |
 | `ttl`, `expiresAt`, `staleWhileRevalidate`, `staleIfError`, `softTimeout`, `hardTimeout`, `refreshAhead`, `earlyExpiry`, `jitter`, `lock`, `onLockTimeout`, `cacheUndefined`, `negativeTtl`, `tags`, `signal`, `tier` | options | per call and cache | RFC 5861's names for the stale windows; the rest say what they do |
 | `failSafeBackoff`, `tagStampTtl`, `tagStampCacheMs`, `maxKeyLength`, `maxEntryBytes`, `maxEntries`, `maxBytes`, `sweepInterval`, `timeout`, `strict`, `circuit`, `version`, `codec`, `compress`, `validate`, `l1`, `bus` | options | `CreateCacheOptions` | — |
-| `mode: "delete" \| "stale"` | option | `invalidateTags` | the stale mode is later (R21) |
+| `mode: "delete" \| "stale"` | option | `invalidateTags` | the stale mode is later (R21); *built in PR-C1b* |
+| `softPurge` | option | `CreateCacheOptions` | *built in PR-C1b, approved by the user 2026-10-29*: lets a cache soft-purge, on every driver, encrypted or not (required on every cache, the user's decision of 2026-10-29), at one stamp lookup per tag per `tagStampCacheMs` on tagged reads; default `false` |
+| `mode: "delete" \| "stale"` | event field | the `invalidate` payload | *built in PR-C1b, approved by the user 2026-10-29*: how the tags were invalidated, the option's own name |
 | `memoryDriver`, `fileDriver`, `sqliteDriver`, `postgresDriver`, `mysqlDriver`, `mariadbDriver`, `mongoDriver`, `redisDriver`, `s3Driver`, `redundant`, `fromSimpleDriver` | functions | root | `<backend>Driver`, matching the backend names users type |
 | `redisBus`, `pgBus`, `CacheBus` | functions, type | root | the bus is separable from the driver |
 | `CacheDriver`, `CacheDriverCapabilities`, `StoredEntry`, `TagFence`, `BusMessage`, `Codec` | types | root | the contract |

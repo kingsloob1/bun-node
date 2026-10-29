@@ -613,7 +613,12 @@ export interface CacheEventMap {
   /** A key was deleted. */
   delete: { key: string; namespace: string };
   /** Tags were invalidated. */
-  invalidate: { namespace: string; tags: readonly string[] };
+  invalidate: {
+    namespace: string;
+    tags: readonly string[];
+    /** How: `"delete"` removed the entries, `"stale"` (a soft purge, R21) marked them stale. */
+    mode: "delete" | "stale";
+  };
   /** A loader ran. `shared` is true when other callers joined the same flight (§3.4). */
   load: { key: string; namespace: string; duration: number; shared: boolean };
   /** A background refresh stored a fresh value. */
@@ -942,8 +947,18 @@ export interface Cache<
   /** Deletes every entry of this namespace (never the whole backend). */
   clear: () => Promise<void>;
   /**
-   * Invalidates every entry carrying any of `tags` (§3.6). `mode: "stale"`
-   * (a soft purge) is a later PR and throws `UnsupportedOperationError` today.
+   * Invalidates every entry carrying any of `tags` (§3.6).
+   *
+   * `mode: "delete"` (the default) removes them. `mode: "stale"` is a soft
+   * purge (R21, Fastly's): the entries stay, but stop being fresh at the
+   * purge — `get` and `has` miss them, `getEntry` answers them `stale`,
+   * `getOrSet` serves them within `staleWhileRevalidate` (refreshing) or
+   * `staleIfError` (when the loader fails), counted from the purge, and a
+   * refresh replaces them. Their hard expiry is not shortened. A load that
+   * began before the purge still stores, and reads stale. Needs
+   * `softPurge: true` on the cache, on every driver; throws
+   * `UnsupportedOperationError` without it. A process on an older version
+   * serves soft-purged entries as fresh until they expire (rolling deploys).
    */
   invalidateTags: (
     tags: readonly Tag[],
@@ -1070,6 +1085,25 @@ export interface CreateCacheOptions {
   tagStampTtl?: number;
   /** How long a stamps-mode driver caches tag stamps in process, in ms (§3.6). Defaults to 1000. */
   tagStampCacheMs?: number;
+  /**
+   * Lets the cache soft-purge, `invalidateTags(tags, { mode: "stale" })`
+   * (R21). Defaults to `false`; every cache needs it, on every driver,
+   * encrypted or not — without it `mode: "stale"` throws
+   * `UnsupportedOperationError`.
+   *
+   * The cost: its tagged reads then check the tags' stale stamps, one stamp
+   * lookup per tag per `tagStampCacheMs` per process (the in-process stamp
+   * cache). On an index-mode driver (memory, SQLite, Postgres, MySQL,
+   * MariaDB, MongoDB, Redis, Cloudflare D1) without `encrypt`, whose reads
+   * otherwise read no stamps, that is a new lookup; on a stamps-mode driver
+   * (file, S3, Azure, Cloudflare KV, `fromSimpleDriver`) or an encrypted
+   * cache it joins the ordinary stamps' call, as one more stamp per tag (a
+   * file or an object of its own on a stamps-mode driver). Without the
+   * option no stale stamp is ever read. A stale stamp lives for
+   * `tagStampTtl`, like any stamp: an entry that outlives it reads fresh
+   * again.
+   */
+  softPurge?: boolean;
 
   /** How often the core calls the driver's `sweep`, in ms; 0 disables. Defaults to 60 s. */
   sweepInterval?: number;

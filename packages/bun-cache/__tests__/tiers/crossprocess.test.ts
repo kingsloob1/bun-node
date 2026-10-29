@@ -12,6 +12,11 @@
  *   its `LISTEN` backend terminated), and then is.
  * - The control: with `bus: false` the reader serves its copy until
  *   `l1.ttl`.
+ * - A soft purge (R21) in one reaches the other: its L1 copy is dropped and
+ *   it reads the entry stale from L2, though its stamp copy would otherwise
+ *   hold for a minute (`tagStampCacheMs`): the bus message drops the stale
+ *   stamps' copies too. Every cache here has `softPurge: true` (the L2s are
+ *   index-mode); the soft purge's control is the reader without it.
  *
  * L2s: an SQLite file (its polled bus, 250 ms by default); Postgres
  * (`LISTEN`/`NOTIFY`) when `BUN_CACHE_TEST_POSTGRES_URL` (or the bun-jobs
@@ -280,6 +285,32 @@ function registerPass(title: string, pass: () => Pass): void {
       expect(gone.timedOut).toBeUndefined();
     }, 60_000);
 
+    test("a soft purge in one is seen in the other: its L1 copy dropped, the entry read stale from L2", async () => {
+      const k = key("soft");
+      const tag = `soft-${k}`;
+      await writer.set(k, "v", { tags: [tag] });
+      await holding(k, "v");
+      // The reader has read the tag's (absent) stale stamp and holds that
+      // copy for `tagStampCacheMs` (a minute): only the bus can refresh it.
+      expect(await reader.request<unknown>({ op: "getEntry", key: k })).toEqual(
+        { value: "v", stale: false },
+      );
+      await writer.invalidateTags([tag], { mode: "stale" });
+      // `get` answers fresh entries only: the watch waits for its miss.
+      const purged = await reader.request<Watched>({
+        op: "watch",
+        key: k,
+        timeoutMs: it.bound * 4,
+      });
+      expect(purged.timedOut).toBeUndefined();
+      expect(await reader.request<unknown>({ op: "getEntry", key: k })).toEqual(
+        {
+          value: "v",
+          stale: true,
+        },
+      );
+    }, 60_000);
+
     test("a gap flushes the other's L1: a write it was never told of is seen after one", async () => {
       const k = key("gap");
       await writer.set(k, "v1");
@@ -343,6 +374,8 @@ function sqlitePass(
     job: (jobBusOverride, l1Ttl) => ({
       driver: { kind: "sqlite", path },
       bus: jobBusOverride,
+      softPurge: true,
+      tagStampCacheMs: 60_000,
       ...(l1Ttl === undefined ? {} : { l1Ttl }),
     }),
     writer: (writerBus, l1) => {
@@ -353,6 +386,7 @@ function sqlitePass(
         bus: writerBus,
         ...(l1 ? { l1: true } : {}),
         sweepInterval: 0,
+        softPurge: true,
       });
     },
     forceGap:
@@ -450,6 +484,8 @@ if (postgres.url === undefined) {
         job: (jobBus, l1Ttl) => ({
           driver: { kind: "postgres", url, prefix },
           bus: jobBus,
+          softPurge: true,
+          tagStampCacheMs: 60_000,
           ...(l1Ttl === undefined ? {} : { l1Ttl }),
         }),
         writer: (writerBus, l1) =>
@@ -458,6 +494,7 @@ if (postgres.url === undefined) {
             bus: writerBus,
             ...(l1 ? { l1: true } : {}),
             sweepInterval: 0,
+            softPurge: true,
           }),
         forceGap: async () => {
           // The backends LISTENing on this run's channel (the reader's, and
