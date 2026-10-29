@@ -13,6 +13,7 @@ import {
   applyPostgresLimit,
   BASELINE_CORES,
   CACHE_DATABASE,
+  CACHE_BENCH_DATABASE,
   cacheDatabaseStatements,
   connectionsForCores,
   defaultMaxConnections,
@@ -1184,5 +1185,85 @@ describe("the Azure Blob Storage server (Azurite)", () => {
       ),
     ).toBe(false);
     expect(azureContainerCreated(403, "")).toBe(false);
+  });
+});
+
+describe("bun-cache's benchmark database", () => {
+  const options = parseArgs([]);
+
+  it("is bun_cache_bench by default, and --cache-bench-database renames it, leaving the others", () => {
+    expect(CACHE_BENCH_DATABASE).toBe("bun_cache_bench");
+    expect(options.cacheBenchDatabase).toBe("bun_cache_bench");
+    const renamed = parseArgs(["--cache-bench-database=other"]);
+    expect(renamed.cacheBenchDatabase).toBe("other");
+    expect(renamed.cacheDatabase).toBe("bun_cache_test");
+    expect(renamed.database).toBe("bun_jobs_test");
+  });
+
+  it("has a URL on every server that has the test database's, in its form, under BUN_CACHE_BENCH_*_URL", () => {
+    for (const service of [
+      "postgres",
+      "mariadb",
+      "mysql",
+      "mongodb",
+    ] as const) {
+      const plan = PLANS[service];
+      expect(plan.cacheBenchEnvVar).toBe(
+        `BUN_CACHE_BENCH_${service.toUpperCase()}_URL`,
+      );
+      expect(plan.cacheBenchUrl!(options)).toBe(
+        plan.cacheUrl!(options).replace("/bun_cache_test", "/bun_cache_bench"),
+      );
+    }
+    expect(PLANS.mysql.cacheBenchUrl!(options)).toEndWith(
+      "/bun_cache_bench?allowPublicKeyRetrieval=true",
+    );
+    // Redis: database 12, nothing to create.
+    expect(PLANS.redis.cacheBenchEnvVar).toBe("BUN_CACHE_BENCH_REDIS_URL");
+    expect(PLANS.redis.cacheBenchUrl!(options)).toBe(
+      "redis://127.0.0.1:6379/12",
+    );
+    expect(PLANS["mongodb-rs"].cacheBenchUrl).toBeUndefined();
+  });
+
+  it("is created and granted to the suites' user by the same conditional statements, never dropped", () => {
+    const bench = { ...options, cacheDatabase: options.cacheBenchDatabase };
+    expect(cacheDatabaseStatements("postgres", bench, "native")).toEqual([
+      "SELECT 'CREATE DATABASE bun_cache_bench OWNER bunjobs' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'bun_cache_bench') \\gexec",
+    ]);
+    expect(cacheDatabaseStatements("mysql", bench, "container")).toEqual([
+      "CREATE DATABASE IF NOT EXISTS `bun_cache_bench`",
+      "GRANT ALL PRIVILEGES ON `bun_cache_bench`.* TO 'bunjobs'@'%'",
+    ]);
+  });
+
+  it("--print-env prints the BUN_CACHE_BENCH_* variables", async () => {
+    const run = async (...args: string[]): Promise<string> => {
+      const child = Bun.spawn({
+        cmd: [
+          process.execPath,
+          new URL("../setup-databases.ts", import.meta.url).pathname,
+          ...args,
+        ],
+        env: { ...process.env, NO_COLOR: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const out = await new Response(child.stdout).text();
+      await child.exited;
+      return out;
+    };
+    const env = await run("--print-env");
+    expect(
+      env
+        .split("\n")
+        .filter((line) => line.startsWith("export BUN_CACHE_BENCH_")),
+    ).toEqual([
+      "export BUN_CACHE_BENCH_REDIS_URL=redis://127.0.0.1:6379/12",
+      "export BUN_CACHE_BENCH_POSTGRES_URL=postgres://bunjobs:bunjobs@127.0.0.1:5432/bun_cache_bench",
+      "export BUN_CACHE_BENCH_MARIADB_URL=mariadb://bunjobs:bunjobs@127.0.0.1:3306/bun_cache_bench",
+      "export BUN_CACHE_BENCH_MYSQL_URL=mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_cache_bench?allowPublicKeyRetrieval=true",
+      "export BUN_CACHE_BENCH_MONGODB_URL=mongodb://127.0.0.1:27017/bun_cache_bench",
+    ]);
   });
 });

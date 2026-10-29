@@ -25,6 +25,13 @@ import process from "node:process";
  * bun-cache's Redis suite uses bun-jobs' test database (15) instead, its keys
  * under a per-run prefix: `--print-env` names it `BUN_CACHE_TEST_REDIS_URL`.
  *
+ * bun-cache's benchmarks have databases of their own, never the suites':
+ * Postgres, MariaDB and MySQL get {@link CACHE_BENCH_DATABASE}
+ * (`BUN_CACHE_BENCH_*_URL`), created and granted to the same user by the same
+ * rule as the test database (only when connecting to it fails); MongoDB's
+ * (`BUN_CACHE_BENCH_MONGODB_URL`) is created by its first write, and Redis's
+ * is database 12 (`BUN_CACHE_BENCH_REDIS_URL`), which needs nothing.
+ *
  * S3 is SeaweedFS in a container ({@link S3_CONTAINER_IMAGE}), the one S3 test
  * server both packages share, with a bucket each (`bun-jobs-test`,
  * {@link S3_CACHE_BUCKET}), created by a signed `PUT` when absent.
@@ -133,6 +140,14 @@ export const POSTGRES_DATA_ROOT = "/var/lib/postgresql";
  * data can touch the other's.
  */
 export const CACHE_DATABASE = "bun_cache_test";
+
+/**
+ * The database bun-cache's benchmarks (`packages/bun-cache/bench`) use on the
+ * Postgres, MariaDB, MySQL and MongoDB servers (`BUN_CACHE_BENCH_*_URL`): same
+ * server, user and password as the suites, but never their database, so a
+ * benchmark's load cannot disturb a test run or the other way round.
+ */
+export const CACHE_BENCH_DATABASE = "bun_cache_bench";
 
 /**
  * The S3 test server: SeaweedFS, pinned. MinIO was the first choice, but its
@@ -261,6 +276,11 @@ interface Options {
   database: string;
   /** bun-cache's database on the SQL and MongoDB servers ({@link CACHE_DATABASE}). */
   cacheDatabase: string;
+  /**
+   * bun-cache's benchmark database on the SQL and MongoDB servers
+   * ({@link CACHE_BENCH_DATABASE}).
+   */
+  cacheBenchDatabase: string;
   /** User this script creates. */
   user: string;
   /**
@@ -325,6 +345,7 @@ export function parseArgs(argv: string[]): Options {
     password: "bunjobs",
     database: "bun_jobs_test",
     cacheDatabase: CACHE_DATABASE,
+    cacheBenchDatabase: CACHE_BENCH_DATABASE,
     user: "bunjobs",
     maxConnections: defaultMaxConnections(),
     postgresMaxConnections: defaultPostgresMaxConnections(),
@@ -366,6 +387,8 @@ export function parseArgs(argv: string[]): Options {
       options.database = arg.slice("--database=".length);
     } else if (arg.startsWith("--cache-database=")) {
       options.cacheDatabase = arg.slice("--cache-database=".length);
+    } else if (arg.startsWith("--cache-bench-database=")) {
+      options.cacheBenchDatabase = arg.slice("--cache-bench-database=".length);
     } else if (arg.startsWith("--user=")) {
       options.user = arg.slice("--user=".length);
     } else if (arg.startsWith("--max-connections=")) {
@@ -415,6 +438,9 @@ Options
   --cache-database=NAME
                     bun-cache's database on Postgres, MariaDB, MySQL and
                     MongoDB (default: ${CACHE_DATABASE})
+  --cache-bench-database=NAME
+                    bun-cache's benchmark database on Postgres, MariaDB,
+                    MySQL and MongoDB (default: ${CACHE_BENCH_DATABASE})
   --max-connections=N
                     The max_connections MariaDB and MySQL should have at
                     least. A server already at or above it is left alone;
@@ -964,6 +990,14 @@ interface ServicePlan {
    * the first write.
    */
   cacheUrl?: (options: Options) => string;
+  /** The variable bun-cache's benchmarks read for this server. */
+  cacheBenchEnvVar?: string;
+  /**
+   * The URL of bun-cache's benchmark database ({@link CACHE_BENCH_DATABASE}),
+   * printed by `--print-env`. The script creates that database on the SQL
+   * servers; MongoDB makes it on the first write; Redis's is database 12.
+   */
+  cacheBenchUrl?: (options: Options) => string;
   /** Whether its binaries are present. */
   installed: () => boolean;
   /** Packages to install, per manager. */
@@ -1950,6 +1984,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     // bun-cache's suite shares database 15 (the repository's test database),
     // its keys under a per-run prefix; there is no database to create.
     cacheEnvVar: "BUN_CACHE_TEST_REDIS_URL",
+    // The benchmarks' own database, 12: nothing to create.
+    cacheBenchEnvVar: "BUN_CACHE_BENCH_REDIS_URL",
+    cacheBenchUrl: () => "redis://127.0.0.1:6379/12",
     installed: () => has("redis-server") || has("redis-cli"),
     packages: {
       apt: ["redis-server"],
@@ -1993,6 +2030,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     cacheEnvVar: "BUN_CACHE_TEST_POSTGRES_URL",
     cacheUrl: (options) =>
       `postgres://${options.user}:${options.password}@127.0.0.1:5432/${options.cacheDatabase}`,
+    cacheBenchEnvVar: "BUN_CACHE_BENCH_POSTGRES_URL",
+    cacheBenchUrl: (options) =>
+      `postgres://${options.user}:${options.password}@127.0.0.1:5432/${options.cacheBenchDatabase}`,
     installed: () => has("postgres") || has("pg_ctl") || has("initdb"),
     packages: {
       apt: ["postgresql"],
@@ -2074,6 +2114,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     cacheEnvVar: "BUN_CACHE_TEST_MARIADB_URL",
     cacheUrl: (options) =>
       `mariadb://${options.user}:${options.password}@127.0.0.1:3306/${options.cacheDatabase}`,
+    cacheBenchEnvVar: "BUN_CACHE_BENCH_MARIADB_URL",
+    cacheBenchUrl: (options) =>
+      `mariadb://${options.user}:${options.password}@127.0.0.1:3306/${options.cacheBenchDatabase}`,
     installed: () => has("mariadbd") || has("mysqld") || has("mariadb"),
     packages: {
       apt: ["mariadb-server"],
@@ -2173,6 +2216,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     // of the URL as bun-jobs' does.
     cacheUrl: (options) =>
       `mysql://${options.user}:${options.password}@127.0.0.1:3307/${options.cacheDatabase}?allowPublicKeyRetrieval=true`,
+    cacheBenchEnvVar: "BUN_CACHE_BENCH_MYSQL_URL",
+    cacheBenchUrl: (options) =>
+      `mysql://${options.user}:${options.password}@127.0.0.1:3307/${options.cacheBenchDatabase}?allowPublicKeyRetrieval=true`,
     // A container, so there are no binaries on the host to look for.
     installed: () => false,
     packages: {},
@@ -2216,6 +2262,9 @@ export const PLANS: Record<Service, ServicePlan> = {
     url: (options) => `mongodb://127.0.0.1:27017/${options.database}`,
     cacheEnvVar: "BUN_CACHE_TEST_MONGODB_URL",
     cacheUrl: (options) => `mongodb://127.0.0.1:27017/${options.cacheDatabase}`,
+    cacheBenchEnvVar: "BUN_CACHE_BENCH_MONGODB_URL",
+    cacheBenchUrl: (options) =>
+      `mongodb://127.0.0.1:27017/${options.cacheBenchDatabase}`,
     installed: () => has("mongod"),
     packages: {
       // Ubuntu and Debian do not ship MongoDB; `configureMongoRepo` adds its
@@ -2881,24 +2930,32 @@ async function ensureCacheDatabase(
   host: LimitHost,
   platform: Platform,
   options: Options,
+  kind: "test" | "bench" = "test",
 ): Promise<{ note: string; failed: boolean }> {
-  if (!plan.cacheUrl) {
+  const bench = kind === "bench";
+  const urlOf = bench ? plan.cacheBenchUrl : plan.cacheUrl;
+  if (!urlOf || (bench && plan.service === "redis")) {
+    // Redis's benchmark database is number 12: nothing to make.
     return { note: "", failed: false };
   }
   if (plan.service === "s3") {
     return await ensureCacheBucket(plan, options);
   }
-  const db = options.cacheDatabase;
+  // The benchmark database takes the test database's place in everything below.
+  const named: Options = bench
+    ? { ...options, cacheDatabase: options.cacheBenchDatabase }
+    : options;
+  const db = named.cacheDatabase;
   if (plan.service === "mongodb" || plan.service === "mongodb-rs") {
     // MongoDB creates a database on its first write: nothing to make.
     return { note: `${db} on first write`, failed: false };
   }
-  const url = plan.cacheUrl(options);
+  const url = urlOf(options);
   if (await sqlReachable(url)) {
     log.skip(`the ${db} database (bun-cache) is already usable`);
     return { note: `${db} ready`, failed: false };
   }
-  const statements = cacheDatabaseStatements(plan.service, options, host);
+  const statements = cacheDatabaseStatements(plan.service, named, host);
 
   if (host === "container") {
     const rootUrl = plan.containerRootUrl?.(options);
@@ -3034,7 +3091,7 @@ async function setupService(
   options: Options,
 ): Promise<Outcome> {
   const outcome = await setupServer(plan, platform, options);
-  if (!outcome.ready || !plan.cacheUrl) {
+  if (!outcome.ready || !(plan.cacheUrl ?? plan.cacheBenchUrl)) {
     return outcome;
   }
   // The same reading of where it runs as the limit check's: this script's
@@ -3047,10 +3104,20 @@ async function setupService(
       ? "container"
       : "native";
   const cache = await ensureCacheDatabase(plan, host, platform, options);
+  const bench = await ensureCacheDatabase(
+    plan,
+    host,
+    platform,
+    options,
+    "bench",
+  );
   return {
     ...outcome,
-    note: withLimit(outcome.note, cache.note),
-    cacheFailed: cache.failed,
+    note: withLimit(
+      outcome.note,
+      [cache.note, bench.note].filter(Boolean).join(", "),
+    ),
+    cacheFailed: cache.failed || bench.failed,
   };
 }
 
@@ -3249,6 +3316,11 @@ function printEnv(options: Options): void {
       const url = plan.cacheUrl ?? plan.url;
       console.log(`export ${plan.cacheEnvVar}=${colour.cyan(url(options))}`);
     }
+    if (plan.cacheBenchEnvVar && plan.cacheBenchUrl) {
+      console.log(
+        `export ${plan.cacheBenchEnvVar}=${colour.cyan(plan.cacheBenchUrl(options))}`,
+      );
+    }
   }
 
   console.log(
@@ -3321,7 +3393,7 @@ async function main(): Promise<void> {
   if (outcomes.some((outcome) => outcome.cacheFailed)) {
     console.log(
       colour.dim(
-        `\n  bun-cache's ${options.cacheDatabase} database could not be made usable on every server; see above.`,
+        `\n  bun-cache's ${options.cacheDatabase} or ${options.cacheBenchDatabase} database could not be made usable on every server; see above.`,
       ),
     );
     process.exitCode = 1;

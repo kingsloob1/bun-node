@@ -362,7 +362,12 @@ looks like a MySQL one.
 and skips visibly with none (a set but unreachable URL fails). bun-cache's own
 suites read `BUN_CACHE_TEST_POSTGRES_URL`, `…_MYSQL_URL` and `…_MARIADB_URL`
 (database `bun_cache_test`; `bun scripts/setup-databases.ts --print-env`
-prints them), falling back to the `BUN_JOBS_TEST_*_URL`s. Its MongoDB suite
+prints them), falling back to the `BUN_JOBS_TEST_*_URL`s. Its benchmarks
+(`packages/bun-cache/bench`) read
+`BUN_CACHE_BENCH_{REDIS,POSTGRES,MYSQL,MARIADB,MONGODB}_URL`: database
+`bun_cache_bench` on the same servers and user (Redis database 12; MongoDB
+creates its own on the first write), which `setup-databases.ts` creates and
+grants the same way, never the suites' database. Its MongoDB suite
 runs a second time on `BUN_CACHE_TEST_MONGODB_RS_URL`, a single-node replica
 set (`rs0`) that `setup-databases.ts` runs as its own docker container,
 `bun-cache-mongodb-rs`, on 27018 (always docker, even without `--docker`;
