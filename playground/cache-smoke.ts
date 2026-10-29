@@ -19,6 +19,12 @@
  *   `/proc` before the SIGINT) must be gone, and every driver the lab opened
  *   must have nothing left at its location (`labDataLeft`, which reads the
  *   same prefixes the cleanup removes, and removes nothing).
+ * - The at-rest item (`cache-at-rest.ts`): the encrypted store shows none of
+ *   the written key, namespace, tags or value, where the plain store shows
+ *   them all; the sealed entry opens by hand from the README's format, its
+ *   names recompute by hand, `describeKey` matches the stored row, and the
+ *   cache answers the value with the ring's key id. A `POST` writes a new
+ *   value, and a bad one is refused.
  * - The playground runs with `PLAYGROUND_INTERVAL_MS=0` (no simulated jobs)
  *   on its default backend. Linux only (`/proc`).
  */
@@ -278,6 +284,118 @@ async function sequences(label: string): Promise<void> {
   );
 }
 
+/** The at-rest item's checks, on the answer of a GET or POST of `/at-rest`. */
+function checkAtRest(label: string, answer: Answer, note: string): void {
+  const body = answer.body as {
+    written?: { key: string; value: Record<string, unknown> };
+    sealed?: {
+      store: {
+        entries: { n?: number }[];
+        plaintextFound: Record<string, boolean>;
+      };
+      envelope: {
+        opened?: boolean;
+        fields?: {
+          magic: string;
+          version: number;
+          cipherId: number;
+          keyId: string;
+        };
+        entry?: { magic: string; key: string; value: unknown };
+        sizes?: { overhead: number; formula: string };
+      };
+      namesByHand: { matchDescribeKey: boolean };
+      cache: {
+        describeKeyMatchesStore: boolean;
+        get: unknown;
+        hitKeyId: string | null;
+        counter: unknown;
+      };
+    };
+    plain?: {
+      store: { plaintextFound: Record<string, boolean> };
+      entry: { magic: string; key: string };
+      cache: {
+        describeKeyMatchesStore: boolean;
+        get: unknown;
+        hitKeyId: string | null;
+      };
+    };
+  };
+  check(`${label}: answers 200`, answer.status === 200, String(answer.status));
+  const { written, sealed, plain } = body;
+  if (written === undefined || sealed === undefined || plain === undefined) {
+    check(
+      `${label}: has written, sealed and plain`,
+      false,
+      JSON.stringify(body),
+    );
+    return;
+  }
+  const shown = (found: Record<string, boolean>) =>
+    Object.entries(found)
+      .filter(([, seen]) => seen)
+      .map(([needle]) => needle);
+  check(
+    `${label}: the encrypted store shows no plaintext`,
+    Object.keys(sealed.store.plaintextFound).length >= 5 &&
+      shown(sealed.store.plaintextFound).length === 0,
+    JSON.stringify(sealed.store.plaintextFound),
+  );
+  check(
+    `${label}: the plain store shows every needle (the scan can see)`,
+    Object.values(plain.store.plaintextFound).every(Boolean),
+    JSON.stringify(plain.store.plaintextFound),
+  );
+  const envelope = sealed.envelope;
+  check(
+    `${label}: the sealed entry opens by hand from the README's format`,
+    envelope.opened === true &&
+      envelope.fields?.magic === "BE" &&
+      envelope.fields.version === 1 &&
+      envelope.fields.cipherId === 1 &&
+      envelope.fields.keyId === "playground-1" &&
+      envelope.entry?.magic === "BC" &&
+      envelope.entry.key === written.key &&
+      JSON.stringify(envelope.entry.value) === JSON.stringify(written.value),
+    JSON.stringify(envelope),
+  );
+  check(
+    `${label}: the sealed size is the README's overhead`,
+    envelope.sizes !== undefined &&
+      envelope.sizes.formula.endsWith(`= ${envelope.sizes.overhead}`),
+    JSON.stringify(envelope.sizes),
+  );
+  check(
+    `${label}: the names recompute by hand to describeKey's`,
+    sealed.namesByHand.matchDescribeKey,
+  );
+  check(
+    `${label}: describeKey names the stored rows`,
+    sealed.cache.describeKeyMatchesStore && plain.cache.describeKeyMatchesStore,
+  );
+  check(
+    `${label}: both caches answer the value, the encrypted one with its key id`,
+    JSON.stringify(sealed.cache.get) === JSON.stringify(written.value) &&
+      JSON.stringify(plain.cache.get) === JSON.stringify(written.value) &&
+      sealed.cache.hitKeyId === "playground-1" &&
+      plain.cache.hitKeyId === null &&
+      written.value.note === note,
+    JSON.stringify({ sealed: sealed.cache, plain: plain.cache }),
+  );
+  check(
+    `${label}: the counter's value is a plaintext integer in the encrypted store`,
+    sealed.cache.counter === 1 &&
+      sealed.store.entries.some((row) => row.n === 1),
+    JSON.stringify(sealed.store.entries.map((row) => row.n)),
+  );
+  check(
+    `${label}: the plain entry carries its key in clear`,
+    plain.entry.magic === "BC" && plain.entry.key === written.key,
+    JSON.stringify(plain.entry),
+  );
+}
+
 /** Switches the lab; answers whether it switched. */
 async function switchTo(query: string): Promise<boolean> {
   const answer = await call("POST", `/config?${query}`);
@@ -355,6 +473,32 @@ try {
   check(
     "an unknown compression is refused",
     (await call("POST", "/config?compress=lz4")).status === 400,
+  );
+
+  /* -------------------------------------------------------------- */
+  console.log("at rest: the encrypted and plain stores, opened by hand");
+  checkAtRest(
+    "at-rest GET",
+    await call("GET", "/at-rest"),
+    "a value the store should never show",
+  );
+  const note = "a second note, still hidden";
+  checkAtRest(
+    "at-rest POST",
+    await call(
+      "POST",
+      `/at-rest?key=${encodeURIComponent("user:grace@example.com")}&note=${encodeURIComponent(note)}`,
+    ),
+    note,
+  );
+  check(
+    "at-rest: a key with a control character is refused",
+    (await call("POST", `/at-rest?key=${encodeURIComponent("a\nb")}`))
+      .status === 400,
+  );
+  check(
+    "the page has the at-rest section",
+    html.includes('id="at-rest-write"'),
   );
 
   /* -------------------------------------------------------------- */

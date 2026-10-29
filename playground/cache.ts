@@ -25,6 +25,11 @@
  *   build, cached 10 s with a 30 s stale window through `getOrSet`; its
  *   `cache` field says `miss`, `hit` or `stale`), `GET /playground/cache/stats`
  *   and `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`).
+ * - **At rest** (`cache-at-rest.ts`, PR-E3): `GET`/`POST
+ *   /playground/cache/at-rest`, one value through an encrypted cache with
+ *   `hashNames` on, shown as the store holds it beside what the cache
+ *   answers, with a plain cache's copy for contrast. It has its own two
+ *   caches over an in-memory SQLite database; the switch does not touch it.
  *
  * Everything lives in the namespace `playground-cache`, under a prefix of
  * this process's own (`cache-drivers.ts`), removed by `stop()`.
@@ -47,6 +52,7 @@ import {
   removeCacheDirs,
   removeLabData,
 } from "./cache-drivers";
+import { mountAtRestDemo } from "./cache-at-rest";
 import { cachePage } from "./cache-page";
 
 /** The lab's mount point. */
@@ -139,6 +145,8 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
   let sieFailing = false;
   /** Builds per route, so a refreshed response is told from the one before. */
   const builds = new Map<string, number>();
+  /** The at-rest item, on caches of its own. */
+  const atRest = await mountAtRestDemo(app, CACHE_BASE);
 
   /** A response that took {@link BUILD_MS} to build. */
   const build = async (route: string): Promise<Record<string, unknown>> => {
@@ -426,6 +434,7 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
     stop: async () => {
       await switching;
       await retire(cache, opened);
+      await atRest.stop();
       removeCacheDirs("mine");
     },
   };

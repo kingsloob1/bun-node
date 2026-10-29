@@ -100,6 +100,31 @@ the namespace's at `createCache`; a top-level `hashNames` (JavaScript) is a
 `TypeError`; Redis's dump reads by type, not `DUMP` (LZF could hide a
 plaintext).
 
+**PR-E3 built (2026-10-29)**, on develop `a4ea7c38` (after PR-E2, #574, and PR-B1, #576): the
+README's compression, "Encryption at rest" and "Hiding names" sections
+checked against the code and corrected where they differed or were silent
+(each correction is listed in the PR, with the code and the probe it was
+checked against): the threat model's sizes (exact, no padding, with a
+key's length readable under `hashNames`), timings, shared names and the
+compression oracle; the size cap, which holds the value before compression
+and the sealed bytes, `oversize` reporting whichever passed; the rotation
+runbook's re-sealing rewrites and `ttl: null` entries; `keys` functions'
+`timeout` (off by default); the move from the built-in to a user cipher; a
+migration in three steps, since `acceptUnencrypted` cannot bridge a
+`hashNames` turned on in the same deploy; the user hash's checks; and the
+entry header's layout for other readers. The playground's **at-rest** item
+(`/playground/cache/at-rest`, `playground/cache-at-rest.ts`, checked by
+`cache-smoke.ts`): one value through an encrypted cache with `hashNames` and
+through a plain one, over one in-memory SQLite database read back with SQL,
+the sealed entry opened by hand from the README's format alone, and
+`describeKey` checked against the stored row. And, the user's choice of
+the same day, a format test in the package
+(`__tests__/core/format.test.ts`) that reads sealed entries and stored
+names from the README's text alone with `node:crypto`, so a drift between
+the documented format and the code fails bun-cache's own gate. No product
+code changed. The
+examples are written alongside, in the same worktree, by the examples agent.
+
 Written 2026-10-28 against `develop` at `251a64f1` (#560). **No product code
 was changed.** Every `file:line` is at `251a64f1`, relative to
 `packages/bun-cache/` unless it says otherwise. The marks are the main

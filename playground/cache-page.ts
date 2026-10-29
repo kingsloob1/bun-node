@@ -2,8 +2,9 @@
  * The cache lab's page (`GET /playground/cache`, `cache.ts`): plain HTML and
  * a little inline script that calls the lab's routes with `fetch` and shows
  * each answer's `X-Cache`, `Age` and time, the live `cache.stats()`, and the
- * driver, compression and L1 switch. Like the compute page, it is a string:
- * nothing to build.
+ * driver, compression and L1 switch, and the at-rest item (`cache-at-rest.ts`):
+ * one value as the store holds it beside what the cache answers. Like the
+ * compute page, it is a string: nothing to build.
  */
 
 /** The page, its routes under `base`. */
@@ -22,6 +23,8 @@ table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}td,th{pa
 .x{display:inline-block;min-width:8em;font-weight:600}.HIT{color:var(--hit)}.MISS{color:var(--miss)}.STALE{color:var(--stale)}.BYPASS{color:var(--bypass)}.UNCACHEABLE{color:var(--unc)}
 pre{margin:4px 0;white-space:pre-wrap;word-break:break-word}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 16px}
 .grid div{border-bottom:1px solid var(--line);padding:2px 0}.grid b{float:right;font-variant-numeric:tabular-nums}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:8px 16px}.pair pre{border:1px solid var(--line);padding:8px;max-height:28em;overflow:auto;font-size:12px}
+.ok{color:var(--hit)}.bad{color:var(--unc)}
 </style></head><body>
 <h1>Playground cache</h1>
 <p><code>@kingsleyweb/bun-cache</code> on the playground's adapter: routes behind
@@ -66,6 +69,22 @@ so a <span class="MISS">MISS</span> and a <span class="HIT">HIT</span> differ in
 <div class="grid" id="stats"></div>
 <h3>L1</h3>
 <div class="grid" id="l1"></div>
+
+<h2>At rest: encryption and hidden names</h2>
+<p>One value written through an <b>encrypted</b> cache with <code>hashNames</code> on (a random ring key and names key,
+drawn at startup and never shown), and through a <b>plain</b> cache, both on one in-memory SQLite database whose rows are
+read back with SQL. The sealed entry is opened by hand from the README's format alone (<code>node:crypto</code>, none of
+bun-cache's code), and <code>describeKey</code> links the stored names to the plaintext ones. JSON:
+<a href="${base}/at-rest">${base}/at-rest</a>.</p>
+<p><input type="text" id="at-rest-key" value="user:ada@example.com"> <input type="text" id="at-rest-note" value="a value the store should never show">
+<button id="at-rest-write">write through both caches</button></p>
+<p id="at-rest-summary"></p>
+<div class="pair">
+<div><h3>Encrypted: what the store holds</h3><pre id="at-rest-sealed-store"></pre></div>
+<div><h3>Encrypted: what the cache answers</h3><pre id="at-rest-sealed-cache"></pre></div>
+<div><h3>Plain: what the store holds</h3><pre id="at-rest-plain-store"></pre></div>
+<div><h3>Plain: what the cache answers</h3><pre id="at-rest-plain-cache"></pre></div>
+</div>
 
 <h2>History</h2>
 <table id="history"><tr><th>When</th><th>Request</th><th>Status</th><th>X-Cache</th><th>Age</th><th>Time</th><th>Body</th></tr></table>
@@ -157,6 +176,28 @@ async function refresh() {
   $("openings").innerHTML = "<tr><th>Driver</th><th>Where</th><th></th></tr>" + state.openings.map((o) =>
     "<tr><td>" + o.kind + "</td><td>" + esc(o.location) + "</td><td>" + (o.current ? "current" : "closed, " + (o.removed ?? 0) + " removed") + "</td></tr>").join("");
 }
+function showAtRest(view) {
+  if (view.error) { $("at-rest-summary").textContent = view.error; return; }
+  const s = view.sealed, p = view.plain;
+  const found = (o) => Object.entries(o).filter(([, v]) => v).map(([k]) => k);
+  const flag = (ok, text) => '<span class="' + (ok ? "ok" : "bad") + '">' + esc(text) + "</span>";
+  $("at-rest-summary").innerHTML = [
+    flag(found(s.store.plaintextFound).length === 0, "encrypted store shows: " + (found(s.store.plaintextFound).join(", ") || "none of the key, namespace, tags or value")),
+    flag(found(p.store.plaintextFound).length > 0, "plain store shows: " + found(p.store.plaintextFound).join(", ")),
+    flag(s.envelope.opened === true, "opened by hand: " + (s.envelope.opened ? "yes" : s.envelope.error)),
+    flag(s.namesByHand.matchDescribeKey === true, "names recomputed by hand match describeKey"),
+    flag(s.cache.describeKeyMatchesStore === true, "describeKey matches the stored row"),
+  ].join(" · ");
+  $("at-rest-sealed-store").textContent = JSON.stringify({ rows: s.store, envelope: s.envelope }, null, 2);
+  $("at-rest-sealed-cache").textContent = JSON.stringify({ written: view.written, ...s.cache, namesByHand: s.namesByHand }, null, 2);
+  $("at-rest-plain-store").textContent = JSON.stringify({ rows: p.store, entry: p.entry }, null, 2);
+  $("at-rest-plain-cache").textContent = JSON.stringify(p.cache, null, 2);
+}
+$("at-rest-write").onclick = async () => {
+  const query = "?key=" + encodeURIComponent($("at-rest-key").value) + "&note=" + encodeURIComponent($("at-rest-note").value);
+  showAtRest(await (await fetch(base + "/at-rest" + query, { method: "POST" })).json());
+};
+fetch(base + "/at-rest").then((r) => r.json()).then(showAtRest);
 refresh();
 setInterval(refresh, 1000);
 </script>
