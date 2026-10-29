@@ -482,13 +482,17 @@ class CacheImpl<
       return result;
     } catch (cause) {
       circuit.probing = false;
-      circuit.failures++;
-      if (circuit.failures >= failures && circuit.openUntil <= now) {
-        circuit.openUntil = now + cooldown;
-        this.#emit("circuit-open", {
-          driver: state.driver.name,
-          failures: circuit.failures,
-        });
+      // A refusal (a `redundant()` driver whose primary is down, asked for a
+      // lock) is not the backend failing: it never counts toward the circuit.
+      if (!(cause instanceof UnsupportedOperationError)) {
+        circuit.failures++;
+        if (circuit.failures >= failures && circuit.openUntil <= now) {
+          circuit.openUntil = now + cooldown;
+          this.#emit("circuit-open", {
+            driver: state.driver.name,
+            failures: circuit.failures,
+          });
+        }
       }
       const error =
         cause instanceof CacheDriverError
@@ -2730,6 +2734,11 @@ class CacheImpl<
     try {
       return await run();
     } catch (cause) {
+      // A refusal is thrown as it is (`redundant()`'s `increment` while its
+      // primary is down, §5.3), like the core's own.
+      if (cause instanceof UnsupportedOperationError) {
+        throw cause;
+      }
       const error =
         cause instanceof CacheDriverError
           ? cause
@@ -3006,6 +3015,10 @@ export function createCache(
   options.driver.onEviction?.((ns, key, reason) => {
     state.stats.evictions++;
     state.events.emit("evict", { key, namespace: ns, reason });
+  });
+  // A combinator's member events (`redundant()`, §5.4) are the cache's.
+  options.driver.onMemberEvent?.((event, payload) => {
+    state.events.emit(event, payload);
   });
   state.bus = linkBus(state);
   state.bus?.start();

@@ -180,6 +180,14 @@ And (PR-C1b):
   cache that opts in with `softPurge: true`
   ([Soft purge](#soft-purge-mode-stale))
 
+And (PR-R1):
+
+- **redundant drivers**, `redundant([a, b], options)`: one driver made of
+  several, written to all (or to the first and replicated), read with
+  failover (or a race), one circuit per member, and a member that missed a
+  write rejoining empty — with what it costs, and when a backend's own
+  replication is the better answer ([Redundant drivers](#redundant-drivers))
+
 What comes next is in the plan's Status.
 
 ## Quick start
@@ -955,7 +963,9 @@ because it costs a schema run per hit.
 `mode`, `"delete"` or `"stale"`), `load`
 (with its duration and a `shared` flag), `refresh`, `stale-if-error`,
 `lock-wait`, `lock-timeout`, `evict`, `oversize`, `error` (with `phase` and
-`driver`), `circuit-open` and `circuit-close`. A `hit` says which `tier`
+`driver`), `circuit-open` and `circuit-close`, and from a `redundant()`
+driver `member-down`, `member-up` and `member-dirty`
+([Redundant drivers](#redundant-drivers)). A `hit` says which `tier`
 served it (`"l1"` or `"l2"`; always `"l2"` without an L1), and a bus failure
 is an `error` with `phase: "bus"`. On an encrypted cache, `hit` and
 `stale-hit` carry the `keyId` that sealed the entry, and an entry that does
@@ -1123,6 +1133,121 @@ writer needs `bus: "auto"` (or one of its own).
 `stats().l1` counts `hits`, `misses` (reads that went on to L2; `tier: "l2"`
 reads are not counted), `backfills`, `invalidations`, `evictions` and
 `flushes`, and reports what it holds now, `entries` and `bytes`.
+
+## Redundant drivers
+
+`redundant(members, options)` makes one driver of several, so a cache tier
+survives losing one backend (plan §5). It is a driver like any other: alone,
+or as the L2 under an L1. Members can differ in type.
+
+```ts
+import { createCache, postgresDriver, redundant } from "@kingsleyweb/bun-cache";
+
+const driver = redundant(
+  [postgresDriver({ url: PRIMARY_URL }), postgresDriver({ url: SECOND_URL })],
+  {
+    write: "all", // or "primary"
+    read: "failover", // or "race"
+    timeout: 250, // per member, per operation
+    circuit: { failures: 5, cooldown: 30_000 },
+    secondaryTtl: 60_000, // optional: see "the gap"
+  },
+);
+const cache = createCache({ driver, l1: { maxEntries: 10_000 } });
+cache.on("member-dirty", ({ index, member, op, reason }) => {
+  logger.warn("cache member missed a write", { index, member, op, reason });
+});
+```
+
+**Is it worth it?** Usually not, and that is the first thing to decide.
+
+- **It helps** when the cache holds what is expensive or impossible to
+  rebuild quickly (a model inference, a quota-limited API, a report that
+  takes minutes), so losing the only backend sends every request to the
+  origin at once; for reads in two regions (`read: "failover"`, the local
+  one first); and when the backend has no high availability of its own (one
+  Redis, one self-hosted Postgres).
+- **It is wasted** when the answer to "the cache is down" can be the default
+  one: bypass plus the in-process single-flight
+  ([The failure policy](#the-failure-policy)) — a cache can always be
+  rebuilt. And when the backend already replicates (Postgres streaming
+  replicas, Redis Sentinel or Cluster, MongoDB replica sets, MySQL group
+  replication, S3 cross-region replication): each of those is consistent in
+  a way an application-level combinator cannot be (the gap, below). The
+  cost is real: two backends to run, twice the writes, and the semantics
+  below to read before trusting it.
+
+**Writes.** `write: "all"` (the default) writes every healthy member at once.
+`ack: "one"` (the default) resolves once the member a read would ask first
+has acknowledged — the first healthy one in order under `failover`, so a
+process reads its own writes — while the rest finish in the background, each
+up to its `timeout`. `ack: "all"` waits for every healthy member. A write
+carrying a tag fence, and a tag invalidation, always wait for every member.
+One member's writes are applied in order (a key's write after that key's
+earlier one; a `clear` or an invalidation after everything before it in its
+namespace; a sweep after every write before it). `write: "primary"` writes the first healthy member and copies to
+the others in the background, in order, through a queue per member
+(`maxQueue`, default 10,000): only the first member is current, the others
+lag by their queue, and a crash loses the queue. `close()` drains it first.
+
+**Reads.** `read: "failover"` (the default) asks the first healthy member; on
+an error, a timeout or a secondary's miss, the next. **A miss from a healthy
+primary is final.** `read: "race"` asks every healthy member and takes the
+first hit: the lowest latency, twice the read load, and possibly an older
+copy while a newer one exists. Tag stamps are read from every healthy member
+whatever the mode, the newest per tag winning.
+
+**Health.** One circuit per member, in each process: `circuit.failures`
+consecutive failures or timeouts (default 5) open it (`member-down`) for
+`circuit.cooldown` (default 30 s); then one `ping()` probe closes it
+(`member-up`) or opens it again. A member's call is not cancelled at its
+timeout: the backend may still apply it. Keep the cache's own `timeout`, if
+any, above the members'.
+
+**Rejoin empty.** A member that misses a write or delete — its circuit open,
+the call failing or timing out, or dropped from a full `write: "primary"`
+queue — is marked **dirty** in this process (`member-dirty`, with the `op`
+and a `reason`: `"down"`, `"failed"` or `"overflow"`), and nothing else is
+kept. Reads skip it until it has been emptied: once every call it was sent
+has settled, every namespace this combinator wrote to is `clear()`ed on it,
+and then it serves again (`member-up` with `cleared: true`). A replayed
+repair log could not be trusted after an outage; an empty cache can always be
+refilled. Emptying is the whole member's share of those namespaces, so a
+member that misses one write while up is emptied too: give `timeout` room.
+
+**The gap.** Process P sees member B down and deletes `k` on A only. Process
+Q still sees B up, and later fails over to B, where `k` survived: Q serves a
+deleted value for up to `k`'s TTL. Nothing in one process can see what
+another missed. `secondaryTtl` caps the hard expiry written to every member
+but the first, which bounds that window (and makes a failover read a miss
+sooner). Measured in `__tests__/drivers/redundant.test.ts`: served stale
+right after the delete, gone after `secondaryTtl`.
+
+**Counters and locks** cannot be atomic across independent backends, so they
+live on the first member only (`counters: "primary"`, the default). While it
+is down or being emptied, `increment` throws `UnsupportedOperationError` and
+**never fails over** — a counter restarted from a secondary's old value is
+worse than an error — and `get` of a counter misses. The cross-process lock
+is refused the same way, and the capabilities say so while it lasts
+(`lock: false`), so `getOrSet({ lock: true })` falls back to the in-process
+single-flight instead of waiting out a lock it cannot take. A primary that
+rejoins empty loses the counters of the namespaces it is emptied of (a
+rate-limit window restarts). `counters: "refuse"` removes counters and locks.
+
+**Capabilities** are the members' intersection, except counters and locks
+(above): `multiProcess` only when every member is; `maxEntryBytes` the
+smallest. **Tags** are `"index"` when every member indexes them — deleted on
+every member, and the fence checked on every member: a write any member
+fences is fenced, and deleted where it was stored. Otherwise they are
+`"stamps"`: an invalidation stamps every member and the core's read check
+hides what it invalidated, which is just as correct on an indexing member,
+whose invalidated entries then keep their space until they expire. **The
+bus** is the first member's, unless the cache names one (`bus:
+redisBus(...)`).
+
+Not offered: **quorum reads** (they need three or more members, for
+store-of-record semantics a cache does not need) and **read repair** (it can
+copy a value that was deleted elsewhere while a member was down).
 
 ## Custom drivers
 
@@ -1331,6 +1456,7 @@ await runCacheDriverConformance("map-store", () => ({
 | Azure Blob Storage | PR-C8 | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) |
 | Cloudflare KV | PR-C10 | native (`expiration_ttl`, at least 60 s) + filtered on read | no | no | stamps, checked on read (eventually consistent) | none (`redisBus` / `pgBus`) |
 | Cloudflare D1 | PR-C11 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index (triggers), atomic fence (one statement) | none (`redisBus` / `pgBus`) |
+| `redundant([...])` | PR-R1 | its members' (native only when all are) | the primary's, never failed over | the primary's, never failed over | index when every member indexes, else stamps | the first member's |
 
 The full per-driver design, with the measured evidence behind each choice, is
 the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).

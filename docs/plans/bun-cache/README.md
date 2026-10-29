@@ -1913,6 +1913,111 @@ stamps-mode paths need anyway. How it is built:
   `Fastly-Soft-Purge: 1` for a stale-mode invalidation (Cloudflare has none:
   a hard purge there). Negative controls and the gate: see the PR.
 
+**PR-R1 built 2026-10-29** (branch `feat/bun-cache-r1-redundant`, on
+develop `75532421`; scheduled by the user 2026-10-29): `redundant(members,
+options)` (§5), in `lib/drivers/redundant.ts`, exactly §5.6's list —
+`write: "all" | "primary"`, `read: "failover" | "race"`, per-member circuits
+and timeouts, rejoin-empty, counters on the primary only. **No quorum, and
+no read repair**: §5.2's table describes repair, but §5.6's list does not
+include it (it can copy a value deleted elsewhere while a member was down).
+How it is built, and where it departs from or adds to §5:
+
+- **Writes.** `write: "all"` writes every healthy member at once. `ack:
+  "one"` (the default) resolves on the acknowledgement of the member a read
+  asks first — the first healthy one in order under `failover`, the first to
+  answer under `race` — **a departure from §5.2's "the first member
+  acknowledges"**: with the first answer from any member, a process's read
+  after its own write went to a primary that had not finished it, and a
+  healthy primary's miss is final (§5.2). `ack: "all"` waits for every
+  healthy member. A write with a tag fence, `deleteByTags` and `setStamps`
+  always wait for every member. A member's writes are **ordered** (a key's
+  after that key's earlier write still running; a `clear` or invalidation
+  after everything before it in its namespace): under `ack: "one"` a
+  background write was still running when the next started, and Postgres
+  (a pool) applied a `clear` after the `deleteByTags` that followed it
+  (found by the kit over Redis + Postgres); a member's `sweep` runs after
+  the writes already sent to it (the seeded serial run found Postgres behind
+  Redis sweeping before an expired entry's write landed). `write:
+  "primary"` writes the
+  first healthy member, then a FIFO queue per member, drained in batches of
+  distinct keys (a namespace-wide write alone), at most `maxQueue` (default
+  10,000): past it the write is dropped for that member, which is marked
+  dirty (`reason: "overflow"`) and emptied rather than left with holes.
+  `close()` drains the queues.
+- **Reads.** `failover` member by member, a secondary's miss moving on, a
+  healthy primary's final; `race` all at once, each key's first hit. An
+  entry past its expiry is a miss to the combinator (the contract lets a
+  driver return one), so a read moves on. **Stamps** (`getStamps`) are read
+  from every healthy member whatever the mode, the newest per tag winning:
+  an invalidation recorded on any member counts, which agrees with the
+  fence (any member may refuse a write).
+- **Health.** §5.4 as written: a circuit per member, `timeout` (default
+  250 ms) on every call except `connect` (the drivers' own connection
+  timeouts govern; a member that fails to connect is down from the start),
+  the `ping()` probe (a read of a reserved namespace for a member without
+  one). A timed-out call is not cancelled.
+- **Rejoin empty.** Any missed write or delete marks a member dirty — its
+  circuit open, a failure or timeout while it is closed, or a queue
+  overflow — **wider than §5.3's "when a member is down"**: one that failed
+  a single write holds an old value or a deleted one just the same. Reads
+  skip it; once every call it was sent has settled, every namespace the
+  combinator wrote to in this process is `clear()`ed on it (counters'
+  namespaces included: a rejoining primary loses those counters), then it
+  serves again. Counter-only namespaces (only `increment`) are not tracked,
+  so a primary's counters there survive its rejoin.
+- **Counters and locks**: the primary (member 0) only. While it is down or
+  being emptied, `increment`, `acquireLock` and `releaseLock` throw
+  `UnsupportedOperationError`, `getCounter` answers `undefined` (so a `get`
+  misses rather than counting a failure), and **the capabilities report
+  `atomicIncrement: false` and `lock: false`** — the capabilities are a
+  getter, a departure from "declared once" — so the cache's own checks
+  refuse `increment` and send `getOrSet({ lock })` to its in-process
+  single-flight instead of a 5 s lock wait per call. `counters: "refuse"`
+  advertises neither.
+- **Tags** (the rule the brief asked for): `"index"` when every member
+  indexes (and has `deleteByTags`) — fanned out and waited for; the fence
+  given to every member, and a write any member fences is `"fenced"` and
+  deleted where it was stored. Otherwise `"stamps"`: `setStamps` on every
+  member, and the core's read check hides the entries, which is correct on
+  an index member too (every driver stores stamps); its invalidated entries
+  keep their space until they expire. `fence` is `"atomic"` only when every
+  member's is. Soft purge (PR-C1b) needs nothing more: its stale stamps
+  ride `setStamps`/`getStamps`, fanned out and merged like the others (the
+  kit's three soft-purge cases pass on every lane).
+- **`secondaryTtl`** caps the hard expiry (and `touch`) on every member but
+  the first; stamps are not capped.
+- **Capabilities, the rest**: `multiProcess`, `ttl: "native"` only when all
+  are; `maxEntryBytes` the smallest; `bus` the first member's (`publish`,
+  `subscribe` delegated); `touch` only when every member has it; `sweep`
+  over every member that sweeps; `onEviction` registered on every member.
+  `syncSchema` runs each member's, its descriptions prefixed with the member.
+- **Events**: `member-down` (`driver`, `index`, `member`, `failures`),
+  `member-up` (`driver`, `index`, `member`, `cleared`) and `member-dirty`
+  (`driver`, `index`, `member`, `op`, `reason: "down" | "failed" |
+  "overflow"`), through a new optional driver hook, `onMemberEvent`, which
+  `createCache` forwards to `cache.on` (the `onEviction` pattern). The
+  queue overflow is a `member-dirty`, not an event of its own.
+- **The core** (`lib/core`, three changes): the events and
+  `CacheMemberEvent` in `types.ts` with `CacheDriver.onMemberEvent`; in
+  `cache.ts`, `createCache` wires the hook, `#op` no longer counts an
+  `UnsupportedOperationError` toward the cache's circuit (a refusal is not
+  the backend failing), and `#opStrict` (`increment`) throws it as it is
+  rather than wrapped in `CacheDriverError`.
+- **Names** awaiting approval: §21's two PR-R1 rows.
+- **Tests**: `__tests__/drivers/redundant.test.ts` — the kit over
+  `[memory, memory]` in five modes (default, `ack: "all"`, `read: "race"`,
+  `write: "primary"`, `secondaryTtl`), `[memory, sqlite]` and
+  `[memory, file]` (mixed tag modes, so stamps), plus the combinator under
+  `faulty` (a member that throws, hangs past its timeout, lags; rejoin
+  empty after a probe, and not when nothing was missed; the primary down for
+  counters and locks; the §5.3 gap with and without `secondaryTtl`; failover
+  and race; stamps merging; the fence across members; the queue, its order,
+  its overflow and `close()`; the ordering of one member's writes; every
+  event through `cache.on`); `__tests__/drivers/redundant-servers.test.ts`
+  — the kit, two-process pass included, over `[postgres, postgres]` (two
+  table prefixes) and `[redis, postgres]`. Negative controls and the gate:
+  see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -2754,6 +2859,8 @@ the optional PR-R1 (~4 d), when a deployment asks for it. Then build only
 rejoin-empty, and counters on the primary only. **Never build quorum.** The
 README should meanwhile say how to get redundancy from each backend's own HA,
 and how each driver behaves across that failover (§7). This is §19 Q4.
+*(Scheduled by the user and built in PR-R1, 2026-10-29: Status, "PR-R1
+built".)*
 
 ---
 
@@ -4221,7 +4328,7 @@ and the last PR of each feature adds it to the playground.
 | **PR-T1** multi-tier | L1 (values, `clone`), the bus wiring and gap flush, backfill keeping expiry, `{ tier: "l2" }`, `redisBus` and `pgBus` (R13, R14) | PR-C1 and one bus driver (C4 or C5) | ~4 d |
 | **PR-B1** bench | The bench package, contenders, baselines, `--compare` | the drivers it measures | ~3 d |
 | *PR-C1b* | soft purge (`mode: "stale"`, R21) | PR-C1 | *~1 d, later* |
-| *PR-R1* | redundant drivers (§5) | PR-T1 | *~4 d, only on demand (Q4)* |
+| *PR-R1* | redundant drivers (§5) | PR-T1 | *~4 d, only on demand (Q4); scheduled by the user and built 2026-10-29* |
 | | **Total (package ~27 d, plus the bench ~3 d; without the later items)** | | **~30 d** |
 
 ### 20.2 The utilities
@@ -4294,6 +4401,8 @@ Every new public name.
 | `BUN_CACHE_TEST_CLOUDFLARE_{ACCOUNT_ID,API_TOKEN,KV_NAMESPACE_ID,D1_DATABASE_ID,PROXY_URL,PROXY_TOKEN}` | env variables | the opt-in live lanes | *approved by the user 2026-10-28* |
 | `BunCacheWorkerEnv`; `"cloudflare-kv"` | type; driver name | `./cloudflare-worker`; `cloudflareKvDriver` | *built in PR-C10, approved by the user 2026-10-28*: the Worker's `env` (its secret and bindings), and the driver's `name`, after `"s3"` |
 | `"cloudflare-d1"` | driver name | `cloudflareD1Driver` | *built in PR-C11, awaiting approval*: the driver's `name`, after `"cloudflare-kv"` |
+| `write: "all" \| "primary"`, `ack: "one" \| "all"`, `read: "failover" \| "race"`, `timeout`, `circuit` (`failures`, `cooldown`), `counters: "primary" \| "refuse"`, `secondaryTtl`, `maxQueue`; `RedundantOptions`; `"redundant(<member names>)"` | options; type; driver name | `redundant()` | *built in PR-R1, approved by the user 2026-10-29*: §5's own names (`timeout` and `circuit` as `createCache`'s); `maxQueue` (default 10,000) after `maxEntries`/`maxBytes`; the type after `<Driver>Options` |
+| `onMemberEvent`; `CacheMemberEvent`; payload fields `driver`, `index`, `member` (all three), `failures` (`member-down`), `cleared` (`member-up`), `op` and `reason: "down" \| "failed" \| "overflow"` (`member-dirty`) | driver hook; type; event fields | `CacheDriver`; root; `member-*` events | *built in PR-R1, approved by the user 2026-10-29*: the hook after `onEviction`; `driver` as `circuit-open`'s, `failures` too; `member` is the member's driver name; the queue overflow reported as `member-dirty` with `reason: "overflow"` rather than an event of its own |
 | `sasToken`, `credential`, `token`; `AzureTokenCredential` | options; type | `AzureBlobConnection`; root | *approved by the user 2026-10-29, built 2026-10-29*: a SAS, a Microsoft Entra ID credential (structurally `@azure/core-auth`'s `TokenCredential`) and a raw bearer token; exactly one way to authorize |
 
 ---
