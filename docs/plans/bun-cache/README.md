@@ -2025,6 +2025,48 @@ How it is built, and where it departs from or adds to §5:
   table prefixes) and `[redis, postgres]`. Negative controls and the gate:
   see the PR.
 
+**Native decoders where the size is provable, built 2026-10-29** (branch
+`perf/bun-cache-native-decoders`; scheduled by the user 2026-10-29, with the
+speed comparison it needs). The decompression cap (#564) decoded every
+built-in through node:zlib with `maxOutputLength`, because Bun's decoders take
+no output limit. Bun's are 1.3–33× faster (zstd 100 B 0.22–1.4 µs against
+7.3 µs; 1 MB 100–780 µs against 290–1,010 µs), so `lib/core/decompress.ts` now
+uses them where the payload's own bytes prove the output fits, and node:zlib
+everywhere else:
+
+- **zstd**: a walk of the frame and block headers (as libzstd's
+  `ZSTD_findDecompressedSize`) sums the declared content sizes. Native only
+  when the payload is nothing but zstd frames, each declaring its size, no
+  dictionary, no reserved bit, ending at its end, and the sum is at most the
+  cap and 16 MiB. That covers every entry this cache writes. A sum past the
+  cap is refused before decoding. It is safe because Bun reserves exactly that
+  sum when it is at most 16 MiB and decodes into that buffer alone, and libzstd
+  refuses a frame that decodes to anything else (measured on Bun 1.4.2, 1.4.3
+  and 1.4.4-canary 11c367163: a frame declaring 1,000 bytes and holding
+  256 MiB failed with no growth; one declaring 20 MiB, or none, streamed with
+  no limit, 384 MiB).
+- **gzip and raw DEFLATE**: native only when `payload × 1,032 ≤ min(cap,
+  16 MiB)`, which is 4,064 bytes at the default cap. That is DEFLATE's
+  expansion bound (a 258-byte match in two bits); zlib's best is 1,028.8.
+  gzip's ISIZE must fit the bound too, since Bun reserves it up front. A
+  native output whose length is not the ISIZE goes back to node:zlib:
+  `Bun.gunzipSync` decodes only the first member
+  ([`docs/bun-bugs/gunzip-sync-reads-first-member-only.md`](../../bun-bugs/gunzip-sync-reads-first-member-only.md)).
+- **Brotli** stays on node:zlib. Bun has no Brotli decoder, and
+  `DecompressionStream("brotli")` was 0.34–0.98× node:zlib's.
+- **The bench**: `get-hit-1mb` rose 15–27% on every backend (memory 817 →
+  1,004/s, Redis 587 → 720/s); nothing else moved beyond noise.
+- **Tests**: the bombs, each with the refusal that says which decoder ran.
+  They are lying, lying-in-a-later-frame, unsized, over-declared and
+  skippable zstd frames, the honest multi-frame bomb, gzip, Brotli and
+  DEFLATE. Each runs through the cache on memory and file, and as a 256 MiB
+  RSS run, with a 32 MiB-cap case past 16 MiB. There are also spies proving
+  which decoder ran, and parity with node:zlib, sub-array views included.
+  Ten negative controls; see the PR.
+- **Open (the user's)**: whether an entry that opened under AES-GCM may skip
+  the proof (recommended: no). Whether to ask Bun for a `maxOutputLength`
+  (oven-sh/bun#28162 is open).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
