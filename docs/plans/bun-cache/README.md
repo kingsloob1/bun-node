@@ -1748,6 +1748,51 @@ Keyv majors.
   TTL (Keyv checks its envelope's `expires` on read): the adapter's cases
   read the stored expiry.
 
+**PR-H2b built 2026-10-29** (branch `feat/bun-cache-h2b-surrogate-keys`, on
+develop `7fd411e2`): `cacheResponse({ surrogateKeys })` (§9.3, R27) in
+`./http`, with the core and bun-common unchanged. `"Surrogate-Key"`
+(Fastly) or `"Cache-Tag"` (Cloudflare) carries each answer's tags — the
+path tag, the route's `tags`, `addCacheTags()`'s — in plain text, so a CDN
+in front can purge by the tags `invalidateTags()` takes. How it is built:
+
+- **The formats, from the CDNs' docs (read 2026-10-29)**: Fastly's keys
+  space-separated, case sensitive, a key 1 KB and the header 16 KB (past
+  either Fastly ignores that key and every later one), removed before the
+  client unless `Fastly-Debug`
+  ([surrogate keys](https://www.fastly.com/documentation/guides/full-site-delivery/purging/working-with-surrogate-keys/));
+  Cloudflare's tags comma-separated, case insensitive, printable ASCII, no
+  spaces, the header 16 KB after its name, a purge call's tag at most 1,024
+  characters, never seen by visitors
+  ([purge by cache-tags](https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-tags/)).
+  Kept under the smaller readings: visible ASCII without the separator, a
+  tag ≤ 1,000 bytes, the value ≤ 16,000 bytes.
+- **A tag that breaks the format is left out of the header** (not the
+  entry), one warning per tag and reason through the new `logger` option
+  (bun-common's console logger by default); never encoded or cut, which
+  would change the name a purge must send; never an error.
+- **Every `GET`/`HEAD` answer through the middleware** carries it: `MISS`,
+  `HIT`, `STALE` (SWR, SIE on a 5xx, `hardTimeout`), `UNCACHEABLE`, a
+  coalesced follower's, a `304` (RFC 9111 §4.3.4 updates a stored copy from
+  a 304's headers), a `HEAD` hit or miss; not `BYPASS`.
+- **Merging**: a header the handler or a middleware ahead set first,
+  verbatim; the entry's tags after, de-duplicated (case-insensitively for
+  `Cache-Tag`). The stored headers keep the handler's own value; the merge
+  is redone per answer.
+- **Stored**: the frame's meta carries `tags` under `surrogateKeys` only (a
+  coalesced follower gets the leader's frame, not the core entry); a frame
+  without them (stored before the option was on) takes the core entry's
+  tags on a read. Under `encrypt` the frame is sealed, so the tags are not
+  in the store in clear (tested on a hashed cache).
+- **`encrypt.hashNames`**: the header carries the plain tags, as the
+  `invalidate` event names them and the purge APIs take them (question to
+  the user, recommended as built).
+- **Purging**: a README recipe — an `invalidate` listener calling Fastly's
+  `POST /service/{id}/purge` (`surrogate_keys`, ≤ 256) or Cloudflare's
+  `POST /zones/{zone_id}/purge_cache` (`tags`); no CDN client. The event is
+  emitted once, by the process that invalidated (not on bus receipt).
+- **Tests**: `__tests__/http/surrogate.test.ts`; 17 negative controls,
+  each failing it (1–11 fails). Gate: see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -3190,7 +3235,8 @@ never delays the response. A write error goes to the failure policy (§3.14).
   - `pages.invalidate(pathOrRequest)` drops one URL's variants.
 - **CDN tags.** `surrogateKeys: "Surrogate-Key" | "Cache-Tag" | false`
   (default `false`) emits the response's tags as a header, so a CDN in front
-  can purge by the same tags (Fastly, Cloudflare, §11). Later PR.
+  can purge by the same tags (Fastly, Cloudflare, §11). *(Built in PR-H2b:
+  see Status.)*
 
 ### 9.4 Streams, stale-while-revalidate and stale-if-error over HTTP [D]
 
@@ -3658,7 +3704,7 @@ now" idea is already folded into the section named.
 | R24 | Recyclable per-entry versions (`version` inside the entry) | Rails | **Later** | §3.7 | The per-cache version covers deploys; per-entry versions serve model-driven keys, which can wait |
 | R25 | TinyLFU admission for memory and L1 | Caffeine, ristretto, moka | **Later** | §3.9 | Worth it only if L1 hit rate becomes a measured problem; a sketch is real code to maintain |
 | R26 | `minUses` admission for L2 (store only after N requests) | nginx | **Later** | §9 | Keeps one-hit URLs out of L2; needs a counter per key |
-| R27 | Surrogate-key headers for CDNs | Fastly, Cloudflare | **Later** (PR-H2b) | §9.3 | Small, but only useful behind a CDN that supports it |
+| R27 | Surrogate-key headers for CDNs | Fastly, Cloudflare | **Later** (PR-H2b; built 2026-10-29) | §9.3 | Small, but only useful behind a CDN that supports it |
 | R28 | `update(key, fn)`: an atomic read-modify-write | JCache `EntryProcessor` | **Later** | §3.8 | Needs compare-and-set per driver; counters cover the common case |
 | R29 | A TTL computed from the value (`ttl: (value) => ms`) | cachetools TLRU | **Adopt now**, PR-C1 | §3.1 | Short TTLs for empty results, one line of code |
 | R30 | Lossy asynchronous `set` | ristretto | **Skip** | — | Surprising semantics, for contention a JS event loop does not have |
@@ -4098,6 +4144,7 @@ Every new public name.
 | `runCacheDriverConformance`, `faulty`, `fakeClock` | functions | `./testing` | after `runProviderConformance` |
 | `cacheResponse`, `coalesceRequests`, `addCacheTags` | functions | `./http` | not `cache()`: too generic beside the router's route-match cache (`getCacheKey`, `clearRouteCache`) |
 | `varyBy`, `query`, `host`, `bypass`, `statusHeader`, `honorRequest`, `allowSetCookie`, `statuses`, `omitHeaders`, `invalidateOnUnsafe`, `streams`, `revalidate`, `coalesce`, `uncacheableTtl`, `etag` | options | `cacheResponse` | — |
+| `surrogateKeys: "Surrogate-Key" \| "Cache-Tag" \| false`, `logger` | options | `cacheResponse` | *built in PR-H2b, approved by the user 2026-10-29*: `surrogateKeys` is §9.3's; `logger` is `createCache`'s name, for the warning about a tag left out of the header |
 | `ttl: "headers-or-cache"` | option value | `cacheResponse` | *built in PR-N2, approved by the user 2026-10-28*: the headers' lifetime, else the cache's own TTL (the interceptor's default) |
 | `X-Cache` values `HIT`, `MISS`, `STALE`, `BYPASS`, `UNCACHEABLE` | header | `cacheResponse`, interceptor | nginx's and Nest's convention |
 | `x-bun-cache-revalidate` | internal header | `cacheResponse` | carries the per-process replay token |

@@ -63,6 +63,13 @@ export interface StoredResponseMeta {
   staleWhileRevalidate: number;
   /** The stale-if-error window, in ms, under the same rules as `staleWhileRevalidate`: a stale entry inside it answers a failed miss. */
   staleIfError: number;
+  /**
+   * The entry's tags (the path's, the route's and the handler's), kept only
+   * under `surrogateKeys`, which sends them to a CDN on every answer from
+   * the entry (a coalesced follower's too). Absent otherwise, and on frames
+   * stored without it: a read then takes the core entry's tags.
+   */
+  tags?: string[];
 }
 
 /** A stored response: its meta and its body. */
@@ -146,7 +153,10 @@ function isResponseMeta(value: unknown): value is StoredResponseMeta {
     typeof meta.age === "number" &&
     (meta.freshUntil === null || typeof meta.freshUntil === "number") &&
     typeof meta.staleWhileRevalidate === "number" &&
-    typeof meta.staleIfError === "number"
+    typeof meta.staleIfError === "number" &&
+    (meta.tags === undefined ||
+      (Array.isArray(meta.tags) &&
+        meta.tags.every((tag) => typeof tag === "string")))
   );
 }
 

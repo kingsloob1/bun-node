@@ -21,6 +21,8 @@
 import type {
   BunRequest,
   BunResponse,
+  Logger,
+  LoggerLike,
   NextFunction,
   ParsedCacheControl,
   RouterHandler,
@@ -29,6 +31,7 @@ import {
   createDeferred,
   etag as etagOf,
   parseCacheControl,
+  resolveLogger,
 } from "@kingsleyweb/bun-common";
 import type { Cache, CacheLoaderContext, GetOrSetOptions } from "../core/types";
 import type { TappedBody } from "./capture";
@@ -60,6 +63,13 @@ import {
 import type { PresetHeaders, Refusal, StoreDecision } from "./policy";
 import { decideStore } from "./policy";
 import { drain, replayIdOf, replayRequest } from "./replay";
+import type { SurrogateKeysHeader, SurrogateSkip } from "./surrogate";
+import {
+  MAX_HEADER_BYTES,
+  MAX_TAG_BYTES,
+  surrogateFormat,
+  surrogateHeaderValue,
+} from "./surrogate";
 import { responseTags } from "./tags";
 
 /**
@@ -83,7 +93,7 @@ const DEFAULT_UNCACHEABLE_TTL = 30_000;
  * key per 10 s instead of one per stale answer.
  */
 const REPLAY_BACKOFF = 10_000;
-/** The most keys an in-process key set (replay backoff, refresh-next) holds before it is cleared. */
+/** The most keys an in-process key set (replay backoff, refresh-next, warned tags) holds before it is cleared. */
 const MAX_TRACKED_KEYS = 10_000;
 
 /** Whether `status` is an origin error, which stale-if-error answers for (RFC 5861 §4: 500, 502, 503, 504; here every 5xx). */
@@ -263,6 +273,30 @@ export interface CacheResponseOptions {
         /** The most bytes a stream may come to and still be stored. */
         buffer: number;
       };
+  /**
+   * Sends each answer's cache tags to a CDN in front (plan §9.3), in the
+   * header that CDN purges by: `"Surrogate-Key"` (Fastly: space-separated,
+   * case sensitive) or `"Cache-Tag"` (Cloudflare: comma-separated, case
+   * insensitive). The tags are the entry's — the path's own
+   * (`http:path:<path>`, which unsafe methods and `invalidate()` drop), the
+   * route's `tags` and `addCacheTags()`'s — in plain text, as
+   * `cache.invalidateTags()` and its `invalidate` event name them (also under
+   * `encrypt.hashNames`), merged after any the handler or a middleware ahead
+   * set, de-duplicated. Every `GET`/`HEAD` answer through the middleware
+   * carries it — `MISS`, `HIT`, `STALE`, `UNCACHEABLE`, a `304`, a `HEAD` —
+   * except `BYPASS`. A tag outside visible ASCII, holding the separator
+   * (a space, a comma), longer than 1,000 bytes, or past 16,000 bytes of
+   * header is left out, with one `logger` warning per tag; never an error.
+   * **The tags reach the client** unless the CDN removes the header (Fastly
+   * and Cloudflare both do). `false` sends none. Defaults to `false`.
+   */
+  surrogateKeys?: "Surrogate-Key" | "Cache-Tag" | false;
+  /**
+   * Where the middleware's warnings go (a tag left out of `surrogateKeys`'
+   * header): a `Logger` or anything `resolveLogger` adapts (pino, winston,
+   * a console…). Defaults to bun-common's console logger, as the router's.
+   */
+  logger?: LoggerLike;
 }
 
 /**
@@ -543,6 +577,61 @@ export function cacheResponse(
     }
     streamBuffer = streams.buffer;
   }
+  const surrogateOption = options.surrogateKeys ?? false;
+  if (
+    surrogateOption !== false &&
+    surrogateOption !== "Surrogate-Key" &&
+    surrogateOption !== "Cache-Tag"
+  ) {
+    throw new TypeError(
+      'cacheResponse(): surrogateKeys must be "Surrogate-Key", "Cache-Tag" or false',
+    );
+  }
+  /** The CDN header's format, under `surrogateKeys`. */
+  const surrogate =
+    surrogateOption === false ? undefined : surrogateFormat(surrogateOption);
+  /** The logger, resolved on its first warning. */
+  let logger: Logger | undefined;
+  /** The tags already warned about (by reason), so a hot route logs each once. */
+  const warnedTags = new Set<string>();
+  /** Reports a tag left out of the CDN header, once per tag and reason. */
+  const skipTag = (tag: string, reason: SurrogateSkip): void => {
+    const id = `${reason}\u0000${tag}`;
+    if (warnedTags.has(id)) {
+      return;
+    }
+    track(warnedTags, id);
+    logger ??= resolveLogger(options.logger);
+    const why =
+      reason === "separator"
+        ? "it holds the header's separator"
+        : reason === "character"
+          ? "it holds a character outside visible ASCII"
+          : reason === "too-long"
+            ? `it is longer than ${MAX_TAG_BYTES} bytes`
+            : `the header would pass ${MAX_HEADER_BYTES} bytes`;
+    logger.warn(
+      `cacheResponse(): a tag was left out of ${surrogateOption}: ${why}; a CDN cannot purge this response by it`,
+      {
+        header: surrogateOption,
+        reason,
+        tag: tag.length > 100 ? `${tag.slice(0, 100)}…` : tag,
+      },
+    );
+  };
+  /**
+   * The CDN header's value for `tags`, merged after `existing` (the header
+   * already on the response); `undefined` when there is nothing to set
+   * (`surrogateKeys` off, no tags known, none fit).
+   */
+  const surrogateValue = (
+    existing: string | null,
+    tags: readonly string[] | undefined,
+  ): string | undefined =>
+    surrogate === undefined || tags === undefined
+      ? undefined
+      : surrogateHeaderValue(surrogate, existing ?? undefined, tags, skipTag);
+
   /** How long a background replay may take before it counts as failed, in ms. */
   const replayBudget = Math.min(wait, hardTimeout ?? Number.POSITIVE_INFINITY);
 
@@ -697,6 +786,12 @@ export function cacheResponse(
         headers.set(name, value);
       }
     }
+    if (surrogate !== undefined) {
+      const value = surrogateValue(headers.get(surrogate.header), meta.tags);
+      if (value !== undefined) {
+        headers.set(surrogate.header, value);
+      }
+    }
     headers.set("age", String(ageOf(stored, now)));
     if (statusHeader !== false) {
       headers.set(statusHeader, "STALE");
@@ -723,6 +818,15 @@ export function cacheResponse(
       tags.add(tag);
     }
     return [...tags];
+  };
+
+  /** {@link tagsFor}, or `undefined` when the route's `tags` function throws. */
+  const tagsOrNone = (exchange: Exchange): string[] | undefined => {
+    try {
+      return tagsFor(exchange);
+    } catch {
+      return undefined;
+    }
   };
 
   /**
@@ -881,6 +985,17 @@ export function cacheResponse(
               decided.ok ? "MISS" : "UNCACHEABLE",
             );
           }
+          if (surrogate !== undefined) {
+            // Stored or not: a CDN may keep what this cache refused (a
+            // stream under "skip", an oversized body).
+            const value = surrogateValue(
+              out.headers.get(surrogate.header),
+              decided.ok ? tags : tagsOrNone(exchange),
+            );
+            if (value !== undefined) {
+              out = withHeader(out, surrogate.header, value);
+            }
+          }
           if (conditional) {
             out = answerConditional(req, out);
           }
@@ -922,6 +1037,7 @@ export function cacheResponse(
                       decision.ttl === undefined ? null : now + decision.ttl,
                     staleWhileRevalidate: decision.staleWhileRevalidate,
                     staleIfError: decision.staleIfError,
+                    ...(surrogate === undefined ? {} : { tags: entryTags }),
                   },
                   body: bytes,
                 },
@@ -990,6 +1106,12 @@ export function cacheResponse(
     }
     if (cookies.length > 0) {
       res.setHeader("Set-Cookie", cookies);
+    }
+    if (surrogate !== undefined) {
+      const value = surrogateValue(res.getHeader(surrogate.header), meta.tags);
+      if (value !== undefined) {
+        res.setHeader(surrogate.header, value);
+      }
     }
     res.setHeader("Age", String(ageOf(stored, Date.now())));
     markStatus(res, status);
@@ -1121,6 +1243,8 @@ export function cacheResponse(
         stale: boolean;
         /** The core entry's `freshUntil`. */
         freshUntil: number | null;
+        /** The core entry's tags. */
+        tags: readonly string[];
       }
     | undefined
   > => {
@@ -1136,6 +1260,7 @@ export function cacheResponse(
           raw: entry.value,
           stale: entry.stale,
           freshUntil: entry.freshUntil,
+          tags: entry.tags,
         };
   };
 
@@ -1157,10 +1282,22 @@ export function cacheResponse(
       // (`freshUntil: null`), and a cache's `jitter` moves it. What is
       // answered — and a stale frame handed to coalesced followers, which
       // read `X-Cache` from it — carries the entry's.
+      //
+      // Under `surrogateKeys`, a frame stored without its tags (before the
+      // option was on) takes the core entry's, so its answers carry them.
+      const untagged =
+        surrogate !== undefined && stored.meta.tags === undefined;
       const response =
-        stored.meta.freshUntil === at.freshUntil
+        stored.meta.freshUntil === at.freshUntil && !untagged
           ? stored
-          : { ...stored, meta: { ...stored.meta, freshUntil: at.freshUntil } };
+          : {
+              ...stored,
+              meta: {
+                ...stored.meta,
+                freshUntil: at.freshUntil,
+                ...(untagged ? { tags: [...at.tags] } : {}),
+              },
+            };
       if (!at.stale || at.freshUntil === null) {
         return { kind: "hit", response };
       }
@@ -1602,6 +1739,27 @@ export function cacheResponse(
     );
   };
 
+  /** A HEAD miss, which captures nothing: its answer still carries the CDN header. */
+  const tagHeadMiss = (
+    exchange: Exchange,
+    header: SurrogateKeysHeader,
+  ): void => {
+    exchange.res.addResponseTransform(
+      {
+        transform: (response) => {
+          const value = surrogateValue(
+            response.headers.get(header),
+            tagsOrNone(exchange),
+          );
+          return value === undefined
+            ? response
+            : withHeader(response, header, value);
+        },
+      },
+      { first: true },
+    );
+  };
+
   const middleware = async (
     req: BunRequest,
     res: BunResponse,
@@ -1683,6 +1841,9 @@ export function cacheResponse(
         return;
       }
       markStatus(res, "MISS");
+      if (surrogate !== undefined) {
+        tagHeadMiss(exchange, surrogate.header);
+      }
       next();
       return;
     }
