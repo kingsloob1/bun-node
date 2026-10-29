@@ -505,10 +505,41 @@ before format 2 reads such an entry as a miss and deletes it, so during the
 rolling deploy that turns Brotli on, old and new processes miss each other's
 entries; once every process runs the new version, nothing more changes.
 
-**The decompression cap holds for every compressor.** The built-ins
-decompress through `node:zlib`'s decoders with `maxOutputLength` set to the
-entry limit (below), so they stop there; a user compressor is handed it as
-`maxOutputLength`, and its answer is refused past it anyway.
+**The decompression cap holds for every compressor.** A read decodes no
+further than the entry limit (below), whoever wrote the entry. Bun's own
+decoders (`Bun.zstdDecompressSync`, `Bun.gunzipSync`, `Bun.inflateSync`) are
+1.3–33× faster than `node:zlib`'s, but take no output limit. So a payload is
+decoded natively only when its own bytes prove that it fits, and otherwise
+through `node:zlib`, with `maxOutputLength` set to the limit:
+
+| Payload | Decoded by |
+|---|---|
+| zstd frames that all declare their size, summing to at most the limit and 16 MiB: every entry this cache writes | Bun |
+| zstd frames declaring more than the limit | nothing: refused before decoding |
+| other zstd: a frame with no size, a skippable frame, trailing bytes, a sum past 16 MiB | `node:zlib` |
+| gzip or raw DEFLATE of at most limit ÷ 1,032 bytes (4,064 bytes at 4 MiB) | Bun |
+| larger gzip or raw DEFLATE, and Brotli | `node:zlib` |
+
+Why each native row is safe:
+
+- **zstd**: the sizes are read from the frame and block headers, before
+  anything is decoded. Bun reserves exactly their sum (when it is at most
+  16 MiB) and decodes into that buffer alone, and libzstd refuses a frame that
+  decodes to more or less than it declares. A frame declaring 1,000 bytes and
+  holding 256 MiB fails with no growth. Past 16 MiB, or with no size, Bun
+  streams with no limit, so those payloads go to `node:zlib`.
+- **gzip and DEFLATE**: no DEFLATE stream decodes to more than 1,032 bytes
+  per byte (a 258-byte match in two bits), so the payload's length bounds its
+  output. gzip's ISIZE trailer must fit the bound too, because Bun reserves
+  that much up front.
+- **Brotli** has no Bun decoder (`DecompressionStream` is slower than
+  `node:zlib`).
+
+A gzip payload of more than one member reads as `node:zlib` reads it (every
+member), though Bun's decoder reads only the first. A user compressor is
+handed the limit as `maxOutputLength`, and its answer is refused past it
+anyway. An entry that opened under its encryption key is held to the same
+proofs.
 
 **With encryption**, compression runs first, on the plaintext entry: the
 cipher seals the compressed bytes, and a read opens the entry before it

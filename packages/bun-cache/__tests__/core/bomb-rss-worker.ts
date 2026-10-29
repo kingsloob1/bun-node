@@ -3,17 +3,18 @@
  * and prints how far the read raised the peak RSS, so nothing else the test
  * runner did can hide the growth under an earlier high-water mark.
  *
- * Usage: `bun bomb-rss-worker.ts <zstd|gzip|br|deflate> <MiB> <maxEntryBytes>`. Prints
- * one JSON line: `{ value, phase, cause, growthMiB }`.
+ * Usage: `bun bomb-rss-worker.ts <bomb name> <MiB> <maxEntryBytes>`, a name
+ * from `BOMBS`. Prints one JSON line: `{ value, phase, cause, growthMiB }`,
+ * `cause` the code of the error's cause (absent when it has none).
  */
 import process from "node:process";
 import { createCache, memoryDriver } from "../../lib/index";
 import { BOMBS, plantEntry } from "./bombs";
 
-const [algorithm, mib, cap] = process.argv.slice(2);
-const bomb = BOMBS.find((each) => each.algorithm === algorithm);
+const [name, mib, cap] = process.argv.slice(2);
+const bomb = BOMBS.find((each) => each.name === name);
 if (bomb === undefined) {
-  throw new Error(`unknown algorithm ${algorithm}`);
+  throw new Error(`unknown bomb ${name}`);
 }
 const driver = memoryDriver();
 const cache = createCache({

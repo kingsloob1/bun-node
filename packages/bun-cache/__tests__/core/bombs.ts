@@ -22,15 +22,16 @@ import {
 /** One MiB, the unit the bombs are built in. */
 const MiB = 1024 * 1024;
 
-/** The decoded size of each of a zstd bomb's frames: 32 KiB, under every limit the tests set, so no frame's declared size gives the bomb away and the decoder's own limit is what stops it. */
+/** The decoded size of each of a zstd bomb's frames: 32 KiB, under every limit the tests set, so no one frame's declared size gives the bomb away: their sum does. */
 const ZSTD_FRAME_BYTES = 32 * 1024;
 
 /**
  * A zstd payload decoding to `mib` MiB of zeros: frames of 32 KiB (17 bytes
  * each), concatenated — zstd decodes a sequence of frames to the
  * concatenation of their outputs (RFC 8878 §3.1), and so does
- * `Bun.zstdDecompressSync`. Each frame declares its own size honestly; only
- * the first is read before decoding.
+ * `Bun.zstdDecompressSync`. Each frame declares its own size honestly, so the
+ * read refuses it by their sum, before decoding (`decompress.ts`'s
+ * `nativeBound`).
  */
 export function zstdBomb(mib: number): Uint8Array {
   const frame = Bun.zstdCompressSync(new Uint8Array(ZSTD_FRAME_BYTES));
@@ -40,6 +41,90 @@ export function zstdBomb(mib: number): Uint8Array {
     bomb.set(frame, i * frame.byteLength);
   }
   return bomb;
+}
+
+/** The most one zstd block may decode to (RFC 8878 §3.1.1.2.4), and what each RLE block of {@link zstdRleFrame} holds. */
+const ZSTD_BLOCK_MAX = 128 * 1024;
+
+/** A zstd skippable frame's first Magic_Number (RFC 8878 §3.1.2): decoders skip what it holds. */
+const ZSTD_SKIPPABLE_MAGIC = 0x184d2a50;
+
+/**
+ * One zstd frame decoding to `actual` bytes of zeros, built by hand from RLE
+ * blocks of 128 KiB (4 bytes each, so 256 MiB is 8 KiB of frame), that
+ * **declares** `declared` as its Frame_Content_Size in a 4-byte field, or no
+ * size at all when `declared` is undefined. Its window is 128 KiB, so the
+ * frame is valid whatever it declares; only the declaration can lie.
+ */
+export function zstdRleFrame(
+  actual: number,
+  declared: number | undefined,
+): Uint8Array {
+  const blocks = Math.max(1, Math.ceil(actual / ZSTD_BLOCK_MAX));
+  const header = declared === undefined ? 6 : 10;
+  const out = new Uint8Array(header + blocks * 4);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, 0xfd2fb528, true);
+  // Frame_Header_Descriptor: FCS_Field_Size flag 2 (4 bytes) or 0 (none),
+  // not single-segment, no checksum, no dictionary.
+  out[4] = declared === undefined ? 0 : 2 << 6;
+  // Window_Descriptor: Exponent 7, Mantissa 0 — a 2^17-byte window.
+  out[5] = 7 << 3;
+  if (declared !== undefined) {
+    view.setUint32(6, declared, true);
+  }
+  let left = actual;
+  for (let i = 0; i < blocks; i++) {
+    const size = Math.min(left, ZSTD_BLOCK_MAX);
+    left -= size;
+    // Block_Header: Last_Block, Block_Type 1 (RLE), Block_Size; then the byte.
+    const block = (size << 3) | (1 << 1) | (i === blocks - 1 ? 1 : 0);
+    out[header + i * 4] = block & 0xff;
+    out[header + i * 4 + 1] = (block >> 8) & 0xff;
+    out[header + i * 4 + 2] = (block >> 16) & 0xff;
+  }
+  return out;
+}
+
+/** A zstd skippable frame holding `length` zero bytes. */
+export function zstdSkippableFrame(length: number): Uint8Array {
+  const out = new Uint8Array(8 + length);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, ZSTD_SKIPPABLE_MAGIC, true);
+  view.setUint32(4, length, true);
+  return out;
+}
+
+/** A frame that declares no content size and decodes to `mib` MiB: only a decoder's own limit stops it. */
+export function zstdUnsizedBomb(mib: number): Uint8Array {
+  return zstdRleFrame(mib * MiB, undefined);
+}
+
+/** One frame that declares 1,000 bytes and decodes to `mib` MiB: the lie the native decoder is handed. */
+export function zstdLyingBomb(mib: number): Uint8Array {
+  return zstdRleFrame(mib * MiB, 1000);
+}
+
+/** An honest 32 KiB frame, then a frame declaring 1,000 bytes that decodes to `mib` MiB: the lie is not in the first frame. */
+export function zstdLyingTailBomb(mib: number): Uint8Array {
+  return Buffer.concat([
+    zstdRleFrame(ZSTD_FRAME_BYTES, ZSTD_FRAME_BYTES),
+    zstdRleFrame(mib * MiB, 1000),
+  ]);
+}
+
+/** One frame declaring 20 MiB — past `NATIVE_LIMIT`, under a 32 MiB cap — that decodes to `mib` MiB. */
+export function zstdOverdeclaredBomb(mib: number): Uint8Array {
+  return zstdRleFrame(mib * MiB, 20 * MiB);
+}
+
+/** An honest 32 KiB frame, a skippable frame, then a frame with no declared size decoding to `mib` MiB. */
+export function zstdSkippableBomb(mib: number): Uint8Array {
+  return Buffer.concat([
+    zstdRleFrame(ZSTD_FRAME_BYTES, ZSTD_FRAME_BYTES),
+    zstdSkippableFrame(16),
+    zstdRleFrame(mib * MiB, undefined),
+  ]);
 }
 
 /**
@@ -147,24 +232,101 @@ export async function plantEntry(
   });
 }
 
-/** One kind of bomb: its algorithm's name, the header's compressor id, and its builder. */
+/**
+ * How a read refuses a bomb, which says which decoder (if any) ran:
+ *
+ * - `"limit"`: node:zlib stopped at the cap (its `ERR_BUFFER_TOO_LARGE` is the cause);
+ * - `"declared"`: the zstd frames declare more than the cap, so no decoder ran (no cause);
+ * - `"native"`: Bun's decoder ran, within the size the frames declare, and refused a frame
+ *   holding more than it declares (Bun's `ERR_ZSTD` is the cause).
+ */
+export type BombRefusal = "limit" | "declared" | "native";
+
+/** One kind of bomb: its name, its algorithm, the header's compressor id, its builder, and how a read under a cap of 64 KiB to 1 MiB refuses it. */
 export interface BombKind {
+  /** The bomb's name: its algorithm's, then how it is built when an algorithm has several. */
+  name: string;
   /** The compression algorithm. */
   algorithm: "zstd" | "gzip" | "br" | "deflate";
   /** The header's compressor id for a payload compressed with it. */
   compressor: number;
   /** Builds a payload decoding to this many MiB. */
   build: (mib: number) => Uint8Array | Promise<Uint8Array>;
+  /** How a read under a cap of 64 KiB to 1 MiB refuses it. */
+  refusal: BombRefusal;
 }
 
-/** Every built-in compressor, with the bomb builder for each. */
+/** Every built-in compressor's bombs, zstd's in each shape its proof has to refuse. */
 export const BOMBS: BombKind[] = [
-  { algorithm: "zstd", compressor: COMPRESSOR_IDS.zstd, build: zstdBomb },
-  { algorithm: "gzip", compressor: COMPRESSOR_IDS.gzip, build: gzipBomb },
-  { algorithm: "br", compressor: COMPRESSOR_IDS.br, build: brBomb },
   {
+    name: "zstd",
+    algorithm: "zstd",
+    compressor: COMPRESSOR_IDS.zstd,
+    build: zstdBomb,
+    refusal: "declared",
+  },
+  {
+    name: "zstd-unsized",
+    algorithm: "zstd",
+    compressor: COMPRESSOR_IDS.zstd,
+    build: zstdUnsizedBomb,
+    refusal: "limit",
+  },
+  {
+    name: "zstd-lying",
+    algorithm: "zstd",
+    compressor: COMPRESSOR_IDS.zstd,
+    build: zstdLyingBomb,
+    refusal: "native",
+  },
+  {
+    name: "zstd-lying-tail",
+    algorithm: "zstd",
+    compressor: COMPRESSOR_IDS.zstd,
+    build: zstdLyingTailBomb,
+    refusal: "native",
+  },
+  {
+    name: "zstd-skippable",
+    algorithm: "zstd",
+    compressor: COMPRESSOR_IDS.zstd,
+    build: zstdSkippableBomb,
+    refusal: "limit",
+  },
+  {
+    name: "zstd-overdeclared",
+    algorithm: "zstd",
+    compressor: COMPRESSOR_IDS.zstd,
+    build: zstdOverdeclaredBomb,
+    refusal: "declared",
+  },
+  {
+    name: "gzip",
+    algorithm: "gzip",
+    compressor: COMPRESSOR_IDS.gzip,
+    build: gzipBomb,
+    refusal: "limit",
+  },
+  {
+    name: "br",
+    algorithm: "br",
+    compressor: COMPRESSOR_IDS.br,
+    build: brBomb,
+    refusal: "limit",
+  },
+  {
+    name: "deflate",
     algorithm: "deflate",
     compressor: COMPRESSOR_IDS.deflate,
     build: deflateBomb,
+    refusal: "limit",
   },
 ];
+
+/** The error `cause`'s code each refusal carries (`undefined`: no cause). */
+export const REFUSAL_CAUSE: Readonly<Record<BombRefusal, string | undefined>> =
+  {
+    limit: "ERR_BUFFER_TOO_LARGE",
+    declared: undefined,
+    native: "ERR_ZSTD",
+  };
