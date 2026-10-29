@@ -91,6 +91,7 @@ export type {
   AzureBlobConnection,
   AzureBlobDriverOptions,
 } from "./drivers/azure";
+export type { AzureTokenCredential } from "./drivers/azure-auth";
 export { cloudflareKvDriver } from "./drivers/cloudflare-kv";
 export type { CloudflareKvDriverOptions } from "./drivers/cloudflare-kv";
 export { cloudflareD1Driver } from "./drivers/cloudflare-d1";

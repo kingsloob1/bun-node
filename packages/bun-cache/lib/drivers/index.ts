@@ -13,6 +13,7 @@ export { redisDriver } from "./redis";
 export type { RedisDriverOptions } from "./redis";
 export { azureBlobDriver } from "./azure";
 export type { AzureBlobConnection, AzureBlobDriverOptions } from "./azure";
+export type { AzureTokenCredential } from "./azure-auth";
 export { s3Driver } from "./s3";
 export type { S3DriverOptions } from "./s3";
 export { cloudflareKvDriver } from "./cloudflare-kv";

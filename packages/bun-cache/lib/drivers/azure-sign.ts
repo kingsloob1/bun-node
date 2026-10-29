@@ -1,22 +1,57 @@
 /**
- * Shared Key request signing for the Azure Blob Storage driver
+ * Request authorization for the Azure Blob Storage driver
  * (`azureBlobDriver`), over `fetch`: Bun has no Azure client, and the
- * driver takes no Azure SDK (the dependency policy). The string to sign is
- * the Blob service's for version 2009-09-19 and later ("Authorize with
- * Shared Key", Microsoft Learn): the verb, eleven standard headers (empty
- * when absent; `Content-Length` empty when zero), the `x-ms-*` headers
- * canonicalized, and the canonicalized resource — `/<account><path>`, then
- * each query parameter as `\n<name>:<value>`, names lower-cased and sorted,
- * values decoded. Against a path-style endpoint (Azurite,
- * `http://127.0.0.1:10000/<account>`) the account appears twice in the
- * resource, as the docs say it must.
+ * driver takes no Azure SDK (the dependency policy). Three ways, one per
+ * driver:
+ *
+ * - **Shared Key**: the string to sign is the Blob service's for version
+ *   2009-09-19 and later ("Authorize with Shared Key", Microsoft Learn): the
+ *   verb, eleven standard headers (empty when absent; `Content-Length` empty
+ *   when zero), the `x-ms-*` headers canonicalized, and the canonicalized
+ *   resource — `/<account><path>`, then each query parameter as
+ *   `\n<name>:<value>`, names lower-cased and sorted, values decoded.
+ *   Against a path-style endpoint (Azurite,
+ *   `http://127.0.0.1:10000/<account>`) the account appears twice in the
+ *   resource, as the docs say it must.
+ * - **A SAS**: its query is appended, as given, to every request's own
+ *   query; nothing is signed here.
+ * - **A bearer token** (Microsoft Entra ID, `azure-auth.ts`):
+ *   `Authorization: Bearer <token>`, which needs `x-ms-version` 2017-11-09
+ *   or later ({@link AZURE_API_VERSION} is). A request the service refuses
+ *   as unauthenticated (401, or Azurite's 403 `AuthenticationFailed`) is
+ *   resent once with a renewed token, when there is one: the refusal means
+ *   nothing was applied, so the resend cannot apply a write twice.
  */
 import { Buffer } from "node:buffer";
+import type { AzureBearerSource } from "./azure-auth";
 
-/** The Blob service REST version every request asks for (`x-ms-version`); Azurite 3.37.0 accepts it (measured). */
+/** The Blob service REST version every request asks for (`x-ms-version`); Azurite 3.37.0 accepts it (measured). Bearer tokens need 2017-11-09 or later. */
 export const AZURE_API_VERSION = "2025-01-05";
 
-/** The account, its key, and the blob container a signed request goes to. */
+/** How a request is authorized: one of Shared Key, a SAS or a bearer token. */
+export type AzureAuthorization =
+  | {
+      /** Shared Key: every request signed with the account key. */
+      type: "shared-key";
+      /** The storage account's name. */
+      account: string;
+      /** The account key, base64, as the portal shows it. */
+      key: string;
+    }
+  | {
+      /** A shared access signature, appended to every request's query. */
+      type: "sas";
+      /** The SAS query, with no leading `?`, exactly as given (still percent-encoded). */
+      query: string;
+    }
+  | {
+      /** A Microsoft Entra ID bearer token on every request. */
+      type: "bearer";
+      /** Where the tokens come from. */
+      source: AzureBearerSource;
+    };
+
+/** The blob container a request goes to, and how it is authorized. */
 export interface AzureSigningTarget {
   /**
    * The blob endpoint, `scheme://host[:port][/path]`, with no trailing `/`:
@@ -24,12 +59,18 @@ export interface AzureSigningTarget {
    * such as Azurite's `http://127.0.0.1:10000/devstoreaccount1`.
    */
   endpoint: string;
+  /** The blob container. */
+  container: string;
+  /** How every request is authorized. */
+  auth: AzureAuthorization;
+}
+
+/** The account and key a Shared Key signature is made with. */
+export interface AzureSharedKey {
   /** The storage account's name. */
   account: string;
   /** The account key, base64, as the portal shows it. */
   key: string;
-  /** The blob container. */
-  container: string;
 }
 
 /** One request to sign. */
@@ -129,18 +170,10 @@ export function azureStringToSign(
  * (`SharedKey <account>:<base64 HMAC-SHA256>`).
  */
 export function signAzureRequest(
-  /** The account and its key. */ target: Pick<
-    AzureSigningTarget,
-    "account" | "key"
-  >,
+  /** The account and its key. */ target: AzureSharedKey,
   /** The request. */ input: AzureSignInput,
 ): Record<string, string> {
-  const headers: Record<string, string> = {};
-  for (const [name, value] of Object.entries(input.headers ?? {})) {
-    headers[name.toLowerCase()] = value;
-  }
-  headers["x-ms-date"] = (input.date ?? new Date()).toUTCString();
-  headers["x-ms-version"] ??= AZURE_API_VERSION;
+  const headers = baseHeaders(input.headers, input.date);
   const signer = new Bun.CryptoHasher(
     "sha256",
     Buffer.from(target.key, "base64"),
@@ -150,6 +183,37 @@ export function signAzureRequest(
     ...headers,
     authorization: `SharedKey ${target.account}:${signer.digest("base64")}`,
   };
+}
+
+/** The headers every request sends: those given, lower-cased, plus `x-ms-date` and `x-ms-version` (unless given). */
+function baseHeaders(
+  /** The caller's headers, any case. */ given: Record<string, string> = {},
+  /** The request time; now by default. */ date: Date = new Date(),
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(given)) {
+    headers[name.toLowerCase()] = value;
+  }
+  headers["x-ms-date"] = date.toUTCString();
+  headers["x-ms-version"] ??= AZURE_API_VERSION;
+  return headers;
+}
+
+/** Appends a SAS query (no leading `?`, still encoded) to a URL's own query, as given. */
+export function appendSas(
+  /** The request's URL. */ url: URL,
+  /** The SAS query. */ sas: string,
+): void {
+  url.search = url.search === "" ? `?${sas}` : `${url.search}&${sas}`;
+}
+
+/** Whether the service refused a request as unauthenticated: 401, or the 403 `AuthenticationFailed` Azurite answers for a bad bearer token. */
+export function isTokenRefused(/** The answer. */ response: Response): boolean {
+  return (
+    response.status === 401 ||
+    (response.status === 403 &&
+      response.headers.get("x-ms-error-code") === "AuthenticationFailed")
+  );
 }
 
 /** The URL of one blob (or, with `blob` empty, of the container), its path encoded, with an optional query. */
@@ -170,13 +234,15 @@ export function azureBlobUrl(
 }
 
 /**
- * Sends a signed request to one blob (or the container, `blob: ""`) and
- * answers the response. A body is sent as bytes, so `fetch` adds no
- * `Content-Type` the signature did not cover. Throws only what `fetch`
- * throws; the status is the caller's to read.
+ * Sends an authorized request to one blob (or the container, `blob: ""`)
+ * and answers the response: signed with Shared Key, the SAS appended, or a
+ * bearer token sent — and, for a token the service refuses, resent once
+ * with a renewed one. A body is sent as bytes, so `fetch` adds no
+ * `Content-Type` a signature did not cover. Throws only what `fetch` (or a
+ * token source) throws; the status is the caller's to read.
  */
 export async function azureFetch(
-  /** Where, and with which key. */ target: AzureSigningTarget,
+  /** Where, and how it is authorized. */ target: AzureSigningTarget,
   /** The request. */ request: {
     /** The HTTP method. */
     method: string;
@@ -193,16 +259,43 @@ export async function azureFetch(
   },
 ): Promise<Response> {
   const url = azureBlobUrl(target, request.blob, request.query);
-  const headers = signAzureRequest(target, {
-    method: request.method,
-    url,
-    headers: request.headers,
-    contentLength: request.body?.byteLength ?? 0,
+  const send = async (headers: Record<string, string>): Promise<Response> =>
+    await fetch(url, {
+      method: request.method,
+      headers,
+      body: request.body,
+      signal: request.signal,
+    });
+  const auth = target.auth;
+  if (auth.type === "shared-key") {
+    return await send(
+      signAzureRequest(auth, {
+        method: request.method,
+        url,
+        headers: request.headers,
+        contentLength: request.body?.byteLength ?? 0,
+      }),
+    );
+  }
+  if (auth.type === "sas") {
+    appendSas(url, auth.query);
+    return await send(baseHeaders(request.headers));
+  }
+  const token = await auth.source.token();
+  const response = await send({
+    ...baseHeaders(request.headers),
+    authorization: `Bearer ${token}`,
   });
-  return await fetch(url, {
-    method: request.method,
-    headers,
-    body: request.body,
-    signal: request.signal,
+  if (!isTokenRefused(response)) {
+    return response;
+  }
+  const renewed = await auth.source.renew(token);
+  if (renewed === undefined) {
+    return response;
+  }
+  await response.body?.cancel();
+  return await send({
+    ...baseHeaders(request.headers),
+    authorization: `Bearer ${renewed}`,
   });
 }

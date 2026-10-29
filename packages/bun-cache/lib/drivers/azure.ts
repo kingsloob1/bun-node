@@ -1,9 +1,11 @@
 /**
  * The Azure Blob Storage driver (`azureBlobDriver`, plan Status of
- * 2026-10-27), over `fetch` with its own Shared Key signing
- * (`azure-sign.ts`): Bun has no Azure client, and the driver takes no Azure
- * SDK. Measured against Azurite 3.37.0 (`evidence/azure-spike.md`); real Azure
- * is untested.
+ * 2026-10-27), over `fetch` with its own request authorization
+ * (`azure-sign.ts`, `azure-auth.ts`) — Shared Key, a SAS, or a Microsoft
+ * Entra ID bearer token, exactly one per driver: Bun has no Azure client, and
+ * the driver takes no Azure SDK. Measured against Azurite 3.37.0
+ * (`evidence/azure-spike.md`; bearer tokens against an HTTPS Azurite with
+ * `--oauth basic`); real Azure is untested.
  *
  * **Layout** — the S3 driver's (`s3.ts`), one block blob per object, in one
  * blob container (`<p>` is the prefix, `bun-cache` by default):
@@ -51,7 +53,9 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
-import type { AzureSigningTarget } from "./azure-sign";
+import type { AzureTokenCredential } from "./azure-auth";
+import { CredentialTokenSource, StaticTokenSource } from "./azure-auth";
+import type { AzureAuthorization, AzureSigningTarget } from "./azure-sign";
 import { azureFetch } from "./azure-sign";
 import type { LockBody, PendingIncrement, StampBody } from "./blob-frame";
 import {
@@ -86,21 +90,58 @@ const DEVELOPMENT_ACCOUNT = "devstoreaccount1";
 const DEVELOPMENT_KEY =
   "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 
-/** Where the blob container is and how to sign for it: fields, or Azure's own connection string. */
+/**
+ * Where the blob container is and how to authorize: fields, or Azure's own
+ * connection string. Exactly one way to authorize, across the url, these
+ * fields and the connection string: `accountKey` (Shared Key), `sasToken`,
+ * `credential` or `token` — two are a `TypeError` naming both.
+ */
 export interface AzureBlobConnection {
   /**
    * Azure's connection string, as the portal shows it:
    * `DefaultEndpointsProtocol=https;AccountName=…;AccountKey=…;EndpointSuffix=core.windows.net`,
-   * or with `BlobEndpoint=…` instead of the protocol and suffix, or
-   * `UseDevelopmentStorage=true` for Azurite on 127.0.0.1:10000. Shared Key
-   * only: a `SharedAccessSignature` is refused. It names no blob container,
-   * so `container` is still needed. The fields below win over it.
+   * or with `BlobEndpoint=…` instead of the protocol and suffix,
+   * `BlobEndpoint=…;SharedAccessSignature=…` for a SAS, or
+   * `UseDevelopmentStorage=true` for Azurite on 127.0.0.1:10000. It names no
+   * blob container, so `container` is still needed. The fields below win over
+   * it.
    */
   connectionString?: string;
-  /** The storage account's name. */
+  /** The storage account's name. Needed for Shared Key, and for the default `endpoint`; not otherwise. */
   accountName?: string;
-  /** The account key, base64, as the portal shows it. */
+  /** The account key, base64, as the portal shows it: Shared Key, every request signed with it. */
   accountKey?: string;
+  /**
+   * A shared access signature (an account SAS or a container SAS), the query
+   * the portal or `generateSasUrl` gives: `sv=…&ss=b&srt=co&sp=rwdl&se=…&sig=…`,
+   * a leading `?` allowed, still percent-encoded. It is appended to every
+   * request, and no account key is needed or used. It must grant read,
+   * write, delete and list (`sp=rwdl`; an account SAS also `ss=b` and
+   * `srt=co`), and the driver does not renew it: when it expires, requests
+   * fail with 403.
+   */
+  sasToken?: string;
+  /**
+   * A Microsoft Entra ID credential — `new DefaultAzureCredential()` from
+   * `@azure/identity`, or anything with its `getToken` — asked for
+   * `https://storage.azure.com/.default`. Its token is cached until 5
+   * minutes before it expires (half its life, for one shorter than 10
+   * minutes, or the credential's `refreshAfterTimestamp` when earlier), one
+   * `getToken` at a time however many requests wait, and asked for again
+   * when the service refuses it (the request is then resent once). The
+   * identity needs a data role on the container, such as Storage Blob Data
+   * Contributor. Azure takes bearer tokens over HTTPS only.
+   */
+  credential?: AzureTokenCredential;
+  /**
+   * A raw Microsoft Entra ID access token for Azure Storage, without
+   * `Bearer `: a string sent as is (it is never renewed), or a function
+   * answering one (or a promise of one), asked on **every request** — the
+   * application owns its caching and refresh. When the service refuses a
+   * token (401), the function is asked once more and the request resent if
+   * it answers a different token. Azure takes bearer tokens over HTTPS only.
+   */
+  token?: string | (() => string | Promise<string>);
   /**
    * The blob endpoint, `scheme://host[:port][/path]`. Defaults to
    * `https://<accountName>.blob.core.windows.net`. A path-style emulator
@@ -121,7 +162,12 @@ export interface AzureBlobDriverOptions {
    * Azure `azure://acct:KEY@acct.blob.core.windows.net/cache`, on Azurite
    * `azure://devstoreaccount1:KEY@127.0.0.1:10000/devstoreaccount1/cache?scheme=http`.
    * The name and key are percent-decoded, so a key's `/`, `+` and `=` are
-   * written `%2F`, `%2B`, `%3D`. Wins over the same fields of `connection`.
+   * written `%2F`, `%2B`, `%3D`. With a SAS instead of a key, the SAS is the
+   * query and there is no key: `azure://acct.blob.core.windows.net/cache?sv=…&sig=…`
+   * (every parameter but `scheme` is the SAS's, kept as written; a query
+   * with no `sig` is refused). For a `credential` or a `token`, give the
+   * url with no key and the credential in `connection`. Wins over the same
+   * fields of `connection`.
    */
   url?: string;
   /** The account, key, endpoint and container as fields, or Azure's connection string. */
@@ -219,9 +265,29 @@ export function parseBlobList(xml: string): {
   return { blobs, next: next === "" ? undefined : next };
 }
 
-/** A failed request's description: its status and Azure's error code. */
-function failure(response: Response): string {
-  return `${response.status} ${response.headers.get("x-ms-error-code") ?? ""}`.trim();
+/**
+ * A failed request's description: its status and Azure's error code, and,
+ * for a refusal the way the driver authorizes can explain, what to check.
+ */
+function failure(
+  /** The answer. */ response: Response,
+  /** How the request was authorized. */ auth: AzureAuthorization["type"],
+): string {
+  const code = response.headers.get("x-ms-error-code") ?? "";
+  const status = `${response.status} ${code}`.trim();
+  if (response.status !== 401 && response.status !== 403) {
+    return status;
+  }
+  if (auth === "sas") {
+    return `${status} (the SAS must grant read, write, delete and list — sp=rwdl, and for an account SAS ss=b and srt=co — on this container, and be within its start and expiry)`;
+  }
+  if (auth === "bearer") {
+    return code === "AuthorizationPermissionMismatch" ||
+      code === "AuthorizationFailure"
+      ? `${status} (the identity needs a data role on the container, such as Storage Blob Data Contributor)`
+      : `${status} (the bearer token was refused: it must be a Microsoft Entra ID token for https://storage.azure.com/.default, unexpired, sent over HTTPS)`;
+  }
+  return status;
 }
 
 /** Whether a conditional write lost its race: 412 `ConditionNotMet`, or 409 `BlobAlreadyExists` for a create-only one. */
@@ -255,6 +321,18 @@ export function parseAzureUrl(url: string): AzureBlobConnection {
       "azureBlobDriver: url must be azure://<accountName>:<accountKey>@<host>[:<port>][/<path>]/<container>",
     );
   }
+  // The query is the SAS's, but for `scheme`: kept exactly as written, since
+  // re-encoding it would change the signature it carries (a `+` is not `%2B`).
+  const sas = parsed.search
+    .slice(1)
+    .split("&")
+    .filter((part) => part !== "" && part.split("=")[0] !== "scheme")
+    .join("&");
+  if (sas !== "" && !new URLSearchParams(sas).has("sig")) {
+    throw new TypeError(
+      `azureBlobDriver: the url's query holds ${[...new URLSearchParams(sas).keys()].join(", ")} but no sig: its only parameters are scheme and a SAS's (sv=…&sig=…)`,
+    );
+  }
   const scheme = parsed.searchParams.get("scheme") ?? "https";
   if (scheme !== "https" && scheme !== "http") {
     throw new TypeError(
@@ -271,12 +349,17 @@ export function parseAzureUrl(url: string): AzureBlobConnection {
   if (parsed.password !== "") {
     out.accountKey = decodeURIComponent(parsed.password);
   }
+  if (sas !== "") {
+    out.sasToken = sas;
+  }
   return out;
 }
 
 /**
- * Reads Azure's connection string into connection fields (Shared Key only).
- * Keys are case-insensitive; a value may hold `=` (a base64 key does).
+ * Reads Azure's connection string into connection fields: Shared Key
+ * (`AccountKey`), or a SAS (`SharedAccessSignature`, with a `BlobEndpoint`).
+ * Keys are case-insensitive; a value may hold `=` (a base64 key and a SAS
+ * do).
  */
 export function parseConnectionString(text: string): AzureBlobConnection {
   const fields = new Map<string, string>();
@@ -293,11 +376,6 @@ export function parseConnectionString(text: string): AzureBlobConnection {
     fields.set(
       part.slice(0, at).trim().toLowerCase(),
       part.slice(at + 1).trim(),
-    );
-  }
-  if (fields.has("sharedaccesssignature")) {
-    throw new TypeError(
-      "azureBlobDriver: a SharedAccessSignature connection string is not supported; use one with AccountName and AccountKey (Shared Key)",
     );
   }
   if (fields.get("usedevelopmentstorage")?.toLowerCase() === "true") {
@@ -317,6 +395,10 @@ export function parseConnectionString(text: string): AzureBlobConnection {
   if (key !== undefined) {
     out.accountKey = key;
   }
+  const sas = fields.get("sharedaccesssignature");
+  if (sas !== undefined) {
+    out.sasToken = sas;
+  }
   const blobEndpoint = fields.get("blobendpoint");
   if (blobEndpoint !== undefined) {
     out.endpoint = blobEndpoint;
@@ -328,13 +410,17 @@ export function parseConnectionString(text: string): AzureBlobConnection {
   return out;
 }
 
+/** The four ways to authorize, by the connection field that selects each. */
+const AUTH_FIELDS = ["accountKey", "sasToken", "credential", "token"] as const;
+
 /**
- * The signing target from the options: the URL over the connection's fields
- * over its connection string, then the endpoint's default. Throws a
- * `TypeError` naming what is missing or wrong.
+ * The request target from the options: the URL over the connection's fields
+ * over its connection string, field by field, then the endpoint's default;
+ * and exactly one way to authorize among them. Throws a `TypeError` naming
+ * what is missing, wrong, or given twice.
  */
 export function resolveAzureTarget(
-  options: Pick<AzureBlobDriverOptions, "url" | "connection">,
+  options: Pick<AzureBlobDriverOptions, "url" | "connection" | "now">,
 ): AzureSigningTarget {
   if (options.url === undefined && options.connection === undefined) {
     throw new TypeError(
@@ -342,30 +428,53 @@ export function resolveAzureTarget(
     );
   }
   const { connectionString, ...fields } = options.connection ?? {};
-  const merged: AzureBlobConnection = {
-    ...(connectionString === undefined
-      ? {}
-      : parseConnectionString(connectionString)),
-    ...Object.fromEntries(
-      Object.entries(fields).filter(([, value]) => value !== undefined),
-    ),
-    ...(options.url === undefined ? {} : parseAzureUrl(options.url)),
-  };
-  const missing = (["accountName", "accountKey", "container"] as const).filter(
-    (field) => merged[field] === undefined || merged[field] === "",
-  );
-  if (missing.length > 0) {
+  const layers: [string, AzureBlobConnection][] = [
+    [
+      "the connection string",
+      connectionString === undefined
+        ? {}
+        : parseConnectionString(connectionString),
+    ],
+    [
+      "the connection's fields",
+      Object.fromEntries(
+        Object.entries(fields).filter(([, value]) => value !== undefined),
+      ),
+    ],
+    ["the url", options.url === undefined ? {} : parseAzureUrl(options.url)],
+  ];
+  const merged: AzureBlobConnection = Object.assign(
+    {},
+    ...layers.map(([, layer]) => layer),
+  ) as AzureBlobConnection;
+  if (merged.container === undefined || merged.container === "") {
     throw new TypeError(
-      `azureBlobDriver: no ${missing.join(", ")} (from the url, the connection's fields or its connectionString)`,
+      "azureBlobDriver: no container (from the url, the connection's fields or its connectionString)",
     );
   }
-  const key = merged.accountKey!;
+  const given = AUTH_FIELDS.flatMap((field) => {
+    const from = layers
+      .filter(([, layer]) => layer[field] !== undefined)
+      .map(([source]) => source);
+    return from.length === 0 ? [] : [`${field} (from ${from.join(", ")})`];
+  });
+  if (given.length === 0) {
+    throw new TypeError(
+      "azureBlobDriver: no way to authorize: give an accountKey (Shared Key), a sasToken, a credential or a token",
+    );
+  }
+  if (given.length > 1) {
+    throw new TypeError(
+      `azureBlobDriver: give exactly one way to authorize (accountKey, sasToken, credential or token), not ${given.join(" and ")}`,
+    );
+  }
+  const auth = resolveAuthorization(merged, options.now);
   if (
-    !/^[a-z0-9+/]+={0,2}$/i.test(key) ||
-    Buffer.from(key, "base64").length === 0
+    merged.endpoint === undefined &&
+    (merged.accountName === undefined || merged.accountName === "")
   ) {
     throw new TypeError(
-      "azureBlobDriver: accountKey must be the account's base64 key (in a url, percent-encode its /, + and =)",
+      "azureBlobDriver: no endpoint or accountName (the endpoint defaults to https://<accountName>.blob.core.windows.net)",
     );
   }
   const endpoint = (
@@ -376,12 +485,62 @@ export function resolveAzureTarget(
       `azureBlobDriver: endpoint must be http(s)://host[:port][/path]; got ${JSON.stringify(endpoint)}`,
     );
   }
-  return {
-    endpoint,
-    account: merged.accountName!,
-    key,
-    container: merged.container!,
-  };
+  return { endpoint, container: merged.container, auth };
+}
+
+/** The one way to authorize the merged connection gives, checked. */
+function resolveAuthorization(
+  /** The merged connection, with exactly one of the auth fields set. */ merged: AzureBlobConnection,
+  /** The clock for a credential's token cache. */ now:
+    (() => number) | undefined,
+): AzureAuthorization {
+  if (merged.accountKey !== undefined) {
+    if (merged.accountName === undefined || merged.accountName === "") {
+      throw new TypeError(
+        "azureBlobDriver: no accountName for Shared Key (from the url, the connection's fields or its connectionString)",
+      );
+    }
+    const key = merged.accountKey;
+    if (
+      !/^[a-z0-9+/]+={0,2}$/i.test(key) ||
+      Buffer.from(key, "base64").length === 0
+    ) {
+      throw new TypeError(
+        "azureBlobDriver: accountKey must be the account's base64 key (in a url, percent-encode its /, + and =)",
+      );
+    }
+    return { type: "shared-key", account: merged.accountName, key };
+  }
+  if (merged.sasToken !== undefined) {
+    const query =
+      typeof merged.sasToken === "string"
+        ? merged.sasToken.trim().replace(/^\?/, "")
+        : "";
+    if (!new URLSearchParams(query).has("sig")) {
+      throw new TypeError(
+        "azureBlobDriver: sasToken must be a SAS query with its signature (sv=…&sig=…)",
+      );
+    }
+    return { type: "sas", query };
+  }
+  if (merged.credential !== undefined) {
+    if (typeof merged.credential.getToken !== "function") {
+      throw new TypeError(
+        "azureBlobDriver: credential must have a getToken(scopes) method (an @azure/identity credential)",
+      );
+    }
+    return {
+      type: "bearer",
+      source: new CredentialTokenSource(merged.credential, now),
+    };
+  }
+  const token = merged.token;
+  if (typeof token !== "string" && typeof token !== "function") {
+    throw new TypeError(
+      "azureBlobDriver: token must be a string or a function answering one",
+    );
+  }
+  return { type: "bearer", source: new StaticTokenSource(token) };
 }
 
 /** The Azure Blob Storage driver. See the module header and {@link AzureBlobDriverOptions}. */
@@ -404,7 +563,7 @@ export class AzureBlobCacheDriver implements CacheDriver {
   /** The blob-name prefix, as resolved. Internal; read by the tests. */
   readonly prefix: string;
 
-  /** The account, key, endpoint and container every request signs for. Internal; read by the tests. */
+  /** The endpoint, container and authorization every request uses. Internal; read by the tests. */
   readonly target: AzureSigningTarget;
 
   /** The `maxEntries` cap; `undefined` for none. */
@@ -533,7 +692,7 @@ export class AzureBlobCacheDriver implements CacheDriver {
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(
-        `azureBlobDriver: listing the container ${this.target.container} at ${this.target.endpoint} answered ${failure(response)}`,
+        `azureBlobDriver: listing the container ${this.target.container} at ${this.target.endpoint} answered ${failure(response, this.target.auth.type)}`,
       );
     }
     return parseBlobList(await response.text());
@@ -554,7 +713,7 @@ export class AzureBlobCacheDriver implements CacheDriver {
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(
-        `azureBlobDriver: GET ${path} answered ${failure(response)}`,
+        `azureBlobDriver: GET ${path} answered ${failure(response, this.target.auth.type)}`,
       );
     }
     const etag = response.headers.get("etag");
@@ -599,7 +758,7 @@ export class AzureBlobCacheDriver implements CacheDriver {
       return false;
     }
     throw new Error(
-      `azureBlobDriver: PUT ${path} answered ${failure(response)}`,
+      `azureBlobDriver: PUT ${path} answered ${failure(response, this.target.auth.type)}`,
     );
   }
 
@@ -618,7 +777,7 @@ export class AzureBlobCacheDriver implements CacheDriver {
       return false;
     }
     throw new Error(
-      `azureBlobDriver: DELETE ${path} answered ${failure(response)}`,
+      `azureBlobDriver: DELETE ${path} answered ${failure(response, this.target.auth.type)}`,
     );
   }
 

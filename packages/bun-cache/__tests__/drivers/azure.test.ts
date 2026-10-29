@@ -232,7 +232,7 @@ describe("azureBlobDriver options", () => {
     expect(() => parseAzureUrl("not a url")).toThrow("not a URL");
   });
 
-  test("parseConnectionString: Azure's forms, keys in any case, a key's = kept, SAS refused", () => {
+  test("parseConnectionString: Azure's forms, keys in any case, a key's = kept, a SAS read", () => {
     expect(
       parseConnectionString(
         "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=a2V5==;EndpointSuffix=core.chinacloudapi.cn",
@@ -256,11 +256,14 @@ describe("azureBlobDriver options", () => {
       accountKey: DEV_KEY,
       endpoint: "http://127.0.0.1:10000/devstoreaccount1",
     });
-    expect(() =>
+    expect(
       parseConnectionString(
-        "BlobEndpoint=https://h;SharedAccessSignature=sv=1",
+        "BlobEndpoint=https://h;SharedAccessSignature=sv=2022-11-02&sp=rwdl&sig=a%2Bb%3D",
       ),
-    ).toThrow("SharedAccessSignature");
+    ).toEqual({
+      endpoint: "https://h",
+      sasToken: "sv=2022-11-02&sp=rwdl&sig=a%2Bb%3D",
+    });
     expect(() => parseConnectionString("AccountName")).toThrow("name=value");
   });
 
@@ -275,9 +278,8 @@ describe("azureBlobDriver options", () => {
     });
     expect(target).toEqual({
       endpoint: "https://h.example",
-      account: "u",
-      key: "dXJs",
       container: "from-url",
+      auth: { type: "shared-key", account: "u", key: "dXJs" },
     });
     expect(
       resolveAzureTarget({
@@ -288,9 +290,8 @@ describe("azureBlobDriver options", () => {
       }),
     ).toEqual({
       endpoint: "https://cs.blob.core.windows.net",
-      account: "cs",
-      key: "Y3M=",
       container: "c",
+      auth: { type: "shared-key", account: "cs", key: "Y3M=" },
     });
     expect(() => resolveAzureTarget({})).toThrow("needs a url or a connection");
     expect(() =>
@@ -300,7 +301,12 @@ describe("azureBlobDriver options", () => {
     ).toThrow("no container");
     expect(() =>
       resolveAzureTarget({ connection: { container: "c" } }),
-    ).toThrow("no accountName, accountKey");
+    ).toThrow("no way to authorize");
+    expect(() =>
+      resolveAzureTarget({
+        connection: { accountKey: "a2V5", container: "c" },
+      }),
+    ).toThrow("no accountName for Shared Key");
     // A key whose "+" was decoded to a space (not percent-encoded): refused, named.
     expect(() => resolveAzureTarget({ url: "azure://a:k%20ey@h/c" })).toThrow(
       "base64 key",
@@ -393,6 +399,10 @@ async function registerAzureSuite(url: string): Promise<void> {
   ): AzureBlobCacheDriver =>
     new AzureBlobCacheDriver({ url, prefix: prefix(suffix), ...extra });
   const target = resolveAzureTarget({ url });
+  if (target.auth.type !== "shared-key") {
+    throw new TypeError(`${azure.variable} must carry the account key`);
+  }
+  const sharedKey = target.auth;
   /** Every blob under a driver's prefix, as the listing reports them. */
   const listed = async (driver: AzureBlobCacheDriver) => {
     const response = await azureFetch(target, {
@@ -843,7 +853,10 @@ async function registerAzureSuite(url: string): Promise<void> {
           where.searchParams.set("maxresults", "5");
           return await real(where, {
             ...init,
-            headers: signAzureRequest(target, { method: "GET", url: where }),
+            headers: signAzureRequest(sharedKey, {
+              method: "GET",
+              url: where,
+            }),
           });
         }
         return await real(input, init);
@@ -891,7 +904,7 @@ async function registerAzureSuite(url: string): Promise<void> {
     test("the store checks signatures, so the signing is proven: a wrong key is refused", async () => {
       const wrong = new AzureBlobCacheDriver({
         connection: {
-          accountName: target.account,
+          accountName: sharedKey.account,
           accountKey: Buffer.from("not-the-key").toString("base64"),
           endpoint: target.endpoint,
           container: target.container,
@@ -905,8 +918,8 @@ async function registerAzureSuite(url: string): Promise<void> {
     test("a missing blob container is named when connecting", async () => {
       const driver = new AzureBlobCacheDriver({
         connection: {
-          accountName: target.account,
-          accountKey: target.key,
+          accountName: sharedKey.account,
+          accountKey: sharedKey.key,
           endpoint: target.endpoint,
           container: `no-such-${process.pid}`,
         },

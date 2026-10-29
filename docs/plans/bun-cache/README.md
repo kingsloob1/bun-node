@@ -1052,7 +1052,7 @@ does, and where it departs from the S3 driver it mirrors:
   (`AzureBlobConnection`: `connectionString` — Azure's own, including
   `UseDevelopmentStorage=true`; SAS refused — `accountName`, `accountKey`,
   `endpoint`, `container`); the URL wins over the fields, which win over the
-  string. Shared Key only (SAS and Entra ID not built). The container must
+  string. Shared Key only at PR-C8 (SAS and Entra ID since built: below). The container must
   exist; `connect()` names a missing one.
 - **`setup-databases.ts`**: service `azure`, container-only, `bun-cache-azurite`
   on `127.0.0.1:10000`, `mcr.microsoft.com/azure-storage/azurite:3.37.0
@@ -1792,6 +1792,54 @@ in front can purge by the tags `invalidateTags()` takes. How it is built:
   emitted once, by the process that invalidated (not on bus receipt).
 - **Tests**: `__tests__/http/surrogate.test.ts`; 17 negative controls,
   each failing it (1–11 fails). Gate: see the PR.
+
+**Azure SAS and Entra ID built 2026-10-29** (branch
+`feat/bun-cache-azure-auth`, on develop `9f1930a6`; the names approved by
+the user 2026-10-29): `azureBlobDriver` authorizes with exactly one of
+Shared Key, a SAS, a `credential` or a `token`.
+
+- **SAS**: `connection.sasToken` (a leading `?` dropped), Azure's
+  `BlobEndpoint=…;SharedAccessSignature=…` connection string (no longer
+  refused), or the `azure://` url's query —
+  `azure://acct.blob.core.windows.net/cache?sv=…&sig=…`, no key; every
+  parameter but `scheme` is the SAS's, kept exactly as written, and a query
+  with no `sig` is refused. The SAS is appended to every request, nothing
+  signed, no account key needed or used. It needs `sp=rwdl` (an account SAS
+  also `ss=b`, `srt=co`); measured per letter on Azurite (below).
+- **Entra ID**: `connection.credential` (`AzureTokenCredential`, structurally
+  `@azure/core-auth`'s `TokenCredential` with no options parameter, so any
+  credential's options type fits; scope `https://storage.azure.com/.default`;
+  the token cached until 5 minutes before `expiresOnTimestamp` — half its
+  life when it lives under 10 minutes, or the credential's
+  `refreshAfterTimestamp` when earlier — single-flight, a failed refresh
+  keeping a still-valid token) and `connection.token` (a string never
+  renewed, or a function asked on every request). On a 401 — or Azurite's
+  403 `AuthenticationFailed`, its answer for the same refusal — the request is
+  resent once with a renewed token when there is a different one (a refusal
+  applied nothing, so the no-retries rule for conditional writes is kept).
+  `x-ms-version` stays 2025-01-05 (bearer needs 2017-11-09 or later).
+  `lib/drivers/azure-auth.ts` is new; `azure-sign.ts`'s target became
+  `{ endpoint, container, auth }`.
+- **Exactly one method**: two (from any of the url, the fields and the
+  connection string) are a `TypeError` naming both and their sources; the
+  same method twice is precedence as before. `accountName` is needed only for
+  Shared Key and the default endpoint. 401/403 errors say what to check (the
+  SAS's permissions and window, the token's audience and lifetime, the data
+  role).
+- **Tested** (`__tests__/drivers/azure-auth.test.ts`): option rules and the
+  token cache with a fake clock; the bearer path against a local fake Blob
+  service checking `Authorization: Bearer` and `x-ms-version`; on Azurite
+  (`BUN_CACHE_TEST_AZURE_URL`) the kit over an account SAS minted in the test
+  (`node:crypto`, the documented string to sign, sv 2022-11-02), a container
+  SAS and a SAS connection string, tampered and expired SASes refused, and
+  each of `r`, `w`, `d`, `l` shown needed (`c` creates but cannot replace);
+  on an HTTPS Azurite 3.37.0 with `--oauth basic` (a second container with a
+  self-signed certificate, run outside `setup-databases.ts`;
+  `BUN_CACHE_TEST_AZURE_OAUTH_URL`, skipped visibly when unset) the kit over a
+  `credential` and over a `token` with unsigned JWTs (Azurite checks `aud`,
+  `iss`, `iat`/`nbf`/`exp`, not signatures), and an expired token refused,
+  renewed and retried. `__tests__/azure.type-test.ts`: a copy of
+  `@azure/core-auth`'s and `@azure/identity`'s declarations is assignable.
 
 ### Contents
 
@@ -4167,6 +4215,7 @@ Every new public name.
 | `BUN_CACHE_TEST_CLOUDFLARE_{ACCOUNT_ID,API_TOKEN,KV_NAMESPACE_ID,D1_DATABASE_ID,PROXY_URL,PROXY_TOKEN}` | env variables | the opt-in live lanes | *approved by the user 2026-10-28* |
 | `BunCacheWorkerEnv`; `"cloudflare-kv"` | type; driver name | `./cloudflare-worker`; `cloudflareKvDriver` | *built in PR-C10, approved by the user 2026-10-28*: the Worker's `env` (its secret and bindings), and the driver's `name`, after `"s3"` |
 | `"cloudflare-d1"` | driver name | `cloudflareD1Driver` | *built in PR-C11, awaiting approval*: the driver's `name`, after `"cloudflare-kv"` |
+| `sasToken`, `credential`, `token`; `AzureTokenCredential` | options; type | `AzureBlobConnection`; root | *approved by the user 2026-10-29, built 2026-10-29*: a SAS, a Microsoft Entra ID credential (structurally `@azure/core-auth`'s `TokenCredential`) and a raw bearer token; exactly one way to authorize |
 
 ---
 
