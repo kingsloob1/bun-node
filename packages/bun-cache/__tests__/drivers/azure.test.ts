@@ -34,7 +34,12 @@ import {
 } from "../../lib/drivers/azure-sign";
 import { parseContentType } from "../../lib/drivers/blob-frame";
 import { runCacheDriverConformance } from "../../lib/testing/index";
-import { azureBackend, azureReachError, deleteAzurePrefix } from "./backends";
+import {
+  azureBackend,
+  azureRawDump,
+  azureReachError,
+  deleteAzurePrefix,
+} from "./backends";
 import { reportNotConfigured, reportUnreachable } from "./sqlSuite";
 
 /** Azurite's published development key (not a secret). */
@@ -437,7 +442,10 @@ async function registerAzureSuite(url: string): Promise<void> {
   const kitOptions = { url, prefix: prefix("kit") };
   await runCacheDriverConformance(
     "azure-blob",
-    () => ({ driver: azureBlobDriver(kitOptions) }),
+    () => ({
+      driver: azureBlobDriver(kitOptions),
+      rawDump: async () => await azureRawDump(url, kitOptions.prefix),
+    }),
     {
       crossProcess: {
         module: new URL("../../lib/drivers/azure.ts", import.meta.url).pathname,

@@ -21,6 +21,7 @@ import {
   reachError,
   runPrefix,
   sqlBackends,
+  sqlRawDump,
 } from "./backends";
 
 /**
@@ -150,7 +151,11 @@ export async function registerSqlSuite(
   await kitDriver.connect!();
   await runCacheDriverConformance(
     name,
-    () => ({ driver: kitDriver, cleanup: async () => await kitDriver.close() }),
+    () => ({
+      driver: kitDriver,
+      cleanup: async () => await kitDriver.close(),
+      rawDump: async () => await sqlRawDump(backend, kitOptions.prefix),
+    }),
     {
       crossProcess: {
         module: backend.module,

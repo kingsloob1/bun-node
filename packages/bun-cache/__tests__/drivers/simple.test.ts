@@ -38,5 +38,10 @@ await runCacheDriverConformance("fromSimpleDriver over a Map", () => {
       return Promise.resolve();
     },
   });
-  return { driver };
+  return {
+    driver,
+    // The Map is the whole store: its keys, and each entry's bytes and tags.
+    rawDump: () =>
+      [...map].flatMap(([key, entry]) => [key, entry.value, ...entry.tags]),
+  };
 });

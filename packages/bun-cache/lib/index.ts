@@ -48,6 +48,7 @@ export type {
   CacheLoaderContext,
   CacheLoadDurations,
   CacheLockOptions,
+  CacheNameContext,
   CachePatternKey,
   CacheSchema,
   CacheSchemaFrom,

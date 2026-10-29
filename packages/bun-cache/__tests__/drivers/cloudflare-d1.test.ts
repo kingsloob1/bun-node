@@ -81,7 +81,15 @@ const kitOptions: CloudflareD1DriverOptions = {
 
 await runCacheDriverConformance(
   "cloudflare-d1",
-  () => ({ driver: cloudflareD1Driver(kitOptions) }),
+  () => ({
+    driver: cloudflareD1Driver(kitOptions),
+    rawDump: async () =>
+      await local.rawD1(
+        ["entries", "tags", "stamps", "locks"].map(
+          (table) => `${kitOptions.prefix}${table}`,
+        ),
+      ),
+  }),
   {
     crossProcess: {
       module: new URL("../../lib/drivers/cloudflare-d1.ts", import.meta.url)

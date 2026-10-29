@@ -37,7 +37,9 @@ import type {
 import type { Observable } from "rxjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Buffer } from "node:buffer";
 import { memoryDriver } from "@kingsleyweb/bun-cache";
+import { memoryDriverDump } from "@kingsleyweb/bun-cache/lib/drivers/memory";
 import { addCacheTags } from "@kingsleyweb/bun-cache/http";
 import {
   Controller,
@@ -1281,5 +1283,55 @@ describe("BunCacheInterceptor: other contexts", () => {
     }
     expect(message).toContain("needs @kingsleyweb/bun-nest's BunHttpAdapter");
     expect(message).toContain("SomeController.route");
+  });
+});
+
+/* ---- a hashed, encrypted cache ---------------------------------------- */
+
+@Controller("hashed")
+class HashedController {
+  @UseInterceptors(BunCacheInterceptor)
+  @CacheTTL(60_000)
+  @CacheTags("statement-secret")
+  @Get("statement")
+  statement(@Query("account") account?: string) {
+    return { n: count("statement"), account: account ?? null };
+  }
+}
+
+describe("BunCacheInterceptor: on a hashed, encrypted cache (encrypt.hashNames)", () => {
+  it("hits, misses and tag invalidation work, and no path, query, tag or body reaches the store in clear", async () => {
+    const driver = memoryDriver();
+    const { adapter, cache } = await boot([HashedController], {
+      driver,
+      cache: {
+        encrypt: {
+          keys: [{ id: "k1", key: new Uint8Array(32).fill(1) }],
+          hashNames: { key: new Uint8Array(32).fill(2) },
+        },
+      },
+    });
+    const path = "/hashed/statement?account=acct-secret-4242";
+    const first = await get(adapter, path);
+    expect(first.xCache).toBe("MISS");
+    await settle();
+    const second = await get(adapter, path);
+    expect(second.xCache).toBe("HIT");
+    expect(second.body).toBe(first.body);
+    expect(calls.statement).toBe(1);
+    const dump = memoryDriverDump(driver);
+    for (const secret of [
+      "/hashed/statement",
+      "acct-secret-4242",
+      "statement-secret",
+    ]) {
+      expect(
+        dump.some((chunk) => Buffer.from(chunk).includes(Buffer.from(secret))),
+        secret,
+      ).toBe(false);
+    }
+    await cache.invalidateTags(["statement-secret"]);
+    expect((await get(adapter, path)).xCache).toBe("MISS");
+    expect(calls.statement).toBe(2);
   });
 });

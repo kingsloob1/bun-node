@@ -157,7 +157,7 @@ const AAD_LABEL = encoder.encode(ENCRYPTION_LABELS.aad);
  * shows the value: a `Uint8Array` of 32 bytes, or 32 bytes as hex (64
  * characters), base64 or base64url (43 characters, or 44 with one `=`).
  */
-function parseKey(key: unknown, where: string): Uint8Array {
+export function parseKey(key: unknown, where: string): Uint8Array {
   if (key instanceof Uint8Array) {
     if (key.byteLength === KEY_BYTES) {
       return key.slice();

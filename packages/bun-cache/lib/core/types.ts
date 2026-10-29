@@ -391,6 +391,14 @@ export interface CacheCipherContext {
   aad: Uint8Array;
 }
 
+/** What `encrypt.hashNames.hash` is told about the name it hashes. */
+export interface CacheNameContext {
+  /** What the name is: a cache's full namespace, a key, or a tag. */
+  kind: "namespace" | "key" | "tag";
+  /** The full namespace, plaintext (`app@v3:users`); for a `"namespace"`, the name itself. A key or tag hashed apart per namespace keeps a dump from showing which namespaces share one. */
+  namespace: string;
+}
+
 /**
  * A user cipher (the encryption plan's §6), given as
  * {@link CacheEncryptOptions.cipher} in place of the built-in
@@ -429,8 +437,8 @@ export interface CacheCipher {
  * sealed — its header, full key, payload, tags and hard expiry — with
  * AES-256-GCM under a key derived per entry, or with a user cipher. Order on
  * write: encode → compress → encrypt; on read the reverse. Counters stay
- * plaintext integers (the backend adds to them), and names (keys,
- * namespaces, tags) stay in clear in the store.
+ * plaintext integers (the backend adds to them). Names (keys, namespaces,
+ * tags) stay in clear in the store unless `hashNames` is on.
  */
 export interface CacheEncryptOptions {
   /**
@@ -455,6 +463,35 @@ export interface CacheEncryptOptions {
    * open here, even under the same key. At most 1 KiB. Default: none.
    */
   aad?: string | Uint8Array;
+  /**
+   * Store keys, namespaces and tags as keyed hashes, so a dump of the store
+   * shows none of them (the encryption plan's §7). Default: off.
+   *
+   * - `{ key }`: HMAC-SHA-256 under this key — 32 bytes, or their hex,
+   *   base64 or base64url spelling — answering 32 hex characters per name,
+   *   each key and tag bound to its namespace. Its own key: **never** one of
+   *   `keys`, and never rotated. Changing it, or turning hashing on, is a
+   *   flush: the old entries sit under names nobody asks for any more until
+   *   they expire (`clear()` first, or accept the orphans).
+   * - `{ hash }`: a function of your own (to match an existing scheme). It
+   *   must be deterministic and answer 1–200 bytes with no NUL or newline;
+   *   both are checked on first use (a `TypeError`).
+   *
+   * The drivers, L1, the bus, the stamp cache and the core's log lines all
+   * see the hashed names; events keep the plaintext ones, except `evict`,
+   * which only the driver knows. Counters' names are hashed, their values
+   * not. `cache.describeKey(key, tags)` answers the stored forms, to find an
+   * entry in a dump. The long-key hashing (`maxKeyLength`) does not apply.
+   */
+  hashNames?:
+    | {
+        /** The HMAC key: 32 bytes, or their hex, base64 or base64url spelling. Secret, and never rotated. */
+        key: string | Uint8Array;
+      }
+    | {
+        /** Answers a name's stored form: deterministic, 1–200 bytes, no NUL or newline. */
+        hash: (name: string, context: CacheNameContext) => string;
+      };
   /**
    * Read entries written without encryption, during a migration. Writes are
    * always sealed. Off by default, and best left off: while it is on,
@@ -538,7 +575,7 @@ export interface CacheEventMap {
   "lock-wait": { key: string; namespace: string };
   /** Waiting on a lock gave up (the waiter loads itself without storing, or throws). */
   "lock-timeout": { key: string; namespace: string };
-  /** The driver evicted an entry (the memory driver's LRU and size caps). */
+  /** The driver evicted an entry (the memory driver's LRU and size caps). Its `key` and `namespace` are the stored forms the driver holds: hashed under `encrypt.hashNames`, `#`-hashed for a long key. */
   evict: { key: string; namespace: string; reason: string };
   /** A `set` encoded above `maxEntryBytes`, stored or before compression, and was skipped (§3.9); `bytes` is the larger of the two sizes. */
   oversize: { key: string; namespace: string; bytes: number; limit: number };
@@ -899,6 +936,18 @@ export interface Cache<
 
   /** A view of the same cache under a longer namespace: `cache.namespace("users")` on `"app"` stores `app:users:*` (§3.7). */
   namespace: (name: string) => Cache<Schema, Tag>;
+
+  /**
+   * The names this cache stores `key` and `tags` under, in this view's
+   * namespace: to find an entry in a dump, a `redis-cli` session or a SQL
+   * row. Under `encrypt.hashNames`, their hashes; otherwise the namespace,
+   * the key (`#`-hashed when longer than `maxKeyLength`) and the tags as
+   * they are. Reads and writes nothing.
+   */
+  describeKey: (
+    key: string,
+    tags?: readonly Tag[],
+  ) => { namespace: string; key: string; tags: string[] };
 
   /** Listens for an event; answers an unsubscribe function. */
   on: <E extends CacheEvent>(

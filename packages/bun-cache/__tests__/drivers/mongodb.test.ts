@@ -23,7 +23,7 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
-import { MongoClient } from "mongodb";
+import { BSON, MongoClient } from "mongodb";
 import * as jobsConnection from "../../../bun-jobs/lib/shared/connection";
 import type { BusMessage, StoredEntry } from "../../lib/index";
 import { createCache, mongoDriver } from "../../lib/index";
@@ -217,7 +217,22 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
   await kitDriver.connect!();
   await runCacheDriverConformance(
     label,
-    () => ({ driver: kitDriver, cleanup: async () => await kitDriver.close() }),
+    () => ({
+      driver: kitDriver,
+      cleanup: async () => await kitDriver.close(),
+      // Every document of the kit's collections, as BSON, and their names.
+      rawDump: async () => {
+        const out: (string | Uint8Array)[] = [];
+        for (const which of MONGO_CACHE_COLLECTIONS) {
+          const name = `${kitOptions.prefix}${which}`;
+          out.push(name);
+          for (const doc of await db.collection(name).find({}).toArray()) {
+            out.push(BSON.serialize(doc));
+          }
+        }
+        return out;
+      },
+    }),
     {
       crossProcess: {
         module: new URL("../../lib/drivers/mongo.ts", import.meta.url).pathname,

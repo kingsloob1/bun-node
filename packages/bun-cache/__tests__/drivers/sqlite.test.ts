@@ -38,7 +38,27 @@ await runCacheDriverConformance(
   "sqlite",
   () => {
     const driver = sqliteDriver({ path: kitPath, busPollInterval: 25 });
-    return { driver, cleanup: async () => await driver.close() };
+    return {
+      driver,
+      cleanup: async () => await driver.close(),
+      // The database file and its WAL and shared-memory files, as on disk:
+      // a row only in the WAL is still stored. Read by a child process:
+      // closing any descriptor of the file in this one would drop the POSIX
+      // locks SQLite holds on it (measured: `--seed=2` then failed the
+      // two-process cases with SQLITE_IOERR_SHORT_READ).
+      rawDump: async () =>
+        await Promise.all(
+          ["", "-wal", "-shm"].map(async (suffix) => {
+            const child = Bun.spawn(["cat", `${kitPath}${suffix}`], {
+              stdout: "pipe",
+              stderr: "ignore",
+            });
+            const bytes = await new Response(child.stdout).bytes();
+            await child.exited;
+            return bytes;
+          }),
+        ),
+    };
   },
   {
     crossProcess: {

@@ -979,7 +979,9 @@ writes the first SigV4 signer. What it does, and where it departs from §7.8:
 [`evidence/encryption/`](evidence/encryption/README.md). It proposes PR-Z1,
 PR-E1, PR-E2 and PR-E3, and awaits the user's answers to its §13. Approved
 in full the same day; **PR-E1 (at-rest encryption) built 2026-10-28** — its
-Status says what landed and the two decisions it left open.
+Status says what landed and the two decisions it left open; **PR-E2 (name
+hashing, `describeKey`, the kit's `rawDump` on every driver) built
+2026-10-28**.
 
 **Azure spike, 2026-10-28** (evidence
 [`evidence/azure-spike.md`](evidence/azure-spike.md), `azure-spike/wire.ts`;

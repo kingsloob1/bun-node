@@ -80,6 +80,26 @@ loopback Redis), +5.8/+4.6 µs at 4 KiB, and within the noise from 70 KB up.
 Seal and open alone take about 2.6 µs each at 100 B, against §3.2's 1.8 and
 1.9 µs for the bare cipher: the envelope's body, AAD and copies.
 
+**PR-E2 built (2026-10-28)**, on develop `17cc3ab8` (after PR-E1, #571):
+`encrypt.hashNames` (`{ key }`, the HMAC of §7.1, or `{ hash }`) in the core
+(`lib/core/names.ts`), hashed once per name through a 10,000-name memo. Each
+cache view hashes its namespace once; the drivers, L1 (its tag index now
+holds the stored tags), the flight map, the stamp cache, the bus messages and
+the two key-bearing log lines see only the stored forms, while events and
+the cipher's AAD keep the plaintext. `describeKey()`; `CacheNameContext`;
+the kit's `rawDump` and an encrypted pass of eight cases (`encrypted.*`)
+that every driver's test runs — memory (through a test hook,
+`memoryDriverDump`), file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB
+(standalone and replica set), S3, Azure, Cloudflare KV and D1 — with a scan
+of each backend's raw bytes that first proves it sees a plain cache's value
+and namespace. Decisions it took, each a question in the PR: `evict` events
+carry the stored names (only the driver knows them); a user `hash` is checked
+on every new name (1–200 bytes, no NUL or newline) and hashed twice for the
+first name of each kind (determinism), a `TypeError` from the operation —
+the namespace's at `createCache`; a top-level `hashNames` (JavaScript) is a
+`TypeError`; Redis's dump reads by type, not `DUMP` (LZF could hide a
+plaintext).
+
 Written 2026-10-28 against `develop` at `251a64f1` (#560). **No product code
 was changed.** Every `file:line` is at `251a64f1`, relative to
 `packages/bun-cache/` unless it says otherwise. The marks are the main
