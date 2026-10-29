@@ -141,11 +141,24 @@ And (PR-E1):
   bound to its namespace and key; key rings with rotation, `keys` functions
   for a KMS, user ciphers with their conformance kit, and a failed open read
   as a miss, never deleted ([Encryption at rest](#encryption-at-rest))
+
+And (PR-E2):
+
 - **name hashing** (`encrypt.hashNames`): keys, namespaces and tags reach
   the store, L1 and the bus only as keyed hashes, with `describeKey()` to
   find an entry in a dump ([Hiding names](#hiding-names))
+- the conformance kit's **encrypted pass**, and `rawDump`, a scan of what
+  the backend holds for any plaintext name or value, run on every driver
 
-Next, in the plan's order: the encryption docs and playground (PR-E3).
+And (PR-E3):
+
+- the encryption, name-hashing and compression sections checked against
+  the code, with the migration, rotation and threat-model details they
+  lacked, and the entry format for other readers; the repository
+  playground's **at-rest** item (`/playground/cache/at-rest`) shows one
+  value as the store holds it beside what the cache answers
+
+What comes next is in the plan's Status.
 
 ## Quick start
 
@@ -185,7 +198,7 @@ exclusive. `ttl: null` means no expiry.
 | Load | `getOrSet(key, loader, opts?)`, `wrap(fn, { key, ...opts })` |
 | Counters | `increment(key, by?, opts?)`, `decrement(key, by?, opts?)` |
 | Scope | `namespace(name)` — a view of the same cache with a longer prefix |
-| Observe | `on(event, listener)`, `stats()` |
+| Observe | `on(event, listener)`, `stats()`, `describeKey(key, tags?)` (the names the store holds, [Hiding names](#hiding-names)) |
 | Lifecycle | `close()`, `syncSchema(opts?)` |
 
 `get` answers fresh values only: past its TTL an entry is a miss. `getEntry`
@@ -349,7 +362,8 @@ smaller. `compress: false` disables it.
   same ratio, six bytes shorter.
 - **`level`** is the one knob, and is checked: a level outside its range, or
   a `level` beside a user compressor, is a `TypeError` at `createCache`. The
-  threshold is 16 KiB for every algorithm.
+  default `threshold`, 16 KiB, is the same for every algorithm; it is
+  compared with the encoded value's size.
 - **Changing `algorithm` needs no flush.** Each entry's header names its
   compressor, and every built-in always decompresses.
 - **Per call, `compress: false`** on `set`, `setMany`, `getOrSet` and `wrap`
@@ -397,9 +411,14 @@ before format 2 reads such an entry as a miss and deletes it, so during the
 rolling deploy that turns Brotli on, old and new processes miss each other's
 entries; once every process runs the new version, nothing more changes.
 
-**The decompression cap holds for every compressor.** The built-ins stop at
-the entry limit (below); a user compressor is handed it as
+**The decompression cap holds for every compressor.** The built-ins
+decompress through `node:zlib`'s decoders with `maxOutputLength` set to the
+entry limit (below), so they stop there; a user compressor is handed it as
 `maxOutputLength`, and its answer is refused past it anyway.
+
+**With encryption**, compression runs first, on the plaintext entry: the
+cipher seals the compressed bytes, and a read opens the entry before it
+decompresses it ([Encryption at rest](#encryption-at-rest)).
 
 Every entry is capped at `maxEntryBytes` (default 4 MiB, or the driver's own
 limit when smaller). An oversized `set` resolves `false` and emits `oversize`
@@ -408,8 +427,9 @@ returned uncached. The limit also holds the value before compression, and a
 read never decompresses past it, so an entry planted in the store that would
 expand further (a decompression bomb) reads as a miss with an `error` event
 of phase `"decode"`, and is deleted. A key longer than `maxKeyLength` bytes
-(default 200) is stored as `#` + its SHA-256, with the full key kept in the
-entry's header: a hash collision reads as a miss, never as the wrong value.
+(default 200) is stored as `#` + its SHA-256 (lower-case hex), with the full
+key kept in the entry's header: a hash collision reads as a miss, never as
+the wrong value.
 
 ## Encryption at rest
 
@@ -438,7 +458,9 @@ write derives its own from that and a random 128-bit salt, with a random
 limit of 2^32 random nonces per key in five days; with a key per entry it
 never does. The order on write is **encode → compress → encrypt**, and the
 reverse on read, so the cipher sees the compressed bytes and the
-decompression cap still applies after decrypting.
+decompression cap still applies after decrypting. Whether to compress is
+decided on the plaintext (the threshold, and "only if smaller"), since
+ciphertext does not compress.
 
 **What is sealed.** The whole entry: its header (with the full key and the
 timestamps), its payload, and copies of its **tags** and **hard expiry**. The
@@ -459,14 +481,34 @@ namespace, the full key, `aad`, and the envelope's own prefix. An entry
 copied to another key, another namespace or a cache with another `aad`
 does not open.
 
-**What it does not hide.** Keys, namespaces and tags are stored as written,
-unless `hashNames` is on ([Hiding names](#hiding-names)). Each entry's size
-(±1 byte), when it was written, when it expires and how often it is read
-stay visible. **Counters** are plaintext integers, so that the backend can
-add to them atomically. And a writer to the store can always delete
-entries, or **replay an older ciphertext of the same key** — served, but
-never fresher or longer-lived than when it was written, since its freshness
-and expiry are sealed with it. A compromised app process holds the keys; nothing here helps there.
+**What it does not hide.**
+
+- **Names**: keys, namespaces and tags are stored as written, unless
+  `hashNames` is on ([Hiding names](#hiding-names)).
+- **Sizes, exactly.** Nothing is padded: the sealed size is the plain
+  entry's plus a fixed overhead (below), and the plain entry holds the full
+  key, so a key's length stays readable in its entry's size even with
+  `hashNames` on, as does the length of its tags (sealed with it).
+- **Timings**: when an entry was written (`ca` columns, mtimes, S3's `at=`),
+  when it expires (the driver's clear expiry, which native TTLs and
+  sweepers need), when a tag was invalidated (its stamp), and how often an
+  entry is read (the store's own logs).
+- **Which entries share a name**: a tag's index rows and every entry
+  carrying it name the same stored tag, hashed or not, and a key keeps its
+  stored name across rewrites, so a reader sees which entries change and
+  which are invalidated together.
+- **Counters** are plaintext integers, so that the backend can add to them
+  atomically; only their names are hashed.
+- **A compression oracle**: a value that mixes a secret with text an
+  attacker chooses still leaks the secret through its compressed size,
+  since encryption hides the bytes, not the length. Store such values with
+  `compress: false` ([Compression and limits](#compression-and-limits)).
+- **Deletion and replay**: a writer to the store can always delete entries,
+  or **replay an older ciphertext of the same key**: served, but never
+  fresher or longer-lived than when it was written, since its freshness and
+  expiry are sealed with it.
+- **The app process** holds the keys, and the decoded values in L1:
+  nothing here helps once it is compromised.
 
 ### Keys
 
@@ -487,6 +529,12 @@ a read picks its key directly. The **first** key seals; **every** key opens.
 Skipping step 1 costs only misses while the deploy rolls: an entry that does
 not open is never deleted. The `keyId` on `hit` and `stale-hit` events shows
 when the old key stops being read.
+
+Any rewrite of an entry seals it under the ring's first key: a `set`, a
+load, a background refresh, and a `touch`, which re-seals the value it
+read. Nothing else re-encrypts, so an entry with no expiry (`ttl: null`)
+never drains by itself: rewrite or `touch` such entries before step 3, or
+they read as misses (`"unknown-key"`) until something writes them again.
 
 **A key from a KMS or Vault.** `keys` may be a function, sync or async; the
 cache never talks to a KMS itself. The usual pattern is an envelope key: the
@@ -511,12 +559,19 @@ const cache = createCache({
 });
 ```
 
-- It is called on first use, and operations wait for it — a read at most
-  the cache's `timeout`, then it is a miss; a write resolves `false`.
-- With `keyRefresh`, it is called again in the background that many ms after
-  its last answer, as operations run.
+- It is called on first use, and operations wait for it, reads and writes
+  alike, at most the cache's `timeout`: past it a read is a miss and a write
+  resolves `false`, while the call goes on. `timeout` is off by default, and
+  without it they wait as long as the function takes, so set one (2 s
+  above).
+- With `keyRefresh` (a positive number of ms; a `TypeError` beside a static
+  ring), it is called again in the background that many ms after its last
+  answer, as operations run: there is no timer. A rotation's next step then
+  reaches a busy process about `keyRefresh` after the ring changes where the
+  function reads it.
 - A read that meets an **unknown key id** calls it once more, at most once
-  per 10 s, so a process learns a peer's new key without a restart.
+  per 10 s, so a process learns a peer's new key without a restart. (A
+  static ring cannot learn one: the read is an `"unknown-key"` miss.)
 - A rejection, or an answer that is not a valid ring, is an `error` event
   (`phase: "encrypt"` on a write, `"decrypt"` on a read) and the previous
   ring stays: an answer is validated whole, never half-applied. With no ring
@@ -526,7 +581,8 @@ const cache = createCache({
 ### When an entry does not open
 
 It is a **miss**, with an `error` event of `phase: "decrypt"` whose `error`
-is a `CacheDecryptError` with a `reason` and the entry's `keyId`:
+is a `CacheDecryptError` with a `reason`, and the `keyId` the envelope names
+when it names one (the built-in cipher's entries):
 
 | `reason` | Meaning |
 |---|---|
@@ -534,7 +590,7 @@ is a `CacheDecryptError` with a `reason` and the entry's `keyId`:
 | `"unknown-key"` | No ring key has the entry's key id (after one refresh of a `keys` function) |
 | `"unencrypted"` | Not an envelope, and `acceptUnencrypted` is off |
 | `"malformed"` | An envelope that does not parse |
-| `"cipher"` | The entry's cipher is not configured here — including a cache with **no `encrypt` at all** reading a sealed entry — or a user cipher threw |
+| `"cipher"` | The entry's cipher is not configured here — including a cache with **no `encrypt` at all** reading a sealed entry, and a cache whose `cipher` is a user cipher reading the built-in's entries — or a user cipher threw |
 
 It is **never thrown**, not even under `strict`, and the entry is **not
 deleted** — during a key rollout, a process without the new key would
@@ -544,22 +600,41 @@ without encryption recognises a sealed entry by its `"BE"` magic and reads
 it as a miss with this event (`"cipher"`), where any other bytes it cannot
 decode are deleted. The next `set` or load — an explicit write of the app's,
 on either kind of cache — overwrites it; an encrypted cache then reads that
-plain entry as `"unencrypted"`, again without deleting it. A `warn` is logged at most once per 10 s per reason, naming
-the key id, never key material or values.
+plain entry as `"unencrypted"`, again without deleting it. A `warn` is
+logged at most once per 10 s per reason, naming the key id, never key
+material or values.
 
 A write that cannot seal (no ring yet, a user cipher that threw) resolves
 `false` with an `error` event of `phase: "encrypt"`, and throws only under
 `strict`. Nothing is ever stored unencrypted.
 
-`maxEntryBytes`, a driver's own limit, `oversize`, the `set` event's
-`bytes` and `stats().bytesWritten` all count the **sealed** size: 49 bytes
-plus the key id's length, plus 11 and the tags (2 + length each), over the
-plain entry — 67 bytes for an untagged entry under the id `2026-10`.
+**The size.** The built-in cipher adds 49 bytes plus the key id's length,
+plus 11 and the tags (2 + their UTF-8 length each), to the plain entry: 67
+bytes for an untagged entry under the id `2026-10`. The entry limit
+(`maxEntryBytes`, or the driver's own when smaller) holds both the value's
+encoded size before compression and the **sealed** bytes the driver
+receives; `oversize` reports whichever passed it, and the `set` event's
+`bytes` and `stats().bytesWritten` count the sealed bytes.
 
 **Migrating an existing cache.** `acceptUnencrypted: true` reads entries
-written before encryption was turned on; every write is still sealed. Leave
-it off afterwards: while it is on, anyone who can write to the store can
-plant a plaintext value the cache serves.
+written before encryption was turned on; every write is still sealed, and
+a `touch` of a plain entry rewrites it sealed. Leave it off afterwards:
+while it is on, anyone who can write to the store can plant a plaintext
+value the cache serves. A rollout in four steps:
+
+1. Upgrade every process to a version of this package that has `encrypt`
+   (it need not be on yet): an older one reads a sealed entry as bytes it
+   cannot decode, and deletes it.
+2. Deploy `encrypt` with `acceptUnencrypted: true`. A process not yet on it
+   reads its peers' sealed entries as misses (`"cipher"`) and never deletes
+   them; the new processes read the old ones' plain entries.
+3. After the longest TTL plus its stale window, deploy without
+   `acceptUnencrypted`.
+4. Turn `hashNames` on, if wanted, as a deploy of its own. It cannot join
+   step 2: a cache hashing its names looks every entry up under its hashed
+   name, so `acceptUnencrypted` never finds the plain entries, which sit
+   under their written names. Turning it on is a flush either way
+   ([Hiding names](#hiding-names)).
 
 ### User ciphers
 
@@ -572,8 +647,12 @@ library cipher. `context` is `{ namespace, key, aad }`, and the cipher
 business, so `keys` beside it is a `TypeError`. Entries keep the cipher id
 they were sealed with: a new cipher takes a new id, and the old one goes in
 `previous: [oldCipher]` while its entries live (`previous` works beside the
-built-in's `keys` too). An entry whose cipher is not configured is a miss
-(`"cipher"`).
+built-in's `keys` too). An id outside 128–255, or one taken twice among
+`cipher` and `previous`, is a `TypeError`. An entry whose cipher is not
+configured is a miss (`"cipher"`). The built-in has no place in `previous`:
+a cache whose `cipher` is a user cipher holds no ring, so moving from the
+built-in to a user cipher leaves the built-in's entries unreadable — misses
+until they are rewritten or expire, as after a flush.
 
 Check one with the conformance kit, in its own test file:
 
@@ -583,10 +662,10 @@ import { runCacheCipherConformance } from "@kingsleyweb/bun-cache/testing";
 runCacheCipherConformance("kms-cipher", kmsCipher);
 ```
 
-It asserts a round trip at 0 B, 100 B, 70 KB and 1 MiB; no plaintext in the
-sealed bytes; two seals of one input differing; and that a flipped bit, a
-truncation, and a changed `aad`, namespace or key are each refused — then
-round-trips a value through a real `createCache`. A cipher that ignores the
+It asserts an id in 128–255; a round trip at 0 B, 100 B, 70 KB and 1 MiB;
+no plaintext in the sealed bytes; two seals of one input differing; and that
+a flipped bit, a truncation, and a changed `aad`, namespace or key are each
+refused — then round-trips a value through a real `createCache`. A cipher that ignores the
 AAD fails it.
 
 ### The cost
@@ -615,14 +694,29 @@ AES-256-GCM are in every standard library):
 envelope   = "BE" | u8 1 (version) | u8 cipher id (1 = aes-256-gcm; 128–255 a user cipher) | …
 built-in … = u8 key id length L (1–32) | key id (UTF-8) | 16-byte salt | 12-byte nonce | ciphertext | 16-byte GCM tag
 user     … = whatever the cipher's seal answered
-sealed body = u8 1 | f64 LE expiresAt (-1: none) | u16 LE tag count | per tag: u16 LE length, UTF-8 | the entry (format 1 or 2, above)
+sealed body = u8 1 | f64 LE expiresAt (-1: none) | u16 LE tag count | per tag: u16 LE length, UTF-8 | the entry (below)
 
-K      = HKDF-SHA-256(ikm = ring key, salt = empty, info = "bun-cache/enc/1/aes-256-gcm", 32 bytes)
-K_salt = HMAC-SHA-256(K, "entry" | salt | 0x01)
-AAD    = "bun-cache/enc/1" 0x00 | full namespace 0x00 | full key 0x00 | aad 0x00 | envelope bytes up to the ciphertext
+K          = HKDF-SHA-256(ikm = ring key, salt = empty, info = "bun-cache/enc/1/aes-256-gcm", 32 bytes)
+K_salt     = HMAC-SHA-256(K, "entry" | salt | 0x01)
+AAD        = "bun-cache/enc/1" 0x00 | full namespace 0x00 | full key 0x00 | aad 0x00 | envelope bytes up to the ciphertext
+ciphertext = AES-256-GCM(K_salt, nonce, sealed body, AAD), its 16-byte tag after it
+
+entry, format 1 = "BC" | u8 1 | u8 codec | u8 flags | f64 LE createdAt | f64 LE freshUntil (-1: never stale) | f64 LE loadMs | u32 LE key length | full key (UTF-8) | payload
+entry, format 2 = "BC" | u8 2 | u8 codec | u8 flags (bits 0–1 zero) | u8 compressor | the rest as format 1
+codec      = 1 structured (bun:jsc), 2 json, 3 raw, 128–255 a user codec
+flags      = bit 0 zstd, bit 1 gzip (format 1 only), bit 2 counter, bit 3 negative, bit 4 raw string
+compressor = 0 none, 1 zstd, 2 gzip, 3 br, 4 raw deflate, 128–255 a user compressor
 ```
 
+In the AAD and the names hash below, the **full namespace** is the
+plaintext chain the cache writes under: its `namespace`, then `@version`
+when it has one, then each `namespace()` segment after a `:`
+(`app@v3:users`); the **full key** is the key as given, before the long-key
+or name hashing; and `aad` is `encrypt.aad`'s bytes (a string's UTF-8),
+empty when it is unset. Both names stay plaintext there under `hashNames`.
 The AAD of a user cipher's entry ends with the envelope's first four bytes.
+A plain cache stores the entry alone, in the same format. A reader outside
+Bun wants `codec: "json"`, since `"structured"` is `bun:jsc`'s format.
 
 ### Hiding names
 
@@ -646,8 +740,9 @@ const cache = createCache({
   with their namespace, so the same key in two namespaces hashes apart and
   a dump does not show which tenants hold the same one. Redis's key names,
   SQL's `ns`/`k`/`tg` columns, MongoDB's `_id`s, the file and object names,
-  the stamps, the locks and the bus messages all carry the hashes. The long-key
-  hashing (`maxKeyLength`) does not apply: an HMAC is already short.
+  the stamps, the locks and the bus messages all carry the hashes. The
+  long-key hashing (`maxKeyLength`) does not apply: an HMAC is already
+  short.
 - **What does not.** `clear()`, `invalidateTags()`, counters, locks, L1
   and the bus work as before: the core hashes every name before anything
   below it sees one, so every process with the same key agrees. Counter
@@ -659,15 +754,24 @@ const cache = createCache({
   hide nothing. The full key is still checked on every read, inside the
   sealed header, so two names colliding only overwrite each other — a miss,
   never the wrong value.
-- **Its key never rotates.** It is a separate key from `keys` (one of
-  theirs is allowed, and warned about): a rotation of the encryption keys
-  must not rename the store. Turning hashing on, or changing its key, is a
-  flush, like a `version` bump: the old entries sit under names nobody asks
-  for until they expire. `clear()` first, or accept the orphans.
+- **Its key never rotates.** It is a separate key from `keys`: a rotation
+  of the encryption keys must not rename the store. (One of a static ring's
+  keys is allowed, since HKDF keeps the two uses apart, and `createCache`
+  warns about it; a `keys` function's answers are not compared.)
+- **Turning it on is a flush**, and so is changing its key, like a `version`
+  bump: the old entries sit under names nobody asks for until they expire
+  or are swept. `clear()` each namespace first with a cache configured as
+  before, or accept the orphans. `acceptUnencrypted` does not bridge it: it
+  reads plain entries only under the names the cache looks up, which are
+  now the hashed ones ([migrating](#when-an-entry-does-not-open)).
 - **A hash of your own**, to match an existing scheme: `hashNames: { hash:
   (name, { kind, namespace }) => string }`, where `kind` is `"namespace"`,
   `"key"` or `"tag"`. It must be deterministic and answer 1–200 bytes with
-  no NUL or newline; both are checked on first use, with a `TypeError`.
+  no NUL or newline. Each new name's answer is checked (the memo keeps the
+  last 10,000), and the first name of each kind is hashed twice and must
+  hash alike. A failure is a `TypeError`: thrown by `createCache` and
+  `namespace()` for the namespace, by `describeKey`, and as the rejection
+  of the operation for a key or a tag.
 
 **Debugging: `describeKey`.** `cache.describeKey(key, tags?)` answers the
 names the store holds for a key and its tags, in that view's namespace,
@@ -680,17 +784,20 @@ cache.describeKey("user:42", ["org:7"]);
 
 Search a dump for those (`redis-cli --scan --pattern '*9a41*'`, `WHERE k =
 '9a41…'`); on the file, S3, Azure and Cloudflare KV drivers the key's
-object name is the SHA-256 of that hash. To check a value, read it back through the cache, skipping L1
-with `get(key, { tier: "l2" })`. Without `hashNames`, `describeKey` answers
-the names as stored: the namespace, the key (`#`-hashed when long) and the
-tags as they are.
+object name is the SHA-256 of that hash. To check a value, read it back
+through the cache, skipping L1 with `get(key, { tier: "l2" })`. Without
+`hashNames`, `describeKey` answers the names as stored: the namespace, the
+key (`#`-hashed when long) and the tags as they are. The repository's
+[playground](https://github.com/kingsloob1/bun-node/blob/develop/playground/README.md#the-cache-lab)
+shows one entry both ways, at `/playground/cache/at-rest`.
 
-The names hash, for a reader in another language:
+The names hash, for a reader in another language (the full namespace and
+key as in [The format](#the-format); a counter's name is hashed as a key):
 
 ```
 K_names    = HKDF-SHA-256(ikm = hashNames.key, salt = empty, info = "bun-cache/names/1", 32 bytes)
 namespace  = hex(HMAC-SHA-256(K_names, "ns"  0x00 | full namespace))[0..32]
-key        = hex(HMAC-SHA-256(K_names, "key" 0x00 | full namespace 0x00 | key))[0..32]
+key        = hex(HMAC-SHA-256(K_names, "key" 0x00 | full namespace 0x00 | full key))[0..32]
 tag        = hex(HMAC-SHA-256(K_names, "tag" 0x00 | full namespace 0x00 | tag))[0..32]
 ```
 

@@ -48,7 +48,7 @@ can reach it, so never expose it.
 | `/playground/compute` | the summoned units: every child process the library's `localCompute()` started for the playground, with its provider status, and buttons that inject a fault into one queue's next unit; every queue's summon status (`GET /jobs-api/summon`), the `onSummonFailed` alerts, and a budget reset (see "Summoning" below) |
 | `/playground/docs` | AD (c)'s `docsRouter`: the adapter's OpenAPI document as JSON (`/playground/docs/openapi.json`, re-generated live per request — the same one `/playground/openapi.json` shows with its warnings) plus a Redoc viewer page, and AD (e)'s AsyncAPI document of the chat channel (`/playground/docs/asyncapi.json`, its official-component viewer at `/playground/docs/asyncapi`); behind the playground's allow-everything auth, and hidden from the document itself |
 | `/playground/chat/:room` | a validated WebSocket chat channel (bun-validate V8's `defineChannel`, `chat.ts`), mounted with one `ws()` call: the upgrade's room name is checked against the channel's `request` schema (a bad one — `/playground/chat/Lobby` — is a 400, never a 101), every text frame is parsed and checked against its `type` (`say` with data, `typing` without; an invalid frame is answered with a value-free `VALIDATION` error frame, an unknown type with `UNKNOWN_MESSAGE`), and `send`/`publish` are typed and checked. It appears in `/playground/routes` as `GET /playground/chat/:room` with its `websocket` contract's rows; OpenAPI documents HTTP only, so each OpenAPI generation still collects one "skipped" warning for it — but the channel is fully present in the **AsyncAPI** document (`/playground/docs/asyncapi.json`: the `playground-chat` channel — its room parameter's checked schema as `x-bun-common-schema`, its frames as envelope payloads, the `say`→`said` reply, the implicit `error` frame). Poke it: `bunx wscat -c 'ws://localhost:4000/playground/chat/lobby?name=ada'`, then `{"type":"say","data":{"text":"hi"}}` |
-| `/playground/cache` | the bun-cache lab (`cache.ts`, see "The cache lab" below): routes behind `cacheResponse()` showing `X-Cache`, `Age` and timing, stale-while-revalidate and stale-if-error, invalidation by path and by tag, live `cache.stats()`, and one cache switchable between drivers, compression algorithms and an L1 tier. PR-C1's `getOrSet` demo stays on the same cache: `GET /playground/cache/report` (250 ms to build, cached 10 s with a 30 s stale window; its `cache` field says `miss`/`hit`/`stale`; ten at once build once), `GET /playground/cache/stats`, `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`) |
+| `/playground/cache` | the bun-cache lab (`cache.ts`, see "The cache lab" below): routes behind `cacheResponse()` showing `X-Cache`, `Age` and timing, stale-while-revalidate and stale-if-error, invalidation by path and by tag, live `cache.stats()`, and one cache switchable between drivers, compression algorithms and an L1 tier. PR-C1's `getOrSet` demo stays on the same cache: `GET /playground/cache/report` (250 ms to build, cached 10 s with a 30 s stale window; its `cache` field says `miss`/`hit`/`stale`; ten at once build once), `GET /playground/cache/stats`, `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`). And the **at-rest** item, `/playground/cache/at-rest`: one value through an encrypted cache with `hashNames` on, as the store holds it beside what the cache answers (see "At rest" below) |
 | `/` | redirects to `/jobs` |
 
 **A validated Nest gateway, on its own port** (`nest-gateway.ts`, bun-validate
@@ -493,6 +493,66 @@ new cache, closes the old one and removes exactly its data. It starts on
 - Cloudflare KV and D1 are listed as unavailable: they need miniflare or an
   account (`examples/bun-cache/04-drivers/`).
 
+**At rest** (`cache-at-rest.ts`, bun-cache's encryption plan, PR-E3):
+`GET /playground/cache/at-rest` shows the last value written, and
+`POST /playground/cache/at-rest?key=&note=` writes a new one (a key or note
+of 1–200 characters, no control characters; anything else is a 400). The
+value goes through two caches over one in-memory `bun:sqlite` database the
+playground opens itself, so its rows are read back with plain SQL, around
+the drivers:
+
+- **encrypted**: `encrypt: { keys: [{ id: "playground-1", key }], aad:
+  "playground", hashNames: { key } }`, both keys 32 random bytes drawn at
+  startup, never written anywhere or answered (a restart draws new ones);
+- **plain**: no `encrypt`, the same namespace (`playground-at-rest`).
+
+For each, the page shows what the store holds (every entry and tag-index
+row, the bytes in hex and base64, and a counter's row) beside what the cache
+answers (`get`, `getEntry`, the `hit` event's `keyId`, the counter, and
+`describeKey`, checked against the stored row). The encrypted store's
+names are 32 hex characters and its bytes an envelope; the plain store
+shows the key, namespace, tags and value as written, and a scan of each
+store for them says so (`plaintextFound`). The sealed entry is also
+**opened by hand**, from the bun-cache README's "The format" and "Hiding
+names" alone (`node:crypto`'s HKDF, HMAC and AES-256-GCM, none of
+bun-cache's code): the envelope's fields (magic `BE`, version, cipher id,
+key id, salt, nonce, ciphertext length, GCM tag), the sealed body (expiry,
+plaintext tags), the entry header (magic `BC`, format, codec, timestamps,
+the full key) and the value; the overhead against the README's formula;
+and each stored name recomputed from the names key. If the README's format
+ever drifted from the code, that is where it shows.
+
+A sample (`GET`, bytes shortened):
+
+```json
+{
+  "sealed": {
+    "store": { "entries": [
+      { "ns": "89be29afd410a7f1e6b02b126145c93d", "k": "098b6d6b73cacba3206a60521e18a1da",
+        "tg": "[\"c01cad52481340749ea38540eefdf069\",\"84c621ee1d0d76957adf5d247f274fb6\"]",
+        "exp": 1793248878764, "ca": 1793248578766, "bytes": 241, "hex": "424501010c706c617967726f756e642d31a6faf6…" },
+      { "ns": "89be29afd410a7f1e6b02b126145c93d", "k": "6f7b632f48feb5bfb345bea18a06ff10", "n": 1 } ],
+      "plaintextFound": { "user:ada@example.com": false, "playground-at-rest": false, "users": false, "org:7": false, "ada@example.com": false } },
+    "envelope": { "fields": { "magic": "BE", "version": 1, "cipherId": 1, "keyId": "playground-1",
+        "salt": "a6faf6d28677f4440db5f1e6c1ed11f8", "nonce": "260a8c62ec0b4febacd72ef4", "ciphertextBytes": 180 },
+      "opened": true, "sealedBody": { "expiresAt": 1793248878764, "tags": ["users", "org:7"] },
+      "entry": { "magic": "BC", "format": 1, "codec": "structured", "key": "user:ada@example.com", "value": { "email": "ada@example.com" } },
+      "sizes": { "sealed": 241, "plainEntry": 155, "overhead": 86, "formula": "49 + 12 (key id) + 11 + 14 (tags) = 86" } },
+    "namesByHand": { "matchDescribeKey": true },
+    "cache": { "describeKey": { "namespace": "89be29af…", "key": "098b6d6b…", "tags": ["c01cad52…", "84c621ee…"] },
+      "describeKeyMatchesStore": true, "get": { "email": "ada@example.com" }, "hitKeyId": "playground-1", "counter": 1 }
+  },
+  "plain": {
+    "store": { "entries": [ { "ns": "playground-at-rest", "k": "user:ada@example.com", "tg": "[\"users\",\"org:7\"]", "bytes": 155, "hex": "42430101…" } ],
+      "plaintextFound": { "user:ada@example.com": true, "playground-at-rest": true, "users": true, "org:7": true, "ada@example.com": true } }
+  }
+}
+```
+
+What stays visible on the encrypted side is what bun-cache's README says
+stays visible: the clear expiry and write time (`exp`, `ca`), the counter's
+value (`n`), which rows share a tag, and the sizes.
+
 There is no Nest route behind `BunCacheInterceptor` here: the playground is
 not a Nest app (`nest-gateway.ts` is a separate WebSocket-only entry), and
 `examples/bun-nest` covers the interceptor.
@@ -502,13 +562,16 @@ variables exported to cover them too): starts the playground on `PORT=0`,
 drives every control through `fetch` on every available driver, asserts the
 `X-Cache` sequences (`MISS`, `HIT`, `BYPASS`, `UNCACHEABLE`, `STALE` for both
 windows, a `MISS` after each invalidation), the fence, the evictions, the L1
-stats and the compression sizes, stops it with SIGINT, and checks that every
-process of its tree is gone and that nothing is left where any opening kept
-its data. With all seven servers set it makes 593 checks in about 80 seconds
-(215 on memory, file and SQLite alone). On a driver whose write lags its response (Azure's several
-round trips) the request right behind a `MISS` can miss too (the write never
-delays the response); the check waits up to 5 s for the `HIT` and reports how
-many such misses it saw.
+stats, the compression sizes and the at-rest item (no plaintext in the
+encrypted store and all of it in the plain one, the hand-opening, the
+overhead, the recomputed names, `describeKey` against the rows), stops it
+with SIGINT, and checks that every process of its tree is gone and that
+nothing is left where any opening kept its data. With all seven servers set
+it makes 615 checks in about 80 seconds (237 on memory, file and SQLite
+alone). On a driver whose write lags its response (Azure's several round
+trips) the request right behind a `MISS` can miss too (the write never
+delays the response); the check waits up to 5 s for the `HIT` and reports
+how many such misses it saw.
 
 ## Things to try
 
@@ -551,6 +614,7 @@ many such misses it saw.
 - `tail -f playground/.data/units-*.log`: every media unit's output, as `output: { file }` appends it.
 - `PLAYGROUND_DRIVER=sqlite` and restart: everything is still there.
 - Connect two WebSocket clients to `/playground/chat/lobby?name=ada` and `?name=bob` (the banner's URL): ada's `{"type":"say","data":{"text":"hi"}}` reaches bob by `publish` and ada by `send`; `{"type":"say","data":{"text":42}}` is answered with a `VALIDATION` error frame whose issues never carry the bad value, and the socket stays open; `/playground/chat/Lobby` never upgrades (400).
+- Open `/playground/cache` and scroll to "At rest": the encrypted store's row is 32-hex names and a `BE` envelope, the plain store's the key, tags and value as written; write a key of your own and see `describeKey` name the new row. `GET /playground/cache/at-rest` is the same as JSON.
 - Open `/playground/cache`: GET item/1 twice (`MISS` in about 120 ms, then `HIT` in a few), invalidate tag `item:1`, GET again (`MISS`). GET swr, wait 2 s, GET twice (`STALE`, then `HIT` on build 2). Switch to `sqlite` with `br` and watch "Drivers opened this run" record the memory cache's removal.
 - `bun playground/nest-gateway.ts` beside the playground, then send it `{"type":2,"namespace":"/","data":["say",{"text":"hi"}],"id":1}`: a `said` event and the ack come back checked; `"data":["say",{"text":42}]` earns an `exception` frame, no ack.
 

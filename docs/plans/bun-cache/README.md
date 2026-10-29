@@ -981,7 +981,10 @@ PR-E1, PR-E2 and PR-E3, and awaits the user's answers to its §13. Approved
 in full the same day; **PR-E1 (at-rest encryption) built 2026-10-28** — its
 Status says what landed and the two decisions it left open; **PR-E2 (name
 hashing, `describeKey`, the kit's `rawDump` on every driver) built
-2026-10-28**.
+2026-10-28**; **PR-E3 (the README's encryption and compression sections
+finished, a format test read from the README, the playground's at-rest
+item) built 2026-10-29**, with the examples written alongside by the
+examples agent.
 
 **Azure spike, 2026-10-28** (evidence
 [`evidence/azure-spike.md`](evidence/azure-spike.md), `azure-spike/wire.ts`;
