@@ -380,6 +380,19 @@ Azurite, which `setup-databases.ts` runs as its own docker container,
 `bun-cache-azurite`, on 10000 (always docker; the blob service only, with its
 `bun-cache-test` blob container), in the driver's `azure://` form with
 Azurite's published development account and key.
+Its Entra ID lane (`azure-auth.test.ts`) reads `BUN_CACHE_TEST_AZURE_OAUTH_URL`:
+a second Azurite, `bun-cache-azurite-oauth`, on 10100 (always docker; HTTPS
+with `--oauth basic`, which checks a token's claims, not its signature; the
+URL has no `scheme`, so the driver speaks HTTPS). `setup-databases.ts
+--only=azure-oauth` makes its self-signed certificate once with `openssl` in
+`~/bun-node-test-certs/azure-oauth/certs` (`BUN_NODE_TEST_CERTS` moves it;
+outside the repository, and not under a dot-directory, which snap Docker cannot
+read; never commit it), creates the container with `docker create`, copies the
+directory in with `tar | docker cp -` and starts it. An existing container is
+only started, so its certificate is never replaced. The suite does not trust
+the certificate: its fetch passes Bun's `tls: { rejectUnauthorized: false }`
+for that host alone, as the script's own checks do; no
+`NODE_TLS_REJECT_UNAUTHORIZED` and no CA option. Unset, the lane skips visibly.
 `BUN_CACHE_TEST_UPSTASH_REDIS_URL` is an **opt-in** lane
 (`__tests__/drivers/upstash.test.ts`): the Redis driver's kit and tests
 against a managed Upstash database over `rediss://`. It is a credential:
