@@ -1888,11 +1888,13 @@ const cache = createCache({
 });
 // or azureBlobDriver({ connection: { connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING, container: "cache" } })
 // or azureBlobDriver({ connection: { accountName, accountKey, container, endpoint? } })
+// or a SAS, or Microsoft Entra ID: see "Authorization" below
 ```
 
 A blob container every process and host can reach, over `fetch`: Bun has no
-Azure client, and the driver signs its own requests with the account key
-(Shared Key) rather than take the Azure SDK. Like S3, it suits large values,
+Azure client, and the driver authorizes its own requests — Shared Key, a SAS
+or a Microsoft Entra ID token ([below](#authorization)) — rather than take
+the Azure SDK. Like S3, it suits large values,
 long TTLs and few reads per key — every read is a billed operation — so for
 hot small keys put an [L1](#multi-tier) in front of it, with a bus of its own
 (`bus: redisBus(url)` or `pgBus(url)`; Azure Blob Storage has none).
@@ -1952,22 +1954,120 @@ blob's expiry from the listing alone.
   expect deleted entries to linger there.
 - **Connections**: `url`; or `connection` with Azure's `connectionString`
   (the portal's `DefaultEndpointsProtocol=…;AccountName=…;AccountKey=…`, or
-  `BlobEndpoint=…`, or `UseDevelopmentStorage=true` for a local Azurite) and
-  a `container`, or with `accountName`, `accountKey`, `container` and an
-  `endpoint` (default `https://<accountName>.blob.core.windows.net`); the URL
-  wins over the fields, which win over the connection string. **Shared Key
-  only**: a SAS token and Microsoft Entra ID are not supported yet. The
-  container must exist (the driver never creates one); `connect()` names it
-  when it is missing. There is nothing to close.
+  `BlobEndpoint=…` with an `AccountKey` or a `SharedAccessSignature`, or
+  `UseDevelopmentStorage=true` for a local Azurite) and a `container`, or
+  with the fields — `endpoint` (default
+  `https://<accountName>.blob.core.windows.net`), `container`, and one way to
+  authorize ([below](#authorization)); the URL wins over the fields, which
+  win over the connection string, field by field. The container must exist
+  (the driver never creates one); `connect()` names it when it is missing.
+  There is nothing to close.
 - **No retries of its own**: a throttled request (503 `ServerBusy`) fails, and
   the cache's [failure policy](#the-failure-policy) takes over. A conditional
   write is never retried blindly, since one that landed but whose answer was
   lost would be applied twice.
 - **Tested against Azurite 3.37.0** (`bun scripts/setup-databases.ts`), which
-  checks the signatures and honours every condition the driver uses; **real
-  Azure is untested**. Azurite does not enforce Azure's 15-minute limit on a
+  checks the signatures (Shared Key and SAS, with a SAS's permissions) and
+  honours every condition the driver uses, and against an HTTPS Azurite with
+  `--oauth basic` for bearer tokens (below); **real Azure is untested**. Azurite does not enforce Azure's 15-minute limit on a
   request's age. An entry holds up to 5000 MiB less a MiB (one Put Blob); the
   core's `maxEntryBytes` (4 MiB) applies first.
+
+### Authorization
+
+Exactly one way per driver — an account key, a SAS, a `credential` or a
+`token`, wherever each comes from (the url, the fields or the connection
+string). Two are a `TypeError` naming both and where each came from (the
+same one twice is not: the url's key wins over a field's), and none is one
+too.
+
+**Shared Key** — the account key; every request is signed with it (above).
+
+**A SAS** (shared access signature) — no account key, and nothing signed:
+the SAS's query is appended to every request.
+
+```ts
+// In the url: the SAS is the query (every parameter but scheme), with no key.
+azureBlobDriver({ url: "azure://myacct.blob.core.windows.net/cache?sv=2022-11-02&ss=b&srt=co&sp=rwdl&se=2027-01-01T00%3A00%3A00Z&spr=https&sig=…" });
+// As a field (a leading ? is dropped), or in Azure's SAS connection string.
+azureBlobDriver({ connection: { endpoint: "https://myacct.blob.core.windows.net", container: "cache", sasToken: process.env.AZURE_STORAGE_SAS } });
+azureBlobDriver({ connection: { connectionString: "BlobEndpoint=https://myacct.blob.core.windows.net;SharedAccessSignature=sv=…&sig=…", container: "cache" } });
+```
+
+- **Permissions**: read, write, delete and list — `sp=rwdl`; an account SAS
+  also `ss=b` (the Blob service) and `srt=co` (List Blobs is a container
+  operation, the rest are object ones). Measured on Azurite, for an account
+  SAS and a container SAS (`sr=c`) alike: without `l` connecting fails (and
+  the sweeper and `clear()`); without `r`, `get`; without `w`, `set` — `c`
+  (create) alone writes a new blob but cannot replace one, and the driver
+  replaces blobs — and without `d`, `delete`. Each fails with 403
+  `AuthorizationPermissionMismatch`, and the error says what the SAS must
+  grant. `a`, `c`, and the others are not needed.
+- **The SAS is kept exactly as given** (still percent-encoded: its `sig` is
+  base64, and a `+` is not a `%2B`). The driver never renews one: when it
+  passes its `se`, every request fails with 403. Give the SAS a lifetime
+  longer than the process, or rebuild the driver with a new one. A SAS with
+  `spr=https` refuses `http` (an emulator).
+
+**Microsoft Entra ID** — a bearer token on every request
+(`Authorization: Bearer …`, with `x-ms-version` 2025-01-05; Azure needs
+2017-11-09 or later for one). Azure takes bearer tokens over HTTPS only, and
+the identity needs a data role on the container, such as Storage Blob Data
+Contributor (a 403 `AuthorizationPermissionMismatch` says so). The url
+carries no key.
+
+```ts
+import { DefaultAzureCredential } from "@azure/identity"; // yours: bun-cache does not depend on it
+
+// A credential: anything with getToken(scopes), @azure/core-auth's TokenCredential.
+azureBlobDriver({
+  url: "azure://myacct.blob.core.windows.net/cache",
+  connection: { credential: new DefaultAzureCredential() },
+});
+// Or a raw token: a string, or a function asked on every request.
+azureBlobDriver({
+  url: "azure://myacct.blob.core.windows.net/cache",
+  connection: { token: async () => await myTokenCache.get() },
+});
+```
+
+- **`credential`** (`AzureTokenCredential`): asked for
+  `https://storage.azure.com/.default`. Its token is cached until 5 minutes
+  before its `expiresOnTimestamp` (half its life for a token living under 10
+  minutes; earlier if it gives a `refreshAfterTimestamp`), and one `getToken`
+  runs at a time, however many requests are waiting for it. When a refresh
+  fails while the cached token is still valid, the cached one is used and
+  the next request tries again.
+- **`token`**: a string is sent as is and never renewed; a function (or
+  async function) is asked **on every request**, so its caching and refresh
+  are the application's — keep it cheap.
+- **A refused token is renewed once.** On a 401 (or the 403
+  `AuthenticationFailed` Azurite answers), the driver asks again — the
+  credential, or the token function — and resends the request once if it
+  gets a different token; a refusal means nothing was applied, so the resend
+  cannot write twice. Otherwise the error stands, naming the refusal.
+  Several requests refused together share one `getToken`.
+
+**Testing Entra ID locally**: Azurite takes bearer tokens only over HTTPS and
+with `--oauth basic`, which checks a token's `aud`
+(`https://storage.azure.com`), `iss` (under `https://sts.windows.net/`) and
+`iat`/`nbf`/`exp` but not its signature. The suite's
+`BUN_CACHE_TEST_AZURE_OAUTH_URL` points at such an Azurite (not set up by
+`setup-databases.ts`; the bearer cases skip visibly without it), in the same
+form as `BUN_CACHE_TEST_AZURE_URL` (the key, for its own setup and clean-up)
+over `https`:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 30 \
+  -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1"
+docker create --name azurite-oauth -p 127.0.0.1:10100:10000 mcr.microsoft.com/azure-storage/azurite:3.37.0 \
+  azurite-blob --blobHost 0.0.0.0 --oauth basic --cert /certs/cert.pem --key /certs/key.pem
+tar -c certs | docker cp - azurite-oauth:/ && docker start azurite-oauth
+# then create the blob container bun-cache-test (Shared Key still works), and
+export BUN_CACHE_TEST_AZURE_OAUTH_URL="azure://devstoreaccount1:<the development key, percent-encoded>@127.0.0.1:10100/devstoreaccount1/bun-cache-test"
+```
+
+The suite accepts that Azurite's self-signed certificate for its origin alone.
 
 ## The Cloudflare KV driver
 
