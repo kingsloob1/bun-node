@@ -239,6 +239,19 @@ export interface CacheDriver {
   onEviction?: (
     listener: (ns: string, key: string, reason: string) => void,
   ) => void;
+  /**
+   * Registers a listener for a combinator's member events (`redundant()`,
+   * §5.4): a member's circuit opening (`member-down`), a member that missed a
+   * write or delete (`member-dirty`), and a member serving reads again
+   * (`member-up`). `createCache` forwards each to `cache.on`. Optional, like
+   * {@link onEviction}: a driver made of no other drivers has none.
+   */
+  onMemberEvent?: (
+    listener: <E extends CacheMemberEvent>(
+      event: E,
+      payload: CacheEventMap[E],
+    ) => void,
+  ) => void;
   /** Creates or migrates the backend's schema. v1 drivers answer `[]`: the schema is new, there is nothing to sync (§7.4). */
   syncSchema?: (options?: SchemaSyncOptions) => Promise<SchemaChange[]>;
 }
@@ -647,7 +660,50 @@ export interface CacheEventMap {
   "circuit-open": { driver: string; failures: number };
   /** A driver's circuit closed again after a successful probe. */
   "circuit-close": { driver: string };
+  /** A `redundant()` member's own circuit opened (§5.4): it gets no reads or writes until a `ping()` probe closes it. */
+  "member-down": {
+    /** The combinator's `name`. */
+    driver: string;
+    /** The member's position in the `redundant([...])` list; 0 is the primary. */
+    index: number;
+    /** The member's own driver `name`. */
+    member: string;
+    /** The consecutive failures or timeouts that opened it (1 for a failed `connect`). */
+    failures: number;
+  };
+  /** A `redundant()` member serves reads again (§5.4): its circuit closed after a probe, or a member marked dirty was emptied. */
+  "member-up": {
+    /** The combinator's `name`. */
+    driver: string;
+    /** The member's position; 0 is the primary. */
+    index: number;
+    /** The member's own driver `name`. */
+    member: string;
+    /** Whether it was emptied first: it rejoined empty because it had missed a write or delete (§5.3). */
+    cleared: boolean;
+  };
+  /**
+   * A `redundant()` member missed a write or delete (§5.3): reads skip it
+   * until it has been emptied (`clear()` of every namespace the combinator
+   * wrote to in this process), and then `member-up` follows. Emitted once
+   * per episode, for the first miss.
+   */
+  "member-dirty": {
+    /** The combinator's `name`. */
+    driver: string;
+    /** The member's position; 0 is the primary. */
+    index: number;
+    /** The member's own driver `name`. */
+    member: string;
+    /** The operation it missed (`"set"`, `"delete"`, `"deleteByTags"`, …). */
+    op: string;
+    /** Why: its circuit was open (`"down"`), the call failed or timed out (`"failed"`), or `write: "primary"`'s replication queue was full (`"overflow"`). */
+    reason: "down" | "failed" | "overflow";
+  };
 }
+
+/** The events a driver made of other drivers reports through {@link CacheDriver.onMemberEvent} (`redundant()`, §5.4). */
+export type CacheMemberEvent = "member-down" | "member-up" | "member-dirty";
 
 /** The event names a cache emits. */
 export type CacheEvent = keyof CacheEventMap;
