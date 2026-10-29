@@ -57,3 +57,30 @@ export function storedKey(key: string, maxKeyLength: number): string {
   hasher.update(key);
   return `#${hasher.digest("hex")}`;
 }
+
+/**
+ * The first character of a stale stamp's name (R21's soft purge): a tag's
+ * stale stamp is the stamp of this character plus the tag's stored name, in
+ * the tag's own namespace, so it travels in the same `getStamps` call as the
+ * tag's ordinary stamp. No stored tag may start with it, so the two never
+ * collide: a plaintext tag that does is refused ({@link checkTags}), a
+ * built-in `hashNames` hash is 32 hex characters, and a user
+ * `hashNames.hash` answer for a tag that does is refused (lib/core/names.ts).
+ */
+export const STALE_STAMP_PREFIX = "\u0001";
+
+/**
+ * Refuses tags a cache cannot store as given: one starting with
+ * {@link STALE_STAMP_PREFIX}, which would read as another tag's stale stamp.
+ * Throws a `TypeError` naming the tag. Only plaintext tags are checked; under
+ * `hashNames` the stored names are hashes, whatever the tag.
+ */
+export function checkTags(tags: readonly string[]): void {
+  for (const tag of tags) {
+    if (tag.startsWith(STALE_STAMP_PREFIX)) {
+      throw new TypeError(
+        `a cache tag must not start with U+0001, which marks soft purge's stale stamps (got ${JSON.stringify(tag)})`,
+      );
+    }
+  }
+}

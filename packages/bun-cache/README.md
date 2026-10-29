@@ -172,6 +172,14 @@ And (PR-H2b):
   purged by the tags the cache invalidates (a recipe on the `invalidate`
   event) ([CDN tags (surrogate keys)](#cdn-tags-surrogate-keys))
 
+And (PR-C1b):
+
+- the **soft purge**, `invalidateTags(tags, { mode: "stale" })`: the
+  entries stay but stop being fresh, so they are served stale within their
+  stale windows and refreshed — on every driver, encrypted or not, for a
+  cache that opts in with `softPurge: true`
+  ([Soft purge](#soft-purge-mode-stale))
+
 What comes next is in the plan's Status.
 
 ## Quick start
@@ -316,8 +324,72 @@ How invalidation works depends on the driver (§3.6 of the plan):
   a stamp is a miss. Stamps are cached in process for `tagStampCacheMs`
   (default 1 s), and invalidated entries are reclaimed by the sweeper.
 
-`invalidateTags(tags, { mode: "stale" })` (a soft purge) is a later PR and
-throws `UnsupportedOperationError` today.
+### Soft purge (`mode: "stale"`)
+
+`invalidateTags(tags, { mode: "stale" })` marks the entries stale instead of
+deleting them — Fastly's soft purge, Next.js's `revalidateTag`:
+
+```ts
+const cache = createCache({
+  driver: postgresDriver({ url }),
+  softPurge: true,            // every cache that soft-purges needs it
+  ttl: 60_000,
+  staleWhileRevalidate: 300_000,
+  staleIfError: 3_600_000,
+});
+await cache.invalidateTags(["org:7"], { mode: "stale" });
+// Within 5 minutes: the old value at once, and one background refresh.
+await cache.getOrSet("org:7:report", loadReport, { tags: ["org:7"] });
+```
+
+- **What a purged entry reads as.** Stale from the purge on, never missing:
+  `get` and `has` miss it, `getEntry` answers it with `stale: true` and a
+  `freshUntil` of the purge, `getOrSet` serves it within
+  `staleWhileRevalidate` (refreshing it in the background) or `staleIfError`
+  (when the loader fails), both **counted from the purge**, and a refresh
+  replaces it. With neither window, it is a miss that loads. Its hard
+  expiry is not shortened, so it keeps its space until then (a delete frees
+  it at once). Freshness is only ever lowered: an entry already stale keeps
+  its own `freshUntil`, and one that never goes stale (`ttl: null`) goes
+  stale at the purge. Entries written after the purge are fresh.
+- **How.** One stale stamp per tag (the stamp of the tag's name with a
+  reserved first character, U+0001, which no tag may start with), and a read
+  of a tagged entry created at or before it caps its freshness at the stamp.
+  Nothing is deleted or rewritten, so it works alike on every driver and
+  under encryption (`freshUntil` is inside the sealed entry). The stale
+  stamps travel in the same `getStamps` call as the ordinary ones, through
+  the same `tagStampCacheMs` copy, and are pushed over the bus.
+- **Every cache needs `softPurge: true`**, on every driver, encrypted or
+  not: without it `mode: "stale"` throws `UnsupportedOperationError`, naming
+  the option, and no read ever asks for a stale stamp — no cache pays for
+  soft purge unless it opts in. **The cost of `softPurge`**: its tagged reads
+  check the tags' stale stamps, one stamp lookup per tag per
+  `tagStampCacheMs` (default 1 s) per process. On a plaintext cache over an
+  index-mode driver (memory, SQLite, Postgres, MySQL, MariaDB, MongoDB,
+  Redis, Cloudflare D1), whose reads otherwise read no stamps, that is a new
+  lookup; on a stamps-mode driver (file, S3, Azure, Cloudflare KV,
+  `fromSimpleDriver`) or an encrypted cache, which read the ordinary stamps
+  anyway, the stale ones join the same call, as one more stamp per tag (a
+  file or an object of its own on a stamps-mode driver).
+- **The fence.** A load that began before the purge still stores its value
+  (no write is refused, unlike a delete's fence), but its `createdAt`
+  predates the stale stamp, so it reads stale: a fresh pre-purge value is
+  never resurrected. One on the purging cache itself is dropped, since the
+  purge forgets its flights (`fenced`, `reason: "local"`).
+- **The fail-safe backoff** of a soft-purged entry is kept in process: after
+  a failed refresh, this process serves it as fresh for `failSafeBackoff`,
+  but other processes may still try a refresh each (the usual backoff
+  rewrites the entry, whose stale stamp would make it stale again). A later
+  soft purge ends it.
+- **Lifetimes.** A stale stamp lives for `tagStampTtl`, like any stamp: an
+  entry that outlives it (a TTL longer than the cache's own, or `ttl: null`
+  past 24 h) reads fresh again. Set `tagStampTtl` to cover your longest TTL.
+- **Rolling deploys.** A process on a version before soft purge reads no
+  stale stamps, and serves soft-purged entries as fresh until they expire.
+- **Events.** `invalidate` carries `mode` (`"delete"` or `"stale"`), and a
+  soft purge counts no `deletes` in `stats()`. Its bus message is a delete's
+  (`invalidate-tags`): every other cache drops its L1 copies of the tags and
+  its stamp copies, the stale ones included, and reads the entries stale.
 
 ## Counters
 
@@ -879,7 +951,8 @@ because it costs a schema run per hit.
 ## Events, statistics, logging
 
 `cache.on(event, listener)` — `hit`, `stale-hit`, `miss`, `set`, `fenced`
-(with a `reason`, `"fence"` or `"local"`), `delete`, `invalidate`, `load`
+(with a `reason`, `"fence"` or `"local"`), `delete`, `invalidate` (with its
+`mode`, `"delete"` or `"stale"`), `load`
 (with its duration and a `shared` flag), `refresh`, `stale-if-error`,
 `lock-wait`, `lock-timeout`, `evict`, `oversize`, `error` (with `phase` and
 `driver`), `circuit-open` and `circuit-close`. A `hit` says which `tier`
@@ -2494,6 +2567,14 @@ An unhandled error is answered by the adapter outside the pipeline and
 cannot be rescued. Without a stale entry, a 5xx goes through and
 `hardTimeout` does nothing.
 
+**After a soft purge** (`cache.invalidateTags(tags, { mode: "stale" })`,
+[Soft purge](#soft-purge-mode-stale)) the stored responses carrying the tags
+are past their freshness from the purge on, so they are answered `STALE`
+inside the windows above — counted from the purge — and refreshed by the
+replay, or answered in place of a 5xx; with neither window, the next request
+is a `MISS`. A route's own tag (`tags`, `addCacheTags()`, the path's tag) is
+what the purge names. The cache needs `softPurge: true` for it.
+
 **Streams.** By default (`streams: "skip"`) a streamed answer is sent and
 not stored. With `streams: { buffer: maxBytes }` its body is swapped for a
 pull-through copy: each chunk goes to the client as it arrives (the first
@@ -2598,20 +2679,24 @@ processes that only hear of it over the bus), so one listener purges each
 invalidation once:
 
 ```ts
-// Fastly: POST /service/{id}/purge, up to 256 keys a call.
-cache.on("invalidate", ({ tags }) => {
+// Fastly: POST /service/{id}/purge, up to 256 keys a call. A soft purge
+// (`invalidateTags(tags, { mode: "stale" })`) soft-purges the CDN too: it
+// marks its copies stale instead of dropping them.
+cache.on("invalidate", ({ tags, mode }) => {
   void fetch(`https://api.fastly.com/service/${FASTLY_SERVICE_ID}/purge`, {
     method: "POST",
     headers: {
       "Fastly-Key": FASTLY_API_TOKEN,
       "Content-Type": "application/json",
-      // "Fastly-Soft-Purge": "1",  // mark stale instead of dropping
+      ...(mode === "stale" ? { "Fastly-Soft-Purge": "1" } : {}),
     },
     body: JSON.stringify({ surrogate_keys: tags }),
   }).catch((error: unknown) => logger.error("CDN purge failed", { error }));
 });
 
 // Cloudflare: POST /zones/{zone_id}/purge_cache; a token with Cache Purge.
+// Cloudflare has no soft purge: a `mode: "stale"` invalidation is a hard
+// purge there (the CDN drops its copies; the cache's stay, stale).
 cache.on("invalidate", ({ tags }) => {
   void fetch(`https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache`, {
     method: "POST",

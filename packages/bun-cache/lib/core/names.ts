@@ -25,6 +25,7 @@
 import { Buffer } from "node:buffer";
 import { hkdfSync } from "node:crypto";
 import { parseKey } from "./encrypt";
+import { STALE_STAMP_PREFIX } from "./keys";
 import type {
   CacheEncryptOptions,
   CacheKeyRing,
@@ -183,6 +184,12 @@ export class NameHasher {
     if (bytes < 1 || bytes > MAX_USER_HASH_BYTES || /[\0\n\r]/.test(stored)) {
       throw new TypeError(
         `encrypt.hashNames.hash must answer 1–${MAX_USER_HASH_BYTES} bytes with no NUL or newline (it answered ${bytes} bytes for a ${kind})`,
+      );
+    }
+    if (kind === "tag" && stored.startsWith(STALE_STAMP_PREFIX)) {
+      // It would read as another tag's stale stamp (soft purge, R21).
+      throw new TypeError(
+        "encrypt.hashNames.hash must not answer a tag's name starting with U+0001, which marks soft purge's stale stamps",
       );
     }
     if (!this.#proven.has(kind)) {

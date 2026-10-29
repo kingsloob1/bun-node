@@ -107,11 +107,14 @@ describe("tags: index mode (memory)", () => {
     await cache.close();
   });
 
-  test('mode: "stale" is a later PR and says so', async () => {
+  test('mode: "stale" needs softPurge on a plaintext index-mode cache, and says so', async () => {
     const { cache } = makeCache();
     await expect(
       cache.invalidateTags(["a"], { mode: "stale" }),
     ).rejects.toThrow(UnsupportedOperationError);
+    await expect(
+      cache.invalidateTags(["a"], { mode: "stale" }),
+    ).rejects.toThrow(/softPurge: true/);
     await cache.close();
   });
 });

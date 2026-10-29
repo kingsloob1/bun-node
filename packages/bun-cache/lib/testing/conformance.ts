@@ -24,6 +24,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import process from "node:process";
 import { createCache } from "../core/cache";
+import { UnsupportedOperationError } from "../core/errors";
+import { STALE_STAMP_PREFIX } from "../core/keys";
 import type {
   BusMessage,
   Cache,
@@ -860,6 +862,7 @@ export async function runCacheDriverConformance(
     );
 
     registerEncryptedPass({ driver, instance, options, kase });
+    registerSoftPurgePass({ driver, kase });
   });
 }
 
@@ -1204,6 +1207,8 @@ function registerEncryptedPass(context: {
         sweepInterval: 0,
         bus: capabilities.bus === "none" ? false : "auto",
         encrypt: KIT_ENCRYPT,
+        // It soft-purges below, so its stale stamp is scanned too.
+        softPurge: true,
       });
       try {
         const child = cache.namespace(sentinels.child);
@@ -1233,8 +1238,12 @@ function registerEncryptedPass(context: {
             tags: [sentinels.tag],
           });
         }
-        // Stamps (and their bus messages) name the invalidated tag.
+        // Stamps (and their bus messages) name the invalidated tag; a soft
+        // purge's stale stamp too.
         await cache.invalidateTags([`${sentinels.tag}_gone`]);
+        await cache.invalidateTags([`${sentinels.tag}_soft`], {
+          mode: "stale",
+        });
         await cache.delete(`${sentinels.key}_gone`);
         const dump = await rawDump();
         expect(
@@ -1252,5 +1261,171 @@ function registerEncryptedPass(context: {
       }
     },
     CROSS_PROCESS_TIMEOUT_MS,
+  );
+}
+
+/**
+ * The soft purge (R21, §3.6): `invalidateTags(tags, { mode: "stale" })`
+ * through caches over the suite's driver with `softPurge: true` — plaintext,
+ * and encrypted with `hashNames` — and, without the option, the refusal and
+ * the read path asking for no stale stamp (no cache pays for soft purge
+ * unless it opts in, the user's decision of 2026-10-29). Every driver
+ * supports it, so no case skips.
+ */
+function registerSoftPurgePass(context: {
+  /** The suite's driver. */
+  driver: CacheDriver;
+  /** The suite's case registrar. */
+  kase: (
+    id: string,
+    title: string,
+    advertised: boolean,
+    run: () => void | Promise<void>,
+    timeoutMs?: number,
+  ) => void;
+}): void {
+  const { driver, kase } = context;
+
+  /** A cache over `over` (the suite's driver by default) in a fresh namespace, closed after `body`. */
+  const withCache = async (
+    options: { softPurge?: boolean; encrypt?: CacheEncryptOptions },
+    body: (cache: Cache) => Promise<void>,
+    over: CacheDriver = unclosable(driver),
+  ): Promise<void> => {
+    const cache = createCache({
+      driver: over,
+      namespace: `kitsoft-${process.pid}-${token()}`,
+      sweepInterval: 0,
+      bus: false,
+      staleWhileRevalidate: 60_000,
+      ...options,
+    });
+    try {
+      await body(cache);
+    } finally {
+      await cache.clear();
+      await cache.close();
+    }
+  };
+
+  /** The contract, on one cache: stale (never missing) within the window, refreshed, and nothing else touched. */
+  const softPurgeContract = async (cache: Cache): Promise<void> => {
+    const ttl = 60_000;
+    await cache.set("a", "a1", { tags: ["soft-a"], ttl });
+    await cache.set("b", "b1", { tags: ["soft-b"], ttl });
+    await cache.set("u", "u1", { ttl });
+    const before = await cache.getEntry("a");
+    expect(before?.stale).toBe(false);
+    await cache.invalidateTags(["soft-a"], { mode: "stale" });
+    const after = await cache.getEntry("a");
+    expect(after?.value).toBe("a1");
+    expect(after?.stale).toBe(true);
+    // Stale from the purge: `freshUntil` lowered to it, the hard expiry kept.
+    expect(after!.freshUntil!).toBeLessThanOrEqual(Date.now());
+    expect(after!.freshUntil!).toBeGreaterThanOrEqual(before!.createdAt);
+    expect(after!.expiresAt).toBe(before!.expiresAt);
+    expect(await cache.get("a")).toBeUndefined();
+    expect(await cache.has("a")).toBe(false);
+    // Other tags and untagged entries are untouched.
+    expect((await cache.getEntry("b"))?.stale).toBe(false);
+    expect(await cache.get("u")).toBe("u1");
+    // Within the window `getOrSet` serves it stale and refreshes it.
+    const refreshed = new Promise<void>((resolve) => {
+      const off = cache.on("refresh", () => {
+        off();
+        resolve();
+      });
+    });
+    expect(
+      await cache.getOrSet("a", () => "a2", { tags: ["soft-a"], ttl }),
+    ).toBe("a1");
+    await refreshed;
+    expect(await cache.get("a")).toBe("a2");
+    // A write after the purge is fresh.
+    await cache.set("c", "c1", { tags: ["soft-a"], ttl });
+    expect(await cache.get("c")).toBe("c1");
+  };
+
+  kase(
+    "soft-purge",
+    'soft purge: invalidateTags mode "stale" serves the entries stale, then refreshes them (softPurge: true)',
+    true,
+    async () => {
+      await withCache({ softPurge: true }, softPurgeContract);
+    },
+    15_000,
+  );
+
+  kase(
+    "soft-purge.option",
+    "soft purge: without softPurge it throws, naming the option, and no read asks for a stale stamp (plain and encrypted)",
+    true,
+    async () => {
+      for (const encrypt of [undefined, KIT_ENCRYPT]) {
+        // Every name each `getStamps` call asked for.
+        const asked: string[] = [];
+        const recording = new Proxy(unclosable(driver), {
+          get(target, property) {
+            if (property === "getStamps") {
+              return async (ns: string, tags: readonly string[]) => {
+                asked.push(...tags);
+                return await target.getStamps(ns, tags);
+              };
+            }
+            return Reflect.get(target, property, target) as unknown;
+          },
+        });
+        await withCache(
+          encrypt === undefined ? {} : { encrypt },
+          async (cache) => {
+            await cache.set("a", "a1", { tags: ["soft-a"] });
+            const refused = cache.invalidateTags(["soft-a"], {
+              mode: "stale",
+            });
+            await expect(refused).rejects.toThrow(UnsupportedOperationError);
+            await expect(refused).rejects.toThrow(/softPurge: true/);
+            // Nothing was purged, and the reads asked for no stale stamp.
+            expect(await cache.get("a")).toBe("a1");
+            expect(await cache.getEntry("a")).toBeDefined();
+            expect(
+              asked.filter((name) => name.startsWith(STALE_STAMP_PREFIX)),
+            ).toEqual([]);
+            // Where reads check the ordinary stamps (encrypted, or a
+            // stamps-mode driver), they did ask: only for those.
+            if (
+              encrypt !== undefined ||
+              driver.capabilities.tags === "stamps"
+            ) {
+              expect(asked.length).toBeGreaterThan(0);
+            }
+          },
+          recording,
+        );
+      }
+    },
+    15_000,
+  );
+
+  kase(
+    "soft-purge.encrypted",
+    "soft purge: encrypt + hashNames with softPurge, its stale stamp under the hashed tag",
+    true,
+    async () => {
+      await withCache(
+        { encrypt: KIT_ENCRYPT, softPurge: true },
+        async (cache) => {
+          await softPurgeContract(cache);
+          // The stale stamp is the hashed tag's, never the plaintext one.
+          const described = cache.describeKey("a", ["soft-a"]);
+          const staleName = `${STALE_STAMP_PREFIX}${described.tags[0]}`;
+          const stamps = await driver.getStamps(described.namespace, [
+            staleName,
+            `${STALE_STAMP_PREFIX}soft-a`,
+          ]);
+          expect([...stamps.keys()]).toEqual([staleName]);
+        },
+      );
+    },
+    15_000,
   );
 }
