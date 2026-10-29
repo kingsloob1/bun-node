@@ -353,7 +353,8 @@ try {
     async () =>
       (await namesUnder(prefix)).filter((name) => name.includes("/expiring/"))
         .length === 0,
-    { timeout: 5_000 },
+    // The default deadline: the deletes run in the background, and a pooled
+    // run shares Azurite with the other examples (a 5 s bound flaked there).
   );
   checkEqual(
     "no blob of the expired namespace is left",
