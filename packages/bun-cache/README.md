@@ -165,6 +165,13 @@ And (PR-K1):
   Keyv majors, storing Keyv's strings with the raw codec
   ([Keyv and `@nestjs/cache-manager`](#keyv-and-nestjscache-manager))
 
+And (PR-H2b):
+
+- **CDN tags**: `cacheResponse({ surrogateKeys })` sends each answer's tags
+  as Fastly's `Surrogate-Key` or Cloudflare's `Cache-Tag`, so the CDN can be
+  purged by the tags the cache invalidates (a recipe on the `invalidate`
+  event) ([CDN tags (surrogate keys)](#cdn-tags-surrogate-keys))
+
 What comes next is in the plan's Status.
 
 ## Quick start
@@ -2315,6 +2322,8 @@ or `no-cache` is not shared.
 | `hardTimeout` | none | ms to wait for the handler when a stale-if-error answer exists |
 | `revalidate` | none | the router or adapter a refresh replays through |
 | `streams` | `"skip"` | or `{ buffer: bytes }`: store streams that end within it |
+| `surrogateKeys` | `false` | `"Surrogate-Key"` (Fastly) or `"Cache-Tag"` (Cloudflare): each answer's tags for a CDN |
+| `logger` | the console | where the middleware's warnings go (a tag left out of `surrogateKeys`' header) |
 
 ### Stale serving over HTTP
 
@@ -2404,6 +2413,124 @@ answer does. Coalesced followers wait for the stream to end. The copy is not a
 `tee()`: a tee's second branch keeps pulling, so a slow client stops
 back-pressuring the handler and a client that leaves no longer stops it
 (measured: `docs/plans/bun-cache/evidence/stream-tap.ts`).
+
+### CDN tags (surrogate keys)
+
+```ts
+const pages = cacheResponse(cache, {
+  ttl: 60_000,
+  surrogateKeys: "Surrogate-Key",  // Fastly; "Cache-Tag" for Cloudflare
+});
+app.get("/posts/:id", pages, async (req, res) => {
+  addCacheTags(res, `post:${req.params.id}`);
+  res.setHeader("Cache-Control", "s-maxage=300");    // what the CDN keeps it for
+  res.json(await loadPost(req.params.id));
+});
+// GET /posts/7 → Surrogate-Key: http:path:/posts/7 post:7
+```
+
+With `surrogateKeys`, every answer carries its entry's tags in the header a
+CDN in front purges by, so the CDN can drop a response by the same tags
+`cache.invalidateTags()` takes. The tags are the path's own
+(`http:path:<path>`, the one unsafe methods and `pages.invalidate()` drop),
+the route's `tags` and `addCacheTags()`'s, in plain text. `false`, the
+default, sends nothing.
+
+| Header | CDN | Format | Limits |
+|---|---|---|---|
+| `Surrogate-Key` | Fastly | space-separated, case sensitive, no duplicates | a key 1 KB, the header 16 KB; past a limit Fastly ignores that key and every key after it |
+| `Cache-Tag` | Cloudflare | comma-separated, case insensitive, printable ASCII, no spaces | the header 16 KB after its name (about 1,000 tags); a purge call takes tags of at most 1,024 characters |
+
+Sources: Fastly's [working with surrogate
+keys](https://www.fastly.com/documentation/guides/full-site-delivery/purging/working-with-surrogate-keys/)
+and [purging API](https://www.fastly.com/documentation/reference/api/purging/);
+Cloudflare's [purge by cache-tags](https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-tags/)
+and [purge cache](https://developers.cloudflare.com/cache/how-to/purge-cache/)
+(read 2026-10-29).
+
+- **Which answers.** Every `GET` and `HEAD` through the middleware: `MISS`,
+  `HIT`, `STALE` (stale-while-revalidate, and the stale answer to a 5xx or a
+  `hardTimeout`), `UNCACHEABLE` (this cache refused it; a CDN may still keep
+  it), a coalesced follower's, a `304` (RFC 9111 §4.3.4: a CDN revalidating
+  its copy takes the 304's headers, so a 304 without the tags could strip
+  them), a `HEAD` hit and a `HEAD` miss. Not `BYPASS`. The CDN reads the
+  header on the response it stores — usually a `MISS` or `HIT` from the
+  origin's side.
+- **Merging.** A header the handler (or a middleware ahead) already set is
+  kept first, as written; the entry's tags follow, de-duplicated —
+  case-insensitively for `Cache-Tag`, as Cloudflare compares them. Set it
+  once: two lines are joined with a comma, which `Surrogate-Key` reads as
+  part of a key. The other CDN's header is left alone.
+- **Tags that break the format** are left out of the header, never the
+  entry (the cache still invalidates by them), with one `logger` warning
+  per tag: a tag holding the separator (a space for `Surrogate-Key`, a
+  comma for `Cache-Tag`), any character outside visible ASCII (`!` to `~`:
+  whitespace, control characters, non-ASCII — percent-encode such tags
+  yourself, the same way where you purge), one longer than 1,000 bytes,
+  and any that would take the header past 16,000 bytes (the smaller reading
+  of both CDNs' "1 KB" and "16 KB"; smaller tags after it still go in). They
+  are not encoded or cut: either would change the name a purge has to use.
+  A request never fails over one; but a CDN cannot purge that response by
+  it, so keep tags short and plain.
+- **Privacy: the tags reach the client unless the CDN removes the header.**
+  Fastly removes `Surrogate-Key` before delivering a response (unless the
+  request sends `Fastly-Debug`); Cloudflare removes `Cache-Tag` (its
+  visitors and Workers never see it). Without such a CDN in front — or with
+  the header on the wrong CDN, or a client reaching the origin directly —
+  every client sees every tag. Do not put identities or secrets in tags of
+  a route that sends them.
+- **Under `encrypt.hashNames`** the header still carries the tags in plain
+  text: they are the names your purge calls send, and the `invalidate` event
+  names them so. The store holds them only sealed (inside the encrypted
+  entry, and hashed in the tag index), but the CDN — and any client, without
+  the stripping above — sees them.
+- **Two CDN details.** CDN tags are not namespaced: a purge of `post:7`
+  drops every response at the CDN carrying it, whichever cache stored it.
+  Cloudflare's tags are case insensitive, so its purge of
+  `http:path:/About` also drops `/about`'s responses (more is purged, never
+  less). An entry stored before `surrogateKeys` was turned on carries the
+  tags the core stored with it.
+
+**Purging the CDN by the same tags.** The cache emits `invalidate`, with the
+tags in plain text, in the process that called `invalidateTags()` (an
+unsafe method's invalidation and `pages.invalidate()` included; not in the
+processes that only hear of it over the bus), so one listener purges each
+invalidation once:
+
+```ts
+// Fastly: POST /service/{id}/purge, up to 256 keys a call.
+cache.on("invalidate", ({ tags }) => {
+  void fetch(`https://api.fastly.com/service/${FASTLY_SERVICE_ID}/purge`, {
+    method: "POST",
+    headers: {
+      "Fastly-Key": FASTLY_API_TOKEN,
+      "Content-Type": "application/json",
+      // "Fastly-Soft-Purge": "1",  // mark stale instead of dropping
+    },
+    body: JSON.stringify({ surrogate_keys: tags }),
+  }).catch((error: unknown) => logger.error("CDN purge failed", { error }));
+});
+
+// Cloudflare: POST /zones/{zone_id}/purge_cache; a token with Cache Purge.
+cache.on("invalidate", ({ tags }) => {
+  void fetch(`https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ tags }),
+  }).catch((error: unknown) => logger.error("CDN purge failed", { error }));
+});
+```
+
+Split a long list into calls the CDN accepts (Fastly's 256 keys; Cloudflare
+lists 100 operations a request, and its tag purges are rate limited per
+plan, from 5 a minute on Free), and retry a failed one: the listener runs
+after the cache's own invalidation, and a lost purge leaves the CDN serving
+the old response until its own TTL. `cache.clear()` and `delete()` are not
+tag invalidations and emit no `invalidate`. A Cloudflare `200` means the
+purge was accepted, not done. bun-cache ships no CDN client.
 
 ## Keyv and `@nestjs/cache-manager`
 
