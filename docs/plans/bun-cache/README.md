@@ -1950,7 +1950,14 @@ How it is built, and where it departs from or adds to §5:
   driver return one), so a read moves on. **Stamps** (`getStamps`) are read
   from every healthy member whatever the mode, the newest per tag winning:
   an invalidation recorded on any member counts, which agrees with the
-  fence (any member may refuse a write).
+  fence (any member may refuse a write). **Except under `write:
+  "primary"`** (fixed after #586): there the fence is the writer's alone,
+  and a secondary's copy of an invalidation is stamped by its own clock
+  when the queue replays it, so the newest stamp could be one the fence
+  does not refuse at (the kit's same-millisecond case failed about 6 runs
+  in 10). The writer's stamps (the first member to answer, in order) win
+  for the tags it holds; a tag only the others hold, one the writer lost by
+  rejoining empty, takes their newest.
 - **Health.** §5.4 as written: a circuit per member, `timeout` (default
   250 ms) on every call except `connect` (the drivers' own connection
   timeouts govern; a member that fails to connect is down from the start),

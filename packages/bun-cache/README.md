@@ -1186,7 +1186,7 @@ carrying a tag fence, and a tag invalidation, always wait for every member.
 One member's writes are applied in order (a key's write after that key's
 earlier one; a `clear` or an invalidation after everything before it in its
 namespace; a sweep after every write before it). `write: "primary"` writes the first healthy member and copies to
-the others in the background, in order, through a queue per member
+the others in the background (a fenced write and an invalidation too), in order, through a queue per member
 (`maxQueue`, default 10,000): only the first member is current, the others
 lag by their queue, and a crash loses the queue. `close()` drains it first.
 
@@ -1195,7 +1195,11 @@ an error, a timeout or a secondary's miss, the next. **A miss from a healthy
 primary is final.** `read: "race"` asks every healthy member and takes the
 first hit: the lowest latency, twice the read load, and possibly an older
 copy while a newer one exists. Tag stamps are read from every healthy member
-whatever the mode, the newest per tag winning.
+whatever the read mode. Under `write: "all"` the newest per tag wins. Under
+`write: "primary"` the stamps of the member that takes the writes win, since it
+alone applies the fence: a secondary's copy of an invalidation is stamped
+when its queue replays it, later than the invalidation itself. A tag only the
+other members hold (one the writer lost by rejoining empty) takes their newest.
 
 **Health.** One circuit per member, in each process: `circuit.failures`
 consecutive failures or timeouts (default 5) open it (`member-down`) for
@@ -1237,8 +1241,8 @@ rate-limit window restarts). `counters: "refuse"` removes counters and locks.
 **Capabilities** are the members' intersection, except counters and locks
 (above): `multiProcess` only when every member is; `maxEntryBytes` the
 smallest. **Tags** are `"index"` when every member indexes them — deleted on
-every member, and the fence checked on every member: a write any member
-fences is fenced, and deleted where it was stored. Otherwise they are
+every member, and the fence checked on every member a write goes to: a write
+any member fences is fenced, and deleted where it was stored. Otherwise they are
 `"stamps"`: an invalidation stamps every member and the core's read check
 hides what it invalidated, which is just as correct on an indexing member,
 whose invalidated entries then keep their space until they expire. **The
