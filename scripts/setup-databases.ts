@@ -40,6 +40,16 @@ import process from "node:process";
  * blob service only, for bun-cache's `azureBlobDriver`
  * (`BUN_CACHE_TEST_AZURE_URL`), with its blob container
  * {@link AZURE_CACHE_CONTAINER} created by a Shared Key-signed `PUT` when absent.
+ * `azure-oauth` is a second Azurite on 10100, HTTPS with `--oauth basic`
+ * (`BUN_CACHE_TEST_AZURE_OAUTH_URL`), for the driver's Entra ID lane: it checks
+ * a bearer token's claims, not its signature. Its certificate is self-signed,
+ * made once by `openssl` into {@link azureOauthCertDir} (outside the repository
+ * and outside dot-directories, which snap Docker cannot read; set
+ * `BUN_NODE_TEST_CERTS` to move it) and copied into the container with
+ * `tar | docker cp -` after `docker create`. The suite does not trust it: its
+ * fetch exempts that one host from verification (`tls.rejectUnauthorized`), and
+ * this script's own checks do the same. A container that exists is only
+ * started, never recreated, so its certificate is never replaced under it.
  *
  * ```bash
  * bun scripts/setup-databases.ts              # install what is missing, configure what is not
@@ -65,6 +75,7 @@ const SERVICES = [
   "mongodb-rs",
   "s3",
   "azure",
+  "azure-oauth",
 ] as const;
 
 /** One of the servers this script knows how to provide. */
@@ -202,6 +213,26 @@ export const AZURE_CACHE_CONTAINER = "bun-cache-test";
 
 /** The Blob service REST version the script's requests ask for. */
 const AZURE_API_VERSION = "2025-01-05";
+
+/** The host port of the HTTPS, `--oauth basic` Azurite (`azure-oauth`). */
+export const AZURE_OAUTH_PORT = 10_100;
+
+/** The name of the `azure-oauth` container. */
+export const AZURE_OAUTH_CONTAINER = "bun-cache-azurite-oauth";
+
+/**
+ * Where the `azure-oauth` certificate and key live: `~/bun-node-test-certs/azure-oauth`,
+ * or `$BUN_NODE_TEST_CERTS/azure-oauth`. Never inside the repository (a key
+ * is never committed) and never under a dot-directory such as `~/.cache`,
+ * which snap Docker cannot read.
+ */
+export function azureOauthCertDir(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const base =
+    env.BUN_NODE_TEST_CERTS || `${env.HOME ?? "/root"}/bun-node-test-certs`;
+  return `${base}/azure-oauth`;
+}
 
 /** Why the last Azure request failed, for the summary. */
 let lastAzureError = "";
@@ -782,6 +813,24 @@ export interface ContainerSpec {
    * they are fixed when the container is created.
    */
   args?: string[];
+  /**
+   * Files to put in the container's filesystem when it is created: the
+   * directory `from` is copied (`tar | docker cp -`, since snap Docker cannot
+   * read every host path) to `to` inside it, between `docker create` and
+   * `docker start`. Used by the `azure-oauth` certificate.
+   */
+  copyIn?: {
+    /** Host directory whose contents are copied. */
+    from: string;
+    /** Directory in the container they are copied into. */
+    to: string;
+  };
+}
+
+/** The `docker create` command for a spec with {@link ContainerSpec.copyIn}: `docker run --detach`'s, without the start. */
+export function dockerCreateArgv(spec: ContainerSpec): string[] {
+  const [docker, , , ...rest] = dockerRunArgv(spec);
+  return [docker, "create", ...rest];
 }
 
 /** The `docker run` command that creates a container to `spec`. */
@@ -908,6 +957,59 @@ async function checkContainerLimit(name: string): Promise<void> {
   );
 }
 
+/** Creates a container, copies `files` into it, then starts it. */
+async function createWithFiles(
+  spec: ContainerSpec,
+  files: NonNullable<ContainerSpec["copyIn"]>,
+  options: Options,
+): Promise<boolean> {
+  const create = dockerCreateArgv(spec);
+  const copy = ["docker", "cp", "-", `${spec.name}:${files.to}`];
+  const start = ["docker", "start", spec.name];
+  log.cmd(create);
+  log.cmd(["tar", "-C", files.from, "-c", ".", "|", ...copy]);
+  log.cmd(start);
+
+  if (options.dryRun) {
+    return true;
+  }
+
+  const created = await run(create);
+  if (!created.ok) {
+    log.bad(tail(created.stderr, 2));
+    return false;
+  }
+
+  const tar = Bun.spawn(["tar", "-C", files.from, "-c", "."], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const cp = Bun.spawn(copy, {
+    stdin: tar.stdout,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [cpErr, cpCode, tarCode] = await Promise.all([
+    new Response(cp.stderr).text(),
+    cp.exited,
+    tar.exited,
+  ]);
+  if (cpCode !== 0 || tarCode !== 0) {
+    log.bad(tail(cpErr, 2) || "could not copy the files into the container");
+    // Never leave a half-made container for the next run to start.
+    await run(["docker", "rm", "--force", spec.name]);
+    return false;
+  }
+
+  if (!(await run(start)).ok) {
+    log.bad(`could not start container ${spec.name}`);
+    return false;
+  }
+
+  log.did(`created container ${spec.name} from ${spec.image}`);
+  return await waitForPort(spec.port);
+}
+
 /** Starts a container, reusing one that already exists. */
 async function ensureContainer(
   spec: ContainerSpec,
@@ -940,6 +1042,10 @@ async function ensureContainer(
 
     log.did(`started the existing container ${spec.name}`);
     return await waitForPort(spec.port);
+  }
+
+  if (spec.copyIn) {
+    return await createWithFiles(spec, spec.copyIn, options);
   }
 
   const argv = dockerRunArgv(spec);
@@ -1047,6 +1153,11 @@ interface ServicePlan {
    * succeeded.
    */
   initContainer?: (options: Options) => Promise<boolean>;
+  /**
+   * Made ready before a container is created (the `azure-oauth` certificate),
+   * only when none exists yet. Resolves whether it succeeded.
+   */
+  prepareContainer?: (options: Options) => Promise<boolean>;
 }
 
 /**
@@ -2493,6 +2604,82 @@ export const PLANS: Record<Service, ServicePlan> = {
     configure: () => Promise.resolve(true),
     configureNote: () => `created the ${AZURE_CACHE_CONTAINER} blob container`,
   },
+
+  "azure-oauth": {
+    service: "azure-oauth",
+    port: AZURE_OAUTH_PORT,
+    // bun-cache only: the Entra ID lane of azureBlobDriver
+    // (azure-auth.test.ts). The URL has no `scheme`, so the driver speaks
+    // HTTPS to it.
+    cacheEnvVar: "BUN_CACHE_TEST_AZURE_OAUTH_URL",
+    url: () => azureTestUrl(AZURE_CACHE_CONTAINER, true),
+    // A container, so there are no binaries on the host to look for.
+    installed: () => false,
+    packages: {},
+    unit: () => "azurite",
+    readyTimeout: 60_000,
+    dockerOnly:
+      "Azurite, the Azure Storage emulator, has no distribution package, so the Entra ID test server runs as a container",
+    container: () => ({
+      name: AZURE_OAUTH_CONTAINER,
+      image: AZURE_CONTAINER_IMAGE,
+      port: AZURE_OAUTH_PORT,
+      containerPort: 10_000,
+      env: {},
+      // The certificate directory, copied to /certs when the container is
+      // created (never a bind mount: snap Docker cannot read every path).
+      copyIn: { from: azureOauthCertDir(), to: "/" },
+      args: [
+        "azurite-blob",
+        "--blobHost",
+        "0.0.0.0",
+        "--blobPort",
+        "10000",
+        "--location",
+        "/data",
+        // Checks a token's claims (audience, issuer, expiry), not its
+        // signature; it needs HTTPS, hence the certificate.
+        "--oauth",
+        "basic",
+        "--cert",
+        "/certs/cert.pem",
+        "--key",
+        "/certs/key.pem",
+      ],
+    }),
+    // The certificate, made once; only called when the container is absent.
+    prepareContainer: (options) => ensureAzureOauthCert(options),
+    // Shared Key still works under `--oauth basic`, which is how the blob
+    // container is made.
+    initContainer: async (options) => {
+      log.cmd([
+        `(Shared Key PUT /${AZURE_ACCOUNT}/${AZURE_CACHE_CONTAINER}?restype=container over https://127.0.0.1:${AZURE_OAUTH_PORT})`,
+      ]);
+      if (options.dryRun) {
+        return true;
+      }
+      const url = azureTestUrl(AZURE_CACHE_CONTAINER, true);
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (await ensureAzureContainer(url, false)) {
+          log.did(`the ${AZURE_CACHE_CONTAINER} blob container is there`);
+          return true;
+        }
+        await Bun.sleep(1_000);
+      }
+      log.bad(
+        `could not create the ${AZURE_CACHE_CONTAINER} blob container: ${lastAzureError}`,
+      );
+      return false;
+    },
+    configured: async () =>
+      (await portOpen(AZURE_OAUTH_PORT)) &&
+      (await ensureAzureContainer(
+        azureTestUrl(AZURE_CACHE_CONTAINER, true),
+        true,
+      )),
+    configure: () => Promise.resolve(true),
+    configureNote: () => `created the ${AZURE_CACHE_CONTAINER} blob container`,
+  },
 };
 
 /* ------------------------------------------------------------------ *
@@ -2666,8 +2853,72 @@ async function ensureCacheBucket(
  * — Azurite's blob endpoint is path-style, `http://127.0.0.1:10000/<account>`,
  * and the key is percent-encoded (it holds `/` and `=`).
  */
-export function azureTestUrl(container: string): string {
-  return `azure://${AZURE_ACCOUNT}:${encodeURIComponent(AZURE_ACCOUNT_KEY)}@127.0.0.1:10000/${AZURE_ACCOUNT}/${container}?scheme=http`;
+export function azureTestUrl(container: string, oauth = false): string {
+  const base = `azure://${AZURE_ACCOUNT}:${encodeURIComponent(AZURE_ACCOUNT_KEY)}@127.0.0.1`;
+  // The `--oauth basic` Azurite is HTTPS, the driver's default scheme: no
+  // `scheme` parameter.
+  return oauth
+    ? `${base}:${AZURE_OAUTH_PORT}/${AZURE_ACCOUNT}/${container}`
+    : `${base}:10000/${AZURE_ACCOUNT}/${container}?scheme=http`;
+}
+
+/** The `openssl` command that makes the `azure-oauth` self-signed certificate and key in `dir`. */
+export function azureOauthCertArgv(dir: string): string[] {
+  return [
+    "openssl",
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    `${dir}/certs/key.pem`,
+    "-out",
+    `${dir}/certs/cert.pem`,
+    "-days",
+    "3650",
+    "-subj",
+    "/CN=127.0.0.1",
+    "-addext",
+    "subjectAltName=IP:127.0.0.1,DNS:localhost",
+  ];
+}
+
+/**
+ * Makes the `azure-oauth` certificate and key (in `<dir>/certs`, so that
+ * copying `<dir>` to `/` puts them at `/certs`) unless both are there. Never
+ * replaces one. The private key is 0644 inside a 0700 directory: the Azurite
+ * process in the container is not the host user.
+ */
+async function ensureAzureOauthCert(options: Options): Promise<boolean> {
+  const dir = azureOauthCertDir();
+  const { chmodSync, existsSync, mkdirSync } = await import("node:fs");
+  if (
+    existsSync(`${dir}/certs/cert.pem`) &&
+    existsSync(`${dir}/certs/key.pem`)
+  ) {
+    log.skip(`the certificate in ${dir}/certs is already there`);
+    return true;
+  }
+  const argv = azureOauthCertArgv(dir);
+  log.cmd(["mkdir", "-p", `${dir}/certs`]);
+  log.cmd(argv);
+  if (options.dryRun) {
+    return true;
+  }
+  if (!has("openssl")) {
+    log.bad("openssl is needed to make the azure-oauth certificate");
+    return false;
+  }
+  mkdirSync(`${dir}/certs`, { recursive: true, mode: 0o700 });
+  const made = await run(argv);
+  if (!made.ok) {
+    log.bad(tail(made.stderr, 2));
+    return false;
+  }
+  chmodSync(`${dir}/certs/key.pem`, 0o644);
+  log.did(`made a self-signed certificate in ${dir}/certs`);
+  return true;
 }
 
 /** The blob endpoint, container and credentials in an Azure test URL (the driver's `azure://` form). */
@@ -2739,6 +2990,9 @@ export function azureContainerCreated(status: number, body: string): boolean {
   );
 }
 
+/** Bun's `fetch` `tls` option, which exempts a self-signed loopback certificate. */
+const azureLoopbackTls = { tls: { rejectUnauthorized: false } };
+
 /**
  * Whether the blob container in an Azure test URL is usable over its
  * credentials: Get Container Properties, then — when it is absent and
@@ -2752,10 +3006,14 @@ async function ensureAzureContainer(
   const containerUrl = new URL(
     `${target.endpoint}/${target.container}?restype=container`,
   );
+  // Bun's per-request TLS option: the `--oauth basic` Azurite's certificate is
+  // self-signed. Exempt for this one loopback host, as the suite does.
+  const tls = containerUrl.protocol === "https:" ? azureLoopbackTls : {};
   try {
     const head = await fetch(containerUrl, {
       method: "HEAD",
       headers: signAzure(target, "HEAD", containerUrl),
+      ...tls,
     });
     if (head.ok) {
       lastAzureError = "";
@@ -2768,6 +3026,7 @@ async function ensureAzureContainer(
     const created = await fetch(containerUrl, {
       method: "PUT",
       headers: signAzure(target, "PUT", containerUrl),
+      ...tls,
     });
     const body = await created.text();
     if (azureContainerCreated(created.status, body)) {
@@ -3174,7 +3433,11 @@ async function setupServer(
 
     const spec = plan.container(options);
     const existed = (await containerState(spec.name)) !== "";
-    let started = await ensureContainer(spec, options);
+    let started =
+      existed ||
+      !plan.prepareContainer ||
+      (await plan.prepareContainer(options));
+    started = started && (await ensureContainer(spec, options));
 
     if (started && plan.initContainer) {
       started = await plan.initContainer(options);

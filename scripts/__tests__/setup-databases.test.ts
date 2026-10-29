@@ -57,7 +57,12 @@ import {
   AZURE_ACCOUNT_KEY,
   AZURE_CACHE_CONTAINER,
   AZURE_CONTAINER_IMAGE,
+  AZURE_OAUTH_CONTAINER,
+  AZURE_OAUTH_PORT,
   azureContainerCreated,
+  azureOauthCertArgv,
+  azureOauthCertDir,
+  dockerCreateArgv,
   azureTestUrl,
   parseAzureTestUrl,
   signAzure,
@@ -983,6 +988,7 @@ describe("bun-cache's database", () => {
       "export BUN_CACHE_TEST_MONGODB_RS_URL=mongodb://127.0.0.1:27018/bun_cache_test?replicaSet=rs0",
       "export BUN_CACHE_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-cache-test?scheme=http",
       `export BUN_CACHE_TEST_AZURE_URL=azure://devstoreaccount1:${encodeURIComponent(AZURE_ACCOUNT_KEY)}@127.0.0.1:10000/devstoreaccount1/bun-cache-test?scheme=http`,
+      `export BUN_CACHE_TEST_AZURE_OAUTH_URL=azure://devstoreaccount1:${encodeURIComponent(AZURE_ACCOUNT_KEY)}@127.0.0.1:10100/devstoreaccount1/bun-cache-test`,
     ]);
     expect(out).toContain(
       "export BUN_JOBS_TEST_S3_URL=s3://test:test@127.0.0.1:8333/bun-jobs-test?scheme=http",
@@ -1185,6 +1191,117 @@ describe("the Azure Blob Storage server (Azurite)", () => {
       ),
     ).toBe(false);
     expect(azureContainerCreated(403, "")).toBe(false);
+  });
+});
+
+describe("the Entra ID Azure server (Azurite with --oauth basic)", () => {
+  const options = parseArgs([]);
+
+  it("is a second pinned Azurite on 10100, HTTPS with --oauth basic, beside the Shared Key one", () => {
+    const plan = PLANS["azure-oauth"];
+    expect(plan.dockerOnly).toContain("container");
+    expect(plan.installed()).toBe(false);
+    expect(plan.port).toBe(10_100);
+    expect(AZURE_OAUTH_PORT).toBe(10_100);
+    const spec = plan.container(options);
+    expect(spec.name).toBe(AZURE_OAUTH_CONTAINER);
+    expect(spec.name).not.toBe(PLANS.azure.container(options).name);
+    expect(spec.image).toBe(AZURE_CONTAINER_IMAGE);
+    const argv = dockerRunArgv(spec);
+    expect(argv).toContain("127.0.0.1:10100:10000");
+    expect(argv).toContain("nofile=65536:65536");
+    expect(argv.slice(argv.indexOf(spec.image))).toEqual([
+      spec.image,
+      "azurite-blob",
+      "--blobHost",
+      "0.0.0.0",
+      "--blobPort",
+      "10000",
+      "--location",
+      "/data",
+      "--oauth",
+      "basic",
+      "--cert",
+      "/certs/cert.pem",
+      "--key",
+      "/certs/key.pem",
+    ]);
+    // The certificate is copied in, never bind-mounted.
+    expect(argv).not.toContain("--volume");
+    expect(spec.copyIn).toEqual({ from: azureOauthCertDir(), to: "/" });
+    expect(plan.prepareContainer).toBeFunction();
+  });
+
+  it("negative control: the Shared Key Azurite has neither --oauth nor a certificate", () => {
+    const argv = dockerRunArgv(PLANS.azure.container(options));
+    expect(argv).not.toContain("--oauth");
+    expect(argv).not.toContain("--cert");
+    expect(PLANS.azure.container(options).copyIn).toBeUndefined();
+  });
+
+  it("creates then copies then starts: docker create is docker run without the start", () => {
+    const spec = PLANS["azure-oauth"].container(options);
+    const create = dockerCreateArgv(spec);
+    const run = dockerRunArgv(spec);
+    expect(create.slice(0, 2)).toEqual(["docker", "create"]);
+    expect(create).not.toContain("--detach");
+    expect(create.slice(2)).toEqual(run.slice(3));
+    expect(run.slice(0, 4)).toEqual(["docker", "run", "--detach", "--name"]);
+    expect(create).toContain(spec.name);
+  });
+
+  it("keeps its certificate outside the repository and outside dot-directories", () => {
+    const dir = azureOauthCertDir({ HOME: "/home/someone" });
+    expect(dir).toBe("/home/someone/bun-node-test-certs/azure-oauth");
+    expect(
+      azureOauthCertDir({ HOME: "/h", BUN_NODE_TEST_CERTS: "/srv/c" }),
+    ).toBe("/srv/c/azure-oauth");
+    const repo = new URL("../..", import.meta.url).pathname;
+    const real = azureOauthCertDir();
+    expect(real.startsWith(repo)).toBe(false);
+    expect(real.split("/").some((part) => part.startsWith("."))).toBe(false);
+  });
+
+  it("makes a self-signed certificate for 127.0.0.1 and localhost with openssl", () => {
+    const argv = azureOauthCertArgv("/d");
+    expect(argv.slice(0, 3)).toEqual(["openssl", "req", "-x509"]);
+    expect(argv).toContain("/d/certs/key.pem");
+    expect(argv).toContain("/d/certs/cert.pem");
+    expect(argv).toContain("subjectAltName=IP:127.0.0.1,DNS:localhost");
+  });
+
+  it("is bun-cache's alone, printed in the HTTPS form (no scheme parameter) the Entra ID lane reads", () => {
+    const plan = PLANS["azure-oauth"];
+    expect(plan.envVar).toBeUndefined();
+    expect(plan.cacheEnvVar).toBe("BUN_CACHE_TEST_AZURE_OAUTH_URL");
+    expect(plan.url(options)).toBe(azureTestUrl(AZURE_CACHE_CONTAINER, true));
+    expect(parseAzureTestUrl(plan.url(options))).toEqual({
+      endpoint: "https://127.0.0.1:10100/devstoreaccount1",
+      container: "bun-cache-test",
+      account: "devstoreaccount1",
+      key: AZURE_ACCOUNT_KEY,
+    });
+    // Negative control: the Shared Key URL is plain HTTP on 10000.
+    expect(parseAzureTestUrl(PLANS.azure.url(options)).endpoint).toBe(
+      "http://127.0.0.1:10000/devstoreaccount1",
+    );
+    expect(parseArgs(["--only=azure-oauth"]).services).toEqual(["azure-oauth"]);
+    expect(parseArgs([]).services).toContain("azure-oauth");
+  });
+
+  it("a dry run of its one-time setup fetches nothing", async () => {
+    const fetched = spyOn(globalThis, "fetch");
+    try {
+      expect(
+        await PLANS["azure-oauth"].initContainer!(parseArgs(["--dry-run"])),
+      ).toBe(true);
+      expect(
+        await PLANS["azure-oauth"].prepareContainer!(parseArgs(["--dry-run"])),
+      ).toBe(true);
+      expect(fetched).not.toHaveBeenCalled();
+    } finally {
+      fetched.mockRestore();
+    }
   });
 });
 
