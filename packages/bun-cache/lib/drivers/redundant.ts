@@ -27,7 +27,10 @@
  *   on an error, a timeout, or a miss from a secondary, the next. A miss from
  *   a healthy primary is final. `read: "race"` asks every healthy member and
  *   takes the first hit. Tag stamps are read from every healthy member, the
- *   newest per tag winning: an invalidation recorded anywhere counts.
+ *   newest per tag winning (an invalidation recorded anywhere counts) —
+ *   except under `write: "primary"`, where the writer's stamps win for the
+ *   tags it holds: it alone applies the fence, and a secondary's copy of an
+ *   invalidation is stamped later, when its queue replays it.
  * - **Health**: one circuit per member, per process. `circuit.failures`
  *   consecutive failures or timeouts open it (`member-down`) for
  *   `circuit.cooldown`; then one `ping()` probe closes it (`member-up`) or
@@ -54,12 +57,13 @@
  *   "refuse"` removes them.
  * - **Capabilities** are the intersection of the members' (§5.1), except
  *   counters and locks. **Tags**: `"index"` when every member indexes them
- *   (deleted on every member, the fence checked on every member: a write any
- *   member fences is fenced, and deleted where it was stored), otherwise
- *   `"stamps"` — invalidation writes stamps on every member and the core's
- *   read check hides what they invalidate, which is correct on an index
- *   member too (it stores and reads stamps like any driver), at the cost of
- *   the space being reclaimed at expiry rather than at once.
+ *   (deleted on every member, the fence checked on every member a write goes
+ *   to: a write any member fences is fenced, and deleted where it was
+ *   stored), otherwise `"stamps"` — invalidation writes stamps on every
+ *   member and the core's read check hides what they invalidate, which is
+ *   correct on an index member too (it stores and reads stamps like any
+ *   driver), at the cost of the space being reclaimed at expiry rather than
+ *   at once.
  * - **The bus** is the first member's (§5.3), unless the cache names one.
  *
  * Read repair and quorum reads (§5.2) are not offered: repair can copy a
@@ -1444,9 +1448,16 @@ export class RedundantDriver implements CacheDriver {
   }
 
   /**
-   * Reads stamps from every healthy member, whatever `read` says, and
-   * answers the newest per tag: an invalidation recorded on any member
-   * counts, and agrees with the fence, which any member may apply.
+   * Reads stamps from every healthy member, whatever `read` says. Under
+   * `write: "all"` it answers the newest per tag: an invalidation recorded on
+   * any member counts, and agrees with the fence, which every member applies.
+   * Under `write: "primary"` the fence is applied by the one member a write
+   * goes to, so that member's stamps win — the first in order that answers,
+   * as a failover read picks it: a secondary's copy of an invalidation is
+   * stamped by its own clock when the queue replays it, later than the
+   * writer's, and would report a stamp the fence does not refuse at. A tag
+   * only other members hold (one the writer lost by rejoining empty) takes
+   * their newest.
    */
   async getStamps(
     ns: string,
@@ -1469,18 +1480,26 @@ export class RedundantDriver implements CacheDriver {
     );
     const out = new Map<string, number>();
     const errors: unknown[] = [];
+    /** `write: "primary"`: the writer's tags, whose stamps no later copy overrides. */
+    let final: ReadonlySet<string> = new Set();
     let answered = false;
     for (const result of results) {
       if (result.status === "rejected") {
         errors.push(result.reason);
         continue;
       }
-      answered = true;
       for (const [tag, at] of result.value) {
-        if (at > (out.get(tag) ?? Number.NEGATIVE_INFINITY)) {
+        if (
+          !final.has(tag) &&
+          at > (out.get(tag) ?? Number.NEGATIVE_INFINITY)
+        ) {
           out.set(tag, at);
         }
       }
+      if (!answered && this.#write === "primary") {
+        final = new Set(result.value.keys());
+      }
+      answered = true;
     }
     if (!answered) {
       throw new AggregateError(

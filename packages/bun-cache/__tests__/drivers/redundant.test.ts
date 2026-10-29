@@ -33,7 +33,11 @@ import {
 import { memoryDriverDump } from "../../lib/drivers/memory";
 import type { RedundantOptions } from "../../lib/drivers/redundant";
 import { redundantDriverState } from "../../lib/drivers/redundant";
-import { faulty, runCacheDriverConformance } from "../../lib/testing/index";
+import {
+  fakeClock,
+  faulty,
+  runCacheDriverConformance,
+} from "../../lib/testing/index";
 
 /** The run's own directory, for the file-driver lane. */
 const dir = await mkdtemp(
@@ -764,6 +768,125 @@ describe("redundant(): tags", () => {
     ).toBe("stored");
     expect(await byteOn(a, "ns", "k")).toBe(1);
     expect(await byteOn(b, "ns", "k")).toBe(1);
+  });
+
+  test('write "primary": the writer\'s stamps win, so getStamps agrees with the fence when the queue replays an invalidation a millisecond later', async () => {
+    // Both members on one fake clock: the secondary's replayed
+    // `deleteByTags` stamps with its own clock when the queue runs it, which
+    // the gate holds until the clock has moved a millisecond.
+    const clock = fakeClock();
+    const a = memoryDriver({ now: clock.now });
+    const b = memoryDriver({ now: clock.now });
+    const gate = Promise.withResolvers<void>();
+    let replayed = false;
+    const gated = overriding(b, {
+      deleteByTags: async (ns, tags, stampUntil) => {
+        await gate.promise;
+        const count = await b.deleteByTags!(ns, tags, stampUntil);
+        replayed = true;
+        return count;
+      },
+    });
+    const driver = redundant([a, gated], { write: "primary" });
+    const invalidatedAt = clock.now();
+    await driver.deleteByTags!("ns", ["t"], invalidatedAt + 60_000);
+    clock.advance(1);
+    gate.resolve();
+    await waitFor("the replayed invalidation", () => replayed);
+    expect((await a.getStamps("ns", ["t"])).get("t")).toBe(invalidatedAt);
+    expect((await b.getStamps("ns", ["t"])).get("t")).toBe(invalidatedAt + 1);
+    // The kit's case: the stamp getStamps answers is the one the fence (on
+    // the writer alone, under write "primary") refuses at.
+    const at = (await driver.getStamps("ns", ["t"])).get("t")!;
+    const fence = (createdAt: number) => ({ tags: ["t"], createdAt });
+    expect(
+      await driver.set("ns", entry("k", 1, { tags: ["t"] }), fence(at)),
+    ).toBe("fenced");
+    expect(await driver.get("ns", "k")).toBeUndefined();
+    expect(at).toBe(invalidatedAt);
+    expect(
+      await driver.set("ns", entry("k", 1, { tags: ["t"] }), fence(at + 1)),
+    ).toBe("stored");
+    expect(await byteOn(a, "ns", "k")).toBe(1);
+    await driver.close();
+  });
+
+  test('write "primary": a stamp only another member holds still counts, and with the first member down the next one\'s stamps win', async () => {
+    const a = memoryDriver();
+    const fa = faulty(a);
+    const b = memoryDriver();
+    const c = memoryDriver();
+    const driver = redundant([fa, b, c], {
+      write: "primary",
+      circuit: { failures: 1, cooldown: 60_000 },
+    });
+    const until = Date.now() + 60_000;
+    // The writer's own stamp wins over later copies; a tag only the others
+    // hold (one A lost by rejoining empty) takes their newest.
+    await a.setStamps("ns", ["t"], 100, until);
+    await b.setStamps("ns", ["t"], 150, until);
+    await c.setStamps("ns", ["t"], 200, until);
+    await b.setStamps("ns", ["only-bc"], 50, until);
+    await c.setStamps("ns", ["only-bc"], 60, until);
+    let stamps = await driver.getStamps("ns", ["t", "only-bc", "none"]);
+    expect(Object.fromEntries(stamps)).toEqual({ t: 100, "only-bc": 60 });
+    // With A down, B takes the writes and the fence: its stamps win.
+    fa.setFaults({ down: true });
+    await driver.get("ns", "x"); // opens A's circuit
+    stamps = await driver.getStamps("ns", ["t", "only-bc"]);
+    expect(Object.fromEntries(stamps)).toEqual({ t: 150, "only-bc": 50 });
+  });
+
+  test('write "primary", encrypted: a value loaded during the replication lag after an invalidation is kept, not reloaded', async () => {
+    // An encrypted cache checks the tags' stamps on every read (the
+    // encryption plan's §4.3), so a stamp later than the fence's would hide
+    // a value the fence let through.
+    const clock = fakeClock();
+    const a = memoryDriver({ now: clock.now });
+    const b = memoryDriver({ now: clock.now });
+    const gate = Promise.withResolvers<void>();
+    let replayed = false;
+    const gated = overriding(b, {
+      deleteByTags: async (ns, tags, stampUntil) => {
+        await gate.promise;
+        const count = await b.deleteByTags!(ns, tags, stampUntil);
+        replayed = true;
+        return count;
+      },
+    });
+    const driver = redundant([a, gated], { write: "primary" });
+    const options = {
+      driver,
+      now: clock.now,
+      encrypt: { keys: [{ id: "k", key: new Uint8Array(32).fill(1) }] },
+      sweepInterval: 0,
+      bus: false,
+    } as const;
+    const writer = createCache(options);
+    await writer.set("k", "old", { tags: ["t"] });
+    clock.advance(5);
+    await writer.invalidateTags(["t"]);
+    clock.advance(1);
+    let loads = 0;
+    /** A loader that counts its calls. */
+    const loader = (value: string) => () => {
+      loads++;
+      return value;
+    };
+    await writer.getOrSet("k", loader("fresh"), { tags: ["t"] });
+    // The secondary replays the invalidation later (a backlog, a remote
+    // member), stamping it with the clock of then.
+    clock.advance(50);
+    gate.resolve();
+    await waitFor("the replayed invalidation", () => replayed);
+    // Another process, with no stamps of its own cached, reads it.
+    const reader = createCache(options);
+    expect(
+      await reader.getOrSet("k", loader("reloaded"), { tags: ["t"] }),
+    ).toBe("fresh");
+    expect(loads).toBe(1);
+    await writer.close();
+    await reader.close();
   });
 
   test("stamps (mixed members): an invalidation stamps every member, and the core's read check hides the entry on each", async () => {
