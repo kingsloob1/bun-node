@@ -1,0 +1,33 @@
+{
+  "name": "bun-cache-benchmarks",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cache benchmarks and the Keyv compatibility harness: @kingsleyweb/bun-cache vs cache-manager (over Keyv's stores), lru-cache, BentoCache and cacheable",
+  "scripts": {
+    "cache": "bun cache.ts",
+    "compat": "bun test --check ./compat/keyv.compat.ts"
+  },
+  "dependencies": {
+    "@keyv/mongo": "3.1.0",
+    "@keyv/mysql": "2.1.10",
+    "@keyv/postgres": "2.2.3",
+    "@keyv/redis": "5.1.6",
+    "bentocache": "1.6.1",
+    "cache-manager": "7.2.9",
+    "cacheable": "2.5.0",
+    "ioredis": "5.11.1",
+    "keyv": "5.6.0",
+    "keyv-6": "npm:keyv@6.1.0",
+    "knex": "3.3.0",
+    "lru-cache": "11.5.3",
+    "mongodb": "7.7.0",
+    "mysql2": "3.24.6",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/pg": "8.23.1"
+  },
+  "trustedDependencies": []
+}

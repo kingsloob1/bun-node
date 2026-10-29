@@ -16,7 +16,17 @@
  *   work others wait on (HybridCache's rule).
  * - **A rejection is shared, never cached**: every waiter rejects with the
  *   one error, and the next call runs the loader again.
+ * - **The read before a load is shared too** (`shareRead`): the callers that
+ *   ask while one read of a key runs await that read, and a read that a
+ *   flight for its key settled under is told so (it may have missed the
+ *   flight's write) and reads again. Without this, a backend whose reads
+ *   queue for longer than the load (MongoDB under a 1,000-caller stampede)
+ *   answered some callers' misses after the first flight had settled, and
+ *   they led a second load (found by the bench, PR-B1).
  */
+
+/** The suffixes `shareRead` keys a read under: none for a read through the L1 tier, `"\nl2"` for one that bypasses it. */
+export const READ_SUFFIXES = ["", "\nl2"] as const;
 
 /** One in-flight load. */
 export interface Flight<T> {
@@ -32,11 +42,23 @@ export interface Flight<T> {
   aborted: number;
   /** Whether the leader's own work has settled (its write may still be pending). */
   settled: boolean;
+  /** A background refresh (stale-while-revalidate, eager refresh): a caller is served the stale value rather than joining it. */
+  background: boolean;
+}
+
+/** One driver read shared by the callers that asked for its key while it ran. */
+interface SharedRead {
+  /** What every caller of the read awaits. */
+  promise: Promise<unknown>;
+  /** Set when a flight for the read's key settled while it ran: its write may have landed after the read looked. */
+  overtaken: boolean;
 }
 
 /** The flight map of one cache, shared by its namespace views (flights are keyed by namespace + stored key). */
 export class FlightMap {
   readonly #flights = new Map<string, Flight<unknown>>();
+  /** The reads running, by flight key plus the read's tier suffix. */
+  readonly #reads = new Map<string, SharedRead>();
 
   /** The flight for `key`, when one is running. */
   get<T>(key: string): Flight<T> | undefined {
@@ -44,7 +66,7 @@ export class FlightMap {
   }
 
   /** Registers a new flight led by this caller; `undefined` when one already runs for `key`. */
-  lead<T>(key: string): Flight<T> | undefined {
+  lead<T>(key: string, background = false): Flight<T> | undefined {
     if (this.#flights.has(key)) {
       return undefined;
     }
@@ -56,6 +78,7 @@ export class FlightMap {
       waiters: 1,
       aborted: 0,
       settled: false,
+      background,
     };
     this.#flights.set(key, flight as Flight<unknown>);
     return flight;
@@ -90,11 +113,53 @@ export class FlightMap {
     });
   }
 
-  /** Removes the flight for `key`, only when it is still `flight` itself. */
+  /**
+   * The read running for `key` (a flight key, plus `suffix` when the read
+   * differs by tier), joined; or a new one, started by `run`. `run` gets
+   * `overtaken()`, which answers whether a flight for `key` has settled since
+   * the read began — its write may have landed after the read looked, so a
+   * miss is not to be trusted — and clears the mark.
+   */
+  shareRead<T>(
+    key: string,
+    suffix: string,
+    run: (overtaken: () => boolean) => Promise<T>,
+  ): Promise<T> {
+    const readKey = key + suffix;
+    const running = this.#reads.get(readKey);
+    if (running !== undefined) {
+      return running.promise as Promise<T>;
+    }
+    const read: SharedRead = { promise: Promise.resolve(), overtaken: false };
+    this.#reads.set(readKey, read);
+    const promise = (async () => {
+      try {
+        return await run(() => {
+          const overtaken = read.overtaken;
+          read.overtaken = false;
+          return overtaken;
+        });
+      } finally {
+        if (this.#reads.get(readKey) === read) {
+          this.#reads.delete(readKey);
+        }
+      }
+    })();
+    read.promise = promise;
+    return promise;
+  }
+
+  /** Removes the flight for `key`, only when it is still `flight` itself, and tells the reads running for `key` that it settled. */
   settle(key: string, flight: Flight<unknown>): void {
     flight.settled = true;
     if (this.#flights.get(key) === (flight as Flight<unknown>)) {
       this.#flights.delete(key);
+    }
+    for (const suffix of READ_SUFFIXES) {
+      const read = this.#reads.get(key + suffix);
+      if (read !== undefined) {
+        read.overtaken = true;
+      }
     }
   }
 

@@ -905,7 +905,10 @@ export interface Cache<
    * Reads the key, and on a miss runs `loader` — once, however many callers
    * asked at the same time (§3.4). A loader's throw rejects every waiter with
    * the one error and is never cached; a loader's `undefined` is not cached
-   * unless `cacheUndefined`.
+   * unless `cacheUndefined`. Callers that ask while a load for the key runs
+   * join it without reading, and callers that ask while a read of the key
+   * runs share that read — so concurrent callers are answered the same value
+   * object, a hit's as a load's (mutating a cached value is a bug either way).
    */
   getOrSet: <K extends Extract<keyof Schema, string>>(
     key: K,

@@ -1633,6 +1633,76 @@ of it afterwards — has a later `createdAt` than the stamps and is stored.
   (6), a driver stamping late (9), no frozen-clock check or no cap (a hang
   each).
 
+**PR-B1 built 2026-10-29** (branch `feat/bun-cache-b1-bench`, on develop
+`ffea0175`, PR-E2): the bench package, `packages/bun-cache/bench/` (§14.3,
+§15), and a core bug it found, fixed here (the user's choice of 2026-10-29).
+The bench is separate and unpublished like bun-jobs', its own `package.json`,
+`bun.lock` and `node_modules`, every comparator pinned exactly (cache-manager
+7.2.9, keyv 5.6.0 and 6.1.0 side by side, `@keyv/redis` 5.1.6,
+`@keyv/postgres` 2.2.3, `@keyv/mysql` 2.1.10, `@keyv/mongo` 3.1.0, lru-cache
+11.5.3, bentocache 1.6.1, cacheable 2.5.0), `trustedDependencies: []` so no
+install script runs. The user lifted the no-speed-comparison rule for this
+PR's runs only.
+
+- **`bun cache.ts`**: the §15.1 scenarios on memory, file, SQLite, Redis,
+  Postgres, MySQL, MariaDB and MongoDB, each contender and scenario in its own
+  process, every scenario checking what it read (a wrong answer is a
+  `FAILED` row, never a figure). `--compare` / `--save-baseline` copy
+  bun-jobs' design (35% self-tolerance, the overtaken check), with three
+  additions, each forced by a measured failure of the guard on an unchanged
+  tree: figures are the best of five trials after a warm-up (one trial per
+  figure varied 0.75x–1.42x between two runs, 10th–90th percentile, and
+  `--compare` failed 13 figures; best-of-five 0.90x–1.09x); a lead counts as
+  lost only past a 10% margin (near-ties, such as a stampede p99 that is
+  mostly its 20 ms loader, flapped); and a row that moved is re-measured in
+  fresh processes, twice at most, before it fails (a child beside a busy
+  hyperthread ran at 0.48x for its whole life; a wrong answer is never
+  re-measured). Our failed runs are recorded under the baseline's `failed`.
+- **The baseline**, against the bench databases (`bun_cache_bench`, Redis
+  12, from `setup-databases.ts`): 108 figures, 75 with a rival; bun-cache
+  leads 20, ties 10, trails 45. It leads on Redis and SQL reads
+  (`get-hit-100b` 1.1–1.45x over cache-manager, `get-hit-10kb` 1.15–1.6x),
+  `getMany` on memory, MySQL and MariaDB, MongoDB writes, the L1 tier
+  (`tier-hit` 2.2–2.6x over BentoCache, `tier-invalidate` 433 µs against
+  508 µs on Redis); the stampede now ties cache-manager everywhere. It trails
+  lru-cache on memory and lazy tag invalidation (by design), `setMany`
+  (2.9–28x behind `mset`), `get-miss` (1.3–2.2x), 1 MB writes (zstd on
+  incompressible data) and `tags-set` against BentoCache (1.5–2.0x). On
+  Redis a cached HTTP hit is slower than the 10 KB handler uncached (21,675
+  against 49,178 requests/s). `tags-invalidate` on memory and file is about
+  1.2 ms, most of it #573's wait. The bench README has the list.
+- **The guard, proven**: `--compare` on the same tree held ("nothing fell
+  more than 35% behind its baseline, and every lead held", after
+  re-measuring 2 rows once); a 200 µs busy-wait planted in `Cache.get`
+  failed it, and was removed.
+- **Found and fixed: `getOrSet` ran the loader twice on MongoDB.** 1,000
+  concurrent callers in one process, every round (6 of 6 alone), against R1.
+  Each caller awaited its driver read before `#loadFlighted` looked for a
+  flight; the 1,000 reads queued for ~210 ms, outlasting the 20 ms load and
+  its write, so the callers whose miss arrived after the first flight settled
+  led a second one. Now (`lib/core/flight.ts`, `getOrSet`): a running load
+  for the key is joined before any read (a map lookup); the callers that ask
+  while a read of the key runs share it (`FlightMap.shareRead`, per tier);
+  a flight that settles marks the reads running for its key, and one that
+  found nothing fresh reads again; a background refresh is flagged, so its
+  callers are still served the stale value rather than made to wait.
+  `wrap` goes through `getOrSet`; the refreshes lead through the same map.
+  Concurrent callers now share one value object, a hit's as a load's (the
+  JSDoc and README say so). Tests (`__tests__/core/flight.test.ts`, a memory
+  driver whose reads look at call time and answer late, one by one): 200
+  concurrent misses, the same through `wrap`, a stale read a refresh
+  settled under, and a load joined without a read. The old order back fails
+  all four; without the re-read, the refresh one; without the join, the
+  join one. The MongoDB stampede row now passes (once, 6 of 6; p50 23 ms
+  against 212 ms) and is guarded.
+- **The compat harness** PR-K1 needs (§13.1): `compat/harness.ts` and
+  `contract.ts` (`describeKeyvCompat`) drive an adapter through the real
+  cache-manager over Keyv 5 and 6; `keyv.compat.ts` proves it on a reference
+  store and pins §10.4's measured facts. `.compat.ts`, not `.test.ts`:
+  bun-cache's own `bun test` walks into `bench/`.
+- `@keyv/sqlite` is left out (native `sqlite3`, install script); `@keyv/mysql`
+  fails its own 1 MB read-back.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

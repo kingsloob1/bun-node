@@ -494,8 +494,22 @@ never the test suite's, so the two can never disturb each other.
 `bun.lock` and `node_modules`, and it is not in `workspaces`. It declares the
 XML benchmark's comparators, `fast-xml-parser` and `htmlparser2`. Before this
 package existed nothing declared them, and its typecheck passed only where an
-old install had left them in the root `node_modules`. Run
-`bun install --frozen-lockfile` in each of the three bench directories, in
+old install had left them in the root `node_modules`.
+
+`packages/bun-cache/bench/` is the third (plan `docs/plans/bun-cache/` §14.3,
+§15): its own `package.json`, `bun.lock` and `node_modules`, not in
+`workspaces`. It holds the cache comparators, pinned exactly — cache-manager
+and Keyv with Keyv's stores, lru-cache, BentoCache, cacheable — and the Keyv
+compatibility harness (`bun run compat` there). It sets
+`trustedDependencies: []`, so no install script runs. Its databases are
+`bun_cache_bench` and Redis database 12, which `setup-databases.ts` provides
+(`--print-env` names `BUN_CACHE_BENCH_*_URL`). `bun cache.ts --compare` is
+its guard, against `baselines/cache.json`.
+`scripts/typecheck.ts` and bun-cache's `bun run lint` both cover it.
+
+Run `bun install --frozen-lockfile` in each of the four bench directories
+(`packages/bun-common/bench`, `packages/bun-jobs/bench`,
+`packages/bun-cache/bench`, `benchmarks/`), in
 `templates/compute-provider/` (below) and in `tools/vscode-bun-lint/` (the
 editor extension, for `@types/vscode`), before `scripts/typecheck.ts`, or their
 projects fail on missing modules. **Frozen, not plain**: a plain `bun install`
@@ -773,6 +787,16 @@ has actually caught was a factor rather than a percentage — a claim that went
 O(n), a wakeup lost for a whole second, a table analysed on every insert. A
 baseline is only meaningful on the machine that recorded it, which is why the
 file records the platform and Bun version.
+
+bun-cache's bench copies the design (`cd packages/bun-cache/bench && bun
+cache.ts --compare`, `baselines/cache.json`) with one difference: a lead is
+lost only when the rival is now ahead by more than 10% (`OVERTAKE_MARGIN`),
+because several cache scenarios are near-ties by construction (a `stampede`
+p99 is mostly its 20 ms loader). A run of ours that answers wrongly is
+recorded under the baseline's `failed`, not as a figure, and a row that
+moved is re-measured in fresh processes (twice at most) before it fails.
+Like any benchmark run here, it goes through the heavy-run wrapper,
+exclusive.
 
 ## Schema sync (`bun-jobs`, SQL and MongoDB)
 

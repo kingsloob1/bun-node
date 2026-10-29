@@ -1,0 +1,13 @@
+{
+  // The bench is a nested project with its own `node_modules`: the package's
+  // `tsconfig.json` does not include it, so the package's `bun run check`
+  // skips it, and `files` never publishes it. This config exists so the IDE
+  // and `bun scripts/typecheck.ts` (which lists it) check it with the
+  // package's compiler options, the way `packages/bun-jobs/bench` is checked.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}
