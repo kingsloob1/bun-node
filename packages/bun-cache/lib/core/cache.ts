@@ -30,7 +30,7 @@ import {
 import { BusLink, driverBus } from "./bus";
 import { CacheEvents } from "./events";
 import type { Flight } from "./flight";
-import { FlightMap } from "./flight";
+import { FlightMap, READ_SUFFIXES } from "./flight";
 import type { EntryHeader } from "./header";
 import {
   COMPRESSOR_IDS,
@@ -1827,7 +1827,7 @@ class CacheImpl<
   ): void {
     const state = this.#state;
     const flightKey = this.#flightKey(stored);
-    const flight = state.flights.lead<unknown>(flightKey);
+    const flight = state.flights.lead<unknown>(flightKey, true);
     if (flight === undefined) {
       return;
     }
@@ -2351,8 +2351,38 @@ class CacheImpl<
     options: GetOrSetOptions<Tag> = {},
   ): Promise<Schema[K] | undefined> {
     const stored = this.#storedKey(key);
-    const { read, tier } = await this.#read(key, stored, options.tier);
-    const now = this.#state.now();
+    const state = this.#state;
+    const flightKey = this.#flightKey(stored);
+    // A load already running for the key: join it without reading (§3.4).
+    // A background refresh is not joined: its callers are served the stale
+    // value, which the read below finds.
+    const running = state.flights.get<unknown>(flightKey);
+    if (running !== undefined && !running.background) {
+      state.stats.misses++;
+      this.#emit("miss", { key, namespace: this.#ns });
+      return (await this.#loadFlighted(
+        key,
+        stored,
+        loader,
+        options,
+        undefined,
+      )) as Schema[K] | undefined;
+    }
+    // One read for the callers that ask while it runs: they then miss
+    // together, and one of them leads the load the rest join. A read that a
+    // flight settled under may have missed that flight's write: when it did
+    // not find a fresh entry, it reads again.
+    const { read, tier } = await state.flights.shareRead(
+      flightKey,
+      options.tier === "l2" ? READ_SUFFIXES[1] : READ_SUFFIXES[0],
+      async (overtaken) => {
+        const first = await this.#read(key, stored, options.tier);
+        return first.read.kind !== "fresh" && overtaken()
+          ? await this.#read(key, stored, options.tier)
+          : first;
+      },
+    );
+    const now = state.now();
     if (read.kind === "fresh") {
       this.#state.stats.hits++;
       this.#emit(

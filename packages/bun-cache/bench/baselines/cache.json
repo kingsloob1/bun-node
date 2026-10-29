@@ -1,0 +1,1172 @@
+{
+  "recordedAt": "2026-10-29T04:46:10.349Z",
+  "bun": "1.4.4+11c367163",
+  "platform": "linux-x64",
+  "ops": 2000,
+  "entries": {
+    "get-hit-100b/memory": {
+      "scenario": "get-hit-100b",
+      "backend": "memory",
+      "ours": 515114.2507024756,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "lru-cache",
+        "value": 4338151.887655966
+      },
+      "leader": "lru-cache"
+    },
+    "get-hit-100b/file": {
+      "scenario": "get-hit-100b",
+      "backend": "file",
+      "ours": 56914.852620729034,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-100b/sqlite": {
+      "scenario": "get-hit-100b",
+      "backend": "sqlite",
+      "ours": 199511.95567794717,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-100b/redis": {
+      "scenario": "get-hit-100b",
+      "backend": "redis",
+      "ours": 44519.36254351383,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 40072.05571495448
+      },
+      "leader": "ours"
+    },
+    "get-hit-100b/postgres": {
+      "scenario": "get-hit-100b",
+      "backend": "postgres",
+      "ours": 11673.187406428468,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 8033.727871181938
+      },
+      "leader": "ours"
+    },
+    "get-hit-100b/mysql": {
+      "scenario": "get-hit-100b",
+      "backend": "mysql",
+      "ours": 12886.686285014222,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 11265.306115092035
+      },
+      "leader": "ours"
+    },
+    "get-hit-100b/mariadb": {
+      "scenario": "get-hit-100b",
+      "backend": "mariadb",
+      "ours": 14025.689818138844,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 11964.575380928743
+      },
+      "leader": "ours"
+    },
+    "get-hit-100b/mongodb": {
+      "scenario": "get-hit-100b",
+      "backend": "mongodb",
+      "ours": 4086.1855226663483,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 4119.098451027237
+      },
+      "leader": "tie"
+    },
+    "get-hit-10kb/memory": {
+      "scenario": "get-hit-10kb",
+      "backend": "memory",
+      "ours": 281652.1749769084,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "lru-cache",
+        "value": 4741531.654904287
+      },
+      "leader": "lru-cache"
+    },
+    "get-hit-10kb/file": {
+      "scenario": "get-hit-10kb",
+      "backend": "file",
+      "ours": 34811.3225816201,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-10kb/sqlite": {
+      "scenario": "get-hit-10kb",
+      "backend": "sqlite",
+      "ours": 87537.65836763871,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-10kb/redis": {
+      "scenario": "get-hit-10kb",
+      "backend": "redis",
+      "ours": 32835.34066515958,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 28469.993736601395
+      },
+      "leader": "ours"
+    },
+    "get-hit-10kb/postgres": {
+      "scenario": "get-hit-10kb",
+      "backend": "postgres",
+      "ours": 10492.139852774826,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 6545.270830412779
+      },
+      "leader": "ours"
+    },
+    "get-hit-10kb/mysql": {
+      "scenario": "get-hit-10kb",
+      "backend": "mysql",
+      "ours": 12416.300014361945,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 10189.139623293346
+      },
+      "leader": "ours"
+    },
+    "get-hit-10kb/mariadb": {
+      "scenario": "get-hit-10kb",
+      "backend": "mariadb",
+      "ours": 11646.806222115214,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 10151.894060193788
+      },
+      "leader": "ours"
+    },
+    "get-hit-10kb/mongodb": {
+      "scenario": "get-hit-10kb",
+      "backend": "mongodb",
+      "ours": 3536.439356191922,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 4759.291887994957
+      },
+      "leader": "cache-manager-mongodb"
+    },
+    "get-hit-1mb/memory": {
+      "scenario": "get-hit-1mb",
+      "backend": "memory",
+      "ours": 839.0802752496111,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "lru-cache",
+        "value": 4934912.1041406365
+      },
+      "leader": "lru-cache"
+    },
+    "get-hit-1mb/file": {
+      "scenario": "get-hit-1mb",
+      "backend": "file",
+      "ours": 651.4940481033796,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-1mb/sqlite": {
+      "scenario": "get-hit-1mb",
+      "backend": "sqlite",
+      "ours": 519.0414809067947,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-1mb/redis": {
+      "scenario": "get-hit-1mb",
+      "backend": "redis",
+      "ours": 626.1190573735853,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 1303.6266086192593
+      },
+      "leader": "cache-manager-redis"
+    },
+    "get-hit-1mb/postgres": {
+      "scenario": "get-hit-1mb",
+      "backend": "postgres",
+      "ours": 360.0263493204326,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 347.8592370343524
+      },
+      "leader": "tie"
+    },
+    "get-hit-1mb/mysql": {
+      "scenario": "get-hit-1mb",
+      "backend": "mysql",
+      "ours": 425.55852407213916,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-1mb/mariadb": {
+      "scenario": "get-hit-1mb",
+      "backend": "mariadb",
+      "ours": 514.2419353439855,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-hit-1mb/mongodb": {
+      "scenario": "get-hit-1mb",
+      "backend": "mongodb",
+      "ours": 426.3622144844114,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 544.5989238348996
+      },
+      "leader": "cache-manager-mongodb"
+    },
+    "get-miss/memory": {
+      "scenario": "get-miss",
+      "backend": "memory",
+      "ours": 935386.8592435777,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "lru-cache",
+        "value": 3828856.2860094034
+      },
+      "leader": "lru-cache"
+    },
+    "get-miss/file": {
+      "scenario": "get-miss",
+      "backend": "file",
+      "ours": 35841.10423792816,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-miss/sqlite": {
+      "scenario": "get-miss",
+      "backend": "sqlite",
+      "ours": 188842.86362818346,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-miss/redis": {
+      "scenario": "get-miss",
+      "backend": "redis",
+      "ours": 26860.75157462533,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 48961.259925490725
+      },
+      "leader": "cache-manager-redis"
+    },
+    "get-miss/postgres": {
+      "scenario": "get-miss",
+      "backend": "postgres",
+      "ours": 7074.607770038179,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 9487.181863840171
+      },
+      "leader": "cache-manager-postgres"
+    },
+    "get-miss/mysql": {
+      "scenario": "get-miss",
+      "backend": "mysql",
+      "ours": 9047.919750923435,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 12737.995838509496
+      },
+      "leader": "cache-manager-mysql"
+    },
+    "get-miss/mariadb": {
+      "scenario": "get-miss",
+      "backend": "mariadb",
+      "ours": 7336.458743013417,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 13783.747800751367
+      },
+      "leader": "cache-manager-mariadb"
+    },
+    "get-miss/mongodb": {
+      "scenario": "get-miss",
+      "backend": "mongodb",
+      "ours": 2608.929161542726,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 5602.82511250648
+      },
+      "leader": "cache-manager-mongodb"
+    },
+    "set-100b/memory": {
+      "scenario": "set-100b",
+      "backend": "memory",
+      "ours": 293725.61761378526,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "lru-cache",
+        "value": 5315273.727976998
+      },
+      "leader": "lru-cache"
+    },
+    "set-100b/file": {
+      "scenario": "set-100b",
+      "backend": "file",
+      "ours": 22064.879403436855,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-100b/sqlite": {
+      "scenario": "set-100b",
+      "backend": "sqlite",
+      "ours": 64458.96027697072,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-100b/redis": {
+      "scenario": "set-100b",
+      "backend": "redis",
+      "ours": 24609.792047257193,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 34075.26047202094
+      },
+      "leader": "cache-manager-redis"
+    },
+    "set-100b/postgres": {
+      "scenario": "set-100b",
+      "backend": "postgres",
+      "ours": 1618.7941010909844,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 1812.3310763583065
+      },
+      "leader": "cache-manager-postgres"
+    },
+    "set-100b/mysql": {
+      "scenario": "set-100b",
+      "backend": "mysql",
+      "ours": 668.6937242317338,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 862.1669431855129
+      },
+      "leader": "cache-manager-mysql"
+    },
+    "set-100b/mariadb": {
+      "scenario": "set-100b",
+      "backend": "mariadb",
+      "ours": 1302.1008701567064,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 1999.1894626186024
+      },
+      "leader": "cache-manager-mariadb"
+    },
+    "set-100b/mongodb": {
+      "scenario": "set-100b",
+      "backend": "mongodb",
+      "ours": 5099.212678502906,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 4158.264425590013
+      },
+      "leader": "ours"
+    },
+    "set-10kb/memory": {
+      "scenario": "set-10kb",
+      "backend": "memory",
+      "ours": 143620.540400002,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "lru-cache",
+        "value": 4931184.230514454
+      },
+      "leader": "lru-cache"
+    },
+    "set-10kb/file": {
+      "scenario": "set-10kb",
+      "backend": "file",
+      "ours": 18456.542985219417,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-10kb/sqlite": {
+      "scenario": "set-10kb",
+      "backend": "sqlite",
+      "ours": 29864.731562705016,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-10kb/redis": {
+      "scenario": "set-10kb",
+      "backend": "redis",
+      "ours": 11298.192737700221,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 28935.17853120135
+      },
+      "leader": "cache-manager-redis"
+    },
+    "set-10kb/postgres": {
+      "scenario": "set-10kb",
+      "backend": "postgres",
+      "ours": 1148.1792700150388,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 1419.1407718533521
+      },
+      "leader": "cache-manager-postgres"
+    },
+    "set-10kb/mysql": {
+      "scenario": "set-10kb",
+      "backend": "mysql",
+      "ours": 546.5687537006337,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 582.8547005782206
+      },
+      "leader": "tie"
+    },
+    "set-10kb/mariadb": {
+      "scenario": "set-10kb",
+      "backend": "mariadb",
+      "ours": 1193.839985998597,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 1191.332730344243
+      },
+      "leader": "tie"
+    },
+    "set-10kb/mongodb": {
+      "scenario": "set-10kb",
+      "backend": "mongodb",
+      "ours": 3971.2280950408986,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 3533.164226200607
+      },
+      "leader": "ours"
+    },
+    "set-1mb/memory": {
+      "scenario": "set-1mb",
+      "backend": "memory",
+      "ours": 579.5656963252446,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "lru-cache",
+        "value": 5058761.602455744
+      },
+      "leader": "lru-cache"
+    },
+    "set-1mb/file": {
+      "scenario": "set-1mb",
+      "backend": "file",
+      "ours": 454.6917784933353,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-1mb/sqlite": {
+      "scenario": "set-1mb",
+      "backend": "sqlite",
+      "ours": 351.65141341151497,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-1mb/redis": {
+      "scenario": "set-1mb",
+      "backend": "redis",
+      "ours": 219.36622220320646,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 1393.9799720325793
+      },
+      "leader": "cache-manager-redis"
+    },
+    "set-1mb/postgres": {
+      "scenario": "set-1mb",
+      "backend": "postgres",
+      "ours": 62.363168115344564,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 119.0517691355998
+      },
+      "leader": "cache-manager-postgres"
+    },
+    "set-1mb/mysql": {
+      "scenario": "set-1mb",
+      "backend": "mysql",
+      "ours": 47.09800113172538,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-1mb/mariadb": {
+      "scenario": "set-1mb",
+      "backend": "mariadb",
+      "ours": 236.8964304772772,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-1mb/mongodb": {
+      "scenario": "set-1mb",
+      "backend": "mongodb",
+      "ours": 280.6121270694994,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 217.16206995514725
+      },
+      "leader": "ours"
+    },
+    "get-many-100/memory": {
+      "scenario": "get-many-100",
+      "backend": "memory",
+      "ours": 6869.721482049804,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-memory",
+        "value": 5829.415028869677
+      },
+      "leader": "ours"
+    },
+    "get-many-100/file": {
+      "scenario": "get-many-100",
+      "backend": "file",
+      "ours": 2043.687315561583,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-many-100/sqlite": {
+      "scenario": "get-many-100",
+      "backend": "sqlite",
+      "ours": 2766.4381831747783,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "get-many-100/redis": {
+      "scenario": "get-many-100",
+      "backend": "redis",
+      "ours": 2913.178326839175,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 3441.4261685008432
+      },
+      "leader": "cache-manager-redis"
+    },
+    "get-many-100/postgres": {
+      "scenario": "get-many-100",
+      "backend": "postgres",
+      "ours": 1829.2943314187112,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 2086.7416989090716
+      },
+      "leader": "cache-manager-postgres"
+    },
+    "get-many-100/mysql": {
+      "scenario": "get-many-100",
+      "backend": "mysql",
+      "ours": 1508.8031871358994,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 903.5412437754803
+      },
+      "leader": "ours"
+    },
+    "get-many-100/mariadb": {
+      "scenario": "get-many-100",
+      "backend": "mariadb",
+      "ours": 1726.0762661709782,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 1272.012145330965
+      },
+      "leader": "ours"
+    },
+    "get-many-100/mongodb": {
+      "scenario": "get-many-100",
+      "backend": "mongodb",
+      "ours": 799.5391712069697,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 973.8463246737814
+      },
+      "leader": "cache-manager-mongodb"
+    },
+    "set-many-100/memory": {
+      "scenario": "set-many-100",
+      "backend": "memory",
+      "ours": 3381.2371572793645,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-memory",
+        "value": 9881.77737995938
+      },
+      "leader": "cache-manager-memory"
+    },
+    "set-many-100/file": {
+      "scenario": "set-many-100",
+      "backend": "file",
+      "ours": 219.74770774463752,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-many-100/sqlite": {
+      "scenario": "set-many-100",
+      "backend": "sqlite",
+      "ours": 588.3376856398074,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "set-many-100/redis": {
+      "scenario": "set-many-100",
+      "backend": "redis",
+      "ours": 255.1771787781573,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 2717.884616045638
+      },
+      "leader": "cache-manager-redis"
+    },
+    "set-many-100/postgres": {
+      "scenario": "set-many-100",
+      "backend": "postgres",
+      "ours": 16.29576895716555,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 453.0961995772405
+      },
+      "leader": "cache-manager-postgres"
+    },
+    "set-many-100/mysql": {
+      "scenario": "set-many-100",
+      "backend": "mysql",
+      "ours": 6.7817120792640555,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 44.58163404284564
+      },
+      "leader": "cache-manager-mysql"
+    },
+    "set-many-100/mariadb": {
+      "scenario": "set-many-100",
+      "backend": "mariadb",
+      "ours": 13.099870926971752,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 101.98197085620833
+      },
+      "leader": "cache-manager-mariadb"
+    },
+    "set-many-100/mongodb": {
+      "scenario": "set-many-100",
+      "backend": "mongodb",
+      "ours": 51.11245635120813,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 163.9011037916557
+      },
+      "leader": "cache-manager-mongodb"
+    },
+    "stampede/memory": {
+      "scenario": "stampede",
+      "backend": "memory",
+      "ours": 20.89773500000001,
+      "higherIsBetter": false,
+      "label": "p99",
+      "rival": {
+        "contender": "cache-manager-memory",
+        "value": 20.852825000000053
+      },
+      "leader": "tie"
+    },
+    "stampede/file": {
+      "scenario": "stampede",
+      "backend": "file",
+      "ours": 21.115572999999983,
+      "higherIsBetter": false,
+      "label": "p99",
+      "rival": {
+        "contender": "bentocache-file",
+        "value": 54.19748000000004
+      },
+      "leader": "ours"
+    },
+    "stampede/sqlite": {
+      "scenario": "stampede",
+      "backend": "sqlite",
+      "ours": 20.891006000000004,
+      "higherIsBetter": false,
+      "label": "p99",
+      "leader": "ours"
+    },
+    "stampede/redis": {
+      "scenario": "stampede",
+      "backend": "redis",
+      "ours": 20.99942599999997,
+      "higherIsBetter": false,
+      "label": "p99",
+      "rival": {
+        "contender": "cache-manager-redis",
+        "value": 20.981514000000004
+      },
+      "leader": "tie"
+    },
+    "stampede/postgres": {
+      "scenario": "stampede",
+      "backend": "postgres",
+      "ours": 21.964382999999998,
+      "higherIsBetter": false,
+      "label": "p99",
+      "rival": {
+        "contender": "cache-manager-postgres",
+        "value": 22.04968600000001
+      },
+      "leader": "tie"
+    },
+    "stampede/mysql": {
+      "scenario": "stampede",
+      "backend": "mysql",
+      "ours": 24.035212,
+      "higherIsBetter": false,
+      "label": "p99",
+      "rival": {
+        "contender": "cache-manager-mysql",
+        "value": 22.358460000000036
+      },
+      "leader": "tie"
+    },
+    "stampede/mariadb": {
+      "scenario": "stampede",
+      "backend": "mariadb",
+      "ours": 22.99264800000003,
+      "higherIsBetter": false,
+      "label": "p99",
+      "rival": {
+        "contender": "cache-manager-mariadb",
+        "value": 21.831290999999965
+      },
+      "leader": "tie"
+    },
+    "stampede/mongodb": {
+      "scenario": "stampede",
+      "backend": "mongodb",
+      "ours": 23.727295000000026,
+      "higherIsBetter": false,
+      "label": "p99",
+      "rival": {
+        "contender": "cache-manager-mongodb",
+        "value": 23.082337999999993
+      },
+      "leader": "tie"
+    },
+    "tags-set/memory": {
+      "scenario": "tags-set",
+      "backend": "memory",
+      "ours": 290206.70034981676,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-memory",
+        "value": 575052.5645703406
+      },
+      "leader": "bentocache-memory"
+    },
+    "tags-set/file": {
+      "scenario": "tags-set",
+      "backend": "file",
+      "ours": 19961.16814233094,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-file",
+        "value": 33844.631226148646
+      },
+      "leader": "bentocache-file"
+    },
+    "tags-set/sqlite": {
+      "scenario": "tags-set",
+      "backend": "sqlite",
+      "ours": 31962.450149650173,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "tags-set/redis": {
+      "scenario": "tags-set",
+      "backend": "redis",
+      "ours": 22617.34811593339,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-redis",
+        "value": 38401.19499000075
+      },
+      "leader": "bentocache-redis"
+    },
+    "tags-set/postgres": {
+      "scenario": "tags-set",
+      "backend": "postgres",
+      "ours": 1144.8538038722156,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-postgres",
+        "value": 1717.7637953026363
+      },
+      "leader": "bentocache-postgres"
+    },
+    "tags-set/mysql": {
+      "scenario": "tags-set",
+      "backend": "mysql",
+      "ours": 563.7911075015951,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-mysql",
+        "value": 843.2567663803935
+      },
+      "leader": "bentocache-mysql"
+    },
+    "tags-set/mariadb": {
+      "scenario": "tags-set",
+      "backend": "mariadb",
+      "ours": 1019.1154776766984,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-mariadb",
+        "value": 1891.6669144119778
+      },
+      "leader": "bentocache-mariadb"
+    },
+    "tags-set/mongodb": {
+      "scenario": "tags-set",
+      "backend": "mongodb",
+      "ours": 1573.7303586864646,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "cacheable-mongodb",
+        "value": 1406.2560000988424
+      },
+      "leader": "ours"
+    },
+    "tags-invalidate/memory": {
+      "scenario": "tags-invalidate",
+      "backend": "memory",
+      "ours": 1.2005740000000173,
+      "higherIsBetter": false,
+      "label": "best",
+      "rival": {
+        "contender": "bentocache-memory",
+        "value": 0.010425999999995383
+      },
+      "leader": "bentocache-memory"
+    },
+    "tags-invalidate/file": {
+      "scenario": "tags-invalidate",
+      "backend": "file",
+      "ours": 1.12466100000006,
+      "higherIsBetter": false,
+      "label": "best",
+      "rival": {
+        "contender": "bentocache-file",
+        "value": 0.04972599999996419
+      },
+      "leader": "bentocache-file"
+    },
+    "tags-invalidate/sqlite": {
+      "scenario": "tags-invalidate",
+      "backend": "sqlite",
+      "ours": 3.896437999999989,
+      "higherIsBetter": false,
+      "label": "best",
+      "leader": "ours"
+    },
+    "tags-invalidate/redis": {
+      "scenario": "tags-invalidate",
+      "backend": "redis",
+      "ours": 4.643787000000032,
+      "higherIsBetter": false,
+      "label": "best",
+      "rival": {
+        "contender": "bentocache-redis",
+        "value": 0.046289999999999054
+      },
+      "leader": "bentocache-redis"
+    },
+    "tags-invalidate/postgres": {
+      "scenario": "tags-invalidate",
+      "backend": "postgres",
+      "ours": 6.87584599999991,
+      "higherIsBetter": false,
+      "label": "best",
+      "rival": {
+        "contender": "bentocache-postgres",
+        "value": 0.5996990000003279
+      },
+      "leader": "bentocache-postgres"
+    },
+    "tags-invalidate/mysql": {
+      "scenario": "tags-invalidate",
+      "backend": "mysql",
+      "ours": 267.50871000000006,
+      "higherIsBetter": false,
+      "label": "best",
+      "rival": {
+        "contender": "cacheable-mysql",
+        "value": 1.0319729999991978
+      },
+      "leader": "cacheable-mysql"
+    },
+    "tags-invalidate/mariadb": {
+      "scenario": "tags-invalidate",
+      "backend": "mariadb",
+      "ours": 28.20035100000041,
+      "higherIsBetter": false,
+      "label": "best",
+      "rival": {
+        "contender": "bentocache-mariadb",
+        "value": 0.5472130000002835
+      },
+      "leader": "bentocache-mariadb"
+    },
+    "tags-invalidate/mongodb": {
+      "scenario": "tags-invalidate",
+      "backend": "mongodb",
+      "ours": 10.999080999999933,
+      "higherIsBetter": false,
+      "label": "best",
+      "rival": {
+        "contender": "cacheable-mongodb",
+        "value": 0.4828160000006392
+      },
+      "leader": "cacheable-mongodb"
+    },
+    "tier-hit/redis": {
+      "scenario": "tier-hit",
+      "backend": "redis",
+      "ours": 1668539.2324719531,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-redis",
+        "value": 634035.428604559
+      },
+      "leader": "ours"
+    },
+    "tier-hit/postgres": {
+      "scenario": "tier-hit",
+      "backend": "postgres",
+      "ours": 1450603.0806233047,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "rival": {
+        "contender": "bentocache-postgres",
+        "value": 648888.9682665401
+      },
+      "leader": "ours"
+    },
+    "tier-invalidate/redis": {
+      "scenario": "tier-invalidate",
+      "backend": "redis",
+      "ours": 0.433349609375,
+      "higherIsBetter": false,
+      "label": "p50",
+      "rival": {
+        "contender": "bentocache-redis",
+        "value": 0.5078125
+      },
+      "leader": "ours"
+    },
+    "tier-invalidate/postgres": {
+      "scenario": "tier-invalidate",
+      "backend": "postgres",
+      "ours": 1.667236328125,
+      "higherIsBetter": false,
+      "label": "p50",
+      "rival": {
+        "contender": "bentocache-postgres",
+        "value": 2.25341796875
+      },
+      "leader": "ours"
+    },
+    "http-hit/memory": {
+      "scenario": "http-hit",
+      "backend": "memory",
+      "ours": 77750.66909990498,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "http-hit/redis": {
+      "scenario": "http-hit",
+      "backend": "redis",
+      "ours": 21674.928283530928,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "http-304/memory": {
+      "scenario": "http-304",
+      "backend": "memory",
+      "ours": 81217.45550568702,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "http-304/redis": {
+      "scenario": "http-304",
+      "backend": "redis",
+      "ours": 21299.919387151644,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "http-miss/memory": {
+      "scenario": "http-miss",
+      "backend": "memory",
+      "ours": 16759.712048873334,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "http-miss/redis": {
+      "scenario": "http-miss",
+      "backend": "redis",
+      "ours": 4537.982066970375,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "http-uncached/memory": {
+      "scenario": "http-uncached",
+      "backend": "memory",
+      "ours": 54608.58639036456,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    },
+    "http-uncached/redis": {
+      "scenario": "http-uncached",
+      "backend": "redis",
+      "ours": 49178.397276032796,
+      "higherIsBetter": true,
+      "label": "ops/s",
+      "leader": "ours"
+    }
+  }
+}

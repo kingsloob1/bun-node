@@ -50,6 +50,8 @@ export const PROJECTS = [
   "packages/bun-jobs-ui/app/tsconfig.json",
   "packages/bun-api-docs-ui/tsconfig.json",
   "packages/bun-cache/tsconfig.json",
+  // Needs `bun install --frozen-lockfile` there first, like the other benches.
+  "packages/bun-cache/bench/tsconfig.json",
   "benchmarks/tsconfig.json",
   "playground/tsconfig.json",
   "examples/bun-jobs/tsconfig.json",

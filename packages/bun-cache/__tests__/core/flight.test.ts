@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createDeferred, sleep } from "@kingsleyweb/bun-common";
-import type { CacheEventMap } from "../../lib/index";
+import type { CacheDriver, CacheEventMap } from "../../lib/index";
 import { createCache, LoaderTimeoutError, memoryDriver } from "../../lib/index";
 import { makeCache } from "../helpers";
 
@@ -330,6 +330,141 @@ describe("getOrSet: the loader's noStore() (§3.4)", () => {
     const entry = await cache.getEntry("k");
     expect(entry?.value).toBe("v1");
     expect(entry?.stale).toBe(true);
+    await cache.close();
+  });
+});
+
+/**
+ * A memory driver whose reads look at the store when they are called but
+ * answer late, one after another, as reads queued on a busy backend do
+ * (MongoDB under a stampede, where the bench found the loader running twice
+ * in one process, PR-B1). Writes are not queued behind them.
+ */
+function slowReads(spacingMs: number): {
+  /** The driver. */
+  driver: CacheDriver;
+  /** Changes the spacing for the reads that follow. */
+  setSpacing: (ms: number) => void;
+} {
+  const inner = memoryDriver();
+  let spacing = spacingMs;
+  let lastAnswer = 0;
+  const driver = new Proxy(inner, {
+    get(target, property, receiver) {
+      if (property !== "get") {
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (ns: string, key: string) => {
+        const snapshot = await target.get(ns, key);
+        lastAnswer = Math.max(Date.now(), lastAnswer) + spacing;
+        await sleep(Math.max(0, lastAnswer - Date.now()));
+        return snapshot;
+      };
+    },
+  });
+  return { driver, setSpacing: (ms) => (spacing = ms) };
+}
+
+describe("getOrSet: reads slower than the load (§3.4)", () => {
+  test("200 concurrent misses whose reads answer one by one over 600 ms run a 10 ms loader once", async () => {
+    const { driver } = slowReads(3);
+    const cache = createCache({ driver, sweepInterval: 0 });
+    let loads = 0;
+    const results = await Promise.all(
+      Array.from({ length: 200 }, async () =>
+        cache.getOrSet("k", async () => {
+          loads++;
+          await sleep(10);
+          return 42;
+        }),
+      ),
+    );
+    expect(loads).toBe(1);
+    expect(results.every((r) => r === 42)).toBe(true);
+    await cache.close();
+  });
+
+  test("wrap: the same, through a wrapped function", async () => {
+    const { driver } = slowReads(3);
+    const cache = createCache({ driver, sweepInterval: 0 });
+    let loads = 0;
+    const load = cache.wrap(
+      async (id: number) => {
+        loads++;
+        await sleep(10);
+        return id * 2;
+      },
+      { key: (id) => `w:${id}` },
+    );
+    const results = await Promise.all(
+      Array.from({ length: 200 }, async () => load(21)),
+    );
+    expect(loads).toBe(1);
+    expect(results.every((r) => r === 42)).toBe(true);
+    await cache.close();
+  });
+
+  test("a stale read that a background refresh settled under reads again, and starts no second refresh", async () => {
+    const { driver, setSpacing } = slowReads(0);
+    const cache = createCache({
+      driver,
+      sweepInterval: 0,
+      staleWhileRevalidate: 60_000,
+    });
+    let loads = 0;
+    const refreshed = createDeferred<void>();
+    const loader = async () => {
+      loads++;
+      await sleep(20);
+      refreshed.resolve();
+      return "new";
+    };
+    await cache.set("s", "old", { ttl: 30 });
+    await sleep(40);
+    // The first caller is served the stale value and starts the refresh.
+    expect(await cache.getOrSet("s", loader)).toBe("old");
+    // The second reads while the refresh runs, and its read answers after
+    // the refresh has written: it must not take the stale value it saw for
+    // a reason to refresh again.
+    setSpacing(60);
+    const second = cache.getOrSet("s", loader);
+    await refreshed.promise;
+    expect(await second).toBe("new");
+    await sleep(50);
+    expect(loads).toBe(1);
+    await cache.close();
+  });
+
+  test("a load already running is joined without a read", async () => {
+    const { driver } = slowReads(0);
+    let reads = 0;
+    const counted = new Proxy(driver, {
+      get(target, property, receiver) {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (property === "get" && typeof value === "function") {
+          return async (...args: [string, string]) => {
+            reads++;
+            return await (value as CacheDriver["get"])(...args);
+          };
+        }
+        return value;
+      },
+    });
+    const cache = createCache({ driver: counted, sweepInterval: 0 });
+    const gate = createDeferred<number>();
+    const first = cache.getOrSet("j", async () => await gate.promise);
+    await sleep(5);
+    const readsBefore = reads;
+    const joiners = Array.from({ length: 10 }, async () =>
+      cache.getOrSet("j", async () => 0),
+    );
+    expect(reads).toBe(readsBefore);
+    gate.resolve(7);
+    expect(await first).toBe(7);
+    expect(await Promise.all(joiners)).toEqual(
+      Array.from({ length: 10 }, () => 7),
+    );
     await cache.close();
   });
 });

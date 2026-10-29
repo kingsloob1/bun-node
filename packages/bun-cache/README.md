@@ -206,6 +206,14 @@ reported like the tag fence's (below): a `fenced` event with
 one more in `stats().fenced`. A background refresh that is forgotten reports
 the same, in place of its `refresh` event.
 
+- **The read is shared too.** Callers that ask while a load runs join it
+  without reading; callers that ask while a read of the key runs share that
+  read, so they miss together and one leads the load. A read that a load
+  settled under reads again when it found nothing fresh, since it may have
+  looked before the write. This matters on a backend whose reads queue for
+  longer than the load: before it, 1,000 concurrent misses on MongoDB ran a
+  20 ms loader twice (found by the bench, `bench/`). Concurrent callers are
+  therefore answered the same value object, a hit's as a load's.
 - **Cancellation is collective.** `getOrSet(key, loader, { signal })` rejects
   the caller that aborted; the loader's own `signal` aborts only when *every*
   waiter has aborted, so one impatient caller cannot cancel shared work.
