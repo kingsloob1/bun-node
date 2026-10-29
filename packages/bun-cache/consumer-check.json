@@ -130,6 +130,18 @@
       "types": ["CacheResponseOptions"]
     },
     {
+      "$comment": "The Keyv store adapter (plan \u00a710.4, PR-K1) for cache-manager and @nestjs/cache-manager. Structural: its declarations import no Keyv type, and the package has no Keyv dependency.",
+      "spelling": "@kingsleyweb/bun-cache/keyv",
+      "values": ["toKeyvStore"],
+      "types": ["BunCacheKeyvStore", "ToKeyvStoreOptions", "KeyvStoreEntry"],
+      "snippet": "import { createCache, memoryDriver } from \"@kingsleyweb/bun-cache\";\nconst store = m.toKeyvStore(createCache({ driver: memoryDriver() }), { namespace: \"keyv-store\" });\nexport type _storeNotAny = Expect<IsAny<typeof store>>;\nexport const _typed: t.BunCacheKeyvStore = store;\nexport const _get: Promise<string | undefined> = store.get<string>(\"keyv:k\");\nexport const _set: Promise<boolean> = store.set(\"keyv:k\", \"{}\", 60_000);\nexport const _entries: t.KeyvStoreEntry[] = [{ key: \"k\", value: \"{}\", expires: Date.now() + 1000 }];\nexport const _options: t.ToKeyvStoreOptions = { namespace: \"app\" };\nexport type _expires = Equal<typeof store.capabilities.expires, true>;\nstore.on(\"error\", (error) => { void error; });\nstore.namespace = \"keyv\";"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/keyv",
+      "values": ["toKeyvStore"],
+      "types": ["BunCacheKeyvStore"]
+    },
+    {
       "$comment": "The Worker the Cloudflare drivers' endpoint points at, which users deploy (plan Status, PR-C10). It runs on Cloudflare's runtime, so it is checked as a browser entry: no Node or Bun types in its graph, and it imports nothing.",
       "spelling": "@kingsleyweb/bun-cache/cloudflare-worker",
       "browser": true,

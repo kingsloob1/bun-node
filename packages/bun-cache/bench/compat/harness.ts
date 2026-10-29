@@ -179,6 +179,20 @@ export function referenceBacking(): { store: () => ReferenceStore } {
   };
 }
 
+/** The Keyv options {@link keyvOver} passes through. */
+export interface KeyvOverOptions {
+  /** Keyv's namespace; Keyv 5 defaults it to `"keyv"`, Keyv 6 to none. An explicit `undefined` is none under both. */
+  namespace?: string;
+  /** Keyv's default TTL, in ms. */
+  ttl?: number;
+  /** Keyv 5: its serialiser; `undefined` hands the store Keyv's envelope object. */
+  serialize?: undefined;
+  /** Keyv 5: its deserialiser; `undefined` alongside `serialize`. */
+  deserialize?: undefined;
+  /** Keyv 6: `false` hands the store Keyv's envelope object. */
+  serialization?: false;
+}
+
 /**
  * A Keyv of `major` over `store`, as `@nestjs/cache-manager` builds one from
  * a bare adapter (`new Keyv({ store, ttl, namespace })`).
@@ -186,7 +200,7 @@ export function referenceBacking(): { store: () => ReferenceStore } {
 export function keyvOver(
   major: KeyvMajor,
   store: KeyvStoreLike,
-  options: { namespace?: string; ttl?: number } = {},
+  options: KeyvOverOptions = {},
 ): Keyv5 {
   if (major === 5) {
     return new Keyv5({ store, ...options });

@@ -158,6 +158,13 @@ And (PR-E3):
   playground's **at-rest** item (`/playground/cache/at-rest`) shows one
   value as the store holds it beside what the cache answers
 
+And (PR-K1):
+
+- the **Keyv store**, `@kingsleyweb/bun-cache/keyv`: `toKeyvStore(cache)`
+  for apps on `@nestjs/cache-manager` or cache-manager, one store for both
+  Keyv majors, storing Keyv's strings with the raw codec
+  ([Keyv and `@nestjs/cache-manager`](#keyv-and-nestjscache-manager))
+
 What comes next is in the plan's Status.
 
 ## Quick start
@@ -2397,3 +2404,122 @@ answer does. Coalesced followers wait for the stream to end. The copy is not a
 `tee()`: a tee's second branch keeps pulling, so a slow client stops
 back-pressuring the handler and a client that leaves no longer stops it
 (measured: `docs/plans/bun-cache/evidence/stream-tap.ts`).
+
+## Keyv and `@nestjs/cache-manager`
+
+`@kingsleyweb/bun-cache/keyv` turns a cache into a
+[Keyv](https://github.com/jaredwray/keyv) store, for an app already on
+`@nestjs/cache-manager` or cache-manager, whose only storage seam is a Keyv
+store. A new Nest app is better served by bun-nest's
+[`BunCacheModule`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/README.md#the-cache-module),
+which keeps everything below that Keyv loses.
+
+```ts
+import { CacheModule } from "@nestjs/cache-manager";
+import { createCache, postgresDriver } from "@kingsleyweb/bun-cache";
+import { toKeyvStore } from "@kingsleyweb/bun-cache/keyv";
+
+@Module({
+  imports: [
+    CacheModule.register({
+      stores: [toKeyvStore(createCache({ driver: postgresDriver({ url }) }))],
+      ttl: 60_000,
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+`@nestjs/cache-manager` wraps the store in `new Keyv({ store, ttl,
+namespace })`, and `CACHE_MANAGER` is cache-manager's `Cache` over it. The
+same store goes to `new Keyv({ store })` or to cache-manager's
+`createCache({ stores: [keyv] })` directly. It is structural: this package
+has no Keyv dependency, and installing Keyv is the app's.
+
+**Pin `keyv@5.6.0`, exactly.** cache-manager 7.2.9 (the current one)
+depends on `keyv ^5.6.0` and breaks under Keyv 6.1.0, measured
+([`docs/plans/bun-cache/evidence/keyv-compat/`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/evidence/keyv-compat/results.txt),
+and pinned by the bench's compatibility tests): `wrap()` runs the loader on
+every call where Keyv 5 runs it once (three concurrent calls, then a fourth:
+two runs), and `ttl()` answers `undefined` instead of the entry's absolute
+expiry. The store itself works under both majors; it is cache-manager that
+does not. In `package.json`:
+
+```json
+{ "dependencies": { "keyv": "5.6.0", "cache-manager": "7.2.9", "@nestjs/cache-manager": "12.0.1" } }
+```
+
+**Pin the whole family exactly, and check the lock.** On 2026-08-04
+poisoned releases of ten packages in this family were published, each adding
+a `preinstall` script — `keyv@6.0.0`, `cacheable@2.5.1` and
+`cache-manager@7.2.10` among them — and have since been removed from npm
+([jaredwray/cacheable#1692](https://github.com/jaredwray/cacheable/issues/1692)).
+A caret range would have taken them. Pin exact versions, commit the lock,
+install with `--frozen-lockfile`, and leave install scripts untrusted (Bun
+runs none outside `trustedDependencies` and its own short default list).
+
+**What a store receives, and what it does with it.**
+
+| | Keyv 5 | Keyv 6 |
+|---|---|---|
+| How Keyv uses it | directly | directly: the store declares `capabilities.expires`, so no bridge |
+| The value | Keyv's JSON envelope as a string, stored with the `"raw"` codec | the same |
+| The TTL | relative, in ms | an absolute expiry, in epoch ms |
+| The key | prefixed with Keyv's namespace (`keyv:k`), stored as sent | bare |
+| The namespace | `"keyv"` by default; none when `@nestjs/cache-manager` passes none | none by default |
+| `deleteMany` answers | whether every key was there | a boolean per key |
+
+- **One serialisation.** Keyv has already serialised the value (and
+  compressed or encrypted it, if told to), so the store keeps the string's
+  UTF-8 bytes under the `"raw"` codec whatever the cache's `codec` is, and
+  hands the same string back. With Keyv's serialisation off
+  (`serialize: undefined` in Keyv 5, `serialization: false` in Keyv 6) the
+  store receives Keyv's envelope object and stores it with the cache's own
+  codec — its only encoding, so with the default structured clone a `Date`
+  survives. The cache's compression still applies to large entries.
+- **Namespaces.** Each Keyv namespace is a namespace view of the cache:
+  `"keyv"` stores in `<cache namespace>:keyv`, and a namespace
+  `cache.namespace()` would refuse (a space, a colon) in
+  `<cache namespace>:_:<its UTF-8 in hex>`. No namespace is the cache's own
+  namespace, or `toKeyvStore(cache, { namespace })`'s. Keyv sets
+  `store.namespace` when it is built and when you assign
+  `keyv.namespace`; the store reads it on every call.
+- **`clear()` clears the current namespace and nothing else** — never
+  another Keyv namespace, never the backend. With no Keyv namespace it
+  clears the cache's own namespace, so give the store a cache of its own,
+  or `toKeyvStore(cache, { namespace: "keyv-store" })`.
+- **TTLs are Keyv's.** A write Keyv gives no TTL never expires, whatever the
+  cache's `ttl` default; the cache's `jitter` and stale windows are not
+  applied. A relative TTL of 0 or less, or one that is not finite, is no
+  TTL, as Keyv treats it. An absolute expiry already past deletes the key
+  (Keyv 6's own bridge does the same).
+- **Errors are `error` events, never throws**, as Keyv expects of a store: a
+  failed operation answers a miss, `false` or nothing and emits the error,
+  which Keyv re-emits on `keyv.on("error")`. The cache's own `error` events
+  (a driver failure its default policy turned into a miss) are forwarded
+  too, each error once.
+- **`disconnect()` closes the cache**, as a Keyv store closes its connection;
+  `@nestjs/cache-manager` calls it from its `onModuleDestroy`, as it does for
+  every store — before `app.close()` drains the requests still in flight, so
+  a request still running then reads misses. Give the store a cache nothing
+  else uses.
+- **One store per Keyv.** The store learns which Keyv major drives it from
+  Keyv itself (Keyv 6 reads `capabilities`), and holds one Keyv namespace at
+  a time, as every Keyv store does.
+
+**What is lost through Keyv**: tags (`invalidateTags`); stale-while-revalidate
+and stale-if-error (cache-manager's `refreshThreshold` is the nearest thing);
+cross-process locks, since cache-manager's `wrap()` is single-flight in one
+process only; and the cache's codec, because Keyv's JSON envelope wins, so a
+`Date` comes back as its ISO string. `cache.getOrSet` keeps all of them.
+
+**The compatibility tests** run the store through the real cache-manager
+7.2.9 over Keyv 5.6.0 and 6.1.0, and through `@nestjs/cache-manager` 12.0.1's
+`CacheModule`, on memory, SQLite, Postgres and Redis. They live in the
+unpublished bench package, so none of those libraries is a dependency here:
+
+```bash
+cd packages/bun-cache/bench
+bun install --frozen-lockfile
+bun run compat
+```

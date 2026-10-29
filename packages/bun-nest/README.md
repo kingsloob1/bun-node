@@ -2486,6 +2486,13 @@ export class UsersService {
 }
 ```
 
+**Staying on `@nestjs/cache-manager` for now?** bun-cache's
+`toKeyvStore(cache)` (`@kingsleyweb/bun-cache/keyv`) is a Keyv store, so
+`CacheModule.register({ stores: [toKeyvStore(cache)] })` puts any bun-cache
+driver under `CACHE_MANAGER` without this module — with `keyv` pinned to
+5.6.0, and without tags, the stale windows or cross-process locks. See bun-cache's
+[Keyv and `@nestjs/cache-manager`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-cache/README.md#keyv-and-nestjscache-manager).
+
 ### Modules, names and shutdown
 
 - **`forRoot(options)`** takes `createCache`'s options (the module creates the

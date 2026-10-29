@@ -132,6 +132,19 @@ describe("package.json exports", () => {
     ).toBe(true);
   });
 
+  it("checks the ./keyv subpath, the Keyv store for cache-manager", () => {
+    expect(manifest.exports["./keyv"]).toEqual({
+      "@kingsleyweb/source": "./lib/keyv/index.ts",
+      types: "./dts/keyv/index.d.ts",
+      default: "./lib/keyv/index.ts",
+    });
+    expect(
+      checkConfig.entries?.some(
+        (entry) => entry.spelling === "@kingsleyweb/bun-cache/keyv",
+      ),
+    ).toBe(true);
+  });
+
   it("checks the ./cloudflare-worker subpath, the Worker users deploy, as a browser entry", () => {
     expect(manifest.exports["./cloudflare-worker"]).toEqual({
       "@kingsleyweb/source": "./lib/cloudflare/worker.ts",
@@ -152,6 +165,40 @@ describe("this package's runtime dependencies", () => {
   // dependency (plan §14.1), not a peer or a devDependency.
   it("declares bun-common, which ./http's declarations import", () => {
     expect(manifest.dependencies["@kingsleyweb/bun-common"]).toBeDefined();
+  });
+});
+
+// The Keyv adapter is structural (plan §10.4): Keyv and cache-manager are
+// pinned in the bench package only, where the compatibility tests run them.
+describe("the Keyv adapter's dependencies", () => {
+  const manifestFull = manifest as typeof manifest & {
+    devDependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
+  };
+
+  it("declares no keyv, cache-manager or @nestjs/cache-manager anywhere", () => {
+    for (const field of [
+      manifestFull.dependencies,
+      manifestFull.devDependencies ?? {},
+      manifestFull.peerDependencies ?? {},
+    ]) {
+      for (const name of Object.keys(field)) {
+        expect(name).not.toMatch(
+          /^(keyv|@keyv\/.*|cache-manager|@nestjs\/cache-manager)$/,
+        );
+      }
+    }
+  });
+
+  it("imports only the package's own modules in lib/keyv/", async () => {
+    for (const file of readdirSync(join(ROOT, "lib", "keyv"))) {
+      const source = await Bun.file(join(ROOT, "lib", "keyv", file)).text();
+      const specifiers = [...source.matchAll(/^import[^"]*"([^"]+)"/gm)].map(
+        (match) => match[1],
+      );
+      expect(specifiers.length).toBeGreaterThan(0);
+      for (const specifier of specifiers) expect(specifier).toStartWith("../");
+    }
   });
 });
 

@@ -225,7 +225,7 @@ Two differences from bun-jobs':
 ## The Keyv compatibility harness
 
 ```bash
-bun run compat                  # bun test --check ./compat/keyv.compat.ts
+bun run compat                  # bun test --check ./compat/keyv.compat.ts ./compat/toKeyvStore.compat.ts
 ```
 
 `compat/harness.ts` drives a Keyv store adapter through the **real**
@@ -233,15 +233,28 @@ cache-manager 7.2.9 over Keyv 5.6.0 and over Keyv 6.1.0 (installed side by
 side, the second as `keyv-6`); `compat/contract.ts`'s `describeKeyvCompat`
 registers the cases an adapter must pass under each (round trip, the JSON
 envelope's `Date`, misses, `mset`/`mget`, `del`, expiry, a namespaced
-`clear()` that spares a second cache's keys). PR-K1 runs `toKeyvStore`
-through it:
+`clear()` that spares a second cache's keys). `compat/toKeyvStore.compat.ts`
+(PR-K1) runs `toKeyvStore` through it:
 
 ```ts
-describeKeyvCompat("toKeyvStore", () => {
+describeKeyvCompat("toKeyvStore over memory", () => {
   const cache = createCache({ driver: memoryDriver() });
   return { store: () => toKeyvStore(cache), close: () => cache.close() };
 });
 ```
+
+on memory, a SQLite file, Postgres and Redis (`BUN_CACHE_BENCH_POSTGRES_URL`
+and `BUN_CACHE_BENCH_REDIS_URL`; unset, each skips by name; its tables and keys
+carry the run's id and are deleted by those exact names), then checks what
+each major hands the store against what bun-cache stored (one serialisation,
+the TTL's unit, namespaces set late, serialisation off, errors as events), and
+drives it through `@nestjs/cache-manager` 12.0.1's `CacheModule.register({
+stores: [toKeyvStore(cache)] })` with `@nestjs/common` and `@nestjs/core`
+12.2.0 (the repository's Nest), `rxjs` 7.8.2 and `reflect-metadata` 0.2.2,
+pinned like the rest. The contract alone cannot see a store's TTL: Keyv checks
+its envelope's own `expires` on every read, so a store that kept an entry a
+thousand times too long still reads as expired. The adapter's own cases read
+the stored expiry for that reason.
 
 `compat/keyv.compat.ts` proves the harness on a reference store (a full Keyv
 6 storage adapter with a store-managed namespace; without one, Keyv 6's
