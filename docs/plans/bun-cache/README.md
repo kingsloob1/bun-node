@@ -1706,6 +1706,48 @@ PR's runs only.
 - `@keyv/sqlite` is left out (native `sqlite3`, install script); `@keyv/mysql`
   fails its own 1 MB read-back.
 
+**PR-K1 built 2026-10-29** (branch `feat/bun-cache-k1-keyv`, on develop
+`b18d29f9`; the user accepted its four choices the same day: `disconnect()`
+closes the cache, the three type names, `cacheWithCodec` kept internal, and
+no Keyv 6 `KeyvStorageAdapter` type for now): `toKeyvStore(cache, { namespace? })` in
+`@kingsleyweb/bun-cache/keyv` (§10.4, D12), structural, one store for both
+Keyv majors.
+
+- **Keyv 6 uses it natively**: the store declares `capabilities.expires`, so
+  Keyv 6 skips its bridge and sends absolute expiries; reading `capabilities`
+  is what switches the store to that contract (and to `boolean[]` from
+  `deleteMany`), since Keyv 5 never reads it and both send the expiry in
+  `set`'s third argument.
+- **One serialisation** needed a core change: the codec was per cache, so a
+  view could not store Keyv's strings raw. `CacheImpl` now carries a write
+  codec per view (`namespace()` keeps it), and `cacheWithCodec(cache, codec)`
+  in `lib/core/cache.ts` (not in the barrel) makes one; reads still decode by
+  each entry's header. Strings and bytes go raw; an object (Keyv's
+  serialisation off) goes through the cache's own codec, its only encoding.
+- **Namespaces**: each Keyv namespace is `cache.namespace(ns)` (one Keyv
+  cannot clear another's, nor the backend), `_:<hex>` for one the cache would
+  refuse, the cache's own (or the option's) for none; keys verbatim (Keyv 5's
+  `keyv:` prefix kept: stripping it would merge Keyv 6's `a:b` in `a` with
+  `b`). The namespace is read per call, so one Keyv sets after construction
+  applies.
+- **TTL is Keyv's**: no TTL never expires (the cache's `ttl` default, jitter
+  and stale windows are not applied); 0, negative or non-finite is none; an
+  absolute expiry already past deletes.
+- **Errors are events**: every method catches and emits; the cache's own
+  `error` events are forwarded, each error once (a strict cache emits and
+  throws the same one). `disconnect()` closes the cache.
+- **Types**: assignable to Keyv 5's `KeyvStoreAdapter`, which
+  `@nestjs/cache-manager`'s `stores` names (overloaded `setMany` and
+  `deleteMany`: the two majors' return types differ).
+- **Tests**: `__tests__/keyv/` (structural, no Keyv); the bench's
+  `compat/toKeyvStore.compat.ts` runs `describeKeyvCompat` on memory, SQLite,
+  Postgres and Redis under Keyv 5.6.0 and 6.1.0, the adapter's own cases, and
+  `@nestjs/cache-manager` 12.0.1's `CacheModule.register` (new bench
+  dependencies, pinned exactly: it, `@nestjs/common`/`core` 12.2.0, `rxjs`
+  7.8.2, `reflect-metadata` 0.2.2). The contract alone cannot see a store's
+  TTL (Keyv checks its envelope's `expires` on read): the adapter's cases
+  read the stored expiry.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -4062,6 +4104,7 @@ Every new public name.
 | `cacheControl`, `formatCacheControl`, `CacheControlDirectives` | function, type | bun-common | the header's name |
 | `addResponseTransform(t, { first })` | option | bun-common `BunResponse` | — |
 | `toKeyvStore` | function | `./keyv` | says what it returns |
+| `BunCacheKeyvStore`, `ToKeyvStoreOptions`, `KeyvStoreEntry` | types | `./keyv` | *built in PR-K1, approved by the user 2026-10-29*: what `toKeyvStore` returns (named after the package, so it is not read as one of Keyv's own types), its options, and one `setMany` entry |
 | `BunCacheModule`, `forRoot`, `forRootAsync`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS` | module, decorator, tokens | bun-nest `./cache` | follow `BunJobsApiModule` and `InjectJobsApi` |
 | `Cacheable`, `CacheEvict`, `CachePut` (`key`, `ttl`, `tags`, `cache`, `condition`, `unless`, `beforeInvocation`, `all`) | method decorators | bun-nest `./cache` | Spring's names (Q9) |
 | `noStore()` | loader-context method | `CacheLoaderContext` (`getOrSet`'s loader) | *built in PR-N1, approved by the user 2026-10-28*: keeps a loaded value out of the cache (`@Cacheable`'s `unless`); after `Cache-Control: no-store` |

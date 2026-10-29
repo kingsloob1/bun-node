@@ -287,11 +287,34 @@ class CacheImpl<
    */
   readonly #storedNs: string;
 
-  constructor(state: SharedState, ns: string) {
+  /**
+   * The codec this view writes with: the cache's `codec`, or another one a
+   * view was made with ({@link cacheWithCodec}). Reads decode by the codec
+   * id in each entry's header, so every view reads every entry alike.
+   */
+  readonly #codec: Codec;
+
+  constructor(state: SharedState, ns: string, codec: Codec = state.codec) {
     this.#state = state;
     this.#ns = ns;
     this.#storedNs = state.names?.namespace(ns) ?? ns;
+    this.#codec = codec;
     this.#startSweep();
+  }
+
+  /**
+   * A view of `cache` over the same namespace and shared state that writes
+   * with `codec`; `undefined` when `cache` was not made by `createCache`.
+   */
+  static withCodec<S extends CacheSchema, T extends string>(
+    cache: Cache<S, T>,
+    codec: Codec,
+  ): Cache<S, T> | undefined {
+    if (!(cache instanceof CacheImpl)) {
+      return undefined;
+    }
+    const view = cache as CacheImpl<S, T>;
+    return new CacheImpl<S, T>(view.#state, view.#ns, codec);
   }
 
   /* ---------------------------------------------------------------- */
@@ -530,10 +553,11 @@ class CacheImpl<
     compress?: false,
   ): Encoded | Promise<Encoded> {
     const state = this.#state;
+    const codec = this.#codec;
     if (negative) {
       const empty = new Uint8Array(0);
       return {
-        codecId: state.codec.id,
+        codecId: codec.id,
         flags: ENTRY_FLAGS.negative,
         compressor: COMPRESSOR_IDS.none,
         payload: empty,
@@ -541,12 +565,12 @@ class CacheImpl<
       };
     }
     let flags = 0;
-    const plain = state.codec.encode(value);
-    if (state.codec.id === CODEC_IDS.raw && typeof value === "string") {
+    const plain = codec.encode(value);
+    if (codec.id === CODEC_IDS.raw && typeof value === "string") {
       flags |= ENTRY_FLAGS.rawString;
     }
     const uncompressed: Encoded = {
-      codecId: state.codec.id,
+      codecId: codec.id,
       flags,
       compressor: COMPRESSOR_IDS.none,
       payload: plain,
@@ -2514,7 +2538,11 @@ class CacheImpl<
 
   namespace(name: string): Cache<Schema, Tag> {
     const segment = checkNamespace(name, "namespace(name)");
-    return new CacheImpl<Schema, Tag>(this.#state, `${this.#ns}:${segment}`);
+    return new CacheImpl<Schema, Tag>(
+      this.#state,
+      `${this.#ns}:${segment}`,
+      this.#codec,
+    );
   }
 
   describeKey(
@@ -2774,6 +2802,28 @@ export function createCache(
   state.bus = linkBus(state);
   state.bus?.start();
   return cache as Cache<Record<string, unknown>, string>;
+}
+
+/**
+ * A view of `cache` — the same namespace, driver, L1, events and statistics
+ * — whose writes encode with `codec` instead of the cache's own. Reads are
+ * unchanged: an entry decodes with the codec its header names, so the view
+ * and the cache read each other's entries. `namespace(name)` on the view
+ * keeps the codec. Answers `undefined` for a `Cache` that `createCache` did
+ * not make (a hand-written implementation), which has no codec to swap.
+ *
+ * Not exported from the package root: `toKeyvStore` (`./keyv`) uses it to
+ * store Keyv's already-serialised strings with the `"raw"` codec whatever
+ * the cache's `codec` is, so nothing is serialised twice.
+ */
+export function cacheWithCodec<
+  Schema extends CacheSchema = Record<string, unknown>,
+  Tag extends string = string,
+>(
+  cache: Cache<Schema, Tag>,
+  codec: "structured" | "json" | "raw" | Codec,
+): Cache<Schema, Tag> | undefined {
+  return CacheImpl.withCodec(cache, resolveCodec(codec));
 }
 
 /**
