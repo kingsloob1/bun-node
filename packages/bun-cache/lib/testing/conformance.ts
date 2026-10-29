@@ -130,11 +130,29 @@ async function wait(ms: number): Promise<void> {
   await Bun.sleep(ms);
 }
 
-/** Waits until `condition` holds, checking every 10 ms; throws after `timeoutMs`. */
+/**
+ * How long {@link waitFor} waits by default, in ms: the bound on a bus
+ * delivery or a gap's signal, a reconnect included (Redis: about a second
+ * after `CLIENT KILL`).
+ */
+const WAIT_FOR_MS = 5_000;
+
+/**
+ * The bound of a case that waits with {@link waitFor}, in ms: its wait's
+ * {@link WAIT_FOR_MS}, plus the subscribe, the publishes or the forced gap,
+ * and the 300 ms quiet check around it, with room for a loaded machine. It
+ * must outlast the wait by more than the rest of the case takes, so a message
+ * that never comes fails the case with `waitFor`'s own message. At bun:test's
+ * default 5 s, equal to the wait, the case timed out first and the wait's
+ * error landed after it, as an unhandled error between tests.
+ */
+const WAITING_CASE_TIMEOUT_MS = 15_000;
+
+/** Waits until `condition` holds, checking every 10 ms; throws after `timeoutMs` (default {@link WAIT_FOR_MS}), inside a case bounded by {@link WAITING_CASE_TIMEOUT_MS}. */
 async function waitFor(
   what: string,
   condition: () => boolean,
-  timeoutMs = 5_000,
+  timeoutMs = WAIT_FOR_MS,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -693,27 +711,36 @@ export async function runCacheDriverConformance(
         driver.publish !== undefined &&
         driver.subscribe !== undefined,
       async () => {
+        // Only this case's namespace counts. The bus is the suite's, and a
+        // pushed one may deliver an earlier case's message after this
+        // subscribe: one published just before, still on its way over the
+        // shared subscriber connection (Redis: the raw-dump case's last
+        // `clear`, which made the count 2 and the wait for exactly 1 run out).
+        const namespace = ns();
         const received: BusMessage[] = [];
         const unsubscribe = await driver.subscribe!(
           (message) => {
-            received.push(message);
+            if (message.namespace === namespace) {
+              received.push(message);
+            }
           },
           () => {},
         );
         const message: BusMessage = {
           type: "delete",
-          namespace: ns(),
+          namespace,
           keys: ["k"],
           at: Date.now(),
         };
         await driver.publish!(message);
-        await waitFor("the published message", () => received.length === 1);
+        await waitFor("the published message", () => received.length > 0);
         expect(received).toEqual([message]);
         await unsubscribe();
         await driver.publish!({ ...message, at: Date.now() });
         await wait(300);
         expect(received.length).toBe(1);
       },
+      WAITING_CASE_TIMEOUT_MS,
     );
 
     kase(
@@ -829,6 +856,7 @@ export async function runCacheDriverConformance(
         await waitFor("the gap to be signalled", () => gaps > 0);
         await unsubscribe();
       },
+      WAITING_CASE_TIMEOUT_MS,
     );
 
     registerEncryptedPass({ driver, instance, options, kase });
