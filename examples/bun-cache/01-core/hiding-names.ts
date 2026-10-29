@@ -225,6 +225,12 @@ checkEqual(
 /* ------------------------------------------------------------------ */
 step("what it refuses");
 
+// The two misuses below are compile errors too (`encrypt` needs `keys` or a
+// user `cipher`; `hashNames` takes exactly one of `key` and `hash`), so a
+// TypeScript caller never reaches them. The `TypeError`s are for JavaScript
+// callers and casts, and the `@ts-expect-error`s say the compiler refuses
+// them first.
+
 /** The `TypeError` message `make` throws, or `undefined` when it does not throw. */
 function typeErrorOf(make: () => unknown): string | undefined {
   try {
@@ -240,6 +246,7 @@ function typeErrorOf(make: () => unknown): string | undefined {
 const noCipher = typeErrorOf(() =>
   createCache({
     driver: memoryDriver(),
+    // @ts-expect-error -- no cipher: "Property 'keys' is missing"
     encrypt: { hashNames: { key: newKey() } },
   }),
 );
@@ -272,6 +279,7 @@ const both = typeErrorOf(() =>
     driver: memoryDriver(),
     encrypt: {
       keys: [{ id: "k1", key: newKey() }],
+      // @ts-expect-error -- both: "'(name: string) => string' is not assignable to type 'undefined'"
       hashNames: { key: newKey(), hash: (name: string) => name },
     },
   }),

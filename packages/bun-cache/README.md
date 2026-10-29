@@ -451,6 +451,16 @@ const cache = createCache({
 });
 ```
 
+`encrypt` takes one of two shapes: `{ keys, cipher?: "aes-256-gcm",
+keyRefresh? }` for the built-in cipher, or `{ cipher }` with a user
+[`CacheCipher`](#user-ciphers), and no `keys`. Either takes
+`previous`, `aad`, `hashNames` and `acceptUnencrypted`. Neither `keys` nor a
+user `cipher`, or both, is a compile error ("Property 'keys' is missing …"),
+and a `TypeError` at `createCache` for JavaScript callers and casts. The
+shapes are exported by name: `CacheEncryptWithKeys` and
+`CacheEncryptWithCipher`, and for `hashNames`, `CacheHashNamesKey` and
+`CacheHashNamesHash`.
+
 The built-in cipher is **AES-256-GCM** through `node:crypto`, with **a key
 per entry**: HKDF-SHA-256 derives a key from each ring key once, and each
 write derives its own from that and a random 128-bit salt, with a random
@@ -644,7 +654,8 @@ function sync or returning a promise — for an HSM, a KMS that encrypts, or a
 library cipher. `context` is `{ namespace, key, aad }`, and the cipher
 **must** authenticate `context.aad`: it is what binds an entry to its place.
 `open` throws when the bytes do not authenticate. Its keys are its own
-business, so `keys` beside it is a `TypeError`. Entries keep the cipher id
+business, so `keys` (or `keyRefresh`) beside it is a compile error and a
+`TypeError`. Entries keep the cipher id
 they were sealed with: a new cipher takes a new id, and the old one goes in
 `previous: [oldCipher]` while its entries live (`previous` works beside the
 built-in's `keys` too). An id outside 128–255, or one taken twice among
@@ -749,7 +760,8 @@ const cache = createCache({
   **values** stay plaintext integers. Events keep the plaintext names (they
   are your process's own API), except `evict`, which only the driver knows;
   the core's log lines name the stored key.
-- **It needs encryption** (a `TypeError` otherwise): without it every
+- **It needs encryption**, `keys` or a user `cipher` (a compile error
+  otherwise, and a `TypeError` for JavaScript callers): without it every
   entry's header carries its full key in clear, and hashing the names would
   hide nothing. The full key is still checked on every read, inside the
   sealed header, so two names colliding only overwrite each other — a miss,
@@ -766,9 +778,10 @@ const cache = createCache({
   now the hashed ones ([migrating](#when-an-entry-does-not-open)).
 - **A hash of your own**, to match an existing scheme: `hashNames: { hash:
   (name, { kind, namespace }) => string }`, where `kind` is `"namespace"`,
-  `"key"` or `"tag"`. It must be deterministic and answer 1–200 bytes with
-  no NUL or newline. Each new name's answer is checked (the memo keeps the
-  last 10,000), and the first name of each kind is hashed twice and must
+  `"key"` or `"tag"`. `hashNames` takes exactly one of `key` and `hash`:
+  both, or neither, is a compile error (and a `TypeError`). The hash must be
+  deterministic and answer 1–200 bytes with no NUL or newline. Each new
+  name's answer is checked (the memo keeps the last 10,000), and the first name of each kind is hashed twice and must
   hash alike. A failure is a `TypeError`: thrown by `createCache` and
   `namespace()` for the namespace, by `describeKey`, and as the rejection
   of the operation for a key or a tag.

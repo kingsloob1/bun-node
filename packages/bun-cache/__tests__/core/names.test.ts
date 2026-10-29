@@ -518,6 +518,7 @@ describe("hashNames: validation at createCache", () => {
 
   test("needs a cipher", () => {
     expect(() =>
+      // @ts-expect-error -- a compile error too (encrypt.type-test.ts); this is the runtime check, for JavaScript callers and casts
       createCache({ driver, encrypt: { hashNames: { key: NAMES_KEY } } }),
     ).toThrow(/encrypt\.hashNames needs a cipher/);
     expect(() =>

@@ -125,6 +125,23 @@ the documented format and the code fails bun-cache's own gate. No product
 code changed. The
 examples are written alongside, in the same worktree, by the examples agent.
 
+**PR built (2026-10-29): the `encrypt` shapes as types**, on develop
+`33fa0874` (after PR-E3, #577), the user's decision of the same day. Two
+§10.4 refusals that were only a `TypeError` at `createCache` are compile
+errors too: `CacheEncryptOptions` is a union of a built-in shape (`keys`
+required, `cipher?: "aes-256-gcm"`, `keyRefresh?`) and a user-cipher shape
+(`cipher: CacheCipher`, `keys?: never`, `keyRefresh?: never`), so `hashNames`
+without a cipher, an empty `encrypt` and `keys` beside a user cipher are
+refused; and `hashNames` is `{ key; hash?: never } | { hash; key?: never }`,
+so both of `key` and `hash` are refused (neither already was). The branch
+interfaces are not exported (no new public name); the runtime checks stay.
+`keyRefresh` beside a static ring stays a `TypeError` only, since typing it
+would break a `keys` held in a variable of the ring-or-function union. The
+type test is `__tests__/encrypt.type-test.ts`, with a negative control for
+each refused shape. The two shapes and the two `hashNames` shapes are exported as
+`CacheEncryptWithKeys`, `CacheEncryptWithCipher`, `CacheHashNamesKey` and
+`CacheHashNamesHash` (the user's decision, 2026-10-29).
+
 Written 2026-10-28 against `develop` at `251a64f1` (#560). **No product code
 was changed.** Every `file:line` is at `251a64f1`, relative to
 `packages/bun-cache/` unless it says otherwise. The marks are the main

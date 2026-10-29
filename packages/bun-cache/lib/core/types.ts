@@ -401,7 +401,7 @@ export interface CacheNameContext {
 
 /**
  * A user cipher (the encryption plan's §6), given as
- * {@link CacheEncryptOptions.cipher} in place of the built-in
+ * `encrypt.cipher` ({@link CacheEncryptOptions}) in place of the built-in
  * `"aes-256-gcm"`: a KMS, an HSM, a library cipher. Its key management is its
  * own. Either function may be synchronous or return a promise; the core
  * awaits only a returned promise. Check one with `runCacheCipherConformance`
@@ -411,7 +411,7 @@ export interface CacheCipher {
   /**
    * Stored in each entry's envelope: an integer in 128–255 (1–127 are the
    * package's). Entries keep the id they were sealed with, so a new cipher
-   * takes a new id and the old one goes in {@link CacheEncryptOptions.previous}
+   * takes a new id and the old one goes in `encrypt.previous`
    * while its entries live.
    */
   id: number;
@@ -433,29 +433,30 @@ export interface CacheCipher {
 }
 
 /**
- * `createCache`'s `encrypt` option (the encryption plan's §10): every entry is
- * sealed — its header, full key, payload, tags and hard expiry — with
- * AES-256-GCM under a key derived per entry, or with a user cipher. Order on
- * write: encode → compress → encrypt; on read the reverse. Counters stay
- * plaintext integers (the backend adds to them). Names (keys, namespaces,
- * tags) stay in clear in the store unless `hashNames` is on.
+ * `encrypt.hashNames` with the built-in HMAC: exactly one of `key` and
+ * `hash`, so `hash` is typed `never` here.
  */
-export interface CacheEncryptOptions {
-  /**
-   * The built-in cipher's keys: the first seals, all open. Or a function
-   * answering them, or a promise of them (a KMS, Vault): called on first use
-   * — operations wait for it, a read at most `timeout` — then every
-   * `keyRefresh` ms, and early (at most once per 10 s) when a read meets an
-   * unknown key id. A rejection, or an invalid ring, is an `error` event and
-   * the previous ring stays. Required unless `cipher` is a {@link CacheCipher};
-   * refused beside one.
-   */
-  keys?: CacheKeyRing | (() => CacheKeyRing | Promise<CacheKeyRing>);
-  /** Re-call a `keys` function after this many ms (checked as operations run). Default: never after the first answer; an unknown key id still triggers one refresh per 10 s. Only with a `keys` function. */
-  keyRefresh?: number;
-  /** `"aes-256-gcm"` (the default: `node:crypto`, a key per entry by HKDF from a random 128-bit salt, a 96-bit nonce) or a user {@link CacheCipher}. */
-  cipher?: "aes-256-gcm" | CacheCipher;
-  /** User ciphers that still open: entries sealed by an earlier {@link CacheCipher} stay readable after `cipher` moves on. Ids 128–255, unique. */
+export interface CacheHashNamesKey {
+  /** The HMAC key: 32 bytes, or their hex, base64 or base64url spelling. Secret, and never rotated. */
+  key: string | Uint8Array;
+  /** Not beside `key`: `hashNames` takes exactly one of the two (a `TypeError` at `createCache` otherwise). */
+  hash?: never;
+}
+
+/**
+ * `encrypt.hashNames` with a hash of your own: exactly one of `key` and
+ * `hash`, so `key` is typed `never` here.
+ */
+export interface CacheHashNamesHash {
+  /** Answers a name's stored form: deterministic, 1–200 bytes, no NUL or newline. */
+  hash: (name: string, context: CacheNameContext) => string;
+  /** Not beside `hash`: `hashNames` takes exactly one of the two (a `TypeError` at `createCache` otherwise). */
+  key?: never;
+}
+
+/** What both of `encrypt`'s shapes take, whichever cipher seals. */
+interface CacheEncryptCommonOptions {
+  /** User ciphers that still open: entries sealed by an earlier {@link CacheCipher} stay readable after `cipher` moves on. Ids 128–255, unique. Beside the built-in's `keys` too. */
   previous?: readonly CacheCipher[];
   /**
    * Extra context bound into every entry's AAD — an environment (`"prod"`),
@@ -465,7 +466,9 @@ export interface CacheEncryptOptions {
   aad?: string | Uint8Array;
   /**
    * Store keys, namespaces and tags as keyed hashes, so a dump of the store
-   * shows none of them (the encryption plan's §7). Default: off.
+   * shows none of them (the encryption plan's §7). Default: off. It needs a
+   * cipher, which both of `encrypt`'s shapes have: `keys`, or a user
+   * `cipher`.
    *
    * - `{ key }`: HMAC-SHA-256 under this key — 32 bytes, or their hex,
    *   base64 or base64url spelling — answering 32 hex characters per name,
@@ -477,21 +480,16 @@ export interface CacheEncryptOptions {
    *   must be deterministic and answer 1–200 bytes with no NUL or newline;
    *   both are checked on first use (a `TypeError`).
    *
+   * Exactly one of the two: both, or neither, is a compile error (and a
+   * `TypeError` at `createCache`).
+   *
    * The drivers, L1, the bus, the stamp cache and the core's log lines all
    * see the hashed names; events keep the plaintext ones, except `evict`,
    * which only the driver knows. Counters' names are hashed, their values
    * not. `cache.describeKey(key, tags)` answers the stored forms, to find an
    * entry in a dump. The long-key hashing (`maxKeyLength`) does not apply.
    */
-  hashNames?:
-    | {
-        /** The HMAC key: 32 bytes, or their hex, base64 or base64url spelling. Secret, and never rotated. */
-        key: string | Uint8Array;
-      }
-    | {
-        /** Answers a name's stored form: deterministic, 1–200 bytes, no NUL or newline. */
-        hash: (name: string, context: CacheNameContext) => string;
-      };
+  hashNames?: CacheHashNamesKey | CacheHashNamesHash;
   /**
    * Read entries written without encryption, during a migration. Writes are
    * always sealed. Off by default, and best left off: while it is on,
@@ -500,6 +498,57 @@ export interface CacheEncryptOptions {
    */
   acceptUnencrypted?: boolean;
 }
+
+/** `encrypt` with a user {@link CacheCipher}: it manages its own keys, so `keys` and `keyRefresh` are typed `never`. */
+export interface CacheEncryptWithCipher extends CacheEncryptCommonOptions {
+  /** Not beside a user cipher, which manages its own keys (a `TypeError` at `createCache` otherwise). `keys` belongs to the built-in `"aes-256-gcm"`. */
+  keys?: never;
+  /** Not beside a user cipher: it refreshes a `keys` function, which only the built-in takes (a `TypeError` at `createCache` otherwise). */
+  keyRefresh?: never;
+  /** The user cipher that seals, in place of the built-in `"aes-256-gcm"`: a KMS, an HSM, a library cipher. Ids 128–255. */
+  cipher: CacheCipher;
+}
+
+/** `encrypt` with the built-in `"aes-256-gcm"`: `keys` is required. */
+export interface CacheEncryptWithKeys extends CacheEncryptCommonOptions {
+  /**
+   * The built-in cipher's keys: the first seals, all open. Or a function
+   * answering them, or a promise of them (a KMS, Vault): called on first use
+   * — operations wait for it, a read at most `timeout` — then every
+   * `keyRefresh` ms, and early (at most once per 10 s) when a read meets an
+   * unknown key id. A rejection, or an invalid ring, is an `error` event and
+   * the previous ring stays. Required by the built-in, and refused beside a
+   * user {@link CacheCipher} (`encrypt`'s other shape).
+   */
+  keys: CacheKeyRing | (() => CacheKeyRing | Promise<CacheKeyRing>);
+  /** Re-call a `keys` function after this many ms (checked as operations run). Default: never after the first answer; an unknown key id still triggers one refresh per 10 s. Only with a `keys` function (a `TypeError` beside a static ring). */
+  keyRefresh?: number;
+  /** `"aes-256-gcm"`, the default: `node:crypto`, a key per entry by HKDF from a random 128-bit salt, a 96-bit nonce. A user {@link CacheCipher} is `encrypt`'s other shape. */
+  cipher?: "aes-256-gcm";
+}
+
+/**
+ * `createCache`'s `encrypt` option (the encryption plan's §10): every entry is
+ * sealed — its header, full key, payload, tags and hard expiry — with
+ * AES-256-GCM under a key derived per entry, or with a user cipher. Order on
+ * write: encode → compress → encrypt; on read the reverse. Counters stay
+ * plaintext integers (the backend adds to them). Names (keys, namespaces,
+ * tags) stay in clear in the store unless `hashNames` is on.
+ *
+ * One of two shapes, so a cache cannot be configured without a cipher:
+ * `{ keys, cipher?: "aes-256-gcm", keyRefresh? }` for the built-in, or
+ * `{ cipher: CacheCipher }` for a user cipher, with no `keys`. Either takes
+ * `previous`, `aad`, `hashNames` and `acceptUnencrypted`. Neither `keys` nor
+ * a user `cipher`, or both, is a compile error (and a `TypeError` at
+ * `createCache`, for JavaScript callers and casts).
+ */
+// The order and the names are the error message's: given neither `keys` nor
+// `cipher`, tsc 6 and `bun check` both report the union's last shape, and
+// "Property 'keys' is missing ... in type 'CacheEncryptWithKeys'" is the fix
+// most callers need. tsc 6 orders the shapes as declared, `bun check` by
+// name; both put this one last (measured 2026-10-29: renaming it to sort
+// first, or declaring it first, makes that checker name `cipher` instead).
+export type CacheEncryptOptions = CacheEncryptWithCipher | CacheEncryptWithKeys;
 
 /* ------------------------------------------------------------------ */
 /* Events and statistics (§3.12)                                      */
