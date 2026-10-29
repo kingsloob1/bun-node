@@ -380,3 +380,178 @@ export async function deleteAzurePrefix(
     deleted += blobs.length;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* rawDump: what each backend stored, read around the driver          */
+/* ------------------------------------------------------------------ */
+
+/** One chunk of a raw dump: bytes, or text scanned as its UTF-8. */
+export type RawChunk = Uint8Array | string;
+
+/** Flattens a value read from a backend (a row, a document, a field) into dump chunks: bytes as they are, text as text, the rest as JSON. */
+export function rawChunks(value: unknown, out: RawChunk[] = []): RawChunk[] {
+  if (value === null || value === undefined) {
+    return out;
+  }
+  if (value instanceof Uint8Array) {
+    out.push(value);
+  } else if (value instanceof ArrayBuffer) {
+    out.push(new Uint8Array(value));
+  } else if (typeof value === "string") {
+    out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) {
+      rawChunks(item, out);
+    }
+  } else if (value instanceof Date) {
+    out.push(value.toISOString());
+  } else if (typeof value === "object") {
+    for (const [field, item] of Object.entries(value)) {
+      out.push(field);
+      rawChunks(item, out);
+    }
+  } else if (
+    typeof value === "number" ||
+    typeof value === "bigint" ||
+    typeof value === "boolean"
+  ) {
+    out.push(String(value));
+  }
+  return out;
+}
+
+/**
+ * The kit's `rawDump` on a SQL backend: every row of the prefix's tables
+ * (`SELECT *`), each column's bytes or text. A table the engine does not
+ * keep (Postgres has no `bus` table) contributes nothing.
+ */
+export async function sqlRawDump(
+  backend: SqlBackend,
+  prefix: string,
+): Promise<RawChunk[]> {
+  const sql = rawClient(backend);
+  const out: RawChunk[] = [];
+  try {
+    for (const table of ["entries", "tags", "stamps", "locks", "bus"]) {
+      let rows: unknown;
+      try {
+        rows = await sql.unsafe(`SELECT * FROM ${prefix}${table}`);
+      } catch {
+        continue; // not kept on this engine
+      }
+      rawChunks([...(rows as unknown[])], out);
+    }
+  } finally {
+    await sql.close();
+  }
+  return out;
+}
+
+/**
+ * The kit's `rawDump` on Redis: every key under the prefix — its name, and
+ * its value by type (a string's bytes, a hash's fields and values, a set's
+ * members). Read by type rather than `DUMP`, whose RDB form LZF-compresses
+ * strings over 20 bytes and could hide a plaintext from the scan.
+ */
+export async function redisRawDump(
+  url: string,
+  prefix: string,
+): Promise<RawChunk[]> {
+  const client = new RedisClient(url);
+  const pattern = `${prefix.replace(/[*?[\]\\]/g, (char) => `\\${char}`)}:*`;
+  const out: RawChunk[] = [];
+  let cursor = "0";
+  try {
+    do {
+      const [next, found] = await client.scan(
+        cursor,
+        "MATCH",
+        pattern,
+        "COUNT",
+        1_000,
+      );
+      cursor = String(next);
+      for (const key of found) {
+        out.push(key);
+        const type = await client.type(key);
+        if (type === "string") {
+          rawChunks(await client.getBuffer(key), out);
+        } else if (type === "hash") {
+          rawChunks(await client.hgetall(key), out);
+        } else if (type === "set") {
+          rawChunks(await client.smembers(key), out);
+        } else if (type !== "none") {
+          rawChunks(await client.send("DUMP", [key]), out);
+        }
+      }
+    } while (cursor !== "0");
+  } finally {
+    client.close();
+  }
+  return out;
+}
+
+/** The kit's `rawDump` on S3: every object under the prefix — its name, its `Content-Type` (the driver's `exp=`/`at=` live there) and its body. */
+export async function s3RawDump(
+  url: string,
+  prefix: string,
+): Promise<RawChunk[]> {
+  const client = new S3Client(parseS3Url(url));
+  const out: RawChunk[] = [];
+  let startAfter: string | undefined;
+  for (;;) {
+    const page = await client.list({
+      prefix: `${prefix}/`,
+      maxKeys: 1000,
+      ...(startAfter === undefined ? {} : { startAfter }),
+    });
+    const objects = page.contents ?? [];
+    for (const object of objects) {
+      out.push(object.key);
+      const file = client.file(object.key);
+      try {
+        out.push((await file.stat()).type, await file.bytes());
+      } catch {
+        // Deleted since the listing.
+      }
+    }
+    if (page.isTruncated !== true || objects.length === 0) {
+      return out;
+    }
+    startAfter = objects.at(-1)!.key;
+  }
+}
+
+/** The kit's `rawDump` on Azure Blob Storage: every blob under the prefix — its name, its headers (`Content-Type`, metadata) and its body. */
+export async function azureRawDump(
+  url: string,
+  prefix: string,
+): Promise<RawChunk[]> {
+  const target = resolveAzureTarget({ url });
+  const out: RawChunk[] = [];
+  let marker: string | undefined;
+  do {
+    const response = await azureFetch(target, {
+      method: "GET",
+      blob: "",
+      query: {
+        restype: "container",
+        comp: "list",
+        prefix: `${prefix}/`,
+        include: "metadata",
+        ...(marker === undefined ? {} : { marker }),
+      },
+    });
+    const listing = await response.text();
+    const { blobs, next } = parseBlobList(listing);
+    out.push(listing);
+    for (const blob of blobs) {
+      out.push(blob.name);
+      const body = await azureFetch(target, { method: "GET", blob: blob.name });
+      out.push(JSON.stringify([...body.headers]));
+      out.push(new Uint8Array(await body.arrayBuffer()));
+    }
+    marker = next;
+  } while (marker !== undefined);
+  return out;
+}

@@ -41,6 +41,8 @@ import {
 } from "./header";
 import { checkNamespace, fullNamespace, storedKey } from "./keys";
 import { L1Store } from "./l1";
+import type { NameHasher } from "./names";
+import { resolveNameHasher } from "./names";
 import { CacheStatsCounter } from "./stats";
 import type {
   BusMessage,
@@ -137,6 +139,8 @@ interface DecodedValue {
   loadMs: number;
   /** The entry's tags. */
   tags: readonly string[];
+  /** The entry's tags as the driver, L1 and the bus name them: hashed under `encrypt.hashNames`, else {@link tags} itself. */
+  storedTags: readonly string[];
   /** The stored size, in bytes. */
   bytes: number;
   /** The decoded payload's size, in bytes (before compression): what it costs the L1 tier. */
@@ -262,6 +266,8 @@ interface SharedState {
   encryption: EntryEncryption | undefined;
   /** When each encryption failure reason (`CacheDecryptError.reason`, or `"encrypt"`) was last logged: at most once per 10 s each. */
   lastCryptoWarnAt: Map<string, number>;
+  /** The name hashing, when `encrypt.hashNames` is set (the encryption plan's §7). */
+  names: NameHasher | undefined;
 }
 
 /** The cache implementation; one instance per namespace view, over shared state. */
@@ -271,12 +277,20 @@ class CacheImpl<
 > implements Cache<Schema, Tag> {
   readonly #state: SharedState;
 
-  /** This view's full namespace. */
+  /** This view's full namespace, plaintext: what events report and the cipher binds. */
   readonly #ns: string;
+
+  /**
+   * The namespace the driver, L1, the flight map, the stamp cache and the bus
+   * see: {@link #ns}, or its hash under `encrypt.hashNames` — hashed once,
+   * here, so every operation of the view names it alike.
+   */
+  readonly #storedNs: string;
 
   constructor(state: SharedState, ns: string) {
     this.#state = state;
     this.#ns = ns;
+    this.#storedNs = state.names?.namespace(ns) ?? ns;
     this.#startSweep();
   }
 
@@ -284,17 +298,33 @@ class CacheImpl<
   /* small pieces                                                      */
   /* ---------------------------------------------------------------- */
 
-  /** The stored form of a user key (hashed when long, §3.7). */
+  /** The stored form of a user key: its hash under `encrypt.hashNames`, else itself (`#`-hashed when long, §3.7). */
   #storedKey(key: string): string {
-    return storedKey(
-      key,
-      this.#state.options.maxKeyLength ?? DEFAULTS.maxKeyLength,
-    );
+    const names = this.#state.names;
+    return names === undefined
+      ? storedKey(
+          key,
+          this.#state.options.maxKeyLength ?? DEFAULTS.maxKeyLength,
+        )
+      : names.key(this.#ns, key);
+  }
+
+  /** The stored forms of tags: their hashes under `encrypt.hashNames`, else the tags themselves. */
+  #storedTags(tags: readonly string[]): readonly string[] {
+    const names = this.#state.names;
+    return names === undefined || tags.length === 0
+      ? tags
+      : names.tags(this.#ns, tags);
+  }
+
+  /** The key a log line names: the stored form under `encrypt.hashNames` (logs are often stored), else the key (the encryption plan's §7.1). */
+  #logKey(key: string, stored: string): string {
+    return this.#state.names === undefined ? key : stored;
   }
 
   /** The flight-map key of a stored key. */
   #flightKey(stored: string): string {
-    return `${this.#ns}\n${stored}`;
+    return `${this.#storedNs}\n${stored}`;
   }
 
   /** Emits an event. */
@@ -437,9 +467,9 @@ class CacheImpl<
   }
 
   /**
-   * The live stamps of `tags` on a stamps-mode driver, cached in process for
-   * `tagStampCacheMs` (§3.6). A driver failure fails open — no stamps — with
-   * an `error` event, per the failure policy.
+   * The live stamps of `tags` (their stored forms) on a stamps-mode driver,
+   * cached in process for `tagStampCacheMs` (§3.6). A driver failure fails
+   * open — no stamps — with an `error` event, per the failure policy.
    */
   async #stampsFor(tags: readonly string[]): Promise<Map<string, number>> {
     const state = this.#state;
@@ -447,7 +477,7 @@ class CacheImpl<
     const out = new Map<string, number>();
     const missing: string[] = [];
     for (const tag of tags) {
-      const cached = state.stampCache.get(`${this.#ns}\n${tag}`);
+      const cached = state.stampCache.get(`${this.#storedNs}\n${tag}`);
       if (cached !== undefined && cached.expires > now) {
         if (cached.at > 0) {
           out.set(tag, cached.at);
@@ -459,14 +489,14 @@ class CacheImpl<
     if (missing.length > 0) {
       const fetched = await this.#op(
         "getStamps",
-        async () => await state.driver.getStamps(this.#ns, missing),
+        async () => await state.driver.getStamps(this.#storedNs, missing),
         new Map<string, number>(),
       );
       const expires =
         now + (state.options.tagStampCacheMs ?? DEFAULTS.tagStampCacheMs);
       for (const tag of missing) {
         const at = fetched.get(tag) ?? 0;
-        state.stampCache.set(`${this.#ns}\n${tag}`, { at, expires });
+        state.stampCache.set(`${this.#storedNs}\n${tag}`, { at, expires });
         if (at > 0) {
           out.set(tag, at);
         }
@@ -479,7 +509,7 @@ class CacheImpl<
   #deleteInBackground(stored: string): void {
     void this.#op(
       "delete",
-      async () => await this.#state.driver.delete(this.#ns, [stored]),
+      async () => await this.#state.driver.delete(this.#storedNs, [stored]),
       0,
     );
   }
@@ -745,7 +775,7 @@ class CacheImpl<
     const now = state.now();
     const raw = await this.#op<StoredEntry | undefined | typeof FAILED>(
       "get",
-      async () => await driver.get(this.#ns, stored),
+      async () => await driver.get(this.#storedNs, stored),
       FAILED,
     );
     if (raw === FAILED) {
@@ -756,7 +786,7 @@ class CacheImpl<
       if (driver.getCounter !== undefined) {
         const counter = await this.#op(
           "getCounter",
-          async () => await driver.getCounter?.(this.#ns, stored),
+          async () => await driver.getCounter?.(this.#storedNs, stored),
           undefined,
         );
         if (
@@ -773,6 +803,7 @@ class CacheImpl<
               expiresAt: counter.expiresAt,
               loadMs: 0,
               tags: [],
+              storedTags: [],
               bytes: 0,
               size: 0,
               counter: true,
@@ -835,6 +866,9 @@ class CacheImpl<
     }
     const { header } = decoded;
     const tags = unsealed.tags;
+    // The sealed tags are the plaintext ones; the stamps and L1 name their
+    // stored forms. A plain entry's tags are the driver's, stored already.
+    const storedTags = unsealed.sealed ? this.#storedTags(tags) : tags;
     // The stamps-mode read check (§3.6): an entry older than one of its
     // tags' invalidation stamps is a miss, whatever the bytes say. On an
     // encrypted cache it runs on every driver, with the sealed tags: an index
@@ -845,9 +879,9 @@ class CacheImpl<
       tags.length > 0 &&
       (state.driver.capabilities.tags === "stamps" || unsealed.sealed)
     ) {
-      const stamps = await this.#stampsFor(tags);
+      const stamps = await this.#stampsFor(storedTags);
       let invalidated = false;
-      for (const tag of tags) {
+      for (const tag of storedTags) {
         const at = stamps.get(tag);
         // A stamp at the entry's own millisecond counts as newer: Date.now()
         // cannot order two events within one ms, so the safe side wins (a
@@ -894,6 +928,7 @@ class CacheImpl<
       expiresAt: unsealed.expiresAt,
       loadMs: header.loadMs,
       tags,
+      storedTags,
       bytes: raw.value.byteLength,
       size: decoded.size,
       uncompressed: header.compressor === COMPRESSOR_IDS.none,
@@ -923,7 +958,7 @@ class CacheImpl<
     if (l1 === undefined || tier === "l2") {
       return { read: await this.#readStored(key, stored), tier: "l2" };
     }
-    const copy = l1.get(this.#ns, stored, state.now());
+    const copy = l1.get(this.#storedNs, stored, state.now());
     if (copy !== undefined) {
       l1.counts.hits++;
       return { read: { kind: "fresh", entry: copy }, tier: "l1" };
@@ -948,7 +983,7 @@ class CacheImpl<
       read.entry.counter !== true
     ) {
       l1.fill(
-        this.#ns,
+        this.#storedNs,
         stored,
         read.entry,
         read.entry.size,
@@ -968,7 +1003,7 @@ class CacheImpl<
     }
     await bus.publish({
       ...message,
-      namespace: this.#ns,
+      namespace: this.#storedNs,
       at: this.#state.now(),
     });
   }
@@ -1089,18 +1124,20 @@ class CacheImpl<
     if (sealed.byteLength > limit) {
       return this.#oversize(key, sealed.byteLength, limit);
     }
+    // Sealed with the plaintext tags; the driver indexes their stored forms.
+    const storedTags = this.#storedTags(init.tags);
     const entry: StoredEntry = {
       key: stored,
       value: sealed,
       expiresAt,
-      tags: init.tags,
+      tags: storedTags,
     };
     // The fence (§3.6): an indexed driver refuses the write when one of its
     // tags was invalidated after the load started. Stamps-mode drivers need
     // none — the read-side check sees the stamp either way.
     const fence =
       init.tags.length > 0 && state.driver.capabilities.tags === "index"
-        ? { tags: init.tags, createdAt: init.createdAt }
+        ? { tags: storedTags, createdAt: init.createdAt }
         : undefined;
     // §4.1's write order: L2, then L1, then the bus. The token is taken
     // before the L2 write, so an invalidation that lands while it runs keeps
@@ -1111,13 +1148,20 @@ class CacheImpl<
     try {
       const result = await this.#op(
         "set",
-        async () => await state.driver.set(this.#ns, entry, fence),
+        async () => await state.driver.set(this.#storedNs, entry, fence),
         "fenced" as const,
       );
       if (result === "fenced") {
         // Fenced, or failed: L2 kept what it had, and so does every other
         // process's L1 — only this process's copy, if any, is dropped.
-        l1?.afterWrite(this.#ns, stored, undefined, 0, token, state.now());
+        l1?.afterWrite(
+          this.#storedNs,
+          stored,
+          undefined,
+          0,
+          token,
+          state.now(),
+        );
         this.#reportFenced(key, init.tags, "fence");
         return false;
       }
@@ -1143,7 +1187,7 @@ class CacheImpl<
           entry,
           init,
         );
-        l1.afterWrite(this.#ns, stored, copy, size, token, state.now());
+        l1.afterWrite(this.#storedNs, stored, copy, size, token, state.now());
       }
       await this.#publish({ type: "set", keys: [stored] });
       return true;
@@ -1181,6 +1225,8 @@ class CacheImpl<
       createdAt: number;
       /** The load's duration. */
       loadMs: number;
+      /** The entry's tags, plaintext (`entry.tags` holds their stored forms). */
+      tags: readonly string[];
       /** The per-call tier. */
       tier?: "l2";
     },
@@ -1202,7 +1248,8 @@ class CacheImpl<
           freshUntil,
           expiresAt: entry.expiresAt,
           loadMs: init.loadMs,
-          tags: entry.tags,
+          tags: init.tags,
+          storedTags: entry.tags,
           bytes: entry.value.byteLength,
           size: decoded.size,
           uncompressed: header.compressor === COMPRESSOR_IDS.none,
@@ -1319,7 +1366,12 @@ class CacheImpl<
           const acquired = await this.#op(
             "acquireLock",
             async () =>
-              await driver.acquireLock!(this.#ns, stored, owner, lock.ttl),
+              await driver.acquireLock!(
+                this.#storedNs,
+                stored,
+                owner,
+                lock.ttl,
+              ),
             false,
           );
           if (acquired) {
@@ -1351,7 +1403,7 @@ class CacheImpl<
           state.warnedLock = true;
           state.logger.warn(
             `cache: the "${driver.name}" driver has no cross-process lock; "lock" falls back to the in-process single-flight`,
-            { key },
+            { key: this.#logKey(key, stored) },
           );
         }
       }
@@ -1361,7 +1413,7 @@ class CacheImpl<
         const owner = lockOwner;
         void this.#op(
           "releaseLock",
-          async () => await driver.releaseLock!(this.#ns, stored, owner),
+          async () => await driver.releaseLock!(this.#storedNs, stored, owner),
           false,
         );
       }
@@ -1393,7 +1445,7 @@ class CacheImpl<
         const owner = lockOwner;
         void this.#op(
           "releaseLock",
-          async () => await driver.releaseLock!(this.#ns, stored, owner),
+          async () => await driver.releaseLock!(this.#storedNs, stored, owner),
           false,
         );
       }
@@ -1687,18 +1739,18 @@ class CacheImpl<
       await this.#op(
         "set",
         async () =>
-          await state.driver.set(this.#ns, {
+          await state.driver.set(this.#storedNs, {
             key: stored,
             value,
             expiresAt: staleEntry.expiresAt,
-            tags: staleEntry.tags,
+            tags: staleEntry.storedTags,
           }),
         "fenced" as const,
       );
     } catch (error) {
       state.logger.warn("cache: failed to push a stale value's backoff", {
         error,
-        key,
+        key: this.#logKey(key, stored),
       });
     }
   }
@@ -1744,7 +1796,7 @@ class CacheImpl<
         (await this.#op(
           "acquireLock",
           async () =>
-            await driver.acquireLock!(this.#ns, stored, owner, lock.ttl),
+            await driver.acquireLock!(this.#storedNs, stored, owner, lock.ttl),
           false,
         )) === true
       ) {
@@ -1926,7 +1978,7 @@ class CacheImpl<
       if (l1 === undefined) {
         return undefined;
       }
-      const copy = l1.get(this.#ns, key, state.now());
+      const copy = l1.get(this.#storedNs, key, state.now());
       if (copy === undefined) {
         l1.counts.misses++;
       } else {
@@ -1947,7 +1999,7 @@ class CacheImpl<
               "getMany",
               async () =>
                 await state.driver.getMany(
-                  this.#ns,
+                  this.#storedNs,
                   wanted.map((index) => stored[index]),
                 ),
               FAILED,
@@ -2048,7 +2100,7 @@ class CacheImpl<
     const expiresAt = ttl === null ? null : now + ttl;
     const raw = await this.#op(
       "get",
-      async () => await state.driver.get(this.#ns, stored),
+      async () => await state.driver.get(this.#storedNs, stored),
       undefined,
     );
     if (raw !== undefined && (raw.expiresAt === null || raw.expiresAt > now)) {
@@ -2097,13 +2149,14 @@ class CacheImpl<
     ) {
       const counter = await this.#op(
         "getCounter",
-        async () => await state.driver.getCounter?.(this.#ns, stored),
+        async () => await state.driver.getCounter?.(this.#storedNs, stored),
         undefined,
       );
       if (counter !== undefined) {
         return await this.#op(
           "touch",
-          async () => await state.driver.touch!(this.#ns, stored, expiresAt),
+          async () =>
+            await state.driver.touch!(this.#storedNs, stored, expiresAt),
           false,
         );
       }
@@ -2120,11 +2173,11 @@ class CacheImpl<
     this.#state.flights.forget(this.#flightKey(stored));
     const count = await this.#op(
       "delete",
-      async () => await this.#state.driver.delete(this.#ns, [stored]),
+      async () => await this.#state.driver.delete(this.#storedNs, [stored]),
       0,
     );
     // §4.1: L2, then L1, then the bus.
-    this.#state.l1?.invalidateKeys(this.#ns, [stored]);
+    this.#state.l1?.invalidateKeys(this.#storedNs, [stored]);
     await this.#publish({ type: "delete", keys: [stored] });
     if (count > 0) {
       this.#state.stats.deletes += count;
@@ -2143,23 +2196,23 @@ class CacheImpl<
     }
     const count = await this.#op(
       "delete",
-      async () => await this.#state.driver.delete(this.#ns, stored),
+      async () => await this.#state.driver.delete(this.#storedNs, stored),
       0,
     );
-    this.#state.l1?.invalidateKeys(this.#ns, stored);
+    this.#state.l1?.invalidateKeys(this.#storedNs, stored);
     await this.#publish({ type: "delete", keys: stored });
     this.#state.stats.deletes += count;
     return count;
   }
 
   async clear(): Promise<void> {
-    this.#state.flights.forgetAll(`${this.#ns}\n`);
+    this.#state.flights.forgetAll(`${this.#storedNs}\n`);
     await this.#op(
       "clear",
-      async () => await this.#state.driver.clear(this.#ns),
+      async () => await this.#state.driver.clear(this.#storedNs),
       undefined,
     );
-    this.#state.l1?.invalidateNamespace(this.#ns);
+    this.#state.l1?.invalidateNamespace(this.#storedNs);
     await this.#publish({ type: "clear" });
   }
 
@@ -2178,9 +2231,12 @@ class CacheImpl<
       return;
     }
     const state = this.#state;
+    // The driver, L1, the stamps and the bus name the stored forms; the
+    // `invalidate` event the plaintext ones.
+    const storedTags = this.#storedTags(tags);
     // Forget this namespace's flights: a load in flight for a tagged key must
     // not be joined (§3.4); its write is fenced or dropped.
-    state.flights.forgetAll(`${this.#ns}\n`);
+    state.flights.forgetAll(`${this.#storedNs}\n`);
     const now = state.now();
     const until = now + this.#tagStampTtl();
     const driver = state.driver;
@@ -2190,30 +2246,32 @@ class CacheImpl<
     ) {
       const count = await this.#op(
         "deleteByTags",
-        async () => await driver.deleteByTags!(this.#ns, tags, until),
+        async () =>
+          await driver.deleteByTags!(this.#storedNs, storedTags, until),
         0,
       );
       state.stats.deletes += count;
       if (state.encryption !== undefined) {
         // An encrypted cache checks the sealed tags' stamps on every driver
         // (`#decodeStored`): this process sees the invalidation at once.
-        this.#cacheStamps(tags, now);
+        this.#cacheStamps(storedTags, now);
       }
     } else {
       await this.#op(
         "setStamps",
-        async () => await driver.setStamps(this.#ns, tags, now, until),
+        async () =>
+          await driver.setStamps(this.#storedNs, storedTags, now, until),
         undefined,
       );
       // This process sees the invalidation at once, cache or no cache.
-      this.#cacheStamps(tags, now);
+      this.#cacheStamps(storedTags, now);
     }
     // Every stamp the call wrote is at or before this reading: a driver's
     // `deleteByTags` stamps with its clock while the call runs, and
     // `setStamps` was given `now`.
     const stampedBy = state.now();
-    state.l1?.invalidateTags(this.#ns, tags);
-    await this.#publish({ type: "invalidate-tags", tags });
+    state.l1?.invalidateTags(this.#storedNs, storedTags);
+    await this.#publish({ type: "invalidate-tags", tags: storedTags });
     await this.#passStamps(stampedBy);
     this.#emit("invalidate", { namespace: this.#ns, tags });
   }
@@ -2260,13 +2318,13 @@ class CacheImpl<
     }
   }
 
-  /** Puts this process's own invalidation of `tags` at `at` into the tag-stamp cache (§3.6). */
+  /** Puts this process's own invalidation of `tags` (their stored forms) at `at` into the tag-stamp cache (§3.6). */
   #cacheStamps(tags: readonly string[], at: number): void {
     const state = this.#state;
     const expires =
       Date.now() + (state.options.tagStampCacheMs ?? DEFAULTS.tagStampCacheMs);
     for (const tag of tags) {
-      state.stampCache.set(`${this.#ns}\n${tag}`, { at, expires });
+      state.stampCache.set(`${this.#storedNs}\n${tag}`, { at, expires });
     }
   }
 
@@ -2390,7 +2448,7 @@ class CacheImpl<
     // throws even under the default policy (§3.14 covers reads and plain writes).
     return await this.#opStrict("increment", async () => {
       state.flights.forget(this.#flightKey(stored));
-      return await driver.increment!(this.#ns, stored, by, expiresAt);
+      return await driver.increment!(this.#storedNs, stored, by, expiresAt);
     });
   };
 
@@ -2427,6 +2485,17 @@ class CacheImpl<
   namespace(name: string): Cache<Schema, Tag> {
     const segment = checkNamespace(name, "namespace(name)");
     return new CacheImpl<Schema, Tag>(this.#state, `${this.#ns}:${segment}`);
+  }
+
+  describeKey(
+    key: string,
+    tags: readonly Tag[] = [],
+  ): { namespace: string; key: string; tags: string[] } {
+    return {
+      namespace: this.#storedNs,
+      key: this.#storedKey(key),
+      tags: [...this.#storedTags(tags)],
+    };
   }
 
   on<E extends CacheEvent>(
@@ -2605,6 +2674,7 @@ export function createCache(
     options.compress,
     DEFAULTS.compressThreshold,
   );
+  const names = resolveNames(options, logger);
   const validators = {
     exact: new Map<string, StandardSchemaV1>(),
     prefixes: [] as { prefix: string; schema: StandardSchemaV1 }[],
@@ -2641,6 +2711,7 @@ export function createCache(
     lastBusWarnAt: 0,
     encryption: undefined,
     lastCryptoWarnAt: new Map(),
+    names,
   };
   if (options.encrypt !== undefined) {
     state.encryption = new EntryEncryption(options.encrypt, {
@@ -2673,6 +2744,41 @@ export function createCache(
   state.bus = linkBus(state);
   state.bus?.start();
   return cache as Cache<Record<string, unknown>, string>;
+}
+
+/**
+ * Resolves `encrypt.hashNames` (the encryption plan's §7, §10.4): a
+ * `TypeError` when it is given without encryption — beside no cipher, or as
+ * a top-level option (JavaScript) — since the full key is then readable in
+ * every entry's header and hashing hides nothing; a warning when its key is
+ * one of the ring's (allowed: HKDF keeps the two apart).
+ */
+function resolveNames(
+  options: CreateCacheOptions,
+  logger: Logger,
+): NameHasher | undefined {
+  if ((options as { hashNames?: unknown }).hashNames !== undefined) {
+    throw new TypeError(
+      "hashNames is an encrypt option (encrypt: { keys, hashNames }): name hashing needs encryption",
+    );
+  }
+  const encrypt = options.encrypt;
+  if (encrypt?.hashNames === undefined) {
+    return undefined;
+  }
+  const cipher = encrypt.cipher ?? "aes-256-gcm";
+  if (cipher === "aes-256-gcm" && encrypt.keys === undefined) {
+    throw new TypeError(
+      "encrypt.hashNames needs a cipher (encrypt.keys or encrypt.cipher): without encryption every entry carries its full key in clear, and hashing the names would hide nothing",
+    );
+  }
+  const resolved = resolveNameHasher(encrypt)!;
+  if (resolved.sharesRingKey) {
+    logger.warn(
+      "createCache: encrypt.hashNames.key is also an encrypt.keys key; HKDF keeps the two uses apart, but a separate names key (never rotated) is the safer choice",
+    );
+  }
+  return resolved.hasher;
 }
 
 /** Resolves the `l1` option into a store; `undefined` without one. */

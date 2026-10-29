@@ -10,10 +10,16 @@
  * directory's tsconfig enables `experimentalDecorators`); constructor
  * parameter decorators are applied by call (oven-sh/bun#28605).
  */
-import type { Cache, CreateCacheOptions } from "@kingsleyweb/bun-cache";
+import type {
+  Cache,
+  CacheDriver,
+  CreateCacheOptions,
+} from "@kingsleyweb/bun-cache";
 import type { FakeClock } from "@kingsleyweb/bun-cache/testing";
 import type { INestApplicationContext } from "@nestjs/common";
+import { Buffer } from "node:buffer";
 import { memoryDriver } from "@kingsleyweb/bun-cache";
+import { memoryDriverDump } from "@kingsleyweb/bun-cache/lib/drivers/memory";
 import { fakeClock } from "@kingsleyweb/bun-cache/testing";
 import { Injectable, Module, Scope, SetMetadata } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
@@ -58,13 +64,19 @@ async function start(
     cache?: Omit<CreateCacheOptions, "driver">;
     close?: boolean;
   } = {},
-): Promise<{ app: INestApplicationContext; cache: Cache; clock: FakeClock }> {
+): Promise<{
+  app: INestApplicationContext;
+  cache: Cache;
+  clock: FakeClock;
+  driver: CacheDriver;
+}> {
   const clock = fakeClock();
+  const driver = memoryDriver({ now: clock.now });
   class AppModule {}
   Module({
     imports: [
       BunCacheModule.forRoot({
-        driver: memoryDriver({ now: clock.now }),
+        driver,
         now: clock.now,
         sweepInterval: 0,
         ...options.cache,
@@ -83,7 +95,7 @@ async function start(
       await app.close();
     });
   }
-  return { app, cache: app.get<Cache>(BUN_CACHE), clock };
+  return { app, cache: app.get<Cache>(BUN_CACHE), clock, driver };
 }
 
 /** A user service whose methods count their runs. */
@@ -705,5 +717,38 @@ describe("finding the cache", () => {
       }
       return Svc;
     }).toThrow(/only instance methods can be cached/);
+  });
+});
+
+describe("on a hashed, encrypted cache (encrypt.hashNames)", () => {
+  it("@Cacheable, @CacheEvict and @CachePut work, and no key, tag or value reaches the store in clear", async () => {
+    const { Users, calls } = usersService();
+    const { app, cache, driver } = await start([Users], {
+      cache: {
+        encrypt: {
+          keys: [{ id: "k1", key: new Uint8Array(32).fill(1) }],
+          hashNames: { key: new Uint8Array(32).fill(2) },
+        },
+      },
+    });
+    const users = app.get(Users);
+    expect(await users.find(1)).toEqual({ id: 1, name: "Ada" });
+    expect(await users.find(1)).toEqual({ id: 1, name: "Ada" });
+    expect(calls.find).toBe(1);
+    expect(await cache.get("user:1")).toEqual({ id: 1, name: "Ada" });
+    // Evicted by its (hashed) tag.
+    await users.rename(1, "Ada Lovelace");
+    expect(await users.find(1)).toEqual({ id: 1, name: "Ada Lovelace" });
+    expect(calls.find).toBe(2);
+    await users.save({ id: 2, name: "Bo Bramble" });
+    expect(await users.find(2)).toEqual({ id: 2, name: "Bo Bramble" });
+    expect(calls.find).toBe(2);
+    const dump = memoryDriverDump(driver);
+    for (const secret of ["user:1", "user:2", "Ada Lovelace", "Bo Bramble"]) {
+      expect(
+        dump.some((chunk) => Buffer.from(chunk).includes(Buffer.from(secret))),
+        secret,
+      ).toBe(false);
+    }
   });
 });

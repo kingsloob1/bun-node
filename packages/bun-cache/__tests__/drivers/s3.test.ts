@@ -29,7 +29,7 @@ import {
 } from "../../lib/drivers/s3";
 import { s3Encode, signS3Request } from "../../lib/drivers/s3-sign";
 import { runCacheDriverConformance } from "../../lib/testing/index";
-import { deleteS3Prefix, s3Backend, s3ReachError } from "./backends";
+import { deleteS3Prefix, s3RawDump, s3Backend, s3ReachError } from "./backends";
 import { reportNotConfigured, reportUnreachable } from "./sqlSuite";
 
 /** An entry for the specifics. */
@@ -397,7 +397,10 @@ async function registerS3Suite(url: string): Promise<void> {
   const kitOptions = { url, prefix: prefix("kit") };
   await runCacheDriverConformance(
     "s3",
-    () => ({ driver: s3Driver(kitOptions) }),
+    () => ({
+      driver: s3Driver(kitOptions),
+      rawDump: async () => await s3RawDump(url, kitOptions.prefix),
+    }),
     {
       crossProcess: {
         module: new URL("../../lib/drivers/s3.ts", import.meta.url).pathname,

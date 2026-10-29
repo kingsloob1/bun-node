@@ -21,8 +21,16 @@
  * level, as above.
  */
 import { afterAll, describe, expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import process from "node:process";
-import type { BusMessage, CacheDriver, StoredEntry } from "../core/types";
+import { createCache } from "../core/cache";
+import type {
+  BusMessage,
+  Cache,
+  CacheDriver,
+  CacheEncryptOptions,
+  StoredEntry,
+} from "../core/types";
 
 /** What the factory answers: the driver, and an optional cleanup run once after the suite. */
 export interface ConformanceInstance {
@@ -30,6 +38,19 @@ export interface ConformanceInstance {
   driver: CacheDriver;
   /** Run once after the suite; closes clients, removes files. */
   cleanup?: () => unknown | Promise<unknown>;
+  /**
+   * Every byte the driver has stored, raw: rows, key names, objects, files,
+   * the bus — read straight from the backend, around the driver. A string
+   * chunk is scanned as its UTF-8. With it, the kit's at-rest case writes
+   * sentinel keys, namespaces, tags and values through a cache with
+   * `encrypt` and `hashNames`, and fails if the dump shows any of them, in
+   * UTF-8 or UTF-16. It first proves the dump sees the store: a plain
+   * cache's value and namespace must be found in it. Without it the case is
+   * reported as skipped.
+   */
+  rawDump?: () =>
+    | readonly (Uint8Array | string)[]
+    | Promise<readonly (Uint8Array | string)[]>;
 }
 
 /** The driver's factory; awaited once, before the suite registers. */
@@ -809,5 +830,399 @@ export async function runCacheDriverConformance(
         await unsubscribe();
       },
     );
+
+    registerEncryptedPass({ driver, instance, options, kase });
   });
+}
+
+/** The ring the encrypted pass seals with: fixed, test-only bytes. */
+const KIT_RING = [{ id: "kit", key: new Uint8Array(32).fill(0x6b) }];
+
+/** The names key the encrypted pass hashes with: fixed, test-only bytes. */
+const KIT_NAMES_KEY = new Uint8Array(32).fill(0x6e);
+
+/** The encryption the pass's caches use. */
+const KIT_ENCRYPT: CacheEncryptOptions = {
+  keys: KIT_RING,
+  hashNames: { key: KIT_NAMES_KEY },
+};
+
+/**
+ * The driver as a cache's, whose `close()` does nothing: the pass's caches
+ * share the suite's driver, which only the factory's `cleanup` closes.
+ */
+function unclosable(driver: CacheDriver): CacheDriver {
+  return new Proxy(driver, {
+    get(target, property) {
+      if (property === "close") {
+        return async () => {};
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function"
+        ? (value as (...args: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
+}
+
+/** A run-unique token, so sentinels never match another case's or run's data. */
+function token(): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(8))).toString("hex");
+}
+
+/** Whether any chunk of a dump holds `text`, as UTF-8 or UTF-16 (LE or BE). */
+function dumpHolds(
+  chunks: readonly (Uint8Array | string)[],
+  text: string,
+): boolean {
+  const utf8 = Buffer.from(text, "utf8");
+  const utf16le = Buffer.from(text, "utf16le");
+  const utf16be = Buffer.from(utf16le).swap16();
+  return chunks.some((chunk) => {
+    const bytes = Buffer.from(
+      typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk,
+    );
+    return (
+      bytes.includes(utf8) || bytes.includes(utf16le) || bytes.includes(utf16be)
+    );
+  });
+}
+
+/**
+ * The pass with `encrypt` and `hashNames` on (the encryption plan's §11):
+ * the core's every operation the driver advertises, through caches whose
+ * names reach the driver only as keyed hashes and whose entries are sealed —
+ * and, given `rawDump`, a scan of the backend for the plaintext.
+ */
+function registerEncryptedPass(context: {
+  /** The suite's driver. */
+  driver: CacheDriver;
+  /** The factory's answer (`rawDump`). */
+  instance: ConformanceInstance;
+  /** The suite's options (`crossProcess`). */
+  options: ConformanceOptions;
+  /** The suite's case registrar. */
+  kase: (
+    id: string,
+    title: string,
+    advertised: boolean,
+    run: () => void | Promise<void>,
+    timeoutMs?: number,
+  ) => void;
+}): void {
+  const { driver, instance, options, kase } = context;
+  const capabilities = driver.capabilities;
+
+  /** A cache over the suite's driver, in a fresh namespace of its own; `encrypt: null` is a plain one. */
+  const open = (
+    namespace = `kitenc-${process.pid}-${token()}`,
+    encrypt: CacheEncryptOptions | null = KIT_ENCRYPT,
+  ): Cache =>
+    createCache({
+      driver: unclosable(driver),
+      namespace,
+      sweepInterval: 0,
+      bus: false,
+      ...(encrypt === null ? {} : { encrypt }),
+    });
+
+  /** Runs `body` with a cache, closing it after. */
+  const withCache = async (
+    body: (cache: Cache) => Promise<void>,
+    cache = open(),
+  ): Promise<void> => {
+    try {
+      await body(cache);
+    } finally {
+      await cache.close();
+    }
+  };
+
+  kase(
+    "encrypted.round-trip",
+    "encrypt + hashNames: values round-trip under hashed names, sealed",
+    true,
+    async () => {
+      await withCache(async (cache) => {
+        const big = "x".repeat(70_000);
+        expect(await cache.set("user:1", { id: 1 }, { tags: ["org:1"] })).toBe(
+          true,
+        );
+        expect(await cache.set("big", big)).toBe(true);
+        expect(await cache.get("user:1")).toEqual({ id: 1 });
+        expect(await cache.get("big")).toBe(big);
+        const entry = await cache.getEntry("user:1");
+        expect(entry?.tags).toEqual(["org:1"]);
+        expect(await cache.getMany(["user:1", "nope"])).toEqual([
+          { id: 1 },
+          undefined,
+        ]);
+        expect(await cache.has("user:1")).toBe(true);
+        // The driver holds it under the names describeKey answers, sealed.
+        const described = cache.describeKey("user:1", ["org:1"]);
+        expect(described.key).toMatch(/^[\da-f]{32}$/);
+        const raw = await driver.get(described.namespace, described.key);
+        expect(raw).toBeDefined();
+        expect(Buffer.from(raw!.value.subarray(0, 2)).toString()).toBe("BE");
+        expect([...raw!.tags]).toEqual(described.tags);
+        expect(await cache.delete("user:1")).toBe(true);
+        expect(await cache.get("user:1")).toBeUndefined();
+        expect(await cache.deleteMany(["big"])).toBe(1);
+        expect(await cache.get("big")).toBeUndefined();
+      });
+    },
+  );
+
+  kase(
+    "encrypted.names",
+    "encrypt + hashNames: another names key, or none, sees nothing",
+    true,
+    async () => {
+      const namespace = `kitenc-${process.pid}-${token()}`;
+      const cache = open(namespace);
+      const other = open(namespace, {
+        ...KIT_ENCRYPT,
+        hashNames: { key: new Uint8Array(32).fill(0x6f) },
+      });
+      const unhashed = open(namespace, { keys: KIT_RING });
+      try {
+        await cache.set("k", "v");
+        expect(await cache.get("k")).toBe("v");
+        expect(await other.get("k")).toBeUndefined();
+        expect(await unhashed.get("k")).toBeUndefined();
+      } finally {
+        await cache.close();
+        await other.close();
+        await unhashed.close();
+      }
+    },
+  );
+
+  kase(
+    "encrypted.clear",
+    "encrypt + hashNames: clear() empties its own namespace view only",
+    true,
+    async () => {
+      await withCache(async (root) => {
+        const users = root.namespace("users");
+        const orders = root.namespace("orders");
+        await root.set("k", "root");
+        await users.set("k", "users");
+        await orders.set("k", "orders");
+        await users.clear();
+        expect(await users.get("k")).toBeUndefined();
+        expect(await orders.get("k")).toBe("orders");
+        expect(await root.get("k")).toBe("root");
+      });
+    },
+  );
+
+  kase(
+    "encrypted.tags",
+    "encrypt + hashNames: invalidateTags reaches the hashed tags",
+    true,
+    async () => {
+      const namespace = `kitenc-${process.pid}-${token()}`;
+      const peer = open(namespace);
+      await withCache(async (cache) => {
+        await cache.set("a", 1, { tags: ["org:1", "plan:pro"] });
+        await cache.set("b", 2, { tags: ["org:2"] });
+        await wait(2);
+        await cache.invalidateTags(["org:1"]);
+        expect(await cache.get("a")).toBeUndefined();
+        expect(await cache.get("b")).toBe(2);
+        // A second cache over the store (a peer process's) sees it too —
+        // read only now, since a stamps-mode read caches the stamps it saw
+        // for `tagStampCacheMs`.
+        expect(await peer.get("a")).toBeUndefined();
+        expect(await peer.get("b")).toBe(2);
+      }, open(namespace));
+      await peer.close();
+    },
+  );
+
+  kase(
+    "encrypted.increment",
+    "encrypt + hashNames: a counter's name is hashed, its value stays plain",
+    capabilities.atomicIncrement && driver.increment !== undefined,
+    async () => {
+      await withCache(async (cache) => {
+        expect(await cache.increment("hits", 3)).toBe(3);
+        expect(await cache.increment("hits")).toBe(4);
+        expect(await cache.get("hits")).toBe(4);
+        const { namespace, key } = cache.describeKey("hits");
+        const counter = await driver.getCounter?.(namespace, key);
+        if (driver.getCounter !== undefined) {
+          expect(counter?.value).toBe(4);
+        }
+      });
+    },
+  );
+
+  kase(
+    "encrypted.lock",
+    "encrypt + hashNames: getOrSet with a lock loads once and stores",
+    capabilities.lock && driver.acquireLock !== undefined,
+    async () => {
+      await withCache(async (cache) => {
+        let loads = 0;
+        const loader = async () => {
+          loads++;
+          await wait(20);
+          return "loaded";
+        };
+        const [one, two] = await Promise.all([
+          cache.getOrSet("locked", loader, { lock: true }),
+          cache.getOrSet("locked", loader, { lock: true }),
+        ]);
+        expect([one, two]).toEqual(["loaded", "loaded"]);
+        expect(loads).toBe(1);
+        expect(await cache.get("locked")).toBe("loaded");
+      });
+    },
+  );
+
+  kase(
+    "encrypted.multiprocess.increment",
+    "encrypt + hashNames: another process increments the counter at describeKey's names",
+    capabilities.multiProcess && capabilities.atomicIncrement,
+    async () => {
+      const harness = options.crossProcess;
+      expect(
+        harness,
+        "the driver advertises multiProcess: give the kit `crossProcess` ({ module, export, options }) so the pass can spawn a second process",
+      ).toBeDefined();
+      await withCache(async (cache) => {
+        const { namespace, key } = cache.describeKey("shared-counter");
+        const child = await startWorker({
+          harness: harness!,
+          op: "increment",
+          ns: namespace,
+          key,
+          count: 50,
+        });
+        child.go();
+        const mine: number[] = [];
+        for (let wave = 0; wave < 10; wave++) {
+          mine.push(
+            ...(await Promise.all(
+              Array.from(
+                { length: 5 },
+                async () => await cache.increment("shared-counter"),
+              ),
+            )),
+          );
+          await wait(0);
+        }
+        const theirs = await child.result;
+        const all = [...mine, ...(theirs.results ?? [])];
+        expect(new Set(all).size).toBe(100);
+        expect(Math.max(...all)).toBe(100);
+        expect(await cache.get("shared-counter")).toBe(100);
+      });
+    },
+    CROSS_PROCESS_TIMEOUT_MS,
+  );
+
+  const rawDumpTitle =
+    "encrypt + hashNames: the raw store holds no plaintext key, namespace, tag or value";
+  if (instance.rawDump === undefined) {
+    test.skip(`${rawDumpTitle} — skipped: the factory gives no rawDump (what the backend stored, read around the driver)`, () => {});
+    return;
+  }
+  kase(
+    "encrypted.raw-dump",
+    rawDumpTitle,
+    true,
+    async () => {
+      const rawDump = instance.rawDump!;
+      const run = token();
+      // The dump must see the store: a plain cache's value and namespace are
+      // in it, in clear, on every driver (keys and tags may already be
+      // hashed by the driver itself, unsalted — not a protection).
+      const plainNs = `kitplainns_${run}`;
+      const plainValue = `kitplainvalue_${run}`;
+      const plain = open(plainNs, null);
+      try {
+        expect(await plain.set("k", plainValue)).toBe(true);
+        const before = await rawDump();
+        expect(
+          dumpHolds(before, plainValue),
+          "rawDump does not show a plain cache's value: it does not read what the driver stored",
+        ).toBe(true);
+        expect(
+          dumpHolds(before, plainNs),
+          "rawDump does not show a plain cache's namespace: it misses the stored names",
+        ).toBe(true);
+      } finally {
+        await plain.clear();
+        await plain.close();
+      }
+
+      const sentinels = {
+        namespace: `kitsecretns_${run}`,
+        key: `kitsecretkey_${run}`,
+        tag: `kitsecrettag_${run}`,
+        value: `kitsecretvalue_${run}`,
+        counter: `kitsecretcounter_${run}`,
+        lock: `kitsecretlock_${run}`,
+        child: `kitsecretchild_${run}`,
+      };
+      // With the driver's bus, so a store that keeps its messages (a bus
+      // table, a log, a capped collection) holds this cache's.
+      const cache = createCache({
+        driver: unclosable(driver),
+        namespace: sentinels.namespace,
+        sweepInterval: 0,
+        bus: capabilities.bus === "none" ? false : "auto",
+        encrypt: KIT_ENCRYPT,
+      });
+      try {
+        const child = cache.namespace(sentinels.child);
+        expect(
+          await cache.set(
+            sentinels.key,
+            { secret: sentinels.value },
+            { tags: [sentinels.tag], ttl: 600_000 },
+          ),
+        ).toBe(true);
+        expect(
+          await child.set(sentinels.key, sentinels.value, {
+            tags: [sentinels.tag],
+          }),
+        ).toBe(true);
+        expect(
+          await cache.set(`${sentinels.key}_gone`, sentinels.value, {
+            tags: [`${sentinels.tag}_gone`],
+          }),
+        ).toBe(true);
+        if (capabilities.atomicIncrement && driver.increment !== undefined) {
+          await cache.increment(sentinels.counter, 7);
+        }
+        if (capabilities.lock && driver.acquireLock !== undefined) {
+          await cache.getOrSet(sentinels.lock, () => sentinels.value, {
+            lock: true,
+            tags: [sentinels.tag],
+          });
+        }
+        // Stamps (and their bus messages) name the invalidated tag.
+        await cache.invalidateTags([`${sentinels.tag}_gone`]);
+        await cache.delete(`${sentinels.key}_gone`);
+        const dump = await rawDump();
+        expect(
+          dumpHolds(dump, cache.describeKey(sentinels.key).namespace),
+          "rawDump does not show the encrypted cache's hashed namespace",
+        ).toBe(true);
+        const leaks = Object.entries(sentinels)
+          .filter(([, text]) => dumpHolds(dump, text))
+          .map(([what, text]) => `${what} "${text}"`);
+        expect(leaks, "the raw store holds these in plaintext").toEqual([]);
+      } finally {
+        await cache.namespace(sentinels.child).clear();
+        await cache.clear();
+        await cache.close();
+      }
+    },
+    CROSS_PROCESS_TIMEOUT_MS,
+  );
 }

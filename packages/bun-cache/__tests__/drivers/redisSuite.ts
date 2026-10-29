@@ -26,7 +26,7 @@ import { createCache, redisBus, redisDriver } from "../../lib/index";
 import type { RedisDriverOptions } from "../../lib/drivers/redis";
 import { RedisCacheDriver } from "../../lib/drivers/redis";
 import { runCacheDriverConformance } from "../../lib/testing/index";
-import { deleteRedisPrefix } from "./backends";
+import { deleteRedisPrefix, redisRawDump } from "./backends";
 
 /** How a Redis lane differs from the local server's: a remote, managed one (Upstash) answers slower and supports less. */
 export interface RedisLane {
@@ -314,6 +314,7 @@ export async function registerRedisSuite(
         await kitDriver.close();
         kitClient.close();
       },
+      rawDump: async () => await redisRawDump(url, kitOptions.prefix),
     }),
     {
       crossProcess: {

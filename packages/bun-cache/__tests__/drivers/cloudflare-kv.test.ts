@@ -108,7 +108,10 @@ const kitOptions: CloudflareKvDriverOptions = {
 
 await runCacheDriverConformance(
   "cloudflare-kv",
-  () => ({ driver: cloudflareKvDriver(kitOptions) }),
+  () => ({
+    driver: cloudflareKvDriver(kitOptions),
+    rawDump: async () => await local.rawKv(`${RUN}/kit`),
+  }),
   {
     crossProcess: {
       module: new URL("../../lib/drivers/cloudflare-kv.ts", import.meta.url)

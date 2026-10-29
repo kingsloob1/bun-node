@@ -6,10 +6,15 @@
 import { describe, expect, test } from "bun:test";
 import type { StoredEntry } from "../../lib/index";
 import { memoryDriver } from "../../lib/index";
+import { memoryDriverDump } from "../../lib/drivers/memory";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 
-// The kit's first proof: the memory driver conforms.
-await runCacheDriverConformance("memory", () => ({ driver: memoryDriver() }));
+// The kit's first proof: the memory driver conforms. Its raw store is its
+// maps, through the driver's test hook.
+await runCacheDriverConformance("memory", () => {
+  const driver = memoryDriver();
+  return { driver, rawDump: () => memoryDriverDump(driver) };
+});
 
 describe("memoryDriver specifics", () => {
   const entry = (key: string, size: number): StoredEntry => ({

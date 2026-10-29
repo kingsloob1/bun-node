@@ -141,9 +141,11 @@ And (PR-E1):
   bound to its namespace and key; key rings with rotation, `keys` functions
   for a KMS, user ciphers with their conformance kit, and a failed open read
   as a miss, never deleted ([Encryption at rest](#encryption-at-rest))
+- **name hashing** (`encrypt.hashNames`): keys, namespaces and tags reach
+  the store, L1 and the bus only as keyed hashes, with `describeKey()` to
+  find an entry in a dump ([Hiding names](#hiding-names))
 
-Next, in the plan's order: the Nest interceptor (PR-N2), then name hashing
-(PR-E2) and the encryption docs and playground (PR-E3).
+Next, in the plan's order: the encryption docs and playground (PR-E3).
 
 ## Quick start
 
@@ -449,14 +451,14 @@ namespace, the full key, `aad`, and the envelope's own prefix. An entry
 copied to another key, another namespace or a cache with another `aad`
 does not open.
 
-**What it does not hide.** Keys, namespaces and tags are stored as written
-(name hashing is a later PR). Each entry's size (±1 byte), when it was
-written, when it expires and how often it is read stay visible. **Counters**
-are plaintext integers, so that the backend can add to them atomically.
-And a writer to the store can always delete entries, or **replay an older
-ciphertext of the same key** — served, but never fresher or longer-lived
-than when it was written, since its freshness and expiry are sealed with
-it. A compromised app process holds the keys; nothing here helps there.
+**What it does not hide.** Keys, namespaces and tags are stored as written,
+unless `hashNames` is on ([Hiding names](#hiding-names)). Each entry's size
+(±1 byte), when it was written, when it expires and how often it is read
+stay visible. **Counters** are plaintext integers, so that the backend can
+add to them atomically. And a writer to the store can always delete
+entries, or **replay an older ciphertext of the same key** — served, but
+never fresher or longer-lived than when it was written, since its freshness
+and expiry are sealed with it. A compromised app process holds the keys; nothing here helps there.
 
 ### Keys
 
@@ -613,6 +615,76 @@ AAD    = "bun-cache/enc/1" 0x00 | full namespace 0x00 | full key 0x00 | aad 0x00
 ```
 
 The AAD of a user cipher's entry ends with the envelope's first four bytes.
+
+### Hiding names
+
+Encryption hides values, not names: a dump still shows every key,
+namespace and tag, and keys are often the secret — an email, a URL with
+its query, a tenant's name. `hashNames` stores each name as a keyed hash
+instead:
+
+```ts
+const cache = createCache({
+  driver: redisDriver({ url }),
+  encrypt: {
+    keys: [{ id: "2026-10", key: process.env.CACHE_KEY_2026_10! }],
+    hashNames: { key: process.env.CACHE_NAMES_KEY! }, // its own key, never rotated
+  },
+});
+```
+
+- **What changes in the store.** Each name becomes 32 hex characters: the
+  first 128 bits of an HMAC-SHA-256. A key and a tag are hashed together
+  with their namespace, so the same key in two namespaces hashes apart and
+  a dump does not show which tenants hold the same one. Redis's key names,
+  SQL's `ns`/`k`/`tg` columns, MongoDB's `_id`s, the file and object names,
+  the stamps, the locks and the bus messages all carry the hashes. The long-key
+  hashing (`maxKeyLength`) does not apply: an HMAC is already short.
+- **What does not.** `clear()`, `invalidateTags()`, counters, locks, L1
+  and the bus work as before: the core hashes every name before anything
+  below it sees one, so every process with the same key agrees. Counter
+  **values** stay plaintext integers. Events keep the plaintext names (they
+  are your process's own API), except `evict`, which only the driver knows;
+  the core's log lines name the stored key.
+- **It needs encryption** (a `TypeError` otherwise): without it every
+  entry's header carries its full key in clear, and hashing the names would
+  hide nothing. The full key is still checked on every read, inside the
+  sealed header, so two names colliding only overwrite each other — a miss,
+  never the wrong value.
+- **Its key never rotates.** It is a separate key from `keys` (one of
+  theirs is allowed, and warned about): a rotation of the encryption keys
+  must not rename the store. Turning hashing on, or changing its key, is a
+  flush, like a `version` bump: the old entries sit under names nobody asks
+  for until they expire. `clear()` first, or accept the orphans.
+- **A hash of your own**, to match an existing scheme: `hashNames: { hash:
+  (name, { kind, namespace }) => string }`, where `kind` is `"namespace"`,
+  `"key"` or `"tag"`. It must be deterministic and answer 1–200 bytes with
+  no NUL or newline; both are checked on first use, with a `TypeError`.
+
+**Debugging: `describeKey`.** `cache.describeKey(key, tags?)` answers the
+names the store holds for a key and its tags, in that view's namespace,
+without reading or writing anything:
+
+```ts
+cache.describeKey("user:42", ["org:7"]);
+// { namespace: "3f9c…", key: "9a41…", tags: ["c17e…"] }
+```
+
+Search a dump for those (`redis-cli --scan --pattern '*9a41*'`, `WHERE k =
+'9a41…'`); on the file, S3, Azure and Cloudflare KV drivers the key's
+object name is the SHA-256 of that hash. To check a value, read it back through the cache, skipping L1
+with `get(key, { tier: "l2" })`. Without `hashNames`, `describeKey` answers
+the names as stored: the namespace, the key (`#`-hashed when long) and the
+tags as they are.
+
+The names hash, for a reader in another language:
+
+```
+K_names    = HKDF-SHA-256(ikm = hashNames.key, salt = empty, info = "bun-cache/names/1", 32 bytes)
+namespace  = hex(HMAC-SHA-256(K_names, "ns"  0x00 | full namespace))[0..32]
+key        = hex(HMAC-SHA-256(K_names, "key" 0x00 | full namespace 0x00 | key))[0..32]
+tag        = hex(HMAC-SHA-256(K_names, "tag" 0x00 | full namespace 0x00 | tag))[0..32]
+```
 
 ## Namespaces and versions
 
@@ -987,6 +1059,22 @@ overlap. A driver with a polled bus also gives `busGap`, a function that
 forces a gap in its log; a driver with a pushed bus may give one that drops
 its subscriber connection (the Redis driver's test kills it with `CLIENT
 KILL`), and the bus-gap case then runs for it too.
+
+The kit also runs the core over the driver with `encrypt` and `hashNames`
+on: every operation the driver advertises, through caches whose names reach
+it only as hashes. Give it `rawDump` too — a function answering every byte
+the backend holds, read around the driver (rows, key names, objects, files,
+the bus), as `Uint8Array`s or strings — and it writes sentinel keys,
+namespaces, tags and values through such a cache and fails if the dump
+shows any of them, in UTF-8 or UTF-16. It first checks the dump can see the
+store at all: a plain cache's value and namespace must be in it.
+
+```ts
+await runCacheDriverConformance("map-store", () => ({
+  driver,
+  rawDump: () => [...store].flatMap(([name, bytes]) => [name, bytes]),
+}));
+```
 
 ## Testing helpers
 

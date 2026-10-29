@@ -16,9 +16,10 @@
  * - Every key here is random bytes made when the file starts
  *   (`crypto.getRandomValues`): there is no secret in this file. A real
  *   deployment reads them from a secret store (`openssl rand -base64 32`).
- * - Names — keys, namespaces, tags — stay in clear in the store; name hashing
- *   is a later change. What is sealed is the entry: header, full key, value,
- *   and copies of its tags and hard expiry.
+ * - Names — keys, namespaces, tags — stay in clear in the store here, since
+ *   this file does not set `encrypt.hashNames` (the README's "Hiding names").
+ *   What is sealed is the entry: header, full key, value, and copies of its
+ *   tags and hard expiry.
  */
 import { Buffer } from "node:buffer";
 import {

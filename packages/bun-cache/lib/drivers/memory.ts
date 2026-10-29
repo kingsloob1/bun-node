@@ -85,6 +85,9 @@ interface NamespaceStore {
   locks: Map<string, Lock>;
 }
 
+/** Set by {@link MemoryDriver}'s static block: the only reader of its private stores. */
+let dumpStores: (driver: MemoryDriver) => (Uint8Array | string)[];
+
 /** The memory driver. See the module header. */
 export class MemoryDriver implements CacheDriver {
   /** `"memory"`. */
@@ -119,6 +122,25 @@ export class MemoryDriver implements CacheDriver {
   ) {
     this.#options = options;
     this.#now = options.now ?? Date.now;
+  }
+
+  static {
+    dumpStores = (driver) =>
+      [...driver.#stores].flatMap(([ns, store]) => [
+        ns,
+        ...[...store.entries].flatMap(([key, slot]) => [
+          key,
+          slot.value,
+          ...slot.tags,
+        ]),
+        ...store.tagIndex.keys(),
+        ...store.stamps.keys(),
+        ...[...store.counters].flatMap(([key, counter]) => [
+          key,
+          String(counter.value),
+        ]),
+        ...store.locks.keys(),
+      ]);
   }
 
   /** A no-op: there is nothing to connect. */
@@ -532,6 +554,19 @@ export class MemoryDriver implements CacheDriver {
   syncSchema(_options?: SchemaSyncOptions): Promise<SchemaChange[]> {
     return Promise.resolve([]);
   }
+}
+
+/**
+ * Every name and byte a memory driver holds — namespaces, keys, entry
+ * bytes, tags, stamps, counters, locks — for the conformance kit's `rawDump`
+ * (the encryption plan's §11). A test hook: not exported from the package
+ * root. Throws for a driver that is not a memory driver.
+ */
+export function memoryDriverDump(driver: CacheDriver): (Uint8Array | string)[] {
+  if (!(driver instanceof MemoryDriver)) {
+    throw new TypeError("memoryDriverDump takes a memoryDriver()");
+  }
+  return dumpStores(driver);
 }
 
 /** A memory driver (§7.1): per-process, synchronous, LRU-capped. See {@link MemoryDriver}. */

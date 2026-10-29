@@ -30,10 +30,26 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+/** Every path under `root` (relative) and every file's bytes: the kit's `rawDump`. */
+async function walk(root: string): Promise<(string | Uint8Array)[]> {
+  const out: (string | Uint8Array)[] = [];
+  for (const name of await readdir(root, { recursive: true })) {
+    out.push(name);
+    const file = Bun.file(join(root, name));
+    // A directory, or a temporary file renamed away since the listing.
+    const bytes = await file.bytes().catch(() => undefined);
+    if (bytes !== undefined) {
+      out.push(bytes);
+    }
+  }
+  return out;
+}
+
 await runCacheDriverConformance(
   "file",
   () => ({
     driver: fileDriver({ root: dir, busPollInterval: 25 }),
+    rawDump: async () => await walk(dir),
   }),
   {
     crossProcess: {

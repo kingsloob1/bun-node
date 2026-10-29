@@ -32,8 +32,8 @@ export interface L1Entry {
   freshUntil: number | null;
   /** The L2 entry's hard expiry, epoch ms; `null` when never. */
   expiresAt: number | null;
-  /** The entry's tags. */
-  tags: readonly string[];
+  /** The entry's tags as the driver and the bus name them (hashed under `encrypt.hashNames`): what the tag index holds, and what an invalidation names. */
+  storedTags: readonly string[];
 }
 
 /** The resolved `l1` options. */
@@ -231,7 +231,10 @@ export class L1Store<E extends L1Entry> {
     token: number,
     now: number,
   ): boolean {
-    if (!this.#armed || this.#invalidatedSince(token, ns, key, entry.tags)) {
+    if (
+      !this.#armed ||
+      this.#invalidatedSince(token, ns, key, entry.storedTags)
+    ) {
       return false;
     }
     if (this.#put(ns, key, entry, size, now)) {
@@ -258,7 +261,7 @@ export class L1Store<E extends L1Entry> {
     const raced =
       entry === undefined ||
       !this.#armed ||
-      this.#invalidatedSince(token, ns, key, entry.tags);
+      this.#invalidatedSince(token, ns, key, entry.storedTags);
     this.#record(this.#keyGen, slotKey(ns, key));
     if (raced) {
       this.#drop(slotKey(ns, key), false);
@@ -284,7 +287,7 @@ export class L1Store<E extends L1Entry> {
       : entry;
     this.#slots.set(id, { entry: held, ns, size, until });
     this.#bytes += size;
-    for (const tag of entry.tags) {
+    for (const tag of entry.storedTags) {
       const tagId = slotKey(ns, tag);
       let keys = this.#tagIndex.get(tagId);
       if (keys === undefined) {
@@ -382,7 +385,7 @@ export class L1Store<E extends L1Entry> {
   #remove(id: string, slot: Slot<E>): void {
     this.#slots.delete(id);
     this.#bytes -= slot.size;
-    for (const tag of slot.entry.tags) {
+    for (const tag of slot.entry.storedTags) {
       const tagId = slotKey(slot.ns, tag);
       const keys = this.#tagIndex.get(tagId);
       if (keys !== undefined) {
