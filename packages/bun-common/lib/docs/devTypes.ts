@@ -148,9 +148,12 @@ export interface DevTypesOptions {
    * `"node_modules/.cache/bun-types/<port>.json"`. Written atomically (a
    * temporary file renamed over it) with mode `0600` in a directory created
    * `0700`; holds `{ url, ws, token, pid }`. Removed by {@link
-   * DevTypesRouter.close}, on the adapter's `close`, and at process exit — a
-   * process killed by a signal leaves it behind, and the next server on that
-   * port replaces it (a watcher tells a stale one by its `pid`).
+   * DevTypesRouter.close}, on the adapter's `close`, and at process exit,
+   * and on `SIGTERM` and `SIGINT` (the process then still ends with the
+   * signal's own exit code, unless the app has a listener of its own, which
+   * decides). A process killed by any other signal (`SIGKILL`, `SIGHUP`)
+   * leaves it behind, and the next server on that port replaces it (a watcher
+   * tells a stale one by its `pid`).
    */
   tokenFile?: string | false;
 }
@@ -297,6 +300,8 @@ interface Registry {
   files: Map<string, string>;
   /** Whether the process `exit` hook is installed. */
   exitHook: boolean;
+  /** The `SIGTERM`/`SIGINT` listeners installed while a token file is written, by signal. */
+  signalHooks: Map<TermSignal, () => void>;
 }
 
 /** The instance-side operations the hub's timer and socket handlers call. */
@@ -320,6 +325,7 @@ function registry(): Registry {
     hubs: new Map(),
     files: new Map(),
     exitHook: false,
+    signalHooks: new Map(),
   });
 }
 
@@ -462,6 +468,43 @@ function installExitHook(): void {
     for (const [file, token] of reg.files) removeTokenFile(file, token);
     reg.files.clear();
   });
+}
+
+/** The signals whose default action (exit) is kept after the token files are removed. */
+type TermSignal = "SIGTERM" | "SIGINT";
+
+const TERM_SIGNALS: readonly TermSignal[] = ["SIGTERM", "SIGINT"];
+
+/**
+ * Installs `SIGTERM` and `SIGINT` listeners that remove the token files (the
+ * `exit` hook does not run when a signal kills the process). A listener
+ * suppresses the signal's default exit, so when it is the only one left it
+ * removes itself and re-raises the signal, which ends the process as it would
+ * have ended (128 + the signal number). When the app has a listener of its own
+ * this one does nothing: the app decides, and the `exit` hook removes the files
+ * when it exits.
+ */
+function installSignalHooks(): void {
+  const reg = registry();
+  for (const signal of TERM_SIGNALS) {
+    if (reg.signalHooks.has(signal)) continue;
+    const hook = (): void => {
+      if (process.listenerCount(signal) > 1) return;
+      for (const [file, token] of reg.files) removeTokenFile(file, token);
+      reg.files.clear();
+      removeSignalHooks();
+      process.kill(process.pid, signal);
+    };
+    reg.signalHooks.set(signal, hook);
+    process.on(signal, hook);
+  }
+}
+
+/** Removes the signal listeners {@link installSignalHooks} installed. */
+function removeSignalHooks(): void {
+  const reg = registry();
+  for (const [signal, hook] of reg.signalHooks) process.off(signal, hook);
+  reg.signalHooks.clear();
 }
 
 /** Writes `content` to `file` atomically (a temporary file renamed over it), mode `0600`. */
@@ -843,8 +886,10 @@ export function devTypes(
   const removeWritten = (): void => {
     if (writtenFile === undefined) return;
     removeTokenFile(writtenFile, token);
-    registry().files.delete(writtenFile);
+    const reg = registry();
+    reg.files.delete(writtenFile);
     writtenFile = undefined;
+    if (reg.files.size === 0) removeSignalHooks();
   };
 
   const listening = (server: DevTypesServer): void => {
@@ -885,6 +930,7 @@ export function devTypes(
     writtenFile = file;
     registry().files.set(file, token);
     installExitHook();
+    installSignalHooks();
   };
 
   const close = (): void => {

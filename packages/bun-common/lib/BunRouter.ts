@@ -33,7 +33,6 @@ import type {
 } from "./utils/expressPath";
 import { Buffer } from "node:buffer";
 import path, { join } from "node:path";
-import process from "node:process";
 import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
 import {
@@ -220,8 +219,16 @@ export interface RouteConstructorOption {
   caseSensitive?: boolean | null;
 }
 
+/**
+ * Where routejs's `route.mjs` is. Resolved from this module's directory, not
+ * the working directory: from the cwd it found the package only where the cwd
+ * sat inside a tree with the dependency, and failed ("Cannot find module
+ * '@routejs/router'") in an app whose cwd has no `node_modules` above it (or an
+ * empty one, such as `devTypes()`'s `node_modules/.cache` creates under
+ * `bun --hot`).
+ */
 export const routeModulePath = path.join(
-  path.dirname(Bun.resolveSync("@routejs/router", process.cwd())),
+  path.dirname(Bun.resolveSync("@routejs/router", import.meta.dir)),
   "./src/route.mjs",
 );
 
