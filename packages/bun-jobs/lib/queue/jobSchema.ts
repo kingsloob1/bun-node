@@ -19,6 +19,7 @@ import type {
   Policy,
   StandardOutcome,
   StandardSchemaV1,
+  Transport,
   ValidationIssue,
 } from "@kingsleyweb/bun-common";
 import type { Logger } from "../shared/logger";
@@ -229,18 +230,27 @@ export type JobMapFromSchemas<
 /* --- the jobs transport -------------------------------------------------- */
 
 /**
+ * The jobs transport's spec. Named, and the transport's type written out
+ * below, so its declaration names `Transport` through bun-common: an inferred
+ * one names the package the type is declared in, `@kingsleyweb/bun-contract`,
+ * which bun-jobs does not depend on (the declarations build refuses it).
+ */
+const JOBS_SPEC = {
+  name: "jobs",
+  wire: "json",
+  inbound: { parts: ["data"] },
+  outbound: { parts: ["result"] },
+} as const;
+
+/**
  * The jobs transport (plan §4.1.1): a job's `data` inbound, its handler's
  * `result` outbound, no key. A definition with a schema carries a contract on
  * it, so `describeContract(getContract(definition))` lists its rows.
  *
  * @internal
  */
-export const jobsTransport = defineTransport({
-  name: "jobs",
-  wire: "json",
-  inbound: { parts: ["data"] },
-  outbound: { parts: ["result"] },
-});
+export const jobsTransport: Transport<typeof JOBS_SPEC> =
+  defineTransport(JOBS_SPEC);
 
 /**
  * Attaches the jobs contract of `schema` to `carrier` (a definition), named

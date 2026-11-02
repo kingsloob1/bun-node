@@ -248,12 +248,16 @@ describe("this package's peers and the browser bundle", () => {
       expect(entry.peers ?? []).toEqual([]);
   });
 
-  it("packs bun-common beside it in the consumer check", () => {
+  // bun-contract too: bun-common depends on it, and it is not on a registry.
+  it("packs bun-common and bun-contract beside it in the consumer check", () => {
     const { workspaceDependencies } = checkConfig as CheckConfig & {
       /** Sibling packages the consumer check packs alongside this one. */
       workspaceDependencies?: string[];
     };
-    expect(workspaceDependencies).toEqual(["packages/bun-common"]);
+    expect(workspaceDependencies).toEqual([
+      "packages/bun-contract",
+      "packages/bun-common",
+    ]);
   });
 
   // `dist/` is the prebuilt browser bundle `docsUi()` serves; `dts/` is the

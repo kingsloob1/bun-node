@@ -1,0 +1,104 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-contract writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-contract` from the repo root. Every spelling here worked at some point; removing one hides a regression. The whole package is browser-safe, so every entry is also checked as a browser entry. It has no dependency, so it needs no workspaceDependencies.",
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-contract",
+      "values": [
+        "defineTransport",
+        "createReceiver",
+        "createSender",
+        "validateStandard",
+        "describeContract",
+        "mergeContracts",
+        "getContract",
+        "attachContract",
+        "documented",
+        "recordOf",
+        "ContractError",
+        "channelContract",
+        "channelErrorFrame",
+        "wsTransport"
+      ],
+      "types": [
+        "GuardOptions",
+        "ValidationIssue",
+        "ContractEntry",
+        "ChannelContract",
+        "ChannelErrorFrame",
+        "ChannelMessage",
+        "ChannelMessages",
+        "ChannelMeta",
+        "ChannelRequestSchemas",
+        "ChannelSpec",
+        "ChannelErrorCode",
+        "ContractLogger",
+        "ContractLoggerLike",
+        "ContractLogSink",
+        "ContractLogEvent",
+        "StandardSchemaV1",
+        "StandardTypedV1",
+        "StandardJSONSchemaV1"
+      ],
+      "browser": true,
+      "snippet": "const transport = m.defineTransport({ name: \"t\", inbound: { parts: [\"data\"] } });\nconst c = transport.contract({ inbound: {} });\nconst g = m.createReceiver(c, \"inbound\");\nexport type _guardNotAny = Expect<IsAny<ReturnType<typeof g>>>;\nexport type _entryNotAny = Expect<IsAny<t.ContractEntry[\"encoding\"]>>;\nexport type _receivedNotAny = Expect<IsAny<t.Received<typeof c, \"inbound\">>>;\nexport type _sentNotAny = Expect<IsAny<t.Sent<typeof c, \"inbound\">>>;\nexport type _outcomeNotAny = Expect<IsAny<t.StandardOutcome<number>>>;\nexport const _logger: t.ContractLoggerLike = { warn: (_m: string) => {}, error: (_m: string) => {} };\nexport const _sink: t.ContractLoggerLike = (e: t.ContractLogEvent) => void e.message;\nconst g2 = m.createReceiver(c, \"inbound\", { policy: \"warn\", logger: _sink });\nexport type _g2NotAny = Expect<IsAny<typeof g2>>;\n// @ts-expect-error a logger needs warn and error\nm.createReceiver(c, \"inbound\", { logger: { warn: () => {} } });"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib",
+      "values": ["defineTransport", "createReceiver"],
+      "types": ["GuardOptions"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/index",
+      "values": ["defineTransport"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/index.ts",
+      "values": ["defineTransport"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/index.js",
+      "values": ["defineTransport"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/guard",
+      "values": ["createReceiver", "createSender", "ContractError"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/model",
+      "values": ["CONTRACT"],
+      "types": ["GuardOptions", "ValidationIssue", "IssueContext"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/http",
+      "values": ["httpTransport"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/channel",
+      "values": ["channelContract", "wsTransport"],
+      "types": ["ChannelSpec"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/logger",
+      "values": [
+        "setLoggerResolver",
+        "defaultLoggerResolver",
+        "resolveContractLogger"
+      ],
+      "types": ["ContractLogger", "ContractLoggerResolver"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-contract/lib/standardSchema",
+      "types": ["StandardSchemaV1", "StandardTypedV1", "StandardJSONSchemaV1"],
+      "browser": true
+    }
+  ]
+}

@@ -32,10 +32,11 @@ prefer Bun and native APIs over third-party dependencies.
 | Package | npm | Description |
 |---|---|---|
 | [bun-common](packages/bun-common/README.md) | `@kingsleyweb/bun-common` | An Express-like HTTP layer for `Bun.serve`: `BunRouter` with Express 5 semantics, `BunRequest`, `BunResponse`, `BunHttpAdapter`, validation with any Standard Schema, CORS, static files, compression, multipart uploads, WebSockets and structured logging. |
+| [bun-contract](packages/bun-contract/README.md) | `@kingsleyweb/bun-contract` | bun-common's transport-agnostic contract core on its own: transports, contracts over any Standard Schema, guards, contract descriptions and channel contracts, with no dependency and safe in a browser. bun-common re-exports it as `@kingsleyweb/bun-common/contract`. |
 | [bun-nest](packages/bun-nest/README.md) | `@kingsleyweb/bun-nest` | Run NestJS 11 or 12 on Bun: `BunHttpAdapter` in place of `@nestjs/platform-express`, multer-style file upload interceptors, and `BunWebSocketAdapter` for gateways over Bun's native WebSockets. |
 | [bun-jobs](packages/bun-jobs/README.md) | `@kingsleyweb/bun-jobs` | Background work for Bun: `BunRunner` runs a JS/TS file on a schedule or on demand (child process, `Worker` or in-process), and `BunQueue` / `BunQueueWorker` process jobs across processes and services over memory, file, Redis, SQL and MongoDB drivers. |
 
-bun-nest and bun-jobs both depend on bun-common.
+bun-nest and bun-jobs both depend on bun-common, which depends on bun-contract.
 
 ## Examples
 
@@ -174,6 +175,7 @@ bun queue.ts --save-baseline    # re-record after a deliberate change
 bun-node/
 ├── packages/
 │   ├── bun-common/        # HTTP layer: lib/, __tests__/, bench/, playground/, scripts/
+│   ├── bun-contract/      # the contract core, no dependency: lib/, __tests__/
 │   ├── bun-nest/          # NestJS adapter: lib/, __tests__/
 │   └── bun-jobs/          # jobs and queues: lib/, __tests__/, bench/ (its own package)
 ├── examples/

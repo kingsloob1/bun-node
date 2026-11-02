@@ -6,8 +6,9 @@
  *
  * 1. Packs every `file:` directory in `overrides` (inside the bun-node repo,
  *    bun-jobs and bun-common, which are not on a registry there), as a
- *    publish would, declarations built. With no such overrides, bun-jobs
- *    comes from the registry.
+ *    publish would, declarations built, and any dependency of theirs found
+ *    beside them (bun-common's bun-contract). With no such overrides,
+ *    bun-jobs comes from the registry.
  * 2. Copies the plugin out, installs it against those packages, and checks
  *    its own sources with its own `tsconfig.json` (no custom conditions:
  *    bun-jobs' published declarations), then packs it (`prepack` builds).
@@ -39,7 +40,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import process from "node:process";
 import ts from "typescript";
 
@@ -191,14 +192,49 @@ const results: {
   problems: string[];
 }[] = [];
 
-// 1. The packages the overrides point at, packed as a publish would.
+/**
+ * The directory beside `dir` that holds the package `name`
+ * (`packages/bun-contract` beside `packages/bun-common`), or `undefined`.
+ */
+function siblingPackage(dir: string, name: string): string | undefined {
+  const candidate = join(dirname(dir), name.split("/").pop()!);
+  const found = statSync(join(candidate, "package.json"), {
+    throwIfNoEntry: false,
+  });
+  if (!found?.isFile()) return undefined;
+  const sibling = JSON.parse(
+    readFileSync(join(candidate, "package.json"), "utf8"),
+  ) as { name?: string };
+  return sibling.name === name ? candidate : undefined;
+}
+
+// 1. The packages the overrides point at, packed as a publish would, and
+// the dependencies of theirs that sit beside them, packed too: inside the
+// bun-node repo, bun-common depends on bun-contract, which no registry has
+// either, so its tarball's install would fail without one.
 const overrides: Record<string, string> = {};
+const toPack: [string, string][] = [];
 for (const [name, spec] of Object.entries(manifest.overrides ?? {})) {
   const dir = spec.startsWith("file:") ? resolve(root, spec.slice(5)) : "";
-  overrides[name] =
-    dir !== "" && statSync(dir, { throwIfNoEntry: false })?.isDirectory()
-      ? `file:${pack(dir)}`
-      : spec;
+  if (dir !== "" && statSync(dir, { throwIfNoEntry: false })?.isDirectory())
+    toPack.push([name, dir]);
+  else overrides[name] = spec;
+}
+for (let next = toPack.shift(); next !== undefined; next = toPack.shift()) {
+  const [name, dir] = next;
+  overrides[name] = `file:${pack(dir)}`;
+  const { dependencies = {} } = JSON.parse(
+    readFileSync(join(dir, "package.json"), "utf8"),
+  ) as { dependencies?: Record<string, string> };
+  for (const dependency of Object.keys(dependencies)) {
+    if (
+      dependency in overrides ||
+      toPack.some(([queued]) => queued === dependency)
+    )
+      continue;
+    const sibling = siblingPackage(dir, dependency);
+    if (sibling !== undefined) toPack.push([dependency, sibling]);
+  }
 }
 
 // 2. The plugin, copied out, installed against them, checked and packed.

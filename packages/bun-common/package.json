@@ -131,6 +131,7 @@
     }
   },
   "dependencies": {
+    "@kingsleyweb/bun-contract": "^0.1.0",
     "@routejs/router": "^3.0.3",
     "@types/accepts": "^1.3.7",
     "@types/busboy": "^1.5.4",

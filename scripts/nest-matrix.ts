@@ -66,6 +66,7 @@ export const NEST_PACKAGES = [
 
 /** The workspace packages a copy must resolve from itself. */
 export const OWN_PACKAGES = [
+  "@kingsleyweb/bun-contract",
   "@kingsleyweb/bun-common",
   "@kingsleyweb/bun-nest",
   "@kingsleyweb/bun-jobs",

@@ -4,11 +4,21 @@
  * with `Bun.build({ target: "browser" })`, unminified so identifiers survive,
  * and the bundle and its module graph are searched for server code; a
  * negative control proves the search catches a module that has some.
+ *
+ * The core itself lives in `@kingsleyweb/bun-contract` since the typed-client
+ * plan's PR-K, and the entry re-exports it: the graph is that package's
+ * modules, this entry and bun-common's dependency-free logger, which the
+ * entry installs as the core's logger resolution.
  */
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
 
 const LIB = resolve(import.meta.dir, "../../lib");
+
+/** bun-contract's `lib/`, where the core now lives. */
+const CONTRACT_LIB = dirname(
+  Bun.resolveSync("@kingsleyweb/bun-contract", import.meta.dir),
+);
 
 /** Text only server code contains. */
 const SERVER_MARKERS: readonly RegExp[] = [
@@ -40,7 +50,11 @@ async function bundle(entry: string) {
         name: "record-modules",
         setup(build) {
           build.onLoad({ filter: /\.[cm]?[jt]s$/ }, async (args) => {
-            modules.push(relative(LIB, args.path));
+            modules.push(
+              args.path.startsWith(CONTRACT_LIB)
+                ? `bun-contract:${relative(CONTRACT_LIB, args.path)}`
+                : relative(LIB, args.path),
+            );
             return { contents: await Bun.file(args.path).text(), loader: "ts" };
           });
         },
@@ -70,18 +84,22 @@ describe("the contract subpath in a browser bundle", () => {
       expect(code).toContain(`function ${name}`);
     }
     expect(serverMarkersIn(code)).toEqual([]);
-    // Its module graph: the core, and bun-common's dependency-free logger.
+    // Its module graph: the core (bun-contract's), this entry, and
+    // bun-common's dependency-free logger with the module installing it.
     expect(modules).toEqual([
-      "contract/channel.ts",
-      "contract/describe.ts",
-      "contract/guard.ts",
+      "bun-contract:channel.ts",
+      "bun-contract:describe.ts",
+      "bun-contract:guard.ts",
+      "bun-contract:index.ts",
+      "bun-contract:issues.ts",
+      "bun-contract:logger.ts",
+      "bun-contract:media.ts",
+      "bun-contract:model.ts",
+      "bun-contract:protoKeys.ts",
+      "bun-contract:schemas.ts",
+      "bun-contract:transport.ts",
       "contract/index.ts",
-      "contract/issues.ts",
-      "contract/media.ts",
-      "contract/model.ts",
-      "contract/protoKeys.ts",
-      "contract/schemas.ts",
-      "contract/transport.ts",
+      "contract/logger.ts",
       "logging.ts",
     ]);
   }, 30_000);

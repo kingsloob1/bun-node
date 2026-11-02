@@ -86,7 +86,8 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
 
 The runtime dependencies are small parsers that a native API does not replace:
 `@routejs/router`, `busboy`, `file-type`, `mime`, `parse-domain`, `accepts`,
-`type-is` and `picoquery`.
+`type-is` and `picoquery`, plus `@kingsleyweb/bun-contract`, the contract
+core (see [Contracts](#contracts)), which has no dependency of its own.
 
 ## Installation
 
@@ -2054,9 +2055,13 @@ Example:
 ### Contracts
 
 `validate()` is built on a transport-agnostic **contract core**, also
-published on its own as `@kingsleyweb/bun-common/contract`. That entry
-imports no Bun or Node API, so a contract module can be shared by a server
-and a browser client. A transport declares the **parts** its messages carry
+published on its own as `@kingsleyweb/bun-common/contract`. The core is the
+package [`@kingsleyweb/bun-contract`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-contract#readme), which
+bun-common depends on and re-exports at that entry unchanged; it has no
+dependency and imports no Bun or Node API, so a contract module can be
+shared by a server and a browser client, and a client can install the core
+without bun-common. Through bun-common, a guard's `logger` option takes any
+[`LoggerLike`](#structured-logging), as before. A transport declares the **parts** its messages carry
 on each **side** (and, when a side carries several kinds of message, the name
 of its **key**). A **contract** maps parts to Standard Schemas, and **guards**
 check messages against it:
