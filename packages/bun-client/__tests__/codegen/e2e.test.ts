@@ -8,9 +8,12 @@
  */
 import { describe, expect, it } from "bun:test";
 import type { Routes } from "./fixtures/app.gen";
+import type { Routes as MountsRoutes } from "./fixtures/mounts.gen";
 import { createClient, UnexpectedStatusError } from "../../lib/index";
 import { buildRouter } from "./fixtures/app";
 import { manifest } from "./fixtures/app.gen";
+import { buildRouter as buildMountsRouter } from "./fixtures/mounts";
+import { manifest as mountsManifest } from "./fixtures/mounts.gen";
 
 type Equal<X, Y> =
   (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
@@ -155,5 +158,38 @@ describe("the generated map drives the client through the app", () => {
     );
     // @ts-expect-error -- no such operation
     never(() => api.op.getUsers());
+  });
+});
+
+describe("a registry mounted twice (fixtures/mounts.ts)", () => {
+  const mounts = buildMountsRouter();
+  const client = createClient<MountsRoutes>({
+    baseUrl: "http://app.test",
+    fetch: (request) => mounts.fetch(request),
+    manifest: mountsManifest,
+    retry: false,
+  });
+
+  it("calls each mount by its own operation name", async () => {
+    const one = await client.op.getUser({
+      params: { id: "1" },
+      throwOnError: true,
+    });
+    expect(one).toEqual({ id: "1", version: "v1" });
+    const two = await client.op.getUserV2({
+      params: { id: "2" },
+      throwOnError: true,
+    });
+    expect(two).toEqual({ id: "2", version: "v2" });
+    const listed = await client.op.listUsersV2({ throwOnError: true });
+    expect(listed).toEqual([]);
+  });
+
+  it("types the two names apart (negative controls)", () => {
+    const never = (_: unknown) => {};
+    // @ts-expect-error -- the suffix names the second mount, not the first
+    never(() => client.op.getUserUsers());
+    // @ts-expect-error -- the params are required on the second mount too
+    never(() => client.op.getUserV2());
   });
 });

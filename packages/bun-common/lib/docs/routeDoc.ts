@@ -55,7 +55,9 @@ export interface RouteDoc {
    */
   tags?: readonly string[];
   /**
-   * The operation id. Must be unique across the document.
+   * The operation id. Must be unique across the document; on a router
+   * mounted at several paths, the first mount's route keeps it and each
+   * later mount's gets a suffix from its mount (`getUser`, `getUserV2`).
    * Default: derived from method + path (see
    * {@link import("./openapi").OpenApiOptions.operationId}).
    */

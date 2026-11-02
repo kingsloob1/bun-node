@@ -453,8 +453,8 @@ returned `router`, which takes no options) and answers a `RouteDef` carrying
 the method, the full path and the callbacks. Each **property name becomes the
 route's `operationId`**, recorded through `.describe()`'s own store, so its
 rules apply unchanged: a duplicate operation id is a `ConfigError` from
-`generateOpenApi`, and a route registered without the registry keeps the
-derived one. `mount` and `router` are reserved property names.
+`generateOpenApi` (the same registry mounted twice is not one; see below), and
+a route registered without the registry keeps the derived one. `mount` and `router` are reserved property names.
 
 A definition documents itself with its own chainable **`describe()`**, which
 takes the same `RouteDoc` as `BunRouter.describe()` (`summary`,
@@ -484,8 +484,27 @@ called later on the returned registry (`users.getUser.describe({ … })`). It
 returns the same definition, so the definition's types and its `RoutesOf`
 entry do not change: `errors` narrow a generated client's error codes, not
 the inferred map. As with `BunRouter.describe()`, a handler reused by another
-route shares its doc. A registry mounted twice cannot be documented, since
-both mounts carry one `operationId` (a `ConfigError`, as for any duplicate).
+route shares its doc.
+
+A registry (or any router whose routes declare an `operationId`) **mounted
+twice** documents both mounts. Both carry the same declared ids, so
+`generateOpenApi` keeps them on the first mount, in registration order, and
+suffixes each later mount's with the segments where its mount differs from the
+first one's, spelt like a derived id (camelCase, a param as `By<Name>`):
+
+```ts
+app.use(users.mount, users.router);   // /users/:id    → getUser
+const v2 = new BunRouter();
+v2.use(users.mount, users.router);
+app.use("/v2", v2);                   // /v2/users/:id → getUserV2
+```
+
+The ids stay valid identifiers, so a generated client calls
+`api.op.getUser()` and `api.op.getUserV2()`. Only the same route at another
+mount is renamed: the same handler, method and path within the mount. Any
+other duplicate is still a `ConfigError`. That includes two routes given one
+id by hand, two registries with the same property name, a suffixed id another
+route already uses, and a later mount at `/`, which has no words to suffix.
 
 The registry exists **for inference**: `RoutesOf<typeof users>` is a pure type
 that reads the return into the flat route map a typed client is built over,

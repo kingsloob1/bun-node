@@ -28,7 +28,9 @@
  * default): it records a {@link DocWarning} and emits what it knows. `strict:
  * "strict"` escalates every warning to a {@link ConfigError}. The genuine
  * configuration mistakes — a duplicate operation id, a security requirement
- * naming an undeclared scheme — are always a `ConfigError`.
+ * naming an undeclared scheme — are always a `ConfigError`. One route at
+ * several mounts is not a duplicate: a declared id is suffixed per later
+ * mount ({@link OpenApiOptions.operationId}).
  *
  * Deterministic: two calls over one router deep-equal (plan §9.2).
  */
@@ -559,6 +561,19 @@ export interface OpenApiOptions {
    * `camelCase(method + path)` with params as `By<Name>` —
    * `GET /users/:id/posts` → `getUsersByIdPosts`. Collisions are a
    * `ConfigError`, never a silent rename.
+   *
+   * One exception, for **declared** ids only (`.describe({ operationId })`,
+   * a `defineRoutes` property name): a router mounted at several paths
+   * declares its ids once per mount, so the route at the first mount (in
+   * registration order) keeps its id and the same route at each later mount
+   * gets the id suffixed with where its mount differs from the first one's,
+   * spelt as here — `getUser` at `/users` and `/v2/users` documents as
+   * `getUser` and `getUserV2`; at `/api/v1` and `/api/v2`, `getUser` and
+   * `getUserV2`; at `/teams` and `/orgs/:org`, `getUser` and
+   * `getUserOrgsByOrg`. "The same route" means the same terminal callback,
+   * method and path within the mount. A suffixed id another route already
+   * uses, and a later mount at `/` (no words to suffix), are still a
+   * `ConfigError`, as is a duplicate this callback returns.
    */
   operationId?: (route: ListedRoute) => string;
   /**
@@ -715,6 +730,89 @@ function defaultOperationId(method: string, template: string): string {
   return id;
 }
 
+/**
+ * Who claimed an operation id, and what makes two claims the same route at
+ * two mounts: one terminal callback (so one `.describe()` doc), one method,
+ * one path within the mount, two different mounts.
+ */
+interface OperationIdClaim {
+  /** The claiming route's listing key (`"GET /users/:id"`). */
+  readonly key: string;
+  /** Its method, as the listing carries it. */
+  readonly method: string;
+  /** Its terminal callback, the key of its `.describe()` doc. */
+  readonly terminal: unknown;
+  /** Its mount: the route record's `group` as written, `""` outside any mount. */
+  readonly mount: string;
+  /** Its path within the mount; `undefined` when the path does not start with it. */
+  readonly within: string | undefined;
+}
+
+/** A route record's mount — its `group`, joined across nested mounts — `""` for none. */
+function mountOf(record: unknown): string {
+  const group = (record as { group?: unknown } | undefined)?.group;
+  return typeof group === "string" ? group : "";
+}
+
+/** The part of `path` after `mount`; `undefined` when `path` does not start with it. */
+function pathWithinMount(path: string, mount: string): string | undefined {
+  const prefix = mount.replace(/\/+$/, "");
+  if (prefix === "") return path;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
+}
+
+/** Whether `claim` is the same route as `other`, mounted somewhere else. */
+function isRemount(claim: OperationIdClaim, other: OperationIdClaim): boolean {
+  return (
+    claim.terminal !== undefined &&
+    claim.terminal === other.terminal &&
+    claim.method === other.method &&
+    claim.mount !== other.mount &&
+    claim.within !== undefined &&
+    claim.within === other.within
+  );
+}
+
+/**
+ * The suffix that tells a later mount's operation from the first mount's:
+ * the segments of `mount` where it differs from `first` (the common leading
+ * and trailing segments dropped; all of `mount` when nothing is left), as the
+ * default operation id spells a path — camelCase words, a param as
+ * `By<Name>`. `"/v2/users"` against `"/users"` is `"V2"`; `"/api/v2"`
+ * against `"/api/v1"` is `"V2"`; `"/orgs/:org"` against `"/teams"` is
+ * `"OrgsByOrg"`. `""` when `mount` has no words (the root mount).
+ */
+function mountSuffix(mount: string, first: string): string {
+  const own = mount.split("/").filter((segment) => segment !== "");
+  const theirs = first.split("/").filter((segment) => segment !== "");
+  let start = 0;
+  while (
+    start < own.length &&
+    start < theirs.length &&
+    own[start] === theirs[start]
+  ) {
+    start++;
+  }
+  let end = own.length;
+  let theirEnd = theirs.length;
+  while (
+    end > start &&
+    theirEnd > start &&
+    own[end - 1] === theirs[theirEnd - 1]
+  ) {
+    end--;
+    theirEnd--;
+  }
+  const differing = end > start ? own.slice(start, end) : own;
+  // As a template, for the default id's word rule: an Express param
+  // (`:org`, `*rest`, a routejs `:id(\d+)` or `:id?`) as `{org}`, and an
+  // optional group's braces as separators.
+  const template = `/${differing.join("/")}`
+    .replace(/[{}]/g, "/")
+    .replace(/[:*]([\p{L}\p{N}_$]+)(?:\([^)]*\))?\??/gu, "{$1}");
+  return defaultOperationId("", template);
+}
+
 /** Whether a converted JSON Schema describes an array (bun-jobs' emission rule). */
 function isArraySchema(schema: unknown): boolean {
   if (typeof schema !== "object" || schema === null) return false;
@@ -753,7 +851,9 @@ function normalizeResponseDoc(
  * @param router  The router (or adapter) to document.
  * @param options See {@link OpenApiOptions}.
  * @throws ConfigError on a genuine configuration mistake (a duplicate
- *   operation id, a security requirement naming an undeclared scheme), and —
+ *   operation id — one route at several mounts is not one, see
+ *   {@link OpenApiOptions.operationId} — a security requirement naming an
+ *   undeclared scheme), and —
  *   under `strict: "strict"` — on any warning.
  */
 export function generateOpenApi(
@@ -981,7 +1081,7 @@ export function generateOpenApi(
    * The paths walk.
    * ---------------------------------------------------------------- */
   const paths: Record<string, Record<string, unknown>> = {};
-  const operationIds = new Map<string, string>(); // id → route key
+  const operationIds = new Map<string, OperationIdClaim>(); // id → its claim
   const tagsUsed: string[] = [];
 
   /** Parameters from a converted object schema's properties. */
@@ -1019,9 +1119,9 @@ export function generateOpenApi(
   };
 
   for (const route of routes) {
-    const terminal = (
-      table[route.routeIndex] as { callbacks?: unknown[] } | undefined
-    )?.callbacks?.at(-1);
+    const record = table[route.routeIndex] as
+      { callbacks?: unknown[] } | undefined;
+    const terminal = record?.callbacks?.at(-1);
     const doc = routeDocFor(terminal);
     if (doc?.hidden === true) continue;
     if (options.filter !== undefined && !options.filter(route)) continue;
@@ -1113,6 +1213,16 @@ export function generateOpenApi(
     /* The typed client's extensions (typed-client plan §3.0, §8.2), once per
      * route: an optional param's two templates carry the same ones. */
     const bunExtensions = bunExtensionsFor(route, doc, warn);
+
+    /* What this route's operation id claim records (see `isRemount`). */
+    const mount = mountOf(record);
+    const claim: OperationIdClaim = {
+      key: route.key,
+      method: route.method,
+      terminal,
+      mount,
+      within: pathWithinMount(route.path, mount),
+    };
 
     for (const template of pathResult.templates) {
       const method = route.method.toLowerCase();
@@ -1274,19 +1384,44 @@ export function generateOpenApi(
         warn,
       );
 
-      /* The operation id: declared, else the caller's namer, else derived. */
-      const operationId =
-        doc?.operationId ??
+      /* The operation id: declared, else the caller's namer, else derived.
+       * A declared id (`.describe()`, a registry's property name) lives on
+       * the terminal callback, so a route mounted twice declares it twice:
+       * the first mount keeps it, each later one gets its mount's suffix.
+       * Any other duplicate is a ConfigError. */
+      const declared = doc?.operationId;
+      let operationId =
+        declared ??
         options.operationId?.(route) ??
         defaultOperationId(route.method, template.path);
-      const owner = operationIds.get(operationId);
-      if (owner !== undefined && owner !== route.key) {
+      let owner = operationIds.get(operationId);
+      if (
+        declared !== undefined &&
+        owner !== undefined &&
+        owner.key !== route.key &&
+        isRemount(claim, owner)
+      ) {
+        const suffix = mountSuffix(claim.mount, owner.mount);
+        if (suffix === "") {
+          throw new ConfigError(
+            `The operation id "${declared}" is declared on a route mounted twice (${owner.key} and ${route.key}), and the mount "${claim.mount}" has no words to tell the two apart; mount it under a named path`,
+            {
+              operationId: declared,
+              first: owner.key,
+              second: route.key,
+            },
+          );
+        }
+        operationId = `${declared}${suffix}`;
+        owner = operationIds.get(operationId);
+      }
+      if (owner !== undefined && owner.key !== route.key) {
         throw new ConfigError(
-          `Two routes share the operation id "${operationId}" (${owner} and ${route.key})`,
-          { operationId, first: owner, second: route.key },
+          `Two routes share the operation id "${operationId}" (${owner.key} and ${route.key})`,
+          { operationId, first: owner.key, second: route.key },
         );
       }
-      operationIds.set(operationId, route.key);
+      operationIds.set(operationId, claim);
 
       for (const tag of doc?.tags ?? []) {
         if (!tagsUsed.includes(tag)) tagsUsed.push(tag);

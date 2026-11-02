@@ -437,6 +437,27 @@ describe("--module", () => {
     expect(stdout).toBe(await Bun.file(join(FIXTURES, "app.gen.ts")).text());
   });
 
+  it("documents a registry mounted twice: each mount's routes are named operations (the mounts golden)", async () => {
+    const { code, stdout, stderr } = await run(
+      "generate",
+      "--module",
+      join(FIXTURES, "mounts.ts"),
+    );
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toBe(await Bun.file(join(FIXTURES, "mounts.gen.ts")).text());
+    // Four routes, four names, none left out of `api.op`.
+    for (const line of [
+      `"GET /users/:id": { operationId: "getUser", statuses: [200] }`,
+      `"GET /v2/users/:id": { operationId: "getUserV2", statuses: [200] }`,
+      `"GET /users/": { operationId: "listUsers", statuses: [200] }`,
+      `"GET /v2/users/": { operationId: "listUsersV2", statuses: [200] }`,
+    ]) {
+      expect(stdout).toContain(line);
+    }
+    expect(stdout).not.toContain("left out of `api.op`");
+  });
+
   it("reads a module exporting a document", async () => {
     await writeFile(
       join(dir, "doc.ts"),
