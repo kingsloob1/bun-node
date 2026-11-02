@@ -13,15 +13,16 @@ browsers: a browser bundle of the entry is 4.6 KiB gzipped, and the checks
 
 This is the core of the typed-client plan
 ([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
-its generator (PR-C2), its watcher (PR-C3), validation (PR-C4) and the query
-layer (PR-C5): `bun-client generate` writes the route map from the server's
+its generator (PR-C2), its watcher (PR-C3), validation (PR-C4), the query
+layer (PR-C5) and the React binding (PR-C6): `bun-client generate` writes the route map from the server's
 OpenAPI document ([below](#generating-the-map-bun-client-generate)), with its
 zod schemas beside it on request, `bun-client watch` keeps both in step with
 a running dev server ([below](#keeping-it-in-step-bun-client-watch)), and
 `./query` puts the routes on TanStack's `@tanstack/query-core`, with cache
 tags, `ETag` revalidation and optimistic updates
-([below](#the-query-layer-query)). The framework bindings and the other
-transports come in later PRs (the plan's §15).
+([below](#the-query-layer-query)), and `./react` gives React components
+typed hooks over it ([below](#react-react)). The other framework bindings
+and transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -812,8 +813,98 @@ object until one of them changes, so `useSyncExternalStore` can read it
 directly. The first subscriber starts the observer (and its fetch, if the
 data is missing or stale); the last one to leave stops it, and the query
 goes inactive. `refetch()`, `setOptions()` and, for an infinite query,
-`fetchNextPage()`/`fetchPreviousPage()` resolve the snapshot after. The
-React binding (`./react`) and live invalidation (`live()`) come in later PRs.
+`fetchNextPage()`/`fetchPreviousPage()` resolve the snapshot after. React
+apps use `./react` instead ([below](#react-react)); live invalidation
+(`live()`) comes in a later PR.
+
+## React (`/react`)
+
+`@kingsleyweb/bun-client/react` gives React components the query layer's
+routes as hooks. They are thin wrappers over
+[`@tanstack/react-query`](https://tanstack.com/query/latest/docs/framework/react/overview)'s
+(the plan's §7.1), so the reactivity, dedupe, Suspense, StrictMode, focus and
+interval refetches are react-query's, and everything under them (keys, tags,
+`ETag` revalidation, `invalidates`, optimistic writes and their rollback) is
+`./query`'s. `react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) are
+optional peers: install them beside the client and `@tanstack/query-core`.
+The entry is 390 bytes gzipped over react-query.
+
+```tsx
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createClient } from "@kingsleyweb/bun-client";
+import { queries } from "@kingsleyweb/bun-client/query";
+import { createApiHooks } from "@kingsleyweb/bun-client/react";
+import { manifest, type Routes } from "./routes.gen";
+
+const api = createClient<Routes>({ baseUrl: "/api", manifest });
+export const q = queries(api, { manifest });
+export const { useApi, useApiSuspense, useApiInfinite, useApiMutation } =
+  createApiHooks(q);
+
+function User({ id }: { id: string }) {
+  const user = useApi("/users/:id", { params: { id } });
+  const rename = useApiMutation("PATCH /users/:id", {
+    optimistic: {
+      "GET /users/:id": (old, vars) => ({ ...old, name: vars.body.name }),
+    },
+  });
+  if (user.isPending) return <p>Loading</p>;
+  if (user.isError) return <p>{user.error.message}</p>;
+  return (
+    <button
+      onClick={() => rename.mutate({ params: { id }, body: { name: "Ada" } })}
+    >
+      {user.data.name}
+    </button>
+  );
+}
+
+const queryClient = new QueryClient();
+root.render(
+  <QueryClientProvider client={queryClient}>
+    <User id="7" />
+  </QueryClientProvider>,
+);
+```
+
+`createApiHooks(q)` is called once per client, at module level; the hooks
+read the `QueryClient` from react-query's `QueryClientProvider` (there is no
+provider of ours), and `q` serves prefetching, `getQueryData` and
+`invalidateTags` outside components.
+
+| Hook | Is | Returns |
+|---|---|---|
+| `useApi(path, options?, query?)` | `useQuery(q.query(path, options))` | `UseQueryResult`: `data` the route's success body, `error` its `HttpError` or another `ClientError` |
+| `useApiSuspense(path, options?, query?)` | `useSuspenseQuery(…)`, for `<Suspense>` | `data` always defined; the first fetch's error goes to the error boundary |
+| `useApiInfinite(path, options, page, query?)` | `useInfiniteQuery(q.infinite(…))` | `data.pages`, `fetchNextPage()`, `hasNextPage`, … |
+| `useApiMutation(key, config?, options?)` | `useMutation(q.mutation(key, config))` | `mutate(vars)`, `status`, `data`, `error`, `context` (the optimistic snapshot) |
+
+- **`options`** are the call's, as `q.query()` takes them: `params`, `query`,
+  `headers`, `body`, and `timeout`, `retry`, `middleware`, `validate`;
+  required when the route has a required part. The path must be a GET
+  route of the map; a wrong param, query field or route is a type error.
+- **`query`** is any of react-query's options but the key and the query
+  function (`staleTime`, `enabled`, `select`, `refetchInterval`,
+  `placeholderData`, …); `select` types `data`. A `meta` is merged under
+  the route's `tags`.
+- **`useApiSuspense`** keeps react-query's `staleTime` floor of 1 s for
+  suspense queries, so the subscription made after the suspended render
+  does not fetch again what was just fetched.
+- **`useApiMutation`'s `options`** are `useMutation`'s but the key, the
+  function and `onMutate` (the route and its `optimistic` writers own
+  them). Its `onSuccess`, `onError` and `onSettled` run **after** the query
+  layer's own, so `onSuccess` sees the cache refetched after the route's
+  `invalidates`. (Spreading `q.mutation()` into react-query's `useMutation`
+  with your own `onSuccess` replaces the invalidation; this hook does not.)
+- **Unmounting** releases each hook's observer (and with it any
+  `refetchInterval`), so an invalidation no longer refetches a query no
+  component reads; react-query's `gcTime` then collects it.
+
+**Not yet:** `useLive(tags)` comes with live invalidation (`live(api)`, the
+plan's PR-W4), and `<ApiHydrate state>` with bun-views' hydration (BVW
+PR-5, §6.6). Until then, server-rendered data reaches the client through
+react-query's own `HydrationBoundary`: the queries' keys and data are plain
+JSON, so `dehydrate(queryClient)` of them serialises as it is.
 
 ## The query string
 
@@ -839,10 +930,13 @@ package in this repo does. The client has one runtime dependency,
 the lazily loaded checks. `./zod` is the zod glue, with `zod` an optional
 peer; `./query` is the query layer, with `@tanstack/query-core` an optional
 peer (`^5.90.0`: its query and mutation callbacks read the `QueryClient`
-from their context, which 5.90 has). The generator is `./codegen` (Bun only)
+from their context, which 5.90 has); `./react` is the React binding, with
+`react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) optional peers
+beside query-core. The generator is `./codegen` (Bun only)
 and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round
 trip, the shared backoff vector, the `RoutesOf` types and the generator's
 parity with them. bun-cache is a dev dependency too, for the query layer's
-`Surrogate-Key` tests.
+`Surrogate-Key` tests. React, react-dom, react-query and happy-dom are dev
+dependencies for the React binding's DOM tests.

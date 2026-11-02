@@ -357,6 +357,15 @@ rules = { "bun:test/consistent-test-it" = "off", "bun:test/no-focused-tests" = "
 files = ["packages/bun-jobs-ui/**", "examples/bun-jobs-ui/**"]
 rules = { "react/error-boundaries" = "error", "react/exhaustive-deps" = "warn", "react/iframe-missing-sandbox" = "warn", "react/jsx-key" = "error", "react/jsx-no-comment-textnodes" = "warn", "react/jsx-no-script-url" = "warn", "react/no-access-state-in-setstate" = "error", "react/no-array-index-key" = "warn", "react/no-children-prop" = "warn", "react/no-clone-element" = "warn", "react/no-danger" = "warn", "react/no-danger-with-children" = "error", "react/no-did-mount-set-state" = "warn", "react/no-did-update-set-state" = "warn", "react/no-direct-mutation-state" = "error", "react/no-find-dom-node" = "error", "react/no-namespace" = "error", "react/no-render-return-value" = "error", "react/no-unsafe" = "warn", "react/no-unstable-nested-components" = "error", "react/no-unused-class-component-methods" = "warn", "react/no-will-update-set-state" = "warn", "react/only-export-components" = ["error", { allowConstantExport = false, allowExportNames = [] }], "react/purity" = "warn", "react/rules-of-hooks" = "error", "react/set-state-in-effect" = "warn", "react/set-state-in-render" = "error", "react/static-components" = "error", "react/unsupported-syntax" = "error", "react/use-memo" = "error", "react/void-dom-elements-no-children" = "error" }
 
+# bun-client's React binding (PR-C6) and its tests: the hooks rules, nothing of the app rules above.
+[[lint.overrides]]
+files = [
+  "packages/bun-client/lib/react.ts",
+  "packages/bun-client/__tests__/react/**",
+  "packages/bun-client/__tests__/react.type-test.ts",
+]
+rules = { "react/exhaustive-deps" = "warn", "react/jsx-key" = "error", "react/rules-of-hooks" = "error" }
+
 # antfu's per-glob disables (antfu/disables/scripts, cli, dts, cjs, config-files), kept as they are today.
 [[lint.overrides]]
 files = ["**/scripts/**", "**/cli/**", "**/cli.*", "**/*.config.*"]

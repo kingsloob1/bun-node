@@ -21,6 +21,13 @@
  * none of the core client (the app's `createClient` comes from `.`); built
  * with query-core inlined, it still carries nothing of a server. A negative
  * control beside bun-common must be caught.
+ *
+ * Since PR-C6 the `./react` entry (plan §7.1, §10.1): built with its peers
+ * (`@tanstack/react-query`, `react`) external, it imports react-query and
+ * nothing else, and carries none of the query layer or the core client
+ * (it takes the app's `queries()` object); with react-query and query-core
+ * inlined (React left to the app), still nothing of a server. A negative
+ * control beside bun-common must be caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -208,6 +215,51 @@ describe("the ./query entry (plan §10.1, §10.3)", () => {
     const { code, logs } = await build(
       join(import.meta.dir, "fixtures", "query-server-import.ts"),
       PEER,
+    );
+    if (code === undefined) {
+      expect(logs.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(serverMarkersIn(code).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the ./react entry (plan §7.1, §10.1)", () => {
+  const REACT = join(import.meta.dir, "..", "lib", "react.ts");
+  const PEERS = ["@tanstack/react-query", "@tanstack/query-core", "react"];
+
+  /** The specifiers `code` still imports. */
+  const importsOf = (code: string): string[] =>
+    [...code.matchAll(/^import[^"]*from\s*"([^"]+)"/gm)].map(
+      (match) => match[1],
+    );
+
+  it("imports react-query and nothing else, and holds nothing of a server, the query layer or the core client", async () => {
+    const { code, logs } = await build(REACT, PEERS);
+    expect(logs).toEqual([]);
+    expect(code!.includes("function createApiHooks")).toBe(true);
+    expect(importsOf(code!)).toEqual(["@tanstack/react-query"]);
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(code!.includes("function queries")).toBe(false);
+    expect(contractMarkersIn(code!)).toEqual([]);
+  });
+
+  it("with react-query and query-core inlined, React left to the app (react and its JSX runtime), still holds nothing of a server", async () => {
+    const { code, logs } = await build(REACT, ["react"]);
+    expect(logs).toEqual([]);
+    expect([...new Set(importsOf(code!))].sort()).toEqual([
+      "react",
+      "react/jsx-runtime",
+    ]);
+    expect(code!.includes("var QueryObserver = class")).toBe(true);
+    expect(serverMarkersIn(code!)).toEqual([]);
+  });
+
+  it("negative control: the entry beside bun-common is caught", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "fixtures", "react-server-import.ts"),
+      PEERS,
     );
     if (code === undefined) {
       expect(logs.length).toBeGreaterThan(0);

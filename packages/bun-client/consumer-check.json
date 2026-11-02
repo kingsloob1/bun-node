@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer and the ./query entries the optional @tanstack/query-core peer: they are checked in the consumer that has them (`peers`), every other entry in one without either.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer, the ./query entries the optional @tanstack/query-core peer, and the ./react entries react and @tanstack/react-query beside query-core (their declarations import ./query's): they are checked in the consumer that has them (`peers`), every other entry in one without either.",
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-client",
@@ -106,6 +106,25 @@
       "browser": true
     },
     {
+      "spelling": "@kingsleyweb/bun-client/react",
+      "peers": ["@tanstack/query-core", "@tanstack/react-query", "react"],
+      "values": ["createApiHooks"],
+      "browser": true,
+      "snippet": "import { createClient } from \"@kingsleyweb/bun-client\";\nimport { queries } from \"@kingsleyweb/bun-client/query\";\nimport type { InfiniteData } from \"@tanstack/react-query\";\ninterface Routes { \"GET /users/:id\": { params: { id: string }; responses: { 200: { id: string; at: Date }; 404: { code: \"NOT_FOUND\" } } }; \"GET /users\": { query: { page?: number }; responses: { 200: { items: string[]; next: number | null } } }; \"PATCH /users/:id\": { params: { id: string }; body: { name: string }; responses: { 200: { id: string } } } }\nconst hooks = m.createApiHooks(queries(createClient<Routes>()));\nfunction Probe() {\n  const user = hooks.useApi(\"/users/:id\", { params: { id: \"1\" } });\n  const _data: Equal<typeof user.data, { id: string; at: string } | undefined> = true; void _data;\n  if (user.isError && \"error\" in user.error) { const _code: Equal<typeof user.error.error, { code: \"NOT_FOUND\" }> = true; void _code; }\n  const names = hooks.useApi(\"/users\", {}, { select: (page) => page.items.length });\n  const _names: Equal<typeof names.data, number | undefined> = true; void _names;\n  const sure = hooks.useApiSuspense(\"/users/:id\", { params: { id: \"1\" } });\n  const _sure: Equal<typeof sure.data, { id: string; at: string }> = true; void _sure;\n  const pages = hooks.useApiInfinite(\"/users\", {}, { pageParam: \"page\", next: (last) => last.next });\n  const _pages: Equal<typeof pages.data, InfiniteData<{ items: string[]; next: number | null }, number | undefined> | undefined> = true; void _pages;\n  const rename = hooks.useApiMutation(\"PATCH /users/:id\", { optimistic: { \"GET /users/:id\": (old, vars) => ({ ...old, id: vars.params.id }) } });\n  rename.mutate({ params: { id: \"1\" }, body: { name: \"Ada\" } });\n  return null;\n}\nvoid Probe;\nexport type _hooks = Expect<IsAny<t.ApiHooks<Routes>>>;\nexport type _query = Expect<IsAny<t.UseApiOptions<string, Error, string, \"GET /x\">>>;\nexport type _suspense = Expect<IsAny<t.UseApiSuspenseOptions<string, Error, string, \"GET /x\">>>;\nexport type _infinite = Expect<IsAny<t.UseApiInfiniteOptions<string, Error, number, \"GET /x\">>>;\nexport type _mutation = Expect<IsAny<t.UseApiMutationOptions<string, Error, void>>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/react",
+      "peers": ["@tanstack/query-core", "@tanstack/react-query", "react"],
+      "values": ["createApiHooks"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/react.js",
+      "peers": ["@tanstack/query-core", "@tanstack/react-query", "react"],
+      "values": ["createApiHooks"],
+      "browser": true
+    },
+    {
       "spelling": "@kingsleyweb/bun-client/codegen",
       "values": ["generateRoutes", "loadDocuments", "runCli", "documentsHash"],
       "types": [
@@ -125,5 +144,11 @@
     }
   ],
   "workspaceDependencies": ["packages/bun-contract"],
-  "consumerDependencies": ["zod@^4", "@tanstack/query-core@^5.90.0"]
+  "consumerDependencies": [
+    "zod@^4",
+    "@tanstack/query-core@^5.90.0",
+    "@tanstack/react-query@^5.90.0",
+    "react@^19.2.0",
+    "@types/react@^19.2.0"
+  ]
 }
