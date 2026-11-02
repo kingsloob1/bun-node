@@ -379,14 +379,23 @@ export type Operations<R, F> = {
   [K in keyof R as OperationIdOf<R[K]>]: Call<R[K], F>;
 };
 
-/** The options of {@link Client.url}: the params and query of the path's entries. */
-export type UrlArgs<R, P extends string> = [
-  RequiredKeys<
-    ParamsPart<EntriesAtPath<R, P>> & QueryPart<EntriesAtPath<R, P>>
-  >,
-] extends [never]
-  ? [options?: ParamsPart<EntriesAtPath<R, P>> & QueryPart<EntriesAtPath<R, P>>]
-  : [options: ParamsPart<EntriesAtPath<R, P>> & QueryPart<EntriesAtPath<R, P>>];
+/**
+ * The options one entry gives {@link Client.url}, distributed over the
+ * entries at a path: a path several methods share takes the union of their
+ * options, so each method's `query` is accepted (a bare intersection of the
+ * entries' parts reduced two different queries to `never`).
+ */
+type UrlOptionsOf<E> = E extends unknown ? ParamsPart<E> & QueryPart<E> : never;
+
+/**
+ * The options of {@link Client.url}: the params and query of the path's
+ * entries. Optional when some entry at the path needs none (a URL is built
+ * without a method, so the call cannot tell which entry it means).
+ */
+export type UrlArgs<R, P extends string> =
+  Record<never, never> extends UrlOptionsOf<EntriesAtPath<R, P>>
+    ? [options?: UrlOptionsOf<EntriesAtPath<R, P>>]
+    : [options: UrlOptionsOf<EntriesAtPath<R, P>>];
 
 /**
  * The runtime facts a map's types cannot carry, per route key: its
