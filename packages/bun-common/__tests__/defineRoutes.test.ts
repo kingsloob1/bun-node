@@ -9,6 +9,7 @@ import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { BunRouter } from "../lib/BunRouter";
 import { validate } from "../lib/BunValidate";
+import type { RouteDef } from "../lib/defineRoutes";
 import { defineRoutes } from "../lib/defineRoutes";
 import { routeDocFor } from "../lib/docs/routeDoc";
 import type { OpenApiDocument } from "../lib/docs/index";
@@ -261,8 +262,183 @@ describe("defineRoutes: the returned registry", () => {
     expect(() =>
       defineRoutes("/users", () => ({
         // A hand-made record has no terminal callback to document.
-        fake: { method: "GET", path: "/users/x", callbacks: [] },
+        fake: {
+          method: "GET",
+          path: "/users/x",
+          callbacks: [],
+        } as unknown as RouteDef,
       })),
     ).toThrow(/"fake" is not a definition the builder made/);
+  });
+});
+
+describe("RouteDef.describe(): a definition documents itself", () => {
+  it("chains: it returns the same definition, whose own properties stay its data", () => {
+    let chained: unknown;
+    const users = defineRoutes("/users", (r) => {
+      const plain = r.get("/:id", (_req, res) => res.json({}));
+      chained = plain.describe({ summary: "Read one user" });
+      expect(chained).toBe(plain);
+      return { getUser: plain };
+    });
+    expect(users.getUser).toBe(chained as typeof users.getUser);
+    // describe() lives on the prototype: the definition's keys are unchanged.
+    expect(Object.keys(users.getUser)).toEqual(["method", "path", "callbacks"]);
+    expect(users.getUser.method).toBe("GET");
+    expect(users.getUser.path).toBe("/users/:id");
+  });
+
+  it("records the doc on the terminal callback, beside the property name's operationId", () => {
+    const users = defineRoutes("/users", (r) => ({
+      getUser: r
+        .get("/:id", (_req, res) => res.json({}))
+        .describe({
+          summary: "Read one user",
+          errors: ["NOT_FOUND"],
+          cache: { tags: ["user:{id}"] },
+        }),
+    }));
+    expect(routeDocFor(users.getUser.callbacks.at(-1))).toEqual({
+      summary: "Read one user",
+      errors: ["NOT_FOUND"],
+      cache: { tags: ["user:{id}"] },
+      operationId: "getUser",
+    });
+  });
+
+  it("changes nothing at request time: a described route serves as before", async () => {
+    const users = defineRoutes("/users", (r) => ({
+      getUser: r
+        .get("/:id", validate({ params: IdParams }), (req, res) => {
+          res.json({ id: req.params.id });
+        })
+        .describe({ summary: "Read one user", errors: ["NOT_FOUND"] }),
+    }));
+    const app = new BunRouter();
+    app.use(users.mount, users.router);
+    const response = await app.fetch("/users/9");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: "9" });
+  });
+
+  describe("merge order: the terminal callback's doc, the property name, then describe() in call order", () => {
+    it("an explicit operationId wins over the property name, chained inside build", () => {
+      const users = defineRoutes("/users", (r) => ({
+        getUser: r
+          .get("/:id", (_req, res) => res.json({}))
+          .describe({ operationId: "readUser" }),
+      }));
+      const app = new BunRouter();
+      app.use(users.mount, users.router);
+      const { document } = generateOpenApi(app, { title: "T", version: "1" });
+      expect(op(document, "/users/{id}", "get").operationId).toBe("readUser");
+      expect(routeDocFor(users.getUser.callbacks.at(-1))?.operationId).toBe(
+        "readUser",
+      );
+    });
+
+    it("an explicit operationId wins too when describe() runs on the returned registry", () => {
+      const users = defineRoutes("/users", (r) => ({
+        getUser: r.get("/:id", (_req, res) => res.json({})),
+      }));
+      expect(routeDocFor(users.getUser.callbacks.at(-1))?.operationId).toBe(
+        "getUser",
+      );
+      users.getUser.describe({ operationId: "readUser", summary: "Later" });
+      expect(routeDocFor(users.getUser.callbacks.at(-1))).toEqual({
+        operationId: "readUser",
+        summary: "Later",
+      });
+    });
+
+    it("control: without an explicit operationId the property name stays", () => {
+      const users = defineRoutes("/users", (r) => ({
+        getUser: r
+          .get("/:id", (_req, res) => res.json({}))
+          .describe({ summary: "Read" }),
+      }));
+      expect(routeDocFor(users.getUser.callbacks.at(-1))?.operationId).toBe(
+        "getUser",
+      );
+    });
+
+    it("wins per key over a doc the terminal callback already carries, keeping its other keys", () => {
+      const handler = (_req: unknown, res: { send: (v: string) => void }) =>
+        res.send("ok");
+      new BunRouter().get("/direct", handler).describe({
+        summary: "Direct",
+        errors: ["GONE"],
+        operationId: "direct",
+      });
+      defineRoutes("/users", (r) => ({
+        reused: r.get("/reused", handler).describe({ summary: "Explicit" }),
+      }));
+      expect(routeDocFor(handler)).toEqual({
+        // The explicit describe() wins its key...
+        summary: "Explicit",
+        // ...the earlier doc keeps the keys nobody rewrote...
+        errors: ["GONE"],
+        // ...and the property name replaces the earlier operationId.
+        operationId: "reused",
+      });
+    });
+
+    it("several describe() calls merge in call order, a nested object replaced whole", () => {
+      const users = defineRoutes("/users", (r) => ({
+        update: r
+          .patch("/:id", (_req, res) => res.json({}))
+          .describe({
+            summary: "First",
+            tags: ["users"],
+            cache: { tags: ["user:{id}"] },
+          })
+          .describe({ summary: "Second", cache: { invalidates: ["users"] } }),
+      }));
+      expect(routeDocFor(users.update.callbacks.at(-1))).toEqual({
+        summary: "Second",
+        tags: ["users"],
+        cache: { invalidates: ["users"] },
+        operationId: "update",
+      });
+    });
+  });
+
+  it("hidden: true leaves the route out of the document", () => {
+    const users = defineRoutes("/users", (r) => ({
+      getUser: r.get("/:id", (_req, res) => res.json({})),
+      internal: r
+        .get("/internal", (_req, res) => res.json({}))
+        .describe({ hidden: true }),
+    }));
+    const app = new BunRouter();
+    app.use(users.mount, users.router);
+    const { document } = generateOpenApi(app, { title: "T", version: "1" });
+    expect(Object.keys(document.paths as object)).toEqual(["/users/{id}"]);
+  });
+
+  it("refuses a definition with no terminal callback, as BunRouter.describe() does", () => {
+    defineRoutes("/users", (r) => {
+      // Only an untyped call can register a route with no handler.
+      const verb = r.get as unknown as (path: string) => RouteDef;
+      const empty = verb("/none");
+      expect(empty.callbacks).toEqual([]);
+      expect(() => empty.describe({ summary: "x" })).toThrow(
+        "describe(): the route has no terminal callback to document",
+      );
+      return {};
+    });
+  });
+
+  it("refuses a doc that is not an object, as BunRouter.describe() does", () => {
+    defineRoutes("/users", (r) => {
+      const def = r.get("/:id", (_req, res) => res.json({}));
+      for (const bad of [null, undefined, "summary", 3, ["x"]]) {
+        expect(() => def.describe(bad as never)).toThrow(TypeError);
+        expect(() => def.describe(bad as never)).toThrow(
+          "describe(): expected a RouteDoc object",
+        );
+      }
+      return { getUser: def };
+    });
   });
 });

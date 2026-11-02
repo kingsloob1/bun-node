@@ -455,6 +455,37 @@ rules apply unchanged: a duplicate operation id is a `ConfigError` from
 `generateOpenApi`, and a route registered without the registry keeps the
 derived one. `mount` and `router` are reserved property names.
 
+A definition documents itself with its own chainable **`describe()`**, which
+takes the same `RouteDoc` as `BunRouter.describe()` (`summary`,
+`description`, `tags`, `operationId`, `deprecated`, `hidden`, `responses`,
+`errors`, `cache`, `extensions`, …) and writes to the same store, so the doc
+survives mounting:
+
+```ts
+export const users = defineRoutes("/users", (r) => ({
+  getUser: r
+    .get("/:id", validate({ params: IdParams }), handler)
+    .describe({ summary: "Read one user", errors: ["NOT_FOUND"], cache: { tags: ["user:{id}"] } }),
+  updateUser: r
+    .patch("/:id", validate({ params: IdParams, body: UserPatch }), updateHandler)
+    .describe({ cache: { invalidates: ["user:{id}", "users"] } }),
+}));
+```
+
+`generateOpenApi` then emits the summary, `x-bun-errors` and `x-bun-cache` on
+those operations, wherever the registry is mounted; `x-bun-route-key` stays
+the generator's own. The docs merge per top-level key, last write winning (a
+nested object such as `cache` is replaced whole): first the doc the terminal
+callback already carries, then the property name as `operationId`, then each
+`describe()` in call order — so an **explicit `describe()` wins**, an
+`operationId` it names included, whether it is chained inside `build` or
+called later on the returned registry (`users.getUser.describe({ … })`). It
+returns the same definition, so the definition's types and its `RoutesOf`
+entry do not change: `errors` narrow a generated client's error codes, not
+the inferred map. As with `BunRouter.describe()`, a handler reused by another
+route shares its doc. A registry mounted twice cannot be documented, since
+both mounts carry one `operationId` (a `ConfigError`, as for any duplicate).
+
 The registry exists **for inference**: `RoutesOf<typeof users>` is a pure type
 that reads the return into the flat route map a typed client is built over,
 keyed `"VERB /full/path"`, each entry answering `params`, `query`, `body` and
