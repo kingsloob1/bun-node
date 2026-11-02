@@ -27,11 +27,15 @@
  * app.use(users.mount, users.router);        // an ordinary sub-router mount
  * export type Api = RoutesOf<typeof users>;  // the flat map, keyed "VERB /path"
  * ```
+ *
+ * A definition documents itself with its own chainable `describe()`
+ * ({@link RouteDef.describe}): `r.get(…).describe({ summary, errors, cache })`.
  */
 import type { ValidatorMiddleware } from "./BunValidate";
 import { BunRouter } from "./BunRouter";
 import type { DtoClass } from "./classDto";
 import type { WireInput } from "./contract/model";
+import type { RouteDoc } from "./docs/routeDoc";
 import { attachRouteDoc } from "./docs/routeDoc";
 import type { RouterHandler } from "./types/general";
 import type { ReceivedResponses } from "./types/responseTyping";
@@ -43,7 +47,7 @@ import type {
   ResolveQuery,
 } from "./types/routeTyping";
 import type { StandardSchemaV1 } from "./types/standardSchema";
-import { isFunction, isObject } from "./utils/native";
+import { isArray, isFunction, isObject } from "./utils/native";
 
 /**
  * One named route of a registry: what a builder verb returns and what
@@ -85,6 +89,96 @@ export interface RouteDef<
    * derives the sender's and receiver's views; never present at runtime.
    */
   readonly __schemas?: TSchemas;
+  /**
+   * Documents this route, chainably — `BunRouter.describe()` for a
+   * definition, taking the same {@link RouteDoc} (`summary`, `description`,
+   * `tags`, `operationId`, `deprecated`, `hidden`, `request`, `responses`,
+   * `security`, `errors`, `cache`, `extensions`, …) and writing to the same
+   * store, the route's terminal callback, so the doc survives mounting:
+   *
+   * ```ts
+   * const users = defineRoutes("/users", (r) => ({
+   *   getUser: r
+   *     .get("/:id", validate({ params: IdParams }), handler)
+   *     .describe({ summary: "Read one user", errors: ["NOT_FOUND"], cache: { tags: ["user:{id}"] } }),
+   * }));
+   * ```
+   *
+   * **Merge order**, per top-level key, last write winning (a nested object
+   * such as `cache` is replaced whole, not merged): the doc the terminal
+   * callback already carries, then the registry's property name as
+   * `operationId`, then each `describe()` in call order. So an explicit
+   * `describe()` wins over both, and `describe({ operationId })` renames the
+   * operation in the documents (a client's `api.op` follows the documents;
+   * `RoutesOf` keys by method and path, so its types do not change). The
+   * order is the same whether `describe()` is chained inside `build` or
+   * called on the returned registry.
+   *
+   * It changes nothing but the documents: the definition's types, and so
+   * its `RoutesOf` entry, are unchanged — `errors` narrow a generated
+   * client's error codes (from `x-bun-errors`), never the inferred map.
+   * Gotchas, both `BunRouter.describe()`'s: a terminal callback reused by
+   * another route shares this doc, and a call after the registry is mounted
+   * reaches the documents without moving the parent router's
+   * `routesVersion`.
+   *
+   * @returns The same definition, with its types unchanged.
+   * @throws TypeError when `doc` is not an object (or is an array).
+   */
+  readonly describe: (doc: RouteDoc) => this;
+}
+
+/**
+ * The definitions whose `describe()` named an `operationId`: the registry's
+ * property name yields to it (see {@link RouteDef.describe}'s merge order).
+ */
+const explicitOperationIds = new WeakSet<object>();
+
+/**
+ * A builder-made {@link RouteDef}. `describe()` lives on the prototype, so a
+ * definition's own properties stay its data: `method`, `path`, `callbacks`.
+ */
+class Definition<
+  TMethod extends string,
+  TPath extends string,
+> implements RouteDef<TMethod, TPath> {
+  /** The HTTP method, upper-case; `"ALL"` for an `all()` definition. */
+  readonly method: TMethod;
+  /** The full path — the registry's mount joined with the path as written. */
+  readonly path: TPath;
+  /** The route's own callbacks (the validator, then the handler), in order. */
+  readonly callbacks: readonly unknown[];
+
+  /**
+   * @param method The HTTP method, upper-case.
+   * @param path The full path, mount included.
+   * @param callbacks The callbacks the route registered with, in order.
+   */
+  constructor(method: TMethod, path: TPath, callbacks: readonly unknown[]) {
+    this.method = method;
+    this.path = path;
+    this.callbacks = callbacks;
+  }
+
+  describe(doc: RouteDoc): this {
+    if (typeof doc !== "object" || doc === null || isArray(doc)) {
+      throw new TypeError("describe(): expected a RouteDoc object");
+    }
+    const terminal: unknown = this.callbacks.at(-1);
+    if (
+      !isFunction(terminal) &&
+      (typeof terminal !== "object" || terminal === null)
+    ) {
+      throw new TypeError(
+        "describe(): the route has no terminal callback to document",
+      );
+    }
+    attachRouteDoc(terminal, doc);
+    if (doc.operationId !== undefined) {
+      explicitOperationIds.add(this);
+    }
+    return this;
+  }
 }
 
 /**
@@ -134,7 +228,9 @@ const RESERVED_KEYS = ["mount", "router"] as const;
  * registry's route table: each property name becomes the route's
  * `operationId`, recorded with `.describe()`'s own store, so its rules apply
  * (a doc keyed on the terminal callback; a duplicate operation id is
- * `generateOpenApi`'s `ConfigError`, never a rename).
+ * `generateOpenApi`'s `ConfigError`, never a rename). A definition's own
+ * `describe()` ({@link RouteDef.describe}) adds the rest of its doc, and wins
+ * over the property name when it names an `operationId` itself.
  *
  * The return is that record plus two reserved properties: `mount`, the mount
  * path as given, and `router`, the fresh router the routes registered on —
@@ -210,7 +306,11 @@ export function defineRoutes<
         `defineRoutes(): "${name}" is not a definition the builder made — it has no terminal callback to document`,
       );
     }
-    attachRouteDoc(terminal, { operationId: name });
+    // An explicit `describe({ operationId })` wins over the property name,
+    // whether it ran inside `build` (before this) or runs later (after).
+    if (!explicitOperationIds.has(def)) {
+      attachRouteDoc(terminal, { operationId: name });
+    }
   }
 
   return { ...defs, mount, router };
@@ -227,7 +327,7 @@ function makeVerb<TMount extends string, TMethod extends string>(
     ...callbacks: RouterHandler[]
   ): RouteDef<TMethod, string> => {
     register(path, callbacks);
-    return { method, path: `${mount}${path}`, callbacks };
+    return new Definition(method, `${mount}${path}`, callbacks);
   };
   return define as unknown as DefineVerb<TMount, TMethod>;
 }

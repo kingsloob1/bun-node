@@ -3,7 +3,8 @@
  * operation `generateOpenApi` emits carries `x-bun-route-key`, the key
  * `listRoutes` lists it under — through a mount, a double mount, a nested
  * mount with params and a `defineRoutes` registry — and `.describe({ errors,
- * cache })` arrive as `x-bun-errors` and `x-bun-cache`.
+ * cache })` arrive as `x-bun-errors` and `x-bun-cache`, a registry's own
+ * `RouteDef.describe()` included.
  */
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
@@ -313,5 +314,93 @@ describe("x-bun-errors and x-bun-cache", () => {
     expect(() =>
       generateOpenApi(router, { ...OPTIONS, strict: "strict" }),
     ).toThrow(/names \{slug\}/);
+  });
+});
+
+describe("a described defineRoutes registry (RouteDef.describe())", () => {
+  /** A registry under a mount with a param: one route described, or none. */
+  function registry(described: boolean) {
+    return defineRoutes("/orgs/:org/posts", (r) => {
+      const getPost = r.get(
+        "/:postId",
+        validate({ params: z.object({ org: z.string(), postId: z.string() }) }),
+        (req, res) => res.json({ id: req.params.postId }),
+      );
+      const updatePost = r.patch("/:postId", (_req, res) => res.json({}));
+      if (described) {
+        getPost.describe({
+          summary: "Read one post",
+          errors: ["NOT_FOUND", "FORBIDDEN"],
+          // `org` is the mount's param: the full path declares it.
+          cache: { tags: ["post:{postId}", "org:{org}"] },
+        });
+        updatePost.describe({
+          cache: { invalidates: ["post:{postId}"] },
+          extensions: { "x-bun-route-key": "PATCH /elsewhere" },
+        });
+      }
+      return { getPost, updatePost };
+    });
+  }
+
+  /** The registry mounted as written, inside a router mounted at `/api`. */
+  function nested(described: boolean): BunRouter {
+    const posts = registry(described);
+    const orgs = new BunRouter();
+    orgs.use(posts.mount, posts.router);
+    const router = new BunRouter();
+    router.use("/api", orgs);
+    return router;
+  }
+
+  it("emits its summary, x-bun-errors and x-bun-cache through a nested mount", () => {
+    const { document, warnings } = generateOpenApi(nested(true), OPTIONS);
+    const path = "/api/orgs/{org}/posts/{postId}";
+    const get = op(document, path, "get");
+    expect(get.summary).toBe("Read one post");
+    expect(get.operationId).toBe("getPost");
+    expect(get["x-bun-errors"]).toEqual(["NOT_FOUND", "FORBIDDEN"]);
+    expect(get["x-bun-cache"]).toEqual({
+      tags: ["post:{postId}", "org:{org}"],
+    });
+    const patch = op(document, path, "patch");
+    expect(patch.operationId).toBe("updatePost");
+    expect(patch["x-bun-cache"]).toEqual({ invalidates: ["post:{postId}"] });
+    expect(patch["x-bun-errors"]).toBeUndefined();
+    // The only extension warning is the hand-written route key's: `{org}`,
+    // the mount's param, is the full path's, so no template warning.
+    expect(extensionWarnings(warnings)).toEqual([
+      '.describe() extensions set "x-bun-route-key", which the generator also sets; the generator wins',
+    ]);
+  });
+
+  it("leaves x-bun-route-key unchanged: the listing's key, the same as an undescribed twin's", () => {
+    const router = nested(true);
+    const keysOf = (r: BunRouter) =>
+      operationsOf(generateOpenApi(r, OPTIONS).document)
+        .map(
+          (o) =>
+            `${o.method} ${o.path} ${String(o.operation["x-bun-route-key"])}`,
+        )
+        .sort();
+    expect(keysOf(router)).toEqual([
+      "get /api/orgs/{org}/posts/{postId} GET /api/orgs/:org/posts/:postId",
+      "patch /api/orgs/{org}/posts/{postId} PATCH /api/orgs/:org/posts/:postId",
+    ]);
+    expect(keysOf(router)).toEqual(keysOf(nested(false)));
+    const listed = listRoutes(router).map((route) => route.key);
+    expect(listed.sort()).toEqual([
+      "GET /api/orgs/:org/posts/:postId",
+      "PATCH /api/orgs/:org/posts/:postId",
+    ]);
+  });
+
+  it("control: the undescribed twin has the names and keys, and none of the doc", () => {
+    const { document } = generateOpenApi(nested(false), OPTIONS);
+    const get = op(document, "/api/orgs/{org}/posts/{postId}", "get");
+    expect(get.operationId).toBe("getPost");
+    expect(get.summary).toBeUndefined();
+    expect(get["x-bun-errors"]).toBeUndefined();
+    expect(get["x-bun-cache"]).toBeUndefined();
   });
 });
