@@ -228,7 +228,9 @@ const RESERVED_KEYS = ["mount", "router"] as const;
  * registry's route table: each property name becomes the route's
  * `operationId`, recorded with `.describe()`'s own store, so its rules apply
  * (a doc keyed on the terminal callback; a duplicate operation id is
- * `generateOpenApi`'s `ConfigError`, never a rename). A definition's own
+ * `generateOpenApi`'s `ConfigError`, never a rename — except the same
+ * registry at a later mount, whose ids `generateOpenApi` suffixes with its
+ * mount: `getUser`, then `getUserV2` at `/v2/users`). A definition's own
  * `describe()` ({@link RouteDef.describe}) adds the rest of its doc, and wins
  * over the property name when it names an `operationId` itself.
  *

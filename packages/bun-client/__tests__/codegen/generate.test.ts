@@ -9,6 +9,7 @@
  * bun lib/codegen/cli.ts generate --openapi __tests__/codegen/fixtures/corpus.openapi.json --out __tests__/codegen/fixtures/corpus.gen.ts
  * bun lib/codegen/cli.ts generate --openapi __tests__/codegen/fixtures/thirdParty.openapi.yaml --out __tests__/codegen/fixtures/thirdParty.gen.ts
  * bun lib/codegen/cli.ts generate --module __tests__/codegen/fixtures/app.ts --out __tests__/codegen/fixtures/app.gen.ts
+ * bun lib/codegen/cli.ts generate --module __tests__/codegen/fixtures/mounts.ts --out __tests__/codegen/fixtures/mounts.gen.ts
  * ```
  */
 import { join } from "node:path";

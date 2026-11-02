@@ -2373,6 +2373,18 @@ Ordered by how much they can hurt.
    and an explicit one must be suffixed or rejected on collision. Related
    existing hazard, worth reporting separately: a `setName`d route in a
    double-mounted sub-router throws `Route with name "x" already exists`.
+   **Built 2026-11-02** (branch `feat/bun-common-openapi-mount-suffix`; the
+   fix approved by the user 2026-11-02, the rule below **awaiting the user's
+   approval**; no new public name): derived ids were already per path; a
+   **declared** id (`.describe({ operationId })`, a `defineRoutes` property
+   name) is kept by the first mount in registration order and suffixed at
+   each later mount of the same route (one terminal callback, method and
+   path within the mount) with the segments where its mount differs from the
+   first one's, spelt as a derived id: `getUser` at `/users`, `getUserV2` at
+   `/v2/users`. Every other duplicate stays a `ConfigError`: two routes
+   given one id by hand, a namer's duplicate, a suffixed id already taken,
+   a later mount at `/`. Output is unchanged wherever no route is mounted
+   twice with a declared id (those documents threw before).
 
 10. **Bundle size if a converter reaches the browser.** The converters are the
     reason to keep the generator out of `lib/index.ts`. A browser viewer needs
