@@ -10,8 +10,9 @@
  *   it (bun-common's generator writes it), else the OpenAPI path with
  *   `{id}` as `:id` (a document from any server);
  * - `manifest`, the runtime facts the types cannot carry (`operationId` for
- *   `api.op`, the declared statuses for `undeclaredStatus`), checked against
- *   `Routes` by `RouteManifest<Routes>`.
+ *   `api.op`, the declared statuses for `undeclaredStatus`, `x-bun-cache`'s
+ *   tag templates for the query layer, `./query`), checked against `Routes`
+ *   by `RouteManifest<Routes>`.
  *
  * Each entry is the wire side (plan §4.1): `params`, `query`, `headers` and
  * `body` are what a sender writes, `responses` what arrives, which the
@@ -432,6 +433,33 @@ export function generateRoutes(
           "]",
         ]),
       ]);
+    if (built.cache !== undefined) {
+      const lists: Doc[] = [];
+      for (const field of ["tags", "invalidates"] as const) {
+        const list = built.cache[field];
+        if (list === undefined) continue;
+        lists.push([
+          `${field}: `,
+          group([
+            "[",
+            indent([softline, join([",", line], list.map(quote))]),
+            ifBreak(","),
+            softline,
+            "]",
+          ]),
+        ]);
+      }
+      facts.push([
+        "cache: ",
+        group([
+          "{",
+          indent([line, join([",", line], lists)]),
+          ifBreak(","),
+          line,
+          "}",
+        ]),
+      ]);
+    }
     if (facts.length > 0) {
       const object = group([
         "{",
@@ -623,6 +651,13 @@ interface BuiltEntry {
   readonly operationId?: string;
   /** Its declared statuses, for the manifest; `undefined` when none is numeric. */
   readonly statuses?: readonly number[];
+  /** Its `x-bun-cache` lists, for the manifest (the query layer's tags); `undefined` when it has none. */
+  readonly cache?: {
+    /** The tag templates the response is filed under. */
+    readonly tags?: readonly string[];
+    /** The tag templates a successful call invalidates. */
+    readonly invalidates?: readonly string[];
+  };
 }
 
 /** Builds one route's entry from its operations (two when an optional param documents as two paths). */
@@ -733,6 +768,10 @@ function buildEntry(
 
   /* cache (x-bun-cache). */
   const cache = operation["x-bun-cache"];
+  const cacheLists: {
+    tags?: readonly string[];
+    invalidates?: readonly string[];
+  } = {};
   if (cache !== undefined) {
     const cacheMembers: TsMember[] = [];
     if (isRecord(cache)) {
@@ -743,6 +782,7 @@ function buildEntry(
           Array.isArray(list) &&
           list.every((item): item is string => typeof item === "string")
         ) {
+          cacheLists[field] = list;
           cacheMembers.push({
             name: field,
             optional: false,
@@ -800,6 +840,7 @@ function buildEntry(
     ...(responses.statuses === undefined
       ? {}
       : { statuses: responses.statuses }),
+    ...(Object.keys(cacheLists).length === 0 ? {} : { cache: cacheLists }),
   };
 }
 

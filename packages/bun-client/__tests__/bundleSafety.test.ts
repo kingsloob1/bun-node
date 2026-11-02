@@ -14,6 +14,13 @@
  * HTTP-only page with validation off never loads them; a negative control
  * importing the checks statically puts them in its entry chunk. And the
  * `./zod` entry carries no zod (it imports zod's types only).
+ *
+ * Since PR-C5 the `./query` entry (plan §10.1): built with its optional peer,
+ * `@tanstack/query-core`, left external as an app's bundler shares it, it
+ * imports that package and nothing else, carries nothing of a server and
+ * none of the core client (the app's `createClient` comes from `.`); built
+ * with query-core inlined, it still carries nothing of a server. A negative
+ * control beside bun-common must be caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -41,12 +48,14 @@ function serverMarkersIn(code: string): string[] {
 /** Builds `entry` for a browser, unminified: its code, or the build's logs. */
 async function build(
   entry: string,
+  external: string[] = [],
 ): Promise<{ code?: string; logs: string[] }> {
   const result = await Bun.build({
     entrypoints: [entry],
     target: "browser",
     minify: false,
     throw: false,
+    external,
   });
   if (!result.success) return { logs: result.logs.map(String) };
   const code = (
@@ -163,5 +172,47 @@ describe("the ./zod entry", () => {
     expect(code!.match(/^\s*import\s/m)).toBeNull();
     expect(code!.includes("$ZodType")).toBe(false);
     expect(serverMarkersIn(code!)).toEqual([]);
+  });
+});
+
+describe("the ./query entry (plan §10.1, §10.3)", () => {
+  const QUERY = join(import.meta.dir, "..", "lib", "query.ts");
+  const PEER = ["@tanstack/query-core"];
+
+  /** The specifiers `code` still imports. */
+  const importsOf = (code: string): string[] =>
+    [...code.matchAll(/^import[^"]*from\s*"([^"]+)"/gm)].map(
+      (match) => match[1],
+    );
+
+  it("imports its optional peer and nothing else, and holds nothing of a server or of the core client", async () => {
+    const { code, logs } = await build(QUERY, PEER);
+    expect(logs).toEqual([]);
+    expect(code!.includes("function queries")).toBe(true);
+    expect(code!.includes("function observe")).toBe(true);
+    expect(importsOf(code!)).toEqual(["@tanstack/query-core"]);
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(contractMarkersIn(code!)).toEqual([]);
+  });
+
+  it("with query-core inlined, still holds nothing of a server", async () => {
+    const { code, logs } = await build(QUERY);
+    expect(logs).toEqual([]);
+    expect(importsOf(code!)).toEqual([]);
+    expect(code!.includes("var QueryObserver = class")).toBe(true);
+    expect(serverMarkersIn(code!)).toEqual([]);
+  });
+
+  it("negative control: the entry beside bun-common is caught", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "fixtures", "query-server-import.ts"),
+      PEER,
+    );
+    if (code === undefined) {
+      expect(logs.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(serverMarkersIn(code).length).toBeGreaterThan(0);
   });
 });

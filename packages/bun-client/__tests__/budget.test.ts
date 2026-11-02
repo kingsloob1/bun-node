@@ -20,6 +20,15 @@
  * minified, 6.3 KiB gzipped. A Bun splitting build's entry chunk adds Bun's
  * chunk loader (0.7 KiB minified, 0.4 KiB gzipped) to the eager figure:
  * 11.5 KiB and 5.0 KiB.
+ *
+ * Since PR-C5 the `./query` entry has its own budget, {@link QUERY_BUDGET}:
+ * the layer's own code over `@tanstack/query-core` (external, as the app
+ * shares it with its `QueryClient`), the plan's "3 KB over query-core"
+ * (§10.3). Measured 2026-11-02 (the same build): 5.8 KiB minified, 2.4 KiB
+ * gzipped; with query-core inlined (what it brings of it: the observers and
+ * `hashKey`) 17.8 KiB and 6.2 KiB. The `.` entry is byte-identical to
+ * PR-C4's (11,106 bytes minified, 4,690 gzipped): `./query` adds nothing to
+ * it.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -54,6 +63,18 @@ const CHECKS_BUDGET = {
   gzipBytes: 7 * 1024,
 } as const;
 
+/**
+ * Byte limits for the `./query` entry, query-core left out: the plan's 3 KB
+ * gzipped (§10.3), and about 10% above the measured minified figure. The
+ * same rule for raising them.
+ */
+const QUERY_BUDGET = {
+  /** The entry, minified, query-core external, in bytes. */
+  minifiedBytes: 6.5 * 1024,
+  /** The entry gzipped, query-core external, in bytes. */
+  gzipBytes: 3 * 1024,
+} as const;
+
 /** Formats bytes as KiB with one decimal, for failure messages. */
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -83,6 +104,12 @@ const split = await Bun.build({
   target: "browser",
   minify: true,
   splitting: true,
+});
+const query = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "query.ts")],
+  target: "browser",
+  minify: true,
+  external: ["@tanstack/query-core"],
 });
 
 /** An output's minified and gzipped sizes. */
@@ -127,5 +154,18 @@ describe("the bundle budget", () => {
   it(`keeps the checks chunk within ${kib(CHECKS_BUDGET.gzipBytes)} gzipped and ${kib(CHECKS_BUDGET.minifiedBytes)} minified`, async () => {
     const chunk = split.outputs.find((output) => output.kind === "chunk")!;
     expect(verdict(await sizes(chunk), CHECKS_BUDGET)).toBe("within budget");
+  });
+});
+
+describe("the ./query budget", () => {
+  it("builds as one file, query-core left out", () => {
+    expect(query.success).toBe(true);
+    expect(query.outputs.length).toBe(1);
+  });
+
+  it(`keeps ./query within ${kib(QUERY_BUDGET.gzipBytes)} gzipped and ${kib(QUERY_BUDGET.minifiedBytes)} minified over query-core`, async () => {
+    expect(verdict(await sizes(query.outputs[0]), QUERY_BUDGET)).toBe(
+      "within budget",
+    );
   });
 });

@@ -51,7 +51,7 @@ import {
   ValidationError,
 } from "./errors";
 import { buildPath } from "./path";
-import { serializeQuery } from "./query";
+import { serializeQuery } from "./querystring";
 import { backoffDelay, retryAfterMs } from "./retry";
 
 /** {@link RetryConfig} with every default filled in. */

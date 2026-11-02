@@ -13,12 +13,15 @@ browsers: a browser bundle of the entry is 4.6 KiB gzipped, and the checks
 
 This is the core of the typed-client plan
 ([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
-its generator (PR-C2), its watcher (PR-C3) and validation (PR-C4):
-`bun-client generate` writes the route map from the server's OpenAPI
-document ([below](#generating-the-map-bun-client-generate)), with its zod
-schemas beside it on request, and `bun-client watch` keeps both in step with
-a running dev server ([below](#keeping-it-in-step-bun-client-watch)). The
-query layer and the other transports come in later PRs (the plan's §15).
+its generator (PR-C2), its watcher (PR-C3), validation (PR-C4) and the query
+layer (PR-C5): `bun-client generate` writes the route map from the server's
+OpenAPI document ([below](#generating-the-map-bun-client-generate)), with its
+zod schemas beside it on request, `bun-client watch` keeps both in step with
+a running dev server ([below](#keeping-it-in-step-bun-client-watch)), and
+`./query` puts the routes on TanStack's `@tanstack/query-core`, with cache
+tags, `ETag` revalidation and optimistic updates
+([below](#the-query-layer-query)). The framework bindings and the other
+transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -78,14 +81,19 @@ There are three ways to get one:
 
 ### The manifest
 
-Types do not exist at run time, so two facts need a small object beside the
-map: each route's `operationId`, for `api.op`, and its declared statuses, for
-`undeclaredStatus`. The generator writes it beside the map. A hand-written
-one is checked against the map:
+Types do not exist at run time, so a few facts need a small object beside
+the map: each route's `operationId`, for `api.op`, its declared statuses, for
+`undeclaredStatus`, and its cache tags, for the query layer
+([below](#the-query-layer-query)). The generator writes it beside the map. A
+hand-written one is checked against the map:
 
 ```ts
 const manifest = {
-  "GET /users/:id": { operationId: "getUser", statuses: [200, 404] },
+  "GET /users/:id": {
+    operationId: "getUser",
+    statuses: [200, 404],
+    cache: { tags: ["user:{id}"] },
+  },
 } as const satisfies RouteManifest<Routes>;
 
 const api = createClient<Routes>({ manifest });
@@ -268,7 +276,8 @@ export const manifest = {
   one: `Omit<Problem, "code"> & { code: "NOT_FOUND" | "GONE" }`, or the inline
   object's own `code`, member by member for a `oneOf`.
 - **`x-bun-cache`** becomes `cache: { tags; invalidates }`, as literal tuples,
-  for the query layer (PR-C5).
+  in the entry and in the manifest, for the query layer
+  ([below](#the-query-layer-query)).
 - **Server-sent events**: a 2xx served as `text/event-stream` or carrying
   `x-sse-events` reads no body through the HTTP call (`undefined`); the entry
   is marked `stream: "sse"` and its `events` are typed by name, for `sse()`
@@ -634,6 +643,178 @@ export const schemas = schemasFromZod<Routes>({
   itself through `z.lazy`, a cycle through a small hoisted accessor. The file
   is laid out as Prettier lays it out, so `bun fmt` leaves it unchanged.
 
+## The query layer (`/query`)
+
+`@kingsleyweb/bun-client/query` puts the client's routes on
+[`@tanstack/query-core`](https://tanstack.com/query) (an optional peer,
+`^5.90.0`; install it beside the client), and adds what query-core does not
+know: keys from the route, cache tags, `ETag` revalidation, optimistic
+writes and typed pages. Dedupe, stale-while-revalidate, focus and online
+refetches, intervals, gc and retries are query-core's, set on the
+`QueryClient` as usual. The entry is 2.4 KiB gzipped over query-core, and
+the client's own entry does not grow by a byte.
+
+```ts
+import { MutationObserver, QueryClient } from "@tanstack/query-core";
+import { createClient } from "@kingsleyweb/bun-client";
+import { observe, queries } from "@kingsleyweb/bun-client/query";
+import { manifest, type Routes } from "./api.gen";
+
+const api = createClient<Routes>({ baseUrl: "/api", manifest });
+const q = queries(api, { manifest });
+const queryClient = new QueryClient();
+
+const user = q.query("/users/:id", { params: { id: "7" } });
+await queryClient.prefetchQuery(user); // any query-core method takes it
+const cached = queryClient.getQueryData(user.queryKey); // typed by the key
+
+const rename = q.mutation("PATCH /users/:id", {
+  optimistic: {
+    "GET /users/:id": (old, vars) => ({ ...old, name: vars.body.name }),
+  },
+});
+await new MutationObserver(queryClient, rename).mutate({
+  params: { id: "7" },
+  body: { name: "Ada" },
+});
+```
+
+`q.query(path, options)` takes a GET path and the call's options (`params`,
+`query`, `headers`, `body`, and the route settings `timeout`, `retry`,
+`middleware`, `validate`) and returns `{ queryKey, queryFn, meta }`. Spread
+anything of query-core's over it (`{ ...q.query(…), staleTime: 60_000 }`).
+The query function always resolves the success body and rejects with the
+client's error (`HttpError`, `UnexpectedStatusError`, `NetworkError`, …),
+whatever the client's `throwOnError`, because that is how query-core tells
+success from failure. Both retry layers apply, the client's per request and
+query-core's per query: turn one off.
+
+`queries(api, { manifest })` takes the manifest the client was given; it
+holds the routes' declared tags. Without it only the tags the responses send
+apply.
+
+### Keys
+
+`[routeKey, { params, query }]`: `["GET /users/:id", { params: { id: "7" },
+query: {} }]`. Params are written as strings, as the URL holds them, so
+`{ id: 7 }` and `{ id: "7" }` are one query. query-core hashes a key with its
+object keys sorted, so the order of the query's fields does not matter.
+`q.key(routeKey, parts?)` builds one for a filter: `q.key("GET /users/:id")`
+matches every user, `q.key("GET /users/:id", { params: { id: 7 } })` that
+user under any query.
+
+```ts
+queryClient.invalidateQueries({ queryKey: q.key("GET /users/:id") });
+```
+
+An infinite query's key ends in `"infinite"` and leaves its page field out
+of `query`, so it never shares a key with the plain query of the same route.
+
+### Tags
+
+A route's `cache.tags` in the manifest (bun-common's `.describe({ cache: {
+tags: ["user:{id}"] } })`, which the generator carries over from
+`x-bun-cache`) are filled from the call's params into the query's
+`meta.tags`: `["user:7"]`. A template naming a param the call does not have
+is left out. A route's responses can add tags it could not declare: the
+`Cache-Tag` (comma-separated) and `Surrogate-Key` (space-separated) headers,
+which bun-cache's `cacheResponse({ surrogateKeys })` writes from the route's
+`tags` and `addCacheTags()`:
+
+```ts
+// server
+const orgs = cacheResponse(cache, { surrogateKeys: "Surrogate-Key" });
+app.get("/orgs/:id", orgs, async (req, res) => {
+  const org = await loadOrg(req.params.id);
+  addCacheTags(res, `team:${org.team}`); // known only from the data
+  res.json(org);
+});
+
+// client
+await invalidateTags(queryClient, ["team:blue"]); // refetches that team's orgs
+```
+
+`invalidateTags(queryClient, tags, filters?, options?)` (also
+`q.invalidateTags`) invalidates every query carrying one of the tags,
+declared or from its last response, and resolves when the refetches it
+started settle. Matching is exact. `tagsOfQuery(queryClient, query)` lists a
+query's tags. A CDN in front usually strips these headers; then only the
+declared tags apply.
+
+A mutation's `cache.invalidates` (`"PATCH /users/:id"` with `invalidates:
+["user:{id}", "users"]`) is filled from its variables' params and
+invalidated when it succeeds; the mutation settles after those refetches. A
+failed mutation invalidates nothing.
+
+### `ETag` and `304`
+
+When a response carries an `ETag` (bun-common's `res.setEtag()`, or
+bun-cache's `cacheResponse`), the query's next fetch sends it as
+`If-None-Match`, and a `304` keeps the cached data: the same object, so
+nothing downstream sees a change, with `dataUpdatedAt` moved as for a fresh
+answer. An ETag is kept only for the data it came with: writing the query by
+hand (`setQueryData`, an optimistic write) drops it, an optimistic rollback
+puts it back, and a `Cache-Control: no-store` answer keeps none. In a
+browser, the Fetch standard bypasses the HTTP cache for a request that
+carries its own `If-None-Match`, so the page sees the `304` (from the
+standard; the tests here run on Bun's `fetch`, in process and over a socket).
+
+### Optimistic updates
+
+`q.mutation(key, { optimistic })` says, per GET route, how a cached query's
+data changes. Before the request those queries are cancelled and written;
+if it fails, each is put back exactly as it was (the same object, its `ETag`
+included); when it settles, they are invalidated. A writer applies to each
+cached query of its route whose params agree with the mutation's on every
+name both have: `"GET /users/:id"` for `PATCH /users/:id` with `id: 7`
+writes user 7 only, `"GET /users"` (no params) every list. Returning
+`undefined` leaves a query as it is. Infinite queries are not written.
+
+`q.mutation()` returns `{ mutationKey, mutationFn, onMutate, onError,
+onSuccess, onSettled, meta }` for a `MutationObserver` (or a binding's
+`useMutation`). Spreading your own `onSuccess` over it replaces the
+invalidation; pass per-call callbacks to `mutate(vars, { onSuccess })`
+instead, which run as well.
+
+### Infinite queries
+
+```ts
+const list = q.infinite(
+  "/users",
+  { query: { q: "a" } },
+  { pageParam: "page", next: (last) => last.next ?? undefined },
+);
+const pages = observe(queryClient, list);
+await pages.fetchNextPage();
+```
+
+`pageParam` names the query field the page goes in, typed from the route's
+query (that field may be left out of the options); `next` (and `previous`,
+for paging back) returns that field's next value, `undefined` or `null` for
+none. The first page is `initialPageParam`, else the field's value in the
+call's query, else none (the server's first page). A query holds the tags of
+every page it fetched.
+
+### `observe()`
+
+`observe(queryClient, options)` is a framework-free store over query-core's
+`QueryObserver` (an `InfiniteQueryObserver` for `q.infinite()`'s options):
+
+```ts
+const user = observe(queryClient, q.query("/users/:id", { params: { id: "7" } }));
+const stop = user.subscribe(() => render(user.getSnapshot()));
+```
+
+The snapshot has `status`, `data`, `error`, `isFetching`, `isStale` and
+`dataUpdatedAt` (and `hasNextPage`, `hasPreviousPage`, `isFetchingNextPage`
+and `isFetchingPreviousPage` for an infinite query), and stays the same
+object until one of them changes, so `useSyncExternalStore` can read it
+directly. The first subscriber starts the observer (and its fetch, if the
+data is missing or stale); the last one to leave stops it, and the query
+goes inactive. `refetch()`, `setOptions()` and, for an infinite query,
+`fetchNextPage()`/`fetchPreviousPage()` resolve the snapshot after. The
+React binding (`./react`) and live invalidation (`live()`) come in later PRs.
+
 ## The query string
 
 The query is written so that bun-common's parser reads it back unchanged
@@ -656,8 +837,12 @@ because bun-common decodes encoded brackets before it parses.
 package in this repo does. The client has one runtime dependency,
 `@kingsleyweb/bun-contract` (no dependencies of its own), imported only by
 the lazily loaded checks. `./zod` is the zod glue, with `zod` an optional
-peer. The generator is `./codegen` (Bun only) and the `bun-client` bin.
+peer; `./query` is the query layer, with `@tanstack/query-core` an optional
+peer (`^5.90.0`: its query and mutation callbacks read the `QueryClient`
+from their context, which 5.90 has). The generator is `./codegen` (Bun only)
+and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round
 trip, the shared backoff vector, the `RoutesOf` types and the generator's
-parity with them.
+parity with them. bun-cache is a dev dependency too, for the query layer's
+`Surrogate-Key` tests.

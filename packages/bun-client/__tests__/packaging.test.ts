@@ -130,6 +130,14 @@ describe("package.json exports", () => {
     });
   });
 
+  it("publishes the query layer as ./query (plan §10.1, §16)", () => {
+    expect(manifest.exports["./query"]).toEqual({
+      "@kingsleyweb/source": "./lib/query.ts",
+      types: "./dts/query.d.ts",
+      default: "./lib/query.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -158,7 +166,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     ).toBe(true);
   });
 
-  it("declares only optional peers; zod (^4) is needed by the ./zod entries alone", () => {
+  it("declares only optional peers; zod (^4) is needed by the ./zod entries alone, query-core (^5.90) by the ./query ones", () => {
     for (const [name] of Object.entries(manifest.peerDependencies ?? {})) {
       expect({
         name,
@@ -166,12 +174,15 @@ describe("dependencies (plan D17, §10.1)", () => {
       }).toEqual({ name, optional: true });
     }
     expect(manifest.peerDependencies?.zod).toBe("^4");
+    expect(manifest.peerDependencies?.["@tanstack/query-core"]).toBe("^5.90.0");
     for (const entry of checkConfig.entries)
       expect({ spelling: entry.spelling, peers: entry.peers ?? [] }).toEqual({
         spelling: entry.spelling,
         peers: /\/(?:lib\/)?zod(?:\.[jt]s)?$/.test(entry.spelling)
           ? ["zod"]
-          : [],
+          : /\/(?:lib\/)?query(?:\.[jt]s)?$/.test(entry.spelling)
+            ? ["@tanstack/query-core"]
+            : [],
       });
     expect(checkConfig.workspaceDependencies ?? []).toEqual([
       "packages/bun-contract",
@@ -195,7 +206,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("imports in lib/ only its own modules, types from bun-contract and zod, and bun-contract's guards in one place (plan §12.1)", async () => {
+  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, and query-core in ./query alone (plan §12.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -214,6 +225,11 @@ describe("dependencies (plan D17, §10.1)", () => {
           expect(found.type || file === "validation.ts").toBe(true);
           continue;
         }
+        // query-core: the ./query entry alone (its optional peer).
+        if (found.specifier === "@tanstack/query-core") {
+          expect(found.file).toBe("query.ts");
+          continue;
+        }
         // zod: types only, in the ./zod entry alone.
         expect(found).toEqual({
           file: "zod.ts",
@@ -221,6 +237,21 @@ describe("dependencies (plan D17, §10.1)", () => {
           specifier: "zod/v4/core",
         });
       }
+    }
+  });
+
+  it("keeps the query layer out of the core: no lib/ module imports ./query (plan §10.1)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        imports: /from "\.\/query"|import\("\.\/query"\)/.test(source),
+      }).toEqual({
+        file,
+        imports: false,
+      });
     }
   });
 
