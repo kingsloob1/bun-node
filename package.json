@@ -21,7 +21,8 @@
     "packages/bun-jobs",
     "packages/bun-jobs-ui",
     "packages/bun-api-docs-ui",
-    "packages/bun-cache"
+    "packages/bun-cache",
+    "packages/bun-client"
   ],
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",

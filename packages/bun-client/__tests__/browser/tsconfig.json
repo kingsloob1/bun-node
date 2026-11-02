@@ -1,0 +1,13 @@
+{
+  // `lib/` as a browser sees it: the DOM lib and no Bun or Node types, so a
+  // Bun or Node global used in `lib/` fails this check. A project of its own
+  // (the package's `check` script and `scripts/typecheck.ts` run it), kept
+  // outside `lib/` so the published package carries no tsconfig beside its
+  // sources. The tests, which need Bun's types, are `../../tsconfig.json`.
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["../../lib/**/*"]
+}

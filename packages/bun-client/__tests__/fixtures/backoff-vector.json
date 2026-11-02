@@ -1,0 +1,837 @@
+{
+  "$comment": "Shared backoff vector: bun-common's computeBackoff(attempt, { type: \"exponential\", delay: baseMs, factor: 2, max: maxMs, jitter }) with Math.random() fixed at `random`, against bun-client's backoffDelay. Generated once from bun-common; both implementations must reproduce `expected`.",
+  "cases": [
+    {
+      "attempt": 0,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 150
+    },
+    {
+      "attempt": 0,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 225
+    },
+    {
+      "attempt": 0,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 300
+    },
+    {
+      "attempt": 0,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 449.7
+    },
+    {
+      "attempt": 1,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 150
+    },
+    {
+      "attempt": 1,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 225
+    },
+    {
+      "attempt": 1,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 300
+    },
+    {
+      "attempt": 1,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 449.7
+    },
+    {
+      "attempt": 2,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 300
+    },
+    {
+      "attempt": 2,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 450
+    },
+    {
+      "attempt": 2,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 600
+    },
+    {
+      "attempt": 2,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 899.4
+    },
+    {
+      "attempt": 3,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 600
+    },
+    {
+      "attempt": 3,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 900
+    },
+    {
+      "attempt": 3,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 1200
+    },
+    {
+      "attempt": 3,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 1798.8
+    },
+    {
+      "attempt": 4,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 1200
+    },
+    {
+      "attempt": 4,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 1800
+    },
+    {
+      "attempt": 4,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 2400
+    },
+    {
+      "attempt": 4,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 3597.6
+    },
+    {
+      "attempt": 6,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 4800
+    },
+    {
+      "attempt": 6,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 7200
+    },
+    {
+      "attempt": 6,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 9600
+    },
+    {
+      "attempt": 6,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 14390.4
+    },
+    {
+      "attempt": 10,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 5000
+    },
+    {
+      "attempt": 10,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 7500
+    },
+    {
+      "attempt": 10,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 10000
+    },
+    {
+      "attempt": 10,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 14990
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0,
+      "expected": 300
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.25,
+      "expected": 450
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.5,
+      "expected": 600
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0.5,
+      "random": 0.999,
+      "expected": 899.4
+    },
+    {
+      "attempt": 0,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 300
+    },
+    {
+      "attempt": 1,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 300
+    },
+    {
+      "attempt": 2,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 600
+    },
+    {
+      "attempt": 3,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 1200
+    },
+    {
+      "attempt": 4,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 2400
+    },
+    {
+      "attempt": 6,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 9600
+    },
+    {
+      "attempt": 10,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 10000
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 300,
+      "maxMs": 10000,
+      "jitter": 0,
+      "random": 0.5,
+      "expected": 600
+    },
+    {
+      "attempt": 0,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 75
+    },
+    {
+      "attempt": 0,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 87.5
+    },
+    {
+      "attempt": 0,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 100
+    },
+    {
+      "attempt": 0,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 124.95
+    },
+    {
+      "attempt": 1,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 75
+    },
+    {
+      "attempt": 1,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 87.5
+    },
+    {
+      "attempt": 1,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 100
+    },
+    {
+      "attempt": 1,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 124.95
+    },
+    {
+      "attempt": 2,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 150
+    },
+    {
+      "attempt": 2,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 175
+    },
+    {
+      "attempt": 2,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 200
+    },
+    {
+      "attempt": 2,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 249.9
+    },
+    {
+      "attempt": 3,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 300
+    },
+    {
+      "attempt": 3,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 350
+    },
+    {
+      "attempt": 3,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 400
+    },
+    {
+      "attempt": 3,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 499.8
+    },
+    {
+      "attempt": 4,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 600
+    },
+    {
+      "attempt": 4,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 700
+    },
+    {
+      "attempt": 4,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 800
+    },
+    {
+      "attempt": 4,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 999.6
+    },
+    {
+      "attempt": 6,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 750
+    },
+    {
+      "attempt": 6,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 875
+    },
+    {
+      "attempt": 6,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 1000
+    },
+    {
+      "attempt": 6,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 1249.5
+    },
+    {
+      "attempt": 10,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 750
+    },
+    {
+      "attempt": 10,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 875
+    },
+    {
+      "attempt": 10,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 1000
+    },
+    {
+      "attempt": 10,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 1249.5
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0,
+      "expected": 150
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.25,
+      "expected": 175
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.5,
+      "expected": 200
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 100,
+      "maxMs": 1000,
+      "jitter": 0.25,
+      "random": 0.999,
+      "expected": 249.9
+    },
+    {
+      "attempt": 0,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 0,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 0.5
+    },
+    {
+      "attempt": 0,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 1
+    },
+    {
+      "attempt": 0,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 1.998
+    },
+    {
+      "attempt": 1,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 1,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 0.5
+    },
+    {
+      "attempt": 1,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 1
+    },
+    {
+      "attempt": 1,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 1.998
+    },
+    {
+      "attempt": 2,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 2,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 1
+    },
+    {
+      "attempt": 2,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 2
+    },
+    {
+      "attempt": 2,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 3.996
+    },
+    {
+      "attempt": 3,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 3,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 2
+    },
+    {
+      "attempt": 3,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 4
+    },
+    {
+      "attempt": 3,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 7.992
+    },
+    {
+      "attempt": 4,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 4,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 2.5
+    },
+    {
+      "attempt": 4,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 5
+    },
+    {
+      "attempt": 4,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 9.99
+    },
+    {
+      "attempt": 6,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 6,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 2.5
+    },
+    {
+      "attempt": 6,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 5
+    },
+    {
+      "attempt": 6,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 9.99
+    },
+    {
+      "attempt": 10,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 10,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 2.5
+    },
+    {
+      "attempt": 10,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 5
+    },
+    {
+      "attempt": 10,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 9.99
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0,
+      "expected": 0
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.25,
+      "expected": 1
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.5,
+      "expected": 2
+    },
+    {
+      "attempt": 2.7,
+      "baseMs": 1,
+      "maxMs": 5,
+      "jitter": 1,
+      "random": 0.999,
+      "expected": 3.996
+    }
+  ]
+}

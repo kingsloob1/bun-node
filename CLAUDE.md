@@ -36,6 +36,9 @@ published packages under `packages/`:
   `docsRouter`'s `"self-hosted"` viewer (bun-common, optional peer) serves
   its bundle. Its `check` is `bun check && bun check -p app`; only the
   DOM-free root project is in `scripts/typecheck.ts`.
+- **`@kingsleyweb/bun-client`** — the typed-client plan's HTTP client
+  (PR-C1): `createClient` over a `"VERB /path"` route map; no runtime
+  dependency, browser-safe.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
 typecheck (`bun run check`), and `bun lint` plus `bun fmt --check` against
