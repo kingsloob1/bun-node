@@ -38,6 +38,7 @@ import {
   danglingRefs,
   generateAsyncApi,
   generateOpenApi,
+  typesHash,
   liftComponents,
   openApiSecurity,
   registerJsonSchemaConverter,
@@ -257,6 +258,15 @@ const _public: RouteDoc = { security: [] };
 const _extensions: RouteDoc = { extensions: { "x-audience": "partners" } };
 // @ts-expect-error an extension key must start with x-
 const _badExtension: RouteDoc = { extensions: { audience: "partners" } };
+/* typed-client PR-M1: `errors` and `cache`, the typed forms of two x-bun-* extensions. */
+const _errorsCache: RouteDoc = {
+  errors: ["NOT_FOUND", "CONFLICT"],
+  cache: { tags: ["user:{id}"], invalidates: ["users"] },
+};
+// @ts-expect-error an error code is a string
+const _badErrors: RouteDoc = { errors: [404] };
+// @ts-expect-error cache takes `tags` and `invalidates`, nothing else
+const _badCache: RouteDoc = { cache: { tag: ["users"] } };
 
 /* generateOpenApi's shape. */
 const openApiResult: OpenApiResult = generateOpenApi(describedRouter, {
@@ -302,6 +312,11 @@ type _securitySchemes = Expect<
   >
 >;
 
+/* typesHash takes either document, and answers a string. */
+const _typesHash: string = typesHash({ openapi: { openapi: "3.1.2" } });
+// @ts-expect-error a document is an object, not a string
+typesHash({ asyncapi: "3.0.0" });
+
 export const _usesA = [
   chained,
   validatedRouter,
@@ -313,6 +328,10 @@ export const _usesA = [
   _public,
   _extensions,
   _badExtension,
+  _errorsCache,
+  _badErrors,
+  _badCache,
+  _typesHash,
   openApiResult,
   _document,
   _warnings,

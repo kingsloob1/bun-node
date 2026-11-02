@@ -461,6 +461,32 @@ keyed `"VERB /full/path"`, each entry answering `params`, `query`, `body` and
 the default and the generated documents read a registry's routes like any
 others, with their operations already named and no annotation needed.
 
+Those four fields are the **server's** view: what the handler reads after
+validation. Each entry also carries the two views a client needs:
+
+```ts
+type Api = RoutesOf<typeof users>;
+type Send = Api["GET /users/:id"]["send"];       // { params; query; headers; body }
+type Receive = Api["GET /users/:id"]["receive"]; // { 200: …; 404: … }
+```
+
+- **`send`** is what a sender is held to: each part's wire input
+  (`WireInput`): a field's input type, or its output where a coercion's input
+  is `unknown`; a defaulted key optional. With
+  `query: z.object({ page: z.coerce.number(), q: z.string().default("") })`
+  the sender's query is `{ page: number; q?: string }`, where the handler
+  reads `{ page: number; q: string }`, and `{ page: "x" }` does not compile.
+  A `transform` sends its input. A part with no schema is the path's captures
+  (`params`), `Record<never, never>` (`query`, `headers`) or `undefined`
+  (`body`); cookies are not part of it (the browser sends them).
+- **`receive`** is what a receiver gets, per declared status: a JSON body is
+  `Jsonify` of what the handler sends (the schema's wire input: a `Date`
+  arrives as a `string`), or of the schema's **output** when the validator sets
+  `responseOutput: "parsed"`; a text body its wire value; a status declared
+  `null` is `undefined`; a byte body, `opaque()`, `chunks()` and `sse()` are
+  `unknown`; nothing declared is `{ 200: unknown }`. Only the validator's own
+  `responseOutput` reaches the types: a router-wide one does not.
+
 Example:
 [`define-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/define-routes.ts).
 
@@ -2425,6 +2451,62 @@ claim warns and disambiguates; two calls on one input deep-equal.
 `documented(json)` and `toStandardSchema(fn, { jsonSchema })` — the escape
 hatches for a part known only as JSON Schema — convert with no registration
 at all, since both publish the document as `~standard.jsonSchema`.
+
+#### The documents as a typed client's model: `x-bun-*` and `typesHash()`
+
+A typed client reads the two documents, so `generateOpenApi` writes three
+extensions a client needs beside the standard fields:
+
+| Extension | On | Value | From |
+|---|---|---|---|
+| `x-bun-route-key` | every operation | `"GET /users/:id"` | the route's `listRoutes()` key: the Express-syntax path, which OpenAPI's `{id}` template loses (`:id?`, `:id(\d+)`) |
+| `x-bun-errors` | an operation that declares it | `["NOT_FOUND", "CONFLICT"]` | `.describe({ errors })`, in order |
+| `x-bun-cache` | an operation that declares it | `{ "tags": ["user:{id}"], "invalidates": ["users"] }` | `.describe({ cache })`, the fields given |
+
+```ts
+app
+  .get("/users/:id", validate({ params: IdParams }, { responses: { 200: User } }), handler)
+  .describe({ errors: ["NOT_FOUND"], cache: { tags: ["user:{id}"] } });
+app
+  .patch("/users/:id", validate({ params: IdParams, body: UserPatch }), patchHandler)
+  .describe({ cache: { invalidates: ["user:{id}", "users"] } });
+```
+
+- **The key is the listing's.** It survives a mount (every mount of a
+  sub-router gets its own key), a `defineRoutes` registry and a NestJS
+  controller (whose `@Validate` contract reaches the listing through reflect
+  metadata), and an optional parameter's two documented paths carry one key.
+  It is the generator's own: a `.describe({ extensions })` value for it is
+  replaced (with a warning when it differs).
+- **`errors` and `cache` are documentation**: they reach the documents, never
+  the handler's types or bun-cache's runtime. A cache template names the
+  route's own params in braces; a name the path lacks is emitted as written,
+  with a warning. Both win over a hand-written `extensions["x-bun-errors"]` or
+  `["x-bun-cache"]` (with a warning when the two differ); a hand-written one
+  alone passes through as every extension does. `errors: []` and `cache: {}`
+  are emitted as given; with neither declared, the operation has no such
+  extension. A document from elsewhere, with no `x-bun-*`, still describes its
+  API: a client derives keys from its paths and has no code unions or tags.
+
+`typesHash({ openapi, asyncapi })`, also from
+`@kingsleyweb/bun-common/lib/docs`, is the change detector a client's tooling
+compares:
+
+```ts
+import { generateAsyncApi, generateOpenApi, typesHash } from "@kingsleyweb/bun-common/lib/docs";
+
+const hash = typesHash({
+  openapi: generateOpenApi(app, { title: "API", version: "1" }).document,
+  asyncapi: generateAsyncApi(app, { title: "API", version: "1" }).document,
+}); // 16 lowercase hex characters
+```
+
+It is SHA-256 over the canonical JSON of `{ asyncapi, openapi }` (every
+object's keys sorted, at every depth; arrays in order; an absent document left
+out), as the first 16 lowercase hex characters. The same documents hash the
+same in any process, whatever order their keys were built in. **Every** change
+to the documents changes it, including prose (a `summary`, a `description`):
+the documents are hashed whole. Either document may be absent.
 
 #### Serving and viewing the documents: `docsRouter()`
 

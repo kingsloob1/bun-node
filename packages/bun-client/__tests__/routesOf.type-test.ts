@@ -4,10 +4,10 @@
  * as it is. And the receiver/sender views PR-M1 adds to `RoutesOf` (§8.5),
  * read in preference when present.
  *
- * Today's `RoutesOf` carries the validator's **parsed** shapes for params,
- * query and body (the gap §2.2 names, which PR-M1's `send` view closes), and
- * each response as a handler spec whose `json` is the wire body. Case 4
- * pins the gap, so the change PR-M1 makes is visible here.
+ * `RoutesOf` carries the validator's **parsed** shapes for params, query and
+ * body, and each response as a handler spec whose `json` is the wire body;
+ * since PR-M1 each entry also carries the `send` and `receive` views, which
+ * the client reads instead. Case 4 shows the gap §2.2 named, now closed.
  *
  * Each `@ts-expect-error` is a negative control. Checked by `bun run check`.
  */
@@ -72,12 +72,13 @@ async function inferred() {
   // @ts-expect-error -- wrong body
   void api.post("/users/", { body: { name: 1 } });
 
-  // 4. The parsed-shape gap (§2.2), pinned until PR-M1's `send` view: the
-  // defaulted `page` reads as required and as the coerced number, where the
-  // wire wants it optional and a string would do.
-  // @ts-expect-error -- today's RoutesOf: a defaulted query key is required
+  // 4. The parsed-shape gap (§2.2), closed by PR-M1's `send` view: the
+  // defaulted `page` is optional for the sender, and its wire type is the
+  // coercion's output (a number), so a string is still refused.
   void api.get("/users/:id", { params: { id: "1" }, query: {} });
   void api.get("/users/:id", { params: { id: "1" }, query: { page: 2 } });
+  // @ts-expect-error -- the send view: `page` is a number on the wire, not a string
+  void api.get("/users/:id", { params: { id: "1" }, query: { page: "x" } });
 }
 
 // 5. The PR-M1 views, when an entry has them, win over the parsed fields.

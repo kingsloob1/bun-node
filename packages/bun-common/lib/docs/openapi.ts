@@ -19,7 +19,10 @@
  *   over `.describe({ responses })` on a disagreement (Decision 4), variant
  *   statuses emitted with `oneOf` bodies and an `x-variants` table (plan
  *   §4.12 of bun-validate);
- * - its prose, from `.describe()`.
+ * - its prose, from `.describe()`;
+ * - the typed client's extensions (typed-client plan §3.0, §8.2):
+ *   `x-bun-route-key` on every operation (the listing's key), `x-bun-errors`
+ *   from `.describe({ errors })` and `x-bun-cache` from `.describe({ cache })`.
  *
  * Nothing here throws for a documentation problem in lenient mode (the
  * default): it records a {@link DocWarning} and emits what it knows. `strict:
@@ -1107,6 +1110,10 @@ export function generateOpenApi(
     const direction: SchemaDirection =
       route.responseOutput === "parsed" ? "output" : "input";
 
+    /* The typed client's extensions (typed-client plan §3.0, §8.2), once per
+     * route: an optional param's two templates carry the same ones. */
+    const bunExtensions = bunExtensionsFor(route, doc, warn);
+
     for (const template of pathResult.templates) {
       const method = route.method.toLowerCase();
       const item = (paths[template.path] ??= {});
@@ -1300,6 +1307,7 @@ export function generateOpenApi(
           ? {}
           : { security: doc.security.map((r) => ({ ...r })) }),
         ...(doc?.extensions === undefined ? {} : { ...doc.extensions }),
+        ...bunExtensions,
       };
     }
   }
@@ -1384,6 +1392,110 @@ export function generateOpenApi(
     );
   }
   return { document, warnings };
+}
+
+/** The extension carrying the route's key (typed-client plan §3.0). */
+const ROUTE_KEY_EXTENSION = "x-bun-route-key";
+/** The extension carrying `.describe({ errors })` (typed-client plan §4.3). */
+const ERRORS_EXTENSION = "x-bun-errors";
+/** The extension carrying `.describe({ cache })` (typed-client plan §6.4). */
+const CACHE_EXTENSION = "x-bun-cache";
+
+/**
+ * The operation's `x-bun-*` extensions (typed-client plan §3.0, §8.2), which
+ * a typed client reads beside the standard fields:
+ *
+ * - `x-bun-route-key`, always: the listing's key (`"GET /users/:id"`), the
+ *   Express-syntax path a client's route map is keyed by. It is the
+ *   generator's own: a `.describe({ extensions })` value for it is dropped,
+ *   with a warning when it differs.
+ * - `x-bun-errors`, from `.describe({ errors })`: the error codes, in order.
+ * - `x-bun-cache`, from `.describe({ cache })`: `{ tags?, invalidates? }`,
+ *   each template checked against the route's own params.
+ *
+ * The typed fields win over a hand-written extension of the same name, with
+ * a warning when the two differ; a hand-written one alone passes through
+ * verbatim, as every extension does.
+ */
+function bunExtensionsFor(
+  route: ListedRoute,
+  doc: RouteDoc | undefined,
+  warn: Warn,
+): Record<string, unknown> {
+  const given: Readonly<Record<string, unknown>> = doc?.extensions ?? {};
+  const out: Record<string, unknown> = {};
+
+  /** Warns when a hand-written extension disagrees with the generated value. */
+  const agree = (name: string, value: unknown, source: string): void => {
+    if (
+      Object.hasOwn(given, name) &&
+      canonicalJson(given[name]) !== canonicalJson(value)
+    ) {
+      warn(
+        "operation",
+        `.describe() extensions set "${name}", which ${source} also sets; ${source} wins`,
+        route.key,
+      );
+    }
+  };
+
+  agree(ROUTE_KEY_EXTENSION, route.key, "the generator");
+  out[ROUTE_KEY_EXTENSION] = route.key;
+
+  /** A declared list, its non-strings dropped with a warning. */
+  const strings = (list: unknown, field: string): string[] => {
+    if (!Array.isArray(list)) {
+      warn(
+        "operation",
+        `.describe() ${field} is not an array of strings; emitted []`,
+        route.key,
+      );
+      return [];
+    }
+    const kept: string[] = [];
+    for (const item of list as unknown[]) {
+      if (typeof item === "string") {
+        kept.push(item);
+      } else {
+        warn(
+          "operation",
+          `.describe() ${field} holds a non-string (${typeof item}); dropped`,
+          route.key,
+        );
+      }
+    }
+    return kept;
+  };
+
+  if (doc?.errors !== undefined) {
+    const errors = strings(doc.errors, "errors");
+    agree(ERRORS_EXTENSION, errors, ".describe({ errors })");
+    out[ERRORS_EXTENSION] = errors;
+  }
+
+  if (doc?.cache !== undefined) {
+    const cache: Record<string, string[]> = {};
+    for (const field of ["tags", "invalidates"] as const) {
+      const list = doc.cache[field];
+      if (list === undefined) continue;
+      const templates = strings(list, `cache.${field}`);
+      for (const template of templates) {
+        for (const match of template.matchAll(/\{([^{}]*)\}/g)) {
+          if (!route.params.includes(match[1])) {
+            warn(
+              "operation",
+              `.describe() cache.${field} template "${template}" names {${match[1]}}, which is not a param of the path; emitted as written`,
+              route.key,
+            );
+          }
+        }
+      }
+      cache[field] = templates;
+    }
+    agree(CACHE_EXTENSION, cache, ".describe({ cache })");
+    out[CACHE_EXTENSION] = cache;
+  }
+  return out;
 }
 
 /** What {@link buildResponses} takes along, to keep its signature readable. */
