@@ -249,5 +249,9 @@ export const manifest = {
   "GET /pets": { operationId: "listPets", statuses: [200] },
   "POST /pets": { statuses: [201, 409, 422] },
   "GET /streams/:id/events": { statuses: [200, 401] },
-  "GET /trees/:id": { operationId: "getTree", statuses: [200, 404] },
+  "GET /trees/:id": {
+    operationId: "getTree",
+    statuses: [200, 404],
+    cache: { tags: ["tree:{id}", "trees"] },
+  },
 } as const satisfies RouteManifest<Routes>;

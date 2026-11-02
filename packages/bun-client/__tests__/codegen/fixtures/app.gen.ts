@@ -175,8 +175,16 @@ export const manifest = {
   "GET /api/categories": { operationId: "listCategories", statuses: [200] },
   "GET /api/health": { operationId: "health" },
   "POST /api/shapes": { operationId: "draw", statuses: [200] },
-  "POST /api/users": { operationId: "createUser", statuses: [201, 409] },
-  "GET /api/users/:id": { operationId: "getUser", statuses: [200, 404] },
+  "POST /api/users": {
+    operationId: "createUser",
+    statuses: [201, 409],
+    cache: { invalidates: ["users"] },
+  },
+  "GET /api/users/:id": {
+    operationId: "getUser",
+    statuses: [200, 404],
+    cache: { tags: ["user:{id}"] },
+  },
   "DELETE /api/users/:id": { operationId: "deleteUser", statuses: [204] },
   "GET /api/users/:id/events": { operationId: "userEvents", statuses: [200] },
 } as const satisfies RouteManifest<Routes>;

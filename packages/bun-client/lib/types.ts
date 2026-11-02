@@ -404,6 +404,19 @@ export type RouteManifest<R> = {
     readonly operationId?: OperationIdOf<R[K]>;
     /** Every status the route declares. */
     readonly statuses?: readonly StatusOf<R[K]>[];
+    /**
+     * The route's cache tags (`x-bun-cache`, bun-common's
+     * `.describe({ cache })`), read by the query layer (`./query`, §6.4):
+     * `tags` its queries are filed under, `invalidates` what a successful
+     * call invalidates. A template names the route's path params in braces
+     * (`"user:{id}"`). The core client ignores it. Default: none.
+     */
+    readonly cache?: {
+      /** Tags the route's response carries (templates). Default: none. */
+      readonly tags?: readonly string[];
+      /** Tags a successful call invalidates (templates). Default: none. */
+      readonly invalidates?: readonly string[];
+    };
   };
 };
 
