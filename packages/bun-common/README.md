@@ -57,6 +57,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [The route model](#the-route-model-listroutes)
     - [Converting a schema to JSON Schema](#converting-a-schema-to-json-schema-tojsonschema)
     - [Serving and viewing the documents](#serving-and-viewing-the-documents-docsrouter)
+    - [Dev type sync](#dev-type-sync-devtypes)
   - [CORS](#cors)
   - [Static files](#static-files)
   - [Response compression](#response-compression)
@@ -2574,6 +2575,104 @@ app.use(
   router leaves them out. The pages point at their document resolved per
   request from `req.baseUrl`, so the router works under any mount without
   knowing where it is.
+
+#### Dev type sync: `devTypes()`
+
+`devTypes(app, options)` — from `@kingsleyweb/bun-common/lib/docs` — serves a
+running app's documents to a typed client's watcher **in development**, and
+announces each change over a WebSocket, so the client's generated types follow
+the server as you edit it:
+
+```ts
+import { devTypes } from "@kingsleyweb/bun-common/lib/docs";
+
+app.use(
+  devTypes(app, {
+    enabled: process.env.NODE_ENV !== "production",
+    openapi: { title: "API", version: "1" }, // generateOpenApi's options; title and version optional
+  }),
+);
+await app.listen(3000); // writes node_modules/.cache/bun-types/3000.json
+```
+
+| Under `path` (default `/__bun/types`) | Answers |
+|---|---|
+| `GET <path>` | `200` with `{ hash, openapi, asyncapi }`, `ETag: "<hash>"`, `Cache-Control: no-store`; `304` on a matching `If-None-Match` |
+| `GET <path>/openapi.json`, `GET <path>/asyncapi.json` | each document alone, same `ETag`, for third-party tools |
+| `<path>/ws` | a WebSocket channel (subprotocol `bun-types.v1`, which the client must offer): `hello { version, hash }` on connect and in answer to `ping`; `changed { hash, at }` whenever the hash moves. It carries hashes, never documents |
+
+The documents are exactly `generateOpenApi(app, …)`'s and
+`generateAsyncApi(app, …)`'s, and the hash is `typesHash()`'s. `openapi` and
+`asyncapi` take the generators' options (`title` defaults to `"API"`,
+`version` to `"dev"`) or a function returning the document, which is how
+another source plugs in (bun-nest:
+`() => gatewayAsyncApi(app)`). The endpoint's own routes and channel are
+hidden from both documents.
+
+**The security model: fail closed.** This endpoint describes your whole API,
+so it is built to be absent unless every condition holds:
+
+- **Off unless `enabled` is exactly `true`.** Anything else returns an empty
+  router and registers nothing — there is no implicit on.
+- **Never in production.** `enabled: true` under `NODE_ENV=production`
+  throws a `ConfigError` at startup; `NODE_ENV` is also read on every
+  request, so a process that switches to production refuses from then on.
+- **Loopback peers only**: `127.0.0.0/8`, `::1`, `::ffff:127.x.x.x`, unless
+  `allowRemote: true`. A request with no peer address — a socket-free
+  `fetch()`, a unix socket — is in-process or local by construction and counts
+  as loopback.
+- **A bearer token on every request**: `Authorization: Bearer <token>`, or on
+  the channel a `token.<token>` subprotocol offered beside `bun-types.v1` (a
+  browser cannot set headers on a WebSocket; the server answers
+  `bun-types.v1`, never the token). Compared in constant time. The token is
+  random per process (32 bytes, base64url) unless `token` gives one (at least
+  16 characters of `A–Z a–z 0–9 . _ ~ -`). `allowRemote` never waives it.
+- **A refusal is indistinguishable from a path nothing serves.** No token, a
+  wrong one, a remote peer, production, a channel upgrade without the
+  subprotocol: the request leaves the router and gets the app's own not-found
+  answer (`404`, or whatever its not-found handler sends). Nothing in it names
+  the endpoint, and no `ETag` is sent.
+- **The token file** is how a watcher on the same machine finds the server:
+  `node_modules/.cache/bun-types/<port>.json` under the working directory
+  (`tokenFile` moves it; `<port>` is replaced; `false` writes none), holding
+  `{ url, ws, token, pid }`. It is written atomically (a temporary file
+  renamed over it), mode `0600`, in a directory created `0700`, when the
+  server listens, and removed when it closes and at process exit — only while
+  it still holds this server's token. A process killed by a signal leaves it
+  behind; the next server on the port replaces it, and a watcher can tell a
+  stale one by its `pid`.
+
+`docsRouter`'s public documents are a separate, production feature with your
+own `authorize`; the dev endpoint never replaces them.
+
+- **Lazy.** Nothing is generated until an authorized `GET` or a connected
+  watcher asks. The build is then cached until the routes change:
+  `BunRouter.routesVersion` and `BunWebSocket.routesVersion` are counters
+  bumped by every route registered (a mount included), every `.describe()`,
+  and every socket route added, removed or described. While a watcher is
+  connected they are polled every 100 ms, so a route registered at run time is
+  announced; with none connected nothing runs.
+- **Mount it at the root.** The channel is registered on `app` itself (a
+  socket route belongs to the socket's router), and the token file names
+  `path`. `app` needs a `BunWebSocket` for the channel (a `BunHttpAdapter`
+  always has one); without one only the HTTP endpoints are served, with a
+  warning.
+- **The server.** On a `BunHttpAdapter` the token file follows its
+  `listening` and `close` events. For a bare router behind your own
+  `Bun.serve()`, or another adapter (bun-nest's), call
+  `dev.listening(server)` once it listens and `dev.close()` when it stops;
+  `dev.token` is the token, `dev.tokenFile` the file written. `close()` also
+  closes the watchers' sockets (`1001`). A wildcard listener (`0.0.0.0`,
+  `::`) is written as `127.0.0.1`.
+- **`bun --hot`.** The token, the watchers and the last hash announced live on
+  `globalThis`, keyed by `path`: a re-evaluated module's `devTypes()` takes
+  over, rebuilds, and announces its hash on the sockets already open. So there
+  is one dev sync per `path` per process. The takeover needs a server that
+  survives the re-evaluation (a `Bun.serve()` kept on `globalThis` and
+  `server.reload()`ed); a `BunHttpAdapter` whose module calls `listen()` again
+  under `--hot` fails with `EADDRINUSE` (measured on Bun 1.4.4-canary), so run
+  an adapter app with `bun --watch`, where the restarted server writes a fresh
+  token file and the watcher reconnects.
 
 ### CORS
 
