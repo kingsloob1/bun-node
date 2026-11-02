@@ -47,6 +47,7 @@ import {
   azureRawDump,
   azureReachError,
   deleteAzurePrefix,
+  HOOK_TIMEOUT_MS,
 } from "./backends";
 import { reportNotConfigured, reportUnreachable } from "./sqlSuite";
 
@@ -779,6 +780,8 @@ function keylessUrl(server: string, query = ""): string {
 }
 
 let restoreFetch: (() => void) | undefined;
+// Azurite deletes ~100-150 blobs in 2-4 s alone and several times that under a
+// full-suite run; bun:test's default hook bound (5 s) timed out unnamed.
 afterAll(async () => {
   try {
     for (const [server, prefixes] of created) {
@@ -789,7 +792,7 @@ afterAll(async () => {
   } finally {
     restoreFetch?.();
   }
-});
+}, HOOK_TIMEOUT_MS);
 
 if (azure.url === undefined) {
   reportNotConfigured("azure (SAS)", azure.variable);

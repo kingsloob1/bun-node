@@ -346,6 +346,9 @@ export async function azureReachError(url: string): Promise<Error | undefined> {
   }
 }
 
+/** The bound, in ms, for a hook that deletes Azure blobs: bun:test's default (5 s) is too tight under load. */
+export const HOOK_TIMEOUT_MS = 30_000;
+
 /**
  * Deletes every blob under one of this run's Azure prefixes (`<prefix>/…`).
  * The prefix carries the run's pid and a timestamp, so the listing it walks
