@@ -106,6 +106,8 @@ describe("the lib/docs import graph (plan risk 1f)", () => {
       "lib/docs/channelDoc.ts",
       "lib/docs/convert.ts",
       "lib/docs/converters.ts",
+      // typed-client PR-M2: the dev type sync.
+      "lib/docs/devTypes.ts",
       // typed-client PR-M1: typesHash (imports nothing).
       "lib/docs/hash.ts",
       "lib/docs/index.ts",

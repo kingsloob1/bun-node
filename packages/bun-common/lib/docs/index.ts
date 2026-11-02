@@ -13,7 +13,8 @@
  * ones (`./viewer`), and `"self-hosted"` (`./selfHosted`) — the
  * `@kingsleyweb/bun-api-docs-ui` bundle served from this origin, an optional
  * peer. {@link typesHash} hashes the documents for a typed client's change
- * detection (typed-client plan §3.0). The browser-safe document types are the
+ * detection (typed-client plan §3.0), and {@link devTypes} serves them, with
+ * that hash, to a typed client's watcher in development (§3.3, PR-M2). The browser-safe document types are the
  * `./types` entry (plan risk 10) — this index pulls the router in, so it is
  * server-side.
  *
@@ -62,6 +63,11 @@ export {
 } from "./security";
 export type { RouteDoc, RouteResponseDoc } from "./routeDoc";
 export { typesHash } from "./hash";
+export {
+  devTypes,
+  type DevTypesOptions,
+  type DevTypesRouter,
+} from "./devTypes";
 export {
   type DocWarning,
   generateOpenApi,

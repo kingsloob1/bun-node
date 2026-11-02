@@ -1020,7 +1020,14 @@ export function generateAsyncApi(
       table[route.routeIndex] as { callbacks?: unknown[] } | undefined
     )?.callbacks?.at(-1);
     const doc = routeDocFor(terminal);
-    if (doc?.hidden === true) continue;
+    if (doc?.hidden === true) {
+      // A hidden channel stays hidden: its path counts as covered, so the
+      // bare-route listing below does not document it as a stub instead.
+      if (route.contract?.transport === "websocket") {
+        coveredPaths.add(route.path);
+      }
+      continue;
+    }
 
     if (
       route.contract !== undefined &&

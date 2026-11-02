@@ -1298,6 +1298,26 @@ export class BunRouter<
    */
   #hostScoped = false;
 
+  /** Backs {@link routesVersion}: bumped on every change to the route table or a route's docs. */
+  #routesVersion = 0;
+
+  /**
+   * A counter bumped whenever this router's route table changes — a route
+   * registered (a verb, `use()`, a flattened sub-router mount, a `ws()`
+   * route's middleware chain), a `ws()` chain revived with new middleware —
+   * or a route is `.describe()`d. It only grows, starting at `0`.
+   *
+   * A cheap change detector for whatever derives from the routes: the dev
+   * type sync (`devTypes()`, `./lib/docs`) rebuilds its documents only when it
+   * moved. A sub-router's later changes are not this router's (a mount
+   * copies the sub-router's routes at the time of the `use()`), and a
+   * `BunWebSocket`'s socket routes have its own counter
+   * (`BunWebSocket.routesVersion`).
+   */
+  get routesVersion(): number {
+    return this.#routesVersion;
+  }
+
   /**
    * Whether this router, or any route registered on it, opted in to an
    * undecodable body (`acceptUndecodableBody`): while `false`,
@@ -1729,6 +1749,7 @@ export class BunRouter<
       this.routeCacheLayers.clear();
     }
     this.#routeTree.invalidate();
+    this.#routesVersion++;
     return this;
   }
 
@@ -2173,6 +2194,7 @@ export class BunRouter<
         ...middleware,
       );
       this.clearRouteCache();
+      this.#routesVersion++;
       return;
     }
 
@@ -5682,6 +5704,8 @@ export class BunRouter<
       );
     }
     attachRouteDoc(terminal, doc);
+    // The documents changed even though the table did not.
+    this.#routesVersion++;
     return this;
   }
 

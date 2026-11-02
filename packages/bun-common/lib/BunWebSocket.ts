@@ -502,6 +502,21 @@ export class BunWebSocket<
    */
   private _upgradeRoutes = new Map<string, WebSocketUpgradeRoute<TCustom>>();
 
+  /** Backs {@link routesVersion}. */
+  #routesVersion = 0;
+
+  /**
+   * A counter bumped whenever this instance's socket routes change — a
+   * handler added ({@link setRouteHandler}, so `router.ws()`) or removed
+   * ({@link removeRouteHandler}), or a channel documented
+   * ({@link describeChannel}). It only grows, starting at `0`. The
+   * counterpart of `BunRouter.routesVersion` for what {@link wsRoutes}
+   * lists: the dev type sync (`devTypes()`) watches both.
+   */
+  get routesVersion(): number {
+    return this.#routesVersion;
+  }
+
   /**
    * The instance-wide upgrade hook — `onUpgrade`, else the deprecated
    * `customDataToWsClientFn` adapted to one — used when a route has none.
@@ -1069,6 +1084,7 @@ export class BunWebSocket<
 
       if (!handlersArr.includes(handler)) {
         handlersArr.push(handler);
+        this.#routesVersion++;
       }
 
       this._routeHandlers.set(path, handlersArr);
@@ -1276,6 +1292,7 @@ export class BunWebSocket<
       );
     }
     attachChannelDoc(this, path, doc);
+    this.#routesVersion++;
     return this;
   }
 
@@ -1310,6 +1327,7 @@ export class BunWebSocket<
 
     if (handler === undefined) {
       this._routeHandlers.delete(path);
+      this.#routesVersion++;
       return true;
     }
 
@@ -1319,6 +1337,7 @@ export class BunWebSocket<
     if (remaining.length === handlersArr.length) {
       return false;
     }
+    this.#routesVersion++;
 
     if (remaining.length === 0) {
       this._routeHandlers.delete(path);
