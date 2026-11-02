@@ -829,7 +829,10 @@ export class BunValidate<
    * as a phantom type, so a verb method registering it can narrow the
    * following handler's `req` without the caller restating anything.
    */
-  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
+  public middleware(): SchemaCarrying<
+    ValidatedShapeFor<S, H, R, RS>,
+    DeclaredSchemas<S, RS, ResponseOutputMode | undefined>
+  > {
     const responses = this.#responses;
     const own = this.#options.responseValidation;
     const ownOutput = this.#options.responseOutput;
@@ -889,7 +892,10 @@ export class BunValidate<
    */
   #handler(
     gate: ResponseContractGate | undefined,
-  ): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
+  ): SchemaCarrying<
+    ValidatedShapeFor<S, H, R, RS>,
+    DeclaredSchemas<S, RS, ResponseOutputMode | undefined>
+  > {
     const { onFailure, status, abortEarly, replace, formatError } =
       this.#options;
     // The wrapped view: a DTO class reached the handler as its `fromDto`
@@ -1023,19 +1029,51 @@ export class BunValidate<
     return handler;
   }
 
-  /** Shorthand for `new BunValidate(options).middleware()`. */
+  /**
+   * Shorthand for `new BunValidate(options).middleware()`, which also records
+   * a literal `responseOutput` in the result's type (the receiver view of
+   * `RoutesOf`, typed-client plan §8.5).
+   */
   public static middleware<
     S extends ValidationSchemas,
     H extends ValidationHooks<S> = ValidationHooks<S>,
     R extends boolean = true,
     const RS extends ResponseSchemas<InferValidatedShape<S>> | undefined =
       undefined,
+    const O extends ResponseOutputMode | undefined = undefined,
   >(
-    options: BunValidateOptions<S, H, R, RS>,
-  ): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
-    return new BunValidate<S, H, R, RS>(options).middleware();
+    options: BunValidateOptions<S, H, R, RS> & {
+      /** As {@link BunValidateOptions.responseOutput}; its literal is kept in the type. */
+      responseOutput?: O;
+    },
+  ): SchemaCarrying<ValidatedShapeFor<S, H, R, RS>, DeclaredSchemas<S, RS, O>> {
+    // The instance types `responseOutput` as the whole union; this narrows
+    // the phantom to the literal the caller passed (types only).
+    return new BunValidate<S, H, R, RS>(options).middleware() as SchemaCarrying<
+      ValidatedShapeFor<S, H, R, RS>,
+      DeclaredSchemas<S, RS, O>
+    >;
   }
 }
+
+/**
+ * What a validator's `__schemas` phantom carries (typed-client plan §8.5):
+ * the schemas it was given, its declared responses and its own
+ * `responseOutput`, so `RoutesOf` can derive the **sender's** view (each
+ * part's wire input) beside the handler's parsed view in `__shape`.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- an alias, not an interface: declaration emit expands an alias's literal where it cannot name it (a consumer's `export const api = defineRoutes(…)`), and refuses an unexported interface (TS4023)
+type DeclaredSchemas<S, RS, O> = {
+  /** The request schemas, by target, as passed to `validate()`. */
+  readonly request: S;
+  /** The declared `responses`, as passed; `undefined` when none were. */
+  readonly responses: RS;
+  /**
+   * The validator's own `responseOutput` literal; `undefined` when it set
+   * none, and the whole union when only `BunValidate`'s instance knows it.
+   */
+  readonly responseOutput: O;
+};
 
 /**
  * A router handler that additionally advertises which request members it
@@ -1049,6 +1087,23 @@ export interface ValidatorMiddleware<TShape> extends RouterHandler {
   readonly __shape?: TShape;
 }
 
+/**
+ * What `validate()` returns: a {@link ValidatorMiddleware} that also carries
+ * its schemas in a `__schemas` phantom (typed-client plan §8.5), which
+ * `RoutesOf` reads for the sender's and receiver's views. An intersection
+ * rather than a member of `ValidatorMiddleware`, so the verb overloads'
+ * validator slot — typed `ValidatorMiddleware<TShape>` — is unchanged: an
+ * optional member there changed what the handler after a `__shape?: never`
+ * branded middleware sees (measured: bun-cache's `http.type-test.ts`).
+ */
+type SchemaCarrying<TShape, TSchemas> = ValidatorMiddleware<TShape> & {
+  /**
+   * Phantom carrier of the schemas behind `__shape`, for `RoutesOf`'s `send`
+   * and `receive` views; never present at runtime.
+   */
+  readonly __schemas?: TSchemas;
+};
+
 /** Convenience wrapper matching the example in {@link BunValidate}. */
 export function validate<
   S extends ValidationSchemas,
@@ -1056,9 +1111,21 @@ export function validate<
   R extends boolean = true,
   const RS extends ResponseSchemas<InferValidatedShape<S>> | undefined =
     undefined,
+  const O extends ResponseOutputMode | undefined = undefined,
 >(
   schemas: S,
-  options?: Omit<BunValidateOptions<S, H, R, RS>, "schemas">,
-): ValidatorMiddleware<ValidatedShapeFor<S, H, R, RS>> {
-  return new BunValidate<S, H, R, RS>({ ...options, schemas }).middleware();
+  options?: Omit<BunValidateOptions<S, H, R, RS>, "schemas"> & {
+    /** As {@link BunValidateOptions.responseOutput}; its literal is kept in the type. */
+    responseOutput?: O;
+  },
+): SchemaCarrying<ValidatedShapeFor<S, H, R, RS>, DeclaredSchemas<S, RS, O>> {
+  // The instance types `responseOutput` as the whole union; this narrows the
+  // phantom to the literal the caller passed (types only).
+  return new BunValidate<S, H, R, RS>({
+    ...options,
+    schemas,
+  }).middleware() as SchemaCarrying<
+    ValidatedShapeFor<S, H, R, RS>,
+    DeclaredSchemas<S, RS, O>
+  >;
 }

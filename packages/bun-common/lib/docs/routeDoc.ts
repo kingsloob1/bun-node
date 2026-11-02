@@ -131,8 +131,46 @@ export interface RouteDoc {
    */
   security?: readonly Record<string, readonly string[]>[];
   /**
+   * The error codes this route answers with (the `code` of its problem+json
+   * bodies), emitted as the operation's `x-bun-errors` array in the order
+   * given (typed-client plan §4.3: a client turns them into a `code` union).
+   * Documentation only: nothing checks that the handler sends them. `[]`
+   * declares "no codes" and is emitted as `[]`. Default: none, and no
+   * `x-bun-errors` is emitted. Wins over an `extensions["x-bun-errors"]`
+   * given beside it (with a warning when the two differ).
+   */
+  errors?: readonly string[];
+  /**
+   * The cache tags this route's response carries and the tags a successful
+   * call invalidates, emitted as the operation's `x-bun-cache` object
+   * (typed-client plan §6.4, in bun-cache's vocabulary). A template may name
+   * the route's own path params in braces (`"user:{id}"`); a name the path
+   * does not declare is emitted as written, with a warning. Documentation
+   * only: it reaches neither the handler's types nor bun-cache's runtime.
+   * Default: none, and no `x-bun-cache` is emitted. Wins over an
+   * `extensions["x-bun-cache"]` given beside it (with a warning when the two
+   * differ).
+   */
+  cache?: {
+    /**
+     * Tags the response carries (`["user:{id}"]`): what a client files the
+     * cached result under, so that invalidating a tag refetches it.
+     * Default: none, and the field is left out of `x-bun-cache`.
+     */
+    tags?: readonly string[];
+    /**
+     * Tags a successful call invalidates (`["user:{id}", "users"]`),
+     * typically declared on a mutation. Default: none, and the field is left
+     * out of `x-bun-cache`.
+     */
+    invalidates?: readonly string[];
+  };
+  /**
    * Vendor extensions merged into the operation object verbatim. Keys must
-   * start with `x-`. Default: none.
+   * start with `x-`. `x-bun-route-key` is the generator's own and is never
+   * taken from here (a warning says so); `x-bun-errors` and `x-bun-cache`
+   * yield to {@link RouteDoc.errors} and {@link RouteDoc.cache} when those
+   * are given. Default: none.
    */
   extensions?: Readonly<Record<`x-${string}`, unknown>>;
 }

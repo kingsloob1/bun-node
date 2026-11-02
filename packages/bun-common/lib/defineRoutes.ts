@@ -30,14 +30,19 @@
  */
 import type { ValidatorMiddleware } from "./BunValidate";
 import { BunRouter } from "./BunRouter";
+import type { DtoClass } from "./classDto";
+import type { WireInput } from "./contract/model";
 import { attachRouteDoc } from "./docs/routeDoc";
 import type { RouterHandler } from "./types/general";
+import type { ReceivedResponses } from "./types/responseTyping";
+import type { ExtractRouteParams } from "./types/routeParams";
 import type {
   EmptyShape,
   MountedHandler,
   ResolveParams,
   ResolveQuery,
 } from "./types/routeTyping";
+import type { StandardSchemaV1 } from "./types/standardSchema";
 import { isFunction, isObject } from "./utils/native";
 
 /**
@@ -48,9 +53,9 @@ import { isFunction, isObject } from "./utils/native";
  * registry's mount, so a definition alone answers the key its flat-map entry
  * sits under (`"${method} ${path}"`). `callbacks` are the route's own
  * callbacks (the validator and the handler), in registration order. The
- * `__shape` property is a phantom carrier of the validator's shape — the same
- * one `ValidatorMiddleware` advertises — and never exists at runtime;
- * {@link RoutesOf} reads it.
+ * `__shape` and `__schemas` properties are phantom carriers of the
+ * validator's shape and schemas — the same ones `ValidatorMiddleware`
+ * advertises — and never exist at runtime; {@link RoutesOf} reads them.
  *
  * @typeParam TMethod The HTTP method, upper-case; `"ALL"` for an `all()`
  *   definition.
@@ -58,11 +63,14 @@ import { isFunction, isObject } from "./utils/native";
  *   as written on the builder.
  * @typeParam TShape The validator's advertised shape, `EmptyShape` when the
  *   definition declares no validator.
+ * @typeParam TSchemas The validator's schemas (its `__schemas` phantom, for
+ *   the sender's view); `unknown` when the definition declares no validator.
  */
 export interface RouteDef<
   TMethod extends string = string,
   TPath extends string = string,
   TShape = EmptyShape,
+  TSchemas = unknown,
 > {
   /** The HTTP method, upper-case; `"ALL"` for an `all()` definition. */
   readonly method: TMethod;
@@ -72,6 +80,11 @@ export interface RouteDef<
   readonly callbacks: readonly unknown[];
   /** Phantom carrier of the validated shape; never present at runtime. */
   readonly __shape?: TShape;
+  /**
+   * Phantom carrier of the validator's schemas, from which {@link RoutesOf}
+   * derives the sender's and receiver's views; never present at runtime.
+   */
+  readonly __schemas?: TSchemas;
 }
 
 /**
@@ -87,11 +100,14 @@ interface DefineVerb<TMount extends string, TMethod extends string> {
     path: TPath,
     handler: MountedHandler<TMount, EmptyShape, TPath, TShape>,
   ): RouteDef<TMethod, `${TMount}${TPath}`, TShape>;
-  <TPath extends string, TShape = EmptyShape>(
+  <TPath extends string, TShape = EmptyShape, TSchemas = unknown>(
     path: TPath,
-    validator: ValidatorMiddleware<TShape>,
+    validator: ValidatorMiddleware<TShape> & {
+      /** The validator's schemas (`validate()`'s phantom); never present at runtime. */
+      readonly __schemas?: TSchemas;
+    },
     handler: MountedHandler<TMount, EmptyShape, TPath, TShape>,
-  ): RouteDef<TMethod, `${TMount}${TPath}`, TShape>;
+  ): RouteDef<TMethod, `${TMount}${TPath}`, TShape, TSchemas>;
 }
 
 /**
@@ -228,12 +244,30 @@ function makeVerb<TMount extends string, TMethod extends string>(
  * // { "GET /users/:id": { params: { id: string }; query: …; body: …; responses: … } }
  * ```
  *
- * Each entry answers what a client needs of the route: `params` from the
+ * Each entry carries the **server's** view of the route — `params` from the
  * validator's parsed params when it declared them, else the full path's
  * captures; `query` the validator's parsed query (else the untyped parser
  * output); `body` the parsed body (else `undefined`); `responses` the
- * declared response map (else `{ 200: unknown }`). The reserved `mount` and
- * `router` properties of the registry contribute no entry.
+ * declared response map, as the handler's `res` is held to it (else
+ * `{ 200: unknown }`) — and the two views a typed client reads
+ * (typed-client plan §4.1, §8.5):
+ *
+ * - `send`, what a **sender** is held to: `params`, `query`, `headers` and
+ *   `body`, each the schema's `WireInput` (a field's input, or its output
+ *   where a coercion's input is `unknown`; a defaulted key optional). A part
+ *   with no schema is the path's captures (`params`), `Record<never, never>`
+ *   (`query`, `headers`) or `undefined` (`body`). Cookies are not a call
+ *   option (the browser sends them). A `transform` hook changes the handler's
+ *   view, never this one.
+ * - `receive`, what a **receiver** gets, per declared status: a JSON body's
+ *   `Jsonify` of the schema's wire input (a `Date` field arrives a
+ *   `string`), or of its output when the validator sets
+ *   `responseOutput: "parsed"`; `undefined` for a status declared bodiless;
+ *   `{ 200: unknown }` when nothing is declared. A router-wide
+ *   `responseOutput` is invisible to the types; declare it on the validator.
+ *
+ * The reserved `mount` and `router` properties of the registry contribute no
+ * entry.
  *
  * Pure type: it exists at compile time only.
  *
@@ -251,11 +285,48 @@ type RouteKeyOf<D> =
 
 /** One entry of the flat map; `never` for a property that is not a definition. */
 type RouteEntryOf<D> =
-  D extends RouteDef<string, infer P, infer S>
+  D extends RouteDef<string, infer P, infer S, infer X>
     ? {
         params: ResolveParams<P, S>;
         query: ResolveQuery<S>;
         body: S extends { body: infer B } ? B : undefined;
         responses: S extends { responses: infer R } ? R : { 200: unknown };
+        send: SendView<P, RequestSchemasOf<X>>;
+        receive: X extends {
+          responses: infer RS;
+          responseOutput: infer O;
+        }
+          ? ReceivedResponses<RS, O>
+          : { 200: unknown };
       }
     : never;
+
+/** The request schemas a validator's `__schemas` phantom recorded; none for anything else. */
+type RequestSchemasOf<X> = X extends { request: infer S } ? S : EmptyShape;
+
+/** What a sender is held to for one request schema: a DTO's instance, a schema's `WireInput`. */
+type SendOf<V> =
+  V extends DtoClass<infer T>
+    ? T
+    : V extends StandardSchemaV1
+      ? WireInput<V>
+      : never;
+
+/** One request part's sender view: `SendOf` its schema, `F` when it has none. */
+type SendPart<S, K extends string, F> = S extends {
+  [P in K]: infer V extends StandardSchemaV1 | DtoClass;
+}
+  ? SendOf<V>
+  : F;
+
+/** A route's sender view (typed-client plan §8.5): each part's wire input. */
+interface SendView<P extends string, S> {
+  /** The path params: the schema's wire input, else the path's captures. */
+  params: SendPart<S, "params", ExtractRouteParams<P>>;
+  /** The query: the schema's wire input, else no keys. */
+  query: SendPart<S, "query", EmptyShape>;
+  /** The request headers: the schema's wire input, else no keys. */
+  headers: SendPart<S, "headers", EmptyShape>;
+  /** The body: the schema's wire input, else `undefined`. */
+  body: SendPart<S, "body", undefined>;
+}

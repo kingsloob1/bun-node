@@ -25,6 +25,7 @@ import type {
 import type { DtoClass } from "../classDto";
 import type { WireInput } from "../contract/model";
 import type { ResponseVariants } from "../responseBodies";
+import type { Jsonify } from "../utils/native";
 import type { EmptyShape } from "./routeTyping";
 import type { StandardSchemaV1 } from "./standardSchema";
 
@@ -513,3 +514,63 @@ type Filled<S> = S extends { filledJson: infer J; filledSend: infer D }
       send: D;
     }
   : S;
+
+// ---------------------------------------------------------------------------
+// The receiver's view (typed-client plan §4.1, §8.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * One declared schema's body as a client receives it under media key `K`: a
+ * JSON-classed body after `JSON.parse` (`Jsonify` of what the handler sent —
+ * the schema's wire input, or its output when the validator sends bodies
+ * `"parsed"`, V13), a text body as sent, and `unknown` for a byte body,
+ * `opaque()`, `chunks()` and `sse()` (the streamed kinds are the SSE and
+ * bodies PRs' to type, typed-client plan §15).
+ */
+type ReceivedOne<K, V, O> = V extends null
+  ? undefined
+  : V extends OpaqueDecl | StreamDecl
+    ? unknown
+    : V extends StandardSchemaV1 | DtoClass
+      ? MediaClass<K> extends "json" | "any"
+        ? Jsonify<
+            [O] extends ["parsed"]
+              ? V extends StandardSchemaV1
+                ? StandardSchemaV1.InferOutput<V>
+                : WireOf<V>
+              : WireOf<V>
+          >
+        : MediaClass<K> extends "text"
+          ? WireOf<V>
+          : unknown
+      : unknown;
+
+/** One status's (or one variant's) body as received: the union over its media types. */
+type ReceivedBody<Sp, O> =
+  ContentOf<Sp> extends infer C
+    ? C extends null
+      ? undefined
+      : C extends undefined
+        ? unknown
+        : { [K in keyof C]: ReceivedOne<K, C[K], O> }[keyof C]
+    : never;
+
+/**
+ * A `responses` declaration as a client receives it (typed-client plan §4.1,
+ * §8.5): status to body, a `variants()` status the union of its variants'
+ * bodies; `{ 200: unknown }` when nothing is declared. `O` is the
+ * validator's own `responseOutput` (a router-wide one is not in the types).
+ *
+ * @internal
+ */
+export type ReceivedResponses<RS, O = undefined> = [RS] extends [undefined]
+  ? { 200: unknown }
+  : {
+      [K in keyof RS]: RS[K] extends ResponseVariants<
+        infer T,
+        infer _B,
+        infer _V
+      >
+        ? { [N in keyof T & string]: ReceivedBody<T[N], O> }[keyof T & string]
+        : ReceivedBody<RS[K], O>;
+    };

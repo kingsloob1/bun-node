@@ -1,7 +1,8 @@
 /**
  * AD (a), plan §9.4: one golden document for a fixture router exercising
  * every feature — a mount, a wildcard, a regex param, a validator,
- * `.describe()`, `hidden`, and all four request targets — regenerated with
+ * `.describe()` (with `errors` and `cache`), `hidden`, and all four request
+ * targets, and the `x-bun-*` extensions (typed-client PR-M1) — regenerated with
  * `UPDATE_DOCS_FIXTURE=1`. The warnings list is part of the fixture: the
  * wildcard route is undocumentable and says so.
  */
@@ -48,7 +49,13 @@ function fixtureRouter(): BunRouter {
       ),
       (req, res) => res.json({ id: req.params.id }),
     )
-    .describe({ summary: "Read one user", tags: ["Users"] });
+    .describe({
+      summary: "Read one user",
+      tags: ["Users"],
+      // typed-client PR-M1: x-bun-errors and x-bun-cache.
+      errors: ["NOT_FOUND"],
+      cache: { tags: ["user:{id}"] },
+    });
   users
     .post(
       "/",

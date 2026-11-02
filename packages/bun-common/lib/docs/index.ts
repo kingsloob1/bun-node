@@ -12,8 +12,10 @@
  * serves the document(s) and the viewer pages, off by default: the pinned-CDN
  * ones (`./viewer`), and `"self-hosted"` (`./selfHosted`) — the
  * `@kingsleyweb/bun-api-docs-ui` bundle served from this origin, an optional
- * peer. The browser-safe document types are the `./types` entry (plan risk
- * 10) — this index pulls the router in, so it is server-side.
+ * peer. {@link typesHash} hashes the documents for a typed client's change
+ * detection (typed-client plan §3.0). The browser-safe document types are the
+ * `./types` entry (plan risk 10) — this index pulls the router in, so it is
+ * server-side.
  *
  * Nothing here imports a vendor package — the converters are structural
  * (plan risk 1f; `__tests__/docs/packaging.test.ts` proves the import graph).
@@ -59,6 +61,7 @@ export {
   toAsyncApiSecurityScheme,
 } from "./security";
 export type { RouteDoc, RouteResponseDoc } from "./routeDoc";
+export { typesHash } from "./hash";
 export {
   type DocWarning,
   generateOpenApi,

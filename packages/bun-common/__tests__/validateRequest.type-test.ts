@@ -225,10 +225,18 @@ const wrongCookies: ResolvedHandler<"/s", { cookies: { sid: number } }> = () =>
 // @ts-expect-error N9 the validator's cookies have no numeric `sid`
 router.get("/s", validate({ cookies: CookieSchema }), wrongCookies);
 
-// L1, a limit (not a control): a handler typed as a bare TypedRouteHandler
-// still loses TShape after an inline validator. Pinned so lifting it is noticed.
+// L1, a former limit, lifted by typed-client PR-M1: a handler typed as a bare
+// TypedRouteHandler used to lose TShape after an inline validator. Since
+// `validate()` returns its `__schemas` phantom as an intersection with
+// `ValidatorMiddleware`, the inline call infers, and the handler is checked
+// against the validator's shape (the control below must still fail).
 const bareHandler: TypedRouteHandler<{ id: string }, Page> = () => undefined;
-// @ts-expect-error L1 an inline generic validator loses inference to TShape
 router.get("/declared/:id", validate({ query: PageSchema }), bareHandler);
+const bareWrongQuery: TypedRouteHandler<
+  { id: string },
+  { page: string }
+> = () => undefined;
+// @ts-expect-error L1 the validator's query has a numeric `page`
+router.get("/declared/:id", validate({ query: PageSchema }), bareWrongQuery);
 
 export {};
