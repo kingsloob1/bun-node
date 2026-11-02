@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/retry.test.ts": 1896,
+    "__tests__/timeout.test.ts": 840,
+    "__tests__/auth.test.ts": 622,
+    "__tests__/query.test.ts": 467,
+    "__tests__/client.test.ts": 456,
+    "__tests__/path.test.ts": 417,
+    "__tests__/backoff.test.ts": 366,
+    "__tests__/bundleSafety.test.ts": 219,
+    "__tests__/middleware.test.ts": 59,
+    "__tests__/packaging.test.ts": 47,
+    "__tests__/budget.test.ts": 37
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. It has no runtime dependency, so nothing is packed beside it.",
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-client",
+      "values": [
+        "createClient",
+        "ClientError",
+        "HttpError",
+        "UnexpectedStatusError",
+        "NetworkError",
+        "TimeoutError"
+      ],
+      "types": [
+        "ClientConfig",
+        "ClientFlags",
+        "RouteConfig",
+        "CallConfig",
+        "RetryConfig",
+        "AuthConfig",
+        "ClientMiddleware",
+        "RequestContext",
+        "RouteMap",
+        "RouteEntry"
+      ],
+      "browser": true,
+      "snippet": "interface Routes { \"GET /users/:id\": { operationId: \"getUser\"; params: { id: string }; query: Record<never, never>; body: undefined; responses: { 200: { id: string; at: Date }; 404: { code: \"NOT_FOUND\" } } } }\nconst api = m.createClient<Routes>({ baseUrl: \"https://api.example\" });\nasync function probe() {\n  const r = await api.get(\"/users/:id\", { params: { id: \"1\" } });\n  if (r.ok) { const _at: Equal<typeof r.data.at, string> = true; void _at; }\n  else { const _code: Equal<typeof r.error.code, \"NOT_FOUND\"> = true; void _code; }\n  const u = await api.op.getUser({ params: { id: \"1\" }, throwOnError: true });\n  const _u: Equal<typeof u, { id: string; at: string }> = true; void _u;\n}\nvoid probe;\nexport type _api = Expect<IsAny<typeof api>>;\nexport type _client = Expect<IsAny<t.Client<Routes>>>;\nexport type _result = Expect<IsAny<t.Result<Routes[\"GET /users/:id\"]>>>;\nconst _status: Equal<t.Result<Routes[\"GET /users/:id\"]>[\"status\"], 200 | 404> = true; void _status;\nconst _jsonify: Equal<t.Jsonify<{ at: Date }>, { at: string }> = true; void _jsonify;\nconst _manifest: t.RouteManifest<Routes> = { \"GET /users/:id\": { operationId: \"getUser\", statuses: [200, 404] } }; void _manifest;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib",
+      "values": ["createClient"],
+      "types": ["ClientConfig"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/index",
+      "values": ["createClient", "HttpError"],
+      "types": ["ClientConfig"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/index.ts",
+      "values": ["createClient"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/index.js",
+      "values": ["createClient"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/errors",
+      "values": ["ClientError", "TimeoutError"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/types",
+      "types": ["RouteMap", "RetryConfig"],
+      "runtime": false,
+      "browser": true
+    }
+  ]
+}

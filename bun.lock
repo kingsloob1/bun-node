@@ -80,6 +80,25 @@
         "typescript",
       ],
     },
+    "packages/bun-client": {
+      "name": "@kingsleyweb/bun-client",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@kingsleyweb/bun-common": "^2.2.0",
+        "@types/bun": "^1.4.2",
+        "bun-types": "^1.4.3",
+        "typescript": "^6.0.3",
+        "zod": "^4",
+      },
+      "peerDependencies": {
+        "@types/bun": ">=1.4.2",
+        "typescript": "^5.9.3 || ^6.0.0",
+      },
+      "optionalPeers": [
+        "@types/bun",
+        "typescript",
+      ],
+    },
     "packages/bun-common": {
       "name": "@kingsleyweb/bun-common",
       "version": "2.2.0",
@@ -670,6 +689,8 @@
     "@kingsleyweb/bun-api-docs-ui": ["@kingsleyweb/bun-api-docs-ui@workspace:packages/bun-api-docs-ui"],
 
     "@kingsleyweb/bun-cache": ["@kingsleyweb/bun-cache@workspace:packages/bun-cache"],
+
+    "@kingsleyweb/bun-client": ["@kingsleyweb/bun-client@workspace:packages/bun-client"],
 
     "@kingsleyweb/bun-common": ["@kingsleyweb/bun-common@workspace:packages/bun-common"],
 

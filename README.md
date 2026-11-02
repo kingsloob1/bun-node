@@ -35,6 +35,7 @@ prefer Bun and native APIs over third-party dependencies.
 | [bun-contract](packages/bun-contract/README.md) | `@kingsleyweb/bun-contract` | bun-common's transport-agnostic contract core on its own: transports, contracts over any Standard Schema, guards, contract descriptions and channel contracts, with no dependency and safe in a browser. bun-common re-exports it as `@kingsleyweb/bun-common/contract`. |
 | [bun-nest](packages/bun-nest/README.md) | `@kingsleyweb/bun-nest` | Run NestJS 11 or 12 on Bun: `BunHttpAdapter` in place of `@nestjs/platform-express`, multer-style file upload interceptors, and `BunWebSocketAdapter` for gateways over Bun's native WebSockets. |
 | [bun-jobs](packages/bun-jobs/README.md) | `@kingsleyweb/bun-jobs` | Background work for Bun: `BunRunner` runs a JS/TS file on a schedule or on demand (child process, `Worker` or in-process), and `BunQueue` / `BunQueueWorker` process jobs across processes and services over memory, file, Redis, SQL and MongoDB drivers. |
+| [bun-client](packages/bun-client/README.md) | `@kingsleyweb/bun-client` | A typed HTTP client for these servers, with no dependency and safe in a browser: one call per verb keyed by the server's own path literal, named operations, results discriminated by status, retries with `Retry-After`, timeouts, middleware and single-flight auth refresh. |
 
 bun-nest and bun-jobs both depend on bun-common, which depends on bun-contract.
 
@@ -177,7 +178,8 @@ bun-node/
 │   ├── bun-common/        # HTTP layer: lib/, __tests__/, bench/, playground/, scripts/
 │   ├── bun-contract/      # the contract core, no dependency: lib/, __tests__/
 │   ├── bun-nest/          # NestJS adapter: lib/, __tests__/
-│   └── bun-jobs/          # jobs and queues: lib/, __tests__/, bench/ (its own package)
+│   ├── bun-jobs/          # jobs and queues: lib/, __tests__/, bench/ (its own package)
+│   └── bun-client/        # the typed HTTP client, no dependency: lib/, __tests__/
 ├── examples/
 │   ├── bun-common/        # one runnable project per package
 │   ├── bun-nest/
