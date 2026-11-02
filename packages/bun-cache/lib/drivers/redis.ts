@@ -24,7 +24,8 @@
  *   `getBuffer`, and no script returns one.
  * - **Atomic paths are Lua** (`EVALSHA`, falling back to `EVAL` on
  *   `NOSCRIPT`): `set` with the tag fence (check the stamps, replace the old
- *   tag memberships, write), `delete`, `deleteByTags` (stamps first, then every
+ *   tag memberships, write), `setMany` (that write for each entry, one
+ *   script per 1,000 entries), `delete`, `deleteByTags` (stamps first, then every
  *   member, in one script), `increment` (create with its expiry, or add),
  *   `touch`, and the lock's take and compare-and-delete.
  * - **Expiry is native** (`PEXPIREAT`), so the core's sweeper never has
@@ -66,6 +67,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { chunkEntries } from "./batch";
 import { encodeSegment } from "./file-names";
 import type { ConnectionInput } from "./sql-connection";
 import { resolveConnectionUrl } from "./sql-connection";
@@ -87,6 +89,12 @@ const FIRST_CONNECT_TIMEOUT_MS = 5_000;
 
 /** How many keys one `SCAN` call asks for, in `clear` and `sweep`. */
 const SCAN_COUNT = 1_000;
+
+/** The most entries one `setMany` script writes, so a large batch does not hold the server for one long script. */
+const SET_MANY_ROWS = 1_000;
+
+/** The most frame bytes one `setMany` script carries (a larger entry goes alone). */
+const SET_MANY_BYTES = 8 * 1024 * 1024;
 
 /** The most `SCAN` calls one `sweep` makes, so a pass is bounded on a large keyspace; the next pass resumes. */
 const SWEEP_SCANS = 100;
@@ -278,6 +286,32 @@ for j = 1, nt do
   redis.call('SADD', base .. 't:' .. ARGV[i + j], key)
 end
 return 1
+`);
+
+/**
+ * `setMany`: KEYS[1] the first entry; ARGV base, then per entry its key,
+ * frame, expiresAt ('' none), a count and its tags. Does `set`'s write for
+ * each in turn, unfenced (so a key twice ends with its last write). Answers
+ * how many it wrote. Not `allow-oom`: it writes entries and memberships.
+ */
+const SET_MANY = script(`
+local base = ARGV[1]
+local i = 2
+local n = 0
+while i <= #ARGV do
+  local key, frame, exp, nt = ARGV[i], ARGV[i + 1], ARGV[i + 2], tonumber(ARGV[i + 3])
+  dropEntry(base, key)
+  redis.call('UNLINK', base .. 'n:' .. key)
+  local ek = base .. 'e:' .. key
+  redis.call('SET', ek, frame)
+  if exp ~= '' then redis.call('PEXPIREAT', ek, exp) end
+  for j = 1, nt do
+    redis.call('SADD', base .. 't:' .. ARGV[i + 3 + j], key)
+  end
+  i = i + 4 + nt
+  n = n + 1
+end
+return n
 `);
 
 /**
@@ -835,9 +869,40 @@ export class RedisCacheDriver implements CacheDriver {
     return stored === 1 ? "stored" : "fenced";
   }
 
-  /** Writes several entries, pipelined (no fence: bulk writes come from `setMany`, not from loads). */
+  /**
+   * Writes several entries: one script per {@link SET_MANY_ROWS} entries
+   * (or {@link SET_MANY_BYTES} of frames), each doing `set`'s write for every
+   * entry in turn, so a key written twice keeps its last write. A script
+   * runs whole, so each chunk is applied atomically; the chunks run one
+   * after another. No fence: bulk writes come from `setMany`, not from loads.
+   */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
-    await Promise.all(entries.map(async (entry) => await this.set(ns, entry)));
+    if (entries.length === 0) {
+      return;
+    }
+    await this.#ready();
+    const base = this.#base(ns);
+    const framed = entries.map((entry) => ({
+      ...entry,
+      value: RedisCacheDriver.#frame(entry),
+    }));
+    for (const chunk of chunkEntries(framed, {
+      rows: SET_MANY_ROWS,
+      bytes: SET_MANY_BYTES,
+    })) {
+      const args: (string | Uint8Array)[] = [base];
+      for (const entry of chunk) {
+        const tags = [...new Set(entry.tags)];
+        args.push(
+          entry.key,
+          entry.value,
+          expiryArg(entry.expiresAt),
+          String(tags.length),
+          ...tags,
+        );
+      }
+      await this.#run(SET_MANY, [`${base}e:${chunk[0].key}`], args);
+    }
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

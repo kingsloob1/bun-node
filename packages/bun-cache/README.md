@@ -235,6 +235,23 @@ exclusive. `ttl: null` means no expiry.
 is the escape hatch — it returns stale entries (still within their stale
 window) with `stale: true`.
 
+**`setMany(entries)`** takes `[key, value, options?]` triples and answers how
+many it stored. Each entry goes through `set`'s pipeline with its own options
+(TTL, tags, `compress`, the entry limit, encryption), but the driver gets the
+batch in one call: one statement per 1,000 entries on Postgres (several in one
+transaction), one transaction on SQLite, MySQL and MariaDB, one script per
+1,000 entries on Redis, one `bulkWrite` on MongoDB, and the cloud drivers' bulk
+paths. Tagged entries on a driver with a tag index are the exception: each is
+a fenced `set` ([Tags](#tags)), all issued together, since the driver
+contract's `setMany` takes no fence. A key given twice keeps its last write.
+An entry over the limit is skipped with its `oversize` event in its place, and
+events and stats follow the batch's order. On SQLite, Postgres, MySQL and
+MariaDB a batch is stored whole or not at all; a driver failure under the
+default policy stores nothing of it and answers `0`, with one `error` event
+and a `fenced` event per entry (as a failed `set` reports itself). A throw
+while preparing an entry (a codec's, a refused tag, or under `strict` an
+oversize entry or a failed seal) writes the entries before it, then throws.
+
 ## Stampede protection
 
 `getOrSet` is single-flight in process, always: 1000 concurrent misses run the
@@ -1419,6 +1436,9 @@ await runCacheDriverConformance("map-store", () => ({
 ```
 
 The kit checks byte round-trips, expiry (lazy and swept), `getMany` order,
+`setMany` (each entry's expiry and tags, replaced tags, a key given twice,
+a batch past 1,000 entries and past 16 MiB, and through a cache: per-entry
+TTLs, tags and compression, an oversize entry, plain and encrypted),
 delete counts, namespace-scoped `clear`, tag invalidation in both modes with
 the fence's race, 200 concurrent increments, a 50-way contended lock, and bus
 delivery. Each case is gated on the driver's `capabilities`: an advertised
@@ -1695,6 +1715,12 @@ one.
   stamps `LOCK IN SHARE MODE` inside a `REPEATABLE READ` transaction, and the
   invalidation upserts them first. Writes that touch the tag index on MySQL
   and MariaDB are one transaction; on Postgres one statement.
+- **`setMany`** is multi-row: on Postgres one statement per 1,000 entries
+  (and 16 MiB of values), several in one transaction; on MySQL and MariaDB
+  one `REPEATABLE READ` transaction of multi-row statements, each within
+  1,000 rows and `max_allowed_packet`. Either way the batch is stored whole
+  or not at all, its rows go in key order (two batches over the same keys
+  lock them in the same order), and a key given twice keeps its last write.
 - **Counters** are integers (`BIGINT`), added in the database, and may go
   below zero; a fractional step throws a `TypeError`.
 - **Expiry**: reads filter out expired rows and never write; the core's

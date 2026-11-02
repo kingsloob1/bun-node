@@ -486,6 +486,109 @@ export async function runCacheDriverConformance(
       },
     );
 
+    kase(
+      "setMany",
+      "setMany writes each entry with its own expiry and tags",
+      true,
+      async () => {
+        const namespace = ns();
+        const later = Date.now() + 60_000;
+        await driver.setMany(namespace, []);
+        await driver.setMany(namespace, [
+          entry("never", 10),
+          entry("later", 20, { expiresAt: later, tags: ["a", "b"] }),
+          entry("gone", 30, { expiresAt: Date.now() - 1_000 }),
+          entry("tagged", 40, { expiresAt: later + 1, tags: ["b"] }),
+        ]);
+        const [never, kept, gone, tagged] = await driver.getMany(namespace, [
+          "never",
+          "later",
+          "gone",
+          "tagged",
+        ]);
+        expect(never?.value).toEqual(bytesOf(10));
+        expect(never?.expiresAt).toBeNull();
+        expect(never?.tags).toEqual([]);
+        expect(kept?.value).toEqual(bytesOf(20));
+        expect(kept?.expiresAt).toBe(later);
+        expect([...kept!.tags].sort()).toEqual(["a", "b"]);
+        expect(gone).toBeUndefined();
+        expect(tagged?.value).toEqual(bytesOf(40));
+        expect(tagged?.expiresAt).toBe(later + 1);
+        expect(tagged?.tags).toEqual(["b"]);
+        if (
+          driver.capabilities.tags === "index" &&
+          driver.deleteByTags !== undefined
+        ) {
+          // The batch's entries are in the tag index.
+          expect(
+            await driver.deleteByTags(namespace, ["b"], Date.now() + 60_000),
+          ).toBe(2);
+          expect(await driver.get(namespace, "later")).toBeUndefined();
+          expect(await driver.get(namespace, "never")).toBeDefined();
+        }
+      },
+    );
+
+    kase(
+      "setMany.replace",
+      "setMany replaces values and tags as set does, a key twice keeping its last write",
+      true,
+      async () => {
+        const namespace = ns();
+        await driver.set(namespace, entry("k", 10, { tags: ["old"] }));
+        await driver.set(namespace, entry("j", 10, { tags: ["old", "kept"] }));
+        await driver.setMany(namespace, [
+          entry("k", 20, { tags: ["new"] }),
+          entry("j", 30, { tags: ["kept"] }),
+          entry("twice", 1, { tags: ["first"] }),
+          entry("other", 2),
+          entry("twice", 3, { tags: ["second"] }),
+        ]);
+        const [k, j, twice] = await driver.getMany(namespace, [
+          "k",
+          "j",
+          "twice",
+        ]);
+        expect(k?.value).toEqual(bytesOf(20));
+        expect(k?.tags).toEqual(["new"]);
+        expect(j?.value).toEqual(bytesOf(30));
+        expect(j?.tags).toEqual(["kept"]);
+        expect(twice?.value).toEqual(bytesOf(3));
+        expect(twice?.tags).toEqual(["second"]);
+        if (
+          driver.capabilities.tags === "index" &&
+          driver.deleteByTags !== undefined
+        ) {
+          const until = Date.now() + 60_000;
+          // The replaced tags left the index, and the first write of a key
+          // written twice left nothing there.
+          expect(await driver.deleteByTags(namespace, ["old"], until)).toBe(0);
+          expect(await driver.deleteByTags(namespace, ["first"], until)).toBe(
+            0,
+          );
+          expect(await driver.get(namespace, "k")).toBeDefined();
+          expect(await driver.get(namespace, "twice")).toBeDefined();
+          expect(await driver.deleteByTags(namespace, ["kept"], until)).toBe(1);
+          expect(await driver.deleteByTags(namespace, ["second"], until)).toBe(
+            1,
+          );
+        }
+        if (driver.capabilities.atomicIncrement && driver.increment) {
+          // Over a counter, setMany does what set does.
+          await driver.increment(namespace, "c1", 5, null);
+          await driver.increment(namespace, "c2", 5, null);
+          await driver.set(namespace, entry("c1", 7));
+          await driver.setMany(namespace, [entry("c2", 7)]);
+          const [one, two] = await driver.getMany(namespace, ["c1", "c2"]);
+          expect(two?.value).toEqual(one?.value);
+          expect(await driver.getCounter?.(namespace, "c2")).toEqual(
+            await driver.getCounter?.(namespace, "c1"),
+          );
+        }
+      },
+    );
+
     kase("delete", "delete counts what it removed", true, async () => {
       const namespace = ns();
       await driver.setMany(namespace, [
@@ -1002,6 +1105,89 @@ function registerEncryptedPass(context: {
         expect(await cache.get("big")).toBeUndefined();
       });
     },
+  );
+
+  kase(
+    "setMany.cache",
+    "cache.setMany, plain and with encrypt + hashNames: each entry's TTL, tags and compression, an oversize entry skipped in its place",
+    true,
+    async () => {
+      // Incompressible: base64 of random bytes, past the 64 KiB limit below.
+      const noise = Buffer.from(
+        crypto.getRandomValues(new Uint8Array(60_000)),
+      ).toString("base64");
+      // Compressible, past the default 16 KiB threshold, under the limit.
+      const big = "x".repeat(40_000);
+      for (const encrypt of [null, KIT_ENCRYPT]) {
+        const cache = createCache({
+          driver: unclosable(driver),
+          namespace: `kitmany-${process.pid}-${token()}`,
+          sweepInterval: 0,
+          bus: false,
+          maxEntryBytes: 64 * 1024,
+          ...(encrypt === null ? {} : { encrypt }),
+        });
+        try {
+          const events: string[] = [];
+          cache.on("set", (event) => events.push(`set ${event.key}`));
+          cache.on("oversize", (event) => events.push(`oversize ${event.key}`));
+          const before = Date.now();
+          expect(
+            await cache.setMany([
+              ["short", { n: 1 }, { ttl: 60_000 }],
+              ["forever", "f", { ttl: null }],
+              ["tagged", 3, { ttl: 60_000, tags: ["t1"] }],
+              ["noise", noise],
+              ["big", big],
+              ["plain", big, { compress: false }],
+              ["last", 4],
+            ]),
+          ).toBe(6);
+          expect(events).toEqual([
+            "set short",
+            "set forever",
+            "set tagged",
+            "oversize noise",
+            "set big",
+            "set plain",
+            "set last",
+          ]);
+          expect(await cache.getMany(["short", "forever", "noise"])).toEqual([
+            { n: 1 },
+            "f",
+            undefined,
+          ]);
+          const short = await cache.getEntry("short");
+          expect(short?.expiresAt).toBeGreaterThanOrEqual(before + 60_000);
+          expect(short?.expiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
+          expect((await cache.getEntry("forever"))?.expiresAt).toBeNull();
+          expect((await cache.getEntry("tagged"))?.tags).toEqual(["t1"]);
+          expect(await cache.get("big")).toBe(big);
+          expect(await cache.get("plain")).toBe(big);
+          // Compressed per entry, and sealed when encrypted.
+          const raw = async (key: string) => {
+            const described = cache.describeKey(key);
+            return await driver.get(described.namespace, described.key);
+          };
+          const bigRaw = await raw("big");
+          const plainRaw = await raw("plain");
+          expect(bigRaw!.value.byteLength).toBeLessThan(4_000);
+          expect(plainRaw!.value.byteLength).toBeGreaterThan(40_000);
+          for (const each of [bigRaw!, plainRaw!]) {
+            expect(
+              Buffer.from(each.value.subarray(0, 2)).toString() === "BE",
+            ).toBe(encrypt !== null);
+          }
+          await cache.invalidateTags(["t1"]);
+          expect(await cache.get("tagged")).toBeUndefined();
+          expect(await cache.get("last")).toBe(4);
+          await cache.clear();
+        } finally {
+          await cache.close();
+        }
+      }
+    },
+    120_000,
   );
 
   kase(

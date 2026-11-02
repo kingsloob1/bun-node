@@ -2067,6 +2067,77 @@ everywhere else:
   the proof (recommended: no). Whether to ask Bun for a `maxOutputLength`
   (oven-sh/bun#28162 is open).
 
+**Speed work: `setMany`, built 2026-11-02** (branch `perf/bun-cache-set-many`,
+speed work PR 1, scheduled by the user with its speed comparisons). The
+baseline had `setMany` of 100 2.4–25× behind cache-manager's `mset`. Two
+causes, measured before anything changed (a scratch profile, exclusive):
+
+- **The core never called the driver's `setMany`.** `Cache.setMany` was a
+  loop of awaited `set`s, one driver round trip and one bus message per
+  entry. Core against `driver.setMany` of the same 100 entries: SQLite 272
+  against 2,705 batches/s, MongoDB 54 against 277, memory 4,161 against
+  60,154.
+- **Three drivers' own `setMany` were loops too**: Postgres, MySQL and
+  MariaDB (`sql-base.ts`) awaited a `set` (a statement or a transaction) per
+  entry, so core, driver and a serial loop all measured alike (Postgres
+  6.2 / 16.3 / 16.6); Redis ran one `EVALSHA` per entry; file one write at a
+  time.
+
+What changed:
+
+- **The core** (`cache.ts`): `#write` is split into `#prepareWrite` (encode,
+  compress, the entry limit, seal, fence) and `#settleWrite` (stats, the
+  `set` or `fenced` event, L1). `setMany` prepares every entry with its own
+  options, then writes **stretches** of distinct stored keys (a repeated key
+  starts a new one, so the last write wins, in L2 and in L1): one
+  `driver.setMany` under one failure-policy operation, unless an entry
+  needs the tag fence (tagged, `tags: "index"`), when the stretch is a
+  fenced `set` per entry, issued together. Events and stats follow the
+  batch's order, an `oversize` in its place; one bus message per stretch
+  names its stored keys (as `deleteMany` already did). A throw while
+  preparing (a codec's, a refused tag, `strict`'s oversize or seal) writes
+  the entries before it, then throws, as the loop did.
+- **Drivers**: Postgres one multi-row CTE per 1,000 entries or 16 MiB
+  (`set`'s upsert-and-retag for every row), several in one transaction;
+  MySQL and MariaDB one `REPEATABLE READ` transaction of multi-row
+  statements, within 1,000 rows and `max_allowed_packet`; both dedupe a
+  repeated key and write in key order. Redis one `SET_MANY` script per 1,000
+  entries or 8 MiB of frames. File 16 writes at a time. S3 and Azure (already
+  16 at a time) now dedupe: two concurrent writes of one key landed in any
+  order, which the new kit case caught on S3. Shared helpers in
+  `lib/drivers/batch.ts`. SQLite, MongoDB and the Cloudflare drivers already
+  batched and are unchanged.
+- **Atomicity changed** on Postgres, MySQL and MariaDB: a batch is stored
+  whole or not at all (it was entry by entry); a driver failure under the
+  default policy answers `0` for the batch, with one `error` event and a
+  `fenced` event per entry. Under `strict`, a failed batch throws with none
+  of it stored there (before: the entries ahead of the failing one were).
+  Raised with the lead as a question; the README says so.
+- **The scratch A/B** (base against this branch in one process, trials
+  interleaved, best of five, exclusive; batches/s of 100): memory 3,924 →
+  5,262 (1.34×), file 17.9 → 43 (2.4×), SQLite 268 → 2,245 (8.4×), Redis 234
+  → 1,054 (4.5×), Postgres 16.9 → 354 (21×), MySQL 6.9 → 253 (37×), MariaDB
+  13.4 → 430 (32×), MongoDB 47 → 232 (4.9×). Tagged batches (each entry a
+  fenced `set`): memory 3,769 → 4,313, Postgres 11.8 → 68, MySQL 6.1 → 25,
+  MariaDB 11.3 → 62, Redis 259 → 580, MongoDB 6.5 → 16. `getMany` after it
+  unchanged everywhere (0.97–1.03×).
+- **The bench** (`--compare`, exclusive; held before and twice after):
+  `set-many-100` memory 3,835 → 4,740/s, file 224 → 541, SQLite 572 →
+  2,445, Redis 154 → 1,224, Postgres 17 → 342, MySQL 7 → 239, MariaDB 14 →
+  382, MongoDB 62 → 238. bun-cache now leads cache-manager on MySQL, MariaDB
+  and MongoDB, and trails it 1.2× on Postgres, 2.2× on Redis, 2.1× on
+  memory. The baseline is not re-recorded yet (the machine was busy).
+- **Still behind on memory and Redis**: memory's batch is now the codec
+  (structured clone's `serialize` and its buffer: 47% of the profile, the
+  header another 12%), against cache-manager storing references.
+- **Tests**: kit cases `setMany`, `setMany.replace` and `setMany.cache`
+  (plain and encrypted: per-entry TTLs, tags, compression, an oversize entry
+  in place); `__tests__/drivers/setManyChunks.ts` (past 1,000 entries and
+  16 MiB, and the all-or-nothing batch) on the SQL suites and local Redis
+  only, since the kit also runs on billed live lanes;
+  `__tests__/core/setMany.test.ts`; `__tests__/drivers/batch.test.ts`.
+  Sixteen negative controls; see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

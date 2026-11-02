@@ -59,7 +59,11 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { lastWritePerKey } from "./batch";
 import { encodeSegment } from "./file-names";
+
+/** How many files one `setMany` writes at a time. */
+const SET_MANY_CONCURRENCY = 16;
 
 /** The entry file's magic and format version. */
 const FILE_MAGIC = [0x42, 0x46]; // "BF"
@@ -431,9 +435,36 @@ class FileDriver implements CacheDriver {
     return "stored";
   }
 
+  /**
+   * Writes several entries, {@link SET_MANY_CONCURRENCY} files at a time,
+   * each as `set` writes it (a temp file renamed into place). A key written
+   * twice keeps its last write, as a loop of `set` would: only that one is
+   * written. After a failure no further write starts; it rejects with the
+   * first failure once the writes under way have settled, and the files
+   * already renamed into place stay (as a loop of `set` left the ones before
+   * its failure).
+   */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
-    for (const entry of entries) {
-      await this.set(ns, entry);
+    const writes = lastWritePerKey(entries);
+    let next = 0;
+    let failed: { error: unknown } | undefined;
+    await Promise.all(
+      Array.from(
+        { length: Math.min(SET_MANY_CONCURRENCY, writes.length) },
+        async () => {
+          while (failed === undefined && next < writes.length) {
+            const entry = writes[next++];
+            try {
+              await this.set(ns, entry);
+            } catch (error) {
+              failed ??= { error };
+            }
+          }
+        },
+      ),
+    );
+    if (failed !== undefined) {
+      throw failed.error;
     }
   }
 

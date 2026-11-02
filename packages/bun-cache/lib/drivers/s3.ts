@@ -83,6 +83,7 @@ import {
 } from "./blob-frame";
 import type { S3SigningTarget } from "./s3-sign";
 import { s3SignedFetch } from "./s3-sign";
+import { lastWritePerKey } from "./batch";
 
 export { parseContentType } from "./blob-frame";
 
@@ -665,9 +666,10 @@ export class S3CacheDriver implements CacheDriver {
     return "stored";
   }
 
+  /** Writes several entries, {@link CONCURRENCY} at a time; a key written twice keeps its last write, as a loop of `set` would (only that one is written: concurrent writes of one key would land in any order). */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     await mapLimit(
-      entries,
+      lastWritePerKey(entries),
       CONCURRENCY,
       async (entry) => await this.set(ns, entry),
     );

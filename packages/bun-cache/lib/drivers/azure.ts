@@ -73,6 +73,7 @@ import {
   parseContentType,
   segment,
 } from "./blob-frame";
+import { lastWritePerKey } from "./batch";
 
 /** The default blob-name prefix (§7, §21: `bun-cache`, as S3's). */
 export const DEFAULT_AZURE_PREFIX = "bun-cache";
@@ -838,9 +839,10 @@ export class AzureBlobCacheDriver implements CacheDriver {
     return "stored";
   }
 
+  /** Writes several entries, {@link CONCURRENCY} at a time; a key written twice keeps its last write, as a loop of `set` would (only that one is written: concurrent writes of one key would land in any order). */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     await mapLimit(
-      entries,
+      lastWritePerKey(entries),
       CONCURRENCY,
       async (entry) => await this.set(ns, entry),
     );
