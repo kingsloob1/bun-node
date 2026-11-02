@@ -1017,7 +1017,13 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   every spelling in `<pkg>/consumer-check.json` under `bundler` / `bun-init` /
   `node16` (+ `browser` for browser entries) × `skipLibCheck` on/off, asserts
   each named export is not `any`, scans the shipped declarations for leaked
-  imports, and imports each spelling under Bun. Any NEW-BROKEN cell fails.
+  imports, and imports each spelling under Bun. Only an `OK` cell passes: any
+  `PROBE-ERRORS` (a probe snippet that does not type-check, which hides the
+  assertion it carries), `UNRESOLVED`, `ANY` or `LIB-ERRORS` cell, a failing
+  runtime import, a leak and a browser environment leak each fail the run (exit
+  1, one line per problem). With `--baseline`, a problem the baseline already
+  had in the same status is known and passes; a cell that was `OK` is
+  `NEW-BROKEN`.
   It runs each consumer's own tsc, deliberately not `bun check`: the point is
   what a consumer on TypeScript 5.9 or 6.0 sees.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.

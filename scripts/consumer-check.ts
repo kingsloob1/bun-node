@@ -23,7 +23,7 @@
  * ```bash
  * bun scripts/consumer-check.ts packages/bun-common                      # run, print the table
  * bun scripts/consumer-check.ts packages/bun-common --save base.json     # record a baseline
- * bun scripts/consumer-check.ts packages/bun-common --baseline base.json # fail on NEW-BROKEN
+ * bun scripts/consumer-check.ts packages/bun-common --baseline base.json # fail on any problem not in the baseline
  * bun scripts/consumer-check.ts packages/bun-common --tarball x.tgz      # check a pre-packed tarball
  * bun scripts/consumer-check.ts packages/bun-common --typescript 5.9.3   # a different compiler
  * bun scripts/consumer-check.ts --show after.json --baseline base.json   # re-print a saved run
@@ -39,10 +39,16 @@
  * left out of it), so a root that reaches one fails there. Entries with
  * `peers` are checked in `consumer-peers/`, which has everything.
  *
- * A cell is `OK` only with zero diagnostics anywhere. With `--baseline`, a cell
- * that was `OK` and no longer is, or a runtime import that worked and no
- * longer does, is `NEW-BROKEN` and fails the run; that is the acceptance rule
- * for any packaging change.
+ * A cell is `OK` only with zero diagnostics anywhere, and only `OK` passes:
+ * a cell in any other status (`UNRESOLVED`, `ANY`, `PROBE-ERRORS`,
+ * `LIB-ERRORS`), a runtime import that fails, a leaked import and a browser
+ * environment leak each fail the run (see {@link failures}). `PROBE-ERRORS` in
+ * particular means the probe snippet itself does not type-check, which hides
+ * whatever it was meant to assert, so it is never ignored. With `--baseline`, a
+ * problem the baseline already had in the same status is known and does not
+ * fail; a cell that was `OK` and no longer is, or a runtime import that worked
+ * and no longer does, is `NEW-BROKEN`; that is the acceptance rule for any
+ * packaging change.
  */
 import {
   existsSync,
@@ -104,7 +110,7 @@ interface CheckConfig {
 }
 
 /** How one cell of the matrix came out. */
-type CellStatus =
+export type CellStatus =
   | "OK" // no diagnostics at all
   | "UNRESOLVED" // the spelling does not resolve (TS2307 and friends in the probe)
   | "ANY" // resolves, but a probed name is `any` or missing
@@ -112,7 +118,7 @@ type CellStatus =
   | "LIB-ERRORS"; // the probe is clean, but errors surface inside installed packages
 
 /** One (spelling, resolution, skipLibCheck, environment) result. */
-interface CellResult {
+export interface CellResult {
   /** Stable key used to compare against a baseline. */
   key: string;
   /** The spelling this cell probes. */
@@ -132,7 +138,7 @@ interface CellResult {
 }
 
 /** Everything a run produced; what `--save` writes and `--baseline` reads. */
-interface RunResult {
+export interface RunResult {
   /** Package name under test. */
   package: string;
   /** TypeScript version used. */
@@ -435,11 +441,12 @@ async function main(): Promise<void> {
     report(saved);
     const against = flag("--baseline");
     process.exit(
-      against &&
-        compare(
-          JSON.parse(readFileSync(resolve(against), "utf8")) as RunResult,
-          saved,
-        )
+      reportFailures(
+        saved,
+        against
+          ? (JSON.parse(readFileSync(resolve(against), "utf8")) as RunResult)
+          : undefined,
+      )
         ? 1
         : 0,
     );
@@ -662,15 +669,13 @@ async function main(): Promise<void> {
   if (save)
     writeFileSync(resolve(save), `${JSON.stringify(result, null, 2)}\n`);
 
-  let failed = false;
   const baselinePath = flag("--baseline");
-  if (baselinePath)
-    failed = compare(
-      JSON.parse(readFileSync(resolve(baselinePath), "utf8")) as RunResult,
-      result,
-    );
-  if (leaks.length > 0) failed = true;
-  if (cells.some((c) => c.envLeaks)) failed = true;
+  const failed = reportFailures(
+    result,
+    baselinePath
+      ? (JSON.parse(readFileSync(resolve(baselinePath), "utf8")) as RunResult)
+      : undefined,
+  );
   process.exit(failed ? 1 : 0);
 }
 
@@ -720,34 +725,87 @@ function report(result: RunResult): void {
     );
 }
 
-/** Compares against a baseline; returns true when anything that worked broke. */
-function compare(baseline: RunResult, now: RunResult): boolean {
-  const before = new Map(baseline.cells.map((c) => [c.key, c]));
-  const newBroken: string[] = [];
+/** What {@link failures} found: the lines that fail the run, and what a baseline fixed. */
+export interface Verdict {
+  /** One line per problem that fails the run. Empty means the run passes. */
+  failed: string[];
+  /** Cells the baseline had broken that are `OK` now (informational). */
+  fixed: string[];
+}
+
+/**
+ * Decides whether a run fails. Only `OK` passes; every other state fails
+ * unless a baseline already had the same problem in the same state ("known").
+ *
+ * | State | Without a baseline | With a baseline |
+ * |---|---|---|
+ * | cell `OK` | pass | pass (`fixed` if it was not `OK`) |
+ * | cell `UNRESOLVED`, `ANY`, `PROBE-ERRORS`, `LIB-ERRORS` | fail | pass only if the baseline had that same status; `NEW-BROKEN` if it was `OK`, otherwise a new or changed status fails |
+ * | cell not in the baseline, not `OK` | fail | fail |
+ * | baseline cell no longer checked | n/a | fail |
+ * | runtime import `ok` | pass | pass |
+ * | runtime import failing | fail | pass only if the baseline's failed too; `NEW-BROKEN` if it was `ok` |
+ * | leaked import in a declaration | fail | fail |
+ * | Node/Bun types in a browser cell | fail | fail |
+ */
+export function failures(now: RunResult, baseline?: RunResult): Verdict {
+  const before = new Map((baseline?.cells ?? []).map((c) => [c.key, c]));
+  const failed: string[] = [];
   const fixed: string[] = [];
   for (const c of now.cells) {
     const b = before.get(c.key);
-    if (!b) continue;
-    if (b.status === "OK" && c.status !== "OK")
-      newBroken.push(`${c.key}: OK -> ${c.status}`);
-    if (b.status !== "OK" && c.status === "OK")
+    if (b && b.status !== "OK" && c.status === "OK")
       fixed.push(`${c.key}: ${b.status} -> OK`);
+    if (c.status === "OK") continue;
+    if (b?.status === c.status) continue; // known to the baseline
+    const detail = `${c.status}(${c.probeErrors + c.libErrors}) ${c.sample.join(" | ")}`;
+    failed.push(
+      b?.status === "OK"
+        ? `NEW-BROKEN  ${c.key}: OK -> ${c.status}`
+        : `${c.status}  ${now.package} ${c.spelling} [${c.column}]: ${detail}`,
+    );
   }
-  for (const [s, r] of Object.entries(baseline.runtime)) {
-    if (r === "ok" && now.runtime[s] !== "ok")
-      newBroken.push(`${s} runtime: ok -> ${now.runtime[s] ?? "not run"}`);
+  for (const [s, r] of Object.entries(now.runtime)) {
+    if (r === "ok") continue;
+    const b = baseline?.runtime[s];
+    if (b !== undefined && b !== "ok") continue;
+    failed.push(
+      b === "ok"
+        ? `NEW-BROKEN  ${s} runtime: ok -> ${r}`
+        : `RUNTIME-FAIL  ${now.package} ${s}: ${r}`,
+    );
+  }
+  for (const [s, r] of Object.entries(baseline?.runtime ?? {})) {
+    if (r === "ok" && now.runtime[s] === undefined)
+      failed.push(`NEW-BROKEN  ${s} runtime: ok -> not run`);
   }
   // A spelling the baseline covered must still be covered.
   for (const key of before.keys()) {
     if (!now.cells.some((c) => c.key === key))
-      newBroken.push(`${key}: no longer checked`);
+      failed.push(`NEW-BROKEN  ${key}: no longer checked`);
   }
-  console.log(
-    `\nvs baseline: ${fixed.length} fixed, ${newBroken.length} NEW-BROKEN`,
-  );
+  for (const l of now.leaks) failed.push(`LEAK  ${now.package}: ${l}`);
+  for (const c of now.cells)
+    if (c.envLeaks)
+      failed.push(
+        `ENV-LEAK  ${now.package} ${c.spelling} [${c.column}]: ${c.envLeaks.join(", ")}`,
+      );
+  return { failed, fixed };
+}
+
+/** Prints the verdict of {@link failures}; returns true when the run fails. */
+function reportFailures(now: RunResult, baseline?: RunResult): boolean {
+  const { failed, fixed } = failures(now, baseline);
+  if (baseline)
+    console.log(
+      `\nvs baseline: ${fixed.length} fixed, ${failed.filter((f) => f.startsWith("NEW-BROKEN")).length} NEW-BROKEN`,
+    );
   for (const f of fixed) console.log(`  fixed       ${f}`);
-  for (const n of newBroken) console.log(`  NEW-BROKEN  ${n}`);
-  return newBroken.length > 0;
+  if (failed.length > 0) {
+    console.log(`\nFAILED: ${failed.length} problem(s)`);
+    for (const f of failed) console.log(`  ${f}`);
+  }
+  return failed.length > 0;
 }
 
 // Run only as a command: the tests import the scanner without running a check.
