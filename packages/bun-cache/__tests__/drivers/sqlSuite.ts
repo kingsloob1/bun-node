@@ -15,6 +15,7 @@ import { createCache } from "../../lib/index";
 import type { PostgresCacheDriver } from "../../lib/drivers/postgres";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import type { SqlBackend } from "./backends";
+import { registerSetManyChunkTests } from "./setManyChunks";
 import {
   dropTables,
   rawClient,
@@ -592,6 +593,10 @@ export async function registerSqlSuite(
         ).toThrow(TypeError);
       }
     });
+  });
+
+  describe(`${name} setMany chunks`, () => {
+    registerSetManyChunkTests(make("chunks_"), { atomic: true });
   });
 
   describe(`${name} specifics`, () => {

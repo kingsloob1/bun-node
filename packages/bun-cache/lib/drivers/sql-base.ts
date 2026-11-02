@@ -422,12 +422,8 @@ export abstract class SqlCacheDriverBase implements CacheDriver {
     entry: StoredEntry,
     fence?: TagFence,
   ): Promise<"stored" | "fenced">;
-  /** Writes several entries, one after another (no fence: bulk writes come from `setMany`, not from loads). */
-  async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
-    for (const entry of entries) {
-      await this.set(ns, entry);
-    }
-  }
+  /** Writes several entries, stored whole or not at all: the dialect's multi-row statements (no fence: bulk writes come from `setMany`, not from loads). */
+  abstract setMany(ns: string, entries: readonly StoredEntry[]): Promise<void>;
   abstract delete(ns: string, keys: readonly string[]): Promise<number>;
   abstract clear(ns: string): Promise<void>;
   abstract touch(

@@ -73,6 +73,7 @@ import type {
   SchemaSyncOptions,
   SetOptions,
   StoredEntry,
+  TagFence,
 } from "./types";
 
 // A deep import of this module (`lib/core/cache`) is where `createCache`
@@ -219,6 +220,65 @@ interface Decoded {
   header: EntryHeader;
   /** The decoded payload's size, in bytes (after decompression). */
   size: number;
+}
+
+/** How one value is written: everything the write pipeline needs beyond the key and the value. */
+interface WriteInit<Tag extends string> {
+  /** The fresh-for, in ms; `null` never goes stale. */
+  ttl: number | null;
+  /** The entry's tags. */
+  tags: readonly Tag[];
+  /** When the value's loader started (the fence reads it). */
+  createdAt: number;
+  /** The load's duration, for early expiry. */
+  loadMs: number;
+  /** The stale-while-revalidate window, in ms. */
+  staleWhileRevalidate: number;
+  /** The stale-if-error window, in ms. */
+  staleIfError: number;
+  /** Whether this is a negative marker. */
+  negative: boolean;
+  /** `"l2"`: write the driver only; this process's L1 copy is dropped, not replaced. */
+  tier?: "l2";
+  /** `false`: store the payload uncompressed (the per-call option). */
+  compress?: false;
+  /**
+   * A load's L1 token, taken when its loader started (`L1Store.begin`):
+   * an invalidation that landed during the load then keeps its value out
+   * of L1 — on a stamps-mode driver nothing else would, since there is no
+   * driver fence there. Absent: the write takes its own.
+   */
+  l1Token?: number;
+}
+
+/** A write encoded, held to the entry limit and sealed: what goes to the driver, and what settling it needs (`#prepareWrite`). */
+interface PreparedWrite<Tag extends string> {
+  /** The user key. */
+  key: string;
+  /** Its stored form. */
+  stored: string;
+  /** The entry the driver receives. */
+  entry: StoredEntry;
+  /** The tag fence the driver applies (§3.6); absent when the write needs none. */
+  fence: TagFence | undefined;
+  /** The entry's header. */
+  header: EntryHeader;
+  /** What the encoder produced. */
+  encoded: Encoded;
+  /** The encoded entry before sealing (header and payload). */
+  bytes: Uint8Array;
+  /** How it is written. */
+  init: WriteInit<Tag>;
+}
+
+/**
+ * A write the pipeline refused before the driver (§3.9, §4.6): `skip`
+ * reports it — the `oversize` event, or the `encrypt` error — and answers
+ * `false`, or throws under `strict`.
+ */
+interface SkippedWrite {
+  /** Reports the refusal; answers `false`, or throws under `strict`. */
+  skip: () => false;
 }
 
 /** The resolved `lock` option. */
@@ -1181,38 +1241,79 @@ class CacheImpl<
     key: string,
     stored: string,
     value: unknown,
-    init: {
-      /** The fresh-for, in ms; `null` never goes stale. */
-      ttl: number | null;
-      /** The entry's tags. */
-      tags: readonly Tag[];
-      /** When the value's loader started (the fence reads it). */
-      createdAt: number;
-      /** The load's duration, for early expiry. */
-      loadMs: number;
-      /** The stale-while-revalidate window, in ms. */
-      staleWhileRevalidate: number;
-      /** The stale-if-error window, in ms. */
-      staleIfError: number;
-      /** Whether this is a negative marker. */
-      negative: boolean;
-      /** `"l2"`: write the driver only; this process's L1 copy is dropped, not replaced. */
-      tier?: "l2";
-      /** `false`: store the payload uncompressed (the per-call option). */
-      compress?: false;
-      /**
-       * A load's L1 token, taken when its loader started (`L1Store.begin`):
-       * an invalidation that landed during the load then keeps its value out
-       * of L1 — on a stamps-mode driver nothing else would, since there is no
-       * driver fence there. Absent: the write takes its own.
-       */
-      l1Token?: number;
-    },
+    init: WriteInit<Tag>,
   ): Promise<boolean> {
+    const preparing = this.#prepareWrite(key, stored, value, init);
+    const prepared = isPromiseLike(preparing) ? await preparing : preparing;
+    if ("skip" in prepared) {
+      return prepared.skip();
+    }
     const state = this.#state;
-    const now = state.now();
+    // §4.1's write order: L2, then L1, then the bus. The token is taken
+    // before the L2 write, so an invalidation that lands while it runs keeps
+    // this value out of L1 (which write L2 kept last is unknowable here).
+    const l1 = state.l1;
+    const own = l1 !== undefined && init.l1Token === undefined;
+    const token = init.l1Token ?? (own ? l1.begin() : 0);
+    try {
+      const result = await this.#op(
+        "set",
+        async () =>
+          await state.driver.set(
+            this.#storedNs,
+            prepared.entry,
+            prepared.fence,
+          ),
+        "fenced" as const,
+      );
+      if (!this.#settleWrite(prepared, result, token)) {
+        return false;
+      }
+      await this.#publish({ type: "set", keys: [stored] });
+      return true;
+    } finally {
+      if (own) {
+        l1.end();
+      }
+    }
+  }
+
+  /**
+   * The write pipeline up to the driver: encode → compress → hold to the
+   * entry limit → encrypt, and the fence the driver applies. A refusal comes
+   * back as a {@link SkippedWrite}, not yet reported, so a batch can report
+   * it in its place (`setMany`); a codec's or compressor's throw propagates.
+   * Synchronous unless a user compressor or the cipher answers a promise.
+   */
+  #prepareWrite(
+    key: string,
+    stored: string,
+    value: unknown,
+    init: WriteInit<Tag>,
+  ):
+    | PreparedWrite<Tag>
+    | SkippedWrite
+    | Promise<PreparedWrite<Tag> | SkippedWrite> {
+    const now = this.#state.now();
     const encoding = this.#encodeValue(value, init.negative, init.compress);
-    const encoded = isPromiseLike(encoding) ? await encoding : encoding;
+    return isPromiseLike(encoding)
+      ? Promise.resolve(encoding).then((encoded) =>
+          this.#sealWrite(key, stored, init, now, encoded),
+        )
+      : this.#sealWrite(key, stored, init, now, encoding);
+  }
+
+  /** `#prepareWrite` after encoding: the header, the entry limit, the seal and the fence. */
+  #sealWrite(
+    key: string,
+    stored: string,
+    init: WriteInit<Tag>,
+    now: number,
+    encoded: Encoded,
+  ):
+    | PreparedWrite<Tag>
+    | SkippedWrite
+    | Promise<PreparedWrite<Tag> | SkippedWrite> {
     const freshUntil = init.ttl === null ? NO_FRESH_UNTIL : now + init.ttl;
     const expiresAt =
       init.ttl === null
@@ -1235,97 +1336,200 @@ class CacheImpl<
     const limit = this.#entryLimit();
     const entrySize = Math.max(bytes.byteLength, encoded.plain.byteLength);
     if (entrySize > limit) {
-      return this.#oversize(key, entrySize, limit);
+      return { skip: () => this.#oversize(key, entrySize, limit) };
     }
     // encode → compress → encrypt: the cipher sees the compressed entry. A
     // write that cannot seal stores nothing (the encryption plan's §4.6).
-    let sealed: Uint8Array;
-    try {
-      const sealing = this.#seal(key, bytes, expiresAt, init.tags);
-      sealed = isPromiseLike(sealing) ? await sealing : sealing;
-    } catch (error) {
-      this.#reportCrypto("encrypt", key, error);
-      if (state.options.strict === true) {
-        throw error;
+    const failed = (error: unknown): SkippedWrite => ({
+      skip: () => {
+        this.#reportCrypto("encrypt", key, error);
+        if (this.#state.options.strict === true) {
+          throw error;
+        }
+        return false;
+      },
+    });
+    const sealed = (sealed: Uint8Array): PreparedWrite<Tag> | SkippedWrite => {
+      // The limit holds the sealed size too: it is what the driver receives.
+      if (sealed.byteLength > limit) {
+        return {
+          skip: () => this.#oversize(key, sealed.byteLength, limit),
+        };
       }
+      // Sealed with the plaintext tags; the driver indexes their stored forms.
+      const storedTags = this.#storedTags(init.tags);
+      return {
+        key,
+        stored,
+        entry: { key: stored, value: sealed, expiresAt, tags: storedTags },
+        // The fence (§3.6): an indexed driver refuses the write when one of
+        // its tags was invalidated after the load started. Stamps-mode
+        // drivers need none — the read-side check sees the stamp either way.
+        fence:
+          init.tags.length > 0 &&
+          this.#state.driver.capabilities.tags === "index"
+            ? { tags: storedTags, createdAt: init.createdAt }
+            : undefined,
+        header,
+        encoded,
+        bytes,
+        init,
+      };
+    };
+    let sealing: Uint8Array | Promise<Uint8Array>;
+    try {
+      sealing = this.#seal(key, bytes, expiresAt, init.tags);
+    } catch (error) {
+      return failed(error);
+    }
+    return isPromiseLike(sealing)
+      ? Promise.resolve(sealing).then(sealed, failed)
+      : sealed(sealing);
+  }
+
+  /**
+   * After the driver answered a prepared write: on `"fenced"` (or a failure,
+   * which the failure policy answers as one) this process's L1 copy, if any,
+   * is dropped and the `fenced` event fires; on `"stored"`, the stats, the
+   * `set` event and the L1 copy. Answers whether it was stored. The bus is
+   * the caller's: one message per write, or per batch.
+   */
+  #settleWrite(
+    prepared: PreparedWrite<Tag>,
+    result: "stored" | "fenced",
+    token: number,
+  ): boolean {
+    const state = this.#state;
+    const l1 = state.l1;
+    const { key, stored, entry, init } = prepared;
+    if (result === "fenced") {
+      // Fenced, or failed: L2 kept what it had, and so does every other
+      // process's L1 — only this process's copy, if any, is dropped.
+      l1?.afterWrite(this.#storedNs, stored, undefined, 0, token, state.now());
+      this.#reportFenced(key, init.tags, "fence");
       return false;
     }
-    // The limit holds the sealed size too: it is what the driver receives.
-    if (sealed.byteLength > limit) {
-      return this.#oversize(key, sealed.byteLength, limit);
-    }
-    // Sealed with the plaintext tags; the driver indexes their stored forms.
-    const storedTags = this.#storedTags(init.tags);
-    const entry: StoredEntry = {
-      key: stored,
-      value: sealed,
-      expiresAt,
-      tags: storedTags,
-    };
-    // The fence (§3.6): an indexed driver refuses the write when one of its
-    // tags was invalidated after the load started. Stamps-mode drivers need
-    // none — the read-side check sees the stamp either way.
-    const fence =
-      init.tags.length > 0 && state.driver.capabilities.tags === "index"
-        ? { tags: storedTags, createdAt: init.createdAt }
-        : undefined;
-    // §4.1's write order: L2, then L1, then the bus. The token is taken
-    // before the L2 write, so an invalidation that lands while it runs keeps
-    // this value out of L1 (which write L2 kept last is unknowable here).
-    const l1 = state.l1;
-    const own = l1 !== undefined && init.l1Token === undefined;
-    const token = init.l1Token ?? (own ? l1.begin() : 0);
-    try {
-      const result = await this.#op(
-        "set",
-        async () => await state.driver.set(this.#storedNs, entry, fence),
-        "fenced" as const,
-      );
-      if (result === "fenced") {
-        // Fenced, or failed: L2 kept what it had, and so does every other
-        // process's L1 — only this process's copy, if any, is dropped.
-        l1?.afterWrite(
-          this.#storedNs,
-          stored,
-          undefined,
-          0,
-          token,
-          state.now(),
-        );
-        this.#reportFenced(key, init.tags, "fence");
-        return false;
-      }
-      state.stats.sets++;
-      state.stats.bytesWritten += sealed.byteLength;
-      this.#emit("set", {
+    state.stats.sets++;
+    state.stats.bytesWritten += entry.value.byteLength;
+    this.#emit("set", {
+      key,
+      namespace: this.#ns,
+      bytes: entry.value.byteLength,
+    });
+    if (l1 !== undefined) {
+      // The codec's bytes, never the caller's own (the raw codec passes a
+      // Uint8Array through): the stored copy's payload when uncompressed,
+      // else a copy of the bytes the compressor was given.
+      const { encoded, bytes } = prepared;
+      const plain =
+        encoded.compressor === COMPRESSOR_IDS.none
+          ? bytes.subarray(bytes.byteLength - encoded.payload.byteLength)
+          : encoded.plain.slice();
+      const [copy, size] = this.#l1CopyOfWrite(
         key,
-        namespace: this.#ns,
-        bytes: sealed.byteLength,
-      });
-      if (l1 !== undefined) {
-        // The codec's bytes, never the caller's own (the raw codec passes a
-        // Uint8Array through): the stored copy's payload when uncompressed,
-        // else a copy of the bytes the compressor was given.
-        const plain =
-          encoded.compressor === COMPRESSOR_IDS.none
-            ? bytes.subarray(bytes.byteLength - encoded.payload.byteLength)
-            : encoded.plain.slice();
-        const [copy, size] = this.#l1CopyOfWrite(
-          key,
-          header,
-          plain,
-          entry,
-          init,
-        );
-        l1.afterWrite(this.#storedNs, stored, copy, size, token, state.now());
-      }
-      await this.#publish({ type: "set", keys: [stored] });
-      return true;
-    } finally {
-      if (own) {
-        l1.end();
-      }
+        prepared.header,
+        plain,
+        entry,
+        init,
+      );
+      l1.afterWrite(this.#storedNs, stored, copy, size, token, state.now());
     }
+    return true;
+  }
+
+  /**
+   * Writes one stretch of a `setMany` batch, whose stored keys are distinct,
+   * and settles it in the batch's order; answers how many were stored.
+   *
+   * - **One driver call when nothing needs a fence**: the driver's
+   *   `setMany`, under one failure-policy operation. A failure leaves every
+   *   entry of the stretch unstored (reported as for `set`: `fenced`).
+   * - **Otherwise a `set` per entry, issued together**, each with its own
+   *   fence (§3.6) — the driver contract's `setMany` takes none — and its
+   *   own operation.
+   *
+   * Then, in the batch's order, each skipped write's report and each write's
+   * settling (stats, events, L1 under one token taken before the driver
+   * call), and one bus message naming every stored key. Under `strict`, a
+   * skip's or a write's throw is rethrown after the rest are settled.
+   */
+  async #writeStretch(
+    items: readonly (PreparedWrite<Tag> | SkippedWrite)[],
+  ): Promise<number> {
+    const state = this.#state;
+    const writes = items.filter(
+      (item): item is PreparedWrite<Tag> => !("skip" in item),
+    );
+    const l1 = state.l1;
+    const token = l1 === undefined ? 0 : l1.begin();
+    let thrown: { error: unknown } | undefined;
+    const keys: string[] = [];
+    try {
+      let results: ("stored" | "fenced" | undefined)[];
+      if (writes.length === 0) {
+        results = [];
+      } else if (
+        writes.length === 1 ||
+        writes.some((write) => write.fence !== undefined)
+      ) {
+        // No async wrappers around `#op` and the driver call: a frame each,
+        // per entry, was a fifth of a tagged batch's time on memory.
+        const settled = await Promise.allSettled(
+          writes.map((write) =>
+            this.#op(
+              "set",
+              () => state.driver.set(this.#storedNs, write.entry, write.fence),
+              "fenced" as const,
+            ),
+          ),
+        );
+        results = settled.map((outcome) => {
+          if (outcome.status === "fulfilled") {
+            return outcome.value;
+          }
+          // Only under `strict`: the failure policy answers otherwise.
+          thrown ??= { error: outcome.reason };
+          return undefined;
+        });
+      } else {
+        const ok = await this.#op(
+          "setMany",
+          async () => {
+            await state.driver.setMany(
+              this.#storedNs,
+              writes.map((write) => write.entry),
+            );
+            return true;
+          },
+          false,
+        );
+        results = writes.map(() => (ok ? "stored" : "fenced"));
+      }
+      let next = 0;
+      for (const item of items) {
+        if ("skip" in item) {
+          try {
+            item.skip();
+          } catch (error) {
+            thrown ??= { error };
+          }
+          continue;
+        }
+        const result = results[next++];
+        if (result !== undefined && this.#settleWrite(item, result, token)) {
+          keys.push(item.stored);
+        }
+      }
+      if (keys.length > 0) {
+        await this.#publish({ type: "set", keys });
+      }
+    } finally {
+      l1?.end();
+    }
+    if (thrown !== undefined) {
+      throw thrown.error;
+    }
+    return keys.length;
   }
 
   /** Reports an entry over the limit: an `oversize` event, and `false` — or `EntryTooLargeError` under `strict` (§3.9). */
@@ -2205,7 +2409,16 @@ class CacheImpl<
     options?: SetOptions<Tag>,
   ): Promise<boolean> {
     this.#checkTags(options?.tags);
-    return await this.#write(key, this.#storedKey(key), value, {
+    const stored = this.#storedKey(key);
+    return await this.#write(key, stored, value, this.#setInit(value, options));
+  }
+
+  /** How an explicit `set` (or one `setMany` entry) writes: its options over the cache's, created now. */
+  #setInit(
+    value: unknown,
+    options: SetOptions<Tag> | undefined,
+  ): WriteInit<Tag> {
+    return {
       ttl: this.#resolveTtl(value, options),
       tags: options?.tags ?? [],
       createdAt: this.#state.now(),
@@ -2219,9 +2432,23 @@ class CacheImpl<
       negative: false,
       tier: options?.tier,
       compress: options?.compress,
-    });
+    };
   }
 
+  /**
+   * Every entry goes through `set`'s pipeline (its own options, encoding,
+   * compression, seal and limit), but the driver sees the batch: one
+   * `driver.setMany` per stretch of distinct keys, unless an entry needs the
+   * tag fence (`#writeStretch`). A key repeated in the batch starts a new
+   * stretch, so the last write of a key wins, as in a loop of `set`. Stats,
+   * events and L1 are settled per entry in the batch's order; the bus gets
+   * one message per stretch.
+   *
+   * A throw while preparing an entry (a tag `checkTags` refuses, a `ttl`
+   * function's or a codec's throw, and under `strict` an oversized entry or
+   * a failed seal) writes the entries before it, then throws, as a loop of
+   * `set` did; nothing after it is encoded.
+   */
   async setMany<K extends Extract<keyof Schema, string>>(
     entries: readonly (readonly [
       K,
@@ -2229,11 +2456,49 @@ class CacheImpl<
       (SetOptions<Tag> | undefined)?,
     ])[],
   ): Promise<number> {
-    let stored = 0;
+    const strict = this.#state.options.strict === true;
+    const items: (PreparedWrite<Tag> | SkippedWrite)[] = [];
+    let thrown: { error: unknown } | undefined;
     for (const [key, value, options] of entries) {
-      if (await this.set(key, value, options)) {
-        stored++;
+      try {
+        this.#checkTags(options?.tags);
+        const stored = this.#storedKey(key);
+        const preparing = this.#prepareWrite(
+          key,
+          stored,
+          value,
+          this.#setInit(value, options),
+        );
+        const prepared = isPromiseLike(preparing) ? await preparing : preparing;
+        items.push(prepared);
+        if (strict && "skip" in prepared) {
+          // Its report throws: nothing after it is written.
+          break;
+        }
+      } catch (error) {
+        thrown = { error };
+        break;
       }
+    }
+    let stored = 0;
+    let start = 0;
+    while (start < items.length) {
+      const keys = new Set<string>();
+      let end = start;
+      for (; end < items.length; end++) {
+        const item = items[end];
+        if (!("skip" in item)) {
+          if (keys.has(item.stored)) {
+            break;
+          }
+          keys.add(item.stored);
+        }
+      }
+      stored += await this.#writeStretch(items.slice(start, end));
+      start = end;
+    }
+    if (thrown !== undefined) {
+      throw thrown.error;
     }
     return stored;
   }

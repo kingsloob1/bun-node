@@ -53,6 +53,7 @@ import {
 } from "./sql-base";
 import { withLockRetry } from "./sql-connection";
 import { sqlCacheIndexName } from "./sql-tables";
+import { chunkEntries, lastWritePerKey } from "./batch";
 
 /** `mysqlDriver()`'s and `mariadbDriver()`'s options. */
 export interface MysqlDriverOptions extends SqlCacheDriverOptions {
@@ -64,6 +65,12 @@ export interface MysqlDriverOptions extends SqlCacheDriverOptions {
 
 /** The headroom kept below `max_allowed_packet` for the rest of a write's statement. */
 const PACKET_HEADROOM_BYTES = 64 * 1024;
+
+/** The most entries (six parameters each) or tag rows (three each) one `setMany` statement carries: far inside the 65,535 placeholders of a prepared statement. */
+const SET_MANY_ROWS = 1_000;
+
+/** The most bytes one `setMany` statement carries, by its rows' values and names; never more than `max_allowed_packet` allows an entry (a larger entry goes alone). */
+const SET_MANY_BYTES = 16 * 1024 * 1024;
 
 /** The `<p>locks` namespace of the row `maxEntries` sweeps take turns on: reserved-looking, like the core's own `__bun_cache__` sweep lock. A cache namespace of the same name would only share a lock row with it (its key would have to be `cap-sweep` too). */
 const CAP_LOCK_NS = "__bun_cache_cap__";
@@ -270,6 +277,80 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
         );
       }
       return "stored";
+    });
+  }
+
+  /**
+   * Writes the batch in one `REPEATABLE READ` transaction, as `set` writes
+   * one entry: the entries upserted by multi-row statements of at most
+   * {@link SET_MANY_ROWS} rows (and {@link SET_MANY_BYTES}, within
+   * `max_allowed_packet`), the keys' tag rows deleted, and the new ones
+   * inserted. So the batch is stored whole or not at all, and no reader sees
+   * an entry without the tag rows that invalidate it. A key written twice
+   * keeps its last write, as a loop of `set` would. The rows go in key
+   * order, so two batches over the same keys lock them in the same order.
+   * No fence: bulk writes come from `setMany`, not from loads.
+   */
+  async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
+    if (entries.length === 0) {
+      return;
+    }
+    await this.ready();
+    const t = this.tables;
+    const fns = this.fit(ns);
+    const rows = lastWritePerKey(entries)
+      .map((entry) => ({ ...entry, key: this.fit(entry.key) }))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const now = this.now();
+    // The parameters of one statement travel in one packet: the values, the
+    // names and the tags' JSON count, and the packet's own limit holds.
+    const chunks = chunkEntries(rows, {
+      rows: SET_MANY_ROWS,
+      bytes: Math.min(
+        SET_MANY_BYTES,
+        this.capabilities.maxEntryBytes ?? SET_MANY_BYTES,
+      ),
+      size: (entry) =>
+        entry.value.byteLength +
+        fns.length +
+        entry.key.length +
+        (SqlCacheDriverBase.tagsColumn(entry.tags)?.length ?? 0) +
+        64,
+    });
+    await this.#transaction(async (tx) => {
+      for (const chunk of chunks) {
+        await tx.unsafe(
+          `INSERT INTO ${t.entries} (ns, k, v, n, exp, ca, tg) VALUES ${chunk.map(() => "(?, ?, ?, NULL, ?, ?, ?)").join(", ")}
+           ON DUPLICATE KEY UPDATE v = VALUES(v), n = NULL, exp = VALUES(exp), ca = VALUES(ca), tg = VALUES(tg)`,
+          chunk.flatMap((entry) => [
+            fns,
+            entry.key,
+            entry.value,
+            entry.expiresAt,
+            now,
+            SqlCacheDriverBase.tagsColumn(entry.tags),
+          ]),
+        );
+        // Replacing: the keys' old tag rows go, the new ones come.
+        await tx.unsafe(
+          `DELETE FROM ${t.tags} WHERE ns = ? AND k IN (${marks(chunk.length)})`,
+          [fns, ...chunk.map((entry) => entry.key)],
+        );
+        const pairs = chunk.flatMap((entry) =>
+          [...this.fitTags(entry.tags).keys()].map((tag) => [
+            fns,
+            tag,
+            entry.key,
+          ]),
+        );
+        for (let at = 0; at < pairs.length; at += SET_MANY_ROWS) {
+          const slice = pairs.slice(at, at + SET_MANY_ROWS);
+          await tx.unsafe(
+            `INSERT INTO ${t.tags} (ns, tag, k) VALUES ${slice.map(() => "(?, ?, ?)").join(", ")} ON DUPLICATE KEY UPDATE k = k`,
+            slice.flat(),
+          );
+        }
+      }
     });
   }
 

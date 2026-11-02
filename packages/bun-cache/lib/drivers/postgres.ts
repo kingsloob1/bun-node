@@ -29,6 +29,7 @@
  *   cold. It applies when the tables are created; existing tables keep what
  *   they were created as.
  */
+import type { SQL } from "bun";
 import type {
   BusMessage,
   CacheDriver,
@@ -45,6 +46,13 @@ import { sqlCacheIndexName, sqlCacheStoreKey } from "./sql-tables";
 import { withLockRetry } from "./sql-connection";
 import type { PgSubscription } from "./pg-notify";
 import { pgChannel, pgListen, pgNotify, pgUnlistenAll } from "./pg-notify";
+import { chunkEntries, lastWritePerKey } from "./batch";
+
+/** The most entries one `setMany` statement carries: four parameters each, far inside Postgres's 65,535. */
+const SET_MANY_ROWS = 1_000;
+
+/** The most value bytes one `setMany` statement carries (a larger entry goes alone), so a batch of large entries is several statements, not one huge message. */
+const SET_MANY_BYTES = 16 * 1024 * 1024;
 
 /** `postgresDriver()`'s options. */
 export interface PostgresDriverOptions extends SqlCacheDriverOptions {
@@ -219,6 +227,96 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
         : await this.sql.unsafe(statement, params),
     );
     return rows[0]?.stored === 1 ? "stored" : "fenced";
+  }
+
+  /**
+   * The multi-row form of {@link #setStatement}, without the fence: `rows`
+   * entries as `VALUES` (four parameters each, from `$4`), upserted; the
+   * keys' tag rows not among the new pairs dropped, and the new pairs added.
+   * `$1` the namespace, `$2`/`$3` the tag pairs (keys and tags, element by
+   * element), then `ca` last.
+   */
+  #setManyStatement(rows: number): string {
+    const t = this.tables;
+    const values = Array.from({ length: rows }, (_, row) => {
+      const at = 4 + row * 4;
+      return `($${at}::text, $${at + 1}::bytea, $${at + 2}::bigint, $${at + 3}::text)`;
+    }).join(", ");
+    const ca = `$${4 + rows * 4}::bigint`;
+    return `WITH input (k, v, exp, tg) AS (VALUES ${values}), up AS (
+        INSERT INTO ${t.entries} (ns, k, v, n, exp, ca, tg)
+        SELECT $1::text, k, v, NULL::bigint, exp, ${ca}, tg FROM input
+        ON CONFLICT (ns, k) DO UPDATE SET v = excluded.v, n = NULL, exp = excluded.exp, ca = excluded.ca, tg = excluded.tg
+        RETURNING 1
+      ), pairs AS (
+        SELECT k, tag FROM unnest($2::text[], $3::text[]) AS p(k, tag)
+      ), dropped AS (
+        DELETE FROM ${t.tags} AS g WHERE g.ns = $1 AND g.k IN (SELECT k FROM input)
+          AND NOT EXISTS (SELECT 1 FROM pairs WHERE pairs.k = g.k AND pairs.tag = g.tag)
+      ), added AS (
+        INSERT INTO ${t.tags} (ns, tag, k) SELECT $1::text, tag, k FROM pairs
+        ON CONFLICT DO NOTHING
+      )
+      SELECT (SELECT count(*) FROM up)::int AS stored`;
+  }
+
+  /**
+   * Writes the batch in one statement per {@link SET_MANY_ROWS} entries (or
+   * {@link SET_MANY_BYTES} of values), each `set`'s upsert-and-retag for
+   * every row at once, so no reader sees an entry without its tag rows.
+   * Several statements run in one transaction: the batch is stored whole or
+   * not at all. A key written twice keeps its last write, as a loop of `set`
+   * would. The rows go in key order, so two batches over the same keys lock
+   * them in the same order. No fence: bulk writes come from `setMany`, not
+   * from loads.
+   */
+  async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
+    if (entries.length === 0) {
+      return;
+    }
+    await this.ready();
+    const fns = this.fit(ns);
+    const rows = lastWritePerKey(entries)
+      .map((entry) => ({ ...entry, key: this.fit(entry.key) }))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const chunks = chunkEntries(rows, {
+      rows: SET_MANY_ROWS,
+      bytes: SET_MANY_BYTES,
+    });
+    const now = this.now();
+    const write = async (
+      sql: SQL,
+      chunk: readonly StoredEntry[],
+    ): Promise<void> => {
+      const pairKeys: string[] = [];
+      const pairTags: string[] = [];
+      const params: unknown[] = [fns, pairKeys, pairTags];
+      for (const entry of chunk) {
+        for (const tag of this.fitTags(entry.tags).keys()) {
+          pairKeys.push(entry.key);
+          pairTags.push(tag);
+        }
+        params.push(
+          entry.key,
+          entry.value,
+          entry.expiresAt,
+          SqlCacheDriverBase.tagsColumn(entry.tags),
+        );
+      }
+      params.push(now);
+      await sql.unsafe(this.#setManyStatement(chunk.length), params);
+    };
+    await withLockRetry(async () => {
+      if (chunks.length === 1) {
+        await write(this.sql, chunks[0]);
+        return;
+      }
+      await this.sql.begin(async (tx) => {
+        for (const chunk of chunks) {
+          await write(tx, chunk);
+        }
+      });
+    });
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

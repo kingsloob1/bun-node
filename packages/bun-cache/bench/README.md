@@ -294,8 +294,13 @@ bun-cache leads 20, ties 10 (within 10%) and trails 45;
   memory and file is about 1.1–1.2 ms, most of it the up-to-1 ms wait the
   fence fix added to `invalidateTags` (#573).
 - **Where it trails, and a later PR should look**:
-  - `setMany` of 100 is 2.9x (memory) to 28x (Postgres: 16 against 453
-    batches/s) behind cache-manager's `mset` on every backend.
+  - `setMany` of 100, since the speed-work PR (baseline 2026-11-02): ahead
+    of cache-manager's `mset` on MySQL (244 against 46 batches/s) and
+    MariaDB (424 against 107), level on memory, and still behind on
+    Postgres (307 against 479), Redis (1,101 against 2,846) and, narrowly,
+    MongoDB (162 against 180). It was 2.9x to 28x behind everywhere
+    (Postgres 16 against 453): the core wrote a batch one `set` at a time,
+    and several drivers looped too.
   - `get-miss` is 1.3x to 2.2x behind on every networked backend.
   - Writes of 1 MB values are slower everywhere but MongoDB (Redis 219
     against 1,394/s): the default zstd above 16 KiB, on incompressible data.

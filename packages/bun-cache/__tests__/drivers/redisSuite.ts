@@ -27,6 +27,7 @@ import type { RedisDriverOptions } from "../../lib/drivers/redis";
 import { RedisCacheDriver } from "../../lib/drivers/redis";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import { deleteRedisPrefix, redisRawDump } from "./backends";
+import { registerSetManyChunkTests } from "./setManyChunks";
 
 /** How a Redis lane differs from the local server's: a remote, managed one (Upstash) answers slower and supports less. */
 export interface RedisLane {
@@ -351,6 +352,14 @@ export async function registerRedisSuite(
       ],
     },
   );
+
+  // Local only: on a remote, billed lane a thousand-entry batch costs more
+  // than it proves (`setManyChunks.ts`).
+  if (lane === LOCAL_REDIS_LANE) {
+    describe(`${lane.name} setMany chunks`, () => {
+      registerSetManyChunkTests(make("chunks"), { atomic: false });
+    });
+  }
 
   describe(`${lane.name} specifics`, () => {
     const driver = make("spec");
