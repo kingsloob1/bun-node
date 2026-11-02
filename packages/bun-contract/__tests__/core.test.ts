@@ -1,9 +1,9 @@
 /**
  * The core on its own, with no other package loaded: a transport, a
  * contract, the receiver parsing and the sender checking, the error a
- * failing message becomes, a description and a merge. bun-common's suite
- * (`packages/bun-common/__tests__/contract/`) is the full one, run through
- * its re-export; this shows the package works without it.
+ * failing message becomes, a description and a merge. The rest of the core's tests
+ * (`guards.test.ts`, `describe.test.ts`, …) run it against zod, valibot,
+ * arktype and yup; this shows the package works with the spec alone.
  */
 import { describe, expect, it } from "bun:test";
 import {

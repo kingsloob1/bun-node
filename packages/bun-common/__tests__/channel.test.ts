@@ -5,7 +5,7 @@
  * one at a time, in order, sends included; the upgrade's request side refuses
  * a bad request with a 400 before the 101; `send`/`publish` are typed and
  * checked under the out policy. The pure half (lib/contract/channel.ts) is
- * covered in __tests__/contract/channel.test.ts.
+ * covered in packages/bun-contract/__tests__/channel.test.ts.
  */
 import type { ServerWebSocket } from "bun";
 import type { Channel, ChannelHandlers } from "../lib/channel";

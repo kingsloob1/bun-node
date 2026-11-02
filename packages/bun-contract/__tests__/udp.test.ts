@@ -3,11 +3,11 @@
  * loopback) gets typed, validated handlers from the core alone (plan §4.2,
  * the spike's C1–C6).
  */
-import type { GuardOptions } from "../../lib/contract/model";
+import type { GuardOptions } from "../lib/model";
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { ContractError, createReceiver } from "../../lib/contract/guard";
-import { createTestLogger } from "../../lib/logging";
+import { ContractError, createReceiver } from "../lib/guard";
+import { createTestLogger } from "./testLogger";
 import { serveUdp, udp, udpClient } from "./udp";
 
 const chat = udp.contract({

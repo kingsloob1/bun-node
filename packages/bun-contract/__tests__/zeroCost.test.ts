@@ -8,8 +8,8 @@ import { fullGC, heapStats } from "bun:jsc";
  */
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { createReceiver, createSender } from "../../lib/contract/guard";
-import { documented } from "../../lib/contract/schemas";
+import { createReceiver, createSender } from "../lib/guard";
+import { documented } from "../lib/schemas";
 import { broker, http, jobs } from "./fixtures";
 
 /** Live `Object`s added by retaining `n` results of `fn`. */

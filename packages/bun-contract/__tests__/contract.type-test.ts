@@ -1,5 +1,5 @@
 /**
- * Compile-time guarantees of the contract core (`lib/contract/`), with
+ * Compile-time guarantees of the contract core (`lib/`), with
  * negative controls: the spike's 24 (`docs/plans/bun-validate/evidence/
  * contract-core/types.probe.ts`), the per-field `WireInput` rule (plan §4.12
  * M1), the receiver policy rule (Q-C1), and the helpers' types.
@@ -12,12 +12,12 @@
  * its control.
  */
 /* eslint-disable prettier/prettier */
-import type { Carries, Received, Sent, WireInput } from "../lib/contract/model";
+import type { Carries, Received, Sent, WireInput } from "../lib/model";
 import type {
   StandardJSONSchemaV1,
   StandardSchemaV1,
   StandardTypedV1,
-} from "../lib/types/standardSchema";
+} from "../lib/standardSchema";
 import type {
   ChildResult,
   GrpcUnary,
@@ -27,16 +27,12 @@ import type {
   KafkaProduce,
   SseEmit,
   WsSend,
-} from "./contract/fixtures";
+} from "./fixtures";
 import { z } from "zod";
-import {
-  ContractError,
-  createReceiver,
-  createSender,
-} from "../lib/contract/guard";
-import { documented, recordOf } from "../lib/contract/schemas";
-import { getContract } from "../lib/contract/transport";
-import { flow, grpc, http, jobs, kafka, sse, ws } from "./contract/fixtures";
+import { ContractError, createReceiver, createSender } from "../lib/guard";
+import { documented, recordOf } from "../lib/schemas";
+import { getContract } from "../lib/transport";
+import { flow, grpc, http, jobs, kafka, sse, ws } from "./fixtures";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2

@@ -1,15 +1,14 @@
 /**
- * `channelContract()` (lib/contract/channel.ts), the pure half of a WebSocket
+ * `channelContract()` (lib/channel.ts), the pure half of a WebSocket
  * channel: the message maps' normalization, the implicit `error` frame, the
  * declaration TypeErrors and the meta the typed client reads. Socket-free; the
- * server binding (lib/channel.ts's `defineChannel`) is covered in
- * __tests__/channel.test.ts.
+ * server binding (bun-common's `defineChannel`) is covered in
+ * packages/bun-common/__tests__/channel.test.ts.
  */
-import type { StandardSchemaV1 } from "../../lib/types/standardSchema";
+import type { StandardSchemaV1 } from "../lib/standardSchema";
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { channelContract, wsTransport } from "../../lib/contract/channel";
-import { variants } from "../../lib/responseBodies";
+import { channelContract, wsTransport } from "../lib/channel";
 
 /** A `say`/`said` payload. */
 const Say = z.object({ text: z.string() });
@@ -77,24 +76,6 @@ describe("channelContract: the declaration", () => {
     ).toThrow(
       new TypeError(
         'defineChannel(): the sends "bad" must be a Standard Schema or null',
-      ),
-    );
-  });
-
-  it("refuses a variants() entry for now (the variants-on-sends shape is an open design point, plan §9)", () => {
-    expect(() =>
-      channelContract({
-        path: "/c",
-        receives: {},
-        sends: {
-          said: variants({
-            admin: { content: { "application/json": Said } },
-          }) as never,
-        },
-      }),
-    ).toThrow(
-      new TypeError(
-        'defineChannel(): the sends "said" must be a Standard Schema or null',
       ),
     );
   });

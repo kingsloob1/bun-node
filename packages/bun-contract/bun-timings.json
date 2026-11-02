@@ -1,9 +1,15 @@
 {
   "version": 1,
   "files": {
-    "__tests__/browserSafety.test.ts": 10,
-    "__tests__/core.test.ts": 9,
-    "__tests__/logger.test.ts": 8,
-    "__tests__/packaging.test.ts": 7
+    "__tests__/guards.test.ts": 593,
+    "__tests__/zeroCost.test.ts": 548,
+    "__tests__/describe.test.ts": 190,
+    "__tests__/udp.test.ts": 144,
+    "__tests__/channel.test.ts": 138,
+    "__tests__/thenable.test.ts": 132,
+    "__tests__/browserSafety.test.ts": 78,
+    "__tests__/core.test.ts": 68,
+    "__tests__/logger.test.ts": 49,
+    "__tests__/packaging.test.ts": 32
   }
 }

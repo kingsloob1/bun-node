@@ -2290,7 +2290,7 @@ datagram is logged and handed on raw; under `"off"` no schema runs. A client
 is the same calls the other way round: a sender on the `inbound` side before
 it sends, and a receiver on the `outbound` side for the replies. The
 package's tests run this adapter on port 0
-(`__tests__/contract/udp.test.ts`).
+(`packages/bun-contract/__tests__/udp.test.ts`).
 
 Example:
 [`custom-transport.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/custom-transport.ts).
