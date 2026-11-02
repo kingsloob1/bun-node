@@ -50,9 +50,10 @@ with one command.
 
 | Part | State |
 |---|---|
-| This plan, its sub-plans and `nest-typed-routes.md` | revised 2026-11-02 and **approved by the user on 2026-11-02**: every recommendation in §14 and every name in §16. **PR-K, PR-C1, PR-M1 and PR-M2 are built** (the next rows); nothing else is. The next PRs are **PR-K** (the contract package), **PR-M1** (the documents as the model) and **PR-C1** (the client core), which can start together (§15); the user's order of 2026-10-28 puts the work after bun-cache |
+| This plan, its sub-plans and `nest-typed-routes.md` | revised 2026-11-02 and **approved by the user on 2026-11-02**: every recommendation in §14 and every name in §16. **PR-K, PR-C1, PR-M1, PR-M2 and PR-C2 are built** (the next rows); nothing else is. The next PRs are **PR-K** (the contract package), **PR-M1** (the documents as the model) and **PR-C1** (the client core), which can start together (§15); the user's order of 2026-10-28 puts the work after bun-cache |
 | **PR-K** (`@kingsleyweb/bun-contract`, §10.1, §12.1, R14) | **built** 2026-11-02 (branch `feat/bun-contract-package`): `lib/contract/` and the Standard Schema types moved to `packages/bun-contract`, which has no dependency and bundles browser-safe; bun-common depends on it and re-exports it unchanged (`./contract`, the root, every `lib/contract/<module>` path); the logger is a minimal `ContractLogger`/`ContractLogSink`, bun-common installing its `resolveLogger` as the resolution; consumer check OK for both packages |
 | **PR-C1** client core (`packages/bun-client`) | **PR-C1 built** (2026-11-02, branch `feat/bun-client-core`): `createClient`, the verbs, `request`, `url`, `api.op`; params, query (round-trips through `router.fetch()`), body, headers; abort, timeout, retries with `Retry-After`, middleware, single-flight auth refresh; `Result` and the five error classes; §6.2's merging. Types from a hand-written map or `RoutesOf` (its parsed view until PR-M1). The names beyond §16 (`manifest` with `RouteManifest`, `Client`, `ClientFlags`, `RequestContext`), `throwOnError`/`undeclaredStatus` at the client and call levels only, a later level re-enabling retries, and a playground page after PR-C2 were **approved by the user on 2026-11-02** |
+| **PR-C2** generator and CLI (§3.2, §4, §10.1) | **built** 2026-11-02 (branch `feat/bun-client-codegen`, unmerged): `./codegen` (`generateRoutes`, `loadDocuments`, `runCli`, `documentsHash`) and the `bun-client` bin (`generate` with `--url`, `--openapi`/`--asyncapi`, `--module`/`--export`, `--out`, `--check`). OpenAPI 3.1 (and 3.0's `nullable`) → `Routes`, components as named types (recursion through their names), `manifest`; keys from `x-bun-route-key`, `x-bun-errors` narrowing error `code`s, `x-bun-cache` as `cache`, `x-sse-events` as `stream: "sse"` and `events`; inexpressible keywords `unknown` with a warning; deterministic, laid out as Prettier lays it out; `typesHash` in the header. Parity with `RoutesOf`'s `send`/`receive` over a fixture app, with §5.3's `z.date()` and the narrower codes pinned. `watch` (PR-C3) and `--zod` (PR-C4) exit saying so. The names beyond §16 (now in §16), `generate --url` waiting for PR-C3's token file (no `--header`), `--module`'s fixed `{ title: "API", version: "1" }`, untyped `default`/range responses with a warning, and a component named like a global keeping its name were **approved by the user on 2026-11-02**, as was a follow-up PR for `api.url`'s query becoming `never` on a path two methods share; §3.1's HTTP check-time rows are measured (`evidence/transports/http-typing/`) |
 | **PR-M1**, the documents as the model (§8.2, §8.5) | **built** 2026-11-02 (branch `feat/bun-common-docs-model`, unmerged): `x-bun-route-key` on every operation, `RouteDoc.errors`/`cache` → `x-bun-errors`/`x-bun-cache`, `typesHash` in `./lib/docs`, and `RoutesOf`'s `send`/`receive` views (a `__schemas` phantom intersected with `ValidatorMiddleware`, which stays unchanged; the departure from §8.5 approved 2026-11-02, with `send`/`receive` and a hash covering prose). No runtime change to routing. AsyncAPI gains nothing but the hash's coverage (§8.2 assigns channels nothing) |
 | **PR-M2**, the dev sync (§3.3, §8.3) | **built** 2026-11-02 (branch `feat/bun-common-dev-types`, unmerged): `devTypes(app, options)` in `./lib/docs` serves `{ hash, openapi, asyncapi }` (and each document alone) at `/__bun/types` with the hash as `ETag` and `304`, plus the `bun-types.v1` channel at `<path>/ws` (a `defineChannel`: `hello`, `changed`, `ping`), both hidden from the documents; fails closed (production throws when enabled and refuses per request, disabled registers nothing, loopback only unless `allowRemote`, bearer token or `token.<t>` subprotocol, every refusal the app's own not-found answer); lazy and cached by `routesVersion` (new counters on `BunRouter` and `BunWebSocket`, polled every 100 ms only while a watcher is connected); the token file `0600`, atomic, removed on close and at exit; a hub on `globalThis` keeps the token and watchers across a re-evaluation. bun-nest's adapter serves the channel (R12 verified by a probe). Open: a `BunHttpAdapter` app under `bun --hot` fails its re-evaluated `listen()` with `EADDRINUSE` (the adapter's, measured), so adapter apps use `--watch` until that follow-up lands. The names beyond the first §16 list (`tokenFile`, `DevTypesOptions`, `DevTypesRouter` with `token`/`tokenFile`/`listening()`/`close()`, `routesVersion`) and the protocol details (`hello.version` is the protocol version, `ping` answered with `hello`, a refusal falls through to the app's not-found, no peer address counts as loopback with the token still required, the `bun-types.v1` offer required, tokens of 16+ `[A-Za-z0-9._~-]`) were **approved by the user on 2026-11-02**, now in §16; so was a separate follow-up PR making `BunHttpAdapter.listen()` survive `bun --hot` |
 | **What it builds on, now built** (§2): the contract core and its browser-safe `/contract` entry (bun-validate V1, #470), request and response checks (V2–V3c), `listRoutes`/`effectiveContract` (V12, #528), channels (`defineChannel`, V8 #525), Nest `@Validate` and gateways (V7a/b, V9), the JSON Schema converter (AD (b), #529), `generateOpenApi` (AD (a), #531), `docsRouter` (AD (c), #532), `defineRoutes`/`RoutesOf` (AD (a2), #534), class DTOs (AD (b2), #535), `generateAsyncApi` and `gatewayAsyncApi` (AD (e), #539) | **merged 2026-10-21 to 2026-10-27**. The old critical path (AD (a), (b), (b1)) is done; §2.6 says what of it changed this plan |
@@ -446,8 +447,25 @@ channels [M, `transports/ws-typing/`]:
 
 **Under `bun --check`, the repo's checker, both forms check in a third of a
 second at 200 channels**; the tsc row is what a consumer on TypeScript 6
-pays. The HTTP rows above were measured with tsc only; under `bun --check`
-they are expected to shrink by the same order [I: PR-C2 measures them].
+pays. The HTTP rows above were measured with tsc only, against the
+2026-10-10 spike's client. PR-C2 measured the real client (`Client<…>`,
+bun-client) over the real generator's output, on 2026-11-02, median of three,
+through the heavy-run wrapper [M, `transports/http-typing/results.txt`]:
+
+| Routes | registries alone (tsc s / MB; `bun --check` ms) | client over `RoutesOf` | client over the generated map |
+|---|---|---|---|
+| 50 | 2.26 / 340; 132 | 3.14 / 419; 186 | **0.51 / 130; 38** |
+| 200 | 3.62 / 456; 156 | 5.70 / 616; 406 | **1.25 / 154; 56** |
+| 1000 | 7.79 / 1,032; 280 | 17.52 / 1,360; 1,817 | **7.16 / 327; 208** |
+
+The generated map's program holds no server code, so it is checked in a
+fraction of the inferred one's time and memory at every size. **Under
+`bun --check` the inferred client stays under a second to 200 routes and
+takes 1.8 s at 1000; the generated one stays under a quarter of a second**.
+The tsc figure for the generated map at 1000 routes (7.16 s), against the
+2026-10-10 spike's 0.75 s, is likely the real client's per-call types over a
+1000-key map rather than the map itself [I: not measured apart]; its memory
+is a quarter of inference's. Generating 1000 routes took 297 ms (607 KB).
 
 ### 3.2 (b) Generation: the documents to a `.d.ts`
 
@@ -1564,6 +1582,9 @@ option) are **withdrawn** with D1.
 | **`@kingsleyweb/bun-contract`** | package | new, extracted | bun-common's `./contract`, standalone |
 | `./query`, `./react`, `./vue`, `./svelte`, `./solid`, `./preact`, `./zod`, `./persist`, `./codegen`, **`./channel`, `./sse`, `./webrtc`, `./graphql`** | subpaths | bun-client | one per optional peer or transport |
 | `bun-client` (`generate`, `watch`, `--check`, `--module`, `--export`, `--url`, **`--openapi`, `--asyncapi`**, `--out`, `--zod`, `--zod-flavour`) | bin and flags | bun-client | |
+| `generateRoutes` (`GenerateRoutesOptions`: `asyncapi`, `documentWarnings`, `clientModule`; `GenerateRoutesResult`), `loadDocuments` (`DocumentSource`, its `headers`; `LoadedDocuments`), `runCli` (`CliIo`), `documentsHash`, `CodegenWarning` | functions, types | `./codegen` | PR-C2; **approved 2026-11-02** with the PR |
+| `events`, `cache` (beside `stream: "sse"`) | fields of a generated `Routes` entry | generated files | PR-C2; **approved 2026-11-02** |
+| `pathParams`, `PathParamInfo` | function, type | bun-client `./lib/path` | PR-C2 (the generator reads keys with the client's tokenizer); **approved 2026-11-02** |
 | `createClient`, `ClientConfig`, `RouteConfig`, `CallConfig`, `RetryConfig`, `ValidationConfig`, `PartValidation`, `FailureMode`, `QueryDefaults`, `AuthConfig`, `ClientMiddleware`, `SchemaSource` | function, types | `.` | §6.2 |
 | option names of `ClientConfig` (§6.2's list; `live` moves to `./query`'s `live()`) | options | `.` | query-core's words where it has them |
 | `op` (the named-operation proxy) | property | the client | short; `api.op.getUser()` |

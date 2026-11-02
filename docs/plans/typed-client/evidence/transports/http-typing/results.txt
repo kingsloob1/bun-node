@@ -1,0 +1,15 @@
+# bun http-typing/gen.ts && bun http-typing/measure.ts — 2026-11-02, Bun 1.4.4-canary.1+11c367163, tsc 6.0.3, zod 4.6.5, linux-x64, through the heavy-run wrapper (exclusive, nice 10), median of 3
+# N routes in defineRoutes registries of 50 (GETs: params + coerced/defaulted query + 3-6 fields; POSTs: params + a 3-6 field body; each a 200 body and a shared 404); base = the registries alone, infer = registries + Client<interface Api extends RoutesOf<…>>, gen = Client<Routes> over bun-client's generated api.gen.ts (no server code in the program); every client calls every route once
+variant  N     tsc: exit check_s  mem_MB  instantiations | bun --check: exit wall_ms
+base     50            0    2.26     340          541486 |                0     132
+infer    50            0    3.14     419          718549 |                0     186
+gen      50            0    0.51     130           49261 |                0      38
+base     200           0    3.62     456          768832 |                0     156
+infer    200           0    5.70     616         1439059 |                0     406
+gen      200           0    1.25     154          148751 |                0      56
+base     1000          0    7.79    1032         1981344 |                0     280
+infer    1000          0   17.52    1360         5312959 |                0    1817
+gen      1000          0    7.16     327          679303 |                0     208
+
+# generation (bun http-typing/gen.ts, generateOpenApi + generateRoutes, one run): N=50: generated 50 routes, 30 KB, in 60 ms; N=200: generated 200 routes, 121 KB, in 103 ms; N=1000: generated 1000 routes, 607 KB, in 297 ms
+# negative control: id: "1" -> id: 7 in out/gen-1000/client7.ts -> bun --check: TS2322, 'Found 1 error in 1 file, checked 29 files'; the same in out/infer-1000/client7.ts -> TS2322, 'checked 134 files'; restored -> clean

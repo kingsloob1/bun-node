@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. It has no runtime dependency, so nothing is packed beside it.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. Nothing has a runtime dependency, so nothing is packed beside it.",
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-client",
@@ -58,6 +58,24 @@
       "types": ["RouteMap", "RetryConfig"],
       "runtime": false,
       "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/codegen",
+      "values": ["generateRoutes", "loadDocuments", "runCli", "documentsHash"],
+      "types": [
+        "CodegenWarning",
+        "GenerateRoutesOptions",
+        "GenerateRoutesResult",
+        "DocumentSource",
+        "LoadedDocuments",
+        "CliIo"
+      ],
+      "snippet": "const generated: t.GenerateRoutesResult = m.generateRoutes({ openapi: \"3.1.0\", info: { title: \"t\", version: \"1\" }, paths: {} });\nconst _code: Equal<typeof generated.code, string> = true; void _code;\nconst _hash: Equal<ReturnType<typeof m.documentsHash>, string> = true; void _hash;\nconst source: t.DocumentSource = { openapi: \"./openapi.json\" }; void source;\nconst _status: Equal<Awaited<ReturnType<typeof m.runCli>>, number> = true; void _status;\nexport type _result = Expect<IsAny<t.GenerateRoutesResult>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/codegen",
+      "values": ["generateRoutes"],
+      "types": ["CodegenWarning"]
     }
   ]
 }

@@ -19,7 +19,7 @@ repository root's `node_modules`, so run `bun install` at the root as well.
 | [`swr-core/`](swr-core/README.md) | A dependency-free SWR core (465 lines) and a React binding: dedupe, SWR, focus/online, retries, optimistic rollback, tags, GC, hydration, ETag/304, structural sharing, infinite; 27 tests | `bun test swr-core` |
 | [`bundle-size/`](bundle-size/README.md) | Minified/gzip/brotli of our spike core against query-core and its five adapters, swr, nanoquery, openapi-fetch, ky, and client-side validators | `bun bundle-size/measure.ts` |
 | [`nest/`](nest/README.md) | Nest controllers → the same route model through DiscoveryService, on bun-nest; a guarded dev endpoint | `cd nest && bun explore.ts` (from that directory) |
-| [`transports/`](transports/README.md) (2026-11-02, its own `package.json`) | WebSocket message typing cost (inferred vs generated); WebRTC under Bun (node-datachannel, werift) with typed signalling and data channels; GraphQL runtime sizes and gql.tada's check cost; the contract core in a browser bundle | see its README |
+| [`transports/`](transports/README.md) (2026-11-02, its own `package.json`) | WebSocket message typing cost (inferred vs generated); the HTTP client's check cost, inferred `RoutesOf` against PR-C2's generated map (`http-typing/`); WebRTC under Bun (node-datachannel, werift) with typed signalling and data channels; GraphQL runtime sizes and gql.tada's check cost; the contract core in a browser bundle | see its README |
 
 The first six were measured on Bun 1.4.3 (`bbdc5a519`), TypeScript 6.0.3 (7.0.2 for the
 swr-core type check), linux-x64, 2026-10-10. A conclusion here is as old as

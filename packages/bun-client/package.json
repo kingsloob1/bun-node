@@ -37,6 +37,16 @@
       "types": "./dts/index.d.ts",
       "default": "./lib/index.ts"
     },
+    "./codegen": {
+      "@kingsleyweb/source": "./lib/codegen/index.ts",
+      "types": "./dts/codegen/index.d.ts",
+      "default": "./lib/codegen/index.ts"
+    },
+    "./lib/codegen": {
+      "@kingsleyweb/source": "./lib/codegen/index.ts",
+      "types": "./dts/codegen/index.d.ts",
+      "default": "./lib/codegen/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",
@@ -56,6 +66,9 @@
   },
   "main": "lib/index.ts",
   "types": "dts/index.d.ts",
+  "bin": {
+    "bun-client": "./lib/codegen/cli.ts"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -84,10 +97,14 @@
     "format:check": "bun fmt --check"
   },
   "peerDependencies": {
+    "@kingsleyweb/bun-common": ">=2.2.0",
     "@types/bun": ">=1.4.2",
     "typescript": "^5.9.3 || ^6.0.0"
   },
   "peerDependenciesMeta": {
+    "@kingsleyweb/bun-common": {
+      "optional": true
+    },
     "@types/bun": {
       "optional": true
     },
