@@ -574,6 +574,14 @@ export interface OpenApiOptions {
    * method and path within the mount. A suffixed id another route already
    * uses, and a later mount at `/` (no words to suffix), are still a
    * `ConfigError`, as is a duplicate this callback returns.
+   *
+   * A second exception, for a declared id or one this callback returns: an
+   * optional param documents its route on several paths
+   * ({@link OpenApiOptions.optionalParams}), and an id is unique in a
+   * document, so the path with every param keeps it and each shorter path
+   * gets `Without<Params>` — `getPage` on `/page/:n?` documents as `getPage`
+   * at `/page/{n}` and `getPageWithoutN` at `/page`; on `/x/:a?/:b?`, the
+   * others are `getXWithoutB`, `getXWithoutA` and `getXWithoutAAndB`.
    */
   operationId?: (route: ListedRoute) => string;
   /**
@@ -771,6 +779,23 @@ function isRemount(claim: OperationIdClaim, other: OperationIdClaim): boolean {
     claim.within !== undefined &&
     claim.within === other.within
   );
+}
+
+/**
+ * The suffix that tells an optional param's shorter path from its full one:
+ * `Without` and the camelCase names of the params `template` drops, joined by
+ * `And` (`/x/{a}/{b}` against `/x/{b}` is `"WithoutA"`; against `/x` it is
+ * `"WithoutAAndB"`).
+ */
+function withoutSuffix(
+  full: OpenApiPathTemplate,
+  template: OpenApiPathTemplate,
+): string {
+  const kept = new Set(template.params.map((param) => param.name));
+  const words = full.params
+    .filter((param) => !kept.has(param.name))
+    .map((param) => param.name.replace(/^./, (c) => c.toUpperCase()));
+  return `Without${words.join("And")}`;
 }
 
 /**
@@ -1390,10 +1415,12 @@ export function generateOpenApi(
        * the first mount keeps it, each later one gets its mount's suffix.
        * Any other duplicate is a ConfigError. */
       const declared = doc?.operationId;
+      const named = declared ?? options.operationId?.(route);
+      /* A derived id already differs per path; a declared or named one is
+       * the route's, and is shared by an optional param's paths. */
+      const derived = named === undefined;
       let operationId =
-        declared ??
-        options.operationId?.(route) ??
-        defaultOperationId(route.method, template.path);
+        named ?? defaultOperationId(route.method, template.path);
       let owner = operationIds.get(operationId);
       if (
         declared !== undefined &&
@@ -1413,6 +1440,12 @@ export function generateOpenApi(
           );
         }
         operationId = `${declared}${suffix}`;
+        owner = operationIds.get(operationId);
+      }
+      /* An optional param documents the route on several paths; the first
+       * (every param present) keeps the id, the others name what they drop. */
+      if (!derived && template !== pathResult.templates[0]) {
+        operationId = `${operationId}${withoutSuffix(pathResult.templates[0], template)}`;
         owner = operationIds.get(operationId);
       }
       if (owner !== undefined && owner.key !== route.key) {

@@ -14,6 +14,8 @@
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
+import { BunRouter } from "@kingsleyweb/bun-common";
+import { generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
 import {
   documentsHash,
   generateRoutes,
@@ -278,6 +280,28 @@ describe("route keys", () => {
     const routes = code.slice(0, code.indexOf("export const manifest"));
     expect(routes.match(/"GET \/users\/:id\?": \{/g)).toHaveLength(1);
     expect(code).toContain("    params: {\n      id?: string;\n    };");
+  });
+
+  it("keeps one entry, named by the declared id, for an optional param the generator documents on two paths", () => {
+    const app = new BunRouter();
+    app
+      .get("/root/:a?", (_req, res) => res.json({}))
+      .describe({ operationId: "getRoot" });
+    const { document } = generateOpenApi(app, { title: "t", version: "1" });
+    const ids = Object.values(
+      document.paths as Record<string, { get: { operationId: string } }>,
+    ).map((item) => item.get.operationId);
+    expect(ids.toSorted()).toEqual(["getRoot", "getRootWithoutA"]);
+    const { code, warnings } = generateRoutes(document);
+    expect(code.slice(0, code.indexOf("export const manifest"))).toContain(
+      '"GET /root/:a?": {',
+    );
+    expect(code.match(/"GET \/root\/:a\?": \{/g)).toHaveLength(2); // route + manifest
+    expect(code).toContain('operationId: "getRoot"');
+    expect(code).not.toContain("getRootWithoutA");
+    expect(warnings.filter((w) => w.message.includes("operationId"))).toEqual(
+      [],
+    );
   });
 
   it("types a wildcard as an array of segments", () => {
