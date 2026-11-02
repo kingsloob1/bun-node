@@ -1,0 +1,4 @@
+# bun contract-reuse/size.ts — 2026-11-02, Bun 1.4.4-canary.1+11c367163; browser target, minified, source condition
+entry   min_KB  gzip_KB  server markers
+guards    19.2      6.8  none
+whole     25.6      9.0  none

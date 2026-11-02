@@ -152,13 +152,30 @@ blindly.
     in-process A/B and stage scripts, CPU-profile summarisers, multipart
     stage costs, `file-type` costs, Bun `formData()` against busboy (speed and
     20 behaviour probes), urlencoded parser comparison.
-- **[`typed-client/`](typed-client/README.md)** — a type-aware client request
-  library: one route model, types from the server, an SWR data layer, live
-  sync.
+- **[`typed-client/`](typed-client/README.md)** — a type-aware client
+  library for every transport bun-node serves (revised and approved by the user 2026-11-02; nothing built): types
+  from the server's contracts through its OpenAPI and AsyncAPI documents (or
+  inferred in a monorepo), validation of both directions, an SWR data layer,
+  live sync.
+  - [`websocket.md`](typed-client/websocket.md) — typed WebSocket channels:
+    request/response, push, reconnection, backpressure, Nest gateways, live
+    invalidation as a channel.
+  - [`sse.md`](typed-client/sse.md) — typed server-sent events with
+    `Last-Event-ID` resume.
+  - [`webrtc.md`](typed-client/webrtc.md) — what of WebRTC can be typed:
+    signalling and data channels, not media; Bun has no WebRTC.
+  - [`graphql.md`](typed-client/graphql.md) — bun-node serves no GraphQL;
+    a typed call for external APIs, on demand.
+  - [`other-transports.md`](typed-client/other-transports.md) — named
+    operations, uploads, downloads, streamed bodies; gRPC and Connect out.
   - [`nest-typed-routes.md`](typed-client/nest-typed-routes.md) — the NestJS
-    half: decorators, the route model, a dev types module, typed gateways.
+    half: decorators, a dev types module, typed gateways (mostly built by
+    bun-validate; revised 2026-11-02).
   - Evidence: [`typed-client/evidence/`](typed-client/evidence/README.md)
-    (backs both) — a standalone Bun project (query-core and its five
+    (backs all of them; the 2026-11-02 spikes are its
+    [`transports/`](typed-client/evidence/transports/README.md) project:
+    WebSocket typing cost, WebRTC peers under Bun, GraphQL sizes and
+    gql.tada's check cost, the contract core in a browser) — a standalone Bun project (query-core and its five
     adapters, swr, nanostores, openapi-fetch, zod, valibot, ajv and others,
     pinned and installed there only) **measuring**, on Bun 1.4.3 and
     TypeScript 6.0.3: a route map type accumulating on a patched copy of the

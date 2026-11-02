@@ -1,0 +1,14 @@
+# bun ws-typing/gen.ts && bun ws-typing/measure.ts — 2026-11-02, Bun 1.4.4-canary.1+11c367163, tsc 6.0.3, zod 4.6.5, linux-x64, through the heavy-run wrapper (slot), median of 3
+# N channels x (8 receives + 8 sends) zod object schemas; 2 replies per channel; modules of 10
+variant  N     tsc: exit check_s  mem_MB  instantiations | bun --check: exit wall_ms
+base     10            0    0.67     123           52077 |                0      80
+infer    10            0    0.87     177          162439 |                0      88
+gen      10            0    0.42      90           14274 |                0      39
+base     50            0    1.03     218          218277 |                0      68
+infer    50            0    2.13     327          768955 |                0     134
+gen      50            0    0.62     151           32502 |                0      49
+base     200           0    3.92     456          841527 |                0     121
+infer    200           0    6.61    1022         3043416 |                0     324
+gen      200           0    1.25     230          100857 |                0      60
+
+# negative control: a wrong field type in out/infer-200/client7.ts -> bun --check: TS2322, 'Found 1 error in 1 file, checked 53 files'; restored -> clean

@@ -1,0 +1,6 @@
+# bun graphql/size.ts — 2026-11-02, Bun 1.4.4-canary.1+11c367163; browser target, minified
+entry        min_KB  gzip_KB
+thin            0.4      0.3
+gqltada        10.3      3.4
+graphqljs      42.8     11.4
+urql           30.5     10.5

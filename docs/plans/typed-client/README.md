@@ -1,10 +1,12 @@
-# Typed client: one route model, types from the server, an SWR data layer, live sync
+# Typed client: types from the server for every transport, validation both ways, an SWR data layer, live sync
 
-Implementation plan for a **type-aware client request library** and the
-server-side pieces it needs in `@kingsleyweb/bun-common` (both HTTP adapters).
-The NestJS half is a separate document,
-[`nest-typed-routes.md`](nest-typed-routes.md), sharing this plan's route
-model and protocol (§9 says why it is split). The user asked:
+Implementation plan for a **type-aware client library** and the server-side
+pieces it needs in `@kingsleyweb/bun-common` (both HTTP adapters), covering
+**HTTP, WebSocket channels, server-sent events, WebRTC signalling and data
+channels, and GraphQL**, with typed, validated messages in both directions.
+The transports beyond HTTP each have a sub-plan in this folder (§1.4); the
+NestJS half is [`nest-typed-routes.md`](nest-typed-routes.md). The user
+asked, on 2026-10-10:
 
 > "The bun-views plan combined with api-docs-generation plan can aid or be the
 > first implementation of a client aware request library that gets the types
@@ -18,7 +20,7 @@ model and protocol (§9 says why it is split). The user asked:
 > or probably websocket to communicate types with the client on the fly during
 > development."
 
-and then, through the coordinator, on the same day:
+then, through the coordinator, on the same day:
 
 > "it should come with a builtin zod validator although it should allow for
 > bring your own validator to add extra validation outside the inbuilt schema
@@ -26,23 +28,33 @@ and then, through the coordinator, on the same day:
 > the client side library to enable or disable or customise functionality. For
 > instance enabling request body or request query validation etc."
 
-That second request is §5 (validation) and §6.2 (configuration).
+and on 2026-10-28, widening it:
 
-Written 2026-10-10 against `develop` at `7dac1de4`. **No product code was
-changed.** Every `file:line` is at `7dac1de4` and relative to `packages/`
-unless it says otherwise. The evidence is in
-[`evidence/`](evidence/README.md), and each
-measurement there can be re-run with one command.
+> "After the bun cache plan, you will work on the typed client plan
+> implementation but this time it should include auto typings, validation for
+> all kind of request. Http, websocket, webrtc, graphql if any, etc."
 
-### Status (2026-10-10)
+The second request is §5 (validation) and §6.2 (configuration); the third is
+§3.5 (auto typing per transport), §5.6 (validation per transport) and the
+sub-plans.
+
+Written 2026-10-10 against `develop` at `7dac1de4`; **revised 2026-11-02
+against `e80ab379`**, after bun-validate, api-docs-generation and the
+contract core landed (§2). **No product code was changed.** Every
+`file:line` is at `e80ab379` and relative to `packages/` unless it says
+otherwise; a measurement carries the date of its evidence. The evidence is in
+[`evidence/`](evidence/README.md), and each measurement there can be re-run
+with one command.
+
+### Status (2026-11-02)
 
 | Part | State |
 |---|---|
-| This plan and `nest-typed-routes.md` | written; nothing built |
-| **What it builds on, from [`api-docs-generation/README.md`](../api-docs-generation/README.md)**: `.describe()`, `__schemas` on the validator, `validate(…, { responses })`, the JSON Schema converter registry, `generateOpenApi()` | **plan only, not started** (`grep __schemas packages/bun-common/lib` finds nothing). Its phases (a), (b0), (b), (b1) are this plan's critical path (§15) |
-| [`bun-views/README.md`](../bun-views/README.md) (merged #325): adapters, props on the wire, nonce, hydration | plan only; its PR-5 (hydration) is what SSR here uses (§6.6) |
-| `bun-cache/README.md` (PR #319, branch `docs/plan-bun-cache`, not merged): tags, `cacheResponse()`, ETag/304 | plan only; §6.4 ties into its tags |
-| SSE helpers ([`bun-native-routes/README.md`](../bun-native-routes/README.md) §16, PR-sse1 to sse5) | not started; §6.5 uses them as the WebSocket fallback |
+| This plan, its sub-plans and `nest-typed-routes.md` | revised 2026-11-02 and **approved by the user on 2026-11-02**: every recommendation in §14 and every name in §16. **Nothing is built.** The next PRs are **PR-K** (the contract package), **PR-M1** (the documents as the model) and **PR-C1** (the client core), which can start together (§15); the user's order of 2026-10-28 puts the work after bun-cache |
+| **What it builds on, now built** (§2): the contract core and its browser-safe `/contract` entry (bun-validate V1, #470), request and response checks (V2–V3c), `listRoutes`/`effectiveContract` (V12, #528), channels (`defineChannel`, V8 #525), Nest `@Validate` and gateways (V7a/b, V9), the JSON Schema converter (AD (b), #529), `generateOpenApi` (AD (a), #531), `docsRouter` (AD (c), #532), `defineRoutes`/`RoutesOf` (AD (a2), #534), class DTOs (AD (b2), #535), `generateAsyncApi` and `gatewayAsyncApi` (AD (e), #539) | **merged 2026-10-21 to 2026-10-27**. The old critical path (AD (a), (b), (b1)) is done; §2.6 says what of it changed this plan |
+| bun-cache (`cacheResponse({ tags })`, `addCacheTags`, surrogate keys, Nest `@CacheTags`) | merged (#544–#588); §6.4's tags use its names |
+| The SSE writer (`res.sse()`, [`bun-native-routes/README.md`](../bun-native-routes/README.md) §16 PR-sse2) | **not started**; [`sse.md`](sse.md) asks it for ids, resume and `retry:` |
+| [`bun-views/`](../bun-views/README.md): hydration (its PR-5) | **not started**; §6.6's SSR waits for it |
 
 ### Contents
 
@@ -59,9 +71,14 @@ measurement there can be re-run with one command.
 11. [Using it ourselves: bun-jobs and bun-jobs-ui](#11-using-it-ourselves-bun-jobs-and-bun-jobs-ui)
 12. [Tests and evidence](#12-tests-and-evidence)
 13. [Risks](#13-risks)
-14. [Open questions for the user](#14-open-questions-for-the-user)
+14. [Answered by the user, 2026-11-02](#14-answered-by-the-user-2026-11-02)
 15. [PR slicing and effort](#15-pr-slicing-and-effort)
-16. [Names needing approval](#16-names-needing-approval)
+16. [Names (approved 2026-11-02)](#16-names-approved-2026-11-02)
+
+Sub-plans: [`websocket.md`](websocket.md), [`sse.md`](sse.md),
+[`webrtc.md`](webrtc.md), [`graphql.md`](graphql.md),
+[`other-transports.md`](other-transports.md) (RPC, uploads, downloads,
+streams, gRPC), [`nest-typed-routes.md`](nest-typed-routes.md).
 
 ### How to read the markings
 
@@ -69,7 +86,7 @@ The same marks the other plans use:
 
 | Mark | Meaning |
 |---|---|
-| **[S]** | Read in this repo's source at `7dac1de4`. The `file:line` is given |
+| **[S]** | Read in this repo's source at `e80ab379` (at `7dac1de4` where a 2026-10-10 claim kept its old mark). The `file:line` is given |
 | **[M]** | Measured here by a spike that can be re-run. The evidence file is named |
 | **[V]** | Read in a third party's docs or source at a pinned version, linked. "V-prior" when carried from another plan |
 | **[I]** | Inference. A claim to test, never a finding |
@@ -77,9 +94,13 @@ The same marks the other plans use:
 | **[D]** | A design decision this plan proposes |
 
 **AD** is [`api-docs-generation/README.md`](../api-docs-generation/README.md), **BV** is
-[`bun-views/README.md`](../bun-views/README.md), **BC** is `bun-cache/README.md` (PR #319), **NTR**
-is [`nest-typed-routes.md`](nest-typed-routes.md). "The evidence" is
-`docs/plans/typed-client/evidence/`.
+[`bun-validate/README.md`](../bun-validate/README.md), **BVW** is
+[`bun-views/README.md`](../bun-views/README.md), **BC** is
+[`bun-cache/README.md`](../bun-cache/README.md), **BNR** is
+[`bun-native-routes/README.md`](../bun-native-routes/README.md), **NTR** is
+[`nest-typed-routes.md`](nest-typed-routes.md). "The evidence" is
+`docs/plans/typed-client/evidence/`; the 2026-11-02 spikes are in its
+`transports/` project.
 
 ---
 
@@ -87,260 +108,297 @@ is [`nest-typed-routes.md`](nest-typed-routes.md). "The evidence" is
 
 ### 1.1 The one-paragraph answer
 
-**One route model, built at runtime from the routes an app already
-registers, drives everything:** the OpenAPI document (AD), a generated
-TypeScript map of every route (`Routes`), optional generated runtime schemas
-(Zod by default), and a dev-only channel that pushes changes to a watcher,
-which rewrites the client's types file **49 ms** after the server file is
-saved under `bun --hot` [M, `sync/`]. The model comes from the
-`validate(schemas, { responses })` and `.describe()` that AD already plans,
-so a route author writes nothing new, and **today's statement-style routes
-work unchanged**: the spike generated a correct `.d.ts` from six ordinary
-`app.get(...)` statements on the unpatched router, with a mounted sub-router
-[M, `codegen/`]. A monorepo may skip generation and **infer** the same map
-from a `defineRoutes()` registry, which costs +2% type-check time at 1000
-routes, where making `BunRouter`'s own verbs accumulate the map costs +49%
-and needs chaining [M, `inference/`]. On the client, a dependency-free core
-(`@kingsleyweb/bun-client`) builds typed requests (params, query, body,
-headers, abort, timeouts, retries, middleware, auth refresh), validates
-requests and responses with the built-in generated schemas plus any Standard
-Schema the app brings, and returns a result discriminated by status. **The
-data layer is `@tanstack/query-core`**, an optional peer with no dependencies
-of its own, whose official adapters already cover React, Vue, Svelte 5,
-Solid and Preact; we add typed query options, cache tags, ETag revalidation,
-live invalidation over WebSocket or SSE, and SSR through bun-views. Writing
-our own core was spiked too: 465 lines and 3.0 KB gzipped against
-query-core's 10.5 KB, but without observer reconciliation, pending-promise
-hydration, paused mutations or a binding per framework [M, `swr-core/`,
-`bundle-size/`]. Nest controllers produce the same model through
-`DiscoveryService` (NTR).
+**The contract every route and channel already carries is the single source
+of types and checks, for every transport.** bun-validate made it real:
+`validate(schemas, { responses })` on a route, `defineChannel()` on a
+WebSocket, `sse({ … })` on a stream, `@Validate`/`@ValidateMessage` in Nest,
+each carrying a contract the server enforces in both directions and that
+`generateOpenApi()` and `generateAsyncApi()` already publish as OpenAPI 3.1
+and AsyncAPI 3.0. The client reads **those documents** (plus three `x-bun-*`
+extensions for route keys, error codes and cache tags) to generate a typed map
+per transport, or, in a monorepo, **infers** the same types from the shared
+contract modules (`RoutesOf` for routes, `channelContract()` for channels);
+a dev-only endpoint pushes a changed document's hash so the generated file
+follows the server **49 ms** after a save under `bun --hot` [M, `sync/`].
+On the client, a dependency-free core (`@kingsleyweb/bun-client`) gives each
+transport a call keyed by a literal (a path, a message `type`, an event name):
+`api.get("/users/:id")`, `channel(api, chat).request("say", …)`,
+`sse(api, "GET /jobs/:id/events")`, `typedDataChannel(rtc, chat)`,
+`gql.query(UserQuery)`; **it validates what it sends and what it receives with
+the same guards the server runs** (the contract core, extracted to a
+zero-dependency package and loaded only when validation is on), plus any
+Standard Schema the app brings. The data layer is `@tanstack/query-core`;
+live invalidation is one typed channel. WebRTC is typed where it has data
+(signalling and data channels; media cannot be); GraphQL, which bun-node does
+not serve, gets a 0.3 KB typed call over the HTTP core, typed by the app's
+gql.tada or graphql-codegen.
 
 ### 1.2 The decisions
 
+Changed or new on 2026-11-02 are marked **(rev)** and **(new)**.
+
 | # | Decision | Why |
 |---|---|---|
-| D1 | **One route model**: a JSON document listing every route (`"GET /users/:id"`, `operationId`, params, request JSON Schemas, responses by status, cache tags, warnings) with a hash of its canonical form. Docs, codegen, live sync and Nest all produce or read it. | One description, four outputs, as the user asked. The hash is the change detector (§3.3). §3.0 |
-| D2 | **The route author's shape is AD's**: `validate(schemas, { responses })` before the handler, `.describe({ … })` after. This plan adds two `.describe()` fields (`cache`, `channel`) and an app-level `commonResponses`. | Responses must sit before the handler to be enforced (AD Decision 4, spiked there). Nothing new to learn. §8.1 |
-| D3 | **Generation plus live sync is the default for every layout**, monorepo included. **Inference is opt-in**, through a `defineRoutes()` registry (AD's (a2) registrar). `BunRouter`'s verb overloads keep returning `this`. | Generation works with statement-style routes; inference needs chaining or a registry. A client over a generated map of 1000 routes checks in 0.75 s against 7 to 10 s for inference [M]. The accumulating router costs +49% [M]. §3.4 |
-| D4 | **The live sync is a dev-only HTTP endpoint plus a WebSocket that announces the model's hash**; a CLI watcher rewrites the generated files atomically. It refuses `NODE_ENV=production`, needs `enabled: true`, a bearer token, loopback, and answers 404 otherwise. | 49 ms edit-to-file under `--hot`, 160 ms under `--watch`, against 560 ms for the 1 s polling the existing tools use [M]. No surveyed tool pushes types from a running server [V]. §3.3 |
-| D5 | **Params and query are typed from the schema's output values with the input's optionality; bodies from the input; responses from the output, after a JSON round trip (`Jsonify`).** | `z.coerce.number()` has input `unknown`; typed from the input, the client accepted `{ page: "x" }` [M]. A defaulted key is required in the output, optional in the input [M]. A `Date` arrives as a string. §4.1 |
-| D6 | **Responses come from declared schemas, not handler inference.** Undeclared routes get `{ 200: unknown }` and a warning. A status the route does not declare **throws** `UnexpectedStatusError` by default. | Handlers return `res`, not the body (AD §3.7). A catch-all `number` member would ruin narrowing by status. §4.2 |
-| D7 | **A call returns a result discriminated by status** (`{ ok, status, data }` or `{ ok, status, error }`); `throwOnError: true` turns failures into a typed `HttpError`. Errors are problem+json with a generated `code` union. | bun-jobs-ui compares 32 error codes as strings because its contract exports no union [S, survey]. §4.3 |
-| D8 | **Built-in runtime validation is generated Zod**, in `@kingsleyweb/bun-client/zod` with zod an optional peer; `zod/mini` by default. A monorepo may pass the server's own schemas when their module is browser safe. | A client in another repo cannot import the server's schema objects. `zod/mini` is 8.9 KB gz for 50 routes and eval-free; classic zod is 26.2 KB and contains `new Function` [M]. §5.1 |
-| D9 | **Bring your own validator: any Standard Schema, run after the built-in one, issues merged into one `ValidationError`** of `{ target, message, path }`; `replace: true` drops the built-in one for that part. | BunValidate's rule and BunValidate's issue shape. §5.4 |
-| D10 | **Every behaviour is configurable at three levels, global → per route → per call, later wins**; defaults make zero-config work. | The user's request. §6.2 |
-| D11 | **Validation defaults: on in development, off in production**, for requests and responses; a request failure throws, a response failure warns. | Response validation costs 22 µs on a 20-user list with generated classic Zod (35 µs jitless, 37 µs `zod/mini`), against 11 µs for `JSON.parse` [M]. A server already validates the request. §5.5 |
-| D12 | **The data layer is `@tanstack/query-core` (optional peer, `^5`)**: `/query` exports typed `queryOptions`/`mutationOptions`/`infiniteOptions` factories; framework subpaths are thin wrappers over the official adapters. | All five frameworks are covered officially [V]; query-core has no dependencies; 10.5 KB gz [M]. Our own core would cost ~15–20 days more for parity and leave five bindings to maintain. §7 |
-| D13 | **Cache tags are declared on routes** (`.describe({ cache: { tags, invalidates } })`, templated by params); a mutation invalidates by tag; the server can push the same tags live. | query-core has prefix and predicate invalidation, no tags [V]; `meta.tags` plus a predicate covers it. Shares BC's tag names. §6.4 |
-| D14 | **Revalidation is conditional**: the query function sends `If-None-Match` with the last ETag and keeps the cached data on a 304. | bun-common already answers 304 from `res.send` (`bun-common/lib/BunResponse.ts:1537-1548`) [S]; query-core hands the query function the client (`query-core/src/types.ts:174-183`) [V]. The spike's core proved the semantics [M]. §6.4 |
-| D15 | **Live queries push invalidations, not data**, over WebSocket with SSE as the fallback; after a reconnect gap the client invalidates every active query. | TkDodo's guidance and tRPC's `tracked()` resume [V]; bun-jobs-ui already does this by hand (`bun-jobs-ui/app/live/live.ts:223-267`) [S]. §6.5 |
-| D16 | **SSR uses bun-views' props channel**: the server prefetches through `router.fetch()` in process, dehydrates into the view's props, and the client entry hydrates query-core before hydrating the view. | No socket, the production pipeline (CLAUDE.md "Testing without a socket"); the props are JSON already; BV's `jsonForScript` and nonce apply (BV §4.6.4) [V-prior]. §6.6 |
-| D17 | **No runtime code reaches a browser bundle from bun-common or the server.** The client depends on nothing of ours at runtime; a bundle-safety test with a negative control guards every browser subpath. | The bun-jobs `api/contract` lesson (`bun-jobs-ui/__tests__/app/pkg/bundle-safety.test.ts`) [S]. §10 |
-| D18 | **The Nest half is its own document** (NTR), on the same model and protocol: `@Validate` (AD (g)) is the typed-route decorator, an explorer builds the model through `DiscoveryService` (measured: 6 routes in 8.7 ms, every key matching the adapter's registered routes), and a `DevTypesModule` serves it. | The Nest surface (decorators, pipes, guards, interceptors, discovery, gateways) is a design of its own, and has a different owner. §9 |
-| D19 | **bun-jobs' management API and bun-jobs-ui are the first consumer, as a pilot of one domain**, not a rewrite. | It has 84 routes declared with schemas, and the UI hand-writes 78 `request<T>()` calls, 11 key factories and 20 shape assertions [S, survey]. §11 |
+| D1 **(rev)** | **The type source is the contract, published as OpenAPI 3.1 and AsyncAPI 3.0**, with `x-bun-route-key`, `x-bun-errors` and `x-bun-cache`. The old bespoke `RouteModel` is dropped; the hash is over the two canonical documents. | Both generators are built and read the same contracts the server enforces (BV V-D14; `docs/openapi.ts:756`, `docs/asyncapi.ts:279`) [S]; Nest controllers reach them through reflect metadata (#538) and gateways through `gatewayAsyncApi` [S]; and the generator then types any third-party OpenAPI or AsyncAPI service too. §3.0 |
+| D2 | **The route author's shape is AD's**, now built: `validate(schemas, { responses })` before the handler, `.describe({ … })` after. This plan adds two `.describe()` fields (`errors`, `cache`), written as the extensions. | Nothing new to learn; `RouteDoc.extensions` already carries `x-*` (`docs/routeDoc.ts:137`) [S]. §8.1 |
+| D3 | **Generation plus live sync is the default for every layout**; **inference is opt-in** through `defineRoutes()` (built, #534) and shared channel contracts. | Unchanged reasons [M, 2026-10-10]; measured again for channels: generated 1.25 s against inferred 6.61 s of tsc at 200 channels, both under 0.33 s with `bun --check` [M, `transports/ws-typing/`]. §3.4 |
+| D4 | **The live sync is a dev-only endpoint serving the documents with an `ETag`, plus a WebSocket announcing their hash**; fail closed (production refuses, `enabled: true`, token, loopback, 404). | 49 ms edit-to-file under `--hot` [M]. §3.3 |
+| D5 **(rev)** | **The client sends each field's wire input and receives the wire side after JSON**: `WireInput<S>` for params, query, headers and bodies; `Jsonify<WireInput<S>>` for responses and received messages, the output only under `responseOutput: "parsed"`. | BV's rule, approved 2026-10-17 (BV §4.12 M1, M2) and built (`contract/model.ts:443`; `docs/openapi.ts:1107-1108`) [S]. The old D5 typed responses from the output. §4.1 |
+| D6 | **Responses come from declared schemas.** Undeclared → `{ 200: unknown }` and a warning; an undeclared status **throws** `UnexpectedStatusError`. | Unchanged. §4.2 |
+| D7 | **A call returns a result discriminated by status**; errors are problem+json with a generated `code` union from `x-bun-errors`. | bun-jobs-ui still compares error codes as strings: 25 comparisons and 19 `case` labels (survey, §2.5) [S]. §4.3 |
+| D8 | **Built-in runtime schemas**: the server's own, through the shared contract module, in a monorepo; **generated `zod/mini`** from the documents' JSON Schema otherwise, in `/zod`, zod an optional peer. | §5.1, §5.2 [M]. |
+| D9 | **Bring your own validator: any Standard Schema, run after the built-in one**, issues merged into one `ValidationError`; `replace: true` drops the built-in. | §5.4. |
+| D10 | **Every behaviour is configurable at three levels, global → per route (or channel) → per call, later wins.** | The user's request. §6.2 |
+| D11 **(rev)** | **Validation defaults on every transport: on in development, off in production; what the client sends fails by throwing, what it receives fails by warning and delivering.** | One rule for HTTP, channels, SSE, data channels (§5.6). Costs as measured [M]. §5.5 |
+| D12 | **The data layer is `@tanstack/query-core`** (optional peer, `^5`). | §7.2 [M]. |
+| D13 **(rev)** | **Cache tags are declared on routes** (`.describe({ cache: { tags, invalidates } })`) with bun-cache's vocabulary; a response's `Cache-Tag`/`Surrogate-Key` header (bun-cache's `surrogateKeys`) adds runtime tags. | bun-cache shipped `cacheResponse({ tags })`, `addCacheTags` and surrogate-key headers (`bun-cache/lib/http/cacheResponse.ts:278-293`) [S]. §6.4 |
+| D14 | **Revalidation is conditional** (`If-None-Match`, keep data on 304). | Unchanged. §6.4 |
+| D15 **(rev)** | **Live queries push invalidations over one typed channel** (`liveContract`, a `defineChannel`), with SSE as the fallback; a gap invalidates every active query. | It gets validation, AsyncAPI and the client from [`websocket.md`](websocket.md) instead of a bespoke protocol. websocket.md §9 |
+| D16 | **SSR uses bun-views' props channel** and in-process `router.fetch()`. | Unchanged; **waits for BVW PR-5**, not started. §6.6 |
+| D17 **(rev)** | **No runtime code reaches a browser bundle from bun-common or the server**: the client's only runtime import of ours is the zero-dependency contract package (D20), guarded by a bundle-safety test. | §10.3. |
+| D18 **(rev)** | **The Nest half shrinks**: controllers already reach `listRoutes`/`generateOpenApi`, gateways `gatewayAsyncApi`; NTR keeps a dev-types module, `@Invalidates` and the gateway codec. | #538, #539 [S]. §9, NTR |
+| D19 | **bun-jobs and bun-jobs-ui are the first consumer, as a pilot of one domain.** | Its 84 routes now carry contracts (`define.ts:696`) and it serves its own OpenAPI [S]. §11 |
+| D20 **(new)** | **One validation core on both ends**: the client's guards are the contract core's (`createSender`, `createReceiver`), from **`@kingsleyweb/bun-contract`**, a zero-dependency package extracted from bun-common's `lib/contract/` and re-exported unchanged at `@kingsleyweb/bun-common/contract`. | The core imports only bun-common's logger and the vendored Standard Schema types (§2.1) [S]; it bundles for a browser at **6.8 KB gzip** with no server marker [M, `transports/contract-reuse/`], loaded lazily so a production bundle with validation off carries none. A copy would drift; depending on bun-common would install 11 server dependencies in every frontend. §10.1 |
+| D21 **(new)** | **Every transport gets the same three things**: a type source from the contract (inferred or generated), a call keyed by a literal, and validation of both directions under D11's policy. | The user's "auto typings, validation for all kind of request". §3.5, §5.6 |
+| D22 **(new)** | **WebSocket**: one client per channel with `send`, `request` (correlation id, from the contract's `replies`), `on`/`messages`; codecs for bun-common frames and bun-nest packets; reconnect, resubscribe, offline buffer, `sendWhenReady`. | [`websocket.md`](websocket.md) |
+| D23 **(new)** | **SSE**: a `fetch`-based client with `Last-Event-ID` resume, typed by the route's `sse()` declaration. | Bun has no `EventSource` (oven-sh/bun#8474) and `EventSource` sends no headers [M, V]. [`sse.md`](sse.md) |
+| D24 **(new)** | **WebRTC**: a typed signalling contract and relay, and a typed data-channel wrapper; **no media, no WebRTC dependency**. | Bun has no `RTCPeerConnection`; node-datachannel and werift work as Bun peers [M, `transports/webrtc/`]. [`webrtc.md`](webrtc.md) |
+| D25 **(new)** | **GraphQL**: bun-node serves none; a typed GraphQL call over the HTTP core, typed by `TypedDocumentNode`, built on demand. No GraphQL server, no codegen of ours. | 0.3 KB gz of ours [M]. [`graphql.md`](graphql.md) |
+| D26 **(new)** | **"etc."**: named operations, typed uploads, downloads and streamed bodies are in; gRPC, Connect and JSON-RPC are out. | [`other-transports.md`](other-transports.md) |
 
 ### 1.3 What it costs
 
-| Part | Effort | Owner | Depends on |
-|---|---|---|---|
-| AD (a), (b0), (b), (b1): `.describe()`, `__schemas`, responses on the validator | 15–20 d **(AD's own estimate, not this plan's)** | bun-common agent | — |
-| Server: route model, dev sync, live channel (PR-M1 to M3) | ~10 d | bun-common agent / features | AD (a), (b), (b1) |
-| Client: core, codegen, watcher, validation and `/zod`, query layer, React, live, persistence (PR-C1 to C8) | ~26.5 d | features agent | PR-M1 for C2 on |
-| Inference registry (`defineRoutes`, = AD (a2)) | ~2.5 d | bun-common agent | AD (b1) |
-| Later, on demand: Vue, Svelte, Solid, Preact bindings; typed WS channels | ~6 d + ~5 d | features agent | PR-C5 |
-| Nest (NTR) | ~13 d | bun-nest agent / features | PR-M1, AD (g) |
-| Pilot in bun-jobs-ui (one domain) | ~4.5 d | bun-jobs and bun-jobs-ui agents | PR-C2, PR-C5 |
-| Examples, per PR | ~4 d | examples agent | each PR |
-| **Total for this plan, React first** (server, client, registry, pilot, examples) | **~47.5 d**, plus NTR's ~13 d, AD's own phases and ~6 d of bindings on demand | | |
+| Part | Effort | Depends on |
+|---|---|---|
+| Prerequisites in bun-common: the contract package, the documents as the model, the dev sync (PR-K, PR-M1, PR-M2) | ~6.5 d | — |
+| **HTTP**: client core with named operations, generator, watcher, validation and `/zod`, query layer, React, persistence, bodies (PR-C1 to C6, C8, C9; the old C7 moved to PR-W4) | ~25.5 d | PR-K for C4 on; PR-M1 for C2 on |
+| **WebSocket and SSE**: server pieces, channel client, Nest codec, live invalidation, SSE client (PR-W1 to W4, PR-S1) | ~16.5 d, plus ~1 d asked of BNR PR-sse2 | the HTTP core |
+| **WebRTC**: signalling, data channels (PR-R1, R2) | ~4 d | PR-W2 |
+| **GraphQL**, on demand (PR-G1) | ~2 d | PR-C5 |
+| Nest (NTR, revised) | ~4 d (was ~13) | PR-M2, PR-W2 |
+| Pilot in bun-jobs-ui (one domain) | ~3.5 d | PR-C2, PR-C5 |
+| Examples, per PR | ~5 d | each PR |
+| **Total, React first** | **~67 d**, of which GraphQL 2 d on demand; plus ~6 d of other bindings on demand | |
 
+The old plan's ~47.5 d covered HTTP and live invalidation only, and needed
+AD's 15–20 d first; AD is built, so the HTTP part is now ~32 d of the total.
 §15 has the order, what each PR proves, and the gates.
+
+### 1.4 The transports at a glance
+
+| Transport | Type source (monorepo / separate repo) | Client call | Both directions checked | Reconnect, resume, backpressure | Plan |
+|---|---|---|---|---|---|
+| HTTP | `RoutesOf<typeof api>` / OpenAPI → `Routes` | `api.get("/users/:id", …)`, `api.op.getUser(…)` | request parts before sending; response by status | retries, timeouts, auth refresh; ETag revalidation | §3–§7 |
+| Multipart, downloads, streamed bodies | the body's media map / OpenAPI | the same calls; `Blob`, `ReadableStream`, `AsyncIterable` | fields; per NDJSON chunk | — | [`other-transports.md`](other-transports.md) |
+| WebSocket channel | `channelContract()` module / AsyncAPI → `Channels` | `channel(api, chat).send/request/on` | every sent and received frame | backoff, heartbeat, resubscribe, offline buffer, `sendWhenReady` | [`websocket.md`](websocket.md) |
+| Nest gateway | shared `as const` maps / `gatewayAsyncApi` | the same, with the `"bun-nest"` codec | payloads and acks | the same | [`websocket.md`](websocket.md) §11 |
+| SSE | the route's `sse()` declaration / OpenAPI `x-sse-events` | `sse(api, "GET /…")`, async iteration | every event | `Last-Event-ID`, `retry:`, backoff | [`sse.md`](sse.md) |
+| WebRTC signalling | `signallingContract` (shipped) | a channel | every frame | the channel's | [`webrtc.md`](webrtc.md) |
+| WebRTC data channel | a shared `channelContract()` | `typedDataChannel(rtc, contract)` | every JSON message; binary kind and size | `bufferedamountlow` | [`webrtc.md`](webrtc.md) |
+| Live invalidation | `liveContract` (shipped) | `live(api)` in `/query` | every frame | resume by `{ epoch, seq }`, gap → invalidate all | [`websocket.md`](websocket.md) §9 |
+| GraphQL (external) | the app's gql.tada or graphql-codegen | `gql.query(Doc, vars)` | BYO result schema only | the HTTP core's | [`graphql.md`](graphql.md) |
+| Media tracks, gRPC, Connect | — | — | — | — | out |
 
 ---
 
 ## 2. What exists today
 
-### 2.1 bun-common: typed routes, a validator, a route list
+### 2.1 The contract core (bun-validate, built 2026-10-21 to 10-27)
 
-- **The verb overloads type the handler, and return `this`.** 25 generated
-  blocks (checkout … view, plus `all`), 10 overloads each, 250 in all: a
-  handler alone, then a validator and a handler behind 0 to 8 plain handlers
-  (`bun-common/lib/BunRouter.ts:1669-1756` for `get`;
-  `scripts/generate-verb-overloads.ts:29`, `MAX_PRECEDING = 8`) [S]. **Every
-  one returns `this`**; no route type accumulates anywhere [S]. The class is
-  `BunRouter<TMountPath, TMountShape, THost>` (`BunRouter.ts:803-833`) with a
-  phantom `__mount` (`:835`) [S].
-- **`validate()` advertises the parsed shape as a phantom type only**:
-  `ValidatorMiddleware<TShape> extends RouterHandler { readonly __shape?:
-  TShape }` (`bun-common/lib/BunValidate.ts:553-556`), with
-  `InferValidatedShape` built from **output** types (`:94-108`) [S]. The
-  schemas themselves are not reachable at runtime (AD Decision 2) [V-prior].
-- **`routes()`** (inherited from `@routejs/router`) lists every route, with
-  `method`, `path`, `params`, `group`, `name` and `callbacks`
-  (`node_modules/@routejs/router/index.d.ts:10-27`) [S]. Measured: a mounted
-  sub-router's routes come back with the **full** path and `group` set to the
-  mount; a `use()` layer has no `path`; an `all()` route has no `method`
-  [M, `codegen/`].
-- **`router.ws(path, handler)` takes a plain `string`** (`BunRouter.ts:1251-1300`)
-  and `BunWebSocket` types nothing but `ws.data.custom`; messages are
-  `string | Buffer`, and there is no topic or pub/sub abstraction
-  (`BunWebSocket.ts:42-75`, `:393-415`) [S].
-- **ETag and 304 are per response**: `res.etag`/`setEtag()`
-  (`BunResponse.ts:1070-1117`), and Express's `send` tail answers 304 when
-  `req.fresh` (`:1537-1548`); the adapter has an `etag` option
-  (`BunHttpAdapter.ts:309-314`) [S]. No HTTP cache middleware exists yet; BC
-  plans `cacheResponse()`.
-- **No SSE helper exists** (`BunResponse.ts:1940-1950` says to set
-  `text/event-stream` yourself) [S].
+All [S]:
 
-### 2.2 What AD already plans, and this plan reuses
+- **`@kingsleyweb/bun-common/contract`** is a browser-safe entry
+  (`package.json` `exports["./contract"]`; `lib/contract/index.ts:1-71`):
+  `defineTransport`, `attachContract`/`getContract`/`forwardContract`
+  (`contract/transport.ts:184-293`), `describeContract`/`mergeContracts`
+  (`contract/describe.ts:271`, `:419`), the guards `createReceiver` and
+  `createSender` (`contract/guard.ts:430`, `:463`), `validateStandard`,
+  `documented`/`recordOf`, and the channel half (`channelContract`,
+  `wsTransport`, the error frame; `contract/channel.ts`).
+  `__tests__/contract/browserSafety.test.ts` bundles it for a browser. The
+  whole of `lib/contract/` imports only `../logging` and
+  `../types/standardSchema` from the rest of bun-common (grep of its imports),
+  which is what makes D20's extraction a move, not a rewrite.
+- **The client's type rules are in it**: `WireInput<S>` (each field's input,
+  or its output where the input is `unknown`, deep; `contract/model.ts:443`),
+  `Sent`/`Received` per side (`:528-531`), `ContractWire` (`"json"` or
+  `"identity"`, `:103`) and each row's `ContractEncoding` (`path-string`,
+  `querystring`, `header-string`, cookies, `body`; `:79-87`). BV §4.12
+  folded the 2026-10-17 review of this plan into it (M1–M7, m1–m12).
+- **Body kinds**: `chunks()`, `sse()`, `opaque()` declare streamed, event and
+  unread bodies (`responseBodies.ts:166`, `:204`, `:264`), and rows say which
+  (`ContractKind`, `contract/model.ts:95`).
 
-AD is a plan only (status line in AD; nothing in `lib/` yet [S]). This plan
-takes these pieces as given and does not restate their design:
+### 2.2 Routes: listing, documents, registry
 
-| AD piece | What it gives this plan |
+- **`listRoutes(router)`** (`routeModel.ts:293`) gives every endpoint's key
+  (`"GET /users/:id"`), path, params and **effective contract**
+  (`effectiveContract`, `:127`: the contracts of every layer that runs,
+  merged outermost first, `commonResponses` included), described
+  (`ListedRoute`, `:174-216`). Rows carry the live schema objects, not JSON.
+- **`generateOpenApi(router, options)`** (`docs/openapi.ts:756`, AD (a),
+  #531) builds OpenAPI 3.1 from that listing and `.describe()` docs, with
+  responses converted from the **wire side** (input) unless
+  `responseOutput: "parsed"` (`:1107-1108`), stream events under
+  `x-sse-events` (`:1819-1835`), variants under `x-variants`, and warnings for
+  what OpenAPI cannot express. `RouteDoc` takes `summary`, `description`,
+  `tags`, `operationId`, `deprecated`, `hidden`, `request`, `responses`,
+  `security` and **`extensions` (`x-*`)** (`docs/routeDoc.ts:42-137`).
+- **`generateAsyncApi(router, options)`** (`docs/asyncapi.ts:279`, AD (e),
+  #539) documents `defineChannel` channels (upgrade side, envelope and its id
+  field, replies as `operation.reply`, subprotocol, binary, topics, SSE
+  fallback; `:608-800`) and SSE endpoints (`:846`).
+- **`docsRouter()`** serves both documents and viewers (`docs/router.ts:190`,
+  AD (c), #532); `@kingsleyweb/bun-api-docs-ui` is the self-hosted viewer
+  (AD (f), #541/#542).
+- **`defineRoutes(mount, build)` and `RoutesOf<T>`** (`defineRoutes.ts:143`,
+  `:242`, AD (a2), #534): this plan's §8.5 registry, built with its approved
+  names. **One gap for a client**: `RoutesOf`'s entries are the validator's
+  **parsed** shape (`:255-261`, from `InferValidatedShape`, `BunValidate.ts:187`),
+  i.e. the receiver's view; a client must send the **wire input** (D5), so a
+  defaulted query key reads as required and a transform's output stands in
+  for its input. PR-M1 adds the sender view (§8.5).
+- **Not built**: a serialised route model with a hash, the dev endpoint
+  (`devTypes`), any type generator, any client. Measured by grep for
+  `RouteModel`, `devTypes`, `__bun/types`: nothing [S].
+
+### 2.3 Channels and streams
+
+- **`defineChannel(spec)`** (`channel.ts:196`, BV V8, #525): upgrade checks,
+  every received frame checked (error frames for invalid, unknown and
+  unsupported data), typed and checked `send`/`publish`. Gaps for a client
+  (`websocket.md` §2): replies do not echo the request id, although the
+  AsyncAPI document says they do (`docs/asyncapi.ts:617` documents an echoed
+  id that the handler dispatch, `channel.ts:296-308`, never sends; **PR-W1
+  fixes it**); `send` drops Bun's backpressure status; socket params are
+  untyped.
+- **`router.ws()`** takes a middleware chain (#536, `BunRouter.ts:1918-1975`).
+- **SSE**: the `sse()` declaration and its per-event checks exist; **the
+  writer does not** (BNR PR-sse2 not started; `sse.md` §2).
+
+### 2.4 bun-nest
+
+`@Validate` with responses and `reply()` (BV V7a/b; `bun-nest/lib/validate.ts:1255`),
+`StandardSchemaPipe` and `StandardValidationPipe` (V6; `validation.ts:312`,
+`:451`), gateway validation `@ValidateMessage`/`@Emits`/`TypedSocket` (V9;
+`wsValidation.ts:94-390`), `gatewayAsyncApi()` (AD (e);
+`gateway-docs.ts:195`). **A controller's `@Validate` contract reaches
+`listRoutes(adapter.instance)` and `generateOpenApi()`** through reflect
+metadata Nest copies onto the handler (#538;
+`bun-nest/__tests__/validateContractDocs.nest.test.ts:42-58`) [S], which
+removes the need for NTR's explorer (§9).
+
+### 2.5 bun-jobs and bun-jobs-ui: what a typed client would remove
+
+Re-surveyed at `e80ab379` (counts by grep; commands in the progress notes of
+this revision) [S]:
+
+- **The server**: 84 `defineRoute(` call sites (87 routes, one factory used
+  four times; `bun-jobs/lib/api/routes/define.ts:219`), each now carrying a
+  bun-common contract on its terminal layer (`forwardContract`, `:696`), so
+  `listRoutes` sees them (BV M5). It still generates **its own** OpenAPI and
+  AsyncAPI (`spec/openapi.ts:259`, `spec/asyncapi.ts:330`), not bun-common's.
+  Its WS frames are checked inbound (`ws/session.ts:461`) but **not
+  outbound** (`:1551`). Its error codes are an open union server-side
+  (`ApiErrorCode = ApiOwnErrorCode | (string & {})`, `lib/api/errors.ts:110`)
+  and `ProblemDto.code` is `string` in the browser contract
+  (`contract/types.ts:76-77`).
+- **The browser contract** (`api/contract`): 184 types, 88 exports in
+  `constants.ts`, 23 WS frame types; still **no route table and no error-code
+  union**.
+- **The UI** (`bun-jobs-ui/app/api/`): 19 files, 3,374 lines; 73 lines with
+  `request<` (64 `api.request<T>` calls with a caller-asserted `T`, plus 7
+  untyped); 18 path helpers (`jobPath` still in both `queues.ts:192` and
+  `jobs.ts:96`); **11 query-key factories**; **15 `assertShape<` sites**
+  (`api/shape.ts:28`); **25 string comparisons of error codes plus 19
+  `case "CODE":` labels**; the WS frame still cast unchecked
+  (`app/live/client.ts:983`). It imports nothing from bun-common in `app/`.
+  (The 2026-10-10 survey's "78 calls" and "20 assertShape sites" were counted
+  with looser patterns; the same patterns at `7dac1de4` give 72 and 21 lines.)
+- **Its live client** is the tuned reconnect reference
+  (`app/live/client.ts:366-384`, `:618-664`, `:1018-1041`; `live.ts:219-263`).
+
+### 2.6 What of the old critical path is done
+
+| Old prerequisite (2026-10-10) | Now |
 |---|---|
-| `.describe(doc)` chained after a verb, stored in a `WeakMap` keyed by the terminal callback, which survives mounting (AD Decision 1, measured there) | prose, `operationId`, `tags`, and the two fields this plan adds (§8.1) |
-| `__schemas` on the validator middleware (AD Decision 2) | the request schemas at runtime, for the model |
-| `validate(schemas, { responses })`, narrowing `res.status().json()` at compile time and optionally checking at runtime (AD Decision 4, §3.5, §3.7) | the response types, enforced on the server |
-| `~standard.jsonSchema` first, a structural vendor registry second (AD Decision 3, §4.3) | JSON Schema for the model, with no vendor import |
-| `DiscoveredRoute` and `generateOpenApi()` (AD §3.3) | the model is the discovered routes, serialised; OpenAPI is generated from it |
-| `WsChannelDoc` and AsyncAPI 3.0 (AD §5) | the channel half of the model (§6.5, later) |
-| `@Validate` for Nest (AD §3.8, phase (g)) | NTR's typed-route decorator |
+| AD (a) `.describe()` and discovery | **built** (#531): `listRoutes` + `routeDocFor` |
+| AD (b) `__schemas` and the converter | **built**, differently: the contract on each layer (`getContract`, BV V-D14) replaces `__schemas`; the converter is #529 |
+| AD (b1) responses on the validator | **built** as BV V3a (#482) |
+| AD (b0) spec types | **built** (#527) |
+| AD (e) AsyncAPI / `WsChannelDoc` | **built** (#539) |
+| AD (a2) registry | **built** as `defineRoutes`/`RoutesOf` (#534) |
+| AD (g) Nest `@Validate` | **built** as BV V7a/b (#522, #523) |
+| Old PR-M4 typed channels (`defineChannel`, model `channels`) | **server built** (V8, #525); the client is `websocket.md` |
+| Old PR-M1 route model | **mostly built**: `listRoutes` is the discovery and the generators are the serialisation; what is left is three extensions, a hash and the sender view (§8.2) |
+| BC tags (`cacheResponse`, `invalidateTags`) | **built** (bun-cache) |
+| BNR PR-sse2 (`res.sse()`) | not started |
+| BVW PR-5 (hydration) | not started |
 
-### 2.3 bun-jobs and bun-jobs-ui: what a typed client would have removed
+### 2.7 Prior art
 
-The surveyed numbers, all [S] at `7dac1de4`:
-
-- **The server has a single source of truth.** 84 routes declared with
-  `defineRoute` (`bun-jobs/lib/api/routes/define.ts:191-200`): method, path,
-  `operationId`, summary, tags, `params`/`query`/`body` schemas,
-  `responses` by status, `errors` codes. Its `s.*` schemas are Standard
-  Schemas with JSON Schema attached (`schema/builder.ts:31-47`), and feed
-  OpenAPI 3.1 (`spec/openapi.ts:302-407`) and AsyncAPI 3.0
-  (`spec/asyncapi.ts:330`).
-- **The browser contract has no route table.** `api/contract` exports 179
-  hand-restated types (124 `…Dto`), 86 constants and 23 WS frame types, but
-  no method/path map, no `operationId`s and no error-code union
-  (`contract/types.ts:72-73`: `ProblemDto.code` is `string`). Keeping the
-  restated types honest takes a 2,338-line type test with ~733 `Equal` lines
-  (`__tests__/api/api-contract.type-test.ts`).
-- **The UI restates everything again.** `app/api/` is 19 files and 3,338
-  lines: **78 `request<T>("METHOD", "/path")` calls** with a caller-asserted
-  `T` (`app/api/client.ts:84-88`), 11 path helpers (`jobPath` duplicated in
-  `jobs.ts:96` and `queues.ts:192`), **11 query-key factories**, **20
-  `assertShape` sites** (`app/api/shape.ts:28-45`), **32 string comparisons
-  of error codes**, an unchecked WS frame cast
-  (`app/live/client.ts:987`), and 386 `"GET /path"` literals in test mocks.
-  27 real-API integration test files exist largely to keep it in step.
-- **Its live client already does live invalidation by hand**: subscribe to
-  channels, resume with `{ epoch, afterSeq }`, turn a failed resume into a
-  gap, and invalidate the given query keys within 250 ms of an event
-  (`app/live/live.ts:223-267`, `app/live/client.ts:324-343`).
-
-### 2.4 What bun-views gives the SSR story
-
-BV (merged as a plan in #325) carries a view's props to the browser as
-`self.__BV_PROPS = <jsonForScript(props)>` in a nonce'd inline script, which
-every adapter hydrated from in Chrome with hostile strings in the props
-(BV §4.6.4) [V-prior]; it builds a client entry per view with `Bun.build`,
-SRI and a per-request nonce (BV §4.6.3, §4.6.5); and it warns when props do
-not survive JSON (BV §4.6.4). Its adapters are React, Vue, Svelte, Preact
-and Solid, "core first, frameworks on demand" (BV D10). §6.6 and §7 mirror
-both.
-
-### 2.5 Prior art
-
-Read from docs and source at pinned versions on 2026-10-10 (two survey agents;
-tarballs kept in the session's scratch). Sizes are **our measurement**
-(`bundle-size/`) where a row says [M], the survey's own `bun build` where
-[V].
-
-**Typed clients:**
+The 2026-10-10 survey stands (typed clients, data layers, streaming), read
+at the versions it names [V]:
 
 | Library | How types travel | Responses and errors | Scale notes | Dev regeneration | Client runtime |
 |---|---|---|---|---|---|
 | Elysia Eden Treaty 1.4.9 | inference: each verb returns a new `Elysia<…, Routes & CreateEden<…>>` [V] | per status, `data`/`error` [V] | "use Eden Fetch over 500 routes" ([eden/fetch](https://elysiajs.com/eden/fetch)) [V] | none (tsserver) | 3.3 KB gz [V] |
-| Hono RPC 4.13.13 | inference; routes must be **chained** for the type to accumulate ([guide](https://hono.dev/docs/guides/rpc)) [V] | `c.json(body, 404)`, `InferResponseType<T, 200>` [V] | "compile the client type with tsc" (`hcWithType`) [V] | none | 2.1 KB [V] |
-| tRPC 11.19 | inference from `typeof appRouter` [V] | RPC codes, `errorFormatter`, no per-status union [V] | v10 halved check time by making evaluation lazy ([blog](https://trpc.io/blog/typescript-performance-lessons)) [V] | none | 9.2 KB [V] |
-| oRPC 1.15.5 | router-first inference, or a contract; a router minified to JSON for other repos [V] | `errors({ NOT_FOUND })`, typed `safe()` [V] | a page on **TS7056** for one big exported router ([docs](https://orpc.dev/docs/advanced/exceeds-the-maximum-length-problem)) [V] | none | 8.1 KB [V]; opt-in request/response validation plugins [V] |
-| ts-rest 3.52.1 | a shared contract object [V] | `{ status, body }` union [V] | — | not needed | 1.9 KB [V]; quiet since 2025-06 [V] |
-| openapi-typescript 7.13 + openapi-fetch 0.17 | codegen from OpenAPI to a `paths` type [V] | `{ data, error }` [V] | plain interfaces [I] | **no watch**, `--check` only [V] | 2.7 KB gz [M] |
-| orval 8.41 / Kubb 5.5.6 / hey-api 0.99 | codegen to hooks + zod for react/vue/svelte/solid [V] | per status [V] | — | orval watches local files; **Kubb polls a URL every 2 s; hey-api polls every 1 s with `If-None-Match`** [V] | per generator |
-| nestia 14.0.3 | a Go TS transform under TS 7 (ttsc) reading controllers [V] | `propagate` unions [V] | — | — | Bun only through `@ttsc/unplugin` preload, restart on change [V] |
+| Hono RPC 4.13.13 | inference; routes must be **chained** ([guide](https://hono.dev/docs/guides/rpc)) [V] | `c.json(body, 404)`, `InferResponseType<T, 200>` [V] | "compile the client type with tsc" [V] | none | 2.1 KB [V] |
+| tRPC 11.19 | inference from `typeof appRouter` [V] | RPC codes, no per-status union [V] | lazy evaluation halved check time ([blog](https://trpc.io/blog/typescript-performance-lessons)) [V] | none | 9.2 KB [V] |
+| oRPC 1.15.5 | router-first inference, or a contract [V] | `errors({ NOT_FOUND })` [V] | TS7056 on one big exported router ([docs](https://orpc.dev/docs/advanced/exceeds-the-maximum-length-problem)) [V] | none | 8.1 KB [V] |
+| ts-rest 3.52.1 | a shared contract object [V] | `{ status, body }` union [V] | — | not needed | 1.9 KB [V] |
+| openapi-typescript 7.13 + openapi-fetch 0.17 | codegen from OpenAPI to a `paths` type [V] | `{ data, error }` [V] | plain interfaces [I] | **no watch** [V] | 2.7 KB gz [M] |
+| orval 8.41 / Kubb 5.5.6 / hey-api 0.99 | codegen to hooks + zod [V] | per status [V] | — | orval watches files; **Kubb polls every 2 s; hey-api every 1 s with `If-None-Match`** [V] | per generator |
+| nestia 14.0.3 | a TS transform (ttsc) reading controllers [V] | `propagate` unions [V] | — | — | under Bun only through a preload [V] |
+| socket.io | two interface maps for events [V] | acks typed by callback [V] | — | — | validates nothing [V] |
+| gql.tada 1.11.4, graphql-codegen client preset | GraphQL: inference from an introspection `.d.ts` (gql.tada), or codegen per operation; both emit `TypedDocumentNode` [V] | `{ data, errors }` | `graphql.md` §2.1 [M] | GraphQLSP in the editor | 3.4 KB gz with its parser [M] |
 
-**Nobody pushes types from a running server.** Inference relies on the
-language server re-reading shared source; generators watch a file or poll a
-URL [V]. §3.3's channel is new; its HTTP half (an ETag'd model) is also
-exactly what hey-api's and Kubb's watchers consume [I].
-
-**Data layers** (sizes [M], `bundle-size/results.txt`, framework external):
-
-| Library | Framework support | min / gzip | Notes |
-|---|---|---|---|
-| `@tanstack/query-core` 5.104.1 | core, no dependencies [V] | 37.3 / **10.5 KB** | observers, structural sharing, gc, retryer, focus/online managers, hydration of pending promises (5.40+) [V] |
-| + `react-query` / `vue-query` / `svelte-query` 6.3.1 / `solid-query` / **`preact-query`** | all official [V]; Svelte's v6 is runes (`svelte ^5.25`); Preact's peer is `preact ^10` while Preact 11 is out [V] | 11.6 / 11.5 / 10.9 / 11.3 / 10.7 KB gz | ~1 KB per adapter over the core |
-| swr 2.5.1 | React only (`useSyncExternalStore`) [V] | 17.0 / 7.5 KB | no gc; Map-like cache provider [V] |
-| `@nanostores/query` 0.3.4 + nanostores | bindings for react/preact/vue/svelte/solid at 0.2–0.7 KB [V] | 7.4 / 3.4 KB | no SSR hydration, no infinite queries, no structural sharing [V/I] |
-| our spike core (`swr-core/core.ts`) | React binding spiked | 7.4 / **3.0 KB** (+React 3.2) | §7.2 says what it leaves out |
-| Apollo 4.3.3, urql core 6.0.3 | normalised by `__typename:id` [V] | 43.7, 11.0 KB gz [V] | normalisation needs a type tag REST payloads lack [I]; normy offers it for REST with id-uniqueness rules [V] |
-
-**Streaming:** tRPC's `tracked(id, data)` re-sends every subscription with its
-`lastEventId` on reconnect, and recommends SSE first [V]. TkDodo's guidance
-for WebSockets with query-core: push invalidations, not data
-([post](https://tkdodo.eu/blog/using-web-sockets-with-react-query)) [V].
-`EventSource` sends no custom headers and is capped at six connections per
-origin on HTTP/1.1 ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/EventSource))
-[V]; `@microsoft/fetch-event-source` is unmaintained since 2021 [V];
-`eventsource-parser` 4.1.1 is a maintained parser with no transport [V].
-socket.io types events as two interface maps, and validates nothing [V].
+**Nobody pushes types from a running server**, still [V, 2026-10-10]; and
+socket.io, the common typed WebSocket layer, validates nothing [V]. Whether
+any surveyed client validates both directions on more than HTTP was not
+re-surveyed on 2026-11-02 [U]; nothing in this plan rests on it. Data layers
+and streaming notes: §7.2 and the 2026-10-10 tables in
+[`evidence/bundle-size/results.txt`](evidence/bundle-size/README.md).
 
 ---
 
 ## 3. How types get from the backend to the client
 
-### 3.0 The route model [D]
+### 3.0 The model is the documents [D]
 
-Everything in this plan reads one structure. The spike's version is
-`codegen/describe.ts`; the package's is PR-M1's.
+The old plan designed a `RouteModel` JSON of its own. Since then the server
+grew two generators that walk exactly what that model would have walked (BV
+V-D14: "docs and the typed client read one thing"), and serialise it to
+standards. So **the model a client reads is the pair**:
 
-```ts
-/** The routes an app serves, as data. Produced by bun-common's walk, by bun-jobs, or by the Nest explorer. */
-export interface RouteModel {
-  /** Format version. */
-  version: 1;
-  /** sha-256 (16 hex) of the canonical JSON of `routes` and `channels`: the change detector. */
-  hash: string;
-  /** Every endpoint, sorted by `key`. */
-  routes: ModelRoute[];
-  /** WebSocket channels (§6.5, later PR). */
-  channels?: ModelChannel[];
-}
+| Document | Produced by | Covers |
+|---|---|---|
+| OpenAPI 3.1 | `generateOpenApi(router)` (bun-common), bun-jobs' own generator, `@nestjs/swagger` for a Nest app without `@Validate` | every HTTP route: parameters, request bodies by media type, responses by status with headers and media types, SSE event maps (`x-sse-events`), variants |
+| AsyncAPI 3.0 | `generateAsyncApi(router)`, `gatewayAsyncApi(app)` (bun-nest), bun-jobs' own | channels (both directions, replies, envelope, upgrade side), Nest gateways (events, acks), SSE endpoints |
 
-/** One endpoint. */
-export interface ModelRoute {
-  /** `"GET /users/:id"`: method, a space, the Express-syntax path with mounts joined. The client map's key. */
-  key: string;
-  method: string;
-  path: string;
-  /** Path parameter names, in order. */
-  params: string[];
-  /** From `.describe({ operationId })`, else `camelCase(method + path)` as AD derives it. Unique. */
-  operationId: string;
-  /** JSON Schemas (draft 2020-12): params and query as §4.1 says; body from the input. */
-  request: { params?: JsonSchema; query?: JsonSchema; body?: JsonSchema; headers?: JsonSchema };
-  /** status → JSON Schema of the output, `null` for a status without a body. Common responses merged in. */
-  responses: Record<string, JsonSchema | null>;
-  /** From `.describe({ cache })`: templates such as `"user:{id}"`. */
-  cache?: { tags?: string[]; invalidates?: string[] };
-  /** `.describe()` prose the client exposes in hovers: summary, deprecated. */
-  doc?: { summary?: string; deprecated?: boolean };
-  /** What could not be described, and why. Copied into the generated file as comments. */
-  warnings: string[];
-}
-```
+plus three extensions this plan adds to bun-common's OpenAPI output [D]:
 
-The TypeScript side is a **flat map keyed like the model**, which both
-generation and inference produce, so one client type serves both:
+| Extension | On | Value | Why a client needs it |
+|---|---|---|---|
+| `x-bun-route-key` | each operation | `"GET /users/:id"`: the Express-syntax key | the client's map is keyed by the server's own path string, so a search finds both (§6.1); OpenAPI's `{id}` loses Express forms such as `*name` |
+| `x-bun-errors` | each operation | `["NOT_FOUND", "CONFLICT"]`, from `.describe({ errors })` | the `code` union (D7) |
+| `x-bun-cache` | each operation | `{ tags: ["user:{id}"], invalidates: ["users"] }`, from `.describe({ cache })` | tags and invalidation (D13) |
+
+- **The hash** (the change detector of the live sync, §3.3) is sha-256 over
+  the canonical JSON of both documents (keys sorted), 16 hex characters, as
+  before.
+- **A document from elsewhere works**: any OpenAPI 3.1 or AsyncAPI 3.0 with
+  no `x-bun-*` gets keys derived from its paths (`{id}` → `:id`), no code
+  unions and no tags. So the same generator types a third-party API, which
+  the old bespoke model could not.
+- **What a document cannot express**, the generator reports, as the
+  generators already do: a path OpenAPI cannot template (regex-constrained,
+  host-scoped) is listed with a warning and left out (`ListedRoute.partial`,
+  `routeModel.ts:209-216`; AD's `undocumentable`) [S]; such a route is still
+  callable untyped (`api.request("GET /x", …)` with a cast).
+- **The TypeScript side is unchanged**: one flat map per transport, keyed like
+  the server (`Routes` keyed `"GET /users/:id"`, `Channels` keyed by channel
+  path), which generation and inference both produce:
 
 ```ts
 export interface Routes {
@@ -349,43 +407,20 @@ export interface Routes {
     params: { id: string };
     query: Record<never, never>;
     body: undefined;
-    responses: { 200: User; 404: Problem };
+    responses: { 200: User; 404: Problem<"NOT_FOUND"> };
+    cache: { tags: ["user:{id}"] };
   };
-  // …
 }
 ```
 
-A flat map keyed by method and path is the cheapest shape the survey found
-for a type checker (openapi-fetch's `paths`, Eden Fetch for large apps) [V],
-and it measured so here (§3.2). `Record<never, never>`, not
-`Record<string, never>`: the spike's first emitter wrote the latter, whose
-`keyof` is `string`, and every call then demanded a `params` it did not have
-[M].
+A flat map is the cheapest shape for a checker (§3.2) [M].
+`Record<never, never>`, not `Record<string, never>`, for "no keys" [M,
+2026-10-10].
 
-### 3.1 (a) Inference: the server's type, no generation
+### 3.1 (a) Inference: the server's types, no generation
 
-**Question:** can `BunRouter`'s generated per-verb overloads accumulate a route
-map, or does it need a builder? Spiked three ways against the **real** class
-[M, `inference/`]:
-
-- **v1, the router itself.** `patch-router.ts` copies `bun-common/lib` and
-  changes only types: a fourth class parameter `TRoutes = {}`; each of the
-  250 typed verb overloads returns `BunRouter<…, TRoutes & RouteEntry<VERB,
-  \`${TMountPath}${TPath}\`, TShape>>` instead of `this`; the two typed
-  `use(path, subRouter)` overloads infer the sub-router's routes and
-  intersect them. **The patched library typechecks clean**, handlers stay
-  narrowed (a `@ts-expect-error` in every module proves `req.query.page` is
-  still `number | undefined`), and mounting works because a sub-router's keys
-  already carry its mount path. It works only for **chained** calls.
-- **v2, a registry.** No router change: `defineRoutes(mount, r => ({ getItem:
-  r.get(path, validator, handler), … }))` returns an object whose type is the
-  map; it is mounted on a router at runtime. This is AD's optional (a2)
-  `routes([...])` registrar under another name.
-- **v0, today**: statements on the real router, as the baseline.
-
-Each route has its own zod schemas (params, query, body on POST/PUT) and two
-declared responses; modules of 50. Median of three `tsc --extendedDiagnostics`
-runs, TypeScript 6.0.3, through the heavy-run wrapper [M, `inference/results.txt`]:
+Measured on 2026-10-10 against the real `BunRouter` (TypeScript 6.0.3,
+median of three, through the heavy-run wrapper) [M, `inference/results.txt`]:
 
 | Routes | v0 check / memory | v1 (router accumulates) | v2 (registry) | client against emitted `.d.ts`: v1 / v2 |
 |---|---|---|---|---|
@@ -393,129 +428,104 @@ runs, TypeScript 6.0.3, through the heavy-run wrapper [M, `inference/results.txt
 | 200 | 3.15 s / 423 MB | 3.89 s / 500 MB | 2.96 s / 385 MB | 3.42 s / 2.22 s |
 | 1000 | 6.92 s / 843 MB | **10.30 s / 973 MB (+49%)** | **7.07 s / 928 MB (+2%)** | 4.72 s / 1.77 s |
 
-- Declaration emit raised **no TS7056, TS2742 or TS4023** at any size, with
-  `app.d.ts` at 1.1 MB (v1) and 1.45 MB (v2) for 1000 routes [M]. oRPC hits
-  TS7056 with one big exported router [V]; per-module exports stayed under it.
-- v1's cost is the intersection being re-examined at every chained call
-  (+1.47 M instantiations at 1000) [M].
+The v2 registry was built as `defineRoutes()` (#534), with no change to the
+verb overloads, as this plan decided. Statements cannot accumulate a returned
+type (assertion signatures narrow a variable but break chaining and stop at
+function boundaries) [M, `inference/probes/`]. **Channels** infer from the
+shared `channelContract()` module; measured on 2026-11-02 at 10/50/200
+channels [M, `transports/ws-typing/`]:
 
-**Statements cannot accumulate a returned type.** An assertion signature
-(`asserts this is BunRouter<…>`) does narrow the variable statement by
-statement, and a `typeof` query at the end of the module sees the narrowed
-type, so it can even be exported [M, `inference/probes/`]. It is still not an
-option for `BunRouter`: the variable needs an explicit annotation (TS2775);
-an assertion method returns `void`, which would break every chain,
-`.describe()` and `.setName()`; and narrowing stops at a function boundary,
-so routes registered in `registerUsers(app)` never reach the caller [M].
+| Channels × 16 messages | declare only | inferred client | generated map |
+|---|---|---|---|
+| tsc 6.0.3, check s / MB | 0.67 / 123; 1.03 / 218; 3.92 / 456 | 0.87 / 177; 2.13 / 327; **6.61 / 1,022** | 0.42 / 90; 0.62 / 151; **1.25 / 230** |
+| `bun --check`, wall ms | 80; 68; 121 | 88; 134; **324** | 39; 49; **60** |
 
-**Decision [D]:** do **not** change the verb overloads' return type. Offer
-inference through the registry, which costs 2%, is additive, gives every
-route a name (an `operationId` for free), and is AD's (a2) anyway. Its type
-is turned into the flat map by `RoutesOf<typeof api>`.
+**Under `bun --check`, the repo's checker, both forms check in a third of a
+second at 200 channels**; the tsc row is what a consumer on TypeScript 6
+pays. The HTTP rows above were measured with tsc only; under `bun --check`
+they are expected to shrink by the same order [I: PR-C2 measures them].
 
-### 3.2 (b) Generation: the model to a `.d.ts`
+### 3.2 (b) Generation: the documents to a `.d.ts`
 
-The spike walks `router.routes()` of six **statement-style** routes on the
-**unpatched** router (one mounted at `/orgs/:org`, one with no validator),
-finds the schemas and declared responses on the validator middleware (the
-`__schemas` property AD Decision 2 adds; the spike attaches it in a `dv()`
-wrapper), converts them with `~standard.jsonSchema`, and emits `Routes` with
-a ~90-line JSON Schema → TypeScript emitter [M, `codegen/`]:
-
-- `tsc` is clean over a client file with positive calls and
-  `@ts-expect-error` negative controls (a missing body field, a string page,
-  an unknown route) [M].
-- **Parity:** for a representable schema, the generated response type is
-  `Equal` to `Jsonify<z.output<schema>>`, the type inference would give [M].
-- **Where they differ:** a `z.date()` cannot be represented in JSON Schema;
-  zod throws, the model falls back to `{}` with a warning, and the generated
-  type is `unknown` where inference gives `string`. The negative control in
-  `client-check.ts` pins that difference [M]. §5.3 lists the rest.
-
-**At scale** [M, `codegen/scale-results.txt`]: building the model for 1000
-routes takes ~0.2–0.3 s (almost all of it `~standard.jsonSchema`), emitting
-22 ms, and the generated file is 527 KB. **A client file checks against it
-in 0.75 s and 150 MB**, against 1.8 s (registry) and 4.7 s (accumulating
-router) through emitted declarations, and 7 to 10 s against the server's
-source [M]. A client in another package pays only for the map.
-
-**How it is run [D]:**
+The 2026-10-10 spike generated a correct `Routes` from statement-style
+routes on the unpatched router, `Equal` to inference for representable
+schemas, with a `z.date()` the documented difference [M, `codegen/`]; at
+1000 routes, emitting took 22 ms, the file was 527 KB, and **a client file
+checked against it in 0.75 s and 150 MB**, against 1.8 s (registry) and
+4.7 s (accumulating router) through emitted declarations [M,
+`codegen/scale-results.txt`]. Its emitter read the spike's model; PR-C2's
+reads OpenAPI and AsyncAPI, whose schemas are the same JSON Schema the spike
+emitted from, with `$ref`s into `components.schemas` that become **named
+types** (`User`, not an inlined object) [D].
 
 ```bash
-bunx bun-client generate --url http://127.0.0.1:3000 --out src/api.gen.ts [--zod src/api.zod.gen.ts]
-bunx bun-client generate --module ./server/app.ts --export app --out …   # in process, no server running
-bunx bun-client generate … --check                                       # CI: exit 1 if the files are stale
+bunx bun-client generate --url http://127.0.0.1:3000/__bun/types --out src/api.gen.ts [--zod src/api.zod.gen.ts]
+bunx bun-client generate --openapi ./openapi.json [--asyncapi ./asyncapi.json] --out …   # any documents, any server
+bunx bun-client generate --module ./server/app.ts --export app --out …                   # in process, no server running
+bunx bun-client generate … --check                                                        # CI: exit 1 if stale
 ```
 
-`--module` imports the app module and calls bun-common's model builder, so
-CI needs no running server; `--url` reads the dev endpoint (§3.3) or any
-server serving a model. A file's header records the hash it was generated
-from, which is how `--check` and the watcher decide.
+`--module` imports the app and calls `generateOpenApi`/`generateAsyncApi`
+on it, so CI needs no running server. The file's header records the hash.
 
 ### 3.3 (c) Live sync in development
 
-The user asked for types that follow the server while developing, without a
-manual step. Measured end to end [M, `sync/`]:
+Measured on 2026-10-10 end to end [M, `sync/`]:
 
-| Server run as | Save → client file changed, median / p90 | What happens |
-|---|---|---|
-| `bun --hot` | **49 ms / 68 ms** | the module re-evaluates; the hub on `globalThis` sees a new hash and announces it on the open socket (0 reconnects in 10 edits); the watcher fetches, emits and renames |
-| `bun --watch` | 160 ms / 163 ms | the process restarts; the watcher reconnects and reads the hash in the greeting |
-| polling every 1 s (hey-api, Kubb) | 560 ms / 1,043 ms | the interval dominates |
+| Server run as | Save → client file changed, median / p90 |
+|---|---|
+| `bun --hot` | **49 ms / 68 ms** |
+| `bun --watch` | 160 ms / 163 ms |
+| polling every 1 s (hey-api, Kubb) | 560 ms / 1,043 ms |
 
-Building the model took ~1.3 ms for that app, fetch and emit ~1 ms: nearly
-all of the 49 ms is Bun noticing the save and re-evaluating [M].
-
-**The protocol [D]:**
+**The protocol [D]**, now over the documents:
 
 | Piece | Shape |
 |---|---|
-| Model endpoint | `GET <path>` (default `/__bun/types`): `200` with the `RouteModel`, `ETag: "<hash>"`, `Cache-Control: no-store`; `304` on a matching `If-None-Match` |
-| Channel | WebSocket at `<path>/ws`, subprotocol `bun-types.v1`. Server → client: `{ type: "hello", version: 1, hash }` on open, `{ type: "model", hash, at }` on every change. Client → server: `{ type: "ping" }`. Nothing else: the channel carries hashes, never the model, so one slow watcher costs nothing |
-| Change detection | the model's hash is the truth. Three triggers recompute it: a re-evaluation under `--hot` (the hub lives on `globalThis`, measured to survive), a restart under `--watch` (the greeting), and a route registered at runtime (a `routesVersion` counter bumped in `setRoute`, polled every 100 ms **only while a watcher is connected**) |
-| Cost when unused | the model is built lazily, on a `GET` or while a watcher is connected. 1000 routes cost ~0.3 s to build [M], so building it on every reload of a large app with nobody listening would be waste |
-| Watcher | `bun-client watch --url … --out … [--zod …]`: compares the announced hash with the file header's, fetches with `If-None-Match`, emits, writes to a temp file and renames, and only when the content changed (an unchanged file must not wake tsserver). On disconnect it keeps the last file and reconnects with backoff (50 ms doubling to 2 s). A Vite plugin and a Bun build plugin are the same loop in another host, built on demand [D] |
+| Documents endpoint | `GET <path>` (default `/__bun/types`): `200` with `{ hash, openapi, asyncapi }`, `ETag: "<hash>"`, `Cache-Control: no-store`; `304` on a matching `If-None-Match`. `<path>/openapi.json` and `<path>/asyncapi.json` serve each alone, for third-party tools (hey-api's and Kubb's watchers poll such a URL [V]) |
+| Channel | WebSocket at `<path>/ws`, subprotocol `bun-types.v1`, declared with `defineChannel` like any channel (so it is itself typed and checked): server → client `hello { version, hash }` and `changed { hash, at }`; client → server `ping`. It carries hashes, never documents |
+| Change detection | the hash; recomputed on a `--hot` re-evaluation (the hub on `globalThis`), a `--watch` restart (the greeting), and a route or channel registered at runtime (a `routesVersion` counter, polled every 100 ms only while a watcher is connected) |
+| Cost when unused | built lazily, only on a `GET` or while a watcher is connected (1000 routes took ~0.3 s in the spike [M]) |
+| Watcher | `bun-client watch`: compares hashes, fetches with `If-None-Match`, emits, writes atomically and only when the content changed; reconnects with backoff (50 ms → 2 s) |
 
-**Auth and exposure: fail closed [D].** Measured in the spike: no token →
-404, token → 200, matching ETag → 304, and `NODE_ENV=production` refuses to
-start [M]. The package version:
+**Auth and exposure: fail closed [D]**, unchanged: `enabled` must be `true`;
+`NODE_ENV=production` throws a `ConfigError` even when enabled; a bearer
+token (random per process unless given) written `0600` to
+`node_modules/.cache/bun-types/<port>.json` for the watcher, and accepted as
+a second subprotocol (`bun-types.v1, token.<t>`) from a browser tool;
+loopback peers only unless `allowRemote: true`; **404** for anything refused;
+hidden routes stay hidden. The spike measured no token → 404, token → 200,
+ETag → 304, production refuses to start [M]. `docsRouter`'s public
+documents (AD (c)) are a separate, production feature with the app's own
+`authorize`; the dev endpoint never replaces them.
 
-- `enabled` must be `true`; there is no implicit on, and no environment
-  variable turns it on.
-- Under `NODE_ENV=production` it throws a `ConfigError` even when enabled, so
-  a dev flag copied into a production config fails the boot rather than
-  exposing the routes.
-- A bearer token, random per process unless given; written with mode `0600`
-  to `node_modules/.cache/bun-types/<port>.json` (with the URL), where the
-  watcher finds it on the same machine, and logged once at `info`. Browsers
-  cannot set headers on a WebSocket, so a browser tool would offer it as a
-  second subprotocol (`bun-types.v1, token.<t>`) [D].
-- Loopback peers only (`server.requestIP()`), unless `allowRemote: true` (a
-  dev server in a container), which still needs the token.
-- **404, never 401 or 403**, for anything refused, so its existence is not
-  confirmed. (The Nest spike's guard answered 403, Nest's default for a
-  guard; NTR's guard throws `NotFoundException` instead [M, `nest/`].)
-- The endpoint hides itself and anything marked `hidden` from the model.
-
-**Who needs it:** the separate-repo client always; a monorepo using
-generation (the default, D3). A monorepo using the registry does not: the
-language server re-reads the server's source.
-
-### 3.4 Recommendation: the combination [D]
+### 3.4 Recommendation per layout [D]
 
 | Layout | Types | Runtime schemas | In development | In CI |
 |---|---|---|---|---|
-| **Separate repos** | generated `Routes` | generated Zod (§5) | `bun-client watch` against the dev server | `bun-client generate --url <staging> --check`, or the server repo publishes the model as an artifact |
-| **Monorepo, default** | generated `Routes`, committed | generated, or the server's own schemas when browser safe (§5.1) | `bun-client watch` | `bun-client generate --module … --check` |
-| **Monorepo, opt-in** | inferred: `RoutesOf<typeof api>` from `defineRoutes()` | the server's own schemas when browser safe | the language server | `bun scripts/typecheck.ts` |
+| **Separate repos**, or a third-party API | generated `Routes` and `Channels` | generated `zod/mini` (§5.2) | `bun-client watch` | `bun-client generate --url <staging> --check`, or the server repo publishes the documents |
+| **Monorepo, default** | generated, committed | the shared contract modules' own schemas when browser-safe, else generated | `bun-client watch` | `bun-client generate --module … --check` |
+| **Monorepo, opt-in** | inferred: `RoutesOf<typeof api>` (with the sender view, §8.5) and `channelContract()` modules | the shared modules' own | the language server | `bun scripts/typecheck.ts` |
 
-**This differs from the expected "(a) for monorepos, (b)+(c) for separate
-repos"** in one place: generation is the default in a monorepo too. The
-reasons are measured: generation works with the statement-style routes this
-repo and its users write, without moving them into a registry or a chain;
-its client checks in 0.75 s at 1000 routes, an order of magnitude under
-inference; and a monorepo that wants inference loses nothing by waiting for
-the registry PR. Q1 asks.
+Generation stays the default in a monorepo for the reasons measured on
+2026-10-10 (statement-style routes need no registry; the client checks an
+order of magnitude faster under tsc). Approved 2026-11-02 (Q1).
+
+### 3.5 Auto typing, transport by transport [D]
+
+"Auto typing" means the app writes **no client-side type**: every type comes
+from a declaration the server already enforces.
+
+| Transport | What the server author writes (already, unless marked) | Inferred from (monorepo) | Generated from | What stays manual |
+|---|---|---|---|---|
+| HTTP | `validate({ params, query, body, headers }, { responses })`, `.describe()` | `RoutesOf` | OpenAPI | nothing; an undeclared response is `unknown` with a warning |
+| Uploads, downloads, streams | a body media map; `opaque()`, `chunks()`; **new**: `.describe({ request: { files } })` | the same | OpenAPI (`format: binary`, kinds) | file content |
+| SSE | `sse({ event: schema })` as a response | `RoutesOf` | OpenAPI `x-sse-events` / AsyncAPI | — |
+| WebSocket | `defineChannel` / **new**: `channelContract()` in a shared module | the shared module | AsyncAPI | the app's subscribe/resume messages (declared like any message) |
+| Nest HTTP | `@Validate` | — (decorators are invisible to the type system) | OpenAPI from `generateOpenApi(adapter.instance)` | — |
+| Nest gateways | `@ValidateMessage`, `@Emits` with shared `as const` maps | the shared maps | `gatewayAsyncApi` | — |
+| WebRTC | **new**: `signallingContract`, a `channelContract()` per data channel | the shared module | AsyncAPI (signalling only; data channels have no server) | media |
+| GraphQL (external) | — (someone else's server) | gql.tada inference from the introspection | graphql-codegen | the app's choice of tool |
 
 ---
 
@@ -523,16 +533,20 @@ the registry PR. Q1 asks.
 
 ### 4.1 Input or output: which side of a schema the client sees [D] [M]
 
+**Revised 2026-11-02 to BV's rule** (BV §4.1.4, §4.12 M1/M2, approved
+2026-10-17 and built as `WireInput`, `contract/model.ts:443`) [S]. The old
+table typed responses from the schema's output; BV's review showed the wire
+carries what the handler sent, which the **input** describes (P2 there).
+
 | Part | Type the client uses | Why |
 |---|---|---|
-| params, query | the schema's **output** value types, with the **input's** optionality | They cross as strings and are coerced. `z.coerce.number()` has input `unknown` in zod 4: typed from the input, `{ page: "x" }` compiled, and the negative control caught it [M, `inference/`]. A key with a default is required in the output and optional in the input: the client may omit it [M, `codegen/`] |
-| body | the **input** | JSON crosses as it is; transforms run on the server |
-| headers | the output's values, the input's optionality | as query |
-| responses | the **output, after a JSON round trip**: `Jsonify<T>` | what `JSON.parse` returns. A `Date` becomes `string`; a function or `undefined` field disappears |
+| params, query, headers | **`WireInput<S>`**: each field's input, or its output where the input is `unknown` (a coercion), with the input's optionality, deep | They cross as strings and are coerced. `z.coerce.number()` has input `unknown` in zod 4: typed from the input, `{ page: "x" }` compiled, and the negative control caught it [M, `inference/`]. A key with a default is optional for the sender [M, `codegen/`] |
+| body | `WireInput<S>` | JSON crosses as it is; transforms run on the server |
+| cookies | not a browser call option; documented only (BV m4) | the browser sends them |
+| responses, received messages and events | **`Jsonify<WireInput<S>>`**, or `Jsonify<output>` for a route under `responseOutput: "parsed"` (BV V13) | what the handler sent, after `JSON.parse`: a `Date` becomes `string`, a function or `undefined` field disappears. The OpenAPI generator already converts responses from the input side unless `"parsed"` (`docs/openapi.ts:1107-1108`) [S] |
 
-The generator applies the same rule to JSON Schema: `required` from the
-input's schema, `properties` from the output's (`keysInValuesOut` in
-`codegen/describe.ts`) [M].
+The generator needs nothing extra for this: the documents' JSON Schemas are
+already the wire side (`required` from the input).
 
 ### 4.2 Response types come from declarations [D]
 
@@ -542,14 +556,15 @@ style (AD §3.7) [V-prior]. So:
 
 - A route with `validate(…, { responses })` has its responses typed, and
   enforced on the server at compile time (AD (b1)).
-- A route without them is `{ 200: unknown }` in the model, with a warning
+- A route without them is `{ 200: unknown }` in the documents, with a warning
   copied into the generated file. `strict` generation fails instead (AD's
   `strict` option).
 - **Common responses**: statuses every route can produce because of
-  middleware (a 400 validation problem, 401, 403, 429, 500) are declared once,
-  `buildRouteModel(router, { commonResponses: { 400: ValidationProblem, … } })`,
-  and merged into every route unless the route declares that status itself.
-  Hono's `ApplyGlobalResponse` is the same idea [V].
+  middleware (a 400 validation problem, 401, 403, 429, 500) are declared once
+  as the router's `commonResponses` (built, BV M3; merged by
+  `effectiveContract`, `routeModel.ts:127`) [S], and every route's
+  documented responses include them unless the route declares that status
+  itself. Hono's `ApplyGlobalResponse` is the same idea [V].
 - `res.send()`, `res.jsonp()` and a helper typed `BunResponse` escape the
   server-side check (AD §3.7's measured boundary) [V-prior]. Runtime response
   validation (§5.5) is the backstop.
@@ -560,9 +575,10 @@ style (AD §3.7) [V-prior]. So:
   bun-jobs does (`contract/types.ts:57-86`) [S]. `ValidationProblem` extends
   it with `issues: { target, message, path }[]`, BunValidate's issue shape.
 - **Error codes become a union.** `.describe({ errors: ["NOT_FOUND", …] })`
-  (or bun-jobs' `errors` field) puts the codes in the model; the generator
+  (or bun-jobs' `errors` field) puts the codes in `x-bun-errors`; the generator
   writes `code: "NOT_FOUND" | "CONFLICT"` into that route's problem type.
-  bun-jobs-ui's 32 string comparisons become checked [S, survey].
+  bun-jobs-ui's 25 string comparisons and 19 `case` labels become checked
+  [S, §2.5].
 - **A status the route does not declare throws** `UnexpectedStatusError`
   (with the `Response`) by default, as ts-rest's `throwOnUnknownStatus`
   does [V]. A result type with a catch-all `{ status: number; error: unknown
@@ -604,13 +620,22 @@ client differs by layout:
 
 | Layout | Runtime schemas on the client | Possible when |
 |---|---|---|
-| Separate repos, or the server's schemas are not browser safe | **generated Zod**, from the model, beside the generated types, by the same `generate`/`watch` | always: the model is JSON |
+| Separate repos, or the server's schemas are not browser safe | **generated Zod**, from the documents' JSON Schema, beside the generated types, by the same `generate`/`watch` | always: the documents are JSON |
 | Monorepo, schemas in a browser-safe module | **the server's own schema objects**, passed as `schemas: () => import("../shared/schemas")` | the module imports no server code: no `node:*`, no drivers, no bun-common runtime. A bundle-safety test (§10.3) proves it. Any Standard Schema library works, and nothing is lost to JSON Schema (§5.3) |
 
 The second row is the monorepo case the coordinator asked about. It needs the
 schemas to live in their own module that both sides import; a schema
 declared inline in a route file drags the route file, and with it the
 server, into the browser bundle. The bundle-safety test catches that.
+
+**Who runs the schemas (2026-11-02, D20).** Whichever row supplies them,
+the client runs them through the **same guards the server runs**
+(`createSender` for what it sends, `createReceiver` for what it receives,
+`contract/guard.ts:430-472`) [S], from `@kingsleyweb/bun-contract`, loaded
+lazily with the schemas. So a check on the client and on the server agree on
+issue paths, value-free messages and prototype-key stripping, by
+construction. The guards and `channelContract` bundle at 6.8 KB gzip for a
+browser, with no server marker [M, `transports/contract-reuse/`].
 
 ### 5.2 The built-in validator: generated Zod, `/zod`, zod an optional peer [D] [M]
 
@@ -732,6 +757,23 @@ cost: invisible for a screen's handful of requests, measurable for a list
 polled every second. That is why production defaults to off, and why it can
 be turned on per route (a payment confirmation) rather than globally.
 
+### 5.6 The same policy on every transport [D]
+
+D11 holds for every transport, so one switch means one thing everywhere:
+
+| Transport | What the client sends (checked before writing; failure **throws**) | What it receives (checked on arrival; failure **warns and delivers**) | Plan |
+|---|---|---|---|
+| HTTP | params, query, headers, body (multipart fields included) | the response by status: body, and headers the route declares; NDJSON per line | §5.1–5.5, [`other-transports.md`](other-transports.md) |
+| WebSocket channel | every `send` and `request` | every push and reply; the error frame always | [`websocket.md`](websocket.md) §5 |
+| SSE | — (the request is HTTP) | every event's `data`, by event name | [`sse.md`](sse.md) §3.3 |
+| WebRTC | signalling frames; data-channel messages | the same | [`webrtc.md`](webrtc.md) |
+| GraphQL | — (variables are typed, not checked) | BYO result schema only | [`graphql.md`](graphql.md) |
+
+`onFailure.receive` takes `"warn"` (the default), `"drop"` (for streams and
+channels: discard the message and emit `$invalid`) or `"throw"`; the
+per-transport options sit at the same three levels as HTTP's (§6.2): global
+(`createClient`), per route or channel, per call.
+
 ---
 
 ## 6. The client core
@@ -753,7 +795,8 @@ api.url("/users/:id", { params: { id: "42" }, query });    // "/api/users/42?…
 - **One method per verb, the path as a literal**: the shape openapi-fetch and
   Eden Fetch use, the cheapest for the type checker [V] [M], and the same
   string as the server's route, so a search finds both. A named form
-  (`api.op.getUser(opts)`, from `operationId`) is a later, optional proxy.
+  (`api.op.getUser(opts)`, from `operationId`) is the same call by name,
+  in PR-C1 ([`other-transports.md`](other-transports.md) §2).
 - **Params** are substituted and `encodeURIComponent`-ed; a missing one is a
   type error, and a runtime `ClientError` for an untyped caller.
 - **Query** is serialised as the inverse of bun-common's parser
@@ -841,8 +884,6 @@ export interface ClientConfig<R extends RouteMap> {
   logger?: Pick<Console, "warn" | "error" | "debug">;
   /** Defaults for the data layer (`/query`, §6.4). Default: see {@link QueryDefaults}. */
   query?: QueryDefaults;
-  /** Live invalidation (`/live`, §6.5). Default: off until `live.url` is set. */
-  live?: LiveConfig;
   /** Per-route overrides, keyed like the map. Each takes the per-route subset of this config. */
   routes?: { [K in keyof R]?: RouteConfig };
 }
@@ -936,7 +977,7 @@ export type CallConfig = RouteConfig & {
 };
 ```
 
-`LiveConfig`, `AuthConfig`, `ClientMiddleware`, `Persister` and
+`AuthConfig`, `ClientMiddleware`, `Persister` and
 `SchemaSource` are in §6.4 to §6.5 and §16. **Precedence:**
 
 | Option kind | Built-in default | `createClient(config)` | `config.routes[key]` | the call's options | How levels combine |
@@ -988,9 +1029,14 @@ q.invalidateTags(queryClient, ["users"]);
   resolved with the call's params into `meta.tags`; `invalidateTags` is a
   predicate over `meta.tags`. A mutation's `invalidates` templates run on
   success, so `POST /users` invalidates `users` without the caller listing
-  keys. The names are BC's (`cacheResponse({ tags })`, `invalidateTags`), so
-  one vocabulary covers the server cache, the client cache and the live
-  channel.
+  keys. The names are bun-cache's, now built (`cacheResponse({ tags })`,
+  `addCacheTags`, `invalidateTags`), so one vocabulary covers the server
+  cache, the client cache and the live channel. **Runtime tags** [D13]: when
+  a route sets tags per response (`addCacheTags`) and `cacheResponse`'s
+  `surrogateKeys` writes them as `Cache-Tag` or `Surrogate-Key`
+  (`bun-cache/lib/http/cacheResponse.ts:278-293`) [S], the query function
+  adds them to the query's `meta.tags`, so a tag the route could not declare
+  statically (`"org:7"` from the data) still invalidates it.
 - **Conditional revalidation** [D14]: the query function keeps the last
   `ETag` per key, sends `If-None-Match`, and on a 304 returns
   `ctx.client.getQueryData(ctx.queryKey)`, which structural sharing then
@@ -1013,64 +1059,29 @@ q.invalidateTags(queryClient, ["users"]);
 - **Persistence** (`/persist`): a persister on IndexedDB written against the
   raw API (`idb-keyval` is 0.75 KB gz [V], but this is ~60 lines and needs no
   dependency), plugged into query-core's `persistQueryClient` (`maxAge`,
-  `buster` = the model hash, so a schema change drops a persisted cache) [V].
+  `buster` = the documents' hash, so a schema change drops a persisted cache) [V].
 - **Normalised caching is out of scope** [D]: REST payloads carry no type tag
   to key entities by, and normy-style normalisation needs app-wide unique ids
   and array hints [V]. Tags and invalidation cover the common need.
 
-### 6.5 WebSocket and SSE: typed channels and live queries [D]
+### 6.5 WebSocket, SSE, WebRTC, GraphQL: the sub-plans [D]
 
-Two separate things, built in this order:
-
-**1. Live invalidation (PR-M3, PR-C7).** The server publishes tags; clients
-invalidate.
-
-- **Server:** `liveInvalidation({ path: "/__live", authorize })` mounts a
-  WebSocket channel (BunWebSocket) and an SSE route (PR-sse2's `res.sse()`)
-  on a router. `publishTags(tags)` sends `{ seq, epoch, tags }` to every
-  subscriber of a matching tag; it is wired to BC's `invalidateTags` bus when
-  bun-cache is present, and to a `.describe({ cache: { invalidates } })`
-  route's success automatically. It is an application feature, not a dev
-  tool, so it is **authenticated by the app's own `authorize`** (the bun-jobs
-  shape, `config.ts:135-154` [S]).
-- **Client:** `live({ url, transport: "ws" | "sse" | "auto" })` subscribes to
-  the tags of the queries currently observed (refcounted, as SWR's
-  subscription hook is [V]), and on a message invalidates by tag.
-  **Reconnect** with half-jittered backoff from 500 ms to 30 s and a 25 s
-  heartbeat watchdog (bun-jobs-ui's tuned values,
-  `app/live/client.ts:124-133` [S]); **resubscribe** on reconnect; **resume**
-  with `{ epoch, afterSeq }`, and when the server cannot resume (a gap),
-  **invalidate every active query**, because events were missed. tRPC's
-  `tracked()` + `lastEventId` is the same model [V].
-- **SSE is the fallback** for networks that break WebSockets. `EventSource`
-  cannot send an `Authorization` header [V], so the client reads SSE over
-  `fetch` with its own parser: bun-common's planned `./sse` entry is
-  dependency-free and browser safe (bun-native-routes §16.3) [V-prior], and
-  `@microsoft/fetch-event-source` is unmaintained [V].
-
-**2. Typed channels (later, PR-M4).** Typed messages over `router.ws()`:
-
-```ts
-const chat = defineChannel({
-  path: "/rooms/:room",
-  receives: { say: z.object({ text: z.string() }) },                  // client → server
-  sends: { said: z.object({ by: z.string(), text: z.string() }) },    // server → client
-});
-router.ws(chat.path, chat.handler({ say(ws, msg) { chat.publish(ws.params.room, "said", { by: ws.data.user, text: msg.text }); } }));
-
-const room = api.channel("/rooms/:room", { params: { room: "1" } });
-room.on("said", (m) => m.text);           // typed
-room.send("say", { text: "hi" });         // typed, validated in development
-```
-
-The declaration is AD's `WsChannelDoc` (`receives`, `sends`) made
-enforcing, as `validate(…, { responses })` made `.describe()`'s responses
-enforcing; it lands in the model's `channels` and in AsyncAPI (AD (e)).
-`router.ws()` gains a typed overload taking a path literal so `ws.params` is
-typed. This is the larger design and waits for AD (e); the live
-invalidation above does not.
+The 2026-10-10 version of this section planned live invalidation (PR-M3,
+PR-C7) and, "later", typed channels (PR-M4). The typed channels' server half
+has since been built (`defineChannel`, BV V8), so both now live in
+[`websocket.md`](websocket.md): the channel client (§3–§8 there) and live
+invalidation as one typed channel (§9 there). Server-sent events are
+[`sse.md`](sse.md), WebRTC [`webrtc.md`](webrtc.md), GraphQL
+[`graphql.md`](graphql.md), and uploads, downloads, streamed bodies and
+named operations [`other-transports.md`](other-transports.md). Each follows
+this plan's rules: types from the contract (§3.5), validation of both
+directions under §5.5's defaults (§5.6), errors extending `ClientError`
+(§4.3), and configuration at three levels (§6.2).
 
 ### 6.6 SSR and hydration through bun-views [D]
+
+**Waits for bun-views' hydration (BVW PR-5, not started).** The design
+below stands; PR-C6 ships React without it and adds `<ApiHydrate>` after.
 
 ```ts
 // server: a route rendering a hydrated view
@@ -1153,229 +1164,206 @@ query-core 5.104 already deprecates `fetchQuery` in favour of
 `queryClient.query()` for the next major [V], so the factories return
 `queryOptions`-shaped objects that both forms accept, and the next major is
 a planned upgrade (risk R1). The spike core stays in the evidence as the
-fallback if the user prefers no peer at all (Q3).
+fallback only; the user chose query-core on 2026-11-02 (Q3).
 
 ---
 ## 8. Server side: bun-common, both adapters
 
-bun-common's `BunHttpAdapter` *is* a `BunRouter` (`bun-common/lib/BunHttpAdapter.ts:219-222`),
-and bun-nest's adapter delegates its verbs to one (`bun-nest/lib/BunHttpAdapter.ts:1580-1604`)
-[S, via BC §9 and the survey]. So everything in this section works for routes
-registered on either adapter. Routes declared as Nest **controllers** go
-through Nest's explorer instead; that is NTR.
+bun-common's `BunHttpAdapter` *is* a `BunRouter`, and bun-nest's adapter
+delegates its verbs to one [S, 2026-10-10]; a Nest controller's `@Validate`
+contract reaches the same listing through reflect metadata (#538) [S]. So
+everything here works for routes on either adapter and for Nest controllers.
 
 ### 8.1 What a route author writes [D]
 
-AD's shape, plus two `.describe()` fields:
+AD's shape, built, plus two `.describe()` fields that become extensions:
 
 ```ts
-const app = new BunHttpAdapter();
-
 app.get(
   "/users/:id",
-  validate({ params: IdParams }, { responses: { 200: User, 404: Problem } }),   // AD (b), (b1)
+  validate({ params: IdParams }, { responses: { 200: User, 404: Problem } }),   // built (BV V2, V3a)
   (req, res) => res.status(200).json(users.get(req.params.id)),
 ).describe({
   summary: "Read one user",
   operationId: "getUser",
-  errors: ["NOT_FOUND"],                       // new: the codes this route's problems carry (§4.3)
-  cache: { tags: ["user:{id}"] },              // new: client cache tags, templated by params (§6.4)
+  errors: ["NOT_FOUND"],                       // new → x-bun-errors (§4.3)
+  cache: { tags: ["user:{id}"] },              // new → x-bun-cache (§6.4)
 });
 
-app.patch(
-  "/users/:id",
-  validate({ params: IdParams, body: UserPatch }, { responses: { 200: User } }),
-  handler,
-).describe({ cache: { invalidates: ["user:{id}", "users"] } });   // new: what a success invalidates
+app.patch("/users/:id", validate({ params: IdParams, body: UserPatch }, { responses: { 200: User } }), handler)
+  .describe({ cache: { invalidates: ["user:{id}", "users"] } });
 ```
 
-One description drives four things: the request is validated (BunValidate),
-the response is checked at compile time and optionally at runtime (AD
-(b1)), the OpenAPI document is generated (AD), and the client's types,
-schemas, keys and invalidations are generated (this plan). **Nothing is
-declared twice.**
+One declaration drives five things: the request check (BunValidate), the
+response check (V3a), the OpenAPI document (AD), the client's types, schemas,
+keys and invalidations (this plan), and live invalidation on success
+(`websocket.md` §9). **Nothing is declared twice.**
 
-- `errors` and `cache` are **documentation-only fields** in AD's sense
-  (§3.4 there): they reach the model, never the handler's types. `cache`
-  templates may name only the route's own params; the model builder checks
-  that and warns otherwise.
-- A route with no validator still appears in the model, typed `unknown`, with
-  a warning (§4.2).
-- `hidden: true` (AD) also hides a route from the client model.
+- `errors` and `cache` are documentation fields: they reach the documents,
+  never the handler's types. `cache` templates may name only the route's own
+  params; the generator warns otherwise. Today the same can be written by
+  hand as `.describe({ extensions: { "x-bun-errors": [...] } })`
+  (`docs/routeDoc.ts:137`) [S]; the typed fields make it checked.
+- A route with no validator is in the documents typed `unknown`, with a
+  warning (§4.2). `hidden: true` hides it from the client as from the docs.
 
-### 8.2 The model builder (PR-M1) [D]
+### 8.2 The documents as the model (PR-M1) [D]
 
-```ts
-import { buildRouteModel } from "@kingsleyweb/bun-common/lib/docs";
+What is left of the old PR-M1, now small:
 
-const model = buildRouteModel(app, {
-  commonResponses: { 400: ValidationProblem, 401: Problem, 500: Problem },
-  // AD's filter, operationId, converters and strict options, unchanged
-});
-```
-
-It is AD's route discovery (`routes()` plus the pipeline replay, AD §3.3)
-serialised into §3.0's `RouteModel`, and AD's `generateOpenApi()` becomes a
-second consumer of the same discovery, so the two cannot drift. The spike's
-walk (`codegen/describe.ts`) is the measured part: 6 routes in 9 to 18 ms,
-1000 in 0.2 to 0.3 s [M].
+1. `RouteDoc.errors` and `RouteDoc.cache`, emitted as `x-bun-errors` and
+   `x-bun-cache`; `x-bun-route-key` on every operation (the listing's `key`).
+2. `typesHash({ openapi, asyncapi })`: the canonical-JSON hash (§3.0).
+3. **The sender view for inference** (§8.5).
+4. A test that a route's `x-bun-*` survive mounting and `defineRoutes`, and
+   that `generateOpenApi`'s and `listRoutes`' keys agree for every route.
 
 ### 8.3 The dev sync (PR-M2) [D]
 
 ```ts
 import { devTypes } from "@kingsleyweb/bun-common/lib/docs";
-
-app.use(devTypes(app, { enabled: process.env.NODE_ENV !== "production" }));
+app.use(devTypes(app, { enabled: process.env.NODE_ENV !== "production", openapi: { title: "API", version: "1" } }));
 ```
 
-`devTypes()` returns a sub-router: the model endpoint, and the channel as a
-`router.ws()` route, which both adapters serve [I for bun-nest's adapter:
-PR-M2 verifies it]. Disabled, it returns an empty router and registers
-nothing. §3.3 is the protocol and the fail-closed rules; the spike
-(`sync/dev-types.ts`) is the measured version.
+`devTypes()` returns a sub-router: the documents endpoint and the channel
+(a `defineChannel`), which both adapters serve [I for bun-nest's adapter:
+PR-M2 verifies, risk R12]. Disabled, it registers nothing. §3.3 is the
+protocol; `sync/dev-types.ts` the measured version.
 
-### 8.4 How it composes with typed overloads and sub-routers [S] [M]
+### 8.4 How it composes with typed overloads and sub-routers [S]
 
-- **The generated verb overloads do not change.** `.describe()` is a separate
-  method (AD §3.4), the validator stays the one shape-carrying position, and
-  the responses ride in the shape it already carries (AD Decision 4).
-  `generate-verb-overloads.ts --check` stays green [V-prior].
-- **Sub-routers**: the walk sees a mounted router's routes with their full
-  path [M]; `.describe()` metadata survives mounting because it is keyed by
-  the terminal callback (AD Decision 1, measured there) [V-prior]. A
-  `BunRouter<"/users/:id">` declared for typing mounts unchanged.
-- **The registry** (§8.5) is mounted like any sub-router.
+Unchanged and now built: `.describe()` is a separate method, the validator
+stays the one shape-carrying position, the generated verb overloads did not
+change (`generate-verb-overloads.ts --check` green through #534), and a
+mounted router's routes list with their full path.
 
-### 8.5 The inference registry: `defineRoutes()` [D]
+### 8.5 The inference registry and the sender view [D]
 
-AD's optional (a2) `routes([...])` registrar and this plan's v2 are one
-thing; build it once, as `defineRoutes`:
+`defineRoutes()` and `RoutesOf` are built (#534). For a client, `RoutesOf`
+needs the **wire input** of each part (D5), and today it carries only the
+validator's parsed shape (§2.2). PR-M1 adds, with no runtime change:
 
-```ts
-export const users = defineRoutes("/users", (r) => ({
-  get: r.get("/:id", validate({ params: IdParams }, { responses: { 200: User, 404: Problem } }), handler),
-  create: r.post("/", validate({ body: NewUser }, { responses: { 201: User } }), handler),
-}));
-app.use(users.mount, users.router);           // runtime: an ordinary sub-router
-export type Api = RoutesOf<typeof users>;     // the same flat map as generation
-```
+- a phantom `__schemas?: S` on `ValidatorMiddleware` beside `__shape`
+  (`BunValidate.ts:1047-1050`), so `RouteDef` can carry the schemas' types;
+- `RoutesOf`'s entries gain a `send` view (`WireInput` of params, query,
+  headers, body) and a `receive` view (`Jsonify<WireInput>` of each
+  response, or the output under `responseOutput: "parsed"`), keeping today's
+  fields for compatibility; bun-client's `createClient<RoutesOf<typeof
+  api>>()` reads the views.
+- A type test pins the old 2026-10-10 negative control: `{ page: "x" }`
+  against `z.coerce.number()` must fail, and a defaulted query key must be
+  optional for the sender.
 
-The property names become `operationId`s (`users.get`), handlers are typed
-through the same `MountedHandler` the verbs use, and the cost is +2% check
-time at 1000 routes [M]. It exists for monorepos that prefer no generated
-files (§3.4).
+### 8.6 Channels, streams and the live channel
+
+The WebSocket pieces (echoed replies, `defineChannel(contract)`, typed socket
+params, send status, server-level publish) are [`websocket.md`](websocket.md)
+§10; the live channel (`liveContract`, `liveInvalidation`, `publishTags`,
+bun-common `./live`) is §9 there; what the SSE writer needs is
+[`sse.md`](sse.md) §4 (BNR's PR); the signalling contract and relay are
+[`webrtc.md`](webrtc.md) §3.
 
 ---
 
 ## 9. NestJS: a separate document
 
-**Split into [`nest-typed-routes.md`](nest-typed-routes.md).** The reasons:
+[`nest-typed-routes.md`](nest-typed-routes.md) stays a separate document, but
+most of it has been built or made unnecessary since 2026-10-10:
 
-- **Its surface is its own design**: decorators (AD's `@Validate` as the
-  typed-route decorator, `@Describe`), a Standard Schema pipe, guards and an
-  interceptor for the dev endpoint, a `DevTypesModule`, an explorer over
-  `DiscoveryService`, a comparison with nestia's transformer and the
-  `@nestjs/swagger` plugin, and typed gateways over `BunWebSocketAdapter`.
-  That is a dozen pieces this plan's readers do not need.
-- **It has a different owner** (the bun-nest agent) and a different gate
-  (`examples/bun-nest`).
-- **The contract between them is small and fixed**: §3.0's `RouteModel`,
-  §3.3's protocol, §6.5's live frames. NTR produces the model; this plan
-  consumes it. The client is the same for both: a Nest app's client is
-  `createClient<Routes>()` over the map generated from Nest's model.
+| NTR piece | Now |
+|---|---|
+| `@Validate` (AD (g)) as the typed-route decorator | **built** as BV V7a/b |
+| `StandardSchemaPipe` | **built** as BV V6 |
+| `TypedRoutesExplorer` over `DiscoveryService` | **not needed**: `@Validate` contracts reach `listRoutes(adapter.instance)` and `generateOpenApi()` through reflect metadata (#538) [S] |
+| typed gateways (`@ValidateMessage`, `@Emits`, `TypedSocket`) and their documents | **built** as BV V9 and `gatewayAsyncApi` (AD (e)) |
+| `DevTypesModule` | still to build, smaller: it mounts bun-common's `devTypes()` with `generateOpenApi(adapter.instance)` and `gatewayAsyncApi(app)` as its sources |
+| `@Invalidates` | still to build, publishing to `websocket.md` §9's live channel |
+| the gateway client | the `"bun-nest"` codec, `websocket.md` §11 |
 
-Measured there [M, `nest/`]: a `TypedRoutesExplorer` over `DiscoveryService`,
-`MetadataScanner` and `ApplicationConfig.getGlobalPrefix()` built the model
-for 6 routes (one documented only by `swagger/apiResponse` metadata) in
-8.7 ms, every key matching a route bun-nest's adapter had registered; the
-same emitter generated `Routes`, and the same client type-checked against it.
+NTR's revised status and PRs (~4 d, was ~13 d) are in its own Status section.
 
 ---
 
 ## 10. Packaging
 
-### 10.1 `@kingsleyweb/bun-client`, a new package [D]
+### 10.1 `@kingsleyweb/bun-client`, a new package, and `@kingsleyweb/bun-contract` [D]
 
-| Entry | Contents | Runtime peers | Browser safe |
+| Package / entry | Contents | Runtime peers | Browser safe |
 |---|---|---|---|
-| `.` | `createClient`, `Result`, `ClientError`/`HttpError`/`UnexpectedStatusError`/`NetworkError`/`TimeoutError`/`ValidationError`, middleware, auth, retry, `toStandardSchema` copy, `Jsonify`, `RoutesOf` | none | yes |
-| `./query` | `queries()`, `observe()`, `invalidateTags`, the ETag query function | `@tanstack/query-core ^5` (optional) | yes |
+| **`@kingsleyweb/bun-contract`** (new, extracted) | bun-common's `lib/contract/` moved as it is, with a minimal logger interface instead of bun-common's logger; bun-common depends on it and re-exports it at `./contract` unchanged | none | yes |
+| bun-client `.` | `createClient`, the named-operation proxy, `Result`, errors, middleware, auth, retry, `Jsonify`, `RoutesOf`'s client view; the guards loaded lazily from bun-contract only when validation is on | `@kingsleyweb/bun-contract` (dependency) | yes |
+| `./channel` | `channel(api, contract, options)`: [`websocket.md`](websocket.md) | none | yes |
+| `./sse` | `sse(api, key, options)`: [`sse.md`](sse.md) | none | yes |
+| `./webrtc` | `connectPeer`, `typedDataChannel`: [`webrtc.md`](webrtc.md) | none (the app passes its `RTCPeerConnection`) | yes |
+| `./graphql` | `createGraphQLClient`: [`graphql.md`](graphql.md) | none | yes |
+| `./query` | `queries()`, `observe()`, `invalidateTags`, the ETag query function, `live(api)` (the live channel's client) | `@tanstack/query-core ^5` (optional) | yes |
 | `./react`, `./vue`, `./svelte`, `./solid`, `./preact` | §7.1's bindings | the framework and its TanStack adapter (optional) | yes |
-| `./zod` | the glue that runs generated schemas (`schemasFromZod`), and the flavour detection | `zod ^4` (optional) | yes |
-| `./live` | §6.5's live client: WebSocket, SSE over fetch, resume | none | yes |
+| `./zod` | the glue that runs generated schemas (`schemasFromZod`) | `zod ^4` (optional) | yes |
 | `./persist` | the IndexedDB persister | `@tanstack/query-persist-client-core` (optional) | yes |
-| `./codegen` | the model → TypeScript and → Zod emitters, the model fetcher, the watcher loop | none | **no** (Bun only) |
-| bin `bun-client` | `generate`, `watch`, `--check` | `@kingsleyweb/bun-common` optional, for `--module` only | — |
+| `./codegen` | documents → `Routes`, `Channels` and Zod emitters; fetcher; watcher | none | **no** (Bun only) |
+| bin `bun-client` | `generate`, `watch`, `--check` | `@kingsleyweb/bun-common` optional, for `--module` | — |
 
-- **Every framework, query-core and zod are optional peers**, so a Vue user
-  installs no React (BV D10's rule) and an app that turns validation off
-  installs no zod. Each subpath that needs a peer says so in
-  `consumer-check.json`'s `peers`, which the build's `checkPeerScopes` and the
-  consumer check already enforce (CLAUDE.md "Packaging types") [S].
-- **The packaging recipe** is the repo's: `dts/`, the four files, the
-  `exports` shape with the source condition, and browser entries checked as
-  `browser` cells in the consumer check, as bun-jobs' `api/contract` is [S].
-- **Zero runtime dependencies** in every entry; `./codegen` uses only Bun.
+- **Transports are functions in subpaths, not methods on `api`**
+  (`channel(api, chat)`, not `api.channel(chat)`), so an HTTP-only app's
+  bundle carries no WebSocket, SSE or WebRTC code; the `.` budget stays
+  5 KB [D].
+- **Why a separate contract package (D20)**: a browser client needs the
+  guards; bun-common's own dependencies (`@routejs/router`, `busboy`,
+  `file-type`, `mime` and seven more) have no place in a frontend's install,
+  and a copy would drift from the server's checks. The extraction is a move:
+  `lib/contract/` imports nothing else of bun-common but the logger and the
+  Standard Schema types (§2.1) [S]. Alternatives considered (Q18, approved 2026-11-02): depend on bun-common
+  (11 server packages in every frontend install; none bundled), or copy.
+- **Every framework, query-core and zod are optional peers**; each subpath
+  that needs one lists it in `consumer-check.json`'s `peers` [S, the recipe].
+- **The packaging recipe** is the repo's: `dts/`, the four copied files, the
+  `exports` shape with the source condition, browser entries checked as
+  `browser` cells in the consumer check.
 
 ### 10.2 bun-common [D]
 
-No new package. AD's `./lib/docs` entry (server only) gains
-`buildRouteModel` and `devTypes`; a new `./live` entry holds
-`liveInvalidation` and `publishTags`. The `.describe()` fields are type
-additions to AD's `RouteDoc`. bun-common gains **no dependency**.
-
-**The wire format is defined on both sides** [D]: bun-common declares the
-`RouteModel` and live frame types it produces; bun-client declares the ones
-it consumes, because a browser client in another repo must not need
-bun-common installed even for types. A type test in bun-client
-(`Equal<Produced, Consumed>`) binds them, and `version: 1` guards at runtime.
-That is two small types, not bun-jobs' 179.
+No new runtime dependency. `./lib/docs` gains `devTypes` and `typesHash`;
+`RouteDoc` gains `errors` and `cache`; a new `./live` entry holds
+`liveContract`, `liveInvalidation` and `publishTags`; a new `./webrtc` entry
+holds `signallingContract` and `signallingRelay` (browser-safe contract half
+and server half split as `defineChannel` is). `./contract` re-exports
+`@kingsleyweb/bun-contract`.
 
 ### 10.3 Browser safety [D]
 
-The bun-jobs lesson: one value import from the wrong entry pulls drivers and
-`node:*` into a bundle (CLAUDE.md "bun-jobs-ui … Browser safety") [S]. So:
-
-- `__tests__/bundle-safety.test.ts` builds every browser entry of bun-client
-  with `Bun.build({ target: "browser" })` and fails on a server marker
+- `__tests__/bundle-safety.test.ts` in bun-client builds **every** browser
+  entry with `Bun.build({ target: "browser" })` and fails on a server marker
   (`node:`, `bun:`, `Bun.`, an `@kingsleyweb/bun-common` import), with a
-  negative control entry that imports bun-common and must fail. Copied from
-  bun-jobs-ui's (`__tests__/app/pkg/bundle-safety.test.ts`) [S].
-- A **budget** test caps each entry's gzip size (bun-jobs-ui's
-  `budget.test.ts` pattern): `.` at 5 KB, `./query` at 3 KB over query-core,
-  `./live` at 3 KB [I: the targets; measured once PR-C1 exists].
-- The **schemas module** a monorepo passes (§5.1) gets the same test in the
-  app's own repo: the README gives the five lines.
+  negative-control entry that must fail. Copied from bun-jobs-ui's
+  (`bun-jobs-ui/__tests__/app/pkg/bundle-safety.test.ts`) [S].
+- A **budget** test caps each entry's gzip size: `.` 5 KB without the guards;
+  the guards 7 KB (measured 6.8 KB [M]); `./channel` 4 KB, `./sse` 2 KB,
+  `./webrtc` 2 KB, `./graphql` 0.5 KB, `./query` 3 KB over query-core
+  [I: the targets; measured once each PR exists].
+- A shared contract module an app passes (§5.1, `websocket.md` §3.1) gets
+  the same test in the app's repo; the README gives the five lines.
 
 ---
 
 ## 11. Using it ourselves: bun-jobs and bun-jobs-ui
 
-**Recommended as a pilot of one domain, not a rewrite.** It is the best
-validation available: a real API with 84 routes, schemas, responses, error
-codes, a live channel, and a UI already on TanStack Query.
+**A pilot of one domain, not a rewrite** (unchanged in spirit; Q14):
 
-- **bun-jobs' side (~1.5 d, bun-jobs agent):** `defineRoute` already carries
-  everything the model needs (`define.ts:97-178`: method, path,
-  `operationId`, schemas with JSON Schema, responses, `errors`) [S], so a
-  `toRouteModel(routes)` beside `spec/openapi.ts` produces §3.0's model
-  without bun-common's walk. Its `errors` lists become the code unions
-  bun-jobs-ui lacks.
-- **bun-jobs-ui's side (~3 d, bun-jobs-ui agent):** generate
-  `app/api/routes.gen.ts` with `bun-client generate --module` (the
-  monorepo default) and move **one domain** onto `createClient<Routes>` and
-  `/query`: **summon** is the candidate, with 5 of the 20 `assertShape`
-  sites, its own key factory and the error-code comparisons in
-  `app/api/summon.ts:31,47-52` [S]. Keep its TanStack Query hooks; only the
-  query options change.
-- **What the pilot measures:** lines removed, assertions and key factories
-  removed, whether the 27 integration tests stay green unchanged, the bundle
-  delta, and whether generated `--check` would have caught a drift the
-  integration tests caught. **The decision to go further is taken after**,
-  with those numbers (Q14).
-- **Not in the pilot:** the 179 contract types stay (they are bun-jobs'
-  public API for other consumers); the live client stays (typed channels are
-  PR-M4).
+- **bun-jobs' side (~0.5 d, was ~1.5 d)**: its routes already carry
+  contracts (BV M5) and it serves its own OpenAPI, so no `toRouteModel` is
+  needed; it adds `x-bun-errors` from each `defineRoute`'s `errors` list to
+  its own generator (`spec/openapi.ts:259`), and closes its server-side
+  `ApiErrorCode` (`lib/api/errors.ts:110`) so the union is real.
+- **bun-jobs-ui's side (~3 d)**: generate `app/api/routes.gen.ts` from
+  bun-jobs' OpenAPI with `bun-client generate --module`, and move **summon**
+  onto `createClient<Routes>` and `/query`: it holds 5 of the 15
+  `assertShape` sites and its own key factory [S]. The TanStack hooks stay.
+- **What the pilot measures**: lines, assertions and key factories removed;
+  the 27 real-API integration tests unchanged and green; the bundle delta;
+  whether `--check` would have caught a drift the integration tests caught.
+- **Not in the pilot**: the 184 contract types (bun-jobs' public API); the
+  live client (a `"bun-jobs"` codec for `./channel` is a later, separate
+  step, `websocket.md` §13).
 
 ---
 
@@ -1385,29 +1373,35 @@ codes, a live channel, and a UI already on TanStack Query.
 
 | PR | Proves |
 |---|---|
-| PR-M1 model | a fixture app (statements, a mounted sub-router, `all()`, middleware, a route with no validator, common responses) gives a golden model; the hash is stable across runs and changes when a schema changes; `.describe()` survives mounting; §4.1's input/output rule per part; warnings for unrepresentable schemas; OpenAPI from the same discovery still passes AD's meta-schema test |
-| PR-M2 dev sync | the e2e loop from `sync/` as a test (an edit under a real `bun --hot` child, the file updated, the hash in its header); fail closed: production throws, `enabled` missing registers nothing, no token → 404, a non-loopback peer → 404, matching ETag → 304; the model is not built while nobody listens |
-| PR-M3 live | publish → only matching subscribers; resume after a reconnect; a gap reported when the epoch changed; `authorize` refusal; SSE and WebSocket give the same frames |
-| PR-C1 core | type tests with negative controls (wrong params, wrong query type, unknown route, undeclared status narrowing); the query serialiser round-trips through `router.fetch()` for every shape; retries only on the listed methods and statuses, `Retry-After`; timeout vs abort errors; middleware order; single-flight auth refresh under 10 concurrent 401s; the backoff test vector shared with bun-common; bundle safety and budget; the consumer check |
-| PR-C2 codegen | the emitter's output for a corpus of JSON Schemas (objects, unions, nullable, recursion, `$defs`); **parity**: for a fixture app, the generated `Routes` equals `RoutesOf<typeof registry>` for the same routes (an `Equal` test), with the known differences (§5.3) pinned as negative controls; `--check` exits 1 on a stale file |
-| PR-C3 watch | reconnect after a server restart; atomic write (a reader never sees a partial file); no write when unchanged |
-| PR-C4 validation | built-in and BYO order and merging; `replace`; each failure mode; defaults by mode; generated Zod accepts and rejects the same payloads as the server's schema across a corpus, **except** the documented refinements; `zod/mini` and classic agree |
-| PR-C5 query | keys and prefix invalidation; tag templates; mutation `invalidates`; ETag 304 keeps data identity; optimistic rollback; infinite page params |
-| PR-C6 React | the repo's DOM rules (bun-jobs-ui's `setupDom()`, react-dom loaded dynamically) [S]; pending → success with bounded renders; one fetch for two components; Suspense with the `staleTime` floor (the spike's double-fetch as the negative control); SSR: a view rendered through bun-views with dehydrated state hydrates with no refetch, in Chrome through `Bun.WebView` as bun-jobs-ui's e2e tests do |
-| PR-C7 live client | a dropped socket reconnects, resubscribes, resumes, and on a gap invalidates every active query; SSE fallback |
-| every PR | `bun test --randomize` with two seeds besides the parallel run (CLAUDE.md "Tests run in parallel") |
+| PR-K contract package | bun-common's whole contract suite passes unchanged through the re-export; `@kingsleyweb/bun-contract` has no dependency (`package.json` asserted) and bundles browser-safe; the consumer check for both packages |
+| PR-M1 documents as the model | `x-bun-route-key`/`-errors`/`-cache` on every operation, through mounts and `defineRoutes`; keys agree with `listRoutes`; the hash stable across runs and changed by a schema change; the sender view's type controls (§8.5) |
+| PR-M2 dev sync | the `sync/` e2e loop as a test; fail closed (production throws, disabled registers nothing, no token → 404, non-loopback → 404, ETag → 304); nothing built while nobody listens |
+| PR-C1 core | type tests with negative controls (wrong params, wrong query type, unknown route, undeclared status narrowing, named operations); the query serialiser round-trips through `router.fetch()` for every shape; retries, `Retry-After`, timeout vs abort, middleware order, single-flight auth refresh under 10 concurrent 401s; the backoff vector shared with bun-common; bundle safety and budget; the consumer check |
+| PR-C2 generator | OpenAPI/AsyncAPI → TypeScript over a corpus (objects, unions, nullable, `$ref` components, recursion, `x-sse-events`); **parity**: for a fixture app, generated `Routes` `Equal` to `RoutesOf`'s client view, with §5.3's differences pinned as controls; a third-party OpenAPI document (no `x-bun-*`) generates; `--check` exits 1 when stale |
+| PR-C3 watch | reconnect after a restart; atomic write; no write when unchanged |
+| PR-C4 validation | built-in and BYO order; `replace`; failure modes; defaults by mode; the guards are bun-contract's (one import site); generated Zod accepts and rejects what the server's schema does over a corpus, except the documented refinements |
+| PR-C5 query | keys and prefix invalidation; tag templates and `Cache-Tag` headers; `invalidates`; ETag 304 keeps identity; optimistic rollback; infinite |
+| PR-C6 React | the repo's DOM rules; pending → success; one fetch for two components; Suspense's `staleTime` floor (the spike's double fetch as the control); SSR once BVW PR-5 exists |
+| PR-C8 persist | the buster is the document hash |
+| PR-C9 bodies | multipart and urlencoded built from typed fields; downloads by kind; NDJSON checked per line (control: a bad line delivered under `"warn"`, refused under `"throw"`) |
+| PR-W*, PR-S1, PR-R*, PR-G1 | the sub-plans' Tests sections |
+| every PR | `bun test --randomize` with two seeds beside the parallel run |
 
 ### 12.2 Evidence
 
 | Spike | Run | Result |
 |---|---|---|
-| `inference/` | `bun patch-router.ts && bun gen.ts && bun measure.ts` (heavy) | the route map accumulates on the real router; +49% (router) or +2% (registry) check time at 1000 routes; no declaration-emit errors; statement style cannot accumulate a returned type |
-| `codegen/` | `bun generate.ts && tsc -p .`, `bun scale.ts` | a correct `Routes` from statement-style routes; parity with inference except unrepresentable schemas; 0.75 s client check at 1000 routes |
-| `codegen/zod/` | `bun measure.ts`, `bun jitless.ts`, `bun roundtrip.ts` | generated Zod sizes and costs; what survives JSON Schema |
-| `sync/` | `bun e2e.ts` | 49 ms (`--hot`), 160 ms (`--watch`), 560 ms (1 s poll); fail closed |
-| `swr-core/` | `bun test swr-core` | a 465-line core and React binding, 27 tests; the Suspense double fetch |
-| `bundle-size/` | `bun bundle-size/measure.ts` | the size tables of §2.5, §5.2 and §7.2 |
-| `nest/` | `cd nest && bun explore.ts` | NTR's measurements |
+| `inference/` (2026-10-10) | `bun patch-router.ts && bun gen.ts && bun measure.ts` (heavy) | +49% (router) or +2% (registry) check time at 1000 routes |
+| `codegen/` (2026-10-10) | `bun generate.ts`, `bun scale.ts` | `Routes` from statement-style routes; 0.75 s client check at 1000 routes |
+| `codegen/zod/` (2026-10-10) | `bun measure.ts`, `bun jitless.ts`, `bun roundtrip.ts` | generated Zod sizes and costs; what survives JSON Schema |
+| `sync/` (2026-10-10) | `bun e2e.ts` | 49 ms (`--hot`), 160 ms (`--watch`), 560 ms (1 s poll); fail closed |
+| `swr-core/` (2026-10-10) | `bun test swr-core` | a 465-line core and React binding, 27 tests |
+| `bundle-size/` (2026-10-10) | `bun bundle-size/measure.ts` | the data-layer and validator sizes |
+| `nest/` (2026-10-10) | `cd nest && bun explore.ts` | NTR's explorer (now superseded, §9) |
+| **`transports/ws-typing/`** (2026-11-02) | `bun ws-typing/gen.ts && bun ws-typing/measure.ts` (wrapper) | §3.1's channel table; a negative control |
+| **`transports/webrtc/`** (2026-11-02) | `bun webrtc/spike.ts` | Bun has no WebRTC; node-datachannel and werift peers; typed signalling and data channels; `webrtc.md` §2 |
+| **`transports/graphql/`** (2026-11-02) | `bun graphql/size.ts`, `bun graphql/tada.ts` (wrapper) | runtime sizes; gql.tada check cost; `graphql.md` §2.1 |
+| **`transports/contract-reuse/`** (2026-11-02) | `bun contract-reuse/size.ts` | the contract core in a browser: 6.8 KB gz, no server marker |
 
 ---
 
@@ -1415,147 +1409,176 @@ codes, a live channel, and a UI already on TanStack Query.
 
 | # | Risk | Likelihood / impact | Mitigation |
 |---|---|---|---|
-| R1 | **query-core's next major** changes the factories' target (`fetchQuery` is already deprecated for `queryClient.query()`) [V] | likely within a year / medium | factories return `queryOptions`-shaped objects both accept; peer range `^5`; an upgrade PR when v6 ships |
-| R2 | **AD is not built**, and is this plan's critical path (`__schemas`, responses on the validator, `.describe()`) | certain today / high | PR-M1 starts after AD (a), (b), (b1); nothing client-side before PR-C2 needs it; AD's "suggested first commit" (`__schemas`) unblocks the model's request half |
-| R3 | **Generated schemas are weaker than the server's** (refinements dropped silently) [M] | certain / low | documented; the server stays the authority; BYO for client-side rules; a zod-specific detector later |
-| R4 | **The dev endpoint leaks in production** | low / high | fail closed by construction (§3.3) and by test: production throws, no implicit on, token, loopback, 404 |
-| R5 | **tsc cost**: inference at scale [M] | — | generation is the default; the registry costs 2% |
-| R6 | **Model build cost on large apps** (~0.3 s per 1000 routes) [M] | medium / low | built lazily, only with a watcher or on a `GET` |
-| R7 | **Query serialisation drifts from the server's parser** | medium / medium | a round-trip test through `router.fetch()` for every shape; one module owns both directions' options |
-| R8 | **Preact 11**: TanStack's Preact adapter declares `preact ^10` [V] | certain / low | Preact is built on demand; check then |
-| R9 | **zod classic under a strict CSP** runs jitless, ~1.6× slower [M] | medium / low | `zod/mini` is the default flavour |
-| R10 | **Generated-file churn** in reviews and merges | medium / low | one file per side, sorted keys, stable output; `--check` in CI; Q9 |
-| R11 | **The pilot finds the model insufficient** for bun-jobs (alternate content types, `bodyOptional`, `maxBodyBytes`) | medium / medium | it is a pilot of one domain; the model has room (`version`) |
-| R12 | **bun-nest's adapter does not serve a BunRouter `ws()` route** the way bun-common's does [I] | unknown / medium | PR-M2 verifies; NTR's `DevTypesModule` can serve the channel through bun-nest's own WebSocket path otherwise |
+| R1 | **query-core's next major** changes the factories' target [V] | likely within a year / medium | factories return `queryOptions`-shaped objects; peer `^5` |
+| R2 | ~~AD not built~~ **resolved**: AD and BV built (§2.6) | — | — |
+| R3 | **Generated schemas are weaker than the server's** (refinements dropped silently) [M] | certain / low | documented; the server stays the authority; BYO for client rules; in a monorepo the shared module's own schemas avoid it |
+| R4 | **The dev endpoint leaks in production** | low / high | fail closed by construction and by test |
+| R5 | **Inference cost at scale** (tsc) [M] | — | generation is the default; under `bun --check` both forms are sub-second at 200 channels [M] |
+| R6 | **Document build cost on large apps** (~0.3 s per 1000 routes [M]) | medium / low | built lazily |
+| R7 | **Query serialisation drifts from the server's parser** | medium / medium | a round-trip test through `router.fetch()` |
+| R8 | **Preact 11**: TanStack's adapter declares `preact ^10` [V] | certain / low | Preact on demand |
+| R9 | **zod classic under a strict CSP** runs jitless [M] | medium / low | `zod/mini` by default |
+| R10 | **Generated-file churn** | medium / low | sorted, stable output; `--check` in CI; Q9 |
+| R11 | **The pilot finds the documents insufficient** for bun-jobs (alternate content types, `bodyOptional`, `maxBodyBytes`) | medium / medium | one domain first; bun-jobs' own generator can add what it needs as `x-bun-*` |
+| R12 | **bun-nest's adapter does not serve a `BunRouter` `ws()` route** as bun-common's does [I] | unknown / medium | PR-M2 verifies; NTR's module serves the channel through bun-nest's own path otherwise |
+| R13 **(new)** | **OpenAPI cannot express some paths** (regex-constrained, host-scoped) [S] | low / low | `x-bun-route-key` keeps the Express key; unexpressible routes are listed with a warning and callable untyped |
+| R14 **(new)** | **Extracting the contract package churns bun-common's imports and its consumer check** | certain / low | a move with a re-export; bun-common's suite unchanged is the gate (PR-K) |
+| R15 **(new)** | **AsyncAPI documents describe behaviour the runtime lacks** (a reply echoing the id, `docs/asyncapi.ts:617`) [S] | certain today / medium | PR-W1 makes the runtime match before the client relies on it |
+| R16 **(new)** | **Bun gains `EventSource` or WebRTC later**, changing what "works under Bun" means [V: oven-sh/bun#8474 open] | unknown / low | the SSE client never used `EventSource`; the WebRTC wrapper is structural, so a native `RTCDataChannel` fits |
+| R17 **(new)** | **bun-nest's packet format drifts** from socket.io's or changes in a Nest major | low / medium | the codec is tested in the Nest matrix (11 and 12) |
+| R18 **(new)** | **Native WebRTC test dependency** (node-datachannel's prebuilt binary) missing on a platform | low / low | a devDependency of bun-client only; the tests skip visibly without it; werift as the pure-TS fallback |
 
 ---
 
-## 14. Open questions for the user
+## 14. Answered by the user, 2026-11-02
 
-Each has a recommended answer.
+The user approved every recommendation on 2026-11-02 (through the lead
+session, b8). The 2026-10-10 Q2 ("leave `BunRouter`'s verb return types
+alone") was already settled by #534, and the old Q11 was replaced by Q20.
 
-1. **Generation plus live sync as the default everywhere, inference as an
-   opt-in registry?** **Recommended: yes** (§3.4). It differs from "(a) for
-   monorepos" because generation works with today's statement-style routes
-   and checks an order of magnitude faster on the client [M].
-2. **Leave `BunRouter`'s verb return types alone (no accumulating router)?**
-   **Yes.** +49% check time at 1000 routes, and it only works chained [M].
-3. **Build the data layer on `@tanstack/query-core` rather than our own
-   core?** **Yes**, as an optional peer (§7.2). Our core is 7.5 KB gzip
-   smaller but ~15–20 days short of parity, with five bindings to maintain.
-4. **The call style: path literal per verb (`api.get("/users/:id", …)`) as the
-   primary form, a named proxy (`api.op.getUser`) later?** **Yes.**
-5. **A status the route does not declare throws by default?** **Yes** (§4.3),
-   with `undeclaredStatus: "result"` to opt out.
-6. **Built-in validation is generated Zod, `zod/mini` by default, in a `/zod`
-   subpath with zod an optional peer?** **Yes** (§5.2). Classic is a flag
-   away; valibot as a second generated target is possible later.
-7. **Validation defaults: requests and responses on in development, off in
-   production; a request failure throws, a response failure warns?** **Yes**
-   (§5.5).
-8. **BYO validators run after the built-in ones, on its output when it
-   passed, issues merged into one `ValidationError`, `replace: true` to drop
-   the built-in?** **Yes** (§5.4).
-9. **Commit the generated files?** **Yes**, in both layouts, with `--check`
-   in CI: reviewable diffs, and a frontend builds without a server running.
-10. **The dev endpoint's path and token file: `/__bun/types` and
-    `node_modules/.cache/bun-types/<port>.json`?** **Yes**; both configurable.
-11. **Live invalidation as a production feature (opt-in, the app's own
-    `authorize`), before typed channels?** **Yes** (§6.5): it is what the UI
-    needs most, and typed channels wait for AD (e).
-12. **Cache tags declared in `.describe({ cache: { tags, invalidates } })`,
-    templated by params, with bun-cache's names?** **Yes** (§6.4, §8.1).
-13. **Package name `@kingsleyweb/bun-client`?** **Yes**, unless the user
-    prefers `bun-fetch` or `bun-query`; §16.
-14. **Pilot one bun-jobs-ui domain (summon) before deciding on more?**
-    **Yes** (§11).
-15. **SSR prefetch in process through `router.fetch()`?** **Yes** (§6.6).
-16. **React first, the other four bindings on demand, as bun-views does?**
-    **Yes** (§7.1).
+**Carried over from 2026-10-10**
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Generation plus live sync as the default, inference as the opt-in registry | **Yes** (§3.4) |
+| 3 | The data layer on `@tanstack/query-core`, an optional peer | **Yes** (§7.2) |
+| 4 | Path literal per verb as the primary call; the named proxy `api.op.*` beside it from PR-C1 | **Yes** (§6.1) |
+| 5 | An undeclared status throws by default (`undeclaredStatus: "result"` to opt out) | **Yes** (§4.3) |
+| 6 | Built-in validation from generated `zod/mini` in `/zod`, zod an optional peer; the server's own schemas when a shared module is browser-safe | **Yes** (§5.1–5.2) |
+| 7 | On every transport: validation on in development, off in production; sends throw on failure, receives warn and deliver | **Yes** (§5.5–5.6) |
+| 8 | BYO validators after the built-in, issues merged, `replace: true` | **Yes** (§5.4) |
+| 9 | Commit the generated files, `--check` in CI | **Yes** |
+| 10 | Dev endpoint `/__bun/types`, token file `node_modules/.cache/bun-types/<port>.json`, both configurable | **Yes** (§3.3) |
+| 12 | Cache tags in `.describe({ cache })` with bun-cache's vocabulary, plus `Cache-Tag`/`Surrogate-Key` headers | **Yes** (§6.4) |
+| 13 | Package name `@kingsleyweb/bun-client` | **Yes** |
+| 14 | Pilot one bun-jobs-ui domain (summon) first | **Yes** (§11) |
+| 15 | SSR prefetch in process through `router.fetch()`, once bun-views' hydration exists | **Yes** (§6.6) |
+| 16 | React first, other bindings on demand | **Yes** (§7.1) |
+
+**New on 2026-11-02**
+
+| # | Question | Answer |
+|---|---|---|
+| 17 | The documents are the model (OpenAPI 3.1, AsyncAPI 3.0, `x-bun-*`); the bespoke `RouteModel` is dropped | **Yes** (D1, §3.0) |
+| 18 | Extract `lib/contract/` into zero-dependency `@kingsleyweb/bun-contract`, re-exported by bun-common, used by the client | **Yes** (D20, §10.1) |
+| 19 | The WebSocket client as `websocket.md` designs it, with its bun-common changes (echoed reply ids, `defineChannel(contract)`, typed socket params, `send` returning Bun's status) | **Yes** |
+| 20 | Live invalidation as one typed channel (`liveContract`, bun-common `./live`), SSE as the fallback | **Yes** (D15) |
+| 21 | Nest: no explorer; a small `DevTypesModule`, `Describe` and `@Invalidates` from bun-nest's root; gateways through `gatewayAsyncApi` and shared `as const` maps | **Yes** (§9, NTR) |
+| 22 | SSE over `fetch` with our own parser, `Last-Event-ID` by default; ask BNR's PR-sse2 for ids, a `resume` hook, `retry:` and heartbeats | **Yes** (`sse.md`) |
+| 23 | WebRTC: signalling contract and relay, typed data channels; no media, no WebRTC runtime dependency | **Yes** (`webrtc.md`) |
+| 24 | `node-datachannel` as a devDependency of bun-client only, for the data-channel tests | **Yes** |
+| 25 | GraphQL: no server, no codegen of ours; a typed `TypedDocumentNode` call over the HTTP core, on demand | **Yes** (`graphql.md`) |
+| 26 | Named operations, uploads, downloads, streamed bodies in; gRPC, Connect, JSON-RPC out | **Yes** (`other-transports.md`) |
+| 27 | Transports as subpath functions (`channel(api, …)`, `sse(api, …)`) | **Yes** (§10.1) |
 
 ---
 
 ## 15. PR slicing and effort
 
-Focused days for someone who knows the code, as in the other plans. Each PR
-passes the full gate alone (`bun scripts/typecheck.ts`, `CI=1 bunx eslint .`
-in each touched package, `bun run test` and `--randomize`, the consumer check
-for packaging changes, and `run-all.ts` in the affected `examples/`). **Each
-user-facing PR is reported to the examples agent before merging.**
+Focused days for someone who knows the code. Each PR passes the full gate
+alone (`bun scripts/typecheck.ts`; `bun run lint` and `bun run format:check`
+in each touched directory; `bun run test` plus `bun test --randomize` with two
+seeds; the consumer check for packaging changes; the affected `examples/`),
+and every user-facing PR sends the examples a change report before merging.
+**After a bun-common change, bun-nest's suite and bun-jobs' `test:seeded`
+run too** (CLAUDE.md).
 
-### 15.1 Prerequisites (AD's phases, estimated there)
-
-AD (a) `.describe()` and discovery, (b0) spec types, (b) `__schemas` and
-converters, (b1) responses on the validator: **15–20 d** by AD's own figures.
-PR-M1 needs (a), (b) and (b1); PR-C1 needs none of them.
-
-### 15.2 Server (bun-common)
+### 15.1 Group 0: prerequisites (bun-common)
 
 | PR | What it ships | Depends on | Effort |
 |---|---|---|---|
-| **PR-M1** route model | `buildRouteModel`, `RouteModel` types, §4.1's rule, `commonResponses`, `.describe({ errors, cache })`, the hash; AD's `generateOpenApi` on the same discovery | AD (a), (b), (b1) | ~3 d |
-| **PR-M2** dev sync | `devTypes()`: endpoint, channel, token file, loopback, fail closed, lazy build, `routesVersion` | PR-M1 | ~3 d |
-| **PR-M3** live invalidation | `./live`: `liveInvalidation`, `publishTags`, WebSocket and SSE, resume, BC bus hook | PR-M1; PR-sse2 for SSE | ~4 d |
-| *PR-R* registry | `defineRoutes`, `RoutesOf` (AD (a2)) | AD (b1) | ~2.5 d |
-| *PR-M4* typed channels | `defineChannel`, typed `router.ws()` path overload, model `channels` | AD (e) | ~5 d (later) |
+| **PR-K** contract package | `@kingsleyweb/bun-contract` from `lib/contract/`; bun-common depends on it and re-exports it at `./contract`; packaging recipe; consumer check | — | ~2 d |
+| **PR-M1** documents as the model | `x-bun-route-key`, `RouteDoc.errors`/`cache` → `x-bun-errors`/`x-bun-cache`, `typesHash`, the sender view on `RoutesOf` (§8.5) | — | ~2 d |
+| **PR-M2** dev sync | `devTypes()`: documents endpoint, channel, token file, loopback, fail closed, lazy build, `routesVersion` | PR-M1 | ~2.5 d |
 
-### 15.3 Client (`@kingsleyweb/bun-client`)
+### 15.2 Group 1: HTTP (bun-client)
 
 | PR | What it ships | Depends on | Effort |
 |---|---|---|---|
-| **PR-C1** package and core | package skeleton and packaging recipe; `createClient`, verbs, `request`, `url`; params, query, body, headers; abort, timeout, retries, middleware, auth refresh; `Result` and errors; `ClientConfig` with §6.2's precedence; bundle safety, budget, consumer check | — | ~5 d |
-| **PR-C2** codegen and CLI | `./codegen`: model → `Routes` emitter (with `$defs`, recursion), fetch from URL or `--module`, `--check`; the wire-format `Equal` test | PR-M1, PR-C1 | ~4 d |
+| **PR-C1** package and core | skeleton and recipe; `createClient`, verbs, `request`, `url`, **named operations**; params, query, body, headers; abort, timeout, retries, middleware, auth refresh; `Result` and errors; §6.2's config | — | ~5.5 d |
+| **PR-C2** generator and CLI | `./codegen`: OpenAPI → `Routes` (`$ref` components as named types, recursion, `x-sse-events`), from a URL, files or `--module`, `--check` | PR-M1, PR-C1 | ~4 d |
 | **PR-C3** watcher | `bun-client watch` | PR-M2, PR-C2 | ~1.5 d |
-| **PR-C4** validation and `/zod` | built-in and BYO validation, `ValidationError`, failure modes, defaults by mode; the Zod emitter (mini and classic) and `./zod` | PR-C2 | ~4 d |
-| **PR-C5** query layer | `./query`: `queries()`, keys, tags, `invalidates`, ETag 304, optimistic, infinite, `observe()` | PR-C1 | ~4 d |
-| **PR-C6** React and SSR | `./react`; `<ApiHydrate>`; SSR through bun-views' props | PR-C5; BV PR-5 for hydration | ~3 d |
-| **PR-C7** live client | `./live`: WebSocket, SSE over fetch, refcounted tag subscriptions, reconnect, resume, gap invalidation | PR-M3, PR-C5 | ~3.5 d |
-| **PR-C8** persistence | `./persist` on IndexedDB, buster = model hash | PR-C5 | ~1.5 d |
-| | **Total, server and client, React first** | | **~36.5 d** (PR-M1 to M3, C1 to C8) **+ 2.5 d registry** |
-| *Later, on demand* | `./vue` ~1.5 d, `./svelte` ~2 d, `./solid` ~1.5 d, `./preact` ~1 d | PR-C5 | ~6 d |
+| **PR-C4** validation and `/zod` | built-in and BYO validation on bun-contract's guards, `ValidationError`, failure modes, defaults; the Zod emitter (mini, classic) | PR-K, PR-C2 | ~4 d |
+| **PR-C5** query layer | `./query`: keys, tags (declared and from headers), `invalidates`, ETag 304, optimistic, infinite, `observe()` | PR-C1 | ~4 d |
+| **PR-C6** React | `./react`; SSR's `<ApiHydrate>` later, after BVW PR-5 (+1 d then) | PR-C5 | ~2 d |
+| **PR-C8** persistence | `./persist`, buster = the document hash | PR-C5 | ~1.5 d |
+| **PR-C9** bodies | typed multipart/urlencoded and files, downloads by kind, NDJSON and raw chunk iteration, streaming request bodies; bun-common's `RouteDoc.request.files` (other-transports.md §6) | PR-C1, PR-C4 | ~3 d |
+| | **Group 1 total** | | **~25.5 d** |
 
-### 15.4 Elsewhere
+### 15.3 Group 2: WebSocket and SSE
+
+| PR | What it ships | Depends on | Effort |
+|---|---|---|---|
+| **PR-W1** channel server pieces (bun-common) | echoed replies, `defineChannel(contract)`, typed socket params, send status, server-level publish | — | ~3 d |
+| **PR-W2** channel client | `./channel`; AsyncAPI → `Channels` in the generator | PR-C1, PR-C2, PR-K, PR-W1 | ~5 d |
+| **PR-W3** Nest codec | `"bun-nest"` codec and acks; the Nest matrix | PR-W2 | ~1.5 d |
+| **PR-W4** live invalidation | bun-common `./live` (`liveContract`, `liveInvalidation`, `publishTags`, bun-cache source); `live(api)` in `./query` | PR-W1, PR-W2, PR-C5 | ~4 d |
+| **PR-S1** SSE client | `./sse`, its parser and shared corpus, resume, validation; the live channel's SSE fallback | PR-C1, PR-C2 | ~3 d |
+| *(BNR PR-sse2)* | the writer, plus ids, `resume`, `retry:`, heartbeats asked by sse.md §4 | BNR | +~1 d on BNR's estimate |
+| | **Group 2 total** | | **~16.5 d** (+1 d in BNR) |
+
+### 15.4 Group 3: WebRTC; Group 4: GraphQL
+
+| PR | What it ships | Depends on | Effort |
+|---|---|---|---|
+| **PR-R1** signalling | bun-common `./webrtc` (`signallingContract`, `signallingRelay`); bun-client `connectPeer` | PR-W1, PR-W2 | ~2 d |
+| **PR-R2** data channels | `typedDataChannel`: envelope, guards, request/response, `sendWhenReady`, binary kind/size | PR-W2 | ~2 d |
+| *PR-G1* GraphQL (on demand) | `./graphql` | PR-C1, PR-C5 | ~2 d |
+
+### 15.5 Elsewhere
 
 | PR | Owner | Effort |
 |---|---|---|
-| NTR's PRs (N1 to N5) | bun-nest agent / features | ~13 d (NTR §9) |
-| Pilot: bun-jobs `toRouteModel` | bun-jobs agent | ~1.5 d |
-| Pilot: bun-jobs-ui summon domain | bun-jobs-ui agent | ~3 d |
-| Examples (each user-facing PR; `examples/bun-common/14-typed-client/` and a client example per binding) | examples agent | ~4 d |
+| NTR's revised PRs (`DevTypesModule`, `@Invalidates`, the shared-maps convention) | bun-nest | ~4 d (NTR §9.4) |
+| Pilot: bun-jobs `x-bun-errors` and a closed `ApiErrorCode` | bun-jobs | ~0.5 d |
+| Pilot: bun-jobs-ui summon domain | bun-jobs-ui | ~3 d |
+| Examples: `examples/bun-common/14-typed-client/` (HTTP, a channel, SSE, a data channel), one per binding | examples | ~5 d |
+| *Later, on demand*: `./vue` ~1.5 d, `./svelte` ~2 d, `./solid` ~1.5 d, `./preact` ~1 d; upload progress ~1 d; a `"bun-jobs"` codec ~1 d | | ~8 d |
 
-**Order:** PR-C1 can start now (it needs nothing). AD (a) → (b) → (b1) →
-PR-M1 → (PR-M2 ∥ PR-C2) → PR-C3, PR-C4; PR-C5 after PR-C1; PR-C6 after
-PR-C5 and BV PR-5; PR-M3 → PR-C7. The pilot follows PR-C2 and PR-C5.
+**Order.** PR-K, PR-M1 and PR-C1 can start at once (none depends on
+another). Then PR-M2 ∥ PR-C2; PR-C3, PR-C4; PR-C5 → PR-C6, PR-C8; PR-C9.
+**HTTP first (group 1), then WebSocket and SSE (group 2: PR-W1 can start
+beside group 1), then WebRTC (group 3), then GraphQL on demand.** The pilot
+follows PR-C2 and PR-C5.
 
 ---
 
-## 16. Names needing approval
+## 16. Names (approved 2026-11-02)
 
-Every new public name.
+**Approved by the user, 2026-11-02, as listed, withdrawals included.**
+
+Every new public name. Names approved and built since 2026-10-10
+(`defineRoutes`, `RoutesOf`, `RouteDef`, `defineChannel`, `channelContract`,
+`listRoutes`, `generateOpenApi`, `generateAsyncApi`, `docsRouter`) are not
+repeated; the old `RouteModel`, `ModelRoute`, `ModelChannel`,
+`buildRouteModel`, `toRouteModel` and `commonResponses` (as a builder
+option) are **withdrawn** with D1.
 
 | Name | Kind | Where | Why this name |
 |---|---|---|---|
 | `@kingsleyweb/bun-client` | package | new | the client of the bun-* server packages |
-| `./query`, `./react`, `./vue`, `./svelte`, `./solid`, `./preact`, `./zod`, `./live`, `./persist`, `./codegen` | subpaths | bun-client | one per optional peer or concern, as BV does |
-| `bun-client` (`generate`, `watch`, `--check`, `--module`, `--url`, `--out`, `--zod`, `--zod-flavour`) | bin and flags | bun-client | the package name |
-| `createClient`, `ClientConfig`, `RouteConfig`, `CallConfig`, `RetryConfig`, `ValidationConfig`, `PartValidation`, `FailureMode`, `QueryDefaults`, `LiveConfig`, `AuthConfig`, `ClientMiddleware`, `SchemaSource` | function, types | `.` | §6.2 |
-| option names: `baseUrl`, `fetch`, `headers`, `credentials`, `timeout`, `retry`, `throwOnError`, `undeclaredStatus`, `mode`, `schemas`, `validate` (`request`, `params`, `query`, `body`, `headers`, `response`, `onFailure`, `enabled`, `custom`, `replace`), `middleware`, `auth`, `logger`, `query` (`cache`, `staleTime`, `gcTime`, `refetchOnFocus`, `refetchOnReconnect`, `refetchInterval`, `retry`, `conditional`, `persist`), `live`, `routes` | options | `ClientConfig` | §6.2; query-core's words where it has them |
-| `Result`, `Jsonify`, `RoutesOf`, `RouteMap`, `RouteEntry` | types | `.` | §4.4, §3.1 |
-| `ClientError`, `HttpError`, `UnexpectedStatusError`, `NetworkError`, `TimeoutError`, **`ValidationError`** | classes | `.` | `ValidationError` mirrors BunValidate's, with `direction`, `status` and `source` per issue (§5.4) |
-| `queries`, `observe`, `invalidateTags` | functions | `./query` | `invalidateTags` is bun-cache's verb |
-| `useApi`, `useApiSuspense`, `useApiMutation`, `useLive`, `ApiHydrate`; `createApi` (Svelte, Solid) | hooks, component | framework subpaths | one prefix per binding |
-| `schemasFromZod` | function | `./zod` | |
-| `live` | function | `./live` | |
-| `idbPersister` | function | `./persist` | |
-| `RouteModel`, `ModelRoute`, `ModelChannel` | types | bun-common `./lib/docs`, mirrored in bun-client | §3.0 |
-| `buildRouteModel`, `commonResponses` | function, option | bun-common `./lib/docs` | beside AD's `generateOpenApi` |
-| `devTypes` (`enabled`, `path`, `token`, `allowRemote`) | function, options | bun-common `./lib/docs` | |
+| **`@kingsleyweb/bun-contract`** | package | new, extracted | bun-common's `./contract`, standalone |
+| `./query`, `./react`, `./vue`, `./svelte`, `./solid`, `./preact`, `./zod`, `./persist`, `./codegen`, **`./channel`, `./sse`, `./webrtc`, `./graphql`** | subpaths | bun-client | one per optional peer or transport |
+| `bun-client` (`generate`, `watch`, `--check`, `--module`, `--export`, `--url`, **`--openapi`, `--asyncapi`**, `--out`, `--zod`, `--zod-flavour`) | bin and flags | bun-client | |
+| `createClient`, `ClientConfig`, `RouteConfig`, `CallConfig`, `RetryConfig`, `ValidationConfig`, `PartValidation`, `FailureMode`, `QueryDefaults`, `AuthConfig`, `ClientMiddleware`, `SchemaSource` | function, types | `.` | §6.2 |
+| option names of `ClientConfig` (§6.2's list; `live` moves to `./query`'s `live()`) | options | `.` | query-core's words where it has them |
+| `op` (the named-operation proxy) | property | the client | short; `api.op.getUser()` |
+| `Result`, `Jsonify`, `RouteMap`, `RouteEntry` | types | `.` | |
+| `ClientError`, `HttpError`, `UnexpectedStatusError`, `NetworkError`, `TimeoutError`, `ValidationError` | classes | `.` | |
+| `queries`, `observe`, `invalidateTags`, `live` | functions | `./query` | `invalidateTags` is bun-cache's verb |
+| `useApi`, `useApiSuspense`, `useApiMutation`, `useLive`, `ApiHydrate`; `createApi` (Svelte, Solid) | hooks, component | framework subpaths | |
+| `schemasFromZod`, `idbPersister` | functions | `./zod`, `./persist` | |
+| `channel`, `ChannelClient`, `ChannelOptions` and its members and options, `ChannelError`, `RequestTimeoutError`, `DisconnectedError`, `ChannelClosedError`, codecs `"bun-common"`/`"bun-nest"` | function, types, classes | `./channel` | [`websocket.md`](websocket.md) §13.3 |
+| `sse`, `EventStream`, `StreamClosedError`, `$gap`, `heartbeatMs`, `fatalStatuses` | function, types | `./sse` | [`sse.md`](sse.md) |
+| `connectPeer`, `typedDataChannel` | functions | `./webrtc` | [`webrtc.md`](webrtc.md) |
+| `createGraphQLClient`, `GraphQLResponseError`, `throwOnGraphQLErrors` | function, class, option | `./graphql` | [`graphql.md`](graphql.md) |
+| `x-bun-route-key`, `x-bun-errors`, `x-bun-cache` | OpenAPI extensions | bun-common's generator | §3.0 |
+| `RouteDoc.errors`, `RouteDoc.cache` (`tags`, `invalidates`), `RouteDoc.request.files` | fields | bun-common `RouteDoc` | §8.1 |
+| `devTypes` (`enabled`, `path`, `token`, `allowRemote`, `openapi`, `asyncapi`), `typesHash` | functions, options | bun-common `./lib/docs` | |
 | `/__bun/types`, `bun-types.v1`, `node_modules/.cache/bun-types/<port>.json` | defaults | dev sync | §3.3 |
-| `RouteDoc.errors`, `RouteDoc.cache` (`tags`, `invalidates`) | fields | AD's `RouteDoc` | §8.1 |
-| `liveInvalidation`, `publishTags` | functions | bun-common `./live` (new entry) | |
-| `defineRoutes` | function | bun-common root | replaces AD's working name `routes([...])` for (a2) |
-| `defineChannel` | function | bun-common (later, PR-M4) | AD's `WsChannelDoc` made enforcing |
-| `toRouteModel` | function | bun-jobs `./lib/api` | pilot |
+| `liveContract`, `liveInvalidation`, `publishTags` | constant, functions | bun-common `./live` (new entry) | websocket.md §9 |
+| `signallingContract`, `signallingRelay` | functions | bun-common `./webrtc` (new entry) | webrtc.md §3 |
+| `defineChannel(contract)`; `send(…, { id })`; `send`/`publish` → `Promise<number>`; server-level `publish` | overload, signature changes | bun-common `Channel` | websocket.md §10 |
 
 ---
 
@@ -1563,20 +1586,13 @@ Every new public name.
 
 `docs/plans/typed-client/evidence/` ([index](evidence/README.md)):
 
-- `inference/`: `patch-router.ts`, `gen.ts`, `spike-types.ts`,
-  `measure.ts`, `results.txt`, `probes/`
-- `codegen/`: `describe.ts`, `app.ts`, `emit-dts.ts`, `generate.ts`,
-  `routes.gen.ts`, `model.json`, `client-types.ts`, `client-check.ts`,
-  `scale.ts`, `scale-results.txt`, `results.txt`; `zod/`: `emit-zod.ts`,
-  `synthetic.ts`, `measure.ts`, `jitless.ts`, `roundtrip.ts`,
-  `app.zod-classic.gen.ts`, `app.zod-mini.gen.ts`, `results.txt`,
-  `roundtrip.txt`
-- `sync/`: `dev-types.ts`, `watch.ts`, `e2e.ts`, `results.txt`
-- `swr-core/`: `core.ts`, `react.ts`, `core.test.ts`, `react.test.tsx`,
-  `results.txt`
-- `bundle-size/`: `measure.ts`, `entries/`, `results.txt`
-- `nest/`: `explore.ts`, `explore-types.ts`, `client-check.ts`,
-  `nest-routes.gen.ts`, `results.txt`
+- 2026-10-10: `inference/`, `codegen/` (with `zod/`), `sync/`,
+  `swr-core/`, `bundle-size/`, `nest/` (files listed in each README)
+- 2026-11-02: `transports/` (its own `package.json` and `bun.lock`):
+  `ws-typing/` (`client-types.ts`, `gen.ts`, `measure.ts`, `results.txt`),
+  `webrtc/` (`spike.ts`, `results.txt`), `graphql/` (`entries/`, `size.ts`,
+  `size-results.txt`, `tada.ts`, `tada-results.txt`), `contract-reuse/`
+  (`guards.ts`, `whole.ts`, `size.ts`, `results.txt`)
 
-Third-party packages are pinned in `evidence/package.json` and
+Third-party packages are pinned in each project's `package.json` and
 installed there only.
