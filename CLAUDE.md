@@ -94,7 +94,9 @@ management API and the bun-jobs-ui app on one adapter at
 `http://localhost:4000/jobs`, with a simulation that keeps every screen
 moving (`playground/README.md`). It is a project of its own, like
 `benchmarks/`: typechecked by `scripts/typecheck.ts`, linted with
-`cd playground && bun run lint && bun run format:check`, and outside the workspaces.
+`cd playground && bun run lint && bun run format:check && bun run check:client`
+(the last is `bun-client generate --check` on its committed typed-client
+files), and outside the workspaces.
 
 Then, in each affected package directory:
 

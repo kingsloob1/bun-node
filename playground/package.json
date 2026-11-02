@@ -9,6 +9,8 @@
     "dev": "bun --watch index.ts",
     "lint": "bun lint",
     "format": "bun fmt",
-    "format:check": "bun fmt --check"
+    "format:check": "bun fmt --check",
+    "gen:client": "bun-client generate --module typed-client-api.ts --out typed-client-api.gen.ts --zod typed-client-api.zod.gen.ts",
+    "check:client": "bun-client generate --module typed-client-api.ts --out typed-client-api.gen.ts --zod typed-client-api.zod.gen.ts --check"
   }
 }
