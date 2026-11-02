@@ -7,13 +7,14 @@
  * bun-client generate --openapi ./openapi.json [--asyncapi ./asyncapi.json] --out src/api.gen.ts
  * bun-client generate --module ./server/app.ts [--export app] --out src/api.gen.ts
  * bun-client generate … --check      # CI: exit 1 when the file is stale
- * bun-client watch --out src/api.gen.ts [--url <url>] [--token-file <path>]
+ * bun-client generate … --out src/api.gen.ts --zod src/api.zod.gen.ts [--zod-flavour classic]
+ * bun-client watch --out src/api.gen.ts [--zod src/api.zod.gen.ts] [--url <url>] [--token-file <path>]
  * ```
  *
  * Exit status: `0` written (or fresh, under `--check`; for `watch`, stopped),
- * `1` stale under `--check`, `2` a usage error or a source that could not be
- * read. `--zod`/`--zod-flavour` (PR-C4) are named by the plan and not built
- * yet: they exit `2` saying so.
+ * `1` stale under `--check` (either file, with `--zod`), `2` a usage error
+ * or a source that could not be read. `--zod` (PR-C4) writes the runtime zod
+ * schemas beside the route map, for both commands.
  *
  * `generate --url` against a dev endpoint (bun-common's `devTypes()`) sends
  * the bearer token of the matching token file (plan §3.3), the one `watch`
@@ -24,12 +25,14 @@ import process from "node:process";
 import { parseArgs } from "node:util";
 import type { DocumentSource } from "./load";
 import { devServerFor, readDevServers, tokenDirectory } from "./devServer";
+import type { ZodTarget } from "./emit";
 import {
   emitModule,
   formatWarnings,
   headerHash,
   readExisting,
   writeAtomically,
+  zodTarget,
 } from "./emit";
 import { loadDocuments } from "./load";
 import { watchDevServer } from "./watch";
@@ -52,8 +55,8 @@ export interface CliIo {
 
 /** The usage text. */
 const USAGE = `Usage:
-  bun-client generate <source> [--out <file>] [--check]
-  bun-client watch --out <file> [--url <url>] [--token-file <path>]
+  bun-client generate <source> [--out <file>] [--zod <file>] [--check]
+  bun-client watch --out <file> [--zod <file>] [--url <url>] [--token-file <path>]
 
 Sources (one):
   --url <url>          a URL serving an OpenAPI document, or { hash, openapi, asyncapi }
@@ -65,6 +68,8 @@ Sources (one):
 Options:
   --out <file>         where to write the module (default: stdout)
   --check              write nothing; exit 1 when <file> is not what would be written
+  --zod <file>         also write the runtime zod schemas there (needs --out)
+  --zod-flavour <f>    "mini" (zod/mini, the default) or "classic" (zod)
   --token-file <path>  a dev server's token file, or a directory of them
                        (default: the nearest node_modules/.cache/bun-types)
   --help               this text
@@ -167,10 +172,9 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
     io,
   );
   if (values === undefined) return asksHelp(args) ? 0 : 2;
-  if (values.zod !== undefined || values["zod-flavour"] !== undefined) {
-    err(
-      "bun-client generate: --zod and --zod-flavour are not built yet (typed-client plan PR-C4)\n",
-    );
+  const zod = zodTarget(values.zod, values["zod-flavour"], values.out, cwd);
+  if (typeof zod === "string") {
+    err(`bun-client generate: ${zod}\n`);
     return 2;
   }
 
@@ -236,12 +240,20 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
 
   let code: string;
   let hash: string;
+  let zodCode: string | undefined;
   try {
-    const emitted = emitModule(await loadDocuments(source, cwd));
+    const emitted = emitModule(
+      await loadDocuments(source, cwd),
+      zod ?? undefined,
+    );
     code = emitted.code;
     hash = emitted.hash;
+    zodCode = emitted.zod?.code;
     if (emitted.warnings.length > 0) {
       err(formatWarnings("bun-client generate", emitted.warnings));
+    }
+    if (emitted.zod !== undefined && emitted.zod.warnings.length > 0) {
+      err(formatWarnings("bun-client generate --zod", emitted.zod.warnings));
     }
   } catch (error) {
     const refused =
@@ -256,31 +268,43 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
     out(code);
     return 0;
   }
-  const path = resolve(cwd, values.out);
-  const existing = await readExisting(path);
+  const files: { display: string; path: string; code: string }[] = [
+    { display: values.out, path: resolve(cwd, values.out), code },
+  ];
+  if (zod !== null && values.zod !== undefined && zodCode !== undefined)
+    files.push({ display: values.zod, path: zod.path, code: zodCode });
 
   if (values.check === true) {
-    if (existing === code) {
-      out(
-        `bun-client generate: ${values.out} is up to date (typesHash ${hash})\n`,
+    let stale = false;
+    for (const file of files) {
+      const existing = await readExisting(file.path);
+      if (existing === file.code) {
+        out(
+          `bun-client generate: ${file.display} is up to date (typesHash ${hash})\n`,
+        );
+        continue;
+      }
+      stale = true;
+      const was = existing === undefined ? undefined : headerHash(existing);
+      err(
+        existing === undefined
+          ? `bun-client generate: ${file.display} does not exist; run the same command without --check\n`
+          : `bun-client generate: ${file.display} is stale (it records typesHash ${was ?? "none"}, the documents hash ${hash}${was === hash ? ", with different content: regenerated by another version of the generator?" : ""}); run the same command without --check\n`,
       );
-      return 0;
     }
-    const was = existing === undefined ? undefined : headerHash(existing);
-    err(
-      existing === undefined
-        ? `bun-client generate: ${values.out} does not exist; run the same command without --check\n`
-        : `bun-client generate: ${values.out} is stale (it records typesHash ${was ?? "none"}, the documents hash ${hash}${was === hash ? ", with different content: regenerated by another version of the generator?" : ""}); run the same command without --check\n`,
-    );
-    return 1;
+    return stale ? 1 : 0;
   }
 
-  if (existing === code) {
-    out(`bun-client generate: ${values.out} unchanged (typesHash ${hash})\n`);
-    return 0;
+  for (const file of files) {
+    if ((await readExisting(file.path)) === file.code) {
+      out(
+        `bun-client generate: ${file.display} unchanged (typesHash ${hash})\n`,
+      );
+      continue;
+    }
+    await writeAtomically(file.path, file.code);
+    out(`bun-client generate: wrote ${file.display} (typesHash ${hash})\n`);
   }
-  await writeAtomically(path, code);
-  out(`bun-client generate: wrote ${values.out} (typesHash ${hash})\n`);
   return 0;
 }
 
@@ -300,12 +324,6 @@ async function watch(args: readonly string[], io: Io): Promise<number> {
     io,
   );
   if (values === undefined) return asksHelp(args) ? 0 : 2;
-  if (values.zod !== undefined || values["zod-flavour"] !== undefined) {
-    err(
-      "bun-client watch: --zod and --zod-flavour are not built yet (typed-client plan PR-C4)\n",
-    );
-    return 2;
-  }
   if (values.out === undefined) {
     err(
       `bun-client watch: --out is required, the file to keep generated\n\n${USAGE}`,
@@ -314,6 +332,16 @@ async function watch(args: readonly string[], io: Io): Promise<number> {
   }
   if (values.url !== undefined && !URL.canParse(values.url)) {
     err(`bun-client watch: --url ${values.url} is not a URL\n`);
+    return 2;
+  }
+  const zod: ZodTarget | null | string = zodTarget(
+    values.zod,
+    values["zod-flavour"],
+    values.out,
+    cwd,
+  );
+  if (typeof zod === "string") {
+    err(`bun-client watch: ${zod}\n`);
     return 2;
   }
 
@@ -335,6 +363,9 @@ async function watch(args: readonly string[], io: Io): Promise<number> {
     return await watchDevServer({
       out: resolve(cwd, values.out),
       display: values.out,
+      ...(zod === null || values.zod === undefined
+        ? {}
+        : { zod: { ...zod, display: values.zod } }),
       url: values.url,
       tokenPath:
         values["token-file"] === undefined

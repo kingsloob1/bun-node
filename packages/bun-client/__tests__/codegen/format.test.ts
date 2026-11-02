@@ -4,7 +4,10 @@
  * the golden files and on a sweep of layouts built to sit either side of
  * the 80-column line, where Prettier's choices change: unions in a
  * property, an alias, an array, a type argument and a tuple; intersections;
- * long names and keys; the manifest's objects.
+ * long names and keys; the manifest's objects. The zod modules (PR-C4) are
+ * held to it the same way: their goldens, both flavours, and a sweep of their
+ * own (`fixtures/zodSweep.ts`) through call arguments, member chains and
+ * Prettier's assignment layouts.
  *
  * `bun fmt` is the repo's formatter on its development floor (Bun 1.4.4);
  * on a Bun without it both tests skip, visibly.
@@ -15,6 +18,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
 import { generateRoutes } from "../../lib/codegen/index";
 import { sweepDocument } from "./fixtures/sweep";
+import { zodSweepDocument } from "./fixtures/zodSweep";
 
 const FIXTURES = join(import.meta.dir, "fixtures");
 const dir = await mkdtemp(join(tmpdir(), "bun-client-format-"));
@@ -49,6 +53,10 @@ describe("the generated module is formatted", () => {
       "app.gen.ts",
       "corpus.gen.ts",
       "thirdParty.gen.ts",
+      "app.zod-mini.gen.ts",
+      "app.zod-classic.gen.ts",
+      "corpus.zod-mini.gen.ts",
+      "corpus.zod-classic.gen.ts",
     ]);
     expect(result).toEqual({ code: 0, output: expect.any(String) as string });
   });
@@ -68,6 +76,28 @@ describe("the generated module is formatted", () => {
         const diff = Bun.spawnSync(["diff", file, copy], { stdout: "pipe" });
         throw new Error(
           `bun fmt would reformat the sweep:\n${diff.stdout.toString().slice(0, 4000)}`,
+        );
+      }
+      expect(result.code).toBe(0);
+    },
+  );
+
+  it.skipIf(!hasFmt).each(["mini", "classic"] as const)(
+    "bun fmt leaves the zod sweep unchanged (%s)",
+    async (flavour) => {
+      const { zod } = generateRoutes(zodSweepDocument(), {
+        zod: { flavour, routesModule: "./sweep.gen" },
+      });
+      const file = join(dir, `zod-sweep-${flavour}.gen.ts`);
+      await writeFile(file, zod!.code);
+      const result = fmtCheck(dir, [`zod-sweep-${flavour}.gen.ts`]);
+      if (result.code !== 0) {
+        const copy = join(dir, `zod-sweep-${flavour}.formatted.ts`);
+        await writeFile(copy, zod!.code);
+        Bun.spawnSync([process.execPath, "fmt", copy], { cwd: dir });
+        const diff = Bun.spawnSync(["diff", file, copy], { stdout: "pipe" });
+        throw new Error(
+          `bun fmt would reformat the zod sweep:\n${diff.stdout.toString().slice(0, 4000)}`,
         );
       }
       expect(result.code).toBe(0);

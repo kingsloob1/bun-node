@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. Nothing has a runtime dependency, so nothing is packed beside it.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer: they are checked in the consumer that has it (`peers`), every other entry in one without it.",
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-client",
@@ -9,7 +9,8 @@
         "HttpError",
         "UnexpectedStatusError",
         "NetworkError",
-        "TimeoutError"
+        "TimeoutError",
+        "ValidationError"
       ],
       "types": [
         "ClientConfig",
@@ -21,10 +22,15 @@
         "ClientMiddleware",
         "RequestContext",
         "RouteMap",
-        "RouteEntry"
+        "RouteEntry",
+        "ValidationConfig",
+        "PartValidation",
+        "FailureMode",
+        "RouteSchemas",
+        "ValidationErrorIssue"
       ],
       "browser": true,
-      "snippet": "interface Routes { \"GET /users/:id\": { operationId: \"getUser\"; params: { id: string }; query: Record<never, never>; body: undefined; responses: { 200: { id: string; at: Date }; 404: { code: \"NOT_FOUND\" } } } }\nconst api = m.createClient<Routes>({ baseUrl: \"https://api.example\" });\nasync function probe() {\n  const r = await api.get(\"/users/:id\", { params: { id: \"1\" } });\n  if (r.ok) { const _at: Equal<typeof r.data.at, string> = true; void _at; }\n  else { const _code: Equal<typeof r.error.code, \"NOT_FOUND\"> = true; void _code; }\n  const u = await api.op.getUser({ params: { id: \"1\" }, throwOnError: true });\n  const _u: Equal<typeof u, { id: string; at: string }> = true; void _u;\n}\nvoid probe;\nexport type _api = Expect<IsAny<typeof api>>;\nexport type _client = Expect<IsAny<t.Client<Routes>>>;\nexport type _result = Expect<IsAny<t.Result<Routes[\"GET /users/:id\"]>>>;\nconst _status: Equal<t.Result<Routes[\"GET /users/:id\"]>[\"status\"], 200 | 404> = true; void _status;\nconst _jsonify: Equal<t.Jsonify<{ at: Date }>, { at: string }> = true; void _jsonify;\nconst _manifest: t.RouteManifest<Routes> = { \"GET /users/:id\": { operationId: \"getUser\", statuses: [200, 404] } }; void _manifest;"
+      "snippet": "interface Routes { \"GET /users/:id\": { operationId: \"getUser\"; params: { id: string }; query: Record<never, never>; body: undefined; responses: { 200: { id: string; at: Date }; 404: { code: \"NOT_FOUND\" } } } }\nconst api = m.createClient<Routes>({ baseUrl: \"https://api.example\" });\nasync function probe() {\n  const r = await api.get(\"/users/:id\", { params: { id: \"1\" } });\n  if (r.ok) { const _at: Equal<typeof r.data.at, string> = true; void _at; }\n  else { const _code: Equal<typeof r.error.code, \"NOT_FOUND\"> = true; void _code; }\n  const u = await api.op.getUser({ params: { id: \"1\" }, throwOnError: true });\n  const _u: Equal<typeof u, { id: string; at: string }> = true; void _u;\n}\nvoid probe;\nexport type _api = Expect<IsAny<typeof api>>;\nexport type _client = Expect<IsAny<t.Client<Routes>>>;\nexport type _result = Expect<IsAny<t.Result<Routes[\"GET /users/:id\"]>>>;\nconst _status: Equal<t.Result<Routes[\"GET /users/:id\"]>[\"status\"], 200 | 404> = true; void _status;\nconst _jsonify: Equal<t.Jsonify<{ at: Date }>, { at: string }> = true; void _jsonify;\nconst _manifest: t.RouteManifest<Routes> = { \"GET /users/:id\": { operationId: \"getUser\", statuses: [200, 404] } }; void _manifest;\nconst _v = m.createClient<Routes>({ mode: \"development\", validate: { response: { 200: { custom: { \"~standard\": { version: 1, vendor: \"x\", validate: (value: unknown) => ({ value }) } } } }, onFailure: { response: \"throw\" } } }); void _v;\nconst _e = new m.ValidationError(\"GET /x\", \"response\", [], 500);\nconst _dir: Equal<typeof _e.direction, \"request\" | \"response\"> = true; void _dir;\nconst _src: Equal<t.ValidationErrorIssue[\"source\"], \"builtin\" | \"custom\"> = true; void _src;\nexport type _issue = Expect<IsAny<t.ValidationErrorIssue>>;\nexport type _source = Expect<IsAny<t.SchemaSource<Routes>>>;\nconst _sourceKeys: Equal<keyof t.SchemaSource<Routes>[\"schemas\"], \"GET /users/:id\"> = true; void _sourceKeys;"
     },
     {
       "spelling": "@kingsleyweb/bun-client/lib",
@@ -60,6 +66,25 @@
       "browser": true
     },
     {
+      "spelling": "@kingsleyweb/bun-client/zod",
+      "peers": ["zod"],
+      "values": ["schemasFromZod"],
+      "browser": true,
+      "snippet": "import { z } from \"zod/mini\";\ninterface Routes { \"GET /users/:id\": { params: { id: string }; responses: { 200: { id: string } } } }\nconst schemas = m.schemasFromZod<Routes>({ \"GET /users/:id\": { params: z.looseObject({ id: z.string() }), responses: { 200: z.looseObject({ id: z.string() }) } } });\nconst _keys: Equal<keyof typeof schemas, \"GET /users/:id\"> = true; void _keys;\nexport type _fn = Expect<IsAny<typeof m.schemasFromZod>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/zod",
+      "peers": ["zod"],
+      "values": ["schemasFromZod"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/zod.js",
+      "peers": ["zod"],
+      "values": ["schemasFromZod"],
+      "browser": true
+    },
+    {
       "spelling": "@kingsleyweb/bun-client/codegen",
       "values": ["generateRoutes", "loadDocuments", "runCli", "documentsHash"],
       "types": [
@@ -77,5 +102,7 @@
       "values": ["generateRoutes"],
       "types": ["CodegenWarning"]
     }
-  ]
+  ],
+  "workspaceDependencies": ["packages/bun-contract"],
+  "consumerDependencies": ["zod@^4"]
 }

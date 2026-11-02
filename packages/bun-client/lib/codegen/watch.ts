@@ -22,6 +22,7 @@
  * is picked up. It stops when `signal` aborts (the CLI's SIGINT or SIGTERM).
  */
 import type { DevServer } from "./devServer";
+import type { ZodTarget } from "./emit";
 import { chooseDevServer, readDevServers, tokenDirectory } from "./devServer";
 import {
   emitModule,
@@ -38,6 +39,14 @@ export interface WatchOptions {
   readonly out: string;
   /** The file as the user named it, for messages. */
   readonly display: string;
+  /**
+   * The zod module to keep generated beside it (`--zod`, plan §5.2), with
+   * its name as the user gave it. Default: none.
+   */
+  readonly zod?: ZodTarget & {
+    /** The zod file as the user named it, for messages. */
+    readonly display: string;
+  };
   /** The dev server to follow, by its endpoint or origin URL. Default: the only server running (see `chooseDevServer`). */
   readonly url?: string | undefined;
   /** A token file or a directory of them, absolute. Default: `tokenDirectory(cwd)`, looked up again on every attempt. */
@@ -175,17 +184,32 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
     try {
       const emitted = emitModule(
         await documentsFromResponse(response, server.url),
+        options.zod,
       );
       hash = emitted.hash;
-      const warnings =
+      const warnings = [
         emitted.warnings.length === 0
           ? ""
-          : formatWarnings(PREFIX, emitted.warnings);
+          : formatWarnings(PREFIX, emitted.warnings),
+        emitted.zod === undefined || emitted.zod.warnings.length === 0
+          ? ""
+          : formatWarnings(`${PREFIX} --zod`, emitted.zod.warnings),
+      ].join("");
       if (warnings !== lastWarnings) {
         lastWarnings = warnings;
         if (warnings !== "") options.stderr(warnings);
       }
+      // The zod module first: the route map's header hash is what the
+      // watcher compares, so it is written last.
+      const zodOutcome =
+        options.zod === undefined || emitted.zod === undefined
+          ? "unchanged"
+          : await writeIfChanged(options.zod.path, emitted.zod.code);
       outcome = await writeIfChanged(out, emitted.code);
+      if (zodOutcome === "written")
+        options.stdout(
+          `${PREFIX}: wrote ${options.zod!.display} (typesHash ${emitted.hash})\n`,
+        );
     } catch (error) {
       options.stderr(
         `${PREFIX}: regenerating ${display} failed: ${(error as Error).message}\n`,

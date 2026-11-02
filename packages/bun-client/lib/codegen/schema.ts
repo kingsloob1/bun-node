@@ -37,8 +37,8 @@ export interface SchemaContext {
   readonly warn: (at: string, message: string) => void;
 }
 
-/** Keywords that change the type in a way TypeScript cannot express. */
-const INEXPRESSIBLE = [
+/** Keywords that change the type in a way TypeScript cannot express (nor the zod emitter check). */
+export const INEXPRESSIBLE = [
   "not",
   "if",
   "then",
@@ -49,6 +49,26 @@ const INEXPRESSIBLE = [
   "$dynamicRef",
   "$recursiveRef",
 ] as const;
+
+/** How a media type's body crosses: decides the type the client sees, and what is checked. */
+export type MediaKind =
+  "json" | "events" | "text" | "multipart" | "form" | "binary";
+
+/** The kind of a media type. */
+export function mediaKind(mediaType: string): MediaKind {
+  const type = mediaType.toLowerCase().split(";")[0].trim();
+  if (
+    type === "*/*" ||
+    type === "application/json" ||
+    /^application\/[\w.+-]+\+json$/.test(type)
+  )
+    return "json";
+  if (type === "text/event-stream") return "events";
+  if (type === "multipart/form-data") return "multipart";
+  if (type === "application/x-www-form-urlencoded") return "form";
+  if (type.startsWith("text/")) return "text";
+  return "binary";
+}
 
 /** Whether `value` is a plain JSON object. */
 export function isRecord(value: unknown): value is Record<string, unknown> {

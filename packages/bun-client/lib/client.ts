@@ -15,9 +15,16 @@
  * 6. the **result**: a declared status read into `data` or `error`; an
  *    undeclared one thrown (or returned, under `undeclaredStatus: "result"`).
  *
- * A `timeout` covers all of it, retries and their waits included. The
- * client imports nothing at run time: it is browser-safe and
- * dependency-free (D17).
+ * **Validation** (§5, PR-C4) wraps it: the params, query and body are
+ * checked before the URL is built, the headers on the first attempt before
+ * the middleware, and a declared status's body after it is read. The checks
+ * live in `./validation`, imported with `import()` only when a call has
+ * something to check, so a client with validation off loads neither it nor
+ * bun-contract.
+ *
+ * A `timeout` covers the request, retries and their waits included. The
+ * client imports nothing at run time but that lazy module: it is
+ * browser-safe, and an HTTP-only bundle carries nothing more (D17).
  */
 import type {
   CallConfig,
@@ -32,13 +39,16 @@ import type {
   RouteConfig,
   RouteMap,
   UndeclaredStatus,
+  ValidationConfig,
 } from "./types";
+import type { CallChecks, Checks } from "./validation";
 import {
   ClientError,
   HttpError,
   NetworkError,
   TimeoutError,
   UnexpectedStatusError,
+  ValidationError,
 } from "./errors";
 import { buildPath } from "./path";
 import { serializeQuery } from "./query";
@@ -99,6 +109,45 @@ interface Resolved {
   headers: (HeadersOption | undefined)[];
   /** The middleware, outermost first. */
   middleware: ClientMiddleware[];
+}
+
+/**
+ * Whether a validation level could turn a check on: an object with any key
+ * but `onFailure` that is not `false`. Decides, with the mode and the schema
+ * source, whether a call loads the checks at all, so a production client
+ * that configures nothing extra never does.
+ */
+function mayCheck(level: ValidationConfig | false | undefined): boolean {
+  return (
+    typeof level === "object" &&
+    Object.entries(level).some(
+      ([name, value]) =>
+        name !== "onFailure" && value !== false && value !== undefined,
+    )
+  );
+}
+
+/**
+ * The one `process` read here: `process.env.NODE_ENV`. Declared in this
+ * module alone (a type, erased), since `lib/` is browser code checked with no
+ * Bun or Node types; at run time it is the global, or a bundler's define.
+ */
+declare const process: {
+  /** The environment; only `NODE_ENV` is read. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+};
+
+/**
+ * The mode when the configuration names none (§5.5): `process.env.NODE_ENV`
+ * written out, so a bundler's define replaces it; where nothing replaced it
+ * and there is no `process` (a browser), development.
+ */
+function defaultMode(): "development" | "production" {
+  try {
+    return process.env.NODE_ENV === "production" ? "production" : "development";
+  } catch {
+    return "development";
+  }
 }
 
 /** Retry settings merged over the previous level's; `false` turns them off, a later object back on. */
@@ -319,6 +368,19 @@ export function createClient(
       { operationId?: string; statuses?: readonly number[] } | undefined
     >
   >;
+  const development = (config.mode ?? defaultMode()) === "development";
+
+  /** The checks (`./validation`), imported on the first call that may check something. */
+  let checks: Promise<Checks> | undefined;
+  const loadChecks = (): Promise<Checks> =>
+    (checks ??= import("./validation").then((module) =>
+      module.createChecks({
+        development,
+        source: config.schemas,
+        logger,
+        errors: { ClientError, ValidationError },
+      }),
+    ));
 
   /** The configuration for one call, every level merged (§6.2). */
   const resolve = (key: string, call: RuntimeOptions): Resolved => {
@@ -366,6 +428,7 @@ export function createClient(
     resolved: Resolved,
     signal: AbortSignal,
     number: number,
+    checkHeaders: ((request: Request) => Promise<void>) | undefined,
   ): Promise<{ response: Response; generation: number }> => {
     const raw = isRawBody(call.body);
     const json = call.body !== undefined && !raw;
@@ -399,6 +462,9 @@ export function createClient(
     const token = await auth.token();
     if (token !== undefined && !ctx.request.headers.has("authorization"))
       ctx.request.headers.set("authorization", `Bearer ${token}`);
+    // The headers as they are sent, checked once, before any middleware.
+    if (number === 1 && checkHeaders !== undefined)
+      await checkHeaders(ctx.request);
 
     const run = async (index: number): Promise<Response> => {
       const middleware = resolved.middleware[index];
@@ -427,6 +493,7 @@ export function createClient(
     resolved: Resolved,
     signal: AbortSignal,
     first: number,
+    checkHeaders?: (request: Request) => Promise<void>,
   ): Promise<{ response: Response; generation: number; attempts: number }> => {
     const retry =
       resolved.retry !== false &&
@@ -444,7 +511,15 @@ export function createClient(
       let outcome: { response: Response; generation: number } | undefined;
       let failure: NetworkError | undefined;
       try {
-        outcome = await attempt(ctxBase, url, call, resolved, signal, number);
+        outcome = await attempt(
+          ctxBase,
+          url,
+          call,
+          resolved,
+          signal,
+          number,
+          checkHeaders,
+        );
       } catch (error) {
         if (signal.aborted) throw reasonOf(signal);
         if (!(error instanceof NetworkError)) throw error;
@@ -487,6 +562,7 @@ export function createClient(
     key: string,
     method: string,
     resolved: Resolved,
+    callChecks: CallChecks | undefined,
   ): Promise<unknown> => {
     const status = response.status;
     const declared = manifest[key]?.statuses;
@@ -496,7 +572,9 @@ export function createClient(
       const error = await readBody(response, method, key);
       return { ok: false, status, error, response };
     }
-    const body = await readBody(response, method, key);
+    const read = await readBody(response, method, key);
+    const body =
+      callChecks === undefined ? read : await callChecks.response(status, read);
     const ok = status >= 200 && status < 300;
     if (resolved.throwOnError) {
       if (ok) return body;
@@ -510,7 +588,7 @@ export function createClient(
   /** Runs one call by route key. */
   const call = async (
     key: string,
-    options: RuntimeOptions = {},
+    given: RuntimeOptions = {},
   ): Promise<unknown> => {
     const space = key.indexOf(" ");
     if (space < 1)
@@ -519,7 +597,15 @@ export function createClient(
       });
     const method = key.slice(0, space).toUpperCase();
     const path = key.slice(space + 1);
-    const resolved = resolve(key, options);
+    const resolved = resolve(key, given);
+    const levels = [config.validate, routes[key]?.validate, given.validate];
+    const callChecks =
+      (development && config.schemas !== undefined) || levels.some(mayCheck)
+        ? (await loadChecks())(key, levels)
+        : undefined;
+    // What is sent: the call's options, with a passing BYO schema's output.
+    const options =
+      callChecks === undefined ? given : await callChecks.request(given);
     const url = absolute(urlFor(path, options, key), key);
 
     const timeout = new AbortController();
@@ -548,6 +634,7 @@ export function createClient(
         resolved,
         signal,
         1,
+        callChecks?.headers,
       );
       if (
         auth.triggers(response.status) &&
@@ -563,7 +650,7 @@ export function createClient(
           attempts + 1,
         ));
       }
-      return await finish(response, key, method, resolved);
+      return await finish(response, key, method, resolved, callChecks);
     } catch (error) {
       // Whichever aborted first, the caller or the timeout (the combined
       // signal keeps the first reason), over whatever the abort caused.

@@ -40,6 +40,7 @@ import {
   softline,
 } from "./doc";
 import { documentsHash } from "./hash";
+import { emitZodModule } from "./zod";
 import {
   intersection,
   jsDoc,
@@ -54,6 +55,7 @@ import {
 import {
   componentOf,
   isRecord,
+  mediaKind,
   resolvePointer,
   schemaDoc,
   schemaToType,
@@ -82,10 +84,25 @@ export interface GenerateRoutesOptions {
    */
   readonly documentWarnings?: readonly CodegenWarning[];
   /**
-   * The module the generated file imports `RouteManifest` from. Default:
+   * The module the generated file imports `RouteManifest` from (and the zod
+   * module `schemasFromZod`, from its `/zod`). Default:
    * `"@kingsleyweb/bun-client"`.
    */
   readonly clientModule?: string;
+  /**
+   * Also write the runtime zod module (plan §5.2, PR-C4), returned as the
+   * result's `zod`: the built-in schemas the client validates with. Default:
+   * none.
+   */
+  readonly zod?: {
+    /** `"mini"` imports `zod/mini`, `"classic"` imports `zod`. Default: `"mini"`. */
+    readonly flavour?: "mini" | "classic";
+    /**
+     * The import specifier the zod module reads `Routes` from: the route map
+     * module's path relative to it, without the extension (`"./api.gen"`).
+     */
+    readonly routesModule: string;
+  };
 }
 
 /** What {@link generateRoutes} returns. */
@@ -98,6 +115,13 @@ export interface GenerateRoutesResult {
   readonly hash: string;
   /** How many routes the map holds. */
   readonly routes: number;
+  /** The zod module, when {@link GenerateRoutesOptions.zod} asked for it. */
+  readonly zod?: {
+    /** Its source, formatted, ending in a newline. */
+    readonly code: string;
+    /** What it does not check, in the order found; also listed in its header. */
+    readonly warnings: readonly CodegenWarning[];
+  };
 }
 
 /** The HTTP methods an OpenAPI path item may hold, in the order a path's routes are emitted. */
@@ -113,7 +137,7 @@ const METHODS = [
 ] as const;
 
 /** Names the generated module itself uses, which a component must not take. */
-const RESERVED = new Set([
+export const RESERVED: ReadonlySet<string> = new Set([
   // TypeScript's own type names and keywords.
   "any",
   "bigint",
@@ -197,38 +221,28 @@ function identifierFor(name: string): string {
   return id;
 }
 
-/** Assigns each component a unique, unreserved identifier, in name order. */
-function componentIdentifiers(names: readonly string[]): Map<string, string> {
+/**
+ * Assigns each component a unique, unreserved identifier, in name order.
+ *
+ * @param names The component names, sorted.
+ * @param reserved Identifiers a component must not take. Default: the
+ *   types module's ({@link RESERVED}).
+ */
+export function componentIdentifiers(
+  names: readonly string[],
+  reserved: ReadonlySet<string> = RESERVED,
+): Map<string, string> {
   const taken = new Set<string>();
   const out = new Map<string, string>();
   for (const name of names) {
     let id = identifierFor(name);
-    if (RESERVED.has(id)) id = `${id}Schema`;
+    if (reserved.has(id)) id = `${id}Schema`;
     let candidate = id;
     for (let n = 2; taken.has(candidate); n++) candidate = `${id}${n}`;
     taken.add(candidate);
     out.set(name, candidate);
   }
   return out;
-}
-
-/** How a media type's body crosses: decides the type the client sees. */
-type MediaKind = "json" | "events" | "text" | "multipart" | "form" | "binary";
-
-/** The kind of a media type. */
-function mediaKind(mediaType: string): MediaKind {
-  const type = mediaType.toLowerCase().split(";")[0].trim();
-  if (
-    type === "*/*" ||
-    type === "application/json" ||
-    /^application\/[\w.+-]+\+json$/.test(type)
-  )
-    return "json";
-  if (type === "text/event-stream") return "events";
-  if (type === "multipart/form-data") return "multipart";
-  if (type === "application/x-www-form-urlencoded") return "form";
-  if (type.startsWith("text/")) return "text";
-  return "binary";
 }
 
 /** A raw request body, as the client passes one through unchanged. */
@@ -243,7 +257,7 @@ const RAW_BODY: TsType = union([
 ]);
 
 /** One operation found in the document. */
-interface FoundOperation {
+export interface FoundOperation {
   /** The upper-case method. */
   readonly method: string;
   /** The OpenAPI path template, `/users/{id}`. */
@@ -510,11 +524,25 @@ export function generateRoutes(
       manifestDoc,
     ],
   );
+  const zod =
+    options.zod === undefined
+      ? undefined
+      : emitZodModule({
+          document,
+          componentNames,
+          keys,
+          operations: byKey,
+          hash,
+          flavour: options.zod.flavour ?? "mini",
+          routesModule: options.zod.routesModule,
+          clientModule: options.clientModule ?? "@kingsleyweb/bun-client",
+        });
   return {
     code: `${printDoc(module)}\n`,
     warnings: allWarnings,
     hash,
     routes: keys.length,
+    ...(zod === undefined ? {} : { zod }),
   };
 }
 

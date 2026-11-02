@@ -378,10 +378,16 @@ function printFlat(doc: Doc): string {
     case "group":
     case "indent":
       return printFlat(command.contents);
+    case "fluid":
+      return ` ${printFlat(command.contents)}`;
     case "ifBreak":
       return printFlat(command.flat);
     case "line":
       return command.soft ? "" : " ";
+    case "conditional":
+      return printFlat(command.states[0]);
+    case "breakParent":
+      return "";
   }
 }
 

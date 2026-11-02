@@ -7,7 +7,11 @@
  * formatted: `bun fmt` and Prettier leave it unchanged
  * (`__tests__/codegen/format.test.ts` proves it on every golden file).
  *
- * Nothing here knows TypeScript: `./emit` does.
+ * Nothing here knows TypeScript: `./print` and `./zod` do. Beside Prettier's
+ * `group`, `indent`, `line` and `ifBreak` there are its `conditionalGroup`
+ * and `breakParent`, which call arguments and member chains are printed
+ * with, and {@link fluid}, its "fluid" assignment layout (`group(indent(line),
+ * { id })` with `indentIfBreak(rhs, { groupId })`) as one command.
  */
 
 /** A printable document. */
@@ -46,6 +50,29 @@ type DocCommand =
       readonly broken: Doc;
       /** Printed when flat. */
       readonly flat: Doc;
+    }
+  | {
+      /**
+       * Prettier's `conditionalGroup`: the first state that fits, printed
+       * flat (its forced breaks still break), else the last, broken.
+       */
+      readonly kind: "conditional";
+      /** The states, from flattest to most expanded. */
+      readonly states: readonly Doc[];
+    }
+  | {
+      /** Breaks the enclosing group, printing nothing (Prettier's `breakParent`). */
+      readonly kind: "breakParent";
+    }
+  | {
+      /**
+       * The right side of an assignment in Prettier's "fluid" layout: a
+       * space and `contents` when the text up to its first possible line
+       * break fits; else a line break and `contents` one level deeper.
+       */
+      readonly kind: "fluid";
+      /** The right side. */
+      readonly contents: Doc;
     };
 
 /** The line width the output is laid out for: Prettier's default. */
@@ -80,6 +107,19 @@ export function ifBreak(broken: Doc, flat: Doc = ""): Doc {
   return { kind: "ifBreak", broken, flat };
 }
 
+/** Prettier's `conditionalGroup`: see the command. */
+export function conditionalGroup(states: readonly Doc[]): Doc {
+  return { kind: "conditional", states };
+}
+
+/** Breaks the enclosing group. */
+export const breakParent: Doc = { kind: "breakParent" };
+
+/** An assignment's right side in Prettier's "fluid" layout: see the command. */
+export function fluid(contents: Doc): Doc {
+  return { kind: "fluid", contents };
+}
+
 /** `docs` with `separator` between each two. */
 export function join(separator: Doc, docs: readonly Doc[]): Doc[] {
   const out: Doc[] = [];
@@ -100,9 +140,14 @@ export function hasHardline(doc: Doc): boolean {
       return command.hard;
     case "group":
     case "indent":
+    case "fluid":
       return hasHardline(command.contents);
     case "ifBreak":
       return hasHardline(command.broken) || hasHardline(command.flat);
+    case "conditional":
+      return command.states.some(hasHardline);
+    case "breakParent":
+      return true;
   }
 }
 
@@ -126,10 +171,19 @@ function propagateBreaks(doc: Doc): boolean {
       return command.shouldBreak;
     }
     case "indent":
+    case "fluid":
       return propagateBreaks(command.contents);
     case "ifBreak":
       // Prettier propagates from the broken contents only.
       return propagateBreaks(command.broken);
+    case "conditional":
+      // Its states' own groups are marked, but a conditional group is never
+      // broken by its contents, nor does it break its parent: whoever builds
+      // one adds a `breakParent` beside it when that is wanted.
+      for (const state of command.states) propagateBreaks(state);
+      return false;
+    case "breakParent":
+      return true;
   }
 }
 
@@ -189,6 +243,23 @@ function fits(next: Frame, rest: readonly Frame[], width: number): boolean {
       case "line":
         if (mode === "break" || command.hard) return true;
         if (!command.soft) remaining -= 1;
+        break;
+      case "conditional":
+        stack.push({
+          mode,
+          doc:
+            mode === "break"
+              ? command.states[command.states.length - 1]
+              : command.states[0],
+        });
+        break;
+      case "breakParent":
+        break;
+      case "fluid":
+        // Its line: a break in break mode, a space when flat.
+        if (mode === "break") return true;
+        remaining -= 1;
+        stack.push({ mode, doc: command.contents });
         break;
     }
   }
@@ -264,6 +335,50 @@ export function printDoc(doc: Doc): string {
         out.push(`\n${" ".repeat(indentation)}`);
         column = indentation;
         break;
+      case "conditional": {
+        const { states } = command;
+        if (mode === "flat") {
+          stack.push({ indentation, mode: "flat", doc: states[0] });
+          break;
+        }
+        const chosen = states.find((state) =>
+          fits(
+            { indentation, mode: "flat", doc: state },
+            stack,
+            PRINT_WIDTH - column,
+          ),
+        );
+        stack.push(
+          chosen === undefined
+            ? { indentation, mode: "break", doc: states[states.length - 1] }
+            : { indentation, mode: "flat", doc: chosen },
+        );
+        break;
+      }
+      case "breakParent":
+        break;
+      case "fluid": {
+        const rhs: Frame = { indentation, mode, doc: command.contents };
+        if (
+          mode === "flat" ||
+          fits(
+            { indentation, mode: "flat", doc: line },
+            [...stack, { ...rhs, mode: "break" }],
+            PRINT_WIDTH - column,
+          )
+        ) {
+          stack.push(rhs);
+          out.push(" ");
+          column += 1;
+        } else {
+          stack.push({
+            indentation: indentation + 2,
+            mode: "break",
+            doc: [hardline, command.contents],
+          });
+        }
+        break;
+      }
     }
   }
   // Prettier trims the whitespace a broken line leaves behind (`key: ` before

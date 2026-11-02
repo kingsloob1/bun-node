@@ -208,6 +208,55 @@ describe("bun-client watch: regeneration", () => {
   });
 });
 
+describe("bun-client watch --zod (PR-C4)", () => {
+  it("keeps the zod module in step with the route map (control: without --zod none is written)", async () => {
+    const server = await startDevServer({ dir });
+    cleanups.push(server.close);
+    const zod = join(dir, "src", "schemas", "api.zod.gen.ts");
+    const watcher = watch("--zod", "src/schemas/api.zod.gen.ts");
+    await until(
+      "the first write",
+      () => regenerations(watcher.stdout).length === 1,
+    );
+    const first = await readFile(zod, "utf8");
+    expect(first).toContain('import { z } from "zod/mini";');
+    expect(first).toContain('import type { Routes } from "../api.gen";');
+    expect(first).toContain(
+      `typesHash: ${await servedHash(server.url, String(server.dev.token))}`,
+    );
+    expect(first).not.toContain('"GET /posts"');
+    expect(
+      watcher.stdout.some((line) =>
+        /wrote src\/schemas\/api\.zod\.gen\.ts \(typesHash /.test(line),
+      ),
+    ).toBe(true);
+    await until("the channel", () =>
+      watcher.stdout.some((line) => line.includes(`following ${server.url}`)),
+    );
+
+    server.addRoute("/posts");
+    await until(
+      "the second write",
+      () => regenerations(watcher.stdout).length === 2,
+    );
+    const second = await readFile(zod, "utf8");
+    expect(second).toContain(
+      `typesHash: ${await servedHash(server.url, String(server.dev.token))}`,
+    );
+    expect(await watcher.stop()).toBe(0);
+
+    // Control: a watcher without --zod writes the map alone.
+    await rm(zod);
+    const plain = watch();
+    await until(
+      "the plain write",
+      () => regenerations(plain.stdout).length === 1,
+    );
+    expect(await plain.stop()).toBe(0);
+    expect(await readdir(join(dir, "src", "schemas"))).toEqual([]);
+  });
+});
+
 describe("bun-client watch: restarts and tokens", () => {
   it("follows a restart with a new token and port: reconnects, re-reads the token file, regenerates (control: the old token is refused by the new server)", async () => {
     const path = "/__bun/restart";

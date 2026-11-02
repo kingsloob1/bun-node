@@ -4,7 +4,7 @@
  * the module, then write it atomically and only when its content changed.
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import process from "node:process";
 import type { LoadedDocuments } from "./load";
 import type { CodegenWarning } from "./openapi";
@@ -18,17 +18,92 @@ export interface EmittedModule {
   readonly hash: string;
   /** What the generator (and the documents' producer) warned about. */
   readonly warnings: readonly CodegenWarning[];
+  /** The zod module (`--zod`, plan §5.2), when it was asked for. */
+  readonly zod?: {
+    /** Its text. */
+    readonly code: string;
+    /** What it does not check; also in its header. */
+    readonly warnings: readonly CodegenWarning[];
+  };
 }
 
-/** Generates the module for loaded documents: the step `generate` and `watch` share. */
-export function emitModule(documents: LoadedDocuments): EmittedModule {
+/** The zod module to write beside the route map (`--zod`, `--zod-flavour`). */
+export interface ZodTarget {
+  /** Where the zod module goes, absolute. */
+  readonly path: string;
+  /** Where the route map goes, absolute: the zod module imports `Routes` from it. */
+  readonly routesPath: string;
+  /** `"mini"` (`zod/mini`, the default) or `"classic"` (`zod`). */
+  readonly flavour: "mini" | "classic";
+}
+
+/**
+ * The specifier a module at `from` imports the module at `to` with: relative,
+ * `./`-led, with the file's `.ts`-family extension dropped (`"./api.gen"`).
+ */
+export function relativeSpecifier(from: string, to: string): string {
+  const path = relative(dirname(from), to)
+    .replaceAll("\\", "/")
+    .replace(/\.(?:d\.)?[cm]?tsx?$/, "");
+  return path.startsWith(".") ? path : `./${path}`;
+}
+
+/**
+ * Generates the module for loaded documents, and the zod module when
+ * `zod` names one: the step `generate` and `watch` share.
+ */
+export function emitModule(
+  documents: LoadedDocuments,
+  zod?: ZodTarget,
+): EmittedModule {
   const result = generateRoutes(documents.openapi, {
     ...(documents.asyncapi === undefined
       ? {}
       : { asyncapi: documents.asyncapi }),
     documentWarnings: documents.warnings,
+    ...(zod === undefined
+      ? {}
+      : {
+          zod: {
+            flavour: zod.flavour,
+            routesModule: relativeSpecifier(zod.path, zod.routesPath),
+          },
+        }),
   });
-  return { code: result.code, hash: result.hash, warnings: result.warnings };
+  return {
+    code: result.code,
+    hash: result.hash,
+    warnings: result.warnings,
+    ...(result.zod === undefined ? {} : { zod: result.zod }),
+  };
+}
+
+/**
+ * Checks `--zod` and `--zod-flavour` for a command: the zod target, `null`
+ * when `--zod` is not given, or an error message.
+ *
+ * @param zod `--zod`'s value: the zod module's path.
+ * @param flavour `--zod-flavour`'s value.
+ * @param out `--out`'s value, the route map's path, which the zod module imports.
+ * @param cwd What relative paths resolve from.
+ */
+export function zodTarget(
+  zod: string | undefined,
+  flavour: string | undefined,
+  out: string | undefined,
+  cwd: string,
+): ZodTarget | null | string {
+  if (zod === undefined)
+    return flavour === undefined ? null : "--zod-flavour goes with --zod";
+  if (flavour !== undefined && flavour !== "mini" && flavour !== "classic")
+    return `--zod-flavour is "mini" or "classic", not "${flavour}"`;
+  if (out === undefined)
+    return "--zod needs --out: the zod module imports the route map's types from it";
+  const path = resolve(cwd, zod);
+  const routesPath = resolve(cwd, out);
+  if (path === routesPath)
+    return `--zod names the same file as --out (${basename(path)})`;
+  return { path, routesPath, flavour: flavour ?? "mini" };
 }
 
 /** The warnings as the commands print them, under `prefix` (`"bun-client generate"`). */

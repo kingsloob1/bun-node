@@ -22,17 +22,31 @@ interface Conditions {
   default: string;
 }
 
-const manifest = (await Bun.file(join(ROOT, "package.json")).json()) as {
+/** The fields of a `package.json` these tests read. */
+interface Manifest {
+  /** The `exports` map. */
   exports: Record<string, string | Conditions>;
+  /** What is published. */
   files: string[];
+  /** The runtime entry. */
   main: string;
+  /** The `bun-client` bin. */
   bin?: Record<string, string>;
+  /** The declarations' entry. */
   types: string;
+  /** Runtime dependencies. */
   dependencies?: Record<string, string>;
+  /** Development dependencies. */
   devDependencies?: Record<string, string>;
+  /** Peers. */
   peerDependencies?: Record<string, string>;
+  /** Which peers are optional. */
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
-};
+}
+
+const manifest = (await Bun.file(
+  join(ROOT, "package.json"),
+).json()) as Manifest;
 
 const checkConfig = (await Bun.file(
   join(ROOT, "consumer-check.json"),
@@ -108,6 +122,14 @@ describe("package.json exports", () => {
     expect(statSync(join(ROOT, "lib/codegen/cli.ts")).mode & 0o111).not.toBe(0);
   });
 
+  it("publishes the zod glue as ./zod (plan §10.1, §16)", () => {
+    expect(manifest.exports["./zod"]).toEqual({
+      "@kingsleyweb/source": "./lib/zod.ts",
+      types: "./dts/zod.d.ts",
+      default: "./lib/zod.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -116,8 +138,14 @@ describe("package.json exports", () => {
 });
 
 describe("dependencies (plan D17, §10.1)", () => {
-  it("has no runtime dependency at all", () => {
-    expect(manifest.dependencies ?? {}).toEqual({});
+  it("has one runtime dependency, bun-contract (Q18), which itself has none", async () => {
+    expect(manifest.dependencies ?? {}).toEqual({
+      "@kingsleyweb/bun-contract": expect.any(String) as string,
+    });
+    const contract = (await Bun.file(
+      join(ROOT, "..", "bun-contract", "package.json"),
+    ).json()) as Manifest;
+    expect(contract.dependencies ?? {}).toEqual({});
   });
 
   it("keeps bun-common a devDependency, and an optional peer only for the CLI's --module (plan §10.1)", () => {
@@ -130,16 +158,24 @@ describe("dependencies (plan D17, §10.1)", () => {
     ).toBe(true);
   });
 
-  it("declares only optional peers, and none any entry needs", () => {
+  it("declares only optional peers; zod (^4) is needed by the ./zod entries alone", () => {
     for (const [name] of Object.entries(manifest.peerDependencies ?? {})) {
       expect({
         name,
         optional: manifest.peerDependenciesMeta?.[name]?.optional,
       }).toEqual({ name, optional: true });
     }
+    expect(manifest.peerDependencies?.zod).toBe("^4");
     for (const entry of checkConfig.entries)
-      expect(entry.peers ?? []).toEqual([]);
-    expect(checkConfig.workspaceDependencies ?? []).toEqual([]);
+      expect({ spelling: entry.spelling, peers: entry.peers ?? [] }).toEqual({
+        spelling: entry.spelling,
+        peers: /\/(?:lib\/)?zod(?:\.[jt]s)?$/.test(entry.spelling)
+          ? ["zod"]
+          : [],
+      });
+    expect(checkConfig.workspaceDependencies ?? []).toEqual([
+      "packages/bun-contract",
+    ]);
   });
 
   it("imports nothing but node: builtins and its own modules in lib/codegen/, bun-common only by a dynamic import", async () => {
@@ -159,19 +195,45 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("imports nothing but its own modules in lib/", async () => {
+  it("imports in lib/ only its own modules, types from bun-contract and zod, and bun-contract's guards in one place (plan §12.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
       const source = await Bun.file(join(ROOT, "lib", file)).text();
-      const specifiers = [
-        ...source.matchAll(/^(?:import|export)[^"]*from "([^"]+)"/gm),
-      ].map((match) => match[1]);
-      for (const specifier of specifiers)
-        expect({ file, specifier }).toEqual({
-          file,
-          specifier: expect.stringMatching(/^\.\//),
+      const imports = [
+        ...source.matchAll(/^(?:import|export)([^"]*)from "([^"]+)"/gm),
+      ].map((match) => ({
+        file,
+        type: /^\s*type\b/.test(match[1]),
+        specifier: match[2],
+      }));
+      for (const found of imports) {
+        if (found.specifier.startsWith("./")) continue;
+        // Values from bun-contract: only the lazily loaded checks module.
+        if (found.specifier.startsWith("@kingsleyweb/bun-contract")) {
+          expect(found.type || file === "validation.ts").toBe(true);
+          continue;
+        }
+        // zod: types only, in the ./zod entry alone.
+        expect(found).toEqual({
+          file: "zod.ts",
+          type: true,
+          specifier: "zod/v4/core",
         });
+      }
+    }
+  });
+
+  it("loads the checks module only by a dynamic import, from the client alone", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        value: /^import(?! type)[^"]*from "\.\/validation"/m.test(source),
+        dynamic: source.includes('import("./validation")'),
+      }).toEqual({ file, value: false, dynamic: file === "client.ts" });
     }
   });
 });
