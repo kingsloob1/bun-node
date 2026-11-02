@@ -52,6 +52,11 @@
       "types": "./dts/query.d.ts",
       "default": "./lib/query.ts"
     },
+    "./react": {
+      "@kingsleyweb/source": "./lib/react.ts",
+      "types": "./dts/react.d.ts",
+      "default": "./lib/react.ts"
+    },
     "./lib/codegen": {
       "@kingsleyweb/source": "./lib/codegen/index.ts",
       "types": "./dts/codegen/index.d.ts",
@@ -112,7 +117,9 @@
   "peerDependencies": {
     "@kingsleyweb/bun-common": ">=2.2.0",
     "@tanstack/query-core": "^5.90.0",
+    "@tanstack/react-query": "^5.90.0",
     "@types/bun": ">=1.4.2",
+    "react": "^19.0.0",
     "typescript": "^5.9.3 || ^6.0.0",
     "zod": "^4"
   },
@@ -123,7 +130,13 @@
     "@tanstack/query-core": {
       "optional": true
     },
+    "@tanstack/react-query": {
+      "optional": true
+    },
     "@types/bun": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     },
     "typescript": {
@@ -134,11 +147,18 @@
     }
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.0.0",
     "@kingsleyweb/bun-cache": "^0.1.0",
     "@kingsleyweb/bun-common": "^2.2.0",
     "@tanstack/query-core": "^5.90.0",
+    "@tanstack/react-query": "^5.90.0",
     "@types/bun": "^1.4.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
     "bun-types": "^1.4.3",
+    "happy-dom": "^20.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "typescript": "^6.0.3",
     "zod": "^4"
   }

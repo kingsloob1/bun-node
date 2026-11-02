@@ -138,6 +138,14 @@ describe("package.json exports", () => {
     });
   });
 
+  it("publishes the React binding as ./react (plan §7.1, §10.1, §16)", () => {
+    expect(manifest.exports["./react"]).toEqual({
+      "@kingsleyweb/source": "./lib/react.ts",
+      types: "./dts/react.d.ts",
+      default: "./lib/react.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -166,7 +174,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     ).toBe(true);
   });
 
-  it("declares only optional peers; zod (^4) is needed by the ./zod entries alone, query-core (^5.90) by the ./query ones", () => {
+  it("declares only optional peers; zod (^4) is needed by the ./zod entries alone, query-core (^5.90) by the ./query ones, react (^19) and react-query (^5.90) by the ./react ones beside query-core", () => {
     for (const [name] of Object.entries(manifest.peerDependencies ?? {})) {
       expect({
         name,
@@ -175,6 +183,10 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
     expect(manifest.peerDependencies?.zod).toBe("^4");
     expect(manifest.peerDependencies?.["@tanstack/query-core"]).toBe("^5.90.0");
+    expect(manifest.peerDependencies?.["@tanstack/react-query"]).toBe(
+      "^5.90.0",
+    );
+    expect(manifest.peerDependencies?.react).toBe("^19.0.0");
     for (const entry of checkConfig.entries)
       expect({ spelling: entry.spelling, peers: entry.peers ?? [] }).toEqual({
         spelling: entry.spelling,
@@ -182,7 +194,9 @@ describe("dependencies (plan D17, §10.1)", () => {
           ? ["zod"]
           : /\/(?:lib\/)?query(?:\.[jt]s)?$/.test(entry.spelling)
             ? ["@tanstack/query-core"]
-            : [],
+            : /\/(?:lib\/)?react(?:\.[jt]s)?$/.test(entry.spelling)
+              ? ["@tanstack/query-core", "@tanstack/react-query", "react"]
+              : [],
       });
     expect(checkConfig.workspaceDependencies ?? []).toEqual([
       "packages/bun-contract",
@@ -206,7 +220,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, and query-core in ./query alone (plan §12.1)", async () => {
+  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, query-core in ./query alone, and react-query in ./react alone (plan §12.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -230,6 +244,11 @@ describe("dependencies (plan D17, §10.1)", () => {
           expect(found.file).toBe("query.ts");
           continue;
         }
+        // react-query: the ./react entry alone (its optional peer).
+        if (found.specifier === "@tanstack/react-query") {
+          expect(found.file).toBe("react.ts");
+          continue;
+        }
         // zod: types only, in the ./zod entry alone.
         expect(found).toEqual({
           file: "zod.ts",
@@ -240,18 +259,35 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("keeps the query layer out of the core: no lib/ module imports ./query (plan §10.1)", async () => {
+  it("keeps the query layer out of the core: no lib/ module imports ./query, but ./react its types (plan §10.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
       const source = await Bun.file(join(ROOT, "lib", file)).text();
       expect({
         file,
-        imports: /from "\.\/query"|import\("\.\/query"\)/.test(source),
+        values:
+          /^import(?! type)[^"]*from "\.\/query"|import\("\.\/query"\)/m.test(
+            source,
+          ),
+        types: /^import type[^"]*from "\.\/query"/m.test(source),
       }).toEqual({
         file,
-        imports: false,
+        values: false,
+        types: file === "react.ts",
       });
+    }
+  });
+
+  it("keeps the React binding out of every other entry: no lib/ module imports ./react (plan §10.1)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        imports: /from "\.\/react"|import\("\.\/react"\)/.test(source),
+      }).toEqual({ file, imports: false });
     }
   });
 

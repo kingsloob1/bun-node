@@ -29,6 +29,13 @@
  * `hashKey`) 17.8 KiB and 6.2 KiB. The `.` entry is byte-identical to
  * PR-C4's (11,106 bytes minified, 4,690 gzipped): `./query` adds nothing to
  * it.
+ *
+ * Since PR-C6 the `./react` entry has its own budget, {@link REACT_BUDGET}:
+ * the binding's own code over `@tanstack/react-query`, query-core and React
+ * (external: the app shares them). Measured 2026-11-03 (the same build):
+ * 855 bytes minified, 390 gzipped; with react-query and query-core inlined
+ * (React external) 17.9 KiB and 6.0 KiB. The `.` and `./query` entries are
+ * unchanged by it (no file they bundle changed).
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -75,6 +82,19 @@ const QUERY_BUDGET = {
   gzipBytes: 3 * 1024,
 } as const;
 
+/**
+ * Byte limits for the `./react` entry, its peers left out: about 10% above
+ * the measured minified figure, and 0.5 KiB gzipped (the plan sets no figure
+ * for a binding; §7.1 says "a few hundred lines at most"). The same rule
+ * for raising them.
+ */
+const REACT_BUDGET = {
+  /** The entry, minified, react-query, query-core and React external, in bytes. */
+  minifiedBytes: 0.95 * 1024,
+  /** The entry gzipped, its peers external, in bytes. */
+  gzipBytes: 0.5 * 1024,
+} as const;
+
 /** Formats bytes as KiB with one decimal, for failure messages. */
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -110,6 +130,13 @@ const query = await Bun.build({
   target: "browser",
   minify: true,
   external: ["@tanstack/query-core"],
+});
+
+const react = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "react.ts")],
+  target: "browser",
+  minify: true,
+  external: ["@tanstack/react-query", "@tanstack/query-core", "react"],
 });
 
 /** An output's minified and gzipped sizes. */
@@ -165,6 +192,19 @@ describe("the ./query budget", () => {
 
   it(`keeps ./query within ${kib(QUERY_BUDGET.gzipBytes)} gzipped and ${kib(QUERY_BUDGET.minifiedBytes)} minified over query-core`, async () => {
     expect(verdict(await sizes(query.outputs[0]), QUERY_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+});
+
+describe("the ./react budget", () => {
+  it("builds as one file, its peers left out", () => {
+    expect(react.success).toBe(true);
+    expect(react.outputs.length).toBe(1);
+  });
+
+  it(`keeps ./react within ${kib(REACT_BUDGET.gzipBytes)} gzipped and ${kib(REACT_BUDGET.minifiedBytes)} minified over react-query`, async () => {
+    expect(verdict(await sizes(react.outputs[0]), REACT_BUDGET)).toBe(
       "within budget",
     );
   });
