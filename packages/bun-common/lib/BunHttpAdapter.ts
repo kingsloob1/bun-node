@@ -358,6 +358,13 @@ export class BunHttpAdapter<
        * `ReadableStream` or async iterable passed to `res.send()`. A
        * `res.write()` or `pipe()` stream (server-sent events) is exempt: it
        * turns the idle timeout off for its request.
+       *
+       * `id` names the server for `bun --hot`. Leave it unset: Bun then
+       * derives it from the address, so a re-evaluated `listen()` reloads
+       * the running server. Set it to keep two adapters on one address
+       * (two on port `0`, say) apart, since under `--hot` they would
+       * otherwise share one server; `null` turns the reuse off, and the
+       * re-evaluated `listen()` fails with `EADDRINUSE`.
        */
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
@@ -1470,6 +1477,11 @@ export class BunHttpAdapter<
    *   second `listening` event.
    * - Called again with a different hostname or port, it stops the running
    *   server (force-closing its connections) and binds the new address.
+   * - Under `bun --hot`, a re-evaluated module's new adapter calling
+   *   `listen()` on the same address reloads the running server with its
+   *   handlers (WebSocket ones included) instead of failing with
+   *   `EADDRINUSE`: Bun finds the server by its address-derived `id` (the
+   *   `server` option's `id`). Port `0` keeps the port it was given.
    */
   public async listen(
     port: string | number,

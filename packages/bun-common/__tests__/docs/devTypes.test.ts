@@ -917,6 +917,69 @@ describe("devTypes(): the channel", () => {
     }
   });
 
+  it("the takeover announces changed as soon as the re-evaluated app listens, without the poll, and only when the hash moved", async () => {
+    const first = makeAdapter();
+    const path = uniquePath();
+    const dev = devTypes(first, { enabled: true, path, tokenFile: false });
+    first.use(dev);
+    const server = await first.listen(0);
+    const second = makeAdapter();
+    try {
+      const { frames } = await openWatcher(
+        `ws://127.0.0.1:${server.port}${path}/ws`,
+        dev.token,
+      );
+      await until(() => frames.length >= 1);
+
+      // Freeze the 100 ms route poll: the hub's timer is swapped for an
+      // inert one, which `startPoll` leaves alone and `close()` clears. Any
+      // `changed` from here on is the takeover's own.
+      const hub = (
+        globalThis as unknown as Record<
+          symbol,
+          {
+            hubs: Map<
+              string,
+              { timer: ReturnType<typeof setInterval> | undefined }
+            >;
+          }
+        >
+      )[Symbol.for("@kingsleyweb/bun-common/devTypes")].hubs.get(path);
+      if (hub === undefined) throw new Error("no hub for the path");
+      clearInterval(hub.timer);
+      hub.timer = setInterval(() => {}, 2 ** 30);
+      hub.timer.unref();
+
+      second.get("/added-on-reload", (_req, res) => {
+        res.json({});
+      });
+      const again = devTypes(second, { enabled: true, path, tokenFile: false });
+      second.use(again);
+      // Not before the app is complete: several poll periods pass silently.
+      await Bun.sleep(350);
+      expect(frames.length).toBe(1);
+
+      await second.listen(0);
+      await until(() => frames.length >= 2, 2000);
+      expect(frames[1].type).toBe("changed");
+      const expected = (await (
+        await second.fetch(path, { headers: bearer(again.token) })
+      ).json()) as { hash: string };
+      expect(frames[1].data?.hash).toBe(expected.hash);
+
+      // Listening again with nothing moved announces nothing.
+      const bound = second.getBunServer();
+      if (bound === undefined) throw new Error("second is not listening");
+      again.listening(bound);
+      await Bun.sleep(200);
+      expect(frames.length).toBe(2);
+      again.close();
+    } finally {
+      await second.close();
+      await first.close();
+    }
+  });
+
   it("close() closes the watchers with 1001", async () => {
     const adapter = makeAdapter();
     const path = uniquePath();

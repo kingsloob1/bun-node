@@ -1179,6 +1179,13 @@ export class BunHttpAdapter<
        * Base `Bun.serve` options merged into the server created in `listen()`
        * (TLS, `maxRequestBodySize`, etc.). `port`/`hostname`/`fetch`/`websocket`
        * are managed by the adapter and override anything set here.
+       *
+       * `id` names the server for `bun --hot`. Leave it unset: Bun then
+       * derives it from the address (the port, or the socket path), so a
+       * re-evaluated `app.listen()` reloads the running server. Set it to
+       * keep two adapters on one address apart, since under `--hot` they
+       * would otherwise share one server; `null` turns the reuse off, and the
+       * re-evaluated `listen()` fails with `EADDRINUSE`.
        */
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
@@ -2469,6 +2476,11 @@ export class BunHttpAdapter<
    * the error, the callback is not called, and this resolves `undefined`:
    * rejecting too would leave a rejection `app.listen()` never observes. So
    * `app.listen()` rejects with the error either way.
+   *
+   * Under `bun --hot`, a re-evaluated module's new app listening on the same
+   * port or socket path reloads the running server with its handlers instead
+   * of failing with `EADDRINUSE`: Bun finds the server by its
+   * address-derived `id` (the `server` option's `id`).
    */
   public async listen(
     port: string | number,
