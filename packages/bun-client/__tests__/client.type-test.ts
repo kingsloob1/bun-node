@@ -289,3 +289,42 @@ void undeclared;
 void throwing;
 void operations;
 void others;
+
+// --- 11. url() on a path several methods share ------------------------------
+// `url` builds a URL without a method, so it takes the union of the methods'
+// queries (this was `never` when two methods declared different ones).
+interface SharedRoutes {
+  "GET /items": {
+    query: { page?: number };
+    responses: { 200: string[] };
+  };
+  "DELETE /items": {
+    query: { force: boolean };
+    responses: { 204: undefined };
+  };
+  "GET /things/:id": {
+    params: { id: string };
+    query: { q: string };
+    responses: { 200: string };
+  };
+}
+declare const shared: Client<SharedRoutes>;
+
+function sharedUrls() {
+  // each method's query is accepted
+  void shared.url("/items", { query: { page: 1 } });
+  void shared.url("/items", { query: { force: true } });
+  // the GET's query is optional, so the options may be left out
+  void shared.url("/items");
+  // @ts-expect-error -- url(): a query no method declares
+  void shared.url("/items", { query: { page: "x" } });
+  // @ts-expect-error -- url(): a key no method declares
+  void shared.url("/items", { query: { nope: 1 } });
+  // single-method path: unchanged
+  void shared.url("/things/:id", { params: { id: "1" }, query: { q: "a" } });
+  // @ts-expect-error -- url(): a single-method path still requires its params
+  void shared.url("/things/:id");
+  // @ts-expect-error -- url(): a single-method path still checks its query
+  void shared.url("/things/:id", { params: { id: "1" }, query: { q: 1 } });
+}
+void sharedUrls;
