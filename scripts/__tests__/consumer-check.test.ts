@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
-import { bareSpecifiers, scanLeaks } from "../consumer-check";
+import type { CellResult, CellStatus, RunResult } from "../consumer-check";
+import { bareSpecifiers, failures, scanLeaks } from "../consumer-check";
 
 // The sentence that exposed the regex scanner, verbatim from bun-jobs'
 // `lib/drivers/jobCursor.ts`. tsc copies it into `dts/drivers/jobCursor.d.ts`,
@@ -130,5 +131,103 @@ describe("scanLeaks", () => {
       "dts/drivers/jobCursor.d.ts": JOB_CURSOR_DOC,
     });
     expect(scanLeaks(dir, new Set(["optional-peer"]))).toEqual([]);
+  });
+});
+
+/** One matrix cell in the given status. */
+function cell(
+  status: CellStatus,
+  spelling = "@scope/pkg/query",
+  column = "bundler/strict",
+): CellResult {
+  return {
+    key: `${spelling}|${column}`,
+    spelling,
+    column,
+    status,
+    probeErrors: status === "PROBE-ERRORS" || status === "ANY" ? 1 : 0,
+    libErrors: status === "LIB-ERRORS" ? 1 : 0,
+    sample: status === "OK" ? [] : [`probe.ts(3,1): error TS2322: bad`],
+  };
+}
+
+/** A run with the given cells, passing runtime imports and no leaks. */
+function run(cells: CellResult[], over: Partial<RunResult> = {}): RunResult {
+  return {
+    package: "@scope/pkg",
+    typescript: "6.0.3",
+    cells,
+    runtime: { "@scope/pkg/query": "ok" },
+    leaks: [],
+    ...over,
+  };
+}
+
+describe("failures", () => {
+  it("passes a run where every cell is OK", () => {
+    expect(
+      failures(run([cell("OK"), cell("OK", "@scope/pkg", "node16/slc")]))
+        .failed,
+    ).toEqual([]);
+  });
+
+  // The negative control for the rest: a broken probe used to exit 0.
+  it("fails a PROBE-ERRORS cell, naming package, spelling, column and the errors", () => {
+    const { failed } = failures(run([cell("OK"), cell("PROBE-ERRORS")]));
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain("PROBE-ERRORS");
+    expect(failed[0]).toContain("@scope/pkg");
+    expect(failed[0]).toContain("@scope/pkg/query");
+    expect(failed[0]).toContain("[bundler/strict]");
+    expect(failed[0]).toContain("error TS2322");
+  });
+
+  it.each(["UNRESOLVED", "ANY", "LIB-ERRORS"] as const)(
+    "fails a %s cell too",
+    (status) => {
+      expect(failures(run([cell(status)])).failed).toHaveLength(1);
+    },
+  );
+
+  it("fails a runtime import that does not resolve, a leak and a browser env leak", () => {
+    expect(
+      failures(run([cell("OK")], { runtime: { "@scope/pkg/query": "boom" } }))
+        .failed,
+    ).toHaveLength(1);
+    expect(
+      failures(run([cell("OK")], { leaks: ["dts/a.d.ts imports x"] })).failed,
+    ).toHaveLength(1);
+    expect(
+      failures(run([{ ...cell("OK"), envLeaks: ["@types/node"] }])).failed,
+    ).toHaveLength(1);
+  });
+
+  it("with a baseline, a problem it already had in the same status is known", () => {
+    const base = run([cell("PROBE-ERRORS")], {
+      runtime: { "@scope/pkg/query": "boom" },
+    });
+    const now = run([cell("PROBE-ERRORS")], {
+      runtime: { "@scope/pkg/query": "boom" },
+    });
+    expect(failures(now, base).failed).toEqual([]);
+  });
+
+  it("with a baseline, a new or changed problem fails; OK -> broken is NEW-BROKEN", () => {
+    const base = run([cell("OK"), cell("ANY", "@scope/pkg", "node16/slc")]);
+    const now = run([
+      cell("PROBE-ERRORS"),
+      cell("PROBE-ERRORS", "@scope/pkg", "node16/slc"),
+    ]);
+    const { failed } = failures(now, base);
+    expect(failed).toHaveLength(2);
+    expect(failed.some((f) => f.startsWith("NEW-BROKEN"))).toBe(true);
+  });
+
+  it("with a baseline, reports fixed cells and fails a cell no longer checked", () => {
+    const base = run([cell("PROBE-ERRORS"), cell("OK", "@scope/pkg", "x")]);
+    const now = run([cell("OK")]);
+    const v = failures(now, base);
+    expect(v.fixed).toHaveLength(1);
+    expect(v.failed).toEqual([expect.stringContaining("no longer checked")]);
   });
 });
