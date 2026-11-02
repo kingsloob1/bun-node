@@ -219,8 +219,15 @@ export type SuccessStatus<E> =
 /** The declared statuses that are not 2xx. */
 export type ErrorStatus<E> = Exclude<StatusOf<E>, SuccessStatus<E>>;
 
-/** The body of status `S`, after JSON. */
-type BodyAt<E, S> = Jsonify<
+/**
+ * A response body as the client returns it: after JSON, except a `Blob`,
+ * which is how the client returns a body that is neither JSON nor text
+ * (`readBody`), and which JSON would make an object of its two properties.
+ */
+type WireBody<T> = Jsonify<Exclude<T, Blob>> | Extract<T, Blob>;
+
+/** The body of status `S`, as the client returns it. */
+type BodyAt<E, S> = WireBody<
   S extends keyof ResponsesOf<E> ? ResponsesOf<E>[S] : never
 >;
 

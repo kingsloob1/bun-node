@@ -9,5 +9,8 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": []
   },
-  "include": ["../../lib/**/*"]
+  "include": ["../../lib/**/*"],
+  // The generator is Bun-only and dev-time (plan §10.1: `./codegen` is not
+  // browser-safe); the root project checks it with Bun's types.
+  "exclude": ["../../lib/codegen/**/*"]
 }

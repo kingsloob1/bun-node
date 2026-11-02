@@ -6,7 +6,7 @@
  * (`bun scripts/consumer-check.ts packages/bun-client` from the repo root),
  * too slow for `bun test`. These are the invariants it depends on.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
 
@@ -26,6 +26,7 @@ const manifest = (await Bun.file(join(ROOT, "package.json")).json()) as {
   exports: Record<string, string | Conditions>;
   files: string[];
   main: string;
+  bin?: Record<string, string>;
   types: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -72,7 +73,7 @@ describe("package.json exports", () => {
     }
   });
 
-  it("has no lib/ subdirectory without its own key (there are none yet)", () => {
+  it("has no lib/ subdirectory without its own key", () => {
     const dirs = readdirSync(join(ROOT, "lib"), { withFileTypes: true }).filter(
       (entry) => entry.isDirectory(),
     );
@@ -93,6 +94,20 @@ describe("package.json exports", () => {
     }
   });
 
+  it("publishes the generator as ./codegen and ./lib/codegen, and its CLI as the bun-client bin (plan §10.1, §16)", async () => {
+    for (const key of ["./codegen", "./lib/codegen"])
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/codegen/index.ts",
+        types: "./dts/codegen/index.d.ts",
+        default: "./lib/codegen/index.ts",
+      });
+    expect(manifest.bin).toEqual({ "bun-client": "./lib/codegen/cli.ts" });
+    const cli = Bun.file(join(ROOT, "lib/codegen/cli.ts"));
+    expect((await cli.text()).startsWith("#!/usr/bin/env bun\n")).toBe(true);
+    // Executable, for a bin linked straight to it.
+    expect(statSync(join(ROOT, "lib/codegen/cli.ts")).mode & 0o111).not.toBe(0);
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -105,11 +120,14 @@ describe("dependencies (plan D17, §10.1)", () => {
     expect(manifest.dependencies ?? {}).toEqual({});
   });
 
-  it("keeps bun-common a devDependency, for the tests only, never a peer", () => {
+  it("keeps bun-common a devDependency, and an optional peer only for the CLI's --module (plan §10.1)", () => {
     expect(manifest.devDependencies?.["@kingsleyweb/bun-common"]).toBeDefined();
     expect(
       manifest.peerDependencies?.["@kingsleyweb/bun-common"],
-    ).toBeUndefined();
+    ).toBeDefined();
+    expect(
+      manifest.peerDependenciesMeta?.["@kingsleyweb/bun-common"]?.optional,
+    ).toBe(true);
   });
 
   it("declares only optional peers, and none any entry needs", () => {
@@ -122,6 +140,23 @@ describe("dependencies (plan D17, §10.1)", () => {
     for (const entry of checkConfig.entries)
       expect(entry.peers ?? []).toEqual([]);
     expect(checkConfig.workspaceDependencies ?? []).toEqual([]);
+  });
+
+  it("imports nothing but node: builtins and its own modules in lib/codegen/, bun-common only by a dynamic import", async () => {
+    const dir = join(ROOT, "lib", "codegen");
+    for (const file of readdirSync(dir).filter((name) =>
+      name.endsWith(".ts"),
+    )) {
+      const source = await Bun.file(join(dir, file)).text();
+      const specifiers = [
+        ...source.matchAll(/^(?:import|export)[^"]*from "([^"]+)"/gm),
+      ].map((match) => match[1]);
+      for (const specifier of specifiers)
+        expect({ file, specifier }).toEqual({
+          file,
+          specifier: expect.stringMatching(/^(?:\.{1,2}\/|node:)/),
+        });
+    }
   });
 
   it("imports nothing but its own modules in lib/", async () => {
@@ -149,11 +184,15 @@ describe("the consumer check", () => {
     expect(root?.browser).toBe(true);
   });
 
-  it("checks every entry as a browser entry", () => {
+  it("checks every entry as a browser entry, but the Bun-only generator", () => {
     for (const entry of checkConfig.entries)
       expect({ spelling: entry.spelling, browser: entry.browser }).toEqual({
         spelling: entry.spelling,
-        browser: true,
+        browser: entry.spelling.includes("codegen") ? undefined : true,
       });
+    expect(
+      checkConfig.entries.filter((entry) => entry.spelling.includes("codegen"))
+        .length,
+    ).toBeGreaterThan(0);
   });
 });

@@ -1,0 +1,435 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Generator corpus", "version": "1.0.0" },
+  "paths": {
+    "/trees/{id}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/Id" },
+        { "name": "x-trace", "in": "header", "schema": { "type": "string" } }
+      ],
+      "get": {
+        "operationId": "getTree",
+        "summary": "A recursive tree, by id",
+        "parameters": [
+          {
+            "name": "depth",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 0 },
+            "description": "How deep to go."
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "leaf": { "type": "boolean" } }
+                }
+              }
+            }
+          },
+          {
+            "name": "X-Trace",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          { "name": "session", "in": "cookie", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Tree" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "default": { "description": "Anything else" }
+        },
+        "x-bun-route-key": "GET /trees/:id",
+        "x-bun-errors": ["NOT_FOUND", "GONE"],
+        "x-bun-cache": { "tags": ["tree:{id}", "trees"] }
+      }
+    },
+    "/pets": {
+      "post": {
+        "operationId": "createPet",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Pet" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Pet" }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/Problem" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": { "type": "string" },
+                        "existing": { "type": "string" }
+                      },
+                      "required": ["code"]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "message": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "x-bun-errors": ["CONFLICT", "INVALID"]
+      },
+      "get": {
+        "operationId": "listPets",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": { "enum": ["cat", "dog", null] }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "schema": { "type": "array", "items": { "type": "string" } }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Pet" }
+                }
+              }
+            }
+          },
+          "2XX": { "description": "A range" }
+        }
+      }
+    },
+    "/files/{path}": {
+      "put": {
+        "operationId": "putFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": { "type": "string", "format": "binary" }
+            },
+            "multipart/form-data": { "schema": { "type": "object" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "text/plain": { "schema": { "type": "string" } },
+              "image/png": {}
+            }
+          }
+        }
+      }
+    },
+    "/forms": {
+      "post": {
+        "operationId": "createPet",
+        "requestBody": { "$ref": "#/components/requestBodies/Form" },
+        "responses": { "204": { "description": "Done" } },
+        "deprecated": true,
+        "description": "A form post.\nIt says \"*/\" in its prose."
+      }
+    },
+    "/streams/{id}/events": {
+      "get": {
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "x-sse-events": {
+                    "tick": {
+                      "type": "object",
+                      "properties": { "n": { "type": "integer" } },
+                      "required": ["n"]
+                    },
+                    "ping": null,
+                    "end": { "$ref": "#/components/schemas/Pet" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Problem" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/odd/{user-id}/{a b}": {
+      "get": {
+        "operationId": "odd",
+        "parameters": [
+          {
+            "name": "user-id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "a b",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Unusual" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/nothing": {
+      "get": {
+        "responses": {}
+      },
+      "options": {
+        "operationId": "optionsNothing",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Missing" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "Id": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "The tree's id."
+      }
+    },
+    "responses": {
+      "NotFound": {
+        "description": "Not Found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      }
+    },
+    "requestBodies": {
+      "Form": {
+        "required": true,
+        "content": {
+          "application/x-www-form-urlencoded": {
+            "schema": { "type": "object" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Tree": {
+        "type": "object",
+        "description": "A node and its children.",
+        "properties": {
+          "id": { "type": "string" },
+          "children": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Tree" }
+          },
+          "parent": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/Tree" },
+              { "type": "null" }
+            ]
+          },
+          "meta": { "$ref": "#/components/schemas/Meta" }
+        },
+        "required": ["id", "children"]
+      },
+      "Meta": {
+        "type": "object",
+        "properties": {
+          "owner": { "$ref": "#/components/schemas/Tree" },
+          "labels": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      },
+      "Pet": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Named" },
+          {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string", "enum": ["cat", "dog"] },
+              "age": { "type": ["integer", "null"] },
+              "legacyAge": { "type": "integer", "nullable": true },
+              "status": { "const": "active" },
+              "weights": { "type": "array", "items": { "type": "number" } },
+              "position": {
+                "type": "array",
+                "prefixItems": [{ "type": "number" }, { "type": "number" }],
+                "items": false
+              },
+              "trail": {
+                "type": "array",
+                "prefixItems": [{ "type": "string" }],
+                "items": { "type": "number" }
+              },
+              "extra": {
+                "type": "object",
+                "properties": { "a": { "type": "string" } },
+                "additionalProperties": { "type": "number" }
+              },
+              "closed": { "type": "object", "additionalProperties": false },
+              "open": { "type": "object" },
+              "byPattern": {
+                "type": "object",
+                "patternProperties": { "^x-": { "type": "boolean" } }
+              },
+              "deprecatedField": {
+                "type": "string",
+                "deprecated": true,
+                "description": "Use kind."
+              },
+              "shape": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": { "const": "circle" },
+                      "r": { "type": "number" }
+                    },
+                    "required": ["kind", "r"]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": { "const": "square" },
+                      "side": { "type": "number" }
+                    },
+                    "required": ["kind", "side"]
+                  }
+                ]
+              },
+              "never": { "not": {} },
+              "notString": { "not": { "type": "string" } },
+              "conditional": {
+                "if": { "type": "string" },
+                "then": { "minLength": 1 }
+              },
+              "external": { "$ref": "other.json#/Thing" },
+              "pointer": {
+                "$ref": "#/components/schemas/Named/properties/name"
+              },
+              "selfPointer": {
+                "$ref": "#/components/schemas/Pet/allOf/1/properties/selfPointer"
+              },
+              "quoted": { "enum": ["say \"hi\"", "it's", "plain"] },
+              "anything": {},
+              "nothing": false
+            },
+            "required": ["kind", "status"]
+          }
+        ]
+      },
+      "Named": {
+        "type": "object",
+        "properties": { "name": { "type": "string", "minLength": 1 } },
+        "required": ["name"]
+      },
+      "Problem": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "title": { "type": "string" },
+          "code": { "type": "string" },
+          "detail": { "type": "string" }
+        },
+        "required": ["type", "title", "code"]
+      },
+      "Unusual": { "type": "string", "enum": ["a", "b"] },
+      "user-profile": {
+        "type": "object",
+        "properties": { "id": { "type": "string" } }
+      },
+      "Record": {
+        "type": "object",
+        "properties": { "value": { "type": "number" } }
+      },
+      "2fa": { "type": "boolean" }
+    }
+  }
+}

@@ -204,3 +204,37 @@ export function buildPath(
   }
   return path;
 }
+
+/** One param a path literal declares, as {@link pathParams} lists it. */
+export interface PathParamInfo {
+  /** The param's name. */
+  readonly name: string;
+  /** `true` for a wildcard (`*name`), whose value is an array of segments. */
+  readonly wildcard: boolean;
+  /** `true` when the path matches without it (inside `{…}`, or routejs's `:name?`). */
+  readonly optional: boolean;
+}
+
+/**
+ * The params a path literal declares, in order: what the generator (PR-C2)
+ * types a route's `params` from, read by the same tokenizer that writes the
+ * URL, so the two cannot disagree.
+ */
+export function pathParams(pattern: string): PathParamInfo[] {
+  const out: PathParamInfo[] = [];
+  const walk = (tokens: readonly Token[], optional: boolean): void => {
+    for (const token of tokens) {
+      if (token.kind === "group") walk(token.tokens, true);
+      else if (token.kind === "param")
+        out.push({
+          name: token.name,
+          wildcard: false,
+          optional: optional || token.optional,
+        });
+      else if (token.kind === "wildcard")
+        out.push({ name: token.name, wildcard: true, optional });
+    }
+  };
+  walk(tokenize(pattern)[0], false);
+  return out;
+}

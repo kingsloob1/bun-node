@@ -1,0 +1,186 @@
+# A third-party document (typed-client plan §12.1: "a third-party OpenAPI
+# document (no x-bun-*) generates"): written by hand in the shape of the
+# classic petstore, OpenAPI 3.0 and YAML, so the keys come from the paths,
+# `nullable` is 3.0's, and nothing carries a bun-node extension.
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+servers:
+  - url: https://petstore.example/v1
+paths:
+  /pets:
+    get:
+      summary: List all pets
+      operationId: listPets
+      tags: [pets]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [available, pending, sold]
+      responses:
+        "200":
+          description: A paged array of pets
+          headers:
+            x-next:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pets"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create a pet
+      operationId: createPets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewPet"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+        default:
+          $ref: "#/components/responses/Error"
+  /pets/{petId}:
+    parameters:
+      - name: petId
+        in: path
+        required: true
+        description: The id of the pet to retrieve
+        schema:
+          type: integer
+          format: int64
+    get:
+      summary: Info for a specific pet
+      operationId: showPetById
+      responses:
+        "200":
+          description: Expected response to a valid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      responses:
+        "204":
+          description: Deleted
+  /pets/{petId}/photo:
+    put:
+      operationId: uploadPhoto
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          image/png:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: The photo
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: How many items to return at one time (max 100)
+      required: false
+      schema:
+        type: integer
+        maximum: 100
+  responses:
+    Error:
+      description: unexpected error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    NewPet:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        tag:
+          type: string
+          nullable: true
+    Pet:
+      allOf:
+        - $ref: "#/components/schemas/NewPet"
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: integer
+              format: int64
+              readOnly: true
+            createdAt:
+              type: string
+              format: date-time
+            owner:
+              oneOf:
+                - $ref: "#/components/schemas/Person"
+                - $ref: "#/components/schemas/Shelter"
+              discriminator:
+                propertyName: kind
+            attributes:
+              type: object
+              additionalProperties: true
+    Person:
+      type: object
+      required: [kind, name]
+      properties:
+        kind:
+          type: string
+          enum: [person]
+        name:
+          type: string
+    Shelter:
+      type: object
+      required: [kind, city]
+      properties:
+        kind:
+          type: string
+          enum: [shelter]
+        city:
+          type: string
+        rating:
+          type: integer
+          enum: [1, 2, 3]
+    Pets:
+      type: array
+      maxItems: 100
+      items:
+        $ref: "#/components/schemas/Pet"
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string

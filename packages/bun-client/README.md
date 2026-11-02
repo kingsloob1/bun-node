@@ -10,10 +10,11 @@ middleware, and an auth refresh that runs once for any number of concurrent
 it is 4.2 KiB gzipped.
 
 This is the core of the typed-client plan
-([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1).
-The generator that writes the route map from the server's OpenAPI document
-(`bun-client generate`), the watcher, validation, the query layer and the
-other transports come in later PRs (the plan's §15).
+([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
+and its generator (PR-C2): `bun-client generate` writes the route map from
+the server's OpenAPI document ([below](#generating-the-map-bun-client-generate)).
+The watcher, validation, the query layer and the other transports come in
+later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -59,23 +60,24 @@ export interface Routes {
 }
 ```
 
-There are two ways to get one before the generator ships:
+There are three ways to get one:
 
+- **Generate it** from the server's OpenAPI document with `bun-client
+  generate` (the default, plan §3.4): [below](#generating-the-map-bun-client-generate).
+- **Infer it** from a `defineRoutes` registry with bun-common's `RoutesOf`:
+  `createClient<RoutesOf<typeof users>>()`. The client reads its `send` and
+  `receive` views (PR-M1), the same wire side the generator writes; a test
+  holds the two equal for a fixture app.
 - **Write it by hand**, in the shape above. `query: Record<never, never>`
   declares no query (any key is then an error), and `body: undefined` declares
   no body. A part left out is undeclared, and loosely typed.
-- **Infer it** from a `defineRoutes` registry with bun-common's `RoutesOf`:
-  `createClient<RoutesOf<typeof users>>()`. Today `RoutesOf` carries the
-  validator's parsed shapes, so a defaulted query key reads as required. The
-  sender view the plan adds to `RoutesOf` (PR-M1) fixes that, and the client
-  reads that view when it is there.
 
 ### The manifest
 
 Types do not exist at run time, so two facts need a small object beside the
 map: each route's `operationId`, for `api.op`, and its declared statuses, for
-`undeclaredStatus`. The generator will write it. A hand-written one is checked
-against the map:
+`undeclaredStatus`. The generator writes it beside the map. A hand-written
+one is checked against the map:
 
 ```ts
 const manifest = {
@@ -87,6 +89,168 @@ const api = createClient<Routes>({ manifest });
 
 If a route has no manifest entry, every status it answers is returned as
 declared.
+
+## Generating the map: `bun-client generate`
+
+The generator reads an OpenAPI 3.1 document (3.0's `nullable` is read too)
+and writes a TypeScript module: the `Routes` map, every component schema as a
+named type, and the `manifest`. Commit the file, and check it in CI (plan
+§3.4, Q9).
+
+```bash
+# from a running server: a URL serving the document, or the dev endpoint's { hash, openapi, asyncapi }
+bunx bun-client generate --url http://127.0.0.1:3000/__bun/types --out src/api.gen.ts
+# from files: JSON, or YAML by extension; the AsyncAPI document joins the hash
+bunx bun-client generate --openapi ./openapi.json [--asyncapi ./asyncapi.json] --out src/api.gen.ts
+# in process, no server running: a router (documented with bun-common's generateOpenApi), a document, or a function returning one
+bunx bun-client generate --module ./server/app.ts [--export app] --out src/api.gen.ts
+# CI: write nothing, exit 1 when the file is stale
+bunx bun-client generate --module ./server/app.ts --export app --out src/api.gen.ts --check
+```
+
+```ts
+import { createClient } from "@kingsleyweb/bun-client";
+import { manifest, type Routes } from "./api.gen";
+
+const api = createClient<Routes>({ baseUrl: "/api", manifest });
+```
+
+| Flag | What it does |
+| --- | --- |
+| `--url <url>` | fetches the document (JSON or YAML), or `{ hash, openapi, asyncapi }` |
+| `--openapi <file>`, `--asyncapi <file>` | reads the documents from files; the AsyncAPI one only joins the hash until the channel map exists (PR-W2) |
+| `--module <path>`, `--export <name>` | imports the module and reads the export (default `default`): a router or adapter, an OpenAPI document, a `generateOpenApi` result, `{ openapi, asyncapi }`, an object with a `router`, or a function returning one. A router is documented as `{ title: "API", version: "1" }`, with bun-common resolved from the module's own directory (an optional peer) |
+| `--out <file>` | where to write; without it, the module goes to stdout. A file whose content would not change is not rewritten, and a write is atomic |
+| `--check` | writes nothing; exits `1` when `--out` is missing or differs from what would be written |
+
+Exit status: `0` written (or fresh), `1` stale under `--check`, `2` a usage
+error or a source that could not be read. `watch` (PR-C3) and `--zod` (PR-C4)
+are not built yet and say so.
+
+### What it writes
+
+```ts
+/**
+ * Generated by `bun-client generate` … typesHash: 3dcc0f6a50e0371c
+ *
+ * Warnings:
+ * - GET /api/health: no response is declared; typed `{ 200: unknown }`
+ */
+import type { RouteManifest } from "@kingsleyweb/bun-client";
+
+export interface User {
+  id: string;
+  /** The display name. */
+  name: string;
+  role: Role;
+}
+
+export type Role = "admin" | "member";
+
+export interface Routes {
+  /** Read one user */
+  "GET /api/users/:id": {
+    operationId: "getUser";
+    params: {
+      id: string;
+    };
+    query: {
+      page?: number;
+    };
+    headers: {
+      "x-tenant": string;
+    };
+    body: undefined;
+    responses: {
+      200: User;
+      404: Omit<Problem, "code"> & {
+        code: "NOT_FOUND" | "GONE";
+      };
+    };
+    cache: {
+      tags: ["user:{id}"];
+    };
+  };
+}
+
+export const manifest = {
+  "GET /api/users/:id": { operationId: "getUser", statuses: [200, 404] },
+} as const satisfies RouteManifest<Routes>;
+```
+
+- **Keys** are the operation's `x-bun-route-key` (bun-common writes the
+  route's own Express path, `"GET /users/:id"`), else the OpenAPI path with
+  `{id}` as `:id`. An optional param that bun-common documents as two paths is
+  one entry, the param optional. `params` comes from the key's own params,
+  typed by the documented path parameters; a wildcard is a `string[]`.
+- **The wire side** (plan §4.1): the documents' schemas are already what
+  crosses, so `query` has a defaulted key optional and a coerced one at its
+  output type, and a response is what the handler sent.
+- **`x-bun-errors`** narrows the `code` of every declared error body that has
+  one: `Omit<Problem, "code"> & { code: "NOT_FOUND" | "GONE" }`, or the inline
+  object's own `code`, member by member for a `oneOf`.
+- **`x-bun-cache`** becomes `cache: { tags; invalidates }`, as literal tuples,
+  for the query layer (PR-C5).
+- **Server-sent events**: a 2xx served as `text/event-stream` or carrying
+  `x-sse-events` reads no body through the HTTP call (`undefined`); the entry
+  is marked `stream: "sse"` and its `events` are typed by name, for `sse()`
+  (PR-S1).
+- **Bodies by media type**: JSON as its schema; `multipart/form-data` as
+  `FormData` and `application/x-www-form-urlencoded` as `URLSearchParams`
+  (typed fields come with PR-C9); anything else as
+  `Blob | ArrayBuffer | ReadableStream<Uint8Array>`. Responses: JSON as its
+  schema, `text/*` as `string`, anything else as `Blob`.
+- **Deterministic and formatted**: routes sorted by path then method,
+  components by name, statuses numerically, events by name; properties keep
+  the document's order. The output is laid out as Prettier lays it out, so
+  `bun fmt` and Prettier leave it unchanged.
+- **The header** records the documents' hash (bun-common's `typesHash`), and
+  every warning.
+
+### JSON Schema to TypeScript
+
+| JSON Schema | TypeScript |
+| --- | --- |
+| `$ref: "#/components/schemas/User"` | `User`, a named type; a recursive schema recurses through its name |
+| another local `$ref` (`#/components/schemas/A/properties/b`) | the target, inlined; one that leads back into itself is `unknown`, with a warning |
+| a component | `export interface` for an object, `export type` otherwise; a name that is not an identifier is PascalCased (`user-profile` → `UserProfile`), a reserved one gains `Schema` (`Record` → `RecordSchema`) |
+| `type: string`, `integer`/`number`, `boolean`, `null` | `string`, `number`, `boolean`, `null` |
+| `type: [a, b]`, or `nullable: true` (3.0) | `A \| B`, `T \| null` |
+| `enum`, `const` | a union of literals, a literal |
+| `properties` with `required` | an object, optional keys with `?`; a `required` key with no schema is `unknown` |
+| `additionalProperties`/`patternProperties` | `Record<string, T>`; beside properties, an index signature admitting theirs too |
+| `additionalProperties: false`, alone | `Record<string, never>` |
+| `type: object`, alone | `Record<string, unknown>` |
+| `items` | `T[]`; none is `unknown[]` |
+| `prefixItems` (or 3.0's array `items`) | a tuple, `[A, B]`, with `...T[]` for further `items` |
+| `oneOf`, `anyOf` | a union |
+| `allOf` | an intersection |
+| `{}`, `true` | `unknown` |
+| `false`, `not: {}` | `never` |
+| `not`, `if`/`then`/`else`, `dependentSchemas`, `unevaluatedProperties`, `unevaluatedItems`, `$dynamicRef` | `unknown`, **with a warning**: never a type that is silently wrong |
+| a `$ref` outside the document, or that does not resolve | `unknown`, with a warning |
+| lengths, ranges, `pattern`, `format`, `multipleOf`, `uniqueItems`, `contains`, `dependentRequired`, `propertyNames` | nothing: they validate, they do not type |
+| `description`, `deprecated` | JSDoc |
+
+A `default` response and a status range (`2XX`) are not typed, with a
+warning; a status the route does not declare goes to `undeclaredStatus`. A
+route that declares no response at all is `{ 200: unknown }`, with a warning.
+A `z.date()` has no JSON Schema, so bun-common documents it as `{}` and it
+arrives `unknown` (plan §5.3): declare a wire type such as `z.iso.datetime()`.
+
+### From code
+
+`@kingsleyweb/bun-client/codegen` exports the same steps (Bun only, never in
+a browser bundle):
+
+```ts
+import { generateRoutes, loadDocuments } from "@kingsleyweb/bun-client/codegen";
+
+const { openapi, asyncapi, warnings } = await loadDocuments({ module: "./server/app.ts" });
+const { code, hash } = generateRoutes(openapi, { asyncapi, documentWarnings: warnings });
+```
+
+`runCli(argv)` is the command itself, and `documentsHash` the header's hash.
 
 ## Results and errors
 
@@ -102,7 +266,8 @@ declared.
 Every error the client raises extends `ClientError`, which carries the route
 `key`. Bodies are read by content type: JSON is parsed; text is read as a
 string; no body gives `undefined`; `text/event-stream` is left unread on
-`response.body`; anything else becomes a `Blob`.
+`response.body`; anything else becomes a `Blob`. A body typed `Blob` stays a
+`Blob` in the result's type; everything else is read through `Jsonify`.
 
 `throwOnError` and `undeclaredStatus` change a call's return type, so when the
 client sets them, its second type argument says so too. The configuration and
@@ -209,6 +374,9 @@ because bun-common decodes encoded brackets before it parses.
 ## Packaging
 
 `lib/` ships as TypeScript source with built declarations in `dts/`, as every
-package in this repo does. The client has no runtime dependency.
-`@kingsleyweb/bun-common` is a dev dependency, used only by the tests: the
-query round trip, the shared backoff vector and the `RoutesOf` types.
+package in this repo does. The client has no runtime dependency. The
+generator is `./codegen` (Bun only) and the `bun-client` bin.
+`@kingsleyweb/bun-common` is an optional peer, needed only by `generate
+--module` on a router, and a dev dependency for the tests: the query round
+trip, the shared backoff vector, the `RoutesOf` types and the generator's
+parity with them.
