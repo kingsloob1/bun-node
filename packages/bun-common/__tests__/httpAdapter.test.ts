@@ -124,7 +124,9 @@ beforeAll(async () => {
     res.status(404).json({ message: "Route not found" });
   });
 
-  await httpAdapter.listen(10000);
+  // Port 0: a fixed port collides with whatever else holds it (setup-databases
+  // runs Azurite on 10000), and the tests reach the server through `app`.
+  await httpAdapter.listen(0);
 
   app = httpAdapter as unknown as App;
 });
