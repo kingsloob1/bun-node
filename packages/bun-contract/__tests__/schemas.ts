@@ -1,8 +1,8 @@
 /**
  * Hand-rolled Standard Schemas for the package's own tests, so they need no
  * validation library: the package has no dependency, and its tests show it
- * works with the spec alone. bun-common's suite runs the same core against
- * zod, valibot, arktype and yup.
+ * works with the spec alone. guards.test.ts and the other moved suites run
+ * the same core against zod, valibot, arktype and yup.
  */
 import type { StandardSchemaV1 } from "../lib/index";
 

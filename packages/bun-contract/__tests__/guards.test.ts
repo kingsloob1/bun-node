@@ -1,28 +1,24 @@
-import type { IssueContext, ValidationIssue } from "../../lib/contract/model";
+import type { IssueContext, ValidationIssue } from "../lib/model";
 /**
  * The contract core at runtime: declarations, the runner, guards and their
  * policies, `onIssues`, `checksKey`, carrying contracts, an in-process
  * broker and a flow (the spike's C7–C10, C16, C19–C22; plan §4.1).
  */
-import type { StandardSchemaV1 } from "../../lib/types/standardSchema";
+import type { StandardSchemaV1 } from "../lib/standardSchema";
 import { type } from "arktype";
 import { describe, expect, it } from "bun:test";
 import * as v from "valibot";
 import * as yup from "yup";
 import { z } from "zod";
-import {
-  ContractError,
-  createReceiver,
-  createSender,
-} from "../../lib/contract/guard";
-import { andThen, validateStandard } from "../../lib/contract/issues";
+import { ContractError, createReceiver, createSender } from "../lib/guard";
+import { andThen, validateStandard } from "../lib/issues";
 import {
   attachContract,
   defineTransport,
   forwardContract,
   getContract,
-} from "../../lib/contract/transport";
-import { createTestLogger } from "../../lib/logging";
+} from "../lib/transport";
+import { createTestLogger } from "./testLogger";
 import { broker, flow, http, jobs } from "./fixtures";
 import "reflect-metadata";
 

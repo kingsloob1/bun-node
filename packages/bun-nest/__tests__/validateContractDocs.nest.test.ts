@@ -3,7 +3,7 @@
  * `attachContract` also writes reflect metadata, which NestJS's
  * `RouterExplorer.copyMetadataToCallback` carries onto the route handler it
  * wraps the method in — so `listRoutes`/`generateOpenApi` see it. (The
- * bun-common half has its own unit test in `__tests__/contract/core.test.ts`.)
+ * bun-common half has its own unit test in `packages/bun-contract/__tests__/guards.test.ts`.)
  *
  * `reflect-metadata` is imported last per the import-sort rule.
  */

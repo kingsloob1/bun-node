@@ -1,10 +1,8 @@
 /**
- * A Standard Schema (or a hook) answering with a thenable that is not a
- * native `Promise`: the core reads any object or function with a callable
- * `then` as async, adopts it with `Promise.resolve()`, and so refuses the
- * issues it resolves to, passes the value, and fails as for a rejected
- * Promise when it rejects. Before, `instanceof Promise` read the thenable as
- * a settled result with no `issues`: a pass.
+ * A thenable-returning Standard Schema through bun-common's `validate()` and
+ * its response gate (`variants()`): the router half of the thenable tests.
+ * The core's half (`isPromiseLike`, `andThen`, `validateStandard`, the guard
+ * receiver) is in `packages/bun-contract/__tests__/thenable.test.ts`.
  */
 import type { StandardSchemaV1 } from "../../lib/types/standardSchema";
 import type { RouterErrorMiddlewareHandler } from "../../lib/types/general";
@@ -12,14 +10,9 @@ import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { BunRouter } from "../../lib/BunRouter";
 import { validate } from "../../lib/BunValidate";
-import { ContractError, createReceiver } from "../../lib/contract/guard";
-import { andThen, validateStandard } from "../../lib/contract/issues";
-import { isPromiseLike } from "../../lib/contract/model";
-import { recordOf } from "../../lib/contract/schemas";
 import { createTestLogger } from "../../lib/logging";
 import { variants } from "../../lib/responseBodies";
 import { ResponseValidationError } from "../../lib/responseValidation";
-import { broker } from "./fixtures";
 
 /** What a {@link thenable} settles with. */
 type Settle =
@@ -80,104 +73,6 @@ function schema(reject = false): StandardSchemaV1<unknown, { x: number }> {
     },
   };
 }
-
-describe("isPromiseLike", () => {
-  it("is true for a Promise and any object or function with a callable then", () => {
-    const fn = Object.assign(() => 1, { then: () => undefined });
-    expect(isPromiseLike(Promise.resolve(1))).toBe(true);
-    expect(isPromiseLike(thenable({ resolve: 1 }))).toBe(true);
-    expect(isPromiseLike(fn)).toBe(true);
-    for (const not of [null, undefined, 1, "then", { then: 1 }, {}, []]) {
-      expect(isPromiseLike(not)).toBe(false);
-    }
-  });
-});
-
-describe("andThen adopts a thenable", () => {
-  it("chains it as a Promise", async () => {
-    const later = andThen(
-      thenable({ resolve: 2 }) as never,
-      (x: number) => x * 3,
-    );
-    expect(later).toBeInstanceOf(Promise);
-    expect(await later).toBe(6);
-  });
-});
-
-describe("validateStandard with a thenable-returning vendor", () => {
-  it("refuses a thenable resolving to issues, with the issue", async () => {
-    const out = validateStandard(schema(), { x: "nope" }, "body");
-    expect(out).toBeInstanceOf(Promise);
-    expect(await out).toEqual({
-      ok: false,
-      issues: [{ target: "body", path: "x", message: "x must be a number" }],
-    });
-  });
-
-  it("passes a thenable resolving to a value, with the vendor's output", async () => {
-    expect(await validateStandard(schema(), { x: 2 }, "body")).toEqual({
-      ok: true,
-      value: { x: 4 },
-    });
-  });
-
-  it("rejects as for a rejected Promise when the thenable rejects", async () => {
-    const out = validateStandard(schema(true), { x: 2 }, "body");
-    expect(out).toBeInstanceOf(Promise);
-    await expect(out).rejects.toBe(BOOM);
-  });
-
-  it("refuses through recordOf when a member answers with a thenable", async () => {
-    const record = recordOf({ a: schema(), b: z.number() });
-    expect(
-      await validateStandard(record, { a: { x: "no" }, b: 1 }, "data"),
-    ).toEqual({
-      ok: false,
-      issues: [{ target: "data", path: "a.x", message: "x must be a number" }],
-    });
-    expect(
-      await validateStandard(record, { a: { x: 1 }, b: 1 }, "data"),
-    ).toEqual({
-      ok: true,
-      value: { a: { x: 2 }, b: 1 },
-    });
-  });
-});
-
-describe("a guard receiver with a thenable-returning vendor", () => {
-  const c = broker.contract({ inbound: { t: { payload: schema() } } });
-  const failing = broker.contract({
-    inbound: { t: { payload: schema(true) } },
-  });
-
-  it("refuses a thenable resolving to issues with a ContractError", async () => {
-    const r = createReceiver(
-      c,
-      "inbound",
-    )({ topic: "t", payload: { x: "no" } });
-    expect(r).toBeInstanceOf(Promise);
-    const settled = await r;
-    expect(settled).toBeInstanceOf(ContractError);
-    expect((settled as ContractError).issues).toEqual([
-      { target: "payload", path: "x", message: "x must be a number", key: "t" },
-    ]);
-  });
-
-  it("hands on the vendor's output for a thenable resolving to a value", async () => {
-    expect<unknown>(
-      await createReceiver(c, "inbound")({ topic: "t", payload: { x: 3 } }),
-    ).toEqual({ topic: "t", payload: { x: 6 } });
-  });
-
-  it("rejects when the thenable rejects", async () => {
-    const r = createReceiver(
-      failing,
-      "inbound",
-    )({ topic: "t", payload: { x: 3 } });
-    expect(r).toBeInstanceOf(Promise);
-    await expect(r).rejects.toBe(BOOM);
-  });
-});
 
 /** Renders any error as a 500 naming it, and a refused response's issues. */
 const render = ((error, _req, res, _next) => {

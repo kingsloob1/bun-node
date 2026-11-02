@@ -2,22 +2,16 @@
  * Reading contracts back (plan §4.1.5) and the §4.12 items V1 owns:
  * declared sides and keys (B1), row kinds (M4), wire encodings (m3), the
  * canonical row order (m1), `mergeContracts` (M3, Q-C11), `documented()`
- * (M6, Q-C12), and JSON Schema on `recordOf` and `toStandardSchema` (m10).
+ * (M6, Q-C12), and JSON Schema on `recordOf` (m10; `toStandardSchema`'s is in bun-common).
  */
 import { describe, expect, it } from "bun:test";
 import * as v from "valibot";
 import { z } from "zod";
-import { toStandardSchema } from "../../lib/BunValidate";
-import { describeContract, mergeContracts } from "../../lib/contract/describe";
-import { createReceiver } from "../../lib/contract/guard";
-import { validateStandard } from "../../lib/contract/issues";
-import {
-  documented,
-  kindOf,
-  markKind,
-  recordOf,
-} from "../../lib/contract/schemas";
-import { createTestLogger } from "../../lib/logging";
+import { describeContract, mergeContracts } from "../lib/describe";
+import { createReceiver } from "../lib/guard";
+import { validateStandard } from "../lib/issues";
+import { documented, kindOf, markKind, recordOf } from "../lib/schemas";
+import { createTestLogger } from "./testLogger";
 import { broker, http, jobs, ws } from "./fixtures";
 
 /** The rows without their schemas, for comparison. */
@@ -433,7 +427,7 @@ describe("documented() (M6, Q-C12)", () => {
   });
 });
 
-describe("JSON Schema on recordOf and toStandardSchema (m10)", () => {
+describe("JSON Schema on recordOf (m10)", () => {
   it("recordOf composes its members' JSON Schemas", () => {
     const record = recordOf({ a: z.string(), b: z.number() });
     const converter = (
@@ -464,29 +458,5 @@ describe("JSON Schema on recordOf and toStandardSchema (m10)", () => {
     expect(await record["~standard"].validate(null)).toEqual({
       issues: [{ message: "Expected an object", path: [] }],
     });
-  });
-
-  it("toStandardSchema takes an optional jsonSchema", () => {
-    const Page = toStandardSchema<{ page: number }>(
-      (input) => ({ value: input as { page: number } }),
-      {
-        jsonSchema: {
-          type: "object",
-          properties: { page: { type: "integer" } },
-        },
-      },
-    );
-    const converter = (
-      Page["~standard"] as unknown as {
-        jsonSchema: { input: (o: { target: string }) => unknown };
-      }
-    ).jsonSchema;
-    expect(converter.input({ target: "draft-2020-12" })).toEqual({
-      type: "object",
-      properties: { page: { type: "integer" } },
-    });
-    expect(
-      "jsonSchema" in toStandardSchema(() => ({ value: 1 }))["~standard"],
-    ).toBe(false);
   });
 });

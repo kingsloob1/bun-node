@@ -168,8 +168,13 @@
       "version": "0.1.0",
       "devDependencies": {
         "@types/bun": "^1.4.2",
+        "arktype": "^2",
         "bun-types": "^1.4.3",
+        "reflect-metadata": "^0.2.2",
         "typescript": "^6.0.3",
+        "valibot": "^1",
+        "yup": "^1",
+        "zod": "^4",
       },
       "peerDependencies": {
         "@types/bun": ">=1.4.2",

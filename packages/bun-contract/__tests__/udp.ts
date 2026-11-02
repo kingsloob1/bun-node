@@ -14,14 +14,10 @@ import type {
   Received,
   Sent,
   ValidationIssue,
-} from "../../lib/contract/model";
-import {
-  ContractError,
-  createReceiver,
-  createSender,
-} from "../../lib/contract/guard";
-import { andThen } from "../../lib/contract/issues";
-import { defineTransport } from "../../lib/contract/transport";
+} from "../lib/model";
+import { ContractError, createReceiver, createSender } from "../lib/guard";
+import { andThen } from "../lib/issues";
+import { defineTransport } from "../lib/transport";
 
 /** UDP: datagrams keyed by `type`, one `payload` part each way. */
 export const udp = defineTransport({
