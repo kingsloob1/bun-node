@@ -224,6 +224,34 @@ function producerWarning(raw: unknown): CodegenWarning {
 }
 
 /**
+ * Reads the documents from a successful response: one OpenAPI document (JSON,
+ * or YAML by its content type), or the dev endpoint's `{ hash, openapi,
+ * asyncapi }`. `bun-client watch` reads the dev endpoint's answers with it.
+ *
+ * @param response The response, already known to be `ok`.
+ * @param where What the messages name (`--url <url>`).
+ * @throws Error when the body is not one of those.
+ */
+export async function documentsFromResponse(
+  response: Response,
+  where: string,
+): Promise<LoadedDocuments> {
+  const type = response.headers.get("content-type") ?? "";
+  const value = parseDocument(await response.text(), /yaml/i.test(type), where);
+  if (isOpenApi(value)) return { openapi: value, warnings: [] };
+  if (isRecord(value) && isOpenApi(value.openapi)) {
+    return {
+      openapi: value.openapi,
+      ...(isRecord(value.asyncapi) ? { asyncapi: value.asyncapi } : {}),
+      warnings: [],
+    };
+  }
+  throw new Error(
+    `${where}: the answer is neither an OpenAPI document nor { openapi, asyncapi }`,
+  );
+}
+
+/**
  * Reads the documents a source names.
  *
  * @param source A URL, files, or a module (see {@link DocumentSource}).
@@ -253,23 +281,7 @@ export async function loadDocuments(
         `--url ${source.url}: answered ${response.status} ${response.statusText}`.trimEnd(),
       );
     }
-    const type = response.headers.get("content-type") ?? "";
-    const value = parseDocument(
-      await response.text(),
-      /yaml/i.test(type),
-      `--url ${source.url}`,
-    );
-    if (isOpenApi(value)) return { openapi: value, warnings: [] };
-    if (isRecord(value) && isOpenApi(value.openapi)) {
-      return {
-        openapi: value.openapi,
-        ...(isRecord(value.asyncapi) ? { asyncapi: value.asyncapi } : {}),
-        warnings: [],
-      };
-    }
-    throw new Error(
-      `--url ${source.url}: the answer is neither an OpenAPI document nor { openapi, asyncapi }`,
-    );
+    return documentsFromResponse(response, `--url ${source.url}`);
   }
   if ("openapi" in source) {
     const openapi = await readDocument(resolve(cwd, source.openapi));

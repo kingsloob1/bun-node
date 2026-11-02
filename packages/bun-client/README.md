@@ -11,10 +11,12 @@ it is 4.2 KiB gzipped.
 
 This is the core of the typed-client plan
 ([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
-and its generator (PR-C2): `bun-client generate` writes the route map from
-the server's OpenAPI document ([below](#generating-the-map-bun-client-generate)).
-The watcher, validation, the query layer and the other transports come in
-later PRs (the plan's §15).
+its generator (PR-C2) and its watcher (PR-C3): `bun-client generate` writes
+the route map from the server's OpenAPI document
+([below](#generating-the-map-bun-client-generate)), and `bun-client watch`
+keeps it in step with a running dev server
+([below](#keeping-it-in-step-bun-client-watch)). Validation, the query layer
+and the other transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -117,15 +119,85 @@ const api = createClient<Routes>({ baseUrl: "/api", manifest });
 
 | Flag | What it does |
 | --- | --- |
-| `--url <url>` | fetches the document (JSON or YAML), or `{ hash, openapi, asyncapi }` |
+| `--url <url>` | fetches the document (JSON or YAML), or `{ hash, openapi, asyncapi }`. A dev endpoint gets the bearer token of the [token file](#the-token-file) naming it |
+| `--token-file <path>` | with `--url`: the token file, or a directory of them, to read instead of the nearest `node_modules/.cache/bun-types` |
 | `--openapi <file>`, `--asyncapi <file>` | reads the documents from files; the AsyncAPI one only joins the hash until the channel map exists (PR-W2) |
 | `--module <path>`, `--export <name>` | imports the module and reads the export (default `default`): a router or adapter, an OpenAPI document, a `generateOpenApi` result, `{ openapi, asyncapi }`, an object with a `router`, or a function returning one. A router is documented as `{ title: "API", version: "1" }`, with bun-common resolved from the module's own directory (an optional peer) |
 | `--out <file>` | where to write; without it, the module goes to stdout. A file whose content would not change is not rewritten, and a write is atomic |
 | `--check` | writes nothing; exits `1` when `--out` is missing or differs from what would be written |
 
 Exit status: `0` written (or fresh), `1` stale under `--check`, `2` a usage
-error or a source that could not be read. `watch` (PR-C3) and `--zod` (PR-C4)
-are not built yet and say so.
+error or a source that could not be read. `--zod` (PR-C4) is not built yet
+and says so.
+
+### Keeping it in step: `bun-client watch`
+
+In development, run the server with bun-common's `devTypes()` mounted (plan
+§3.3) and leave the watcher running beside it:
+
+```ts
+// server: the documents at /__bun/types, a change channel at /__bun/types/ws, and a token file
+import { devTypes } from "@kingsleyweb/bun-common/lib/docs";
+
+app.use(devTypes(app, { enabled: process.env.NODE_ENV !== "production" }));
+```
+
+```bash
+bunx bun-client watch --out src/api.gen.ts                                 # the only dev server running
+bunx bun-client watch --out src/api.gen.ts --url http://localhost:3000     # one of several
+```
+
+```
+bun-client watch: wrote src/api.gen.ts (typesHash 662cf4320039a0b5, 16 ms)
+bun-client watch: following http://127.0.0.1:3000/__bun/types (token file …/node_modules/.cache/bun-types/3000.json)
+bun-client watch: wrote src/api.gen.ts (typesHash 5fe8467b9825878f, 2 ms)
+```
+
+- **It finds the server through its token file**, read again on every
+  (re)connection, so a restarted server's new token and port are picked up.
+  With one server running it follows that one; with several it exits `2`
+  naming them, and `--url` (the endpoint, or just the origin) picks one.
+  Before any server is up it waits, and says so.
+- **It regenerates through the same step as `generate`**: on start, and
+  whenever the channel announces a hash (`hello` on connect, `changed` on a
+  change) other than the one in the file's header. A route added at run time
+  counts, as does a `--hot` re-evaluation or a `--watch` restart. The write is
+  atomic (a temporary file renamed over the old one) and happens only when
+  the content changed, so an unchanged file keeps its modification time. One
+  line per regeneration gives the hash and the time it took.
+- **It survives restarts**: when the channel closes it reconnects after
+  50 ms, doubling to 2 s (the backoff restarts once a channel opens).
+- **A refused token is logged**, once per token file, and retried: a stale
+  file left by a killed server, or a server that is not a `devTypes()`
+  endpoint. A token file whose `pid` is no longer running is skipped.
+- **Ctrl-C (SIGINT) or SIGTERM stops it**, exit `0`. `runCli` takes a
+  `signal` instead when it runs in process.
+
+From saving a route's file to the generated file holding the change,
+measured with this watcher and `devTypes()` (median / p90,
+[`evidence/watch/`](../../docs/plans/typed-client/evidence/watch/README.md)):
+**170 / 178 ms under `bun --watch`**, **139 / 146 ms under `bun --hot`**; the
+watcher's own fetch and write take 1–14 ms. A `BunHttpAdapter` app runs under
+`bun --watch` until the adapter survives a `bun --hot` re-evaluation (a
+follow-up).
+
+| Flag | What it does |
+| --- | --- |
+| `--out <file>` | the file to keep generated (required) |
+| `--url <url>` | the server to follow, when several run: its endpoint or origin |
+| `--token-file <path>` | a token file, or a directory of them, instead of the nearest `node_modules/.cache/bun-types` (a server run from another directory, or a custom `devTypes({ tokenFile })`) |
+
+#### The token file
+
+`devTypes()` writes `{ url, ws, token, pid }`, mode `0600`, to
+`node_modules/.cache/bun-types/<port>.json` under the server's working
+directory once it listens, and removes it on close and at exit. Both
+commands read the nearest such directory from their own working directory
+up, so a command run in a subdirectory of the server's project finds it. The
+token goes only to that server's endpoint (`--url`'s scheme, port and host,
+the loopback names counting as one, and a path at or under the endpoint's),
+never to the app's other routes, and `generate --url` with any other URL
+sends none. A refused token makes `generate` exit `2` naming the file.
 
 ### What it writes
 
@@ -250,7 +322,8 @@ const { openapi, asyncapi, warnings } = await loadDocuments({ module: "./server/
 const { code, hash } = generateRoutes(openapi, { asyncapi, documentWarnings: warnings });
 ```
 
-`runCli(argv)` is the command itself, and `documentsHash` the header's hash.
+`runCli(argv, io)` is the command itself (`io.signal` stops `watch`), and
+`documentsHash` the header's hash.
 
 ## Results and errors
 

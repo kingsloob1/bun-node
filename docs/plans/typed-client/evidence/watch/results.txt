@@ -1,0 +1,3 @@
+2026-11-02T20:39:59.862Z bun 1.4.4 (11c367163), linux-x64, load 6.67
+{"mode":"watch","iterations":10,"editToFileMs":{"median":170,"p90":178,"max":178,"min":168},"evaluatedToFileMs":{"median":79,"p90":83,"n":10},"watcherRegenerateMsMedian":14,"regenerationLines":11,"followingLines":1,"serverEvaluations":11,"watcherStderr":[]}
+{"mode":"hot","iterations":10,"editToFileMs":{"median":139,"p90":146,"max":146,"min":73},"evaluatedToFileMs":{"median":95,"p90":100,"n":10},"watcherRegenerateMsMedian":1,"regenerationLines":11,"followingLines":1,"serverEvaluations":11,"watcherStderr":[]}

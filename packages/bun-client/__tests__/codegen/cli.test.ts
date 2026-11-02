@@ -332,8 +332,10 @@ describe("--url against bun-common's devTypes() (PR-M2)", () => {
       const golden = await Bun.file(join(FIXTURES, "app.gen.ts")).text();
       const body = (code: string) => code.slice(code.indexOf("import type"));
       expect(body(result.code)).toBe(body(golden));
-      // The CLI sends no token until PR-C3 reads the token file: refused, as
-      // the endpoint refuses anything unauthorized (its not-found answer).
+      // No token file names the server (`tokenFile: false`), so the CLI
+      // sends no token: refused, as the endpoint refuses anything
+      // unauthorized (its not-found answer). `devServer.test.ts` covers the
+      // token file being read.
       const refused = await run("generate", "--url", url);
       expect(refused.code).toBe(2);
       expect(refused.stderr).toContain("answered 404");
@@ -422,7 +424,15 @@ describe("usage", () => {
     ],
     [["generate", "--openapi", "openapi.json", "--zod", "z.ts"], 2, "PR-C4"],
     [["generate", "--bogus"], 2, "Unknown option"],
-    [["watch"], 2, "PR-C3"],
+    [["watch"], 2, "--out is required"],
+    [["watch", "--out", "a.ts", "--url", "not a url"], 2, "is not a URL"],
+    [["watch", "--out", "a.ts", "--zod", "z.ts"], 2, "PR-C4"],
+    [["watch", "--out", "a.ts", "--check"], 2, "Unknown option"],
+    [
+      ["generate", "--openapi", "openapi.json", "--token-file", "t.json"],
+      2,
+      "--token-file goes with --url",
+    ],
     [["frobnicate"], 2, 'unknown command "frobnicate"'],
     [["generate", "--openapi", "absent.json"], 2, "absent.json"],
   ])("%j exits %d", async (argv, status, message) => {
@@ -434,6 +444,9 @@ describe("usage", () => {
   it("prints help and exits 0 for --help", async () => {
     expect((await run("--help")).code).toBe(0);
     expect((await run("generate", "--help")).stdout).toContain("--check");
+    const watchHelp = await run("watch", "--help");
+    expect(watchHelp.code).toBe(0);
+    expect(watchHelp.stdout).toContain("--token-file");
   });
 
   it("is executable as the package's bin (its shebang and mode)", () => {
