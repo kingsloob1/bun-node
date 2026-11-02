@@ -39,6 +39,7 @@ import {
   azureRawDump,
   azureReachError,
   deleteAzurePrefix,
+  HOOK_TIMEOUT_MS,
 } from "./backends";
 import { reportNotConfigured, reportUnreachable } from "./sqlSuite";
 
@@ -443,11 +444,13 @@ async function registerAzureSuite(url: string): Promise<void> {
     return sent;
   };
 
+  // Azurite deletes ~100-150 blobs in 2-4 s alone and several times that under a
+  // full-suite run; bun:test's default hook bound (5 s) timed out unnamed.
   afterAll(async () => {
     for (const each of prefixes) {
       await deleteAzurePrefix(url, each);
     }
-  });
+  }, HOOK_TIMEOUT_MS);
 
   const kitOptions = { url, prefix: prefix("kit") };
   await runCacheDriverConformance(
