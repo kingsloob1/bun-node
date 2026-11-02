@@ -1,22 +1,24 @@
 # @kingsleyweb/bun-client
 
-A typed HTTP client for the bun-node servers, with no dependencies. Each verb
+A typed HTTP client for the bun-node servers. Each verb
 takes the server's own path literal (`api.get("/users/:id", …)`), so a search
 finds both ends. The params, query and body are typed from a route map, and a
 call returns a result discriminated by status. It also has named operations
 (`api.op.getUser(…)`), retries with backoff and `Retry-After`, timeouts,
-middleware, and an auth refresh that runs once for any number of concurrent
-401s. It runs in browsers: the entry imports nothing, and a browser bundle of
-it is 4.2 KiB gzipped.
+middleware, an auth refresh that runs once for any number of concurrent
+401s, and validation of what it sends and receives
+([below](#validation)), on in development and off in production. It runs in
+browsers: a browser bundle of the entry is 4.6 KiB gzipped, and the checks
+(bun-contract's guards, its one dependency) load only when a call validates.
 
 This is the core of the typed-client plan
 ([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
-its generator (PR-C2) and its watcher (PR-C3): `bun-client generate` writes
-the route map from the server's OpenAPI document
-([below](#generating-the-map-bun-client-generate)), and `bun-client watch`
-keeps it in step with a running dev server
-([below](#keeping-it-in-step-bun-client-watch)). Validation, the query layer
-and the other transports come in later PRs (the plan's §15).
+its generator (PR-C2), its watcher (PR-C3) and validation (PR-C4):
+`bun-client generate` writes the route map from the server's OpenAPI
+document ([below](#generating-the-map-bun-client-generate)), with its zod
+schemas beside it on request, and `bun-client watch` keeps both in step with
+a running dev server ([below](#keeping-it-in-step-bun-client-watch)). The
+query layer and the other transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -108,6 +110,8 @@ bunx bun-client generate --openapi ./openapi.json [--asyncapi ./asyncapi.json] -
 bunx bun-client generate --module ./server/app.ts [--export app] --out src/api.gen.ts
 # CI: write nothing, exit 1 when the file is stale
 bunx bun-client generate --module ./server/app.ts --export app --out src/api.gen.ts --check
+# the runtime zod schemas beside the map, for validation (zod/mini; --zod-flavour classic for zod)
+bunx bun-client generate --module ./server/app.ts --out src/api.gen.ts --zod src/api.zod.gen.ts
 ```
 
 ```ts
@@ -124,11 +128,12 @@ const api = createClient<Routes>({ baseUrl: "/api", manifest });
 | `--openapi <file>`, `--asyncapi <file>` | reads the documents from files; the AsyncAPI one only joins the hash until the channel map exists (PR-W2) |
 | `--module <path>`, `--export <name>` | imports the module and reads the export (default `default`): a router or adapter, an OpenAPI document, a `generateOpenApi` result, `{ openapi, asyncapi }`, an object with a `router`, or a function returning one. A router is documented as `{ title: "API", version: "1" }`, with bun-common resolved from the module's own directory (an optional peer) |
 | `--out <file>` | where to write; without it, the module goes to stdout. A file whose content would not change is not rewritten, and a write is atomic |
-| `--check` | writes nothing; exits `1` when `--out` is missing or differs from what would be written |
+| `--check` | writes nothing; exits `1` when `--out` (or `--zod`'s file) is missing or differs from what would be written |
+| `--zod <file>` | also writes the [zod module](#the-generated-zod-module-zod) there (needs `--out`, which it imports `Routes` from) |
+| `--zod-flavour <f>` | `mini` (`zod/mini`, the default) or `classic` (`zod`) |
 
 Exit status: `0` written (or fresh), `1` stale under `--check`, `2` a usage
-error or a source that could not be read. `--zod` (PR-C4) is not built yet
-and says so.
+error or a source that could not be read.
 
 ### Keeping it in step: `bun-client watch`
 
@@ -186,6 +191,7 @@ follow-up).
 | `--out <file>` | the file to keep generated (required) |
 | `--url <url>` | the server to follow, when several run: its endpoint or origin |
 | `--token-file <path>` | a token file, or a directory of them, instead of the nearest `node_modules/.cache/bun-types` (a server run from another directory, or a custom `devTypes({ tokenFile })`) |
+| `--zod <file>`, `--zod-flavour <f>` | keeps the zod module in step too, as `generate` writes it |
 
 #### The token file
 
@@ -334,6 +340,8 @@ const { code, hash } = generateRoutes(openapi, { asyncapi, documentWarnings: war
 | A status the manifest does not list | throws `UnexpectedStatusError` (body unread); with `undeclaredStatus: "result"`, `{ ok: false, status: number, error: unknown }` | throws `UnexpectedStatusError` |
 | `fetch` failed | throws `NetworkError` (after the retries) | the same |
 | `timeout` ran out | throws `TimeoutError` | the same |
+| A request part fails validation | throws `ValidationError` before sending ([below](#validation)) | the same |
+| A response fails validation | logs a warning and returns the body as it arrived; under `onFailure: "throw"`, throws `ValidationError` | the same |
 | The caller's `signal` aborted | rejects with the signal's reason (the platform's `AbortError` by default) | the same |
 
 Every error the client raises extends `ClientError`, which carries the route
@@ -371,8 +379,11 @@ later level wins.
 | `undeclaredStatus` | `"throw"` | client, call | last wins |
 | `middleware` | none | all three | concatenated: client outermost, then route, then call |
 | `auth` | none | client | |
-| `logger` | `console` | client | retry notes go to `debug` |
+| `logger` | `console` | client | retry notes go to `debug`, validation warnings to `warn` |
 | `manifest` | none | client | |
+| `mode` | `"production"` when `process.env.NODE_ENV` is, else `"development"` | client | chooses validation's defaults |
+| `schemas` | none | client | the built-in schemas, loaded on first use ([below](#where-the-schemas-come-from)) |
+| `validate` | on in development, off in production | all three | merged per key; `false` turns it all off, BYO schemas included, until a later level turns it back on ([below](#configuring-it)) |
 
 ### Retries
 
@@ -428,6 +439,201 @@ What `refresh()` returns decides the next step:
 If `refresh()` throws, every waiting call rejects with its error. An
 `Authorization` header that a call sets itself is never replaced.
 
+## Validation
+
+The client checks what it sends before it sends it, and what it receives when
+it arrives (plan §5), through the very guards the server runs
+(`createSender` and `createReceiver` from `@kingsleyweb/bun-contract`). Issue
+paths, value-free messages and prototype-key stripping therefore agree on
+both sides.
+
+| | Default | A failure |
+| --- | --- | --- |
+| The request: `params`, `query`, `body` (before they are serialised), `headers` (as sent, on the first attempt) | **on in development, off in production** | **throws** `ValidationError`; nothing is sent |
+| The response body, by status | **on in development, off in production** | **warns** through `logger` and returns the body as it arrived |
+
+Development is `process.env.NODE_ENV !== "production"`, written out so a
+bundler's define replaces it (in a browser with no define, development);
+`mode` overrides it. The checks live in their own module, loaded with
+`import()` only when a call has something to check: a production client that
+configures nothing loads neither them nor the schemas, and a splitting
+bundler puts them in a chunk of their own (6.3 KiB gzipped,
+`__tests__/budget.test.ts`).
+
+### Where the schemas come from
+
+`schemas` is the built-in source: a module exporting `schemas`, one entry per
+route key, given as a function so it loads on first use.
+
+```ts
+import { createClient } from "@kingsleyweb/bun-client";
+import { manifest, type Routes } from "./api.gen";
+
+const api = createClient<Routes>({
+  manifest,
+  schemas: () => import("./api.zod.gen"),   // generated: bun-client generate --zod
+});
+```
+
+| Layout | The schemas | When |
+| --- | --- | --- |
+| Separate repos, or schemas that are not browser-safe | the generated zod module ([below](#the-generated-zod-module-zod)) | always: it is made from the OpenAPI document |
+| A monorepo whose schemas live in a browser-safe module | **the server's own schemas**: a module exporting `schemas` built from them, `satisfies SchemaSource<Routes>["schemas"]` (any Standard Schema: zod, valibot, arktype, …) | the module imports no server code (no `node:*`, no drivers, no bun-common runtime) |
+
+The second row loses nothing to JSON Schema: a `.refine()` the generated
+module cannot carry (below) runs on the client too. A schema declared inline
+in a route file drags the route file, and the server, into the browser, so
+keep them in their own module and check it in the app's tests:
+
+```ts
+const result = await Bun.build({ entrypoints: ["./shared/schemas.ts"], target: "browser" });
+const code = (await Promise.all(result.outputs.map((o) => o.text()))).join("");
+expect(result.success).toBe(true);
+expect(code).not.toMatch(/["'](?:node|bun):|\bBun\.\w+|BunRouter/);
+```
+
+Remember the wire: a response schema with `z.date()` refuses the string a
+`Date` becomes in JSON, so declare wire types (`z.iso.datetime()`).
+
+### Configuring it
+
+`validate` takes the same shape at every level (`createClient`,
+`routes[key]`, the call), merged per key, a later level winning:
+
+```ts
+createClient<Routes>({
+  schemas: () => import("./api.zod.gen"),
+  validate: { onFailure: { response: "throw" } },          // every route
+  routes: {
+    "POST /payments": { validate: { response: true } },     // checked in production too
+    "GET /feed": { validate: { response: false } },         // a hot list: never
+  },
+});
+await api.get("/feed", { validate: false });                // this call: nothing at all
+```
+
+| Key | What it does |
+| --- | --- |
+| `request` | every request part at once: `true` runs their built-in schemas, `false` turns them off (BYO included) |
+| `params`, `query`, `body`, `headers` | one part: `true`, `false`, or `{ enabled, custom, replace }` |
+| `response` | `true`/`false` for every status, or `{ [status]: true \| false \| { enabled, custom, replace } }` |
+| `onFailure` | `"throw"`, `"warn"`, or a hook `(error) => void` (it may throw), for both directions or `{ request, response }`; default `{ request: "throw", response: "warn" }` |
+
+A `false` anywhere turns off everything under it, BYO schemas included, until
+a later level turns it back on.
+
+### Bring your own
+
+Any Standard Schema (zod, valibot, arktype, yup, or an object with a
+`~standard.validate` of your own) runs **after** the built-in one, per part
+and per status:
+
+```ts
+createClient<Routes>({
+  schemas: () => import("./api.zod.gen"),
+  routes: {
+    "POST /users": {
+      validate: {
+        body: { custom: SignupRules },                                // after the built-in body schema
+        response: { 201: { custom: UserWithDates, replace: true } },  // instead of the built-in 201 schema
+      },
+    },
+  },
+});
+```
+
+- It receives the built-in schema's output when that passed, and the value
+  as it was when it failed, so both run and **every issue is reported at
+  once**, the built-in ones first.
+- `replace: true` runs it alone for that part.
+- What it returns is what is sent (a request part) or delivered (a
+  response): a transform applies. Headers are checked, never transformed.
+  The result's type stays the route map's.
+- A part's `custom` runs whatever the mode (it was asked for), unless a
+  `false` turns the part off; a call's replaces the route's.
+
+### `ValidationError`
+
+```ts
+try {
+  await api.post("/users", { body });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    error.direction;  // "request" | "response"
+    error.status;     // the response's status; undefined for a request
+    error.issues;     // [{ target: "body", path: "email", message: "Invalid email address", source: "builtin" }]
+  }
+}
+```
+
+It extends `ClientError` (its `key` is the route key). Each issue is
+bun-contract's `{ target, message, path }` (with `key`, the status, on a
+response), plus `source`: `"builtin"` or `"custom"`. `target` is `params`,
+`query`, `body`, `headers` or `response`. No issue quotes the value it is
+about: a vendor message that does is replaced by `Invalid value`, as the
+server does.
+
+### The generated zod module (`/zod`)
+
+`bun-client generate --zod <file>` writes, beside the map, a module of
+runtime zod schemas from the same document: `zod/mini` by default (a third of
+classic zod's size, and no `new Function`, so it runs under a CSP without
+`'unsafe-eval'`), classic `zod` with `--zod-flavour classic`. `zod` (`^4`) is
+an optional peer: only that module and the `@kingsleyweb/bun-client/zod`
+entry (`schemasFromZod`, which keys the schemas by the route map and checks
+they are zod's) import it, and only as the app loads the module.
+
+```ts
+// src/api.zod.gen.ts (generated)
+import { schemasFromZod } from "@kingsleyweb/bun-client/zod";
+import { z } from "zod/mini";
+import type { Routes } from "./api.gen";
+
+export const User: z.ZodMiniType = z.looseObject({
+  id: z.string(),
+  email: z.email(),
+  createdAt: z.iso.datetime({ offset: true }),
+});
+
+export const schemas = schemasFromZod<Routes>({
+  "GET /users/:id": {
+    params: z.looseObject({
+      id: z.string(),
+    }),
+    responses: {
+      200: User,
+      404: Problem,
+    },
+  },
+});
+```
+
+- **Objects are loose** (`z.looseObject`), requests included: a newer
+  server's extra field never fails a check, and the server is the authority
+  on unknown keys.
+- **Checked**: types, `enum` and `const`, required keys, arrays and tuples,
+  `oneOf`/`anyOf`/`allOf`, nullable; string lengths and `pattern`; the formats
+  `email`, `uuid` (zod's lenient `guid`), `date-time` (offsets allowed),
+  `date` and `uri`; number ranges and `multipleOf`; array lengths. Per route:
+  `params`, `query` and `headers` from the documented parameters, a JSON body,
+  and each status's JSON body (`z.string()` for text, `null` for none).
+- **Not checked**: a multipart or binary body, an event stream, a `default`
+  status; other keywords (the check is looser than the document, never
+  stricter). A keyword TypeScript cannot express either (`not`, `if`, …)
+  leaves its schema `z.unknown()`, listed under "Not checked" in the header.
+- **What JSON Schema loses** (plan §5.3): a `.refine()` or `.superRefine()`
+  on the server is dropped silently, so the generated check is weaker than
+  the server's with no warning possible; a `.transform()`'s output,
+  `z.custom()` and `z.date()` are `z.unknown()`. The server still validates:
+  the client's check exists to fail early and to catch drift. Put a
+  cross-field rule you want checked before sending in a BYO schema, or use
+  the server's own schemas.
+- `zod/mini` reports `Invalid input` for every issue until a locale is
+  loaded (`z.config(z.locales.en())`); the paths are there either way.
+- Components are exported, each after those it uses; a schema refers to
+  itself through `z.lazy`, a cycle through a small hoisted accessor. The file
+  is laid out as Prettier lays it out, so `bun fmt` leaves it unchanged.
+
 ## The query string
 
 The query is written so that bun-common's parser reads it back unchanged
@@ -447,8 +653,10 @@ because bun-common decodes encoded brackets before it parses.
 ## Packaging
 
 `lib/` ships as TypeScript source with built declarations in `dts/`, as every
-package in this repo does. The client has no runtime dependency. The
-generator is `./codegen` (Bun only) and the `bun-client` bin.
+package in this repo does. The client has one runtime dependency,
+`@kingsleyweb/bun-contract` (no dependencies of its own), imported only by
+the lazily loaded checks. `./zod` is the zod glue, with `zod` an optional
+peer. The generator is `./codegen` (Bun only) and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round
 trip, the shared backoff vector, the `RoutesOf` types and the generator's

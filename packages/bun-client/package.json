@@ -42,6 +42,11 @@
       "types": "./dts/codegen/index.d.ts",
       "default": "./lib/codegen/index.ts"
     },
+    "./zod": {
+      "@kingsleyweb/source": "./lib/zod.ts",
+      "types": "./dts/zod.d.ts",
+      "default": "./lib/zod.ts"
+    },
     "./lib/codegen": {
       "@kingsleyweb/source": "./lib/codegen/index.ts",
       "types": "./dts/codegen/index.d.ts",
@@ -96,10 +101,14 @@
     "format": "bun fmt",
     "format:check": "bun fmt --check"
   },
+  "dependencies": {
+    "@kingsleyweb/bun-contract": "^0.1.0"
+  },
   "peerDependencies": {
     "@kingsleyweb/bun-common": ">=2.2.0",
     "@types/bun": ">=1.4.2",
-    "typescript": "^5.9.3 || ^6.0.0"
+    "typescript": "^5.9.3 || ^6.0.0",
+    "zod": "^4"
   },
   "peerDependenciesMeta": {
     "@kingsleyweb/bun-common": {
@@ -109,6 +118,9 @@
       "optional": true
     },
     "typescript": {
+      "optional": true
+    },
+    "zod": {
       "optional": true
     }
   },

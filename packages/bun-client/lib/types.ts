@@ -7,6 +7,8 @@
  * `RoutesOf`; from PR-C2 the generator writes it from the OpenAPI document.
  * All three produce the same shape.
  */
+import type { StandardSchemaV1 } from "@kingsleyweb/bun-contract";
+import type { ValidationError } from "./errors";
 import type { Jsonify } from "./jsonify";
 import type { PathParamValue } from "./path";
 
@@ -489,6 +491,115 @@ export interface AuthConfig {
 }
 
 /**
+ * What a failed check does (§6.2): `"throw"` a {@link ValidationError};
+ * `"warn"` through the client's `logger` and carry on (send the request, or
+ * deliver the response as it arrived); or a hook, called with the error,
+ * which may throw it (or anything) to fail the call, and otherwise carries
+ * on as `"warn"` does, without the log line.
+ */
+export type FailureMode = "throw" | "warn" | ((error: ValidationError) => void);
+
+/**
+ * One part's validation (§5.4, §6.2): `true` runs the built-in schema,
+ * `false` turns the part off (a BYO schema included), or an object.
+ */
+export type PartValidation =
+  | boolean
+  | {
+      /** Run the built-in schema. Default: the level's `request`/`response` switch. */
+      enabled?: boolean;
+      /**
+       * A Standard Schema run after the built-in one (§5.4), on the built-in
+       * one's output when that passed and on the raw value when it failed,
+       * so both report at once. What it returns is what is sent (a request
+       * part) or delivered (a response). A set `custom` runs whatever the
+       * mode, unless a `false` at this level or a later one turns the part
+       * off. A later level's `custom` replaces an earlier one's. Default: none.
+       */
+      custom?: StandardSchemaV1;
+      /** Run `custom` instead of the built-in schema. Default: `false`. */
+      replace?: boolean;
+    };
+
+/**
+ * Validation switches and BYO schemas (§5.4–§5.5, §6.2), at any level of the
+ * configuration. Levels merge per key, later winning; a `false` (the whole
+ * object, `request`, `response` or a part) turns everything under it off,
+ * BYO schemas included, until a later level turns it back on.
+ */
+export interface ValidationConfig {
+  /**
+   * Every request part at once, before the parts' own entries at the same
+   * level: `true` runs their built-in schemas, `false` turns them off (BYO
+   * schemas included). Default: built-in schemas on in development, off in
+   * production ({@link ClientConfig.mode}).
+   */
+  request?: boolean;
+  /** Path parameters. Default: `request`. */
+  params?: PartValidation;
+  /** The query object, checked before it is serialised. Default: `request`. */
+  query?: PartValidation;
+  /** The body, checked before it is serialised. Default: `request`. */
+  body?: PartValidation;
+  /**
+   * The request's headers, by lower-case name, as they are sent (every
+   * level's, and the auth token's), on the first attempt. Checked, never
+   * transformed: a BYO schema's output is not applied to headers.
+   * Default: `request`.
+   */
+  headers?: PartValidation;
+  /**
+   * Response bodies: one switch for every status (`false` turns them off,
+   * BYO schemas included), or one entry per status (a status not listed
+   * keeps the earlier levels' setting). Default: built-in schemas on in
+   * development, off in production.
+   */
+  response?: boolean | { readonly [status: number]: PartValidation };
+  /**
+   * What a failure does, for both directions or each. Default:
+   * `{ request: "throw", response: "warn" }` (§5.5).
+   */
+  onFailure?:
+    | FailureMode
+    | {
+        /** For a request part. Default: `"throw"`. */
+        request?: FailureMode;
+        /** For a response. Default: `"warn"`. */
+        response?: FailureMode;
+      };
+}
+
+/**
+ * One route's runtime schemas (§5.1): any Standard Schema per request part,
+ * and the response body's per status (`null`: the status has no body). The
+ * generated `zod/mini` module (`bun-client generate --zod`) writes these, and
+ * so may a browser-safe module of the server's own schemas.
+ */
+export interface RouteSchemas {
+  /** The path parameters, as a call gives them (before they are encoded). */
+  readonly params?: StandardSchemaV1;
+  /** The query object, before it is serialised. */
+  readonly query?: StandardSchemaV1;
+  /** The request headers, by lower-case name. */
+  readonly headers?: StandardSchemaV1;
+  /** The request body, before it is serialised. */
+  readonly body?: StandardSchemaV1;
+  /** Response bodies by status, after JSON; `null`: no body. A status not listed is not checked. */
+  readonly responses?: { readonly [status: number]: StandardSchemaV1 | null };
+}
+
+/**
+ * Where the built-in schemas come from (§5.1, §5.2): a module exporting
+ * `schemas`, one {@link RouteSchemas} per route key. Usually given as
+ * `() => import("./api.zod.gen")`, so the schemas (and zod) load only when a
+ * check first needs them.
+ */
+export interface SchemaSource<R> {
+  /** The schemas, keyed like the route map. */
+  readonly schemas: { readonly [K in keyof R]?: RouteSchemas };
+}
+
+/**
  * Per-route overrides (§6.2): the subset of {@link ClientConfig} that makes
  * sense for one route. `throwOnError` and `undeclaredStatus` are not here:
  * they decide a call's return type, which the client's type argument and
@@ -503,6 +614,11 @@ export interface RouteConfig {
   retry?: RetryConfig | false;
   /** Middleware for this route, inside the client's. Default: none. */
   middleware?: readonly ClientMiddleware[];
+  /**
+   * Validation for this route, merged per key over the client's (§6.2);
+   * `false` turns it all off, BYO schemas included. Default: the client's.
+   */
+  validate?: ValidationConfig | false;
 }
 
 /** Per-call options beside the typed parts (§6.2): the route subset again, plus a signal. */
@@ -550,7 +666,27 @@ export interface ClientConfig<R = Record<string, RouteEntry>> {
   middleware?: readonly ClientMiddleware[];
   /** Token and refresh. Default: none. */
   auth?: AuthConfig;
-  /** Where warnings and retry notes go. Default: `console`. */
+  /**
+   * Which defaults apply (§5.5): `"development"` turns validation on,
+   * `"production"` off. Default: `"production"` when
+   * `process.env.NODE_ENV === "production"` (read as a bundler replaces it;
+   * where there is no `process`, `"development"`), else `"development"`.
+   */
+  mode?: "development" | "production";
+  /**
+   * The built-in runtime schemas (§5.1): the generated module
+   * (`bun-client generate --zod`) or a browser-safe module of the server's
+   * own, given as a function so they load on first use:
+   * `() => import("./api.zod.gen")`. Default: none, so only BYO schemas run.
+   */
+  schemas?: SchemaSource<R> | (() => Promise<SchemaSource<R>>);
+  /**
+   * Validation switches, failure modes and BYO schemas for every route;
+   * `false` turns it all off. Validation code (bun-contract's guards) is
+   * loaded only when a check runs. Default: see {@link ValidationConfig}.
+   */
+  validate?: ValidationConfig | false;
+  /** Where warnings (a response failing validation under `"warn"`) and retry notes go. Default: `console`. */
   logger?: Pick<Console, "warn" | "error" | "debug">;
   /** Per-route overrides, keyed like the map. Default: none. */
   routes?: { [K in keyof R]?: RouteConfig };

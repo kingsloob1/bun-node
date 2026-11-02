@@ -232,6 +232,84 @@ describe("--check", () => {
   });
 });
 
+describe("--zod (PR-C4)", () => {
+  it("writes the zod module beside the map, importing it relatively (the corpus golden, both flavours)", async () => {
+    for (const flavour of ["mini", "classic"]) {
+      const result = await run(
+        "generate",
+        "--openapi",
+        "openapi.json",
+        "--out",
+        "zod/corpus.gen.ts",
+        "--zod",
+        `zod/corpus.zod-${flavour}.gen.ts`,
+        "--zod-flavour",
+        flavour,
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain(`wrote zod/corpus.zod-${flavour}.gen.ts`);
+      expect(result.stderr).toContain("bun-client generate --zod: 5 warnings");
+      expect(
+        await readFile(join(dir, `zod/corpus.zod-${flavour}.gen.ts`), "utf8"),
+      ).toBe(
+        await Bun.file(join(FIXTURES, `corpus.zod-${flavour}.gen.ts`)).text(),
+      );
+    }
+    // mini is the default.
+    const plain = await run(
+      "generate",
+      "--openapi",
+      "openapi.json",
+      "--out",
+      "zod/corpus.gen.ts",
+      "--zod",
+      "zod/default.gen.ts",
+    );
+    expect(plain.code).toBe(0);
+    expect(await readFile(join(dir, "zod/default.gen.ts"), "utf8")).toBe(
+      await Bun.file(join(FIXTURES, "corpus.zod-mini.gen.ts")).text(),
+    );
+    // A zod module in another directory imports the map relatively.
+    await run(
+      "generate",
+      "--openapi",
+      "openapi.json",
+      "--out",
+      "zod/corpus.gen.ts",
+      "--zod",
+      "zod/schemas/api.ts",
+    );
+    expect(await readFile(join(dir, "zod/schemas/api.ts"), "utf8")).toContain(
+      'import type { Routes } from "../corpus.gen";',
+    );
+  });
+
+  it("--check covers the zod module: fresh exits 0, a stale or missing one exits 1 (control: the map alone is fresh)", async () => {
+    const args = [
+      "generate",
+      "--openapi",
+      "openapi.json",
+      "--out",
+      "zodcheck/api.gen.ts",
+      "--zod",
+      "zodcheck/api.zod.gen.ts",
+    ];
+    expect((await run(...args)).code).toBe(0);
+    expect((await run(...args, "--check")).code).toBe(0);
+    await writeFile(join(dir, "zodcheck/api.zod.gen.ts"), "// stale\n");
+    const stale = await run(...args, "--check");
+    expect(stale.code).toBe(1);
+    expect(stale.stdout).toContain("zodcheck/api.gen.ts is up to date");
+    expect(stale.stderr).toContain("zodcheck/api.zod.gen.ts is stale");
+    await rm(join(dir, "zodcheck/api.zod.gen.ts"));
+    expect((await run(...args, "--check")).stderr).toContain(
+      "zodcheck/api.zod.gen.ts does not exist",
+    );
+    // Control: without --zod, the map alone is checked, and is fresh.
+    expect((await run(...args.slice(0, 5), "--check")).code).toBe(0);
+  });
+});
+
 describe("--url", () => {
   /** A server answering `/doc` with the corpus, `/types` with the dev endpoint's shape, `/yaml` with YAML. */
   const documents = async () => {
@@ -422,11 +500,53 @@ describe("usage", () => {
       2,
       "--export goes with --module",
     ],
-    [["generate", "--openapi", "openapi.json", "--zod", "z.ts"], 2, "PR-C4"],
+    [
+      ["generate", "--openapi", "openapi.json", "--zod", "z.ts"],
+      2,
+      "--zod needs --out",
+    ],
+    [
+      ["generate", "--openapi", "openapi.json", "--zod-flavour", "mini"],
+      2,
+      "--zod-flavour goes with --zod",
+    ],
+    [
+      [
+        "generate",
+        "--openapi",
+        "openapi.json",
+        "--out",
+        "a.ts",
+        "--zod",
+        "z.ts",
+        "--zod-flavour",
+        "max",
+      ],
+      2,
+      '--zod-flavour is "mini" or "classic", not "max"',
+    ],
+    [
+      [
+        "generate",
+        "--openapi",
+        "openapi.json",
+        "--out",
+        "a.ts",
+        "--zod",
+        "a.ts",
+      ],
+      2,
+      "--zod names the same file as --out",
+    ],
     [["generate", "--bogus"], 2, "Unknown option"],
     [["watch"], 2, "--out is required"],
     [["watch", "--out", "a.ts", "--url", "not a url"], 2, "is not a URL"],
-    [["watch", "--out", "a.ts", "--zod", "z.ts"], 2, "PR-C4"],
+    [
+      ["watch", "--out", "a.ts", "--zod", "z.ts", "--zod-flavour", "x"],
+      2,
+      '--zod-flavour is "mini" or "classic", not "x"',
+    ],
+    [["watch", "--out", "a.ts", "--zod", "a.ts"], 2, "the same file as --out"],
     [["watch", "--out", "a.ts", "--check"], 2, "Unknown option"],
     [
       ["generate", "--openapi", "openapi.json", "--token-file", "t.json"],

@@ -4,6 +4,7 @@
  * surfaces as the platform's `AbortError` (the signal's reason), unchanged,
  * so `signal.reason` checks keep working.
  */
+import type { ValidationIssue } from "@kingsleyweb/bun-contract";
 import type { Jsonify } from "./jsonify";
 import type { ErrorStatus, ResponsesOf } from "./types";
 
@@ -110,5 +111,56 @@ export class TimeoutError extends ClientError {
     super(`${key ?? "Request"} timed out after ${timeout} ms`, { key });
     this.name = "TimeoutError";
     this.timeout = timeout;
+  }
+}
+
+/**
+ * One issue of a {@link ValidationError}: bun-contract's issue shape (the
+ * one the server's checks report: `target`, `message`, `path`, and `key`,
+ * the status, on a response), plus which check found it.
+ */
+export interface ValidationErrorIssue extends ValidationIssue<
+  "params" | "query" | "body" | "headers" | "response"
+> {
+  /** `"builtin"`: the route's built-in schema; `"custom"`: a BYO schema (§5.4). */
+  source: "builtin" | "custom";
+}
+
+/**
+ * A request or a response failed validation (§5.4). Thrown before the
+ * request is sent (a request part, by default) or, under `"throw"`, when a
+ * response arrives; under `"warn"` it is only logged, and a hook receives it.
+ * Every issue of the call is in it at once, the built-in ones first. No
+ * issue carries a value: messages that quote what was checked are replaced
+ * (bun-contract's rule, the server's too).
+ */
+export class ValidationError extends ClientError {
+  /** `"request"`: a part about to be sent; `"response"`: a body that arrived. */
+  readonly direction: "request" | "response";
+  /** The response's status; `undefined` for a request. */
+  readonly status: number | undefined;
+  /** Every issue, the built-in schema's first, then the BYO schema's. */
+  readonly issues: readonly ValidationErrorIssue[];
+
+  constructor(
+    key: string,
+    direction: "request" | "response",
+    issues: readonly ValidationErrorIssue[],
+    status?: number,
+  ) {
+    const summary = issues
+      .map(
+        (issue) =>
+          `${issue.target}${issue.path ? `.${issue.path}` : ""}: ${issue.message}`,
+      )
+      .join("; ");
+    super(
+      `${key} ${direction === "request" ? "request" : `response ${status}`} failed validation: ${summary}`,
+      { key },
+    );
+    this.name = "ValidationError";
+    this.direction = direction;
+    this.status = status;
+    this.issues = issues;
   }
 }
