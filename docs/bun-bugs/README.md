@@ -9,6 +9,7 @@ it and the test that guards it.
 
 | Report | Bun | Upstream | Worked around in |
 |---|---|---|---|
+| [`bun --hot` misses an atomic save of an entry file outside the working directory](./hot-misses-rename-outside-cwd.md) | 1.4.4-canary.1 | [#47787](https://github.com/oven-sh/bun/issues/47787) | bun-common's `hotChild.ts` test helper and README |
 | [A served HEAD response loses the implicit `Content-Type` its GET gets](./head-response-loses-implicit-content-type.md) | 1.4.2 | [#46337](https://github.com/oven-sh/bun/issues/46337) | `BunResponse` `#respondToHead` |
 | [`new Response(string).headers` has no `Content-Type`](./response-headers-miss-body-content-type.md) | 1.4.2 | not filed | `toFetchResponse` (socket-free `fetch()`) |
 | [`console.log` / `Bun.inspect` print an object's non-enumerable properties](./inspect-shows-non-enumerable-properties.md) | 1.4.2 | not filed | `defineHidden` (`err.req`), partially: Errors only |

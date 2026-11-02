@@ -32,6 +32,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [BunHttpAdapter](#bunhttpadapter)
     - [Adapter options](#adapter-options)
     - [Listening and closing](#listening-and-closing)
+    - [`bun --hot`](#bun---hot)
     - [Native static routes](#native-static-routes-serverroutes)
     - [Not-found and error handlers](#not-found-and-error-handlers)
     - [Testing without a socket](#testing-without-a-socket)
@@ -730,6 +731,41 @@ Example tours:
 Examples:
 [`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts),
 [`shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/shutdown.ts) (the drain, `closeDrainTimeout`, `drainAndStop()`).
+
+#### `bun --hot`
+
+An adapter app runs under `bun --hot` as it is. On an edit Bun re-evaluates
+the modules and keeps the process, so the module calls `listen()` again while
+the first server is still bound. Bun keys each `Bun.serve()` server by an
+`id`, by default its address: `[http]-tcp:<hostname>:<port>`, or
+`[http]-unix:<path>`. Under `--hot`, a `Bun.serve()` whose `id` is taken
+reloads that server instead of binding again. The adapter passes no `id`, so
+the re-evaluated `listen()` reloads the running server with the new routes,
+error handlers and WebSocket handlers. The port stays the same, open
+WebSockets stay open and reach the new handlers, and there is no
+`EADDRINUSE`. Outside `--hot`, nothing changes: a busy port still rejects.
+
+- **Port `0`** is part of the default `id`, so a re-evaluated `listen(0)`
+  keeps the port it was given.
+- **Two servers on one address are one server under `--hot`**, port `0`
+  included. A second `listen()` on the same address in the same process
+  takes the first server over instead of failing (Bun's design,
+  oven-sh/bun#7207). To keep two adapters apart (an app and a metrics
+  server, both on port `0`), give each a name:
+  `new BunHttpAdapter(0, { server: { id: "metrics" } })`.
+- **`server: { id: null }`** turns the reuse off: a re-evaluated `listen()`
+  then fails with `EADDRINUSE`.
+- `close()` still force-stops the server, and a later `listen()` binds
+  afresh.
+- The old evaluation's timers and listeners keep running: `--hot` does not
+  dispose them (oven-sh/bun#8963). Keep them on `globalThis`, or clear them
+  yourself.
+- Bun 1.4.4 misses an editor's atomic save (a temporary file renamed over
+  the source) when the file is outside the working directory
+  (oven-sh/bun#47787), so start `bun --hot` from the project root.
+
+bun-nest's adapter behaves the same, with `app.listen()` on a port or a
+unix socket path.
 
 #### Not-found and error handlers
 
@@ -2697,13 +2733,16 @@ own `authorize`; the dev endpoint never replaces them.
   `::`) is written as `127.0.0.1`.
 - **`bun --hot`.** The token, the watchers and the last hash announced live on
   `globalThis`, keyed by `path`: a re-evaluated module's `devTypes()` takes
-  over, rebuilds, and announces its hash on the sockets already open. So there
-  is one dev sync per `path` per process. The takeover needs a server that
-  survives the re-evaluation (a `Bun.serve()` kept on `globalThis` and
-  `server.reload()`ed); a `BunHttpAdapter` whose module calls `listen()` again
-  under `--hot` fails with `EADDRINUSE` (measured on Bun 1.4.4-canary), so run
-  an adapter app with `bun --watch`, where the restarted server writes a fresh
-  token file and the watcher reconnects.
+  over, rebuilds, and announces a changed hash on the sockets already open as
+  soon as its app listens (`listening`, or `dev.listening(server)`), without
+  waiting for the 100 ms poll. So there
+  is one dev sync per `path` per process. The server survives the
+  re-evaluation too: a `BunHttpAdapter` whose module calls `listen()` again,
+  like a bare `Bun.serve()` on the same address, reloads the running server
+  (see [`bun --hot`](#bun---hot)). So an open watcher stays connected and gets
+  `changed` with the edited app's hash, and the token file keeps its token.
+  Under `bun --watch` the process restarts instead: the new server writes a
+  fresh token file, and the watcher reconnects.
 
 ### CORS
 

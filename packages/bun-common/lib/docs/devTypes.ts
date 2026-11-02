@@ -46,11 +46,12 @@
  * **`bun --hot`.** The token, the connected watchers and the last announced
  * hash live on `globalThis`, keyed by `path`, so a re-evaluation keeps them:
  * the new `devTypes()` takes over, rebuilds and announces the new hash on
- * the open sockets. One dev sync per `path` per process, therefore — a second
+ * the open sockets as soon as its app listens (or `listening()` is called),
+ * without waiting for the poll. One dev sync per `path` per process, therefore — a second
  * `devTypes()` on the same path takes over the first's watchers. (The server
- * must survive the re-evaluation, a `Bun.serve()` `reload()`ed; a
- * `BunHttpAdapter` that calls `listen()` again fails with `EADDRINUSE`, so an
- * adapter app runs under `bun --watch`.)
+ * survives the re-evaluation: under `--hot`, a `BunHttpAdapter` that calls
+ * `listen()` again, like a bare `Bun.serve()` on the same address, reloads
+ * the running server, which Bun finds by its address-derived `id`.)
  */
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { Buffer } from "node:buffer";
@@ -681,7 +682,9 @@ export function devTypes(
   };
   // The latest devTypes() on a path answers for it: what a `bun --hot`
   // re-evaluation needs. Its first build is compared with the hash the
-  // previous instance announced, so the open watchers hear of the change.
+  // previous instance announced, so the open watchers hear of the change:
+  // when the re-evaluated app listens (`listening()` below), or at the next
+  // poll for one that never does.
   hub.owner = instance;
   if (hub.sockets.size > 0) startPoll(hub);
 
@@ -845,6 +848,15 @@ export function devTypes(
   };
 
   const listening = (server: DevTypesServer): void => {
+    // A `bun --hot` takeover: the re-evaluated app is complete once it
+    // listens (its routes are registered before), so the open watchers hear
+    // of a moved hash now rather than at the next poll, up to `POLL_MS`
+    // later. `refresh()` announces only a hash that differs.
+    if (hub.owner === instance && hub.sockets.size > 0) {
+      instance.refresh().catch((error: unknown) => {
+        instance.fail("devTypes(): rebuilding the documents failed", error);
+      });
+    }
     if (tokenFileTemplate === false) return;
     const port = server.port;
     if (port === undefined || !Number.isInteger(port) || port <= 0) return;

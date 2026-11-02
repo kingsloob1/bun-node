@@ -1042,6 +1042,14 @@ it.
     So **`app.listen()` rejects with the bind error**, as with
     `@nestjs/platform-express`.
 - **Emits** `listening` with the server on `adapter.eventEmitter`.
+- **`bun --hot`.** The app runs under `bun --hot` as it is. A re-evaluated
+  module's new app calls `app.listen()` on the same port or socket path, and
+  that reloads the running server with the new app's handlers instead of
+  failing with `EADDRINUSE`. Bun finds the server by an `id` derived from
+  its address. Two adapters on one address in one process share a server
+  under `--hot`, port `0` included; give each a `server: { id }` adapter
+  option to keep them apart. The rest is in bun-common's
+  [`bun --hot`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#bun---hot) section.
 
 `close()` drains, as `@nestjs/platform-express` 12 does: it stops accepting
 connections (idle keep-alive connections close at once), lets the requests in
