@@ -1,5 +1,5 @@
 /**
- * How the declarations build finds imports, and that its four copies agree.
+ * How the declarations build finds imports, and that its copies agree.
  *
  * `scripts/build-declarations.ts` verifies that no published declaration
  * imports a package a consumer may not have. It used to find imports by
@@ -14,7 +14,8 @@
  */
 
 import type { Manifest } from "../scripts/build-declarations";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -281,6 +282,16 @@ describe("rewrite, on the parsed specifiers", () => {
   });
 });
 
+/** Every other published package, each with its own copy of the recipe's files. */
+const PUBLISHED = [
+  "bun-contract",
+  "bun-nest",
+  "bun-jobs",
+  "bun-jobs-ui",
+  "bun-api-docs-ui",
+  "bun-cache",
+];
+
 describe("build-declarations copies", () => {
   // CLAUDE.md, "Packaging types": the recipe's script is copied unchanged into
   // every published package. A fix made to one copy must reach all of them.
@@ -289,18 +300,35 @@ describe("build-declarations copies", () => {
       join(ROOT, "scripts/build-declarations.ts"),
       "utf8",
     );
-    for (const pkg of [
-      "bun-nest",
-      "bun-jobs",
-      "bun-jobs-ui",
-      "bun-api-docs-ui",
-      "bun-cache",
-    ]) {
+    for (const pkg of PUBLISHED) {
       const theirs = await readFile(
         join(ROOT, "..", pkg, "scripts/build-declarations.ts"),
         "utf8",
       );
       expect({ pkg, same: theirs === mine }).toEqual({ pkg, same: true });
     }
+  });
+
+  // The recipe's other copied file, under the same rule.
+  it("has a byte-identical tsconfig.build.json in every published package", async () => {
+    const mine = await readFile(join(ROOT, "tsconfig.build.json"), "utf8");
+    for (const pkg of PUBLISHED) {
+      const theirs = await readFile(
+        join(ROOT, "..", pkg, "tsconfig.build.json"),
+        "utf8",
+      );
+      expect({ pkg, same: theirs === mine }).toEqual({ pkg, same: true });
+    }
+  });
+
+  it("lists every package under packages/ that ships declarations", async () => {
+    const shipping = (await readdir(join(ROOT, "..")))
+      .filter(
+        (pkg) =>
+          pkg !== "bun-common" &&
+          existsSync(join(ROOT, "..", pkg, "scripts/build-declarations.ts")),
+      )
+      .sort();
+    expect(shipping).toEqual([...PUBLISHED].sort());
   });
 });

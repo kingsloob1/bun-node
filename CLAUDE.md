@@ -11,6 +11,10 @@ published packages under `packages/`:
   `BunRequest`, `BunResponse`, `BunRouter` (extends `@routejs/router`),
   `BunHttpAdapter`, `BunWebSocket`, and a multipart upload system
   (`lib/multipart/`).
+- **`@kingsleyweb/bun-contract`** — bun-common's contract core
+  (`defineTransport`, the guards, `describeContract`, channel contracts),
+  extracted with no dependency and browser-safe (typed-client PR-K);
+  bun-common depends on it and re-exports it as `./contract` unchanged.
 - **`@kingsleyweb/bun-nest`** — a NestJS adapter built on bun-common:
   `BunHttpAdapter` (extends NestJS `AbstractHttpAdapter`),
   `BunWebSocketAdapter`, file interceptors, decorators.

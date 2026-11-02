@@ -1,71 +1,15 @@
 /**
- * The transport-agnostic contract core (plan `docs/plans/bun-validate/` §4.1),
- * also published as the browser-safe subpath `@kingsleyweb/bun-common/contract`.
+ * The transport-agnostic contract core, published as the browser-safe
+ * subpath `@kingsleyweb/bun-common/contract`. It lives in
+ * `@kingsleyweb/bun-contract` since the typed-client plan's PR-K (§10.1):
+ * this entry re-exports that package's root unchanged, after installing
+ * bun-common's logger resolution (`./logger`), so a guard's `logger` option
+ * takes every logger bun-common does.
  *
- * Nothing under `lib/contract/` imports a Bun or Node API; its only imports
- * are the vendored Standard Schema types and bun-common's dependency-free
- * logger (`__tests__/contract/browserSafety.test.ts` checks a browser bundle
- * of this entry).
- *
- * Only the names approved for the package's entries are exported here: plan
- * §9's, and the types a transport author needs to name (the user's choice of
- * 2026-10-21). The remaining helpers stay internal, reachable only by deep
- * import.
+ * Browser-safe: bun-contract imports no Bun or Node API, and bun-common's
+ * logger is dependency-free (`__tests__/contract/browserSafety.test.ts`
+ * checks a browser bundle of this entry).
  */
-export {
-  type ContractDescription,
-  type ContractEntry,
-  describeContract,
-  mergeContracts,
-} from "./describe";
-export {
-  ContractError,
-  createReceiver,
-  createSender,
-  type Guard,
-} from "./guard";
-export { validateStandard } from "./issues";
-export {
-  type AnyContract,
-  type Carries,
-  CONTRACT,
-  type Contract,
-  type ContractDef,
-  type ContractEncoding,
-  type ContractKind,
-  type ContractMeta,
-  type ContractWire,
-  type GuardOptions,
-  type IssueContext,
-  type MediaMap,
-  type Policy,
-  type Received,
-  type Sent,
-  type Side,
-  type SideSpec,
-  type StandardOutcome,
-  type Transport,
-  type TransportSpec,
-  type ValidationIssue,
-  type WireInput,
-} from "./model";
-export { documented, recordOf } from "./schemas";
-export {
-  channelContract,
-  channelErrorFrame,
-  type ChannelContract,
-  type ChannelErrorCode,
-  type ChannelErrorFrame,
-  type ChannelMessage,
-  type ChannelMessages,
-  type ChannelMeta,
-  type ChannelRequestSchemas,
-  type ChannelSpec,
-  wsTransport,
-} from "./channel";
-export {
-  attachContract,
-  defineTransport,
-  forwardContract,
-  getContract,
-} from "./transport";
+import "./logger";
+
+export * from "@kingsleyweb/bun-contract";

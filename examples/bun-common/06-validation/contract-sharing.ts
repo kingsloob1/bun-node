@@ -331,8 +331,16 @@ checkEqual(
 
 /** bun-common's `lib/`, where the root entry resolves. */
 const LIB = dirname(Bun.resolveSync("@kingsleyweb/bun-common", here));
+/**
+ * `@kingsleyweb/bun-contract`'s `lib/`: the contract core itself, which
+ * bun-common's `/contract` entry re-exports. It has no dependency at all.
+ */
+const CONTRACT_LIB = dirname(Bun.resolveSync("@kingsleyweb/bun-contract", LIB));
 
-/** Bundles `entry` for a browser, recording every bun-common module it loads. */
+/**
+ * Bundles `entry` for a browser, recording every bun-common module it loads,
+ * and bun-contract's as `bun-contract:<file>`.
+ */
 async function browserBundle(entry: string) {
   const loaded: string[] = [];
   const result = await Bun.build({
@@ -345,7 +353,9 @@ async function browserBundle(entry: string) {
         name: "record-bun-common-modules",
         setup(build) {
           build.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, async (args) => {
-            if (args.path.startsWith(LIB))
+            if (args.path.startsWith(CONTRACT_LIB))
+              loaded.push(`bun-contract:${relative(CONTRACT_LIB, args.path)}`);
+            else if (args.path.startsWith(LIB))
               loaded.push(relative(LIB, args.path));
             return {
               contents: await Bun.file(args.path).text(),
@@ -365,15 +375,22 @@ async function browserBundle(entry: string) {
 /** bun-common modules a browser should not get: anything outside the contract core and its logger. */
 const serverModules = (loaded: readonly string[]): string[] =>
   loaded.filter(
-    (file) => !file.startsWith("contract/") && file !== "logging.ts",
+    (file) =>
+      !file.startsWith("bun-contract:") &&
+      !file.startsWith("contract/") &&
+      file !== "logging.ts",
   );
 
 const clientBundle = await browserBundle(join(here, "modules/posts-client.ts"));
-show("bun-common modules in the client's bundle", clientBundle.loaded);
+show(
+  "bun-common and bun-contract modules in the client's bundle",
+  clientBundle.loaded,
+);
 check("the client bundles for a browser", clientBundle.ok);
 check(
-  "…with bun-common's contract core in it",
-  clientBundle.loaded.includes("contract/guard.ts"),
+  "…with the contract core in it (bun-contract's, through bun-common's entry)",
+  clientBundle.loaded.includes("bun-contract:guard.ts") &&
+    clientBundle.loaded.includes("contract/index.ts"),
   clientBundle.loaded,
 );
 checkEqual(

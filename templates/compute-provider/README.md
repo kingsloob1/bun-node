@@ -28,11 +28,13 @@ The summon facet only: bun-jobs has no execute facet yet.
    `@kingsleyweb/bun-jobs` is on the registry: `overrides` points the install
    at the bun-node repo's own packages, and works only inside that repo.
    Until the packages are published, `@kingsleyweb/bun-jobs@2.2.x` cannot be
-   installed from a registry, so pack both from a checkout of bun-node and
-   point `overrides` at the tarballs:
+   installed from a registry, so pack them from a checkout of bun-node (with
+   `@kingsleyweb/bun-contract`, which bun-common depends on) and point
+   `overrides` at the tarballs:
 
    ```bash
    cd /path/to/bun-node && bun install
+   (cd packages/bun-contract && bun pm pack --destination /path/to/tarballs)
    (cd packages/bun-common && bun pm pack --destination /path/to/tarballs)
    (cd packages/bun-jobs && bun pm pack --destination /path/to/tarballs)
    ```
@@ -41,7 +43,8 @@ The summon facet only: bun-jobs has no execute facet yet.
    {
      "overrides": {
        "@kingsleyweb/bun-jobs": "file:/path/to/tarballs/kingsleyweb-bun-jobs-2.2.0.tgz",
-       "@kingsleyweb/bun-common": "file:/path/to/tarballs/kingsleyweb-bun-common-2.2.0.tgz"
+       "@kingsleyweb/bun-common": "file:/path/to/tarballs/kingsleyweb-bun-common-2.2.0.tgz",
+       "@kingsleyweb/bun-contract": "file:/path/to/tarballs/kingsleyweb-bun-contract-0.1.0.tgz"
      }
    }
    ```

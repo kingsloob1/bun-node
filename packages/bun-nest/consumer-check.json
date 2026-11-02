@@ -1,6 +1,7 @@
 {
   "$comment": "Import spellings a consumer of @kingsleyweb/bun-nest writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-nest` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has them, and every other entry in one that has none.",
   "workspaceDependencies": [
+    "packages/bun-contract",
     "packages/bun-common",
     "packages/bun-jobs",
     "packages/bun-cache"

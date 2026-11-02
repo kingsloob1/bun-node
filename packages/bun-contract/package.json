@@ -1,0 +1,101 @@
+{
+  "name": "@kingsleyweb/bun-contract",
+  "type": "module",
+  "version": "0.1.0",
+  "private": false,
+  "description": "The transport-agnostic contract core of the bun-* packages, with no dependencies and safe in a browser: transports and contracts over any Standard Schema, guards that check what a side sends or receives, contract descriptions and merges, and WebSocket channel contracts. Re-exported by @kingsleyweb/bun-common as ./contract",
+  "author": "okafor obinna <kingsloob1@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-contract#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsloob1/bun-node.git",
+    "directory": "packages/bun-contract"
+  },
+  "bugs": {
+    "url": "https://github.com/kingsloob1/bun-node/issues"
+  },
+  "keywords": [
+    "bun",
+    "contract",
+    "validation",
+    "standard-schema",
+    "typed-client",
+    "browser",
+    "websocket"
+  ],
+  "exports": {
+    ".": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib/*.ts": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*.js": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "lib/index.ts",
+  "types": "dts/index.d.ts",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "directories": {
+    "lib": "lib",
+    "test": "__tests__"
+  },
+  "files": [
+    "dts",
+    "lib"
+  ],
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "build:types": "bun scripts/build-declarations.ts",
+    "bun-version": "bun --version",
+    "prepack": "bun scripts/build-declarations.ts",
+    "test": "bun test --check --parallel --timings=bun-timings.json",
+    "test:serial": "bun test --check",
+    "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
+    "check": "bun check",
+    "lint": "bun lint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
+  },
+  "peerDependencies": {
+    "@types/bun": ">=1.4.2",
+    "typescript": "^5.9.3 || ^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/bun": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "bun-types": "^1.4.3",
+    "typescript": "^6.0.3"
+  }
+}

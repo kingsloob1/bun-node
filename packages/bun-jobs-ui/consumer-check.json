@@ -1,6 +1,10 @@
 {
   "$comment": "Import spellings a consumer of @kingsleyweb/bun-jobs-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-jobs-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. bun-jobs is a required peer whose types (JobsApi, ConfigError) the public surface uses, so it is packed alongside bun-common.",
-  "workspaceDependencies": ["packages/bun-common", "packages/bun-jobs"],
+  "workspaceDependencies": [
+    "packages/bun-contract",
+    "packages/bun-common",
+    "packages/bun-jobs"
+  ],
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-jobs-ui",

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/browserSafety.test.ts": 10,
+    "__tests__/core.test.ts": 9,
+    "__tests__/logger.test.ts": 8,
+    "__tests__/packaging.test.ts": 7
+  }
+}

@@ -1,0 +1,12 @@
+{
+  // Compiler options live in the repo root's `tsconfig.base.json`; see the note
+  // there for why. `types: ["bun"]` is for the tests and scripts: nothing in
+  // `lib/` imports Bun, so without it no project file would load Bun's types.
+  // `lib/` itself needs none (it declares the two host globals it uses), which
+  // the declaration build, run with no `types`, proves.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun"]
+  },
+  "include": ["./lib/**/*", "./__tests__/**/*", "./scripts/**/*"]
+}

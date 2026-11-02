@@ -333,6 +333,12 @@
       "browser": true
     },
     {
+      "$comment": "A deep path into the contract core, which moved to @kingsleyweb/bun-contract (typed-client PR-K): the module stays as a re-export, so the spelling keeps working.",
+      "spelling": "@kingsleyweb/bun-common/lib/contract/guard",
+      "values": ["createReceiver", "createSender", "ContractError"],
+      "browser": true
+    },
+    {
       "spelling": "@kingsleyweb/bun-common/lib/types/standardSchema",
       "types": ["StandardSchemaV1", "StandardTypedV1", "StandardJSONSchemaV1"],
       "browser": true
@@ -344,5 +350,5 @@
       "peers": ["@kingsleyweb/bun-api-docs-ui"]
     }
   ],
-  "workspaceDependencies": ["packages/bun-api-docs-ui"]
+  "workspaceDependencies": ["packages/bun-contract", "packages/bun-api-docs-ui"]
 }

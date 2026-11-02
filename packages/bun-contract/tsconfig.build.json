@@ -1,0 +1,28 @@
+{
+  // Declaration emit, driven by `scripts/build-declarations.ts` (never run
+  // `tsc -p` on this directly: raw `tsc` output keeps the sources'
+  // extensionless relative specifiers, which `node16` consumers cannot
+  // resolve; the script rewrites them).
+  //
+  // Everything else in the repo type-checks with `noEmit`. This is the one
+  // project that writes files, so it is its own config rather than a flag on
+  // `tsconfig.json`. Compiler options still come from `tsconfig.base.json`, so
+  // the declarations describe exactly the types `scripts/typecheck.ts` checks.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // `dts/` mirrors `lib/` one-to-one, so an `exports` pattern maps
+    // `./lib/*` to `./dts/*.d.ts` with a single `*`.
+    "rootDir": "./lib",
+    "declaration": true,
+    // Go-to-definition lands on the shipped `lib/**/*.ts`, not on a stub.
+    "declarationMap": true,
+    // Declarations only: Bun runs the shipped `.ts` sources directly.
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "./dts",
+    // `sourceMap` describes emitted JS, and there is none.
+    "sourceMap": false
+  },
+  // Only the shipped library; `__tests__/` and `scripts/` must not reach `dts/`.
+  "include": ["./lib/**/*"]
+}

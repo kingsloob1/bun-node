@@ -1,6 +1,6 @@
 {
   "$comment": "Import spellings a consumer of @kingsleyweb/bun-jobs writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-jobs` from the repo root. Every spelling here worked at some point; removing one hides a regression. `./api/contract` and `./remote` are the browser-safe entries: each is also checked with no ambient Node/Bun types and must not load any.",
-  "workspaceDependencies": ["packages/bun-common"],
+  "workspaceDependencies": ["packages/bun-contract", "packages/bun-common"],
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-jobs",

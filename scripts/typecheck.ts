@@ -40,6 +40,7 @@ import process from "node:process";
 
 /** Every tsconfig in the repo, as a path relative to the root. */
 export const PROJECTS = [
+  "packages/bun-contract/tsconfig.json",
   "packages/bun-common/tsconfig.json",
   "packages/bun-common/bench/tsconfig.json",
   "packages/bun-common/playground/tsconfig.json",

@@ -15,6 +15,7 @@
     "typecheck": "bun scripts/typecheck.ts"
   },
   "workspaces": [
+    "packages/bun-contract",
     "packages/bun-common",
     "packages/bun-nest",
     "packages/bun-jobs",
