@@ -21,6 +21,7 @@
 import type { Server } from "bun";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
@@ -1135,5 +1136,128 @@ describe("devTypes(): the token file", () => {
     } finally {
       await server.stop(true);
     }
+  });
+});
+
+describe("devTypes(): the token file and signals", () => {
+  const FIXTURE = join(import.meta.dir, "fixtures/devTypes.signal.fixture.ts");
+
+  /** Starts the fixture, resolves once it printed its `ready` line. */
+  async function start(mode: string) {
+    const child = Bun.spawn([process.execPath, FIXTURE], {
+      env: {
+        ...process.env,
+        MODE: mode,
+        TOKEN_FILE: join(scratch, "sig", "<port>.json"),
+      },
+      stdout: "pipe",
+      stderr: "inherit",
+    });
+    const reader = child.stdout.getReader();
+    let text = "";
+    while (!text.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`fixture exited early: ${text}`);
+      text += new TextDecoder().decode(value);
+    }
+    reader.releaseLock();
+    const [, file, listeners] = text.trim().split(" ");
+    return { child, file, listeners: Number(listeners) };
+  }
+
+  for (const [signal, code] of [
+    ["SIGTERM", 143],
+    ["SIGINT", 130],
+  ] as const) {
+    it(`${signal} removes the token file and the process still exits ${code}`, async () => {
+      const { child, file } = await start("plain");
+      try {
+        expect(await Bun.file(file).exists()).toBe(true);
+        child.kill(signal);
+        expect(await child.exited).toBe(code);
+        expect(await Bun.file(file).exists()).toBe(false);
+      } finally {
+        child.kill("SIGKILL");
+      }
+    });
+  }
+
+  it("control: SIGKILL (no hook can run) leaves the file, so the checks above are the hook's doing", async () => {
+    const { child, file } = await start("plain");
+    child.kill("SIGKILL");
+    await child.exited;
+    expect(await Bun.file(file).exists()).toBe(true);
+  });
+
+  it("an app with its own SIGTERM listener decides: it runs, exits 7, and the exit hook removes the file", async () => {
+    const { child, file } = await start("own");
+    try {
+      expect(await Bun.file(file).exists()).toBe(true);
+      child.kill("SIGTERM");
+      expect(await child.exited).toBe(7);
+      expect(await Bun.file(file).exists()).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
+  it("installs no signal listener when no token file is written", async () => {
+    const written = await start("plain");
+    const none = await start("nofile");
+    try {
+      // The app's own listener count: the hook's one, or none.
+      expect(written.listeners).toBe(1);
+      expect(none.listeners).toBe(0);
+      expect(none.file).toBe("-");
+    } finally {
+      written.child.kill("SIGKILL");
+      none.child.kill("SIGKILL");
+    }
+  });
+
+  it("close() removes the listeners it installed", async () => {
+    const before = process.listenerCount("SIGTERM");
+    const adapter = makeAdapter();
+    const dev = devTypes(adapter, {
+      enabled: true,
+      path: uniquePath(),
+      tokenFile: tokenFileIn(scratch),
+    });
+    adapter.use(dev);
+    await adapter.listen(0);
+    expect(process.listenerCount("SIGTERM")).toBe(before + 1);
+    expect(process.listenerCount("SIGINT")).toBeGreaterThan(0);
+    await adapter.close();
+    expect(process.listenerCount("SIGTERM")).toBe(before);
+  });
+});
+
+describe("bun-common resolves @routejs/router from its own directory", () => {
+  /** Imports BunRouter in a child whose working directory is `cwd`. */
+  async function importIn(cwd: string) {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "--no-install",
+        "-e",
+        `const m = await import(${JSON.stringify(join(import.meta.dir, "../../lib/BunRouter.ts"))}); console.log(typeof m.BunRouter);`,
+      ],
+      { cwd, stdout: "pipe", stderr: "pipe" },
+    );
+    const [out, err, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { out: out.trim(), err, code };
+  }
+
+  it("loads from a working directory with no node_modules above it, and from one with an empty node_modules (what devTypes() creates)", async () => {
+    // The scratch directory is under the OS temp dir: no node_modules above it.
+    const bare = await importIn(scratch);
+    expect(bare).toMatchObject({ out: "function", code: 0 });
+    const empty = join(scratch, "empty-cwd");
+    mkdirSync(join(empty, "node_modules/.cache"), { recursive: true });
+    expect(await importIn(empty)).toMatchObject({ out: "function", code: 0 });
   });
 });

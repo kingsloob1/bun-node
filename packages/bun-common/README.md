@@ -2723,9 +2723,11 @@ so it is built to be absent unless every condition holds:
   (`tokenFile` moves it; `<port>` is replaced; `false` writes none), holding
   `{ url, ws, token, pid }`. It is written atomically (a temporary file
   renamed over it), mode `0600`, in a directory created `0700`, when the
-  server listens, and removed when it closes and at process exit — only while
-  it still holds this server's token. A process killed by a signal leaves it
-  behind; the next server on the port replaces it, and a watcher can tell a
+  server listens, and removed when it closes, at process exit and on `SIGTERM`
+  or `SIGINT` (the process still ends with that signal's exit code, 143 or 130,
+  unless the app has its own listener for it, which then decides) — only while
+  it still holds this server's token. A process killed by another signal
+  (`SIGKILL`, `SIGHUP`) leaves it behind; the next server on the port replaces it, and a watcher can tell a
   stale one by its `pid`.
 
 `docsRouter`'s public documents are a separate, production feature with your
