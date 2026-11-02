@@ -1,0 +1,19 @@
+# bun webrtc/spike.ts, three runs — 2026-11-02, node-datachannel 0.33.6, werift 0.26.0, zod 4.6.5; signalling over a real BunHttpAdapter defineChannel, trickle ICE (queued until the remote description), host candidates only
+bun 1.4.4 (11c367163), linux-x64
+globalThis.RTCPeerConnection: undefined, RTCDataChannel: undefined
+ndc-ndc        open   121 ms | 1000 checked msgs   19 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object ArrayBuffer]:5 | candidates refused: 0
+werift-werift  open   357 ms | 1000 checked msgs 1146 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object Uint8Array]:5 | candidates refused: 0
+ndc-werift     open   219 ms | 1000 checked msgs   20 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object Uint8Array]:5 | candidates refused: 5 (Failed to parse ICE candidate)
+signalling frames rejected by the channel: 0
+bun 1.4.4 (11c367163), linux-x64
+globalThis.RTCPeerConnection: undefined, RTCDataChannel: undefined
+ndc-ndc        open   123 ms | 1000 checked msgs   19 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object ArrayBuffer]:5 | candidates refused: 0
+werift-werift  open   358 ms | 1000 checked msgs 1140 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object Uint8Array]:5 | candidates refused: 0
+ndc-werift     open   215 ms | 1000 checked msgs   14 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object Uint8Array]:5 | candidates refused: 5 (Failed to parse ICE candidate)
+signalling frames rejected by the channel: 0
+bun 1.4.4 (11c367163), linux-x64
+globalThis.RTCPeerConnection: undefined, RTCDataChannel: undefined
+ndc-ndc        open   121 ms | 1000 checked msgs   19 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object ArrayBuffer]:5 | candidates refused: 0
+werift-werift  open   364 ms | 1000 checked msgs 1141 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object Uint8Array]:5 | candidates refused: 0
+ndc-werift     open   217 ms | 1000 checked msgs   13 ms | received 1000, rejected 2 [text: Too small: expected string to have >=1 characters; at: Invalid input: expected int, received number | : This type is not declared (chat, ping)] | sender guard refuses bad: true | binary: [object Uint8Array]:5 | candidates refused: 5 (Failed to parse ICE candidate)
+signalling frames rejected by the channel: 0

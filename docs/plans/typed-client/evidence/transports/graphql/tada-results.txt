@@ -1,0 +1,7 @@
+# bun graphql/tada.ts — 2026-11-02, Bun 1.4.4-canary.1+11c367163, tsc 6.0.3, gql.tada 1.11.4, graphql 17.0.2, linux-x64, through the heavy-run wrapper (slot), median of 3
+# T object types (8 fields, 2 relations each; a Query field and a list field per type), 50 operations with nested selections and variables
+T    sdl_KB  env_d.ts_KB  tsc: exit check_s  mem_MB  instantiations | bun --check: exit wall_ms
+50      9.5         77.2         0    2.48     524         1141257 |                0     345
+200    38.9        288.3         0    2.19     504         1142117 |                0     359
+
+# negative control: in out/tada-200/ops.ts, 'const n: number = r0.t0!.name' -> 'const n: string = …' makes its @ts-expect-error unused: bun --check TS2578 'Found 1 error'; restored -> clean

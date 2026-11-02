@@ -26,6 +26,27 @@ run from that directory because Bun reads decorator settings from the
 working directory's `tsconfig.json` (oven-sh/bun#28605, recorded in
 [`nest-jobs-decorators/README.md`](../nest-jobs-decorators/README.md) R3).
 
+### Status (2026-11-02): most of this is built, or no longer needed
+
+**Approved by the user on 2026-11-02** (TC §14 Q21, and §9.5's names);
+**nothing of what remains is built.** The next PRs are TC's PR-K, PR-M1 and
+PR-C1; this document's PR-N2 follows TC's PR-M2. Re-surveyed against
+`develop` at `e80ab379` (`file:line` there, relative to `packages/`) [S]. The body below is the 2026-10-10 design, kept for its
+reasons; this table is what holds now, and §9.3/§9.4 are revised to match.
+
+| Piece (section) | Now |
+|---|---|
+| `@Validate` as the typed-route decorator (§3.1, N-D1, AD (g)) | **built** as bun-validate V7a/V7b (#522, #523): `Validate` (`bun-nest/lib/validate.ts:1255`), `reply()` (`:1118`), `ResponseValidationInterceptor` (`:1158`), `responseOutput` (V13) |
+| `StandardSchemaPipe` (§4.1, N-D7) | **built** as V6 (#501): `bun-nest/lib/validation.ts:312`, with `StandardValidationPipe` (`:451`), `ValidationExceptionFilter` (`:680`), `StandardValidationModule` (`:850`) |
+| The explorer (§5, N-D3, N-D4, PR-N1) | **not needed for HTTP**: a `@Validate` contract is written as reflect metadata Nest copies onto the handler (`bun-common/lib/contract/transport.ts:228-248`, #538), so `listRoutes(adapter.instance)` and `generateOpenApi(adapter.instance)` see controller routes with their final paths (`bun-nest/__tests__/validateContractDocs.nest.test.ts:42-58`). The typed client reads that OpenAPI (TC D1). Routes documented only by `@nestjs/swagger` keep using swagger's own document, which the generator also reads (TC §3.2) |
+| Typed gateways (§7, N-D9, PR-N5) | **built** as V9 (#526): `@ValidateMessage(schema, { ack })`, `@Emits`, `TypedSocket` (`bun-nest/lib/wsValidation.ts:94-390`), exported from bun-nest's root, not `./typed`; documented by `gatewayAsyncApi()` (`bun-nest/lib/gateway-docs.ts:195`, AD (e) #539), which emits acks as replies (`:478-517`). The client side is TC [`websocket.md`](websocket.md) §11 (the `"bun-nest"` codec) |
+| `@Describe` (§3.2, N-D2) | **open**: needed only for TC's `errors` and `cache` fields on a controller (AD's Nest documentation path has no `.describe()`); proposed as a thin decorator writing `RouteDoc` |
+| `DevTypesModule` (§6, N-D6) | **open**, smaller: it mounts bun-common's `devTypes()` with `generateOpenApi(adapter.instance)` and `gatewayAsyncApi(app)` as its sources |
+| `@Invalidates`, `LiveModule` (§4.3, N-D8) | **open**: they publish to TC's live channel (`websocket.md` §9); bun-cache's Nest `CacheTags`/`BunCacheInterceptor` (#570) already carry tags for the HTTP cache, and `@Invalidates` reuses their vocabulary |
+| `ProblemDetailsFilter` | **dropped**: V6's `ValidationExceptionFilter` answers validation failures; other problems are the app's |
+| `validateTarget` in bun-common (§8) | **superseded** by `validateStandard` in the contract core (`bun-common/lib/contract/index.ts:27`) |
+| `@kingsleyweb/bun-nest/typed` (§8, N-D10) | **withdrawn** (TC §14 Q21, approved 2026-11-02): `Describe`, `DevTypesModule` and `Invalidates` ship from bun-nest's root |
+
 Markings as in TC: **[S]** source, **[M]** measured, **[V]** third party at a
 pinned version, **[I]** inference, **[U]** unverified, **[D]** decision.
 **AD** is [`api-docs-generation/README.md`](../api-docs-generation/README.md), **NJD** is
@@ -373,7 +394,7 @@ export class ChatGateway {
 - The explorer reads `GATEWAY_OPTIONS` (`"websockets:gateway_options"`) for
   `path` and `namespace`, `MESSAGE_METADATA` (`"message"`) for each handler,
   and `@Emits`, into TC's `ModelChannel` with `envelope: "bun-nest"`, so the
-  client's `api.channel()` speaks bun-nest's packet format (connect, event,
+  client's `channel()` speaks bun-nest's packet format (connect, event,
   ack) rather than bun-common's raw frames [S for the constants,
   `node_modules/@nestjs/websockets/constants.d.ts`; D for the rest].
 - Live invalidation does not need a gateway: it is §4.3's interceptor and
@@ -430,48 +451,47 @@ export class ChatGateway {
 | NR4 | **Decorator flags read from the cwd's tsconfig** (oven-sh/bun#28605): metadata silently absent | the explorer warns when a controller has `PATH_METADATA` but no method has `design:paramtypes`, naming the cause (NJD R3's bootstrap check) |
 | NR5 | **Swagger class DTOs** convert poorly | inline schemas and `@ApiProperty` classes only; the rest reported untyped (§5.4) |
 
-### 9.3 Open questions for the user
+### 9.3 Answered by the user, 2026-11-02
 
-1. **Build AD (g)'s `@Validate` as the typed-route decorator, rather than
-   relying on `@nestjs/swagger`?** **Recommended: yes** (N-D1). Without it a
-   Nest app's client has no response schemas for a Standard Schema.
-2. **Runtime discovery over nestia's transformer?** **Yes** (§5.2).
-3. **Mount the dev endpoint below Nest's pipeline, with bun-common's
-   implementation, rather than as a Nest controller?** **Yes** (N-D6, §4.2):
-   one implementation, and no app guard decides it.
-4. **Ship `StandardSchemaPipe` as a secondary tool?** **Yes**, documented as
-   such (§4.1).
-5. **Read `@nestjs/swagger` metadata for routes without `@Validate`?**
-   **Yes**, inline schemas and `@ApiProperty` classes (§5.4).
-6. **Typed gateways after TC PR-M4 and AD (e), not before?** **Yes** (§7).
+The 2026-10-10 questions 1, 4 and 6 were settled by what was built
+(`@Validate` V7a, `StandardSchemaPipe` V6, typed gateways V9); question 2 is
+moot, since no explorer is needed. What was left was TC §14 **Q21**,
+approved on 2026-11-02 with these answers:
+
+1. **The dev endpoint is mounted below Nest's pipeline with bun-common's
+   `devTypes()`**, not as a Nest controller. **Yes.**
+2. **The generator reads `@nestjs/swagger`'s document** for routes without
+   `@Validate`. **Yes.**
+3. **`Describe`, `DevTypesModule` and `Invalidates` ship from bun-nest's
+   root**, with no `./typed` subpath. **Yes.**
 
 ### 9.4 PR slicing and effort
 
+Revised 2026-11-02 (was ~13 d):
+
 | PR | What it ships | Depends on | Effort |
 |---|---|---|---|
-| **PR-N1** explorer | `TypedRoutesExplorer`: discovery, paths (prefix, versioning, `RouterModule`), the adapter cross-check, `@Validate`/pipe/swagger sources, TC's model and hash | AD (g), TC PR-M1 | ~3 d |
-| **PR-N2** `DevTypesModule` | `forRoot`, the production refusal, mounting `devTypes()` with the explorer as source, `DevTypesGuard` | PR-N1, TC PR-M2 | ~1.5 d |
-| **PR-N3** `@Describe`, `StandardSchemaPipe`, `validateTarget` | the prose decorator, the pipe, the shared core extracted in bun-common | AD (g) | ~2 d |
-| **PR-N4** `@Invalidates`, `LiveModule`, `ProblemDetailsFilter` | live invalidation from Nest | TC PR-M3 | ~2 d |
-| *PR-N5* typed gateways | `@ValidateMessage`, `@Emits`, `TypedSocket`, explorer channels | TC PR-M4, AD (e) | ~4.5 d (later) |
-| | **Total** | | **~13 d** |
+| ~~PR-N1 explorer~~ | not needed (Status) | — | — |
+| **PR-N2** `DevTypesModule` | `forRoot`, the production refusal, mounting bun-common's `devTypes()` with `generateOpenApi(adapter.instance)` and `gatewayAsyncApi(app)` as sources; a test that its documents equal a router app's for the same routes | TC PR-M2 | ~1.5 d |
+| **PR-N3** `Describe` | the prose decorator (TC's `errors`, `cache`), read by `generateOpenApi` through the same reflect-metadata path as `@Validate`'s contract | TC PR-M1 | ~1 d |
+| **PR-N4** `@Invalidates` | publishing a route's `invalidates` to TC's live channel after success, with `@CacheTags`' vocabulary | TC PR-W4 | ~1.5 d |
+| ~~PR-N5 typed gateways~~ | **built** (V9); the client codec is TC PR-W3 | — | — |
+| | **Total** | | **~4 d** |
 
 Examples: `examples/bun-nest/09-typed-client/` (a controller app, its
-generated client, the dev sync), reported to the examples agent with each
-PR.
+generated client, the dev sync, a gateway through the `"bun-nest"` codec),
+reported to the examples with each PR.
 
-### 9.5 Names needing approval
+### 9.5 Names (approved 2026-11-02)
+
+**Approved by the user, 2026-11-02**, withdrawals included. Built names (`Validate`, `StandardSchemaPipe`,
+`ValidateMessage`, `Emits`, `TypedSocket`, `gatewayAsyncApi`) are not
+repeated, and `validateTarget`, `DevTypesGuard`, `LiveModule`,
+`ProblemDetailsFilter` and the `./typed` subpath are withdrawn.
 
 | Name | Kind | Where |
 |---|---|---|
-| `@kingsleyweb/bun-nest/typed` | subpath | bun-nest |
-| `Describe` | decorator | `./typed` |
-| `StandardSchemaPipe` | pipe | `./typed` |
-| `validateTarget` | function | bun-common root |
-| `DevTypesModule` (`forRoot`: `enabled`, `path`, `token`, `allowRemote`, `commonResponses`) | module | `./typed` |
-| `DevTypesGuard` | guard | `./typed` |
-| `Invalidates` | decorator (interceptor) | `./typed` |
-| `LiveModule` (`forRoot`: `path`, `authorize`) | module | `./typed` |
-| `ProblemDetailsFilter` | exception filter | `./typed` |
-| `ValidateMessage`, `Emits`, `TypedSocket` | decorators, type | `./typed` (later) |
-| `bun:validate`, `bun:describe` | metadata keys | internal, but visible to `Reflect` |
+| `Describe` | decorator | bun-nest root |
+| `DevTypesModule` (`forRoot`: `enabled`, `path`, `token`, `allowRemote`, `openapi`, `asyncapi`) | module | bun-nest root |
+| `Invalidates` | decorator (interceptor) | bun-nest root |
+| `bun:describe` | metadata key | internal, but visible to `Reflect` |
