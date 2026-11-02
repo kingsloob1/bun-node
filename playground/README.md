@@ -17,6 +17,8 @@ PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow 
 PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
 bun playground/nest-gateway.ts                           # the validated Nest gateway (V9), on its own port (PORT_NEST, default 4001)
 bun playground/cache-smoke.ts                            # the cache lab's smoke check (see "The cache lab")
+bun playground/typed-client-smoke.ts                     # the typed client's smoke check (see "The typed client")
+cd playground && bun run check:client                    # the typed client's committed route map is fresh (bun run gen:client rewrites it)
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -49,6 +51,7 @@ can reach it, so never expose it.
 | `/playground/docs` | AD (c)'s `docsRouter`: the adapter's OpenAPI document as JSON (`/playground/docs/openapi.json`, re-generated live per request — the same one `/playground/openapi.json` shows with its warnings) plus a Redoc viewer page, and AD (e)'s AsyncAPI document of the chat channel (`/playground/docs/asyncapi.json`, its official-component viewer at `/playground/docs/asyncapi`); behind the playground's allow-everything auth, and hidden from the document itself |
 | `/playground/chat/:room` | a validated WebSocket chat channel (bun-validate V8's `defineChannel`, `chat.ts`), mounted with one `ws()` call: the upgrade's room name is checked against the channel's `request` schema (a bad one — `/playground/chat/Lobby` — is a 400, never a 101), every text frame is parsed and checked against its `type` (`say` with data, `typing` without; an invalid frame is answered with a value-free `VALIDATION` error frame, an unknown type with `UNKNOWN_MESSAGE`), and `send`/`publish` are typed and checked. It appears in `/playground/routes` as `GET /playground/chat/:room` with its `websocket` contract's rows; OpenAPI documents HTTP only, so each OpenAPI generation still collects one "skipped" warning for it — but the channel is fully present in the **AsyncAPI** document (`/playground/docs/asyncapi.json`: the `playground-chat` channel — its room parameter's checked schema as `x-bun-common-schema`, its frames as envelope payloads, the `say`→`said` reply, the implicit `error` frame). Poke it: `bunx wscat -c 'ws://localhost:4000/playground/chat/lobby?name=ada'`, then `{"type":"say","data":{"text":"hi"}}` |
 | `/playground/cache` | the bun-cache lab (`cache.ts`, see "The cache lab" below): routes behind `cacheResponse()` showing `X-Cache`, `Age` and timing, stale-while-revalidate and stale-if-error, invalidation by path and by tag, live `cache.stats()`, and one cache switchable between drivers, compression algorithms and an L1 tier. PR-C1's `getOrSet` demo stays on the same cache: `GET /playground/cache/report` (250 ms to build, cached 10 s with a 30 s stale window; its `cache` field says `miss`/`hit`/`stale`; ten at once build once), `GET /playground/cache/stats`, `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`). And the **at-rest** item, `/playground/cache/at-rest`: one value through an encrypted cache with `hashNames` on, as the store holds it beside what the cache answers (see "At rest" below) |
+| `/playground/client` | the typed client (`typed-client.ts`, see "The typed client" below): bun-client against a small API at `/playground/client/api`, its generated route map beside the OpenAPI document it came from, live typed calls (a 200, a narrowed 404, `api.op`, `throwOnError`, an undeclared status, a `Retry-After` retry, a timeout, middleware), validation both ways, the query layer (keys, `ETag`/304, `invalidates`, `Cache-Tag` tags), and a regenerate button with its diff. `/playground/client/__bun/types` is its `devTypes()` endpoint, for `bun-client watch` (development only, loopback, token) |
 | `/` | redirects to `/jobs` |
 
 **A validated Nest gateway, on its own port** (`nest-gateway.ts`, bun-validate
@@ -573,6 +576,94 @@ trips) the request right behind a `MISS` can miss too (the write never
 delays the response); the check waits up to 5 s for the `HIT` and reports
 how many such misses it saw.
 
+## The typed client
+
+`/playground/client` (`typed-client.ts`, the page in `typed-client-page.ts`)
+is `@kingsleyweb/bun-client` on the playground's adapter, against a small API
+of its own, `typed-client-api.ts`: a `defineRoutes` registry with zod
+schemas, in the shape of bun-client's codegen fixture app, mounted at
+`/playground/client/api`. Its route map is generated from the API's OpenAPI
+document and committed beside it, with the runtime zod schemas:
+
+```bash
+cd playground
+bun run gen:client     # bun-client generate --module typed-client-api.ts --out typed-client-api.gen.ts --zod typed-client-api.zod.gen.ts
+bun run check:client   # the same with --check: exit 1 when either file is stale (run it after changing the API)
+```
+
+The page shows the OpenAPI document beside `typed-client-api.gen.ts`, with
+its `typesHash` and warnings (none today) and the zod module under them.
+**Regenerate** (`POST /playground/client/regenerate`) runs `runCli` in process
+against the section's dev endpoint, the step `bun-client watch` runs on every
+change, and answers the diff against the committed file, beside
+`generate --module … --check`, the CI form.
+
+**The calls.** Each button runs one scenario on the server
+(`POST /playground/client/run/:scenario`), through
+`createClient<Routes>({ manifest, schemas: () => import("./typed-client-api.zod.gen"), mode: "development" })`
+over the adapter's socket-free `fetch()`. The code the page shows is read
+from `typed-client.ts` itself, between each scenario's `// #region`
+markers, so it is the code that ran, and its type assertions
+(`Equal<typeof r.error.code, "NOT_FOUND" | "GONE">`) are checked by
+`bun scripts/typecheck.ts`. Each answer has the outcome, every request the
+client's `fetch` sent (with `x-request-id`, `If-None-Match`, `Retry-After`,
+`ETag`, `X-Cache` and `Cache-Tag` where present, and when, from the
+scenario's start), what the API saw, and the client's warnings.
+
+| Scenario | What it shows |
+|---|---|
+| A 200 | a result discriminated by status: `r.ok`, then `r.data` typed from the generated `User` |
+| A 404 | `r.error.code` narrowed to `"NOT_FOUND" \| "GONE"`, the route's `x-bun-errors` |
+| `api.op` | calls by `operationId`; a 409 narrowed to `"CONFLICT"` |
+| `throwOnError` | the data itself on a 2xx; a declared error status throws `HttpError` |
+| An undeclared status | `GET /api/brew` declares a 200 and answers 418: `UnexpectedStatusError`, its body unread |
+| `Retry-After` | a ticket's first request is a 503 with `Retry-After: 1`; the retry is sent about a second later |
+| A timeout | a 2 s answer against `timeout: 250`: `TimeoutError` |
+| Middleware | one sets `x-request-id` (the API's log shows it) and logs; another answers a route itself, so nothing is sent |
+| A request that fails validation | the generated zod schema refuses the email: `ValidationError` before sending, and the API saw nothing |
+| A response that fails validation | `GET /api/drifted/:id` answers a `role` its schema refuses: one warning through the client's `logger`, and the body delivered as it arrived |
+| A query keyed by its route | `q.query()`'s `[routeKey, { params, query }]` and `meta.tags` (`user:42`, `users`), the data read back by the key |
+| `ETag` and 304 | the refetch sends `If-None-Match`; the 304 keeps the cached object, `dataUpdatedAt` moved |
+| A mutation's `invalidates` | `POST /api/users` invalidates `users`: the active list query refetches before the mutation settles (the scenario deletes the user it created, so the API keeps its seed) |
+| Tags from `Cache-Tag` | `GET /api/orgs/:id` is behind bun-cache's `cacheResponse({ surrogateKeys: "Cache-Tag" })` with `addCacheTags(res, "team:<team>")`; `invalidateTags(["team:blue"])` refetches org 7 and not org 8 |
+
+Each run gets a fresh `QueryClient`, with `staleTime: Infinity`, so only an
+invalidation or an explicit `staleTime: 0` refetches. The org route has a
+memory cache of its own (namespace `playground-client`), not the cache lab's,
+which a driver switch replaces and closes.
+
+**Watch it.** `devTypes()` serves the API's documents at
+`/playground/client/__bun/types` (and a change channel at `…/ws`), on unless
+`NODE_ENV=production`, to loopback peers only, behind a random bearer token
+it writes to its token file, the repository's
+`node_modules/.cache/bun-types/<port>.json`, mode `0600`, removed when the
+playground stops. It documents this API alone, as `--module` does
+(`{ title: "API", version: "1" }`), so `generate --url` gives the committed
+file byte for byte. The page prints the command, with the URL and the token
+file (never the token):
+
+```bash
+bunx bun-client watch --url http://127.0.0.1:4000/playground/client/__bun/types \
+  --token-file node_modules/.cache/bun-types/4000.json --out /tmp/playground-api.gen.ts
+```
+
+**Add a route** (`POST /playground/client/drift`) mounts
+`GET /api/users/:id/badge` at run time: the endpoint's hash moves, a running
+watcher rewrites its file with the new route, and Regenerate shows it as
+added lines. `--check` still exits 0, since the code did not change; a
+restart forgets the route.
+
+**The smoke check**, `bun playground/typed-client-smoke.ts`: checks that
+the committed files are fresh, starts the playground on `PORT=0`, runs every
+scenario and asserts its outcome, what was sent (statuses, headers, the
+retry's wait) and what the API saw; reads the dev endpoint without the token
+(404) and with it (`generate --url` equals the committed file), presses
+Regenerate (no diff, `--check` 0), runs `watch` in process, presses "add a
+route" and waits for the watcher's rewrite, presses Regenerate again (the
+watcher's hash, the route added, `--check` still 0), stops the watcher and
+then the playground with SIGINT, and checks that the token file is gone. 71
+checks, in about 13 seconds.
+
 ## Things to try
 
 - Open the Overview after a minute: Jobs, Queues, Runners and Workers all show real numbers over the range.
@@ -616,6 +707,8 @@ how many such misses it saw.
 - Connect two WebSocket clients to `/playground/chat/lobby?name=ada` and `?name=bob` (the banner's URL): ada's `{"type":"say","data":{"text":"hi"}}` reaches bob by `publish` and ada by `send`; `{"type":"say","data":{"text":42}}` is answered with a `VALIDATION` error frame whose issues never carry the bad value, and the socket stays open; `/playground/chat/Lobby` never upgrades (400).
 - Open `/playground/cache` and scroll to "At rest": the encrypted store's row is 32-hex names and a `BE` envelope, the plain store's the key, tags and value as written; write a key of your own and see `describeKey` name the new row. `GET /playground/cache/at-rest` is the same as JSON.
 - Open `/playground/cache`: GET item/1 twice (`MISS` in about 120 ms, then `HIT` in a few), invalidate tag `item:1`, GET again (`MISS`). GET swr, wait 2 s, GET twice (`STALE`, then `HIT` on build 2). Switch to `sqlite` with `br` and watch "Drivers opened this run" record the memory cache's removal.
+- Open `/playground/client`, run "A 404": the result's `code` is `NOT_FOUND`, and the code above it shows the type the playground's type check holds it to. Run "`Retry-After`" and read the sent timeline: the 503, then the retry a second later.
+- Start the `bun-client watch` command `/playground/client` prints, press "add a route" and watch its second line arrive with a new `typesHash`; press Regenerate for the diff.
 - `bun playground/nest-gateway.ts` beside the playground, then send it `{"type":2,"namespace":"/","data":["say",{"text":"hi"}],"id":1}`: a `said` event and the ack come back checked; `"data":["say",{"text":42}]` earns an `exception` frame, no ack.
 
 Ctrl+C stops it cleanly (it waits up to 2 s for a running report).

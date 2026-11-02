@@ -64,6 +64,7 @@ import { startFlows } from "./flows";
 import { startRunners } from "./runners";
 import { startSimulation } from "./simulation";
 import { createSummoning } from "./summoning";
+import { CLIENT_BASE, mountTypedClientDemo } from "./typed-client";
 
 /**
  * The port to listen on (`PORT`, default 4000; `PORT=0` picks a free one
@@ -163,6 +164,11 @@ summoning.mount(app);
 // and one cache switchable between drivers, compression and an L1 tier; plus
 // PR-C1's cached report (`/playground/cache/report`).
 const cacheDemo = await mountCacheDemo(app);
+// The typed client (`/playground/client`, typed-client.ts): bun-client
+// against a small API with its generated route map, live typed calls,
+// validation and the query layer, and a devTypes() endpoint for
+// `bun-client watch`.
+const typedClient = await mountTypedClientDemo(app);
 // The validated chat channel (bun-validate V8, chat.ts): one `ws()` call —
 // `app.ws(chat.path, chat.checks(), chat.handler(…), chat.options(…))` — at
 // `/playground/chat/:room`.
@@ -357,6 +363,7 @@ bun-node playground (${playgroundBackend()} driver)
   Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
   Cache lab     ${origin}/playground/cache  (bun-cache: cached routes with X-Cache HIT/MISS/STALE/BYPASS/UNCACHEABLE, Age and timing, SWR and stale-if-error, invalidation by path and tag, live stats; switch driver, compression, L1)
   Cache report  ${origin}/playground/cache/report  (PR-C1's getOrSet demo: a 250 ms report, cached 10 s + 30 s stale — fire ten at once, one build)
+  Typed client  ${origin}${CLIENT_BASE}  (bun-client: the generated route map beside its OpenAPI document, live typed calls, validation, the query layer; devTypes() for bun-client watch${typedClient.dev.token === undefined ? " — off under NODE_ENV=production" : ""})
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
@@ -390,6 +397,8 @@ async function shutdown(): Promise<void> {
     // Closes the cache and removes the data its current driver holds (the
     // drivers switched away from were cleaned at the switch).
     await cacheDemo.stop();
+    // Closes the API's cache and the dev endpoint, removing its token file.
+    await typedClient.stop();
     await api.close();
     await app.close();
     await jobs.close();
