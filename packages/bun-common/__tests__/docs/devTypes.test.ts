@@ -186,7 +186,11 @@ async function openWatcher(url: string, token: string | undefined) {
     headers: bearer(token),
     protocols: ["bun-types.v1"],
   });
-  const frames: { type: string; data?: Record<string, unknown> }[] = [];
+  const frames: {
+    type: string;
+    id?: string;
+    data?: Record<string, unknown>;
+  }[] = [];
   client.onmessage = (event) => {
     frames.push(
       JSON.parse(String(event.data)) as {
@@ -751,6 +755,15 @@ describe("devTypes(): the channel", () => {
       client.send(JSON.stringify({ type: "ping" }));
       await until(() => frames.length >= 2);
       expect(frames[1]).toEqual({ type: "hello", data: { version: 1, hash } });
+      // A ping with an id is answered with it (the channel's `replies`).
+      client.send(JSON.stringify({ type: "ping", id: "p-1" }));
+      await until(() => frames.length >= 3);
+      expect(frames[2]).toEqual({
+        type: "hello",
+        id: "p-1",
+        data: { version: 1, hash },
+      });
+      frames.splice(2, 1);
 
       adapter.get("/posts", (_req, res) => {
         res.json([]);

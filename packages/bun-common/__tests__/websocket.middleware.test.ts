@@ -9,13 +9,17 @@
  * the chain aside, and a re-registration revives them with the new call's
  * middleware and options.
  */
-import type { WebSocketClientData } from "../lib/BunWebSocket";
+import type {
+  BunWebSocketHandlerType,
+  WebSocketClientData,
+} from "../lib/BunWebSocket";
 import type { BunRequest } from "../lib/BunRequest";
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRouter } from "../lib/BunRouter";
 import { BunWebSocket } from "../lib/BunWebSocket";
+import { validate } from "../lib/BunValidate";
 import { defineChannel } from "../lib/channel";
 import { createTestLogger } from "../lib/logging";
 
@@ -499,7 +503,7 @@ describe("defineChannel: the one-call ws() form", () => {
       chat.checks(),
       chat.handler({
         say(ws, msg) {
-          chat.send(ws, "said", { by: "test", text: msg.text });
+          void chat.send(ws, "said", { by: "test", text: msg.text });
         },
       }),
       chat.options(),
@@ -532,6 +536,71 @@ describe("defineChannel: the one-call ws() form", () => {
       expect(
         (await fetch(`http://127.0.0.1:${port}/rooms/Bad-Room`)).status,
       ).toBe(404);
+    } finally {
+      await adapter.close();
+    }
+  });
+});
+
+describe("ws(): ws.data.valid carries what the chain's validators parsed", () => {
+  it("a validator in the chain: its parsed parts reach ws.data.valid; none: absent", async () => {
+    const adapter = newAdapter();
+    const seen: Record<string, unknown>[] = [];
+    const record: BunWebSocketHandlerType = {
+      open(ws) {
+        seen.push({ route: ws.data.route, valid: ws.data.valid });
+      },
+      message() {},
+    };
+    adapter.ws(
+      "/checked/:room",
+      validate({
+        params: z.object({ room: z.string() }),
+        query: z.object({ page: z.coerce.number() }),
+      }),
+      record,
+    );
+    adapter.ws("/plain", record);
+    // A hook's whole `data` keeps the chain's `valid` when it gives none.
+    adapter.ws(
+      "/replaced",
+      validate({ query: z.object({ n: z.coerce.number() }) }),
+      record,
+      {
+        onUpgrade: (req) => ({
+          data: {
+            host: req.host,
+            path: req.path,
+            search: req.search,
+            hash: "",
+            originalUrl: req.originalUrl,
+            headers: req.headersObj,
+            custom: undefined,
+          },
+        }),
+      },
+    );
+    const server = await adapter.listen(0);
+    try {
+      const base = `ws://127.0.0.1:${Number(server.port)}`;
+      for (const path of [
+        "/checked/lobby?page=2",
+        "/plain?page=2",
+        "/replaced?n=7",
+      ]) {
+        const before = seen.length;
+        const { client } = await openClient(`${base}${path}`);
+        await until(() => seen.length === before + 1);
+        client.close();
+      }
+      expect(seen).toEqual([
+        {
+          route: "/checked/:room",
+          valid: { params: { room: "lobby" }, query: { page: 2 } },
+        },
+        { route: "/plain", valid: undefined },
+        { route: "/replaced", valid: { query: { n: 7 } } },
+      ]);
     } finally {
       await adapter.close();
     }

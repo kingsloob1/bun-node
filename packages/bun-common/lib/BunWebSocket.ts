@@ -118,6 +118,14 @@ export interface WebSocketClientData<TCustom = unknown> {
    */
   params?: ParamsDictionary;
   /**
+   * The request parts a `validate()` middleware in the upgrade's chain
+   * parsed — `req.valid` at the upgrade, by target (`params`, `query`,
+   * `headers`, `cookies`, `signedCookies`), each the schema's output. A
+   * shallow copy. Absent when no validator ran: a `defineChannel` channel's
+   * `checks()` is what fills it for a channel's declared `request` side.
+   */
+  valid?: Record<string, unknown>;
+  /**
    * The port of the server that accepted the upgrade — the real bound port,
    * never `0`, even for a server started on port `0`. Lets a handler tell a
    * client of the shared HTTP server from one of a dedicated server on
@@ -156,7 +164,8 @@ export interface WebSocketUpgradeResult<TCustom = unknown> {
    * `webSocketUpgradeData` layer are discarded. Dispatch still needs `route`,
    * `params` and `port`, so each one this object leaves `undefined` is filled
    * in from the matched route (the route pattern, its params, and the
-   * accepting server's port) — a value given here is kept.
+   * accepting server's port) — a value given here is kept. `valid` (what the
+   * chain's validators parsed) is filled in the same way.
    */
   data?: WebSocketClientData<TCustom>;
 }
@@ -231,6 +240,20 @@ function acceptingPort(req: BunRequest): number | undefined {
   return typeof port === "number" && Number.isInteger(port) && port > 0
     ? port
     : undefined;
+}
+
+/**
+ * A shallow copy of what the validators ahead of the upgrade parsed
+ * (`req.valid`), or `undefined` when none ran. Read through the getter, which
+ * allocates an empty object on a request no validator touched — so an empty
+ * one counts as none.
+ */
+function validOf(req: BunRequest): Record<string, unknown> | undefined {
+  const parsed = req.valid as Record<string, unknown> | undefined;
+  if (parsed === undefined || Object.keys(parsed).length === 0) {
+    return undefined;
+  }
+  return { ...parsed };
 }
 
 /**
@@ -1172,6 +1195,9 @@ export class BunWebSocket<
         }
         // Whichever server built `req` — shared, standalone or extra-port.
         const port = acceptingPort(req);
+        // What a validator in the chain parsed (a channel's `checks()`):
+        // carried onto the socket, so a handler reads the parsed upgrade.
+        const valid = validOf(req);
 
         const defaults = upgradeRoute.defaultsFrom ?? this.router;
         const responseData = res.webSocketUpgradeData as
@@ -1187,6 +1213,9 @@ export class BunWebSocket<
             params: result.data.params ?? params,
             ...(result.data.port === undefined && port !== undefined
               ? { port }
+              : {}),
+            ...(result.data.valid === undefined && valid !== undefined
+              ? { valid }
               : {}),
           };
         } else {
@@ -1210,6 +1239,7 @@ export class BunWebSocket<
             route: path,
             params,
             port,
+            ...(valid === undefined ? {} : { valid }),
           };
         }
         if (result && Object.hasOwn(result, "custom")) {
