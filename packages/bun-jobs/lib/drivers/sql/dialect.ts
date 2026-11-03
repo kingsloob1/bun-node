@@ -140,6 +140,16 @@ export interface SqlDialect {
    * repeated `CREATE INDEX` without `IF NOT EXISTS` raises.
    */
   isDuplicateIndex: (error: unknown) => boolean;
+  /**
+   * Whether an error is another connection creating the same object at the
+   * same moment, which a repeated `CREATE … IF NOT EXISTS` then finds made.
+   * Postgres's `IF NOT EXISTS` is not atomic against itself: two sessions
+   * creating one table both pass the check, and the loser fails on the
+   * catalog's unique index (`23505` on `pg_type_typname_nsp_index`) or with
+   * `42710` (duplicate object). The other engines serialise DDL, so for them
+   * this is always `false`.
+   */
+  isConcurrentCreate: (error: unknown) => boolean;
   /** Drops an index. MySQL needs the table; the others do not. */
   dropIndex: (name: string, table: string) => string;
   /**
@@ -1366,6 +1376,8 @@ const postgres: SqlDialect = {
     `ALTER TABLE ${table} ${columns.map(postgresAlterClause).join(", ")}`,
   indexIfNotExists: true,
   isDuplicateIndex: (error) => hasErrorCode(error, ["42P07"]),
+  isConcurrentCreate: (error) =>
+    hasErrorCode(error, ["23505", 23505, "42710", 42710]),
   claimIndexNamesId: false,
   dropIndex: (name) => `DROP INDEX CONCURRENTLY IF EXISTS ${name}`,
   normalizeType: normalizeSqlType,
@@ -1579,6 +1591,7 @@ const mysql: SqlDialect = {
   // ER_DUP_KEYNAME: "Duplicate key name".
   isDuplicateIndex: (error) =>
     hasErrorCode(error, [1061, "1061", "ER_DUP_KEYNAME"]),
+  isConcurrentCreate: () => false,
   claimIndexNamesId: true,
   dropIndex: (name, table) => `DROP INDEX ${name} ON ${table}`,
   normalizeType: normalizeSqlType,
@@ -1814,6 +1827,7 @@ const sqlite: SqlDialect = {
   indexIfNotExists: true,
   isDuplicateIndex: (error) =>
     /index .* already exists/i.test(String((error as Error | null)?.message)),
+  isConcurrentCreate: () => false,
   claimIndexNamesId: false,
   dropIndex: (name) => `DROP INDEX IF EXISTS ${name}`,
   normalizeType: normalizeSqlType,
