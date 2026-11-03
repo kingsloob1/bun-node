@@ -196,6 +196,22 @@ export function gatewayAsyncApi(
   app: INestApplication,
   options: GatewayAsyncApiOptions = {},
 ): AsyncApiResult {
+  return gatewayAsyncApiOf(app.get(ModulesContainer), options);
+}
+
+/**
+ * {@link gatewayAsyncApi} over the application's `ModulesContainer` itself:
+ * what a module that injects the container (`DevTypesModule`, which has no
+ * `INestApplication` to hand) documents the gateways with. Not exported from
+ * the package root.
+ *
+ * @param container The booted application's `ModulesContainer`.
+ * @param options See {@link GatewayAsyncApiOptions}.
+ */
+export function gatewayAsyncApiOf(
+  container: ModulesContainer,
+  options: GatewayAsyncApiOptions = {},
+): AsyncApiResult {
   const strict = options.strict === "strict";
   const warnings: DocWarning[] = [];
   const warn = (message: string, route?: string): void => {
@@ -211,7 +227,7 @@ export function gatewayAsyncApi(
    * it needs only the container, and resolving an unregistered token through
    * `app.get` is a path this build avoids deliberately (the workspace's Nest
    * 12.2.0 does not auto-register it). */
-  const discovery = new DiscoveryService(app.get(ModulesContainer));
+  const discovery = new DiscoveryService(container);
   const scanner = new MetadataScanner();
   const gateways: GatewayInfo[] = [];
   for (const wrapper of discovery.getProviders()) {

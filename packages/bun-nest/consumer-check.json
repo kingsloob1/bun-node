@@ -46,10 +46,12 @@
         "reply",
         "ResponseValidationInterceptor",
         "gatewayAsyncApi",
-        "Describe"
+        "Describe",
+        "DevTypesModule"
       ],
       "types": [
         "BunBeforeWriteBody",
+        "DevTypesModuleOptions",
         "BunBeforeWriteContext",
         "BunBeforeWriteHook",
         "BunNestWebSocketClient",
