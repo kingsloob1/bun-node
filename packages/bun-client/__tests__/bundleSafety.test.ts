@@ -57,6 +57,11 @@
  * it calls the app's client), holds nothing of a server, and has no lazy
  * chunk at all (its result checks are the HTTP client's). A negative
  * control beside bun-common must be caught.
+ *
+ * Since PR-R1 the `./webrtc` entry (`webrtc.md`): it imports nothing, holds
+ * nothing of a server, the core client or the channel client (it drives the
+ * app's channel), and no bun-contract at all; a negative control beside
+ * bun-common's relay is caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -453,6 +458,32 @@ describe("the ./graphql entry (graphql.md, plan §10.1)", () => {
   it("negative control: the entry beside bun-common is caught", async () => {
     const { code, logs } = await build(
       join(import.meta.dir, "fixtures", "graphql-server-import.ts"),
+    );
+    if (code === undefined) {
+      expect(logs.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(serverMarkersIn(code).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the ./webrtc entry (webrtc.md, plan §10.1)", () => {
+  const WEBRTC = join(import.meta.dir, "..", "lib", "webrtc.ts");
+
+  it("imports nothing, and holds nothing of a server, the core client, the channel client or the guards", async () => {
+    const { code, logs } = await build(WEBRTC);
+    expect(logs).toEqual([]);
+    expect(code!.includes("function connectPeer(")).toBe(true);
+    expect(code!.match(/^\s*import\s/m)).toBeNull();
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(code!.includes("function channel(")).toBe(false);
+    expect(contractMarkersIn(code!)).toEqual([]);
+  });
+
+  it("negative control: the entry beside bun-common's relay is caught", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "fixtures", "webrtc-server-import.ts"),
     );
     if (code === undefined) {
       expect(logs.length).toBeGreaterThan(0);

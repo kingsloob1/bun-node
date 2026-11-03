@@ -70,6 +70,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Headers on the 101](#headers-on-the-101)
     - [Validated channels](#validated-channels-definechannel)
     - [Live invalidation](#live-invalidation-kingsleywebbun-commonlive)
+    - [WebRTC signalling](#webrtc-signalling-signallingcontract-and-signallingrelay)
   - [Structured logging](#structured-logging)
   - [Native utilities](#native-utilities)
 - [Examples](#examples)
@@ -3808,6 +3809,61 @@ publishTags(["user:42"]); // or by hand, from anywhere in the process
   own.
 - `liveContract` alone is browser-safe:
   `@kingsleyweb/bun-common/lib/live/contract`.
+#### WebRTC signalling: `signallingContract` and `signallingRelay`
+
+`@kingsleyweb/bun-common/webrtc` is a ready-made, typed signalling channel
+for WebRTC peers. The server needs no WebRTC: it relays the peers' offers,
+answers and ICE candidates, each to the peer it names, in the sender's room.
+The peers connect with bun-client's `connectPeer`
+(`@kingsleyweb/bun-client/webrtc`).
+
+```ts
+// shared module, browser-safe: the contract alone
+import { signallingContract } from "@kingsleyweb/bun-common/lib/webrtc/signalling";
+export const signalling = signallingContract({ path: "/rtc/:room" });
+
+// server
+import { signallingRelay } from "@kingsleyweb/bun-common/webrtc";
+app.ws(...signallingRelay(signalling, { authorize, maxPeersPerRoom: 8 }));
+```
+
+| Client → relay | Relay → client |
+|---|---|
+| `join { peer }`, answered with `peers` | `peers { peers }`: the others already in the room |
+| `leave` (no data) | `join { peer }`, `leave { peer }`: another peer came or went |
+| `offer { to, description }` | `offer { from, description }` |
+| `answer { to, description }` | `answer { from, description }` |
+| `candidate { to, candidate }` | `candidate { from, candidate }` |
+
+- **The messages are the browser's shapes**: `description` is an
+  `RTCSessionDescriptionInit` (`type`, `sdp`), `candidate` an
+  `RTCIceCandidateInit` (`candidate`, `sdpMid`, `sdpMLineIndex`,
+  `usernameFragment`). The schemas are bun-common's own (no vendor), carry
+  their JSON Schema for the AsyncAPI document, keep only the declared fields
+  and bound every string (a name 1–128 characters, an SDP 64 KiB, a candidate
+  line 4 KiB). `signallingContract` takes a channel's other options
+  (`request`, the upgrade's checks; `messageValidation`; `closeOnInvalid`;
+  `subprotocol`; `meta`) and fixes the messages.
+- **Rooms** are the route's params (`/rtc/:room`; a path without params is
+  one room). A socket joins with `join { peer }`, a name unique in the room,
+  and is answered with `peers`; the others get `join`. `leave`, or the socket
+  closing, takes it out and the others get `leave`.
+- **Forwarding** reaches only the named peer, with `from` set to the
+  sender's joined name, whatever the frame claims. Nothing crosses rooms.
+- **Refusals** are the channel's error frame, `VALIDATION`, echoing the
+  frame's id, value-free, and the socket stays open: a frame from a socket
+  that has not joined, for a peer not in the sender's room (or for itself),
+  and a `join` while joined, under a taken name, or into a full room
+  (`maxPeersPerRoom`, default `8`, at most 1024).
+- **`authorize`** is middleware run before the upgrade, ahead of the
+  contract's `request` checks (a `401` refuses the socket).
+- `signallingRelay()` returns the `ws()` route's arguments, `[path,
+  middleware, handler, options]`, so it spreads into `ws()` on a
+  `BunHttpAdapter`, bun-nest's adapter or a `BunRouter`. Its rooms live in
+  the process: two relays behind a load balancer do not share peers.
+- `./webrtc` holds the relay, which is server code; a browser imports the
+  contract from `@kingsleyweb/bun-common/lib/webrtc/signalling`, which holds
+  nothing else.
 
 ### Structured logging
 

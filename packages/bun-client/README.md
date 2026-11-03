@@ -35,8 +35,10 @@ and backpressure (PR-W2, [below](#websocket-channels-channel)), and
 `./query`'s `live()` keeps observed queries fresh over bun-common's live
 channel (PR-W4, [below](#live-invalidation-live)), and `./graphql` makes a
 typed GraphQL call over the client, typed by the app's gql.tada or
-graphql-codegen documents (PR-G1, [below](#graphql-graphql)). The other framework
-bindings and transports come in later PRs (the plan's §15).
+graphql-codegen documents (PR-G1, [below](#graphql-graphql)), and
+`./webrtc` connects WebRTC peers over a typed signalling channel (PR-R1,
+[below](#webrtc-webrtc)). The other framework bindings and transports come
+in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -1518,6 +1520,70 @@ responses' `Cache-Tag` and `Surrogate-Key` carry, so `invalidateTags` and
 
 The entry is 2.2 KiB gzipped, none of it in the `.` entry; `q.graphql()`
 adds 0.2 KiB to `./query`.
+## WebRTC (`/webrtc`)
+
+`connectPeer` connects two WebRTC peers over a typed signalling channel:
+bun-common's `signallingContract()`, served by its `signallingRelay`
+([bun-common's README](../bun-common/README.md#webrtc-signalling-signallingcontract-and-signallingrelay))
+and opened with [`channel()`](#websocket-channels-channel). The relay needs
+no WebRTC; the peers bring their own `RTCPeerConnection`: a browser's, or in
+Bun (which has none) node-datachannel's or werift's.
+
+```ts
+import { channel } from "@kingsleyweb/bun-client/channel";
+import { connectPeer } from "@kingsleyweb/bun-client/webrtc";
+import { signalling } from "../shared/signalling"; // signallingContract({ path: "/rtc/:room" })
+
+const sig = channel(api, signalling, { params: { room: "lobby" } });
+const { peers } = await sig.request("join", { peer: "alice" }); // the others in the room
+
+// alice calls bob: she offers, once she has a data channel to offer
+const peer = connectPeer(sig, { to: "bob", iceServers: [{ urls: "stun:stun.example:3478" }] });
+const chat = peer.createDataChannel("chat");
+
+// bob answers whoever calls
+sig.on("offer", (offer) => {
+  const peer = connectPeer(sig, { to: offer.from, offer });
+  peer.connection.addEventListener("datachannel", (event) => …);
+});
+```
+
+- **The exchange.** Without `offer` the peer offers: on its first data
+  channel made through `peer.createDataChannel` (a microtask later, so
+  channels made together go in one offer), and on any `negotiationneeded`
+  the connection fires while no offer is in flight (node-datachannel's
+  polyfill fires none, so the first is the one that counts there). With
+  `offer` (the received `offer` message, or its description) it answers,
+  and answers any later offer from the same peer. Glare and perfect
+  negotiation are the app's: an offer that arrives while this side's own
+  waits for its answer goes to `onError` and is ignored.
+- **Trickle ICE.** Local candidates go out as they are gathered, queued until
+  this side's description has gone out; remote ones are queued until
+  `setRemoteDescription` has resolved, then added (libdatachannel refuses a
+  candidate that arrives first: "Got a remote candidate without remote
+  description").
+- **Refused candidates are not fatal.** A candidate `addIceCandidate`
+  refuses (stacks parse each other's differently: libdatachannel refused 5
+  of werift's per run in the spike) goes to `onCandidateError(error,
+  candidate)`; the pair connects on the rest.
+- **Only `to`'s frames** are taken: a peer in a room of several answers and
+  applies only its own peer's messages.
+- **Options**: `to` (required), `offer`, `rtc` (the `RTCPeerConnection`
+  constructor; the global one by default, a `TypeError` where there is
+  none), `iceServers`, `configuration` (the rest of the `RTCConfiguration`),
+  `onCandidateError`, `onError`. The result is `{ connection, to,
+  createDataChannel, close }`: `connection` is the `RTCPeerConnection`,
+  typed by `rtc`; `close()` stops listening and closes it, leaving the
+  channel open.
+- **One socket is one peer.** The relay names a socket by its `join`, and
+  `channel()` shares a socket per URL, so two peers in one page (a test, a
+  demo) open the channel on different URLs: a query (`query: { as: "bob" }`)
+  is enough.
+- In Bun: `rtc: RTCPeerConnection` from `node-datachannel/polyfill`
+  (libdatachannel, a prebuilt binary per platform) or from `werift` (pure
+  TypeScript, about 60 times slower per message), as the app's own
+  dependency. Neither is a dependency of this package (node-datachannel is a
+  dev dependency, for the tests).
 
 ## The query string
 
@@ -1548,10 +1614,10 @@ from their context, which 5.90 has); `./react` is the React binding, with
 beside query-core; `./persist` is the IndexedDB persister, with
 `@tanstack/query-persist-client-core` (`^5.90.0`) an optional peer whose
 types alone it imports; `./sse` is the event-stream client and
-`./channel` the WebSocket channel client, each with no peer, and
-`./graphql` the GraphQL client, with none either (its documents are typed
-structurally). The generator is `./codegen` (Bun only)
-and the `bun-client` bin.
+`./channel` the WebSocket channel client and `./webrtc` the WebRTC
+helpers, each with no peer, and `./graphql` the GraphQL client, with none
+either (its documents are typed structurally). The generator is
+`./codegen` (Bun only) and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round
 trip, the shared backoff vector, the `RoutesOf` types and the generator's
@@ -1559,4 +1625,9 @@ parity with them. bun-cache is a dev dependency too, for the query layer's
 `Surrogate-Key` tests. React, react-dom, react-query and happy-dom are dev
 dependencies for the React binding's DOM tests, and
 query-persist-client-core for the persister's (pinned to the lock's
-query-core, which it depends on exactly).
+query-core, which it depends on exactly). node-datachannel (`0.33.6`, pinned) is a dev
+dependency for `./webrtc`'s tests, two real peers in Bun: it installs a
+prebuilt binary per platform through optional dependencies and runs no
+install script, so nothing is added to `trustedDependencies`. The browser
+case runs in Chrome through `Bun.WebView` and skips when no Chrome is found
+(`BUN_CHROME_PATH`).

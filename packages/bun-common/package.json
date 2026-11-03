@@ -68,6 +68,16 @@
       "types": "./dts/live/index.d.ts",
       "default": "./lib/live/index.ts"
     },
+    "./webrtc": {
+      "@kingsleyweb/source": "./lib/webrtc/index.ts",
+      "types": "./dts/webrtc/index.d.ts",
+      "default": "./lib/webrtc/index.ts"
+    },
+    "./lib/webrtc": {
+      "@kingsleyweb/source": "./lib/webrtc/index.ts",
+      "types": "./dts/webrtc/index.d.ts",
+      "default": "./lib/webrtc/index.ts"
+    },
     "./lib/docs": {
       "@kingsleyweb/source": "./lib/docs/index.ts",
       "types": "./dts/docs/index.d.ts",

@@ -117,6 +117,16 @@ describe("package.json exports", () => {
     expect(manifest.exports["./lib/sse"]).toEqual(conditions);
   });
 
+  it("publishes WebRTC signalling at ./webrtc (typed-client webrtc.md §3)", () => {
+    const conditions = {
+      "@kingsleyweb/source": "./lib/webrtc/index.ts",
+      types: "./dts/webrtc/index.d.ts",
+      default: "./lib/webrtc/index.ts",
+    };
+    expect(manifest.exports["./webrtc"]).toEqual(conditions);
+    expect(manifest.exports["./lib/webrtc"]).toEqual(conditions);
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -153,6 +163,20 @@ describe("the declaration build", () => {
     expect(files).toContain("index.ts");
     for (const file of files) {
       expect(built.has(join(ROOT, "lib/sse", file))).toBe(true);
+    }
+  });
+
+  it("covers every module of lib/webrtc", () => {
+    const configPath = join(ROOT, "tsconfig.build.json");
+    const read = ts.readConfigFile(configPath, (path) => ts.sys.readFile(path));
+    const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, ROOT);
+    const built = new Set(parsed.fileNames.map((f) => resolve(f)));
+    const files = readdirSync(join(ROOT, "lib/webrtc")).filter((f) =>
+      f.endsWith(".ts"),
+    );
+    expect(files).toContain("index.ts");
+    for (const file of files) {
+      expect(built.has(join(ROOT, "lib/webrtc", file))).toBe(true);
     }
   });
 });

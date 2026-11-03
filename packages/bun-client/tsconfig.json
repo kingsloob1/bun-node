@@ -12,6 +12,7 @@
   "include": ["./lib/**/*", "./__tests__/**/*", "./scripts/**/*"],
   // The declaration build's DOM reference: never in a program with
   // bun-common's sources, whose Bun-typed streams and headers the DOM lib
-  // contradicts.
-  "exclude": ["./lib/dom.d.ts"]
+  // contradicts. `__tests__/browser/` holds the DOM-typed assertions its own
+  // project checks.
+  "exclude": ["./lib/dom.d.ts", "./__tests__/browser/**/*"]
 }
