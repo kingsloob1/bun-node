@@ -30,7 +30,11 @@ generator's `Channels`; `"bun-nest"` is PR-W3's. **PR-W3 is built**
 (2026-11-03, branch `feat/bun-client-nest-codec`; TC's Status row): §11's
 codec, the generator reading `gatewayAsyncApi()`'s packets, NTR §7's
 shared maps; its names (the ack as the sent type `"<event> ack"`,
-`ChannelDescriptor.codec`) **approved by the user on 2026-11-03**.
+`ChannelDescriptor.codec`) **approved by the user on 2026-11-03**. **PR-W4 is built** (2026-11-03, branch
+`feat/live-invalidation`; TC's Status row): §9, with `live()` in bun-client's
+`./query` (TC §16; the `./live` of §9 is bun-common's entry), and
+bun-cache's existing `invalidate` event as the cache source; its names and
+decisions **approved by the user on 2026-11-03**, as built.
 
 ### Contents
 
@@ -374,7 +378,7 @@ publishTags(["user:42"]);
   invalidations when a cache is passed. bun-cache has no tag-invalidation
   event today (`bun-cache/lib/core/types.ts:709` lists the events) [S]; the
   PR adds one, or subscribes to the cache's bus [I].
-- **Client** (`./live`): subscribes to the tags of the observed queries
+- **Client** (`live()` in bun-client `./query`): subscribes to the tags of the observed queries
   (refcounted), invalidates by tag (TC §6.4), and on a `gap` or an epoch
   change invalidates every active query. Its SSE fallback is `sse.md`'s
   client over the channel's `fallback` endpoint.
@@ -489,4 +493,4 @@ TC §14 Q19–Q21, **answered 2026-11-02: approved as recommended.**
 | `defineChannel(contract)` | overload | bun-common root |
 | `send(…, { id })`, `send`/`publish` returning `Promise<number>` | signature changes | bun-common `Channel` |
 | `liveContract`, `liveInvalidation`, `publishTags` | constant, functions | bun-common `./live` (new entry) |
-| `live` | function | bun-client `./live` |
+| `live` | function | bun-client `./query` (built there, TC §16; approved 2026-11-03) |

@@ -69,6 +69,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [WebSockets](#websockets)
     - [Headers on the 101](#headers-on-the-101)
     - [Validated channels](#validated-channels-definechannel)
+    - [Live invalidation](#live-invalidation-kingsleywebbun-commonlive)
   - [Structured logging](#structured-logging)
   - [Native utilities](#native-utilities)
 - [Examples](#examples)
@@ -3745,6 +3746,68 @@ the channel, its types and its documents are the inline form's).
 
 Example:
 [`validated-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/validated-channel.ts).
+
+#### Live invalidation: `@kingsleyweb/bun-common/live`
+
+Tells a client's query cache when the data under a cache tag changed, so it
+refetches what is filed under it (bun-client's `live()` in `./query` is the
+client). It is one `defineChannel`, `liveContract`, at `/__live`, with an SSE
+fallback at `/__live/sse`:
+
+```ts
+import { liveInvalidation, publishTags } from "@kingsleyweb/bun-common/live";
+
+app.use(liveInvalidation(app, { authorize, source: cache })); // first, before the routes
+
+app
+  .patch("/users/:id", validate({ params: IdParams, body: UserPatch }), handler)
+  .describe({ cache: { invalidates: ["user:{id}", "users"] } }); // published on a 2xx
+
+publishTags(["user:42"]); // or by hand, from anywhere in the process
+```
+
+- **Sources**: `publishTags(tags)`; a route's `.describe({ cache: {
+  invalidates } })`, each `{param}` filled from the request's params (a
+  template naming a param the request lacks is skipped), once its response
+  is a 2xx; and, with `source`, a bun-cache cache's `invalidateTags()` (its
+  `invalidate` event, either mode; any object with `on("invalidate",
+  listener)` will do).
+- **Mount it first**: the route source is a middleware on the returned
+  router, which sees only the requests that reach it. The channel itself is
+  registered on `app` (a socket route lives on the socket's router), so
+  `app` needs a `BunWebSocket` (a `BunHttpAdapter` has one); without one only
+  the SSE fallback is served, with a warning.
+- **`authorize` is required** and runs before the upgrade and the SSE
+  fallback (`next()` lets the client in; answering refuses it). An
+  invalidation names the data that changed.
+- **Frames** (bun-common's envelope): the client sends `subscribe { tags }`,
+  `unsubscribe { tags }` and `resume { epoch, seq }`; the server answers
+  `subscribe` and `resume` with `hello { epoch, seq }` and sends
+  `invalidate { tags, seq, epoch }` and `gap { epoch, seq }`. Tags are
+  strings of 1 to 512 characters, at most 256 per frame.
+- **Topics**: each tag is a Bun pub/sub topic, refcounted: an invalidation is
+  published only on the topics somebody holds, one frame per tag, so a
+  socket holding two tags of one invalidation gets two frames with the same
+  `seq` (bun-client invalidates a query once per `seq`).
+- **Resume**: invalidations are numbered per process (`seq`) within an
+  `epoch` (random per process), and the last 1024 are kept. A client that
+  reconnects subscribes again, then sends `resume` with its cursor, and is
+  replayed what it missed for the tags it holds; when the epoch changed, the
+  cursor is ahead, or what it missed fell off the ring, it gets a `gap` and
+  invalidates everything.
+- **The SSE fallback**: `GET /__live/sse?tag=a&tag=b` on `res.sse()` (its
+  opening comment, heartbeat every 15 s, exemption from Bun's `idleTimeout`,
+  backpressure and bound), the cursor as `Last-Event-ID` (`<epoch>:<seq>`,
+  the id of every event): its `resume` answers what was missed (or a `gap`,
+  also for an id the process cannot read), then `hello`, then `invalidate`
+  events, each checked by the channel's own schemas. Hidden from the OpenAPI document; the AsyncAPI document
+  carries the channel with the fallback (`x-bun-common-sse-fallback`).
+- **Per process**: the ring, the epoch and the subscribers are the
+  process's. bun-cache's bus does not emit `invalidate` for another
+  process's invalidation, so behind a balancer each process publishes its
+  own.
+- `liveContract` alone is browser-safe:
+  `@kingsleyweb/bun-common/lib/live/contract`.
 
 ### Structured logging
 

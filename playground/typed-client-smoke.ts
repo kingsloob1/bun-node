@@ -15,7 +15,7 @@
  * - The page and `/state`: the generated module's hash, the zod module's,
  *   the dev endpoint on, its token file `0600`, every scenario with its code.
  * - Every scenario's outcome, what the client sent (statuses, headers,
- *   timing) and what the API saw.
+ *   timing) and what the API saw; `live` over the playground's own socket.
  * - The dev endpoint: refused without the token (404); with it,
  *   `generate --url` gives the committed file byte for byte; the page's
  *   regenerate answers no diff and `--check` 0. After "add a route": the
@@ -507,6 +507,19 @@ try {
       "cache-tag: invalidating team:blue refetched org 7 only",
       count("/api/orgs/7") === 2 && count("/api/orgs/8") === 1,
       JSON.stringify(r.sent.map((each) => each.url)),
+    );
+  }
+  {
+    const r = await run("live");
+    const o = rec(r.outcome);
+    const lists = r.sent.filter((each) => each.url === "/api/users").length;
+    check(
+      "live: another client's POST /api/users refetched the observed list over the live channel",
+      r.ok &&
+        typeof o.before === "number" &&
+        o.after === (o.before as number) + 1 &&
+        lists >= 2,
+      JSON.stringify({ o, sent: r.sent.map((each) => each.url) }),
     );
   }
   {

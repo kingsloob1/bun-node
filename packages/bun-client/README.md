@@ -31,8 +31,10 @@ schemas change ([below](#persistence-persist)), and `./sse` reads typed,
 validated, resumable server-sent events (PR-S1,
 [below](#server-sent-events-sse)), and `./channel` talks to a WebSocket
 channel with typed, validated messages both ways, requests, reconnection
-and backpressure (PR-W2, [below](#websocket-channels-channel)). The other
-framework bindings and transports come in later PRs (the plan's §15).
+and backpressure (PR-W2, [below](#websocket-channels-channel)), and
+`./query`'s `live()` keeps observed queries fresh over bun-common's live
+channel (PR-W4, [below](#live-invalidation-live)). The other framework
+bindings and transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -901,8 +903,44 @@ directly. The first subscriber starts the observer (and its fetch, if the
 data is missing or stale); the last one to leave stops it, and the query
 goes inactive. `refetch()`, `setOptions()` and, for an infinite query,
 `fetchNextPage()`/`fetchPreviousPage()` resolve the snapshot after. React
-apps use `./react` instead ([below](#react-react)); live invalidation
-(`live()`) comes in a later PR.
+apps use `./react` instead ([below](#react-react)).
+
+### Live invalidation: `live()`
+
+`live(api, queryClient, options?)` keeps the observed queries fresh over
+bun-common's live channel (`liveInvalidation()` from
+`@kingsleyweb/bun-common/live` on the server), and answers the function that
+stops it:
+
+```ts
+import { live } from "@kingsleyweb/bun-client/query";
+
+const stop = live(api, queryClient);
+// another client's PATCH /users/7 (declaring invalidates: ["user:{id}"])
+// now refetches every observed query tagged "user:7"
+```
+
+- It subscribes to the tags of every query that has an observer (the
+  route's declared tags and its responses' `Cache-Tag`/`Surrogate-Key`, as
+  `tagsOfQuery` reads them), refcounted: a tag is subscribed once whatever
+  the number of queries under it, and dropped with its last query.
+- An invalidation invalidates every cached query holding one of its tags
+  (query-core refetches the active ones), once per invalidation however many
+  of its tags a query holds.
+- After a reconnect it resumes from the last invalidation it heard, and the
+  server replays what it missed; when that is not possible (a `gap`, or a
+  restarted server's new epoch), every query is invalidated.
+- `transport`: `"websocket"` (the channel at `/__live` under `baseUrl`) or
+  `"sse"` (the fallback at `/__live/sse`, through the client's own calls, so
+  its headers and auth apply). Default: the channel where the platform has a
+  `WebSocket`, else SSE; a channel that has not opened 3 s after the start
+  (a proxy that refuses upgrades) gives way to SSE.
+- The implementation, and `./channel` or `./sse` under it, load with
+  `import()` on the first call, so `./query` grows by about 140 bytes
+  gzipped.
+- A query observed again after a time with no observer missed what was
+  invalidated meanwhile; query-core's `staleTime` decides whether it
+  refetches on its return.
 
 ## React (`/react`)
 

@@ -388,6 +388,20 @@
       "browser": true
     },
     {
+      "$comment": "Typed-client PR-W4: live invalidation, the server half with its contract. The contract alone is a browser entry (the next spelling).",
+      "spelling": "@kingsleyweb/bun-common/live",
+      "values": ["liveContract", "liveInvalidation", "publishTags"],
+      "types": ["LiveInvalidationOptions"],
+      "snippet": "declare const app: import(\"@kingsleyweb/bun-common\").BunRouter;\nconst _router: import(\"@kingsleyweb/bun-common\").BunRouter = m.liveInvalidation(app, { authorize: (_req, _res, next) => next() });\nexport type _authorizeNotAny = Expect<IsAny<t.LiveInvalidationOptions[\"authorize\"]>>;\nexport type _sourceNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"source\"]>>>;\nexport type _path = Equal<typeof m.liveContract.spec.path, \"/__live\">;\nexport type _publish = Equal<Parameters<typeof m.publishTags>[0], readonly string[]>;"
+    },
+    {
+      "$comment": "The live channel's contract alone, for a browser bundle (typed-client PR-W4).",
+      "spelling": "@kingsleyweb/bun-common/lib/live/contract",
+      "values": ["liveContract"],
+      "browser": true,
+      "snippet": "export type _replies = Equal<typeof m.liveContract.spec.replies, { readonly subscribe: \"hello\"; readonly resume: \"hello\" }>;"
+    },
+    {
       "$comment": "A deep path into the contract core, which moved to @kingsleyweb/bun-contract (typed-client PR-K): the module stays as a re-export, so the spelling keeps working.",
       "spelling": "@kingsleyweb/bun-common/lib/contract/guard",
       "values": ["createReceiver", "createSender", "ContractError"],

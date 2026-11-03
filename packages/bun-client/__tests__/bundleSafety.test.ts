@@ -22,6 +22,12 @@
  * with query-core inlined, it still carries nothing of a server. A negative
  * control beside bun-common must be caught.
  *
+ * Since PR-W4 `./query` loads its live layer (`lib/live.ts`) lazily, so the
+ * entry is checked with that module left out, and the layer on its own,
+ * with the channel and SSE clients it loads lazily left out in turn: it
+ * imports nothing (query-core's types only), and carries nothing of a
+ * server, the core client or the contract.
+ *
  * Since PR-C6 the `./react` entry (plan §7.1, §10.1): built with its peers
  * (`@tanstack/react-query`, `react`) external, it imports react-query and
  * nothing else, and carries none of the query layer or the core client
@@ -73,6 +79,7 @@ function serverMarkersIn(code: string): string[] {
 async function build(
   entry: string,
   external: string[] = [],
+  lazy?: RegExp,
 ): Promise<{ code?: string; logs: string[] }> {
   const result = await Bun.build({
     entrypoints: [entry],
@@ -80,6 +87,22 @@ async function build(
     minify: false,
     throw: false,
     external,
+    // A lazily loaded module (`import()`) left out, as a splitting build
+    // leaves it in a chunk of its own.
+    plugins:
+      lazy === undefined
+        ? []
+        : [
+            {
+              name: "lazy-external",
+              setup(builder) {
+                builder.onResolve({ filter: lazy }, (args) => ({
+                  path: args.path,
+                  external: true,
+                }));
+              },
+            },
+          ],
   });
   if (!result.success) return { logs: result.logs.map(String) };
   const code = (
@@ -219,7 +242,8 @@ describe("the ./query entry (plan §10.1, §10.3)", () => {
     );
 
   it("imports its optional peer and nothing else, and holds nothing of a server or of the core client", async () => {
-    const { code, logs } = await build(QUERY, PEER);
+    // The live layer (PR-W4) is its own chunk: `live()` loads it lazily.
+    const { code, logs } = await build(QUERY, PEER, /^\.\/live$/);
     expect(logs).toEqual([]);
     expect(code!.includes("function queries")).toBe(true);
     expect(code!.includes("function observe")).toBe(true);
@@ -235,6 +259,20 @@ describe("the ./query entry (plan §10.1, §10.3)", () => {
     expect(importsOf(code!)).toEqual([]);
     expect(code!.includes("var QueryObserver = class")).toBe(true);
     expect(serverMarkersIn(code!)).toEqual([]);
+  });
+
+  it("its live layer (PR-W4) holds nothing of a server, the core client or the contract, the channel and SSE clients it loads lazily left out", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "..", "lib", "live.ts"),
+      PEER,
+      /^\.\/(?:channel|sse)$/,
+    );
+    expect(logs).toEqual([]);
+    expect(code!.includes("function startLive")).toBe(true);
+    expect(importsOf(code!)).toEqual([]);
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(contractMarkersIn(code!)).toEqual([]);
   });
 
   it("negative control: the entry beside bun-common is caught", async () => {
