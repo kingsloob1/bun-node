@@ -52,6 +52,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Files and byte ranges](#files-and-byte-ranges)
     - [Redirects, views and format](#redirects-views-and-format)
     - [Streaming and server-sent events](#streaming-and-server-sent-events)
+    - [Server-sent events: `res.sse()`](#server-sent-events-ressse)
   - [Validation](#validation)
   - [Contracts](#contracts)
     - [Writing a transport](#writing-a-transport)
@@ -1496,7 +1497,8 @@ The semantics are Node's:
 - The first `write()` (or `flushHeaders()`) sends the headers set so far and
   adds none. A Content-Type you set is kept. For server-sent events, set
   `Content-Type: text/event-stream` yourself before writing, as NestJS's
-  `@Sse()` does. `compression()` flushes each chunk only for that type.
+  `@Sse()` does, or use [`res.sse()`](#server-sent-events-ressse), which
+  does that and more. `compression()` flushes each chunk only for that type.
 - A write after the response has ended returns `false` and emits
   `ERR_STREAM_WRITE_AFTER_END`.
 - A chunk that is not text or bytes throws `ERR_INVALID_ARG_TYPE`.
@@ -1546,6 +1548,101 @@ Example:
 [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts),
 tour
 [`response-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/response-options.ts).
+
+#### Server-sent events: `res.sse()`
+
+`res.sse(options?)` opens an event stream and returns its writer, an
+`SseWriter`. It does what a hand-written stream gets wrong silently:
+
+- It sets `Content-Type: text/event-stream`, `Cache-Control: no-cache,
+  no-transform` and `X-Accel-Buffering: no` (nginx), unless you set them
+  first. It never sets `Connection`, which HTTP/2 forbids.
+- It sends an opening comment (`: ok`) at once, because Bun sends no headers
+  before the first chunk. The client sees the stream open even while your
+  handler is still running.
+- It exempts the request from Bun's `idleTimeout`, and sends a heartbeat
+  comment (`:`) after `heartbeatMs` (15 s) with nothing else written, for
+  proxies and for noticing a dead peer.
+- `send()` honours backpressure: it resolves at once while under
+  `highWaterMark` (64 KiB queued), and otherwise when the client has read.
+  A client that stops reading is disconnected past `maxQueuedBytes`
+  (8 MiB), not buffered without limit.
+- It closes when the client leaves. `onClose(fn)`, `signal` and `closed`
+  say so, and `send()` resolves `false` from then on.
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+import { sse } from "@kingsleyweb/bun-common/sse"; // browser-safe: a shared module can declare it
+import { z } from "zod";
+
+// The route's events, declared once for the server and its typed client.
+const JobEvents = sse({
+  progress: z.object({ percent: z.number() }),
+  done: z.object({ result: z.string() }),
+  gap: null,
+});
+
+const app = new BunHttpAdapter();
+app.get("/jobs/:id/events", (req, res) => {
+  const stream = res.sse({
+    contract: JobEvents, // send() typed and checked by it
+    ids: "auto", // 1, 2, 3, … continuing after Last-Event-ID
+    retry: 2000, // the client's reconnection delay, ms
+    resume: (lastEventId) => jobLog.since(req.params.id, lastEventId) ?? "gap",
+  });
+  const off = jobs.onProgress(req.params.id, async (percent) => {
+    if (!(await stream.send({ event: "progress", data: { percent } }))) off();
+  });
+  stream.onClose(off);
+});
+```
+
+The options beyond the defaults above:
+
+| Option | Default | What it does |
+|---|---|---|
+| `contract` | none | An `sse({ … })` declaration. `send()` is typed by it (`event` selects `data`'s type, the schema's input), and each event is checked **before** it is encoded. Its `data` format decides the encoding: `"json"` (the default) stringifies every value, strings included; `"text"` writes the string as it is. A typed writer takes no pre-encoded bytes. |
+| `validation` | `"error"` | What a mismatch against `contract` does. `"error"` refuses the event and sends nothing: `send()` throws the `ContractError` for a synchronous schema, or rejects with it for an asynchronous one, and the stream stays open. `"warn"` logs it and sends it. `"off"` checks nothing. |
+| `ids` | none | `"auto"` numbers the events that carry no `id`, per stream, continuing after an integer `Last-Event-ID` and after any integer `id` you send. |
+| `resume` | none | Called with the request's `Last-Event-ID`, when it has one. Its events are sent first, and live `send()`s wait behind them. Returning `"gap"` sends `{ event: "gap" }`, which you declare as `gap: null`. A throw closes the stream, and the live events waiting behind the replay are dropped. |
+| `retry` | none | A `retry:` sent with the opening: how long the client waits before reconnecting. |
+| `heartbeatMs` | `15_000` | The heartbeat interval; `0` turns it off. A beat is skipped when something else was written since the last, so bytes are at most about twice this apart. |
+| `highWaterMark`, `maxQueuedBytes` | `65_536`, `8_388_608` | The backpressure mark and the slow-client bound, in bytes queued. |
+| `open` | `{ comment: "ok" }` | The first block; `false` sends none. |
+| `compress` | `false` | `true` drops `no-transform`, so `compression()` gzips the stream, flushing every event. |
+| `onError` | none | Called with an error of `resume`, or of `sseResponse()`'s source, instead of logging it and closing. Nothing is sent by default, so no message leaks. |
+| `logger` | console | Where a `"warn"` mismatch, a slow client's disconnection and an error go. Any logger `resolveLogger` adapts. |
+
+`stream.lastEventId` is the request's `Last-Event-ID`, or `undefined`. An
+event declared `null` (or any event with no data) is written with one empty
+`data:` line, so `EventSource` and any parser following the standard
+dispatch it. A declared response contract on the route still checks the
+stream's status and media type as it commits, and its events as they go
+(see [Streamed bodies](#streamed-bodies-chunks-sse-and-opaque)).
+
+Without a `BunResponse`, `sseResponse(source, init?)` returns the same
+stream as a `Response`, for a native route, `Bun.serve`'s `fetch`,
+`res.send()` or a test. The source is an iterable or async iterable of
+events (its end closes the stream), or a function given the writer.
+`request` gives it the client's signal and `Last-Event-ID`, and `server` the
+idle-timeout exemption:
+
+```ts
+import { sseResponse } from "@kingsleyweb/bun-common/sse";
+
+Bun.serve({
+  routes: {
+    "/ticks": (req, server) => sseResponse(ticks(), { request: req, server }),
+  },
+});
+```
+
+`@kingsleyweb/bun-common/sse` is the browser-safe entry for all of it. It
+has the declaration `sse({ … })` (also exported from the root), the writer,
+`sseResponse`, the wire format (`formatSseEvent`, and
+`encodeSseEvent` to encode one event once for many streams) and the
+standard parser (`SseParser`, and `readSse(body)` to iterate a response's
+events, since Bun has no `EventSource`).
 
 ### Validation
 
@@ -2550,6 +2647,7 @@ extensions a client needs beside the standard fields:
 | `x-bun-errors` | an operation that declares it | `["NOT_FOUND", "CONFLICT"]` | `.describe({ errors })`, in order |
 | `x-bun-cache` | an operation that declares it | `{ "tags": ["user:{id}"], "invalidates": ["users"] }` | `.describe({ cache })`, the fields given |
 | `x-bun-chunks` | a `chunks()` body's schema | `"ndjson"` or `"raw"` | the declaration's `framing`: a client iterates the stream, one JSON value per line or its bytes |
+| `x-sse-data` | an `sse()` body's schema, beside its `x-sse-events` | `"json"` or `"text"` | the declaration's `data`: how a client decodes each event's `data:` lines |
 | `x-bun-max-bytes` | a documented file's schema | `1000000` | `.describe({ request: { files } })`'s `maxBytes` |
 
 ```ts

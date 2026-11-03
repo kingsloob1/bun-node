@@ -386,6 +386,31 @@ export {
   type VariantSpec,
   type VariantsOptions,
 } from "./responseBodies";
+/* ------------------------------------------------------------------
+ * Server-sent events (`lib/sse/`, bun-native-routes plan §16, PR-sse2):
+ * the writer `res.sse()` returns, `sseResponse()`, the wire format and
+ * the parser. Also the browser-safe subpath `@kingsleyweb/bun-common/sse`.
+ * ------------------------------------------------------------------ */
+export {
+  encodeSseEvent,
+  formatSseEvent,
+  readSse,
+  type SseContractEvent,
+  type SseEvent,
+  type SseIdleTimeoutServer,
+  type SseItem,
+  type SseMessage,
+  SseParser,
+  type SseParserOptions,
+  type SseReplay,
+  sseResponse,
+  type SseResponseInit,
+  type SseSendOf,
+  type SseSource,
+  SseWriter,
+  type SseWriterInit,
+  type SseWriterOptions,
+} from "./sse";
 export {
   type ResponseSchemas,
   type ResponseSpec,

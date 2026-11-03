@@ -4,7 +4,7 @@
  * lazily: `createClient<Routes>({ schemas: () => import("<this module>") })`.
  * Do not edit; regenerate it, and run the same command with `--check` in CI.
  *
- * typesHash: 9216f4bbad30aaf0
+ * typesHash: 5d36a615aa248f7a
  */
 import { schemasFromZod } from "@kingsleyweb/bun-client/zod";
 import { z } from "zod/mini";

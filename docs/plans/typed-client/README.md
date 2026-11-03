@@ -288,8 +288,8 @@ All [S]:
   fixes it**); `send` drops Bun's backpressure status; socket params are
   untyped.
 - **`router.ws()`** takes a middleware chain (#536, `BunRouter.ts:1918-1975`).
-- **SSE**: the `sse()` declaration and its per-event checks exist; **the
-  writer does not** (BNR PR-sse2 not started; `sse.md` §2).
+- **SSE**: the `sse()` declaration and its per-event checks exist; the
+  writer is BNR PR-sse2 (built 2026-11-03, not yet merged; `sse.md` Status).
 
 ### 2.4 bun-nest
 
@@ -347,7 +347,7 @@ this revision) [S]:
 | Old PR-M4 typed channels (`defineChannel`, model `channels`) | **server built** (V8, #525); the client is `websocket.md` |
 | Old PR-M1 route model | **mostly built**: `listRoutes` is the discovery and the generators are the serialisation; what is left is three extensions, a hash and the sender view (§8.2) |
 | BC tags (`cacheResponse`, `invalidateTags`) | **built** (bun-cache) |
-| BNR PR-sse2 (`res.sse()`) | not started |
+| BNR PR-sse2 (`res.sse()`) | **built** 2026-11-03 (branch `feat/bun-common-sse-writer`), with `sse.md` §4's four additions |
 | BVW PR-5 (hydration) | not started |
 
 ### 2.7 Prior art

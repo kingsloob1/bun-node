@@ -1,0 +1,43 @@
+{
+  "bun": "11c367163a4baa77d3627d14764c376c856a630a",
+  "platform": "linux-x64",
+  "date": "2026-11-03T14:56:29.203Z",
+  "cells": [
+    {
+      "target": "raw-hwm",
+      "n": 100,
+      "m": 1000,
+      "eventsPerSec": 1449773
+    },
+    {
+      "target": "common-write",
+      "n": 100,
+      "m": 1000,
+      "eventsPerSec": 751784
+    },
+    {
+      "target": "common-sse",
+      "n": 100,
+      "m": 1000,
+      "eventsPerSec": 1401963
+    },
+    {
+      "target": "raw-hwm",
+      "n": 1000,
+      "m": 100,
+      "eventsPerSec": 1083541
+    },
+    {
+      "target": "common-write",
+      "n": 1000,
+      "m": 100,
+      "eventsPerSec": 510179
+    },
+    {
+      "target": "common-sse",
+      "n": 1000,
+      "m": 100,
+      "eventsPerSec": 971772
+    }
+  ]
+}

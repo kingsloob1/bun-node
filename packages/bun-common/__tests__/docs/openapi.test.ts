@@ -967,6 +967,25 @@ describe("generateOpenApi: the response side", () => {
       (_req, res) => res.send(""),
     );
     router.get(
+      "/log",
+      validate(
+        {},
+        {
+          responses: {
+            200: {
+              content: {
+                "text/event-stream": sse(
+                  { line: z.string() },
+                  { data: "text" },
+                ),
+              },
+            },
+          },
+        },
+      ),
+      (_req, res) => res.send(""),
+    );
+    router.get(
       "/logo",
       validate(
         {},
@@ -995,6 +1014,13 @@ describe("generateOpenApi: the response side", () => {
     expect(events.description).toMatch(/Server-sent events/);
     expect(events["x-sse-events"].tick.properties).toHaveProperty("n");
     expect(events["x-sse-events"].note).toBeNull();
+    // How the events' data decodes, for a client generator.
+    expect(events["x-sse-data"]).toBe("json");
+    const log = op(document, "/log", "get").responses["200"].content[
+      "text/event-stream"
+    ].schema;
+    expect(log["x-sse-data"]).toBe("text");
+    expect(log.description).toMatch(/as text/);
 
     const image = op(document, "/logo", "get").responses["200"].content[
       "image/png"

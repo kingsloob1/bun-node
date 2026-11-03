@@ -936,7 +936,34 @@ prototype/tests/` (with `BNR_SEEDS`, `BNR_MODE` as documented in each file).
 
 Added 2026-10-01 against `develop` at `fb0eceb`, on the same Bun build
 (`1.4.3-canary.1+5f554969b`). The request: "expose SSE helpers for both
-httpAdapter and nest". **Plan only; no library code changed.** Every probe is
+httpAdapter and nest". Written as a plan, with no library code changed.
+
+**Status (2026-11-03).** PR-sse1 merged as #267. **PR-sse2 is built**
+(branch `feat/bun-common-sse-writer`, rebased onto `develop` f4ddd3a8;
+not yet merged), with the typed client's four additions (`typed-client/sse.md` §4):
+`lib/sse/` behind a browser-safe `./sse` subpath and the root
+(`sse()` moved there from `responseBodies.ts`, re-exported unchanged;
+`formatSseEvent`, `encodeSseEvent`, `SseWriter`, `sseResponse`, and
+bun-jobs' `SseParser`/`readSse` lifted verbatim), `res.sse(options)`,
+`x-sse-data` beside `x-sse-events`, and the fan-out guard `bench/sse.ts`.
+**Approved by the user on 2026-11-03, as built**: every name (§16.12's,
+the writer options beyond them, `validation`, `logger`, the
+`new SseWriter()` init fields `lastEventId` and `signal`, the types
+`SseWriterInit`, `SseSendOf`, `SseContractEvent`, `SseReplay`,
+`SseSource`, `SseResponseInit`, `SseIdleTimeoutServer`, and the
+extension `x-sse-data`), and four behaviours: an asynchronous vendor's
+refusal rejects `send()` (a synchronous one throws, as W1's channel);
+a heartbeat is skipped when something was written since the last one;
+a named event with no data is written with one empty `data:` line (so
+`EventSource` and the standard parser dispatch it); a refused
+`ReadableStream` body is cancelled (so an orphaned writer closes). The
+fan-out baseline was recorded once, as the user asked
+(`bench/baselines/sse.json`). **S10** (`res.write()` on the byte-length
+queue, `false` past the mark) is not in it: a later, separate PR that
+comes back with an A/B plan first (the user's decision, 2026-11-03).
+PR-sse2b (channels), PR-sse3, PR-sse4 and PR-sse5 are not started.
+
+Every probe is
 in [`evidence/sse/`](evidence/sse/), each
 with its command and its output in `sse/results/`. The markings are the ones
 defined under "How to read the markings" at the top.
@@ -1346,7 +1373,7 @@ start returning `false` past the high-water mark, as Node's does.
 | PR | What | Depends on | Effort | Package / tarball |
 |---|---|---|---|---|
 | **PR-sse1** | **Streaming correctness in bun-common.** (1) `headersSent` stops counting `socket.setKeepAlive`. (2) `socket.setTimeout(0)` calls `server.timeout(request, 0)`; the fetch stub gets a no-op `timeout`. (3) The adapter and `router.fetch()` return a response with a streaming body at once (bun-nest's race, ported and widened; bun-nest takes the wider condition too). (4) An error after headers runs the error handlers, and if still unhandled aborts the stream. (5) `res.writableEnded`. Tests: every §16.2 row, served and `fetch()`; `@Sse()` edge tests in bun-nest; `--randomize` | — | 2–3 d | bun-common, plus a few lines in bun-nest's adapter; no new export; no size change |
-| **PR-sse2** | **The helpers.** `lib/sse/`: `formatSseEvent`, `encodeSseEvent`, `SseWriter`, `sseResponse`, the test reader (or the lifted parser, §16.7); `res.sse()`; the `./sse` subpath (exports, `consumer-check.json` incl. `browser`); `res.write` on the byte-length queue if S10 says yes; README "Server-sent events"; a fan-out benchmark guard | PR-sse1 | 3–4 d | bun-common; ~9 KB source (prototype 8.5 KB), ~4 KB of declarations [I]; no dependency |
+| **PR-sse2** (built 2026-11-03, see the §16 Status) | **The helpers.** `lib/sse/`: `formatSseEvent`, `encodeSseEvent`, `SseWriter`, `sseResponse`, the test reader (or the lifted parser, §16.7); `res.sse()`; the `./sse` subpath (exports, `consumer-check.json` incl. `browser`); `res.write` on the byte-length queue if S10 says yes; README "Server-sent events"; a fan-out benchmark guard | PR-sse1 | 3–4 d | bun-common; ~9 KB source (prototype 8.5 KB), ~4 KB of declarations [I]; no dependency |
 | **PR-sse3** | **bun-nest.** README section: `@Sse()` is supported, with its edges (Nest's encoder drops falsy `data`; the idle exemption; `app.close()` cuts streams); `@Res() res.sse()` for imperative use; the backpressure caveat | PR-sse1 (PR-sse2 for the `res.sse()` docs) | 0.5–1 d | bun-nest docs and tests only |
 | **PR-sse4** | **Docs and examples**: a change report to the examples session. `examples/bun-common/05-response/files-and-streams.ts` gains `res.sse()`. The stale line in `examples/bun-nest/02-http-adapter/controllers-and-routing.ts` ("`@Sse()` fails …") is wrong today [M] and must go. A new bun-nest `@Sse()` example | PR-sse2, PR-sse3 | 0.5 d here; the examples session's own time | examples only |
 | PR-sse5 | **bun-jobs** imports the parser (and, for its executor's `http-stream` writer, the encoder) from `@kingsleyweb/bun-common/sse` | PR-2a2, PR-sse2 | 0.5 d | Phase 2 session |

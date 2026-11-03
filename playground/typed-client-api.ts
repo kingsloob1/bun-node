@@ -28,7 +28,7 @@
  * | `GET /api/brew` | declares a 200 and answers 418, which no manifest lists |
  * | `GET /api/drifted/:id` | declares a `User` and answers one whose `role` the schema refuses |
  * | `GET /api/orgs/:id` | behind bun-cache's `cacheResponse({ surrogateKeys: "Cache-Tag" })`, tagged `team:<team>` from the data |
- * | `GET /api/jobs/:id/events` | an event stream (`sse({ progress, done, gap })`): three events with ids `1`–`3`, replayed after a known `Last-Event-ID`, a `gap` first for an unknown one |
+ * | `GET /api/jobs/:id/events` | an event stream (`sse({ progress, done, gap })`) written with `res.sse({ contract, resume })`: three events with ids `1`–`3`, replayed after a known `Last-Event-ID`, a `gap` first for an unknown one |
  *
  * `extraApi` is one more route, `GET /api/users/:id/badge`, which the page's
  * "add a route" button mounts at run time: the dev endpoint's hash moves, so
@@ -156,6 +156,13 @@ function problem(code: string, title: string) {
 
 /** The params of a route with one `:id`. */
 const IdParams = z.object({ id: z.string() });
+
+/** A job's event stream: the route's declaration, and its writer's contract. */
+const JobEvents = sse({
+  progress: z.object({ percent: z.number() }),
+  done: z.object({ result: z.string() }),
+  gap: null,
+});
 
 /** Records a request in `state.hits`, keeping the last 200. */
 function record(state: ApiState, req: BunRequest): void {
@@ -403,13 +410,7 @@ function registry(state: ApiState) {
           {
             responses: {
               200: {
-                content: {
-                  "text/event-stream": sse({
-                    progress: z.object({ percent: z.number() }),
-                    done: z.object({ result: z.string() }),
-                    gap: null,
-                  }),
-                },
+                content: { "text/event-stream": JobEvents },
               },
             },
           },
@@ -420,25 +421,24 @@ function registry(state: ApiState) {
           // never sent) gets the declared `gap` first, then all of them.
           const job = req.params.id;
           const events = [
-            ["1", "progress", { percent: 50 }],
-            ["2", "progress", { percent: 100 }],
-            ["3", "done", { result: `job ${job} done` }],
+            { id: "1", event: "progress", data: { percent: 50 } },
+            { id: "2", event: "progress", data: { percent: 100 } },
+            { id: "3", event: "done", data: { result: `job ${job} done` } },
           ] as const;
-          const last = req.get("last-event-id");
-          const from = events.findIndex(([id]) => id === last);
-          const gap = last != null && from === -1;
-          const body = [
-            "retry: 1000\n\n",
-            ...(gap ? ["event: gap\ndata:\n\n"] : []),
-            ...events
-              .slice(from + 1)
-              .map(
-                ([id, name, data]) =>
-                  `id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`,
-              ),
-          ].join("");
-          res.setHeader("content-type", "text/event-stream");
-          res.status(200).send(body);
+          const last = req.get("last-event-id") ?? undefined;
+          const from = events.findIndex(({ id }) => id === last);
+          const gap = last !== undefined && from === -1;
+          const stream = res.status(200).sse({
+            contract: JobEvents,
+            retry: 1000,
+            // Called only with a Last-Event-ID: what came after it, or a gap.
+            resume: () => (gap ? "gap" : events.slice(from + 1)),
+          });
+          // A fresh stream, or one past a gap, gets every event.
+          if (last === undefined || gap) {
+            for (const event of events) void stream.send(event);
+          }
+          stream.close();
         },
       )
       .describe({

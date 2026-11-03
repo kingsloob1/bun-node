@@ -13,7 +13,13 @@ TC. **BNR** is [`bun-native-routes/README.md`](../bun-native-routes/README.md)
 **Status (2026-11-03): approved by the user** (TC §14, Q22; names as in
 TC §16). **PR-S1 is built** (branch `feat/bun-client-sse`; TC's Status
 row has what it ships, its departures and the names awaiting approval).
-BNR PR-sse2 (§4) is not started.
+BNR PR-sse2 (§4) **is built** (2026-11-03, branch
+`feat/bun-common-sse-writer`): all four additions, as `res.sse({ contract,
+validation, ids: "auto", resume, retry, heartbeatMs })`, with an end-to-end
+test against this client (`bun-client/__tests__/sseServer.test.ts`), and
+`x-sse-data` (`"json"`/`"text"`) beside `x-sse-events` for the generator
+(not read by it yet). Approved by the user as built on 2026-11-03
+(BNR §16's Status lists the names and behaviours).
 
 ---
 

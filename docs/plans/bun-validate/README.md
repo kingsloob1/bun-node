@@ -698,7 +698,7 @@ Adopted by reference. This plan builds on them and changes only what §4 says.
 | `ProblemDetailsFilter` | NTR §3.3 | plan | `ValidationExceptionFilter` beside it (§4.5.5) |
 | `defineChannel({ receives, sends })` | TC §6.5, PR-M4 | plan, validation semantics open | a WebSocket contract on the core; the semantics (§4.6) |
 | `@ValidateMessage`, `@Emits` | NTR §7, PR-N5 | plan | on the core; error frame and filter (§4.6.2) |
-| SSE helpers: `res.sse()`, `SseWriter`, `./sse` | bun-native-routes §16, PR-sse2 | plan, not started; this plan's lead owns it | the writer takes an SSE contract (§4.7) |
+| SSE helpers: `res.sse()`, `SseWriter`, `./sse` | bun-native-routes §16, PR-sse2 | **built** 2026-11-03 (branch `feat/bun-common-sse-writer`): `res.sse({ contract })` typed and checked before encoding (V11's bun-common half, Q-H10's recommendation) | the writer takes an SSE contract (§4.7) |
 | `validate` on read for caches | BC §3.13 | plan | runner and order only (§4.10) |
 | Client-side validation, `Jsonify` responses, the route model | TC §3.0, §4.1, §5 | plan | reads `describeContract` (§4.11) |
 | NestJS 12 support | [nestjs-12-parity](../nestjs-12-parity/README.md) | plan, being built | the Nest PRs here stack on its PR-2, PR-3, PR-5, PR-6a, PR-6c (§6) |

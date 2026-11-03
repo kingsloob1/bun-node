@@ -107,6 +107,16 @@ describe("package.json exports", () => {
     expect(manifest.exports["./lib/contract"]).toEqual(conditions);
   });
 
+  it("publishes the SSE helpers at the browser-safe ./sse subpath", () => {
+    const conditions = {
+      "@kingsleyweb/source": "./lib/sse/index.ts",
+      types: "./dts/sse/index.d.ts",
+      default: "./lib/sse/index.ts",
+    };
+    expect(manifest.exports["./sse"]).toEqual(conditions);
+    expect(manifest.exports["./lib/sse"]).toEqual(conditions);
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -129,6 +139,20 @@ describe("the declaration build", () => {
     expect(contract).toContain("index.ts");
     for (const file of contract) {
       expect(built.has(join(ROOT, "lib/contract", file))).toBe(true);
+    }
+  });
+
+  it("covers every module of lib/sse", () => {
+    const configPath = join(ROOT, "tsconfig.build.json");
+    const read = ts.readConfigFile(configPath, (path) => ts.sys.readFile(path));
+    const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, ROOT);
+    const built = new Set(parsed.fileNames.map((f) => resolve(f)));
+    const files = readdirSync(join(ROOT, "lib/sse")).filter((f) =>
+      f.endsWith(".ts"),
+    );
+    expect(files).toContain("index.ts");
+    for (const file of files) {
+      expect(built.has(join(ROOT, "lib/sse", file))).toBe(true);
     }
   });
 });
