@@ -1015,6 +1015,47 @@ export async function registerSqlSuite(
         // Bun's reconnect backs off exponentially; measured ~0.25 s idle.
       }, 20_000);
     } else {
+      test("deleteByTags works on a tag table without the driver's (ns, k) index, and with it", async () => {
+        // An existing schema named through `tables`, its tag table created
+        // without `ix_<tags>_key`: the plan cannot name that index there.
+        const bare = named("bare_tags");
+        const sql = rawClient(backend);
+        try {
+          await sql.unsafe(
+            `CREATE TABLE ${bare} (ns VARCHAR(255) NOT NULL, tag VARCHAR(255) NOT NULL, k VARCHAR(255) NOT NULL, PRIMARY KEY (ns, tag, k))`,
+          );
+        } finally {
+          await sql.close();
+        }
+        for (const driver of [
+          make("barex_", { tables: { tags: bare } }),
+          make("keyed_"),
+        ]) {
+          const ns = `bare-${process.pid}`;
+          const tagged = (key: string, tags: string[]) => ({
+            key,
+            value: new Uint8Array([1]),
+            expiresAt: null,
+            tags,
+          });
+          await driver.set(ns, tagged("a", ["t", "u"]));
+          await driver.set(ns, tagged("b", ["t"]));
+          await driver.set(ns, tagged("c", ["u"]));
+          await driver.increment!(ns, "n", 1, null);
+          expect(
+            await driver.deleteByTags!(ns, ["t"], Date.now() + 60_000),
+          ).toBe(2);
+          expect(await driver.get(ns, "a")).toBeUndefined();
+          expect(await driver.get(ns, "b")).toBeUndefined();
+          // "a"'s other tag row went with it: "u" now reaches only "c".
+          expect(
+            await driver.deleteByTags!(ns, ["u"], Date.now() + 60_000),
+          ).toBe(1);
+          expect((await driver.getCounter!(ns, "n"))?.value).toBe(1);
+          await driver.close();
+        }
+      });
+
       test("maxEntryBytes is read from the server's max_allowed_packet", async () => {
         const sql = rawClient(backend);
         try {

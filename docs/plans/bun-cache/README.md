@@ -2385,6 +2385,34 @@ design stays eager (the user's rule); what changed:
   memory 261,875 → 304,577/s; the other rows moved within the bench's
   run-to-run spread.
 
+**Speed work: MySQL `invalidateTags`, built 2026-11-03** (speed work PR 5,
+scheduled by the user with its speed comparisons). The baseline had
+`invalidateTags` of one tag on 1,000 keys at 250–268 ms on MySQL, 27 ms on
+MariaDB and 7 ms on Postgres. Timed statement by statement in the bench's
+pattern, MySQL's tag-row delete (the self-join that removes every tag row of
+a key with no entry left) took 240–375 ms of it. `EXPLAIN FORMAT=TREE` showed
+why: **a table scan of `entries` for every tag row** in the antijoin, the
+optimizer believing the table held one row (InnoDB's statistics, taken when
+the table was created); MariaDB looked each key up by primary key. The entry
+delete had the same exposure (MySQL drove it from the namespace's every
+entry).
+
+- **MySQL's two deletes fix their plan**: `STRAIGHT_JOIN` from the
+  invalidated tag's rows, `FORCE INDEX (PRIMARY)` on `entries` and the tag
+  table's `(ns, k)` index on its side. That index is named only when
+  `information_schema.STATISTICS` shows the table has it (read on connect),
+  since a `tables` name may point at a schema created without it and forcing
+  a missing index is an error. MariaDB keeps the plain statements: forced, it
+  measured 41 ms against its own 28. What either deletes is unchanged.
+- **A/B** (the PR 4 tree against this one, the bench's pattern, eight
+  rounds): MySQL 255–329 → 26–122 ms (best 26.6, rounds above 30 ms
+  intermittent, the fixed plan itself 22 ms); MariaDB 26.1 → 26.7 best; with
+  50,000 more entries in the namespace both forms took 25–34 ms (InnoDB had
+  recalculated the statistics), so the bug is a fresh or small table's.
+- **Tests**: `deleteByTags` on a tag table created without the `(ns, k)`
+  index and on one with it (MySQL and MariaDB); the index always named
+  fails MySQL's.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
