@@ -289,6 +289,12 @@ export const manifest = {
 - **`x-bun-errors`** narrows the `code` of every declared error body that has
   one: `Omit<Problem, "code"> & { code: "NOT_FOUND" | "GONE" }`, or the inline
   object's own `code`, member by member for a `oneOf`.
+- **Response headers** (`responses.<status>.headers`) become
+  `responseHeaders: { 200: { "x-total-count": string } }`, by lower-case
+  name, optional unless `required`; a header whose schema is not a string's
+  is typed `string`, since that is what arrives. `Content-Type` and
+  `Set-Cookie` are left out. Read them from `r.response.headers`; the
+  client checks them (below).
 - **`x-bun-cache`** becomes `cache: { tags; invalidates }`, as literal tuples,
   in the entry and in the manifest, for the query layer
   ([below](#the-query-layer-query)).
@@ -339,6 +345,7 @@ warning; a status the route does not declare goes to `undeclaredStatus`. A
 route that declares no response at all is `{ 200: unknown }`, with a warning.
 A `z.date()` has no JSON Schema, so bun-common documents it as `{}` and it
 arrives `unknown` (plan §5.3): declare a wire type such as `z.iso.datetime()`.
+From `--module` the header says where ([below](#the-generated-zod-module-zod)).
 
 ### From code
 
@@ -474,7 +481,7 @@ both sides.
 | | Default | A failure |
 | --- | --- | --- |
 | The request: `params`, `query`, `body` (before they are serialised), `headers` (as sent, on the first attempt) | **on in development, off in production** | **throws** `ValidationError`; nothing is sent |
-| The response body, by status | **on in development, off in production** | **warns** through `logger` and returns the body as it arrived |
+| The response, by status: its body, and the headers it declares | **on in development, off in production** | **warns** through `logger` and returns the body as it arrived |
 
 Development is `process.env.NODE_ENV !== "production"`, written out so a
 bundler's define replaces it (in a browser with no define, development);
@@ -519,6 +526,16 @@ expect(code).not.toMatch(/["'](?:node|bun):|\bBun\.\w+|BunRouter/);
 Remember the wire: a response schema with `z.date()` refuses the string a
 `Date` becomes in JSON, so declare wire types (`z.iso.datetime()`).
 
+An entry may also give `responseHeaders`, one schema per status for the
+headers it declares: an object of them as they arrived, by lower-case name,
+each a string (a repeated header joined with `", "`). They are checked under
+the status's switch and failure mode, in the same `ValidationError` as its
+body (the headers' issues first, `target: "headers"`), and alone when the
+body is left unread (a stream, a download `as: "stream"`). In a browser, a
+cross-origin response shows a page only the headers its
+`Access-Control-Expose-Headers` names, and never `Set-Cookie`: a required
+header it hides reads as missing.
+
 ### Configuring it
 
 `validate` takes the same shape at every level (`createClient`,
@@ -540,7 +557,7 @@ await api.get("/feed", { validate: false });                // this call: nothin
 | --- | --- |
 | `request` | every request part at once: `true` runs their built-in schemas, `false` turns them off (BYO included) |
 | `params`, `query`, `body`, `headers` | one part: `true`, `false`, or `{ enabled, custom, replace }` |
-| `response` | `true`/`false` for every status, or `{ [status]: true \| false \| { enabled, custom, replace } }` |
+| `response` | `true`/`false` for every status, or `{ [status]: true \| false \| { enabled, custom, replace } }`; covers the status's body and its declared headers |
 | `onFailure` | `"throw"`, `"warn"`, or a hook `(error) => void` (it may throw), for both directions or `{ request, response }`; default `{ request: "throw", response: "warn" }` |
 
 A `false` anywhere turns off everything under it, BYO schemas included, until
@@ -569,10 +586,30 @@ createClient<Routes>({
 - It receives the built-in schema's output when that passed, and the value
   as it was when it failed, so both run and **every issue is reported at
   once**, the built-in ones first.
-- `replace: true` runs it alone for that part.
+- `replace: true` runs it alone for that part. On a response it replaces
+  the built-in body schema; the status's declared headers are still checked.
+  A response's BYO schema checks the body only.
 - What it returns is what is sent (a request part) or delivered (a
   response): a transform applies. Headers are checked, never transformed.
-  The result's type stays the route map's.
+- **Set on the call, it types the result** (plan §5.4): a status whose
+  `custom` the call's `validate.response` sets has its `data` (or `error`)
+  typed as the schema's output; a streamed status yields the outputs. Set on
+  the client or a route, it still runs, but the type stays the route map's
+  (`createClient<Routes>()` names its types, so it cannot infer them from the
+  configuration):
+
+  ```ts
+  const r = await api.get("/events/:id", {
+    params: { id },
+    validate: { response: { 200: { custom: EventWithDate } } },
+  });
+  if (r.ok) r.data.at.getTime();      // a Date, as EventWithDate's output
+  ```
+
+  The type holds when the check passes. Under `"warn"` (the response
+  default), or a hook that returns, a failed check delivers the body as it
+  arrived, so a call whose BYO schema transforms is safest with
+  `onFailure: { response: "throw" }`.
 - A part's `custom` runs whatever the mode (it was asked for), unless a
   `false` turns the part off; a call's replaces the route's.
 
@@ -593,7 +630,8 @@ try {
 It extends `ClientError` (its `key` is the route key). Each issue is
 bun-contract's `{ target, message, path }` (with `key`, the status, on a
 response), plus `source`: `"builtin"` or `"custom"`. `target` is `params`,
-`query`, `body`, `headers` or `response`. No issue quotes the value it is
+`query`, `body`, `headers`, `files` or `response` (a response's body; its
+declared headers are `headers`, with `direction: "response"`). No issue quotes the value it is
 about: a vendor message that does is replaced by `Invalid value`, as the
 server does.
 
@@ -640,18 +678,35 @@ export const schemas = schemasFromZod<Routes>({
   `email`, `uuid` (zod's lenient `guid`), `date-time` (offsets allowed),
   `date` and `uri`; number ranges and `multipleOf`; array lengths. Per route:
   `params`, `query` and `headers` from the documented parameters, a JSON body,
-  and each status's JSON body (`z.string()` for text, `null` for none).
+  each status's JSON body (`z.string()` for text, `null` for none), and
+  `responseHeaders`, each status's declared headers (`Content-Type` and
+  `Set-Cookie` left out).
+- **Headers cross as strings**, request and response alike: a header whose
+  schema describes strings is checked by it, and any other (a server's
+  `z.coerce.number()` documents `integer`) as `z.string()`. The route map
+  types a response header the same way.
 - **Not checked**: a multipart or binary body, an event stream, a `default`
   status; other keywords (the check is looser than the document, never
   stricter). A keyword TypeScript cannot express either (`not`, `if`, …)
   leaves its schema `z.unknown()`, listed under "Not checked" in the header.
 - **What JSON Schema loses** (plan §5.3): a `.refine()` or `.superRefine()`
-  on the server is dropped silently, so the generated check is weaker than
-  the server's with no warning possible; a `.transform()`'s output,
-  `z.custom()` and `z.date()` are `z.unknown()`. The server still validates:
-  the client's check exists to fail early and to catch drift. Put a
-  cross-field rule you want checked before sending in a BYO schema, or use
-  the server's own schemas.
+  on the server is dropped from the document, so the generated check is
+  weaker than the server's; a `.transform()`'s output, `z.custom()` and
+  `z.date()` are `z.unknown()`. The document says nothing of either, so
+  only the zod objects show it: `generate --module`, which reads the router
+  itself, lists each one in the route map's header ("Warnings", and on
+  stderr), once per schema, at the first route part it is met in:
+
+  ```text
+  - POST /api/users body: at the value itself: a refinement (`.refine()`, `.superRefine()`) is not in the document, so a schema generated from it (`--zod`) does not run it
+  - GET /api/users/:id response 200: at `joined`: `z.date()` has no JSON Schema, so it is typed `unknown` and not checked (declare the wire type, `z.iso.datetime()`)
+  ```
+
+  A document read from a URL or a file carries no such warning. The server
+  still validates: the client's check exists to fail early and to catch
+  drift. Put a cross-field rule you want checked before sending in a BYO
+  schema, or use the server's own schemas (which run their refinements on
+  the client too).
 - `zod/mini` reports `Invalid input` for every issue until a locale is
   loaded (`z.config(z.locales.en())`); the paths are there either way.
 - Components are exported, each after those it uses; a schema refers to

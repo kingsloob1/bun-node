@@ -4,7 +4,7 @@
  * lazily: `createClient<Routes>({ schemas: () => import("<this module>") })`.
  * Do not edit; regenerate it, and run the same command with `--check` in CI.
  *
- * typesHash: 108152abb8ac0736
+ * typesHash: 6ee06fd1bf4975f8
  */
 import { schemasFromZod } from "@kingsleyweb/bun-client/zod";
 import { z } from "zod";
@@ -116,6 +116,12 @@ export const schemas = schemasFromZod<Routes>({
     responses: {
       200: User,
       404: Problem,
+    },
+    responseHeaders: {
+      200: z.looseObject({
+        "x-request-id": z.optional(z.string().check(z.regex(/^req-/))),
+        "x-rate-limit": z.optional(z.string()),
+      }),
     },
   },
   "DELETE /api/users/:id": {

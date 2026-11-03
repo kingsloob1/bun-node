@@ -47,8 +47,8 @@ function isZodSchema(value: unknown): boolean {
  * ```
  *
  * @typeParam R The route map: a key it does not have is a compile error.
- * @param schemas Per route key, each request part's schema and the response
- *   bodies' by status (`null`: no body).
+ * @param schemas Per route key, each request part's schema, the response
+ *   bodies' by status (`null`: no body) and the response headers' by status.
  * @returns The same object, typed for `SchemaSource<R>`'s `schemas`.
  * @throws TypeError when a key is not a route key (`"VERB /path"`) or a
  *   value is not a zod 4 schema, naming where.
@@ -67,6 +67,8 @@ export function schemasFromZod<R>(schemas: {
     readonly files?: $ZodType;
     /** Response bodies by status (an NDJSON stream's: one line); `null`: no body. */
     readonly responses?: { readonly [status: number]: $ZodType | null };
+    /** Response headers by status: an object of them, by lower-case name, each a string. */
+    readonly responseHeaders?: { readonly [status: number]: $ZodType };
   };
 }): SchemaSource<R>["schemas"] {
   for (const [key, route] of Object.entries(
@@ -88,6 +90,13 @@ export function schemasFromZod<R>(schemas: {
       if (schema !== null && !isZodSchema(schema))
         throw new TypeError(
           `schemasFromZod(): ${key} response ${status} is not a zod 4 schema (or null)`,
+        );
+    }
+    const headers = (route.responseHeaders ?? {}) as Record<string, unknown>;
+    for (const [status, schema] of Object.entries(headers)) {
+      if (!isZodSchema(schema))
+        throw new TypeError(
+          `schemasFromZod(): ${key} response ${status} headers is not a zod 4 schema`,
         );
     }
   }

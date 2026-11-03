@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: fd5b0e96bf4fc9b6
+ * typesHash: d76bb040a5195d54
  *
  * Warnings:
  * - GET /nothing: no response is declared; typed `{ 200: unknown }`
@@ -23,7 +23,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "fd5b0e96bf4fc9b6";
+export const typesHash = "d76bb040a5195d54";
 
 export type _2fa = boolean;
 
@@ -181,6 +181,15 @@ export interface Routes {
     responses: {
       200: Pet[];
     };
+    responseHeaders: {
+      200: {
+        /** How many pets there are. */
+        "x-total-count": string;
+        "x-page-kind"?: "first" | "next";
+        /** Pagination links. */
+        link?: string;
+      };
+    };
   };
   "POST /pets": {
     params: Record<never, never>;
@@ -244,6 +253,11 @@ export interface Routes {
       200: Tree;
       404: Omit<Problem, "code"> & {
         code: "NOT_FOUND" | "GONE";
+      };
+    };
+    responseHeaders: {
+      404: {
+        "x-reason": string;
       };
     };
     cache: {

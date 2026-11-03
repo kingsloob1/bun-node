@@ -20,7 +20,8 @@
  *
  * **Validation** (§5, PR-C4) wraps it: the params, query and body are
  * checked before the URL is built, the headers on the first attempt before
- * the middleware, and a declared status's body after it is read. The checks
+ * the middleware, and a declared status's body and declared headers after
+ * the body is read (the headers alone for a body left unread). The checks
  * live in `./validation`, imported with `import()` only when a call has
  * something to check, so a client with validation off loads neither it nor
  * bun-contract.
@@ -636,10 +637,18 @@ export function createClient(
       callChecks && ((line) => callChecks.response(status, line)),
     );
     const filename = read.filename;
-    const body =
-      callChecks === undefined || read.unread
-        ? read.value
-        : await callChecks.response(status, read.value);
+    // The declared headers (§5.6) are checked with the body, in one error;
+    // alone for a body left unread, before it is handed on.
+    let body = read.value;
+    if (callChecks !== undefined && read.unread) {
+      try {
+        await callChecks.responseHeaders(status, response.headers);
+      } catch (error) {
+        await discard(response);
+        throw error;
+      }
+    } else if (callChecks !== undefined)
+      body = await callChecks.response(status, read.value, response.headers);
     const ok = status >= 200 && status < 300;
     if (resolved.throwOnError) {
       if (ok) return body;

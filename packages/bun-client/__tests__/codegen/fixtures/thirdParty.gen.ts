@@ -63,6 +63,11 @@ export interface Routes {
     responses: {
       200: Pets;
     };
+    responseHeaders: {
+      200: {
+        "x-next"?: string;
+      };
+    };
   };
   /** Create a pet */
   "POST /pets": {

@@ -4,7 +4,7 @@
  * lazily: `createClient<Routes>({ schemas: () => import("<this module>") })`.
  * Do not edit; regenerate it, and run the same command with `--check` in CI.
  *
- * typesHash: fd5b0e96bf4fc9b6
+ * typesHash: d76bb040a5195d54
  *
  * Not checked:
  * - components.schemas.Pet allOf[1].notString: `not` cannot be checked; not checked
@@ -134,6 +134,13 @@ export const schemas = schemasFromZod<Routes>({
     responses: {
       200: z.array(Pet),
     },
+    responseHeaders: {
+      200: z.looseObject({
+        "x-total-count": z.string(),
+        "x-page-kind": z.optional(z.enum(["first", "next"])),
+        link: z.optional(z.string().check(z.minLength(1))),
+      }),
+    },
   },
   "POST /pets": {
     body: Pet,
@@ -177,6 +184,11 @@ export const schemas = schemasFromZod<Routes>({
     responses: {
       200: Tree,
       404: Problem,
+    },
+    responseHeaders: {
+      404: z.looseObject({
+        "x-reason": z.string(),
+      }),
     },
   },
 });
