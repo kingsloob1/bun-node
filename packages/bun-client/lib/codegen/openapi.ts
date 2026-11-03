@@ -1409,7 +1409,8 @@ function objectOf(members: readonly TsMember[]): TsType {
  * (`params`, `query` when declared, `receives`, `sends`, `replies`), each
  * message's data its JSON Schema's type (`undefined` for none), and each
  * descriptor's runtime facts (`path`, `idField` when not `"id"`, `replies`,
- * `subprotocol`). Nothing when there is no channel.
+ * `subprotocol`, `codec` for a bun-nest gateway). Nothing when there is no
+ * channel.
  */
 function channelsDoc(
   channels: readonly ParsedChannel[],
@@ -1512,6 +1513,8 @@ function channelsDoc(
       ]);
     if (channel.subprotocol !== undefined)
       facts.push(`subprotocol: ${quote(channel.subprotocol)}`);
+    if (channel.codec !== undefined)
+      facts.push(`codec: ${quote(channel.codec)}`);
     const object = group([
       "{",
       indent([line, join([",", line], facts)]),

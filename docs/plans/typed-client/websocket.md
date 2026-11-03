@@ -26,7 +26,11 @@ documents a reply that echoes the request's id, which the handler dispatch
 (2026-11-03, branch `feat/bun-common-channel-server`; TC's Status row):
 §10.1–10.4; §10.5 is not in it. **PR-W2 is built** (2026-11-03, branch
 `feat/bun-client-channel`; TC's Status row): the client of §3–§8, the
-generator's `Channels`; `"bun-nest"` is PR-W3's.
+generator's `Channels`; `"bun-nest"` is PR-W3's. **PR-W3 is built**
+(2026-11-03, branch `feat/bun-client-nest-codec`; TC's Status row): §11's
+codec, the generator reading `gatewayAsyncApi()`'s packets, NTR §7's
+shared maps; its names (the ack as the sent type `"<event> ack"`,
+`ChannelDescriptor.codec`) **approved by the user on 2026-11-03**.
 
 ### Contents
 

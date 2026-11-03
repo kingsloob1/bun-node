@@ -1300,12 +1300,81 @@ const room = channel(api, channels["/rooms/:room"], { params: { room: "lobby" } 
   room.sendWhenReady(type, data, { highWaterMark })` (1 MiB) waits an
   animation frame at a time (16 ms outside a browser) until the buffer is
   under the mark. `send` never waits.
-- **Codecs.** `"bun-common"` (the default) is `defineChannel`'s envelope; a
-  custom `{ encode, decode }` maps another (`"bun-nest"` comes in PR-W3).
+- **Codecs.** `"bun-common"` (the default) is `defineChannel`'s envelope;
+  `"bun-nest"` is a bun-nest gateway's packets (below); a custom `{ encode,
+  decode }` maps another. A generated descriptor names its codec, so it
+  needs no option.
 
-The entry is 4.4 KiB gzipped, none of it in the `.` entry; its checks
+The entry is 4.9 KiB gzipped, none of it in the `.` entry; its checks
 (bun-contract's guards) load lazily, as the core client's do. Its error
 classes are exported from `./channel`.
+
+### bun-nest gateways (`codec: "bun-nest"`)
+
+A gateway on bun-nest's `BunWebSocketAdapter` speaks socket.io-style packets,
+not bun-common frames. With `codec: "bun-nest"`, `send(type, data)` writes an
+`EVENT` `{ type: 2, namespace: "/", data: [type, data] }` (`[type]` with no
+data), and `request(type, data)` the same with an id, which the gateway
+answers with an `ACK` of that id: the handler's return, or its `@Ack()`
+call. So `request()` resolves with the ack, typed by `@ValidateMessage(schema,
+{ ack })`'s `ack` schema and checked against it like any frame the client
+receives.
+
+In a separate repo, generate from the gateway's AsyncAPI document
+(`gatewayAsyncApi(app)`, which documents each ack as its operation's reply):
+
+```ts
+// bun-client generate --openapi openapi.json --asyncapi gateways.json --out api.gen.ts --zod api.zod.gen.ts
+// or --module app-docs.ts, whose default export boots the app (no listen) and returns
+// { openapi: generateOpenApi(adapter.instance).document, asyncapi: gatewayAsyncApi(app).document }
+import { channels } from "./api.gen";
+
+const chat = channel(api, channels["/chat"]);          // the descriptor names codec: "bun-nest"
+const ack = await chat.request("say", { text: "hi" }); // Channels["/chat"]["sends"]["say ack"]
+chat.on("said", (m) => show(m.by, m.text));            // an @Emits event
+```
+
+The ack is a sent type of its own, named as the document names it
+(`"<event> ack"`), and `replies` maps the event to it. In a monorepo, put the
+gateway's schemas in a shared, browser-safe module (the **shared maps**,
+NTR §7), pass them to the decorators, and open the same module's contract:
+
+```ts
+// chat.shared.ts: zod and the contract core only, never the gateway
+export const Say = z.object({ text: z.string().min(1) });
+export const SayAck = z.object({ ok: z.boolean(), length: z.number().int() });
+export const chatEmits = { said: z.object({ by: z.string(), text: z.string() }), typing: null } as const;
+export const chat = channelContract({
+  path: "/chat",                                       // the gateway's path (and namespace)
+  receives: { say: Say, typing: null },
+  sends: { ...chatEmits, "say ack": SayAck },
+  replies: { say: "say ack" },
+});
+
+// the gateway: @Emits(chatEmits), @ValidateMessage(Say, { ack: SayAck }), TypedSocket<typeof chatEmits>
+// the client:
+const room = channel(api, chat, { codec: "bun-nest" });
+```
+
+- **Pushes** are the gateway's `EVENT`s: an `@Emits` event, a `WsResponse`
+  (`{ event, data }`). A server event is never a reply, even with an id
+  (`emitWithAck`, the server asking the client for an ack, is not
+  supported: its id is dropped). Several arguments arrive as their array.
+- **Errors.** `ValidationExceptionFilter`'s `exception` event (`{ status,
+  code: "VALIDATION", issues }`) is a `ChannelError` on `on("$error")`; any
+  other `exception` (a `WsException`'s `{ status: "error", message, cause
+  }`) is a push of type `"exception"`, and an `ERROR` packet a push of type
+  `"error"` carrying its message. None of them names the request that
+  failed, and a gateway sends no ack for a handler that threw, so **such a
+  request ends with `RequestTimeoutError`** at its `timeout`. An ack that
+  arrives after its request gave up is ignored.
+- **Bytes.** Data that is an `ArrayBuffer` or a typed array is sent as a
+  `BINARY_EVENT` (base64, which the adapter decodes to a `Buffer`), and a
+  `BINARY_EVENT`'s or `BINARY_ACK`'s binary arguments arrive as
+  `Uint8Array`s. JSON Schema cannot describe bytes, so a generated map types
+  them `unknown`; a shared contract can say `z.instanceof(Uint8Array)`.
+- **The namespace** on the wire is `"/"`: bun-nest's adapter echoes it and
+  routes by the URL (the gateway's `path` and `namespace`), not by it.
 
 ## The query string
 
