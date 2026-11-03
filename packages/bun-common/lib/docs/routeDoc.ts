@@ -201,9 +201,11 @@ export interface RouteDoc {
    * call invalidates, emitted as the operation's `x-bun-cache` object
    * (typed-client plan §6.4, in bun-cache's vocabulary). A template may name
    * the route's own path params in braces (`"user:{id}"`); a name the path
-   * does not declare is emitted as written, with a warning. Documentation
-   * only: it reaches neither the handler's types nor bun-cache's runtime.
-   * Default: none, and no `x-bun-cache` is emitted. Wins over an
+   * does not declare is emitted as written, with a warning. It reaches
+   * neither the handler's types nor bun-cache's runtime; with
+   * `liveInvalidation()` (`@kingsleyweb/bun-common/live`) mounted,
+   * `invalidates` is published, filled from the request's params, when the
+   * response is a 2xx. Default: none, and no `x-bun-cache` is emitted. Wins over an
    * `extensions["x-bun-cache"]` given beside it (with a warning when the two
    * differ).
    */

@@ -27,7 +27,7 @@
  *   time, so the endpoint's hash moves and a running `bun-client watch`
  *   rewrites its file. The page shows the command.
  */
-import type { BunHttpAdapter } from "@kingsleyweb/bun-common";
+import type { BunHttpAdapter, BunServer } from "@kingsleyweb/bun-common";
 import type { DevTypesRouter } from "@kingsleyweb/bun-common/lib/docs";
 import type { ClientMiddleware } from "@kingsleyweb/bun-client";
 import type { ServerHit } from "./typed-client-api";
@@ -46,11 +46,13 @@ import {
   UnexpectedStatusError,
   ValidationError,
 } from "@kingsleyweb/bun-client";
+import { liveInvalidation } from "@kingsleyweb/bun-common/live";
 import { runCli } from "@kingsleyweb/bun-client/codegen";
 import { channel } from "@kingsleyweb/bun-client/channel";
 import { sse } from "@kingsleyweb/bun-client/sse";
 import {
   invalidateTags,
+  live,
   observe,
   queries,
   tagsOfQuery,
@@ -160,7 +162,8 @@ export type ScenarioName =
   | "query-key"
   | "etag-304"
   | "invalidates"
-  | "cache-tag";
+  | "cache-tag"
+  | "live";
 
 /** One scenario, as the page lists it. */
 export interface ScenarioInfo {
@@ -293,6 +296,13 @@ export const SCENARIOS: readonly ScenarioInfo[] = [
     about:
       'bun-cache\'s cacheResponse({ surrogateKeys: "Cache-Tag" }) sends team:blue from the data; invalidating it refetches org 7, not org 8',
   },
+  {
+    name: "live",
+    section: "query",
+    title: "Live invalidation",
+    about:
+      "live() from @kingsleyweb/bun-client/query over bun-common's liveInvalidation(): another client's POST /api/users (invalidates \"users\") refetches the observed list over the socket, with no mutation in this query client",
+  },
 ];
 
 /** What the section owns, for the playground's shutdown and the banner. */
@@ -334,6 +344,15 @@ export async function mountTypedClientDemo(
     asyncapi: () => generateAsyncApi(documented(), DOCUMENT_INFO).document,
   });
   app.use(dev);
+  // Live invalidation (bun-common's ./live), before the API so its routes'
+  // cache.invalidates are published on a 2xx, and the API's cache as a
+  // source. The playground answers loopback only, so every client is let in.
+  app.use(
+    liveInvalidation(app, {
+      authorize: (_req, _res, next) => next(),
+      source: api.cache,
+    }),
+  );
   app.use(CLIENT_BASE, api.router);
 
   const snippets = await readSnippets();
@@ -342,7 +361,11 @@ export async function mountTypedClientDemo(
    * A fresh client, query layer and query client for one run, whose `fetch`
    * records every request it sends and whose `logger` keeps the warnings.
    */
-  function makeKit(started: number, origin: string | undefined) {
+  function makeKit(
+    started: number,
+    origin: string | undefined,
+    server: BunServer | undefined,
+  ) {
     const sent: SentRequest[] = [];
     const warnings: string[] = [];
     const client = createClient<Routes>({
@@ -390,7 +413,19 @@ export async function mountTypedClientDemo(
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
-    return { api: client, q, queryClient, sent, warnings, origin };
+    /**
+     * Resolves once the server holds `tag` for a live socket (its pub/sub
+     * topic has a subscriber), so a scenario changes nothing before the
+     * subscription is in place.
+     */
+    const held = async (tag: string): Promise<void> => {
+      const deadline = Date.now() + 5_000;
+      while ((server?.subscriberCount(`bun-common/live:${tag}`) ?? 0) === 0) {
+        if (Date.now() > deadline) throw new Error(`"${tag}" was never held`);
+        await Bun.sleep(10);
+      }
+    };
+    return { api: client, q, queryClient, sent, warnings, origin, held };
   }
 
   /** One kit, as the scenarios receive it. */
@@ -707,18 +742,51 @@ export async function mountTypedClientDemo(
       return tags;
       // #endregion
     },
+
+    live: async ({ api, q, queryClient, origin, held }) => {
+      if (origin === undefined) throw new Error("the adapter is not listening");
+      // #region live
+      const listOptions = q.query("/api/users");
+      const list = observe(queryClient, listOptions);
+      const stopObserving = list.subscribe(() => {});
+      await queryClient.fetchQuery(listOptions);
+      // live() over a real socket: the channel is at the server's root
+      const stop = live(createClient({ baseUrl: origin }), queryClient);
+      await held("users"); // the server holds the list's tag for this socket
+      const before = list.getSnapshot().data?.length;
+      // Another client's call, not this query client's mutation: only the
+      // live channel can tell the list (POST declares invalidates: ["users"])
+      const created = await api.post("/api/users", {
+        body: { name: "Kay", email: `kay-${Date.now()}@example.com` },
+        throwOnError: true,
+      });
+      const deadline = Date.now() + 5_000;
+      while (
+        list.getSnapshot().data?.length === before &&
+        Date.now() < deadline
+      )
+        await Bun.sleep(10);
+      const after = list.getSnapshot().data?.length;
+      stop();
+      stopObserving();
+      // #endregion
+      // Tidy up, so the API keeps its seed users.
+      await api.delete("/api/users/:id", { params: { id: created.id } });
+      return { listTags: listOptions.meta.tags, before, after };
+    },
   };
 
   /** Runs one scenario. */
   async function run(
     name: ScenarioName,
     origin: string | undefined,
+    server?: BunServer,
   ): Promise<ScenarioRun> {
     const startedAt = Date.now();
     const started = performance.now();
     // The API's log from here on: hits numbered after the last one now.
     const seen = api.state.seq;
-    const kit = makeKit(started, origin);
+    const kit = makeKit(started, origin, server);
     let ok = true;
     let outcome: unknown;
     try {
@@ -825,6 +893,7 @@ export async function mountTypedClientDemo(
         await run(
           name,
           port === undefined ? undefined : `http://127.0.0.1:${port}`,
+          req.server,
         ),
       );
     })

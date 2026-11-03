@@ -249,7 +249,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, query-core in ./query alone, react-query in ./react alone, and query-persist-client-core's types in ./persist alone (plan §12.1)", async () => {
+  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, query-core in ./query alone (its types in the live layer), react-query in ./react alone, and query-persist-client-core's types in ./persist alone (plan §12.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -268,9 +268,13 @@ describe("dependencies (plan D17, §10.1)", () => {
           expect(found.type || file === "validation.ts").toBe(true);
           continue;
         }
-        // query-core: the ./query entry alone (its optional peer).
+        // query-core: the ./query entry alone (its optional peer), and its
+        // types in the live layer that entry loads lazily.
         if (found.specifier === "@tanstack/query-core") {
-          expect(found.file).toBe("query.ts");
+          expect(
+            found.file === "query.ts" ||
+              (found.file === "live.ts" && found.type),
+          ).toBe(true);
           continue;
         }
         // react-query: the ./react entry alone (its optional peer).
@@ -341,15 +345,22 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("keeps the event-stream client out of every other entry: no lib/ module imports ./sse, and ./sse none of the core client (plan §10.1)", async () => {
+  it("keeps the event-stream client out of every other entry: no lib/ module imports ./sse, but the live layer its types and a dynamic import (its fallback), and ./sse none of the core client (plan §10.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
       const source = await Bun.file(join(ROOT, "lib", file)).text();
       expect({
         file,
-        imports: /from "\.\/sse"|import\("\.\/sse"\)/.test(source),
-      }).toEqual({ file, imports: false });
+        value: /^import(?! type)[^"]*from "\.\/sse"/m.test(source),
+        types: /^import type[^"]*from "\.\/sse"/m.test(source),
+        dynamic: source.includes('import("./sse")'),
+      }).toEqual({
+        file,
+        value: false,
+        types: file === "live.ts",
+        dynamic: file === "live.ts",
+      });
     }
     const sse = await Bun.file(join(ROOT, "lib", "sse.ts")).text();
     expect(/^import(?! type)[^"]*from "\.\/client"/m.test(sse)).toBe(false);
@@ -406,21 +417,32 @@ describe("the consumer check", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("keeps the channel client out of every other entry: no lib/ module imports ./channel but a type, and ./channel none of the core client (plan §10.1)", async () => {
+  it("keeps the channel client out of every other entry: no lib/ module imports ./channel but a type, and the live layer by a dynamic import, and ./channel none of the core client (plan §10.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
       const source = await Bun.file(join(ROOT, "lib", file)).text();
       expect({
         file,
-        imports:
-          /^import(?! type)[^"]*from "\.\/channel"|import\("\.\/channel"\)/m.test(
-            source,
-          ),
-      }).toEqual({ file, imports: false });
+        value: /^import(?! type)[^"]*from "\.\/channel"/m.test(source),
+        dynamic: source.includes('import("./channel")'),
+      }).toEqual({ file, value: false, dynamic: file === "live.ts" });
     }
     const channel = await Bun.file(join(ROOT, "lib", "channel.ts")).text();
     expect(/^import(?! type)[^"]*from "\.\/client"/m.test(channel)).toBe(false);
+  });
+
+  it("loads the live layer only by a dynamic import, from ./query alone (PR-W4)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        value: /^import(?! type)[^"]*from "\.\/live"/m.test(source),
+        dynamic: source.includes('import("./live")'),
+      }).toEqual({ file, value: false, dynamic: file === "query.ts" });
+    }
   });
 
   it("loads the channel checks only by a dynamic import, from the channel client alone", async () => {

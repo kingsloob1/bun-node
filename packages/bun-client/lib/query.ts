@@ -36,8 +36,10 @@
  * the `QueryClient` or spread over what the factories return.
  *
  * `@tanstack/query-core` is an optional peer (Q3): only this entry imports
- * it, and the core client (`.`) imports nothing of this module. Live
- * invalidation (`live(api)`, PR-W4) builds on {@link tagsOfQuery}.
+ * it, and the core client (`.`) imports nothing of this module.
+ * {@link live} (PR-W4) keeps the observed queries fresh over bun-common's
+ * live channel, through {@link tagsOfQuery}; its implementation
+ * (`./live`) loads lazily.
  */
 import type {
   DataTag,
@@ -455,8 +457,7 @@ function queryAt(client: QueryClient, key: QueryKey): Query | undefined {
 /**
  * Every tag of a cached query: its `meta.tags` (the route's declared tags)
  * and the tags its last response's headers carried. What
- * {@link invalidateTags} matches, and what the live channel (PR-W4)
- * subscribes to.
+ * {@link invalidateTags} matches, and what {@link live} subscribes to.
  */
 export function tagsOfQuery(client: QueryClient, query: Query): string[] {
   const declared = query.meta?.tags;
@@ -498,6 +499,83 @@ export function invalidateTags(
     },
     options,
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Live invalidation                                                    */
+/* ------------------------------------------------------------------ */
+
+/** {@link live}'s options. */
+export interface LiveOptions {
+  /**
+   * How to reach the server's live channel: `"websocket"` (bun-common's
+   * `liveContract` at `/__live` under the client's `baseUrl`) or `"sse"`
+   * (its fallback, `/__live/sse`). Default: `"websocket"` where the
+   * platform has a `WebSocket`, else `"sse"`; a socket that has not opened
+   * 3 s after the start (a proxy refusing upgrades) gives way to `"sse"`.
+   */
+  transport?: "websocket" | "sse";
+}
+
+/** The implementation, loaded on the first {@link live} call. */
+let liveModule: Promise<typeof import("./live")> | undefined;
+
+/**
+ * Keeps `queryClient`'s observed queries fresh over bun-common's live
+ * channel (`websocket.md` §9; `liveInvalidation()` on the server): it
+ * subscribes to the tags of every query with an observer ({@link
+ * tagsOfQuery}: the route's declared tags and its responses' `Cache-Tag` /
+ * `Surrogate-Key`), refcounted, and invalidates the queries under a tag
+ * when the server says it was invalidated — once per invalidation, however
+ * many of its tags they hold. After a reconnect it resumes from the last
+ * invalidation it heard; when the server cannot replay what was missed (a
+ * `gap`, or a restarted server's new epoch) every query is invalidated.
+ * Answers the function that stops it.
+ *
+ * The implementation (and `./channel` or `./sse` under it) loads with
+ * `import()` on the first call, so this entry stays small; nothing is
+ * subscribed until it has.
+ *
+ * ```ts
+ * const stop = live(api, queryClient);
+ * ```
+ *
+ * @param api The client (`createClient`): its `baseUrl`, headers, auth and
+ *   logger apply.
+ * @param queryClient The `QueryClient` whose queries are kept fresh.
+ * @param options See {@link LiveOptions}.
+ */
+export function live(
+  api: {
+    /** The client's URL builder. */
+    readonly url: (...args: never[]) => string;
+    /** The client's request. */
+    readonly request: (...args: never[]) => Promise<unknown>;
+  },
+  queryClient: QueryClient,
+  options: LiveOptions = {},
+): () => void {
+  let stop: (() => void) | undefined;
+  let stopped = false;
+  void (liveModule ??= import("./live")).then(
+    (module) => {
+      if (!stopped)
+        stop = module.startLive(api, queryClient, options, tagsOfQuery);
+    },
+    (error: unknown) => {
+      const logger =
+        (
+          (api as unknown as Record<symbol, unknown>)[
+            Symbol.for("@kingsleyweb/bun-client")
+          ] as { logger?: Pick<Console, "error"> } | undefined
+        )?.logger ?? console;
+      logger.error("live(): could not load", error);
+    },
+  );
+  return () => {
+    stopped = true;
+    stop?.();
+  };
 }
 
 /* ------------------------------------------------------------------ */

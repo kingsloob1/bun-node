@@ -95,6 +95,18 @@
  * in it. PR-W3's `"bun-nest"` codec (packets, acks by id, base64 bytes) took
  * the entry to 13,123 and 5,019 (+1,292 and +496; the same build), 189 and
  * 101 bytes under the limits, which it left as they were.
+ *
+ * Since PR-W4 `./query` carries `live()`, whose implementation
+ * (`lib/live.ts`) it loads with `import()` on the first call, as `.` loads
+ * its checks: the `./query` build leaves that module out, and the live chunk
+ * has its own budget, {@link LIVE_BUDGET}, with `./channel` and `./sse`
+ * (which it loads the same way) left out. Measured 2026-11-03 (Bun
+ * 1.4.4-canary.1+11c367163, over develop 5b4a6f5c): `./query` 6,211 bytes
+ * minified, 2,626 gzipped (5,974 and 2,486 before: `live()`, its options'
+ * default and the lazy load); the live chunk 3,547 and 1,643. A build that inlined
+ * the live chunk with the channel and SSE clients under it would be 56,149
+ * and 19,732, which is why each loads lazily. The `.` entry is unchanged
+ * (12,074 and 5,085).
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -200,11 +212,15 @@ const SSE_BUDGET = {
 const CHANNEL_BUDGET = {
   // Minified raised 13 to 14 KiB for the `"bun-nest"` codec's `ackId`
   // handling (about 0.3 KiB minified, 0.1 gzipped, measured 2026-11-03; the
-  // entry was at 13.0 KiB of 13 before).
+  // entry was at 13.0 KiB of 13 before). Raised again with PR-W4 (the
+  // user's decision, 2026-11-03) to 14.5 KiB minified and 5.5 KiB gzipped:
+  // measured 2026-11-03 (Bun 1.4.4-canary.1+11c367163, develop 5b4a6f5c
+  // with PR-W4) at 13,434 bytes minified and 5,116 gzipped, 4 bytes under
+  // the former 5 KiB gzip limit, which left no room for the next change.
   /** The entry, minified, its checks external, in bytes. */
-  minifiedBytes: 14 * 1024,
+  minifiedBytes: 14.5 * 1024,
   /** The entry gzipped, its checks external, in bytes. */
-  gzipBytes: 5 * 1024,
+  gzipBytes: 5.5 * 1024,
 } as const;
 
 /**
@@ -217,6 +233,18 @@ const CHANNEL_CHECKS_BUDGET = {
   minifiedBytes: 19 * 1024,
   /** The chunk gzipped, in bytes. */
   gzipBytes: 7 * 1024,
+} as const;
+
+/**
+ * Byte limits for the live chunk (`lib/live.ts`, PR-W4), `./channel` and
+ * `./sse` left out: the plan sets no figure, so about 10% above the
+ * measured sizes. The same rule for raising them.
+ */
+const LIVE_BUDGET = {
+  /** The chunk, minified, in bytes. */
+  minifiedBytes: 3.875 * 1024,
+  /** The chunk gzipped, in bytes. */
+  gzipBytes: 1.875 * 1024,
 } as const;
 
 /** Formats bytes as KiB with one decimal, for failure messages. */
@@ -252,11 +280,31 @@ const split = await Bun.build({
   minify: true,
   splitting: true,
 });
+/** Leaves a lazily loaded transport or layer (`./live`, `./channel`, `./sse`) out of a build. */
+const lazyExternal = (filter: RegExp): Bun.BunPlugin => ({
+  name: "lazy-external",
+  setup(build) {
+    build.onResolve({ filter }, (args) => ({
+      path: args.path,
+      external: true,
+    }));
+  },
+});
+
 const query = await Bun.build({
   entrypoints: [join(import.meta.dir, "..", "lib", "query.ts")],
   target: "browser",
   minify: true,
   external: ["@tanstack/query-core"],
+  plugins: [lazyExternal(/^\.\/live$/)],
+});
+
+const liveChunk = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "live.ts")],
+  target: "browser",
+  minify: true,
+  external: ["@tanstack/query-core"],
+  plugins: [lazyExternal(/^\.\/(?:channel|sse)$/)],
 });
 
 const react = await Bun.build({
@@ -371,6 +419,25 @@ describe("the ./query budget", () => {
     expect(verdict(await sizes(query.outputs[0]), QUERY_BUDGET)).toBe(
       "within budget",
     );
+  });
+});
+
+describe("the live chunk's budget", () => {
+  it("builds as one file, the channel and SSE clients left out", () => {
+    expect(liveChunk.success).toBe(true);
+    expect(liveChunk.outputs.length).toBe(1);
+  });
+
+  it(`keeps the live chunk within ${kib(LIVE_BUDGET.gzipBytes)} gzipped and ${kib(LIVE_BUDGET.minifiedBytes)} minified`, async () => {
+    expect(verdict(await sizes(liveChunk.outputs[0]), LIVE_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+
+  it("loads the live layer lazily: ./query's build without it carries none of it", async () => {
+    const code = await query.outputs[0]!.text();
+    expect(code).toContain("./live");
+    expect(code).not.toContain("/__live");
   });
 });
 

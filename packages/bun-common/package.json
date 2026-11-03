@@ -58,6 +58,16 @@
       "types": "./dts/sse/index.d.ts",
       "default": "./lib/sse/index.ts"
     },
+    "./live": {
+      "@kingsleyweb/source": "./lib/live/index.ts",
+      "types": "./dts/live/index.d.ts",
+      "default": "./lib/live/index.ts"
+    },
+    "./lib/live": {
+      "@kingsleyweb/source": "./lib/live/index.ts",
+      "types": "./dts/live/index.d.ts",
+      "default": "./lib/live/index.ts"
+    },
     "./lib/docs": {
       "@kingsleyweb/source": "./lib/docs/index.ts",
       "types": "./dts/docs/index.d.ts",
