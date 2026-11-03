@@ -30,11 +30,7 @@ import {
   useClassDtos,
   validate,
 } from "@kingsleyweb/bun-common";
-import {
-  docsRouter,
-  generateAsyncApi,
-  generateOpenApi,
-} from "@kingsleyweb/bun-common/lib/docs";
+import { docsRouter, generateAsyncApi } from "@kingsleyweb/bun-common/lib/docs";
 import { plainToInstance } from "class-transformer";
 import {
   IsInt,
@@ -59,6 +55,7 @@ import {
 } from "./backend";
 import { mountCacheDemo } from "./cache";
 import { mountChatChannel } from "./chat";
+import { playgroundOpenApi } from "./docs";
 import { startMailer } from "./mailer";
 import { startFlows } from "./flows";
 import { startRunners } from "./runners";
@@ -158,15 +155,11 @@ const ui = jobsUi({
 
 const app = new BunHttpAdapter();
 /**
- * Which routes the playground's whole-app OpenAPI document lists. The
- * playground's own pages and their support routes are `.describe({ hidden:
- * true })`; the viewers' mounts (the jobs UI at `/jobs`, the two `docsUi()`
- * apps) are other packages' routers, so they are dropped here by path.
+ * The whole-app OpenAPI document every docs mount below serves (docs.ts): the
+ * routes it documents, in sections and subsections (`tagGroups`, the
+ * document's `x-tagGroups`), the jobs API's operations under its own tags.
  */
-const documentedRoute = (route: { readonly path: string }): boolean =>
-  !["/jobs", "/playground/api-docs", "/playground/ws-docs"].some(
-    (prefix) => route.path === prefix || route.path.startsWith(`${prefix}/`),
-  );
+const openApiDocument = () => playgroundOpenApi(app, api).document;
 // The summoned units' control page (`/playground/compute`) goes on this adapter.
 summoning.mount(app);
 // The bun-cache lab (`/playground/cache`, cache.ts): routes behind
@@ -192,10 +185,8 @@ app
   });
 // The playground's own small route group, declared through defineRoutes
 // (AD (a2)): the property names are the routes' operationIds in the document
-// below, with no .describe() annotation. Mounted as an ordinary sub-router.
-// The playground's own small route group, declared through defineRoutes
-// (AD (a2)): the property names are the routes' operationIds in the document
-// below, with no .describe() annotation. Mounted as an ordinary sub-router.
+// below, with no `operationId` annotation (a `.describe()` adds the summary
+// and the tag). Mounted as an ordinary sub-router.
 //
 // AD (b2): one DTO-validated endpoint. The class-validator /
 // class-transformer surface is injected, never imported by bun-common;
@@ -220,17 +211,22 @@ const playgroundRoutes = defineRoutes("/playground", (r) => ({
   // A class DTO on `query` (AD (b2)): "42" arrives as the number 42 on a
   // SearchQuery instance (implicit conversion), a failing query answers 400
   // with the issues, and the route documents itself in openapi.json.
-  dtoSearch: r.get(
-    "/dto-search",
-    validate({ query: DtoSearchQuery }, { onFailure: "respond" }),
-    (req, res) => {
-      res.json({
-        page: req.query.page,
-        q: req.query.q,
-        instance: req.query instanceof DtoSearchQuery,
-      });
-    },
-  ),
+  dtoSearch: r
+    .get(
+      "/dto-search",
+      validate({ query: DtoSearchQuery }, { onFailure: "respond" }),
+      (req, res) => {
+        res.json({
+          page: req.query.page,
+          q: req.query.q,
+          instance: req.query instanceof DtoSearchQuery,
+        });
+      },
+    )
+    .describe({
+      summary: "Search with a class-validator DTO on the query",
+      tags: ["Class DTOs"],
+    }),
   // The route model (bun-validate V12): every route on this adapter with the
   // contract it runs under — the jobs API's routes carry theirs (V4). Each
   // row's schema is shown converted to JSON Schema (AD (b)'s toJsonSchema —
@@ -268,11 +264,7 @@ const playgroundRoutes = defineRoutes("/playground", (r) => ({
   // warning, never an error.
   openapi: r
     .get("/openapi.json", (_req, res) => {
-      const { document, warnings } = generateOpenApi(app, {
-        title: "bun-node playground",
-        version: "1.0.0",
-        filter: documentedRoute,
-      });
+      const { document, warnings } = playgroundOpenApi(app, api);
       res.json({ document, warnings });
     })
     .describe({ hidden: true }),
@@ -290,12 +282,7 @@ app.use(playgroundRoutes.mount, playgroundRoutes.router);
 app.use(
   "/playground/docs",
   docsRouter({
-    openapi: () =>
-      generateOpenApi(app, {
-        title: "bun-node playground",
-        version: "1.0.0",
-        filter: documentedRoute,
-      }).document,
+    openapi: () => openApiDocument(),
     asyncapi: () =>
       generateAsyncApi(app, {
         title: "bun-node playground (events)",
@@ -310,12 +297,7 @@ app.use(
 // serving each thunk's document itself at <basePath>/document.json. `dev`
 // rebuilds from the source on disk, for the same reason the jobs UI's does.
 const apiDocs = docsUi({
-  document: () =>
-    generateOpenApi(app, {
-      title: "bun-node playground",
-      version: "1.0.0",
-      filter: documentedRoute,
-    }).document,
+  document: openApiDocument,
   basePath: "/playground/api-docs",
   logger: noopLogger,
   dev: true,
@@ -340,12 +322,7 @@ app.use(wsDocs.basePath, wsDocs.router);
 app.use(
   "/playground/self-hosted-docs",
   docsRouter({
-    openapi: () =>
-      generateOpenApi(app, {
-        title: "bun-node playground",
-        version: "1.0.0",
-        filter: documentedRoute,
-      }).document,
+    openapi: () => openApiDocument(),
     asyncapi: () =>
       generateAsyncApi(app, {
         title: "bun-node playground (events)",

@@ -415,6 +415,78 @@ export function groupByTag(
   return result;
 }
 
+/** One section of the sidebar: a document's `x-tagGroups` entry, over the tags it names. */
+export interface DocSection {
+  /** The section's name. */
+  name: string;
+  /** Its tags with their operations, in the section's order. */
+  tags: DocTagGroup[];
+}
+
+/** The section the tags no `x-tagGroups` entry names go in. */
+const OTHER_SECTION = "Other";
+
+/**
+ * The document's sections (`x-tagGroups`, Redoc's and Scalar's shape: `[{
+ * name, tags }]`, the one bun-common's `generateOpenApi({ tagGroups })`
+ * emits), each over its tags' groups, in the document's order; `undefined`
+ * when the document declares none, so the sidebar stays one level deep. A
+ * malformed entry is skipped, and a list with none well formed reads as none.
+ *
+ * Unlike Redoc, nothing is hidden: a group no section names (`Other`, the
+ * untagged operations, among them) follows in a trailing `Other` section, or
+ * in the document's section of that name when it has one. A tag in two
+ * sections is listed in each; a section with no group (a search left none)
+ * is dropped.
+ */
+export function groupBySection(
+  doc: SpecDocument,
+  groups: readonly DocTagGroup[],
+): DocSection[] | undefined {
+  const raw = doc["x-tagGroups"];
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const declared = raw.flatMap(
+    (entry: unknown): { name: string; tags: string[] }[] => {
+      if (!isSchemaObject(entry)) {
+        return [];
+      }
+      const name = text(entry.name);
+      return name === undefined || !Array.isArray(entry.tags)
+        ? []
+        : [{ name, tags: strings(entry.tags) }];
+    },
+  );
+  if (declared.length === 0) {
+    return undefined;
+  }
+  const byName = new Map(groups.map((group) => [group.name, group]));
+  const named = new Set<string>();
+  const sections: DocSection[] = [];
+  for (const { name, tags } of declared) {
+    const section: DocSection = { name, tags: [] };
+    for (const tag of tags) {
+      const group = byName.get(tag);
+      if (group && !section.tags.includes(group)) {
+        section.tags.push(group);
+        named.add(tag);
+      }
+    }
+    sections.push(section);
+  }
+  const rest = groups.filter((group) => !named.has(group.name));
+  if (rest.length > 0) {
+    const other = sections.find((section) => section.name === OTHER_SECTION);
+    if (other) {
+      other.tags.push(...rest);
+    } else {
+      sections.push({ name: OTHER_SECTION, tags: rest });
+    }
+  }
+  return sections.filter((section) => section.tags.length > 0);
+}
+
 /**
  * Whether an operation matches a search: every whitespace-separated term
  * must appear, ignoring case, in its path, id, summary, method or action.

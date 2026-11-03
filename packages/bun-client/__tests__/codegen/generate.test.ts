@@ -107,6 +107,31 @@ describe("determinism", () => {
     expect(b.code).toBe(a.code);
   });
 
+  it("ignores the document-level x-tagGroups: only the hash differs", async () => {
+    // bun-common's `generateOpenApi({ tagGroups })` emits it; it is the
+    // viewers' sidebar, not the API's shape.
+    const document = await corpus();
+    const grouped = {
+      ...document,
+      tags: [{ name: "Users" }],
+      "x-tagGroups": [{ name: "People", tags: ["Users"] }],
+    };
+    const zod = { routesModule: "./api.gen" } as const;
+    const plain = generateRoutes(document, { zod });
+    const sectioned = generateRoutes(grouped, { zod });
+    // The documents differ, so the hash does (the control that the field
+    // reached the generator), and nothing else.
+    expect(sectioned.hash).not.toBe(plain.hash);
+    expect(sectioned.code.replaceAll(sectioned.hash, "")).toBe(
+      plain.code.replaceAll(plain.hash, ""),
+    );
+    expect(sectioned.zod?.code.replaceAll(sectioned.hash, "")).toBe(
+      plain.zod?.code.replaceAll(plain.hash, ""),
+    );
+    expect(sectioned.warnings).toEqual(plain.warnings);
+    expect(sectioned.routes).toBe(plain.routes);
+  });
+
   it("does not mutate the document", async () => {
     const document = await corpus();
     const before = JSON.stringify(document);

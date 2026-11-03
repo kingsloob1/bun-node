@@ -362,3 +362,99 @@ describe("the HTTP reference", () => {
     expect(fetched).toContain(`"${CSRF}": "1"`);
   });
 });
+
+describe("sections (x-tagGroups)", () => {
+  /** The real document, with two sections over some of its tags. */
+  function sectioned(): SpecDocument {
+    return {
+      ...doc,
+      "x-tagGroups": [
+        { name: "Operate", tags: ["Queues", "Workers", "Jobs"] },
+        { name: "Schedule", tags: ["Runners"] },
+      ],
+    };
+  }
+
+  /** The sidebar's headings at a level, in order. */
+  function headings(nav: HTMLElement, level: 2 | 3): (string | null)[] {
+    return within(nav)
+      .queryAllByRole("heading", { level })
+      .map((heading) => heading.textContent);
+  }
+
+  /** The section names, each with its nested tag names. */
+  function tree(nav: HTMLElement): [string | null, (string | null)[]][] {
+    return Array.from(nav.querySelectorAll<HTMLElement>(".http-section")).map(
+      (section) => [
+        section.querySelector("h2")!.textContent,
+        Array.from(section.querySelectorAll("h3")).map(
+          (heading) => heading.textContent,
+        ),
+      ],
+    );
+  }
+
+  it("lists the sections as top-level headings with their tags nested, the rest under Other", async () => {
+    await open("", { document: sectioned() });
+    const nav = page().getByRole("navigation", { name: "Operations" });
+    expect(headings(nav, 2)).toEqual(["Operate", "Schedule", "Other"]);
+    expect(tree(nav)).toEqual([
+      ["Operate", ["Queues", "Workers", "Jobs"]],
+      ["Schedule", ["Runners"]],
+      ["Other", ["Meta", "Docs", "Analytics"]],
+    ]);
+    // A link sits under its tag inside its section.
+    const pause = nav.querySelector('a[data-operation="pauseQueue"]')!;
+    expect(
+      pause.closest(".http-section")!.querySelector("h2")!.textContent,
+    ).toBe("Operate");
+    expect(pause.closest(".http-tag")!.querySelector("h3")!.textContent).toBe(
+      "Queues",
+    );
+    // The landing view: one card per section, its tags inside.
+    const landing = document.querySelector<HTMLElement>(".http-overview")!;
+    expect(
+      within(landing)
+        .getAllByRole("heading", { level: 2 })
+        .map((heading) => heading.textContent),
+    ).toEqual(["Operate", "Schedule", "Other", "Schemas"]);
+    const overview = within(landing).getAllByRole("region", {
+      name: "Operate",
+    });
+    expect(overview.length).toBe(1);
+    expect(
+      within(overview[0])
+        .getAllByRole("heading", { level: 3 })
+        .map((heading) => heading.textContent),
+    ).toEqual(["Queues", "Workers", "Jobs"]);
+  });
+
+  it("without x-tagGroups, lists the tags at the top level with no section (the control)", async () => {
+    await open("");
+    const nav = page().getByRole("navigation", { name: "Operations" });
+    expect(headings(nav, 3)).toEqual([]);
+    expect(nav.querySelectorAll(".http-section").length).toBe(0);
+    expect(headings(nav, 2)).toEqual([
+      "Meta",
+      "Docs",
+      "Queues",
+      "Workers",
+      "Jobs",
+      "Runners",
+      "Analytics",
+    ]);
+  });
+
+  it("drops the sections a search leaves empty", async () => {
+    await open("?q=killrunner", { document: sectioned() });
+    const nav = page().getByRole("navigation", { name: "Operations" });
+    await waitFor(() => {
+      expect(tree(nav)).toEqual([["Schedule", ["Runners"]]]);
+    });
+    expect(
+      Array.from(nav.querySelectorAll<HTMLAnchorElement>("a.http-op-link")).map(
+        (link) => link.dataset.operation,
+      ),
+    ).toEqual(["killRunner"]);
+  });
+});

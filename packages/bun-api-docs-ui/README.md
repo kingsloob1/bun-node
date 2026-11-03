@@ -32,7 +32,9 @@ app.use(ui.basePath, ui.router);
 ```
 
 Which reference the viewer shows is read from the document itself: an
-`openapi` field gets the HTTP reference (operations by tag, schemas as
+`openapi` field gets the HTTP reference (operations by tag — and, when the
+document declares `x-tagGroups`, the tags nested under those sections, with
+any tag no section names in a trailing `Other` one; schemas as
 expandable trees, a try-it panel per operation), an `asyncapi` field gets the
 WebSocket reference (channels, operations, messages, limits, close codes).
 

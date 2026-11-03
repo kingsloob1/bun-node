@@ -199,6 +199,7 @@ function registry(state: ApiState) {
       )
       .describe({
         summary: "Read one user",
+        tags: ["Users"],
         errors: ["NOT_FOUND", "GONE"],
         cache: { tags: ["user:{id}", "users"] },
       }),
@@ -220,7 +221,11 @@ function registry(state: ApiState) {
             );
         },
       )
-      .describe({ summary: "List the users", cache: { tags: ["users"] } }),
+      .describe({
+        summary: "List the users",
+        tags: ["Users"],
+        cache: { tags: ["users"] },
+      }),
     createUser: r
       .post(
         "/users",
@@ -253,6 +258,7 @@ function registry(state: ApiState) {
       )
       .describe({
         summary: "Create a user",
+        tags: ["Users"],
         errors: ["CONFLICT"],
         cache: { invalidates: ["users"] },
       }),
@@ -274,6 +280,7 @@ function registry(state: ApiState) {
       )
       .describe({
         summary: "Delete a user",
+        tags: ["Users"],
         errors: ["NOT_FOUND"],
         cache: { invalidates: ["user:{id}", "users"] },
       }),
@@ -303,6 +310,7 @@ function registry(state: ApiState) {
       )
       .describe({
         summary: "Fail a ticket's first request, with Retry-After",
+        tags: ["Failure modes"],
         errors: ["UNAVAILABLE"],
       }),
     slow: r
@@ -321,7 +329,10 @@ function registry(state: ApiState) {
           res.status(200).json({ sleptMs: req.query.ms });
         },
       )
-      .describe({ summary: "Answer after ?ms= milliseconds" }),
+      .describe({
+        summary: "Answer after ?ms= milliseconds",
+        tags: ["Failure modes"],
+      }),
     brew: r
       .get(
         "/brew",
@@ -334,7 +345,10 @@ function registry(state: ApiState) {
             .json(problem("TEAPOT", "I'm a teapot"));
         },
       )
-      .describe({ summary: "Brew coffee (it never does)" }),
+      .describe({
+        summary: "Brew coffee (it never does)",
+        tags: ["Failure modes"],
+      }),
     drifted: r
       .get(
         "/drifted/:id",
@@ -353,7 +367,10 @@ function registry(state: ApiState) {
           });
         },
       )
-      .describe({ summary: "Answer a body its own schema refuses" }),
+      .describe({
+        summary: "Answer a body its own schema refuses",
+        tags: ["Failure modes"],
+      }),
     getOrg: r
       .get(
         "/orgs/:id",
@@ -373,7 +390,11 @@ function registry(state: ApiState) {
           res.status(200).json(org);
         },
       )
-      .describe({ summary: "Read one org (cached)", errors: ["NOT_FOUND"] }),
+      .describe({
+        summary: "Read one org (cached)",
+        tags: ["Orgs"],
+        errors: ["NOT_FOUND"],
+      }),
     jobEvents: r
       .get(
         "/jobs/:id/events",
@@ -420,7 +441,10 @@ function registry(state: ApiState) {
           res.status(200).send(body);
         },
       )
-      .describe({ summary: "A job's progress, as server-sent events" }),
+      .describe({
+        summary: "A job's progress, as server-sent events",
+        tags: ["Server-sent events"],
+      }),
   }));
 }
 
@@ -441,7 +465,10 @@ export const extraApi = defineRoutes("/api", (r) => ({
         res.status(200).json({ id: req.params.id, badge: "early adopter" });
       },
     )
-    .describe({ summary: "Read a user's badge (added at run time)" }),
+    .describe({
+      summary: "Read a user's badge (added at run time)",
+      tags: ["Users"],
+    }),
 }));
 
 /** A registry: its mount and its router. */

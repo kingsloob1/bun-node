@@ -322,6 +322,7 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
     )
     .describe({
       summary: "A cached item (fresh for 15 s)",
+      tags: ["Cached responses"],
       responses: {
         200: builtResponse(
           "The built item (X-Cache says whether it was stored)",
@@ -340,6 +341,7 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
     )
     .describe({
       summary: "Update an item; a success drops its stored entries",
+      tags: ["Invalidation"],
       responses: {
         200: {
           description:
@@ -363,6 +365,7 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
     )
     .describe({
       summary: "A stale-while-revalidate route (fresh 2 s, stale 60 s)",
+      tags: ["Stale serving"],
       responses: {
         200: builtResponse(
           "The built answer, possibly STALE while one refresh runs",
@@ -387,6 +390,7 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
     )
     .describe({
       summary: "A stale-if-error route (fresh 2 s)",
+      tags: ["Stale serving"],
       responses: {
         200: builtResponse(
           "The built answer, or the stale copy while the failure switch is on",
@@ -414,6 +418,7 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
     )
     .describe({
       summary: "A Cache-Control: private route, never stored",
+      tags: ["Cached responses"],
       responses: {
         200: builtResponse(
           "The built answer; X-Cache is UNCACHEABLE",
@@ -446,6 +451,7 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
     )
     .describe({
       summary: "A 64 KiB compressible response, for the compression switch",
+      tags: ["Cached responses"],
       responses: {
         200: builtResponse("The built answer and 900 lines of text", {
           lines: { type: "array", items: { type: "string" } },

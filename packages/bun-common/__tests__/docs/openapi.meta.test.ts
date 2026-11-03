@@ -117,11 +117,13 @@ function matrixRouter(cell: string): {
       .get("/ping", (_req, res) => res.json({ ok: true }))
       .describe({
         summary: "Liveness",
+        tags: ["Ops"],
         responses: { 200: { schema: { type: "object" } } },
       });
     router
       .post("/echo/:room", (req, res) => res.json({ room: req.params.room }))
       .describe({
+        tags: ["Ops"],
         request: {
           params: { type: "object", properties: { room: { type: "string" } } },
           body: { type: "object" },
@@ -218,6 +220,17 @@ function documentFor(
     title: "Matrix",
     version: "1.0.0",
     strict,
+    // Every cell carries a section (the top-level `x-tagGroups` extension),
+    // so the meta-schema checks the document with one.
+    tags: {
+      Users: { description: "User management" },
+      Ops: { description: "Liveness" },
+    },
+    tagGroups: [
+      cell === "none"
+        ? { name: "Service", tags: ["Ops"] }
+        : { name: "People", tags: ["Users"] },
+    ],
     ...options,
     ...SECURITY[security],
   });

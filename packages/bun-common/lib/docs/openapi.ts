@@ -20,7 +20,8 @@
  *   over `.describe({ responses })` on a disagreement (Decision 4), variant
  *   statuses emitted with `oneOf` bodies and an `x-variants` table (plan
  *   §4.12 of bun-validate);
- * - its prose, from `.describe()`;
+ * - its prose, from `.describe()`, its tags placed in the sections
+ *   {@link OpenApiOptions.tagGroups} declares (the `x-tagGroups` extension);
  * - the typed client's extensions (typed-client plan §3.0, §8.2):
  *   `x-bun-route-key` on every operation (the listing's key), `x-bun-errors`
  *   from `.describe({ errors })` and `x-bun-cache` from `.describe({ cache })`;
@@ -31,7 +32,8 @@
  * default): it records a {@link DocWarning} and emits what it knows. `strict:
  * "strict"` escalates every warning to a {@link ConfigError}. The genuine
  * configuration mistakes — a duplicate operation id, a security requirement
- * naming an undeclared scheme — are always a `ConfigError`. One route at
+ * naming an undeclared scheme, two tag groups with one name — are always a
+ * `ConfigError`. One route at
  * several mounts is not a duplicate: a declared id is suffixed per later
  * mount ({@link OpenApiOptions.operationId}).
  *
@@ -555,6 +557,41 @@ export interface OpenApiOptions {
     Record<string, { description?: string; externalDocs?: unknown }>
   >;
   /**
+   * Sections of tags, for a sidebar two levels deep: each group heads the
+   * tags it names, and each tag its operations. Emitted as the document's
+   * top-level `x-tagGroups` extension, in the shape Redoc and Scalar read
+   * (`[{ name, tags }]`), in the order given. Default: none, and no
+   * `x-tagGroups` is emitted (an empty list emits none either).
+   *
+   * - **A used tag no group names** goes in a trailing group named `"Other"`
+   *   (into the group of that name, when one is given), in first-use order.
+   *   Redoc does not display a tag that is in no group at all, so leaving
+   *   one out would hide its operations.
+   * - **A tag no documented operation uses** is left out of its group, with a
+   *   warning; a group left with no tag is left out too, with a warning.
+   * - **A tag named twice** (in two groups, or twice in one) stays where it
+   *   was first named, with a warning for the rest: an operation is listed
+   *   once.
+   * - **Two groups with one name** are a `ConfigError`, whatever `strict`
+   *   says: which of them a viewer shows is undefined.
+   * - **An untagged operation** gets a warning: no group can name it, and
+   *   Redoc lists only grouped tags, so it is not shown there. Tag it with
+   *   `.describe({ tags })`.
+   *
+   * With groups, the document's `tags` list follows the groups' order, for
+   * viewers that read `tags` and ignore `x-tagGroups`.
+   */
+  tagGroups?: readonly {
+    /** The group's name, as the sidebar heads it. Unique in the list. */
+    name: string;
+    /**
+     * The tags it holds, by name, in the order listed. Each is a tag some
+     * route's `.describe({ tags })` uses; {@link OpenApiOptions.tags}
+     * describes it.
+     */
+    tags: readonly string[];
+  }[];
+  /**
    * Decides which routes are documented, on top of `hidden`. Return `false`
    * to drop one. Default: every non-hidden endpoint route.
    */
@@ -626,6 +663,11 @@ export interface OpenApiResult {
    */
   warnings: readonly DocWarning[];
 }
+
+/** The document-level extension carrying {@link OpenApiOptions.tagGroups}. */
+const TAG_GROUPS_EXTENSION = "x-tagGroups";
+/** The trailing group the used tags no group names go in. */
+const OTHER_TAG_GROUP = "Other";
 
 /** Reason phrases for the statuses a reason phrase exists for. */
 const REASON_PHRASES: Record<number, string> = {
@@ -884,7 +926,8 @@ function normalizeResponseDoc(
  * @throws ConfigError on a genuine configuration mistake (a duplicate
  *   operation id — one route at several mounts is not one, see
  *   {@link OpenApiOptions.operationId} — a security requirement naming an
- *   undeclared scheme), and —
+ *   undeclared scheme, two {@link OpenApiOptions.tagGroups} with one name),
+ *   and —
  *   under `strict: "strict"` — on any warning.
  */
 export function generateOpenApi(
@@ -919,6 +962,12 @@ export function generateOpenApi(
       );
     },
   };
+
+  // A configuration mistake in the groups fails before any route is walked.
+  const tagGroups =
+    options.tagGroups === undefined || options.tagGroups.length === 0
+      ? undefined
+      : checkTagGroups(options.tagGroups);
 
   const routes = listRoutes(router, { logger: collecting });
   // Read once, for the terminal-callback lookups; `ListedRoute.routeIndex`
@@ -1114,6 +1163,8 @@ export function generateOpenApi(
   const paths: Record<string, Record<string, unknown>> = {};
   const operationIds = new Map<string, OperationIdClaim>(); // id → its claim
   const tagsUsed: string[] = [];
+  /** Routes already warned for having no tag (once per route, not per path). */
+  const untaggedWarned = new Set<string>();
 
   /** Parameters from a converted object schema's properties. */
   const parametersFrom = (
@@ -1499,6 +1550,18 @@ export function generateOpenApi(
       for (const tag of doc?.tags ?? []) {
         if (!tagsUsed.includes(tag)) tagsUsed.push(tag);
       }
+      if (
+        tagGroups !== undefined &&
+        (doc?.tags === undefined || doc.tags.length === 0) &&
+        !untaggedWarned.has(route.key)
+      ) {
+        untaggedWarned.add(route.key);
+        warn(
+          "operation",
+          "the operation has no tag, and `tagGroups` emits x-tagGroups: a viewer that honours it (Redoc) lists grouped tags only, so it does not show this operation — tag it with `.describe({ tags })`",
+          route.key,
+        );
+      }
 
       item[method] = {
         operationId,
@@ -1536,6 +1599,15 @@ export function generateOpenApi(
         },
   );
 
+  const grouped =
+    tagGroups === undefined
+      ? undefined
+      : placeTagGroups(tagGroups, tagsUsed, (message) =>
+          warn("operation", message),
+        );
+  const tagOrder =
+    grouped === undefined ? tagsUsed : grouped.flatMap((group) => group.tags);
+
   const document: OpenApiDocument = {
     openapi: "3.1.2",
     info: {
@@ -1547,9 +1619,9 @@ export function generateOpenApi(
       ...(options.info === undefined ? {} : { ...options.info }),
     },
     servers: structuredClone(options.servers ?? [{ url: "/" }]),
-    ...(tagsUsed.length > 0
+    ...(tagOrder.length > 0
       ? {
-          tags: tagsUsed.map((name) => ({
+          tags: tagOrder.map((name) => ({
             name,
             ...(options.tags?.[name] === undefined
               ? {}
@@ -1557,6 +1629,9 @@ export function generateOpenApi(
           })),
         }
       : {}),
+    ...(grouped === undefined || grouped.length === 0
+      ? {}
+      : { [TAG_GROUPS_EXTENSION]: grouped }),
     paths,
     ...(components.size > 0 || security.securitySchemes !== undefined
       ? {
@@ -1608,6 +1683,108 @@ const ROUTE_KEY_EXTENSION = "x-bun-route-key";
 const ERRORS_EXTENSION = "x-bun-errors";
 /** The extension carrying `.describe({ cache })` (typed-client plan §6.4). */
 const CACHE_EXTENSION = "x-bun-cache";
+
+/** One emitted `x-tagGroups` entry. */
+interface TagGroupEntry {
+  /** The group's name. */
+  name: string;
+  /** Its tags, each used by some documented operation, each in one group. */
+  tags: string[];
+}
+
+/**
+ * Checks {@link OpenApiOptions.tagGroups}' configuration: every name a
+ * non-empty string, unique, and every `tags` a list of strings.
+ *
+ * @throws ConfigError on a malformed group or two groups with one name.
+ */
+function checkTagGroups(
+  groups: NonNullable<OpenApiOptions["tagGroups"]>,
+): NonNullable<OpenApiOptions["tagGroups"]> {
+  const names = new Set<string>();
+  for (const group of groups) {
+    const name: unknown = (group as { name?: unknown } | null)?.name;
+    const tags: unknown = (group as { tags?: unknown } | null)?.tags;
+    if (typeof name !== "string" || name === "") {
+      throw new ConfigError(
+        "generateOpenApi(): every tagGroups entry needs a non-empty `name`",
+        { name },
+      );
+    }
+    if (
+      !Array.isArray(tags) ||
+      tags.some((tag: unknown) => typeof tag !== "string")
+    ) {
+      throw new ConfigError(
+        `generateOpenApi(): tag group "${name}" needs \`tags\`, a list of tag names`,
+        { name },
+      );
+    }
+    if (names.has(name)) {
+      throw new ConfigError(
+        `generateOpenApi(): two tag groups share the name "${name}"`,
+        { name },
+      );
+    }
+    names.add(name);
+  }
+  return groups;
+}
+
+/**
+ * Places the used tags in the configured groups ({@link
+ * OpenApiOptions.tagGroups}' rules): unused tags and repeats are left out with
+ * a warning, a group left empty goes too, and the used tags no group names
+ * end up in the `"Other"` group, appended when none is given.
+ */
+function placeTagGroups(
+  groups: NonNullable<OpenApiOptions["tagGroups"]>,
+  tagsUsed: readonly string[],
+  warn: (message: string) => void,
+): TagGroupEntry[] {
+  const used = new Set(tagsUsed);
+  const placed = new Map<string, string>(); // tag → its group
+  const out: TagGroupEntry[] = [];
+  for (const group of groups) {
+    const tags: string[] = [];
+    for (const tag of group.tags) {
+      const first = placed.get(tag);
+      if (first !== undefined) {
+        warn(
+          first === group.name
+            ? `tag group "${group.name}" names the tag "${tag}" twice; listed once`
+            : `the tag "${tag}" is in tag group "${first}" already; left out of "${group.name}"`,
+        );
+        continue;
+      }
+      if (!used.has(tag)) {
+        warn(
+          `tag group "${group.name}" names the tag "${tag}", which no documented operation uses; left out`,
+        );
+        continue;
+      }
+      placed.set(tag, group.name);
+      tags.push(tag);
+    }
+    if (tags.length === 0) {
+      warn(
+        `tag group "${group.name}" holds no tag a documented operation uses; left out`,
+      );
+      continue;
+    }
+    out.push({ name: group.name, tags });
+  }
+  const rest = tagsUsed.filter((tag) => !placed.has(tag));
+  if (rest.length > 0) {
+    const other = out.find((group) => group.name === OTHER_TAG_GROUP);
+    if (other === undefined) {
+      out.push({ name: OTHER_TAG_GROUP, tags: rest });
+    } else {
+      other.tags.push(...rest);
+    }
+  }
+  return out;
+}
 
 /**
  * The operation's `x-bun-*` extensions (typed-client plan §3.0, §8.2), which
