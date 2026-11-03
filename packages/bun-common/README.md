@@ -2661,7 +2661,13 @@ generateOpenApi(app, {
 - With groups, `tags` follows the groups' order, for viewers that ignore
   `x-tagGroups`; without them, the document is as before.
 
-A tag is declared per route: no router- or mount-level default exists.
+**Tagging a whole router: `defaultTags`.** A router with no `.describe()` of
+its own (another package's, such as bun-jobs' management API) is tagged from
+the listing instead: `defaultTags: (route) => route.path.startsWith("/jobs-api/") ? ["Jobs API"] : undefined`.
+It is asked only for an operation whose own `.describe()` declares no `tags`
+(a route's own tags always win; an own `tags: []` is an explicit opt-out), and
+`undefined` or `[]` leaves the route untagged. The tags it supplies count as
+used: they get `options.tags` descriptions and are placed by `tagGroups`.
 
 #### Serving and viewing the documents: `docsRouter()`
 

@@ -592,6 +592,20 @@ export interface OpenApiOptions {
     tags: readonly string[];
   }[];
   /**
+   * Tags for an operation whose own `.describe()` declares none, so a whole
+   * router (another package's, say) can be tagged without describing each
+   * route. Called once per documented route with its listing entry; return
+   * the tag names, or `undefined` (or `[]`) to leave the route untagged.
+   * Default: none.
+   *
+   * A route's own `.describe({ tags })` always wins, and `defaultTags` is not
+   * asked for it. An own `tags: []` counts as declared (an explicit opt-out)
+   * and is left alone. The tags it supplies count as used: they appear in the
+   * document's `tags`, take their descriptions from {@link
+   * OpenApiOptions.tags} and are placed by {@link OpenApiOptions.tagGroups}.
+   */
+  defaultTags?: (route: ListedRoute) => readonly string[] | undefined;
+  /**
    * Decides which routes are documented, on top of `hidden`. Return `false`
    * to drop one. Default: every non-hidden endpoint route.
    */
@@ -1547,12 +1561,19 @@ export function generateOpenApi(
       }
       operationIds.set(operationId, claim);
 
-      for (const tag of doc?.tags ?? []) {
+      const supplied =
+        doc?.tags === undefined ? options.defaultTags?.(route) : undefined;
+      const opTags =
+        doc?.tags ??
+        (supplied === undefined || supplied.length === 0
+          ? undefined
+          : supplied);
+      for (const tag of opTags ?? []) {
         if (!tagsUsed.includes(tag)) tagsUsed.push(tag);
       }
       if (
         tagGroups !== undefined &&
-        (doc?.tags === undefined || doc.tags.length === 0) &&
+        (opTags === undefined || opTags.length === 0) &&
         !untaggedWarned.has(route.key)
       ) {
         untaggedWarned.add(route.key);
@@ -1569,7 +1590,7 @@ export function generateOpenApi(
         ...(doc?.description === undefined
           ? {}
           : { description: doc.description }),
-        ...(doc?.tags === undefined ? {} : { tags: [...doc.tags] }),
+        ...(opTags === undefined ? {} : { tags: [...opTags] }),
         ...(doc?.deprecated === true ? { deprecated: true } : {}),
         ...(parameters.length > 0 ? { parameters } : {}),
         ...(requestBody === undefined ? {} : { requestBody }),

@@ -124,11 +124,13 @@ untagged operation is warned about (Redoc does not show it); with groups,
 `tags` follows the groups' order. bun-api-docs-ui's viewer shows the groups
 as top-level sidebar sections with their tags nested (`groupBySection`,
 `DocSection` in its `httpModel`); bun-client's generator ignores the
-extension (tested). No router- or mount-level default tag exists, so the
-playground tags its routes one by one and copies the jobs API's tags from
-`api.openapi()`. A `defaultTags` hook is approved as a separate follow-up PR
-(the copying step stays until it lands); `x-tagGroups` in bun-jobs' own
-document (`createJobsApi`) is deferred (both 2026-11-03). The example: `examples/bun-common/13-api-docs/sections.ts`.
+extension (tested). **`defaultTags` built 2026-11-03** (name approved by the
+maintainer): `OpenApiOptions.defaultTags(route)` supplies tags to an operation
+whose own `.describe()` declares none (own tags, `[]` included, win); the
+tags it supplies count as used (`tags`, descriptions, `tagGroups`). The
+playground uses it for the jobs API's routes, in place of copying tags from
+`api.openapi()` afterwards. `x-tagGroups` in bun-jobs' own
+document (`createJobsApi`) is deferred (2026-11-03). The example: `examples/bun-common/13-api-docs/sections.ts`.
 Every claim about
 existing code cites a file; every claim marked **measured** was produced by
 running code against this checkout (Bun 1.4.3-canary.1, 2026-09-22). Claims
