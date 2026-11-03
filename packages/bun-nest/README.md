@@ -95,6 +95,7 @@ Underneath, routing is
 - [OpenAPI with `@nestjs/swagger`](#openapi-with-nestjsswagger)
 - [Typed clients: documents from controllers](#typed-clients-documents-from-controllers)
   - [`@Describe`](#describe)
+  - [`DevTypesModule`: the dev type sync](#devtypesmodule-the-dev-type-sync)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
@@ -2428,6 +2429,53 @@ export class UsersController {
 - It is stored as reflect metadata under `"bun:describe"`, which
   `Reflector` can read too.
 
+### `DevTypesModule`: the dev type sync
+
+bun-common's `devTypes()` (the endpoint `bun-client watch` follows) as a
+Nest module, with the app's own documents:
+
+```ts
+import { DevTypesModule } from "@kingsleyweb/bun-nest";
+
+@Module({
+  imports: [
+    DevTypesModule.forRoot({ enabled: process.env.NODE_ENV !== "production" }),
+  ],
+  controllers: [UsersController],
+})
+export class AppModule {}
+```
+
+```bash
+bun --watch src/main.ts                 # the app, on BunHttpAdapter
+bunx bun-client watch --out src/api.gen.ts   # beside it: regenerates on every change
+```
+
+- **What it serves**: at `path` (default `/__bun/types`) the documents
+  `{ hash, openapi, asyncapi }` with the hash as `ETag` (`304` on
+  `If-None-Match`), each alone at `/openapi.json` and `/asyncapi.json`, and
+  the change channel at `/ws`. The OpenAPI document is
+  `generateOpenApi(adapter.instance)` — every controller route with its
+  `@Validate` schemas and `@Describe` prose, and the routes registered on the
+  adapter itself; the AsyncAPI document is `gatewayAsyncApi`'s, the app's
+  gateways. For the same routes, the OpenAPI document equals a bun-common
+  router app's `devTypes()` (`__tests__/devTypesModule.nest.test.ts`).
+- **Fail closed**, as `devTypes()`: `enabled` must be exactly `true`
+  (anything else is an empty module that registers nothing); `forRoot`
+  throws a `ConfigError` when enabled under `NODE_ENV=production`; every
+  request needs the bearer token (random per process unless `token` is given)
+  and a loopback peer (unless `allowRemote`), or gets the app's own 404.
+- **Below Nest's pipeline**: it is mounted on the adapter at bootstrap, so no
+  guard, interceptor or filter runs for it — an app's global `AuthGuard`
+  does not decide whether the dev channel is reachable. A catch-all
+  controller route (`@Get("*")`) registered before it answers first.
+- **The token file** (`node_modules/.cache/bun-types/<port>.json`, where
+  `bun-client watch` finds the server) is written when `app.listen()` binds
+  and removed by `app.close()`; `tokenFile` moves it, or `false` writes none.
+- Options: `enabled`, `path`, `token`, `allowRemote`, `tokenFile`, and
+  `openapi` / `asyncapi` — the generators' options (`title`, `version`, …;
+  default `"API"` and `"dev"`), or a function returning the document.
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -2814,7 +2862,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
-| [Typed clients](#typed-clients-documents-from-controllers) | `Describe` |
+| [Typed clients](#typed-clients-documents-from-controllers) | `Describe`, `DevTypesModule`; type `DevTypesModuleOptions` |
 | [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`; type `StandardValidationPipeOptions` |
 
 `BunRequest`, `BunResponse`, `UploadOptions`, `StorageFile`, `DiskStorage`,
