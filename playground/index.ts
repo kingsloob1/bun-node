@@ -157,6 +157,16 @@ const ui = jobsUi({
 });
 
 const app = new BunHttpAdapter();
+/**
+ * Which routes the playground's whole-app OpenAPI document lists. The
+ * playground's own pages and their support routes are `.describe({ hidden:
+ * true })`; the viewers' mounts (the jobs UI at `/jobs`, the two `docsUi()`
+ * apps) are other packages' routers, so they are dropped here by path.
+ */
+const documentedRoute = (route: { readonly path: string }): boolean =>
+  !["/jobs", "/playground/api-docs", "/playground/ws-docs"].some(
+    (prefix) => route.path === prefix || route.path.startsWith(`${prefix}/`),
+  );
 // The summoned units' control page (`/playground/compute`) goes on this adapter.
 summoning.mount(app);
 // The bun-cache lab (`/playground/cache`, cache.ts): routes behind
@@ -175,7 +185,11 @@ const typedClient = await mountTypedClientDemo(app);
 mountChatChannel(app);
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
-app.get("/", (_req, res) => res.redirect(ui.basePath));
+app
+  .get("/", (_req, res) => res.redirect(ui.basePath))
+  .describe({
+    hidden: true,
+  });
 // The playground's own small route group, declared through defineRoutes
 // (AD (a2)): the property names are the routes' operationIds in the document
 // below, with no .describe() annotation. Mounted as an ordinary sub-router.
@@ -224,39 +238,44 @@ const playgroundRoutes = defineRoutes("/playground", (r) => ({
   // on the primary path): requests with `input`, responses with `input` too,
   // except under `responseOutput: "parsed"` (then `output`). A row whose
   // schema converts to nothing gets `{}` and a warning, never an error.
-  routes: r.get("/routes", (_req, res) => {
-    res.json({
-      routes: listRoutes(app).map((route) => ({
-        ...route,
-        contract:
-          route.contract &&
-          route.contract.entries.map(({ schema, ...row }) => ({
-            ...row,
-            jsonSchema:
-              schema == null
-                ? null
-                : toJsonSchema(schema, {
-                    direction:
-                      row.side === "outbound" &&
-                      route.responseOutput === "parsed"
-                        ? "output"
-                        : "input",
-                  }),
-          })),
-      })),
-    });
-  }),
+  routes: r
+    .get("/routes", (_req, res) => {
+      res.json({
+        routes: listRoutes(app).map((route) => ({
+          ...route,
+          contract:
+            route.contract &&
+            route.contract.entries.map(({ schema, ...row }) => ({
+              ...row,
+              jsonSchema:
+                schema == null
+                  ? null
+                  : toJsonSchema(schema, {
+                      direction:
+                        row.side === "outbound" &&
+                        route.responseOutput === "parsed"
+                          ? "output"
+                          : "input",
+                    }),
+            })),
+        })),
+      });
+    })
+    .describe({ hidden: true }),
   // The OpenAPI document (AD (a)'s generateOpenApi) for everything mounted on
   // this adapter — the jobs API's routes document themselves from their
   // contracts; what cannot be expressed (a wildcard, an `all()` route) is a
   // warning, never an error.
-  openapi: r.get("/openapi.json", (_req, res) => {
-    const { document, warnings } = generateOpenApi(app, {
-      title: "bun-node playground",
-      version: "1.0.0",
-    });
-    res.json({ document, warnings });
-  }),
+  openapi: r
+    .get("/openapi.json", (_req, res) => {
+      const { document, warnings } = generateOpenApi(app, {
+        title: "bun-node playground",
+        version: "1.0.0",
+        filter: documentedRoute,
+      });
+      res.json({ document, warnings });
+    })
+    .describe({ hidden: true }),
 }));
 app.use(playgroundRoutes.mount, playgroundRoutes.router);
 // The same document served by AD (c)'s docsRouter, with a viewer page: the
@@ -275,6 +294,7 @@ app.use(
       generateOpenApi(app, {
         title: "bun-node playground",
         version: "1.0.0",
+        filter: documentedRoute,
       }).document,
     asyncapi: () =>
       generateAsyncApi(app, {
@@ -294,6 +314,7 @@ const apiDocs = docsUi({
     generateOpenApi(app, {
       title: "bun-node playground",
       version: "1.0.0",
+      filter: documentedRoute,
     }).document,
   basePath: "/playground/api-docs",
   logger: noopLogger,
@@ -323,6 +344,7 @@ app.use(
       generateOpenApi(app, {
         title: "bun-node playground",
         version: "1.0.0",
+        filter: documentedRoute,
       }).document,
     asyncapi: () =>
       generateAsyncApi(app, {

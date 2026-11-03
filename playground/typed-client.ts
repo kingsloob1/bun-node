@@ -664,94 +664,104 @@ export async function mountTypedClientDemo(
     return { argv, exit, stdout: out.join(""), stderr: err.join("") };
   }
 
-  app.get(CLIENT_BASE, (_req, res) => {
-    res.type("html").send(typedClientPage(CLIENT_BASE));
-  });
+  app
+    .get(CLIENT_BASE, (_req, res) => {
+      res.type("html").send(typedClientPage(CLIENT_BASE));
+    })
+    .describe({ hidden: true });
 
-  app.get(`${CLIENT_BASE}/state`, async (_req, res) => {
-    const gen = await Bun.file(join(HERE, FILES.gen)).text();
-    const zod = await Bun.file(join(HERE, FILES.zod)).text();
-    const documentedNow = generateOpenApi(documented(), DOCUMENT_INFO);
-    const url = await devUrl();
-    res.json({
-      files: FILES,
-      commands: {
-        generate: `cd playground && bun run gen:client   # bun-client ${GENERATE_ARGS.join(" ")}`,
-        check: `cd playground && bun run check:client  # the same with --check: exit 1 when stale`,
-        watch:
-          url === undefined || dev.tokenFile === undefined
-            ? undefined
-            : `bunx bun-client watch --url ${url} --token-file ${dev.tokenFile} --out /tmp/playground-api.gen.ts`,
-      },
-      generated: {
-        hash: headerHash(gen),
-        warnings: headerWarnings(gen),
-        code: gen,
-        zod,
-      },
-      openapi: {
-        document: documentedNow.document,
-        warnings: documentedNow.warnings,
-      },
-      dev: {
-        enabled: dev.token !== undefined,
-        endpoint: url,
-        tokenFile: dev.tokenFile,
+  app
+    .get(`${CLIENT_BASE}/state`, async (_req, res) => {
+      const gen = await Bun.file(join(HERE, FILES.gen)).text();
+      const zod = await Bun.file(join(HERE, FILES.zod)).text();
+      const documentedNow = generateOpenApi(documented(), DOCUMENT_INFO);
+      const url = await devUrl();
+      res.json({
+        files: FILES,
+        commands: {
+          generate: `cd playground && bun run gen:client   # bun-client ${GENERATE_ARGS.join(" ")}`,
+          check: `cd playground && bun run check:client  # the same with --check: exit 1 when stale`,
+          watch:
+            url === undefined || dev.tokenFile === undefined
+              ? undefined
+              : `bunx bun-client watch --url ${url} --token-file ${dev.tokenFile} --out /tmp/playground-api.gen.ts`,
+        },
+        generated: {
+          hash: headerHash(gen),
+          warnings: headerWarnings(gen),
+          code: gen,
+          zod,
+        },
+        openapi: {
+          document: documentedNow.document,
+          warnings: documentedNow.warnings,
+        },
+        dev: {
+          enabled: dev.token !== undefined,
+          endpoint: url,
+          tokenFile: dev.tokenFile,
+          drifted,
+        },
+        scenarios: SCENARIOS.map((each) => ({
+          ...each,
+          snippet: snippets.get(each.name) ?? "",
+        })),
+      });
+    })
+    .describe({ hidden: true });
+
+  app
+    .post(`${CLIENT_BASE}/run/:scenario`, async (req, res) => {
+      const name = req.params.scenario as ScenarioName;
+      if (!SCENARIOS.some((each) => each.name === name)) {
+        res.status(404).json({ error: `no scenario "${name}"` });
+        return;
+      }
+      res.json(await run(name));
+    })
+    .describe({ hidden: true });
+
+  app
+    .post(`${CLIENT_BASE}/regenerate`, async (_req, res) => {
+      const committed = await Bun.file(join(HERE, FILES.gen)).text();
+      const url = await devUrl();
+      // The step `bun-client watch` runs: the dev endpoint's documents, its
+      // token read from the token file. Without the endpoint (NODE_ENV is
+      // production), the module itself.
+      const generated =
+        url !== undefined && dev.tokenFile !== undefined
+          ? await cli(["generate", "--url", url, "--token-file", dev.tokenFile])
+          : await cli(["generate", "--module", FILES.api]);
+      const check = await cli([...GENERATE_ARGS, "--check"]);
+      res.json({
+        source: url === undefined ? "module" : "dev endpoint",
+        generate: {
+          argv: generated.argv,
+          exit: generated.exit,
+          stderr: generated.stderr,
+          hash: headerHash(generated.stdout),
+        },
+        committedHash: headerHash(committed),
+        same: generated.stdout === committed,
+        diff: lineDiff(committed, generated.stdout),
+        check: { argv: check.argv, exit: check.exit, stderr: check.stderr },
         drifted,
-      },
-      scenarios: SCENARIOS.map((each) => ({
-        ...each,
-        snippet: snippets.get(each.name) ?? "",
-      })),
-    });
-  });
+      });
+    })
+    .describe({ hidden: true });
 
-  app.post(`${CLIENT_BASE}/run/:scenario`, async (req, res) => {
-    const name = req.params.scenario as ScenarioName;
-    if (!SCENARIOS.some((each) => each.name === name)) {
-      res.status(404).json({ error: `no scenario "${name}"` });
-      return;
-    }
-    res.json(await run(name));
-  });
-
-  app.post(`${CLIENT_BASE}/regenerate`, async (_req, res) => {
-    const committed = await Bun.file(join(HERE, FILES.gen)).text();
-    const url = await devUrl();
-    // The step `bun-client watch` runs: the dev endpoint's documents, its
-    // token read from the token file. Without the endpoint (NODE_ENV is
-    // production), the module itself.
-    const generated =
-      url !== undefined && dev.tokenFile !== undefined
-        ? await cli(["generate", "--url", url, "--token-file", dev.tokenFile])
-        : await cli(["generate", "--module", FILES.api]);
-    const check = await cli([...GENERATE_ARGS, "--check"]);
-    res.json({
-      source: url === undefined ? "module" : "dev endpoint",
-      generate: {
-        argv: generated.argv,
-        exit: generated.exit,
-        stderr: generated.stderr,
-        hash: headerHash(generated.stdout),
-      },
-      committedHash: headerHash(committed),
-      same: generated.stdout === committed,
-      diff: lineDiff(committed, generated.stdout),
-      check: { argv: check.argv, exit: check.exit, stderr: check.stderr },
-      drifted,
-    });
-  });
-
-  app.post(`${CLIENT_BASE}/drift`, (_req, res) => {
-    if (!drifted) {
-      // Served from now on; and the adapter's route set moved, so the dev
-      // endpoint rebuilds its documents (from `documented()`, now with the
-      // extra route) and announces the new hash to every watcher.
-      app.use(CLIENT_BASE, api.extraRouter);
-      drifted = true;
-    }
-    res.json({ drifted, route: "GET /api/users/:id/badge" });
-  });
+  app
+    .post(`${CLIENT_BASE}/drift`, (_req, res) => {
+      if (!drifted) {
+        // Served from now on; and the adapter's route set moved, so the dev
+        // endpoint rebuilds its documents (from `documented()`, now with the
+        // extra route) and announces the new hash to every watcher.
+        app.use(CLIENT_BASE, api.extraRouter);
+        drifted = true;
+      }
+      res.json({ drifted, route: "GET /api/users/:id/badge" });
+    })
+    .describe({ hidden: true });
 
   return {
     dev,

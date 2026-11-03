@@ -34,7 +34,11 @@
  * Everything lives in the namespace `playground-cache`, under a prefix of
  * this process's own (`cache-drivers.ts`), removed by `stop()`.
  */
-import type { BunHttpAdapter, RouterHandler } from "@kingsleyweb/bun-common";
+import type {
+  BunHttpAdapter,
+  RouteResponseDoc,
+  RouterHandler,
+} from "@kingsleyweb/bun-common";
 import type {
   Cache,
   CacheStats,
@@ -99,6 +103,44 @@ export interface CacheDemo {
   /** Closes the cache and removes every driver's data this run created. */
   stop: () => Promise<void>;
 }
+
+/** The `X-Cache` and `Age` headers `cacheResponse()` adds to a cached route's answers. */
+const CACHE_HEADERS = {
+  "X-Cache": {
+    description:
+      "HIT, MISS, STALE, BYPASS or UNCACHEABLE: what the cache did with the request",
+    schema: { type: "string" },
+  },
+  Age: {
+    description: "Seconds the stored copy has been held (on a HIT or STALE)",
+    schema: { type: "integer" },
+  },
+} as const;
+
+/** The body `build()` answers: the route, its build count and when it was built. */
+const BUILT_SCHEMA = {
+  type: "object",
+  properties: {
+    route: { type: "string" },
+    build: { type: "integer" },
+    builtAt: { type: "string", format: "date-time" },
+  },
+  required: ["route", "build", "builtAt"],
+} as const;
+
+/** The 200 of a cached route whose body is the {@link BUILT_SCHEMA} (plus `extra` properties). */
+const builtResponse = (
+  description: string,
+  extra: Record<string, { type: string; [key: string]: unknown }> = {},
+  headers: NonNullable<RouteResponseDoc["headers"]> = CACHE_HEADERS,
+): RouteResponseDoc => ({
+  description,
+  schema: {
+    ...BUILT_SCHEMA,
+    properties: { ...BUILT_SCHEMA.properties, ...extra },
+  },
+  headers,
+});
 
 /** The cached routes' middlewares, rebuilt with each cache. */
 interface LabRoutes {
@@ -213,219 +255,318 @@ export async function mountCacheDemo(app: BunHttpAdapter): Promise<CacheDemo> {
   /* The page, its state and the switch                               */
   /* ---------------------------------------------------------------- */
 
-  app.get(CACHE_BASE, (_req, res) => {
-    res.type("html").send(cachePage(CACHE_BASE));
-  });
+  app
+    .get(CACHE_BASE, (_req, res) => {
+      res.type("html").send(cachePage(CACHE_BASE));
+    })
+    .describe({ hidden: true });
 
-  app.get(`${CACHE_BASE}/state`, (_req, res) => {
-    res.json(state());
-  });
+  app
+    .get(`${CACHE_BASE}/state`, (_req, res) => {
+      res.json(state());
+    })
+    .describe({ hidden: true });
 
-  app.post(`${CACHE_BASE}/config`, async (req, res) => {
-    const query = req.query as Record<string, string | undefined>;
-    const driver = query.driver ?? config.driver;
-    const compress = query.compress ?? config.compress;
-    const l1 = query.l1 === undefined ? config.l1 : query.l1 === "true";
-    if (!isAvailable(driver)) {
-      res.status(400).json({
-        error: `driver "${driver}" is not available here`,
-        drivers: labDrivers(),
-      });
-      return;
-    }
-    if (!(LAB_COMPRESSIONS as readonly string[]).includes(compress)) {
-      res.status(400).json({
-        error: `compress must be one of ${LAB_COMPRESSIONS.join(", ")}`,
-      });
-      return;
-    }
-    const next: LabConfig = {
-      driver,
-      compress: compress as LabCompression,
-      l1,
-    };
-    const run = switching.then(async () => await switchTo(next));
-    switching = run.catch(() => undefined);
-    try {
-      await run;
-    } catch (error) {
-      res.status(502).json({
-        error: `could not switch to ${driver}: ${error instanceof Error ? error.message : String(error)}`,
-        ...state(),
-      });
-      return;
-    }
-    res.json(state());
-  });
+  app
+    .post(`${CACHE_BASE}/config`, async (req, res) => {
+      const query = req.query as Record<string, string | undefined>;
+      const driver = query.driver ?? config.driver;
+      const compress = query.compress ?? config.compress;
+      const l1 = query.l1 === undefined ? config.l1 : query.l1 === "true";
+      if (!isAvailable(driver)) {
+        res.status(400).json({
+          error: `driver "${driver}" is not available here`,
+          drivers: labDrivers(),
+        });
+        return;
+      }
+      if (!(LAB_COMPRESSIONS as readonly string[]).includes(compress)) {
+        res.status(400).json({
+          error: `compress must be one of ${LAB_COMPRESSIONS.join(", ")}`,
+        });
+        return;
+      }
+      const next: LabConfig = {
+        driver,
+        compress: compress as LabCompression,
+        l1,
+      };
+      const run = switching.then(async () => await switchTo(next));
+      switching = run.catch(() => undefined);
+      try {
+        await run;
+      } catch (error) {
+        res.status(502).json({
+          error: `could not switch to ${driver}: ${error instanceof Error ? error.message : String(error)}`,
+          ...state(),
+        });
+        return;
+      }
+      res.json(state());
+    })
+    .describe({ hidden: true });
 
   /* ---------------------------------------------------------------- */
   /* The cached routes                                                */
   /* ---------------------------------------------------------------- */
 
-  app.get(
-    `${CACHE_BASE}/http/item/:id`,
-    via((r) => r.item),
-    async (req, res) => {
-      const id = String(req.params.id);
-      addCacheTags(res, `item:${id}`);
-      res.json(await build(`item/${id}`));
-    },
-  );
+  app
+    .get(
+      `${CACHE_BASE}/http/item/:id`,
+      via((r) => r.item),
+      async (req, res) => {
+        const id = String(req.params.id);
+        addCacheTags(res, `item:${id}`);
+        res.json(await build(`item/${id}`));
+      },
+    )
+    .describe({
+      summary: "A cached item (fresh for 15 s)",
+      responses: {
+        200: builtResponse(
+          "The built item (X-Cache says whether it was stored)",
+        ),
+      },
+    });
   // A POST through the middleware that succeeds drops every entry stored for
   // the path (`invalidateOnUnsafe`, RFC 9111 §4.4).
-  app.post(
-    `${CACHE_BASE}/http/item/:id`,
-    via((r) => r.item),
-    (req, res) => {
-      res.json({ updated: req.params.id });
-    },
-  );
+  app
+    .post(
+      `${CACHE_BASE}/http/item/:id`,
+      via((r) => r.item),
+      (req, res) => {
+        res.json({ updated: req.params.id });
+      },
+    )
+    .describe({
+      summary: "Update an item; a success drops its stored entries",
+      responses: {
+        200: {
+          description:
+            "Updated; the item's cached entries are invalidated (RFC 9111 4.4)",
+          schema: {
+            type: "object",
+            properties: { updated: { type: "string" } },
+            required: ["updated"],
+          },
+        },
+      },
+    });
 
-  app.get(
-    `${CACHE_BASE}/http/swr`,
-    via((r) => r.swr),
-    async (_req, res) => {
-      res.json(await build("swr"));
-    },
-  );
+  app
+    .get(
+      `${CACHE_BASE}/http/swr`,
+      via((r) => r.swr),
+      async (_req, res) => {
+        res.json(await build("swr"));
+      },
+    )
+    .describe({
+      summary: "A stale-while-revalidate route (fresh 2 s, stale 60 s)",
+      responses: {
+        200: builtResponse(
+          "The built answer, possibly STALE while one refresh runs",
+        ),
+      },
+    });
 
-  app.get(
-    `${CACHE_BASE}/http/sie`,
-    via((r) => r.sie),
-    async (_req, res) => {
-      if (sieFailing) {
-        await Bun.sleep(BUILD_MS);
-        res
-          .status(503)
-          .json({ error: "the origin is failing (the page's switch)" });
-        return;
-      }
-      res.json(await build("sie"));
-    },
-  );
+  app
+    .get(
+      `${CACHE_BASE}/http/sie`,
+      via((r) => r.sie),
+      async (_req, res) => {
+        if (sieFailing) {
+          await Bun.sleep(BUILD_MS);
+          res
+            .status(503)
+            .json({ error: "the origin is failing (the page's switch)" });
+          return;
+        }
+        res.json(await build("sie"));
+      },
+    )
+    .describe({
+      summary: "A stale-if-error route (fresh 2 s)",
+      responses: {
+        200: builtResponse(
+          "The built answer, or the stale copy while the failure switch is on",
+        ),
+        503: {
+          description:
+            "The origin is failing (the page's switch) and no stale copy is held",
+          schema: {
+            type: "object",
+            properties: { error: { type: "string" } },
+            required: ["error"],
+          },
+        },
+      },
+    });
 
-  app.get(
-    `${CACHE_BASE}/http/private`,
-    via((r) => r.priv),
-    async (_req, res) => {
-      res.set("Cache-Control", "private, max-age=60");
-      res.json(await build("private"));
-    },
-  );
+  app
+    .get(
+      `${CACHE_BASE}/http/private`,
+      via((r) => r.priv),
+      async (_req, res) => {
+        res.set("Cache-Control", "private, max-age=60");
+        res.json(await build("private"));
+      },
+    )
+    .describe({
+      summary: "A Cache-Control: private route, never stored",
+      responses: {
+        200: builtResponse(
+          "The built answer; X-Cache is UNCACHEABLE",
+          {},
+          {
+            ...CACHE_HEADERS,
+            "Cache-Control": {
+              description: "private, max-age=60",
+              schema: { type: "string" },
+            },
+          },
+        ),
+      },
+    });
 
-  app.get(
-    `${CACHE_BASE}/http/big`,
-    via((r) => r.big),
-    async (_req, res) => {
-      const head = await build("big");
-      // About 64 KiB of very compressible text.
-      const lines = Array.from(
-        { length: 900 },
-        (_, i) =>
-          `line ${String(i).padStart(4, "0")}: the cache stores this response once`,
-      );
-      res.json({ ...head, lines });
-    },
-  );
+  app
+    .get(
+      `${CACHE_BASE}/http/big`,
+      via((r) => r.big),
+      async (_req, res) => {
+        const head = await build("big");
+        // About 64 KiB of very compressible text.
+        const lines = Array.from(
+          { length: 900 },
+          (_, i) =>
+            `line ${String(i).padStart(4, "0")}: the cache stores this response once`,
+        );
+        res.json({ ...head, lines });
+      },
+    )
+    .describe({
+      summary: "A 64 KiB compressible response, for the compression switch",
+      responses: {
+        200: builtResponse("The built answer and 900 lines of text", {
+          lines: { type: "array", items: { type: "string" } },
+        }),
+      },
+    });
 
   /* ---------------------------------------------------------------- */
   /* Controls                                                         */
   /* ---------------------------------------------------------------- */
 
-  app.post(`${CACHE_BASE}/sie`, (req, res) => {
-    sieFailing = (req.query as { failing?: string }).failing === "true";
-    res.json({ sieFailing });
-  });
+  app
+    .post(`${CACHE_BASE}/sie`, (req, res) => {
+      sieFailing = (req.query as { failing?: string }).failing === "true";
+      res.json({ sieFailing });
+    })
+    .describe({ hidden: true });
 
-  app.post(`${CACHE_BASE}/invalidate-path`, async (req, res) => {
-    const path = String((req.query as { path?: string }).path ?? "");
-    if (!path.startsWith(`${CACHE_BASE}/http/`)) {
-      res
-        .status(400)
-        .json({ error: `path must start with ${CACHE_BASE}/http/` });
-      return;
-    }
-    // The path's own tag is the same whichever route's middleware computes it.
-    await routes.item.invalidate(path);
-    res.json({ invalidated: { path } });
-  });
+  app
+    .post(`${CACHE_BASE}/invalidate-path`, async (req, res) => {
+      const path = String((req.query as { path?: string }).path ?? "");
+      if (!path.startsWith(`${CACHE_BASE}/http/`)) {
+        res
+          .status(400)
+          .json({ error: `path must start with ${CACHE_BASE}/http/` });
+        return;
+      }
+      // The path's own tag is the same whichever route's middleware computes it.
+      await routes.item.invalidate(path);
+      res.json({ invalidated: { path } });
+    })
+    .describe({ hidden: true });
 
-  app.post(`${CACHE_BASE}/fence`, async (_req, res) => {
-    // A load that a delete of its key lands in the middle of: the core forgets
-    // the flight and drops the write (`fenced`, reason "local").
-    const before = cache.stats().fenced;
-    const reasons: string[] = [];
-    const off = cache.on("fenced", (event) => {
-      reasons.push(event.reason);
-    });
-    const load = cache.getOrSet("fence-demo", async () => {
-      await Bun.sleep(300);
-      return { loadedAt: new Date().toISOString() };
-    });
-    await Bun.sleep(100);
-    await cache.delete("fence-demo");
-    await load;
-    off();
-    res.json({
-      fenced: cache.stats().fenced - before,
-      reasons,
-      stored: await cache.has("fence-demo"),
-    });
-  });
+  app
+    .post(`${CACHE_BASE}/fence`, async (_req, res) => {
+      // A load that a delete of its key lands in the middle of: the core forgets
+      // the flight and drops the write (`fenced`, reason "local").
+      const before = cache.stats().fenced;
+      const reasons: string[] = [];
+      const off = cache.on("fenced", (event) => {
+        reasons.push(event.reason);
+      });
+      const load = cache.getOrSet("fence-demo", async () => {
+        await Bun.sleep(300);
+        return { loadedAt: new Date().toISOString() };
+      });
+      await Bun.sleep(100);
+      await cache.delete("fence-demo");
+      await load;
+      off();
+      res.json({
+        fenced: cache.stats().fenced - before,
+        reasons,
+        stored: await cache.has("fence-demo"),
+      });
+    })
+    .describe({ hidden: true });
 
-  app.post(`${CACHE_BASE}/fill`, async (req, res) => {
-    const asked = Number((req.query as { count?: string }).count ?? 100);
-    const count = Math.min(1000, Math.max(1, asked || 100));
-    const before = cache.stats().evictions;
-    for (let i = 0; i < count; i++) {
-      await cache.set(`fill:${i}`, { i }, { ttl: 60_000 });
-    }
-    res.json({
-      written: count,
-      cap: opened.capped ? LAB_MAX_ENTRIES : null,
-      evictions: cache.stats().evictions - before,
-      note:
-        opened.kind === "memory"
-          ? "the memory driver evicts at once"
-          : opened.capped
-            ? "this driver evicts on its sweep (every 2 s here): watch evictions climb"
-            : "this driver has no entry cap (Redis: the server's maxmemory policy evicts)",
-    });
-  });
+  app
+    .post(`${CACHE_BASE}/fill`, async (req, res) => {
+      const asked = Number((req.query as { count?: string }).count ?? 100);
+      const count = Math.min(1000, Math.max(1, asked || 100));
+      const before = cache.stats().evictions;
+      for (let i = 0; i < count; i++) {
+        await cache.set(`fill:${i}`, { i }, { ttl: 60_000 });
+      }
+      res.json({
+        written: count,
+        cap: opened.capped ? LAB_MAX_ENTRIES : null,
+        evictions: cache.stats().evictions - before,
+        note:
+          opened.kind === "memory"
+            ? "the memory driver evicts at once"
+            : opened.capped
+              ? "this driver evicts on its sweep (every 2 s here): watch evictions climb"
+              : "this driver has no entry cap (Redis: the server's maxmemory policy evicts)",
+      });
+    })
+    .describe({ hidden: true });
 
-  app.post(`${CACHE_BASE}/reset`, (_req, res) => {
-    res.json({ previous: cache.stats({ reset: true }) });
-  });
+  app
+    .post(`${CACHE_BASE}/reset`, (_req, res) => {
+      res.json({ previous: cache.stats({ reset: true }) });
+    })
+    .describe({ hidden: true });
 
   /* ---------------------------------------------------------------- */
   /* The PR-C1 report, on the same cache                              */
   /* ---------------------------------------------------------------- */
 
   let reportBuilds = 0;
-  app.get(`${CACHE_BASE}/report`, async (_req, res) => {
-    const before = cache.stats();
-    const report = await cache.getOrSet(
-      "report",
-      async () => {
-        reportBuilds++;
-        await Bun.sleep(250); // pretend the report is expensive
-        return { builtAt: new Date().toISOString(), build: reportBuilds };
-      },
-      { tags: ["report"], ttl: 10_000, staleWhileRevalidate: 30_000 },
-    );
-    const after = cache.stats();
-    res.json({ report, cache: verdict(before, after) });
-  });
+  app
+    .get(`${CACHE_BASE}/report`, async (_req, res) => {
+      const before = cache.stats();
+      const report = await cache.getOrSet(
+        "report",
+        async () => {
+          reportBuilds++;
+          await Bun.sleep(250); // pretend the report is expensive
+          return { builtAt: new Date().toISOString(), build: reportBuilds };
+        },
+        { tags: ["report"], ttl: 10_000, staleWhileRevalidate: 30_000 },
+      );
+      const after = cache.stats();
+      res.json({ report, cache: verdict(before, after) });
+    })
+    .describe({ hidden: true });
 
-  app.get(`${CACHE_BASE}/stats`, (_req, res) => {
-    res.json({ stats: cache.stats() });
-  });
+  app
+    .get(`${CACHE_BASE}/stats`, (_req, res) => {
+      res.json({ stats: cache.stats() });
+    })
+    .describe({ hidden: true });
 
-  app.post(`${CACHE_BASE}/invalidate`, async (req, res) => {
-    const tag = String((req.query as { tag?: string }).tag ?? "report");
-    await cache.invalidateTags([tag]);
-    res.json({ invalidated: true, tag });
-  });
+  app
+    .post(`${CACHE_BASE}/invalidate`, async (req, res) => {
+      const tag = String((req.query as { tag?: string }).tag ?? "report");
+      await cache.invalidateTags([tag]);
+      res.json({ invalidated: true, tag });
+    })
+    .describe({ hidden: true });
 
   return {
     get cache() {
