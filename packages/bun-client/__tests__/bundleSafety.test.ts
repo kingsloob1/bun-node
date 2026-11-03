@@ -34,6 +34,12 @@
  * carries nothing of a server, the query layer or the core client, and
  * reaches IndexedDB through the page's own `indexedDB`. A negative control
  * beside bun-common must be caught.
+ *
+ * Since PR-S1 the `./sse` entry (`sse.md`, plan §10.1): it imports nothing,
+ * carries nothing of a server and none of the core client's pipeline (it
+ * calls the app's client), and a splitting build loads bun-contract's guards
+ * only lazily, as the `.` entry does. A negative control beside bun-common
+ * must be caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -302,6 +308,37 @@ describe("the ./persist entry (plan §6.4, §10.1)", () => {
   it("negative control: the entry beside bun-common is caught", async () => {
     const { code, logs } = await build(
       join(import.meta.dir, "fixtures", "persist-server-import.ts"),
+    );
+    if (code === undefined) {
+      expect(logs.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(serverMarkersIn(code).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the ./sse entry (sse.md, plan §10.1)", () => {
+  const SSE = join(import.meta.dir, "..", "lib", "sse.ts");
+
+  it("imports nothing, and holds nothing of a server or the core client's pipeline", async () => {
+    const { code, logs } = await build(SSE);
+    expect(logs).toEqual([]);
+    expect(code!.includes("function sse(")).toBe(true);
+    expect(code!.match(/^\s*import\s/m)).toBeNull();
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(code!.includes("function serializeQuery")).toBe(false);
+  });
+
+  it("loads bun-contract's guards only lazily (a splitting build's eager code has none)", async () => {
+    const { eager, lazy } = await splitBuild(SSE);
+    expect(contractMarkersIn(eager)).toEqual([]);
+    expect(contractMarkersIn(lazy.join("\n")).length).toBeGreaterThan(0);
+  });
+
+  it("negative control: the entry beside bun-common is caught", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "fixtures", "sse-server-import.ts"),
     );
     if (code === undefined) {
       expect(logs.length).toBeGreaterThan(0);

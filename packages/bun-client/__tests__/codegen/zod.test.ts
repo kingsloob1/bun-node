@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { generateRoutes, loadDocuments } from "../../lib/codegen/index";
 import { createClient, ValidationError } from "../../lib/index";
+import { sse } from "../../lib/sse";
 import { schemasFromZod } from "../../lib/zod";
 import * as classicApp from "./fixtures/app.zod-classic.gen";
 import * as miniApp from "./fixtures/app.zod-mini.gen";
@@ -487,9 +488,15 @@ describe("the round trip: the client validates the app's real answers through ro
     expect(
       (await api.delete("/api/users/:id", { params: { id: "42" } })).status,
     ).toBe(204);
-    expect(
-      (await api.get("/api/users/:id/events", { params: { id: "42" } })).status,
-    ).toBe(200);
+    // The event stream, its events checked with the generated `events`.
+    const stream = sse(api, "GET /api/users/:id/events", {
+      params: { id: "42" },
+    });
+    expect((await stream[Symbol.asyncIterator]().next()).value).toEqual({
+      event: "done",
+      data: { ok: true },
+    });
+    stream.close();
     expect(warnings).toEqual([]);
     expect(served).toBe(8);
 

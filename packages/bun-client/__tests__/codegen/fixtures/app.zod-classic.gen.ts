@@ -168,6 +168,14 @@ export const schemas = schemasFromZod<Routes>({
     params: z.looseObject({
       id: z.string(),
     }),
+    events: {
+      done: z.looseObject({
+        ok: z.boolean(),
+      }),
+      progress: z.looseObject({
+        percent: z.number(),
+      }),
+    },
   },
   "GET /api/users/:id/report": {
     params: z.looseObject({

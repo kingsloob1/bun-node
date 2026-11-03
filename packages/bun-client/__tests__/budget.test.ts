@@ -60,6 +60,24 @@
  * 5,019 before: passing the headers to the checks, and checking them alone
  * for an unread body); the checks chunk 19,149 and 6,850 (18,209 and
  * 6,571: the headers part of the response check). No limit changed.
+ *
+ * Since PR-S1 the `./sse` entry has its own budget, {@link SSE_BUDGET}: the
+ * event-stream client (`lib/sse.ts`, its parser, and the error classes and
+ * `Retry-After` reader it shares with `.`), its checks left out as they are
+ * here (it loads `./validation` the same lazy way, and its event checks,
+ * `./sseChecks`, beside it). Measured 2026-11-03 (Bun
+ * 1.4.4-canary.1+11c367163, over the PR-C4 follow-ups): 8,058 bytes
+ * minified, 3,371 gzipped, against the plan's 2 KB estimate (§10.3, "[I]"):
+ * the reconnection, the watchdog, the listeners and the iterator's queue are
+ * the difference. Beside `.` in one splitting build, its own chunk is 7,346
+ * and 3,187, the event checks a chunk of their own (1,026 and 584), the
+ * errors and `Retry-After` reader in a chunk the two share (2,005 and
+ * 1,057). The `.` entry grew by 52 bytes minified, 36 gzipped (12,081 and
+ * 5,088): the client keeps its configuration under a registered symbol for
+ * `./sse` to read (its validation, schemas, mode and logger), and marks an
+ * event stream's body unread; no SSE code is in it. The checks chunk grew
+ * by 131 and 45 (19,280 and 6,895: the plan `./sse` reads, `events`), and
+ * holds none of the event checks.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -144,19 +162,34 @@ const PERSIST_BUDGET = {
   gzipBytes: 0.8 * 1024,
 } as const;
 
+/**
+ * Byte limits for the `./sse` entry, its checks left out: about 10% above
+ * the measured sizes (the plan's 2 KB was an estimate, measured over by the
+ * PR that built the entry). The same rule for raising them.
+ */
+const SSE_BUDGET = {
+  /** The entry, minified, its checks external, in bytes. */
+  minifiedBytes: 8.5 * 1024,
+  /** The entry gzipped, its checks external, in bytes. */
+  gzipBytes: 3.5 * 1024,
+} as const;
+
 /** Formats bytes as KiB with one decimal, for failure messages. */
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
-/** Leaves the lazy modules (`./validation`, `./bodies`) out of a build: the entry's own code alone. */
+/** Leaves the lazy modules (`./validation`, `./bodies`, `./sseChecks`) out of a build: the entry's own code alone. */
 const checksExternal: Bun.BunPlugin = {
   name: "checks-external",
   setup(build) {
-    build.onResolve({ filter: /^\.\/(?:validation|bodies)$/ }, (args) => ({
-      path: args.path,
-      external: true,
-    }));
+    build.onResolve(
+      { filter: /^\.\/(?:validation|bodies|sseChecks)$/ },
+      (args) => ({
+        path: args.path,
+        external: true,
+      }),
+    );
   },
 };
 
@@ -193,6 +226,13 @@ const persist = await Bun.build({
   target: "browser",
   minify: true,
   external: ["@tanstack/query-persist-client-core", "@tanstack/query-core"],
+});
+
+const sseEntry = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "sse.ts")],
+  target: "browser",
+  minify: true,
+  plugins: [checksExternal],
 });
 
 /** An output's minified and gzipped sizes. */
@@ -249,6 +289,13 @@ describe("the bundle budget", () => {
     expect(verdict(await sizes(chunk), CHECKS_BUDGET)).toBe("within budget");
   });
 
+  it("keeps the event checks out of the checks chunk (./sse loads them on its own)", async () => {
+    const chunk = await chunkWith("createReceiver");
+    expect((await chunk.text()).includes("This event is not declared")).toBe(
+      false,
+    );
+  });
+
   it(`keeps the bodies chunk within ${kib(BODIES_BUDGET.gzipBytes)} gzipped and ${kib(BODIES_BUDGET.minifiedBytes)} minified`, async () => {
     const chunk = await chunkWith("FormData");
     expect(chunk).not.toBe(await chunkWith("createReceiver"));
@@ -290,6 +337,19 @@ describe("the ./persist budget", () => {
 
   it(`keeps ./persist within ${kib(PERSIST_BUDGET.gzipBytes)} gzipped and ${kib(PERSIST_BUDGET.minifiedBytes)} minified`, async () => {
     expect(verdict(await sizes(persist.outputs[0]), PERSIST_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+});
+
+describe("the ./sse budget", () => {
+  it("builds as one file, its checks left out", () => {
+    expect(sseEntry.success).toBe(true);
+    expect(sseEntry.outputs.length).toBe(1);
+  });
+
+  it(`keeps ./sse within ${kib(SSE_BUDGET.gzipBytes)} gzipped and ${kib(SSE_BUDGET.minifiedBytes)} minified`, async () => {
+    expect(verdict(await sizes(sseEntry.outputs[0]), SSE_BUDGET)).toBe(
       "within budget",
     );
   });

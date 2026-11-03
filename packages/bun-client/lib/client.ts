@@ -295,7 +295,8 @@ type ReadBody = import("./bodies").ReadBody;
 /**
  * Reads a response body as the declared types expect: JSON parsed; text as a
  * string; no body as `undefined`; an event stream left unread (`undefined`,
- * the stream is still on `response.body`); a streamed body (the manifest's
+ * the stream is still on `response.body` for `sse()`, and no whole-body
+ * check runs on it); a streamed body (the manifest's
  * `chunks` for the status, or an NDJSON media type) and anything else, a
  * **download**, through `./bodies`' `read`: an `AsyncIterable`, or the
  * download as `as` asks.
@@ -314,7 +315,8 @@ async function readBody(
   }
   const type = response.headers.get("content-type") ?? "";
   if (framing === undefined) {
-    if (/^text\/event-stream\b/i.test(type)) return { value: undefined };
+    if (/^text\/event-stream\b/i.test(type))
+      return { value: undefined, unread: true };
     if (isJsonType(type)) {
       const text = await response.text();
       if (!text) return { value: undefined };
@@ -799,10 +801,14 @@ export function createClient(
     }
   };
 
-  const client: Record<string, unknown> = {
+  const client: Record<string | symbol, unknown> = {
     request: call,
     url: (path: string, options: RuntimeOptions = {}) =>
       urlFor(path, options, path),
+    // The configuration, for a transport in another entry (`./sse` reads
+    // its validation, schemas, mode and logger): under a registered symbol,
+    // so that entry imports nothing of this module.
+    [Symbol.for("@kingsleyweb/bun-client")]: config,
   };
   for (const verb of VERBS) {
     const method = verb.toUpperCase();

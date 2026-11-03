@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer, the ./query entries the optional @tanstack/query-core peer, the ./react entries react and @tanstack/react-query beside query-core (their declarations import ./query's), and the ./persist entries the optional @tanstack/query-persist-client-core peer (types only): they are checked in the consumer that has them (`peers`), every other entry in one without either.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer, the ./query entries the optional @tanstack/query-core peer, the ./react entries react and @tanstack/react-query beside query-core (their declarations import ./query's), and the ./persist entries the optional @tanstack/query-persist-client-core peer (types only): they are checked in the consumer that has them (`peers`), every other entry in one without either. The ./sse entries (the event-stream client) need no peer.",
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-client",
@@ -143,6 +143,24 @@
       "spelling": "@kingsleyweb/bun-client/lib/persist.js",
       "peers": ["@tanstack/query-persist-client-core"],
       "values": ["idbPersister"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/sse",
+      "values": ["sse", "StreamClosedError"],
+      "types": ["EventStream"],
+      "browser": true,
+      "snippet": "import { createClient } from \"@kingsleyweb/bun-client\";\ninterface Routes { \"GET /jobs/:id/events\": { params: { id: string }; responses: { 200: undefined; 401: { code: \"UNAUTHORIZED\" } }; stream: \"sse\"; events: { progress: { percent: number; at: Date }; done: { result: string }; gap: undefined } }; \"GET /users/:id\": { params: { id: string }; responses: { 200: { id: string } } } }\nconst api = createClient<Routes>({ manifest: { \"GET /jobs/:id/events\": { statuses: [200, 401] } } });\nconst stream = m.sse(api, \"GET /jobs/:id/events\", { params: { id: \"1\" }, lastEventId: \"4\", heartbeatMs: 15_000, fatalStatuses: [401, 403], reconnect: { initialMs: 1_000, maxMs: 10_000 }, validate: { onFailure: { response: \"drop\" } } });\nasync function probe() { for await (const e of stream) { if (e.event === \"progress\") { const _p: Equal<typeof e.data, { percent: number; at: string }> = true; void _p; } } }\nvoid probe;\nconst off = stream.on(\"done\", (d) => { const _d: Equal<typeof d, { result: string }> = true; void _d; }); off();\nstream.on(\"$gap\", (d) => { const _g: Equal<typeof d, undefined> = true; void _g; });\nconst _last: Equal<typeof stream.lastEventId, string> = true; void _last;\nconst _closed: Equal<typeof stream.closed, Promise<void>> = true; void _closed;\nstream.close();\nconst _err = new m.StreamClosedError(\"GET /x\", new Response(null, { status: 403 }), \"status 403\");\nconst _status: Equal<typeof _err.status, number> = true; void _status;\nexport type _stream = Expect<IsAny<t.EventStream<Routes[\"GET /jobs/:id/events\"][\"events\"]>>>;\n// @ts-expect-error -- an event stream is not an HTTP GET\nvoid (() => api.get(\"/jobs/:id/events\", { params: { id: \"1\" } }));"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/sse",
+      "values": ["sse", "StreamClosedError"],
+      "types": ["EventStream"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/sse.js",
+      "values": ["sse"],
       "browser": true
     },
     {

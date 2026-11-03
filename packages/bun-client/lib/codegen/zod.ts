@@ -31,10 +31,13 @@
  *   `z.mime` from the part's exact media types, a list `z.array` with its
  *   `maxItems`; a wildcard media type is not checked), and `responses` by
  *   numeric status: a JSON body's schema, an NDJSON stream's line schema,
- *   `z.string()` for a text one, `null` for none. A part, or a status, with
- *   nothing to check (a raw body, an event stream, a binary download, a raw
- *   stream) is left out. `responseHeaders` by numeric status, from the
- *   headers each declares (`Content-Type` and `Set-Cookie` left out).
+ *   `z.string()` for a text one, `null` for none; and an event stream's
+ *   `events` (`x-sse-events`): each event's data schema by name, `null` for
+ *   one that carries none (`sse.md` §3.3). A part, or a status, with
+ *   nothing to check (a raw body, an event stream's status, a binary
+ *   download, a raw stream) is left out. `responseHeaders` by numeric
+ *   status, from the headers each declares (`Content-Type` and
+ *   `Set-Cookie` left out).
  * - **Headers** cross as strings, request and response alike: a header
  *   whose schema describes strings is checked by it, any other
  *   (`z.coerce.number()` documents `integer`) as `z.string()`.
@@ -957,6 +960,7 @@ function routeSchemas(
   /* responses: by numeric status, JSON or text bodies, or none. */
   const raw = isRecord(operation.responses) ? operation.responses : {};
   const responses: (readonly [number, Expr])[] = [];
+  let events: (readonly [string, Expr])[] | undefined;
   for (const status of Object.keys(raw)
     .filter((code) => /^[1-5]\d\d$/.test(code))
     .map(Number)
@@ -993,7 +997,31 @@ function routeSchemas(
         isRecord(entry.schema) &&
         "x-sse-events" in entry.schema,
     );
-    if (sse || kinds.size !== 1) continue;
+    if (sse) {
+      // An event stream's events (`sse.md` §3.3): each event's data schema
+      // by name, `null` for one that carries none; the first 2xx stream's.
+      const declared = media
+        .map(([, entry]) => (isRecord(entry) ? entry.schema : undefined))
+        .find(
+          (schema): schema is Record<string, unknown> =>
+            isRecord(schema) && isRecord(schema["x-sse-events"]),
+        )?.["x-sse-events"] as Record<string, unknown> | undefined;
+      if (events === undefined && declared !== undefined && status < 300)
+        events = Object.keys(declared)
+          .sort()
+          .map((name) => [
+            name,
+            declared[name] === null
+              ? atom("null", true)
+              : convert(
+                  declared[name],
+                  walk,
+                  `${key} response ${status} event "${name}"`,
+                ),
+          ]);
+      continue;
+    }
+    if (kinds.size !== 1) continue;
     if (kinds.has("text")) responses.push([status, z("string")]);
     else if (kinds.has("json"))
       responses.push([
@@ -1009,6 +1037,8 @@ function routeSchemas(
   }
   if (responses.length > 0)
     members.push(["responses", { kind: "object", members: responses }]);
+  if (events !== undefined && events.length > 0)
+    members.push(["events", { kind: "object", members: events }]);
 
   /* responseHeaders: by numeric status, the headers it declares (§5.6). */
   const responseHeaders: (readonly [number, Expr])[] = [];
