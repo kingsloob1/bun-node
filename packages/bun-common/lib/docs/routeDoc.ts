@@ -253,9 +253,33 @@ export function attachRouteDoc(callback: object, doc: RouteDoc): void {
 }
 
 /**
+ * The reflect-metadata key a framework decorator records a {@link RouteDoc}
+ * under: bun-nest's `@Describe` (typed-client plan `nest-typed-routes.md`
+ * §3.2, §9.5). Written by value on both sides, as the `"bun:*"` keys are.
+ */
+const ROUTE_DOC_METADATA = "bun:describe";
+
+/**
+ * The reflect-metadata polyfill's reader, when it is loaded (a Nest
+ * application's always is); read structurally, so this module neither
+ * imports nor types the polyfill.
+ */
+const reflectMeta = Reflect as unknown as {
+  getMetadata?: (key: unknown, target: object) => unknown;
+};
+
+/**
  * The doc recorded against a terminal callback, if any. Reads `undefined` for
  * a non-function, so the generator can call it on whatever `callbacks.at(-1)`
  * holds.
+ *
+ * Besides `describe()`'s store, it reads the `"bun:describe"` reflect
+ * metadata on the callback, when the polyfill is loaded: bun-nest's
+ * `@Describe` writes it on a controller method, and NestJS's
+ * `RouterExplorer.copyMetadataToCallback` carries it onto the handler it
+ * registers — the path a `@Validate` contract takes too (`getContract`).
+ * When both exist, `describe()`'s doc is merged over the metadata's, per
+ * top-level key.
  */
 export function routeDocFor(callback: unknown): RouteDoc | undefined {
   if (
@@ -264,5 +288,9 @@ export function routeDocFor(callback: unknown): RouteDoc | undefined {
   ) {
     return undefined;
   }
-  return routeDocs.get(callback);
+  const stored = routeDocs.get(callback);
+  const meta = reflectMeta.getMetadata?.(ROUTE_DOC_METADATA, callback);
+  if (typeof meta !== "object" || meta === null) return stored;
+  const written: RouteDoc = meta;
+  return stored === undefined ? written : { ...written, ...stored };
 }
