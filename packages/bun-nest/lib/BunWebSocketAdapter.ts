@@ -21,6 +21,7 @@ import {
   isUndefined,
 } from "@kingsleyweb/bun-common";
 import { Logger } from "@nestjs/common";
+import { ACK_ID, withAckId, withAckIdOf } from "./wsAckId";
 
 /**
  * Marks the `emit` this adapter installs on a client (see `installEmit`), and
@@ -51,6 +52,8 @@ interface WsExceptionFilterPrototype extends AdapterEmitMarked {
    * native WebSocket, else `client.emit`. Absent on Nest 11.
    */
   emitMessage?: (client: unknown, event: string, payload: unknown) => void;
+  /** Answers a thrown error; wrapped so the event's ack id is in force while it emits. */
+  catch?: (exception: unknown, host: unknown) => unknown;
 }
 
 /**
@@ -99,6 +102,21 @@ function routeWsExceptionsThroughEmit(): void {
     proto = websockets.BaseWsExceptionFilter?.prototype;
   } catch {
     return;
+  }
+  // Nest 11 and 12: the filter's `catch` runs with the event's arguments,
+  // so the ack id is in force while it emits (see `wsAckId.ts`).
+  const originalCatch = proto?.catch;
+  if (proto && isFunction(originalCatch) && !proto[ADAPTER_EMIT]) {
+    proto.catch = function catchWithAckId(
+      this: unknown,
+      exception: unknown,
+      host: unknown,
+    ) {
+      const args = (host as { getArgs?: () => unknown[] } | undefined)?.getArgs;
+      return withAckIdOf(isFunction(args) ? args.call(host) : [], () =>
+        originalCatch.call(this, exception, host),
+      );
+    };
   }
   const original = proto?.emitMessage;
   if (!proto || !isFunction(original) || proto[ADAPTER_EMIT]) {
@@ -863,6 +881,9 @@ export class BunWebSocketAdapter<
      */
     options: BunWebSocketAdapterOptions<customWebsocketDataType, routesType>,
   ) {
+    // Before Nest builds the gateways' exception filters: it binds each
+    // filter's `catch` then, so a later patch would miss a custom filter.
+    routeWsExceptionsThroughEmit();
     // A top-level flow option wins over one inside `localOptions`, which is
     // where `BunHttpAdapter`'s `websocket` option puts it.
     const local = "localOptions" in options ? options.localOptions : undefined;
@@ -996,7 +1017,11 @@ export class BunWebSocketAdapter<
     const emit: WsEmitFunction = (event, ...args) =>
       this.sendPacket(
         target,
-        this.eventPacket(client?.data?.path ?? "/", String(event), args),
+        this.eventPacket(
+          client?.data?.path ?? "/",
+          String(event),
+          args.length === 1 ? [withAckId(String(event), args[0])] : args,
+        ),
       );
     defineHidden(emit, ADAPTER_EMIT, true);
     defineHidden(
@@ -1005,7 +1030,9 @@ export class BunWebSocketAdapter<
       (event: string, payload: unknown) => {
         this.sendPacket(
           target,
-          this.eventPacket(client?.data?.path ?? "/", event, [payload]),
+          this.eventPacket(client?.data?.path ?? "/", event, [
+            withAckId(event, payload),
+          ]),
           true,
         );
       },
@@ -1614,6 +1641,10 @@ export class BunWebSocketAdapter<
                   );
                   ackSent = true;
                 };
+
+            if (ack) {
+              defineHidden(ack, ACK_ID, ackId);
+            }
 
             this.dispatchToHandlers(
               handlers,

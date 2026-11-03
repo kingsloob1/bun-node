@@ -61,6 +61,7 @@ import {
 } from "@nestjs/common";
 import { APP_FILTER, APP_PIPE, HttpAdapterHost } from "@nestjs/core";
 import { throwError } from "rxjs";
+import { withAckIdOf } from "./wsAckId";
 
 /* ------------------------------------------------------------------ *
  * Options and the issue shape
@@ -666,7 +667,8 @@ function rpcUnknownError(
  * adapter (`new ValidationExceptionFilter()`) it writes an Express-style
  * response (`status().json()`, which bun-nest's is too). In a gateway (with
  * `@UseFilters`, since Nest applies no global filter there) it emits an
- * `exception` event with `{ status, code: "VALIDATION", issues }` (the frame
+ * `exception` event with `{ status, code: "VALIDATION", issues, ackId? }` (`ackId`: the id of the
+ * event, when it asked for an ack; the frame
  * shape plan §4.6.2 gives V9's gateway validation), exactly as Nest emits a
  * `WsException` built with that object. In a microservice (`rpc`: global
  * filters apply there, so `StandardValidationModule` applies it too) it
@@ -711,11 +713,15 @@ export class ValidationExceptionFilter implements ExceptionFilter<Error> {
       return undefined;
     }
     if (type === "ws") {
-      emitWsException(host.switchToWs().getClient<unknown>(), {
-        status: answer.status,
-        code: "VALIDATION",
-        issues: answer.body.issues,
-      });
+      // The frame carries the event's ack id (`ackId`), so a waiting
+      // `request()` fails at once.
+      withAckIdOf(host.getArgs(), () =>
+        emitWsException(host.switchToWs().getClient<unknown>(), {
+          status: answer.status,
+          code: "VALIDATION",
+          issues: answer.body.issues,
+        }),
+      );
       return undefined;
     }
     if (type === "rpc") {

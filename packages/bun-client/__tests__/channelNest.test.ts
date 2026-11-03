@@ -306,6 +306,95 @@ describe('the "bun-nest" codec: what it reads', () => {
     expect(exceptions).toEqual([{ status: "error", message: "nope" }]);
   });
 
+  it("an exception frame with the request's ackId rejects it at once (VALIDATION or any failed handler); without a matching id the old behaviour holds", async () => {
+    const issues = [{ target: "payload", message: "Too small", path: "text" }];
+    // Answers each request with the exception frame `frame(id)` builds.
+    const failing = (frame: (id: unknown) => unknown) =>
+      serve((packet) =>
+        packet.id === undefined
+          ? undefined
+          : { type: 2, namespace: "/", data: ["exception", frame(packet.id)] },
+      );
+    const started = Date.now();
+
+    const validation = failing((id) => ({
+      status: 400,
+      code: "VALIDATION",
+      issues,
+      ackId: id,
+    }));
+    const a = open(validation);
+    const errors: unknown[] = [];
+    a.room.on("$error", (error) => void errors.push(error));
+    const refused = await a.room
+      .request("say", { text: "" }, { validate: false, timeout: 5000 })
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ChannelError);
+    expect((refused as ChannelError).code).toBe("VALIDATION");
+    expect((refused as ChannelError).issues).toEqual(issues);
+    expect((refused as ChannelError).type).toBe("say");
+    // Matched: the rejection only, as for any error frame a request waits for.
+    expect(errors).toEqual([]);
+
+    const thrown = failing((id) => ({
+      status: "error",
+      message: "refused by the gateway",
+      ackId: id,
+    }));
+    const b = open(thrown);
+    const exceptions: unknown[] = [];
+    b.room.on("exception", (data) => void exceptions.push(data));
+    const failed = await b.room
+      .request("say", { text: "x" }, { timeout: 5000 })
+      .catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(ChannelError);
+    expect((failed as ChannelError).code).toBe("EXCEPTION");
+    expect((failed as ChannelError).status).toBe(500);
+    expect((failed as ChannelError).detail).toBe("refused by the gateway");
+    expect(exceptions).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(2500);
+
+    // An id no request waits for (it timed out): a thrown handler is a push
+    // (ackId and all), a VALIDATION frame reaches $error.
+    const stray = serve();
+    const c = open(stray);
+    const pushes: unknown[] = [];
+    const strayErrors: unknown[] = [];
+    c.room.on("exception", (data) => void pushes.push(data));
+    c.room.on("$error", (error) => void strayErrors.push(error));
+    await until(() => c.room.state === "open");
+    stray.send({
+      type: 2,
+      namespace: "/",
+      data: ["exception", { status: "error", message: "late", ackId: 99 }],
+    });
+    stray.send({
+      type: 2,
+      namespace: "/",
+      data: ["exception", { status: 400, code: "VALIDATION", ackId: 98 }],
+    });
+    await until(() => pushes.length === 1 && strayErrors.length === 1);
+    expect(pushes).toEqual([{ status: "error", message: "late", ackId: 99 }]);
+    expect((strayErrors[0] as ChannelError).code).toBe("VALIDATION");
+  });
+
+  it("control: an exception frame with no ackId leaves the request to time out (an older server)", async () => {
+    const server = serve((packet) =>
+      packet.id === undefined
+        ? undefined
+        : {
+            type: 2,
+            namespace: "/",
+            data: ["exception", { status: "error", message: "nope" }],
+          },
+    );
+    const { room } = open(server);
+    const outcome = await room
+      .request("say", { text: "x" }, { timeout: 200 })
+      .catch((error: unknown) => error);
+    expect(outcome).toBeInstanceOf(RequestTimeoutError);
+  });
+
   it('an ERROR packet is an "error" push; CONNECT and DISCONNECT are ignored', async () => {
     const server = serve();
     const { room, warnings } = open(server);

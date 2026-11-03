@@ -284,7 +284,7 @@ room.close();
 
 | Error | When | Carries |
 |---|---|---|
-| `ChannelError` | an error frame arrives (`VALIDATION`, `UNKNOWN_MESSAGE`, `UNSUPPORTED_DATA`); for a request, its id matches | `code` (that union), `status`, `issues`, `detail`, the request's `type` when known |
+| `ChannelError` | an error frame arrives (`VALIDATION`, `UNKNOWN_MESSAGE`, `UNSUPPORTED_DATA`; `EXCEPTION` from the `"bun-nest"` codec, below); for a request, its id matches | `code` (that union), `status`, `issues`, `detail`, the request's `type` when known |
 | `ValidationError` | a send fails the sender guard; a received frame fails under `"throw"` | TC §5.4's shape, with `direction: "send" \| "receive"` and `target: "data"` |
 | `RequestTimeoutError` | no reply within `timeout` | `type`, `id`, the timeout |
 | `DisconnectedError` | the socket dropped with requests pending | the close code and reason |
@@ -292,6 +292,18 @@ room.close();
 
 Error frames without an id that match nothing pending are delivered to
 `on("$error")` and, by default, logged.
+
+**`"bun-nest"` and a failed acked event.** bun-nest's `exception` frame
+carries `ackId`, the id of the event that failed, when it asked for an ack (a
+`request()`): `ValidationExceptionFilter`'s frame and any `BaseWsExceptionFilter`
+`catch` (a `WsException`, a thrown error, a guard's refusal). The codec
+rejects the request with that id at once: a `ChannelError` with the frame's
+`code` for the validation frame, `"EXCEPTION"` (`status` the frame's when a
+number, else 500; `detail` its `message`) for the others, and emits no
+`$error` for it (as for any error frame a request waits for). A frame with
+no `ackId` (an older server, an event sent without an id) is as before: the
+request times out. An `ackId` no request waits for is a push (a
+`WsException` frame) or a `$error` (a `VALIDATION` one), as before.
 
 ---
 

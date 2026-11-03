@@ -198,8 +198,11 @@ const SSE_BUDGET = {
  * raising them.
  */
 const CHANNEL_BUDGET = {
+  // Minified raised 13 to 14 KiB for the `"bun-nest"` codec's `ackId`
+  // handling (about 0.3 KiB minified, 0.1 gzipped, measured 2026-11-03; the
+  // entry was at 13.0 KiB of 13 before).
   /** The entry, minified, its checks external, in bytes. */
-  minifiedBytes: 13 * 1024,
+  minifiedBytes: 14 * 1024,
   /** The entry gzipped, its checks external, in bytes. */
   gzipBytes: 5 * 1024,
 } as const;

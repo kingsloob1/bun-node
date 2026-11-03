@@ -69,6 +69,7 @@ import type {
 import type { ChannelChecks, Verdict } from "./channelChecks";
 import type { Jsonify } from "./jsonify";
 import type { ClientConfig, FailureMode, PartValidation } from "./types";
+import type { ChannelFailureCode } from "./errors";
 import {
   ChannelClosedError,
   ChannelError,
@@ -276,8 +277,18 @@ export interface ChannelCodec {
   decode: (
     data: string | ArrayBuffer,
     envelope: { readonly idField: string },
-  ) => ChannelMessage | ChannelErrorFrame | undefined;
+  ) => ChannelMessage | CodecErrorFrame | undefined;
 }
+
+/**
+ * An error frame a codec returns: the contract's {@link ChannelErrorFrame},
+ * its `code` widened by `"EXCEPTION"` (what the `"bun-nest"` codec makes of a
+ * failed handler's `exception` frame).
+ */
+export type CodecErrorFrame = Omit<ChannelErrorFrame, "code"> & {
+  /** What failed. */
+  code: ChannelFailureCode;
+};
 
 /**
  * A generated channel's runtime schemas: the zod module's `channelSchemas`
@@ -508,6 +519,9 @@ const CODES: readonly ChannelErrorCode[] = [
   "UNSUPPORTED_DATA",
 ];
 
+/** The codes the connection accepts on an error frame: {@link CODES} and `"EXCEPTION"`. */
+const FRAME_CODES: readonly ChannelFailureCode[] = [...CODES, "EXCEPTION"];
+
 /** The default fatal close codes (§7). */
 const FATAL: CloseCodes = [1007, 1008, [4400, 4499]];
 
@@ -566,9 +580,16 @@ const payloadOf = (args: unknown[]): unknown =>
  *   is ignored.
  * - An `EVENT` from the server is a push, never a reply (a server event
  *   asking for an ack, `emitWithAck`, is not supported: its id is dropped).
- *   `["exception", { status, code, issues? }]`, what bun-nest's
- *   `ValidationExceptionFilter` emits, is an error frame (with no id: it
- *   reaches `$error`); any other `exception` is a push of that type.
+ *   `["exception", { status, code, issues?, ackId? }]`, what bun-nest's
+ *   `ValidationExceptionFilter` emits, is an error frame. When the frame
+ *   carries `ackId`, the id of the event that failed, the request with that
+ *   id rejects at once with its {@link ChannelError} (and `$error` is not
+ *   emitted, as for any error frame a request waits for); without one (a
+ *   server before `ackId`) it reaches `$error` and the request times out.
+ *   Any other `exception` is a push of that type, except one with an
+ *   `ackId` a request waits on (a `WsException` or a thrown handler): that
+ *   request rejects with a `ChannelError` of code `"EXCEPTION"`, the
+ *   frame's `message` as `detail`.
  * - `ERROR` is a push of type `"error"`, its data the message; `CONNECT`
  *   and `DISCONNECT` are ignored.
  *
@@ -628,13 +649,37 @@ function bunNestCodec(
       if ((kind !== 2 && kind !== 5) || typeof type !== "string")
         return undefined;
       const data = payloadOf(args) as Record<string, unknown> | undefined;
-      if (
-        type === "exception" &&
-        typeof data?.status === "number" &&
-        CODES.includes(data.code as ChannelErrorCode)
-      )
-        // The filter's frame, as an error frame (`Connection` reads `code`).
-        return { ...data, type: "error" };
+      if (type === "exception" && data !== undefined) {
+        // The id of the event that failed, when it asked for an ack (`ackId`).
+        const { ackId, ...frame } = data;
+        const id =
+          typeof ackId === "number" || typeof ackId === "string"
+            ? String(ackId)
+            : undefined;
+        if (
+          typeof frame.status === "number" &&
+          CODES.includes(frame.code as ChannelErrorCode)
+        )
+          // The filter's frame, as an error frame (`Connection` reads `code`),
+          // rejecting the request whose id it carries.
+          return {
+            ...frame,
+            type: "error",
+            ...(id === undefined ? {} : { id }),
+          } as CodecErrorFrame;
+        // Any other failed handler: when a request waits on that id the ack
+        // will never come, so it fails now; otherwise a push, as before.
+        if (id !== undefined && replyOf(id) !== undefined)
+          return {
+            type: "error",
+            id,
+            code: "EXCEPTION",
+            status: typeof frame.status === "number" ? frame.status : 500,
+            ...(typeof frame.message === "string"
+              ? { detail: frame.message }
+              : {}),
+          };
+      }
       return { type, data };
     },
   };
@@ -864,7 +909,7 @@ class Connection {
   #frame(ws: WebSocket, raw: string | ArrayBuffer): void {
     if (ws !== this.ws) return;
     this.#arm();
-    let message: ChannelMessage | ChannelErrorFrame | undefined;
+    let message: ChannelMessage | CodecErrorFrame | undefined;
     try {
       message = this.codec.decode(raw, this.envelope);
     } catch (error) {
@@ -881,7 +926,7 @@ class Connection {
       // The error frame is always checked, with its fixed shape (§5).
       const { code, status, issues, detail } = message;
       if (
-        !CODES.includes(code) ||
+        !FRAME_CODES.includes(code) ||
         typeof status !== "number" ||
         (issues !== undefined && !Array.isArray(issues)) ||
         (detail !== undefined && typeof detail !== "string")
