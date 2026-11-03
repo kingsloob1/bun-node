@@ -24,7 +24,9 @@ TC §16 and §13.3 here). **Nothing is built.** The next PRs are TC's **PR-K**,
 documents a reply that echoes the request's id, which the handler dispatch
 (`channel.ts:296-308`) never sends (§2, §10.1). **PR-W1 is built**
 (2026-11-03, branch `feat/bun-common-channel-server`; TC's Status row):
-§10.1–10.4; §10.5 is not in it.
+§10.1–10.4; §10.5 is not in it. **PR-W2 is built** (2026-11-03, branch
+`feat/bun-client-channel`; TC's Status row): the client of §3–§8, the
+generator's `Channels`; `"bun-nest"` is PR-W3's.
 
 ### Contents
 

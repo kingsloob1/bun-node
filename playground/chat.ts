@@ -29,6 +29,7 @@
  */
 import type { BunHttpAdapter } from "@kingsleyweb/bun-common";
 import { defineChannel } from "@kingsleyweb/bun-common";
+import { channelContract } from "@kingsleyweb/bun-common/contract";
 import { z } from "zod";
 
 /** What each connection carries in `ws.data.custom` (the `onUpgrade` hook sets it). */
@@ -42,8 +43,12 @@ function roomTopic(room: string): string {
   return `playground-chat:${room}`;
 }
 
-/** The channel, declared once. */
-const chat = defineChannel({
+/**
+ * The channel's contract, declared once: the browser-safe half a client
+ * imports too (the typed-client section's `channel` scenario opens it with
+ * bun-client's `channel()`, typed by this declaration).
+ */
+export const chatContract = channelContract({
   path: "/playground/chat/:room",
   request: {
     // The upgrade's request side: the room name, from the path.
@@ -61,6 +66,9 @@ const chat = defineChannel({
   replies: { say: "said" },
   meta: { name: "playground-chat", description: "A validated chat room" },
 });
+
+/** The server binding over the shared contract (`defineChannel(contract)`). */
+const chat = defineChannel(chatContract);
 
 /** Mounts the channel on the playground's adapter, the one-call way. */
 export function mountChatChannel(app: BunHttpAdapter): void {

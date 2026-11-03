@@ -42,7 +42,7 @@ interface Routes {
 
 declare const error: ValidationError;
 export type _Direction = Expect<
-  Equal<typeof error.direction, "request" | "response">
+  Equal<typeof error.direction, "request" | "response" | "send" | "receive">
 >;
 export type _Status = Expect<Equal<typeof error.status, number | undefined>>;
 export type _Issues = Expect<

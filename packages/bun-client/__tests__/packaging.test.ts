@@ -162,6 +162,14 @@ describe("package.json exports", () => {
     });
   });
 
+  it("publishes the channel client as ./channel (websocket.md, plan §10.1, §16)", () => {
+    expect(manifest.exports["./channel"]).toEqual({
+      "@kingsleyweb/source": "./lib/channel.ts",
+      types: "./dts/channel.d.ts",
+      default: "./lib/channel.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -347,7 +355,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     expect(/^import(?! type)[^"]*from "\.\/client"/m.test(sse)).toBe(false);
   });
 
-  it("loads the checks module only by a dynamic import, from the client and the event-stream client (and statically from the event checks, which ./sse loads the same way)", async () => {
+  it("loads the checks module only by a dynamic import, from the client and the event-stream client (and statically from the event checks and the channel checks, which ./sse and ./channel load the same way)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -358,7 +366,7 @@ describe("dependencies (plan D17, §10.1)", () => {
         dynamic: source.includes('import("./validation")'),
       }).toEqual({
         file,
-        value: file === "sseChecks.ts",
+        value: file === "sseChecks.ts" || file === "channelChecks.ts",
         dynamic: file === "client.ts" || file === "sse.ts",
       });
     }
@@ -396,5 +404,35 @@ describe("the consumer check", () => {
       checkConfig.entries.filter((entry) => entry.spelling.includes("codegen"))
         .length,
     ).toBeGreaterThan(0);
+  });
+
+  it("keeps the channel client out of every other entry: no lib/ module imports ./channel but a type, and ./channel none of the core client (plan §10.1)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        imports:
+          /^import(?! type)[^"]*from "\.\/channel"|import\("\.\/channel"\)/m.test(
+            source,
+          ),
+      }).toEqual({ file, imports: false });
+    }
+    const channel = await Bun.file(join(ROOT, "lib", "channel.ts")).text();
+    expect(/^import(?! type)[^"]*from "\.\/client"/m.test(channel)).toBe(false);
+  });
+
+  it("loads the channel checks only by a dynamic import, from the channel client alone", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        value: /^import(?! type)[^"]*from "\.\/channelChecks"/m.test(source),
+        dynamic: source.includes('import("./channelChecks")'),
+      }).toEqual({ file, value: false, dynamic: file === "channel.ts" });
+    }
   });
 });

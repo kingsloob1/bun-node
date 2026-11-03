@@ -40,6 +40,8 @@ import {
   printDoc,
   softline,
 } from "./doc";
+import type { ParsedChannel } from "./asyncapi";
+import { readChannels } from "./asyncapi";
 import { framingOf, splitMultipart } from "./form";
 import { documentsHash } from "./hash";
 import { declaredHeaders, isStringSchema } from "./headers";
@@ -51,6 +53,7 @@ import {
   NO_KEYS,
   printType,
   printTypeAlias,
+  propertyKey,
   quote,
   union,
   UNKNOWN,
@@ -76,8 +79,10 @@ export interface CodegenWarning {
 export interface GenerateRoutesOptions {
   /**
    * The server's AsyncAPI document, when it has one: covered by the header's
-   * hash (so it equals the dev endpoint's, plan §3.3), not emitted (the
-   * channel map is PR-W2's). Default: none.
+   * hash (so it equals the dev endpoint's, plan §3.3), and its WebSocket
+   * channels written as `Channels` (their types, the `channel()` client's,
+   * `websocket.md` §3) and `channels` (each one's descriptor), with
+   * `channelSchemas` in the zod module. Default: none.
    */
   readonly asyncapi?: object;
   /**
@@ -118,6 +123,8 @@ export interface GenerateRoutesResult {
   readonly hash: string;
   /** How many routes the map holds. */
   readonly routes: number;
+  /** How many channels `Channels` holds (`0` without an AsyncAPI document, or with no WebSocket channel). */
+  readonly channels: number;
   /** The zod module, when {@link GenerateRoutesOptions.zod} asked for it. */
   readonly zod?: {
     /** Its source, formatted, ending in a newline. */
@@ -203,6 +210,9 @@ export const RESERVED: ReadonlySet<string> = new Set([
   "manifest",
   "typesHash",
   "RouteManifest",
+  "Channels",
+  "channels",
+  "ChannelDescriptors",
   "Record",
   "Omit",
   "Blob",
@@ -272,8 +282,8 @@ export interface FoundOperation {
   readonly parameters: readonly Record<string, unknown>[];
 }
 
-/** An OpenAPI path template as a route key's path: `{id}` → `:id`. */
-function expressPath(template: string): string {
+/** An OpenAPI path template (or an AsyncAPI address) as a route key's path: `{id}` → `:id`. */
+export function expressPath(template: string): string {
   let out = "";
   const pattern = /\{([^}]*)\}/g;
   let last = 0;
@@ -502,6 +512,13 @@ export function generateRoutes(
     }
   }
 
+  /* Channels (websocket.md §3), from the AsyncAPI document. */
+  const channelList =
+    options.asyncapi === undefined
+      ? []
+      : readChannels(options.asyncapi, expressPath, warn);
+  const channelDocs = channelsDoc(channelList, options.asyncapi ?? {}, warn);
+
   const hash = documentsHash({
     openapi: document,
     ...(options.asyncapi === undefined ? {} : { asyncapi: options.asyncapi }),
@@ -570,6 +587,12 @@ export function generateRoutes(
         jsDoc(header),
         hardline,
         `import type { RouteManifest } from ${quote(options.clientModule ?? "@kingsleyweb/bun-client")};`,
+        channelList.length === 0
+          ? []
+          : [
+              hardline,
+              `import type { ChannelDescriptors } from ${quote(`${options.clientModule ?? "@kingsleyweb/bun-client"}/channel`)};`,
+            ],
       ],
       // The header's hash as a value: a persisted cache's `buster`
       // (`./persist`, plan §6.4), so a schema change drops it.
@@ -583,6 +606,7 @@ export function generateRoutes(
       ...declarations,
       routesDoc,
       manifestDoc,
+      ...channelDocs,
     ],
   );
   const zod =
@@ -597,12 +621,14 @@ export function generateRoutes(
           flavour: options.zod.flavour ?? "mini",
           routesModule: options.zod.routesModule,
           clientModule: options.clientModule ?? "@kingsleyweb/bun-client",
+          channels: channelList,
         });
   return {
     code: `${printDoc(module)}\n`,
     warnings: allWarnings,
     hash,
     routes: keys.length,
+    channels: channelList.length,
     ...(zod === undefined ? {} : { zod }),
   };
 }
@@ -1370,4 +1396,155 @@ function withCodes(
       ],
     },
   ]);
+}
+
+/** An object type of `entries`, or `Record<never, never>` for none. */
+function objectOf(members: readonly TsMember[]): TsType {
+  return members.length === 0 ? NO_KEYS : { kind: "object", members };
+}
+
+/**
+ * The route module's `Channels` map and `channels` descriptors
+ * (`websocket.md` §3.1): each channel's entry in the server's names
+ * (`params`, `query` when declared, `receives`, `sends`, `replies`), each
+ * message's data its JSON Schema's type (`undefined` for none), and each
+ * descriptor's runtime facts (`path`, `idField` when not `"id"`, `replies`,
+ * `subprotocol`). Nothing when there is no channel.
+ */
+function channelsDoc(
+  channels: readonly ParsedChannel[],
+  asyncapi: object,
+  warn: (at: string, message: string) => void,
+): Doc[] {
+  if (channels.length === 0) return [];
+  // The messages' `$ref`s are inlined already (`./asyncapi`), so the
+  // channels name no component.
+  const context: SchemaContext = {
+    document: asyncapi,
+    componentType: () => undefined,
+    warn,
+  };
+  const messages = (list: ParsedChannel["sends"], at: string): TsType =>
+    objectOf(
+      list.map(([type, data]) => ({
+        name: type,
+        optional: false,
+        type:
+          data === null
+            ? keyword("undefined")
+            : schemaToType(data, context, `${at} message "${type}"`),
+      })),
+    );
+  const entries: Doc[] = [];
+  const descriptors: Doc[] = [];
+  for (const channel of channels) {
+    const at = `channel ${channel.key}`;
+    const members: TsMember[] = [
+      {
+        name: "params",
+        optional: false,
+        type: objectOf(
+          channel.params.map(([name, schema]) => ({
+            name,
+            optional: false,
+            type:
+              schema === undefined
+                ? keyword("string")
+                : schemaToType(schema, context, `${at} params.${name}`),
+          })),
+        ),
+      },
+      ...(channel.query === undefined
+        ? []
+        : [
+            {
+              name: "query",
+              optional: false,
+              type: schemaToType(channel.query, context, `${at} query`),
+            },
+          ]),
+      {
+        name: "receives",
+        optional: false,
+        type: messages(channel.receives, at),
+      },
+      { name: "sends", optional: false, type: messages(channel.sends, at) },
+      {
+        name: "replies",
+        optional: false,
+        type: objectOf(
+          channel.replies.map(([type, reply]) => ({
+            name: type,
+            optional: false,
+            type: { kind: "literal", value: reply },
+          })),
+        ),
+      },
+    ];
+    entries.push([
+      channel.doc === undefined ? [] : [jsDoc(channel.doc), hardline],
+      quote(channel.key),
+      ": ",
+      printType({ kind: "object", members }),
+      ";",
+    ]);
+    const facts: Doc[] = [`path: ${quote(channel.key)}`];
+    if (channel.idField !== "id")
+      facts.push(`idField: ${quote(channel.idField)}`);
+    if (channel.replies.length > 0)
+      facts.push([
+        "replies: ",
+        group([
+          "{",
+          indent([
+            line,
+            join(
+              [",", line],
+              channel.replies.map(
+                ([type, reply]) => `${propertyKey(type)}: ${quote(reply)}`,
+              ),
+            ),
+          ]),
+          ifBreak(","),
+          line,
+          "}",
+        ]),
+      ]);
+    if (channel.subprotocol !== undefined)
+      facts.push(`subprotocol: ${quote(channel.subprotocol)}`);
+    const object = group([
+      "{",
+      indent([line, join([",", line], facts)]),
+      ifBreak(","),
+      line,
+      "}",
+    ]);
+    descriptors.push(
+      2 + quote(channel.key).length + ": {".length > PRINT_WIDTH
+        ? [quote(channel.key), ":", indent([hardline, object])]
+        : [quote(channel.key), ": ", object],
+    );
+  }
+  return [
+    [
+      jsDoc(
+        "The WebSocket channels, from the AsyncAPI document: what `channel()`\n(`@kingsleyweb/bun-client/channel`) is typed by, each side in the server's\nnames (the client sends what the server `receives`).",
+      ),
+      hardline,
+      "export interface Channels {",
+      indent([hardline, join(hardline, entries)]),
+      hardline,
+      "}",
+    ],
+    [
+      jsDoc(
+        'Each channel\'s runtime facts, for `channel(api, channels["<path>"], …)`.',
+      ),
+      hardline,
+      "export const channels: ChannelDescriptors<Channels> = {",
+      indent([hardline, join([",", hardline], descriptors), ","]),
+      hardline,
+      "};",
+    ],
+  ];
 }

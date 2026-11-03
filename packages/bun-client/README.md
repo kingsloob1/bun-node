@@ -29,8 +29,10 @@ typed hooks over it ([below](#react-react)), and `./persist` keeps the
 query cache in IndexedDB across page loads, dropped when the server's
 schemas change ([below](#persistence-persist)), and `./sse` reads typed,
 validated, resumable server-sent events (PR-S1,
-[below](#server-sent-events-sse)). The other framework bindings and
-transports come in later PRs (the plan's §15).
+[below](#server-sent-events-sse)), and `./channel` talks to a WebSocket
+channel with typed, validated messages both ways, requests, reconnection
+and backpressure (PR-W2, [below](#websocket-channels-channel)). The other
+framework bindings and transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -143,7 +145,7 @@ const api = createClient<Routes>({ baseUrl: "/api", manifest });
 | --- | --- |
 | `--url <url>` | fetches the document (JSON or YAML), or `{ hash, openapi, asyncapi }`. A dev endpoint gets the bearer token of the [token file](#the-token-file) naming it |
 | `--token-file <path>` | with `--url`: the token file, or a directory of them, to read instead of the nearest `node_modules/.cache/bun-types` |
-| `--openapi <file>`, `--asyncapi <file>` | reads the documents from files; the AsyncAPI one only joins the hash until the channel map exists (PR-W2) |
+| `--openapi <file>`, `--asyncapi <file>` | reads the documents from files; the AsyncAPI one joins the hash, and its WebSocket channels are written as `Channels` and `channels` ([below](#websocket-channels-channel)) |
 | `--module <path>`, `--export <name>` | imports the module and reads the export (default `default`): a router or adapter, an OpenAPI document, a `generateOpenApi` result, `{ openapi, asyncapi }`, an object with a `router`, or a function returning one. A router is documented as `{ title: "API", version: "1" }`, with bun-common resolved from the module's own directory (an optional peer) |
 | `--out <file>` | where to write; without it, the module goes to stdout. A file whose content would not change is not rewritten, and a write is atomic |
 | `--check` | writes nothing; exits `1` when `--out` (or `--zod`'s file) is missing or differs from what would be written |
@@ -317,6 +319,19 @@ export const manifest = {
 - **The header** records the documents' hash (bun-common's `typesHash`), and
   every warning. The module exports the same hash as `typesHash`, the
   `buster` of a persisted cache ([below](#persistence-persist)).
+- **WebSocket channels**, from the AsyncAPI document (`--asyncapi`, the dev
+  endpoint's, or a router's under `--module`): `Channels`, each channel by
+  its route path (`/rooms/{room}` → `/rooms/:room`) as `{ params, query?,
+  receives, sends, replies }` in the server's names, each message's data
+  its JSON Schema's type (`undefined` for none), read off bun-common's
+  envelope (`{ type, <idField>?, data }`); and `channels:
+  ChannelDescriptors<Channels>`, each one's `path`, `idField` (when not
+  `"id"`), `replies` and `subprotocol`, for `channel(api,
+  channels["/rooms/:room"])`. The implicit error frame is left out (the
+  client reads error frames itself), as are SSE channels; a payload that is
+  not the envelope (another server's) is typed whole under the message's
+  name, with a warning; `$ref`s are inlined. With `--zod`, the zod module
+  gains `channelSchemas`, each channel's message schemas by side.
 
 ### JSON Schema to TypeScript
 
@@ -623,7 +638,7 @@ try {
   await api.post("/users", { body });
 } catch (error) {
   if (error instanceof ValidationError) {
-    error.direction;  // "request" | "response"
+    error.direction;  // "request" | "response" ("send" | "receive" on a channel)
     error.status;     // the response's status; undefined for a request
     error.issues;     // [{ target: "body", path: "email", message: "Invalid email address", source: "builtin" }]
   }
@@ -1191,6 +1206,107 @@ The verbs, `request` and `op` do not offer an event stream's route, and
 `sse()` takes nothing else. The entry is 3.2 KiB gzipped, none of it in the
 `.` entry, its checks loaded lazily as the core client's are.
 
+## WebSocket channels (`/channel`)
+
+`channel()` opens a bun-common `defineChannel()` channel (the plan's
+[`websocket.md`](../../docs/plans/typed-client/websocket.md)). Its types come
+from the channel's contract: in a monorepo, the same `channelContract()`
+module the server passes to `defineChannel(contract)`; in a separate repo,
+the descriptor `bun-client generate` writes from the server's AsyncAPI
+document:
+
+```ts
+import { createClient } from "@kingsleyweb/bun-client";
+import { channel } from "@kingsleyweb/bun-client/channel";
+import { chat } from "../shared/chat.contract"; // channelContract({ … }), browser-safe
+
+const api = createClient<Routes>({ baseUrl: "https://api.example" });
+const room = channel(api, chat, { params: { room: "lobby" }, query: { name: "ada" } });
+
+room.send("say", { text: "hi" });                       // chat.spec.receives.say's wire input
+room.send("typing");                                     // a `null` message: no data
+const said = await room.request("say", { text: "hi" }); // sends[replies.say], after JSON
+const off = room.on("said", (m) => show(m.by, m.text));  // a push
+for await (const m of room.messages("someoneTyping")) …  // ends when the channel closes
+room.on("$state", (state) => banner(state));             // connecting, open, reconnecting, closed
+room.close();
+```
+
+```ts
+// A separate repo: `bun-client generate --openapi openapi.json --asyncapi asyncapi.json --out api.gen.ts`
+import { channels } from "./api.gen";
+const room = channel(api, channels["/rooms/:room"], { params: { room: "lobby" } });
+```
+
+- **The types** follow the direction rule (§3.3): the client sends what the
+  server `receives` (each field's wire input: a `z.coerce.number()` is sent
+  as a `number`) and receives what it `sends`, after JSON (a `Date` arrives
+  as a `string`). The generated `Channels` map holds each channel's entry
+  in the same shape, and it agrees with the contract inferred
+  (`__tests__/channel.type-test.ts`). Message types may not start with `$`,
+  the client's events' prefix (`channel()` throws a `TypeError`).
+- **The URL** is built as a call's is (`baseUrl`, the params encoded, the
+  query serialised), with `http` → `ws`; a relative `baseUrl` needs a page
+  to resolve against. The channel's subprotocol is offered on connect. A
+  browser `WebSocket` sends no custom headers: put a token in the query or
+  a subprotocol.
+- **One socket per URL.** A second `channel()` on the same URL shares the
+  first one's socket, and its transport options (`reconnect`,
+  `fatalCloseCodes`, `heartbeat`, `ping`, `offline`, `codec`); it closes
+  when the last handle does. Each handle has its own listeners, requests,
+  validation and `resubscribe`.
+- **Requests.** `request(type, data, { timeout, retry })` is offered only
+  for a type `replies` maps. It stamps the envelope's id field (`"id"`, or
+  the contract's `envelope.idField`) with a counter per socket and resolves
+  with the reply type's frame carrying the same id, which bun-common's
+  channel echoes; a push of the same type without that id is a push. An
+  error frame with the id rejects with `ChannelError` (`code`, `status`,
+  `issues`, `detail`, `type`); no reply within `timeout` (the client's, 30 s
+  by default) with `RequestTimeoutError`; a drop with `DisconnectedError`
+  (`code`, `reason`), unless `retry: true`, which sends it again after the
+  reconnect.
+- **Validation**, on the HTTP policy (on in development, off in production;
+  the client's `validate.request` for sends and `validate.response` for
+  what arrives, then the channel's `validate`, then a send's own): a send
+  runs the contract's sender guard (the server's very check), then a BYO
+  `custom` schema per message type, before anything is written, and a
+  failure throws `ValidationError` (`direction: "send"`, `target: "data"`,
+  `key` the type). A frame that arrives runs the receiver guard and warns
+  and is delivered on a failure; `onFailure: { receive: "drop" }` drops it
+  and fires `on("$invalid")`, `"throw"` rejects a waiting request (and drops
+  a push, to `$error`). An undeclared type arriving is an issue too (drift).
+  The checks load lazily: a send made before they have loaded (or checked
+  by an asynchronous schema) is checked, in order, once they have, and its
+  failure, which can no longer throw, reaches `on("$error")`. The error
+  frame is always checked for its fixed shape. A generated descriptor is
+  checked by the zod module's `channelSchemas` (`--zod`), through the
+  client's `schemas` source.
+- **Reconnection**, bun-jobs-ui's tuned values: 500 ms doubling to 30 s,
+  half-jittered, the count reset after a socket has stayed open 60 s
+  (`reconnect: { initialMs, maxMs, stableAfterMs }`, or `false`). A close
+  code in `fatalCloseCodes` (1007, 1008, 4400–4499; codes or `[from, to]`
+  ranges) is not retried: the channel closes, `$error` gets a
+  `ChannelClosedError`, and a later send throws it. `heartbeat: { type,
+  intervalMs, slackMs }` closes a socket silent for twice the interval plus
+  `slackMs` (5 s) with 4000 and reconnects; `ping: { type, intervalMs }`
+  sends a data-less ping after that long without a frame.
+  `resubscribe(room)` runs after every open, before the offline buffer is
+  flushed: where the app re-sends its own `subscribe` messages and resume
+  cursor.
+- **Offline.** Sends while disconnected are buffered (100 by default) and
+  flushed in order on open; past the limit, or with `offline: "fail"`, a
+  send throws `ChannelClosedError`.
+- **Backpressure.** `bufferedAmount` is the socket's; `await
+  room.sendWhenReady(type, data, { highWaterMark })` (1 MiB) waits an
+  animation frame at a time (16 ms outside a browser) until the buffer is
+  under the mark. `send` never waits.
+- **Codecs.** `"bun-common"` (the default) is `defineChannel`'s envelope; a
+  custom `{ encode, decode }` maps another (`"bun-nest"` comes in PR-W3).
+
+The entry is 4.4 KiB gzipped, none of it in the `.` entry; its checks
+(bun-contract's guards) load lazily, as the core client's do. Its error
+classes are exported from `./channel`.
+
 ## The query string
 
 The query is written so that bun-common's parser reads it back unchanged
@@ -1219,8 +1335,8 @@ from their context, which 5.90 has); `./react` is the React binding, with
 `react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) optional peers
 beside query-core; `./persist` is the IndexedDB persister, with
 `@tanstack/query-persist-client-core` (`^5.90.0`) an optional peer whose
-types alone it imports; `./sse` is the event-stream client, with no
-peer. The generator is `./codegen` (Bun only)
+types alone it imports; `./sse` is the event-stream client and
+`./channel` the WebSocket channel client, each with no peer. The generator is `./codegen` (Bun only)
 and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round

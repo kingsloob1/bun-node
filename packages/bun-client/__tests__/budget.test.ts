@@ -78,6 +78,21 @@
  * event stream's body unread; no SSE code is in it. The checks chunk grew
  * by 131 and 45 (19,280 and 6,895: the plan `./sse` reads, `events`), and
  * holds none of the event checks.
+ *
+ * Since PR-W2 the `./channel` entry has its own budget,
+ * {@link CHANNEL_BUDGET}: the channel client (`lib/channel.ts`: the shared
+ * socket, reconnection, the watchdog and ping, the offline buffer, requests,
+ * listeners and iterators, the `"bun-common"` codec, and the error classes it
+ * shares with `.`), its checks (`./channelChecks`) left out as `./sse`'s are.
+ * Measured 2026-11-03 (Bun 1.4.4-canary.1+11c367163, over PR-S1): 11,831
+ * bytes minified, 4,523 gzipped, against the plan's 4 KB estimate (§10.3,
+ * "[I]"). Its checks, a splitting build's chunk with bun-contract's guards
+ * and `channelContract` (taken through `./validation`, their one import
+ * site, of which a bundler keeps only those), 17,447 and 6,406, against
+ * {@link CHANNEL_CHECKS_BUDGET}. The `.` entry is 12,074 and 5,085 (7 and 3
+ * bytes under PR-S1's: `ValidationError` names a channel's direction, a
+ * shorter expression); no channel code and none of the channel errors are
+ * in it.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -174,17 +189,42 @@ const SSE_BUDGET = {
   gzipBytes: 3.5 * 1024,
 } as const;
 
+/**
+ * Byte limits for the `./channel` entry, its checks left out: about 10%
+ * above the measured sizes (the plan's 4 KB was an estimate, measured over
+ * by the PR that built the entry, as `./sse`'s was). The same rule for
+ * raising them.
+ */
+const CHANNEL_BUDGET = {
+  /** The entry, minified, its checks external, in bytes. */
+  minifiedBytes: 13 * 1024,
+  /** The entry gzipped, its checks external, in bytes. */
+  gzipBytes: 5 * 1024,
+} as const;
+
+/**
+ * Byte limits for the channel's checks chunk (bun-contract's guards and
+ * `channelContract`, and `./channelChecks`): the core checks chunk's
+ * limits, which it stays under. The same rule for raising them.
+ */
+const CHANNEL_CHECKS_BUDGET = {
+  /** The chunk, minified, in bytes. */
+  minifiedBytes: 19 * 1024,
+  /** The chunk gzipped, in bytes. */
+  gzipBytes: 7 * 1024,
+} as const;
+
 /** Formats bytes as KiB with one decimal, for failure messages. */
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
-/** Leaves the lazy modules (`./validation`, `./bodies`, `./sseChecks`) out of a build: the entry's own code alone. */
+/** Leaves the lazy modules (`./validation`, `./bodies`, `./sseChecks`, `./channelChecks`) out of a build: the entry's own code alone. */
 const checksExternal: Bun.BunPlugin = {
   name: "checks-external",
   setup(build) {
     build.onResolve(
-      { filter: /^\.\/(?:validation|bodies|sseChecks)$/ },
+      { filter: /^\.\/(?:validation|bodies|sseChecks|channelChecks)$/ },
       (args) => ({
         path: args.path,
         external: true,
@@ -226,6 +266,19 @@ const persist = await Bun.build({
   target: "browser",
   minify: true,
   external: ["@tanstack/query-persist-client-core", "@tanstack/query-core"],
+});
+
+const channelEntry = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "channel.ts")],
+  target: "browser",
+  minify: true,
+  plugins: [checksExternal],
+});
+const channelSplit = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "channel.ts")],
+  target: "browser",
+  minify: true,
+  splitting: true,
 });
 
 const sseEntry = await Bun.build({
@@ -352,5 +405,48 @@ describe("the ./sse budget", () => {
     expect(verdict(await sizes(sseEntry.outputs[0]), SSE_BUDGET)).toBe(
       "within budget",
     );
+  });
+});
+
+describe("the ./channel budget", () => {
+  it("builds as one file, its checks left out", () => {
+    expect(channelEntry.success).toBe(true);
+    expect(channelEntry.outputs.length).toBe(1);
+  });
+
+  it(`keeps ./channel within ${kib(CHANNEL_BUDGET.gzipBytes)} gzipped and ${kib(CHANNEL_BUDGET.minifiedBytes)} minified`, async () => {
+    expect(verdict(await sizes(channelEntry.outputs[0]), CHANNEL_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+
+  it(`splits its checks into one chunk within ${kib(CHANNEL_CHECKS_BUDGET.gzipBytes)} gzipped and ${kib(CHANNEL_CHECKS_BUDGET.minifiedBytes)} minified, holding none of the HTTP checks`, async () => {
+    expect(channelSplit.success).toBe(true);
+    const chunks = channelSplit.outputs.filter(
+      (output) => output.kind === "chunk",
+    );
+    expect(chunks.length).toBe(1);
+    const text = await chunks[0].text();
+    // channelContract's own message: the contract is built here from the
+    // generated schemas.
+    expect(text.includes('must be a route path (starting with "/")')).toBe(
+      true,
+    );
+    // ./validation's own code (the HTTP request and response checks) is
+    // shaken out: only the guards it re-exports are kept.
+    expect(text.includes("the schema source has no")).toBe(false);
+    expect(text.includes("failed to load")).toBe(false);
+    expect(verdict(await sizes(chunks[0]), CHANNEL_CHECKS_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+
+  it("keeps channelContract (the channel checks' own) out of the core client's chunks", async () => {
+    for (const output of split.outputs)
+      expect(
+        (await output.text()).includes(
+          'must be a route path (starting with "/")',
+        ),
+      ).toBe(false);
   });
 });

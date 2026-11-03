@@ -61,7 +61,7 @@ const USAGE = `Usage:
 Sources (one):
   --url <url>          a URL serving an OpenAPI document, or { hash, openapi, asyncapi }
   --openapi <file>     an OpenAPI 3.x document (JSON, or YAML by extension)
-    --asyncapi <file>  an AsyncAPI document beside it (covered by the hash)
+    --asyncapi <file>  an AsyncAPI document beside it (its WebSocket channels)
   --module <path>      a module exporting a router or a document, documented in process
     --export <name>    the export to read (default: "default")
 
