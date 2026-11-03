@@ -2138,6 +2138,40 @@ What changed:
   `__tests__/core/setMany.test.ts`; `__tests__/drivers/batch.test.ts`.
   Sixteen negative controls; see the PR.
 
+**Speed work: MongoDB reads, built 2026-11-02** (speed work item 5,
+scheduled by the user with its speed comparisons). The bench had
+`get-hit-10kb/mongodb` at 0.74× cache-manager's MongoDB store in one run (it
+reads between 0.74× and 1.24× from run to run). Measured first, in a scratch
+profile (sequential 10 KB hits, best of five, exclusive), µs per read:
+
+- **The query shape, ~52 µs.** `get` filtered `_id` plus `v: { $exists:
+  true }` and the expiry `$or`, which the server plans as an `_id` index
+  scan, a fetch and a filter; `_id` alone takes its `IDHACK` path: 196
+  against 145 µs for the same `findOne`.
+- **A collection handle per call, ~18 µs.** `#collection` asked
+  `db.collection()` on every operation, which builds a `Collection` and
+  resolves its options each time: 214 against 196 µs.
+- **Not the cause**: the `mongodb` package's version (the bench's rival runs
+  7.7.0 and bun-cache 6.21.0 from the root: 4,292 against 4,335 reads/s,
+  within noise), BSON decoding of the value (`promoteBuffers` is faster than
+  without: 145 against 169 µs), a projection (slower: 224 µs), the read
+  preference (207 against 196 µs, noise). The core's decode is ~24 µs.
+
+What changed (`lib/drivers/mongo.ts` only): `get` reads by `_id` alone and
+drops a counter (no `v`) or an expired document itself, the same documents
+the filter selected; the collection handles are built once per database.
+The A/B (base and new drivers in one process, trials interleaved, best of
+five, exclusive): `get-hit-10kb` 4,049 → 5,422/s (1.34×; cache-manager
+4,696), `get-hit-100b` 4,614 → 6,493/s (1.41×; cache-manager 5,623),
+`get-miss` 2,508 → 2,845/s, `getMany` of 100 unchanged (520 → 535). The
+bench (`--compare`, exclusive, before and after): `get-hit-10kb/mongodb`
+4,005 → 5,364/s (cache-manager 4,512: bun-cache leads), `get-hit-100b`
+3,565 → 5,137/s (a tie, was cache-manager's); nothing else moved beyond
+noise. Tests:
+a case on both MongoDB lanes pins the `_id`-only filter (and the server's
+`IDHACK` plan), the counter and expiry checks, and one handle per
+collection; four negative controls, see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
