@@ -38,6 +38,7 @@ export type Scenario =
   | "set-100b"
   | "set-10kb"
   | "set-1mb"
+  | "set-1mb-random"
   | "get-many-100"
   | "set-many-100"
   | "stampede"
@@ -59,6 +60,7 @@ export const ALL_SCENARIOS: readonly Scenario[] = [
   "set-100b",
   "set-10kb",
   "set-1mb",
+  "set-1mb-random",
   "get-many-100",
   "set-many-100",
   "stampede",

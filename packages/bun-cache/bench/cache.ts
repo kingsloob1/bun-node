@@ -42,6 +42,7 @@ const BLURB: Record<Scenario, string> = {
   "set-100b": "set, 100 B values (ops/s)",
   "set-10kb": "set, 10 KB values (ops/s)",
   "set-1mb": "set, 1 MB values (ops/s)",
+  "set-1mb-random": "set, 1 MB values of random bytes (ops/s)",
   "get-many-100": "getMany / mget of 100 written keys (batches/s)",
   "set-many-100": "setMany / mset of 100 entries (batches/s)",
   stampede:

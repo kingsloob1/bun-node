@@ -8,7 +8,7 @@ import type {
 } from "./types";
 import process from "node:process";
 import { nextTurn, sharedNow } from "./harness";
-import { isValue, valueOf } from "./payload";
+import { isValue, randomValueOf, valueOf } from "./payload";
 import { rate, summarise } from "./stats";
 
 /**
@@ -48,6 +48,7 @@ const SIZE: Partial<Record<Scenario, number>> = {
   "set-100b": 100,
   "set-10kb": 10 * 1024,
   "set-1mb": 1024 * 1024,
+  "set-1mb-random": 1024 * 1024,
 };
 
 /** A run that produced a wrong answer. */
@@ -65,7 +66,11 @@ function opsFor(
   config: ScenarioConfig,
 ): number {
   const base = contender.backend === "memory" ? config.ops * 10 : config.ops;
-  if (scenario === "get-hit-1mb" || scenario === "set-1mb") {
+  if (
+    scenario === "get-hit-1mb" ||
+    scenario === "set-1mb" ||
+    scenario === "set-1mb-random"
+  ) {
     return Math.max(20, Math.floor(base / 40));
   }
   if (scenario === "get-many-100" || scenario === "set-many-100") {
@@ -186,7 +191,8 @@ async function getSet(
     });
   }
 
-  const value = valueOf(bytes, 7);
+  const value =
+    scenario === "set-1mb-random" ? randomValueOf(bytes, 7) : valueOf(bytes, 7);
   const result = await throughput(count, async (index) => {
     await cache.set(keys[index % keys.length], value);
   });

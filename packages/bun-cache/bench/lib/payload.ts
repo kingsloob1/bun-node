@@ -46,6 +46,45 @@ export function valueOf(bytes: number, id = 0): BenchValue {
   return { id, body: incompressible(Math.max(1, bytes - 24)) };
 }
 
+/** Bodies of random bytes already built, by length. */
+const randomBodies = new Map<number, string>();
+
+/**
+ * A deterministic string of `length` **random bytes**: each character a code
+ * unit from 0 to 255 (xorshift32, its own fixed seed), so the engine keeps it
+ * as a Latin-1 string and the structured codec stores it as exactly those
+ * bytes, which no compressor shrinks. `incompressible()` draws from 64
+ * symbols, about 6 bits each, which zstd's entropy stage alone takes to
+ * three quarters of its size; this is the case it does not reach: what
+ * bun-cache's compressibility probe exists for (data already compressed, an
+ * image, ciphertext). JSON, which the rivals store, escapes the control
+ * characters and writes the upper half as two UTF-8 bytes.
+ */
+export function randomBytesString(length: number): string {
+  const cached = randomBodies.get(length);
+  if (cached !== undefined) return cached;
+
+  let state = 0x2545f491;
+  const codes = new Uint8Array(length);
+  for (let index = 0; index < length; index++) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    codes[index] = (state >>> 0) & 255;
+  }
+  let body = "";
+  for (let at = 0; at < length; at += 8192) {
+    body += String.fromCharCode(...codes.subarray(at, at + 8192));
+  }
+  randomBodies.set(length, body);
+  return body;
+}
+
+/** A value of about `bytes` bytes whose body is random bytes ({@link randomBytesString}). */
+export function randomValueOf(bytes: number, id = 0): BenchValue {
+  return { id, body: randomBytesString(Math.max(1, bytes - 24)) };
+}
+
 /** Whether a read returned the value written under `id` (a miss or another value is not). */
 export function isValue(read: unknown, id: number): boolean {
   return (
