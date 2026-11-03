@@ -20,7 +20,11 @@
  *   `send` operation (the implicit `error` frame included). A channel's frame
  *   is the envelope `{ type, id?, data }`, so every message payload is
  *   documented as that envelope (bun-jobs' `eventEnvelope` precedent) with
- *   the declared schema at `data`;
+ *   the declared schema at `data` — except the implicit error frame, which
+ *   the runtime sends flat (`{ type: "error", id?, code, status, … }`, the id
+ *   always under `id`) and which is documented as sent. A type declared on
+ *   both sides is one message when the two are the same, else one per
+ *   direction (`<type>.receive`, `<type>.send`);
  * - its meta, as the approved extensions: `x-bun-common-subprotocol`,
  *   `x-bun-common-binary`, `x-bun-common-topics`, `x-bun-common-sse-fallback`.
  *
@@ -472,8 +476,9 @@ export function generateAsyncApi(
   const channelIds = new Map<string, string>(); // id → where it came from
   const operationIds = new Map<string, string>(); // id → where it came from
 
-  const channelMessageRef = (channel: string, type: string) => ({
-    $ref: `#/channels/${channel}/messages/${keySafe(type)}`,
+  /** A reference to a message of a channel, by its id there (what {@link registerMessages} returned). */
+  const channelMessageRef = (channel: string, messageId: string) => ({
+    $ref: `#/channels/${channel}/messages/${messageId}`,
   });
   const channelRef = (id: string) => ({ $ref: `#/channels/${id}` });
 
@@ -505,17 +510,84 @@ export function generateAsyncApi(
     return safe;
   };
 
-  /** Registers one message in `components.messages` and links it from its channel. */
-  const registerMessage = (
+  /**
+   * Registers a channel's messages in `components.messages`, links them from
+   * the channel, and returns each side's type → message id (the
+   * `channel.messages` key its operations reference).
+   *
+   * A type declared on one side keeps its type as its id. A type declared on
+   * both sides (client → server and server → client) is **one** message when
+   * the two message objects are the same — AsyncAPI's own idiom, one message
+   * referenced by the receive and the send operation — and **two** otherwise,
+   * `<type>.receive` and `<type>.send` (the operations' actions), each titled
+   * with its direction. (Keyed by type alone, the outbound one overwrote the
+   * inbound one, documenting the server's schema for both directions.) Any
+   * other clash of ids — two types folding to one key-safe id — is a
+   * `ConfigError`, as a duplicate operation id is.
+   */
+  const registerMessages = (
     build: ChannelBuild,
-    type: string,
-    message: Record<string, unknown>,
-  ): void => {
-    const key = `${build.id}.${keySafe(type)}`;
-    messages[key] = message;
-    (build.channel.messages as Record<string, unknown>)[keySafe(type)] = {
-      $ref: `#/components/messages/${key}`,
+    where: string,
+    receives: readonly (readonly [string, Record<string, unknown>])[],
+    sends: readonly (readonly [string, Record<string, unknown>])[],
+  ): { receive: Map<string, string>; send: Map<string, string> } => {
+    const linked = build.channel.messages as Record<string, unknown>;
+    const ids = {
+      receive: new Map<string, string>(),
+      send: new Map<string, string>(),
     };
+    const claim = (messageId: string, message: Record<string, unknown>) => {
+      const key = `${build.id}.${messageId}`;
+      if (Object.hasOwn(linked, messageId) || Object.hasOwn(messages, key)) {
+        throw new ConfigError(
+          `Two messages share the id "${key}" (${where}): their types fold to one key-safe id`,
+          { channelId: build.id, messageId, where },
+        );
+      }
+      messages[key] = message;
+      linked[messageId] = { $ref: `#/components/messages/${key}` };
+    };
+    /** The message titled with its direction (a type split over both sides). */
+    const titled = (
+      message: Record<string, unknown>,
+      type: string,
+      direction: "client → server" | "server → client",
+    ): Record<string, unknown> => ({
+      name: message.name,
+      title: `${type} (${direction})`,
+      ...message,
+    });
+    // A type listed twice on one side (an SSE route's events over several
+    // bodies) keeps its last message, as it always has.
+    const sent = new Map(sends);
+    for (const [type, message] of new Map(receives)) {
+      const other = sent.get(type);
+      const same =
+        other !== undefined && canonicalJson(other) === canonicalJson(message);
+      const messageId =
+        other === undefined || same
+          ? keySafe(type)
+          : `${keySafe(type)}.receive`;
+      claim(
+        messageId,
+        other === undefined || same
+          ? message
+          : titled(message, type, "client → server"),
+      );
+      ids.receive.set(type, messageId);
+      if (same) ids.send.set(type, messageId);
+    }
+    for (const [type, message] of sent) {
+      if (ids.send.has(type)) continue;
+      const split = ids.receive.has(type);
+      const messageId = split ? `${keySafe(type)}.send` : keySafe(type);
+      claim(
+        messageId,
+        split ? titled(message, type, "server → client") : message,
+      );
+      ids.send.set(type, messageId);
+    }
+    return ids;
   };
 
   /** The parameters of an address, from the upgrade's params schema where there is one. */
@@ -622,6 +694,45 @@ export function generateAsyncApi(
   });
 
   /**
+   * The implicit error frame's payload, as the runtime sends it
+   * (`channelErrorFrame`, bun-contract's `lib/channel.ts`): flat — `{ type:
+   * "error", id?, code, status, issues?, detail? }` — not the `{ type,
+   * <idField>?, data }` envelope, and the offending frame's id echoed under
+   * `id` whatever the channel's `envelope.idField`. `body` is the declared
+   * frame body's schema (`code`, `status`, …), whose properties join `type`
+   * and `id` at the top.
+   */
+  const errorFramePayload = (body: JsonSchemaLike): JsonSchemaLike => {
+    // A `componentName` may have lifted the body to a component: read it there.
+    const prefix = "#/components/schemas/";
+    const lifted =
+      typeof body.$ref === "string" && body.$ref.startsWith(prefix)
+        ? components.get(body.$ref.slice(prefix.length))
+        : undefined;
+    const declared = lifted ?? body;
+    return {
+      type: "object",
+      properties: {
+        type: { const: "error", description: "The message type." },
+        id: {
+          type: "string",
+          description:
+            "The offending frame's correlation id, echoed when it carried one — always under `id`, whatever the channel's envelope field.",
+        },
+        ...(isPlainObject(declared.properties) ? declared.properties : {}),
+      },
+      required: [
+        "type",
+        ...(Array.isArray(declared.required)
+          ? (declared.required as unknown[]).filter(
+              (name): name is string => typeof name === "string",
+            )
+          : []),
+      ],
+    };
+  };
+
+  /**
    * One contract channel (a listed route whose contract's transport is
    * `"websocket"`).
    */
@@ -648,7 +759,7 @@ export function generateAsyncApi(
       prose.push(contract.meta.description);
     }
     prose.push(
-      `Frames are JSON envelopes \`{ "type": "<type>", "${idField}"?: string, "data": … }\`.`,
+      `Frames are JSON envelopes \`{ "type": "<type>", "${idField}"?: string, "data": … }\`, except the error frame, which is flat: \`{ "type": "error", "id"?: string, "code": …, "status": …, "issues"?: […], "detail"?: string }\`, echoing the offending frame's id under \`id\`.`,
     );
     if (
       request?.cookies !== undefined ||
@@ -704,43 +815,35 @@ export function generateAsyncApi(
     const outbound = rowsByType(route, "outbound");
     const replies = meta?.replies ?? {};
 
-    for (const [type, row] of inbound) {
-      registerMessage(build, type, {
-        name: type,
-        contentType: "application/json",
-        payload: envelopePayload(
-          type,
-          idField,
-          row.schema === null
-            ? null
-            : emitSchema(
-                row.schema,
-                "input",
-                `${where} message "${type}"`,
-                where,
-              ),
-        ),
-      });
-    }
-    for (const [type, row] of outbound) {
-      registerMessage(build, type, {
-        name: type,
-        contentType: "application/json",
+    const inboundMessages = inbound.map(
+      ([type, row]): [string, Record<string, unknown>] => [
+        type,
+        {
+          name: type,
+          contentType: "application/json",
+          payload: envelopePayload(
+            type,
+            idField,
+            row.schema === null
+              ? null
+              : emitSchema(
+                  row.schema,
+                  "input",
+                  `${where} message "${type}"`,
+                  where,
+                ),
+          ),
+        },
+      ],
+    );
+    const outboundMessages = outbound.map(
+      ([type, row]): [string, Record<string, unknown>] => {
         // The implicit error frame (channelContract's own declaration, a
-        // `documented()` schema) is marked as the framework's, not the app's.
-        ...(type === "error" && row.vendor === "bun-common/documented"
-          ? {
-              summary:
-                "Declared by the framework (the channel's implicit error frame), not by the application.",
-            }
-          : row.implicit === true
-            ? {
-                summary: "Declared by the framework, not by the application.",
-              }
-            : {}),
-        payload: envelopePayload(
-          type,
-          idField,
+        // `documented()` schema) is marked as the framework's, not the app's,
+        // and documented as the runtime sends it: flat, not enveloped.
+        const errorFrame =
+          type === "error" && row.vendor === "bun-common/documented";
+        const data =
           row.schema === null
             ? null
             : emitSchema(
@@ -748,14 +851,43 @@ export function generateAsyncApi(
                 "input",
                 `${where} message "${type}"`,
                 where,
-              ),
-        ),
-      });
-    }
+              );
+        return [
+          type,
+          {
+            name: type,
+            contentType: "application/json",
+            ...(errorFrame
+              ? {
+                  summary:
+                    "Declared by the framework (the channel's implicit error frame), not by the application. Sent flat, not in the envelope: the offending frame's id is echoed under `id`.",
+                }
+              : row.implicit === true
+                ? {
+                    summary:
+                      "Declared by the framework, not by the application.",
+                  }
+                : {}),
+            payload:
+              errorFrame && data !== null
+                ? errorFramePayload(data)
+                : envelopePayload(type, idField, data),
+          },
+        ];
+      },
+    );
+    const ids = registerMessages(
+      build,
+      where,
+      inboundMessages,
+      outboundMessages,
+    );
 
     for (const [type] of inbound) {
       const replyType = replies[type];
-      if (replyType !== undefined && !outbound.some(([t]) => t === replyType)) {
+      const replyId =
+        replyType === undefined ? undefined : ids.send.get(replyType);
+      if (replyType !== undefined && replyId === undefined) {
         warn(
           "operation",
           `the reply "${replyType}" of "${type}" is not a declared outbound message — the reply link was left out`,
@@ -767,22 +899,24 @@ export function generateAsyncApi(
       ] = {
         action: "receive",
         channel: channelRef(id),
-        messages: [channelMessageRef(id, type)],
-        ...(replyType !== undefined && outbound.some(([t]) => t === replyType)
-          ? {
+        messages: [channelMessageRef(id, ids.receive.get(type)!)],
+        ...(replyId === undefined
+          ? {}
+          : {
               reply: {
                 channel: channelRef(id),
-                messages: [channelMessageRef(id, replyType)],
+                messages: [channelMessageRef(id, replyId)],
               },
-            }
-          : {}),
+            }),
       };
     }
     if (outbound.length > 0) {
       operations[claimOperationId(`send${pascal(id)}`, where)] = {
         action: "send",
         channel: channelRef(id),
-        messages: outbound.map(([type]) => channelMessageRef(id, type)),
+        messages: outbound.map(([type]) =>
+          channelMessageRef(id, ids.send.get(type)!),
+        ),
       };
     }
 
@@ -857,31 +991,41 @@ export function generateAsyncApi(
     }
     const direction: SchemaDirection =
       route.responseOutput === "parsed" ? "output" : "input";
-    for (const [event, nested, parent] of events) {
-      registerMessage(build, event, {
-        name: event,
-        contentType:
-          (parent.schema as { data?: unknown } | null)?.data === "text"
-            ? "text/plain"
-            : "application/json",
-        // A `null` data schema: the event carries no data (no `payload`).
-        ...(nested.schema === null
-          ? {}
-          : {
-              payload: emitSchema(
-                nested.schema,
-                direction,
-                `${where} event "${event}"`,
-                where,
-              ),
-            }),
-      });
-    }
+    const ids = registerMessages(
+      build,
+      where,
+      [],
+      events.map(
+        ([event, nested, parent]): [string, Record<string, unknown>] => [
+          event,
+          {
+            name: event,
+            contentType:
+              (parent.schema as { data?: unknown } | null)?.data === "text"
+                ? "text/plain"
+                : "application/json",
+            // A `null` data schema: the event carries no data (no `payload`).
+            ...(nested.schema === null
+              ? {}
+              : {
+                  payload: emitSchema(
+                    nested.schema,
+                    direction,
+                    `${where} event "${event}"`,
+                    where,
+                  ),
+                }),
+          },
+        ],
+      ),
+    );
     if (events.length > 0) {
       operations[claimOperationId(`send${pascal(id)}`, where)] = {
         action: "send",
         channel: channelRef(id),
-        messages: events.map(([event]) => channelMessageRef(id, event)),
+        messages: events.map(([event]) =>
+          channelMessageRef(id, ids.send.get(event)!),
+        ),
       };
     }
     channels[id] = build.channel;
@@ -958,24 +1102,23 @@ export function generateAsyncApi(
 
     const receives = Object.entries(doc?.receives ?? { incoming: {} });
     const sends = Object.entries(doc?.sends ?? { outgoing: {} });
-    for (const [type, messageDoc] of receives) {
-      registerMessage(
-        build,
+    const ids = registerMessages(
+      build,
+      where,
+      receives.map(([type, messageDoc]): [string, Record<string, unknown>] => [
         type,
         docMessage(type, messageDoc, "client → server"),
-      );
-    }
-    for (const [type, messageDoc] of sends) {
-      registerMessage(
-        build,
+      ]),
+      sends.map(([type, messageDoc]): [string, Record<string, unknown>] => [
         type,
         docMessage(type, messageDoc, "server → client"),
-      );
-    }
-    const sendTypes = new Map(sends);
+      ]),
+    );
     for (const [type, messageDoc] of receives) {
       const replyType = messageDoc?.reply;
-      if (replyType !== undefined && !sendTypes.has(replyType)) {
+      const replyId =
+        replyType === undefined ? undefined : ids.send.get(replyType);
+      if (replyType !== undefined && replyId === undefined) {
         warn(
           "operation",
           `the reply "${replyType}" of "${type}" is not a declared sent message — the reply link was left out`,
@@ -987,22 +1130,24 @@ export function generateAsyncApi(
       ] = {
         action: "receive",
         channel: channelRef(id),
-        messages: [channelMessageRef(id, type)],
-        ...(replyType !== undefined && sendTypes.has(replyType)
-          ? {
+        messages: [channelMessageRef(id, ids.receive.get(type)!)],
+        ...(replyId === undefined
+          ? {}
+          : {
               reply: {
                 channel: channelRef(id),
-                messages: [channelMessageRef(id, replyType)],
+                messages: [channelMessageRef(id, replyId)],
               },
-            }
-          : {}),
+            }),
       };
     }
     if (sends.length > 0) {
       operations[claimOperationId(`send${pascal(id)}`, where)] = {
         action: "send",
         channel: channelRef(id),
-        messages: sends.map(([type]) => channelMessageRef(id, type)),
+        messages: sends.map(([type]) =>
+          channelMessageRef(id, ids.send.get(type)!),
+        ),
       };
     }
     if (doc?.subprotocol !== undefined) {

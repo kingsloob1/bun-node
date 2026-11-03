@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 4d331d34ec383099
+ * typesHash: 7148c7ccdcc5b570
  *
  * Warnings:
  * - GET /rooms/:room: GET /rooms/:room is a "websocket" route; OpenAPI documents HTTP only — skipped
@@ -19,7 +19,7 @@ import type { ChannelDescriptors } from "@kingsleyweb/bun-client/channel";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "4d331d34ec383099";
+export const typesHash = "7148c7ccdcc5b570";
 
 export interface Routes {
   "GET /health": {

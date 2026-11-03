@@ -178,6 +178,32 @@ function enrichedRouter(): BunRouter {
   return router;
 }
 
+/** A contract channel declaring `ping` both ways with different schemas (one message per direction) and `echo` the same both ways (one message). */
+function bothWaysRouter(): BunRouter {
+  const router = new BunRouter();
+  const socket = new BunWebSocket({
+    newInstance: false,
+    getServer: () => undefined,
+    router,
+  });
+  void socket;
+  const ping = defineChannel({
+    path: "/ping",
+    receives: {
+      ping: z.object({ sentAt: z.number() }),
+      echo: z.object({ text: z.string() }),
+    },
+    sends: {
+      ping: z.object({ sentAt: z.number(), serverAt: z.number() }),
+      echo: z.object({ text: z.string() }),
+    },
+    replies: { ping: "ping" },
+    envelope: { idField: "correlation" },
+  });
+  router.ws(ping.path, ping.checks(), ping.handler({}), ping.options());
+  return router;
+}
+
 /** No socket at all: the empty document. */
 function emptyRouter(): BunRouter {
   const router = new BunRouter();
@@ -188,6 +214,7 @@ function emptyRouter(): BunRouter {
 const SOURCES: Record<string, () => BunRouter> = {
   "contract channel + SSE fallback": contractRouter,
   "describeChannel-enriched bare route": enrichedRouter,
+  "contract channel, a type both ways": bothWaysRouter,
   "no channels": emptyRouter,
 };
 

@@ -12,7 +12,8 @@
  * A channel's meta rides its contract (`describeContract`'s meta carries the
  * `ChannelMeta`, upgrade request included — AD (e)'s widening), so a document
  * needs nothing beside the router: every message payload is the frame
- * envelope with the declared schema at `data`, an inbound message's declared
+ * envelope with the declared schema at `data` (but the implicit error frame's,
+ * which is documented flat, as it is sent), an inbound message's declared
  * reply is the operation's `reply`, and the meta lands as the
  * `x-bun-common-*` extensions (`-subprotocol`, `-binary`, `-topics`,
  * `-sse-fallback`; a parameter's schema as `-schema`, AsyncAPI 3.0 carrying
@@ -150,6 +151,11 @@ checkEqual(
 check(
   "a `null` message (typing) carries no data",
   !("data" in messages["chat.typing"].payload.properties),
+);
+checkEqual(
+  "…but the error frame is documented flat, as it is sent (its id under `id`)",
+  Object.keys(messages["chat.error"].payload.properties).sort(),
+  ["code", "detail", "id", "issues", "status", "type"],
 );
 checkEqual(
   "the SSE channel is marked",

@@ -19,8 +19,10 @@
  * - **The id field** is the envelope's one property besides `type` and
  *   `data`; `"id"` when there is none.
  * - **Replies** come from each `receive` operation's `reply`.
- * - **The implicit error frame** (an outbound `error` whose data has `code`
- *   and `status`) is left out: the client reads error frames itself
+ * - **The implicit error frame** (an outbound `error` with `code` and
+ *   `status` at its payload's top level — the flat frame `defineChannel`
+ *   sends, as bun-common documents it — or under `data`, as older documents
+ *   described it) is left out: the client reads error frames itself
  *   (`on("$error")`, `ChannelError`).
  * - **Params** are the address's, typed by bun-common's
  *   `x-bun-common-schema` (else `string`); **the query** is the WebSocket
@@ -113,14 +115,34 @@ function follow(value: unknown, document: unknown): unknown {
   return value;
 }
 
-/** Whether an outbound `error` message's data is bun-common's implicit error frame (`code` and `status`). */
-function isImplicitError(type: string, data: unknown): boolean {
+/** Whether `schema` is an object schema declaring both `code` and `status`. */
+function hasCodeAndStatus(schema: unknown): boolean {
   return (
-    type === "error" &&
-    isRecord(data) &&
-    isRecord(data.properties) &&
-    "code" in data.properties &&
-    "status" in data.properties
+    isRecord(schema) &&
+    isRecord(schema.properties) &&
+    "code" in schema.properties &&
+    "status" in schema.properties
+  );
+}
+
+/**
+ * Whether an outbound `error` message is bun-common's implicit error frame:
+ * `code` and `status` at the payload's top level (the flat frame
+ * `{ type: "error", id?, code, status, … }` the runtime sends, as bun-common
+ * documents it), or under `data` (the envelope older bun-common documents
+ * described it in).
+ *
+ * @param type    The message's type.
+ * @param payload The message's whole payload (inlined).
+ * @param data    Its `data` schema, as {@link readChannels} read it (`null`: none).
+ */
+function isImplicitError(
+  type: string,
+  payload: unknown,
+  data: unknown,
+): boolean {
+  return (
+    type === "error" && (hasCodeAndStatus(payload) || hasCodeAndStatus(data))
   );
 }
 
@@ -175,6 +197,8 @@ export function readChannels(
     }
 
     let idField: string | undefined;
+    /** The inlined payload of each message read (an implicit error frame is told by it). */
+    const payloads = new WeakMap<ParsedMessage, unknown>();
     /** A message reference read as `[type, data]`. */
     const message = (ref: unknown): ParsedMessage | undefined => {
       const found = follow(ref, doc);
@@ -214,7 +238,9 @@ export function readChannels(
         (name) => name !== "type" && name !== "data",
       );
       if (idField === undefined && extra.length === 1) idField = extra[0];
-      return [type, "data" in own ? own.data : null];
+      const parsed: ParsedMessage = [type, "data" in own ? own.data : null];
+      payloads.set(parsed, payload);
+      return parsed;
     };
 
     const receives: ParsedMessage[] = [];
@@ -248,7 +274,10 @@ export function readChannels(
       } else if (operation.action === "send") {
         for (const ref of list) {
           const parsed = message(ref);
-          if (parsed !== undefined && !isImplicitError(parsed[0], parsed[1]))
+          if (
+            parsed !== undefined &&
+            !isImplicitError(parsed[0], payloads.get(parsed), parsed[1])
+          )
             add(sends, parsed);
         }
       }
