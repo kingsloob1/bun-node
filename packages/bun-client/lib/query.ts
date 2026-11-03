@@ -57,7 +57,14 @@ import type {
   QueryObserverOptions,
   QueryObserverResult,
 } from "@tanstack/query-core";
-import type { ClientError, HttpError } from "./errors";
+import type { StandardSchemaV1 } from "@kingsleyweb/bun-contract";
+import type { ClientError, GraphQLResponseError, HttpError } from "./errors";
+import type {
+  GraphQLCallOptions,
+  GraphQLDocument,
+  ResultOf,
+  VariablesOf,
+} from "./graphql";
 import type {
   CallArgs,
   CallParts,
@@ -339,8 +346,71 @@ export interface Queries<R> {
     MutationVariables<R[K]>,
     K
   >;
+  /**
+   * Query options for a GraphQL query (`graphql.md` §3.1), over a client
+   * from `./graphql`'s `createGraphQLClient`: `q.graphql(gh, UserQuery, {
+   * id })`. The key is `[url, operationName, variables]` (an anonymous
+   * operation's text in place of its name); the query function resolves
+   * the operation's `data` and rejects with `GraphQLResponseError` for a
+   * response with errors (partial data included) and the client's errors
+   * otherwise. `tags` become `meta.tags`, beside its responses' `Cache-Tag`
+   * / `Surrogate-Key`.
+   */
+  graphql: <
+    D extends GraphQLDocument,
+    S extends StandardSchemaV1 | undefined = undefined,
+  >(
+    gh: GraphQLQueryClient,
+    document: D,
+    ...args: GraphQLQueryArgs<VariablesOf<D>, S>
+  ) => GraphQLQueryOptions<
+    [S] extends [StandardSchemaV1]
+      ? StandardSchemaV1.InferOutput<S>
+      : ResultOf<D>
+  >;
   /** {@link invalidateTags}, the same function. */
   invalidateTags: typeof invalidateTags;
+}
+
+/** A GraphQL client (`createGraphQLClient`), as `q.graphql()` takes it. */
+interface GraphQLQueryClient {
+  /** Its query call. */
+  readonly query: (...args: never[]) => Promise<unknown>;
+}
+
+/**
+ * The options of `q.graphql()`: a GraphQL call's, without `signal`
+ * (query-core's is used) or the throw switches (the query function always
+ * throws), plus the query's tags.
+ */
+export type GraphQLQueryCallOptions<S> = Omit<
+  GraphQLCallOptions<undefined, undefined, S>,
+  "signal" | "throwOnError" | "throwOnGraphQLErrors"
+> & {
+  /** The query's `meta.tags`, which {@link invalidateTags} and {@link live} match. Default: none. */
+  tags?: readonly string[];
+};
+
+/** `q.graphql()`'s arguments after the document: the variables are required when the operation has a required one. */
+type GraphQLQueryArgs<V, S> = [RequiredKeysOf<V>] extends [never]
+  ? [variables?: V, options?: GraphQLQueryCallOptions<S>]
+  : [variables: V, options?: GraphQLQueryCallOptions<S>];
+
+/** A GraphQL query's key: `[url, operationName (or the text), variables]`. */
+type GraphQLQueryKey = readonly [string, string, unknown];
+
+/** What `q.graphql()` returns: options any query-core method takes. */
+export interface GraphQLQueryOptions<TData> {
+  /** `[url, operationName, variables]`, tagged with the data type. */
+  queryKey: DataTag<
+    GraphQLQueryKey,
+    TData,
+    GraphQLResponseError<TData> | ClientError
+  >;
+  /** Runs the query through the GraphQL client; resolves its `data`. */
+  queryFn: (context: QueryFunctionContext<GraphQLQueryKey>) => Promise<TData>;
+  /** `tags`: as given. */
+  meta: { tags: string[] };
 }
 
 /** The keys of `T` whose property is required. */
@@ -581,6 +651,9 @@ export function live(
 /* ------------------------------------------------------------------ */
 /* The factories                                                       */
 /* ------------------------------------------------------------------ */
+
+/** The symbol a GraphQL client keeps what `q.graphql()` reads under (`./graphql`). */
+const GRAPHQL = Symbol.for("@kingsleyweb/bun-client/graphql");
 
 /** The client as the factories call it, untyped. */
 interface RuntimeClient {
@@ -932,12 +1005,73 @@ export function queries<R extends RouteMap<R>, F extends ClientFlags>(
     };
   };
 
+  const graphql = (
+    gh: object,
+    document: unknown,
+    variables?: unknown,
+    given: { tags?: readonly string[] } & RuntimeCall = {},
+  ) => {
+    const internals = (gh as Record<symbol, unknown>)[GRAPHQL] as
+      | {
+          url: string;
+          describe: (document: unknown) => { source: string; name?: string };
+        }
+      | undefined;
+    if (internals === undefined)
+      throw new TypeError(
+        "q.graphql() takes a client from createGraphQLClient (./graphql)",
+      );
+    const operation = internals.describe(document);
+    const { tags, ...call } = given;
+    return {
+      queryKey: [
+        internals.url,
+        operation.name ?? operation.source,
+        variables ?? {},
+      ] as const,
+      queryFn: async (context: QueryFunctionContext): Promise<unknown> => {
+        let response: Response | undefined;
+        const capture: ClientMiddleware = async (_ctx, next) =>
+          (response = await next());
+        try {
+          const result = await (
+            gh as {
+              query: (
+                document: unknown,
+                variables: unknown,
+                options: object,
+              ) => Promise<{ data?: unknown }>;
+            }
+          ).query(document, variables, {
+            ...call,
+            signal: context.signal,
+            throwOnError: true,
+            throwOnGraphQLErrors: true,
+            middleware: [...(call.middleware ?? []), capture],
+          });
+          return result.data;
+        } finally {
+          // The tags of its responses' headers, as a route query keeps them.
+          const hash = queryAt(context.client, context.queryKey)?.queryHash;
+          const found = response && headerTagsOf(response);
+          if (hash !== undefined) {
+            const store = storeFor(context.client);
+            if (found !== undefined) store.headerTags.set(hash, found);
+            else if (response !== undefined) store.headerTags.delete(hash);
+          }
+        }
+      },
+      meta: { tags: [...(tags ?? [])] },
+    };
+  };
+
   const factories = {
     key: (routeKey: string, parts?: RuntimeCall): QueryKey =>
       parts === undefined ? [routeKey] : [routeKey, keyOf(parts)],
     query,
     infinite,
     mutation,
+    graphql,
     invalidateTags,
   };
   return factories as unknown as Queries<R>;

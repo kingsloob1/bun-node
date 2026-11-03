@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer, the ./query entries the optional @tanstack/query-core peer, the ./react entries react and @tanstack/react-query beside query-core (their declarations import ./query's), and the ./persist entries the optional @tanstack/query-persist-client-core peer (types only): they are checked in the consumer that has them (`peers`), every other entry in one without either. The ./sse entries (the event-stream client) need no peer. The ./channel entries (the WebSocket channel client) need no peer either; their snippet builds its contract with @kingsleyweb/bun-contract, the dependency.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer, the ./query entries the optional @tanstack/query-core peer, the ./react entries react and @tanstack/react-query beside query-core (their declarations import ./query's), and the ./persist entries the optional @tanstack/query-persist-client-core peer (types only): they are checked in the consumer that has them (`peers`), every other entry in one without either. The ./sse entries (the event-stream client) need no peer. The ./channel entries (the WebSocket channel client) need no peer either; their snippet builds its contract with @kingsleyweb/bun-contract, the dependency. The ./graphql entries (the GraphQL client) need no peer: a typed document is structural, nothing of graphql or @graphql-typed-document-node/core is imported.",
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-client",
@@ -161,6 +161,33 @@
     {
       "spelling": "@kingsleyweb/bun-client/lib/sse.js",
       "values": ["sse"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/graphql",
+      "values": ["createGraphQLClient", "GraphQLResponseError"],
+      "types": [
+        "GraphQLClient",
+        "GraphQLClientOptions",
+        "GraphQLCallOptions",
+        "GraphQLResult",
+        "GraphQLError",
+        "GraphQLDocument",
+        "TypedDocumentNode",
+        "TypedString"
+      ],
+      "browser": true,
+      "snippet": "import { createClient } from \"@kingsleyweb/bun-client\";\ninterface UserData { user: { id: string; name: string } | null }\nconst UserQuery = \"query User($id: ID!) { user(id: $id) { id name } }\" as t.TypedString<UserData, { id: string }>;\ndeclare const UserNode: t.TypedDocumentNode<UserData, { id: string }>;\nconst gh = m.createGraphQLClient({ client: createClient({ baseUrl: \"https://api.example\" }), url: \"/graphql\", method: \"POST\", print: (document: { kind: string }) => document.kind });\nasync function probe() {\n  const r = await gh.query(UserQuery, { id: \"1\" });\n  if (r.ok && !r.errors) { const _d: Equal<typeof r.data, UserData> = true; void _d; }\n  if (r.ok && r.errors) { const _e: Equal<typeof r.errors, readonly t.GraphQLError[]> = true; void _e; }\n  if (!r.ok) { const _s: Equal<typeof r.status, number> = true; void _s; }\n  const n = await gh.query(UserNode, { id: \"1\" }, { throwOnGraphQLErrors: true, throwOnError: true, method: \"GET\" });\n  const _n: Equal<typeof n, t.GraphQLResult<UserData, true, true>> = true; void _n;\n  await gh.mutate(UserNode, { id: \"1\" }, { timeout: 5_000 });\n}\nvoid probe;\nconst _result: Equal<t.ResultOf<typeof UserNode>, UserData> = true; void _result;\nconst _vars: Equal<t.VariablesOf<typeof UserQuery>, { id: string }> = true; void _vars;\nconst _err = new m.GraphQLResponseError<UserData>(\"POST /graphql\", 200, [{ message: \"x\" }], null, undefined, new Response());\nconst _data: Equal<typeof _err.data, UserData | null | undefined> = true; void _data;\nexport type _client = Expect<IsAny<t.GraphQLClient>>;\nexport type _options = Expect<IsAny<t.GraphQLCallOptions<undefined, undefined, undefined>>>;\nexport type _document = Expect<IsAny<t.GraphQLDocument>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/graphql",
+      "values": ["createGraphQLClient", "GraphQLResponseError"],
+      "types": ["GraphQLResult"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/graphql.js",
+      "values": ["createGraphQLClient"],
       "browser": true
     },
     {

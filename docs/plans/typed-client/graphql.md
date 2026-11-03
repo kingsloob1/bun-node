@@ -8,9 +8,11 @@ Written 2026-11-02 against `develop` at `e80ab379`. **No product code was
 changed.** Markings as in TC. Evidence:
 [`evidence/transports/graphql/`](evidence/transports/README.md).
 
-**Status (2026-11-02): approved by the user** (TC §14, Q25; names as in
-TC §16). **Nothing is built.** The next PRs are TC's **PR-K**,
-**PR-M1** and **PR-C1**; this sub-plan's PRs follow them as TC §15 orders.
+**Status (2026-11-03): PR-G1 built** (branch `feat/bun-client-graphql`;
+TC's Status table has the details). Approved by the user 2026-11-02 (TC
+§14, Q25; names as in TC §16); the names the PR adds beyond §16 await the
+user. One finding corrects §3.1 below: gql.tada's operation documents
+carry no `loc`.
 
 ---
 
@@ -103,6 +105,13 @@ q.graphql(gh, UserQuery, { id });                          // query-core options
   `@graphql-typed-document-node/core`. A `DocumentNode` is printed with the
   app's own `print` passed in, or sent as `loc.source.body` when present [I:
   gql.tada documents carry their source; verified per tool in the PR].
+  **Measured in PR-G1 (2026-11-03): false for gql.tada's operations.**
+  gql.tada 1.11.4's `graphql()` gives an operation document no `loc` (a
+  fragment document gets one, its source and its fragments' concatenated),
+  so a gql.tada app passes `print` from `@0no-co/graphql.web` (gql.tada's
+  own dependency). graphql-js's and `@0no-co/graphql.web`'s `parse` keep
+  `loc.source.body`; graphql-codegen's client preset writes its ASTs
+  without `loc` [I].
 - **Transport**: GraphQL over HTTP (`application/graphql-response+json`,
   POST; GET for queries opt-in, for CDN caching). Mutations are never
   retried; queries are, as idempotent requests.

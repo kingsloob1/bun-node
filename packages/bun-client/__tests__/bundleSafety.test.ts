@@ -51,6 +51,12 @@
  * three checks — it imports nothing and holds nothing of a server or the
  * core client's pipeline, bun-contract only in a lazily imported chunk, and
  * a negative control beside bun-common is caught.
+ *
+ * Since PR-G1 the `./graphql` entry (`graphql.md`, plan §10.1): it imports
+ * nothing (no GraphQL library, and nothing of the core client's pipeline:
+ * it calls the app's client), holds nothing of a server, and has no lazy
+ * chunk at all (its result checks are the HTTP client's). A negative
+ * control beside bun-common must be caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -414,6 +420,39 @@ describe("the ./channel entry (websocket.md, plan §10.1)", () => {
   it("negative control: the entry beside bun-common is caught", async () => {
     const { code, logs } = await build(
       join(import.meta.dir, "fixtures", "channel-server-import.ts"),
+    );
+    if (code === undefined) {
+      expect(logs.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(serverMarkersIn(code).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the ./graphql entry (graphql.md, plan §10.1)", () => {
+  const GRAPHQL = join(import.meta.dir, "..", "lib", "graphql.ts");
+
+  it("imports nothing, and holds nothing of a server, the core client's pipeline or a GraphQL library", async () => {
+    const { code, logs } = await build(GRAPHQL);
+    expect(logs).toEqual([]);
+    expect(code!.includes("function createGraphQLClient(")).toBe(true);
+    expect(code!.match(/^\s*import\s/m)).toBeNull();
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(code!.includes("function serializeQuery")).toBe(false);
+    expect(code!.includes("function buildPath")).toBe(false);
+    expect(/\bgraphql-js\b|from ["']graphql["']/.test(code!)).toBe(false);
+  });
+
+  it("splits into no chunk: bun-contract's guards are never part of it", async () => {
+    const { eager, lazy } = await splitBuild(GRAPHQL);
+    expect(lazy).toEqual([]);
+    expect(contractMarkersIn(eager)).toEqual([]);
+  });
+
+  it("negative control: the entry beside bun-common is caught", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "fixtures", "graphql-server-import.ts"),
     );
     if (code === undefined) {
       expect(logs.length).toBeGreaterThan(0);

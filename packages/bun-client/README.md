@@ -33,7 +33,9 @@ validated, resumable server-sent events (PR-S1,
 channel with typed, validated messages both ways, requests, reconnection
 and backpressure (PR-W2, [below](#websocket-channels-channel)), and
 `./query`'s `live()` keeps observed queries fresh over bun-common's live
-channel (PR-W4, [below](#live-invalidation-live)). The other framework
+channel (PR-W4, [below](#live-invalidation-live)), and `./graphql` makes a
+typed GraphQL call over the client, typed by the app's gql.tada or
+graphql-codegen documents (PR-G1, [below](#graphql-graphql)). The other framework
 bindings and transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
@@ -1414,6 +1416,109 @@ const room = channel(api, chat, { codec: "bun-nest" });
 - **The namespace** on the wire is `"/"`: bun-nest's adapter echoes it and
   routes by the URL (the gateway's `path` and `namespace`), not by it.
 
+## GraphQL (`/graphql`)
+
+bun-node serves no GraphQL, so this is a client for someone else's GraphQL
+API (the plan's [`graphql.md`](../../docs/plans/typed-client/graphql.md)):
+one typed call over the client's own request path, typed by the document
+your GraphQL tool already makes. Nothing of `graphql` is imported, and no
+GraphQL library is a dependency or a peer.
+
+```ts
+import { createClient } from "@kingsleyweb/bun-client";
+import { createGraphQLClient, GraphQLResponseError } from "@kingsleyweb/bun-client/graphql";
+import { print } from "@0no-co/graphql.web";            // gql.tada's own parser and printer
+import { graphql } from "./graphql";                    // the app's gql.tada setup
+
+const UserQuery = graphql(`query User($id: ID!) { user(id: $id) { id name } }`);
+const Rename = graphql(`mutation Rename($id: ID!, $name: String!) { rename(id: $id, name: $name) { id } }`);
+
+const api = createClient({ baseUrl: "https://api.example.com", auth: { token } });
+const gh = createGraphQLClient({ client: api, url: "/graphql", print });
+
+const r = await gh.query(UserQuery, { id: "1" });      // variables typed, required as the operation says
+if (r.ok && !r.errors) r.data.user;                     // complete: typed by the document
+else if (r.ok) r.errors;                                // partial data (or none) with errors
+else r.status;                                          // a failed status: r.error is its body
+
+await gh.mutate(Rename, { id: "1", name: "Ada" });     // never retried
+```
+
+- **Documents.** Any `TypedDocumentNode` (gql.tada's `graphql()`,
+  graphql-codegen's client preset) or typed string (codegen's
+  `TypedDocumentString`, or your own text cast to `TypedString<R, V>`),
+  read through the `__apiType` phantom both tools emit; a plain string is
+  untyped (`data: unknown`). `ResultOf<D>` and `VariablesOf<D>` name a
+  document's types, as those tools' own do.
+- **`print`.** A parsed document is sent as its `loc.source.body` when it
+  has one (graphql-js's and `@0no-co/graphql.web`'s `parse` keep it), else
+  printed with the `print` you pass. **gql.tada's operation documents and
+  graphql-codegen's carry no `loc`**, so with either, pass `print` (from
+  `@0no-co/graphql.web`, which gql.tada already depends on, or from
+  `graphql`); without it such a document throws a `ClientError`. A
+  document's text is worked out once.
+- **The request.** GraphQL over HTTP: a `POST` of `{ query, variables,
+  operationName }` with `Accept: application/graphql-response+json,
+  application/json;q=0.9` (unless a level of the client sets an
+  `Accept`). `method: "GET"`, on the client or a query, sends a query in the
+  URL instead (`variables` JSON-encoded), for a CDN to cache; a mutation is
+  always a `POST`. The endpoint's own query string is kept.
+- **Through the client.** Each call is `api.request("POST /graphql", …)`,
+  so the client's base URL, headers, auth and refresh, middleware, timeout
+  and logger apply, and its `routes` configure GraphQL calls under that key
+  (`routes: { "POST /graphql": { headers, retry, timeout } }`). `url` is a
+  path under the client's `baseUrl`, like any route's, or an absolute URL
+  for a client with no `baseUrl` (or one under it; any other throws). A
+  query is retried as an idempotent request, under the client's retry
+  settings (its `retry: false`, the route's or the call's turns that off); a
+  mutation is never retried. Each call takes `signal`, `timeout`,
+  `headers`, `middleware` and, for a query, `retry` and `method`.
+- **Results.** A 2xx GraphQL response is `{ ok: true, status, data,
+  errors?, extensions?, response }`: `errors` absent means `data` is the
+  complete result; present, `data` is partial, `null`, or absent (a legacy
+  `application/json` server answers a request error `200`). Any other
+  status is `{ ok: false, status, error, errors?, response }`, `error` the
+  body and `errors` its GraphQL errors when it has any (a GraphQL-over-HTTP
+  server answers a request it cannot run `4xx`). A 2xx body that is not a
+  GraphQL response throws a `ClientError`.
+- **Throwing.** `throwOnGraphQLErrors: true` (on `createGraphQLClient` or a
+  call; default `false`) throws a `GraphQLResponseError` for a 2xx response
+  with errors (`errors`, `data`, `extensions`, `status`, `response`), so
+  every result left has complete `data`. The HTTP client's `throwOnError`
+  (or the call's) throws its `HttpError` for a failed status. Both narrow
+  the result's type.
+- **Validation.** The server checks against its schema, so the client
+  checks nothing by default. A Standard Schema for a document's `data`
+  (`validate: { result: Schema, onFailure }` on a call) runs through the
+  client's checks: on a `200` that has data, an issue's path starting at
+  `data`, its output delivered as `data` and typing it; a failure warns
+  through the client's `logger` and delivers the data as it arrived, or
+  throws the `ValidationError` under `onFailure: "throw"`.
+- **Out of scope:** subscriptions (graphql-ws, GraphQL over SSE), persisted
+  documents (gql.tada's `graphql.persisted`), batching, and a normalised
+  cache.
+
+### In the query layer: `q.graphql()`
+
+```ts
+const q = queries(api);
+const user = q.graphql(gh, UserQuery, { id: "1" }, { tags: ["user:1"] });
+await queryClient.fetchQuery(user);       // resolves r.data
+await q.invalidateTags(queryClient, ["user:1"]);
+```
+
+The key is `[url, operationName, variables]` (an anonymous operation's text
+in its name's place, so two anonymous queries never share one). The query
+function resolves the operation's `data`; a response with errors rejects
+with `GraphQLResponseError` (the partial data on it), a failed status with
+the client's `HttpError`. `tags` become `meta.tags`, beside the tags its
+responses' `Cache-Tag` and `Surrogate-Key` carry, so `invalidateTags` and
+`live()` reach it as they reach a route's query. It takes a call's options
+(`headers`, `method`, `validate`, …) but `signal`, which is query-core's.
+
+The entry is 2.2 KiB gzipped, none of it in the `.` entry; `q.graphql()`
+adds 0.2 KiB to `./query`.
+
 ## The query string
 
 The query is written so that bun-common's parser reads it back unchanged
@@ -1443,7 +1548,9 @@ from their context, which 5.90 has); `./react` is the React binding, with
 beside query-core; `./persist` is the IndexedDB persister, with
 `@tanstack/query-persist-client-core` (`^5.90.0`) an optional peer whose
 types alone it imports; `./sse` is the event-stream client and
-`./channel` the WebSocket channel client, each with no peer. The generator is `./codegen` (Bun only)
+`./channel` the WebSocket channel client, each with no peer, and
+`./graphql` the GraphQL client, with none either (its documents are typed
+structurally). The generator is `./codegen` (Bun only)
 and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round
