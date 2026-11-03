@@ -15,6 +15,7 @@ import { createCache } from "../../lib/index";
 import type { PostgresCacheDriver } from "../../lib/drivers/postgres";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import type { SqlBackend } from "./backends";
+import { registerEntryOrCounterTests } from "./entryOrCounter";
 import { registerSetManyChunkTests } from "./setManyChunks";
 import {
   dropTables,
@@ -597,6 +598,14 @@ export async function registerSqlSuite(
 
   describe(`${name} setMany chunks`, () => {
     registerSetManyChunkTests(make("chunks_"), { atomic: true });
+  });
+
+  describe(`${name} one-round-trip read`, () => {
+    const driver = make("eoc_");
+    afterAll(async () => {
+      await driver.close();
+    });
+    registerEntryOrCounterTests(driver);
   });
 
   describe(`${name} specifics`, () => {

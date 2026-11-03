@@ -166,8 +166,8 @@ describe("L1 reads (§4.1)", () => {
     expect(await b.getMany(["x", "missing", "y"])).toEqual([1, undefined, 2]);
     expect(tiers).toEqual(["l1", "l2"]);
     // Only the keys L1 could not answer reached L2 (the missing key's counter
-    // probe is one more `get`).
-    expect(driver.reads() - reads).toBe(3);
+    // probe is a `getCounter`, not a second `get`: the batch said no entry).
+    expect(driver.reads() - reads).toBe(2);
     const after = driver.reads();
     expect(await b.getMany(["x", "y"])).toEqual([1, 2]);
     expect(driver.reads()).toBe(after);

@@ -2259,6 +2259,42 @@ back in 10 ms. Two findings:
 a driver-level retry would duplicate a job without a `jobId`; the README says
 to give jobs a `jobId` and retry `add` instead.
 
+**Speed work: `get-miss`, built 2026-11-02** (speed work PR 2, scheduled by
+the user with its speed comparisons). The baseline had a `get` of a key never
+written 0.25–0.75× of cache-manager on every networked backend. The cause,
+measured before anything changed (a scratch profile, exclusive): **a miss is
+two sequential round trips**. The core reads with `driver.get` and, finding
+no entry, asks `driver.getCounter` (a counter lives outside the entry bytes,
+§3.8), so a miss cost `get` + `getCounter` (Postgres 65 + 58 µs, MySQL 55 +
+56, MongoDB 248 + 216; `cache.get` 140, 123 and 375 µs against hits of 69,
+66 and 209). `getMany` re-read every key its batch missed with `get`, then
+`getCounter`.
+
+- **An internal one-round-trip read** (`lib/core/read.ts`, not exported):
+  Postgres, MySQL, MariaDB and MongoDB, whose entry and counter share a row,
+  offer a reader under a module symbol that reads the row whatever it holds
+  (their `get` query without the `v IS NOT NULL` filter) and answers the
+  entry, the counter or nothing. The core uses it for every read and falls
+  back to `get` then `getCounter` for every other driver: **the driver
+  contract, the stored format and what a read answers are unchanged**. The
+  core uses the reader only while the driver's `get` and `getCounter` are
+  still the functions it stands for, so a subclass, an instance override or
+  a `Proxy` that replaced either is read through it, never around it.
+- **`getMany`'s missing keys ask only for a counter.**
+- **Redis is unchanged**: its counter is a key of its own, and pipelining
+  `HMGET` beside every `GET` made misses 1.44× faster but hits 0.90–0.94× and
+  every read two commands (Upstash bills each). Raised as a question.
+- **A/B** (develop's `lib` against this one, interleaved, best of five,
+  exclusive): `get-miss` Postgres 1.97×, MySQL 2.13×, MariaDB 2.14×, MongoDB
+  2.26×; hits 0.91–1.14× across three runs (noise around 1.0). **Bench**
+  (`--compare`, exclusive, a loaded machine; then the read rows alone):
+  `get-miss` Postgres 15,249 against cache-manager's 9,200/s, MySQL 18,035
+  against 12,912, MariaDB 15,899 against 14,049, MongoDB 4,776 against 2,712;
+  bun-cache now leads all four. Redis stays 0.57×.
+- **Tests**: `__tests__/core/read.test.ts`, `__tests__/drivers/entryOrCounter.ts`
+  (the SQL suites and MongoDB); two tests that pinned the redundant re-read
+  updated. Four negative controls; see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

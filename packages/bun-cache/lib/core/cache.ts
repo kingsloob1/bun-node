@@ -50,6 +50,8 @@ import { L1Store } from "./l1";
 import type { NameHasher } from "./names";
 import { resolveNameHasher } from "./names";
 import { CacheStatsCounter } from "./stats";
+import type { EntryOrCounter, StoredCounter } from "./read";
+import { entryOrCounterReader } from "./read";
 import type {
   BusMessage,
   Cache,
@@ -897,9 +899,23 @@ class CacheImpl<
    * record those.
    */
   async #readStored(key: string, stored: string): Promise<ReadOutcome> {
-    const state = this.#state;
-    const driver = state.driver;
-    const now = state.now();
+    const driver = this.#state.driver;
+    // One round trip where the driver can read the entry or the counter at
+    // once (`read.ts`); otherwise `get`, then `getCounter` on a miss.
+    const reader = entryOrCounterReader(driver);
+    if (reader !== undefined) {
+      const found = await this.#op<EntryOrCounter | typeof FAILED>(
+        "get",
+        async () => await reader.read(this.#storedNs, stored),
+        FAILED,
+      );
+      if (found === FAILED || found === undefined) {
+        return { kind: "miss" };
+      }
+      return "entry" in found
+        ? await this.#decodeStored(key, stored, found.entry)
+        : this.#counterOutcome(found.counter);
+    }
     const raw = await this.#op<StoredEntry | undefined | typeof FAILED>(
       "get",
       async () => await driver.get(this.#storedNs, stored),
@@ -909,38 +925,53 @@ class CacheImpl<
       return { kind: "miss" };
     }
     if (raw === undefined) {
-      // A counter lives outside the entry bytes (§3.8).
-      if (driver.getCounter !== undefined) {
-        const counter = await this.#op(
-          "getCounter",
-          async () => await driver.getCounter?.(this.#storedNs, stored),
-          undefined,
-        );
-        if (
-          counter !== undefined &&
-          (counter.expiresAt === null || counter.expiresAt > now)
-        ) {
-          return {
-            kind: "fresh",
-            entry: {
-              value: counter.value,
-              negative: false,
-              createdAt: counter.createdAt,
-              freshUntil: counter.expiresAt,
-              expiresAt: counter.expiresAt,
-              loadMs: 0,
-              tags: [],
-              storedTags: [],
-              bytes: 0,
-              size: 0,
-              counter: true,
-            },
-          };
-        }
-      }
-      return { kind: "miss" };
+      return await this.#readCounter(stored);
     }
     return await this.#decodeStored(key, stored, raw);
+  }
+
+  /**
+   * The read of a key the driver holds no entry for: its counter, when the
+   * driver keeps counters outside the entry bytes (§3.8), else a miss.
+   * Shared by `getMany`, whose batch already answered that no entry is there
+   * (so a missing key costs one counter read, not a second entry read too).
+   */
+  async #readCounter(stored: string): Promise<ReadOutcome> {
+    const driver = this.#state.driver;
+    if (driver.getCounter === undefined) {
+      return { kind: "miss" };
+    }
+    const counter = await this.#op(
+      "getCounter",
+      async () => await driver.getCounter?.(this.#storedNs, stored),
+      undefined,
+    );
+    return counter === undefined
+      ? { kind: "miss" }
+      : this.#counterOutcome(counter);
+  }
+
+  /** A counter read as an entry: fresh until its hard expiry, then a miss. */
+  #counterOutcome(counter: StoredCounter): ReadOutcome {
+    if (counter.expiresAt !== null && counter.expiresAt <= this.#state.now()) {
+      return { kind: "miss" };
+    }
+    return {
+      kind: "fresh",
+      entry: {
+        value: counter.value,
+        negative: false,
+        createdAt: counter.createdAt,
+        freshUntil: counter.expiresAt,
+        expiresAt: counter.expiresAt,
+        loadMs: 0,
+        tags: [],
+        storedTags: [],
+        bytes: 0,
+        size: 0,
+        counter: true,
+      },
+    };
   }
 
   /** The read pipeline past the driver's `get` (shared by `getMany`). */
@@ -2403,7 +2434,7 @@ class CacheImpl<
             raws === FAILED
               ? ({ kind: "miss" } as const)
               : raw === undefined
-                ? await this.#readStored(key, stored[index])
+                ? await this.#readCounter(stored[index])
                 : await this.#decodeStored(key, stored[index], raw);
           if (l1 !== undefined) {
             this.#fillL1(stored[index], read, token);

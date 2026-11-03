@@ -428,7 +428,7 @@ describe("errors are events, never throws", () => {
   });
 
   test("a strict cache throws and emits the same error: the store emits it once and answers a miss", async () => {
-    const driver = faulty(memoryDriver(), { failOn: ["get"] });
+    const driver = faulty(memoryDriver(), { failOn: ["get", "getMany"] });
     const cache = createCache({ driver, sweepInterval: 0, strict: true });
     const store = toKeyvStore(cache);
     const errors: unknown[] = [];
@@ -442,8 +442,8 @@ describe("errors are events, never throws", () => {
       undefined,
     ]);
     expect(await store.hasMany(["k"])).toEqual([false]);
-    // getMany on the memory driver reads key by key: two failures, two errors.
-    expect(errors.length).toBeGreaterThanOrEqual(4);
+    // getMany and hasMany each fail once, as a batch: one error each.
+    expect(errors).toHaveLength(4);
     expect(new Set(errors).size).toBe(errors.length);
   });
 

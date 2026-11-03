@@ -72,6 +72,8 @@ import type {
 import type { ConnectionInput } from "./sql-connection";
 import { entryCapExcess } from "./entry-cap";
 import { resolveConnectionUrl } from "./sql-connection";
+import type { EntryOrCounterReader, StoredCounter } from "../core/read";
+import { ENTRY_OR_COUNTER } from "../core/read";
 
 /* ------------------------------------------------------------------ */
 /* The `mongodb` surface this driver uses (after bun-jobs'             */
@@ -844,6 +846,15 @@ export class MongoCacheDriver implements CacheDriver {
     return doc.v !== undefined && (doc.exp === null || doc.exp.getTime() > now);
   }
 
+  /** Decodes a counter document. */
+  static #toCounter(doc: EntryDoc): StoredCounter {
+    return {
+      value: Number(doc.n),
+      expiresAt: doc.exp === null ? null : doc.exp.getTime(),
+      createdAt: doc.ca,
+    };
+  }
+
   /** Decodes an entry document for the caller's key. */
   static #toEntry(key: string, doc: EntryDoc): StoredEntry {
     const v = doc.v ?? new Uint8Array(0);
@@ -855,6 +866,40 @@ export class MongoCacheDriver implements CacheDriver {
       tags: doc.tags ?? [],
     };
   }
+
+  /**
+   * The core's read of a key in one round trip (`core/read.ts`): the
+   * document whatever it holds, so a miss learns about a counter without
+   * asking `getCounter` too. Read by `_id` alone, as `get` reads (below), and
+   * judged here: a live entry, else a live counter, else nothing. Stands for
+   * this class's own `get` and `getCounter`.
+   */
+  readonly [ENTRY_OR_COUNTER]: EntryOrCounterReader = {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- compared by identity, never called (core/read.ts)
+    get: MongoCacheDriver.prototype.get,
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- compared by identity, never called (core/read.ts)
+    getCounter: MongoCacheDriver.prototype.getCounter,
+    read: async (ns, key) => {
+      const entries = await this.#collection<EntryDoc>("entries");
+      const doc = await entries.findOne(
+        { _id: { ns, k: key } },
+        { promoteBuffers: true },
+      );
+      if (doc === null) {
+        return undefined;
+      }
+      const now = this.#now();
+      if (doc.exp !== null && doc.exp.getTime() <= now) {
+        return undefined;
+      }
+      if (doc.v !== undefined) {
+        return { entry: MongoCacheDriver.#toEntry(key, doc) };
+      }
+      return doc.n === undefined
+        ? undefined
+        : { counter: MongoCacheDriver.#toCounter(doc) };
+    },
+  };
 
   /**
    * Reads one entry by its `_id` alone, and drops a counter or an expired
@@ -1226,13 +1271,7 @@ export class MongoCacheDriver implements CacheDriver {
       v: { $exists: false },
       ...this.#live(),
     });
-    return doc === null
-      ? undefined
-      : {
-          value: Number(doc.n),
-          expiresAt: doc.exp === null ? null : doc.exp.getTime(),
-          createdAt: doc.ca,
-        };
+    return doc === null ? undefined : MongoCacheDriver.#toCounter(doc);
   }
 
   /* ---------------------------------------------------------------- */

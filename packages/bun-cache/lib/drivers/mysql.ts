@@ -44,7 +44,14 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
-import type { CounterRow, EntryRow, SqlCacheDriverOptions } from "./sql-base";
+import type {
+  CounterRow,
+  EntryRow,
+  ReadRow,
+  SqlCacheDriverOptions,
+} from "./sql-base";
+import type { EntryOrCounterReader } from "../core/read";
+import { ENTRY_OR_COUNTER } from "../core/read";
 import { entryCapExcess, entryCapStatements } from "./entry-cap";
 import type { EntryCapStatements } from "./entry-cap";
 import {
@@ -195,6 +202,26 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
       }
     });
   }
+
+  /**
+   * The core's read of a key in one round trip (`core/read.ts`): the row
+   * whatever it holds, so a miss learns about a counter without asking
+   * `getCounter` too. Stands for this class's own `get` and `getCounter`.
+   */
+  readonly [ENTRY_OR_COUNTER]: EntryOrCounterReader = {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- compared by identity, never called (core/read.ts)
+    get: MysqlCacheDriver.prototype.get,
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- compared by identity, never called (core/read.ts)
+    getCounter: MysqlCacheDriver.prototype.getCounter,
+    read: async (ns, key) => {
+      await this.ready();
+      const rows = await this.sql.unsafe<ReadRow[]>(
+        `SELECT k, v, n, exp, tg, ca FROM ${this.tables.entries} WHERE ns = ? AND k = ? AND (exp IS NULL OR exp > ?)`,
+        [this.fit(ns), this.fit(key), this.now()],
+      );
+      return SqlCacheDriverBase.toEntryOrCounter(key, rows[0]);
+    },
+  };
 
   async get(ns: string, key: string): Promise<StoredEntry | undefined> {
     await this.ready();

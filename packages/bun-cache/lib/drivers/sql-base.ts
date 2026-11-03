@@ -32,6 +32,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import type { EntryOrCounter } from "../core/read";
 import type { ConnectionInput, SqlCacheAdapter } from "./sql-connection";
 import { isPublicKeyRetrievalRefusal, openSqlClient } from "./sql-connection";
 import type { SqlCacheTable } from "./sql-tables";
@@ -147,6 +148,14 @@ export interface EntryRow {
   exp: string | number | null;
   /** The tags as written, JSON; `null` for none. */
   tg: string | null;
+}
+
+/** A row read back whatever it holds: an entry's, or a counter's (`v` null, `n` set). */
+export interface ReadRow extends EntryRow {
+  /** The counter's value; `null` on an entry row. */
+  n: string | number | null;
+  /** The row's write time, epoch ms: a counter's creation. */
+  ca: string | number;
 }
 
 /** A row read back as a counter. */
@@ -396,6 +405,28 @@ export abstract class SqlCacheDriverBase implements CacheDriver {
       expiresAt: SqlCacheDriverBase.numOrNull(row.exp),
       tags: row.tg === null ? [] : (JSON.parse(row.tg) as string[]),
     };
+  }
+
+  /** Decodes a row read back whatever it holds (`ENTRY_OR_COUNTER`'s read): the entry, else the counter, else nothing. */
+  protected static toEntryOrCounter(
+    key: string,
+    row: ReadRow | undefined,
+  ): EntryOrCounter {
+    if (row === undefined) {
+      return undefined;
+    }
+    if (row.v !== null) {
+      return { entry: SqlCacheDriverBase.toEntry(key, row) };
+    }
+    return row.n === null
+      ? undefined
+      : {
+          counter: {
+            value: SqlCacheDriverBase.num(row.n),
+            expiresAt: SqlCacheDriverBase.numOrNull(row.exp),
+            createdAt: SqlCacheDriverBase.num(row.ca),
+          },
+        };
   }
 
   /** Throws for a counter step the `BIGINT` column cannot add. */
