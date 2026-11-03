@@ -34,6 +34,7 @@ import type {
   BusMessage,
   CacheDriver,
   CacheDriverCapabilities,
+  FencedWrite,
   StoredEntry,
   TagFence,
 } from "../core/types";
@@ -267,8 +268,8 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
    * Several statements run in one transaction: the batch is stored whole or
    * not at all. A key written twice keeps its last write, as a loop of `set`
    * would. The rows go in key order, so two batches over the same keys lock
-   * them in the same order. No fence: bulk writes come from `setMany`, not
-   * from loads.
+   * them in the same order. No fence: a tagged batch goes to
+   * `setManyFenced`.
    */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     if (entries.length === 0) {
@@ -276,47 +277,116 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
     }
     await this.ready();
     const fns = this.fit(ns);
-    const rows = lastWritePerKey(entries)
-      .map((entry) => ({ ...entry, key: this.fit(entry.key) }))
-      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-    const chunks = chunkEntries(rows, {
-      rows: SET_MANY_ROWS,
-      bytes: SET_MANY_BYTES,
-    });
+    const chunks = this.#chunks(lastWritePerKey(entries));
     const now = this.now();
-    const write = async (
-      sql: SQL,
-      chunk: readonly StoredEntry[],
-    ): Promise<void> => {
-      const pairKeys: string[] = [];
-      const pairTags: string[] = [];
-      const params: unknown[] = [fns, pairKeys, pairTags];
-      for (const entry of chunk) {
-        for (const tag of this.fitTags(entry.tags).keys()) {
-          pairKeys.push(entry.key);
-          pairTags.push(tag);
-        }
-        params.push(
-          entry.key,
-          entry.value,
-          entry.expiresAt,
-          SqlCacheDriverBase.tagsColumn(entry.tags),
-        );
-      }
-      params.push(now);
-      await sql.unsafe(this.#setManyStatement(chunk.length), params);
-    };
     await withLockRetry(async () => {
       if (chunks.length === 1) {
-        await write(this.sql, chunks[0]);
+        await this.#writeChunk(this.sql, fns, chunks[0], now);
         return;
       }
       await this.sql.begin(async (tx) => {
         for (const chunk of chunks) {
-          await write(tx, chunk);
+          await this.#writeChunk(tx, fns, chunk, now);
         }
       });
     });
+  }
+
+  /**
+   * Writes several entries, each held to its own fence, in one transaction
+   * under the namespace's **shared** advisory lock, as a fenced `set` takes
+   * it: the stamps of every fence tag are read once after the lock, so no
+   * invalidation (which takes the lock exclusively) can land between that
+   * read and the writes, and an entry whose tag was stamped at or after its
+   * load's start is not written. The rest go as `setMany` writes them, in
+   * the same transaction. The keys are distinct (the contract's rule).
+   */
+  async setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    if (writes.length === 0) {
+      return [];
+    }
+    await this.ready();
+    const t = this.tables;
+    const fns = this.fit(ns);
+    const fenceTags = writes.map((write) =>
+      write.fence === undefined
+        ? []
+        : [...this.fitTags(write.fence.tags).keys()],
+    );
+    const union = [...new Set(fenceTags.flat())];
+    return await withLockRetry(
+      async () =>
+        await this.sql.begin(async (tx) => {
+          const now = this.now();
+          const stamps = new Map<string, number>();
+          if (union.length > 0) {
+            await tx.unsafe("SELECT pg_advisory_xact_lock_shared($1::bigint)", [
+              this.#fenceLockKey(ns),
+            ]);
+            const rows = await tx.unsafe<
+              { tag: string; at: string | number }[]
+            >(
+              `SELECT tag, at FROM ${t.stamps} WHERE ns = $1 AND tag = ANY($2::text[]) AND exp > $3::bigint`,
+              [fns, union, now],
+            );
+            for (const row of rows) {
+              stamps.set(row.tag, SqlCacheDriverBase.num(row.at));
+            }
+          }
+          const results = writes.map((write, index) =>
+            write.fence !== undefined &&
+            fenceTags[index].some(
+              (tag) => (stamps.get(tag) ?? -Infinity) >= write.fence!.createdAt,
+            )
+              ? ("fenced" as const)
+              : ("stored" as const),
+          );
+          const stored = writes
+            .filter((_, index) => results[index] === "stored")
+            .map((write) => write.entry);
+          for (const chunk of this.#chunks(stored)) {
+            await this.#writeChunk(tx, fns, chunk, now);
+          }
+          return results;
+        }),
+    );
+  }
+
+  /** A batch's rows as written: the keys fitted, in key order (so two batches over the same keys lock them in one order), cut into statements. */
+  #chunks(entries: readonly StoredEntry[]): StoredEntry[][] {
+    const rows = entries
+      .map((entry) => ({ ...entry, key: this.fit(entry.key) }))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    return chunkEntries(rows, { rows: SET_MANY_ROWS, bytes: SET_MANY_BYTES });
+  }
+
+  /** One {@link #setManyStatement} over a chunk of fitted, distinct rows, on `sql` (the client or a transaction). */
+  async #writeChunk(
+    sql: SQL,
+    fns: string,
+    chunk: readonly StoredEntry[],
+    now: number,
+  ): Promise<void> {
+    const pairKeys: string[] = [];
+    const pairTags: string[] = [];
+    const params: unknown[] = [fns, pairKeys, pairTags];
+    for (const entry of chunk) {
+      for (const tag of this.fitTags(entry.tags).keys()) {
+        pairKeys.push(entry.key);
+        pairTags.push(tag);
+      }
+      params.push(
+        entry.key,
+        entry.value,
+        entry.expiresAt,
+        SqlCacheDriverBase.tagsColumn(entry.tags),
+      );
+    }
+    params.push(now);
+    await sql.unsafe(this.#setManyStatement(chunk.length), params);
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

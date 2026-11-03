@@ -63,6 +63,7 @@ import type {
   BusMessage,
   CacheDriver,
   CacheDriverCapabilities,
+  FencedWrite,
   SchemaChange,
   SchemaSyncOptions,
   StoredEntry,
@@ -948,7 +949,7 @@ export class MongoCacheDriver implements CacheDriver {
     return "stored";
   }
 
-  /** Writes several entries in one round trip (no fence: bulk writes come from `setMany`, not from loads). */
+  /** Writes several entries in one round trip (no fence: a tagged batch goes to `setManyFenced`). */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     if (entries.length === 0) {
       return;
@@ -970,6 +971,88 @@ export class MongoCacheDriver implements CacheDriver {
           { ordered: true },
         ),
     );
+  }
+
+  /**
+   * Writes several entries, each held to its own fence, with `set`'s
+   * check-then-write and its compensating re-check done for the whole batch
+   * at once: one read of every fence tag's stamps, one `bulkWrite` of the
+   * entries none of them fences (each with a fresh write id), and a second
+   * read of the stamps; an entry a stamp at or after its load's start now
+   * fences is deleted *if it is still this write's*, and answers
+   * `"fenced"`. `deleteByTags` writes its stamps before its delete, so every
+   * interleaving ends as it does for `set`: no pre-invalidation value stays
+   * stored. The keys are distinct (the contract's rule).
+   */
+  async setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    if (writes.length === 0) {
+      return [];
+    }
+    const collection = await this.#collection<EntryDoc>("entries");
+    const fenced = (write: FencedWrite, stamps: Map<string, number>): boolean =>
+      write.fence !== undefined &&
+      write.fence.tags.some(
+        (tag) => (stamps.get(tag) ?? -Infinity) >= write.fence!.createdAt,
+      );
+    const union = [
+      ...new Set(writes.flatMap((write) => write.fence?.tags ?? [])),
+    ];
+    const before =
+      union.length > 0
+        ? await this.getStamps(ns, union)
+        : new Map<string, number>();
+    const results = writes.map((write) =>
+      fenced(write, before) ? ("fenced" as const) : ("stored" as const),
+    );
+    const written: { index: number; doc: EntryDoc }[] = [];
+    writes.forEach((write, index) => {
+      if (results[index] === "stored") {
+        written.push({
+          index,
+          doc: this.#entryDoc(ns, write.entry, crypto.randomUUID()),
+        });
+      }
+    });
+    if (written.length === 0) {
+      return results;
+    }
+    await upsertRetrying(
+      async () =>
+        await collection.bulkWrite(
+          written.map(({ doc }) => ({
+            replaceOne: {
+              filter: { _id: doc._id },
+              replacement: doc,
+              upsert: true,
+            },
+          })),
+          { ordered: true },
+        ),
+    );
+    if (union.length === 0) {
+      return results;
+    }
+    // An invalidation of one of their tags landed between the check and the
+    // write: take those writes back — only these, never a newer write.
+    const after = await this.getStamps(ns, union);
+    const takeBack = written.filter(({ index }) =>
+      fenced(writes[index], after),
+    );
+    if (takeBack.length > 0) {
+      await collection.bulkWrite(
+        takeBack.map(({ doc }) => ({
+          deleteOne: { filter: { _id: doc._id, w: doc.w } },
+        })),
+        { ordered: false },
+      );
+      for (const { index } of takeBack) {
+        results[index] = "fenced";
+      }
+    }
+    return results;
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

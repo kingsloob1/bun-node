@@ -25,7 +25,8 @@
  * - **Atomic paths are Lua** (`EVALSHA`, falling back to `EVAL` on
  *   `NOSCRIPT`): `set` with the tag fence (check the stamps, replace the old
  *   tag memberships, write), `setMany` (that write for each entry, one
- *   script per 1,000 entries), `delete`, `deleteByTags` (stamps first, then every
+ *   script per 1,000 entries), `setManyFenced` (`set`'s check and write for
+ *   each entry, chunked alike), `delete`, `deleteByTags` (stamps first, then every
  *   member, in one script), `increment` (create with its expiry, or add),
  *   `touch`, and the lock's take and compare-and-delete.
  * - **Expiry is native** (`PEXPIREAT`), so the core's sweeper never has
@@ -64,6 +65,7 @@ import type {
   CacheBus,
   CacheDriver,
   CacheDriverCapabilities,
+  FencedWrite,
   StoredEntry,
   TagFence,
 } from "../core/types";
@@ -312,6 +314,52 @@ while i <= #ARGV do
   n = n + 1
 end
 return n
+`);
+
+/**
+ * `setManyFenced`: KEYS[1] the first entry; ARGV base, now, then per entry its
+ * key, frame, expiresAt ('' none), fence createdAt ('' none), a count and the
+ * fence's tags, a count and its tags. Does `set`'s check and write for each
+ * in turn, so no invalidation lands between an entry's check and its write.
+ * Answers a 1 (stored) or 0 (fenced) per entry, in order. Not `allow-oom`:
+ * it writes entries and memberships.
+ */
+const SET_MANY_FENCED = script(`
+local base, now = ARGV[1], tonumber(ARGV[2])
+local i = 3
+local out = {}
+while i <= #ARGV do
+  local key, frame, exp, fenceAt = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3]
+  local nf = tonumber(ARGV[i + 4])
+  local fenced = false
+  if fenceAt ~= '' then
+    local at = tonumber(fenceAt)
+    for j = 1, nf do
+      local stamp = redis.call('GET', base .. 's:' .. ARGV[i + 4 + j])
+      if stamp then
+        local sat, suntil = string.match(stamp, '^(%S+) (%S+)$')
+        if sat and tonumber(suntil) > now and tonumber(sat) >= at then fenced = true break end
+      end
+    end
+  end
+  local t = i + 5 + nf
+  local nt = tonumber(ARGV[t])
+  if fenced then
+    out[#out + 1] = 0
+  else
+    dropEntry(base, key)
+    redis.call('UNLINK', base .. 'n:' .. key)
+    local ek = base .. 'e:' .. key
+    redis.call('SET', ek, frame)
+    if exp ~= '' then redis.call('PEXPIREAT', ek, exp) end
+    for j = 1, nt do
+      redis.call('SADD', base .. 't:' .. ARGV[t + j], key)
+    end
+    out[#out + 1] = 1
+  end
+  i = t + nt + 1
+end
+return out
 `);
 
 /**
@@ -874,7 +922,7 @@ export class RedisCacheDriver implements CacheDriver {
    * (or {@link SET_MANY_BYTES} of frames), each doing `set`'s write for every
    * entry in turn, so a key written twice keeps its last write. A script
    * runs whole, so each chunk is applied atomically; the chunks run one
-   * after another. No fence: bulk writes come from `setMany`, not from loads.
+   * after another. No fence: a tagged batch goes to `setManyFenced`.
    */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     if (entries.length === 0) {
@@ -903,6 +951,68 @@ export class RedisCacheDriver implements CacheDriver {
       }
       await this.#run(SET_MANY, [`${base}e:${chunk[0].key}`], args);
     }
+  }
+
+  /**
+   * Writes several entries, each held to its own fence: one script per
+   * {@link SET_MANY_ROWS} entries (or {@link SET_MANY_BYTES} of frames), each
+   * doing `set`'s check and write for every entry in turn, so each entry's
+   * fence is as atomic as `set`'s. The chunks run one after another.
+   */
+  async setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    if (writes.length === 0) {
+      return [];
+    }
+    await this.#ready();
+    const base = this.#base(ns);
+    const framed = writes.map((write) => ({
+      ...write.entry,
+      value: RedisCacheDriver.#frame(write.entry),
+    }));
+    const results: ("stored" | "fenced")[] = [];
+    let offset = 0;
+    for (const chunk of chunkEntries(framed, {
+      rows: SET_MANY_ROWS,
+      bytes: SET_MANY_BYTES,
+    })) {
+      const args: (string | Uint8Array)[] = [base, String(this.#now())];
+      chunk.forEach((entry, index) => {
+        const fence = writes[offset + index].fence;
+        const fenceTags =
+          fence !== undefined && fence.tags.length > 0
+            ? [...new Set(fence.tags)]
+            : [];
+        const tags = [...new Set(entry.tags)];
+        args.push(
+          entry.key,
+          entry.value,
+          expiryArg(entry.expiresAt),
+          fenceTags.length > 0 ? String(fence!.createdAt) : "",
+          String(fenceTags.length),
+          ...fenceTags,
+          String(tags.length),
+          ...tags,
+        );
+      });
+      const answered = await this.#run(
+        SET_MANY_FENCED,
+        [`${base}e:${chunk[0].key}`],
+        args,
+      );
+      if (!Array.isArray(answered) || answered.length !== chunk.length) {
+        throw new TypeError(
+          `redisDriver: setManyFenced's script answered ${JSON.stringify(answered)} for ${chunk.length} entries`,
+        );
+      }
+      for (const stored of answered) {
+        results.push(Number(stored) === 1 ? "stored" : "fenced");
+      }
+      offset += chunk.length;
+    }
+    return results;
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

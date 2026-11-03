@@ -49,6 +49,7 @@ import type {
   BusMessage,
   CacheDriver,
   CacheDriverCapabilities,
+  FencedWrite,
   SchemaChange,
   SchemaSyncOptions,
   StoredEntry,
@@ -598,20 +599,45 @@ class SqliteDriver implements CacheDriver {
     fence?: TagFence,
   ): Promise<"stored" | "fenced"> {
     const now = this.#now();
-    return await this.#write((db) => {
-      // The fence (§3.6), in the same transaction as the write: an
-      // invalidation cannot land between the check and the upsert.
-      if (fence !== undefined && fence.tags.length > 0) {
-        const hit = db
-          .query(this.#sql.fenceHit)
-          .get(ns, JSON.stringify(fence.tags), now, fence.createdAt);
-        if (hit !== null) {
-          return "fenced" as const;
-        }
+    return await this.#write((db) =>
+      this.#fencedWrite(db, ns, entry, fence, now),
+    );
+  }
+
+  /** `set`'s work, the caller holding the transaction: the fence (§3.6), then the write. An invalidation cannot land between the check and the upsert. */
+  #fencedWrite(
+    db: Database,
+    ns: string,
+    entry: StoredEntry,
+    fence: TagFence | undefined,
+    now: number,
+  ): "stored" | "fenced" {
+    if (fence !== undefined && fence.tags.length > 0) {
+      const hit = db
+        .query(this.#sql.fenceHit)
+        .get(ns, JSON.stringify(fence.tags), now, fence.createdAt);
+      if (hit !== null) {
+        return "fenced";
       }
-      this.#writeEntry(db, ns, entry, now);
-      return "stored" as const;
-    });
+    }
+    this.#writeEntry(db, ns, entry, now);
+    return "stored";
+  }
+
+  /** Writes several entries, each held to its own fence, in one `BEGIN IMMEDIATE` transaction: each entry is `set`'s check and write, and the batch commits whole. */
+  async setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    if (writes.length === 0) {
+      return [];
+    }
+    const now = this.#now();
+    return await this.#write((db) =>
+      writes.map((write) =>
+        this.#fencedWrite(db, ns, write.entry, write.fence, now),
+      ),
+    );
   }
 
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {

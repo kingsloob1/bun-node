@@ -2172,6 +2172,54 @@ a case on both MongoDB lanes pins the `_id`-only filter (and the server's
 `IDHACK` plan), the counter and expiry checks, and one handle per
 collection; four negative controls, see the PR.
 
+**Speed work: a fenced `setMany` in the driver contract, built 2026-11-02**
+(speed work item 6, its own PR by the user's choice). The `setMany` speed
+work left tagged entries on a `tags: "index"` driver as a fenced `set` each,
+because the contract's `setMany` takes no fence. Now:
+
+- **The contract** gains an optional method, `setManyFenced(ns, writes)`:
+  each `FencedWrite` is `{ entry, fence? }`, held to its fence exactly as
+  `set` holds one, and it answers `"stored"` or `"fenced"` per write, in
+  order; the keys of one call are distinct. Optional, not a third parameter
+  on `setMany`: a third-party `setMany` that ignored an extra argument would
+  store every entry unfenced while the core believed them fenced, whereas a
+  missing method is detected. A driver without it is unchanged, type-checks
+  as before, and keeps the per-entry fallback.
+- **The core** (`#writeStretch`) sends a stretch with a fenced entry to
+  `setManyFenced` when the driver has it, under one failure-policy operation
+  (`setMany`): its answer is each entry's, a throw or an answer of the wrong
+  length fails the call, reported as every entry unstored (`error`, then a
+  `fenced` event per entry). Events, stats, L1 and the bus settle in the
+  batch's order, as before.
+- **Drivers**: memory (synchronous, so atomic), SQLite (one `BEGIN
+  IMMEDIATE` transaction, `set`'s check and write per entry), Postgres (one
+  transaction under the namespace's shared advisory lock: one stamp read of
+  every fence tag, then `setMany`'s multi-row writes), MySQL and MariaDB (one
+  `REPEATABLE READ` transaction: one `LOCK IN SHARE MODE` read of the fence
+  tags' stamps, then `setMany`'s writes), Redis (a `SET_MANY_FENCED` script
+  per 1,000 entries, `set`'s check and write for each entry), MongoDB
+  (`set`'s check-then-write with its take-back, for the whole batch: one
+  stamp read, one `bulkWrite`, one re-read, one take-back by write id).
+  `faulty` forwards it; `redundant()` and the Cloudflare D1 driver do not
+  have it, and fall back.
+- **The A/B** (base and new libraries in one process, trials interleaved,
+  best of five, exclusive; batches/s of 100 entries, two tags each, and half
+  tagged): memory 3,145 → 3,584 (1.14×) and 3,183 → 3,652; SQLite 79 → 765
+  (9.7×) and 186 → 1,166; Redis 465 → 606 (1.3×) and 509 → 673; Postgres 63
+  → 162 (2.6×) and 73 → 191; MySQL 22.5 → 117 (5.2×) and 28 → 164; MariaDB 52
+  → 200 (3.9×) and 63 → 249; MongoDB 45 → 187 (4.2×) and 66 → 177. Untagged
+  batches unchanged (0.98–1.05×).
+- **Names** approved by the user (2026-11-03): §21's `setManyFenced`/`FencedWrite`
+  row. `redundant()` and the D1 driver implementing it: later (the user's
+  decision, 2026-11-03); both fall back correctly.
+- **Tests**: kit cases `setManyFenced` (each entry's outcome and what is
+  stored, a refused write over an existing value) and `setManyFenced.race`
+  (20 rounds of a batch against a concurrent invalidation), skipped visibly,
+  naming the method, on an index driver without it; core cases in
+  `__tests__/core/setMany.test.ts`; MongoDB's deterministic re-check and
+  take-back cases; type-level cases in `cache.type-test.ts`. Negative
+  controls: see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -3034,6 +3082,8 @@ interface CacheDriver {
   getMany(ns: string, keys: readonly string[]): Promise<(StoredEntry | undefined)[]>;
   set(ns: string, entry: StoredEntry, fence?: TagFence): Promise<"stored" | "fenced">;
   setMany(ns: string, entries: readonly StoredEntry[]): Promise<void>;
+  // optional (speed work item 6): each entry held to its own fence, as set
+  setManyFenced?(ns: string, writes: readonly { entry: StoredEntry; fence?: TagFence }[]): Promise<("stored" | "fenced")[]>;
   delete(ns: string, keys: readonly string[]): Promise<number>;
   clear(ns: string): Promise<void>;              // this namespace, and its tag index
   touch?(ns: string, key: string, expiresAt: number | null): Promise<boolean>;
@@ -4558,6 +4608,7 @@ Every new public name.
 | `write: "all" \| "primary"`, `ack: "one" \| "all"`, `read: "failover" \| "race"`, `timeout`, `circuit` (`failures`, `cooldown`), `counters: "primary" \| "refuse"`, `secondaryTtl`, `maxQueue`; `RedundantOptions`; `"redundant(<member names>)"` | options; type; driver name | `redundant()` | *built in PR-R1, approved by the user 2026-10-29*: §5's own names (`timeout` and `circuit` as `createCache`'s); `maxQueue` (default 10,000) after `maxEntries`/`maxBytes`; the type after `<Driver>Options` |
 | `onMemberEvent`; `CacheMemberEvent`; payload fields `driver`, `index`, `member` (all three), `failures` (`member-down`), `cleared` (`member-up`), `op` and `reason: "down" \| "failed" \| "overflow"` (`member-dirty`) | driver hook; type; event fields | `CacheDriver`; root; `member-*` events | *built in PR-R1, approved by the user 2026-10-29*: the hook after `onEviction`; `driver` as `circuit-open`'s, `failures` too; `member` is the member's driver name; the queue overflow reported as `member-dirty` with `reason: "overflow"` rather than an event of its own |
 | `sasToken`, `credential`, `token`; `AzureTokenCredential` | options; type | `AzureBlobConnection`; root | *approved by the user 2026-10-29, built 2026-10-29*: a SAS, a Microsoft Entra ID credential (structurally `@azure/core-auth`'s `TokenCredential`) and a raw bearer token; exactly one way to authorize |
+| `setManyFenced`; `FencedWrite` (`entry`, `fence`) | optional driver method; type | `CacheDriver`; root | *approved 2026-11-03 (speed work item 6)*: `setMany` with `set`'s fence per entry, so a tagged batch is one driver call; the type after `TagFence`, one entry of the batch |
 
 ---
 

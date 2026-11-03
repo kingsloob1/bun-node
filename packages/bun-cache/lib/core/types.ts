@@ -39,6 +39,17 @@ export interface TagFence {
   createdAt: number;
 }
 
+/**
+ * One entry of a fenced batch ({@link CacheDriver.setManyFenced}): the entry,
+ * and the tag fence its write is held to, as `set` takes them.
+ */
+export interface FencedWrite {
+  /** The entry to write. */
+  entry: StoredEntry;
+  /** The tag fence (§3.6) the write is held to; absent for an entry that needs none (untagged). */
+  fence?: TagFence;
+}
+
 /** What a backend can do atomically, declared once per driver. */
 export interface CacheDriverCapabilities {
   /** Whether several processes share what it stores (memory: `false`). */
@@ -163,8 +174,28 @@ export interface CacheDriver {
     entry: StoredEntry,
     fence?: TagFence,
   ) => Promise<"stored" | "fenced">;
-  /** Writes several entries. No fence: bulk writes come from explicit `setMany`, not from loads. */
+  /** Writes several entries, with no fence: the core sends an untagged batch here (or any batch, on a `tags: "stamps"` driver). */
   setMany: (ns: string, entries: readonly StoredEntry[]) => Promise<void>;
+  /**
+   * Writes several entries, each held to its own fence as {@link set} holds
+   * one, and answers each write's outcome in the batch's order: `"fenced"`
+   * where any of the entry's fence tags was invalidated at or after its
+   * `fence.createdAt` (nothing is written for it, and what the key held
+   * stays), `"stored"` otherwise. A write without a fence is stored. The
+   * keys of one call are distinct (the core starts a new batch at a
+   * repeated key).
+   *
+   * Optional, for `tags: "index"` drivers. When present, the core writes a
+   * `setMany` batch with tagged entries in one call; without it, as one
+   * fenced `set` per entry. Each entry's fence must be what `set`'s would be
+   * (`capabilities.fence` still describes it): an invalidation must not land
+   * between an entry's check and its write on an `"atomic"` driver. A throw
+   * fails the whole call, which the core reports as every entry unstored.
+   */
+  setManyFenced?: (
+    ns: string,
+    writes: readonly FencedWrite[],
+  ) => Promise<("stored" | "fenced")[]>;
   /** Deletes keys; answers how many were deleted. */
   delete: (ns: string, keys: readonly string[]) => Promise<number>;
   /** Deletes every entry of one namespace, and its tag index. Never touches another namespace. */

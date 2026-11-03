@@ -35,6 +35,7 @@
         "CacheDriverCapabilities",
         "StoredEntry",
         "TagFence",
+        "FencedWrite",
         "BusMessage",
         "Codec",
         "CompressOptions",
