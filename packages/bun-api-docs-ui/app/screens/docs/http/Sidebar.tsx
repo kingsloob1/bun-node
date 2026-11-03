@@ -1,5 +1,5 @@
 import type { KeyboardEvent } from "react";
-import type { DocTagGroup } from "./model";
+import type { DocSection, DocTagGroup } from "./model";
 import { useRef } from "react";
 import { TextInput } from "../../../components/inputs";
 import { arrowTarget } from "../../../components/listKeys";
@@ -11,6 +11,12 @@ import { MethodBadge } from "./OperationView";
 export interface SidebarProps {
   /** The groups to list, already filtered by the search. */
   groups: readonly DocTagGroup[];
+  /**
+   * The document's sections over those groups (`x-tagGroups`), already
+   * filtered: each heads its tags, one level deeper. Default: none, and the
+   * groups are listed at the top level.
+   */
+  sections?: readonly DocSection[];
   /** The search text (`?q=`). */
   query: string;
   /** Sets the search text. */
@@ -26,12 +32,72 @@ function links(root: HTMLElement | null): HTMLAnchorElement[] {
     : [];
 }
 
+/** One tag's heading and its operations' links. */
+function TagBlock({
+  group,
+  headingId,
+  level,
+  hrefOf,
+}: {
+  /** The tag and its operations. */
+  group: DocTagGroup;
+  /** The heading's id, unique in the sidebar (a tag can be in two sections). */
+  headingId: string;
+  /** The heading's level: 2 at the top, 3 inside a section. */
+  level: 2 | 3;
+  /** The link to an operation. */
+  hrefOf: (operationId: string) => string;
+}) {
+  const Heading = level === 2 ? "h2" : "h3";
+  return (
+    <section
+      className="http-tag"
+      aria-labelledby={headingId}
+    >
+      <Heading
+        id={headingId}
+        className="http-tag-name"
+        title={group.description}
+      >
+        {group.name}
+      </Heading>
+      <ul className="http-tag-ops">
+        {group.operations.map((operation) => (
+          <li key={operation.id}>
+            <Link
+              to={hrefOf(operation.id)}
+              className="http-op-link"
+              activeMatch="exact"
+              data-operation={operation.id}
+            >
+              <MethodBadge method={operation.method} />
+              <span className="http-op-text">
+                <span className="http-op-path">{operation.path}</span>
+                {operation.summary && (
+                  <span className="http-op-summary">{operation.summary}</span>
+                )}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /**
- * The operations by tag, with method badges, and a search over path,
+ * The operations by tag (by section, then tag, when the document declares
+ * `x-tagGroups`), with method badges, and a search over path,
  * operation id and summary. Arrow keys move between operations (Home/End to
  * the ends), and ArrowDown from the search goes to the first match.
  */
-export function Sidebar({ groups, query, onQuery, hrefOf }: SidebarProps) {
+export function Sidebar({
+  groups,
+  sections,
+  query,
+  onQuery,
+  hrefOf,
+}: SidebarProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const count = groups.reduce((sum, group) => sum + group.operations.length, 0);
 
@@ -81,43 +147,40 @@ export function Sidebar({ groups, query, onQuery, hrefOf }: SidebarProps) {
         className="http-sidebar-list"
         onKeyDown={onListKey}
       >
-        {groups.map((group) => (
-          <section
-            key={group.name}
-            className="http-tag"
-            aria-labelledby={`tag-${group.name}`}
-          >
-            <h2
-              id={`tag-${group.name}`}
-              className="http-tag-name"
-              title={group.description}
-            >
-              {group.name}
-            </h2>
-            <ul className="http-tag-ops">
-              {group.operations.map((operation) => (
-                <li key={operation.id}>
-                  <Link
-                    to={hrefOf(operation.id)}
-                    className="http-op-link"
-                    activeMatch="exact"
-                    data-operation={operation.id}
-                  >
-                    <MethodBadge method={operation.method} />
-                    <span className="http-op-text">
-                      <span className="http-op-path">{operation.path}</span>
-                      {operation.summary && (
-                        <span className="http-op-summary">
-                          {operation.summary}
-                        </span>
-                      )}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
+        {sections === undefined
+          ? groups.map((group) => (
+              <TagBlock
+                key={group.name}
+                group={group}
+                headingId={`tag-${group.name}`}
+                level={2}
+                hrefOf={hrefOf}
+              />
+            ))
+          : sections.map((section, index) => (
+              <section
+                // Two sections may share a name in a hand-written document.
+                key={`${index}-${section.name}`}
+                className="http-section"
+                aria-labelledby={`section-${index}`}
+              >
+                <h2
+                  id={`section-${index}`}
+                  className="http-section-name"
+                >
+                  {section.name}
+                </h2>
+                {section.tags.map((group) => (
+                  <TagBlock
+                    key={group.name}
+                    group={group}
+                    headingId={`tag-${index}-${group.name}`}
+                    level={3}
+                    hrefOf={hrefOf}
+                  />
+                ))}
+              </section>
+            ))}
         {groups.length === 0 && (
           <p className="http-muted">No operation matches.</p>
         )}

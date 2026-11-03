@@ -227,6 +227,31 @@ try {
       ).length === 5,
     JSON.stringify(warned?.filter((w) => (w.route ?? "").includes("/cache/"))),
   );
+  // Sections and subsections (docs.ts): every operation carries a tag, and
+  // every tag sits in one of the document's x-tagGroups, so Redoc hides none.
+  const grouped = whole.document as {
+    paths: Record<string, Record<string, { tags?: string[] }>>;
+    "x-tagGroups"?: { name: string; tags: string[] }[];
+  };
+  const sections = grouped["x-tagGroups"] ?? [];
+  const inSections = new Set(sections.flatMap((section) => section.tags));
+  const untagged = Object.entries(grouped.paths).flatMap(([path, item]) =>
+    Object.entries(item)
+      .filter(
+        ([, operation]) =>
+          (operation.tags ?? []).length === 0 ||
+          !(operation.tags ?? []).every((tag) => inSections.has(tag)),
+      )
+      .map(([method]) => `${method} ${path}`),
+  );
+  check(
+    "openapi.json: every operation is tagged, its tags in the sections",
+    JSON.stringify(sections.map((section) => section.name)) ===
+      JSON.stringify(["Jobs API", "Cache lab", "Typed client", "Validation"]) &&
+      untagged.length === 0 &&
+      !(warned ?? []).some((w) => w.message.includes("no tag")),
+    `${sections.map((section) => section.name).join(", ")}; untagged: ${untagged.join(" ")}`,
+  );
   const state = (await (await fetch(`${base}/state`)).json()) as State;
   check(
     "/state: the generated module's hash is the committed one",

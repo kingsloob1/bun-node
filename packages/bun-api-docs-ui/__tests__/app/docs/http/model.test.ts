@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
   componentSchemaNames,
   filterGroups,
+  groupBySection,
   groupByTag,
   listOperations,
   readInfo,
@@ -219,5 +220,92 @@ describe("a read-only API's document", () => {
     expect(operations.filter((operation) => operation.mutation).length).toBe(
       operations.length - readOnly.length,
     );
+  });
+});
+
+describe("sections (x-tagGroups)", () => {
+  /** The real document with two sections over some of its tags. */
+  function grouped(tagGroups: unknown): SpecDocument {
+    return { ...doc, "x-tagGroups": tagGroups };
+  }
+
+  /** Section name → its tag names. */
+  function shape(sections: ReturnType<typeof groupBySection>) {
+    return sections?.map((section) => [
+      section.name,
+      section.tags.map((group) => group.name),
+    ]);
+  }
+
+  it("is undefined without x-tagGroups, so the sidebar stays one level (the control)", () => {
+    expectUndefined(groupBySection(doc, groupByTag(doc, operations)));
+    // An empty or malformed list reads as none.
+    for (const raw of [[], [{ tags: ["Meta"] }], [{ name: 1, tags: [] }], {}]) {
+      expectUndefined(
+        groupBySection(grouped(raw), groupByTag(doc, operations)),
+      );
+    }
+  });
+
+  it("arranges the tags in the document's sections, the rest in a trailing Other", () => {
+    const next = grouped([
+      { name: "Operate", tags: ["Queues", "Workers", "Jobs"] },
+      { name: "Schedule", tags: ["Runners", "NoSuchTag"] },
+    ]);
+    const sections = groupBySection(next, groupByTag(next, operations));
+    expect(shape(sections)).toEqual([
+      ["Operate", ["Queues", "Workers", "Jobs"]],
+      ["Schedule", ["Runners"]],
+      // In the groups' (the document's `tags`) order.
+      ["Other", ["Meta", "Docs", "Analytics"]],
+    ]);
+    // The groups are the tag groups themselves, operations included.
+    expect(
+      sections![0].tags[0].operations.map((operation) => operation.id),
+    ).toContain("pauseQueue");
+  });
+
+  it("puts the rest in the document's own Other section, and lists a tag in each section naming it", () => {
+    const next = grouped([
+      { name: "Other", tags: ["Meta"] },
+      { name: "Everything", tags: ["Queues", "Workers", "Jobs", "Runners"] },
+      { name: "Workers too", tags: ["Workers", "Workers"] },
+    ]);
+    expect(shape(groupBySection(next, groupByTag(next, operations)))).toEqual([
+      ["Other", ["Meta", "Docs", "Analytics"]],
+      ["Everything", ["Queues", "Workers", "Jobs", "Runners"]],
+      ["Workers too", ["Workers"]],
+    ]);
+  });
+
+  it("puts the untagged operations' Other group in the trailing section", () => {
+    const tiny: SpecDocument = {
+      openapi: "3.1.2",
+      info: { title: "T", version: "1" },
+      paths: {
+        "/a": { get: { operationId: "a", tags: ["A"] } },
+        "/b": { get: { operationId: "b" } },
+      },
+      "x-tagGroups": [{ name: "Letters", tags: ["A"] }],
+    };
+    const ops = listOperations(tiny);
+    expect(shape(groupBySection(tiny, groupByTag(tiny, ops)))).toEqual([
+      ["Letters", ["A"]],
+      ["Other", ["Other"]],
+    ]);
+  });
+
+  it("drops a section a search leaves empty", () => {
+    const next = grouped([
+      { name: "Operate", tags: ["Queues", "Workers", "Jobs"] },
+      { name: "Schedule", tags: ["Runners"] },
+    ]);
+    const visible = filterGroups(groupByTag(next, operations), "killrunner");
+    expect(shape(groupBySection(next, visible))).toEqual([
+      ["Schedule", ["Runners"]],
+    ]);
+    expect(
+      groupBySection(next, filterGroups(groupByTag(next, operations), "zzz")),
+    ).toEqual([]);
   });
 });

@@ -2,7 +2,7 @@
 import type { DocsClient } from "../../../api/client";
 import type { SpecDocument } from "../../../api/docs";
 import type { PermissionProbe } from "../permissions";
-import type { DocInfo, DocTagGroup } from "./model";
+import type { DocInfo, DocSection, DocTagGroup } from "./model";
 import { useMemo, useState } from "react";
 import { createDocsClient } from "../../../api/client";
 import { Badge } from "../../../components/Badge";
@@ -23,6 +23,7 @@ import { SchemaTree } from "../schema/SchemaTree";
 import {
   componentSchemaNames,
   filterGroups,
+  groupBySection,
   groupByTag,
   listOperations,
   readInfo,
@@ -99,10 +100,43 @@ function InfoHeader({
   );
 }
 
-/** The landing view: tags with their operations, and the component schemas. */
+/** One tag's description and its operations' links, on the landing view. */
+function OverviewTag({
+  group,
+  query,
+  pathBase,
+}: {
+  /** The tag and its operations. */
+  group: DocTagGroup;
+  /** The search, kept on links. */
+  query: string;
+  /** The docs section's path within the host app. */
+  pathBase: string;
+}) {
+  return (
+    <>
+      {group.description && <p className="http-muted">{group.description}</p>}
+      <ul className="http-overview-ops">
+        {group.operations.map((operation) => (
+          <li key={operation.id}>
+            <Link to={operationHref(operation.id, query, pathBase)}>
+              <code>{operation.method}</code> {operation.path}
+            </Link>
+            {operation.summary && (
+              <span className="http-muted">{` ${operation.summary}`}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** The landing view: tags (in their sections, when the document has them) with their operations, and the component schemas. */
 function Overview({
   doc,
   groups,
+  sections,
   query,
   onRef,
   pathBase,
@@ -111,6 +145,8 @@ function Overview({
   doc: SpecDocument;
   /** Every tag group (unfiltered). */
   groups: readonly DocTagGroup[];
+  /** The document's sections over them (`x-tagGroups`), when it declares any: one card each, its tags inside. */
+  sections: readonly DocSection[] | undefined;
   /** The search, kept on links. */
   query: string;
   /** Opens a component schema. */
@@ -121,28 +157,41 @@ function Overview({
   const names = componentSchemaNames(doc);
   return (
     <div className="http-overview">
-      {groups.map((group) => (
-        <Card
-          key={group.name}
-          title={group.name}
-        >
-          {group.description && (
-            <p className="http-muted">{group.description}</p>
-          )}
-          <ul className="http-overview-ops">
-            {group.operations.map((operation) => (
-              <li key={operation.id}>
-                <Link to={operationHref(operation.id, query, pathBase)}>
-                  <code>{operation.method}</code> {operation.path}
-                </Link>
-                {operation.summary && (
-                  <span className="http-muted">{` ${operation.summary}`}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      ))}
+      {sections === undefined
+        ? groups.map((group) => (
+            <Card
+              key={group.name}
+              title={group.name}
+            >
+              <OverviewTag
+                group={group}
+                query={query}
+                pathBase={pathBase}
+              />
+            </Card>
+          ))
+        : sections.map((section, index) => (
+            <Card
+              key={`${index}-${section.name}`}
+              title={section.name}
+              className="http-overview-section"
+            >
+              {section.tags.map((group) => (
+                <section
+                  key={group.name}
+                  className="http-overview-tag"
+                  aria-label={group.name}
+                >
+                  <h3 className="http-overview-tag-name">{group.name}</h3>
+                  <OverviewTag
+                    group={group}
+                    query={query}
+                    pathBase={pathBase}
+                  />
+                </section>
+              ))}
+            </Card>
+          ))}
       {names.length > 0 && (
         <Card title="Schemas">
           <ul
@@ -249,6 +298,12 @@ export function HttpReference({
   );
   const groups = useMemo(() => groupByTag(doc, operations), [doc, operations]);
   const visible = useMemo(() => filterGroups(groups, query), [groups, query]);
+  // `undefined` without `x-tagGroups`: the sidebar is then one level, as before.
+  const sections = useMemo(() => groupBySection(doc, groups), [doc, groups]);
+  const visibleSections = useMemo(
+    () => groupBySection(doc, visible),
+    [doc, visible],
+  );
   const selected =
     operationId === undefined
       ? undefined
@@ -286,6 +341,7 @@ export function HttpReference({
       <div className="http-docs-layout">
         <Sidebar
           groups={visible}
+          sections={visibleSections}
           query={query}
           onQuery={(next) => setQuery(next)}
           hrefOf={(id) => operationHref(id, query, pathBase)}
@@ -300,6 +356,7 @@ export function HttpReference({
               <Overview
                 doc={doc}
                 groups={groups}
+                sections={sections}
                 query={query}
                 onRef={openRef}
                 pathBase={pathBase}

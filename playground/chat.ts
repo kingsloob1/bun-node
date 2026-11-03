@@ -128,6 +128,7 @@ export function mountChatChannel(app: BunHttpAdapter): void {
     })
     .describe({
       summary: "Announce into a chat room, with no socket",
+      tags: ["Chat channel"],
       description:
         'Publishes a `said` frame (`?text=`, default "an announcement") to every connection in the room through the chat channel\'s server-level `publish`, checked like any send.',
       responses: {

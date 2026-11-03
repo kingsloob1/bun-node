@@ -2627,6 +2627,42 @@ same in any process, whatever order their keys were built in. **Every** change
 to the documents changes it, including prose (a `summary`, a `description`):
 the documents are hashed whole. Either document may be absent.
 
+#### Sections and subsections: `tags` and `tagGroups`
+
+A route's `.describe({ tags })` puts its operation in a section of the
+viewers' sidebars; `generateOpenApi`'s `tags` option describes each one.
+`tagGroups` adds the level above: groups of tags, emitted as the document's
+top-level `x-tagGroups` extension, the shape Redoc, Scalar and the
+self-hosted viewer (`@kingsleyweb/bun-api-docs-ui`) read.
+
+```ts
+app.get("/users", listUsers).describe({ tags: ["Users"] });
+app.get("/orders", listOrders).describe({ tags: ["Orders"] });
+app.get("/health", health).describe({ tags: ["Health"] });
+
+generateOpenApi(app, {
+  title: "Shop",
+  version: "1",
+  tags: { Users: { description: "People who buy" }, Orders: { description: "What they bought" } },
+  tagGroups: [{ name: "Store", tags: ["Users", "Orders"] }],
+});
+// x-tagGroups: [{ name: "Store", tags: ["Users", "Orders"] }, { name: "Other", tags: ["Health"] }]
+```
+
+- **Every used tag is in a group.** One no group names goes in a trailing
+  `"Other"` group (or the group of that name, when given): Redoc does not
+  display a tag that is in no group, so leaving it out would hide its
+  operations.
+- **Warnings, not errors**, for a group naming a tag no documented operation
+  uses (left out, and a group left empty goes too), a tag named twice (it
+  stays in the first group), and an operation with no tag (no group can hold
+  it, and Redoc does not show it). `strict: "strict"` escalates them, as any.
+- **Two groups with one name are a `ConfigError`**, in either mode.
+- With groups, `tags` follows the groups' order, for viewers that ignore
+  `x-tagGroups`; without them, the document is as before.
+
+A tag is declared per route: no router- or mount-level default exists.
+
 #### Serving and viewing the documents: `docsRouter()`
 
 `docsRouter(options)` — from `@kingsleyweb/bun-common/lib/docs` — is a

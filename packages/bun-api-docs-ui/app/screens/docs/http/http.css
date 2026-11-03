@@ -51,6 +51,34 @@
   margin-bottom: var(--space-3);
 }
 
+/* A document's x-tagGroups entry: a heading over its tags, nested one level. */
+.http-section {
+  margin-bottom: var(--space-4);
+}
+
+.http-section-name {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+  color: var(--text);
+}
+
+.http-section .http-tag {
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--border);
+}
+
+.http-overview-tag + .http-overview-tag {
+  margin-top: var(--space-3);
+}
+
+.http-overview-tag-name {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
 .http-tag-name {
   margin: 0 0 var(--space-1);
   font-size: var(--text-sm);
