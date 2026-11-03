@@ -5,15 +5,8 @@
  * with the sidebar in sections and subsections — the tags each route's
  * `.describe({ tags })` names, grouped by `tagGroups` into the document's
  * `x-tagGroups`.
- *
- * The jobs management API's routes are bun-jobs' and carry no `.describe()`,
- * so the generator sees them untagged. Their tags come from the API's own
- * document (`api.openapi()`, which tags every operation), copied onto the
- * same operations here, as a "Jobs API" section in front. bun-common has no
- * router- or mount-level default tag that would do this at generation.
  */
 import type {
-  DocWarning,
   OpenApiOptions,
   OpenApiResult,
 } from "@kingsleyweb/bun-common/lib/docs";
@@ -85,19 +78,21 @@ export const PLAYGROUND_TAG_GROUPS: NonNullable<OpenApiOptions["tagGroups"]> = [
 /** The section the jobs API's tags go in. */
 const JOBS_API_SECTION = "Jobs API";
 
-/** An operation, as far as the tag copy reads one. */
-interface OperationLike {
-  /** Its tags. */
-  tags?: string[];
-  /** The listing's key, `"GET /jobs-api/meta"`. */
-  "x-bun-route-key"?: string;
+/** What the jobs API's own document is read for: operations and tags. */
+interface JobsDocumentLike {
+  /** Its paths, by the path template (`/queues/{name}`), then method. */
+  paths?: Record<string, Record<string, { tags?: string[] } | undefined>>;
+  /** Its tags, in its own order, with their descriptions. */
+  tags?: { name: string; description?: string }[];
 }
 
 /**
  * The whole-app document: `generateOpenApi` over `app` with the playground's
- * tags and sections, then the jobs API's operations tagged from its own
- * document. A fresh document per call, so a docs mount always shows the
- * adapter as it is now.
+ * tags and sections. The jobs management API's routes are bun-jobs' and carry
+ * no `.describe()`, so `defaultTags` tags them with the tags the API's own
+ * document (`api.openapi()`) gives the same operations, as a "Jobs API"
+ * section in front. A fresh document per call, so a docs mount always shows
+ * the adapter as it is now.
  *
  * @param app The adapter every route is on.
  * @param api The jobs management API mounted on it.
@@ -106,59 +101,41 @@ export function playgroundOpenApi(
   app: Parameters<typeof generateOpenApi>[0],
   api: JobsApi,
 ): OpenApiResult {
-  const { document, warnings } = generateOpenApi(app, {
+  const own = api.openapi() as JobsDocumentLike;
+  const prefix = `${api.basePath}/`;
+  const jobsTags = new Set<string>();
+  for (const item of Object.values(own.paths ?? {})) {
+    for (const operation of Object.values(item)) {
+      for (const tag of operation?.tags ?? []) jobsTags.add(tag);
+    }
+  }
+  // The API's own tag order and descriptions, for the tags it uses.
+  const described = (own.tags ?? []).filter((tag) => jobsTags.has(tag.name));
+
+  return generateOpenApi(app, {
     title: "bun-node playground",
     version: "1.0.0",
     filter: documentedRoute,
-    tags: PLAYGROUND_TAGS,
-    tagGroups: PLAYGROUND_TAG_GROUPS,
+    tags: {
+      ...Object.fromEntries(
+        described.map(({ name, description }) => [
+          name,
+          description === undefined ? {} : { description },
+        ]),
+      ),
+      ...PLAYGROUND_TAGS,
+    },
+    tagGroups: [
+      { name: JOBS_API_SECTION, tags: described.map((tag) => tag.name) },
+      ...PLAYGROUND_TAG_GROUPS,
+    ],
+    defaultTags: (route) => {
+      if (!route.path.startsWith(prefix)) return undefined;
+      // `/jobs-api/queues/:name` is the API's `/queues/{name}`.
+      const template = route.path
+        .slice(api.basePath.length)
+        .replace(/:(\w+)/g, "{$1}");
+      return own.paths?.[template]?.[route.method.toLowerCase()]?.tags;
+    },
   });
-
-  const own = api.openapi();
-  const ownPaths = (own.paths ?? {}) as Record<
-    string,
-    Record<string, OperationLike>
-  >;
-  const paths = (document.paths ?? {}) as Record<
-    string,
-    Record<string, OperationLike>
-  >;
-  const tagged = new Set<string>();
-  const used = new Set<string>();
-  for (const [path, item] of Object.entries(paths)) {
-    if (!path.startsWith(`${api.basePath}/`)) continue;
-    const ownItem = ownPaths[path.slice(api.basePath.length)];
-    for (const [method, operation] of Object.entries(item)) {
-      const tags = ownItem?.[method]?.tags;
-      if (typeof operation !== "object" || tags === undefined) continue;
-      if (tags.length === 0) continue;
-      operation.tags = [...tags];
-      for (const tag of tags) used.add(tag);
-      const key = operation["x-bun-route-key"];
-      if (key !== undefined) tagged.add(key);
-    }
-  }
-  // The API's own tag order and descriptions, for the tags copied.
-  const jobsTags = ((own.tags ?? []) as { name: string }[]).filter((tag) =>
-    used.has(tag.name),
-  );
-  if (jobsTags.length > 0) {
-    document.tags = [...jobsTags, ...((document.tags ?? []) as unknown[])];
-    document["x-tagGroups"] = [
-      { name: JOBS_API_SECTION, tags: jobsTags.map((tag) => tag.name) },
-      ...((document["x-tagGroups"] ?? []) as unknown[]),
-    ];
-  }
-  return {
-    document,
-    // The generator warned that these were untagged; they are not now.
-    warnings: warnings.filter(
-      (warning: DocWarning) =>
-        !(
-          warning.route !== undefined &&
-          tagged.has(warning.route) &&
-          warning.message.startsWith("the operation has no tag")
-        ),
-    ),
-  };
 }

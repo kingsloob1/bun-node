@@ -236,3 +236,68 @@ describe("generateOpenApi tagGroups (x-tagGroups)", () => {
     expect(groups[0].tags).toEqual(["Users"]);
   });
 });
+
+describe("generateOpenApi defaultTags", () => {
+  /** Operation tags by `"METHOD path"`. */
+  function opTags(document: Record<string, unknown>) {
+    const out: Record<string, unknown> = {};
+    for (const [path, item] of Object.entries(
+      (document.paths ?? {}) as Record<
+        string,
+        Record<string, { tags?: string[] }>
+      >,
+    )) {
+      for (const [method, op] of Object.entries(item)) {
+        out[`${method.toUpperCase()} ${path}`] = op.tags;
+      }
+    }
+    return out;
+  }
+
+  it("tags an operation with no tags of its own, and the tags count as used", () => {
+    const { document, warnings } = generate(
+      [{ name: "Admin", tags: ["Internal"] }],
+      {
+        untagged: true,
+        tags: { Internal: { description: "Not ours" } },
+        defaultTags: (route) =>
+          route.path.startsWith("/ping") ? ["Internal"] : undefined,
+      },
+    );
+    expect(opTags(document)["GET /ping/{n}"]).toEqual(["Internal"]);
+    expect(opTags(document)["GET /ping"]).toEqual(["Internal"]);
+    expect(document.tags).toContainEqual({
+      name: "Internal",
+      description: "Not ours",
+    });
+    expect(
+      (document["x-tagGroups"] as { name: string }[]).map((g) => g.name),
+    ).toEqual(["Admin", "Other"]);
+    // /pong has `tags: []` of its own and is not asked: still warned.
+    expect(opTags(document)["GET /pong"]).toEqual([]);
+    expect(warnings.map((w) => w.route)).toEqual(["GET /pong"]);
+  });
+
+  it("never overrides a route's own tags, and is not asked for it", () => {
+    const asked: string[] = [];
+    const { document } = generate(undefined, {
+      defaultTags: (route) => {
+        asked.push(route.path);
+        return ["Default"];
+      },
+    });
+    expect(opTags(document)["GET /users"]).toEqual(["Users"]);
+    expect(asked).toEqual([]);
+  });
+
+  it("undefined or [] leaves the route untagged, and tagGroups still warns", () => {
+    for (const result of [undefined, []]) {
+      const { document, warnings } = generate(
+        [{ name: "Store", tags: ["Users"] }],
+        { untagged: true, defaultTags: () => result },
+      );
+      expect(opTags(document)["GET /ping"]).toBeUndefined();
+      expect(warnings.map((w) => w.route)).toContain("GET /ping/:n?");
+    }
+  });
+});
