@@ -875,6 +875,9 @@ const BOUNDED_ID_LENGTH: Partial<Record<SqlAdapter, number>> = {
  */
 const MAX_EVICTED_RUN_LOGS = 1000;
 
+/** How many times one schema statement is run while another connection keeps creating the same object at the same moment (Postgres, `isConcurrentCreate`). */
+const CONCURRENT_CREATE_ATTEMPTS = 5;
+
 /** The tables this driver uses. */
 export const SQL_TABLES = [
   "jobs",
@@ -7734,22 +7737,35 @@ export class SqlDriver implements JobsDriver {
       const existing = new Set(columns.keys());
 
       // Two processes starting together both create the schema, and one is
-      // told the database is busy. Every statement is `IF NOT EXISTS`, so
-      // waiting and repeating is exactly the right answer.
+      // told the database is busy, or on Postgres that the other created the
+      // table first (`isConcurrentCreate`). Every statement is
+      // `IF NOT EXISTS`, so waiting and repeating is exactly the right answer.
       for (const statement of createSchema(
         this.#tables,
         this.dialect,
         existing,
       )) {
         await withLockRetry(async () => {
-          try {
-            await this.#sql.unsafe(statement);
-          } catch (error) {
-            // An index that already exists, on an engine whose `CREATE INDEX`
-            // cannot say `IF NOT EXISTS` (MySQL). Exactly what the clause
-            // would have made a no-op.
-            if (!this.dialect.isDuplicateIndex(error)) {
-              throw error;
+          for (let attempt = 1; ; attempt++) {
+            try {
+              await this.#sql.unsafe(statement);
+              return;
+            } catch (error) {
+              // An index that already exists, on an engine whose `CREATE
+              // INDEX` cannot say `IF NOT EXISTS` (MySQL). Exactly what the
+              // clause would have made a no-op.
+              if (this.dialect.isDuplicateIndex(error)) {
+                return;
+              }
+              // The other session's create has committed by the time the
+              // loser fails, so the repeat finds the object and does nothing.
+              if (
+                attempt >= CONCURRENT_CREATE_ATTEMPTS ||
+                !this.dialect.isConcurrentCreate(error)
+              ) {
+                throw error;
+              }
+              await Bun.sleep(20 * attempt);
             }
           }
         });
