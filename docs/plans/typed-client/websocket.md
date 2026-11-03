@@ -22,7 +22,9 @@ TC §16 and §13.3 here). **Nothing is built.** The next PRs are TC's **PR-K**,
 **PR-M1** and **PR-C1**; this sub-plan's PRs follow them as TC §15 orders.
 **The reply-id mismatch is fixed by PR-W1**: `docs/asyncapi.ts:617`
 documents a reply that echoes the request's id, which the handler dispatch
-(`channel.ts:296-308`) never sends (§2, §10.1).
+(`channel.ts:296-308`) never sends (§2, §10.1). **PR-W1 is built**
+(2026-11-03, branch `feat/bun-common-channel-server`; TC's Status row):
+§10.1–10.4; §10.5 is not in it.
 
 ### Contents
 

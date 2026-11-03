@@ -16,8 +16,12 @@ import type { RawResponseHead } from "./helpers";
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { BunRouter } from "../lib/BunRouter";
+import { BunWebSocket } from "../lib/BunWebSocket";
 import { defineChannel } from "../lib/channel";
+import { channelContract } from "../lib/contract/channel";
 import { describeContract } from "../lib/contract/describe";
+import { generateAsyncApi } from "../lib/docs/index";
 import { ContractError } from "../lib/contract/guard";
 import { getContract } from "../lib/contract/transport";
 import { createTestLogger } from "../lib/logging";
@@ -62,7 +66,7 @@ async function openClient(url: string) {
  */
 async function serve<S extends ChannelSpec>(
   channel: Channel<S>,
-  handlers: ChannelHandlers<S["receives"]>,
+  handlers: ChannelHandlers<S["receives"], S>,
   setup?: (adapter: BunHttpAdapter) => void,
 ): Promise<{ adapter: BunHttpAdapter; port: number }> {
   const { logger } = createTestLogger();
@@ -111,8 +115,8 @@ function sayData(text: string) {
   return { text, at: AT };
 }
 
-/** The room of a connection, from the route's params (a channel handler's `ws.data` is `never`). */
-function roomOf(ws: ServerWebSocket<never>): string {
+/** The room of a connection, from the route's params (a socket from elsewhere: its `ws.data` is untyped). */
+function roomOf(ws: ServerWebSocket<unknown>): string {
   return String((ws.data as WebSocketClientData).params?.room);
 }
 
@@ -228,8 +232,11 @@ describe("defineChannel: incoming frames", () => {
       client.send(JSON.stringify({ type: "typing", data: { at: AT } }));
       await until(() => frames.length === 1);
       client.close();
-      // The handler is passed the socket, and `undefined` for the absent data.
-      expect(typingCalls).toEqual([[undefined]]);
+      // The handler is passed the socket, `undefined` for the absent data,
+      // and the frame's type and (absent) id.
+      expect(typingCalls).toEqual([
+        [undefined, { type: "typing", id: undefined }],
+      ]);
       expect(frames).toEqual([
         {
           type: "error",
@@ -432,7 +439,7 @@ describe("defineChannel: a socket's frames one at a time, in order", () => {
     const { adapter, port } = await serve(ticks, {
       tick(ws, msg) {
         order.push(msg.n);
-        ticks.send(ws, "tock", { n: msg.n });
+        void ticks.send(ws, "tock", { n: msg.n });
       },
     });
     try {
@@ -565,7 +572,7 @@ describe("defineChannel: send and publish", () => {
       await Bun.sleep(25);
       expect(frames).toEqual([]);
       // A good frame is written.
-      chat.send(ws, "said", { by: "server", text: "hello" });
+      void chat.send(ws, "said", { by: "server", text: "hello" });
       await until(() => frames.length === 1);
       client.close();
       expect(frames).toEqual([
@@ -582,7 +589,7 @@ describe("defineChannel: send and publish", () => {
       chat,
       {
         say(ws, msg) {
-          chat.publish(ws, `room:${roomOf(ws)}`, "said", {
+          void chat.publish(ws, `room:${roomOf(ws)}`, "said", {
             by: "peer",
             text: msg.text,
           });
@@ -684,14 +691,623 @@ describe("defineChannel: the typed surface", () => {
     const chat = makeChat();
     // Never called: the assertions are the compiler's.
     const typecheck = (ws: ServerWebSocket<never>): void => {
-      chat.send(ws, "said", { by: "server", text: "hi" });
+      void chat.send(ws, "said", { by: "server", text: "hi" });
       // @ts-expect-error — "said" data is { by: string; text: string }
-      chat.send(ws, "said", { by: 42, text: "hi" });
+      void chat.send(ws, "said", { by: 42, text: "hi" });
       // @ts-expect-error — "nope" is not one of the channel's sends
-      chat.send(ws, "nope", { by: "server", text: "hi" });
+      void chat.send(ws, "nope", { by: "server", text: "hi" });
       // @ts-expect-error — the implicit "error" frame is not the app's to send
-      chat.send(ws, "error", {});
+      void chat.send(ws, "error", {});
     };
     expect(typecheck).toBeInstanceOf(Function);
+  });
+});
+
+/** An async vendor's `said`, which refuses any `by` of "refused" (after a tick). */
+const asyncSaid: StandardSchemaV1<unknown, { by: string; text: string }> = {
+  "~standard": {
+    version: 1,
+    vendor: "test-async",
+    validate: async (value) => {
+      await Bun.sleep(1);
+      const record = (value ?? {}) as { by?: unknown; text?: unknown };
+      if (
+        typeof record.by !== "string" ||
+        typeof record.text !== "string" ||
+        record.by === "refused"
+      ) {
+        return { issues: [{ message: "Refused", path: ["by"] }] };
+      }
+      return { value: { by: record.by, text: record.text } };
+    },
+  },
+};
+
+/** A channel with replies: `say` → `said`, `ping` → `pong` (no data), `typing` unreplied. */
+function makeReplying() {
+  return defineChannel({
+    path: "/reply/:room",
+    request: { params: RoomParams },
+    receives: { say: Say, ping: null, typing: null },
+    sends: { said: Said, pong: null, note: z.object({ n: z.number() }) },
+    replies: { say: "said", ping: "pong" },
+  });
+}
+
+describe("defineChannel: replies echo the request's id", () => {
+  it("a replied type's return is sent as the reply, carrying the request's id", async () => {
+    const chat = makeReplying();
+    const { adapter, port } = await serve(chat, {
+      say(_ws, msg) {
+        return { by: "server", text: msg.text.toUpperCase() };
+      },
+    });
+    try {
+      const { client, frames } = await openClient(
+        `ws://127.0.0.1:${port}/reply/general`,
+      );
+      client.send(sayFrame(sayData("hello"), "m-1"));
+      // A request without an id is answered too, without one.
+      client.send(sayFrame(sayData("anon")));
+      await until(() => frames.length === 2);
+      client.close();
+      expect(frames).toEqual([
+        { type: "said", id: "m-1", data: { by: "server", text: "HELLO" } },
+        { type: "said", data: { by: "server", text: "ANON" } },
+      ]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("an async handler's reply, after what the handler sent itself, in order", async () => {
+    const chat = makeReplying();
+    const { adapter, port } = await serve(chat, {
+      async say(ws, msg) {
+        void chat.send(ws, "note", { n: 1 });
+        await Bun.sleep(5);
+        return { by: "later", text: msg.text };
+      },
+    });
+    try {
+      const { client, frames } = await openClient(
+        `ws://127.0.0.1:${port}/reply/general`,
+      );
+      client.send(sayFrame(sayData("a"), "m-a"));
+      client.send(sayFrame(sayData("b"), "m-b"));
+      await until(() => frames.length === 4);
+      client.close();
+      expect(frames).toEqual([
+        { type: "note", data: { n: 1 } },
+        { type: "said", id: "m-a", data: { by: "later", text: "a" } },
+        { type: "note", data: { n: 1 } },
+        { type: "said", id: "m-b", data: { by: "later", text: "b" } },
+      ]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("a handler may await its own send's status (no deadlock), and the next frame still waits for its writes", async () => {
+    const chat = defineChannel({
+      path: "/await/:room",
+      receives: { say: Say },
+      sends: { said: asyncSaid, note: z.object({ n: z.number() }) },
+      replies: { say: "said" },
+    });
+    const statuses: number[] = [];
+    const { adapter, port } = await serve(chat, {
+      async say(ws, msg) {
+        statuses.push(await chat.send(ws, "note", { n: statuses.length }));
+        // An async vendor's send, awaited too.
+        statuses.push(await chat.send(ws, "said", { by: "x", text: "y" }));
+        return { by: "reply", text: msg.text };
+      },
+    });
+    try {
+      const { client, frames } = await openClient(
+        `ws://127.0.0.1:${port}/await/general`,
+      );
+      client.send(sayFrame(sayData("a"), "m-a"));
+      client.send(sayFrame(sayData("b"), "m-b"));
+      await until(() => frames.length === 6);
+      client.close();
+      expect(frames).toEqual([
+        { type: "note", data: { n: 0 } },
+        { type: "said", data: { by: "x", text: "y" } },
+        { type: "said", id: "m-a", data: { by: "reply", text: "a" } },
+        { type: "note", data: { n: 2 } },
+        { type: "said", data: { by: "x", text: "y" } },
+        { type: "said", id: "m-b", data: { by: "reply", text: "b" } },
+      ]);
+      expect(statuses).toHaveLength(4);
+      for (const status of statuses) expect(status).toBeGreaterThan(0);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("a data-less reply is sent on `null`, with the id and no data", async () => {
+    const chat = makeReplying();
+    const { adapter, port } = await serve(chat, { ping: () => null });
+    try {
+      const { client, frames, raw } = await openClient(
+        `ws://127.0.0.1:${port}/reply/general`,
+      );
+      client.send(JSON.stringify({ type: "ping", id: "p-1" }));
+      await until(() => frames.length === 1);
+      client.close();
+      expect(frames).toEqual([{ type: "pong", id: "p-1" }]);
+      expect(raw[0]).toBe('{"type":"pong","id":"p-1"}');
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("returning nothing answers later: `send(…, { id })` with the frame's id", async () => {
+    const chat = makeReplying();
+    const { adapter, port } = await serve(chat, {
+      say(ws, msg, frame) {
+        setTimeout(() => {
+          void chat.send(
+            ws,
+            "said",
+            { by: "later", text: msg.text },
+            { id: frame.id },
+          );
+        }, 10);
+      },
+      // An unreplied type's return is ignored.
+      typing: () => ({ by: "ignored", text: "ignored" }),
+      ping(ws, _data, frame) {
+        void chat.send(ws, "pong", { id: frame.id });
+      },
+    });
+    try {
+      const { client, frames } = await openClient(
+        `ws://127.0.0.1:${port}/reply/general`,
+      );
+      client.send(JSON.stringify({ type: "typing", id: "t-1" }));
+      client.send(sayFrame(sayData("x"), "m-later"));
+      client.send(JSON.stringify({ type: "ping", id: "p-2" }));
+      await until(() => frames.length === 2);
+      await Bun.sleep(25);
+      client.close();
+      expect(frames).toEqual([
+        { type: "pong", id: "p-2" },
+        { type: "said", id: "m-later", data: { by: "later", text: "x" } },
+      ]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("the envelope's idField names the echoed field", async () => {
+    const chat = defineChannel({
+      path: "/ref",
+      receives: { say: Say },
+      sends: { said: Said },
+      replies: { say: "said" },
+      envelope: { idField: "ref" },
+    });
+    const { adapter, port } = await serve(chat, {
+      say: (_ws, msg) => ({ by: "s", text: msg.text }),
+    });
+    try {
+      const { client, frames } = await openClient(`ws://127.0.0.1:${port}/ref`);
+      client.send(
+        JSON.stringify({ type: "say", ref: "r-1", data: sayData("hi") }),
+      );
+      await until(() => frames.length === 1);
+      client.close();
+      expect(frames).toEqual([
+        { type: "said", ref: "r-1", data: { by: "s", text: "hi" } },
+      ]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("a reply failing its contract is not sent, and the socket goes on", async () => {
+    const sync = makeReplying();
+    const asyncChat = defineChannel({
+      path: "/reply-async",
+      receives: { say: Say },
+      sends: { said: asyncSaid },
+      replies: { say: "said" },
+    });
+    const one = await serve(sync, {
+      say: (_ws, msg) =>
+        msg.text === "bad"
+          ? ({ by: 42, text: "x" } as never)
+          : { by: "ok", text: msg.text },
+    });
+    const two = await serve(asyncChat, {
+      say: (_ws, msg) => ({
+        by: msg.text === "bad" ? "refused" : "ok",
+        text: msg.text,
+      }),
+    });
+    try {
+      for (const url of [
+        `ws://127.0.0.1:${one.port}/reply/general`,
+        `ws://127.0.0.1:${two.port}/reply-async`,
+      ]) {
+        const { client, frames } = await openClient(url);
+        client.send(sayFrame(sayData("bad"), "m-bad"));
+        client.send(sayFrame(sayData("good"), "m-good"));
+        await until(() => frames.length === 1);
+        await Bun.sleep(25);
+        client.close();
+        expect(frames).toEqual([
+          { type: "said", id: "m-good", data: { by: "ok", text: "good" } },
+        ]);
+      }
+    } finally {
+      await one.adapter.close();
+      await two.adapter.close();
+    }
+  });
+
+  it("a handler that throws sends no reply", async () => {
+    const chat = makeReplying();
+    const { adapter, port } = await serve(chat, {
+      say(_ws, msg) {
+        if (msg.text === "throw") throw new Error("boom");
+        return { by: "ok", text: msg.text };
+      },
+    });
+    try {
+      const { client, frames } = await openClient(
+        `ws://127.0.0.1:${port}/reply/general`,
+      );
+      client.send(sayFrame(sayData("throw"), "m-1"));
+      client.send(sayFrame(sayData("fine"), "m-2"));
+      await until(() => frames.length === 1);
+      await Bun.sleep(25);
+      client.close();
+      expect(frames).toEqual([
+        { type: "said", id: "m-2", data: { by: "ok", text: "fine" } },
+      ]);
+    } finally {
+      await adapter.close();
+    }
+  });
+});
+
+describe("defineChannel(contract): a shared channelContract()", () => {
+  /** The declaration both forms share. */
+  const spec = {
+    path: "/rooms/:room",
+    request: { params: RoomParams },
+    receives: { say: Say, typing: null },
+    sends: { said: Said },
+    replies: { say: "said" },
+    topics: ["rooms"],
+    meta: { name: "chat", description: "A chat room" },
+  } as const;
+
+  it("uses the contract as it is, and serves the same channel", async () => {
+    const shared = channelContract(spec);
+    const chat = defineChannel(shared);
+    expect(chat.contract).toBe(shared);
+    expect(chat.path).toBe("/rooms/:room");
+    expect(getContract(chat.handler({}))).toBe(shared.contract);
+    const { adapter, port } = await serve(chat, {
+      say: (_ws, msg) => ({ by: "s", text: msg.text }),
+    });
+    try {
+      const { client, frames } = await openClient(
+        `ws://127.0.0.1:${port}/rooms/general`,
+      );
+      client.send(sayFrame(sayData("hi"), "m-1"));
+      client.send(sayFrame({ text: 1, at: AT }, "m-2"));
+      await until(() => frames.length === 2);
+      client.close();
+      expect(frames[0]).toEqual({
+        type: "said",
+        id: "m-1",
+        data: { by: "s", text: "hi" },
+      });
+      expect(frames[1]).toMatchObject({
+        type: "error",
+        id: "m-2",
+        code: "VALIDATION",
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("documents exactly as the inline form (AsyncAPI)", () => {
+    const documentOf = (chat: Channel<typeof spec>) => {
+      const router = new BunRouter();
+      // Generation never binds: a socket with no server.
+      router.setBunWebSocket(
+        new BunWebSocket({
+          newInstance: false,
+          getServer: () => undefined,
+          router,
+        }),
+      );
+      router.ws(chat.path, chat.checks(), chat.handler({}), chat.options());
+      return generateAsyncApi(router, { title: "Chat", version: "1.0.0" });
+    };
+    const inline = documentOf(defineChannel(spec));
+    const fromContract = documentOf(defineChannel(channelContract(spec)));
+    expect(fromContract.warnings).toEqual([]);
+    expect(fromContract.document).toEqual(inline.document);
+    // Not vacuous: the channel, its reply link and the id field are there.
+    expect(Object.keys(fromContract.document.channels ?? {})).toEqual(["chat"]);
+    expect(JSON.stringify(fromContract.document)).toContain('"reply"');
+  });
+
+  it("two channels over one contract keep their own handlers", async () => {
+    const shared = channelContract(spec);
+    const a = defineChannel(shared);
+    const b = defineChannel(shared);
+    const one = await serve(a, { say: () => ({ by: "a", text: "" }) });
+    const two = await serve(b, { say: () => ({ by: "b", text: "" }) });
+    try {
+      const ca = await openClient(`ws://127.0.0.1:${one.port}/rooms/x`);
+      const cb = await openClient(`ws://127.0.0.1:${two.port}/rooms/x`);
+      ca.client.send(sayFrame(sayData("1"), "1"));
+      cb.client.send(sayFrame(sayData("2"), "2"));
+      await until(() => ca.frames.length === 1 && cb.frames.length === 1);
+      ca.client.close();
+      cb.client.close();
+      expect(ca.frames[0]).toMatchObject({ data: { by: "a" } });
+      expect(cb.frames[0]).toMatchObject({ data: { by: "b" } });
+    } finally {
+      await one.adapter.close();
+      await two.adapter.close();
+    }
+  });
+});
+
+describe("defineChannel: the typed socket", () => {
+  it("ws.data carries the path's params raw and the upgrade's parsed parts on valid", async () => {
+    const chat = defineChannel({
+      path: "/typed/:room",
+      request: {
+        params: RoomParams,
+        query: z.object({ page: z.coerce.number() }),
+      },
+      receives: { hello: null },
+      sends: { welcome: z.object({ room: z.string(), page: z.number() }) },
+      replies: { hello: "welcome" },
+    });
+    const seen: unknown[] = [];
+    const { adapter, port } = await serve(chat, {
+      hello(ws) {
+        seen.push({ params: ws.data.params, valid: ws.data.valid });
+        return { room: ws.data.params.room, page: ws.data.valid.query.page };
+      },
+    });
+    try {
+      const { client, frames } = await openClient(
+        `ws://127.0.0.1:${port}/typed/general?page=3`,
+      );
+      client.send(JSON.stringify({ type: "hello", id: "h" }));
+      await until(() => frames.length === 1);
+      client.close();
+      expect(seen).toEqual([
+        {
+          params: { room: "general" },
+          valid: { params: { room: "general" }, query: { page: 3 } },
+        },
+      ]);
+      expect(frames).toEqual([
+        { type: "welcome", id: "h", data: { room: "general", page: 3 } },
+      ]);
+    } finally {
+      await adapter.close();
+    }
+  });
+});
+
+describe("defineChannel: send status", () => {
+  /** Serves `chat` with a tiny backpressure limit, capturing the channel's server-side socket. */
+  async function serveCapturing<S extends ChannelSpec>(
+    chat: Channel<S>,
+    wsOptions?: { backpressureLimit: number; closeOnBackpressureLimit: false },
+  ) {
+    const { logger } = createTestLogger();
+    const adapter = new BunHttpAdapter(0, {
+      logger,
+      ...(wsOptions === undefined ? {} : { websocket: { wsOptions } }),
+    });
+    const sockets: ServerWebSocket<never>[] = [];
+    adapter.webSocketAdapter.on("open", (ws) => {
+      if (ws.data.route === chat.path) {
+        sockets.push(ws as ServerWebSocket<never>);
+      }
+    });
+    adapter.ws(chat.path, chat.checks(), chat.handler({}), chat.options());
+    const server = await adapter.listen(0);
+    return { adapter, port: Number(server.port), sockets };
+  }
+
+  it("send resolves to the bytes written; an async refusal to 0, nothing written", async () => {
+    const chat = defineChannel({
+      path: "/status",
+      receives: {},
+      sends: { said: asyncSaid },
+    });
+    const { adapter, port, sockets } = await serveCapturing(chat);
+    try {
+      const { client, frames, raw } = await openClient(
+        `ws://127.0.0.1:${port}/status`,
+      );
+      await until(() => sockets.length === 1);
+      const ws = sockets[0];
+      const good = await chat.send(ws, "said", { by: "s", text: "hi" });
+      const refused = await chat.send(ws, "said", { by: "refused", text: "x" });
+      await until(() => frames.length === 1);
+      await Bun.sleep(25);
+      client.close();
+      expect(good).toBe(raw[0].length);
+      expect(good).toBeGreaterThan(0);
+      expect(refused).toBe(0);
+      expect(frames).toEqual([{ type: "said", data: { by: "s", text: "hi" } }]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("send resolves to -1 under backpressure, then 0 once the limit drops the next", async () => {
+    const chat = defineChannel({
+      path: "/big",
+      receives: {},
+      sends: { blob: z.object({ text: z.string() }) },
+    });
+    const { adapter, port, sockets } = await serveCapturing(chat, {
+      backpressureLimit: 1024,
+      closeOnBackpressureLimit: false,
+    });
+    try {
+      const { client } = await openClient(`ws://127.0.0.1:${port}/big`);
+      await until(() => sockets.length === 1);
+      const ws = sockets[0];
+      const text = "x".repeat(4 * 1024 * 1024);
+      const first = chat.send(ws, "blob", { text });
+      const second = chat.send(ws, "blob", { text });
+      expect(await first).toBe(-1);
+      expect(await second).toBe(0);
+      client.close();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("a socket's publish resolves to the status; 0 with no other subscriber", async () => {
+    const chat = defineChannel({
+      path: "/pub",
+      receives: {},
+      sends: { said: Said },
+    });
+    const { adapter, port, sockets } = await serveCapturing(chat);
+    try {
+      const ada = await openClient(`ws://127.0.0.1:${port}/pub`);
+      await until(() => sockets.length === 1);
+      const lonely = await chat.publish(sockets[0], "t", "said", {
+        by: "a",
+        text: "x",
+      });
+      const bob = await openClient(`ws://127.0.0.1:${port}/pub`);
+      await until(() => sockets.length === 2);
+      for (const ws of sockets) ws.subscribe("t");
+      const heard = await chat.publish(sockets[0], "t", "said", {
+        by: "a",
+        text: "y",
+      });
+      await until(() => bob.frames.length === 1);
+      ada.client.close();
+      bob.client.close();
+      expect(lonely).toBe(0);
+      expect(heard).toBeGreaterThan(0);
+      expect(bob.frames).toEqual([
+        { type: "said", data: { by: "a", text: "y" } },
+      ]);
+      expect(ada.frames).toEqual([]);
+    } finally {
+      await adapter.close();
+    }
+  });
+});
+
+describe("defineChannel: publish on a server", () => {
+  it("a route handler pushes to every subscriber through req.server, with no socket", async () => {
+    const chat = makeReplying();
+    const statuses: number[] = [];
+    const { adapter, port } = await serve(chat, {}, (a) => {
+      a.webSocketAdapter.on("open", (ws) => {
+        if (ws.data.route === chat.path) ws.subscribe("room:general");
+      });
+      a.post("/announce", async (req, res) => {
+        const server = req.server;
+        if (server === undefined) {
+          void res.status(500).end();
+          return;
+        }
+        statuses.push(
+          await chat.publish(server, "room:general", "said", {
+            by: "route",
+            text: "news",
+          }),
+        );
+        res.json({ ok: true });
+      });
+    });
+    try {
+      const ada = await openClient(`ws://127.0.0.1:${port}/reply/general`);
+      const bob = await openClient(`ws://127.0.0.1:${port}/reply/general`);
+      const response = await fetch(`http://127.0.0.1:${port}/announce`, {
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      await until(() => ada.frames.length === 1 && bob.frames.length === 1);
+      ada.client.close();
+      bob.client.close();
+      // Every subscriber, none excluded: there is no sender.
+      for (const frames of [ada.frames, bob.frames]) {
+        expect(frames).toEqual([
+          { type: "said", data: { by: "route", text: "news" } },
+        ]);
+      }
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]).toBeGreaterThan(0);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("the adapter's server publishes too; checked under the out policy", async () => {
+    const chat = makeReplying();
+    const asyncChat = defineChannel({
+      path: "/reply-async",
+      receives: {},
+      sends: { said: asyncSaid },
+    });
+    const { adapter, port } = await serve(chat, {}, (a) => {
+      a.webSocketAdapter.on("open", (ws) => {
+        ws.subscribe("all");
+      });
+    });
+    try {
+      const server = adapter.server;
+      if (server === undefined) throw new Error("not listening");
+      const ada = await openClient(`ws://127.0.0.1:${port}/reply/general`);
+      // A synchronous vendor's mismatch throws to the caller, nothing written.
+      expect(
+        () =>
+          void chat.publish(server, "all", "said", {
+            by: 42,
+            text: "x",
+          } as never),
+      ).toThrow(ContractError);
+      // An asynchronous one's resolves to 0, nothing written.
+      expect(
+        await asyncChat.publish(server, "all", "said", {
+          by: "refused",
+          text: "x",
+        }),
+      ).toBe(0);
+      // No subscriber: 0.
+      expect(await chat.publish(server, "nobody", "pong")).toBe(0);
+      const sent = await asyncChat.publish(server, "all", "said", {
+        by: "s",
+        text: "ok",
+      });
+      await until(() => ada.frames.length === 1);
+      await Bun.sleep(25);
+      ada.client.close();
+      expect(sent).toBeGreaterThan(0);
+      expect(ada.frames).toEqual([
+        { type: "said", data: { by: "s", text: "ok" } },
+      ]);
+    } finally {
+      await adapter.close();
+    }
   });
 });

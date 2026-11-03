@@ -281,9 +281,9 @@ interface Hub {
   /** The generated token, reused by the next `devTypes()` on this path. */
   token: string | undefined;
   /** Every open watcher socket. */
-  sockets: Set<ServerWebSocket<never>>;
+  sockets: Set<ServerWebSocket<unknown>>;
   /** The sockets greeted with `hello`, which `changed` goes to. */
-  greeted: WeakSet<ServerWebSocket<never>>;
+  greeted: WeakSet<ServerWebSocket<unknown>>;
   /** The hash last announced (in a `hello` or a `changed`). */
   announced: string | undefined;
   /** The `devTypes()` instance answering for the path now (the latest). */
@@ -308,8 +308,8 @@ interface Registry {
 interface Instance {
   /** Builds when stale, announces a moved hash to the greeted sockets, and returns the current build. */
   refresh: () => Promise<Built>;
-  /** Sends `hello` to `ws` (after a refresh). */
-  greet: (ws: ServerWebSocket<never>) => Promise<void>;
+  /** Sends `hello` to `ws` (after a refresh), echoing `id` — the `ping`'s, when it answers one. */
+  greet: (ws: ServerWebSocket<unknown>, id?: string) => Promise<void>;
   /** The channel the instance sends on. */
   channel: DevTypesChannel | undefined;
   /** Logs a failure. */
@@ -700,7 +700,7 @@ export function devTypes(
           for (const ws of hub.sockets) {
             if (!hub.greeted.has(ws)) continue;
             try {
-              channel.send(ws, "changed", { hash: result.hash, at });
+              void channel.send(ws, "changed", { hash: result.hash, at });
             } catch (error) {
               instance.fail("devTypes(): announcing a change failed", error);
             }
@@ -710,13 +710,15 @@ export function devTypes(
       hub.announced = result.hash;
       return result;
     },
-    async greet(ws) {
+    async greet(ws, id) {
       const result = await instance.refresh();
       if (!hub.sockets.has(ws)) return;
-      instance.channel?.send(ws, "hello", {
-        version: PROTOCOL_VERSION,
-        hash: result.hash,
-      });
+      void instance.channel?.send(
+        ws,
+        "hello",
+        { version: PROTOCOL_VERSION, hash: result.hash },
+        id === undefined ? undefined : { id },
+      );
       hub.greeted.add(ws);
     },
     fail(message, error) {
@@ -841,9 +843,11 @@ export function devTypes(
       next("router");
     };
     const inner = channel.handler({
-      ping(ws) {
+      ping(ws, _data, frame) {
+        // Answered later (after a refresh), so the reply carries the ping's
+        // id itself rather than being the handler's return.
         const owner = hub.owner ?? instance;
-        owner.greet(ws).catch((error: unknown) => {
+        owner.greet(ws, frame.id).catch((error: unknown) => {
           owner.fail("devTypes(): answering a ping failed", error);
         });
       },

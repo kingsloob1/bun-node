@@ -3295,7 +3295,7 @@ be async. It returns a `WebSocketUpgradeResult`, or nothing:
 |---|---|
 | `custom` | becomes `ws.data.custom` |
 | `headers` | any `HeadersInit`, sent on the `101 Switching Protocols` |
-| `data` | replaces `ws.data` entirely; `route`, `params` and `port` it leaves `undefined` are filled in from the match, since dispatch needs them |
+| `data` | replaces `ws.data` entirely; `route`, `params` and `port` it leaves `undefined` are filled in from the match, since dispatch needs them (and `valid`, from the chain's validators) |
 
 A route's hook replaces the instance-wide `onUpgrade` option for that route.
 The adapter's type argument types `custom`, `new BunHttpAdapter<MyData>()`,
@@ -3341,6 +3341,7 @@ await app.listen(0);
 | `user` | `req.user` at upgrade time, when middleware set one |
 | `custom` | the hook's `custom`, else `webSocketUpgradeData.custom` (see below), else `undefined` |
 | `route`, `params` | the matched route pattern and a copy of its params |
+| `valid` | what a `validate()` in the route's `ws()` chain parsed (`req.valid` at the upgrade, a shallow copy); absent when none ran |
 | `port` | the real bound port of the server that accepted the upgrade (never `0`). Absent only without a socket. |
 
 `BunWebSocket` options:
@@ -3493,7 +3494,8 @@ tour
 A **channel** is a WebSocket [contract](#contracts) served on a path: both
 sides keyed by the message's `type`, one part, `data`. One declaration gives
 the upgrade's request checks, every incoming frame's validation, typed and
-checked `send`/`publish`, and the error frames a bad message is answered with.
+checked `send`/`publish`, replies that echo the request's id, and the error
+frames a bad message is answered with.
 
 ```ts
 import { defineChannel } from "@kingsleyweb/bun-common";
@@ -3504,20 +3506,29 @@ const chat = defineChannel({
   request: { params: z.object({ room: z.string().min(1) }) }, // the upgrade's, checked before the 101
   receives: { say: z.object({ text: z.string() }), typing: null }, // client → server; null: no data
   sends: { said: z.object({ by: z.string(), text: z.string() }) }, // server → client
+  replies: { say: "said" }, // `say` is answered with `said`, echoing its id
   messageValidation: { in: "error", out: "error" }, // the defaults
 });
 
 app.ws(
   chat.path,
   chat.checks(), // the upgrade's checks, in the chain
-  chat.handler({
+  chat.handler<{ name: string }>({
     say(ws, msg) {
-      chat.publish(ws, `room:${roomOf(ws)}`, "said", { by: nameOf(ws), text: msg.text });
+      const line = { by: ws.data.custom.name, text: msg.text };
+      void chat.publish(ws, `room:${ws.data.params.room}`, "said", line); // the others
+      return line; // the reply: sent as `said`, with the request's id
     },
   }),
   chat.options((req) => ({ custom: { name: String(req.query.name ?? "anonymous") } })),
 );
 ```
+
+The declaration can live in a shared, browser-safe module instead, so a
+client imports the very same one: `export const chatContract =
+channelContract({ … })` from `@kingsleyweb/bun-common/contract` there, and
+`defineChannel(chatContract)` on the server (the contract is used as it is;
+the channel, its types and its documents are the inline form's).
 
 - **`checks()` rides the `ws()` middleware chain** (a route handler's
   `req.params` are bound for the chain, and the `request` check reads them —
@@ -3538,16 +3549,43 @@ app.ws(
   client may then send the same JSON envelope as a binary frame, decoded as
   UTF-8 and checked like a text frame). A socket's frames are handled one at a
   time, in order, so an async vendor never reorders them.
-- **Outgoing**: `send(ws, type, data)` and `publish(ws, topic, type, data)`
-  are typed by `sends` (each field's wire input) and checked under the `out`
-  policy. Under `"error"` a synchronous vendor's mismatch throws to the caller
-  (an asynchronous one's is logged); nothing is written either way. `publish`
-  is the socket's own `ws.publish`, so the sender is excluded. Writes ride the
-  socket's frame chain, keeping their order against the handling.
+- **Replies**: a handler for a type `replies` maps may return the reply's
+  data (typed by the reply's wire input); anything but `undefined` is sent as
+  the reply type carrying the request's id (under `envelope.idField`),
+  checked under the `out` policy, after whatever the handler sent itself. A
+  reply that carries no data (a `null` entry) is sent on `return null`.
+  Returning nothing answers later: the handler's third argument is the frame's
+  `{ type, id }`, and `send(ws, type, data, { id })` sends the reply. A reply
+  that fails its contract, or a handler that throws, is logged and nothing is
+  sent. An unreplied type's return is ignored.
+- **Outgoing**: `send(ws, type, data, { id }?)` and `publish(ws, topic, type,
+  data)` are typed by `sends` (each field's wire input) and checked under the
+  `out` policy. Under `"error"` a synchronous vendor's mismatch throws to the
+  caller (an asynchronous one's is logged); nothing is written either way.
+  `publish` on a socket is its own `ws.publish`, so the sender is excluded;
+  `publish(server, topic, type, data)` on a server (`req.server` in a route
+  handler, the adapter's `server`) is Bun's `server.publish`, reaching every
+  subscriber with no socket. Writes ride the socket's frame chain (a server's
+  publishes, the server's), keeping their order against the handling. Both
+  return `Promise<number>`, Bun's send status once the queued write ran:
+  `-1` under backpressure, `0` dropped or not written (a refused
+  asynchronous check, no subscriber), else the bytes sent. The promise never
+  rejects, so `void chat.send(…)` is safe when the status does not matter.
+  A handler may `await` its own sends: those made while a frame is handled
+  start at once, in call order, and the socket's next frame waits until they
+  (and the reply) are written.
+- **The socket is typed**: a handler's `ws.data.params` comes from the path
+  literal (the raw match, as a verb's `req.params` without a validator),
+  `ws.data.valid` holds what the declared `request` schemas parsed (each
+  part's output, a coercion included — `checks()` fills it; any `ws()` route
+  whose chain runs a validator gets `ws.data.valid` the same way), and
+  `handler<TCustom>()` types `ws.data.custom` (what the `onUpgrade` hook
+  returns as `custom`). `ChannelSocket<typeof spec, TCustom>` names it for a
+  helper.
 - **The error frame is a declared outbound message** (`type: "error"`) added
   to `sends` when not declared, so `describeContract` and a generated document
   see it. `meta` (`replies`, `envelope.idField` — the frame's correlation id,
-  echoed on an error frame — `subprotocol`, `topics`, `fallback`) rides the
+  echoed on a reply and an error frame — `subprotocol`, `topics`, `fallback`) rides the
   contract for a typed client and docs; `options()` composes the app's own
   `onUpgrade` hook and answers the declared subprotocol on the 101.
 - **The pure half is browser-safe**: `channelContract(spec)`, the frame types

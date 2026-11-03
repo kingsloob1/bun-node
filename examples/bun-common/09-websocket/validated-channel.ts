@@ -21,18 +21,20 @@
  * - **Outgoing**: `send(ws, type, data)` and `publish(ws, topic, type, data)`
  *   are typed by `sends` and checked under the `out` policy; under `"error"`
  *   (the default) a synchronous vendor's mismatch throws to the caller and
- *   nothing is written.
+ *   nothing is written. Both resolve to Bun's send status, and never reject.
+ * - **Replies**: `say` is answered with `said` (`replies`), so the `say`
+ *   handler's return is sent back as the reply, carrying the request's id.
+ *   The handler's `ws` is typed by the channel (`ws.data.params.room`, and
+ *   `ws.data.custom` as `handler<Session>()` says).
  * - **The upgrade** is a GET, so its `params`/`query`/`headers`/`cookies` are
  *   checked by `checks()` — in the `ws()` chain ahead of the handler (a
  *   `use()` middleware never sees the path's params) — and a failure is a
  *   400, never a 101.
  */
-import type { ServerWebSocket } from "bun";
 import type {
   ChannelErrorFrame,
   ChannelMessage,
   WebSocketClient,
-  WebSocketClientData,
 } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter, defineChannel } from "@kingsleyweb/bun-common";
 import { z } from "zod";
@@ -50,20 +52,6 @@ interface Session {
 /** The room topic a connection subscribes to. */
 function roomTopic(room: string): string {
   return `room:${room}`;
-}
-
-/**
- * The session of a connection inside a channel handler. Channel handlers are
- * typed for any connection, so `ws.data` is `never` there; the `onUpgrade`
- * hook passed to `options()` is what put a `Session` in it.
- */
-function sessionOf(ws: ServerWebSocket<never>): Session {
-  return (ws.data as WebSocketClientData<Session>).custom;
-}
-
-/** The room of a connection, from the route's params. */
-function roomOf(ws: ServerWebSocket<never>): string {
-  return String((ws.data as WebSocketClientData<Session>).params?.room);
 }
 
 /** The frames a client has received, parsed. */
@@ -150,16 +138,18 @@ adapter.webSocketAdapter.on("close", (ws) => {
 adapter.ws(
   chat.path,
   chat.checks(),
-  chat.handler({
+  // `ws` is typed by the channel: `ws.data.params.room` from the path, and
+  // `ws.data.custom` as the `onUpgrade` hook below sets it.
+  chat.handler<Session>({
     say(ws, msg) {
       // `msg` is the parsed data: `{ text: string }`, typed and checked.
-      const data = { by: sessionOf(ws).name, text: msg.text };
-      chat.publish(ws, roomTopic(roomOf(ws)), "said", data); // the others
-      chat.send(ws, "said", data); // the speaker's own line back
+      const data = { by: ws.data.custom.name, text: msg.text };
+      void chat.publish(ws, roomTopic(ws.data.params.room), "said", data); // the others
+      return data; // the speaker's own line back: the reply (`replies: { say: "said" }`)
     },
     typing(ws) {
-      chat.publish(ws, roomTopic(roomOf(ws)), "someoneTyping", {
-        by: sessionOf(ws).name,
+      void chat.publish(ws, roomTopic(ws.data.params.room), "someoneTyping", {
+        by: ws.data.custom.name,
       });
     },
   }),
@@ -205,7 +195,7 @@ const bob = await connect(`${url}/lobby?name=bob`);
 ada.socket.send(JSON.stringify({ type: "say", data: { text: "hi lobby" } }));
 
 // `publish` excludes the sender, so bob hears ada; ada's own line is the
-// handler's `send`.
+// handler's reply.
 const bobHeard = await waitForFrame(bob, "ada's hello", (frame) => {
   return frame.type === "said";
 });
@@ -217,7 +207,7 @@ checkEqual("bob received", bobHeard, {
 const adaHeard = await waitForFrame(ada, "her own line", (frame) => {
   return frame.type === "said";
 });
-checkEqual("ada received her own line, via send", adaHeard, bobHeard);
+checkEqual("ada received her own line, as the reply", adaHeard, bobHeard);
 
 /* ------------------------------------------------------------------ */
 step("A `null` entry: a message with no data");
@@ -330,7 +320,7 @@ const before = ada.messages.length;
 await checkRejects(
   "a bad send throws to the caller",
   () => {
-    chat.send(adaSide as ServerWebSocket<never>, "said", {
+    void chat.send(adaSide, "said", {
       by: "ada",
     } as never);
   },

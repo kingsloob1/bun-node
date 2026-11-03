@@ -10,9 +10,11 @@
  *
  * ```bash
  * bunx wscat -c 'ws://localhost:4000/playground/chat/lobby?name=ada'
- * > {"type":"say","data":{"text":"hi lobby"}}     # answered {"type":"said",…}
+ * > {"type":"say","id":"m-1","data":{"text":"hi lobby"}}   # the reply: {"type":"said","id":"m-1",…}
  * > {"type":"say","data":{"text":42}}            # a VALIDATION error frame
  * > {"type":"nope"}                              # UNKNOWN_MESSAGE
+ * # and from a route, with no socket (server-level publish, typed-client PR-W1):
+ * curl -X POST 'http://localhost:4000/playground/chat/lobby/announce?text=hello'
  * ```
  *
  * A room name that fails the params schema (`/playground/chat/Lobby`) is
@@ -25,11 +27,7 @@
  * collected warning per OpenAPI generation, in the response's `warnings`
  * array, never logged.
  */
-import type { ServerWebSocket } from "bun";
-import type {
-  BunHttpAdapter,
-  WebSocketClientData,
-} from "@kingsleyweb/bun-common";
+import type { BunHttpAdapter } from "@kingsleyweb/bun-common";
 import { defineChannel } from "@kingsleyweb/bun-common";
 import { z } from "zod";
 
@@ -42,20 +40,6 @@ interface ChatSession {
 /** The room topic a connection subscribes to. */
 function roomTopic(room: string): string {
   return `playground-chat:${room}`;
-}
-
-/**
- * The session of a connection inside a channel handler. Channel handlers are
- * typed for any connection, so `ws.data` is `never` there; the `onUpgrade`
- * hook passed to `options()` is what put a `ChatSession` in it.
- */
-function sessionOf(ws: ServerWebSocket<never>): ChatSession {
-  return (ws.data as WebSocketClientData<ChatSession>).custom;
-}
-
-/** The room of a connection, from the route's params. */
-function roomOf(ws: ServerWebSocket<never>): string {
-  return String((ws.data as WebSocketClientData<ChatSession>).params?.room);
 }
 
 /** The channel, declared once. */
@@ -94,16 +78,20 @@ export function mountChatChannel(app: BunHttpAdapter): void {
   app.ws(
     chat.path,
     chat.checks(),
-    chat.handler({
+    // `ws` is typed by the channel: `ws.data.params.room` from the path,
+    // `ws.data.custom` as the `onUpgrade` hook below sets it.
+    chat.handler<ChatSession>({
       say(ws, msg) {
         // `msg` is the parsed data: `{ text: string }`, typed and checked.
-        const data = { by: sessionOf(ws).name, text: msg.text };
-        chat.publish(ws, roomTopic(roomOf(ws)), "said", data); // the others
-        chat.send(ws, "said", data); // the speaker's own line back
+        const data = { by: ws.data.custom.name, text: msg.text };
+        void chat.publish(ws, roomTopic(ws.data.params.room), "said", data); // the others
+        // The speaker's own line back, as the reply (`replies: { say: "said" }`):
+        // it carries the request's id, when the frame had one.
+        return data;
       },
       typing(ws) {
-        chat.publish(ws, roomTopic(roomOf(ws)), "someoneTyping", {
-          by: sessionOf(ws).name,
+        void chat.publish(ws, roomTopic(ws.data.params.room), "someoneTyping", {
+          by: ws.data.custom.name,
         });
       },
     }),
@@ -118,4 +106,40 @@ export function mountChatChannel(app: BunHttpAdapter): void {
       };
     }),
   );
+
+  // A route pushes into a room with no socket of its own: the channel's
+  // publish on the server (`req.server`), checked like any send, answering
+  // with Bun's send status (`0`: nobody is in the room). A demo, not
+  // plumbing: documented, with its response declared.
+  app
+    .post("/playground/chat/:room/announce", async (req, res) => {
+      const text = req.query.text;
+      const status =
+        req.server === undefined
+          ? 0
+          : await chat.publish(req.server, roomTopic(req.params.room), "said", {
+              by: "the playground",
+              text:
+                typeof text === "string" && text !== ""
+                  ? text
+                  : "an announcement",
+            });
+      res.json({ status });
+    })
+    .describe({
+      summary: "Announce into a chat room, with no socket",
+      description:
+        'Publishes a `said` frame (`?text=`, default "an announcement") to every connection in the room through the chat channel\'s server-level `publish`, checked like any send.',
+      responses: {
+        200: {
+          description:
+            "Bun's send status: the bytes sent, `-1` under backpressure, `0` when nobody is in the room",
+          schema: {
+            type: "object",
+            properties: { status: { type: "integer" } },
+            required: ["status"],
+          },
+        },
+      },
+    });
 }
