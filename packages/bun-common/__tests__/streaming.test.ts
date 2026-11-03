@@ -42,6 +42,8 @@ interface Target {
   get: (path: string) => Promise<Response>;
   /** The router the routes were registered on (the adapter, for adapter modes). */
   router: BunRouter;
+  /** The port the adapter listens on, in `served` mode; `undefined` otherwise. */
+  port?: number;
 }
 
 /** Registers routes with `build` and returns a {@link Target} for `mode`. */
@@ -64,6 +66,7 @@ async function target(
   open.push(adapter);
   return {
     router: adapter,
+    port: adapter.listeningPort,
     get: async (path) =>
       fetch(`http://127.0.0.1:${adapter.listeningPort}${path}`),
   };
@@ -124,6 +127,135 @@ function sseReader(body: ReadableStream<Uint8Array> | null) {
     },
     cancel: () => reader.cancel().catch(() => undefined),
   };
+}
+
+/** What a client received for a request: its status, then every read to the end. */
+interface Received {
+  /** The response status, `undefined` when no response head came in time. */
+  status: number | undefined;
+  /** Each event in order, then how the stream ended (`done`, `error` or `timeout`). */
+  reads: Read[];
+}
+
+/**
+ * Requests `path` from `t` and reads the event stream to its end: `done` for
+ * a clean end, `error` for a cut, `timeout` when neither came within
+ * `deadlineMs`.
+ *
+ * Over a socket the bytes are read off the wire, not through `fetch()`: a cut
+ * costs a `fetch()` client every byte it has received but not yet read (the
+ * body stream errors, and an errored stream drops its queue, as the Streams
+ * spec has it). In one process, the server's cut, a millisecond after its
+ * last write, overtakes the client's first read whenever the thread stalls
+ * that long in between — a GC, a long loop turn — and an event the server did
+ * send reads as never sent (measured: a 1–20 ms stall injected there lost it
+ * from 6–31% of `fetch()` reads, and from none of 200 read off the wire).
+ * These tests assert what the server sent.
+ */
+async function received(
+  t: Target,
+  path: string,
+  deadlineMs = 5000,
+): Promise<Received> {
+  if (t.port === undefined) {
+    const response = await within(t.get(path), deadlineMs);
+    if (response === undefined) {
+      return { status: undefined, reads: [{ kind: "timeout" }] };
+    }
+    const reader = sseReader(response.body);
+    const reads: Read[] = [];
+    for (;;) {
+      const read = await reader.next(deadlineMs);
+      reads.push(read);
+      if (read.kind !== "event") {
+        return { status: response.status, reads };
+      }
+    }
+  }
+  return wireGet(t.port, path, deadlineMs);
+}
+
+/**
+ * {@link received} over a plain TCP socket: an HTTP/1.1 `GET` whose chunked
+ * response is decoded by hand, so a cut connection shows exactly what was
+ * written before it. A zero-length chunk is a clean end; the connection
+ * closing (or resetting) before one is a cut.
+ */
+async function wireGet(
+  port: number,
+  path: string,
+  deadlineMs: number,
+): Promise<Received> {
+  let wire = "";
+  const { promise, resolve } = Promise.withResolvers<"closed" | "timeout">();
+  const timer = setTimeout(resolve, deadlineMs, "timeout");
+  const socket = await Bun.connect({
+    hostname: "127.0.0.1",
+    port,
+    socket: {
+      data(_socket, chunk) {
+        wire += chunk.toString("latin1");
+        // A clean end leaves a keep-alive connection open: stop at it.
+        if (decodeChunked(wire)?.ended) resolve("closed");
+      },
+      close: () => resolve("closed"),
+      error: () => resolve("closed"),
+    },
+  });
+  socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n\r\n`);
+  const outcome = await promise;
+  clearTimeout(timer);
+  socket.end();
+
+  const decoded = decodeChunked(wire);
+  if (decoded === undefined) {
+    // No response head: cut before it, or nothing came in time.
+    return {
+      status: undefined,
+      reads: [{ kind: outcome === "closed" ? "error" : "timeout" }],
+    };
+  }
+  const blocks = decoded.body.split("\n\n");
+  // The text after the last blank line is no complete event.
+  blocks.pop();
+  const reads: Read[] = blocks.map((block) => ({ kind: "event", block }));
+  reads.push({
+    kind: decoded.ended ? "done" : outcome === "closed" ? "error" : "timeout",
+  });
+  return { status: decoded.status, reads };
+}
+
+/**
+ * Splits a raw HTTP/1.1 response into its status and its chunked body so
+ * far, and whether the terminating zero-length chunk was among it;
+ * `undefined` until the whole head is in. Throws on a response that is not
+ * chunked, which a stream always is.
+ */
+function decodeChunked(
+  wire: string,
+): { status: number; body: string; ended: boolean } | undefined {
+  const headEnd = wire.indexOf("\r\n\r\n");
+  if (headEnd === -1) return undefined;
+  const head = wire.slice(0, headEnd);
+  const status = Number(head.split(" ")[1]);
+  if (!/^transfer-encoding:\s*chunked\s*$/im.test(head)) {
+    throw new Error(`not a chunked response:\n${head}`);
+  }
+  let body = "";
+  let at = headEnd + 4;
+  for (;;) {
+    const lineEnd = wire.indexOf("\r\n", at);
+    if (lineEnd === -1) return { status, body, ended: false };
+    const size = Number.parseInt(wire.slice(at, lineEnd), 16);
+    if (Number.isNaN(size)) {
+      throw new TypeError(`not a chunk-size line: ${wire.slice(at, lineEnd)}`);
+    }
+    if (size === 0) return { status, body, ended: true };
+    const start = lineEnd + 2;
+    if (wire.length < start + size + 2) return { status, body, ended: false };
+    body += wire.slice(start, start + size);
+    at = start + size + 2;
+  }
 }
 
 /** Resolves `fetching`, or `undefined` once `deadlineMs` passes first. */
@@ -410,16 +542,13 @@ describe("an error after the headers were sent (Express 5)", () => {
           }) satisfies RouterErrorMiddlewareHandler);
         });
 
-        const response = await within(t.get("/fail"), 5000);
-        expect(response?.status).toBe(200);
-        const reader = sseReader(response!.body);
-        expect(await reader.next()).toEqual({
-          kind: "event",
-          block: "data: e1",
+        // The event, then a cut, as Express's finalhandler destroys the
+        // socket: not a clean end (a client must not take it for a completed
+        // stream), not left open.
+        expect(await received(t, "/fail")).toEqual({
+          status: 200,
+          reads: [{ kind: "event", block: "data: e1" }, { kind: "error" }],
         });
-        // Cut, as Express's finalhandler destroys the socket: not a clean end
-        // (a client must not take it for a completed stream), not left open.
-        expect(await reader.next()).toEqual({ kind: "error" });
         expect(seen).toEqual([true]);
       });
     }
@@ -453,9 +582,10 @@ describe("an error after the headers were sent (Express 5)", () => {
         });
       });
 
-      const reader = sseReader((await t.get("/fail")).body);
-      expect(await reader.next()).toEqual({ kind: "event", block: "data: e1" });
-      expect(await reader.next()).toEqual({ kind: "error" });
+      expect(await received(t, "/fail")).toEqual({
+        status: 200,
+        reads: [{ kind: "event", block: "data: e1" }, { kind: "error" }],
+      });
     });
 
     it(`${mode}: send(), then throw: the handler runs and the sent body stands`, async () => {
