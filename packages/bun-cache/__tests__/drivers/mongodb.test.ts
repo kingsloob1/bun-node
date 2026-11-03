@@ -648,6 +648,99 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
       await sweepDriver.close();
     });
 
+    test("get reads by _id alone, so the server takes its IDHACK path, and decides counters and expiry itself; the collection handles are built once", async () => {
+      // A client whose collections record what `findOne` was asked and how
+      // often a handle was built, delegating to a real client.
+      const filters: Record<string, unknown>[] = [];
+      let handles = 0;
+      const inner = new MongoClient(url);
+      const recording = {
+        connect: async () => await inner.connect(),
+        close: async () => await inner.close(),
+        db: (name?: string) => {
+          const real = inner.db(name);
+          return new Proxy(real, {
+            get(target, property, receiver) {
+              if (property !== "collection") {
+                const value = Reflect.get(
+                  target,
+                  property,
+                  receiver,
+                ) as unknown;
+                return typeof value === "function" ? value.bind(target) : value;
+              }
+              return (collectionName: string, options?: object) => {
+                handles++;
+                const collection = target.collection(collectionName, options);
+                return new Proxy(collection, {
+                  get(c, member, r) {
+                    const value = Reflect.get(c, member, r) as unknown;
+                    if (typeof value !== "function") {
+                      return value;
+                    }
+                    if (member === "findOne") {
+                      return async (
+                        filter: Record<string, unknown>,
+                        ...rest: unknown[]
+                      ) => {
+                        filters.push(filter);
+                        return await (
+                          value as (...a: unknown[]) => unknown
+                        ).apply(c, [filter, ...rest]);
+                      };
+                    }
+                    return (value as (...a: unknown[]) => unknown).bind(c);
+                  },
+                });
+              };
+            },
+          });
+        },
+      };
+      const idPrefix = prefix("idhack_");
+      const reader = new MongoCacheDriver({
+        client: recording,
+        database: db.databaseName,
+        prefix: idPrefix,
+      });
+      made.push(reader);
+      const idNs = `idhack-${process.pid}`;
+      const now = Date.now();
+      await reader.set(idNs, entry("live", [1], [], now + 60_000));
+      await reader.set(idNs, entry("forever", [2]));
+      await reader.set(idNs, entry("dead", [3], [], now - 1_000));
+      await reader.increment(idNs, "counter", 5, null);
+      const afterConnect = handles;
+      filters.length = 0;
+      expect([...(await reader.get(idNs, "live"))!.value]).toEqual([1]);
+      expect((await reader.get(idNs, "forever"))?.expiresAt).toBeNull();
+      expect(await reader.get(idNs, "dead")).toBeUndefined();
+      expect(await reader.get(idNs, "counter")).toBeUndefined();
+      expect(await reader.get(idNs, "missing")).toBeUndefined();
+      expect(filters.length).toBe(5);
+      for (const filter of filters) {
+        expect(Object.keys(filter)).toEqual(["_id"]);
+      }
+      // The server agrees: a filter on `_id` alone is its IDHACK plan.
+      const plan = await db
+        .collection(`${idPrefix}entries`)
+        .find(filters[0])
+        .limit(1)
+        .explain();
+      expect(JSON.stringify(plan.queryPlanner.winningPlan)).toContain("IDHACK");
+      for (let round = 0; round < 20; round++) {
+        await reader.get(idNs, "live");
+      }
+      // No handle built per read: every one was built while connecting and
+      // writing above (one per collection at most).
+      expect(handles).toBe(afterConnect);
+      expect(afterConnect).toBeLessThanOrEqual(
+        MONGO_CACHE_COLLECTIONS.length + 4,
+      );
+      await reader.close();
+      await inner.close();
+    });
+
     test("touch to the same expiry still answers true", async () => {
       const at = Date.now() + 60_000;
       await driver.set(ns, entry("same", [1], [], at));

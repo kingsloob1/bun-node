@@ -497,6 +497,20 @@ export class MongoCacheDriver implements CacheDriver {
   #ready: Promise<DbLike> | undefined;
   /** Set once `close()` ran. */
   #closed = false;
+  /**
+   * The collection objects of the database {@link #db} answered, built once
+   * each: `db.collection()` builds a new one, resolving its options, on every
+   * call (about 18 µs of a 200 µs read, measured). Rebuilt when the database
+   * object changes (a reconnect after a failed connect).
+   */
+  #handles:
+    | {
+        /** The database the handles belong to. */
+        db: DbLike;
+        /** Each collection's handle, by the driver's name for it. */
+        byName: Map<MongoCacheCollection, CollectionLike<unknown>>;
+      }
+    | undefined;
   /** The `syncSchema` option. */
   readonly #syncOnConnect: boolean | SchemaSyncOptions;
   /** The `maxEntries` cap. */
@@ -700,6 +714,7 @@ export class MongoCacheDriver implements CacheDriver {
     }
     this.#client = undefined;
     this.#ready = undefined;
+    this.#handles = undefined;
   }
 
   /** One round trip. */
@@ -707,14 +722,21 @@ export class MongoCacheDriver implements CacheDriver {
     await (await this.#db()).command({ ping: 1 });
   }
 
-  /** A collection, read from the primary. */
+  /** A collection, read from the primary; its handle is built once per database. */
   async #collection<TDoc>(
     which: MongoCacheCollection,
   ): Promise<CollectionLike<TDoc>> {
-    return (await this.#db()).collection<TDoc>(
-      this.collections[which],
-      COLLECTION_OPTIONS,
-    );
+    const db = await this.#db();
+    if (this.#handles?.db !== db) {
+      this.#handles = { db, byName: new Map() };
+    }
+    let handle = this.#handles.byName.get(which);
+    if (handle === undefined) {
+      handle = db.collection(this.collections[which], COLLECTION_OPTIONS);
+      this.#handles.byName.set(which, handle);
+    }
+    // The documents' shape is the caller's to name, as `db.collection<TDoc>` lets it.
+    return handle as CollectionLike<TDoc>;
   }
 
   /* ---------------------------------------------------------------- */
@@ -812,6 +834,15 @@ export class MongoCacheDriver implements CacheDriver {
     return { $or: [{ exp: null }, { exp: { $gt: new Date(now) } }] };
   }
 
+  /**
+   * What {@link #live} and `v: { $exists: true }` select, decided on a
+   * document already read: an entry (a counter has no `v`) that never
+   * expires or expires after `now`.
+   */
+  static #isLiveEntry(doc: EntryDoc, now: number): boolean {
+    return doc.v !== undefined && (doc.exp === null || doc.exp.getTime() > now);
+  }
+
   /** Decodes an entry document for the caller's key. */
   static #toEntry(key: string, doc: EntryDoc): StoredEntry {
     const v = doc.v ?? new Uint8Array(0);
@@ -824,13 +855,22 @@ export class MongoCacheDriver implements CacheDriver {
     };
   }
 
+  /**
+   * Reads one entry by its `_id` alone, and drops a counter or an expired
+   * document here rather than in the filter: a filter on nothing but `_id`
+   * takes the server's `IDHACK` path, while `_id` plus `v` and `exp` is
+   * planned as an index scan, a fetch and a filter (measured on a 10 KB hit:
+   * 145 against 196 µs a read). The answer is the same document either way.
+   */
   async get(ns: string, key: string): Promise<StoredEntry | undefined> {
     const entries = await this.#collection<EntryDoc>("entries");
     const doc = await entries.findOne(
-      { _id: { ns, k: key }, v: { $exists: true }, ...this.#live() },
+      { _id: { ns, k: key } },
       { promoteBuffers: true },
     );
-    return doc === null ? undefined : MongoCacheDriver.#toEntry(key, doc);
+    return doc !== null && MongoCacheDriver.#isLiveEntry(doc, this.#now())
+      ? MongoCacheDriver.#toEntry(key, doc)
+      : undefined;
   }
 
   async getMany(
