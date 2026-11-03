@@ -16,6 +16,13 @@
  *   (none when the payload declares no `data`). A payload that is not that
  *   envelope (another server's) is typed whole as the data, under the
  *   message's `name`, with a warning: a custom codec maps it.
+ * - **A bun-nest packet** (`gatewayAsyncApi()`'s documents: a numeric
+ *   `type.const`, `MessageEventTypes`) is read as the `"bun-nest"` codec
+ *   carries it: an `EVENT`'s type is `data[0]`'s `const` and its data
+ *   `data[1]` (none when absent), an `ACK` reply is a sent type of the
+ *   message's `name` (`"say ack"`) with `data[0]` as its data, an `ERROR`
+ *   is `"error"` with its string; `CONNECT` and `DISCONNECT` are left out.
+ *   The channel's descriptor then names `codec: "bun-nest"`.
  * - **The id field** is the envelope's one property besides `type` and
  *   `data`; `"id"` when there is none.
  * - **Replies** come from each `receive` operation's `reply`.
@@ -61,6 +68,8 @@ export interface ParsedChannel {
   readonly subprotocol: string | undefined;
   /** The channel's title or description, for the map's JSDoc. */
   readonly doc: string | undefined;
+  /** `"bun-nest"` when the messages are bun-nest's packets. */
+  readonly codec?: "bun-nest";
 }
 
 /** A route path from an AsyncAPI address: `{room}` → `:room`, the rest literal. */
@@ -147,6 +156,36 @@ function isImplicitError(
 }
 
 /**
+ * A bun-nest packet's message read as `[type, data]` (see the module
+ * header): `null` for a lifecycle frame (left out), `undefined` when the
+ * payload is not a packet (a numeric `type.const`).
+ *
+ * @param name       The message's `name`.
+ * @param properties Its payload's properties.
+ */
+function nestPacket(
+  name: unknown,
+  properties: Record<string, unknown>,
+): ParsedMessage | null | undefined {
+  const kind = isRecord(properties.type) ? properties.type.const : undefined;
+  if (typeof kind !== "number") return undefined;
+  const data = isRecord(properties.data) ? properties.data : {};
+  const items = Array.isArray(data.items) ? (data.items as unknown[]) : [];
+  if (kind === 2 || kind === 5) {
+    const head = items[0];
+    return isRecord(head) && typeof head.const === "string"
+      ? [head.const, items.length > 1 ? items[1] : null]
+      : undefined;
+  }
+  if (kind === 3 || kind === 6)
+    return typeof name === "string"
+      ? [name, items.length > 0 ? items[0] : null]
+      : undefined;
+  if (kind === 4) return ["error", properties.data ?? {}];
+  return null;
+}
+
+/**
  * Reads the WebSocket channels of an AsyncAPI 3.0 document, sorted by key.
  *
  * @param document The AsyncAPI document.
@@ -195,6 +234,8 @@ export function readChannels(
       );
       continue;
     }
+    /** Set once a message is a bun-nest packet. */
+    let codec: "bun-nest" | undefined;
 
     let idField: string | undefined;
     /** The inlined payload of each message read (an implicit error frame is told by it). */
@@ -211,6 +252,14 @@ export function readChannels(
         isRecord(payload) && isRecord(payload.properties)
           ? payload.properties
           : undefined;
+      const packet =
+        properties === undefined
+          ? undefined
+          : nestPacket(found.name, properties);
+      if (packet !== undefined) {
+        codec = "bun-nest";
+        return packet ?? undefined;
+      }
       const type =
         properties !== undefined &&
         isRecord(properties.type) &&
@@ -270,6 +319,9 @@ export function readChannels(
               : undefined;
           if (parsed !== undefined && answer !== undefined)
             replies.push([parsed[0], answer[0]]);
+          // A gateway's ack is sent only as a reply, never by a send
+          // operation: a sent type of its own.
+          if (answer !== undefined && codec !== undefined) add(sends, answer);
         }
       } else if (operation.action === "send") {
         for (const ref of list) {
@@ -299,13 +351,17 @@ export function readChannels(
       },
     );
     const ws = isRecord(bindings.ws) ? bindings.ws : {};
-    // The description, without bun-common's own line on the envelope (the
-    // client's types say it).
+    // The description, without bun-common's (or bun-nest's) own line on the
+    // envelope (the client's types say it).
     const prose =
       typeof channel.description === "string"
         ? channel.description
             .split("\n\n")
-            .filter((line) => !line.startsWith("Frames are JSON envelopes"))
+            .filter(
+              (line) =>
+                !line.startsWith("Frames are JSON envelopes") &&
+                !line.startsWith("Every frame is a socket.io-shaped packet"),
+            )
             .join("\n\n")
         : "";
     out.set(key, {
@@ -324,6 +380,7 @@ export function readChannels(
           ? channel["x-bun-common-subprotocol"]
           : undefined,
       doc: prose === "" ? undefined : prose,
+      ...(codec === undefined ? {} : { codec }),
     });
   }
   return [...out.values()].sort((a, b) =>

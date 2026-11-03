@@ -397,6 +397,18 @@ export class ChatGateway {
   client's `channel()` speaks bun-nest's packet format (connect, event,
   ack) rather than bun-common's raw frames [S for the constants,
   `node_modules/@nestjs/websockets/constants.d.ts`; D for the rest].
+- **The shared maps** (the convention TC's `websocket.md` §11 relies on;
+  built and tested by PR-W3, 2026-11-03): a gateway's schemas live in a
+  shared, browser-safe module (zod and the contract core only, never the
+  gateway), which the decorators take (`@ValidateMessage(Say, { ack:
+  SayAck })`, `@Emits(chatEmits)`, `TypedSocket<typeof chatEmits>`) and
+  which also exports the client's `channelContract({ path, receives,
+  sends: { ...chatEmits, "say ack": SayAck }, replies: { say: "say ack" }
+  })`. The client opens it with `channel(api, chat, { codec: "bun-nest" })`,
+  so a monorepo needs no generation; a separate repo generates the same
+  types from `gatewayAsyncApi()` (the ack is named `"<event> ack"` there
+  too). Shown in `bun-nest/__tests__/fixtures/nest-channel/chat.shared.ts`
+  and bun-client's README ("bun-nest gateways").
 - Live invalidation does not need a gateway: it is §4.3's interceptor and
   TC's channel.
 

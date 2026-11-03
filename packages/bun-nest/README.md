@@ -1666,6 +1666,13 @@ class ChatGateway {
   payload at compile time. (Deriving the map from the class —
   `TypedSocket<typeof ChatGateway>` — is not expressible in TypeScript: a
   class decorator's argument is invisible to the type system.)
+- **A typed browser client**: bun-client's `channel()` with `codec:
+  "bun-nest"` speaks the adapter's packets, and its `request()` resolves with
+  the handler's ack, typed by the `ack` schema. Its types come from the
+  `gatewayAsyncApi(app)` document (`bun-client generate`), or, in a
+  monorepo, from the same maps: put `Say`, `SayAck` and `chatEmits` in a
+  shared, browser-safe module that both the gateway and a `channelContract()`
+  for the client import (bun-client's README, "bun-nest gateways").
 
 Example:
 [`validated-gateway.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/validated-gateway.ts).

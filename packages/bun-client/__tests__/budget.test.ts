@@ -92,7 +92,9 @@
  * {@link CHANNEL_CHECKS_BUDGET}. The `.` entry is 12,074 and 5,085 (7 and 3
  * bytes under PR-S1's: `ValidationError` names a channel's direction, a
  * shorter expression); no channel code and none of the channel errors are
- * in it.
+ * in it. PR-W3's `"bun-nest"` codec (packets, acks by id, base64 bytes) took
+ * the entry to 13,123 and 5,019 (+1,292 and +496; the same build), 189 and
+ * 101 bytes under the limits, which it left as they were.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";

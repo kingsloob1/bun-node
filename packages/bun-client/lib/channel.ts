@@ -49,6 +49,9 @@
  * - **Backpressure** (§8): `bufferedAmount`, and `sendWhenReady()`, which
  *   waits (an animation frame at a time, 16 ms outside a browser) until the
  *   socket's buffer is under `highWaterMark` (1 MiB).
+ * - **Codecs** (W-D7, §11): `"bun-common"` (the default), `"bun-nest"` (a
+ *   bun-nest gateway: `request()` resolves with the gateway's ack, typed by
+ *   its `@ValidateMessage` `ack` schema), or a custom `{ encode, decode }`.
  *
  * Browser-safe; it imports nothing of the `.` entry's client (it reads the
  * client's configuration through the client object, as `./sse` does), so an
@@ -170,6 +173,12 @@ export interface ChannelDescriptor<E extends ChannelEntry = ChannelEntry> {
   readonly replies?: Readonly<Record<string, string>>;
   /** The subprotocol the upgrade answers with, offered on connect. Default: none. */
   readonly subprotocol?: string;
+  /**
+   * The envelope the server speaks, used when `channel()`'s options name
+   * none: `"bun-nest"` for a document `gatewayAsyncApi()` wrote. Default
+   * `"bun-common"`.
+   */
+  readonly codec?: "bun-common" | "bun-nest";
   /** The entry's type, carried for inference only (never set). */
   readonly "~entry"?: E;
 }
@@ -246,7 +255,12 @@ export interface ChannelValidationConfig {
  * A codec (W-D7): how a message is written and how a frame is read.
  * `"bun-common"` (the default) is `defineChannel`'s envelope, `{ type,
  * <idField>?, data }` as JSON, its error frame `{ type: "error", id?, code,
- * status, issues?, detail? }`.
+ * status, issues?, detail? }`. `"bun-nest"` is bun-nest's socket.io-style
+ * packets (`BunWebSocketAdapter`'s `MessageEventTypes`): a message is an
+ * `EVENT` `{ type: 2, namespace: "/", id?, data: [type, data] }` (a
+ * `BINARY_EVENT`, its data base64, when the data is bytes), a request's
+ * reply the `ACK` `{ type: 3, id, data: [ack] }` the gateway answers it
+ * with.
  */
 export interface ChannelCodec {
   /** Writes one message (its `id` set on a request) for `WebSocket.send`. */
@@ -345,8 +359,13 @@ export interface ChannelOptions<E extends ChannelEntry = ChannelEntry> {
    * Default: none.
    */
   resubscribe?: (room: ChannelClient<E>) => void | Promise<void>;
-  /** The envelope: `"bun-common"` or a custom {@link ChannelCodec}. Default `"bun-common"`. */
-  codec?: "bun-common" | ChannelCodec;
+  /**
+   * The envelope: `"bun-common"` (a `defineChannel` channel), `"bun-nest"`
+   * (a bun-nest gateway: socket.io-style packets, a request answered by the
+   * gateway's ack), or a custom {@link ChannelCodec}. Default: a generated
+   * descriptor's `codec`, else `"bun-common"`.
+   */
+  codec?: "bun-common" | "bun-nest" | ChannelCodec;
   /**
    * This channel's validation, over the client's (`createClient`'s
    * `validate`: `request` for sends, `response` for what arrives); `false`
@@ -518,6 +537,109 @@ const BUN_COMMON: ChannelCodec = {
   },
 };
 
+/** Whether `value` is bytes (bun-nest's adapter sends those base64, in a binary packet). */
+const isBytes = (value: unknown): value is ArrayBufferView | ArrayBuffer =>
+  ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
+
+/** A binary packet's base64 arguments (those `binary` marks, every string without it) as bytes. */
+function unbase64(args: unknown[], marks: unknown): unknown[] {
+  return args.map((arg, at) =>
+    typeof arg === "string" && (!Array.isArray(marks) || marks.includes(at))
+      ? Uint8Array.from(atob(arg), (char) => char.charCodeAt(0))
+      : arg,
+  );
+}
+
+/** An event's arguments as one payload, as bun-nest's adapter maps them: the one, an array of several, none. */
+const payloadOf = (args: unknown[]): unknown =>
+  args.length > 1 ? args : args[0];
+
+/**
+ * The `"bun-nest"` codec (§11): bun-nest's packets, `MessageEventTypes`
+ * (`EVENT` 2, `ACK` 3, `ERROR` 4, `BINARY_EVENT` 5, `BINARY_ACK` 6).
+ *
+ * - A message is an `EVENT` `[type, data]` (`[type]` with no data), a
+ *   request's carrying the id as a number, as socket.io's client sends it;
+ *   bytes are a `BINARY_EVENT`, base64.
+ * - An `ACK` (or `BINARY_ACK`) is the reply of the request with its id,
+ *   read as that request's reply type (`replyOf`); one no request waits for
+ *   is ignored.
+ * - An `EVENT` from the server is a push, never a reply (a server event
+ *   asking for an ack, `emitWithAck`, is not supported: its id is dropped).
+ *   `["exception", { status, code, issues? }]`, what bun-nest's
+ *   `ValidationExceptionFilter` emits, is an error frame (with no id: it
+ *   reaches `$error`); any other `exception` is a push of that type.
+ * - `ERROR` is a push of type `"error"`, its data the message; `CONNECT`
+ *   and `DISCONNECT` are ignored.
+ *
+ * @param replyOf The reply type of the request waiting with an id.
+ */
+function bunNestCodec(
+  replyOf: (id: string) => string | undefined,
+): ChannelCodec {
+  return {
+    encode: ({ type, id, data }) => {
+      const binary = isBytes(data);
+      let arg: unknown = data;
+      if (binary) {
+        const bytes = ArrayBuffer.isView(data)
+          ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+          : new Uint8Array(data);
+        let text = "";
+        for (const byte of bytes) text += String.fromCharCode(byte);
+        arg = btoa(text);
+      }
+      return JSON.stringify({
+        type: binary ? 5 : 2,
+        namespace: "/",
+        ...(id === undefined ? {} : { id: /^\d+$/.test(id) ? Number(id) : id }),
+        data: data === undefined ? [type] : [type, arg],
+        ...(binary ? { binary: [0] } : {}),
+      });
+    },
+    decode(raw) {
+      const packet = JSON.parse(
+        typeof raw === "string" ? raw : new TextDecoder().decode(raw),
+      ) as { type?: unknown; id?: unknown; data?: unknown; binary?: unknown };
+      const kind = packet?.type;
+      if (kind === 4) return { type: "error", data: packet.data };
+      if (!Array.isArray(packet?.data)) return undefined;
+      const args: unknown[] =
+        kind === 5 || kind === 6
+          ? unbase64(
+              kind === 5 ? packet.data.slice(1) : packet.data,
+              // An event's marks count from its first argument, after the name.
+              packet.binary,
+            )
+          : kind === 2
+            ? packet.data.slice(1)
+            : packet.data;
+      if (kind === 3 || kind === 6) {
+        const id =
+          typeof packet.id === "number" || typeof packet.id === "string"
+            ? String(packet.id)
+            : undefined;
+        const reply = id === undefined ? undefined : replyOf(id);
+        return reply === undefined
+          ? undefined
+          : { type: reply, id, data: payloadOf(args) };
+      }
+      const type: unknown = packet.data[0];
+      if ((kind !== 2 && kind !== 5) || typeof type !== "string")
+        return undefined;
+      const data = payloadOf(args) as Record<string, unknown> | undefined;
+      if (
+        type === "exception" &&
+        typeof data?.status === "number" &&
+        CODES.includes(data.code as ChannelErrorCode)
+      )
+        // The filter's frame, as an error frame (`Connection` reads `code`).
+        return { ...data, type: "error" };
+      return { type, data };
+    },
+  };
+}
+
 /** The checks module, imported on first use and shared by every channel. */
 let checksModule: Promise<typeof import("./channelChecks")> | undefined;
 
@@ -578,6 +700,8 @@ interface Facts {
   readonly subprotocol: string | undefined;
   /** The shared contract, when one was given. */
   readonly contract: ChannelContract | undefined;
+  /** A generated descriptor's codec, when it names one. */
+  readonly codec: "bun-common" | "bun-nest" | undefined;
 }
 
 /** A request waiting for its reply. */
@@ -647,10 +771,13 @@ class Connection {
     readonly options: ChannelOptions,
     readonly logger: Pick<Console, "warn" | "error">,
   ) {
+    const codec = options.codec ?? facts.codec;
     this.codec =
-      options.codec === undefined || options.codec === "bun-common"
-        ? BUN_COMMON
-        : options.codec;
+      codec === "bun-nest"
+        ? bunNestCodec((id) => this.pending.get(id)?.reply)
+        : codec === undefined || codec === "bun-common"
+          ? BUN_COMMON
+          : codec;
     this.envelope = { idField: facts.idField };
     this.#open();
   }
@@ -1335,6 +1462,7 @@ export function channel(
       replies: meta.replies,
       subprotocol: meta.subprotocol,
       contract: source,
+      codec: undefined,
     };
   } else {
     facts = {
@@ -1343,6 +1471,7 @@ export function channel(
       replies: source.replies ?? {},
       subprotocol: source.subprotocol,
       contract: undefined,
+      codec: source.codec,
     };
   }
   let url = (api.url as (path: string, options: object) => string)(facts.path, {
