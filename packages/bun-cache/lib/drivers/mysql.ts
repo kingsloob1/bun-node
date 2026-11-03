@@ -116,6 +116,14 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
   readonly #retention: number;
   /** The server's `auto_increment_increment`: the step between consecutive bus rows. */
   #seqStep = 1;
+  /**
+   * The tag table's `(ns, k)` index, `ix_<tags>_key`, when the server says
+   * the table has it (read on connect): `deleteByTags` names it on MySQL so
+   * its plan does not depend on the table's statistics. `undefined` for a
+   * table this driver did not create with it (a `tables` name for an
+   * existing schema), which `deleteByTags` then leaves to the optimizer.
+   */
+  #tagsKeyIndex: string | undefined;
   /** The `maxEntries` sweep's statements (`entry-cap.ts`). */
   readonly #cap: EntryCapStatements;
   /** Open bus pollers, stopped by `close()`. */
@@ -146,14 +154,24 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
     ];
   }
 
-  /** Reads the entry limit (`max_allowed_packet`) and the bus's sequence step from the server. */
+  /** Reads the entry limit (`max_allowed_packet`), the bus's sequence step and whether the tag table has its `(ns, k)` index from the server. */
   protected override async afterMigrate(): Promise<void> {
+    const keyIndex = sqlCacheIndexName(this.tables.tags, "key");
     const [row] = await this.sql.unsafe<
-      { packet: string | number; step: string | number }[]
+      {
+        packet: string | number;
+        step: string | number;
+        keyed: string | number;
+      }[]
     >(
-      "SELECT @@max_allowed_packet AS packet, @@auto_increment_increment AS step",
+      `SELECT @@max_allowed_packet AS packet, @@auto_increment_increment AS step,
+         (SELECT COUNT(*) FROM information_schema.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?) AS keyed`,
+      [this.tables.tags, keyIndex],
     );
     if (row !== undefined) {
+      this.#tagsKeyIndex =
+        SqlCacheDriverBase.num(row.keyed) > 0 ? keyIndex : undefined;
       const packet = SqlCacheDriverBase.num(row.packet);
       this.capabilities.maxEntryBytes = Math.max(
         0,
@@ -543,9 +561,25 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
          ON DUPLICATE KEY UPDATE at = VALUES(at), exp = VALUES(exp)`,
         fitted.flatMap((tag) => [fns, tag, at, stampUntil]),
       );
+      // On MySQL both deletes fix their plan: from the tag rows of the
+      // invalidated tags (the primary key's prefix), to each key's rows by
+      // index. Left to the optimizer, MySQL 8 read statistics taken while the
+      // tables were nearly empty and scanned the whole entries table for each
+      // tag row (measured: 250–330 ms for 1,000 keys, against 26–28 ms
+      // fixed), or drove the first delete from the namespace's every entry.
+      // MariaDB chose the lookups itself, and was slower forced (28 against
+      // 41 ms), so it keeps the plain statements.
+      const fixed = this.name === "mysql";
+      const order = fixed ? "STRAIGHT_JOIN" : "JOIN";
+      const primary = fixed ? " FORCE INDEX (PRIMARY)" : "";
+      const keyIndex =
+        fixed && this.#tagsKeyIndex !== undefined
+          ? ` FORCE INDEX (${this.#tagsKeyIndex})`
+          : "";
       const deleted = MysqlCacheDriver.#affected(
         await tx.unsafe(
-          `DELETE e FROM ${t.entries} AS e JOIN ${t.tags} AS g ON e.ns = g.ns AND e.k = g.k
+          `DELETE e FROM ${t.tags} AS g
+             ${order} ${t.entries} AS e${primary} ON e.ns = g.ns AND e.k = g.k
             WHERE g.ns = ? AND g.tag IN (${marks(fitted.length)}) AND e.v IS NOT NULL`,
           [fns, ...fitted],
         ),
@@ -553,9 +587,9 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
       // Every tag row of a key that no longer holds an entry: the deleted
       // ones' other tags, and a counter's leftovers.
       await tx.unsafe(
-        `DELETE g FROM ${t.tags} AS g
-           JOIN ${t.tags} AS x ON x.ns = g.ns AND x.k = g.k
-           LEFT JOIN ${t.entries} AS e ON e.ns = g.ns AND e.k = g.k AND e.v IS NOT NULL
+        `DELETE g FROM ${t.tags} AS x
+           ${order} ${t.tags} AS g${keyIndex} ON g.ns = x.ns AND g.k = x.k
+           LEFT JOIN ${t.entries} AS e${primary} ON e.ns = g.ns AND e.k = g.k AND e.v IS NOT NULL
           WHERE x.ns = ? AND x.tag IN (${marks(fitted.length)}) AND e.k IS NULL`,
         [fns, ...fitted],
       );
