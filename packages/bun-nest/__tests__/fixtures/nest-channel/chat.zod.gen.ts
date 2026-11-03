@@ -4,7 +4,7 @@
  * lazily: `createClient<Routes>({ schemas: () => import("<this module>") })`.
  * Do not edit; regenerate it, and run the same command with `--check` in CI.
  *
- * typesHash: c373671a84d50ad5
+ * typesHash: d9550e67a7c1db92
  */
 import { schemasFromZod } from "@kingsleyweb/bun-client/zod";
 import { z } from "zod/mini";
@@ -35,6 +35,7 @@ export const channelSchemas = {
         status: z.literal("error"),
         message: z.string(),
         cause: z.unknown(),
+        ackId: z.optional(z.union([z.string(), z.number()])),
       }),
       error: z.string(),
       said: z.looseObject({

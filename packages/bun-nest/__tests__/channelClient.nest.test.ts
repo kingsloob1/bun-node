@@ -203,23 +203,33 @@ describe('the "bun-nest" codec: a generated map', () => {
     });
   });
 
-  it("a payload the gateway refuses is a ChannelError on $error; the request, never acked, times out", async () => {
+  it("a payload the gateway refuses rejects the request at once with the ChannelError (the frame's ackId); sent with no id it is a ChannelError on $error", async () => {
     const { api } = clientOf(true);
     const room = kept(channel(api, channels["/chat"]));
     const errors: unknown[] = [];
     room.on("$error", (error) => void errors.push(error));
+    const started = Date.now();
     const outcome = await room
-      .request("say", { text: "" }, { validate: false, timeout: 300 })
+      .request("say", { text: "" }, { validate: false, timeout: 5000 })
       .catch((error: unknown) => error);
-    expect(outcome).toBeInstanceOf(RequestTimeoutError);
-    expect(errors).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(outcome).toBeInstanceOf(ChannelError);
+    const rejected = outcome as ChannelError;
+    expect(rejected.code).toBe("VALIDATION");
+    expect(rejected.status).toBe(400);
+    expect(rejected.type).toBe("say");
+    expect(rejected.issues).toEqual([
+      expect.objectContaining({ target: "payload", path: "text" }),
+    ]);
+    // Matched to its request: the rejection only, no `$error`.
+    expect(errors).toEqual([]);
+    // No id (a send): the frame has none, and reaches `$error`, as before.
+    room.send("say", { text: "" }, { validate: false });
+    await until(() => errors.length === 1);
     const error = errors[0] as ChannelError;
     expect(error).toBeInstanceOf(ChannelError);
     expect(error.code).toBe("VALIDATION");
-    expect(error.status).toBe(400);
-    expect(error.issues).toEqual([
-      expect.objectContaining({ target: "payload", path: "text" }),
-    ]);
+    expect(error.type).toBeUndefined();
     expect(said).toEqual([]);
   });
 

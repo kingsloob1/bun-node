@@ -546,7 +546,7 @@ export function gatewayAsyncApi(
     register("exception", {
       name: "exception",
       summary:
-        'A thrown WsException, as the EVENT packet `["exception", { status, message, cause? }]` (the adapter routes exceptions through `emit`).',
+        'A thrown WsException, as the EVENT packet `["exception", { status, message, cause?, ackId? }]` (the adapter routes exceptions through `emit`). `ackId` is the id of the event that failed, present when that event asked for an ack: the ack will never come, so a client waiting on it should fail the request.',
       contentType: "application/json",
       payload: {
         type: "object",
@@ -563,6 +563,11 @@ export function gatewayAsyncApi(
                   status: { const: "error" },
                   message: { type: "string" },
                   cause: {},
+                  ackId: {
+                    type: ["string", "number"],
+                    description:
+                      "The id of the event whose handler failed, when it asked for an ack; that ack is never sent.",
+                  },
                 },
                 required: ["status", "message"],
               },

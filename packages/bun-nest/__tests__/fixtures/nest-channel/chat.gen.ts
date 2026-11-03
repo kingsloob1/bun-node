@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: c373671a84d50ad5
+ * typesHash: d9550e67a7c1db92
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 import type { ChannelDescriptors } from "@kingsleyweb/bun-client/channel";
@@ -13,7 +13,7 @@ import type { ChannelDescriptors } from "@kingsleyweb/bun-client/channel";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "c373671a84d50ad5";
+export const typesHash = "d9550e67a7c1db92";
 
 export interface Routes {}
 
@@ -45,6 +45,8 @@ export interface Channels {
         status: "error";
         message: string;
         cause?: unknown;
+        /** The id of the event whose handler failed, when it asked for an ack; that ack is never sent. */
+        ackId?: string | number;
       };
       error: string;
       said: {

@@ -11,6 +11,14 @@ import type {
 import type { Jsonify } from "./jsonify";
 import type { ErrorStatus, ResponsesOf } from "./types";
 
+/**
+ * What a {@link ChannelError} says failed: the contract's codes, and
+ * `"EXCEPTION"`, which only the `"bun-nest"` codec raises: a gateway handler
+ * that threw (a `WsException` or any error) for an event that asked for an
+ * ack, which will not come.
+ */
+export type ChannelFailureCode = ChannelErrorCode | "EXCEPTION";
+
 /** Options shared by every client error. */
 interface ClientErrorOptions {
   /** The route key the call was for (`"GET /users/:id"`), when there is one. */
@@ -187,7 +195,7 @@ export class ValidationError extends ClientError {
  */
 export class ChannelError extends ClientError {
   /** What failed, as the server's error frame says. */
-  readonly code: ChannelErrorCode;
+  readonly code: ChannelFailureCode;
   /** The frame's status (400 from bun-common). */
   readonly status: number;
   /** The server's issues, value-free, for a `VALIDATION`; empty otherwise. */
@@ -205,7 +213,7 @@ export class ChannelError extends ClientError {
   constructor(
     key: string,
     frame: {
-      readonly code: ChannelErrorCode;
+      readonly code: ChannelFailureCode;
       readonly status: number;
       readonly issues?: readonly ValidationIssue[];
       readonly detail?: string;
