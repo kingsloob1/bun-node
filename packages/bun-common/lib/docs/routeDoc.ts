@@ -205,7 +205,8 @@ export interface RouteDoc {
    * neither the handler's types nor bun-cache's runtime; with
    * `liveInvalidation()` (`@kingsleyweb/bun-common/live`) mounted,
    * `invalidates` is published, filled from the request's params, when the
-   * response is a 2xx. Default: none, and no `x-bun-cache` is emitted. Wins over an
+   * response is a 2xx (unless the handler publishes its own, as bun-nest's
+   * `@Invalidates` does). Default: none, and no `x-bun-cache` is emitted. Wins over an
    * `extensions["x-bun-cache"]` given beside it (with a warning when the two
    * differ).
    */

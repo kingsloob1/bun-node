@@ -29,8 +29,9 @@
  *   server, or what it missed fell off the ring, it gets a `gap` instead,
  *   and invalidates everything.
  * - **Sources**: {@link publishTags}; a route's `cache.invalidates` (TC
- *   §8.1, `.describe({ cache })`), filled from the request's params, when
- *   its response is a 2xx; and a cache's tag invalidations when `source`
+ *   §8.1, `.describe({ cache })`, or bun-nest's `@Describe`), filled from
+ *   the request's params, when its response is a 2xx (unless its handler
+ *   publishes its own: bun-nest's `@Invalidates`); and a cache's tag invalidations when `source`
  *   is given (bun-cache's `invalidate` event, which `invalidateTags`
  *   emits, either mode).
  * - **Per process**: the ring, the epoch and the subscribers are this
@@ -307,9 +308,34 @@ export function fillTagTemplates(
 }
 
 /**
+ * The reflect-metadata key marking a handler that publishes its own
+ * invalidations: bun-nest's `@Invalidates` (typed-client plan
+ * `nest-typed-routes.md` §4.3), whose interceptor publishes when the handler
+ * succeeds rather than on the status. Written by value on both sides, as
+ * `"bun:describe"` is.
+ */
+const SELF_PUBLISHING_METADATA = "bun:invalidates";
+
+/** The reflect-metadata polyfill's reader, when it is loaded; read structurally. */
+const reflectMeta = Reflect as unknown as {
+  getMetadata?: (key: unknown, target: object) => unknown;
+};
+
+/** Whether `callback` publishes its own invalidations (see {@link SELF_PUBLISHING_METADATA}). */
+function publishesItself(callback: unknown): boolean {
+  return (
+    (typeof callback === "function" ||
+      (typeof callback === "object" && callback !== null)) &&
+    reflectMeta.getMetadata?.(SELF_PUBLISHING_METADATA, callback) !== undefined
+  );
+}
+
+/**
  * The middleware publishing a route's `cache.invalidates` once its response
  * is a 2xx: read from the matched route's doc (its terminal callback's, as
- * the documents read it) when the response is produced.
+ * the documents read it) when the response is produced. A route whose
+ * handler publishes its own (bun-nest's `@Invalidates`, marked with
+ * `"bun:invalidates"` metadata) is left to it, so a success publishes once.
  */
 function invalidatesOnSuccess(
   req: BunRequest,
@@ -320,7 +346,9 @@ function invalidatesOnSuccess(
     if (response.status < 200 || response.status >= 300) return;
     const callbacks = (req.route as { callbacks?: readonly unknown[] } | null)
       ?.callbacks;
-    const templates = routeDocFor(callbacks?.at(-1))?.cache?.invalidates;
+    const terminal = callbacks?.at(-1);
+    if (publishesItself(terminal)) return;
+    const templates = routeDocFor(terminal)?.cache?.invalidates;
     if (templates === undefined || templates.length === 0) return;
     publishTags(fillTagTemplates(templates, req.params));
   });

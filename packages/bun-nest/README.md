@@ -96,6 +96,7 @@ Underneath, routing is
 - [Typed clients: documents from controllers](#typed-clients-documents-from-controllers)
   - [`@Describe`](#describe)
   - [`DevTypesModule`: the dev type sync](#devtypesmodule-the-dev-type-sync)
+  - [`@Invalidates`: live invalidation](#invalidates-live-invalidation)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
@@ -2476,6 +2477,58 @@ bunx bun-client watch --out src/api.gen.ts   # beside it: regenerates on every c
   `openapi` / `asyncapi` — the generators' options (`title`, `version`, …;
   default `"API"` and `"dev"`), or a function returning the document.
 
+### `@Invalidates`: live invalidation
+
+When a mutation succeeds, the tags it invalidates are published to the live
+channel, and every client observing a query filed under one of them
+refetches it (bun-client's `live()`). Mount bun-common's
+`liveInvalidation()` on the adapter first, then mark the routes:
+
+```ts
+import { liveInvalidation } from "@kingsleyweb/bun-common/live";
+import { BunHttpAdapter, Describe, Invalidates, Validate } from "@kingsleyweb/bun-nest";
+
+const adapter = new BunHttpAdapter();
+const app = await NestFactory.create(AppModule, adapter);
+app.use(liveInvalidation(adapter.getInstance(), { authorize })); // before app.listen()
+await app.listen(3000);
+
+@Controller("users")
+export class UsersController {
+  @Get(":id")
+  @Describe({ cache: { tags: ["user:{id}"] } })        // what the client files the result under
+  one(@Param("id") id: string) { … }
+
+  @Patch(":id")
+  @Validate({ params: IdParams, body: UserPatch, responses: { 200: User } })
+  @Invalidates("user:{id}", "users")                    // published when the handler succeeds
+  update(@Param("id") id: string, @Body() body: UserPatch) { … }
+}
+```
+
+- **The tags**, in `@CacheTags`' vocabulary: templates, each `{name}` filled
+  from the request's params (`"user:{id}"` → `"user:42"`; a template naming
+  a param the request lacks is skipped), or one function of the
+  `ExecutionContext` (`@Invalidates((ctx) => […])`), computed after the
+  handler. `@Invalidates()` with none takes the route's `@Describe({ cache:
+  { invalidates } })`.
+- **Documented**: templates are the route's `cache.invalidates`
+  (`x-bun-cache`), so the typed client also invalidates its own queries on
+  the call; they win over a `@Describe({ cache: { invalidates } })` on the
+  same method in either order. The function form documents nothing.
+- **It follows the handler, not the status**: published once, when the
+  handler's observable completes without an error, before the response is
+  written. A handler that throws publishes nothing, even when an exception
+  filter answers `200`; a function that throws is logged and publishes
+  nothing.
+- **Without `@Invalidates`**, a route's `@Describe({ cache: { invalidates }
+  })` is published by `liveInvalidation()` itself on any `2xx`, as on a
+  router — the status rule. A route with `@Invalidates` is left to its
+  interceptor, so each success publishes once.
+- No module is needed: `liveInvalidation()` serves the channel (`/__live`,
+  and its SSE fallback) from the adapter, and `publishTags()` from
+  `@kingsleyweb/bun-common/live` publishes by hand.
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -2862,7 +2915,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
-| [Typed clients](#typed-clients-documents-from-controllers) | `Describe`, `DevTypesModule`; type `DevTypesModuleOptions` |
+| [Typed clients](#typed-clients-documents-from-controllers) | `Describe`, `DevTypesModule`, `Invalidates`; type `DevTypesModuleOptions` |
 | [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`; type `StandardValidationPipeOptions` |
 
 `BunRequest`, `BunResponse`, `UploadOptions`, `StorageFile`, `DiskStorage`,

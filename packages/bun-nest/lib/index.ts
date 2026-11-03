@@ -51,6 +51,7 @@ export { UploadedFile, UploadedFiles } from "./decorators";
 export { Describe } from "./describe";
 export { DevTypesModule, type DevTypesModuleOptions } from "./devTypesModule";
 export { gatewayAsyncApi, type GatewayAsyncApiOptions } from "./gateway-docs";
+export { Invalidates } from "./invalidates";
 export {
   AnyFilesInterceptor,
   FileFieldsInterceptor,
