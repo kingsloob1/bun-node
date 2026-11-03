@@ -131,6 +131,16 @@
  * 2,555 bytes minified, 1,112 gzipped, against the plan's 2 KB for
  * `./webrtc` (§10.3, the whole entry: PR-R2's data channels join it). No
  * other entry changed (no file they bundle did).
+ *
+ * PR-R2 adds `typedDataChannel` to it (the envelope, both guards through
+ * the channel's lazily loaded checks, requests and their error frames,
+ * `sendWhenReady` on `bufferedamountlow`, binary frames) and the error
+ * classes it shares with `./channel`. Measured 2026-11-03 (the same build):
+ * 10,656 bytes minified, 4,224 gzipped, its checks left out, against the
+ * plan's 2 KB (§10.3, "[I]", an estimate, as `./channel`'s 4 KB was); the
+ * limits were raised from 2.8 and 2 KiB to 11.5 and 4.5 KiB for it. Its
+ * checks are `./channel`'s chunk, byte for byte (17,447 and 6,406), against
+ * {@link CHANNEL_CHECKS_BUDGET}.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -286,15 +296,16 @@ const GRAPHQL_BUDGET = {
 } as const;
 
 /**
- * Byte limits for the `./webrtc` entry: the plan's 2 KB gzipped (§10.3), and
- * about 10% above the measured minified figure. The same rule for raising
- * them.
+ * Byte limits for the `./webrtc` entry, its checks left out: about 10% above
+ * the measured figures (the plan's 2 KB gzipped, §10.3, was an estimate).
+ * The same rule for raising them.
  */
 const WEBRTC_BUDGET = {
-  /** The entry, minified, in bytes. */
-  minifiedBytes: 2.8 * 1024,
-  /** The entry gzipped, in bytes. */
-  gzipBytes: 2 * 1024,
+  // Raised from 2.8 and 2 KiB for PR-R2's typedDataChannel (measured above).
+  /** The entry, minified, its checks external, in bytes. */
+  minifiedBytes: 11.5 * 1024,
+  /** The entry gzipped, its checks external, in bytes. */
+  gzipBytes: 4.5 * 1024,
 } as const;
 
 /** Formats bytes as KiB with one decimal, for failure messages. */
@@ -401,6 +412,13 @@ const webrtcEntry = await Bun.build({
   entrypoints: [join(import.meta.dir, "..", "lib", "webrtc.ts")],
   target: "browser",
   minify: true,
+  plugins: [checksExternal],
+});
+const webrtcSplit = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "webrtc.ts")],
+  target: "browser",
+  minify: true,
+  splitting: true,
 });
 
 /** An output's minified and gzipped sizes. */
@@ -599,13 +617,28 @@ describe("the ./graphql budget", () => {
 });
 
 describe("the ./webrtc budget", () => {
-  it("builds as one file", () => {
+  it("builds as one file, its checks left out", () => {
     expect(webrtcEntry.success).toBe(true);
     expect(webrtcEntry.outputs.length).toBe(1);
   });
 
   it(`keeps ./webrtc within ${kib(WEBRTC_BUDGET.gzipBytes)} gzipped and ${kib(WEBRTC_BUDGET.minifiedBytes)} minified`, async () => {
     expect(verdict(await sizes(webrtcEntry.outputs[0]), WEBRTC_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+
+  it(`splits its checks into one chunk, ./channel's, within ${kib(CHANNEL_CHECKS_BUDGET.gzipBytes)} gzipped and ${kib(CHANNEL_CHECKS_BUDGET.minifiedBytes)} minified`, async () => {
+    expect(webrtcSplit.success).toBe(true);
+    const chunks = webrtcSplit.outputs.filter(
+      (output) => output.kind === "chunk",
+    );
+    expect(chunks.length).toBe(1);
+    const channelChunks = channelSplit.outputs.filter(
+      (output) => output.kind === "chunk",
+    );
+    expect(await chunks[0].text()).toBe(await channelChunks[0].text());
+    expect(verdict(await sizes(chunks[0]), CHANNEL_CHECKS_BUDGET)).toBe(
       "within budget",
     );
   });
