@@ -539,6 +539,24 @@ try {
       JSON.stringify(r.server),
     );
   }
+  {
+    const r = await run("channel");
+    const o = rec(r.outcome);
+    const said = rec(o.said);
+    check(
+      "channel: the request resolved with its echoed reply, typed by the chat contract",
+      r.ok &&
+        o.state === "open" &&
+        said.by === "bun-client" &&
+        said.text === "hello, room",
+      JSON.stringify(r.outcome),
+    );
+    check(
+      "channel: the empty say was refused before it was written",
+      ((o.refused ?? []) as string[]).some((line) => line.startsWith("text:")),
+      JSON.stringify(o.refused),
+    );
+  }
   check(
     "an unknown scenario is a 404",
     (await post("/run/nope")).status === 404,

@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.1.0",
   "private": false,
-  "description": "A typed, dependency-free HTTP client for the bun-node servers: one call per verb keyed by the server's own path literal, named operations, typed params, query and body, results discriminated by status, retries with backoff and Retry-After, timeouts, middleware and single-flight auth refresh; typed, resumable server-sent events. Browser-safe.",
+  "description": "A typed, dependency-free HTTP client for the bun-node servers: one call per verb keyed by the server's own path literal, named operations, typed params, query and body, results discriminated by status, retries with backoff and Retry-After, timeouts, middleware and single-flight auth refresh; typed, resumable server-sent events; typed WebSocket channels with requests, reconnection and backpressure. Browser-safe.",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-client#readme",
@@ -24,6 +24,7 @@
     "openapi",
     "retry",
     "sse",
+    "websocket",
     "browser"
   ],
   "sideEffects": false,
@@ -67,6 +68,11 @@
       "@kingsleyweb/source": "./lib/sse.ts",
       "types": "./dts/sse.d.ts",
       "default": "./lib/sse.ts"
+    },
+    "./channel": {
+      "@kingsleyweb/source": "./lib/channel.ts",
+      "types": "./dts/channel.d.ts",
+      "default": "./lib/channel.ts"
     },
     "./lib/codegen": {
       "@kingsleyweb/source": "./lib/codegen/index.ts",

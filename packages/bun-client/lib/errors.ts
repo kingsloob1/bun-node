@@ -4,7 +4,10 @@
  * surfaces as the platform's `AbortError` (the signal's reason), unchanged,
  * so `signal.reason` checks keep working.
  */
-import type { ValidationIssue } from "@kingsleyweb/bun-contract";
+import type {
+  ChannelErrorCode,
+  ValidationIssue,
+} from "@kingsleyweb/bun-contract";
 import type { Jsonify } from "./jsonify";
 import type { ErrorStatus, ResponsesOf } from "./types";
 
@@ -118,7 +121,8 @@ export class TimeoutError extends ClientError {
  * One issue of a {@link ValidationError}: bun-contract's issue shape (the
  * one the server's checks report: `target`, `message`, `path`, and `key`,
  * the status, on a response; on an event stream's event, target `data` and
- * `key` the event's name, `sse.md` §3.3), plus which check found it.
+ * `key` the event's name, `sse.md` §3.3; on a channel message, target `data`
+ * and `key` the message type, `websocket.md` §5), plus which check found it.
  */
 export interface ValidationErrorIssue extends ValidationIssue<
   "params" | "query" | "body" | "headers" | "files" | "response" | "data"
@@ -136,8 +140,12 @@ export interface ValidationErrorIssue extends ValidationIssue<
  * (bun-contract's rule, the server's too).
  */
 export class ValidationError extends ClientError {
-  /** `"request"`: a part about to be sent; `"response"`: a body that arrived. */
-  readonly direction: "request" | "response";
+  /**
+   * `"request"`: a part about to be sent; `"response"`: a body that arrived;
+   * on a channel (`./channel`), `"send"`: a message about to be written,
+   * `"receive"`: a frame that arrived.
+   */
+  readonly direction: "request" | "response" | "send" | "receive";
   /** The response's status; `undefined` for a request. */
   readonly status: number | undefined;
   /** Every issue, the built-in schema's first, then the BYO schema's. */
@@ -145,7 +153,7 @@ export class ValidationError extends ClientError {
 
   constructor(
     key: string,
-    direction: "request" | "response",
+    direction: "request" | "response" | "send" | "receive",
     issues: readonly ValidationErrorIssue[],
     status?: number,
   ) {
@@ -156,12 +164,141 @@ export class ValidationError extends ClientError {
       )
       .join("; ");
     super(
-      `${key} ${direction === "request" ? "request" : `response ${status}`} failed validation: ${summary}`,
+      `${key} ${direction === "response" ? `response ${status}` : direction} failed validation: ${summary}`,
       { key },
     );
     this.name = "ValidationError";
     this.direction = direction;
     this.status = status;
     this.issues = issues;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The channel client's errors (`./channel`, `websocket.md` §6).            */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The server answered with an error frame (`websocket.md` §6): an invalid
+ * message (`VALIDATION`, with the server's value-free issues), an unknown
+ * message type (`UNKNOWN_MESSAGE`) or an undeclared binary frame
+ * (`UNSUPPORTED_DATA`). A request whose id the frame echoes rejects with it;
+ * any other reaches the channel's `on("$error")`.
+ */
+export class ChannelError extends ClientError {
+  /** What failed, as the server's error frame says. */
+  readonly code: ChannelErrorCode;
+  /** The frame's status (400 from bun-common). */
+  readonly status: number;
+  /** The server's issues, value-free, for a `VALIDATION`; empty otherwise. */
+  readonly issues: readonly ValidationIssue[];
+  /** What went wrong, for a non-validation error; `undefined` when the frame has none. */
+  readonly detail: string | undefined;
+  /** The message type of the request it answers; `undefined` for an error frame no request is waiting for. */
+  readonly type: string | undefined;
+
+  /**
+   * @param key   The channel's path.
+   * @param frame The error frame's fields.
+   * @param type  The request's message type, when one is waiting.
+   */
+  constructor(
+    key: string,
+    frame: {
+      readonly code: ChannelErrorCode;
+      readonly status: number;
+      readonly issues?: readonly ValidationIssue[];
+      readonly detail?: string;
+    },
+    type?: string,
+  ) {
+    super(
+      `${key}${type === undefined ? "" : ` ${type}`}: the server answered ${frame.code}${frame.detail === undefined ? "" : ` (${frame.detail})`}`,
+      { key },
+    );
+    this.name = "ChannelError";
+    this.code = frame.code;
+    this.status = frame.status;
+    this.issues = frame.issues ?? [];
+    this.detail = frame.detail;
+    this.type = type;
+  }
+}
+
+/** A channel request (`request()`) had no reply within its `timeout`. */
+export class RequestTimeoutError extends ClientError {
+  /** The request's message type. */
+  readonly type: string;
+  /** The id the request carried. */
+  readonly id: string;
+  /** The timeout that ran out, in milliseconds. */
+  readonly timeout: number;
+
+  /**
+   * @param key     The channel's path.
+   * @param type    The request's message type.
+   * @param id      Its correlation id.
+   * @param timeout The timeout, ms.
+   */
+  constructor(key: string, type: string, id: string, timeout: number) {
+    super(`${key} ${type}: no reply within ${timeout} ms`, { key });
+    this.name = "RequestTimeoutError";
+    this.type = type;
+    this.id = id;
+    this.timeout = timeout;
+  }
+}
+
+/**
+ * The socket dropped while a channel request was waiting for its reply: it
+ * is rejected rather than sent again, since a request may not be
+ * idempotent (`retry: true` on the call sends it again after a reconnect).
+ */
+export class DisconnectedError extends ClientError {
+  /** The close code. */
+  readonly code: number;
+  /** The close reason (often `""`). */
+  readonly reason: string;
+
+  /**
+   * @param key    The channel's path.
+   * @param code   The close code.
+   * @param reason The close reason.
+   */
+  constructor(key: string, code: number, reason: string) {
+    super(
+      `${key}: the socket closed (${code}${reason ? ` ${reason}` : ""}) before the reply`,
+      { key },
+    );
+    this.name = "DisconnectedError";
+    this.code = code;
+    this.reason = reason;
+  }
+}
+
+/**
+ * The channel is closed for good, or cannot take the message: a send or a
+ * request after `close()` or after a close the client will not retry (a
+ * fatal close code, or reconnection off), a send while disconnected with
+ * `offline: "fail"`, or past the offline buffer's limit.
+ */
+export class ChannelClosedError extends ClientError {
+  /** The close code; `undefined` when no socket closed (`close()`, a full offline buffer). */
+  readonly code: number | undefined;
+  /** The close reason, or why the message was refused. */
+  readonly reason: string;
+
+  /**
+   * @param key    The channel's path.
+   * @param reason Why.
+   * @param code   The close code, when a socket closed.
+   */
+  constructor(key: string, reason: string, code?: number) {
+    super(`${key}: ${reason}${code === undefined ? "" : ` (${code})`}`, {
+      key,
+    });
+    this.name = "ChannelClosedError";
+    this.code = code;
+    this.reason = reason;
   }
 }

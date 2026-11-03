@@ -47,6 +47,7 @@ import {
   ValidationError,
 } from "@kingsleyweb/bun-client";
 import { runCli } from "@kingsleyweb/bun-client/codegen";
+import { channel } from "@kingsleyweb/bun-client/channel";
 import { sse } from "@kingsleyweb/bun-client/sse";
 import {
   invalidateTags,
@@ -56,6 +57,7 @@ import {
 } from "@kingsleyweb/bun-client/query";
 import { MutationObserver, QueryClient } from "@tanstack/query-core";
 import { z } from "zod/mini";
+import { chatContract } from "./chat";
 import { createApi } from "./typed-client-api";
 import { manifest } from "./typed-client-api.gen";
 import { typedClientPage } from "./typed-client-page";
@@ -152,6 +154,7 @@ export type ScenarioName =
   | "middleware"
   | "sse"
   | "sse-resume"
+  | "channel"
   | "request-invalid"
   | "response-invalid"
   | "query-key"
@@ -240,6 +243,13 @@ export const SCENARIOS: readonly ScenarioInfo[] = [
     title: "Resume with Last-Event-ID",
     about:
       'lastEventId: "1" replays events 2 and 3; an id the server cannot resume from gets the declared gap event first, and on("$gap") fires',
+  },
+  {
+    name: "channel",
+    section: "calls",
+    title: "A WebSocket channel",
+    about:
+      "channel() from @kingsleyweb/bun-client/channel opens the playground's chat channel over a real socket, typed by its shared contract: a request resolved by the reply echoing its id, and a send the contract refuses before anything is written",
   },
   {
     name: "request-invalid",
@@ -332,7 +342,7 @@ export async function mountTypedClientDemo(
    * A fresh client, query layer and query client for one run, whose `fetch`
    * records every request it sends and whose `logger` keeps the warnings.
    */
-  function makeKit(started: number) {
+  function makeKit(started: number, origin: string | undefined) {
     const sent: SentRequest[] = [];
     const warnings: string[] = [];
     const client = createClient<Routes>({
@@ -380,7 +390,7 @@ export async function mountTypedClientDemo(
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
-    return { api: client, q, queryClient, sent, warnings };
+    return { api: client, q, queryClient, sent, warnings, origin };
   }
 
   /** One kit, as the scenarios receive it. */
@@ -564,6 +574,35 @@ export async function mountTypedClientDemo(
       // #endregion
     },
 
+    channel: async ({ origin }) => {
+      if (origin === undefined) throw new Error("the adapter is not listening");
+      // #region channel
+      // The playground's chat channel, over a real socket; typed by its
+      // shared contract (chat.ts), the one defineChannel(contract) serves
+      const sockets = createClient({ baseUrl: origin, mode: "development" });
+      const room = channel(sockets, chatContract, {
+        params: { room: "typed-client" },
+        query: { name: "bun-client" },
+      });
+      try {
+        // The reply is the `said` frame carrying this request's id
+        const said = await room.request("say", { text: "hello, room" });
+        const _by: Equal<typeof said.by, string> = true;
+        // A message the contract refuses: thrown before anything is written
+        let refused: string[] = [];
+        try {
+          room.send("say", { text: "" });
+        } catch (error) {
+          if (!(error instanceof ValidationError)) throw error;
+          refused = error.issues.map((i) => `${i.path}: ${i.message}`);
+        }
+        return { state: room.state, said, refused };
+      } finally {
+        room.close();
+      }
+      // #endregion
+    },
+
     "request-invalid": async ({ api }) => {
       // #region request-invalid
       // The types allow any string; the generated zod schema checks the format
@@ -671,12 +710,15 @@ export async function mountTypedClientDemo(
   };
 
   /** Runs one scenario. */
-  async function run(name: ScenarioName): Promise<ScenarioRun> {
+  async function run(
+    name: ScenarioName,
+    origin: string | undefined,
+  ): Promise<ScenarioRun> {
     const startedAt = Date.now();
     const started = performance.now();
     // The API's log from here on: hits numbered after the last one now.
     const seen = api.state.seq;
-    const kit = makeKit(started);
+    const kit = makeKit(started, origin);
     let ok = true;
     let outcome: unknown;
     try {
@@ -777,7 +819,14 @@ export async function mountTypedClientDemo(
         res.status(404).json({ error: `no scenario "${name}"` });
         return;
       }
-      res.json(await run(name));
+      // The playground's own origin, for the channel scenario's socket.
+      const port = req.server?.port;
+      res.json(
+        await run(
+          name,
+          port === undefined ? undefined : `http://127.0.0.1:${port}`,
+        ),
+      );
     })
     .describe({ hidden: true });
 

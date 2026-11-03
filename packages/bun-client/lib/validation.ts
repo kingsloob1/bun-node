@@ -38,6 +38,7 @@ import type {
   ValidationConfig,
 } from "./types";
 import {
+  channelContract,
   ContractError,
   createReceiver,
   createSender,
@@ -45,9 +46,16 @@ import {
 } from "@kingsleyweb/bun-contract";
 import { httpTransport } from "@kingsleyweb/bun-contract/lib/http";
 
-// The runner, for `./sseChecks` (loaded with this module, by `./sse`), so
-// bun-contract's values are imported here alone.
-export { validateStandard };
+// The runner, for `./sseChecks` (loaded with this module, by `./sse`), and
+// the guards and `channelContract` for `./channelChecks` (loaded the same
+// way, by `./channel`), so bun-contract's values are imported here alone.
+export {
+  channelContract,
+  ContractError,
+  createReceiver,
+  createSender,
+  validateStandard,
+};
 
 /** A request part the client checks. */
 export type RequestPart = "params" | "query" | "body" | "headers" | "files";

@@ -40,6 +40,11 @@
  * calls the app's client), and a splitting build loads bun-contract's guards
  * only lazily, as the `.` entry does. A negative control beside bun-common
  * must be caught.
+ *
+ * Since PR-W2 the `./channel` entry (`websocket.md`, plan §10.1): the same
+ * three checks — it imports nothing and holds nothing of a server or the
+ * core client's pipeline, bun-contract only in a lazily imported chunk, and
+ * a negative control beside bun-common is caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -339,6 +344,38 @@ describe("the ./sse entry (sse.md, plan §10.1)", () => {
   it("negative control: the entry beside bun-common is caught", async () => {
     const { code, logs } = await build(
       join(import.meta.dir, "fixtures", "sse-server-import.ts"),
+    );
+    if (code === undefined) {
+      expect(logs.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(serverMarkersIn(code).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the ./channel entry (websocket.md, plan §10.1)", () => {
+  const CHANNEL = join(import.meta.dir, "..", "lib", "channel.ts");
+
+  it("imports nothing, and holds nothing of a server or the core client's pipeline", async () => {
+    const { code, logs } = await build(CHANNEL);
+    expect(logs).toEqual([]);
+    expect(code!.includes("function channel(")).toBe(true);
+    expect(code!.match(/^\s*import\s/m)).toBeNull();
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(code!.includes("function serializeQuery")).toBe(false);
+    expect(code!.includes("function sse(")).toBe(false);
+  });
+
+  it("loads bun-contract's guards only lazily (a splitting build's eager code has none)", async () => {
+    const { eager, lazy } = await splitBuild(CHANNEL);
+    expect(contractMarkersIn(eager)).toEqual([]);
+    expect(contractMarkersIn(lazy.join("\n")).length).toBeGreaterThan(0);
+  });
+
+  it("negative control: the entry beside bun-common is caught", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "fixtures", "channel-server-import.ts"),
     );
     if (code === undefined) {
       expect(logs.length).toBeGreaterThan(0);
