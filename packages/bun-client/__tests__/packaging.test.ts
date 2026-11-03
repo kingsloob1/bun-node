@@ -461,7 +461,7 @@ describe("the consumer check", () => {
     }
   });
 
-  it("keeps ./webrtc out of every other entry, and imports nothing but types itself (webrtc.md)", async () => {
+  it("keeps ./webrtc out of every other entry, and imports nothing but types and the error classes itself (webrtc.md)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -472,10 +472,14 @@ describe("the consumer check", () => {
       }).toEqual({ file, imports: false });
     }
     const webrtc = await Bun.file(join(ROOT, "lib", "webrtc.ts")).text();
-    expect(webrtc.match(/^import(?! type)/gm)).toBeNull();
+    expect(
+      [...webrtc.matchAll(/^import(?! type)[^"]*from "([^"]+)"/gm)].map(
+        (match) => match[1],
+      ),
+    ).toEqual(["./errors"]);
   });
 
-  it("loads the channel checks only by a dynamic import, from the channel client alone", async () => {
+  it("loads the channel checks only by a dynamic import, from the channel client and the data channels", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -484,7 +488,11 @@ describe("the consumer check", () => {
         file,
         value: /^import(?! type)[^"]*from "\.\/channelChecks"/m.test(source),
         dynamic: source.includes('import("./channelChecks")'),
-      }).toEqual({ file, value: false, dynamic: file === "channel.ts" });
+      }).toEqual({
+        file,
+        value: false,
+        dynamic: file === "channel.ts" || file === "webrtc.ts",
+      });
     }
   });
 

@@ -36,9 +36,9 @@ and backpressure (PR-W2, [below](#websocket-channels-channel)), and
 channel (PR-W4, [below](#live-invalidation-live)), and `./graphql` makes a
 typed GraphQL call over the client, typed by the app's gql.tada or
 graphql-codegen documents (PR-G1, [below](#graphql-graphql)), and
-`./webrtc` connects WebRTC peers over a typed signalling channel (PR-R1,
-[below](#webrtc-webrtc)). The other framework bindings and transports come
-in later PRs (the plan's §15).
+`./webrtc` connects WebRTC peers over a typed signalling channel and types
+their data channels (PR-R1 and PR-R2, [below](#webrtc-webrtc)). The other
+framework bindings and transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -1584,6 +1584,80 @@ sig.on("offer", (offer) => {
   TypeScript, about 60 times slower per message), as the app's own
   dependency. Neither is a dependency of this package (node-datachannel is a
   dev dependency, for the tests).
+
+### Typed data channels: `typedDataChannel`
+
+`typedDataChannel` puts a channel contract over an `RTCDataChannel` (a
+browser's, node-datachannel's, werift's): the same envelope and guards as a
+[WebSocket channel](#websocket-channels-channel), so one shared
+`channelContract()` serves both, and requests work peer to peer.
+
+```ts
+import { channelContract } from "@kingsleyweb/bun-contract";
+
+export const chat = channelContract({
+  path: "/dc/chat", // a name: a data channel has no route
+  receives: { say: Say, ask: Ask },
+  sends: { said: Said, answer: Answer },
+  replies: { ask: "answer" },
+});
+
+// alice plays the contract's client: she sends `receives` and may request
+const dc = typedDataChannel(peer.createDataChannel("chat"), chat, { side: "client" });
+dc.send("say", { text: "hi" });                    // checked, typed; written once open
+const { a } = await dc.request("ask", { q: "?" }); // answered by bob's listener
+await dc.sendWhenReady("say", big);                // waits on bufferedamountlow
+dc.on("said", (m) => …);
+
+// bob plays its server: he sends `sends`, and his listener's return answers
+const bobDc = typedDataChannel(event.channel, chat, { side: "server" });
+bobDc.on("ask", async (q) => ({ a: await lookUp(q.q) }));
+```
+
+- **Sides.** Between peers there is no server, so `side` says which of the
+  contract's sides this peer plays: `"client"` sends `receives`, receives
+  `sends` and may `request()` what `replies` maps; `"server"` the other way,
+  and answers. `symmetric: true` reads `receives` both ways (`sends` is not
+  read), `replies` included, so either peer requests and answers. One of the
+  two is required.
+- **Validation** is the channel client's (`validate: { send, receive,
+  onFailure }`, BYO per message type, `false` for none), on in development
+  and off in production (`mode`, else `NODE_ENV`): a send that fails throws
+  `ValidationError` and writes nothing; a frame that fails warns and is
+  delivered, or with `onFailure.receive: "drop"` is discarded and fires
+  `$invalid`, or with `"throw"` rejects the request it answers. The guards
+  load lazily, as `./channel`'s do (the same chunk): a send made before
+  they have is checked in order once they have, and its failure reaches
+  `$error`.
+- **Requests** carry the envelope's id and resolve with the reply type's
+  frame carrying it, or reject: with the peer's error frame
+  (`ChannelError`: `UNKNOWN_MESSAGE` for a request it does not declare,
+  `VALIDATION` for one its checks dropped, `EXCEPTION` when its listener
+  threw), `RequestTimeoutError` (`timeout`, 30 s by default), or
+  `ChannelClosedError` when the channel closes first. A listener for an
+  answered type returns the answer, or a promise of it; the first listener
+  that returns one answers. An unreliable channel (`ordered: false`,
+  `maxRetransmits`, `maxPacketLifeTime`) refuses `request()`: a lost reply
+  would leave it waiting.
+- **Backpressure** is real here: `sendWhenReady(type, data, {
+  highWaterMark })` (1 MiB by default) waits until the channel is open and
+  its `bufferedAmount` is at most the mark, on the `bufferedamountlow` event
+  (it sets `bufferedAmountLowThreshold` to the mark), never by polling;
+  calls are served in order. `send` never waits: what is sent while the
+  channel connects is written, in order, once it opens; after it closes,
+  `send` throws `ChannelClosedError`.
+- **Binary**: `binary: { maxBytes }` lets raw binary frames through, each
+  at most `maxBytes` (`sendBinary(bytes)`; a larger one is a `RangeError`,
+  and without the option a `TypeError`). They arrive on `on("$binary")` as
+  a `Uint8Array` whatever the stack delivers: node-datachannel an
+  `ArrayBuffer`, werift a `Uint8Array`, a browser a `Blob` unless
+  `binaryType` is `"arraybuffer"` (the wrapper sets it). A refused frame
+  (undeclared, or over the size) reaches `$error` as a `ChannelError`
+  `UNSUPPORTED_DATA`. The content is the app's: there is no schema for
+  bytes.
+- **Events**: `$state` (each `readyState` change), `$error`, `$invalid`,
+  `$binary`; `state` and `bufferedAmount` read the channel's; `close()`
+  closes it.
 
 ## The query string
 

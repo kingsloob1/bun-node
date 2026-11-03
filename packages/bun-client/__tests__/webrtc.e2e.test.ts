@@ -2,7 +2,8 @@
  * End to end in Chrome (PR-R1, `webrtc.md` §6): two in-page peers on the
  * browser's own `RTCPeerConnection` connect through `connectPeer` over
  * bun-common's `signallingRelay`, and a data channel carries a message each
- * way. The page (`fixtures/webrtc-page.ts`) is bundled for a browser and
+ * way; then (PR-R2) a `typedDataChannel` on each side answers a request
+ * and carries a binary frame. The page (`fixtures/webrtc-page.ts`) is bundled for a browser and
  * served beside the relay on port 0; headless Chrome loads it through
  * `Bun.WebView`, as bun-jobs-ui's e2e tests do.
  *
@@ -123,7 +124,7 @@ describe.skipIf(chromePath === undefined)(
       }
     });
 
-    it("connects two in-page peers over the relay, with the browser's RTCPeerConnection, and a data channel carries a message each way", async () => {
+    it("connects two in-page peers over the relay, with the browser's RTCPeerConnection, and a data channel carries a message each way; a typed one answers a request and carries binary", async () => {
       await view!.navigate(`${origin}/`);
       const outcome = await view!.evaluate<PageOutcome>(`(async () => {
         const deadline = Date.now() + 20000;
@@ -143,6 +144,9 @@ describe.skipIf(chromePath === undefined)(
       expect(outcome).toEqual({
         atBob: "ping",
         reply: "echo:ping",
+        // PR-R2: typedDataChannel over the browser's RTCDataChannel.
+        typedReply: { a: "re:browser" },
+        binary: { kind: "Uint8Array", bytes: [7, 8, 9] },
         errors: [],
         rtc: "function",
       });

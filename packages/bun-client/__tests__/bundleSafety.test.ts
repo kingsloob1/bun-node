@@ -60,8 +60,9 @@
  *
  * Since PR-R1 the `./webrtc` entry (`webrtc.md`): it imports nothing, holds
  * nothing of a server, the core client or the channel client (it drives the
- * app's channel), and no bun-contract at all; a negative control beside
- * bun-common's relay is caught.
+ * app's channel); since PR-R2 its data channels load bun-contract's guards
+ * only lazily, as `./channel` does; a negative control beside bun-common's
+ * relay is caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -470,15 +471,21 @@ describe("the ./graphql entry (graphql.md, plan §10.1)", () => {
 describe("the ./webrtc entry (webrtc.md, plan §10.1)", () => {
   const WEBRTC = join(import.meta.dir, "..", "lib", "webrtc.ts");
 
-  it("imports nothing, and holds nothing of a server, the core client, the channel client or the guards", async () => {
+  it("imports nothing, and holds nothing of a server, the core client or the channel client", async () => {
     const { code, logs } = await build(WEBRTC);
     expect(logs).toEqual([]);
     expect(code!.includes("function connectPeer(")).toBe(true);
+    expect(code!.includes("function typedDataChannel(")).toBe(true);
     expect(code!.match(/^\s*import\s/m)).toBeNull();
     expect(serverMarkersIn(code!)).toEqual([]);
     expect(code!.includes("function createClient")).toBe(false);
     expect(code!.includes("function channel(")).toBe(false);
-    expect(contractMarkersIn(code!)).toEqual([]);
+  });
+
+  it("loads bun-contract's guards only lazily (a splitting build's eager code has none)", async () => {
+    const { eager, lazy } = await splitBuild(WEBRTC);
+    expect(contractMarkersIn(eager)).toEqual([]);
+    expect(contractMarkersIn(lazy.join("\n")).length).toBeGreaterThan(0);
   });
 
   it("negative control: the entry beside bun-common's relay is caught", async () => {

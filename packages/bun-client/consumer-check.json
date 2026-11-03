@@ -224,7 +224,7 @@
     },
     {
       "spelling": "@kingsleyweb/bun-client/webrtc",
-      "values": ["connectPeer"],
+      "values": ["connectPeer", "typedDataChannel"],
       "types": [
         "ConnectPeerOptions",
         "Peer",
@@ -232,15 +232,18 @@
         "PeerConnectionConstructor",
         "SignallingEntry",
         "SessionDescriptionInit",
-        "IceCandidateInit"
+        "IceCandidateInit",
+        "TypedDataChannel",
+        "TypedDataChannelOptions",
+        "DataChannelLike"
       ],
       "browser": true,
-      "snippet": "import type { ChannelClient } from \"@kingsleyweb/bun-client/channel\";\ndeclare const sig: ChannelClient<t.SignallingEntry>;\ninterface Rtc extends t.PeerConnectionLike { readonly extra: 1 }\ndeclare const Rtc: t.PeerConnectionConstructor<Rtc>;\nconst peer = m.connectPeer(sig, { to: \"bob\", rtc: Rtc, iceServers: [{ urls: \"stun:stun.example:3478\" }], configuration: { bundlePolicy: \"max-bundle\" }, onCandidateError: (_e, c) => { const _c: Equal<typeof c, t.IceCandidateInit> = true; void _c; }, onError: () => {} });\nconst _connection: Equal<typeof peer.connection, Rtc> = true;\nconst _to: Equal<typeof peer.to, string> = true;\nsig.on(\"offer\", (offer) => { m.connectPeer(sig, { to: offer.from, offer, rtc: Rtc }); });\nconst _desc: t.SessionDescriptionInit = { type: \"offer\", sdp: \"v=0\" };\npeer.close();\nexport type _peerNotAny = Expect<IsAny<t.Peer<Rtc>>>;\nexport type _optionsNotAny = Expect<IsAny<t.ConnectPeerOptions<Rtc>>>;\nexport type _entryNotAny = Expect<IsAny<t.SignallingEntry[\"receives\"]>>;"
+      "snippet": "import type { ChannelClient } from \"@kingsleyweb/bun-client/channel\";\ndeclare const sig: ChannelClient<t.SignallingEntry>;\ninterface Rtc extends t.PeerConnectionLike { readonly extra: 1 }\ndeclare const Rtc: t.PeerConnectionConstructor<Rtc>;\nconst peer = m.connectPeer(sig, { to: \"bob\", rtc: Rtc, iceServers: [{ urls: \"stun:stun.example:3478\" }], configuration: { bundlePolicy: \"max-bundle\" }, onCandidateError: (_e, c) => { const _c: Equal<typeof c, t.IceCandidateInit> = true; void _c; }, onError: () => {} });\nconst _connection: Equal<typeof peer.connection, Rtc> = true;\nconst _to: Equal<typeof peer.to, string> = true;\nsig.on(\"offer\", (offer) => { m.connectPeer(sig, { to: offer.from, offer, rtc: Rtc }); });\nconst _desc: t.SessionDescriptionInit = { type: \"offer\", sdp: \"v=0\" };\npeer.close();\nexport type _peerNotAny = Expect<IsAny<t.Peer<Rtc>>>;\nexport type _optionsNotAny = Expect<IsAny<t.ConnectPeerOptions<Rtc>>>;\nexport type _entryNotAny = Expect<IsAny<t.SignallingEntry[\"receives\"]>>;\nimport { channelContract } from \"@kingsleyweb/bun-contract\";\nimport type { StandardSchemaV1 } from \"@kingsleyweb/bun-contract\";\ndeclare const Ask: StandardSchemaV1<{ q: string }>;\ndeclare const Answer: StandardSchemaV1<{ a: string; at: Date }>;\nconst chat = channelContract({ path: \"/dc/chat\", receives: { ask: Ask, nudge: null }, sends: { answer: Answer }, replies: { ask: \"answer\" } });\ndeclare const dc: t.DataChannelLike;\nconst client = m.typedDataChannel(dc, chat, { side: \"client\", validate: { onFailure: { receive: \"drop\" } }, mode: \"production\", timeout: 5_000, binary: { maxBytes: 1024 } });\nclient.send(\"nudge\");\nasync function probeDc() { const r = await client.request(\"ask\", { q: \"?\" }); const _r: Equal<typeof r, { a: string; at: string }> = true; void _r; await client.sendWhenReady(\"nudge\", undefined, { highWaterMark: 1024 }); }\nvoid probeDc;\nclient.sendBinary(new Uint8Array(1));\nclient.on(\"$binary\", (b) => { const _b: Equal<typeof b, Uint8Array> = true; void [_b, b]; });\nconst server = m.typedDataChannel(dc, chat, { side: \"server\" });\nserver.on(\"ask\", (q) => ({ a: q.q, at: new Date() }));\nconst _p2p = m.typedDataChannel(dc, chat, { symmetric: true }); void _p2p;\nexport type _dcNotAny = Expect<IsAny<t.TypedDataChannel>>;\nexport type _dcOptionsNotAny = Expect<IsAny<t.TypedDataChannelOptions>>;\nexport type _viewNotAny = Expect<IsAny<t.DataChannelView<typeof chat.spec, \"server\">>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-client/lib/webrtc",
-      "values": ["connectPeer"],
-      "types": ["Peer"],
+      "values": ["connectPeer", "typedDataChannel"],
+      "types": ["Peer", "TypedDataChannel"],
       "browser": true
     },
     {
