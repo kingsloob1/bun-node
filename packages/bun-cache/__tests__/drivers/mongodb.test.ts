@@ -35,6 +35,7 @@ import {
 } from "../../lib/drivers/mongo";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import { mongoBackend, mongoRsBackend, runPrefix } from "./backends";
+import { registerEntryOrCounterTests } from "./entryOrCounter";
 
 // Every case here is a fixed amount of work against a server other runs
 // share, and none asserts on how long it takes: a wait that matters names
@@ -567,6 +568,14 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
       expect(await keysIn(runPrefix("cap5_"))).toHaveLength(50);
       await driver.close();
     });
+  });
+
+  describe(`${label} one-round-trip read`, () => {
+    const driver = make("eoc_");
+    afterAll(async () => {
+      await driver.close();
+    });
+    registerEntryOrCounterTests(driver);
   });
 
   describe(`${label} specifics`, () => {
