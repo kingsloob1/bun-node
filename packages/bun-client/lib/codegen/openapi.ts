@@ -42,6 +42,7 @@ import {
 } from "./doc";
 import { framingOf, splitMultipart } from "./form";
 import { documentsHash } from "./hash";
+import { declaredHeaders, isStringSchema } from "./headers";
 import { emitZodModule } from "./zod";
 import {
   intersection,
@@ -802,9 +803,16 @@ function buildEntry(
   if (requestBody.files !== undefined)
     members.push({ name: "files", optional: false, type: requestBody.files });
 
-  /* responses, events, error codes. */
+  /* responses, events, error codes; the headers they declare. */
   const responses = buildResponses(operation, context, key, warn);
   members.push({ name: "responses", optional: false, type: responses.type });
+  const responseHeaders = buildResponseHeaders(operation, context, key);
+  if (responseHeaders !== undefined)
+    members.push({
+      name: "responseHeaders",
+      optional: false,
+      type: responseHeaders,
+    });
 
   /* cache (x-bun-cache). */
   const cache = operation["x-bun-cache"];
@@ -1117,6 +1125,53 @@ function buildResponses(
     ...(events === undefined ? {} : { events }),
     ...(chunks.length === 0 ? {} : { chunks }),
   };
+}
+
+/**
+ * The headers each numeric status declares (§5.6), as the entry's
+ * `responseHeaders`: by lower-case name, optional unless `required`, a
+ * value typed by its schema when the schema describes strings and `string`
+ * otherwise (a header arrives as a string; `./headers`). `undefined` when
+ * no status declares one.
+ */
+function buildResponseHeaders(
+  operation: Record<string, unknown>,
+  context: SchemaContext,
+  key: string,
+): TsType | undefined {
+  const raw = isRecord(operation.responses) ? operation.responses : {};
+  const statuses: TsMember[] = [];
+  for (const status of Object.keys(raw)
+    .filter((code) => /^[1-5]\d\d$/.test(code))
+    .map(Number)
+    .sort((a, b) => a - b)) {
+    const headers = declaredHeaders(context.document, raw[String(status)]);
+    if (headers.length === 0) continue;
+    statuses.push({
+      name: status,
+      optional: false,
+      type: {
+        kind: "object",
+        members: headers.map((header) => ({
+          name: header.name,
+          optional: !header.required,
+          type: isStringSchema(context.document, header.schema)
+            ? schemaToType(
+                header.schema,
+                context,
+                `${key} response ${status} headers.${header.name}`,
+              )
+            : keyword("string"),
+          ...(header.description === undefined
+            ? {}
+            : { doc: header.description }),
+        })),
+      },
+    });
+  }
+  return statuses.length === 0
+    ? undefined
+    : { kind: "object", members: statuses };
 }
 
 /** What one response's body reads as. */

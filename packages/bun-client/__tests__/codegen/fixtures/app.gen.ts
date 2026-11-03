@@ -4,10 +4,12 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 108152abb8ac0736
+ * typesHash: 6ee06fd1bf4975f8
  *
  * Warnings:
  * - GET /api/health: no responses declared (neither the validator nor .describe() declares any); a placeholder `default` was emitted — strict mode rejects this
+ * - GET /api/users/:id response 200: at `joined`: `z.date()` has no JSON Schema, so it is typed `unknown` and not checked (declare the wire type, `z.iso.datetime()`)
+ * - POST /api/users body: at the value itself: a refinement (`.refine()`, `.superRefine()`) is not in the document, so a schema generated from it (`--zod`) does not run it
  * - GET /api/health: no response is declared; typed `{ 200: unknown }`
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
@@ -16,7 +18,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "108152abb8ac0736";
+export const typesHash = "6ee06fd1bf4975f8";
 
 /** Where a user lives. */
 export interface Address {
@@ -167,6 +169,13 @@ export interface Routes {
       200: User;
       404: Omit<Problem, "code"> & {
         code: "NOT_FOUND" | "GONE";
+      };
+    };
+    responseHeaders: {
+      200: {
+        /** The request's id. */
+        "x-request-id"?: string;
+        "x-rate-limit"?: string;
       };
     };
     cache: {

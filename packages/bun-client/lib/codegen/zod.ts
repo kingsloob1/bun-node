@@ -33,7 +33,11 @@
  *   numeric status: a JSON body's schema, an NDJSON stream's line schema,
  *   `z.string()` for a text one, `null` for none. A part, or a status, with
  *   nothing to check (a raw body, an event stream, a binary download, a raw
- *   stream) is left out.
+ *   stream) is left out. `responseHeaders` by numeric status, from the
+ *   headers each declares (`Content-Type` and `Set-Cookie` left out).
+ * - **Headers** cross as strings, request and response alike: a header
+ *   whose schema describes strings is checked by it, any other
+ *   (`z.coerce.number()` documents `integer`) as `z.string()`.
  *
  * The module is laid out as Prettier lays it out (`./doc`), so `bun fmt`
  * leaves it unchanged (`__tests__/codegen/format.test.ts`).
@@ -58,6 +62,7 @@ import {
   softline,
 } from "./doc";
 import { framingOf, splitMultipart } from "./form";
+import { declaredHeaders, isStringSchema } from "./headers";
 import { componentIdentifiers, RESERVED } from "./openapi";
 import { jsDoc, propertyKey, quote } from "./print";
 import {
@@ -777,16 +782,39 @@ function parametersObject(
         : String(param.name);
     if (seen.has(name)) continue;
     seen.add(name);
-    const expr = parameterSchema(
-      param,
-      walk,
-      `${key} ${location === "header" ? "headers" : "query"}.${name}`,
-    );
+    const at = `${key} ${location === "header" ? "headers" : "query"}.${name}`;
+    // A header is checked as sent, a string (`./headers`).
+    const expr =
+      location === "header"
+        ? headerSchema(parameterSchemaOf(param), walk, at)
+        : parameterSchema(param, walk, at);
     members.push([name, param.required === true ? expr : optional(expr)]);
   }
   return members.length === 0
     ? undefined
     : z("looseObject", { kind: "object", members });
+}
+
+/** A parameter's JSON Schema: its `schema`, or its first `content` entry's; `undefined` when neither is given. */
+function parameterSchemaOf(param: Record<string, unknown>): unknown {
+  if ("schema" in param) return param.schema;
+  if (isRecord(param.content)) {
+    const first = Object.values(param.content)[0];
+    if (isRecord(first) && "schema" in first) return first.schema;
+  }
+  return undefined;
+}
+
+/**
+ * A header value's schema: a header crosses as a string, so a schema that
+ * describes strings is checked as it is, and any other (`integer`,
+ * `boolean`, none) as `z.string()`: looser than the document, never
+ * stricter (`./headers`).
+ */
+function headerSchema(schema: unknown, walk: Walk, at: string): Expr {
+  return isStringSchema(walk.context.document, schema)
+    ? convert(schema, walk, at)
+    : z("string");
 }
 
 /** A parameter's schema: its `schema`, or its `content`'s; a string when neither is given. */
@@ -981,6 +1009,35 @@ function routeSchemas(
   }
   if (responses.length > 0)
     members.push(["responses", { kind: "object", members: responses }]);
+
+  /* responseHeaders: by numeric status, the headers it declares (§5.6). */
+  const responseHeaders: (readonly [number, Expr])[] = [];
+  for (const status of Object.keys(raw)
+    .filter((code) => /^[1-5]\d\d$/.test(code))
+    .map(Number)
+    .sort((a, b) => a - b)) {
+    const headers = declaredHeaders(walk.context.document, raw[String(status)]);
+    if (headers.length === 0) continue;
+    responseHeaders.push([
+      status,
+      z("looseObject", {
+        kind: "object",
+        members: headers.map((header) => {
+          const expr = headerSchema(
+            header.schema,
+            walk,
+            `${key} response ${status} headers.${header.name}`,
+          );
+          return [header.name, header.required ? expr : optional(expr)];
+        }),
+      }),
+    ]);
+  }
+  if (responseHeaders.length > 0)
+    members.push([
+      "responseHeaders",
+      { kind: "object", members: responseHeaders },
+    ]);
 
   return members.length === 0 ? undefined : { kind: "object", members };
 }

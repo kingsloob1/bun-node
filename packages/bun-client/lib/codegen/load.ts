@@ -19,7 +19,9 @@ import { dirname, extname, resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import type { CodegenWarning } from "./openapi";
+import type { ListedRouteLike } from "./zodDrops";
 import { isRecord } from "./schema";
+import { routeDropWarnings } from "./zodDrops";
 
 /** Where to read the documents from: one of a URL, files or a module. */
 export type DocumentSource =
@@ -147,6 +149,49 @@ async function importDocs(modulePath: string): Promise<DocsModule> {
   }
 }
 
+/**
+ * bun-common's `listRoutes`, from the copy the module resolves (the one its
+ * router was built with); `undefined` when it does not load, which leaves
+ * the zod drops unreported rather than failing the generation.
+ */
+async function importListRoutes(
+  modulePath: string,
+): Promise<((router: unknown) => readonly ListedRouteLike[]) | undefined> {
+  const specifier = "@kingsleyweb/bun-common";
+  try {
+    const common = (await import(
+      Bun.resolveSync(specifier, dirname(modulePath))
+    )) as { listRoutes?: unknown };
+    if (typeof common.listRoutes !== "function") return undefined;
+    const listRoutes = common.listRoutes as (
+      router: unknown,
+      options: object,
+    ) => readonly ListedRouteLike[];
+    // Its own warnings are the document's, which `generateOpenApi` reported.
+    const quiet = { log: () => {}, warn: () => {}, error: () => {} };
+    return (router) => listRoutes(router, { logger: quiet });
+  } catch {
+    return undefined;
+  }
+}
+
+/** The route keys a document holds: its operations' `x-bun-route-key`s. */
+function documentedKeys(document: object): Set<string> {
+  const keys = new Set<string>();
+  const paths = (document as { paths?: unknown }).paths;
+  if (!isRecord(paths)) return keys;
+  for (const item of Object.values(paths)) {
+    if (!isRecord(item)) continue;
+    for (const operation of Object.values(item))
+      if (
+        isRecord(operation) &&
+        typeof operation["x-bun-route-key"] === "string"
+      )
+        keys.add(operation["x-bun-route-key"]);
+  }
+  return keys;
+}
+
 /** Reads the documents from a module's export (see the module's doc). */
 async function fromExport(
   value: unknown,
@@ -189,6 +234,13 @@ async function fromExport(
   const docs = await importDocs(modulePath);
   const result = docs.generateOpenApi(router, { ...MODULE_DOCUMENT_INFO });
   const warnings = result.warnings.map(producerWarning);
+  // What the zod schemas hold that the document cannot (plan §5.3): only
+  // the router's own schemas show it, so only a module source reports it.
+  const listRoutes = await importListRoutes(modulePath);
+  if (listRoutes !== undefined)
+    warnings.push(
+      ...routeDropWarnings(listRoutes(router), documentedKeys(result.document)),
+    );
   let asyncapi: object | undefined;
   if (typeof docs.generateAsyncApi === "function") {
     try {

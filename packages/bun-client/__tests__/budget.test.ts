@@ -54,6 +54,12 @@
  * types from `@tanstack/query-persist-client-core`, so the bundle is its own
  * code whatever is external. Measured 2026-11-03 (the same build): 1,472
  * bytes minified, 724 gzipped. The other entries are unchanged by it.
+ *
+ * The PR-C4 follow-ups (response headers checked, §5.6) measured 2026-11-03
+ * (the same build): eager 12,029 bytes minified, 5,052 gzipped (11,922 and
+ * 5,019 before: passing the headers to the checks, and checking them alone
+ * for an unread body); the checks chunk 19,149 and 6,850 (18,209 and
+ * 6,571: the headers part of the response check). No limit changed.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";

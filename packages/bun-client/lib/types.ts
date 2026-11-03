@@ -27,6 +27,7 @@ export type UndeclaredStatus = "throw" | "result";
  * - `responses`: the body type per status; left out, `{ 200: unknown }`. A
  *   download is `Blob`, a streamed body `AsyncIterable` of its values
  *   (`other-transports.md` §4).
+ * - `responseHeaders`: the headers each status declares, by lower-case name.
  * - `send`/`receive`: the sender and receiver views the plan's §8.5 adds to
  *   `RoutesOf` (PR-M1); when present they win over the fields above.
  */
@@ -53,6 +54,13 @@ export interface RouteEntry {
   files?: object;
   /** Response bodies by status. Default: `{ 200: unknown }`. */
   responses?: object;
+  /**
+   * Response headers the route declares, by status, then by lower-case
+   * name: what the client checks on arrival (§5.6), each value a string as
+   * it arrives. Read them from the result's `response.headers`. Default:
+   * undeclared.
+   */
+  responseHeaders?: object;
   /** The sender view (`RoutesOf`, plan §8.5): `params`, `query`, `headers`, `body`. */
   send?: object;
   /** The receiver view (`RoutesOf`, plan §8.5): response bodies by status. */
@@ -184,14 +192,19 @@ export type DownloadAs = "blob" | "stream" | "arrayBuffer";
 /**
  * A call's options for entry `E`: its typed parts plus {@link CallConfig}.
  * `T` and `U` carry the call's `throwOnError` and `undeclaredStatus`, so the
- * return type follows them.
+ * return type follows them; `V` its `validate.response`, so a BYO response
+ * schema's output types the status it is set for (§5.4).
  */
 export type CallOptions<
   E,
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
   A extends DownloadAs | undefined = undefined,
-> = Omit<CallConfig, "headers" | "throwOnError" | "undeclaredStatus" | "as"> &
+  V extends ValidationConfig["response"] = undefined,
+> = Omit<
+  CallConfig,
+  "headers" | "throwOnError" | "undeclaredStatus" | "as" | "validate"
+> &
   CallParts<E> & {
     /** This call's `throwOnError` (§4.4). Default: the client's. */
     throwOnError?: T;
@@ -199,6 +212,19 @@ export type CallOptions<
     undeclaredStatus?: U;
     /** How a download is delivered ({@link CallConfig.as}). Default: `"blob"`. */
     as?: A;
+    /**
+     * Validation for this call, merged per key over the route's and the
+     * client's (§6.2); `false` turns it all off, BYO schemas included. A BYO
+     * schema set here for a response status (`response: { 200: { custom } }`)
+     * types that status's `data` (or `error`) as the schema's output, which
+     * is what the client delivers when the check passes (§5.4); a failed
+     * check under `"warn"` or a hook that returns delivers the body as it
+     * arrived, so a route whose BYO schema transforms is safest with
+     * `onFailure: { response: "throw" }`. Only `response` is captured (`V`),
+     * so a hook in `onFailure` keeps its contextual type. Default: the
+     * route's.
+     */
+    validate?: false | (ValidationConfig & { response?: V });
   };
 
 /** A call's arguments: the options are required when a typed part is. */
@@ -207,9 +233,10 @@ export type CallArgs<
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
   A extends DownloadAs | undefined = undefined,
+  V extends ValidationConfig["response"] = undefined,
 > = [RequiredKeys<CallParts<E>>] extends [never]
-  ? [options?: CallOptions<E, T, U, A>]
-  : [options: CallOptions<E, T, U, A>];
+  ? [options?: CallOptions<E, T, U, A, V>]
+  : [options: CallOptions<E, T, U, A, V>];
 
 /** A response map's key as a status number (`"404"` and `404` alike). */
 type ToStatus<K> = K extends number
@@ -280,11 +307,61 @@ type WireBody<T, A = undefined> =
   | ([Extract<T, Blob>] extends [never] ? never : Download<A>)
   | Streamed<Extract<T, AsyncIterable<unknown>>>;
 
-/** The body of status `S`, as the client returns it under the call's `as` (`A`). */
-type BodyAt<E, S, A = undefined> = WireBody<
-  S extends keyof ResponsesOf<E> ? ResponsesOf<E>[S] : never,
-  A
->;
+/**
+ * The BYO schema a call's `validate.response` (`V`) sets for status `S`,
+ * wrapped as `{ schema }`; `never` when it sets none, or turns it off
+ * (`response: false`, or `false` for the status; `validate: false` leaves
+ * `V` unset). The call is the last level (§6.2), so what it sets is what runs.
+ */
+type CustomAt<V, S> = [V] extends [object]
+  ? (
+      S extends keyof V
+        ? V[S]
+        : `${S & number}` extends keyof V
+          ? V[`${S & number}`]
+          : never
+    ) extends infer P
+    ? [P] extends [never]
+      ? never
+      : [P] extends [{ custom: infer C extends StandardSchemaV1 }]
+        ? { schema: C }
+        : never
+    : never
+  : never;
+
+/**
+ * A body as a BYO schema with output `O` delivers it (§5.4): its output in
+ * place of the wire body, a streamed body's values one by one, and a
+ * download read as `"stream"` left as it is (an unread body is never
+ * checked).
+ */
+type CustomBody<T, O, A> =
+  | ([Exclude<T, Blob | AsyncIterable<unknown>>] extends [never] ? never : O)
+  | ([Extract<T, Blob>] extends [never]
+      ? never
+      : [A] extends ["stream"]
+        ? ReadableStream<Uint8Array>
+        : O)
+  | ([Extract<T, AsyncIterable<unknown>>] extends [never]
+      ? never
+      : AsyncIterable<O>);
+
+/** The declared body of status `S`, before the client reads it. */
+type RawAt<E, S> = S extends keyof ResponsesOf<E> ? ResponsesOf<E>[S] : never;
+
+/**
+ * The body of status `S`, as the client returns it under the call's `as`
+ * (`A`): the wire body after JSON, or, where the call's `validate.response`
+ * (`V`) sets a BYO schema for the status, that schema's output. Distributes over
+ * a union of statuses.
+ */
+type BodyAt<E, S, A = undefined, V = undefined> = S extends unknown
+  ? [CustomAt<V, S>] extends [never]
+    ? WireBody<RawAt<E, S>, A>
+    : CustomAt<V, S> extends { schema: infer C extends StandardSchemaV1 }
+      ? CustomBody<RawAt<E, S>, StandardSchemaV1.InferOutput<C>, A>
+      : never
+  : never;
 
 /**
  * What a call returns (§4.4): one member per declared status, discriminated
@@ -299,11 +376,14 @@ type BodyAt<E, S, A = undefined> = WireBody<
  * @typeParam E The route's entry.
  * @typeParam U `"result"` to include the catch-all member.
  * @typeParam A The call's `as`: how a download is delivered.
+ * @typeParam V The call's `validate.response`: a BYO schema set there for a
+ *   status types its body as the schema's output (§5.4).
  */
 export type Result<
   E,
   U extends UndeclaredStatus = "throw",
   A extends DownloadAs | undefined = undefined,
+  V extends ValidationConfig["response"] = undefined,
 > =
   | {
       [S in SuccessStatus<E>]: {
@@ -312,7 +392,7 @@ export type Result<
         /** The status. */
         status: S;
         /** The parsed body (a download as `as` asks; a stream to iterate). */
-        data: BodyAt<E, S, A>;
+        data: BodyAt<E, S, A, V>;
         /** Absent on success. */
         error?: undefined;
         /**
@@ -334,7 +414,7 @@ export type Result<
         /** Absent on failure. */
         data?: undefined;
         /** The parsed body (problem+json, by the plan's convention). */
-        error: BodyAt<E, S, A>;
+        error: BodyAt<E, S, A, V>;
         /** The response, its body already read. */
         response: Response;
       };
@@ -354,11 +434,16 @@ export type Result<
         }
       : never);
 
-/** What `throwOnError: true` returns: the success body (a union over the 2xx statuses), a download as `A` asks. */
+/**
+ * What `throwOnError: true` returns: the success body (a union over the 2xx
+ * statuses), a download as `A` asks, a BYO schema's output where the call's
+ * `validate.response` (`V`) sets one.
+ */
 export type SuccessData<
   E,
   A extends DownloadAs | undefined = undefined,
-> = BodyAt<E, SuccessStatus<E>, A>;
+  V extends ValidationConfig["response"] = undefined,
+> = BodyAt<E, SuccessStatus<E>, A, V>;
 
 /** The type-level part of the client's configuration: what decides a call's return type. */
 export interface ClientFlags {
@@ -404,18 +489,23 @@ export type FlagConfig<F> = ([GlobalThrow<F>] extends [false]
         undeclaredStatus: GlobalUndeclared<F>;
       });
 
-/** What a call to entry `E` resolves to, given the call's `T`/`U`/`A` and the client's flags `F`. */
-export type CallReturn<E, T, U, F, A = undefined> = (
+/** What a call to entry `E` resolves to, given the call's `T`/`U`/`A`/`V` and the client's flags `F`. */
+export type CallReturn<E, T, U, F, A = undefined, V = undefined> = (
   [T] extends [boolean] ? T : GlobalThrow<F>
 ) extends infer Throw
   ? Throw extends true
-    ? SuccessData<E, A & (DownloadAs | undefined)>
+    ? SuccessData<
+        E,
+        A & (DownloadAs | undefined),
+        V & ValidationConfig["response"]
+      >
     : Result<
         E,
         [U] extends [UndeclaredStatus]
           ? U
           : GlobalUndeclared<F> & UndeclaredStatus,
-        A & (DownloadAs | undefined)
+        A & (DownloadAs | undefined),
+        V & ValidationConfig["response"]
       >
   : never;
 
@@ -424,9 +514,10 @@ export type Call<E, F> = <
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
   A extends DownloadAs | undefined = undefined,
+  V extends ValidationConfig["response"] = undefined,
 >(
-  ...args: CallArgs<E, T, U, A>
-) => Promise<CallReturn<E, T, U, F, A>>;
+  ...args: CallArgs<E, T, U, A, V>
+) => Promise<CallReturn<E, T, U, F, A, V>>;
 
 /** A verb method: the path as a literal of the map's paths for that method. */
 export type Verb<R, M extends string, F> = <
@@ -434,10 +525,11 @@ export type Verb<R, M extends string, F> = <
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
   A extends DownloadAs | undefined = undefined,
+  V extends ValidationConfig["response"] = undefined,
 >(
   path: P,
-  ...args: CallArgs<EntryAt<R, `${M} ${P}`>, T, U, A>
-) => Promise<CallReturn<EntryAt<R, `${M} ${P}`>, T, U, F, A>>;
+  ...args: CallArgs<EntryAt<R, `${M} ${P}`>, T, U, A, V>
+) => Promise<CallReturn<EntryAt<R, `${M} ${P}`>, T, U, F, A, V>>;
 
 /** An entry's `operationId` as a literal; `never` when it has none. */
 type OperationIdOf<E> = E extends { operationId: infer O extends string }
@@ -630,7 +722,11 @@ export type PartValidation =
        * off. A later level's `custom` replaces an earlier one's. Default: none.
        */
       custom?: StandardSchemaV1;
-      /** Run `custom` instead of the built-in schema. Default: `false`. */
+      /**
+       * Run `custom` instead of the built-in schema. For a response status,
+       * the built-in body schema; its declared headers are still checked.
+       * Default: `false`.
+       */
       replace?: boolean;
     };
 
@@ -667,9 +763,10 @@ export interface ValidationConfig {
    */
   files?: PartValidation;
   /**
-   * Response bodies: one switch for every status (`false` turns them off,
-   * BYO schemas included), or one entry per status (a status not listed
-   * keeps the earlier levels' setting). Default: built-in schemas on in
+   * Responses, each status's body and the headers it declares (§5.6): one
+   * switch for every status (`false` turns them off, BYO schemas included),
+   * or one entry per status (a status not listed keeps the earlier levels'
+   * setting). A BYO schema checks the body. Default: built-in schemas on in
    * development, off in production.
    */
   response?: boolean | { readonly [status: number]: PartValidation };
@@ -716,6 +813,17 @@ export interface RouteSchemas {
    * checked.
    */
   readonly responses?: { readonly [status: number]: StandardSchemaV1 | null };
+  /**
+   * Response headers by status (§5.6): an object of the headers as they
+   * arrived, by lower-case name, each a string (a repeated header joined
+   * with `", "`, as `Headers.get` reads it). Checked under the status's
+   * response switch and failure mode, like its body; a BYO schema
+   * (`custom`) checks the body only. A status not listed has its headers
+   * unchecked. In a browser, a cross-origin response exposes only the
+   * headers its `Access-Control-Expose-Headers` names (and never
+   * `Set-Cookie`), so a required header it hides reads as missing.
+   */
+  readonly responseHeaders?: { readonly [status: number]: StandardSchemaV1 };
 }
 
 /**
@@ -854,10 +962,11 @@ export interface Client<R, F extends ClientFlags = Record<never, never>> {
     T extends boolean | undefined = undefined,
     U extends UndeclaredStatus | undefined = undefined,
     A extends DownloadAs | undefined = undefined,
+    V extends ValidationConfig["response"] = undefined,
   >(
     key: K,
-    ...args: CallArgs<R[K], T, U, A>
-  ) => Promise<CallReturn<R[K], T, U, F, A>>;
+    ...args: CallArgs<R[K], T, U, A, V>
+  ) => Promise<CallReturn<R[K], T, U, F, A, V>>;
   /** The URL a call would request, `baseUrl` included; sends nothing. */
   url: <P extends AnyPathOf<R>>(path: P, ...args: UrlArgs<R, P>) => string;
   /** Calls by `operationId`: `api.op.getUser(opts)` is `api.get("/users/:id", opts)`. Needs {@link ClientConfig.manifest}. */

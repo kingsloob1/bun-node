@@ -93,14 +93,17 @@ function contractOf(def: object): AnyContract {
   return httpTransport.contract(def as never);
 }
 
-/** A guard's issues, marked as the built-in schema's, with a response's `body` target named `response`. */
+/**
+ * A guard's issues, marked as the built-in schema's, with a response's
+ * `body` target named `response` (its `headers` keep theirs).
+ */
 function builtinIssues(
   issues: readonly ValidationIssue[],
   response: boolean,
 ): ValidationErrorIssue[] {
   return issues.map((issue) => ({
     ...issue,
-    target: (response
+    target: (response && issue.target === "body"
       ? "response"
       : issue.target) as ValidationErrorIssue["target"],
     source: "builtin",
@@ -201,52 +204,92 @@ export async function checkRequest(
   return { value: out, issues };
 }
 
+/** What a response check runs (§5.4–§5.6): the body's plan, and whether the built-in headers schema runs. */
+export interface ResponsePlan extends PartPlan {
+  /** Run the status's built-in headers schema, when it has one. */
+  readonly headers: boolean;
+}
+
+/** What a response check is given: the body, the headers, or both. */
+export interface ResponseInput {
+  /** Check the body (`false` for one left unread, or the headers alone). */
+  readonly checkBody: boolean;
+  /** The body as the client read it (JSON parsed, text, …). */
+  readonly body?: unknown;
+  /** The headers as they arrived, by lower-case name; `undefined` leaves them unchecked (an NDJSON line). */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
 /**
- * Checks a response body (§5.4, §5.5): the status's built-in schema through
- * a receiver (which strips prototype-pollution keys from the body in place),
- * then the BYO schema, on the built-in schema's output when it passed and on
- * the body when it failed. A BYO schema that passes makes its output the
- * value delivered; otherwise the body is delivered as it arrived.
+ * Checks a response (§5.4–§5.6): the status's built-in schemas, its
+ * declared headers and its body, through one receiver (which strips
+ * prototype-pollution keys from the body in place), then the BYO schema,
+ * on the body, on the built-in schema's output when that passed and on the
+ * body when it failed. A BYO schema that passes makes its output the value
+ * delivered; otherwise the body is delivered as it arrived. Headers are
+ * checked, never changed.
  *
  * @param route  The route's built-in schemas; `undefined` when it has none.
  * @param status The response's status.
  * @param plan   What runs for this status.
- * @param body   The body as the client read it (JSON parsed, text, …).
+ * @param input  The body and the headers, and which of them to check.
  */
 export async function checkResponse(
   route: RouteSchemas | undefined,
   status: number,
-  plan: PartPlan,
-  body: unknown,
+  plan: ResponsePlan,
+  input: ResponseInput,
 ): Promise<Checked<unknown>> {
   const issues: ValidationErrorIssue[] = [];
   let parsed: { ok: true; value: unknown } | undefined;
-  const schema = route?.responses?.[status];
-  if (plan.builtin && route !== undefined && schema !== undefined) {
-    const guard = cached(route, "response", () =>
-      createReceiver(
-        contractOf({
-          outbound: Object.fromEntries(
-            Object.entries(route.responses ?? {}).map(([code, body]) => [
-              code,
-              { body: bodySchema(body) },
-            ]),
-          ),
-        }),
-        "outbound",
-        { undeclaredKey: "allow" },
-      ),
+  const body =
+    input.checkBody && plan.builtin && route?.responses?.[status] !== undefined;
+  const headers =
+    input.headers !== undefined &&
+    plan.headers &&
+    route?.responseHeaders?.[status] !== undefined;
+  if (route !== undefined && (body || headers)) {
+    const guard = cached(
+      route,
+      `response:${body ? "body" : ""}:${headers ? "headers" : ""}`,
+      () => {
+        const statuses = new Set([
+          ...(body ? Object.keys(route.responses ?? {}) : []),
+          ...(headers ? Object.keys(route.responseHeaders ?? {}) : []),
+        ]);
+        return createReceiver(
+          contractOf({
+            outbound: Object.fromEntries(
+              [...statuses].map((code) => {
+                const parts: Record<string, unknown> = {};
+                const declared = route.responseHeaders?.[Number(code)];
+                if (headers && declared !== undefined) parts.headers = declared;
+                const schema = route.responses?.[Number(code)];
+                if (body && schema !== undefined)
+                  parts.body = bodySchema(schema);
+                return [code, parts];
+              }),
+            ),
+          }),
+          "outbound",
+          { undeclaredKey: "allow" },
+        );
+      },
     );
-    const outcome = await guard({ status, body });
+    const message: Record<string, unknown> = { status };
+    if (headers) message.headers = { ...input.headers };
+    if (body) message.body = input.body;
+    const outcome = await guard(message);
     if (outcome instanceof ContractError)
       issues.push(...builtinIssues(outcome.issues, true));
-    else parsed = { ok: true, value: (outcome as { body: unknown }).body };
+    else if (body)
+      parsed = { ok: true, value: (outcome as { body: unknown }).body };
   }
-  let value = body;
-  if (plan.custom !== undefined) {
+  let value = input.body;
+  if (input.checkBody && plan.custom !== undefined) {
     const result: StandardOutcome<unknown> = await validateStandard(
       plan.custom,
-      parsed === undefined ? body : parsed.value,
+      parsed === undefined ? input.body : parsed.value,
       "response",
       String(status),
       undefined,
@@ -390,6 +433,32 @@ function planOf(state: PartState, schemas: boolean): PartPlan | undefined {
     : { builtin, custom: state.custom };
 }
 
+/**
+ * What runs for a response status, when anything does: the body's plan, and
+ * the built-in headers schema, which `replace` leaves on (it replaces the
+ * body's built-in schema, the one a BYO schema stands in for).
+ */
+function responsePlanOf(
+  state: PartState,
+  schemas: boolean,
+): ResponsePlan | undefined {
+  const body = planOf(state, schemas);
+  const headers = schemas && state.enabled;
+  if (body === undefined && !headers) return undefined;
+  return body === undefined
+    ? { builtin: false, headers }
+    : { ...body, headers };
+}
+
+/** A `Headers`' entries as an object, by lower-case name. */
+function headersObject(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, name) => {
+    out[name] = value;
+  });
+  return out;
+}
+
 /* ------------------------------------------------------------------------ */
 /* The checks a client runs.                                                 */
 /* ------------------------------------------------------------------------ */
@@ -440,8 +509,22 @@ export interface CallChecks {
   ) => Promise<O>;
   /** Checks the headers as sent, on the first attempt; `undefined` when nothing checks them. */
   readonly headers: ((request: Request) => Promise<void>) | undefined;
-  /** Checks a declared status's body (§5.5): resolves to what to deliver, or rejects under `"throw"`. */
-  readonly response: (status: number, body: unknown) => Promise<unknown>;
+  /**
+   * Checks a declared status's body (§5.5), and its headers (§5.6) when
+   * they are given: resolves to what to deliver, or rejects under
+   * `"throw"`. An NDJSON line is checked without them.
+   */
+  readonly response: (
+    status: number,
+    body: unknown,
+    headers?: Headers,
+  ) => Promise<unknown>;
+  /**
+   * Checks a declared status's headers alone (§5.6), for a body left unread
+   * (a stream, or a download as `"stream"`): resolves, or rejects under
+   * `"throw"`.
+   */
+  readonly responseHeaders: (status: number, headers: Headers) => Promise<void>;
 }
 
 /** The checks of one client: each call's, from its route key and its validation levels. */
@@ -496,6 +579,16 @@ export function createChecks(context: ChecksContext): Checks {
       ? (await loadSchemas(key))[key]
       : undefined;
 
+  /** The route's built-in schemas, when a response plan runs one (its headers' only when they are given). */
+  const responseRouteOf = async (
+    key: string,
+    plan: ResponsePlan,
+    headers: boolean,
+  ): Promise<RouteSchemas | undefined> =>
+    plan.builtin || (headers && plan.headers)
+      ? (await loadSchemas(key))[key]
+      : undefined;
+
   /** Applies a failure mode: throws, warns, or calls the hook. */
   const failed = (mode: FailureMode, error: ValidationError): void => {
     if (mode === "throw") throw error;
@@ -542,14 +635,10 @@ export function createChecks(context: ChecksContext): Checks {
         headersPlan === undefined
           ? undefined
           : async (request) => {
-              const headers: Record<string, string> = {};
-              request.headers.forEach((value, name) => {
-                headers[name] = value;
-              });
               const { issues } = await checkRequest(
                 await routeOf(key, [headersPlan]),
                 { headers: headersPlan },
-                { headers },
+                { headers: headersObject(request.headers) },
               );
               if (issues.length > 0)
                 failed(
@@ -557,17 +646,23 @@ export function createChecks(context: ChecksContext): Checks {
                   new ValidationError(key, "request", issues),
                 );
             },
-      response: async (status, body) => {
-        const plan = planOf(
+      response: async (status, body, headers) => {
+        const plan = responsePlanOf(
           validation.statuses.get(status) ?? validation.response,
           hasSource,
         );
         if (plan === undefined) return body;
         const { value, issues } = await checkResponse(
-          await routeOf(key, [plan]),
+          await responseRouteOf(key, plan, headers !== undefined),
           status,
           plan,
-          body,
+          {
+            checkBody: true,
+            body,
+            ...(headers === undefined
+              ? {}
+              : { headers: headersObject(headers) }),
+          },
         );
         if (issues.length > 0) {
           failed(
@@ -577,6 +672,24 @@ export function createChecks(context: ChecksContext): Checks {
           return body;
         }
         return value;
+      },
+      responseHeaders: async (status, headers) => {
+        const plan = responsePlanOf(
+          validation.statuses.get(status) ?? validation.response,
+          hasSource,
+        );
+        if (plan === undefined || !plan.headers) return;
+        const { issues } = await checkResponse(
+          await responseRouteOf(key, plan, true),
+          status,
+          plan,
+          { checkBody: false, headers: headersObject(headers) },
+        );
+        if (issues.length > 0)
+          failed(
+            validation.onResponse,
+            new ValidationError(key, "response", issues, status),
+          );
       },
     };
   };

@@ -8,10 +8,11 @@
  * It covers named components (`.meta({ id })`), recursion, an enum, a
  * nullable field, a record, arrays, a discriminated union, a coerced and
  * defaulted query key, a required header, `x-bun-errors`, `x-bun-cache`, an
- * SSE stream, a bodiless status, a route that declares nothing, and a
- * `z.date()` (the documented §5.3 difference); and since PR-C9 the bodies
- * beyond JSON: a multipart upload with documented files, an urlencoded
- * form, an NDJSON stream, a raw stream and a download. The handlers answer
+ * SSE stream, a bodiless status, a route that declares nothing, a
+ * `z.date()` and a `.refine()` (the documented §5.3 differences, which the
+ * generated header names), response headers (`.describe()`, §5.6); and
+ * since PR-C9 the bodies beyond JSON: a multipart upload with documented
+ * files, an urlencoded form, an NDJSON stream, a raw stream and a download. The handlers answer
  * what the e2e test expects.
  */
 import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
@@ -127,14 +128,30 @@ export const api = defineRoutes("/api", (r) => ({
       { responses: { 200: User, 404: Problem } },
     ),
     documented(
-      (req, res) =>
-        req.params.id === ADA.id
-          ? res.status(200).json(ADA)
-          : res.status(404).json(problem("NOT_FOUND", "No such user")),
+      (req, res) => {
+        if (req.params.id !== ADA.id) {
+          res.status(404).json(problem("NOT_FOUND", "No such user"));
+          return;
+        }
+        res.setHeader("x-request-id", "req-1");
+        res.setHeader("x-rate-limit", "100");
+        res.status(200).json(ADA);
+      },
       {
         summary: "Read one user",
         errors: ["NOT_FOUND", "GONE"],
         cache: { tags: ["user:{id}"] },
+        responses: {
+          200: {
+            headers: {
+              "X-Request-Id": {
+                description: "The request's id.",
+                schema: { type: "string", pattern: "^req-" },
+              },
+              "X-Rate-Limit": { schema: { type: "integer", minimum: 0 } },
+            },
+          },
+        },
       },
     ),
   ),
@@ -142,11 +159,13 @@ export const api = defineRoutes("/api", (r) => ({
     "/users",
     validate(
       {
-        body: z.object({
-          name: z.string(),
-          role: Role.default("member"),
-          address: Address.optional(),
-        }),
+        body: z
+          .object({
+            name: z.string(),
+            role: Role.default("member"),
+            address: Address.optional(),
+          })
+          .refine((user) => user.name.trim() !== "", "A name is not blank"),
       },
       { responses: { 201: User, 409: Problem } },
     ),

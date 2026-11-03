@@ -44,7 +44,7 @@ export function probe(): void {
     maxAge: 60_000,
   } satisfies PersistQueryClientOptions;
   void persistQueryClient(options);
-  type _buster = Expect<Equal<typeof typesHash, "108152abb8ac0736">>;
+  type _buster = Expect<Equal<typeof typesHash, "6ee06fd1bf4975f8">>;
 
   // The options are optional, one by one and together.
   idbPersister();

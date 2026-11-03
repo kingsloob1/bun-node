@@ -126,6 +126,20 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "X-Total-Count": {
+                "required": true,
+                "description": "How many pets there are.",
+                "schema": { "type": "integer", "minimum": 0 }
+              },
+              "X-Page-Kind": {
+                "schema": { "type": "string", "enum": ["first", "next"] }
+              },
+              "Link": { "$ref": "#/components/headers/Link" },
+              "link": { "schema": { "type": "number" } },
+              "Content-Type": { "schema": { "type": "string" } },
+              "Set-Cookie": { "schema": { "type": "string" } }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -268,6 +282,12 @@
     }
   },
   "components": {
+    "headers": {
+      "Link": {
+        "description": "Pagination links.",
+        "schema": { "type": "string", "minLength": 1 }
+      }
+    },
     "parameters": {
       "Id": {
         "name": "id",
@@ -280,6 +300,9 @@
     "responses": {
       "NotFound": {
         "description": "Not Found",
+        "headers": {
+          "X-Reason": { "required": true, "schema": { "type": "string" } }
+        },
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/Problem" }
