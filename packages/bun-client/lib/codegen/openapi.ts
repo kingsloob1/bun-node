@@ -199,6 +199,7 @@ export const RESERVED: ReadonlySet<string> = new Set([
   // What the generated module refers to.
   "Routes",
   "manifest",
+  "typesHash",
   "RouteManifest",
   "Record",
   "Omit",
@@ -546,6 +547,15 @@ export function generateRoutes(
         jsDoc(header),
         hardline,
         `import type { RouteManifest } from ${quote(options.clientModule ?? "@kingsleyweb/bun-client")};`,
+      ],
+      // The header's hash as a value: a persisted cache's `buster`
+      // (`./persist`, plan §6.4), so a schema change drops it.
+      [
+        jsDoc(
+          "The documents' hash, as the header records it: the `buster` of a\npersisted query cache (`@kingsleyweb/bun-client/persist`).",
+        ),
+        hardline,
+        `export const typesHash = ${quote(hash)};`,
       ],
       ...declarations,
       routesDoc,

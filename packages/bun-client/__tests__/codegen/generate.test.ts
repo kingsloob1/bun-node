@@ -125,10 +125,29 @@ describe("the header", () => {
     expect(both.hash).toBe(documentsHash({ openapi: document, asyncapi }));
     expect(both.hash).not.toBe(alone.hash);
     expect(alone.code).toContain(`typesHash: ${alone.hash}\n`);
-    // Only the header differs.
-    expect(both.code.replace(both.hash, "")).toBe(
-      alone.code.replace(alone.hash, ""),
+    // Only the hash differs, in the header and in the `typesHash` export.
+    expect(both.code.replaceAll(both.hash, "")).toBe(
+      alone.code.replaceAll(alone.hash, ""),
     );
+  });
+
+  it("exports the same hash as `typesHash`, a persisted cache's buster (plan §6.4, PR-C8)", async () => {
+    const result = generateRoutes(await corpus());
+    expect(result.code).toContain(
+      `\nexport const typesHash = "${result.hash}";\n`,
+    );
+    expect(result.code.split(result.hash).length - 1).toBe(2);
+  });
+
+  it("keeps the `typesHash` export's name from a component: one named so is renamed", () => {
+    const { code } = generateRoutes({
+      openapi: "3.1.0",
+      info: { title: "t", version: "1" },
+      paths: {},
+      components: { schemas: { typesHash: { type: "string" } } },
+    });
+    expect(code).toContain("export type typesHashSchema = string;");
+    expect(code.match(/export const typesHash = /g)).toHaveLength(1);
   });
 
   it("lists every warning, the producer's first", () => {

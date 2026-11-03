@@ -12,6 +12,12 @@
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
+/**
+ * The documents' hash, as the header records it: the `buster` of a
+ * persisted query cache (`@kingsleyweb/bun-client/persist`).
+ */
+export const typesHash = "3dcc0f6a50e0371c";
+
 /** Where a user lives. */
 export interface Address {
   city: string;

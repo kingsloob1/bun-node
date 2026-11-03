@@ -8,6 +8,12 @@
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
+/**
+ * The documents' hash, as the header records it: the `buster` of a
+ * persisted query cache (`@kingsleyweb/bun-client/persist`).
+ */
+export const typesHash = "9aeaf53acb6e4c98";
+
 export interface Org {
   id: string;
   name: string;
