@@ -233,16 +233,31 @@ describe("the pages", () => {
     );
     expect(redoc).toContain('import { init as redocInit } from "redoc";');
     expect(redoc).toContain('document.getElementById("ui")');
+    // The initialiser uses `import`, so it must be a module script: as a
+    // classic one the browser refuses it ("Cannot use import statement
+    // outside a module") and the page stays blank.
+    expect(redoc).toMatch(
+      /<script type="module" nonce="[^"]+">\nimport \{ init as redocInit \}/,
+    );
+    // Telemetry off by default (its endpoint is outside the CSP).
+    expect(redoc).toContain('{"disableTelemetry":true}');
 
     const rapidocFetch = mounted({
       openapi: OPENAPI_DOCUMENT,
       viewer: { openapi: "rapidoc" },
     });
     const rapidoc = await (await rapidocFetch("/")).text();
+    // RapiDoc 11 is ESM-only: its bundle and the initialiser are modules
+    // (a classic script fails on the bundle's first `export`).
     expect(rapidoc).toContain(
-      `<script src="${assetUrl(cdn, DOCS_CDN.rapidoc, "js")}" integrity="${DOCS_CDN.rapidoc.integrity!.js}" crossorigin="anonymous"></script>`,
+      `<script type="module" src="${assetUrl(cdn, DOCS_CDN.rapidoc, "js")}" integrity="${DOCS_CDN.rapidoc.integrity!.js}" crossorigin="anonymous"></script>`,
+    );
+    expect(rapidoc).toMatch(
+      /<script type="module" nonce="[^"]+">\nconst element/,
     );
     expect(rapidoc).toContain('document.createElement("rapi-doc")');
+    // Its Google-hosted fonts are outside the CSP: off by default.
+    expect(rapidoc).toContain('element.setAttribute("load-fonts", "false");');
     expect(rapidoc).toContain(
       'element.setAttribute("spec-url", "\\/docs\\/openapi.json")',
     );
@@ -285,18 +300,26 @@ describe("the pages", () => {
       asyncapi: ASYNCAPI_DOCUMENT,
       viewer: { openapi: "scalar", asyncapi: "asyncapi" },
     });
-    for (const path of ["/", "/asyncapi"]) {
+    // Scalar's page has two inline scripts (zod's `jitless` switch, then the
+    // initialiser); the AsyncAPI component's needs `'unsafe-eval'`, since
+    // its bundle compiles code with `new Function` as it loads.
+    for (const [path, scripts, scriptSrc] of [
+      ["/", 2, /^'nonce-[\w+/]+={0,2}' https:\/\/cdn\.jsdelivr\.net$/],
+      [
+        "/asyncapi",
+        1,
+        /^'nonce-[\w+/]+={0,2}' https:\/\/cdn\.jsdelivr\.net 'unsafe-eval'$/,
+      ],
+    ] as const) {
       const response = await fetch(path);
       const html = await response.text();
       const directives = csp(response);
       expect(directives).toEqual({
         "default-src": "'none'",
-        "script-src": expect.stringMatching(
-          /^'nonce-[\w+/]+={0,2}' https:\/\/cdn\.jsdelivr\.net$/,
-        ),
+        "script-src": expect.stringMatching(scriptSrc),
         "style-src": "https://cdn.jsdelivr.net 'unsafe-inline'",
         "img-src": "'self' data: https://cdn.jsdelivr.net",
-        "font-src": "https://cdn.jsdelivr.net",
+        "font-src": "data: https://cdn.jsdelivr.net",
         "connect-src": "'self'",
         "base-uri": "'none'",
         "form-action": "'none'",
@@ -308,11 +331,13 @@ describe("the pages", () => {
       expect(response.headers.get("cache-control")).toBe("no-store");
 
       const nonce = directives["script-src"].match(/'nonce-([^']+)'/)![1];
-      // Every inline script carries this request's nonce, and no other (the
-      // AsyncAPI/Scalar pages have exactly one).
+      // Every inline script carries this request's nonce, and no other.
       const inline = [...html.matchAll(/<script(?![^>]*\ssrc=)([^>]*)>/g)];
-      expect(inline).toHaveLength(1);
-      expect(inline[0][1]).toContain(`nonce="${nonce}"`);
+      expect(inline).toHaveLength(scripts);
+      for (const script of inline)
+        expect(script[1]).toContain(`nonce="${nonce}"`);
+      // An empty icon, so the page asks for no /favicon.ico.
+      expect(html).toContain('<link rel="icon" href="data:,">');
     }
 
     // Redoc's page has two nonce'd inline scripts (the import map and the
@@ -332,6 +357,26 @@ describe("the pages", () => {
     for (const [, attributes] of redocInline) {
       expect(attributes).toContain(`nonce="${redocNonce}"`);
     }
+    // Its footer logo is on Redocly's own host: that one origin is added to
+    // `img-src`; and its search compiles a worker with `new Function`, so the
+    // page allows `'unsafe-eval'`.
+    expect(csp(redocResponse)["img-src"]).toBe(
+      "'self' data: https://cdn.jsdelivr.net https://cdn.redoc.ly",
+    );
+    expect(csp(redocResponse)["script-src"]).toMatch(/ 'unsafe-eval'$/);
+    expect(csp(redocResponse)["worker-src"]).toBe("blob:");
+
+    // Scalar: its fonts.scalar.com fonts off by default (a pass-through
+    // option after it wins), and zod's `jitless` set before the bundle runs,
+    // so its `new Function` probe never trips the CSP.
+    const scalarHtml = await (await fetch("/")).text();
+    expect(scalarHtml).toContain("  withDefaultFonts: false,\n");
+    expect(scalarHtml).toContain(
+      "globalThis.__zod_globalConfig = Object.assign(globalThis.__zod_globalConfig || {}, { jitless: true });",
+    );
+    expect(scalarHtml.indexOf("jitless: true")).toBeLessThan(
+      scalarHtml.indexOf("@scalar/api-reference"),
+    );
 
     // The control: a second request gets a different nonce, so the page cannot
     // be cached with one and replayed.
@@ -367,7 +412,9 @@ describe("the pages", () => {
       viewer: { openapi: { name: "redoc", hideDownloadButton: true } },
     });
     const redocHtml = await (await redoc("/")).text();
-    expect(redocHtml).toContain('{"hideDownloadButton":true}');
+    expect(redocHtml).toContain(
+      '{"disableTelemetry":true,"hideDownloadButton":true}',
+    );
 
     // RapiDoc: assigned as element properties.
     const rapidoc = mounted({

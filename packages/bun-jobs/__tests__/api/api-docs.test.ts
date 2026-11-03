@@ -170,18 +170,28 @@ describe("the pages", () => {
 
   it("sends the CSP, the hardening headers, and a nonce matching its one inline script", async () => {
     const app = mounted();
-    for (const path of ["/admin/jobs/docs", "/admin/jobs/docs/asyncapi"]) {
+    // The AsyncAPI component's bundle compiles code with `new Function` as it
+    // loads, so its page alone allows `'unsafe-eval'` (without it the page is
+    // blank: the bundle throws before defining its global).
+    for (const [path, scriptSrc] of [
+      [
+        "/admin/jobs/docs",
+        /^'nonce-[\w+/]+={0,2}' https:\/\/cdn\.jsdelivr\.net$/,
+      ],
+      [
+        "/admin/jobs/docs/asyncapi",
+        /^'nonce-[\w+/]+={0,2}' https:\/\/cdn\.jsdelivr\.net 'unsafe-eval'$/,
+      ],
+    ] as const) {
       const response = await app.fetch(path);
       const html = await response.text();
       const directives = csp(response);
       expect(directives).toEqual({
         "default-src": "'none'",
-        "script-src": expect.stringMatching(
-          /^'nonce-[\w+/]+={0,2}' https:\/\/cdn\.jsdelivr\.net$/,
-        ),
+        "script-src": expect.stringMatching(scriptSrc),
         "style-src": "https://cdn.jsdelivr.net 'unsafe-inline'",
         "img-src": "'self' data: https://cdn.jsdelivr.net",
-        "font-src": "https://cdn.jsdelivr.net",
+        "font-src": "data: https://cdn.jsdelivr.net",
         "connect-src": "'self'",
         "base-uri": "'none'",
         "form-action": "'none'",
