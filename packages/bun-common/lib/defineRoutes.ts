@@ -364,7 +364,9 @@ function makeVerb<TMount extends string, TMethod extends string>(
  * - `receive`, what a **receiver** gets, per declared status: a JSON body's
  *   `Jsonify` of the schema's wire input (a `Date` field arrives a
  *   `string`), or of its output when the validator sets
- *   `responseOutput: "parsed"`; `undefined` for a status declared bodiless;
+ *   `responseOutput: "parsed"`; a byte body (`opaque()` included) a
+ *   `Blob`; a `chunks()` stream an `AsyncIterable` (of each NDJSON line's
+ *   JSON, or of the raw bytes); `undefined` for a status declared bodiless;
  *   `{ 200: unknown }` when nothing is declared. A router-wide
  *   `responseOutput` is invisible to the types; declare it on the validator.
  *

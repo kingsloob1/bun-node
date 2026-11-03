@@ -607,6 +607,164 @@ describe("generateOpenApi: the request side", () => {
     ]);
   });
 
+  it("requestMediaTypes re-homes a validator's body (a form)", () => {
+    const router = new BunRouter();
+    router
+      .post(
+        "/login",
+        validate({ body: z.object({ user: z.string(), pass: z.string() }) }),
+        (_req, res) => res.json({}),
+      )
+      .describe({
+        requestMediaTypes: ["application/x-www-form-urlencoded"],
+        responses: { 204: null },
+      });
+    const { document, warnings } = generateOpenApi(router, {
+      title: "T",
+      version: "1",
+    });
+    expect(warnings).toEqual([]);
+    const body = op(document, "/login", "post").requestBody;
+    expect(body.required).toBe(true);
+    expect(Object.keys(body.content)).toEqual([
+      "application/x-www-form-urlencoded",
+    ]);
+    expect(
+      body.content["application/x-www-form-urlencoded"].schema.properties,
+    ).toHaveProperty("pass");
+  });
+
+  it("request.files documents a multipart body's files beside the validator's fields (PR-C9)", () => {
+    const router = new BunRouter();
+    router
+      .post(
+        "/users/:id/avatar",
+        validate({ body: z.object({ caption: z.string().optional() }) }),
+        (_req, res) => res.json({}),
+      )
+      .describe({
+        responses: { 204: null },
+        request: {
+          files: {
+            avatar: {
+              required: true,
+              maxBytes: 1_000_000,
+              mediaTypes: ["image/png", "image/jpeg"],
+              description: "The new picture.",
+            },
+            extras: { maxCount: 3 },
+            any: { maxCount: Number.POSITIVE_INFINITY },
+          },
+        },
+      });
+    const { document, warnings } = generateOpenApi(router, {
+      title: "T",
+      version: "1",
+    });
+    expect(warnings).toEqual([]);
+    const body = op(document, "/users/{id}/avatar", "post").requestBody;
+    expect(body.required).toBe(true);
+    expect(Object.keys(body.content)).toEqual(["multipart/form-data"]);
+    const media = body.content["multipart/form-data"];
+    expect(media.schema.properties.caption).toEqual({ type: "string" });
+    expect(media.schema.properties.avatar).toEqual({
+      type: "string",
+      format: "binary",
+      "x-bun-max-bytes": 1_000_000,
+      description: "The new picture.",
+    });
+    expect(media.schema.properties.extras).toEqual({
+      type: "array",
+      items: { type: "string", format: "binary" },
+      maxItems: 3,
+    });
+    expect(media.schema.properties.any).toEqual({
+      type: "array",
+      items: { type: "string", format: "binary" },
+    });
+    expect(media.schema.required).toEqual(["avatar"]);
+    expect(media.encoding).toEqual({
+      avatar: { contentType: "image/png, image/jpeg" },
+    });
+  });
+
+  it("request.files alone is a multipart body of files; a $ref'd fields schema sits beside them under allOf", () => {
+    const Fields = z.object({ title: z.string() }).meta({ id: "DocFields" });
+    const router = new BunRouter();
+    router
+      .post("/scan", (_req, res) => res.json({}))
+      .describe({ request: { files: { page: {} } }, responses: { 204: null } });
+    router
+      .post("/docs", validate({ body: Fields }), (_req, res) => res.json({}))
+      .describe({
+        request: { files: { page: { required: true } } },
+        responses: { 204: null },
+      });
+    const { document, warnings } = generateOpenApi(router, {
+      title: "T",
+      version: "1",
+    });
+    expect(warnings).toEqual([]);
+    const scan = op(document, "/scan", "post").requestBody;
+    expect(scan).toEqual({
+      required: false,
+      content: {
+        "multipart/form-data": {
+          schema: {
+            type: "object",
+            properties: { page: { type: "string", format: "binary" } },
+          },
+        },
+      },
+    });
+    const docs = op(document, "/docs", "post").requestBody.content[
+      "multipart/form-data"
+    ].schema;
+    expect(docs.allOf).toEqual([
+      { $ref: "#/components/schemas/DocFields" },
+      {
+        type: "object",
+        properties: { page: { type: "string", format: "binary" } },
+        required: ["page"],
+      },
+    ]);
+  });
+
+  it("request.files warns when no multipart media type takes them, and on a bad maxCount", () => {
+    const router = new BunRouter();
+    router
+      .post("/json", (_req, res) => res.json({}))
+      .describe({
+        request: { body: z.object({ a: z.string() }), files: { f: {} } },
+        requestMediaTypes: ["application/json"],
+        responses: { 204: null },
+      });
+    router
+      .post("/count", (_req, res) => res.json({}))
+      .describe({
+        request: { files: { f: { maxCount: 0 } } },
+        responses: { 204: null },
+      });
+    const { document, warnings } = generateOpenApi(router, {
+      title: "T",
+      version: "1",
+    });
+    expect(warnings.map((warning) => warning.message)).toEqual([
+      expect.stringMatching(
+        /include no multipart\/form-data; the files are left out/,
+      ),
+      expect.stringMatching(/maxCount 0 is not a positive integer/),
+    ]);
+    expect(
+      op(document, "/json", "post").requestBody.content["application/json"]
+        .schema.properties,
+    ).not.toHaveProperty("f");
+    expect(
+      op(document, "/count", "post").requestBody.content["multipart/form-data"]
+        .schema.properties.f,
+    ).toEqual({ type: "string", format: "binary" });
+  });
+
   it("a regex-constrained path param carries its pattern", () => {
     const router = new BunRouter();
     router
@@ -827,6 +985,8 @@ describe("generateOpenApi: the response side", () => {
     ].schema;
     expect(streamed.description).toMatch(/newline-delimited/);
     expect(streamed.properties).toHaveProperty("n");
+    // The framing, machine-readable, for a client generator (PR-C9).
+    expect(streamed["x-bun-chunks"]).toBe("ndjson");
 
     const events = op(document, "/events", "get").responses["200"].content[
       "text/event-stream"

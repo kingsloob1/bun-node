@@ -38,6 +38,42 @@ export interface RouteResponseDoc {
   examples?: Readonly<Record<string, { summary?: string; value: unknown }>>;
 }
 
+/**
+ * One file field of a multipart body (`RouteDoc.request.files`), as the
+ * document describes it. Every field optional: `{}` documents one optional
+ * file of any type and size.
+ */
+export interface RouteFileDoc {
+  /** What the file is, as the property's `description`. Default: none. */
+  description?: string;
+  /**
+   * The body must carry the field: listed in the schema's `required`.
+   * Default: `false`, as for any property.
+   */
+  required?: boolean;
+  /**
+   * How many files the field takes, as bun-common's upload handlers'
+   * `maxCount` says: `1` documents one file; more documents a list of them
+   * (`type: "array"` with `maxItems`), and `Infinity` a list with no bound.
+   * Default: `1`. Anything but a positive integer or `Infinity` is
+   * documented as `1`, with a warning.
+   */
+  maxCount?: number;
+  /**
+   * The largest file accepted, in bytes, as the file schema's
+   * `x-bun-max-bytes` (JSON Schema has no size keyword for binary content).
+   * Default: none, and no `x-bun-max-bytes`.
+   */
+  maxBytes?: number;
+  /**
+   * The media types a file may have, as the multipart body's
+   * `encoding[field].contentType` (OpenAPI's place for a part's media
+   * types, joined with `", "`; `type/*` allowed). Default: none, and no
+   * `encoding` entry.
+   */
+  mediaTypes?: readonly string[];
+}
+
 /** What a route contributes to the generated document. Every field optional. */
 export interface RouteDoc {
   /**
@@ -91,10 +127,28 @@ export interface RouteDoc {
     headers?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
     /** Request cookies. Emitted as `in: "cookie"` parameters (plan §4.11). */
     cookies?: StandardSchemaV1 | JsonSchemaLike | DtoClass;
+    /**
+     * The file fields of a `multipart/form-data` body, by field name
+     * (typed-client plan, `other-transports.md` §3): each documented as a
+     * `{ type: "string", format: "binary" }` property of the multipart
+     * body's schema (a list of them when {@link RouteFileDoc.maxCount} is
+     * above 1), beside the body's own fields (`request.body`, else the
+     * validator's body). A client generator types them as files.
+     * Documentation only: the multipart handlers' limits stay the
+     * enforcement (a file is not a validation target). With files and no
+     * {@link RouteDoc.requestMediaTypes}, the body is documented as
+     * `multipart/form-data`; files given beside media types that include no
+     * `multipart/form-data` are left out, with a warning. Default: none.
+     */
+    files?: Readonly<Record<string, RouteFileDoc>>;
   };
   /**
-   * Media types the body is accepted as. Default: `["application/json"]`
-   * when a body schema exists, otherwise no `requestBody` is emitted.
+   * Media types the body is accepted as: `request.body`'s, or the
+   * validator's body when it declares no media type of its own (a
+   * validator's body is JSON by default; `["application/x-www-form-urlencoded"]`
+   * documents a form). Default: `["multipart/form-data"]` when
+   * `request.files` is given, else `["application/json"]` when a body schema
+   * exists, otherwise no `requestBody` is emitted.
    */
   requestMediaTypes?: readonly string[];
   /**

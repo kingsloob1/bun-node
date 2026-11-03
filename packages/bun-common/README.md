@@ -2541,7 +2541,7 @@ at all, since both publish the document as `~standard.jsonSchema`.
 
 #### The documents as a typed client's model: `x-bun-*` and `typesHash()`
 
-A typed client reads the two documents, so `generateOpenApi` writes three
+A typed client reads the two documents, so `generateOpenApi` writes the
 extensions a client needs beside the standard fields:
 
 | Extension | On | Value | From |
@@ -2549,6 +2549,8 @@ extensions a client needs beside the standard fields:
 | `x-bun-route-key` | every operation | `"GET /users/:id"` | the route's `listRoutes()` key: the Express-syntax path, which OpenAPI's `{id}` template loses (`:id?`, `:id(\d+)`) |
 | `x-bun-errors` | an operation that declares it | `["NOT_FOUND", "CONFLICT"]` | `.describe({ errors })`, in order |
 | `x-bun-cache` | an operation that declares it | `{ "tags": ["user:{id}"], "invalidates": ["users"] }` | `.describe({ cache })`, the fields given |
+| `x-bun-chunks` | a `chunks()` body's schema | `"ndjson"` or `"raw"` | the declaration's `framing`: a client iterates the stream, one JSON value per line or its bytes |
+| `x-bun-max-bytes` | a documented file's schema | `1000000` | `.describe({ request: { files } })`'s `maxBytes` |
 
 ```ts
 app
@@ -2574,6 +2576,36 @@ app
   are emitted as given; with neither declared, the operation has no such
   extension. A document from elsewhere, with no `x-bun-*`, still describes its
   API: a client derives keys from its paths and has no code unions or tags.
+
+**Uploads: `.describe({ request: { files } })`.** A file is not a validation
+target (the multipart handlers' limits enforce uploads), so a route documents
+its file fields beside the validator's body:
+
+```ts
+app
+  .post("/users/:id/avatar", validate({ body: z.object({ caption: z.string().optional() }) }), upload)
+  .describe({
+    request: {
+      files: {
+        avatar: { required: true, maxBytes: 1_000_000, mediaTypes: ["image/png", "image/jpeg"] },
+        extras: { maxCount: 3 }, // more than one: a list
+      },
+    },
+  });
+```
+
+The body is then documented as `multipart/form-data` (unless
+`requestMediaTypes` says otherwise): the fields' schema with each file a
+`{ type: "string", format: "binary" }` property (an array with `maxItems` for
+`maxCount` above 1, no bound for `Infinity`), `required` from `required`,
+`x-bun-max-bytes` from `maxBytes` and the part's media types in
+`encoding.<field>.contentType`. A fields schema that is not an inline object
+(a named component) sits beside the files under `allOf`. Files beside media
+types with no `multipart/form-data` are left out, with a warning.
+`requestMediaTypes` also re-homes a validator's body, so
+`.describe({ requestMediaTypes: ["application/x-www-form-urlencoded"] })`
+documents a form. A typed client (`@kingsleyweb/bun-client`) types the fields
+as `body` and the files as `files`.
 
 `typesHash({ openapi, asyncapi })`, also from
 `@kingsleyweb/bun-common/lib/docs`, is the change detector a client's tooling

@@ -520,30 +520,44 @@ type Filled<S> = S extends { filledJson: infer J; filledSend: infer D }
 // ---------------------------------------------------------------------------
 
 /**
- * One declared schema's body as a client receives it under media key `K`: a
- * JSON-classed body after `JSON.parse` (`Jsonify` of what the handler sent —
- * the schema's wire input, or its output when the validator sends bodies
- * `"parsed"`, V13), a text body as sent, and `unknown` for a byte body,
- * `opaque()`, `chunks()` and `sse()` (the streamed kinds are the SSE and
- * bodies PRs' to type, typed-client plan §15).
+ * One declared schema's body as a client receives it under media key `K`
+ * (typed-client plan §4.1, `other-transports.md` §4): a JSON-classed body
+ * after `JSON.parse` (`Jsonify` of what the handler sent — the schema's wire
+ * input, or its output when the validator sends bodies `"parsed"`, V13), a
+ * text body as sent, a byte body as a `Blob` (how a client reads a
+ * download), `opaque()` likewise by its media type (`unknown` under a JSON
+ * or wildcard key: never read, so nothing is known of it), and a
+ * `chunks()` stream as an `AsyncIterable`: one `Jsonify`'d value per line
+ * under `framing: "ndjson"`, the bytes as they arrive under `"raw"`. An
+ * `sse()` stream is `unknown` (typed by the SSE client, PR-S1).
  */
 type ReceivedOne<K, V, O> = V extends null
   ? undefined
-  : V extends OpaqueDecl | StreamDecl
-    ? unknown
-    : V extends StandardSchemaV1 | DtoClass
-      ? MediaClass<K> extends "json" | "any"
-        ? Jsonify<
-            [O] extends ["parsed"]
-              ? V extends StandardSchemaV1
-                ? StandardSchemaV1.InferOutput<V>
-                : WireOf<V>
-              : WireOf<V>
-          >
-        : MediaClass<K> extends "text"
-          ? WireOf<V>
-          : unknown
-      : unknown;
+  : V extends { readonly kind: "chunks"; readonly chunk: infer S }
+    ? V extends { readonly framing: "ndjson" }
+      ? AsyncIterable<Jsonify<WireOf<S>>>
+      : AsyncIterable<Uint8Array>
+    : V extends StreamDecl
+      ? unknown
+      : V extends OpaqueDecl
+        ? MediaClass<K> extends "text"
+          ? string
+          : MediaClass<K> extends "bytes"
+            ? Blob
+            : unknown
+        : V extends StandardSchemaV1 | DtoClass
+          ? MediaClass<K> extends "json" | "any"
+            ? Jsonify<
+                [O] extends ["parsed"]
+                  ? V extends StandardSchemaV1
+                    ? StandardSchemaV1.InferOutput<V>
+                    : WireOf<V>
+                  : WireOf<V>
+              >
+            : MediaClass<K> extends "text"
+              ? WireOf<V>
+              : Blob
+          : unknown;
 
 /** One status's (or one variant's) body as received: the union over its media types. */
 type ReceivedBody<Sp, O> =
