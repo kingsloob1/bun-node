@@ -24,7 +24,7 @@ import type { Socket } from "bun";
 import type { BusMessage, CacheBus, StoredEntry } from "../../lib/index";
 import { createCache, redisBus, redisDriver } from "../../lib/index";
 import type { RedisDriverOptions } from "../../lib/drivers/redis";
-import { RedisCacheDriver } from "../../lib/drivers/redis";
+import { RedisCacheDriver, STAGE_FRAME_BYTES } from "../../lib/drivers/redis";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import { deleteRedisPrefix, redisRawDump } from "./backends";
 import { registerSetManyChunkTests } from "./setManyChunks";
@@ -358,6 +358,125 @@ export async function registerRedisSuite(
   if (lane === LOCAL_REDIS_LANE) {
     describe(`${lane.name} setMany chunks`, () => {
       registerSetManyChunkTests(make("chunks"), { atomic: false });
+    });
+
+    // Local only, like the chunks: a few MiB of writes, on a billed lane.
+    describe(`${lane.name} large frames (staged outside Lua)`, () => {
+      const ns = `big-${process.pid}`;
+      /** Each `SET` the driver sends outside a script, by key. */
+      const staged: string[] = [];
+      const client = new RedisClient(url);
+      const driver = new RedisCacheDriver({
+        prefix: prefix("big"),
+        client: proxied(client, {
+          send: async (command: string, args: string[]) => {
+            if (command === "SET") {
+              staged.push(args[0]);
+            }
+            return await client.send(command, args);
+          },
+        }),
+      });
+      afterAll(async () => {
+        await driver.close();
+        client.close();
+      });
+      /** Bytes of `size`, each `seed`. */
+      const bytes = (size: number, seed: number): number[] =>
+        Array.from({ length: size }, () => seed);
+      /** The run's keys of this driver's namespace that are staging keys. */
+      const stagingKeys = async (): Promise<string[]> => {
+        const keys = (await helper.send("KEYS", [
+          `${driver.prefix}:*`,
+        ])) as string[];
+        return keys.filter((key) => key.includes("}:w:"));
+      };
+      /** The server-side key of an entry. */
+      const entryKey = (key: string): string =>
+        `${driver.prefix}:{${ns}}:e:${key}`;
+
+      test("a frame from STAGE_FRAME_BYTES up is written by a plain SET and renamed into place; a smaller one is not", async () => {
+        staged.length = 0;
+        await driver.set(ns, entry("small", bytes(STAGE_FRAME_BYTES - 200, 1)));
+        expect(staged).toEqual([]);
+        await driver.set(ns, entry("large", bytes(STAGE_FRAME_BYTES, 2)));
+        expect(staged).toHaveLength(1);
+        expect(staged[0]).toContain(`{${ns}}:w:`);
+        expect(await stagingKeys()).toEqual([]);
+        const read = await driver.get(ns, "large");
+        expect(read?.value).toEqual(
+          new Uint8Array(bytes(STAGE_FRAME_BYTES, 2)),
+        );
+        expect((await driver.get(ns, "small"))?.value.byteLength).toBe(
+          STAGE_FRAME_BYTES - 200,
+        );
+      });
+
+      test("a staged entry keeps its own expiry, and one with none keeps none (the staging key's TTL does not carry over)", async () => {
+        const at = Date.now() + 120_000;
+        await driver.set(ns, entry("ttl", bytes(100_000, 3), [], at));
+        expect(
+          Number(await helper.send("PEXPIRETIME", [entryKey("ttl")])),
+        ).toBe(at);
+        await driver.set(ns, entry("forever", bytes(100_000, 4)));
+        expect(Number(await helper.send("PTTL", [entryKey("forever")]))).toBe(
+          -1,
+        );
+        // Replacing a staged entry that had an expiry with one that has none.
+        await driver.set(ns, entry("ttl", bytes(100_000, 5)));
+        expect(Number(await helper.send("PTTL", [entryKey("ttl")]))).toBe(-1);
+      });
+
+      test("a fenced staged write stores nothing and leaves no staging key", async () => {
+        const now = Date.now();
+        await driver.setStamps(ns, ["fence"], now, now + 60_000);
+        expect(
+          await driver.set(ns, entry("fenced", bytes(50_000, 6), ["fence"]), {
+            tags: ["fence"],
+            createdAt: now - 1,
+          }),
+        ).toBe("fenced");
+        expect(await driver.get(ns, "fenced")).toBeUndefined();
+        expect(await stagingKeys()).toEqual([]);
+      });
+
+      test("replacing a large entry drops its old tag memberships, a header past 4 KiB of tags included", async () => {
+        const many = Array.from(
+          { length: 200 },
+          (_, index) => `a-long-tag-name-${index}`,
+        );
+        await driver.set(ns, entry("tagged", bytes(1024 * 1024, 7), many));
+        await driver.set(ns, entry("tagged", bytes(200_000, 8), ["kept"]));
+        for (const tag of [many[0], many[199]]) {
+          expect(
+            await helper.send("SISMEMBER", [
+              `${driver.prefix}:{${ns}}:t:${tag}`,
+              "tagged",
+            ]),
+          ).toBe(0);
+        }
+        expect(
+          await driver.deleteByTags(ns, [many[5]], Date.now() + 1000),
+        ).toBe(0);
+        expect((await driver.get(ns, "tagged"))?.tags).toEqual(["kept"]);
+        expect(await driver.deleteByTags(ns, ["kept"], Date.now() + 1000)).toBe(
+          1,
+        );
+      });
+
+      test("a large entry replaces a counter, and delete counts it once", async () => {
+        await driver.increment(ns, "both", 3, null);
+        await driver.set(ns, entry("both", bytes(30_000, 9), ["t-both"]));
+        expect(await driver.getCounter(ns, "both")).toBeUndefined();
+        expect(await driver.delete(ns, ["both"])).toBe(1);
+        expect(await driver.get(ns, "both")).toBeUndefined();
+      });
+
+      test("delete still counts and removes a foreign empty value at an entry key", async () => {
+        await helper.send("SET", [entryKey("foreign"), ""]);
+        expect(await driver.delete(ns, ["foreign", "absent"])).toBe(1);
+        expect(await helper.send("EXISTS", [entryKey("foreign")])).toBe(0);
+      });
     });
   }
 
@@ -912,6 +1031,17 @@ export async function registerRedisSuite(
           );
           await enforced.increment(space, "c", 1, null);
           await enforced.set(space, entry("c", [3], ["red"]));
+          // A staged (large) write, stored and fenced.
+          const large = Array.from({ length: STAGE_FRAME_BYTES }, () => 7);
+          expect(
+            await enforced.set(space, entry("big", large, ["red", "f"])),
+          ).toBe("stored");
+          expect(
+            await enforced.set(space, entry("big", large, ["f"]), {
+              tags: ["f"],
+              createdAt: now - 20,
+            }),
+          ).toBe("fenced");
           // increment: new, existing, over an entry.
           await enforced.increment(space, "n", 2, now + 60_000);
           expect(await enforced.increment(space, "n", 3, now + 60_000)).toBe(5);

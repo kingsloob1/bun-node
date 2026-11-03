@@ -195,18 +195,42 @@ const KEY_LOCKING_SHEBANG = "#!lua flags=allow-key-locking\n";
  * whole while the server is out of memory (Redis 7's flag semantics), where
  * an unflagged script runs until a command that may grow memory; so without
  * it, key locking would refuse the very deletes that free memory. Given only
- * to scripts whose every command is a read or a removal (`GET`, `EXISTS`,
+ * to scripts whose every command is a read or a removal (`GET`, `GETRANGE`, `EXISTS`,
  * `SMEMBERS`, `SCARD`, `SREM`, `UNLINK`, `DEL`, none of them refused out of
  * memory anyway), so it never lets a write grow a full database. Upstash's
  * behaviour when full is not measured (it needs a full scratch database).
  */
 const KEY_LOCKING_FREEING_SHEBANG = "#!lua flags=allow-key-locking,allow-oom\n";
 
+/** How much of a frame `dropEntry` reads for its header: a frame's first line, unless its tags run past it. */
+const FRAME_HEAD_BYTES = 4096;
+
+/**
+ * A frame at least this large is written outside Lua: a plain `SET` to a
+ * staging key, pipelined with the script that renames it into place (`set`).
+ * A value passed through `EVALSHA` is copied into Lua and out again, which
+ * cost a 1 MiB write 1.9 ms against 0.34 ms staged; the two met at about
+ * 4 KiB (measured, 2026-11-02: 8 KiB 31 µs against 24 µs, 16 KiB 44 against 27).
+ */
+export const STAGE_FRAME_BYTES = 8 * 1024;
+
+/** How long a staging key lives if its script never renames it (a crash between the two commands), in ms. */
+const STAGE_TTL_MS = 60_000;
+
 /**
  * Helpers every script carries. `dropEntry` deletes one entry and its tag
  * memberships, read from the frame's header; it answers 1 when there was an
  * entry. A frame that does not parse (a foreign value at our key) is deleted
  * with no memberships to drop.
+ *
+ * It reads only the header: `GETRANGE` of the frame's first
+ * {@link FRAME_HEAD_BYTES} bytes, and the whole frame only when the header is
+ * longer (a great many tags). A value read into Lua is copied in, and that
+ * copy cost a 1 MiB overwrite about 2 ms (measured, 2026-11-02). `GETRANGE`
+ * answers `""` for a missing key, so an empty value at our key looks absent:
+ * `exact` (`delete`, which counts what went) unlinks it to tell; elsewhere it
+ * is left for the write that follows, or to `sweep`'s neighbours, as foreign
+ * data under the prefix.
  */
 const LUA_HELPERS = `
 local function frameTags(frame)
@@ -218,14 +242,21 @@ local function frameTags(frame)
   if ok and type(tags) == 'table' then return tags end
   return {}
 end
-local function dropEntry(base, key)
+local function dropEntry(base, key, exact)
   local ek = base .. 'e:' .. key
-  local old = redis.pcall('GET', ek)
-  if type(old) ~= 'string' then
-    if type(old) == 'table' and old.err then redis.call('UNLINK', ek) return 1 end
+  local head = redis.pcall('GETRANGE', ek, 0, ${FRAME_HEAD_BYTES - 1})
+  if type(head) ~= 'string' then
+    if type(head) == 'table' and head.err then redis.call('UNLINK', ek) return 1 end
     return 0
   end
-  for _, tag in ipairs(frameTags(old)) do
+  if head == '' then
+    if exact then return redis.call('UNLINK', ek) end
+    return 0
+  end
+  if #head == ${FRAME_HEAD_BYTES} and not string.find(head, '\\n', 1, true) then
+    head = redis.call('GET', ek)
+  end
+  for _, tag in ipairs(frameTags(head)) do
     redis.call('SREM', base .. 't:' .. tag, key)
   end
   redis.call('UNLINK', ek)
@@ -265,6 +296,7 @@ function script(body: string, freesOnly = false): Script {
  */
 const SET = script(`
 local base, key, frame, exp, now, fenceAt = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5]), ARGV[6]
+local staged = KEYS[2]
 local i = 7
 local nf = tonumber(ARGV[i])
 if fenceAt ~= '' then
@@ -273,7 +305,10 @@ if fenceAt ~= '' then
     local stamp = redis.call('GET', base .. 's:' .. ARGV[i + j])
     if stamp then
       local sat, suntil = string.match(stamp, '^(%S+) (%S+)$')
-      if sat and tonumber(suntil) > now and tonumber(sat) >= at then return 0 end
+      if sat and tonumber(suntil) > now and tonumber(sat) >= at then
+        if staged then redis.call('UNLINK', staged) end
+        return 0
+      end
     end
   end
 end
@@ -282,8 +317,13 @@ local nt = tonumber(ARGV[i])
 dropEntry(base, key)
 redis.call('UNLINK', base .. 'n:' .. key)
 local ek = base .. 'e:' .. key
-redis.call('SET', ek, frame)
-if exp ~= '' then redis.call('PEXPIREAT', ek, exp) end
+if staged then
+  redis.call('RENAME', staged, ek)
+  if exp ~= '' then redis.call('PEXPIREAT', ek, exp) else redis.call('PERSIST', ek) end
+else
+  redis.call('SET', ek, frame)
+  if exp ~= '' then redis.call('PEXPIREAT', ek, exp) end
+end
 for j = 1, nt do
   redis.call('SADD', base .. 't:' .. ARGV[i + j], key)
 end
@@ -364,15 +404,15 @@ return out
 
 /**
  * `delete`: ARGV base, then the keys. Answers how many entries and counters
- * went. `allow-oom` when key-locked: it only reads frames (`GET`) and removes
- * (`SREM`, `UNLINK`).
+ * went. `allow-oom` when key-locked: it only reads frame headers
+ * (`GETRANGE`, `GET`) and removes (`SREM`, `UNLINK`).
  */
 const DELETE = script(
   `
 local base = ARGV[1]
 local n = 0
 for i = 2, #ARGV do
-  n = n + dropEntry(base, ARGV[i])
+  n = n + dropEntry(base, ARGV[i], true)
   n = n + redis.call('UNLINK', base .. 'n:' .. ARGV[i])
 end
 return n
@@ -898,22 +938,44 @@ export class RedisCacheDriver implements CacheDriver {
     const fencing = fence !== undefined && fence.tags.length > 0;
     const fenceTags = fencing ? [...new Set(fence.tags)] : [];
     const tags = [...new Set(entry.tags)];
-    const stored = await this.#run(
-      SET,
-      [`${base}e:${entry.key}`],
-      [
-        base,
-        entry.key,
-        RedisCacheDriver.#frame(entry),
-        expiryArg(entry.expiresAt),
-        String(this.#now()),
-        fencing ? String(fence.createdAt) : "",
-        String(fenceTags.length),
-        ...fenceTags,
-        String(tags.length),
-        ...tags,
-      ],
-    );
+    const frame = RedisCacheDriver.#frame(entry);
+    const ek = `${base}e:${entry.key}`;
+    const rest = (value: string | Uint8Array) => [
+      base,
+      entry.key,
+      value,
+      expiryArg(entry.expiresAt),
+      String(this.#now()),
+      fencing ? String(fence.createdAt) : "",
+      String(fenceTags.length),
+      ...fenceTags,
+      String(tags.length),
+      ...tags,
+    ];
+    if (frame.byteLength < STAGE_FRAME_BYTES) {
+      const stored = await this.#run(SET, [ek], rest(frame));
+      return stored === 1 ? "stored" : "fenced";
+    }
+    // A large frame skips Lua: staged with a plain `SET` (in the namespace's
+    // hash tag, so key locking holds), which the script renames into place,
+    // or unlinks when fenced. Bun pipelines the two on the one connection.
+    const staging = `${base}w:${crypto.randomUUID()}`;
+    const staged = this.#client.send("SET", [
+      staging,
+      frame as unknown as string,
+      "PX",
+      String(STAGE_TTL_MS),
+    ]);
+    let stored: unknown;
+    try {
+      stored = await this.#run(SET, [ek, staging], rest(""));
+    } catch (error) {
+      // The staging write's own failure is the cause when there is one.
+      await staged;
+      void this.#client.unlink(staging).catch(() => undefined);
+      throw error;
+    }
+    await staged;
     return stored === 1 ? "stored" : "fenced";
   }
 

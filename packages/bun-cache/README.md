@@ -488,6 +488,14 @@ smaller. `compress: false` disables it.
   oracle**: a value that mixes a secret with text an attacker chooses leaks
   the secret through its compressed size, byte by byte (the CRIME and BREACH
   attacks). A `touch` keeps such an entry uncompressed.
+- **A large value is probed first.** From 256 KiB, a built-in algorithm
+  first compresses a sample: four slices spread over the value, 1/64 of it
+  and at most 16 KiB. When the sample shrinks by less than 2%, the value is
+  stored as it is, without compressing it whole: 1 MiB of random bytes cost
+  zstd 319 µs for output the "only if smaller" rule then discarded. The
+  sample decides, so a value whose sampled parts do not shrink is stored
+  uncompressed even if a part between them would have. A user compressor is
+  never probed.
 
 **User compressors.** A `CacheCompressor` is
 `{ id: 128–255, compress(bytes), decompress(bytes, maxOutputLength) }`, and
@@ -1794,6 +1802,7 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
 <p>:{<ns>}:t:<tag>   SET     the keys carrying the tag
 <p>:{<ns>}:s:<tag>   STRING  the tag's invalidation stamp, "<at> <until>"
 <p>:{<ns>}:l:<key>   STRING  a lock's owner; PX
+<p>:{<ns>}:w:<uuid>  STRING  a large entry's frame between its two commands (below); PX 60 s
 <p>:bus              the bus channel
 ```
 
@@ -1807,6 +1816,13 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
   `NOSCRIPT` (after a restart or a `SCRIPT FLUSH`). On Upstash,
   `keyLocking: true` runs them under a namespace's lock instead of the
   database's ([below](#upstash-and-other-managed-redis)).
+- **A large entry skips Lua.** A value passed to a script is copied into Lua
+  and out again: a 1 MiB write took 1.9 ms that way against 0.34 ms with a
+  plain `SET` (measured). So an entry whose frame is 8 KiB or more is
+  written with a plain `SET` to a staging key (`w:`, in the namespace's hash
+  tag, expiring in 60 s), pipelined with the script, which checks the fence
+  and renames it into place, or deletes it when fenced. Replacing or deleting
+  an entry reads only its header line (`GETRANGE` of its first 4 KiB).
 - **Expiry is native**: an entry's and a counter's keys expire with
   `PEXPIREAT`, and reads also treat a passed expiry as a miss. There is
   nothing for the core's sweeper to reclaim but what has no TTL — tag-set
@@ -1986,10 +2002,11 @@ from a Redis next to the app:
   | `set`, each tag | +1 |
   | `set` replacing an entry | +1, and +1 per old tag |
   | `set` with the fence | +1 per fenced tag |
+  | `set` of an entry of 8 KiB or more (staged) | +1, and +1 more when it has no expiry |
   | `touch` | 4 |
   | `increment` (an existing counter / a new one) | 3 / 6 |
   | `acquireLock`, `releaseLock` | 3 each |
-  | `delete` | 1, plus 2 per absent key, 3 per entry, and 1 per tag it carried |
+  | `delete` | 1, plus 3 per absent key, 3 per entry, and 1 per tag it carried |
   | `deleteByTags` | 1, plus 3 per tag, plus 2 per member and 1 per tag it carried |
   | `publish` (the bus) | 1 |
 

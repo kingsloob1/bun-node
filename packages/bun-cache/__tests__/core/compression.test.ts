@@ -28,6 +28,11 @@ import type {
   CreateCacheOptions,
 } from "../../lib/index";
 import { createCache, memoryDriver } from "../../lib/index";
+import {
+  PROBE_FROM_BYTES,
+  probeSays,
+  resolveCompress,
+} from "../../lib/core/compression";
 import { fakeClock } from "../../lib/testing/index";
 
 /** The clock every fixture was written at. */
@@ -822,5 +827,125 @@ describe("the decompression cap on the new paths", () => {
       );
       await cache.close();
     }
+  });
+});
+
+describe("the compressibility probe (speed work PR 3)", () => {
+  /** `size` bytes from a 64-symbol alphabet: about 6 bits each, so zstd's entropy stage alone shrinks them by a quarter. */
+  function sixBit(size: number): Uint8Array<ArrayBuffer> {
+    const alphabet = new TextEncoder().encode(
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+    );
+    const out = new Uint8Array(size);
+    let state = 0x9e3779b9;
+    for (let index = 0; index < size; index++) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      out[index] = alphabet[(state >>> 0) & 63];
+    }
+    return out;
+  }
+  /** `size` random bytes (getRandomValues fills at most 64 KiB a call). */
+  function random(size: number): Uint8Array<ArrayBuffer> {
+    const out = new Uint8Array(size);
+    for (let at = 0; at < size; at += 65_536) {
+      crypto.getRandomValues(out.subarray(at, Math.min(size, at + 65_536)));
+    }
+    return out;
+  }
+  const zstd = (bytes: Uint8Array<ArrayBuffer>): Uint8Array =>
+    Bun.zstdCompressSync(bytes, { level: 3 });
+
+  test("probeSays: random bytes will not shrink; text, six-bit symbols, zeros and a half-random payload will", () => {
+    const size = 1024 * 1024;
+    expect(probeSays(zstd, random(size))).toBe(false);
+    expect(probeSays(zstd, sixBit(size))).toBe(true);
+    expect(probeSays(zstd, new Uint8Array(size))).toBe(true);
+    expect(
+      probeSays(
+        zstd,
+        new Uint8Array(new TextEncoder().encode(JSON.stringify(records(size)))),
+      ),
+    ).toBe(true);
+    const half = random(size);
+    half.set(sixBit(size / 2));
+    expect(probeSays(zstd, half)).toBe(true);
+    // At the smallest probed size the sample is 1 KiB a slice.
+    expect(probeSays(zstd, random(PROBE_FROM_BYTES))).toBe(false);
+    expect(probeSays(zstd, sixBit(PROBE_FROM_BYTES))).toBe(true);
+  });
+
+  test("a built-in hands back a probed payload that will not shrink, unchanged, without compressing it whole; below PROBE_FROM_BYTES it compresses", () => {
+    for (const algorithm of ["zstd", "gzip", "br", "deflate"] as const) {
+      const { write } = resolveCompress({ algorithm }, 16_384);
+      const big = random(PROBE_FROM_BYTES);
+      expect(write!.compress(big)).toBe(big);
+      const small = random(PROBE_FROM_BYTES - 1);
+      expect(write!.compress(small)).not.toBe(small);
+      const text = sixBit(PROBE_FROM_BYTES);
+      const shrunk = write!.compress(text) as Uint8Array;
+      expect(shrunk.byteLength).toBeLessThan(text.byteLength * 0.9);
+    }
+  });
+
+  test("through the cache: a large random value is stored uncompressed, a large compressible one compressed, both read back", async () => {
+    for (const algorithm of ["zstd", "gzip", "br", "deflate"] as const) {
+      const { cache, driver } = setup({
+        codec: "raw",
+        compress: { algorithm },
+      });
+      const noise = random(1024 * 1024);
+      const text = sixBit(1024 * 1024);
+      await cache.set("noise", noise);
+      await cache.set("text", text);
+      const noiseStored = await storedBytes(driver, "noise");
+      expect(decodeEntry(noiseStored).header.compressor).toBe(
+        COMPRESSOR_IDS.none,
+      );
+      expect(
+        decodeEntry(await storedBytes(driver, "text")).header.compressor,
+      ).toBe(COMPRESSOR_IDS[algorithm]);
+      expect(await cache.get("noise")).toEqual(noise);
+      expect(await cache.get("text")).toEqual(text);
+      await cache.close();
+    }
+  });
+
+  test("a user compressor is never probed, and is handed a copy it may change", async () => {
+    let calls = 0;
+    const scrambling: CacheCompressor = {
+      id: 201,
+      compress: (bytes) => {
+        calls++;
+        const out = Bun.zstdCompressSync(bytes);
+        bytes.fill(0); // keeps nothing it was handed
+        return out;
+      },
+      decompress: (bytes) => Bun.zstdDecompressSync(bytes),
+    };
+    const { cache } = setup({
+      codec: "raw",
+      compress: { algorithm: scrambling },
+      l1: { maxEntries: 10 },
+    });
+    await sleep(5); // L1 serves once the memory driver's bus listens
+    const noise = random(PROBE_FROM_BYTES);
+    await cache.set("noise", noise);
+    expect(calls).toBe(1);
+    expect(noise.some((byte) => byte !== 0)).toBe(true);
+    // The L1 copy and the stored one are the caller's bytes, not the zeros.
+    expect(await cache.get("noise")).toEqual(noise);
+    expect(await cache.get("noise", { tier: "l2" })).toEqual(noise);
+    await cache.close();
+  });
+
+  test("a built-in compresses a view over a larger buffer as the view alone", async () => {
+    const { cache } = setup({ codec: "raw", compress: { threshold: 0 } });
+    const backing = sixBit(200_000);
+    const view = backing.subarray(1_000, 101_000);
+    await cache.set("view", view);
+    expect(await cache.get("view")).toEqual(view.slice());
+    await cache.close();
   });
 });

@@ -2295,6 +2295,57 @@ no entry, asks `driver.getCounter` (a counter lives outside the entry bytes,
   (the SQL suites and MongoDB); two tests that pinned the redundant re-read
   updated. Four negative controls; see the PR.
 
+**Speed work: 1 MB writes, built 2026-11-03** (speed work PR 3, scheduled by
+the user with its speed comparisons). The baseline had `set-1mb` on Redis at
+219/s against cache-manager's 1,596/s, put down to zstd on incompressible
+data. Measured before anything changed (scratch profiles, exclusive), that
+was the smaller part:
+
+- **The bench's value is not incompressible**: a 64-symbol alphabet is 6
+  bits a byte, and zstd's entropy stage alone takes it to 0.750 (1,078 µs
+  per MiB at level 3), so "only if smaller" rightly keeps it compressed.
+  Random bytes do not shrink (1.000) and cost zstd 319 µs per MiB for
+  output that rule discards.
+- **On Redis the time was Lua**: `cache.set` of 1 MiB took 3.8 ms even with
+  `compress: false`. A value passed to `EVALSHA` is copied into Lua and out:
+  `EVAL SET` of 1 MiB 2.2 ms against a plain `SET`'s 0.36 ms, and the
+  script's `GET` of the old frame (to drop its tag memberships) 2.1 ms more.
+
+What changed:
+
+- **Redis stages a frame of 8 KiB or more outside Lua**: a plain `SET` to a
+  staging key in the namespace's hash tag (`w:<uuid>`, `PX` 60 s), pipelined
+  with the `set` script, which checks the fence and `RENAME`s it into place
+  (then `PEXPIREAT`, or `PERSIST` when the entry has no expiry), or deletes
+  it when fenced. Measured on raw commands: 1 MiB 1,883 µs through Lua
+  against 340 µs staged, 64 KiB 123 against 45, 8 KiB 31 against 24, 4 KiB
+  25 against 24. On Upstash it costs one more command (two with no expiry).
+  `setMany`'s script is unchanged.
+- **Redis reads only a frame's header line** to drop an entry (`GETRANGE`
+  of its first 4 KiB; the whole frame only when its tags run longer).
+  `GETRANGE` answers `""` for a missing key, so `delete`, which counts, also
+  unlinks an empty value at the key (a foreign one, deleted as before).
+- **A compressibility probe** (`lib/core/compression.ts`): from 256 KiB, a
+  built-in first compresses four slices spread over the value (1/64 of it,
+  at most 16 KiB); a sample that shrinks by less than 2% means the value is
+  stored uncompressed without compressing it whole. A user compressor is
+  never probed. The judgment is the sample's (a value whose sampled parts do
+  not shrink is stored uncompressed even if a part between them would have).
+- **No copy for a built-in compressor**: the payload was copied before
+  compressing, for a user compressor that may keep it; a built-in now reads
+  the codec's bytes directly.
+- **A/B** (the item-1 tree against this one, exclusive): Redis `set-1mb`
+  2.51×, random 1 MiB 4.85×, compressible JSON 1.12×, 64 KiB 1.82×, 10 KB
+  1.47×, 100 B 0.98×; MongoDB random 1.34×; Postgres unchanged (a 1 MiB write
+  there is 16 ms of Postgres); `get-hit-1mb` unchanged. **Bench**
+  (`--compare`, exclusive, held): `set-1mb` on Redis 219 → 512/s
+  (cache-manager 1,526; what remains is zstd on the bench's compressible
+  value, kept by "only if smaller"), `set-10kb` on Redis 12,747 → 17,958/s
+  (cache-manager 25,046).
+- **Tests**: the probe (`compression.test.ts`, 5) and Redis's large frames
+  (`redisSuite.ts`, 6, local lane only, plus staged writes in the key-locking
+  rule case). Seven negative controls; see the PR.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
