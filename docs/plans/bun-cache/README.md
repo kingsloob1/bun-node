@@ -2220,6 +2220,45 @@ because the contract's `setMany` takes no fence. Now:
   take-back cases; type-level cases in `cache.type-test.ts`. Negative
   controls: see the PR.
 
+**§16's docs item: bun-jobs' "High availability" README section, built
+2026-11-03** (scheduled by the user; §19 Q10). bun-jobs' README now has a
+section per driver (Postgres with Patroni and synchronous commit; MySQL group
+replication, single-primary; MongoDB replica sets with `w: "majority"`;
+Redis through a managed failover endpoint, Sentinel unsupported, asynchronous
+replication losing what was acknowledged last; SQLite and file on one host),
+and §16.3's point 2 measured: one failure per server driver, seen from a
+worker and a producer (a scratch harness: a queue, a worker, a producer
+adding with `jobId`s, and counting). Postgres, MySQL, MariaDB and the MongoDB
+replica set are containers here, so each was killed and restarted inside one
+exclusive wrapped job; Redis is a system service, so its client connections
+were killed (`CLIENT KILL`) instead. No job was lost in any run. Postgres
+recovered in 3.5–7.4 s, with one job run twice once (its completion lost in
+the crash, returned by the stalled sweep, as §16.2 predicted); MySQL and
+MariaDB made their callers wait rather than fail (16.4–16.7 s); Redis was
+back in 10 ms. Two findings:
+
+- **A Bun bug hangs the MongoDB driver across a restart.** In 4 runs of 4 an
+  operation in flight never settled: the `mongodb` package waits for a
+  `drain` that Bun never emits when a write lands just after the peer
+  closed, where Node emits `error` (`docs/bun-bugs/node-net-write-after-peer-close-no-error.md`,
+  a Bun-only reproduction; the same client recovers under Node). `timeoutMS`
+  in the URL works around it (measured: recovered in 10.7 s); the README
+  says so. Filed as oven-sh/bun#47834 (2026-11-03). No default `timeoutMS` in
+  our MongoDB drivers meanwhile (the user's decision, 2026-11-03): it would
+  also cap long bulk operations.
+- **bun-jobs' SQL schema creation lost a race on Postgres** (fixed as its own
+  patch): two drivers creating the schema at once on a fresh prefix, a
+  worker and a producer starting together, failed one of them with `23505`
+  on `pg_type`, because `CREATE TABLE IF NOT EXISTS` is not atomic against
+  itself there and the retry covered only lock errors. The worker's `run()`
+  rejected and it never claimed. The migration now repeats a statement that
+  lost that race (`isConcurrentCreate`, Postgres only).
+
+§16.3's point 3, retrying dropped connections in the SQL driver, is not built
+(the user's decision, 2026-11-03): an `add` that failed may have committed, so
+a driver-level retry would duplicate a job without a `jobId`; the README says
+to give jobs a `jobId` and retry `add` instead.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

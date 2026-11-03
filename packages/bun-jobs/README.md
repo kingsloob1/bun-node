@@ -142,6 +142,12 @@ reference.
   - [Driver configs](#driver-configs)
   - [Connection fields](#connection-fields)
 - [Schema sync](#schema-sync)
+- [High availability](#high-availability)
+  - [Postgres: Patroni](#postgres-patroni)
+  - [MySQL: group replication](#mysql-group-replication)
+  - [MongoDB: a replica set with `w: "majority"`](#mongodb-a-replica-set-with-w-majority)
+  - [Redis: a managed failover endpoint](#redis-a-managed-failover-endpoint)
+  - [SQLite and file: one host](#sqlite-and-file-one-host)
 - [Errors](#errors)
 - [Logging](#logging)
 - [Benchmarks](#benchmarks)
@@ -8521,6 +8527,141 @@ The memory, file and Redis drivers have no schema, and do not implement
 
 Example:
 [`08-drivers/sqlite-and-schema-sync.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts).
+
+## High availability
+
+bun-jobs has no failover of its own, and does not want one: every guarantee
+it gives (claim once, the lock and its fencing token, stalled recovery,
+compare-and-set on queue state) is one atomic conditional write on **one**
+backend. Two backends written to by bun-jobs would each claim the same job.
+So availability is the database's: run its own HA, connect through the
+endpoint that always names the current primary, and bun-jobs carries on
+across a failover the way it carries on across any lost connection.
+
+What any failover costs, whatever the driver:
+
+- **Operations in flight fail, or wait.** A worker reports each failed
+  claim or heartbeat as an `error` event and tries again on its next poll;
+  it does not stop. A `queue.add` that fails throws, and is the caller's to
+  retry. Give jobs a `jobId` and the retry is safe: adding an existing id
+  returns the stored job (`wasAdded: false`), so an add that was committed
+  just before its connection dropped is not added twice.
+- **A job whose completion was lost runs again.** When a worker's
+  `completeJob` dies with the connection, the job's lock lapses after
+  `lockDuration` and the stalled sweep returns it to the queue: the job runs
+  twice, and counts one stall. Handlers should be idempotent, as they should
+  be for a crashed worker anyway. A shorter `lockDuration` and
+  `stalledInterval` shorten the wait.
+- **What the database loses, bun-jobs loses.** With asynchronous
+  replication, a write acknowledged by the old primary and not yet on the new
+  one is gone: an added job, a claim (the job runs again), a completion (it
+  runs again). Only synchronous or majority commit makes every acknowledged
+  write survive.
+
+**What was measured** (2026-11-03, Bun 1.4.4-canary.1+11c367163): a queue,
+one worker (`concurrency: 4`, `lockDuration: 5000`, `stalledInterval: 2000`,
+`pollInterval: 100`) and a producer adding 50 jobs a second, each with a
+`jobId` and retried every 200 ms on failure, for 30 s, the server failing 8 s
+in. Every acknowledged job was then checked for having run, and for having
+run once. These are crashes and restarts of one server (`docker kill`, then
+`docker start`), or for Redis its connections killed, not a promotion to a
+replica: they measure what a worker and a producer see while the endpoint is
+gone and when it is back, not a replica's lag.
+
+| Driver | Fault | Producer | Worker | Lost | Ran twice | Back after |
+|---|---|---|---|---|---|---|
+| Postgres 16 (two runs) | container killed, restarted 1.7–2.4 s later | `add` errors for 0.4 s and for 5 s ("the database system is starting up", "… not yet accepting connections") | 20 and 181 `error` events, over the same windows | 0 | 0, and 1 (its completion lost in the crash; the stalled sweep returned it) | 3.5 s and 7.4 s |
+| MySQL 8.4 | container killed (5 s to die), restarted | no error: each `add` waited | 2 `error` events at the restart | 0 | 0 | 16.7 s (the kill took 5 s of it) |
+| MariaDB 11 | container killed, restarted 2.6 s later | no error: each `add` waited | none: claims waited | 0 | 0 | 16.4 s |
+| Redis 8.0 | the producer's and worker's three connections killed (`CLIENT KILL`) | no error | 2 `error` events, at once | 0 | 0 | 10 ms |
+| MongoDB 7, one-node replica set, `w: "majority"` | container killed, restarted | **an `add` never settled**, in 3 runs of 4 | **a claim or completion never settled, and the worker stopped**, in 2 runs of 4 | 0 | 0 | **never** without `timeoutMS`: the stuck operation was still pending 90–110 s later in every run; 10.7 s with `timeoutMS=10000` (3 `error` events, "Timed out at socket write") |
+
+The MongoDB row is a Bun bug, not the database's: under Bun, a socket
+write that lands just after the server closed the connection emits no
+`error`, so the `mongodb` package waits on it for good
+([oven-sh/bun#47834](https://github.com/oven-sh/bun/issues/47834),
+[`docs/bun-bugs/node-net-write-after-peer-close-no-error.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/bun-bugs/node-net-write-after-peer-close-no-error.md)).
+The same client recovers under Node. **Until Bun fixes it, set `timeoutMS`
+on a MongoDB URL** (`?timeoutMS=10000`): the stuck operation then fails
+after that long, and the driver recovers. `socketTimeoutMS` does not help
+(measured: still stuck after 20 s).
+
+### Postgres: Patroni
+
+- **Connect through the leader**: Patroni's REST API names it, and HAProxy
+  (or a load balancer health-checking `/primary`) gives one address that
+  follows it. A plain list of hosts does not: bun-jobs must write to the
+  primary, and a replica refuses writes. Behind a pooler, set `notify: false`
+  and keep the polling (see [Driver configs](#driver-configs)): a
+  transaction pooler cannot carry `LISTEN`.
+- **For no lost jobs, synchronous commit**: `synchronous_mode: true` in
+  Patroni (and `synchronous_commit` `on` or `remote_apply`), so a commit is
+  acknowledged only once a standby has it. Without it, a failover can lose
+  what the old primary acknowledged last.
+- What a worker sees: the restart above. Statements fail with "the database
+  system is starting up" or "is not yet accepting connections" while the
+  endpoint has no primary; the worker logs them and claims again when it
+  answers; an `add` throws.
+
+### MySQL: group replication
+
+- **Single-primary group replication** (InnoDB Cluster), connecting through
+  MySQL Router's read-write port, which follows the primary. Multi-primary
+  mode is not for bun-jobs: two primaries certify conflicting claims
+  optimistically, and the loser's transaction fails at commit.
+- Group replication commits on a majority of the group, so an acknowledged
+  write survives the primary's loss. Set
+  `group_replication_consistency` to `BEFORE_ON_PRIMARY_FAILOVER` (or
+  stronger), so the new primary serves nothing until it has applied the
+  backlog: otherwise a claim can read a row the old primary had already
+  claimed.
+- What a worker sees, measured on a restart: statements **wait** rather than
+  fail while the server is gone, then go on. MariaDB behaved the same; for
+  MariaDB, Galera in single-writer use (one node written to, through
+  MaxScale or a router) is the equivalent.
+- `max_connections` set with `SET GLOBAL` does not survive a restart (the
+  MariaDB restart above came back at 151): set it in the server's
+  configuration.
+
+### MongoDB: a replica set with `w: "majority"`
+
+- A replica set, `?replicaSet=` in the URL, and `w: "majority"` (the
+  default for most replica sets since MongoDB 5.0; say it in the URL to be
+  sure, `&w=majority`). bun-jobs reads from the primary whatever the
+  client's `readPreference`, because the reads that decide writes must not
+  see a lagging secondary.
+- The `mongodb` package's retryable writes and reads (on by default) retry
+  a write once across an election, so a claim (`findOneAndUpdate`) is not
+  applied twice.
+- **Set `timeoutMS`** on Bun (above): measured, without it an operation in
+  flight during the primary's loss can wait for good.
+- Arbiters lower the majority write's guarantee: prefer three data-bearing
+  members.
+
+### Redis: a managed failover endpoint
+
+- **Sentinel is not supported**: Bun's `RedisClient` does not speak it, so
+  the driver cannot follow a Sentinel-announced primary. Use a managed Redis
+  whose one endpoint follows the primary across a failover (ElastiCache,
+  Memorystore, Azure Cache for Redis, Upstash, and the like).
+- **Redis replicates asynchronously**: a failover can lose what the old
+  primary acknowledged last — an added job, a claim (the job runs again),
+  a completion (it runs again). `WAIT` would narrow that window, and is not
+  used. Where a lost job matters, a SQL or MongoDB driver with synchronous or
+  majority commit is the right backend.
+- What a worker sees: Bun reconnects on its own. Measured with every
+  connection of the producer and the worker killed: the worker logged two
+  errors and was claiming again 10 ms later; nothing failed for the
+  producer. A longer outage is retried for Bun's reconnect budget (about
+  31 s at the defaults: `maxRetries`, `connectionTimeout`), then the next
+  operation starts again ([Driver configs](#driver-configs)).
+
+### SQLite and file: one host
+
+SQLite and the file driver keep the queue on one machine's disk, and have no
+HA: a replicated file system under them (NFS and the like) is not safe for
+SQLite's locking, nor for the file driver's `rename`. Back the disk up, or
+use a server driver.
 
 ## Errors
 
