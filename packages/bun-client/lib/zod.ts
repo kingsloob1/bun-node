@@ -18,7 +18,7 @@ import type { $ZodType } from "zod/v4/core";
 import type { SchemaSource } from "./types";
 
 /** The request parts a route's schemas may name. */
-const PARTS = ["params", "query", "headers", "body"] as const;
+const PARTS = ["params", "query", "headers", "body", "files"] as const;
 
 /** Whether `value` is a zod 4 schema: a Standard Schema whose vendor is zod. */
 function isZodSchema(value: unknown): boolean {
@@ -61,9 +61,11 @@ export function schemasFromZod<R>(schemas: {
     readonly query?: $ZodType;
     /** The request headers, by lower-case name. */
     readonly headers?: $ZodType;
-    /** The request body, before it is serialised. */
+    /** The request body (JSON, or a form's fields), before it is serialised. */
     readonly body?: $ZodType;
-    /** Response bodies by status; `null`: no body. */
+    /** A multipart body's files, by field (each a `File`, or a list of them). */
+    readonly files?: $ZodType;
+    /** Response bodies by status (an NDJSON stream's: one line); `null`: no body. */
     readonly responses?: { readonly [status: number]: $ZodType | null };
   };
 }): SchemaSource<R>["schemas"] {

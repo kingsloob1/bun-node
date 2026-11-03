@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 3dcc0f6a50e0371c
+ * typesHash: 108152abb8ac0736
  *
  * Warnings:
  * - GET /api/health: no responses declared (neither the validator nor .describe() declares any); a placeholder `default` was emitted — strict mode rejects this
@@ -16,7 +16,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "3dcc0f6a50e0371c";
+export const typesHash = "108152abb8ac0736";
 
 /** Where a user lives. */
 export interface Address {
@@ -62,6 +62,19 @@ export interface Routes {
       200: Category[];
     };
   };
+  "GET /api/exports/users": {
+    operationId: "exportUsers";
+    params: Record<never, never>;
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: AsyncIterable<{
+        id: string;
+        name: string;
+      }>;
+    };
+  };
   "GET /api/health": {
     operationId: "health";
     params: Record<never, never>;
@@ -70,6 +83,24 @@ export interface Routes {
     body: undefined;
     responses: {
       200: unknown;
+    };
+  };
+  "POST /api/sessions": {
+    operationId: "login";
+    params: Record<never, never>;
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body:
+      | {
+          user: string;
+          tags?: string[];
+        }
+      | URLSearchParams;
+    responses: {
+      200: {
+        user: string;
+        tags: string[];
+      };
     };
   };
   "POST /api/shapes": {
@@ -154,6 +185,47 @@ export interface Routes {
       204: undefined;
     };
   };
+  "GET /api/users/:id/avatar": {
+    operationId: "avatarBytes";
+    params: {
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: AsyncIterable<Uint8Array>;
+    };
+  };
+  "POST /api/users/:id/avatar": {
+    operationId: "uploadAvatar";
+    params: {
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body:
+      | {
+          caption?: string;
+        }
+      | FormData;
+    files: {
+      /** The new picture. */
+      avatar: Blob;
+      extras?: Blob[];
+    };
+    responses: {
+      201: {
+        caption?: string;
+        files: {
+          field: string;
+          name: string;
+          type: string;
+          size: number;
+        }[];
+      };
+    };
+  };
   "GET /api/users/:id/events": {
     operationId: "userEvents";
     params: {
@@ -175,11 +247,34 @@ export interface Routes {
       };
     };
   };
+  "GET /api/users/:id/report": {
+    operationId: "report";
+    params: {
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: Blob;
+      404: Problem;
+    };
+  };
 }
 
 export const manifest = {
   "GET /api/categories": { operationId: "listCategories", statuses: [200] },
+  "GET /api/exports/users": {
+    operationId: "exportUsers",
+    statuses: [200],
+    chunks: { 200: "ndjson" },
+  },
   "GET /api/health": { operationId: "health" },
+  "POST /api/sessions": {
+    operationId: "login",
+    statuses: [200],
+    bodyType: "urlencoded",
+  },
   "POST /api/shapes": { operationId: "draw", statuses: [200] },
   "POST /api/users": {
     operationId: "createUser",
@@ -192,5 +287,16 @@ export const manifest = {
     cache: { tags: ["user:{id}"] },
   },
   "DELETE /api/users/:id": { operationId: "deleteUser", statuses: [204] },
+  "GET /api/users/:id/avatar": {
+    operationId: "avatarBytes",
+    statuses: [200],
+    chunks: { 200: "raw" },
+  },
+  "POST /api/users/:id/avatar": {
+    operationId: "uploadAvatar",
+    statuses: [201],
+    bodyType: "multipart",
+  },
   "GET /api/users/:id/events": { operationId: "userEvents", statuses: [200] },
+  "GET /api/users/:id/report": { operationId: "report", statuses: [200, 404] },
 } as const satisfies RouteManifest<Routes>;

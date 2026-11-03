@@ -7,9 +7,11 @@ out, with why.
 Written 2026-11-02 against `develop` at `e80ab379`. **No product code was
 changed.** Markings as in TC.
 
-**Status (2026-11-02): approved by the user** (TC §14, Q26; names as in
-TC §16). **Nothing is built.** The next PRs are TC's **PR-K**,
-**PR-M1** and **PR-C1**; this sub-plan's PRs follow them as TC §15 orders.
+**Status (2026-11-03): approved by the user** (TC §14, Q26; names as in
+TC §16). **Built**: the named-operation proxy (§2, in PR-C1) and **PR-C9**
+(§3, §4, and bun-common's `RouteDoc.request.files`; TC's Status row says
+what and which new names await approval). Upload progress over XHR stays
+later, on demand.
 
 ---
 

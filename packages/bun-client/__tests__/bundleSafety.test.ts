@@ -162,9 +162,18 @@ describe("the lazy load of the checks (plan §10.1)", () => {
     expect(eager.includes("createClient")).toBe(true);
     expect(contractMarkersIn(eager)).toEqual([]);
     expect(eager).toMatch(/import\("\.\/chunk-[\w-]+\.js"\)/);
-    expect(lazy.length).toBe(1);
-    expect(contractMarkersIn(lazy[0])).toEqual([...CONTRACT_MARKERS]);
-    expect(serverMarkersIn(lazy[0])).toEqual([]);
+    // Two lazy chunks: the checks (bun-contract), and the bodies (PR-C9:
+    // forms, downloads, streams), which holds none of it.
+    expect(lazy.length).toBe(2);
+    const [checks, bodies] = lazy.toSorted(
+      (a, b) => contractMarkersIn(b).length - contractMarkersIn(a).length,
+    );
+    expect(contractMarkersIn(checks)).toEqual([...CONTRACT_MARKERS]);
+    expect(contractMarkersIn(bodies)).toEqual([]);
+    expect(bodies.includes("multipart") || bodies.includes("FormData")).toBe(
+      true,
+    );
+    for (const chunk of lazy) expect(serverMarkersIn(chunk)).toEqual([]);
   });
 
   it("negative control: an entry importing the checks statically carries bun-contract in what loads first", async () => {

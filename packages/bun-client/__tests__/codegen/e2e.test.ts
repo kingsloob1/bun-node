@@ -161,6 +161,136 @@ describe("the generated map drives the client through the app", () => {
   });
 });
 
+describe("bodies beyond JSON through the app (PR-C9, other-transports.md §3–§4)", () => {
+  it("uploads typed fields and files as multipart/form-data", async () => {
+    const r = await api.post("/api/users/:id/avatar", {
+      params: { id: "42" },
+      body: { caption: "me" },
+      files: {
+        avatar: new File(["png!"], "me.png", { type: "image/png" }),
+        extras: [new Blob(["a"]), new Blob(["bb"], { type: "text/csv" })],
+      },
+      throwOnError: true,
+    });
+    const _size: Equal<(typeof r.files)[number]["size"], number> = true;
+    void _size;
+    expect(r).toEqual({
+      caption: "me",
+      files: [
+        { field: "avatar", name: "me.png", type: "image/png", size: 4 },
+        {
+          field: "extras",
+          name: "blob",
+          type: "application/octet-stream",
+          size: 1,
+        },
+        // Bun's Blob constructor adds the charset (oven-sh/bun#35439).
+        {
+          field: "extras",
+          name: "blob",
+          type: expect.stringMatching(/^text\/csv/),
+          size: 2,
+        },
+      ],
+    });
+  });
+
+  it("sends an urlencoded route's fields as a form", async () => {
+    const r = await api.op.login({
+      body: { user: "ada", tags: ["x"] },
+      throwOnError: true,
+    });
+    expect(r).toEqual({ user: "ada", tags: ["x"] });
+  });
+
+  it("iterates an NDJSON stream, typed per line", async () => {
+    const r = await api.get("/api/exports/users", { throwOnError: true });
+    const names: string[] = [];
+    for await (const row of r) {
+      const _row: Equal<typeof row, { id: string; name: string }> = true;
+      void _row;
+      names.push(row.name);
+    }
+    expect(names).toEqual(["Ada", "Grace"]);
+  });
+
+  it("iterates a raw stream's bytes", async () => {
+    const r = await api.get("/api/users/:id/avatar", {
+      params: { id: "42" },
+      throwOnError: true,
+    });
+    const bytes: number[] = [];
+    for await (const chunk of r) {
+      const _chunk: Equal<typeof chunk, Uint8Array> = true;
+      void _chunk;
+      bytes.push(...chunk);
+    }
+    expect(bytes).toEqual([1, 2, 3]);
+  });
+
+  it("downloads by kind: a named Blob, a stream, an ArrayBuffer; a 404 stays problem+json", async () => {
+    const blob = await api.get("/api/users/:id/report", {
+      params: { id: "42" },
+    });
+    if (!blob.ok) throw new Error("expected 200");
+    const _blob: Equal<typeof blob.data, Blob> = true;
+    void _blob;
+    expect(blob.filename).toBe("report-42.pdf");
+    expect(blob.data).toBeInstanceOf(File);
+    expect((blob.data as File).name).toBe("report-42.pdf");
+    expect(await blob.data.text()).toBe("%PDF-1.7");
+
+    const stream = await api.get("/api/users/:id/report", {
+      params: { id: "42" },
+      as: "stream",
+      throwOnError: true,
+    });
+    const _stream: Equal<typeof stream, ReadableStream<Uint8Array>> = true;
+    void _stream;
+    expect(await new Response(stream).text()).toBe("%PDF-1.7");
+
+    const buffer = await api.get("/api/users/:id/report", {
+      params: { id: "42" },
+      as: "arrayBuffer",
+      throwOnError: true,
+    });
+    const _buffer: Equal<typeof buffer, ArrayBuffer> = true;
+    void _buffer;
+    expect(new TextDecoder().decode(buffer)).toBe("%PDF-1.7");
+
+    const missing = await api.get("/api/users/:id/report", {
+      params: { id: "7" },
+      as: "stream",
+    });
+    if (missing.ok) throw new Error("expected 404");
+    expect(missing.error.code).toBe("NOT_FOUND");
+  });
+
+  it("refuses wrong bodies at compile time (negative controls)", () => {
+    const never = (_: unknown) => {};
+    never(() =>
+      api.post("/api/users/:id/avatar", {
+        params: { id: "1" },
+        // @ts-expect-error -- the avatar file is required
+        files: {},
+      }),
+    );
+    never(() =>
+      api.post("/api/users/:id/avatar", {
+        params: { id: "1" },
+        // @ts-expect-error -- extras is a list of files
+        files: { avatar: new Blob([]), extras: new Blob([]) },
+      }),
+    );
+    // @ts-expect-error -- the form needs its user
+    never(() => api.post("/api/sessions", { body: { tags: [] } }));
+    never(() =>
+      // @ts-expect-error -- no such download kind
+      api.get("/api/users/:id/report", { params: { id: "1" }, as: "text" }),
+    );
+  });
+});
+
 describe("a registry mounted twice (fixtures/mounts.ts)", () => {
   const mounts = buildMountsRouter();
   const client = createClient<MountsRoutes>({

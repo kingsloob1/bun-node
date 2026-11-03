@@ -9,14 +9,18 @@
  * nullable field, a record, arrays, a discriminated union, a coerced and
  * defaulted query key, a required header, `x-bun-errors`, `x-bun-cache`, an
  * SSE stream, a bodiless status, a route that declares nothing, and a
- * `z.date()` (the documented §5.3 difference). The handlers answer what the
- * e2e test expects.
+ * `z.date()` (the documented §5.3 difference); and since PR-C9 the bodies
+ * beyond JSON: a multipart upload with documented files, an urlencoded
+ * form, an NDJSON stream, a raw stream and a download. The handlers answer
+ * what the e2e test expects.
  */
 import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
 import type { RouteDoc } from "@kingsleyweb/bun-common/lib/docs";
 import {
   BunRouter,
+  chunks,
   defineRoutes,
+  opaque,
   sse,
   validate,
 } from "@kingsleyweb/bun-common";
@@ -59,6 +63,22 @@ export const Problem = z
     detail: z.string().optional(),
   })
   .meta({ id: "Problem" });
+
+/** What the upload route answers: the caption and each file it received. */
+const Upload = z.object({
+  caption: z.string().optional(),
+  files: z.array(
+    z.object({
+      field: z.string(),
+      name: z.string(),
+      type: z.string(),
+      size: z.number(),
+    }),
+  ),
+});
+
+/** One line of the NDJSON export. */
+const Row = z.object({ id: z.string(), name: z.string() });
 
 const Shape = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("circle"), radius: z.number() }),
@@ -187,15 +207,142 @@ export const api = defineRoutes("/api", (r) => ({
     (req, res) => res.status(200).json(req.body),
   ),
   health: r.get("/health", (_req, res) => res.json({ ok: true })),
+  uploadAvatar: r
+    .post(
+      "/users/:id/avatar",
+      validate(
+        {
+          params: z.object({ id: z.string() }),
+          body: z.object({ caption: z.string().optional() }),
+        },
+        { responses: { 201: Upload } },
+      ),
+      async (req, res) => {
+        const parts = await req.getMultiParts({});
+        const files = [...parts.files.keys()].map((file) => ({
+          field: file.fieldname,
+          name: file.originalFilename,
+          type: file.mimeType,
+          size: file.file.byteLength,
+        }));
+        res.status(201).json({
+          caption: (parts.fields as { caption?: string }).caption,
+          files: files.sort((a, b) =>
+            a.field === b.field ? a.size - b.size : a.field < b.field ? -1 : 1,
+          ),
+        });
+      },
+    )
+    .describe({
+      request: {
+        files: {
+          avatar: {
+            required: true,
+            maxBytes: 1024,
+            mediaTypes: ["image/png", "image/jpeg"],
+            description: "The new picture.",
+          },
+          extras: { maxCount: 3 },
+        },
+      },
+    }),
+  login: r
+    .post(
+      "/sessions",
+      validate(
+        {
+          body: z.object({
+            user: z.string(),
+            tags: z.array(z.string()).optional(),
+          }),
+        },
+        {
+          responses: {
+            200: z.object({ user: z.string(), tags: z.array(z.string()) }),
+          },
+        },
+      ),
+      (req, res) =>
+        res
+          .status(200)
+          .json({ user: req.body.user, tags: req.body.tags ?? [] }),
+    )
+    .describe({ requestMediaTypes: ["application/x-www-form-urlencoded"] }),
+  exportUsers: r.get(
+    "/exports/users",
+    validate(
+      {},
+      {
+        responses: {
+          200: {
+            content: {
+              "application/x-ndjson": chunks(Row, { framing: "ndjson" }),
+            },
+          },
+        },
+      },
+    ),
+    (_req, res) => {
+      res.setHeader("content-type", "application/x-ndjson");
+      res
+        .status(200)
+        .send('{"id":"42","name":"Ada"}\n{"id":"43","name":"Grace"}\n');
+    },
+  ),
+  avatarBytes: r.get(
+    "/users/:id/avatar",
+    validate(
+      { params: z.object({ id: z.string() }) },
+      {
+        responses: {
+          200: { content: { "application/octet-stream": chunks(z.any()) } },
+        },
+      },
+    ),
+    (_req, res) => {
+      res.setHeader("content-type", "application/octet-stream");
+      res.status(200).send(new Uint8Array([1, 2, 3]));
+    },
+  ),
+  report: r.get(
+    "/users/:id/report",
+    validate(
+      { params: z.object({ id: z.string() }) },
+      { responses: { 200: opaque("application/pdf"), 404: Problem } },
+    ),
+    (req, res) => {
+      if (req.params.id !== ADA.id) {
+        res.status(404).json(problem("NOT_FOUND", "No such user"));
+        return;
+      }
+      res.setHeader(
+        "content-disposition",
+        `attachment; filename="report-${req.params.id}.pdf"`,
+      );
+      res.setHeader("content-type", "application/pdf");
+      res.status(200).send(new Blob(["%PDF-1.7"]));
+    },
+  ),
 }));
 
 /**
- * A fresh router with the registry mounted, and an error handler answering
- * a failed request check with its status as problem+json: what the
- * generator documents and the e2e test serves.
+ * A fresh router with an upload middleware, the registry mounted, and an
+ * error handler answering a failed request check with its status as
+ * problem+json: what the generator documents and the e2e test serves.
  */
 export function buildRouter(): BunRouter {
   const router = new BunRouter();
+  // A multipart body's fields reach `req.body` (and so the validator) only
+  // once something parses it: the upload middleware an app runs first.
+  router.use(async (req, _res, next) => {
+    if (
+      String(req.headers["content-type"] ?? "").startsWith(
+        "multipart/form-data",
+      )
+    )
+      req.body = (await req.getMultiParts({})).fields;
+    next();
+  });
   router.use(api.mount, api.router);
   router.use(((error, _req, res, _next) => {
     const { status, message } = error as { status?: number; message?: string };

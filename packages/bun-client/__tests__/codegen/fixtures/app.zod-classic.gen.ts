@@ -4,7 +4,7 @@
  * lazily: `createClient<Routes>({ schemas: () => import("<this module>") })`.
  * Do not edit; regenerate it, and run the same command with `--check` in CI.
  *
- * typesHash: 3dcc0f6a50e0371c
+ * typesHash: 108152abb8ac0736
  */
 import { schemasFromZod } from "@kingsleyweb/bun-client/zod";
 import { z } from "zod";
@@ -45,6 +45,26 @@ export const schemas = schemasFromZod<Routes>({
   "GET /api/categories": {
     responses: {
       200: z.array(Category),
+    },
+  },
+  "GET /api/exports/users": {
+    responses: {
+      200: z.looseObject({
+        id: z.string(),
+        name: z.string(),
+      }),
+    },
+  },
+  "POST /api/sessions": {
+    body: z.looseObject({
+      user: z.string(),
+      tags: z.optional(z.array(z.string())),
+    }),
+    responses: {
+      200: z.looseObject({
+        user: z.string(),
+        tags: z.array(z.string()),
+      }),
     },
   },
   "POST /api/shapes": {
@@ -106,9 +126,49 @@ export const schemas = schemasFromZod<Routes>({
       204: null,
     },
   },
+  "GET /api/users/:id/avatar": {
+    params: z.looseObject({
+      id: z.string(),
+    }),
+  },
+  "POST /api/users/:id/avatar": {
+    params: z.looseObject({
+      id: z.string(),
+    }),
+    body: z.looseObject({
+      caption: z.optional(z.string()),
+    }),
+    files: z.looseObject({
+      avatar: z
+        .file()
+        .check(z.maxSize(1024), z.mime(["image/png", "image/jpeg"])),
+      extras: z.optional(z.array(z.file()).check(z.maxLength(3))),
+    }),
+    responses: {
+      201: z.looseObject({
+        caption: z.optional(z.string()),
+        files: z.array(
+          z.looseObject({
+            field: z.string(),
+            name: z.string(),
+            type: z.string(),
+            size: z.number(),
+          }),
+        ),
+      }),
+    },
+  },
   "GET /api/users/:id/events": {
     params: z.looseObject({
       id: z.string(),
     }),
+  },
+  "GET /api/users/:id/report": {
+    params: z.looseObject({
+      id: z.string(),
+    }),
+    responses: {
+      404: Problem,
+    },
   },
 });

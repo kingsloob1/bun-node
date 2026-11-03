@@ -4,7 +4,8 @@
  *
  * 1. the configuration, merged global → route → call (§6.2's table);
  * 2. the URL (params into the path literal, the query serialised as
- *    bun-common's parser reads it) and the body (JSON, or passed through);
+ *    bun-common's parser reads it) and the body (JSON; a form's fields and
+ *    files as `multipart/form-data` or urlencoded; or passed through);
  * 3. one **attempt** per try: a fresh `Request`, the headers of each level
  *    applied in order, the auth token, then the middleware onion, then
  *    `fetch`;
@@ -12,8 +13,10 @@
  *    network failures, waiting `Retry-After` or the backoff;
  * 5. **auth refresh** around the retries: a status in `auth.on` runs one
  *    single-flight `refresh()` and sends the request once more;
- * 6. the **result**: a declared status read into `data` or `error`; an
- *    undeclared one thrown (or returned, under `undeclaredStatus: "result"`).
+ * 6. the **result**: a declared status read into `data` or `error` (a
+ *    download as the call's `as` asks, a streamed body as an
+ *    `AsyncIterable`); an undeclared one thrown (or returned, under
+ *    `undeclaredStatus: "result"`).
  *
  * **Validation** (§5, PR-C4) wraps it: the params, query and body are
  * checked before the URL is built, the headers on the first attempt before
@@ -22,10 +25,16 @@
  * something to check, so a client with validation off loads neither it nor
  * bun-contract.
  *
- * A `timeout` covers the request, retries and their waits included. The
- * client imports nothing at run time but that lazy module: it is
- * browser-safe, and an HTTP-only bundle carries nothing more (D17).
+ * **Bodies beyond JSON** (PR-C9, `other-transports.md` §3–§4) live in
+ * `./bodies`, imported the same way only when a call sends files or a
+ * multipart body, or a response streams.
+ *
+ * A `timeout` covers the request, retries and their waits included (not
+ * the iteration of a streamed body, which the caller's `signal` can still
+ * end). The client imports nothing at run time but those lazy modules: it
+ * is browser-safe, and an HTTP-only bundle carries nothing more (D17).
  */
+import type { FilesInput } from "./bodies";
 import type {
   CallConfig,
   Client,
@@ -51,7 +60,7 @@ import {
   ValidationError,
 } from "./errors";
 import { buildPath } from "./path";
-import { serializeQuery } from "./querystring";
+import { queryPairs, serializeQuery } from "./querystring";
 import { backoffDelay, retryAfterMs } from "./retry";
 
 /** {@link RetryConfig} with every default filled in. */
@@ -91,9 +100,36 @@ interface RuntimeOptions extends CallConfig {
   params?: Readonly<Record<string, unknown>>;
   /** The query object. */
   query?: unknown;
-  /** The body: JSON, or a type `fetch` takes as it is. */
+  /** The body: JSON, a form's fields, or a type `fetch` takes as it is. */
   body?: unknown;
+  /** A multipart body's files, by field. */
+  files?: FilesInput;
 }
+
+/** The body one call sends, encoded once for every attempt. */
+interface Payload {
+  /** The body, as `Request` takes it. */
+  readonly body?: BodyLike;
+  /** Its `content-type`, when the client sets one (a `FormData` sets its own). */
+  readonly type?: string;
+}
+
+/** The runtime facts of one route the client reads from the manifest. */
+interface RouteFacts {
+  /** The route's `operationId`. */
+  readonly operationId?: string;
+  /** Its declared statuses. */
+  readonly statuses?: readonly number[];
+  /** How a plain-object body is sent. */
+  readonly bodyType?: "json" | "multipart" | "urlencoded";
+  /** The statuses whose body streams, by framing. */
+  readonly chunks?: Readonly<Record<number, "ndjson" | "raw" | undefined>>;
+}
+
+/** `./bodies`, imported on first use and shared by every client. */
+let bodiesModule: Promise<typeof import("./bodies")> | undefined;
+const loadBodies = (): Promise<typeof import("./bodies")> =>
+  (bodiesModule ??= import("./bodies"));
 
 /** One call's configuration, every level merged. */
 interface Resolved {
@@ -252,39 +288,57 @@ function isJsonType(type: string): boolean {
   return /^application\/(?:[\w.-]+\+)?json\b/i.test(type);
 }
 
+/** A body read: its value, whether it is left unread (a stream), and a download's file name (`./bodies`). */
+type ReadBody = import("./bodies").ReadBody;
+
 /**
  * Reads a response body as the declared types expect: JSON parsed; text as a
  * string; no body as `undefined`; an event stream left unread (`undefined`,
- * the stream is still on `response.body`); anything else as a `Blob`.
+ * the stream is still on `response.body`); a streamed body (the manifest's
+ * `chunks` for the status, or an NDJSON media type) and anything else, a
+ * **download**, through `./bodies`' `read`: an `AsyncIterable`, or the
+ * download as `as` asks.
  */
 async function readBody(
   response: Response,
   method: string,
   key: string,
-): Promise<unknown> {
+  as: RuntimeOptions["as"],
+  framing?: "ndjson" | "raw",
+  check?: (line: unknown) => Promise<unknown>,
+): Promise<ReadBody> {
   if (method === "HEAD" || BODILESS.has(response.status)) {
     await discard(response);
-    return undefined;
+    return { value: undefined };
   }
   const type = response.headers.get("content-type") ?? "";
-  if (/^text\/event-stream\b/i.test(type)) return undefined;
-  if (isJsonType(type)) {
-    const text = await response.text();
-    if (!text) return undefined;
-    try {
-      return JSON.parse(text);
-    } catch (error) {
-      throw new ClientError(
-        `${key} answered ${response.status} with a body that is not JSON`,
-        { key, cause: error },
-      );
+  if (framing === undefined) {
+    if (/^text\/event-stream\b/i.test(type)) return { value: undefined };
+    if (isJsonType(type)) {
+      const text = await response.text();
+      if (!text) return { value: undefined };
+      try {
+        return { value: JSON.parse(text) };
+      } catch (error) {
+        throw new ClientError(
+          `${key} answered ${response.status} with a body that is not JSON`,
+          { key, cause: error },
+        );
+      }
+    }
+    if (!type || /^text\//i.test(type)) {
+      const text = await response.text();
+      return { value: text === "" ? undefined : text };
     }
   }
-  if (!type || /^text\//i.test(type)) {
-    const text = await response.text();
-    return text === "" ? undefined : text;
-  }
-  return response.blob();
+  return (await loadBodies()).read(
+    response,
+    as,
+    framing,
+    check,
+    key,
+    ClientError,
+  );
 }
 
 /** The current token and the single-flight refresh, shared by every call of one client. */
@@ -363,10 +417,7 @@ export function createClient(
     Record<string, RouteConfig | undefined>
   >;
   const manifest = (config.manifest ?? {}) as Readonly<
-    Record<
-      string,
-      { operationId?: string; statuses?: readonly number[] } | undefined
-    >
+    Record<string, RouteFacts | undefined>
   >;
   const development = (config.mode ?? defaultMode()) === "development";
 
@@ -424,26 +475,25 @@ export function createClient(
   const attempt = async (
     ctxBase: Omit<RequestContext, "request" | "attempt">,
     url: string,
-    call: RuntimeOptions,
+    payload: Payload,
     resolved: Resolved,
     signal: AbortSignal,
     number: number,
     checkHeaders: ((request: Request) => Promise<void>) | undefined,
   ): Promise<{ response: Response; generation: number }> => {
-    const raw = isRawBody(call.body);
-    const json = call.body !== undefined && !raw;
     const init: RequestInit & { duplex?: "half" } = {
       method: ctxBase.method,
       credentials: config.credentials ?? "same-origin",
       signal,
-      body: json
-        ? JSON.stringify(call.body)
-        : (call.body as BodyLike | undefined),
-      headers: json ? { "content-type": "application/json" } : undefined,
+      body: payload.body,
+      headers:
+        payload.type === undefined
+          ? undefined
+          : { "content-type": payload.type },
     };
     if (
       typeof ReadableStream !== "undefined" &&
-      call.body instanceof ReadableStream
+      payload.body instanceof ReadableStream
     )
       init.duplex = "half";
     const ctx: RequestContext = {
@@ -489,7 +539,7 @@ export function createClient(
   const withRetries = async (
     ctxBase: Omit<RequestContext, "request" | "attempt">,
     url: string,
-    call: RuntimeOptions,
+    payload: Payload,
     resolved: Resolved,
     signal: AbortSignal,
     first: number,
@@ -502,7 +552,7 @@ export function createClient(
       ) &&
       !(
         typeof ReadableStream !== "undefined" &&
-        call.body instanceof ReadableStream
+        payload.body instanceof ReadableStream
       )
         ? resolved.retry
         : undefined;
@@ -514,7 +564,7 @@ export function createClient(
         outcome = await attempt(
           ctxBase,
           url,
-          call,
+          payload,
           resolved,
           signal,
           number,
@@ -563,26 +613,77 @@ export function createClient(
     method: string,
     resolved: Resolved,
     callChecks: CallChecks | undefined,
+    as: RuntimeOptions["as"],
   ): Promise<unknown> => {
     const status = response.status;
-    const declared = manifest[key]?.statuses;
+    const facts = manifest[key];
+    const declared = facts?.statuses;
     if (declared && !declared.includes(status)) {
       if (resolved.throwOnError || resolved.undeclaredStatus === "throw")
         throw new UnexpectedStatusError(response, declared, key);
-      const error = await readBody(response, method, key);
+      const error = (await readBody(response, method, key, as)).value;
       return { ok: false, status, error, response };
     }
-    const read = await readBody(response, method, key);
+    // A streamed body is read as it is iterated, an NDJSON line checked as
+    // the status's response (other-transports.md §4); an unread one is not
+    // checked whole (a check would have to read it).
+    const read = await readBody(
+      response,
+      method,
+      key,
+      as,
+      facts?.chunks?.[status],
+      callChecks && ((line) => callChecks.response(status, line)),
+    );
+    const filename = read.filename;
     const body =
-      callChecks === undefined ? read : await callChecks.response(status, read);
+      callChecks === undefined || read.unread
+        ? read.value
+        : await callChecks.response(status, read.value);
     const ok = status >= 200 && status < 300;
     if (resolved.throwOnError) {
       if (ok) return body;
       throw new HttpError(status, body, response, key);
     }
     return ok
-      ? { ok, status, data: body, response }
+      ? {
+          ok,
+          status,
+          data: body,
+          ...(filename === undefined ? {} : { filename }),
+          response,
+        }
       : { ok, status, error: body, response };
+  };
+
+  /**
+   * Encodes the body once for every attempt (§6.1, `other-transports.md`
+   * §3): files, or a plain object for a multipart route, as `FormData`; a
+   * plain object for an urlencoded route as a form; a `FormData`,
+   * `URLSearchParams`, `Blob`, buffer or stream as it is; anything else as
+   * JSON.
+   */
+  const encode = async (
+    options: RuntimeOptions,
+    multipart: boolean,
+    bodyType: RouteFacts["bodyType"],
+  ): Promise<Payload> => {
+    const body = options.body;
+    if (multipart)
+      return {
+        body: (await loadBodies()).formDataOf(
+          queryPairs(body),
+          options.files as Readonly<Record<string, File | readonly File[]>>,
+        ),
+      };
+    if (body === undefined) return {};
+    if (isRawBody(body)) return { body };
+    if (bodyType === "urlencoded" && typeof body === "object" && body !== null)
+      return {
+        body: serializeQuery(body),
+        type: "application/x-www-form-urlencoded",
+      };
+    return { body: JSON.stringify(body), type: "application/json" };
   };
 
   /** Runs one call by route key. */
@@ -603,10 +704,31 @@ export function createClient(
       (development && config.schemas !== undefined) || levels.some(mayCheck)
         ? (await loadChecks())(key, levels)
         : undefined;
+    const bodyType = manifest[key]?.bodyType;
+    const hasFiles =
+      given.files !== undefined &&
+      given.files !== null &&
+      Object.values(given.files).some((file) => file != null);
+    const multipart =
+      hasFiles ||
+      (bodyType === "multipart" &&
+        typeof given.body === "object" &&
+        given.body !== null &&
+        !isRawBody(given.body));
+    // Every file a named `File` before it is checked and sent (`./bodies`).
+    const input: RuntimeOptions = hasFiles
+      ? {
+          ...given,
+          files: (await loadBodies()).normaliseFiles(given.files!),
+        }
+      : given;
     // What is sent: the call's options, with a passing BYO schema's output.
     const options =
-      callChecks === undefined ? given : await callChecks.request(given);
+      callChecks === undefined
+        ? input
+        : await callChecks.request(input, isRawBody(input.body));
     const url = absolute(urlFor(path, options, key), key);
+    const payload = await encode(options, multipart, bodyType);
 
     const timeout = new AbortController();
     const timer =
@@ -630,7 +752,7 @@ export function createClient(
       let { response, generation, attempts } = await withRetries(
         ctxBase,
         url,
-        options,
+        payload,
         resolved,
         signal,
         1,
@@ -644,13 +766,20 @@ export function createClient(
         ({ response, generation, attempts } = await withRetries(
           ctxBase,
           url,
-          options,
+          payload,
           resolved,
           signal,
           attempts + 1,
         ));
       }
-      return await finish(response, key, method, resolved, callChecks);
+      return await finish(
+        response,
+        key,
+        method,
+        resolved,
+        callChecks,
+        options.as,
+      );
     } catch (error) {
       // Whichever aborted first, the caller or the timeout (the combined
       // signal keeps the first reason), over whatever the abort caused.

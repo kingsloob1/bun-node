@@ -94,12 +94,15 @@ async function calls() {
   // @ts-expect-error -- `status` is required and must be "active"
   void api.post("/pets", { body: { name: "Rex", kind: "dog" } });
 
-  // Bodies by media type: a form, raw bytes, none.
+  // Bodies by media type: a form (its fields, or a URLSearchParams passed
+  // through), raw bytes, a multipart body's fields or a FormData, none.
   void api.op.createPet({ body: new URLSearchParams() });
-  void api.put("/files/:path", { params: { path: "a" }, body: new Blob([]) });
-  void api.put("/files/:path", { params: { path: "a" } });
-  // @ts-expect-error -- a form body is URLSearchParams, not an object
   void api.post("/forms", { body: { a: 1 } });
+  void api.put("/files/:path", { params: { path: "a" }, body: new Blob([]) });
+  void api.put("/files/:path", { params: { path: "a" }, body: new FormData() });
+  void api.put("/files/:path", { params: { path: "a" } });
+  // @ts-expect-error -- a form body is its fields (an object) or URLSearchParams, not a number
+  void api.post("/forms", { body: 1 });
 
   // Text and binary responses.
   type _file = Expect<

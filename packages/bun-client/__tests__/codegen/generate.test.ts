@@ -82,7 +82,7 @@ describe("golden outputs", () => {
       documentWarnings: loaded.warnings,
     });
     expect(result.code).toBe(await text("app.gen.ts"));
-    expect(result.routes).toBe(7);
+    expect(result.routes).toBe(12);
   });
 });
 

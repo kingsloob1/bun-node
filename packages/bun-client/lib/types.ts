@@ -21,10 +21,12 @@ export type UndeclaredStatus = "throw" | "result";
  * values as strings) and what comes back (before `Jsonify`, which the client
  * applies).
  *
- * - `params`, `query`, `headers`, `body`: a field left out is undeclared, and
- *   loosely typed at the call; `query: Record<never, never>` declares "none",
- *   and `body: undefined` declares "no body".
- * - `responses`: the body type per status; left out, `{ 200: unknown }`.
+ * - `params`, `query`, `headers`, `body`, `files`: a field left out is
+ *   undeclared, and loosely typed at the call; `query: Record<never, never>`
+ *   declares "none", and `body: undefined` declares "no body".
+ * - `responses`: the body type per status; left out, `{ 200: unknown }`. A
+ *   download is `Blob`, a streamed body `AsyncIterable` of its values
+ *   (`other-transports.md` §4).
  * - `send`/`receive`: the sender and receiver views the plan's §8.5 adds to
  *   `RoutesOf` (PR-M1); when present they win over the fields above.
  */
@@ -37,8 +39,18 @@ export interface RouteEntry {
   query?: object;
   /** Request headers the route declares, by lower-case name. Default: undeclared. */
   headers?: object;
-  /** The request body (JSON). Default: undeclared, so `unknown`. */
+  /**
+   * The request body: JSON, or a form's fields (a multipart or urlencoded
+   * route, which {@link RouteManifest}'s `bodyType` names). Default:
+   * undeclared, so `unknown`.
+   */
   body?: unknown;
+  /**
+   * A multipart body's file fields, by name: `Blob` (a `File` is one) for a
+   * field that takes one file, `Blob[]` for one that takes several.
+   * Default: undeclared, so any record of them.
+   */
+  files?: object;
   /** Response bodies by status. Default: `{ 200: unknown }`. */
   responses?: object;
   /** The sender view (`RoutesOf`, plan §8.5): `params`, `query`, `headers`, `body`. */
@@ -145,11 +157,29 @@ type HeadersPart<E> =
       }
     : { headers?: HeadersOption };
 
-/** The typed parts of a call to entry `E`: params, query, body, headers. */
+/**
+ * The `files` option for entry `E` (`other-transports.md` §3): the entry's
+ * declared file fields, else any record of files, one or several per field.
+ * Given, the body is sent as `multipart/form-data`.
+ */
+type FilesPart<E> =
+  Declares<E, "files"> extends true
+    ? KeyedPart<"files", PartOf<E, "files">>
+    : { files?: Readonly<Record<string, Blob | readonly Blob[]>> };
+
+/** The typed parts of a call to entry `E`: params, query, body, headers, files. */
 export type CallParts<E> = ParamsPart<E> &
   QueryPart<E> &
   BodyPart<E> &
-  HeadersPart<E>;
+  HeadersPart<E> &
+  FilesPart<E>;
+
+/**
+ * How a download is delivered (`other-transports.md` §4): a body the client
+ * reads as a `Blob` (a media type neither JSON nor text) as a `"blob"`, as
+ * the unread `"stream"`, or as an `"arrayBuffer"`.
+ */
+export type DownloadAs = "blob" | "stream" | "arrayBuffer";
 
 /**
  * A call's options for entry `E`: its typed parts plus {@link CallConfig}.
@@ -160,12 +190,15 @@ export type CallOptions<
   E,
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
-> = Omit<CallConfig, "headers" | "throwOnError" | "undeclaredStatus"> &
+  A extends DownloadAs | undefined = undefined,
+> = Omit<CallConfig, "headers" | "throwOnError" | "undeclaredStatus" | "as"> &
   CallParts<E> & {
     /** This call's `throwOnError` (§4.4). Default: the client's. */
     throwOnError?: T;
     /** This call's `undeclaredStatus` (§4.3). Default: the client's. */
     undeclaredStatus?: U;
+    /** How a download is delivered ({@link CallConfig.as}). Default: `"blob"`. */
+    as?: A;
   };
 
 /** A call's arguments: the options are required when a typed part is. */
@@ -173,9 +206,10 @@ export type CallArgs<
   E,
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
+  A extends DownloadAs | undefined = undefined,
 > = [RequiredKeys<CallParts<E>>] extends [never]
-  ? [options?: CallOptions<E, T, U>]
-  : [options: CallOptions<E, T, U>];
+  ? [options?: CallOptions<E, T, U, A>]
+  : [options: CallOptions<E, T, U, A>];
 
 /** A response map's key as a status number (`"404"` and `404` alike). */
 type ToStatus<K> = K extends number
@@ -221,16 +255,35 @@ export type SuccessStatus<E> =
 /** The declared statuses that are not 2xx. */
 export type ErrorStatus<E> = Exclude<StatusOf<E>, SuccessStatus<E>>;
 
+/** A download as {@link DownloadAs} `A` delivers it. */
+type Download<A> = [A] extends ["stream"]
+  ? ReadableStream<Uint8Array>
+  : [A] extends ["arrayBuffer"]
+    ? ArrayBuffer
+    : Blob;
+
+/** A streamed body's values: JSON values after JSON, raw bytes as they are. */
+type Streamed<T> =
+  T extends AsyncIterable<infer I>
+    ? AsyncIterable<I extends Uint8Array ? I : Jsonify<I>>
+    : never;
+
 /**
  * A response body as the client returns it: after JSON, except a `Blob`,
  * which is how the client returns a body that is neither JSON nor text
- * (`readBody`), and which JSON would make an object of its two properties.
+ * (`readBody`), delivered as the call's `as` asks, and a streamed body
+ * (`AsyncIterable`, an NDJSON route's lines or a raw one's chunks), which
+ * the client iterates (`other-transports.md` §4).
  */
-type WireBody<T> = Jsonify<Exclude<T, Blob>> | Extract<T, Blob>;
+type WireBody<T, A = undefined> =
+  | Jsonify<Exclude<T, Blob | AsyncIterable<unknown>>>
+  | ([Extract<T, Blob>] extends [never] ? never : Download<A>)
+  | Streamed<Extract<T, AsyncIterable<unknown>>>;
 
-/** The body of status `S`, as the client returns it. */
-type BodyAt<E, S> = WireBody<
-  S extends keyof ResponsesOf<E> ? ResponsesOf<E>[S] : never
+/** The body of status `S`, as the client returns it under the call's `as` (`A`). */
+type BodyAt<E, S, A = undefined> = WireBody<
+  S extends keyof ResponsesOf<E> ? ResponsesOf<E>[S] : never,
+  A
 >;
 
 /**
@@ -245,19 +298,30 @@ type BodyAt<E, S> = WireBody<
  *
  * @typeParam E The route's entry.
  * @typeParam U `"result"` to include the catch-all member.
+ * @typeParam A The call's `as`: how a download is delivered.
  */
-export type Result<E, U extends UndeclaredStatus = "throw"> =
+export type Result<
+  E,
+  U extends UndeclaredStatus = "throw",
+  A extends DownloadAs | undefined = undefined,
+> =
   | {
       [S in SuccessStatus<E>]: {
         /** A declared 2xx status. */
         ok: true;
         /** The status. */
         status: S;
-        /** The parsed body. */
-        data: BodyAt<E, S>;
+        /** The parsed body (a download as `as` asks; a stream to iterate). */
+        data: BodyAt<E, S, A>;
         /** Absent on success. */
         error?: undefined;
-        /** The response, its body already read. */
+        /**
+         * The file name the response's `Content-Disposition` gave
+         * (`filename*` first, then `filename`), for a download; absent when
+         * it named none.
+         */
+        filename?: string;
+        /** The response, its body already read (a stream's still open). */
         response: Response;
       };
     }[SuccessStatus<E>]
@@ -270,7 +334,7 @@ export type Result<E, U extends UndeclaredStatus = "throw"> =
         /** Absent on failure. */
         data?: undefined;
         /** The parsed body (problem+json, by the plan's convention). */
-        error: BodyAt<E, S>;
+        error: BodyAt<E, S, A>;
         /** The response, its body already read. */
         response: Response;
       };
@@ -290,8 +354,11 @@ export type Result<E, U extends UndeclaredStatus = "throw"> =
         }
       : never);
 
-/** What `throwOnError: true` returns: the success body (a union over the 2xx statuses). */
-export type SuccessData<E> = BodyAt<E, SuccessStatus<E>>;
+/** What `throwOnError: true` returns: the success body (a union over the 2xx statuses), a download as `A` asks. */
+export type SuccessData<
+  E,
+  A extends DownloadAs | undefined = undefined,
+> = BodyAt<E, SuccessStatus<E>, A>;
 
 /** The type-level part of the client's configuration: what decides a call's return type. */
 export interface ClientFlags {
@@ -337,17 +404,18 @@ export type FlagConfig<F> = ([GlobalThrow<F>] extends [false]
         undeclaredStatus: GlobalUndeclared<F>;
       });
 
-/** What a call to entry `E` resolves to, given the call's `T`/`U` and the client's flags `F`. */
-export type CallReturn<E, T, U, F> = (
+/** What a call to entry `E` resolves to, given the call's `T`/`U`/`A` and the client's flags `F`. */
+export type CallReturn<E, T, U, F, A = undefined> = (
   [T] extends [boolean] ? T : GlobalThrow<F>
 ) extends infer Throw
   ? Throw extends true
-    ? SuccessData<E>
+    ? SuccessData<E, A & (DownloadAs | undefined)>
     : Result<
         E,
         [U] extends [UndeclaredStatus]
           ? U
-          : GlobalUndeclared<F> & UndeclaredStatus
+          : GlobalUndeclared<F> & UndeclaredStatus,
+        A & (DownloadAs | undefined)
       >
   : never;
 
@@ -355,19 +423,21 @@ export type CallReturn<E, T, U, F> = (
 export type Call<E, F> = <
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
+  A extends DownloadAs | undefined = undefined,
 >(
-  ...args: CallArgs<E, T, U>
-) => Promise<CallReturn<E, T, U, F>>;
+  ...args: CallArgs<E, T, U, A>
+) => Promise<CallReturn<E, T, U, F, A>>;
 
 /** A verb method: the path as a literal of the map's paths for that method. */
 export type Verb<R, M extends string, F> = <
   P extends PathsOf<R, M>,
   T extends boolean | undefined = undefined,
   U extends UndeclaredStatus | undefined = undefined,
+  A extends DownloadAs | undefined = undefined,
 >(
   path: P,
-  ...args: CallArgs<EntryAt<R, `${M} ${P}`>, T, U>
-) => Promise<CallReturn<EntryAt<R, `${M} ${P}`>, T, U, F>>;
+  ...args: CallArgs<EntryAt<R, `${M} ${P}`>, T, U, A>
+) => Promise<CallReturn<EntryAt<R, `${M} ${P}`>, T, U, F, A>>;
 
 /** An entry's `operationId` as a literal; `never` when it has none. */
 type OperationIdOf<E> = E extends { operationId: infer O extends string }
@@ -425,6 +495,27 @@ export type RouteManifest<R> = {
       readonly tags?: readonly string[];
       /** Tags a successful call invalidates (templates). Default: none. */
       readonly invalidates?: readonly string[];
+    };
+    /**
+     * How a plain-object `body` is sent (`other-transports.md` §3):
+     * `"json"`; `"multipart"`, a `multipart/form-data` `FormData` of its
+     * fields (and the call's `files`); `"urlencoded"`, an
+     * `application/x-www-form-urlencoded` form. A call with `files` is sent
+     * as multipart whatever this says; a `FormData`, `URLSearchParams`,
+     * `Blob` or stream body passes through as it is. Default: `"json"`.
+     */
+    readonly bodyType?: "json" | "multipart" | "urlencoded";
+    /**
+     * The statuses whose body streams (`other-transports.md` §4), by how
+     * it is cut, as bun-common's `chunks()` says: `"ndjson"`, one JSON value
+     * per line, each checked as the status's response schema; `"raw"`, the
+     * bytes as they arrive (`Uint8Array`s). The call's `data` is then an
+     * `AsyncIterable` of them, read as it is iterated. Default: none; a
+     * response served as NDJSON (`application/x-ndjson`, `application/jsonl`,
+     * …) is iterated by its lines all the same.
+     */
+    readonly chunks?: {
+      readonly [S in StatusOf<R[K]>]?: "ndjson" | "raw";
     };
   };
 };
@@ -571,6 +662,11 @@ export interface ValidationConfig {
    */
   headers?: PartValidation;
   /**
+   * A multipart body's files (the call's `files`, each a `File`), checked
+   * before the `FormData` is built. Default: `request`.
+   */
+  files?: PartValidation;
+  /**
    * Response bodies: one switch for every status (`false` turns them off,
    * BYO schemas included), or one entry per status (a status not listed
    * keeps the earlier levels' setting). Default: built-in schemas on in
@@ -604,9 +700,21 @@ export interface RouteSchemas {
   readonly query?: StandardSchemaV1;
   /** The request headers, by lower-case name. */
   readonly headers?: StandardSchemaV1;
-  /** The request body, before it is serialised. */
+  /** The request body (JSON, or a form's fields), before it is serialised. */
   readonly body?: StandardSchemaV1;
-  /** Response bodies by status, after JSON; `null`: no body. A status not listed is not checked. */
+  /**
+   * A multipart body's files, as an object by field name, each a `File`
+   * (a call's `Blob` is checked as a `File` named `"blob"`) or a list of
+   * them: presence, count, size and media type (the generated module uses
+   * zod's `z.file()`).
+   */
+  readonly files?: StandardSchemaV1;
+  /**
+   * Response bodies by status, after JSON; `null`: no body. For a streamed
+   * NDJSON status, the schema of one line (a bun-common `chunks()`
+   * declaration is read as its chunk schema). A status not listed is not
+   * checked.
+   */
   readonly responses?: { readonly [status: number]: StandardSchemaV1 | null };
 }
 
@@ -645,6 +753,14 @@ export interface RouteConfig {
 
 /** Per-call options beside the typed parts (§6.2): the route subset again, plus a signal. */
 export interface CallConfig extends RouteConfig {
+  /**
+   * How a download is delivered (`other-transports.md` §4): a response
+   * whose media type is neither JSON nor text arrives as a `Blob`
+   * (`"blob"`), the unread body (`"stream"`, which nothing checks), or an
+   * `ArrayBuffer` (`"arrayBuffer"`). A JSON or text body (an error's
+   * problem+json) is read as it always is. Default: `"blob"`.
+   */
+  as?: DownloadAs;
   /** Aborts this call; the call rejects with the signal's reason. Default: none. */
   signal?: AbortSignal;
   /** As {@link ClientConfig.throwOnError}, for this call. */
@@ -737,10 +853,11 @@ export interface Client<R, F extends ClientFlags = Record<never, never>> {
     K extends keyof R & string,
     T extends boolean | undefined = undefined,
     U extends UndeclaredStatus | undefined = undefined,
+    A extends DownloadAs | undefined = undefined,
   >(
     key: K,
-    ...args: CallArgs<R[K], T, U>
-  ) => Promise<CallReturn<R[K], T, U, F>>;
+    ...args: CallArgs<R[K], T, U, A>
+  ) => Promise<CallReturn<R[K], T, U, F, A>>;
   /** The URL a call would request, `baseUrl` included; sends nothing. */
   url: <P extends AnyPathOf<R>>(path: P, ...args: UrlArgs<R, P>) => string;
   /** Calls by `operationId`: `api.op.getUser(opts)` is `api.get("/users/:id", opts)`. Needs {@link ClientConfig.manifest}. */
