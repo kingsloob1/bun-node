@@ -820,6 +820,123 @@ export async function registerSqlSuite(
     });
 
     if (name === "postgres") {
+      test("a fenced write is one round trip: BEGIN, the lock, the statement and COMMIT all sent before the first answer", async () => {
+        const sql = rawClient(backend);
+        /** Each statement a reserved connection was asked for, and when its answer came, in order. */
+        const events: string[] = [];
+        const recording = new Proxy(sql, {
+          get(target, property) {
+            if (property === "reserve") {
+              return async () => {
+                const connection = await target.reserve();
+                return new Proxy(connection, {
+                  get(inner, key) {
+                    if (key === "unsafe") {
+                      return async (query: string, params?: unknown[]) => {
+                        const word = query.trim().split(/\s+/)[0];
+                        events.push(`send ${word}`);
+                        try {
+                          return await inner.unsafe(query, params);
+                        } finally {
+                          events.push(`answer ${word}`);
+                        }
+                      };
+                    }
+                    const value = Reflect.get(inner, key, inner) as unknown;
+                    return typeof value === "function"
+                      ? (value as (...args: unknown[]) => unknown).bind(inner)
+                      : value;
+                  },
+                });
+              };
+            }
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function"
+              ? (value as (...args: unknown[]) => unknown).bind(target)
+              : value;
+          },
+        });
+        const driver = backend.make({
+          sql: recording,
+          prefix: prefix("pipe_"),
+        });
+        try {
+          await driver.connect!();
+          events.length = 0;
+          expect(
+            await driver.set(
+              "pipe",
+              {
+                key: "k",
+                value: new Uint8Array([1]),
+                expiresAt: null,
+                tags: ["t"],
+              },
+              { tags: ["t"], createdAt: Date.now() },
+            ),
+          ).toBe("stored");
+          expect(events.slice(0, 4)).toEqual([
+            "send BEGIN",
+            "send SELECT",
+            "send WITH",
+            "send COMMIT",
+          ]);
+          expect(events).toHaveLength(8);
+        } finally {
+          await driver.close();
+          await sql.close();
+        }
+      });
+
+      test("a fenced write that fails rolls back, and leaves its connection fit for the next", async () => {
+        const driver = make("pipefail_", { max: 2 });
+        const ns = `pipefail-${process.pid}`;
+        const fence = () => ({ tags: ["t"], createdAt: Date.now() });
+        // An expiry no BIGINT holds: the statement fails inside the
+        // transaction, after BEGIN and the lock went through.
+        await expect(
+          driver.set(
+            ns,
+            {
+              key: "bad",
+              value: new Uint8Array([1]),
+              expiresAt: 2 ** 70,
+              tags: ["t"],
+            },
+            fence(),
+          ),
+        ).rejects.toThrow();
+        expect(await driver.get(ns, "bad")).toBeUndefined();
+        // Every connection of the pool (two) is used again, fenced and not.
+        for (let index = 0; index < 6; index++) {
+          expect(
+            await driver.set(
+              ns,
+              {
+                key: `ok${index}`,
+                value: new Uint8Array([index]),
+                expiresAt: null,
+                tags: ["t"],
+              },
+              fence(),
+            ),
+          ).toBe("stored");
+          await driver.set(ns, {
+            key: `plain${index}`,
+            value: new Uint8Array([index]),
+            expiresAt: null,
+            tags: [],
+          });
+        }
+        expect((await driver.get(ns, "ok5"))?.value).toEqual(
+          new Uint8Array([5]),
+        );
+        expect(await driver.deleteByTags!(ns, ["t"], Date.now() + 1000)).toBe(
+          6,
+        );
+        await driver.close();
+      });
+
       test("unlogged: true creates UNLOGGED tables", async () => {
         const unlogged = make("unlogged_", { unlogged: true });
         await unlogged.connect!();

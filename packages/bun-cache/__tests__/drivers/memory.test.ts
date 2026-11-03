@@ -49,6 +49,29 @@ describe("memoryDriver specifics", () => {
     await driver.close();
   });
 
+  test("replacing an entry keeps the index rows of the tags it keeps, drops the others and adds the new", async () => {
+    const driver = memoryDriver();
+    const tagged = (key: string, tags: string[]): StoredEntry => ({
+      ...entry(key, 4),
+      tags,
+    });
+    await driver.set("ns", tagged("r", ["keep", "drop"]));
+    await driver.set("ns", tagged("r", ["keep", "add"]));
+    await driver.set("ns", tagged("u", ["a"]));
+    await driver.set("ns", tagged("u", []));
+    const until = Date.now() + 60_000;
+    expect(await driver.deleteByTags!("ns", ["drop"], until)).toBe(0);
+    expect(await driver.deleteByTags!("ns", ["a"], until)).toBe(0);
+    expect((await driver.get("ns", "r"))?.tags).toEqual(["keep", "add"]);
+    expect(await driver.deleteByTags!("ns", ["add"], until)).toBe(1);
+    expect(await driver.get("ns", "r")).toBeUndefined();
+    expect(await driver.get("ns", "u")).toBeDefined();
+    // The stats count each entry once through a replacement.
+    await driver.set("ns", tagged("s", ["keep"]));
+    await driver.set("ns", tagged("s", ["keep"]));
+    expect(await driver.deleteByTags!("ns", ["keep"], until)).toBe(1);
+  });
+
   test("two instances share nothing", async () => {
     const one = memoryDriver();
     const two = memoryDriver();
