@@ -122,6 +122,15 @@
  * raised from 6.5 to 7 KiB for it; the gzipped one, the plan's 3 KB, holds.
  * The `.` entry is unchanged in size (12,074 minified; the new error class
  * is shaken out of it).
+ *
+ * Since PR-R1 the `./webrtc` entry has its own budget, {@link WEBRTC_BUDGET}:
+ * `connectPeer` (the offer/answer exchange, trickle ICE with both queues,
+ * the event listening that works on any `RTCPeerConnection`). It imports
+ * nothing, not even the guards: the signalling channel checks its own
+ * frames. Measured 2026-11-03 (Bun 1.4.4-canary.1+11c367163, over PR-W3):
+ * 2,555 bytes minified, 1,112 gzipped, against the plan's 2 KB for
+ * `./webrtc` (§10.3, the whole entry: PR-R2's data channels join it). No
+ * other entry changed (no file they bundle did).
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -276,6 +285,18 @@ const GRAPHQL_BUDGET = {
   gzipBytes: 2.5 * 1024,
 } as const;
 
+/**
+ * Byte limits for the `./webrtc` entry: the plan's 2 KB gzipped (§10.3), and
+ * about 10% above the measured minified figure. The same rule for raising
+ * them.
+ */
+const WEBRTC_BUDGET = {
+  /** The entry, minified, in bytes. */
+  minifiedBytes: 2.8 * 1024,
+  /** The entry gzipped, in bytes. */
+  gzipBytes: 2 * 1024,
+} as const;
+
 /** Formats bytes as KiB with one decimal, for failure messages. */
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -372,6 +393,12 @@ const sseEntry = await Bun.build({
 
 const graphqlEntry = await Bun.build({
   entrypoints: [join(import.meta.dir, "..", "lib", "graphql.ts")],
+  target: "browser",
+  minify: true,
+});
+
+const webrtcEntry = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "webrtc.ts")],
   target: "browser",
   minify: true,
 });
@@ -566,6 +593,19 @@ describe("the ./graphql budget", () => {
 
   it(`keeps ./graphql within ${kib(GRAPHQL_BUDGET.gzipBytes)} gzipped and ${kib(GRAPHQL_BUDGET.minifiedBytes)} minified`, async () => {
     expect(verdict(await sizes(graphqlEntry.outputs[0]), GRAPHQL_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+});
+
+describe("the ./webrtc budget", () => {
+  it("builds as one file", () => {
+    expect(webrtcEntry.success).toBe(true);
+    expect(webrtcEntry.outputs.length).toBe(1);
+  });
+
+  it(`keeps ./webrtc within ${kib(WEBRTC_BUDGET.gzipBytes)} gzipped and ${kib(WEBRTC_BUDGET.minifiedBytes)} minified`, async () => {
+    expect(verdict(await sizes(webrtcEntry.outputs[0]), WEBRTC_BUDGET)).toBe(
       "within budget",
     );
   });

@@ -388,6 +388,27 @@
       "browser": true
     },
     {
+      "$comment": "typed-client PR-R1 (webrtc.md \u00a73): WebRTC signalling, the contract and its relay. The relay is server code, so the entry is not browser-safe; the contract alone is, at lib/webrtc/signalling (below).",
+      "spelling": "@kingsleyweb/bun-common/webrtc",
+      "values": ["signallingContract", "signallingRelay"],
+      "types": [
+        "SignallingMessages",
+        "SignallingOptions",
+        "SignallingSpec",
+        "SignallingRelayOptions",
+        "SignallingRoute"
+      ],
+      "snippet": "const sig = m.signallingContract({ path: \"/rtc/:room\" });\nconst _path: Equal<typeof sig.spec.path, \"/rtc/:room\"> = true;\nconst route = m.signallingRelay(sig, { maxPeersPerRoom: 4 });\nconst _routePath: Equal<(typeof route)[0], \"/rtc/:room\"> = true;\nexport type _routeNotAny = Expect<IsAny<t.SignallingRoute[2]>>;\nexport type _optionsNotAny = Expect<IsAny<t.SignallingRelayOptions[\"authorize\"]>>;\nexport type _offerNotAny = Expect<IsAny<t.SignallingMessages[\"receives\"][\"offer\"]>>;"
+    },
+    {
+      "$comment": "typed-client PR-R1: the signalling contract alone, browser-safe (a shared module a browser imports).",
+      "spelling": "@kingsleyweb/bun-common/lib/webrtc/signalling",
+      "values": ["signallingContract"],
+      "types": ["SignallingMessages", "SignallingOptions", "SignallingSpec"],
+      "browser": true,
+      "snippet": "const sig = m.signallingContract({ path: \"/rtc/:room\" });\nconst _replies: Equal<typeof sig.spec.replies, { readonly join: \"peers\" }> = true;\nexport type _specNotAny = Expect<IsAny<t.SignallingSpec>>;"
+    },
+    {
       "$comment": "Typed-client PR-W4: live invalidation, the server half with its contract. The contract alone is a browser entry (the next spelling).",
       "spelling": "@kingsleyweb/bun-common/live",
       "values": ["liveContract", "liveInvalidation", "publishTags"],

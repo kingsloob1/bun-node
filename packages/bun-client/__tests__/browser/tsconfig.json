@@ -9,7 +9,9 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": []
   },
-  "include": ["../../lib/**/*"],
+  // Its own `*.type-test.ts` files: assertions that need the DOM lib (the
+  // browser's `RTCPeerConnection` as `connectPeer`'s, PR-R1).
+  "include": ["../../lib/**/*", "./**/*.ts"],
   // The generator is Bun-only and dev-time (plan §10.1: `./codegen` is not
   // browser-safe); the root project checks it with Bun's types.
   "exclude": ["../../lib/codegen/**/*"]

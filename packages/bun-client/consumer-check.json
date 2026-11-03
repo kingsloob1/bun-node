@@ -223,6 +223,32 @@
       "browser": true
     },
     {
+      "spelling": "@kingsleyweb/bun-client/webrtc",
+      "values": ["connectPeer"],
+      "types": [
+        "ConnectPeerOptions",
+        "Peer",
+        "PeerConnectionLike",
+        "PeerConnectionConstructor",
+        "SignallingEntry",
+        "SessionDescriptionInit",
+        "IceCandidateInit"
+      ],
+      "browser": true,
+      "snippet": "import type { ChannelClient } from \"@kingsleyweb/bun-client/channel\";\ndeclare const sig: ChannelClient<t.SignallingEntry>;\ninterface Rtc extends t.PeerConnectionLike { readonly extra: 1 }\ndeclare const Rtc: t.PeerConnectionConstructor<Rtc>;\nconst peer = m.connectPeer(sig, { to: \"bob\", rtc: Rtc, iceServers: [{ urls: \"stun:stun.example:3478\" }], configuration: { bundlePolicy: \"max-bundle\" }, onCandidateError: (_e, c) => { const _c: Equal<typeof c, t.IceCandidateInit> = true; void _c; }, onError: () => {} });\nconst _connection: Equal<typeof peer.connection, Rtc> = true;\nconst _to: Equal<typeof peer.to, string> = true;\nsig.on(\"offer\", (offer) => { m.connectPeer(sig, { to: offer.from, offer, rtc: Rtc }); });\nconst _desc: t.SessionDescriptionInit = { type: \"offer\", sdp: \"v=0\" };\npeer.close();\nexport type _peerNotAny = Expect<IsAny<t.Peer<Rtc>>>;\nexport type _optionsNotAny = Expect<IsAny<t.ConnectPeerOptions<Rtc>>>;\nexport type _entryNotAny = Expect<IsAny<t.SignallingEntry[\"receives\"]>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/webrtc",
+      "values": ["connectPeer"],
+      "types": ["Peer"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/webrtc.js",
+      "values": ["connectPeer"],
+      "browser": true
+    },
+    {
       "spelling": "@kingsleyweb/bun-client/codegen",
       "values": ["generateRoutes", "loadDocuments", "runCli", "documentsHash"],
       "types": [

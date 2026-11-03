@@ -178,6 +178,14 @@ describe("package.json exports", () => {
     });
   });
 
+  it("publishes the WebRTC helpers as ./webrtc (webrtc.md, plan §10.1, §16)", () => {
+    expect(manifest.exports["./webrtc"]).toEqual({
+      "@kingsleyweb/source": "./lib/webrtc.ts",
+      types: "./dts/webrtc.d.ts",
+      default: "./lib/webrtc.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -451,6 +459,20 @@ describe("the consumer check", () => {
         dynamic: source.includes('import("./live")'),
       }).toEqual({ file, value: false, dynamic: file === "query.ts" });
     }
+  });
+
+  it("keeps ./webrtc out of every other entry, and imports nothing but types itself (webrtc.md)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        imports: /from "\.\/webrtc"|import\("\.\/webrtc"\)/.test(source),
+      }).toEqual({ file, imports: false });
+    }
+    const webrtc = await Bun.file(join(ROOT, "lib", "webrtc.ts")).text();
+    expect(webrtc.match(/^import(?! type)/gm)).toBeNull();
   });
 
   it("loads the channel checks only by a dynamic import, from the channel client alone", async () => {

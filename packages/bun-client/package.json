@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.1.0",
   "private": false,
-  "description": "A typed, dependency-free HTTP client for the bun-node servers: one call per verb keyed by the server's own path literal, named operations, typed params, query and body, results discriminated by status, retries with backoff and Retry-After, timeouts, middleware and single-flight auth refresh; typed, resumable server-sent events; typed WebSocket channels with requests, reconnection and backpressure. Browser-safe.",
+  "description": "A typed, dependency-free HTTP client for the bun-node servers: one call per verb keyed by the server's own path literal, named operations, typed params, query and body, results discriminated by status, retries with backoff and Retry-After, timeouts, middleware and single-flight auth refresh; typed, resumable server-sent events; typed WebSocket channels with requests, reconnection and backpressure; WebRTC peers over a typed signalling channel. Browser-safe.",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-client#readme",
@@ -25,6 +25,7 @@
     "retry",
     "sse",
     "websocket",
+    "webrtc",
     "browser"
   ],
   "sideEffects": false,
@@ -78,6 +79,11 @@
       "@kingsleyweb/source": "./lib/graphql.ts",
       "types": "./dts/graphql.d.ts",
       "default": "./lib/graphql.ts"
+    },
+    "./webrtc": {
+      "@kingsleyweb/source": "./lib/webrtc.ts",
+      "types": "./dts/webrtc.d.ts",
+      "default": "./lib/webrtc.ts"
     },
     "./lib/codegen": {
       "@kingsleyweb/source": "./lib/codegen/index.ts",
@@ -184,6 +190,7 @@
     "@types/react-dom": "^19.2.0",
     "bun-types": "^1.4.3",
     "happy-dom": "^20.0.0",
+    "node-datachannel": "0.33.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "typescript": "^6.0.3",
