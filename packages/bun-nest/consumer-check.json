@@ -45,7 +45,8 @@
         "ValidSignedCookies",
         "reply",
         "ResponseValidationInterceptor",
-        "gatewayAsyncApi"
+        "gatewayAsyncApi",
+        "Describe"
       ],
       "types": [
         "BunBeforeWriteBody",

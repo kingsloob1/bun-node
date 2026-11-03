@@ -93,6 +93,8 @@ Underneath, routing is
   - [`StandardValidationModule`](#standardvalidationmodule)
   - [Issues carry no received value](#issues-carry-no-received-value)
 - [OpenAPI with `@nestjs/swagger`](#openapi-with-nestjsswagger)
+- [Typed clients: documents from controllers](#typed-clients-documents-from-controllers)
+  - [`@Describe`](#describe)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
@@ -2368,6 +2370,64 @@ assets from a CDN, for a document `generateOpenApi` built. The two never
 share a route or an origin; an app can mount both and each renders the
 document it was given.
 
+## Typed clients: documents from controllers
+
+bun-common's generators document a Nest app as they document a router app:
+`generateOpenApi(adapter.instance)` lists every controller route with its
+final path (global prefix included), and a `@Validate` route with its
+schemas — the contract is reflect metadata, which Nest copies onto the
+handler it registers. The typed client (`@kingsleyweb/bun-client`) is
+generated from that document, so a Nest backend and a router backend give a
+frontend the same client.
+
+### `@Describe`
+
+The prose a router route gets from `.describe()`: bun-common's `RouteDoc`,
+on a controller method or a controller.
+
+```ts
+import { Body, Controller, Get, Param, Patch } from "@nestjs/common";
+import { Describe, Validate } from "@kingsleyweb/bun-nest";
+
+@Controller("users")
+@Describe({ tags: ["users"] })
+export class UsersController {
+  @Get(":id")
+  @Validate({ params: IdParams, responses: { 200: User, 404: Problem } })
+  @Describe({
+    summary: "Read one user",
+    operationId: "getUser",
+    errors: ["NOT_FOUND"],               // x-bun-errors: the client's error codes
+    cache: { tags: ["user:{id}"] },      // x-bun-cache: what the client files the result under
+  })
+  one(@Param("id") id: string) { … }
+
+  @Patch(":id")
+  @Validate({ params: IdParams, body: UserPatch, responses: { 200: User } })
+  @Describe({ cache: { invalidates: ["user:{id}", "users"] } })
+  update(@Param("id") id: string, @Body() body: UserPatch) { … }
+}
+```
+
+- **The same document as a router.** A controller's
+  `generateOpenApi(adapter.instance)` document equals a bun-common router
+  app's with the same routes, `validate()` and `.describe()`
+  (`__tests__/describe.nest.test.ts`).
+- **On a controller**, the doc is merged under each route method the class
+  declares: the method's keys win, and `tags` are the controller's followed
+  by the method's. `@Describe({ hidden: true })` on a controller hides all
+  its routes. A route method inherited from a base controller is left alone
+  (its function is the base's): describe it on the base, or override it.
+- **Two on one method** merge, the upper one winning per key, as two
+  `.describe()` calls do.
+- **Documentation only**: it never reaches the handler's types (declare a
+  checked response on `@Validate({ responses })`), and nothing checks it at
+  run time. With bun-common's `liveInvalidation()` mounted, a route's
+  `cache.invalidates` is published on a 2xx, filled from the request's
+  params, as on a router.
+- It is stored as reflect metadata under `"bun:describe"`, which
+  `Reflector` can read too.
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -2754,6 +2814,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
+| [Typed clients](#typed-clients-documents-from-controllers) | `Describe` |
 | [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`; type `StandardValidationPipeOptions` |
 
 `BunRequest`, `BunResponse`, `UploadOptions`, `StorageFile`, `DiskStorage`,
