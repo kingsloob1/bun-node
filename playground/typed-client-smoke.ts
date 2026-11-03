@@ -191,6 +191,42 @@ try {
   for (const id of ["regenerate", "drift", "calls", "validation", "query"]) {
     check(`the page has #${id}`, html.includes(`id="${id}"`));
   }
+  // The whole-app document lists the demo API and not the section's plumbing
+  // (its page and support routes are `.describe({ hidden: true })`).
+  const whole = (await (
+    await fetch(`${base.replace(/\/client$/, "")}/openapi.json`)
+  ).json()) as { document: { paths: Record<string, unknown> } };
+  const documented = Object.keys(whole.document.paths);
+  check(
+    "openapi.json: the demo API is documented",
+    documented.includes("/playground/client/api/users/{id}"),
+  );
+  check(
+    "openapi.json: the section's plumbing routes are hidden",
+    ["", "/state", "/run/{scenario}", "/regenerate", "/drift"].every(
+      (each) => !documented.includes(`/playground/client${each}`),
+    ) &&
+      !documented.includes("/playground/openapi.json") &&
+      !documented.includes("/playground/cache/state"),
+    documented.filter((p) => !p.startsWith("/jobs-api")).join(" "),
+  );
+  // The cache lab's cached routes are documented with their responses, so
+  // the document carries no "no responses declared" warning for them.
+  const warned = (whole as { warnings?: { route?: string; message: string }[] })
+    .warnings;
+  check(
+    "openapi.json: the cached cache-lab routes declare their responses",
+    warned !== undefined &&
+      !warned.some(
+        (w) =>
+          (w.route ?? "").startsWith("GET /playground/cache/http/") ||
+          (w.route ?? "").startsWith("POST /playground/cache/http/"),
+      ) &&
+      Object.keys(whole.document.paths).filter((p) =>
+        p.startsWith("/playground/cache/http/"),
+      ).length === 5,
+    JSON.stringify(warned?.filter((w) => (w.route ?? "").includes("/cache/"))),
+  );
   const state = (await (await fetch(`${base}/state`)).json()) as State;
   check(
     "/state: the generated module's hash is the committed one",

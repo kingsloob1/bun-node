@@ -209,35 +209,39 @@ export async function mountAtRestDemo(
 
   await write(last.key, last.value);
 
-  app.get(`${base}/at-rest`, async (_req, res) => {
-    res.json(await view());
-  });
+  app
+    .get(`${base}/at-rest`, async (_req, res) => {
+      res.json(await view());
+    })
+    .describe({ hidden: true });
 
-  app.post(`${base}/at-rest`, async (req, res) => {
-    const query = req.query as Record<string, string | undefined>;
-    const key = query.key ?? last.key;
-    const note = query.note ?? DEFAULT_NOTE;
-    for (const [name, text] of [
-      ["key", key],
-      ["note", note],
-    ] as const) {
-      if (
-        text.length === 0 ||
-        text.length > MAX_INPUT ||
-        [...text].some((char) => char.charCodeAt(0) < 0x20)
-      ) {
-        res.status(400).json({
-          error: `${name} must be 1–${MAX_INPUT} characters, with no control characters`,
-        });
-        return;
+  app
+    .post(`${base}/at-rest`, async (req, res) => {
+      const query = req.query as Record<string, string | undefined>;
+      const key = query.key ?? last.key;
+      const note = query.note ?? DEFAULT_NOTE;
+      for (const [name, text] of [
+        ["key", key],
+        ["note", note],
+      ] as const) {
+        if (
+          text.length === 0 ||
+          text.length > MAX_INPUT ||
+          [...text].some((char) => char.charCodeAt(0) < 0x20)
+        ) {
+          res.status(400).json({
+            error: `${name} must be 1–${MAX_INPUT} characters, with no control characters`,
+          });
+          return;
+        }
       }
-    }
-    // Only the last write's rows are shown: start each write from empty tables.
-    await sealed.clear();
-    await plain.clear();
-    await write(key, demoValue(note));
-    res.json(await view());
-  });
+      // Only the last write's rows are shown: start each write from empty tables.
+      await sealed.clear();
+      await plain.clear();
+      await write(key, demoValue(note));
+      res.json(await view());
+    })
+    .describe({ hidden: true });
 
   return {
     stop: async () => {

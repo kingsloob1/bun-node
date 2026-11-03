@@ -722,53 +722,63 @@ ${rows}
     const base = this.basePath;
     const wantsHtml = (accept: string | null | undefined): boolean =>
       (accept ?? "").includes("text/html");
-    app.get(base, async (_req, res) => {
-      res.type("html").send(await this.#page());
-    });
-    app.get(`${base}/state`, async (_req, res) => {
-      res.json({
-        faults: this.pending(),
-        units: await this.snapshot(),
-        alerts: this.alerts(),
-        summon: await this.summonStatus(),
-      });
-    });
-    app.post(`${base}/faults`, (req, res) => {
-      const { kind = "", queue = "" } = req.query as {
-        kind?: string;
-        queue?: string;
-      };
-      const problem = this.inject(String(queue), String(kind));
-      if (problem !== undefined) {
-        res.status(400).json({ error: problem });
-        return;
-      }
-      if (wantsHtml(req.get("accept"))) {
-        res.redirect(base, 303);
-        return;
-      }
-      res.json({ queued: this.pending() });
-    });
-    app.post(`${base}/faults/clear`, (req, res) => {
-      this.clear();
-      if (wantsHtml(req.get("accept"))) {
-        res.redirect(base, 303);
-        return;
-      }
-      res.json({ queued: {} });
-    });
-    app.post(`${base}/summon/reset-budget`, async (req, res) => {
-      const { queue = "" } = req.query as { queue?: string };
-      const problem = await this.resetBudget(String(queue));
-      if (problem !== undefined) {
-        res.status(400).json({ error: problem });
-        return;
-      }
-      if (wantsHtml(req.get("accept"))) {
-        res.redirect(base, 303);
-        return;
-      }
-      res.json({ reset: String(queue), budget: true });
-    });
+    app
+      .get(base, async (_req, res) => {
+        res.type("html").send(await this.#page());
+      })
+      .describe({ hidden: true });
+    app
+      .get(`${base}/state`, async (_req, res) => {
+        res.json({
+          faults: this.pending(),
+          units: await this.snapshot(),
+          alerts: this.alerts(),
+          summon: await this.summonStatus(),
+        });
+      })
+      .describe({ hidden: true });
+    app
+      .post(`${base}/faults`, (req, res) => {
+        const { kind = "", queue = "" } = req.query as {
+          kind?: string;
+          queue?: string;
+        };
+        const problem = this.inject(String(queue), String(kind));
+        if (problem !== undefined) {
+          res.status(400).json({ error: problem });
+          return;
+        }
+        if (wantsHtml(req.get("accept"))) {
+          res.redirect(base, 303);
+          return;
+        }
+        res.json({ queued: this.pending() });
+      })
+      .describe({ hidden: true });
+    app
+      .post(`${base}/faults/clear`, (req, res) => {
+        this.clear();
+        if (wantsHtml(req.get("accept"))) {
+          res.redirect(base, 303);
+          return;
+        }
+        res.json({ queued: {} });
+      })
+      .describe({ hidden: true });
+    app
+      .post(`${base}/summon/reset-budget`, async (req, res) => {
+        const { queue = "" } = req.query as { queue?: string };
+        const problem = await this.resetBudget(String(queue));
+        if (problem !== undefined) {
+          res.status(400).json({ error: problem });
+          return;
+        }
+        if (wantsHtml(req.get("accept"))) {
+          res.redirect(base, 303);
+          return;
+        }
+        res.json({ reset: String(queue), budget: true });
+      })
+      .describe({ hidden: true });
   }
 }
