@@ -241,9 +241,13 @@ many it stored. Each entry goes through `set`'s pipeline with its own options
 batch in one call: one statement per 1,000 entries on Postgres (several in one
 transaction), one transaction on SQLite, MySQL and MariaDB, one script per
 1,000 entries on Redis, one `bulkWrite` on MongoDB, and the cloud drivers' bulk
-paths. Tagged entries on a driver with a tag index are the exception: each is
-a fenced `set` ([Tags](#tags)), all issued together, since the driver
-contract's `setMany` takes no fence. A key given twice keeps its last write.
+paths. Tagged entries on a driver with a tag index need the write fence
+([Tags](#tags)), which the contract's `setMany` does not take: the built-in
+index drivers (memory, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB) take
+such a batch in one call too (`setManyFenced`, each entry held to its own
+fence, refused entries reported as `fenced` in their place), and a driver
+without it gets a fenced `set` per entry, all issued together. A key given
+twice keeps its last write.
 An entry over the limit is skipped with its `oversize` event in its place, and
 events and stats follow the batch's order. On SQLite, Postgres, MySQL and
 MariaDB a batch is stored whole or not at all; a driver failure under the
@@ -1438,7 +1442,10 @@ await runCacheDriverConformance("map-store", () => ({
 The kit checks byte round-trips, expiry (lazy and swept), `getMany` order,
 `setMany` (each entry's expiry and tags, replaced tags, a key given twice,
 a batch past 1,000 entries and past 16 MiB, and through a cache: per-entry
-TTLs, tags and compression, an oversize entry, plain and encrypted),
+TTLs, tags and compression, an oversize entry, plain and encrypted), the
+optional fenced batch `setManyFenced` (each entry's fence and outcome, and the
+fence under a concurrent invalidation; skipped, naming the method, on a
+`tags: "index"` driver without it),
 delete counts, namespace-scoped `clear`, tag invalidation in both modes with
 the fence's race, 200 concurrent increments, a 50-way contended lock, and bus
 delivery. Each case is gated on the driver's `capabilities`: an advertised
@@ -1470,6 +1477,15 @@ await runCacheDriverConformance("map-store", () => ({
   rawDump: () => [...store].flatMap(([name, bytes]) => [name, bytes]),
 }));
 ```
+
+**A fenced batch** is optional. A `tags: "index"` driver may add
+`setManyFenced(ns, writes)`: each `write` is `{ entry, fence? }` (a
+`FencedWrite`), held to its fence exactly as `set(ns, entry, fence)` is, and
+it answers `"stored"` or `"fenced"` per write, in order. A `fenced` write
+stores nothing, and the key keeps what it held. The keys of one call are
+distinct. With it, `cache.setMany` writes a tagged batch in one call; without
+it, the core sends a fenced `set` per tagged entry, so a driver written
+before it needs no change.
 
 ## Testing helpers
 
@@ -1721,6 +1737,10 @@ one.
   1,000 rows and `max_allowed_packet`. Either way the batch is stored whole
   or not at all, its rows go in key order (two batches over the same keys
   lock them in the same order), and a key given twice keeps its last write.
+  A tagged batch is one transaction too: one read of its fence tags' stamps
+  under the fence's lock (Postgres's shared advisory lock, MySQL's and
+  MariaDB's `LOCK IN SHARE MODE`), then the same writes for the entries the
+  stamps do not refuse.
 - **Counters** are integers (`BIGINT`), added in the database, and may go
   below zero; a fractional step throws a `TypeError`.
 - **Expiry**: reads filter out expired rows and never write; the core's
@@ -1780,8 +1800,9 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
 - **Atomic in Lua**: a write with the tag fence (check the stamps, replace
   the old tag memberships, write) is one script, and so is `deleteByTags`
   (every stamp, then every member and the sets), so a write whose load began
-  before an invalidation is refused or deleted, never kept. So are
-  `increment`, `touch`, `delete` and the lock's take and release. Scripts run
+  before an invalidation is refused or deleted, never kept. A tagged
+  `setMany` is that write for each entry, one script per 1,000 entries. So
+  are `increment`, `touch`, `delete` and the lock's take and release. Scripts run
   by `EVALSHA` and are sent again with `EVAL` when the server answers
   `NOSCRIPT` (after a restart or a `SCRIPT FLUSH`). On Upstash,
   `keyLocking: true` runs them under a namespace's lock instead of the
@@ -1901,7 +1922,9 @@ it on connect, as on the SQL drivers.
   writes its stamps before it deletes, so no interleaving leaves a
   pre-invalidation value stored; what remains is a window of about one round
   trip in which a reader can see it (`capabilities.fence:
-  "check-then-write"`).
+  "check-then-write"`). A tagged `setMany` does the same for the whole batch:
+  one stamp read, one `bulkWrite` of the entries it does not refuse, one
+  re-read, and one take-back of the writes a new stamp fences.
 - **Counters** are integers, added on the server by one update, and may go
   below zero (MongoDB widens a 32-bit value to 64 bits as it grows); a
   fractional step throws a `TypeError`.

@@ -61,6 +61,7 @@ export type {
   Codec,
   CompressOptions,
   CreateCacheOptions,
+  FencedWrite,
   GetOrSetOptions,
   JsonifySchema,
   SchemaChange,

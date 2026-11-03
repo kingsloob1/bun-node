@@ -8,6 +8,7 @@
 import type {
   BusMessage,
   CacheDriver,
+  FencedWrite,
   SchemaChange,
   SchemaSyncOptions,
 } from "../core/types";
@@ -16,7 +17,7 @@ import type {
 export interface FaultOptions {
   /** The probability any one operation fails, 0–1. Defaults to 0. */
   failRate?: number;
-  /** Operation names that always fail (`"get"`, `"set"`, `"increment"`, …). Defaults to none. */
+  /** Operation names that always fail (`"get"`, `"set"`, `"increment"`, …): the driver method's name, so a fenced batch is `"setManyFenced"`. Defaults to none. */
   failOn?: readonly string[];
   /** Operations take this long before delegating, in ms. Pairs with the cache's `timeout` to test timeouts. Defaults to 0. */
   hangMs?: number;
@@ -98,6 +99,10 @@ export function faulty(
       run("setStamps", async () => await inner.setStamps(ns, tags, at, until)),
   };
 
+  if (inner.setManyFenced !== undefined) {
+    driver.setManyFenced = (ns: string, writes: readonly FencedWrite[]) =>
+      run("setManyFenced", async () => await inner.setManyFenced!(ns, writes));
+  }
   if (inner.ping !== undefined) {
     driver.ping = () => run("ping", async () => await inner.ping!());
   }

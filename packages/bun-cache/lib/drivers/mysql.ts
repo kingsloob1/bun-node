@@ -40,6 +40,7 @@ import type {
   BusMessage,
   CacheDriver,
   CacheDriverCapabilities,
+  FencedWrite,
   StoredEntry,
   TagFence,
 } from "../core/types";
@@ -289,19 +290,103 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
    * an entry without the tag rows that invalidate it. A key written twice
    * keeps its last write, as a loop of `set` would. The rows go in key
    * order, so two batches over the same keys lock them in the same order.
-   * No fence: bulk writes come from `setMany`, not from loads.
+   * No fence: a tagged batch goes to `setManyFenced`.
    */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     if (entries.length === 0) {
       return;
     }
     await this.ready();
+    const fns = this.fit(ns);
+    const now = this.now();
+    await this.#transaction(async (tx) => {
+      await this.#writeBatch(tx, fns, lastWritePerKey(entries), now);
+    });
+  }
+
+  /**
+   * Writes several entries, each held to its own fence, in one `REPEATABLE
+   * READ` transaction: first one locking read (`LOCK IN SHARE MODE`) of the
+   * stamps of every fence tag, which locks those rows and the gaps where
+   * missing ones would go exactly as a fenced `set`'s read does, so a
+   * concurrent `deleteByTags` waits for the batch to commit and then deletes
+   * what it wrote, and one already in flight makes the batch wait for its
+   * stamps and refuse the entries they fence. An entry whose tag was
+   * stamped at or after its load's start is not written; the rest go as
+   * `setMany` writes them, in the same transaction. The keys are distinct
+   * (the contract's rule).
+   */
+  async setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    if (writes.length === 0) {
+      return [];
+    }
+    await this.ready();
     const t = this.tables;
     const fns = this.fit(ns);
-    const rows = lastWritePerKey(entries)
+    const fenceTags = writes.map((write) =>
+      write.fence === undefined
+        ? []
+        : [...this.fitTags(write.fence.tags).keys()],
+    );
+    // Sorted, as `set` and `deleteByTags` sort theirs: one lock order.
+    const union = [...new Set(fenceTags.flat())].sort();
+    return await this.#transaction(async (tx) => {
+      const now = this.now();
+      const stamps = new Map<string, number>();
+      for (let at = 0; at < union.length; at += SET_MANY_ROWS) {
+        const slice = union.slice(at, at + SET_MANY_ROWS);
+        const rows = await tx.unsafe<{ tag: string; at: string | number }[]>(
+          `SELECT tag, at FROM ${t.stamps} WHERE ns = ? AND tag IN (${marks(slice.length)}) AND exp > ? LOCK IN SHARE MODE`,
+          [fns, ...slice, now],
+        );
+        for (const row of rows) {
+          stamps.set(row.tag, SqlCacheDriverBase.num(row.at));
+        }
+      }
+      const results = writes.map((write, index) =>
+        write.fence !== undefined &&
+        fenceTags[index].some(
+          (tag) => (stamps.get(tag) ?? -Infinity) >= write.fence!.createdAt,
+        )
+          ? ("fenced" as const)
+          : ("stored" as const),
+      );
+      await this.#writeBatch(
+        tx,
+        fns,
+        writes
+          .filter((_, index) => results[index] === "stored")
+          .map((write) => write.entry),
+        now,
+      );
+      return results;
+    });
+  }
+
+  /**
+   * `setMany`'s writes inside the caller's transaction: the entries upserted
+   * by multi-row statements of at most {@link SET_MANY_ROWS} rows (and
+   * {@link SET_MANY_BYTES}, within `max_allowed_packet`), the keys' tag rows
+   * deleted, and the new ones inserted. The rows go in key order, so two
+   * batches over the same keys lock them in the same order. `entries`' keys
+   * are distinct.
+   */
+  async #writeBatch(
+    tx: ReservedSQL,
+    fns: string,
+    entries: readonly StoredEntry[],
+    now: number,
+  ): Promise<void> {
+    if (entries.length === 0) {
+      return;
+    }
+    const t = this.tables;
+    const rows = entries
       .map((entry) => ({ ...entry, key: this.fit(entry.key) }))
       .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-    const now = this.now();
     // The parameters of one statement travel in one packet: the values, the
     // names and the tags' JSON count, and the packet's own limit holds.
     const chunks = chunkEntries(rows, {
@@ -317,41 +402,39 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
         (SqlCacheDriverBase.tagsColumn(entry.tags)?.length ?? 0) +
         64,
     });
-    await this.#transaction(async (tx) => {
-      for (const chunk of chunks) {
+    for (const chunk of chunks) {
+      await tx.unsafe(
+        `INSERT INTO ${t.entries} (ns, k, v, n, exp, ca, tg) VALUES ${chunk.map(() => "(?, ?, ?, NULL, ?, ?, ?)").join(", ")}
+         ON DUPLICATE KEY UPDATE v = VALUES(v), n = NULL, exp = VALUES(exp), ca = VALUES(ca), tg = VALUES(tg)`,
+        chunk.flatMap((entry) => [
+          fns,
+          entry.key,
+          entry.value,
+          entry.expiresAt,
+          now,
+          SqlCacheDriverBase.tagsColumn(entry.tags),
+        ]),
+      );
+      // Replacing: the keys' old tag rows go, the new ones come.
+      await tx.unsafe(
+        `DELETE FROM ${t.tags} WHERE ns = ? AND k IN (${marks(chunk.length)})`,
+        [fns, ...chunk.map((entry) => entry.key)],
+      );
+      const pairs = chunk.flatMap((entry) =>
+        [...this.fitTags(entry.tags).keys()].map((tag) => [
+          fns,
+          tag,
+          entry.key,
+        ]),
+      );
+      for (let at = 0; at < pairs.length; at += SET_MANY_ROWS) {
+        const slice = pairs.slice(at, at + SET_MANY_ROWS);
         await tx.unsafe(
-          `INSERT INTO ${t.entries} (ns, k, v, n, exp, ca, tg) VALUES ${chunk.map(() => "(?, ?, ?, NULL, ?, ?, ?)").join(", ")}
-           ON DUPLICATE KEY UPDATE v = VALUES(v), n = NULL, exp = VALUES(exp), ca = VALUES(ca), tg = VALUES(tg)`,
-          chunk.flatMap((entry) => [
-            fns,
-            entry.key,
-            entry.value,
-            entry.expiresAt,
-            now,
-            SqlCacheDriverBase.tagsColumn(entry.tags),
-          ]),
+          `INSERT INTO ${t.tags} (ns, tag, k) VALUES ${slice.map(() => "(?, ?, ?)").join(", ")} ON DUPLICATE KEY UPDATE k = k`,
+          slice.flat(),
         );
-        // Replacing: the keys' old tag rows go, the new ones come.
-        await tx.unsafe(
-          `DELETE FROM ${t.tags} WHERE ns = ? AND k IN (${marks(chunk.length)})`,
-          [fns, ...chunk.map((entry) => entry.key)],
-        );
-        const pairs = chunk.flatMap((entry) =>
-          [...this.fitTags(entry.tags).keys()].map((tag) => [
-            fns,
-            tag,
-            entry.key,
-          ]),
-        );
-        for (let at = 0; at < pairs.length; at += SET_MANY_ROWS) {
-          const slice = pairs.slice(at, at + SET_MANY_ROWS);
-          await tx.unsafe(
-            `INSERT INTO ${t.tags} (ns, tag, k) VALUES ${slice.map(() => "(?, ?, ?)").join(", ")} ON DUPLICATE KEY UPDATE k = k`,
-            slice.flat(),
-          );
-        }
       }
-    });
+    }
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

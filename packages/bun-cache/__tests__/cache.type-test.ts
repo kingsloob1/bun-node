@@ -266,3 +266,48 @@ type _phases = Expect<
     "encrypt" | "decrypt"
   >
 >;
+
+/* ------------------------------------------------------------------ */
+/* The optional fenced batch (speed work item 6)                       */
+/* ------------------------------------------------------------------ */
+
+/** A driver written before `setManyFenced` existed: the contract still takes it as it is. */
+const olderDriver: import("../lib/index").CacheDriver = {
+  name: "older",
+  capabilities: {
+    multiProcess: false,
+    ttl: "sweep",
+    atomicIncrement: false,
+    lock: false,
+    tags: "index",
+    fence: "atomic",
+    bus: "none",
+  },
+  close: async () => {},
+  get: async () => undefined,
+  getMany: async (_ns, keys) => keys.map(() => undefined),
+  set: async () => "stored",
+  setMany: async () => {},
+  delete: async () => 0,
+  clear: async () => {},
+  getStamps: async () => new Map(),
+  setStamps: async () => {},
+};
+void olderDriver;
+
+type _FencedWriteShape = Expect<
+  Equal<
+    import("../lib/index").FencedWrite,
+    {
+      entry: import("../lib/index").StoredEntry;
+      fence?: import("../lib/index").TagFence;
+    }
+  >
+>;
+
+/** A batch must answer an outcome per write, not nothing. */
+const wrongBatch: Pick<import("../lib/index").CacheDriver, "setManyFenced"> = {
+  // @ts-expect-error -- setManyFenced answers each write's outcome
+  setManyFenced: async () => {},
+};
+void wrongBatch;

@@ -719,6 +719,151 @@ export async function runCacheDriverConformance(
       },
     );
 
+    /**
+     * The fenced batch's cases, or their visible skip: `setManyFenced` is
+     * optional, and a driver without it gets a fenced `set` per entry from
+     * the core instead (the `tags.index.fence` case covers that path).
+     */
+    function fencedBatchCase(
+      id: string,
+      title: string,
+      run: (batch: NonNullable<CacheDriver["setManyFenced"]>) => Promise<void>,
+      timeoutMs?: number,
+    ): void {
+      const batch = driver.setManyFenced?.bind(driver);
+      if (
+        batch === undefined &&
+        driver.capabilities.tags === "index" &&
+        !skipped.has(id)
+      ) {
+        test.skip(`${title} — skipped: the driver has no setManyFenced (optional; the core writes a fenced set per entry instead)`, () => {});
+        return;
+      }
+      kase(
+        id,
+        title,
+        driver.capabilities.tags === "index",
+        async () => await run(batch!),
+        timeoutMs,
+      );
+    }
+
+    fencedBatchCase(
+      "setManyFenced",
+      "setManyFenced holds each entry to its own fence, answering in the batch's order",
+      async (batch) => {
+        const namespace = ns();
+        expect(await batch(namespace, [])).toEqual([]);
+        await driver.set(namespace, entry("kept", 7));
+        await driver.deleteByTags!(namespace, ["t"], Date.now() + 60_000);
+        const at = (await driver.getStamps(namespace, ["t"])).get("t")!;
+        const later = Date.now() + 60_000;
+        const outcomes = await batch(namespace, [
+          // A load that started before the invalidation: refused.
+          {
+            entry: entry("stale", 1, { tags: ["t"] }),
+            fence: { tags: ["t"], createdAt: at - 60_000 },
+          },
+          // No fence: stored.
+          { entry: entry("plain", 2, { expiresAt: later }) },
+          // A millisecond after the stamp: stored, in the tag index.
+          {
+            entry: entry("fresh", 3, { tags: ["t", "u"], expiresAt: later }),
+            fence: { tags: ["t", "u"], createdAt: at + 1 },
+          },
+          // In the stamp's own millisecond: refused, as set refuses it.
+          {
+            entry: entry("tie", 4, { tags: ["t"] }),
+            fence: { tags: ["t"], createdAt: at },
+          },
+          // A tag nobody invalidated: stored.
+          {
+            entry: entry("other", 5, { tags: ["u"] }),
+            fence: { tags: ["u"], createdAt: at - 60_000 },
+          },
+          // One stamped tag among several fences the write.
+          {
+            entry: entry("mixed", 6, { tags: ["u", "t"] }),
+            fence: { tags: ["u", "t"], createdAt: at - 1 },
+          },
+          // Refused over an existing value: the key keeps what it held.
+          {
+            entry: entry("kept", 8, { tags: ["t"] }),
+            fence: { tags: ["t"], createdAt: at - 60_000 },
+          },
+        ]);
+        expect(outcomes).toEqual([
+          "fenced",
+          "stored",
+          "stored",
+          "fenced",
+          "stored",
+          "fenced",
+          "fenced",
+        ]);
+        const [stale, plain, fresh, tie, other, mixed, kept] =
+          await driver.getMany(namespace, [
+            "stale",
+            "plain",
+            "fresh",
+            "tie",
+            "other",
+            "mixed",
+            "kept",
+          ]);
+        expect(stale).toBeUndefined();
+        expect(plain?.value).toEqual(bytesOf(2));
+        expect(plain?.expiresAt).toBe(later);
+        expect(fresh?.value).toEqual(bytesOf(3));
+        expect([...fresh!.tags].sort()).toEqual(["t", "u"]);
+        expect(tie).toBeUndefined();
+        expect(other?.value).toEqual(bytesOf(5));
+        expect(mixed).toBeUndefined();
+        expect(kept?.value).toEqual(bytesOf(7));
+        // What was stored is in the tag index: "u" reaches fresh and other.
+        expect(await driver.deleteByTags!(namespace, ["u"], later)).toBe(2);
+        expect(await driver.get(namespace, "plain")).toBeDefined();
+      },
+    );
+
+    fencedBatchCase(
+      "setManyFenced.race",
+      "setManyFenced holds under a concurrent invalidation: no pre-invalidation write survives it",
+      async (batch) => {
+        const namespace = ns();
+        const survivors: string[] = [];
+        for (let round = 0; round < 20; round++) {
+          const tag = `t${round}`;
+          const startedAt = Date.now() - 1;
+          const keys = [`a${round}`, `b${round}`, `c${round}`];
+          await Promise.all([
+            batch(
+              namespace,
+              keys.map((key) => ({
+                entry: entry(key, 3, { tags: [tag] }),
+                fence: { tags: [tag], createdAt: startedAt },
+              })),
+            ),
+            (async () => {
+              await wait(round % 3);
+              await driver.deleteByTags!(namespace, [tag], Date.now() + 60_000);
+            })(),
+          ]);
+          for (const [index, read] of (
+            await driver.getMany(namespace, keys)
+          ).entries()) {
+            if (read !== undefined) {
+              survivors.push(keys[index]);
+            }
+          }
+        }
+        // Whichever landed first, nothing may be left: either a write was
+        // fenced (or took itself back), or the invalidation deleted it.
+        expect(survivors).toEqual([]);
+      },
+      30_000,
+    );
+
     kase(
       "tags.stamps",
       'tags: "stamps" round-trips stamps and leaves entries to the core\'s read check',

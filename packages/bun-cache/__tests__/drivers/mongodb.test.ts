@@ -871,6 +871,87 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
       expect([...(await driver.get(fenceNs, "k"))!.value]).toEqual([2]);
     });
 
+    test("setManyFenced: an invalidation between the batch's check and its write takes back the writes it fences, and only those", async () => {
+      // As the `set` case above, for the batch: the whole invalidation of
+      // "t" runs after the first stamp read, so the batch writes after the
+      // delete; its re-check takes back the "t" entries and keeps the rest.
+      const fenceNs = `batch-between-${process.pid}`;
+      const target = driver as unknown as {
+        getStamps: MongoCacheDriver["getStamps"];
+      };
+      const original = target.getStamps.bind(driver);
+      let calls = 0;
+      target.getStamps = async (n, tags) => {
+        calls++;
+        const answer = await original(n, tags);
+        if (calls === 1) {
+          await driver.deleteByTags(n, ["t"], Date.now() + 60_000);
+        }
+        return answer;
+      };
+      const createdAt = Date.now() - 1;
+      try {
+        expect(
+          await driver.setManyFenced(fenceNs, [
+            {
+              entry: entry("a", [1], ["t"]),
+              fence: { tags: ["t"], createdAt },
+            },
+            {
+              entry: entry("b", [2], ["u"]),
+              fence: { tags: ["u"], createdAt },
+            },
+            { entry: entry("c", [3]) },
+            {
+              entry: entry("d", [4], ["u", "t"]),
+              fence: { tags: ["u", "t"], createdAt },
+            },
+          ]),
+        ).toEqual(["fenced", "stored", "stored", "fenced"]);
+      } finally {
+        target.getStamps = original;
+      }
+      expect(calls).toBe(2);
+      const [a, b, c, d] = await driver.getMany(fenceNs, ["a", "b", "c", "d"]);
+      expect(a).toBeUndefined();
+      expect([...b!.value]).toEqual([2]);
+      expect([...c!.value]).toEqual([3]);
+      expect(d).toBeUndefined();
+    });
+
+    test("setManyFenced's take-back removes only its own write, never a newer one", async () => {
+      const fenceNs = `batch-takeback-${process.pid}`;
+      const target = driver as unknown as {
+        getStamps: MongoCacheDriver["getStamps"];
+      };
+      const original = target.getStamps.bind(driver);
+      let calls = 0;
+      target.getStamps = async (n, tags) => {
+        calls++;
+        if (calls === 2) {
+          // The re-check: first an invalidation, then a newer, unfenced write.
+          await driver.setStamps(n, tags, Date.now(), Date.now() + 60_000);
+          await driver.set(n, entry("k", [2], ["t"]));
+        }
+        return await original(n, tags);
+      };
+      try {
+        expect(
+          await driver.setManyFenced(fenceNs, [
+            {
+              entry: entry("k", [1], ["t"]),
+              fence: { tags: ["t"], createdAt: Date.now() - 1 },
+            },
+            { entry: entry("j", [3]) },
+          ]),
+        ).toEqual(["fenced", "stored"]);
+      } finally {
+        target.getStamps = original;
+      }
+      expect([...(await driver.get(fenceNs, "k"))!.value]).toEqual([2]);
+      expect([...(await driver.get(fenceNs, "j"))!.value]).toEqual([3]);
+    });
+
     test("an existing client is used and never closed", async () => {
       const client = new MongoClient(url);
       const shared = mongoDriver({

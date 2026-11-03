@@ -1444,9 +1444,12 @@ class CacheImpl<
    * - **One driver call when nothing needs a fence**: the driver's
    *   `setMany`, under one failure-policy operation. A failure leaves every
    *   entry of the stretch unstored (reported as for `set`: `fenced`).
+   * - **One driver call when an entry needs the fence (§3.6) and the driver
+   *   has `setManyFenced`**, each entry with its own fence, under one
+   *   operation: its answer is each entry's, and a failure leaves every
+   *   entry unstored, as above.
    * - **Otherwise a `set` per entry, issued together**, each with its own
-   *   fence (§3.6) — the driver contract's `setMany` takes none — and its
-   *   own operation.
+   *   fence (`setMany` takes none) and its own operation.
    *
    * Then, in the batch's order, each skipped write's report and each write's
    * settling (stats, events, L1 under one token taken before the driver
@@ -1466,12 +1469,35 @@ class CacheImpl<
     const keys: string[] = [];
     try {
       let results: ("stored" | "fenced" | undefined)[];
+      const fenced = writes.some((write) => write.fence !== undefined);
+      const batch = state.driver.setManyFenced;
       if (writes.length === 0) {
         results = [];
-      } else if (
-        writes.length === 1 ||
-        writes.some((write) => write.fence !== undefined)
-      ) {
+      } else if (writes.length > 1 && fenced && batch !== undefined) {
+        const answered = await this.#op(
+          "setMany",
+          async () => {
+            const outcomes = await batch.call(
+              state.driver,
+              this.#storedNs,
+              writes.map((write) => ({
+                entry: write.entry,
+                fence: write.fence,
+              })),
+            );
+            // A short or long answer cannot be matched to the entries: it
+            // fails the call, as a throw does.
+            if (outcomes.length !== writes.length) {
+              throw new TypeError(
+                `${state.driver.name}: setManyFenced answered ${outcomes.length} outcomes for ${writes.length} entries`,
+              );
+            }
+            return outcomes;
+          },
+          undefined,
+        );
+        results = answered ?? writes.map(() => "fenced" as const);
+      } else if (writes.length === 1 || fenced) {
         // No async wrappers around `#op` and the driver call: a frame each,
         // per entry, was a fifth of a tagged batch's time on memory.
         const settled = await Promise.allSettled(
@@ -2438,8 +2464,9 @@ class CacheImpl<
   /**
    * Every entry goes through `set`'s pipeline (its own options, encoding,
    * compression, seal and limit), but the driver sees the batch: one
-   * `driver.setMany` per stretch of distinct keys, unless an entry needs the
-   * tag fence (`#writeStretch`). A key repeated in the batch starts a new
+   * `driver.setMany` per stretch of distinct keys, or when an entry needs the
+   * tag fence its `setManyFenced`, else a fenced `set` per entry
+   * (`#writeStretch`). A key repeated in the batch starts a new
    * stretch, so the last write of a key wins, as in a loop of `set`. Stats,
    * events and L1 are settled per entry in the batch's order; the bus gets
    * one message per stretch.

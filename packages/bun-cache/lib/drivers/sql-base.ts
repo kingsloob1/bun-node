@@ -422,7 +422,7 @@ export abstract class SqlCacheDriverBase implements CacheDriver {
     entry: StoredEntry,
     fence?: TagFence,
   ): Promise<"stored" | "fenced">;
-  /** Writes several entries, stored whole or not at all: the dialect's multi-row statements (no fence: bulk writes come from `setMany`, not from loads). */
+  /** Writes several entries, stored whole or not at all: the dialect's multi-row statements (no fence: a tagged batch goes to `setManyFenced`). */
   abstract setMany(ns: string, entries: readonly StoredEntry[]): Promise<void>;
   abstract delete(ns: string, keys: readonly string[]): Promise<number>;
   abstract clear(ns: string): Promise<void>;

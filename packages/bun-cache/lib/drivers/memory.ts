@@ -15,6 +15,7 @@ import type {
   BusMessage,
   CacheDriver,
   CacheDriverCapabilities,
+  FencedWrite,
   SchemaChange,
   SchemaSyncOptions,
   StoredEntry,
@@ -269,6 +270,25 @@ export class MemoryDriver implements CacheDriver {
     entry: StoredEntry,
     fence?: TagFence,
   ): Promise<"stored" | "fenced"> {
+    return Promise.resolve(this.#setNow(ns, entry, fence));
+  }
+
+  /** Writes several entries, each held to its own fence; synchronous, so no invalidation lands between a check and its write. */
+  setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    return Promise.resolve(
+      writes.map((write) => this.#setNow(ns, write.entry, write.fence)),
+    );
+  }
+
+  /** `set`, synchronously: the fence's check and the write in one step. */
+  #setNow(
+    ns: string,
+    entry: StoredEntry,
+    fence: TagFence | undefined,
+  ): "stored" | "fenced" {
     const store = this.#store(ns);
     if (fence !== undefined && fence.tags.length > 0) {
       const now = this.#now();
@@ -279,7 +299,7 @@ export class MemoryDriver implements CacheDriver {
           stamp.until > now &&
           stamp.at >= fence.createdAt
         ) {
-          return Promise.resolve("fenced");
+          return "fenced";
         }
       }
     }
@@ -302,12 +322,12 @@ export class MemoryDriver implements CacheDriver {
       keys.add(entry.key);
     }
     this.#evictToCaps(ns, store);
-    return Promise.resolve("stored");
+    return "stored";
   }
 
   setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     for (const entry of entries) {
-      void this.set(ns, entry);
+      this.#setNow(ns, entry, undefined);
     }
     return Promise.resolve();
   }
