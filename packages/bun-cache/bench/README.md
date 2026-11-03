@@ -86,6 +86,7 @@ Postgres one measures the database, not the library.
 | `get-hit-100b`, `get-hit-10kb`, `get-hit-1mb` | sequential `get`s of written keys (100 keys; 10 at 1 MB) | ops/s |
 | `get-miss` | sequential `get`s of keys never written | ops/s |
 | `set-100b`, `set-10kb`, `set-1mb` | sequential `set`s, overwriting the same keys | ops/s |
+| `set-1mb-random` | the same as `set-1mb`, the body 1 MB of random bytes, which no compressor shrinks | ops/s |
 | `get-many-100` | `getMany` / cache-manager's `mget` of 100 written keys | batches/s |
 | `set-many-100` | `setMany` / cache-manager's `mset` of 100 entries | batches/s |
 | `stampede` | 1,000 concurrent `getOrSet` / `wrap` misses on one key, a 20 ms loader; 7 rounds | the best round's p99 of the callers; loader runs beside it |
@@ -124,6 +125,17 @@ Values are `{ id, body }`, the body an **incompressible** string drawn from a
 seeded generator (the same bytes in every process): bun-cache compresses
 entries above 16 KiB by default and its rivals do not, and filler like
 `"x".repeat(n)` would flatter whoever compresses.
+
+That string draws from 64 symbols, about 6 bits each, so zstd's entropy stage
+alone takes a 1 MB one to three quarters of its size, and bun-cache's "only
+if smaller" rule rightly keeps the compressed copy. `set-1mb-random` is the
+case it does not reach: its body is 1 MB of seeded **random bytes** (a string
+of code units 0–255, which the structured codec stores as exactly those
+bytes; zstd's ratio on it is 1.000), the shape of data already compressed, an
+image or ciphertext. bun-cache's compressibility probe should store it
+uncompressed without compressing it whole. The rivals store JSON, which
+escapes the control characters and writes the upper half as two UTF-8 bytes,
+so their payload is about 1.6 MB.
 
 ## Contenders
 
@@ -272,52 +284,98 @@ walks into nested directories and would run a `*.test.ts` here (measured).
 
 ## What the baseline says
 
-Recorded 2026-10-29 on the shared 16-thread development machine (Linux x64,
+Recorded 2026-11-03 on the shared 16-thread development machine (Linux x64,
 Bun 1.4.4-canary.1+11c367163), `--ops 2000`, exclusive under the heavy-run
-wrapper, against the bench databases: 108 figures, 75 of them with a rival.
-bun-cache leads 20, ties 10 (within 10%) and trails 45;
-`baselines/cache.json` has every figure.
+wrapper at a load of 2.5–3.3, against the bench databases: 116 figures, 79
+of them with a rival. The row's leader is set by a 10% margin, so a figure
+within 10% of its rival is a tie: bun-cache leads 30, ties 13 and trails 36.
+`baselines/cache.json` has every figure. Ratios below are ours against the
+rival's (above 1 is ours ahead; for the latency rows, the rival's time over
+ours). The rows just past the margin (1.10–1.15x either way) are near-ties
+and are named as such: two runs of one build differ by about that much.
 
-- **Where it leads**: Redis and SQL reads (`get-hit-100b` 1.1x to 1.45x over
-  cache-manager on Redis, Postgres, MySQL and MariaDB; `get-hit-10kb` 1.15x to
-  1.6x), `getMany` on memory, MySQL and MariaDB, writes on MongoDB, the L1
-  tier (`tier-hit` 2.2x to 2.6x over BentoCache's L1; `tier-invalidate` a
-  433 µs median on Redis against 508 µs, 1.67 ms on Postgres against
-  2.25 ms), and the stampede on file (21 ms p99 against BentoCache's 54 ms).
-- **The stampede ties cache-manager on every backend** (20.9–24.0 ms p99
-  against 20.9–23.1 ms). Before the core fix below it trailed on every
-  networked backend (29–31 ms): `getOrSet` read the driver before joining the
-  in-process flight, so 1,000 concurrent misses made 1,000 reads.
-- **Where it trails, by design**: lru-cache on every memory row (a reference
-  against a copy through a codec); lazy tag invalidation (BentoCache,
-  cacheable: a stamp) against bun-cache's eager delete. `tags-invalidate` on
-  memory and file is about 1.1–1.2 ms, most of it the up-to-1 ms wait the
-  fence fix added to `invalidateTags` (#573).
-- **Where it trails, and a later PR should look**:
-  - `setMany` of 100, since the speed-work PR (baseline 2026-11-02): ahead
-    of cache-manager's `mset` on MySQL (244 against 46 batches/s) and
-    MariaDB (424 against 107), level on memory, and still behind on
-    Postgres (307 against 479), Redis (1,101 against 2,846) and, narrowly,
-    MongoDB (162 against 180). It was 2.9x to 28x behind everywhere
-    (Postgres 16 against 453): the core wrote a batch one `set` at a time,
-    and several drivers looped too.
-  - `get-miss` is 1.3x to 2.2x behind on every networked backend.
-  - Writes of 1 MB values are slower everywhere but MongoDB (Redis 219
-    against 1,394/s): the default zstd above 16 KiB, on incompressible data.
-  - `tags-set` trails BentoCache everywhere but MongoDB (1.5x to 2.0x).
-  - `invalidateTags` of 1,000 keys on MySQL takes 268 ms (MariaDB 28 ms,
-    Postgres 7 ms).
-- **On Redis, a cached HTTP hit (21,675 requests/s) is slower than running
-  the 10 KB handler uncached (49,178/s)**; on memory the hit wins (77,751
-  against 54,609/s). A route is worth caching on a networked store only when
-  its handler costs more than a round trip and a decode.
-- **A core bug the bench found, fixed in the same PR**: on MongoDB the
-  stampede's loader ran **twice** for 1,000 concurrent callers in one
-  process, every round. The reads queued for about 210 ms, longer than the
-  20 ms load and its write, so the callers whose miss arrived after the
-  first flight settled led a second one. `getOrSet` now joins a running load
-  before reading, shares one read among the callers that ask while it runs,
-  and reads again when a load settled under its read (bun-cache's README,
-  "Stampede protection"). The row passes and is guarded.
-- **Rivals that failed their own check**: `@keyv/mysql` does not serve back a
-  1 MB value (`get-hit-1mb`, `set-1mb` on MySQL and MariaDB).
+**Against cache-manager** (over the matching Keyv store):
+
+- **Reads lead or tie on every networked backend, except Redis at 1 MB.** `get-hit-100b`:
+  Postgres 1.44x, MariaDB 1.15x, MySQL 1.14x, Redis 1.12x and MongoDB 1.10x
+  (the last three near-ties). `get-hit-10kb`: Postgres 1.48x, MongoDB 1.19x,
+  MariaDB 1.17x, Redis 1.16x, MySQL a tie (1.03x). `get-hit-1mb`: ties on
+  Postgres (1.07x) and MongoDB (1.04x); behind on Redis (0.55x: a 1 MB hit
+  is zstd-decoded there, cache-manager's is not compressed).
+- **`get-miss` leads on the four SQL and document backends** (Postgres
+  1.60x, MongoDB 1.19x, MySQL 1.18x, MariaDB 1.14x, the last a near-tie)
+  since speed work PR 2 read a key and its counter in one round trip. It
+  trails on Redis (0.55x): a Redis miss is still `GET`, then `HMGET` for a
+  counter, a deliberate choice (pipelining both cost every hit 6–10% and a
+  billed command).
+- **Writes**: MongoDB leads at every size (100 B 1.21x, 10 KB 1.22x, 1 MB
+  1.13x, a near-tie). Elsewhere bun-cache trails or ties: `set-100b` Postgres
+  0.91x (a near-tie), MySQL 0.80x, MariaDB 0.70x, Redis 0.67x; `set-10kb`
+  MySQL and MariaDB ties (0.92x, 1.03x), Postgres 0.85x, Redis 0.65x;
+  `set-1mb` Redis 0.32x and Postgres 0.49x (zstd on the bench's value, which
+  compresses to three quarters, against cache-manager storing JSON as it is).
+- **`set-1mb-random` leads wherever cache-manager has the row**: Redis 4.85x,
+  MongoDB 5.52x, Postgres 5.74x. bun-cache's compressibility probe stores the
+  random bytes as they are (1,328/s on Redis against 588/s for the
+  compressible `set-1mb`), while cache-manager's JSON of random code units is
+  about 1.6 MB: it escapes the control characters (an eighth of them) and
+  writes the upper half as two UTF-8 bytes. The figure says more about the
+  rival's encoding of binary data than about speed on text.
+- **Batches**: `get-many-100` leads on MySQL (1.55x) and memory (1.20x),
+  ties on MariaDB (1.06x) and Postgres (0.96x), trails on Redis (0.76x) and
+  MongoDB (0.68x). `set-many-100` leads on MySQL (4.63x) and MariaDB (4.12x),
+  near-ties on MongoDB (1.10x), and trails on Postgres (0.69x), memory
+  (0.56x) and Redis (0.36x).
+- **The stampede ties everywhere** (0.97x–1.01x of cache-manager's p99, 20.7
+  to 22.4 ms): the row is mostly its 20 ms loader. bun-cache's loader runs
+  once per round (it fails the row otherwise); cache-manager's `wrap` is
+  single-flight in one process too.
+
+**Against BentoCache** (and cacheable on MongoDB):
+
+- **The L1 tier leads**: `tier-hit` 2.45x on Redis and 2.42x on Postgres;
+  `tier-invalidate` 343 µs against 465 µs on Redis (1.35x) and 1.37 ms
+  against 1.82 ms on Postgres (1.33x). The stampede on file leads (20.9 ms
+  p99 against 49.3 ms, 2.36x).
+- **`tags-set` trails BentoCache on every backend it shares** (memory 0.47x,
+  Redis 0.51x, file 0.54x, MariaDB 0.58x, Postgres 0.72x, MySQL 0.75x) and
+  leads cacheable on MongoDB (1.18x). That gap is the design: bun-cache keeps
+  an eager tag index and fences a tagged write against a concurrent
+  invalidation; BentoCache's tags are lazy, a stamp checked on every read.
+- **`tags-invalidate` trails by the same design**, 0.01x–0.08x: an eager
+  delete of 1,000 entries (MySQL 24.8 ms, MariaDB 25.6, Postgres 6.5, MongoDB
+  9.6, Redis 4.2) against writing one stamp (BentoCache 38 µs–0.9 ms). On
+  memory and file (1.17 and 1.12 ms) most of ours is the up-to-1 ms wait the
+  fence fix added to `invalidateTags` (#573). MySQL's row was 251 ms in the
+  previous baseline, until speed work PR 5 fixed its delete's plan.
+
+**Against lru-cache** (memory): every memory row trails it by a factor of 5
+to several thousand (`set-1mb` 667 against 5.7 M ops/s): lru-cache holds the
+caller's object by reference, with no copy and no codec.
+
+**No rival**: file, SQLite, MySQL and MariaDB at 1 MB, and the HTTP rows.
+
+- **HTTP**: on memory a cached hit (101,488 requests/s) beats the uncached
+  10 KB handler (55,165/s), 1.84x; on Redis the hit (26,674/s) is about half
+  the handler run uncached (55,962/s): a route is worth caching on a
+  networked store only when its handler costs more than a round trip and a
+  decode.
+- **Rivals that failed their own check**: `@keyv/mysql` does not serve back
+  a 1 MB value (`get-hit-1mb`, `set-1mb` and `set-1mb-random` on MySQL and
+  MariaDB), so those rows have no rival.
+
+**Moved since the previous baseline** (2026-11-02, before speed work PRs 2–5):
+`get-miss` Postgres 1,527 → 16,894/s, MongoDB 2,779 → 7,619, MySQL 9,292 →
+18,766, MariaDB 8,255 → 15,485, Redis 11,895 → 27,269 (that row's old figure
+was taken in a slow moment; the code path is unchanged); `set-1mb` on Redis
+234 → 588/s; `tags-set` on MongoDB 369 → 2,135/s; `tags-invalidate` on MySQL
+251 → 24.8 ms. Most other rows read higher too, often by 10–40%, and the
+rivals' with them: the machine had just been restarted and was quieter. Two
+moved far more for no change this work made: `set-10kb` on file 3,830 →
+19,920/s and SQLite 6,148 → 38,064/s. Both write their files under the OS
+temporary directory (`tmpdir()`), which on the recording machine is a tmpfs,
+in memory. The previous baseline was recorded while that machine was about
+17 GiB into swap, and tmpfs pages can be swapped out; this one with none in
+use. That is the likely cause, inferred rather than reproduced. **So a
+`--compare` on a machine deep in swap can fail the file and SQLite rows**
+without a regression in the code: check `free` before reading it as one.

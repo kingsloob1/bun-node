@@ -22,6 +22,7 @@ export function lruCacheContenders(): CacheContender[] {
         "set-100b",
         "set-10kb",
         "set-1mb",
+        "set-1mb-random",
       ],
       note: "lru-cache holds the object by reference: no copy and no codec, so a hit returns the caller's own object.",
       setup: (): CacheHandle => {

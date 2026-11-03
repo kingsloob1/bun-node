@@ -2413,6 +2413,18 @@ entry).
   index and on one with it (MySQL and MariaDB); the index always named
   fails MySQL's.
 
+**The bench baseline re-recorded, with a random 1 MB row, 2026-11-03** (the
+user's approval: one re-record after both speed-work chains landed, with the
+new row in the same PR). `set-1mb-random` is `set-1mb` with a body of 1 MB of
+seeded random bytes (zstd's ratio 1.000; the old value compresses to 0.750),
+so the compressibility probe's case is guarded: bun-cache leads cache-manager
+on it by 4.85x (Redis) to 5.74x (Postgres), storing the bytes as they are
+where cache-manager writes about 1.6 MB of JSON. `--compare` held against the
+old baseline before the re-record and against the new one after. The new
+baseline: 116 figures, 79 with a rival; bun-cache leads 30, ties 13 and
+trails 36 (the bench README's "What the baseline says" has them rival by
+rival).
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
