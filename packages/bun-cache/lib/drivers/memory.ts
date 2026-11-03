@@ -189,15 +189,20 @@ export class MemoryDriver implements CacheDriver {
     this.#entries--;
     this.#bytes -= slot.value.byteLength;
     for (const tag of slot.tags) {
-      const keys = store.tagIndex.get(tag);
-      if (keys !== undefined) {
-        keys.delete(key);
-        if (keys.size === 0) {
-          store.tagIndex.delete(tag);
-        }
-      }
+      this.#unindex(store, tag, key);
     }
     return true;
+  }
+
+  /** Takes `key` out of `tag`'s index set, and the set out of the index once empty. */
+  #unindex(store: NamespaceStore, tag: string, key: string): void {
+    const keys = store.tagIndex.get(tag);
+    if (keys !== undefined) {
+      keys.delete(key);
+      if (keys.size === 0) {
+        store.tagIndex.delete(tag);
+      }
+    }
   }
 
   /** Evicts least-recently-used entries until both caps hold. */
@@ -303,8 +308,20 @@ export class MemoryDriver implements CacheDriver {
         }
       }
     }
-    // Replacing: drop the old tag-index rows first.
-    this.#deleteEntry(store, entry.key);
+    // Replacing: the old entry's tag-index rows go, but those of the tags the
+    // new one keeps stay where they are (a rewrite with the same tags, the
+    // common case, then touches no index set).
+    const old = store.entries.get(entry.key);
+    if (old !== undefined) {
+      store.entries.delete(entry.key);
+      this.#entries--;
+      this.#bytes -= old.value.byteLength;
+      for (const tag of old.tags) {
+        if (!entry.tags.includes(tag)) {
+          this.#unindex(store, tag, entry.key);
+        }
+      }
+    }
     store.counters.delete(entry.key);
     store.entries.set(entry.key, {
       value: entry.value.slice(),
@@ -314,6 +331,9 @@ export class MemoryDriver implements CacheDriver {
     this.#entries++;
     this.#bytes += entry.value.byteLength;
     for (const tag of entry.tags) {
+      if (old?.tags.includes(tag) === true) {
+        continue;
+      }
       let keys = store.tagIndex.get(tag);
       if (keys === undefined) {
         keys = new Set();

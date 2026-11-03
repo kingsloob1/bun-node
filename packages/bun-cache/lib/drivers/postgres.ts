@@ -6,7 +6,8 @@
  *   without the tag rows that invalidate it.
  * - **The fence** (§3.6) is the same statement, guarded by
  *   `NOT EXISTS (SELECT 1 FROM <p>stamps …)`, inside a transaction holding a
- *   **shared** advisory lock on the namespace; `deleteByTags` takes the same
+ *   **shared** advisory lock on the namespace (the transaction's four
+ *   statements pipelined, one round trip); `deleteByTags` takes the same
  *   lock **exclusively** around its stamp write and its delete. So a fenced
  *   write either commits before the invalidation starts (and the delete,
  *   whose snapshot is taken after the lock, removes it) or starts after it
@@ -246,15 +247,53 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
     const statement = this.#setStatement();
     const rows = await withLockRetry<{ stored: number }[]>(async () =>
       fencing
-        ? await this.sql.begin(async (tx) => {
-            await tx.unsafe("SELECT pg_advisory_xact_lock_shared($1::bigint)", [
-              this.#fenceLockKey(ns),
-            ]);
-            return await tx.unsafe(statement, params);
-          })
+        ? await this.#fencedWrite<{ stored: number }[]>(ns, statement, params)
         : await this.sql.unsafe(statement, params),
     );
     return rows[0]?.stored === 1 ? "stored" : "fenced";
+  }
+
+  /**
+   * A fenced write in one round trip: `BEGIN`, the namespace's shared
+   * advisory lock, `statement` and `COMMIT`, pipelined on one reserved
+   * connection (four round trips, one after another, before). Postgres runs
+   * them in order, so the statement is still its own, and its snapshot is
+   * still taken after the lock is granted (the module header). A statement
+   * that fails aborts the transaction: the ones after it fail too, and the
+   * `COMMIT` of an aborted transaction rolls it back, so nothing is half
+   * written; a `ROLLBACK` follows any failure all the same, so a connection
+   * goes back to the pool outside a transaction whatever the server skipped.
+   * The first failure is thrown (the later ones only say the transaction
+   * was aborted).
+   */
+  async #fencedWrite<T>(
+    ns: string,
+    statement: string,
+    params: unknown[],
+  ): Promise<T> {
+    const connection = await this.sql.reserve();
+    try {
+      const settled = await Promise.allSettled([
+        connection.unsafe("BEGIN"),
+        connection.unsafe("SELECT pg_advisory_xact_lock_shared($1::bigint)", [
+          this.#fenceLockKey(ns),
+        ]),
+        connection.unsafe<T>(statement, params),
+        connection.unsafe("COMMIT"),
+      ]);
+      const failed = settled.find(
+        (step): step is PromiseRejectedResult => step.status === "rejected",
+      );
+      if (failed !== undefined) {
+        throw failed.reason;
+      }
+      return (settled[2] as PromiseFulfilledResult<T>).value;
+    } catch (error) {
+      await connection.unsafe("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 
   /**

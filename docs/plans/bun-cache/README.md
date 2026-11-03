@@ -2346,6 +2346,45 @@ What changed:
   (`redisSuite.ts`, 6, local lane only, plus staged writes in the key-locking
   rule case). Seven negative controls; see the PR.
 
+**Speed work: `tags-set`, built 2026-11-03** (speed work PR 4, scheduled by
+the user with its speed comparisons). The baseline had sets carrying two
+tags 0.50–0.67× of BentoCache. Profiled first (exclusive): the core's share
+of a tagged write is a few µs on every backend (Redis 44 µs through the
+cache against 39 µs for the fenced `driver.set` alone, interleaved); the
+rest is the driver's tag index and the fence (§3.6), which BentoCache's lazy
+tags do not keep. A fenced `driver.set` against an unfenced one: Postgres
+834 against 631 µs (the fence's transaction: `BEGIN`, the shared advisory
+lock, the statement, `COMMIT`, four round trips), MySQL 1,607 against 1,474,
+MariaDB 952 against 834, MongoDB 547 against 162 (two `getStamps` reads),
+Redis 43 against 41, memory 0.8 against 0.7. On memory, a CPU profile put
+structured clone's `serialize` at 25% and the driver's tag-index churn
+(dropping a key from its tag sets and adding it back) at about 20%. The
+design stays eager (the user's rule); what changed:
+
+- **Postgres pipelines the fenced write**: `BEGIN`, the lock, the statement
+  and `COMMIT` go together on one reserved connection. The lock is still
+  its own statement, so the statement's snapshot is still taken after it is
+  granted; a failing statement aborts the transaction and the `COMMIT` rolls
+  it back (a `ROLLBACK` follows any failure all the same).
+- **Redis's `set` script** reads every fence stamp in one `MGET`, keeps the
+  memberships of the tags an entry keeps (it only `SREM`s the ones it
+  drops), and no longer unlinks the entry key it is about to overwrite.
+- **The memory driver** keeps the index rows of the tags a replaced entry
+  keeps.
+- **Not changed**: MySQL and MariaDB. Pipelining their transaction's
+  statements is unsafe: after a deadlock InnoDB rolls the whole transaction
+  back and the statements already sent then run in autocommit, unfenced.
+  MongoDB's fence pre-check is only an optimisation, but dropping it would
+  make every fenced write visible until its compensation; it ties cacheable
+  already.
+- **A/B** (the PR 3 tree against this one, interleaved, exclusive): fenced
+  `driver.set` Postgres 1.06×, Redis 1.07×, memory 1.52×; `tags-set` through
+  the cache memory 1.07×, Redis 1.03×, Postgres 1.06×; untagged writes
+  unchanged. The rest of the gap to BentoCache is the eager index and the
+  fence, by design. **Bench** (`--compare`, exclusive, held): `tags-set` on
+  memory 261,875 → 304,577/s; the other rows moved within the bench's
+  run-to-run spread.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)

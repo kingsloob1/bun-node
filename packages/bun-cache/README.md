@@ -2000,8 +2000,8 @@ from a Redis next to the app:
   | `getMany` | 1 per key |
   | `set`, a new key, no tags | 5 |
   | `set`, each tag | +1 |
-  | `set` replacing an entry | +1, and +1 per old tag |
-  | `set` with the fence | +1 per fenced tag |
+  | `set` replacing an entry | +1 per old tag it no longer carries |
+  | `set` with the fence | +1 (one `MGET` of the stamps) |
   | `set` of an entry of 8 KiB or more (staged) | +1, and +1 more when it has no expiry |
   | `touch` | 4 |
   | `increment` (an existing counter / a new one) | 3 / 6 |

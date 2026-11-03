@@ -360,6 +360,65 @@ export async function registerRedisSuite(
       registerSetManyChunkTests(make("chunks"), { atomic: false });
     });
 
+    describe(`${lane.name} set's script: the fence in one read, memberships kept`, () => {
+      const driver = make("setscript");
+      const ns = `setscript-${process.pid}`;
+      /** Whether `key` is a member of `tag`'s set. */
+      const member = async (tag: string, key: string): Promise<boolean> =>
+        Number(
+          await helper.send("SISMEMBER", [
+            `${driver.prefix}:{${ns}}:t:${tag}`,
+            key,
+          ]),
+        ) === 1;
+
+      test("the fence reads every tag's stamp: only the last one stamped still fences; a lapsed or older stamp does not", async () => {
+        const now = Date.now();
+        await driver.setStamps(ns, ["s3"], now, now + 60_000);
+        await driver.setStamps(ns, ["lapsed"], now, now - 1);
+        await driver.setStamps(ns, ["older"], now - 5_000, now + 60_000);
+        const fence = (tags: string[]) => ({ tags, createdAt: now - 1 });
+        expect(
+          await driver.set(
+            ns,
+            entry("k", [1], ["s1", "s2", "s3"]),
+            fence(["s1", "s2", "s3"]),
+          ),
+        ).toBe("fenced");
+        expect(await driver.get(ns, "k")).toBeUndefined();
+        expect(
+          await driver.set(
+            ns,
+            entry("k", [2], ["lapsed", "older", "none"]),
+            fence(["lapsed", "older", "none"]),
+          ),
+        ).toBe("stored");
+        expect((await driver.get(ns, "k"))?.value).toEqual(new Uint8Array([2]));
+      });
+
+      test("replacing an entry keeps the memberships of the tags it keeps, drops the others and adds the new", async () => {
+        await driver.set(ns, entry("r", [1], ["keep", "drop"]));
+        await driver.set(ns, entry("r", [2], ["keep", "add"]));
+        expect(await member("keep", "r")).toBe(true);
+        expect(await member("drop", "r")).toBe(false);
+        expect(await member("add", "r")).toBe(true);
+        expect((await driver.get(ns, "r"))?.tags).toEqual(["keep", "add"]);
+        expect(await driver.deleteByTags(ns, ["drop"], Date.now() + 1000)).toBe(
+          0,
+        );
+        expect(await driver.deleteByTags(ns, ["keep"], Date.now() + 1000)).toBe(
+          1,
+        );
+        expect(await member("add", "r")).toBe(false);
+        // Untagged now: every membership goes.
+        await driver.set(ns, entry("u", [1], ["a", "b"]));
+        await driver.set(ns, entry("u", [2]));
+        expect(await member("a", "u")).toBe(false);
+        expect(await member("b", "u")).toBe(false);
+        expect((await driver.get(ns, "u"))?.value).toEqual(new Uint8Array([2]));
+      });
+    });
+
     // Local only, like the chunks: a few MiB of writes, on a billed lane.
     describe(`${lane.name} large frames (staged outside Lua)`, () => {
       const ns = `big-${process.pid}`;

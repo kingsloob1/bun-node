@@ -231,6 +231,10 @@ const STAGE_TTL_MS = 60_000;
  * `exact` (`delete`, which counts what went) unlinks it to tell; elsewhere it
  * is left for the write that follows, or to `sweep`'s neighbours, as foreign
  * data under the prefix.
+ *
+ * `keep`, for a write that replaces the entry (`set`), is the new tags as a
+ * Lua set: the memberships of tags the entry keeps stay (the write adds
+ * every tag again), and the entry key is left for the write to overwrite.
  */
 const LUA_HELPERS = `
 local function frameTags(frame)
@@ -242,7 +246,7 @@ local function frameTags(frame)
   if ok and type(tags) == 'table' then return tags end
   return {}
 end
-local function dropEntry(base, key, exact)
+local function dropEntry(base, key, exact, keep)
   local ek = base .. 'e:' .. key
   local head = redis.pcall('GETRANGE', ek, 0, ${FRAME_HEAD_BYTES - 1})
   if type(head) ~= 'string' then
@@ -257,9 +261,11 @@ local function dropEntry(base, key, exact)
     head = redis.call('GET', ek)
   end
   for _, tag in ipairs(frameTags(head)) do
-    redis.call('SREM', base .. 't:' .. tag, key)
+    if not (keep and keep[tag]) then
+      redis.call('SREM', base .. 't:' .. tag, key)
+    end
   end
-  redis.call('UNLINK', ek)
+  if not keep then redis.call('UNLINK', ek) end
   return 1
 end
 `;
@@ -299,10 +305,11 @@ local base, key, frame, exp, now, fenceAt = ARGV[1], ARGV[2], ARGV[3], ARGV[4], 
 local staged = KEYS[2]
 local i = 7
 local nf = tonumber(ARGV[i])
-if fenceAt ~= '' then
+if fenceAt ~= '' and nf > 0 then
   local at = tonumber(fenceAt)
-  for j = 1, nf do
-    local stamp = redis.call('GET', base .. 's:' .. ARGV[i + j])
+  local names = {}
+  for j = 1, nf do names[j] = base .. 's:' .. ARGV[i + j] end
+  for _, stamp in ipairs(redis.call('MGET', unpack(names))) do
     if stamp then
       local sat, suntil = string.match(stamp, '^(%S+) (%S+)$')
       if sat and tonumber(suntil) > now and tonumber(sat) >= at then
@@ -314,7 +321,9 @@ if fenceAt ~= '' then
 end
 i = i + nf + 1
 local nt = tonumber(ARGV[i])
-dropEntry(base, key)
+local keep = {}
+for j = 1, nt do keep[ARGV[i + j]] = true end
+dropEntry(base, key, false, keep)
 redis.call('UNLINK', base .. 'n:' .. key)
 local ek = base .. 'e:' .. key
 if staged then
