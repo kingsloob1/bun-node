@@ -3620,10 +3620,17 @@ the channel, its types and its documents are the inline form's).
   helper.
 - **The error frame is a declared outbound message** (`type: "error"`) added
   to `sends` when not declared, so `describeContract` and a generated document
-  see it. `meta` (`replies`, `envelope.idField` — the frame's correlation id,
-  echoed on a reply and an error frame — `subprotocol`, `topics`, `fallback`) rides the
-  contract for a typed client and docs; `options()` composes the app's own
-  `onUpgrade` hook and answers the declared subprotocol on the 101.
+  see it. It is the one frame outside the envelope: flat, with no `data`, and
+  the offending frame's id echoed under `id` whatever `envelope.idField` says;
+  `generateAsyncApi()` documents it that way. `meta` (`replies`,
+  `envelope.idField` — the frame's correlation id, echoed on a reply —
+  `subprotocol`, `topics`, `fallback`) rides the contract for a typed client
+  and docs; `options()` composes the app's own `onUpgrade` hook and answers
+  the declared subprotocol on the 101.
+- **In a generated AsyncAPI document**, a message type declared in both
+  `receives` and `sends` is one message when the two schemas are the same,
+  and otherwise one per direction, `<type>.receive` and `<type>.send`, each
+  titled with its direction.
 - **The pure half is browser-safe**: `channelContract(spec)`, the frame types
   (`ChannelMessage`, `ChannelErrorFrame`) and `wsTransport` live under
   `@kingsleyweb/bun-common/contract`, so a channel module can be shared with a

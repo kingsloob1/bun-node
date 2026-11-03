@@ -201,10 +201,39 @@ describe("generateAsyncApi: a defineChannel channel documents itself", () => {
     // The implicit error frame is a declared outbound key (channel.ts).
     const error = messagesOf(document)["chat.error"] as never as {
       summary: string;
-      payload: { properties: { data: { properties: object } } };
+      payload: { properties: Record<string, unknown>; required: string[] };
     };
     expect(error.summary).toContain("framework");
-    expect(error.payload.properties.data.properties).toHaveProperty("code");
+  });
+
+  it("documents the implicit error frame flat, its id under `id` whatever the envelope's field", () => {
+    // The runtime sends `{ type: "error", id?, code, status, issues?, detail? }`
+    // (channelErrorFrame): no `data` wrapper, and the id under `id` even on
+    // this channel, whose envelope field is `correlation`.
+    // asyncapi.frames.test.ts checks real frames against it.
+    const error = messagesOf(document)["chat.error"] as never as {
+      payload: { properties: Record<string, unknown>; required: string[] };
+    };
+    expect(Object.keys(error.payload.properties).sort()).toEqual([
+      "code",
+      "detail",
+      "id",
+      "issues",
+      "status",
+      "type",
+    ]);
+    expect(error.payload.properties.type).toMatchObject({ const: "error" });
+    expect(error.payload.properties).not.toHaveProperty("data");
+    expect(error.payload.properties).not.toHaveProperty("correlation");
+    expect([...error.payload.required].sort()).toEqual([
+      "code",
+      "status",
+      "type",
+    ]);
+    // The channel's prose says so too.
+    expect(channelsOf(document).chat.description).toContain(
+      "except the error frame, which is flat",
+    );
   });
 
   it("wraps every payload in the channel envelope ({ type, correlation?, data })", () => {
@@ -244,6 +273,166 @@ describe("generateAsyncApi: a defineChannel channel documents itself", () => {
     expect(() =>
       generateAsyncApi(router, { ...OPTIONS, strict: "strict" }),
     ).not.toThrow();
+  });
+});
+
+describe("generateAsyncApi: a message type declared on both sides", () => {
+  /** `ping` differs by direction; `echo` is the same both ways. */
+  function withPingChannel(router: BunRouter): void {
+    const ping = defineChannel({
+      path: "/ping",
+      receives: {
+        ping: z.object({ sentAt: z.number() }),
+        echo: z.object({ text: z.string() }),
+      },
+      sends: {
+        ping: z.object({ sentAt: z.number(), serverAt: z.number() }),
+        echo: z.object({ text: z.string() }),
+      },
+      replies: { ping: "ping" },
+      meta: { name: "pinger" },
+    });
+    router.ws(ping.path, ping.checks(), ping.handler({}), ping.options());
+  }
+  const { router } = harness();
+  withPingChannel(router);
+  const { document, warnings } = generateAsyncApi(router, OPTIONS);
+  const messages = messagesOf(document);
+  const operations = operationsOf(document);
+  /** The data schema's property names of a component message. */
+  const dataKeys = (key: string): string[] =>
+    Object.keys(
+      (
+        messages[key] as never as {
+          payload: { properties: { data: { properties: object } } };
+        }
+      ).payload.properties.data.properties,
+    ).sort();
+
+  it("warns about nothing", () => {
+    expect(warnings).toEqual([]);
+  });
+
+  it("documents each direction's schema when the two differ, one message per direction", () => {
+    // Keyed by type alone, the outbound `ping` overwrote the inbound one: the
+    // receive operation pointed at the server's schema (`serverAt` required).
+    expect(dataKeys("pinger.ping.receive")).toEqual(["sentAt"]);
+    expect(dataKeys("pinger.ping.send")).toEqual(["sentAt", "serverAt"]);
+    expect(Object.hasOwn(messages, "pinger.ping")).toBe(false);
+    expect(messages["pinger.ping.receive"]).toMatchObject({
+      name: "ping",
+      title: "ping (client → server)",
+    });
+    expect(messages["pinger.ping.send"]).toMatchObject({
+      name: "ping",
+      title: "ping (server → client)",
+    });
+    const receive = operations.receivePingerPing as never as {
+      messages: { $ref: string }[];
+      reply: { messages: { $ref: string }[] };
+    };
+    expect(receive.messages[0].$ref).toBe(
+      "#/channels/pinger/messages/ping.receive",
+    );
+    // The reply is the server's `ping`.
+    expect(receive.reply.messages[0].$ref).toBe(
+      "#/channels/pinger/messages/ping.send",
+    );
+    const send = operations.sendPinger as never as {
+      messages: { $ref: string }[];
+    };
+    expect(send.messages.map((m) => m.$ref)).toContain(
+      "#/channels/pinger/messages/ping.send",
+    );
+  });
+
+  it("keeps one message, referenced by both operations, when the two are the same", () => {
+    expect(dataKeys("pinger.echo")).toEqual(["text"]);
+    expect(Object.hasOwn(messages, "pinger.echo.receive")).toBe(false);
+    expect(Object.hasOwn(messages, "pinger.echo.send")).toBe(false);
+    expect(messages["pinger.echo"]).not.toHaveProperty("title");
+    const receive = operations.receivePingerEcho as never as {
+      messages: { $ref: string }[];
+    };
+    expect(receive.messages[0].$ref).toBe("#/channels/pinger/messages/echo");
+    const send = operations.sendPinger as never as {
+      messages: { $ref: string }[];
+    };
+    expect(send.messages.map((m) => m.$ref)).toContain(
+      "#/channels/pinger/messages/echo",
+    );
+  });
+
+  it("links every channel message, and has no dangling refs", () => {
+    expect(Object.keys(channelsOf(document).pinger.messages).sort()).toEqual([
+      "echo",
+      "error",
+      "ping.receive",
+      "ping.send",
+    ]);
+    expect(danglingRefs(document)).toEqual([]);
+  });
+
+  it("splits a describeChannel() type declared both ways the same way", () => {
+    const { router: bare, socket } = harness();
+    bare.ws("/raw", { message(_ws, _message) {} });
+    socket.describeChannel("/raw", {
+      receives: { ping: { payload: z.object({ t: z.number() }) } },
+      sends: {
+        ping: { payload: z.object({ t: z.number(), at: z.number() }) },
+      },
+    });
+    const raw = generateAsyncApi(bare, OPTIONS).document;
+    const rawMessages = messagesOf(raw);
+    const keys = (key: string) =>
+      Object.keys(
+        (rawMessages[key] as never as { payload: { properties: object } })
+          .payload.properties,
+      ).sort();
+    expect(keys("raw.ping.receive")).toEqual(["t"]);
+    expect(keys("raw.ping.send")).toEqual(["at", "t"]);
+    expect(
+      (
+        operationsOf(raw).receiveRawPing as never as {
+          messages: { $ref: string }[];
+        }
+      ).messages[0].$ref,
+    ).toBe("#/channels/raw/messages/ping.receive");
+  });
+
+  it("an SSE event declared by two bodies is still one message (no ConfigError)", () => {
+    const { router: twice } = harness();
+    const Said = z.object({ by: z.string() });
+    twice.get(
+      "/feed",
+      validate(
+        {},
+        {
+          responses: {
+            200: { content: { "text/event-stream": sse({ said: Said }) } },
+            203: { content: { "text/event-stream": sse({ said: Said }) } },
+          },
+        },
+      ),
+      (_req, res) => res.send(new ReadableStream()),
+    );
+    const { document: feed } = generateAsyncApi(twice, OPTIONS);
+    expect(Object.keys(channelsOf(feed).feed.messages)).toEqual(["said"]);
+    expect(Object.keys(messagesOf(feed))).toEqual(["feed.said"]);
+  });
+
+  it("two types folding to one key-safe id are a ConfigError, not a silent overwrite", () => {
+    const { router: folding } = harness();
+    const channel = defineChannel({
+      path: "/fold",
+      receives: { "a b": null, "a-b": null },
+      sends: {},
+    });
+    folding.ws(channel.path, channel.checks(), channel.handler({}));
+    expect(() => generateAsyncApi(folding, OPTIONS)).toThrow(ConfigError);
+    expect(() => generateAsyncApi(folding, OPTIONS)).toThrow(
+      'Two messages share the id "fold.a-b"',
+    );
   });
 });
 

@@ -187,6 +187,127 @@ describe("readChannels", () => {
     expect(channels.find((c) => c.key === "/ticker")!.idField).toBe("id");
   });
 
+  it("leaves out the implicit error frame in either shape — flat (bun-common's document since the frame fix) or under `data` (older ones) — and keeps an app's own `error`", () => {
+    /** One channel sending `said` and an `error` message with `payload`. */
+    const withError = (payload: unknown) =>
+      documentOf(
+        {
+          messages: {
+            said: { $ref: "#/components/messages/said" },
+            error: { $ref: "#/components/messages/error" },
+          },
+        },
+        {
+          s: {
+            action: "send",
+            channel: { $ref: "#/channels/c" },
+            messages: [
+              { $ref: "#/channels/c/messages/said" },
+              { $ref: "#/channels/c/messages/error" },
+            ],
+          },
+        },
+        {
+          components: {
+            messages: {
+              said: envelope("said", { type: "object" }, "rid"),
+              error: { payload },
+            },
+          },
+        },
+      );
+    const body = {
+      type: "object",
+      properties: {
+        code: { enum: ["VALIDATION"] },
+        status: { type: "integer" },
+      },
+    };
+    // The flat frame the runtime sends: code and status at the top, `id`
+    // beside them whatever the envelope's field, no `data`.
+    const flat = read(
+      withError({
+        type: "object",
+        properties: {
+          type: { const: "error" },
+          id: { type: "string" },
+          ...body.properties,
+        },
+        required: ["type", "code", "status"],
+      }),
+    );
+    expect(flat.warnings).toEqual([]);
+    expect(flat.channels[0].sends.map(([type]) => type)).toEqual(["said"]);
+    // The flat frame's `id` does not become the channel's id field.
+    expect(flat.channels[0].idField).toBe("rid");
+    // The envelope shape older documents described.
+    const enveloped = read(withError(envelope("error", body, "rid").payload));
+    expect(enveloped.channels[0].sends.map(([type]) => type)).toEqual(["said"]);
+    // An app's own `error` message (no code and status) is a message.
+    const own = read(
+      withError(
+        envelope("error", {
+          type: "object",
+          properties: { reason: { type: "string" } },
+        }).payload,
+      ),
+    );
+    expect(own.channels[0].sends.map(([type]) => type)).toEqual([
+      "said",
+      "error",
+    ]);
+  });
+
+  it("reads bun-common's two messages for a type declared both ways, each direction its own schema", () => {
+    const document = documentOf(
+      {
+        messages: {
+          "ping.receive": { $ref: "#/components/messages/c.ping.receive" },
+          "ping.send": { $ref: "#/components/messages/c.ping.send" },
+        },
+      },
+      {
+        r: {
+          action: "receive",
+          channel: { $ref: "#/channels/c" },
+          messages: [{ $ref: "#/channels/c/messages/ping.receive" }],
+          reply: {
+            channel: { $ref: "#/channels/c" },
+            messages: [{ $ref: "#/channels/c/messages/ping.send" }],
+          },
+        },
+        s: {
+          action: "send",
+          channel: { $ref: "#/channels/c" },
+          messages: [{ $ref: "#/channels/c/messages/ping.send" }],
+        },
+      },
+      {
+        components: {
+          messages: {
+            "c.ping.receive": {
+              name: "ping",
+              title: "ping (client → server)",
+              ...envelope("ping", { required: ["sentAt"] }),
+            },
+            "c.ping.send": {
+              name: "ping",
+              title: "ping (server → client)",
+              ...envelope("ping", { required: ["sentAt", "serverAt"] }),
+            },
+          },
+        },
+      },
+    );
+    const { channels, warnings } = read(document);
+    expect(warnings).toEqual([]);
+    expect(channels[0].receives).toEqual([["ping", { required: ["sentAt"] }]]);
+    expect(channels[0].sends).toEqual([
+      ["ping", { required: ["sentAt", "serverAt"] }],
+    ]);
+    expect(channels[0].replies).toEqual([["ping", "ping"]]);
+  });
+
   it("types a payload that is not a bun-common envelope as the whole data, under its name, with a warning", () => {
     const document = documentOf(
       { messages: { m: { $ref: "#/components/messages/m" } } },
