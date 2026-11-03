@@ -311,17 +311,44 @@ function makeNonce(): string {
  *   which is where injection matters;
  * - `connect-src 'self'` keeps the documents (and "try it out") on this origin;
  * - the rest is lockdown: no base tag, no form posts, no framing, no plugins.
+ *
+ * `font-src` allows `data:` too (Redoc inlines a font). `options.allowEval`
+ * adds `'unsafe-eval'` to `script-src`, for a viewer whose bundle compiles
+ * code with `new Function`: the AsyncAPI component's does as it loads (without
+ * it the bundle throws before defining its global, and the page is blank), and
+ * Redoc's search does for its worker.
  */
 export function docsPageHeaders(
   cdn: Readonly<{ origin: string }>,
   nonce: string,
+  options: {
+    /**
+     * Adds `'unsafe-eval'` to `script-src`, for a viewer bundle that needs
+     * `new Function`/`eval`. Scripts still load only from the nonce and the
+     * CDN. Default: `false`.
+     */
+    allowEval?: boolean;
+    /**
+     * Origins added to `img-src`, for a viewer that shows an image from its
+     * vendor's own host (Redoc's logo, from `https://cdn.redoc.ly`).
+     * Default: none.
+     */
+    imageOrigins?: readonly string[];
+    /**
+     * Adds `worker-src blob:`, for a viewer that starts a worker from a
+     * `blob:` URL (Redoc's search). Default: `false` (`worker-src` falls back
+     * to `script-src`, which names no `blob:`).
+     */
+    blobWorkers?: boolean;
+  } = {},
 ): Record<string, string> {
   const csp = [
     "default-src 'none'",
-    `script-src 'nonce-${nonce}' ${cdn.origin}`,
+    `script-src 'nonce-${nonce}' ${cdn.origin}${options.allowEval ? " 'unsafe-eval'" : ""}`,
     `style-src ${cdn.origin} 'unsafe-inline'`,
-    `img-src 'self' data: ${cdn.origin}`,
-    `font-src ${cdn.origin}`,
+    `img-src 'self' data: ${[cdn.origin, ...(options.imageOrigins ?? [])].join(" ")}`,
+    `font-src data: ${cdn.origin}`,
+    ...(options.blobWorkers ? ["worker-src blob:"] : []),
     "connect-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",
@@ -355,10 +382,15 @@ function jsonForScript(value: unknown): string {
   return JSON.stringify(value).replaceAll("/", "\\/");
 }
 
-/** The `<link>` and `<script>` tags for one pinned asset. */
+/**
+ * The `<link>` and `<script>` tags for one pinned asset. `module` loads the
+ * bundle as an ES module (`type="module"`), for one that is ESM-only
+ * (RapiDoc's): loaded as a classic script it fails on its first `export`.
+ */
 function assetTags(
   cdn: Readonly<{ baseUrl: string }>,
   asset: PinnedAsset,
+  module = false,
 ): { stylesheet: string; script: string } {
   const integrity = asset.integrity;
   return {
@@ -368,7 +400,7 @@ function assetTags(
         : `<link rel="stylesheet" href="${escapeHtml(assetUrl(cdn, asset, "css"))}"${
             integrity?.css ? ` integrity="${escapeHtml(integrity.css)}"` : ""
           } crossorigin="anonymous">`,
-    script: `<script src="${escapeHtml(assetUrl(cdn, asset, "js"))}"${
+    script: `<script${module ? ' type="module"' : ""} src="${escapeHtml(assetUrl(cdn, asset, "js"))}"${
       integrity ? ` integrity="${escapeHtml(integrity.js)}"` : ""
     } crossorigin="anonymous"></script>`,
   };
@@ -388,6 +420,11 @@ function page(options: {
   init: string;
   /** This page's nonce. */
   nonce: string;
+  /**
+   * Runs the initialiser as a module (`type="module"`), for one that uses
+   * `import` (Redoc's). Default: `false`, a classic script.
+   */
+  module?: boolean;
 }): string {
   return `<!doctype html>
 <html lang="en">
@@ -396,6 +433,7 @@ function page(options: {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>${escapeHtml(options.title)}</title>
+<link rel="icon" href="data:,">
 ${options.stylesheet}
 ${options.head ?? ""}
 <style nonce="${options.nonce}">body { margin: 0; }</style>
@@ -403,7 +441,7 @@ ${options.head ?? ""}
 <body>
 <div id="ui"></div>
 ${options.script}
-<script nonce="${options.nonce}">
+<script${options.module ? ' type="module"' : ""} nonce="${options.nonce}">
 ${options.init}
 </script>
 </body>
@@ -468,13 +506,23 @@ export function scalarPage(context: DocsViewerContext<"scalar">): DocsPage {
   } = context;
   const nonce = makeNonce();
   const tags = assetTags(cdn, cdn.scalar);
+  // `withDefaultFonts: false`: Scalar's default fonts come from
+  // fonts.scalar.com, which the CSP does not name; the pass-through options
+  // follow it, so `withDefaultFonts: true` turns them back on (with a CSP of
+  // your own).
   const init = `Scalar.createApiReference("#ui", {
   url: ${jsonForScript(documentUrl)},
+  withDefaultFonts: false,
 ${passThroughLines(options ?? {})}});`;
   return {
     html: page({
       title: `${title} — ${documentKind}`,
       stylesheet: tags.stylesheet,
+      // Scalar bundles zod 4, which probes for `new Function` as it loads (a
+      // CSP violation logged on every page). `jitless` is what
+      // `z.config({ jitless: true })` sets, on the global zod reads it from;
+      // set before the bundle runs, zod skips the probe and the JIT.
+      head: `<script nonce="${nonce}">globalThis.__zod_globalConfig = Object.assign(globalThis.__zod_globalConfig || {}, { jitless: true });</script>`,
       script: tags.script,
       init,
       nonce,
@@ -526,6 +574,9 @@ ${passThroughLines(options ?? {})}  requestInterceptor: function (request) {
   };
 }
 
+/** The host Redoc's footer logo is served from. */
+const REDOC_LOGO_ORIGIN = "https://cdn.redoc.ly";
+
 /**
  * The Redoc page for the OpenAPI document.
  *
@@ -533,7 +584,13 @@ ${passThroughLines(options ?? {})}  requestInterceptor: function (request) {
  * map pins its URL **and its hash** (`integrity`, enforced where import-map
  * integrity is supported), and the nonce'd module initialiser calls
  * `init(url, options, element)` — the pass-through options are that second
- * argument.
+ * argument, after `disableTelemetry: true` (Redoc 3 otherwise posts traces to
+ * otel.cloud.redocly.com, which the CSP refuses). Its "API docs by Redocly"
+ * logo is an image on cdn.redoc.ly, which the page's `img-src` names. The
+ * page allows `'unsafe-eval'` and `worker-src blob:`: Redoc's search
+ * (FlexSearch) compiles its worker with `new Function` and starts it from a
+ * `blob:` URL; refused, search falls back to the main thread with a CSP
+ * violation logged on every load.
  */
 export function redocPage(context: DocsViewerContext<"redoc">): DocsPage {
   const { cdn, title, documentUrl, options } = context;
@@ -550,7 +607,7 @@ ${JSON.stringify({
   const init = `import { init as redocInit } from "redoc";
 redocInit(
   ${jsonForScript(documentUrl)},
-  ${jsonForScript(options ?? {})},
+  ${jsonForScript({ disableTelemetry: true, ...options })},
   document.getElementById("ui"),
 );`;
   return {
@@ -560,9 +617,14 @@ redocInit(
       script: "",
       head: importMap,
       init,
+      module: true,
       nonce,
     }),
-    headers: docsPageHeaders(cdn, nonce),
+    headers: docsPageHeaders(cdn, nonce, {
+      allowEval: true,
+      blobWorkers: true,
+      imageOrigins: [REDOC_LOGO_ORIGIN],
+    }),
     nonce,
   };
 }
@@ -576,9 +638,13 @@ redocInit(
 export function rapidocPage(context: DocsViewerContext<"rapidoc">): DocsPage {
   const { cdn, title, documentUrl, options } = context;
   const nonce = makeNonce();
-  const tags = assetTags(cdn, cdn.rapidoc);
+  // RapiDoc 11 is ESM-only: the bundle and the initialiser are both modules,
+  // so the bundle (first in the document) defines `<rapi-doc>` before the
+  // initialiser creates one and assigns its properties.
+  const tags = assetTags(cdn, cdn.rapidoc, true);
   const init = `const element = document.createElement("rapi-doc");
 element.setAttribute("spec-url", ${jsonForScript(documentUrl)});
+element.setAttribute("load-fonts", "false");
 element.style.height = "100vh";
 ${Object.entries(options ?? {})
   .map(
@@ -593,6 +659,7 @@ document.getElementById("ui").replaceWith(element);`;
       stylesheet: tags.stylesheet,
       script: tags.script,
       init,
+      module: true,
       nonce,
     }),
     headers: docsPageHeaders(cdn, nonce),
@@ -625,7 +692,7 @@ export function asyncApiUiPage(
       init,
       nonce,
     }),
-    headers: docsPageHeaders(cdn, nonce),
+    headers: docsPageHeaders(cdn, nonce, { allowEval: true }),
     nonce,
   };
 }
