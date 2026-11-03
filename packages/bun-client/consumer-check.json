@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer, the ./query entries the optional @tanstack/query-core peer, and the ./react entries react and @tanstack/react-query beside query-core (their declarations import ./query's): they are checked in the consumer that has them (`peers`), every other entry in one without either.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-client writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-client` from the repo root. Every entry but the generator is a browser entry: the client runs in browsers and must type-check there without Bun or Node types. The generator (`./codegen`) is Bun-only and dev-time, so it is checked as an ordinary entry. The one runtime dependency, @kingsleyweb/bun-contract (loaded lazily, for validation), is packed beside it. The ./zod entries need the optional zod peer, the ./query entries the optional @tanstack/query-core peer, the ./react entries react and @tanstack/react-query beside query-core (their declarations import ./query's), and the ./persist entries the optional @tanstack/query-persist-client-core peer (types only): they are checked in the consumer that has them (`peers`), every other entry in one without either.",
   "entries": [
     {
       "spelling": "@kingsleyweb/bun-client",
@@ -125,6 +125,27 @@
       "browser": true
     },
     {
+      "spelling": "@kingsleyweb/bun-client/persist",
+      "peers": ["@tanstack/query-persist-client-core"],
+      "values": ["idbPersister"],
+      "types": ["IdbPersisterOptions"],
+      "browser": true,
+      "snippet": "import { persistQueryClient } from \"@tanstack/query-persist-client-core\";\nimport { QueryClient } from \"@tanstack/query-core\";\nconst persister = m.idbPersister({ database: \"app\", store: \"queries\", key: \"client\", throttleTime: 500, onError: (error) => void error });\nconst _p: Equal<typeof persister, import(\"@tanstack/query-persist-client-core\").Persister> = true; void _p;\nconst [stop, restored] = persistQueryClient({ queryClient: new QueryClient(), persister, buster: \"3dcc0f6a50e0371c\", maxAge: 60_000 });\nvoid stop; void restored;\ndeclare const browserIndexedDB: typeof globalThis extends { indexedDB: infer F } ? F : { open: (name: string, version?: number) => never };\nconst _idb = m.idbPersister({ indexedDB: browserIndexedDB }); void _idb;\nconst _options: t.IdbPersisterOptions = { throttleTime: 0 }; void _options;\nexport type _fn = Expect<IsAny<typeof m.idbPersister>>;\nexport type _opts = Expect<IsAny<t.IdbPersisterOptions>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/persist",
+      "peers": ["@tanstack/query-persist-client-core"],
+      "values": ["idbPersister"],
+      "types": ["IdbPersisterOptions"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-client/lib/persist.js",
+      "peers": ["@tanstack/query-persist-client-core"],
+      "values": ["idbPersister"],
+      "browser": true
+    },
+    {
       "spelling": "@kingsleyweb/bun-client/codegen",
       "values": ["generateRoutes", "loadDocuments", "runCli", "documentsHash"],
       "types": [
@@ -149,6 +170,7 @@
     "@tanstack/query-core@^5.90.0",
     "@tanstack/react-query@^5.90.0",
     "react@^19.2.0",
-    "@types/react@^19.2.0"
+    "@types/react@^19.2.0",
+    "@tanstack/query-persist-client-core@^5.90.0"
   ]
 }

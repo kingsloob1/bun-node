@@ -28,6 +28,12 @@
  * (it takes the app's `queries()` object); with react-query and query-core
  * inlined (React left to the app), still nothing of a server. A negative
  * control beside bun-common must be caught.
+ *
+ * Since PR-C8 the `./persist` entry (plan §6.4, §10.1): it imports only
+ * types from its optional peer, so its bundle imports nothing at all,
+ * carries nothing of a server, the query layer or the core client, and
+ * reaches IndexedDB through the page's own `indexedDB`. A negative control
+ * beside bun-common must be caught.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -260,6 +266,33 @@ describe("the ./react entry (plan §7.1, §10.1)", () => {
     const { code, logs } = await build(
       join(import.meta.dir, "fixtures", "react-server-import.ts"),
       PEERS,
+    );
+    if (code === undefined) {
+      expect(logs.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(serverMarkersIn(code).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the ./persist entry (plan §6.4, §10.1)", () => {
+  const PERSIST = join(import.meta.dir, "..", "lib", "persist.ts");
+
+  it("imports nothing, and holds nothing of a server, the query layer or the core client", async () => {
+    const { code, logs } = await build(PERSIST);
+    expect(logs).toEqual([]);
+    expect(code!.includes("function idbPersister")).toBe(true);
+    expect(code!.match(/^\s*import\s/m)).toBeNull();
+    expect(serverMarkersIn(code!)).toEqual([]);
+    expect(code!.includes("function createClient")).toBe(false);
+    expect(code!.includes("function queries")).toBe(false);
+    expect(code!.includes("var QueryObserver = class")).toBe(false);
+    expect(contractMarkersIn(code!)).toEqual([]);
+  });
+
+  it("negative control: the entry beside bun-common is caught", async () => {
+    const { code, logs } = await build(
+      join(import.meta.dir, "fixtures", "persist-server-import.ts"),
     );
     if (code === undefined) {
       expect(logs.length).toBeGreaterThan(0);

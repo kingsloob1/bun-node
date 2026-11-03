@@ -14,14 +14,16 @@ browsers: a browser bundle of the entry is 4.6 KiB gzipped, and the checks
 This is the core of the typed-client plan
 ([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
 its generator (PR-C2), its watcher (PR-C3), validation (PR-C4), the query
-layer (PR-C5) and the React binding (PR-C6): `bun-client generate` writes the route map from the server's
+layer (PR-C5), the React binding (PR-C6) and persistence (PR-C8): `bun-client generate` writes the route map from the server's
 OpenAPI document ([below](#generating-the-map-bun-client-generate)), with its
 zod schemas beside it on request, `bun-client watch` keeps both in step with
 a running dev server ([below](#keeping-it-in-step-bun-client-watch)), and
 `./query` puts the routes on TanStack's `@tanstack/query-core`, with cache
 tags, `ETag` revalidation and optimistic updates
 ([below](#the-query-layer-query)), and `./react` gives React components
-typed hooks over it ([below](#react-react)). The other framework bindings
+typed hooks over it ([below](#react-react)), and `./persist` keeps the
+query cache in IndexedDB across page loads, dropped when the server's
+schemas change ([below](#persistence-persist)). The other framework bindings
 and transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
@@ -225,6 +227,12 @@ sends none. A refused token makes `generate` exit `2` naming the file.
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
+/**
+ * The documents' hash, as the header records it: the `buster` of a
+ * persisted query cache (`@kingsleyweb/bun-client/persist`).
+ */
+export const typesHash = "3dcc0f6a50e0371c";
+
 export interface User {
   id: string;
   /** The display name. */
@@ -293,7 +301,8 @@ export const manifest = {
   the document's order. The output is laid out as Prettier lays it out, so
   `bun fmt` and Prettier leave it unchanged.
 - **The header** records the documents' hash (bun-common's `typesHash`), and
-  every warning.
+  every warning. The module exports the same hash as `typesHash`, the
+  `buster` of a persisted cache ([below](#persistence-persist)).
 
 ### JSON Schema to TypeScript
 
@@ -906,6 +915,68 @@ PR-5, §6.6). Until then, server-rendered data reaches the client through
 react-query's own `HydrationBoundary`: the queries' keys and data are plain
 JSON, so `dehydrate(queryClient)` of them serialises as it is.
 
+## Persistence (`/persist`)
+
+`@kingsleyweb/bun-client/persist` keeps a `QueryClient`'s cache in
+IndexedDB, so a page loaded again starts from what it last had.
+`idbPersister()` is a persister for TanStack's own `persistQueryClient`
+(`@tanstack/query-persist-client-core`, an optional peer, `^5.90.0`),
+written against the browser's IndexedDB API with no IndexedDB library: 724
+bytes gzipped.
+
+```ts
+import { QueryClient } from "@tanstack/query-core";
+import { persistQueryClient } from "@tanstack/query-persist-client-core";
+import { idbPersister } from "@kingsleyweb/bun-client/persist";
+import { typesHash } from "./routes.gen";
+
+const DAY = 24 * 60 * 60_000;
+const queryClient = new QueryClient({
+  // A query collected from memory is not persisted: keep them as long.
+  defaultOptions: { queries: { gcTime: DAY } },
+});
+const [stop, restored] = persistQueryClient({
+  queryClient,
+  persister: idbPersister(),
+  buster: typesHash,
+  maxAge: DAY,
+});
+await restored;
+```
+
+React's `PersistQueryClientProvider` (`@tanstack/react-query-persist-client`)
+takes the same `persister` and `buster` in its `persistOptions`.
+
+- **The buster is the documents' hash.** The generated module exports
+  `typesHash`, bun-common's hash of the documents it was generated from (the
+  one its header records). When the server's schemas change, the module is
+  regenerated (`--check` fails in CI until it is), its hash changes, and a
+  cache persisted under the old hash is dropped, and deleted, instead of
+  restoring data of the old shape. `maxAge` drops one that is too old.
+- **What is kept** is query-core's choice: by default the successful
+  queries, with their data and `meta` (so a route's declared tags still
+  match `invalidateTags`). The query layer's ETags and response tags belong
+  to the live client and are not persisted: a restored query's first fetch
+  is unconditional.
+- **Writes are throttled**: `persistQueryClient` saves on every cache event,
+  and the latest cache is written at most once per `throttleTime`. The last
+  changes before a page closes can be lost, as with TanStack's own
+  persisters.
+- **Nothing rejects.** A failed open, read or write (a quota, a value
+  IndexedDB cannot clone) goes to `onError` and counts as no cache. Without
+  IndexedDB (a server render) every method does nothing.
+- **The connection** opens on first use and closes when another tab upgrades
+  or deletes the database, opening again on the next use.
+
+| Option | Default | |
+|---|---|---|
+| `database` | `"bun-client"` | the IndexedDB database |
+| `store` | `"queries"` | the object store, created when missing (beside other persisters' stores) |
+| `key` | `"client"` | the record; one per `QueryClient` sharing the store |
+| `throttleTime` | `1_000` | ms between writes, the latest cache winning (TanStack's default) |
+| `indexedDB` | `globalThis.indexedDB` | another IndexedDB (`fake-indexeddb` in a test, say) |
+| `onError` | none | called with a failure's error |
+
 ## The query string
 
 The query is written so that bun-common's parser reads it back unchanged
@@ -932,11 +1003,15 @@ peer; `./query` is the query layer, with `@tanstack/query-core` an optional
 peer (`^5.90.0`: its query and mutation callbacks read the `QueryClient`
 from their context, which 5.90 has); `./react` is the React binding, with
 `react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) optional peers
-beside query-core. The generator is `./codegen` (Bun only)
+beside query-core; `./persist` is the IndexedDB persister, with
+`@tanstack/query-persist-client-core` (`^5.90.0`) an optional peer whose
+types alone it imports. The generator is `./codegen` (Bun only)
 and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round
 trip, the shared backoff vector, the `RoutesOf` types and the generator's
 parity with them. bun-cache is a dev dependency too, for the query layer's
 `Surrogate-Key` tests. React, react-dom, react-query and happy-dom are dev
-dependencies for the React binding's DOM tests.
+dependencies for the React binding's DOM tests, and
+query-persist-client-core for the persister's (pinned to the lock's
+query-core, which it depends on exactly).

@@ -146,6 +146,14 @@ describe("package.json exports", () => {
     });
   });
 
+  it("publishes the IndexedDB persister as ./persist (plan §6.4, §10.1, §16)", () => {
+    expect(manifest.exports["./persist"]).toEqual({
+      "@kingsleyweb/source": "./lib/persist.ts",
+      types: "./dts/persist.d.ts",
+      default: "./lib/persist.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -174,7 +182,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     ).toBe(true);
   });
 
-  it("declares only optional peers; zod (^4) is needed by the ./zod entries alone, query-core (^5.90) by the ./query ones, react (^19) and react-query (^5.90) by the ./react ones beside query-core", () => {
+  it("declares only optional peers; zod (^4) is needed by the ./zod entries alone, query-core (^5.90) by the ./query ones, react (^19) and react-query (^5.90) by the ./react ones beside query-core, query-persist-client-core (^5.90) by the ./persist ones", () => {
     for (const [name] of Object.entries(manifest.peerDependencies ?? {})) {
       expect({
         name,
@@ -187,6 +195,9 @@ describe("dependencies (plan D17, §10.1)", () => {
       "^5.90.0",
     );
     expect(manifest.peerDependencies?.react).toBe("^19.0.0");
+    expect(
+      manifest.peerDependencies?.["@tanstack/query-persist-client-core"],
+    ).toBe("^5.90.0");
     for (const entry of checkConfig.entries)
       expect({ spelling: entry.spelling, peers: entry.peers ?? [] }).toEqual({
         spelling: entry.spelling,
@@ -196,7 +207,9 @@ describe("dependencies (plan D17, §10.1)", () => {
             ? ["@tanstack/query-core"]
             : /\/(?:lib\/)?react(?:\.[jt]s)?$/.test(entry.spelling)
               ? ["@tanstack/query-core", "@tanstack/react-query", "react"]
-              : [],
+              : /\/(?:lib\/)?persist(?:\.[jt]s)?$/.test(entry.spelling)
+                ? ["@tanstack/query-persist-client-core"]
+                : [],
       });
     expect(checkConfig.workspaceDependencies ?? []).toEqual([
       "packages/bun-contract",
@@ -220,7 +233,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, query-core in ./query alone, and react-query in ./react alone (plan §12.1)", async () => {
+  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, query-core in ./query alone, react-query in ./react alone, and query-persist-client-core's types in ./persist alone (plan §12.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -247,6 +260,15 @@ describe("dependencies (plan D17, §10.1)", () => {
         // react-query: the ./react entry alone (its optional peer).
         if (found.specifier === "@tanstack/react-query") {
           expect(found.file).toBe("react.ts");
+          continue;
+        }
+        // query-persist-client-core: types only, in the ./persist entry alone.
+        if (found.specifier === "@tanstack/query-persist-client-core") {
+          expect(found).toEqual({
+            file: "persist.ts",
+            type: true,
+            specifier: found.specifier,
+          });
           continue;
         }
         // zod: types only, in the ./zod entry alone.
@@ -287,6 +309,18 @@ describe("dependencies (plan D17, §10.1)", () => {
       expect({
         file,
         imports: /from "\.\/react"|import\("\.\/react"\)/.test(source),
+      }).toEqual({ file, imports: false });
+    }
+  });
+
+  it("keeps the persister out of every other entry: no lib/ module imports ./persist (plan §10.1)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        imports: /from "\.\/persist"|import\("\.\/persist"\)/.test(source),
       }).toEqual({ file, imports: false });
     }
   });

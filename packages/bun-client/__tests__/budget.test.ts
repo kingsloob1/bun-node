@@ -36,6 +36,12 @@
  * 855 bytes minified, 390 gzipped; with react-query and query-core inlined
  * (React external) 17.9 KiB and 6.0 KiB. The `.` and `./query` entries are
  * unchanged by it (no file they bundle changed).
+ *
+ * Since PR-C8 the `./persist` entry has its own budget,
+ * {@link PERSIST_BUDGET}: the IndexedDB persister, which imports only
+ * types from `@tanstack/query-persist-client-core`, so the bundle is its own
+ * code whatever is external. Measured 2026-11-03 (the same build): 1,472
+ * bytes minified, 724 gzipped. The other entries are unchanged by it.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -95,6 +101,18 @@ const REACT_BUDGET = {
   gzipBytes: 0.5 * 1024,
 } as const;
 
+/**
+ * Byte limits for the `./persist` entry: about 10% above the measured
+ * minified figure, and 0.8 KiB gzipped (the plan sets no figure; §6.4 says
+ * "~60 lines"). The same rule for raising them.
+ */
+const PERSIST_BUDGET = {
+  /** The entry, minified, in bytes. */
+  minifiedBytes: 1.6 * 1024,
+  /** The entry gzipped, in bytes. */
+  gzipBytes: 0.8 * 1024,
+} as const;
+
 /** Formats bytes as KiB with one decimal, for failure messages. */
 function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -137,6 +155,13 @@ const react = await Bun.build({
   target: "browser",
   minify: true,
   external: ["@tanstack/react-query", "@tanstack/query-core", "react"],
+});
+
+const persist = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "persist.ts")],
+  target: "browser",
+  minify: true,
+  external: ["@tanstack/query-persist-client-core", "@tanstack/query-core"],
 });
 
 /** An output's minified and gzipped sizes. */
@@ -205,6 +230,19 @@ describe("the ./react budget", () => {
 
   it(`keeps ./react within ${kib(REACT_BUDGET.gzipBytes)} gzipped and ${kib(REACT_BUDGET.minifiedBytes)} minified over react-query`, async () => {
     expect(verdict(await sizes(react.outputs[0]), REACT_BUDGET)).toBe(
+      "within budget",
+    );
+  });
+});
+
+describe("the ./persist budget", () => {
+  it("builds as one file", () => {
+    expect(persist.success).toBe(true);
+    expect(persist.outputs.length).toBe(1);
+  });
+
+  it(`keeps ./persist within ${kib(PERSIST_BUDGET.gzipBytes)} gzipped and ${kib(PERSIST_BUDGET.minifiedBytes)} minified`, async () => {
+    expect(verdict(await sizes(persist.outputs[0]), PERSIST_BUDGET)).toBe(
       "within budget",
     );
   });
