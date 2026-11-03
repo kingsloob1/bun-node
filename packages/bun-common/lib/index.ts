@@ -527,6 +527,7 @@ export type {
   OpenApiSecurityOptions,
   OpenApiSecurityScheme,
   RouteDoc,
+  RouteFileDoc,
   RouteResponseDoc,
   WsChannelDoc,
   WsMessageDoc,

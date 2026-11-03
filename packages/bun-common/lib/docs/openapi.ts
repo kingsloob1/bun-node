@@ -14,7 +14,8 @@
  *   query, headers, cookies as `in: "cookie"`, body via V12's
  *   `bodyPlacement`), a `.describe({ request })` target replacing the
  *   discovered one wholesale (with a warning when it disagrees with a
- *   *checking* schema — plan §3.2);
+ *   *checking* schema — plan §3.2), and `.describe({ request: { files } })`
+ *   adding a multipart body's file fields as `format: binary` properties;
  * - its responses, from the contract's outbound rows, the validator winning
  *   over `.describe({ responses })` on a disagreement (Decision 4), variant
  *   statuses emitted with `oneOf` bodies and an `x-variants` table (plan
@@ -22,7 +23,9 @@
  * - its prose, from `.describe()`;
  * - the typed client's extensions (typed-client plan §3.0, §8.2):
  *   `x-bun-route-key` on every operation (the listing's key), `x-bun-errors`
- *   from `.describe({ errors })` and `x-bun-cache` from `.describe({ cache })`.
+ *   from `.describe({ errors })` and `x-bun-cache` from `.describe({ cache })`;
+ *   on a body's schema, `x-bun-chunks` for a `chunks()` stream's framing and
+ *   `x-bun-max-bytes` for a documented file's size limit.
  *
  * Nothing here throws for a documentation problem in lenient mode (the
  * default): it records a {@link DocWarning} and emits what it knows. `strict:
@@ -845,6 +848,9 @@ function isArraySchema(schema: unknown): boolean {
   return type === "array" || (Array.isArray(type) && type.includes("array"));
 }
 
+/** The media type a body with files is documented as. */
+const MULTIPART = "multipart/form-data";
+
 /** Whether `value` is a plain object. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
@@ -1354,7 +1360,8 @@ export function generateOpenApi(
         );
       }
 
-      /* The request body. */
+      /* The request body, and the multipart body's files. */
+      const files = doc?.request?.files;
       let requestBody: Record<string, unknown> | undefined;
       if (doc?.request?.body !== undefined) {
         const given = doc.request.body;
@@ -1372,7 +1379,9 @@ export function generateOpenApi(
             route.key,
           );
         }
-        const mediaTypes = doc.requestMediaTypes ?? ["application/json"];
+        const mediaTypes =
+          doc.requestMediaTypes ??
+          (files === undefined ? ["application/json"] : [MULTIPART]);
         const content: Record<string, unknown> = {};
         for (const mediaType of mediaTypes) {
           content[mediaType] = {
@@ -1381,6 +1390,26 @@ export function generateOpenApi(
         }
         requestBody = {
           required: doc.requestRequired ?? true,
+          content,
+        };
+      } else if (
+        bodyRows.length === 1 &&
+        bodyRows[0].mediaType === undefined &&
+        (doc?.requestMediaTypes !== undefined || files !== undefined)
+      ) {
+        /* A validator's body declares no media type (JSON by default):
+         * `requestMediaTypes`, or the files' multipart, re-homes it. */
+        const row = bodyRows[0];
+        const placement = bodyPlacement(row);
+        const mediaTypes = doc?.requestMediaTypes ?? [MULTIPART];
+        const content: Record<string, unknown> = {};
+        for (const mediaType of mediaTypes) {
+          content[mediaType] = {
+            schema: emitSchema(row.schema!, "input", "request.body", route.key),
+          };
+        }
+        requestBody = {
+          required: doc?.requestRequired ?? placement.required,
           content,
         };
       } else if (bodyRows.length > 0) {
@@ -1394,6 +1423,17 @@ export function generateOpenApi(
           };
         }
         requestBody = { required, content };
+      } else if (files !== undefined) {
+        /* Files and no fields: a multipart body of files alone. */
+        const content: Record<string, unknown> = {};
+        for (const mediaType of doc?.requestMediaTypes ?? [MULTIPART])
+          content[mediaType] = {};
+        requestBody = { required: doc?.requestRequired ?? false, content };
+      }
+      if (files !== undefined && requestBody !== undefined) {
+        addFiles(requestBody, files, (message) =>
+          warn("request", message, route.key),
+        );
       }
 
       /* ------------------------------------------------------------ *
@@ -2057,10 +2097,131 @@ function buildResponses(
   );
 }
 
+/** Whether `mediaType` is `multipart/form-data` (parameters and case aside). */
+function isMultipart(mediaType: string): boolean {
+  return mediaType.split(";")[0].trim().toLowerCase() === MULTIPART;
+}
+
+/** Whether a schema is an inline object a file property can join (no `$ref` or combinator to respect). */
+function isInlineObject(schema: unknown): schema is Record<string, unknown> {
+  return (
+    isPlainObject(schema) &&
+    schema.type === "object" &&
+    schema.$ref === undefined &&
+    schema.allOf === undefined &&
+    schema.anyOf === undefined &&
+    schema.oneOf === undefined &&
+    (schema.properties === undefined || isPlainObject(schema.properties))
+  );
+}
+
+/**
+ * Adds `RouteDoc.request.files` to each multipart media type of a request
+ * body (typed-client plan, `other-transports.md` §3, §6): every file a
+ * `{ type: "string", format: "binary" }` property (a list when `maxCount` is
+ * above 1), `x-bun-max-bytes` for `maxBytes`, `required` for `required`, and
+ * `encoding[field].contentType` for `mediaTypes`. They join an inline object
+ * schema of the body's fields; any other fields schema (a `$ref`, a union)
+ * is kept whole beside them under `allOf`. A file listed as a required body
+ * makes the body required.
+ */
+function addFiles(
+  requestBody: Record<string, unknown>,
+  files: NonNullable<NonNullable<RouteDoc["request"]>["files"]>,
+  warn: (message: string) => void,
+): void {
+  const properties: Record<string, JsonSchemaLike> = {};
+  const required: string[] = [];
+  const encoding: Record<string, { contentType: string }> = {};
+  for (const [name, file] of Object.entries(files)) {
+    let count = file.maxCount ?? 1;
+    if (
+      count !== Number.POSITIVE_INFINITY &&
+      !(Number.isInteger(count) && count >= 1)
+    ) {
+      warn(
+        `request.files.${name}: maxCount ${String(count)} is not a positive integer or Infinity; documented as 1`,
+      );
+      count = 1;
+    }
+    const one: JsonSchemaLike = {
+      type: "string",
+      format: "binary",
+      ...(file.maxBytes === undefined
+        ? {}
+        : { "x-bun-max-bytes": file.maxBytes }),
+    };
+    const described =
+      file.description === undefined ? {} : { description: file.description };
+    properties[name] =
+      count === 1
+        ? { ...one, ...described }
+        : {
+            type: "array",
+            items: one,
+            ...(Number.isFinite(count) ? { maxItems: count } : {}),
+            ...described,
+          };
+    if (file.required === true) required.push(name);
+    if (file.mediaTypes !== undefined && file.mediaTypes.length > 0)
+      encoding[name] = { contentType: file.mediaTypes.join(", ") };
+  }
+  const content = requestBody.content as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const multipart = Object.keys(content).filter(isMultipart);
+  if (multipart.length === 0) {
+    warn(
+      `request.files documented, but the body's media types (${Object.keys(content).join(", ")}) include no ${MULTIPART}; the files are left out`,
+    );
+    return;
+  }
+  for (const mediaType of multipart) {
+    const media = content[mediaType];
+    const fields = media.schema;
+    const filesObject: JsonSchemaLike = {
+      type: "object",
+      properties: structuredClone(properties),
+      ...(required.length > 0 ? { required: [...required] } : {}),
+    };
+    let schema: JsonSchemaLike;
+    if (fields === undefined) {
+      schema = filesObject;
+    } else if (isInlineObject(fields)) {
+      const own = (fields.properties ?? {}) as Record<string, unknown>;
+      for (const name of Object.keys(properties)) {
+        if (name in own)
+          warn(
+            `request.files.${name}: the body's fields declare "${name}" too; the file is documented`,
+          );
+      }
+      const ownRequired = Array.isArray(fields.required)
+        ? (fields.required as string[])
+        : [];
+      const allRequired = [...new Set([...ownRequired, ...required])];
+      schema = {
+        ...fields,
+        properties: { ...own, ...structuredClone(properties) },
+        ...(allRequired.length > 0 ? { required: allRequired } : {}),
+      };
+    } else {
+      schema = { allOf: [fields as JsonSchemaLike, filesObject] };
+    }
+    media.schema = schema;
+    if (Object.keys(encoding).length > 0)
+      media.encoding = {
+        ...((media.encoding as Record<string, unknown> | undefined) ?? {}),
+        ...structuredClone(encoding),
+      };
+  }
+  if (required.length > 0) requestBody.required = true;
+}
+
 /**
  * The JSON Schema of one outbound body row, by its kind (plan §4.12 M4): a
  * `value` row converts; `chunks` documents its chunk schema with a streaming
- * note; `sse` documents a `text/event-stream` string with its events listed;
+ * note and `x-bun-chunks` (its framing, `"ndjson"` or `"raw"`); `sse` documents a `text/event-stream` string with its events listed;
  * `opaque` documents nothing (the body is never read).
  */
 function bodySchemaFor(
@@ -2094,6 +2255,9 @@ function bodySchemaFor(
       ]
         .filter((part): part is string => typeof part === "string")
         .join(" "),
+      // How the body is cut into the values this schema describes, for a
+      // client to iterate (typed-client plan, other-transports.md §4).
+      "x-bun-chunks": framing === "ndjson" ? "ndjson" : "raw",
     };
   }
   if (row.kind === "sse") {

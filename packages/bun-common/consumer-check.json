@@ -50,6 +50,7 @@
       ],
       "types": [
         "RouteDoc",
+        "RouteFileDoc",
         "RouteResponseDoc",
         "OpenApiOptions",
         "OpenApiResult",
@@ -186,6 +187,7 @@
         "LiftComponentsOptions",
         "LiftedSchema",
         "RouteDoc",
+        "RouteFileDoc",
         "RouteResponseDoc",
         "OpenApiOptions",
         "OpenApiResult",

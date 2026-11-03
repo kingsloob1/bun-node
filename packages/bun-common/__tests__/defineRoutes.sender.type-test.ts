@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { RoutesOf } from "../lib/defineRoutes";
 import { validate } from "../lib/BunValidate";
 import { defineRoutes } from "../lib/defineRoutes";
-import { variants } from "../lib/responseBodies";
+import { chunks, opaque, sse, variants } from "../lib/responseBodies";
 
 type Equal<X, Y> =
   (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
@@ -88,6 +88,32 @@ const users = defineRoutes("/users", (r) => ({
       res.status(200).variant("short").send("ok");
     },
   ),
+  bodies: r.get(
+    "/bodies",
+    validate(
+      {},
+      {
+        responses: {
+          200: {
+            content: {
+              "application/x-ndjson": chunks(User, { framing: "ndjson" }),
+            },
+          },
+          201: {
+            content: { "application/octet-stream": chunks(z.any()) },
+          },
+          202: opaque("application/pdf"),
+          203: { content: { "text/csv": opaque() } },
+          205: opaque(),
+          206: { content: { "image/png": z.any() } },
+          207: { content: { "text/event-stream": sse({ tick: User }) } },
+        },
+      },
+    ),
+    (_req, res) => {
+      res.status(202).send(new Blob(["%PDF"]));
+    },
+  ),
   ping: r.get("/ping/:who", (_req, res) => {
     res.send("pong");
   }),
@@ -99,6 +125,7 @@ type Create = Api["POST /users/"];
 type Hooked = Api["PATCH /users/:id"];
 type Variant = Api["PUT /users/:id"];
 type Ping = Api["GET /users/ping/:who"];
+type Bodies = Api["GET /users/bodies"];
 
 /* --- send: the wire input ------------------------------------------- */
 
@@ -223,6 +250,31 @@ type _receiveVariants = Expect<
 // Nothing declared: `{ 200: unknown }`, like the server's view.
 type _receiveUndeclared = Expect<Equal<Ping["receive"], { 200: unknown }>>;
 type _receiveHooked = Expect<Equal<Hooked["receive"], { 200: unknown }>>;
+
+// Streams and downloads (typed-client plan, other-transports.md §4): an
+// NDJSON stream is one JSON value per line; a raw one its bytes; a byte
+// media type a Blob (opaque or not); opaque text a string; opaque under a
+// JSON key unknown (never read); an event stream unknown (PR-S1's).
+type _receiveNdjson = Expect<
+  Equal<
+    Bodies["receive"][200],
+    AsyncIterable<{ id: string; born: string; nick?: string | undefined }>
+  >
+>;
+type _receiveRaw = Expect<
+  Equal<Bodies["receive"][201], AsyncIterable<Uint8Array>>
+>;
+type _receivePdf = Expect<Equal<Bodies["receive"][202], Blob>>;
+type _receiveCsv = Expect<Equal<Bodies["receive"][203], string>>;
+type _receiveOpaqueJson = Expect<Equal<Bodies["receive"][205], unknown>>;
+type _receivePng = Expect<Equal<Bodies["receive"][206], Blob>>;
+type _receiveSse = Expect<Equal<Bodies["receive"][207], unknown>>;
+type NdjsonIsValue = Equal<Bodies["receive"][200], Get["receive"][200]>;
+// @ts-expect-error a negative control: an NDJSON stream is not its line's value
+type _receiveNdjsonNotValue = Expect<NdjsonIsValue>;
+type RawIsText = Equal<Bodies["receive"][201], AsyncIterable<string>>;
+// @ts-expect-error a negative control: a raw stream yields bytes, not strings
+type _receiveRawNotText = Expect<RawIsText>;
 
 // @ts-expect-error a status the route does not declare
 type _receiveUnknownStatus = Get["receive"][500];

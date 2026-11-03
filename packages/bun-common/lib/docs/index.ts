@@ -61,7 +61,7 @@ export {
   openApiSecurity,
   toAsyncApiSecurityScheme,
 } from "./security";
-export type { RouteDoc, RouteResponseDoc } from "./routeDoc";
+export type { RouteDoc, RouteFileDoc, RouteResponseDoc } from "./routeDoc";
 export { typesHash } from "./hash";
 export {
   devTypes,
