@@ -484,6 +484,36 @@ try {
       JSON.stringify(r.sent.map((each) => each.url)),
     );
   }
+  {
+    const r = await run("sse");
+    const o = rec(r.outcome);
+    const events = (o.events ?? []) as { event: string; id?: string }[];
+    check(
+      "sse: three typed events, in order, with their ids, and no warning",
+      r.ok &&
+        events.map((e) => `${e.id} ${e.event}`).join() ===
+          "1 progress,2 progress,3 done" &&
+        o.lastEventId === "3" &&
+        r.warnings.length === 0,
+      JSON.stringify({ o, warnings: r.warnings }),
+    );
+  }
+  {
+    const r = await run("sse-resume");
+    const o = rec(r.outcome);
+    check(
+      "sse-resume: Last-Event-ID 1 replays 2 and 3; an unknown id gets the gap",
+      r.ok &&
+        ((o.replayed ?? []) as string[]).join() === "2 progress,3 done" &&
+        o.gaps === 1,
+      JSON.stringify(o),
+    );
+    check(
+      "sse-resume: the server saw both Last-Event-IDs",
+      r.server.map((hit) => hit.lastEventId).join() === "1,from-another-server",
+      JSON.stringify(r.server),
+    );
+  }
   check(
     "an unknown scenario is a 404",
     (await post("/run/nope")).status === 404,

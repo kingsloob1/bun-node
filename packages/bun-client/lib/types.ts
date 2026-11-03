@@ -65,6 +65,19 @@ export interface RouteEntry {
   send?: object;
   /** The receiver view (`RoutesOf`, plan §8.5): response bodies by status. */
   receive?: object;
+  /**
+   * `"sse"`: the route answers a `text/event-stream` (`sse.md` §3.1). It is
+   * read with `sse()` from `@kingsleyweb/bun-client/sse`, and the verbs,
+   * `request` and `op` do not offer it. Default: an ordinary route.
+   */
+  stream?: "sse";
+  /**
+   * An event stream's events by name, each its `data`'s wire type
+   * (`undefined` for an event that carries none), as `x-sse-events` (and
+   * bun-common's `sse({ … })`) declares them. Default: undeclared, so any
+   * event name with `unknown` data.
+   */
+  events?: object;
 }
 
 /**
@@ -84,12 +97,25 @@ type RequiredKeys<T> = {
 /** The entry at key `K`, `never` when `K` is not one. */
 export type EntryAt<R, K> = K extends keyof R ? R[K] : never;
 
-/** The paths of `R` whose method is `M`: `"GET /users/:id"` gives `"/users/:id"` for `"GET"`. */
-export type PathsOf<R, M extends string> = keyof R extends infer K
-  ? K extends `${M} ${infer P}`
-    ? P
-    : never
-  : never;
+/**
+ * The keys of `R` an HTTP call takes: every key but an event stream's
+ * (`stream: "sse"`), which `sse()` reads (`sse.md` §3.1).
+ */
+export type HttpKeyOf<R> = {
+  [K in keyof R]: R[K] extends { stream: "sse" } ? never : K;
+}[keyof R];
+
+/**
+ * The paths of `R` whose method is `M`: `"GET /users/:id"` gives
+ * `"/users/:id"` for `"GET"`. An event stream's path is not one
+ * ({@link HttpKeyOf}).
+ */
+export type PathsOf<R, M extends string> =
+  HttpKeyOf<R> extends infer K
+    ? K extends `${M} ${infer P}`
+      ? P
+      : never
+    : never;
 
 /** Every path of `R`, whatever its method. */
 export type AnyPathOf<R> = keyof R extends infer K
@@ -536,9 +562,9 @@ type OperationIdOf<E> = E extends { operationId: infer O extends string }
   ? O
   : never;
 
-/** `api.op`: one call per `operationId` in the map (other-transports.md §2). */
+/** `api.op`: one call per `operationId` in the map (other-transports.md §2), event streams left out. */
 export type Operations<R, F> = {
-  [K in keyof R as OperationIdOf<R[K]>]: Call<R[K], F>;
+  [K in HttpKeyOf<R> as OperationIdOf<R[K]>]: Call<R[K], F>;
 };
 
 /**
@@ -824,6 +850,15 @@ export interface RouteSchemas {
    * `Set-Cookie`), so a required header it hides reads as missing.
    */
   readonly responseHeaders?: { readonly [status: number]: StandardSchemaV1 };
+  /**
+   * An event stream's events by name (`sse.md` §3.3): the schema of each
+   * event's `data` after it is decoded, `null` for an event that carries
+   * none. An event whose name is not listed is a validation issue (the
+   * server's rule). A bun-common `sse({ … })` declaration as the stream
+   * status's response stands for this (its `events` and its `data`
+   * decoding). Default: none, so events are not checked.
+   */
+  readonly events?: { readonly [name: string]: StandardSchemaV1 | null };
 }
 
 /**
@@ -958,7 +993,7 @@ export interface Client<R, F extends ClientFlags = Record<never, never>> {
   options: Verb<R, "OPTIONS", F>;
   /** Call a route by its key, `"PATCH /users/:id"`: for a method chosen at run time. */
   request: <
-    K extends keyof R & string,
+    K extends HttpKeyOf<R> & string,
     T extends boolean | undefined = undefined,
     U extends UndeclaredStatus | undefined = undefined,
     A extends DownloadAs | undefined = undefined,

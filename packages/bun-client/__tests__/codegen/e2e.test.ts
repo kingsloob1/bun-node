@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import type { Routes } from "./fixtures/app.gen";
 import type { Routes as MountsRoutes } from "./fixtures/mounts.gen";
 import { createClient, UnexpectedStatusError } from "../../lib/index";
+import { sse } from "../../lib/sse";
 import { buildRouter } from "./fixtures/app";
 import { manifest } from "./fixtures/app.gen";
 import { buildRouter as buildMountsRouter } from "./fixtures/mounts";
@@ -99,19 +100,23 @@ describe("the generated map drives the client through the app", () => {
     void _children;
   });
 
-  it("reads a bodiless status, an event stream (no body: sse() reads it) and an undeclared route", async () => {
+  it("reads a bodiless status, an event stream (through sse(), typed from the generated events) and an undeclared route", async () => {
     const gone = await api.delete("/api/users/:id", { params: { id: "42" } });
     expect({ status: gone.status, data: gone.data }).toEqual({
       status: 204,
       data: undefined,
     });
-    const events = await api.get("/api/users/:id/events", {
+    const stream = sse(api, "GET /api/users/:id/events", {
       params: { id: "42" },
+      reconnect: false,
     });
-    expect({ status: events.status, data: events.data }).toEqual({
-      status: 200,
-      data: undefined,
-    });
+    const first = await stream[Symbol.asyncIterator]().next();
+    if (!first.done && first.value.event === "done") {
+      const _ok: Equal<typeof first.value.data, { ok: boolean }> = true;
+      void _ok;
+    }
+    expect(first.value).toEqual({ event: "done", data: { ok: true } });
+    stream.close();
     const health = await api.get("/api/health");
     expect(health).toMatchObject({ ok: true, status: 200, data: { ok: true } });
   });
@@ -158,6 +163,17 @@ describe("the generated map drives the client through the app", () => {
     );
     // @ts-expect-error -- no such operation
     never(() => api.op.getUsers());
+    // The HTTP verbs and request() do not offer an event stream; sse() does.
+    // @ts-expect-error -- an SSE route is not a GET path of the client
+    never(() => api.get("/api/users/:id/events", { params: { id: "1" } }));
+    never(() =>
+      // @ts-expect-error -- nor a key request() takes
+      api.request("GET /api/users/:id/events", { params: { id: "1" } }),
+    );
+    // @ts-expect-error -- nor an operation (it is userEvents in the document)
+    never(() => api.op.userEvents({ params: { id: "1" } }));
+    // @ts-expect-error -- and sse() takes only an event stream's key
+    never(() => sse(api, "GET /api/users/:id", { params: { id: "1" } }));
   });
 });
 

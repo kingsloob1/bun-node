@@ -27,8 +27,10 @@ tags, `ETag` revalidation and optimistic updates
 ([below](#the-query-layer-query)), and `./react` gives React components
 typed hooks over it ([below](#react-react)), and `./persist` keeps the
 query cache in IndexedDB across page loads, dropped when the server's
-schemas change ([below](#persistence-persist)). The other framework bindings
-and transports come in later PRs (the plan's §15).
+schemas change ([below](#persistence-persist)), and `./sse` reads typed,
+validated, resumable server-sent events (PR-S1,
+[below](#server-sent-events-sse)). The other framework bindings and
+transports come in later PRs (the plan's §15).
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -301,7 +303,8 @@ export const manifest = {
 - **Server-sent events**: a 2xx served as `text/event-stream` or carrying
   `x-sse-events` reads no body through the HTTP call (`undefined`); the entry
   is marked `stream: "sse"` and its `events` are typed by name, for `sse()`
-  (PR-S1).
+  ([below](#server-sent-events-sse)), which the verbs then refuse; with
+  `--zod`, the zod module gains the route's `events` schemas.
 - **Bodies by media type**: JSON as its schema; `multipart/form-data` as
   `FormData` and `application/x-www-form-urlencoded` as `URLSearchParams`
   (typed fields come with PR-C9); anything else as
@@ -1112,6 +1115,82 @@ the status's schema, is read as its chunk schema. A download and a raw
 stream are not checked (as on the server, their content is not read); a
 pre-built `FormData` or `URLSearchParams` neither.
 
+## Server-sent events (`/sse`)
+
+An event stream is a route of the map marked `stream: "sse"`, its events by
+name in `events`, each its data's wire type (`undefined` for one that
+carries none). The generator writes both from the document's `x-sse-events`
+(bun-common's `sse({ … })` declaration), and `--zod` the events' schemas.
+`sse()` reads it (the plan's [`sse.md`](../../docs/plans/typed-client/sse.md)):
+
+```ts
+import { sse } from "@kingsleyweb/bun-client/sse";
+
+interface Routes {
+  "GET /jobs/:id/events": {
+    params: { id: string };
+    responses: { 200: undefined; 401: Problem };
+    stream: "sse";
+    events: { progress: { percent: number }; done: { result: string }; gap: undefined };
+  };
+}
+
+const stream = sse(api, "GET /jobs/:id/events", { params: { id }, signal });
+for await (const e of stream) {             // read as fast as the loop runs
+  if (e.event === "progress") bar.set(e.data.percent); // narrowed by name
+  if (e.event === "done") break;            // break closes the stream
+}
+stream.on("done", (d) => toast(d.result)); // or listeners (they read eagerly)
+stream.on("$gap", () => refetchAll());     // the server could not resume
+stream.lastEventId;                         // what a reconnection sends
+stream.close();
+await stream.closed;                        // settles when it ends
+```
+
+- **Through the client.** Each connection is a call of `api` (`fetch`, never
+  `EventSource`, which sends no custom headers and which Bun does not have):
+  its base URL, headers, auth and refresh, middleware and request checks
+  apply, and a refreshed token reaches the next reconnection. It sends
+  `Accept: text/event-stream`, and nothing until the stream is first read.
+- **Resume.** The last `id:` the stream committed goes out as
+  `Last-Event-ID` on every reconnection; `lastEventId` starts a stream from
+  a known one. An event's `id` is the last id as of it.
+- **Reconnection.** After the server's `retry:`, else `reconnect.initialMs`
+  (3 s), doubling on consecutive failures to `reconnect.maxMs` (30 s), each
+  wait between half and all of it, the count starting over once a
+  connection has stayed open a minute; a failed status's `Retry-After`
+  wins. A stream the server ends is reconnected too. `reconnect: false`
+  turns it off: the end of the stream ends the iterator, a network failure
+  is a `NetworkError`.
+- **Heartbeat.** With `heartbeatMs` (the server's interval), a connection
+  with no byte for twice it plus 5 s (comments count) is dropped and
+  reconnected.
+- **Stops.** A `204`, `close()`, the `signal` (the stream rejects with its
+  reason), or a status in `fatalStatuses` (every 4xx but 408 and 429): a
+  status the route declares is the client's `HttpError`, its body typed
+  (a `401` problem before the first event); any other is a
+  `StreamClosedError` (`status`, `response`), as is a success that is not
+  an event stream.
+- **Validation**, under the same policy as HTTP (on in development, off in
+  production) and the same `validate` levels (the client's, the route's,
+  the call's): each event's data is checked by its name with the route's
+  `events` schemas (an undeclared name, data on an event declared to carry
+  none and data that is not JSON are issues too, as on the server), a BYO
+  `custom` schema on the stream's status checks the whole `{ event, data,
+  id }`. A failure warns and delivers; `onFailure: { response: "drop" }`
+  discards the event and fires `on("$invalid", error)`; `"throw"` ends the
+  stream with the `ValidationError` (`target: "data"`, `key` the event's
+  name). `data: "text"` delivers each event's data as its text (bun-common's
+  `sse(events, { data: "text" })`); by default it is parsed as JSON, and
+  data that does not parse is delivered as its text.
+- **Backpressure.** The iterator reads the body only as fast as it is
+  consumed; listeners read eagerly and drop nothing (an iterator beside
+  them buffers what it has not taken).
+
+The verbs, `request` and `op` do not offer an event stream's route, and
+`sse()` takes nothing else. The entry is 3.2 KiB gzipped, none of it in the
+`.` entry, its checks loaded lazily as the core client's are.
+
 ## The query string
 
 The query is written so that bun-common's parser reads it back unchanged
@@ -1140,7 +1219,8 @@ from their context, which 5.90 has); `./react` is the React binding, with
 `react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) optional peers
 beside query-core; `./persist` is the IndexedDB persister, with
 `@tanstack/query-persist-client-core` (`^5.90.0`) an optional peer whose
-types alone it imports. The generator is `./codegen` (Bun only)
+types alone it imports; `./sse` is the event-stream client, with no
+peer. The generator is `./codegen` (Bun only)
 and the `bun-client` bin.
 `@kingsleyweb/bun-common` is an optional peer, needed only by `generate
 --module` on a router, and a dev dependency for the tests: the query round

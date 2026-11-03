@@ -165,6 +165,13 @@ export const schemas = schemasFromZod<Routes>({
     responses: {
       401: Problem,
     },
+    events: {
+      end: Pet,
+      ping: null,
+      tick: z.looseObject({
+        n: z.int(),
+      }),
+    },
   },
   "GET /trees/:id": {
     params: z.looseObject({

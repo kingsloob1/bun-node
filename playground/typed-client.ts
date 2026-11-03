@@ -47,6 +47,7 @@ import {
   ValidationError,
 } from "@kingsleyweb/bun-client";
 import { runCli } from "@kingsleyweb/bun-client/codegen";
+import { sse } from "@kingsleyweb/bun-client/sse";
 import {
   invalidateTags,
   observe,
@@ -129,7 +130,7 @@ export interface ScenarioRun {
 }
 
 /** The request headers the sent-request log keeps. */
-const REQUEST_HEADERS = ["x-request-id", "if-none-match"];
+const REQUEST_HEADERS = ["x-request-id", "if-none-match", "last-event-id"];
 /** The response headers the sent-request log keeps. */
 const RESPONSE_HEADERS = ["retry-after", "etag", "x-cache", "cache-tag"];
 
@@ -149,6 +150,8 @@ export type ScenarioName =
   | "retry-after"
   | "timeout"
   | "middleware"
+  | "sse"
+  | "sse-resume"
   | "request-invalid"
   | "response-invalid"
   | "query-key"
@@ -223,6 +226,20 @@ export const SCENARIOS: readonly ScenarioInfo[] = [
     title: "Middleware",
     about:
       "one middleware sets x-request-id (the server saw it) and logs; another answers a route itself, so nothing is sent",
+  },
+  {
+    name: "sse",
+    section: "calls",
+    title: "Server-sent events",
+    about:
+      "sse() from @kingsleyweb/bun-client/sse reads GET /api/jobs/:id/events: each event typed by its name, checked with the generated zod events, its id kept as lastEventId",
+  },
+  {
+    name: "sse-resume",
+    section: "calls",
+    title: "Resume with Last-Event-ID",
+    about:
+      'lastEventId: "1" replays events 2 and 3; an id the server cannot resume from gets the declared gap event first, and on("$gap") fires',
   },
   {
     name: "request-invalid",
@@ -501,6 +518,49 @@ export async function mountTypedClientDemo(
         middleware: [tracing, mock],
       });
       return { log, real: real.data, mocked: mocked.data };
+      // #endregion
+    },
+
+    sse: async ({ api }) => {
+      // #region sse
+      // A stream route of the generated map: the verbs refuse it, sse() reads it
+      const stream = sse(api, "GET /api/jobs/:id/events", {
+        params: { id: "7" },
+        reconnect: false, // the server ends the stream; stay ended
+      });
+      const events: unknown[] = [];
+      for await (const e of stream) {
+        if (e.event === "progress") {
+          const _percent: Equal<typeof e.data.percent, number> = true;
+        } else if (e.event === "done") {
+          const _result: Equal<typeof e.data.result, string> = true;
+        }
+        events.push(e);
+      }
+      return { events, lastEventId: stream.lastEventId };
+      // #endregion
+    },
+
+    "sse-resume": async ({ api }) => {
+      // #region sse-resume
+      // The server replays what came after the id the client sends
+      const resumed = sse(api, "GET /api/jobs/:id/events", {
+        params: { id: "7" },
+        lastEventId: "1",
+        reconnect: false,
+      });
+      const replayed: string[] = [];
+      for await (const e of resumed) replayed.push(`${e.id} ${e.event}`);
+      // An id it cannot resume from: the declared gap event, then everything
+      const stale = sse(api, "GET /api/jobs/:id/events", {
+        params: { id: "7" },
+        lastEventId: "from-another-server",
+        reconnect: false,
+      });
+      let gaps = 0;
+      stale.on("$gap", () => void gaps++);
+      await stale.closed;
+      return { replayed, gaps };
       // #endregion
     },
 

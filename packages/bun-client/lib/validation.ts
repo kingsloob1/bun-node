@@ -45,6 +45,10 @@ import {
 } from "@kingsleyweb/bun-contract";
 import { httpTransport } from "@kingsleyweb/bun-contract/lib/http";
 
+// The runner, for `./sseChecks` (loaded with this module, by `./sse`), so
+// bun-contract's values are imported here alone.
+export { validateStandard };
+
 /** A request part the client checks. */
 export type RequestPart = "params" | "query" | "body" | "headers" | "files";
 
@@ -97,7 +101,7 @@ function contractOf(def: object): AnyContract {
  * A guard's issues, marked as the built-in schema's, with a response's
  * `body` target named `response` (its `headers` keep theirs).
  */
-function builtinIssues(
+export function builtinIssues(
   issues: readonly ValidationIssue[],
   response: boolean,
 ): ValidationErrorIssue[] {
@@ -127,7 +131,7 @@ function bodySchema(schema: StandardSchemaV1 | null): StandardSchemaV1 | null {
 }
 
 /** A BYO schema's issues, marked as such. */
-function customIssues(
+export function customIssues(
   issues: readonly ValidationIssue[],
 ): ValidationErrorIssue[] {
   return issues.map((issue) => ({
@@ -463,6 +467,16 @@ function headersObject(headers: Headers): Record<string, string> {
 /* The checks a client runs.                                                 */
 /* ------------------------------------------------------------------------ */
 
+/** What checks an event stream's events (`CallChecks.events`). */
+export interface EventsPlan {
+  /** What runs for the stream's status. */
+  readonly plan: PartPlan;
+  /** The route's built-in schemas; `undefined` when the plan runs none. */
+  readonly route: RouteSchemas | undefined;
+  /** What a failure does, as the levels resolved it (`sse()` adds `"drop"`). */
+  readonly mode: FailureMode | "drop";
+}
+
 /** What `createClient` hands the checks when it first loads them. */
 export interface ChecksContext {
   /** The client's mode is development (its defaults turn checks on). */
@@ -525,6 +539,14 @@ export interface CallChecks {
    * `"throw"`.
    */
   readonly responseHeaders: (status: number, headers: Headers) => Promise<void>;
+  /**
+   * What checks an event stream's events (`sse.md` §3.3), as the stream's
+   * status says: the plan, the route's built-in schemas (loaded when the
+   * plan runs them) and the failure mode; `undefined` when nothing checks
+   * them. `./sseChecks` runs the checks, so an HTTP-only client's checks
+   * carry none of that code.
+   */
+  readonly events: (status: number) => Promise<EventsPlan | undefined>;
 }
 
 /** The checks of one client: each call's, from its route key and its validation levels. */
@@ -690,6 +712,19 @@ export function createChecks(context: ChecksContext): Checks {
             validation.onResponse,
             new ValidationError(key, "response", issues, status),
           );
+      },
+      events: async (status) => {
+        const plan = planOf(
+          validation.statuses.get(status) ?? validation.response,
+          hasSource,
+        );
+        return plan === undefined
+          ? undefined
+          : {
+              plan,
+              route: await routeOf(key, [plan]),
+              mode: validation.onResponse as FailureMode | "drop",
+            };
       },
     };
   };

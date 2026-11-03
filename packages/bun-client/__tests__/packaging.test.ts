@@ -154,6 +154,14 @@ describe("package.json exports", () => {
     });
   });
 
+  it("publishes the event-stream client as ./sse (sse.md, plan §10.1, §16)", () => {
+    expect(manifest.exports["./sse"]).toEqual({
+      "@kingsleyweb/source": "./lib/sse.ts",
+      types: "./dts/sse.d.ts",
+      default: "./lib/sse.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -325,7 +333,21 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("loads the checks module only by a dynamic import, from the client alone", async () => {
+  it("keeps the event-stream client out of every other entry: no lib/ module imports ./sse, and ./sse none of the core client (plan §10.1)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        imports: /from "\.\/sse"|import\("\.\/sse"\)/.test(source),
+      }).toEqual({ file, imports: false });
+    }
+    const sse = await Bun.file(join(ROOT, "lib", "sse.ts")).text();
+    expect(/^import(?! type)[^"]*from "\.\/client"/m.test(sse)).toBe(false);
+  });
+
+  it("loads the checks module only by a dynamic import, from the client and the event-stream client (and statically from the event checks, which ./sse loads the same way)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -334,7 +356,24 @@ describe("dependencies (plan D17, §10.1)", () => {
         file,
         value: /^import(?! type)[^"]*from "\.\/validation"/m.test(source),
         dynamic: source.includes('import("./validation")'),
-      }).toEqual({ file, value: false, dynamic: file === "client.ts" });
+      }).toEqual({
+        file,
+        value: file === "sseChecks.ts",
+        dynamic: file === "client.ts" || file === "sse.ts",
+      });
+    }
+  });
+
+  it("loads the event checks only by a dynamic import, from the event-stream client alone", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        value: /^import(?! type)[^"]*from "\.\/sseChecks"/m.test(source),
+        dynamic: source.includes('import("./sseChecks")'),
+      }).toEqual({ file, value: false, dynamic: file === "sse.ts" });
     }
   });
 });

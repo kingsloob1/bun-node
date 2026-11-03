@@ -4,7 +4,7 @@
  * lazily: `createClient<Routes>({ schemas: () => import("<this module>") })`.
  * Do not edit; regenerate it, and run the same command with `--check` in CI.
  *
- * typesHash: 9aeaf53acb6e4c98
+ * typesHash: 0f36a0e006bde26b
  */
 import { schemasFromZod } from "@kingsleyweb/bun-client/zod";
 import { z } from "zod/mini";
@@ -59,6 +59,20 @@ export const schemas = schemasFromZod<Routes>({
         attempts: z.number(),
       }),
       503: Problem,
+    },
+  },
+  "GET /api/jobs/:id/events": {
+    params: z.looseObject({
+      id: z.string(),
+    }),
+    events: {
+      done: z.looseObject({
+        result: z.string(),
+      }),
+      gap: null,
+      progress: z.looseObject({
+        percent: z.number(),
+      }),
     },
   },
   "GET /api/orgs/:id": {

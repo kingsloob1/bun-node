@@ -48,7 +48,8 @@ function isZodSchema(value: unknown): boolean {
  *
  * @typeParam R The route map: a key it does not have is a compile error.
  * @param schemas Per route key, each request part's schema, the response
- *   bodies' by status (`null`: no body) and the response headers' by status.
+ *   bodies' by status (`null`: no body), the response headers' by status,
+ *   and an event stream's `events` by name (`null`: an event with no data).
  * @returns The same object, typed for `SchemaSource<R>`'s `schemas`.
  * @throws TypeError when a key is not a route key (`"VERB /path"`) or a
  *   value is not a zod 4 schema, naming where.
@@ -69,6 +70,8 @@ export function schemasFromZod<R>(schemas: {
     readonly responses?: { readonly [status: number]: $ZodType | null };
     /** Response headers by status: an object of them, by lower-case name, each a string. */
     readonly responseHeaders?: { readonly [status: number]: $ZodType };
+    /** An event stream's events: each event's data by name; `null`: it carries none. */
+    readonly events?: { readonly [name: string]: $ZodType | null };
   };
 }): SchemaSource<R>["schemas"] {
   for (const [key, route] of Object.entries(
@@ -97,6 +100,13 @@ export function schemasFromZod<R>(schemas: {
       if (!isZodSchema(schema))
         throw new TypeError(
           `schemasFromZod(): ${key} response ${status} headers is not a zod 4 schema`,
+        );
+    }
+    const events = (route.events ?? {}) as Record<string, unknown>;
+    for (const [name, schema] of Object.entries(events)) {
+      if (schema !== null && !isZodSchema(schema))
+        throw new TypeError(
+          `schemasFromZod(): ${key} event "${name}" is not a zod 4 schema (or null)`,
         );
     }
   }

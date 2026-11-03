@@ -51,7 +51,7 @@ export type _Issues = Expect<
 export type _Target = Expect<
   Equal<
     ValidationErrorIssue["target"],
-    "params" | "query" | "body" | "headers" | "files" | "response"
+    "params" | "query" | "body" | "headers" | "files" | "response" | "data"
   >
 >;
 export type _Source = Expect<

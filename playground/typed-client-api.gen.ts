@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 9aeaf53acb6e4c98
+ * typesHash: 0f36a0e006bde26b
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
@@ -12,7 +12,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "9aeaf53acb6e4c98";
+export const typesHash = "0f36a0e006bde26b";
 
 export interface Org {
   id: string;
@@ -81,6 +81,29 @@ export interface Routes {
       };
       503: Omit<Problem, "code"> & {
         code: "UNAVAILABLE";
+      };
+    };
+  };
+  /** A job's progress, as server-sent events */
+  "GET /api/jobs/:id/events": {
+    operationId: "jobEvents";
+    params: {
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: undefined;
+    };
+    stream: "sse";
+    events: {
+      done: {
+        result: string;
+      };
+      gap: undefined;
+      progress: {
+        percent: number;
       };
     };
   };
@@ -196,6 +219,7 @@ export const manifest = {
   "GET /api/brew": { operationId: "brew", statuses: [200] },
   "GET /api/drifted/:id": { operationId: "drifted", statuses: [200] },
   "GET /api/flaky/:ticket": { operationId: "flaky", statuses: [200, 503] },
+  "GET /api/jobs/:id/events": { operationId: "jobEvents", statuses: [200] },
   "GET /api/orgs/:id": { operationId: "getOrg", statuses: [200, 404] },
   "GET /api/slow": { operationId: "slow", statuses: [200] },
   "GET /api/users": {

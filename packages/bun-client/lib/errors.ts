@@ -117,10 +117,11 @@ export class TimeoutError extends ClientError {
 /**
  * One issue of a {@link ValidationError}: bun-contract's issue shape (the
  * one the server's checks report: `target`, `message`, `path`, and `key`,
- * the status, on a response), plus which check found it.
+ * the status, on a response; on an event stream's event, target `data` and
+ * `key` the event's name, `sse.md` §3.3), plus which check found it.
  */
 export interface ValidationErrorIssue extends ValidationIssue<
-  "params" | "query" | "body" | "headers" | "files" | "response"
+  "params" | "query" | "body" | "headers" | "files" | "response" | "data"
 > {
   /** `"builtin"`: the route's built-in schema; `"custom"`: a BYO schema (§5.4). */
   source: "builtin" | "custom";

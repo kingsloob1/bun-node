@@ -10,9 +10,10 @@ changed.** `file:line` at `e80ab379`, relative to `packages/`. Markings as in
 TC. **BNR** is [`bun-native-routes/README.md`](../bun-native-routes/README.md)
 (its §16 owns the SSE writer).
 
-**Status (2026-11-02): approved by the user** (TC §14, Q22; names as in
-TC §16). **Nothing is built.** The next PRs are TC's **PR-K**,
-**PR-M1** and **PR-C1**; this sub-plan's PRs follow them as TC §15 orders.
+**Status (2026-11-03): approved by the user** (TC §14, Q22; names as in
+TC §16). **PR-S1 is built** (branch `feat/bun-client-sse`; TC's Status
+row has what it ships, its departures and the names awaiting approval).
+BNR PR-sse2 (§4) is not started.
 
 ---
 

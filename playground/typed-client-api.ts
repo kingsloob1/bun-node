@@ -28,6 +28,7 @@
  * | `GET /api/brew` | declares a 200 and answers 418, which no manifest lists |
  * | `GET /api/drifted/:id` | declares a `User` and answers one whose `role` the schema refuses |
  * | `GET /api/orgs/:id` | behind bun-cache's `cacheResponse({ surrogateKeys: "Cache-Tag" })`, tagged `team:<team>` from the data |
+ * | `GET /api/jobs/:id/events` | an event stream (`sse({ progress, done, gap })`): three events with ids `1`–`3`, replayed after a known `Last-Event-ID`, a `gap` first for an unknown one |
  *
  * `extraApi` is one more route, `GET /api/users/:id/badge`, which the page's
  * "add a route" button mounts at run time: the dev endpoint's hash moves, so
@@ -41,7 +42,12 @@ import type {
 } from "@kingsleyweb/bun-common";
 import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
 import { addCacheTags, cacheResponse } from "@kingsleyweb/bun-cache/http";
-import { BunRouter, defineRoutes, validate } from "@kingsleyweb/bun-common";
+import {
+  BunRouter,
+  defineRoutes,
+  sse,
+  validate,
+} from "@kingsleyweb/bun-common";
 import { z } from "zod";
 
 export const Role = z.enum(["admin", "member"]).meta({ id: "Role" });
@@ -86,6 +92,8 @@ export interface ServerHit {
   requestId?: string;
   /** The `If-None-Match` header, when sent (the query layer's revalidation). */
   ifNoneMatch?: string;
+  /** The `Last-Event-ID` header, when sent (an event stream resuming). */
+  lastEventId?: string;
 }
 
 /** The API's state: what its handlers read and write. */
@@ -153,6 +161,7 @@ const IdParams = z.object({ id: z.string() });
 function record(state: ApiState, req: BunRequest): void {
   const requestId = req.get("x-request-id");
   const ifNoneMatch = req.get("if-none-match");
+  const lastEventId = req.get("last-event-id");
   state.hits.push({
     seq: ++state.seq,
     at: Date.now(),
@@ -160,6 +169,7 @@ function record(state: ApiState, req: BunRequest): void {
     url: req.originalUrl,
     ...(requestId == null ? {} : { requestId }),
     ...(ifNoneMatch == null ? {} : { ifNoneMatch }),
+    ...(lastEventId == null ? {} : { lastEventId }),
   });
   if (state.hits.length > 200) state.hits.splice(0, state.hits.length - 200);
 }
@@ -364,6 +374,53 @@ function registry(state: ApiState) {
         },
       )
       .describe({ summary: "Read one org (cached)", errors: ["NOT_FOUND"] }),
+    jobEvents: r
+      .get(
+        "/jobs/:id/events",
+        validate(
+          { params: IdParams },
+          {
+            responses: {
+              200: {
+                content: {
+                  "text/event-stream": sse({
+                    progress: z.object({ percent: z.number() }),
+                    done: z.object({ result: z.string() }),
+                    gap: null,
+                  }),
+                },
+              },
+            },
+          },
+        ),
+        (req, res) => {
+          // Three events with ids; a resumed stream replays those after the
+          // client's Last-Event-ID, and one it cannot resume from (an id it
+          // never sent) gets the declared `gap` first, then all of them.
+          const job = req.params.id;
+          const events = [
+            ["1", "progress", { percent: 50 }],
+            ["2", "progress", { percent: 100 }],
+            ["3", "done", { result: `job ${job} done` }],
+          ] as const;
+          const last = req.get("last-event-id");
+          const from = events.findIndex(([id]) => id === last);
+          const gap = last != null && from === -1;
+          const body = [
+            "retry: 1000\n\n",
+            ...(gap ? ["event: gap\ndata:\n\n"] : []),
+            ...events
+              .slice(from + 1)
+              .map(
+                ([id, name, data]) =>
+                  `id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`,
+              ),
+          ].join("");
+          res.setHeader("content-type", "text/event-stream");
+          res.status(200).send(body);
+        },
+      )
+      .describe({ summary: "A job's progress, as server-sent events" }),
   }));
 }
 
