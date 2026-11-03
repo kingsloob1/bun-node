@@ -3,9 +3,10 @@
   "type": "module",
   "version": "0.0.0",
   "private": true,
-  "description": "XML parsing micro-benchmark: @kingsleyweb/bun-common's parseXmlToObject vs fast-xml-parser, htmlparser2 and Bun's HTMLRewriter",
+  "description": "bun-common benchmarks: parseXmlToObject vs fast-xml-parser, htmlparser2 and Bun's HTMLRewriter; SSE fan-out of res.sse() vs res.write() and a raw Bun.serve stream",
   "scripts": {
-    "xml": "bun xml.ts"
+    "xml": "bun xml.ts",
+    "sse": "bun sse.ts"
   },
   "dependencies": {
     "fast-xml-parser": "^5.11.1",

@@ -48,6 +48,16 @@
       "types": "./dts/contract/index.d.ts",
       "default": "./lib/contract/index.ts"
     },
+    "./sse": {
+      "@kingsleyweb/source": "./lib/sse/index.ts",
+      "types": "./dts/sse/index.d.ts",
+      "default": "./lib/sse/index.ts"
+    },
+    "./lib/sse": {
+      "@kingsleyweb/source": "./lib/sse/index.ts",
+      "types": "./dts/sse/index.d.ts",
+      "default": "./lib/sse/index.ts"
+    },
     "./lib/docs": {
       "@kingsleyweb/source": "./lib/docs/index.ts",
       "types": "./dts/docs/index.d.ts",

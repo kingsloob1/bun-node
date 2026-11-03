@@ -2469,6 +2469,10 @@ function bodySchemaFor(
       }. Each \`data:\` line carries one event's data as ${
         (schema as { data?: unknown }).data === "text" ? "text" : "JSON"
       }.`,
+      // How each event's `data:` decodes, for a client generator to fill
+      // the stream's decoding (typed-client PR-S1's follow-up).
+      "x-sse-data":
+        (schema as { data?: unknown }).data === "text" ? "text" : "json",
       "x-sse-events": Object.fromEntries(
         events.map((event) => [
           event.key ?? "message",

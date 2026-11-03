@@ -24,6 +24,8 @@ import type {
   SendBodyFor,
   VariantNames,
 } from "./types/responseTyping";
+import type { SseEvents } from "./sse/declaration";
+import type { SseWriterOptions } from "./sse/writer";
 import type { CookieSerializeOptions, Deferred } from "./utils/native";
 import type { RenderCallback, RenderLocals } from "./views";
 import { EventEmitter } from "node:events";
@@ -73,6 +75,8 @@ import {
   signCookie,
   toHttpDate,
 } from "./utils/native";
+import { sseHeaders } from "./sse/response";
+import { SseWriter } from "./sse/writer";
 import { mergeUpgradeHeaders } from "./utils/wsUpgrade";
 import { BunViews } from "./views";
 
@@ -2734,10 +2738,17 @@ export class BunResponse<
    * headers, status and body are dropped (Q-H3) and the error goes to the
    * current layer's `next`, for the app's error handlers (with none, the
    * adapter answers 500 and `router.fetch()` rejects). What they answer is
-   * not checked again. When no pipeline can take it, `500` at once.
+   * not checked again. When no pipeline can take it, `500` at once. A
+   * refused `ReadableStream` body is cancelled with the error, so its
+   * producer (an `SseWriter`, a hand-made stream) learns it will never be
+   * read, rather than running on — a writer's heartbeat with it.
    */
   #refuse(slot: ResponseGateSlot, error: Error): void {
     slot.done = true;
+    const refused = this.#sentBody;
+    if (refused instanceof ReadableStream && !refused.locked) {
+      void refused.cancel(error).catch(() => undefined);
+    }
     const headers = this.#headers;
     if (headers !== undefined) {
       for (const name of REFUSED_RESPONSE_HEADERS) {
@@ -3632,6 +3643,59 @@ export class BunResponse<
     // Not awaited: the stream opens synchronously; the promise only reports it.
     void this.initLongLivedConnection();
     return true;
+  }
+
+  /**
+   * Opens a server-sent events stream and returns its writer
+   * (bun-native-routes plan §16.3): sets `Content-Type: text/event-stream`,
+   * `Cache-Control: no-cache, no-transform` (`no-cache` with `compress:
+   * true`) and `X-Accel-Buffering: no` where the handler has not set them,
+   * exempts the request from Bun's `idleTimeout`, and sends the writer's
+   * body at once, so the client gets the headers and the opening comment
+   * even while the handler is still running. The writer reads the request's
+   * `Last-Event-ID` (for `resume`, `ids: "auto"` and `lastEventId`) and
+   * closes when the client leaves.
+   *
+   * ```ts
+   * app.get("/events", (req, res) => {
+   *   const stream = res.sse({ contract: Events, ids: "auto" });
+   *   const off = feed.subscribe((item) => void stream.send({ event: "item", data: item }));
+   *   stream.onClose(off);
+   * });
+   * ```
+   *
+   * A declared response contract still applies: the stream's status,
+   * headers and media type are checked as it is committed, and an `sse()`
+   * body event by event as it is sent. Throws an `Error` when a response
+   * was already sent, and a `TypeError` for a bad option.
+   *
+   * @param options The writer's options ({@link SseWriterOptions}).
+   */
+  public sse<C extends SseEvents | undefined = undefined>(
+    options: SseWriterOptions<C> = {},
+  ): SseWriter<C> {
+    if (this.headersSent || this.#ended) {
+      throw new Error("res.sse(): a response was already sent");
+    }
+    const req = this.req;
+    const writer = new SseWriter<C>({
+      ...options,
+      lastEventId: req.get("last-event-id"),
+      signal: req.signal,
+    });
+    // Bun's own exemption from `idleTimeout`; the socket-free stub's is a
+    // no-op, and a hand-built request may have no server.
+    (
+      req.server as
+        { timeout?: (request: Request, seconds: number) => void } | undefined
+    )?.timeout?.(req.request, 0);
+    for (const [name, value] of Object.entries(
+      sseHeaders(options.compress === true),
+    )) {
+      if (!this.hasHeader(name)) this.setHeader(name, value);
+    }
+    this.#send(writer.readable);
+    return writer;
   }
 
   get readableStream() {

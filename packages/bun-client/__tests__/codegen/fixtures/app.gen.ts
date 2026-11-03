@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 6ee06fd1bf4975f8
+ * typesHash: d319a81765552482
  *
  * Warnings:
  * - GET /api/health: no responses declared (neither the validator nor .describe() declares any); a placeholder `default` was emitted — strict mode rejects this
@@ -18,7 +18,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "6ee06fd1bf4975f8";
+export const typesHash = "d319a81765552482";
 
 /** Where a user lives. */
 export interface Address {
