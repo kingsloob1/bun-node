@@ -107,6 +107,7 @@ export const schemas = schemasFromZod<Routes>({
     }),
   },
   "POST /forms": {
+    body: z.looseObject({}),
     responses: {
       204: null,
     },

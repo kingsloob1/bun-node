@@ -46,7 +46,7 @@ import {
 import { httpTransport } from "@kingsleyweb/bun-contract/lib/http";
 
 /** A request part the client checks. */
-export type RequestPart = "params" | "query" | "body" | "headers";
+export type RequestPart = "params" | "query" | "body" | "headers" | "files";
 
 /** What runs for one part (or one response status), as the configuration resolved it. */
 export interface PartPlan {
@@ -107,6 +107,22 @@ function builtinIssues(
   }));
 }
 
+/**
+ * A route's schema for a body, as a guard checks it: a bun-common `chunks()`
+ * declaration (a server's own module may hold one) is its chunk schema, so
+ * a streamed NDJSON status is checked line by line against it.
+ */
+function bodySchema(schema: StandardSchemaV1 | null): StandardSchemaV1 | null {
+  const declared = schema as { kind?: unknown; chunk?: unknown } | null;
+  return declared !== null &&
+    declared.kind === "chunks" &&
+    typeof declared.chunk === "object" &&
+    declared.chunk !== null &&
+    "~standard" in declared.chunk
+    ? (declared.chunk as StandardSchemaV1)
+    : schema;
+}
+
 /** A BYO schema's issues, marked as such. */
 function customIssues(
   issues: readonly ValidationIssue[],
@@ -120,9 +136,11 @@ function customIssues(
 
 /**
  * Checks request parts (§5.4): the built-in schemas of the parts whose plan
- * asks for them, all at once through one sender, then each part's BYO
- * schema, on the value as given (a sender's output is its input). A BYO
- * schema that passes replaces its part's value with its output.
+ * asks for them, all at once through one sender (the files, which the HTTP
+ * transport has no part for, through the same runner on their own), then
+ * each part's BYO schema, on the value as given (a sender's output is its
+ * input). A BYO schema that passes replaces its part's value with its
+ * output.
  *
  * @param route  The route's built-in schemas; `undefined` when it has none.
  * @param plans  What runs, per part; a part not listed is not checked.
@@ -136,7 +154,8 @@ export async function checkRequest(
   const parts = Object.keys(plans) as RequestPart[];
   const issues: ValidationErrorIssue[] = [];
   const builtin = parts.filter(
-    (part) => plans[part]!.builtin && route?.[part] !== undefined,
+    (part) =>
+      part !== "files" && plans[part]!.builtin && route?.[part] !== undefined,
   );
   if (route !== undefined && builtin.length > 0) {
     const guard = cached(
@@ -158,6 +177,14 @@ export async function checkRequest(
     const outcome = await guard(message);
     if (outcome instanceof ContractError)
       issues.push(...builtinIssues(outcome.issues, false));
+  }
+  if (plans.files?.builtin === true && route?.files !== undefined) {
+    const result: StandardOutcome<unknown> = await validateStandard(
+      route.files,
+      values.files,
+      "files",
+    );
+    if (!result.ok) issues.push(...builtinIssues(result.issues, false));
   }
   const out = { ...values };
   for (const part of parts) {
@@ -202,7 +229,7 @@ export async function checkResponse(
           outbound: Object.fromEntries(
             Object.entries(route.responses ?? {}).map(([code, body]) => [
               code,
-              { body },
+              { body: bodySchema(body) },
             ]),
           ),
         }),
@@ -241,6 +268,7 @@ const REQUEST_PARTS: readonly RequestPart[] = [
   "query",
   "body",
   "headers",
+  "files",
 ];
 
 /** One part's (or one status's) validation, as the levels resolved it. */
@@ -310,6 +338,7 @@ function resolveValidation(
       query: fresh(),
       body: fresh(),
       headers: fresh(),
+      files: fresh(),
     },
     response: fresh(),
     statuses: new Map(),
@@ -392,14 +421,22 @@ export interface ChecksContext {
 /** One call's checks: the request parts, the headers as sent, and the response. */
 export interface CallChecks {
   /**
-   * Checks the params, query and body before anything is built (§5.4):
+   * Checks the params, query, body and files before anything is built (§5.4):
    * resolves to the options to send (a passing BYO schema's output in its
-   * part's place), or rejects under `"throw"`.
+   * part's place), or rejects under `"throw"`. A `raw` body (a `FormData`,
+   * `URLSearchParams`, `Blob`, buffer or stream, which passes through as it
+   * is) is not checked, nor are the files (a `FormData` carries its own).
    */
   readonly request: <
-    O extends { params?: unknown; query?: unknown; body?: unknown },
+    O extends {
+      params?: unknown;
+      query?: unknown;
+      body?: unknown;
+      files?: unknown;
+    },
   >(
     options: O,
+    raw: boolean,
   ) => Promise<O>;
   /** Checks the headers as sent, on the first attempt; `undefined` when nothing checks them. */
   readonly headers: ((request: Request) => Promise<void>) | undefined;
@@ -470,9 +507,11 @@ export function createChecks(context: ChecksContext): Checks {
     const validation = resolveValidation(context.development, levels);
     const headersPlan = planOf(validation.parts.headers, hasSource);
     return {
-      request: async (options) => {
+      request: async (options, raw) => {
         const plans: Partial<Record<RequestPart, PartPlan>> = {};
-        for (const part of ["params", "query", "body"] as const) {
+        for (const part of ["params", "query", "body", "files"] as const) {
+          // A pre-built body carries its own fields and files.
+          if (raw && (part === "body" || part === "files")) continue;
           const plan = planOf(validation.parts[part], hasSource);
           if (plan !== undefined) plans[part] = plan;
         }
@@ -486,6 +525,7 @@ export function createChecks(context: ChecksContext): Checks {
             params: options.params ?? {},
             query: options.query ?? {},
             body: options.body,
+            files: options.files ?? {},
           },
         );
         if (issues.length > 0)

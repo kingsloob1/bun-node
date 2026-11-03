@@ -111,7 +111,12 @@ export interface Routes {
     query: Record<never, never>;
     headers: Record<never, never>;
     body:
-      Blob | ArrayBuffer | ReadableStream<Uint8Array> | FormData | undefined;
+      | Blob
+      | ArrayBuffer
+      | ReadableStream<Uint8Array>
+      | Record<string, unknown>
+      | FormData
+      | undefined;
     responses: {
       200: string | Blob;
     };
@@ -127,7 +132,7 @@ export interface Routes {
     params: Record<never, never>;
     query: Record<never, never>;
     headers: Record<never, never>;
-    body: URLSearchParams;
+    body: Record<string, unknown> | URLSearchParams;
     responses: {
       204: undefined;
     };
@@ -248,8 +253,16 @@ export interface Routes {
 }
 
 export const manifest = {
-  "PUT /files/:path": { operationId: "putFile", statuses: [200] },
-  "POST /forms": { operationId: "createPet", statuses: [204] },
+  "PUT /files/:path": {
+    operationId: "putFile",
+    statuses: [200],
+    bodyType: "multipart",
+  },
+  "POST /forms": {
+    operationId: "createPet",
+    statuses: [204],
+    bodyType: "urlencoded",
+  },
   "OPTIONS /nothing": { operationId: "optionsNothing", statuses: [200] },
   'GET /odd/:"user-id"/:"a b"': { operationId: "odd", statuses: [200] },
   "GET /pets": { operationId: "listPets", statuses: [200] },

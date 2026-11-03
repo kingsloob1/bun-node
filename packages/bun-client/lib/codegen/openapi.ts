@@ -40,6 +40,7 @@ import {
   printDoc,
   softline,
 } from "./doc";
+import { framingOf, splitMultipart } from "./form";
 import { documentsHash } from "./hash";
 import { emitZodModule } from "./zod";
 import {
@@ -461,6 +462,27 @@ export function generateRoutes(
         ]),
       ]);
     }
+    if (built.bodyType !== undefined)
+      facts.push(`bodyType: ${quote(built.bodyType)}`);
+    if (built.chunks !== undefined)
+      facts.push([
+        "chunks: ",
+        group([
+          "{",
+          indent([
+            line,
+            join(
+              [",", line],
+              built.chunks.map(
+                ([status, framing]) => `${status}: ${quote(framing)}`,
+              ),
+            ),
+          ]),
+          ifBreak(","),
+          line,
+          "}",
+        ]),
+      ]);
     if (facts.length > 0) {
       const object = group([
         "{",
@@ -668,6 +690,10 @@ interface BuiltEntry {
     /** The tag templates a successful call invalidates. */
     readonly invalidates?: readonly string[];
   };
+  /** How a plain-object body is sent, when not as JSON. */
+  readonly bodyType?: "multipart" | "urlencoded";
+  /** The streamed statuses, by framing. */
+  readonly chunks?: readonly (readonly [number, "ndjson" | "raw"])[];
 }
 
 /** Builds one route's entry from its operations (two when an optional param documents as two paths). */
@@ -765,12 +791,16 @@ function buildEntry(
     members.push(partMember(part, partMembers));
   }
 
-  /* body. */
-  members.push({
-    name: "body",
-    optional: false,
-    type: requestBodyType(operation.requestBody, context, key, warn),
-  });
+  /* body, and a multipart body's files. */
+  const requestBody = requestBodyParts(
+    operation.requestBody,
+    context,
+    key,
+    warn,
+  );
+  members.push({ name: "body", optional: false, type: requestBody.type });
+  if (requestBody.files !== undefined)
+    members.push({ name: "files", optional: false, type: requestBody.files });
 
   /* responses, events, error codes. */
   const responses = buildResponses(operation, context, key, warn);
@@ -851,6 +881,10 @@ function buildEntry(
       ? {}
       : { statuses: responses.statuses }),
     ...(Object.keys(cacheLists).length === 0 ? {} : { cache: cacheLists }),
+    ...(requestBody.bodyType === undefined
+      ? {}
+      : { bodyType: requestBody.bodyType }),
+    ...(responses.chunks === undefined ? {} : { chunks: responses.chunks }),
   };
 }
 
@@ -863,14 +897,35 @@ function partMember(name: string, members: readonly TsMember[]): TsMember {
   };
 }
 
-/** `requestBody` (or its `$ref`) as the type a call's `body` takes. */
-function requestBodyType(
+/** What {@link requestBodyParts} returns. */
+interface RequestBodyParts {
+  /** The type a call's `body` takes. */
+  readonly type: TsType;
+  /** The type a call's `files` takes; `undefined` when the body has none. */
+  readonly files?: TsType;
+  /** How a plain-object body is sent, when the body is a form only. */
+  readonly bodyType?: "multipart" | "urlencoded";
+}
+
+/** A blob, or a list of them: a file field's type. */
+const BLOB: TsType = { kind: "ref", name: "Blob" };
+
+/**
+ * `requestBody` (or its `$ref`) as the types a call's `body` and `files`
+ * take (`other-transports.md` §3): a JSON body's schema; a multipart body's
+ * fields (its files taken out into `files`, `Blob` or `Blob[]` each) or a
+ * `FormData`; an urlencoded body's fields or a `URLSearchParams` (a
+ * pre-built body passes through, unchecked); anything else a raw body. The manifest's
+ * `bodyType` says which form a plain-object body is sent as when the route
+ * takes no JSON.
+ */
+function requestBodyParts(
   raw: unknown,
   context: SchemaContext,
   key: string,
   warn: (at: string, message: string) => void,
-): TsType {
-  if (raw === undefined) return keyword("undefined");
+): RequestBodyParts {
+  if (raw === undefined) return { type: keyword("undefined") };
   let body: unknown = raw;
   if (isRecord(body) && typeof body.$ref === "string")
     body = resolvePointer(context.document, body.$ref);
@@ -879,28 +934,77 @@ function requestBodyType(
       key,
       "`requestBody` is not an object (or does not resolve); typed `unknown`",
     );
-    return UNKNOWN;
+    return { type: UNKNOWN };
   }
   const content = isRecord(body.content) ? body.content : {};
   const types: TsType[] = [];
+  const fileMembers: TsMember[] = [];
+  const kinds = new Set<string>();
+  let fieldless = false;
   for (const [mediaType, media] of Object.entries(content)) {
     const kind = mediaKind(mediaType);
+    kinds.add(kind);
+    const schema =
+      isRecord(media) && "schema" in media ? media.schema : undefined;
     if (kind === "json") {
       types.push(
-        isRecord(media) && "schema" in media
-          ? schemaToType(media.schema, context, `${key} body`)
-          : UNKNOWN,
+        schema === undefined
+          ? UNKNOWN
+          : schemaToType(schema, context, `${key} body`),
       );
     } else if (kind === "multipart") {
+      if (schema === undefined) {
+        types.push(UNKNOWN);
+        continue;
+      }
+      const split = splitMultipart(
+        schema,
+        isRecord(media) ? media.encoding : undefined,
+        context,
+      );
+      // A files-only body has no fields to send: the body is optional.
+      if (split.fields === undefined) fieldless = true;
+      else types.push(schemaToType(split.fields, context, `${key} body`));
+      // A pre-built body still passes through, unchecked (§6.1).
       types.push({ kind: "ref", name: "FormData" });
+      for (const file of split.files) {
+        if (fileMembers.some((member) => member.name === file.name)) continue;
+        fileMembers.push({
+          name: file.name,
+          optional: !file.required,
+          type: file.multiple ? { kind: "array", element: BLOB } : BLOB,
+          ...(file.description === undefined ? {} : { doc: file.description }),
+        });
+      }
     } else if (kind === "form") {
-      types.push({ kind: "ref", name: "URLSearchParams" });
+      types.push(
+        schema === undefined
+          ? UNKNOWN
+          : schemaToType(schema, context, `${key} body`),
+        { kind: "ref", name: "URLSearchParams" },
+      );
     } else {
       types.push(RAW_BODY);
     }
   }
   const type = types.length === 0 ? UNKNOWN : union(types);
-  return body.required === true ? type : union([type, keyword("undefined")]);
+  const bodyType = kinds.has("json")
+    ? undefined
+    : kinds.has("multipart")
+      ? "multipart"
+      : kinds.has("form")
+        ? "urlencoded"
+        : undefined;
+  return {
+    type:
+      body.required === true && !fieldless
+        ? type
+        : union([type, keyword("undefined")]),
+    ...(fileMembers.length === 0
+      ? {}
+      : { files: { kind: "object", members: fileMembers } }),
+    ...(bodyType === undefined ? {} : { bodyType }),
+  };
 }
 
 /** What {@link buildResponses} returns. */
@@ -913,6 +1017,8 @@ interface BuiltResponses {
   readonly stream: boolean;
   /** The events by name, from `x-sse-events`. */
   readonly events?: TsType;
+  /** The statuses whose body streams, by framing, for the manifest. */
+  readonly chunks?: readonly (readonly [number, "ndjson" | "raw"])[];
 }
 
 /** The operation's responses, by status, with `x-bun-errors` applied to the error bodies. */
@@ -936,6 +1042,7 @@ function buildResponses(
 
   const statuses: number[] = [];
   const members: TsMember[] = [];
+  const chunks: [number, "ndjson" | "raw"][] = [];
   let stream = false;
   let events: TsType | undefined;
   let narrowed = false;
@@ -962,6 +1069,7 @@ function buildResponses(
   for (const status of numeric) {
     const at = `${key} response ${status}`;
     const read = responseType(raw[String(status)], context, at, warn);
+    if (read.framing !== undefined) chunks.push([status, read.framing]);
     let type = read.type;
     if (read.events !== undefined) events = read.events;
     if (read.stream && status >= 200 && status < 300) stream = true;
@@ -1007,6 +1115,7 @@ function buildResponses(
     statuses,
     stream,
     ...(events === undefined ? {} : { events }),
+    ...(chunks.length === 0 ? {} : { chunks }),
   };
 }
 
@@ -1020,6 +1129,8 @@ interface ReadResponse {
   readonly stream: boolean;
   /** Its events, from `x-sse-events`. */
   readonly events?: TsType;
+  /** How its body streams, when it does (`x-bun-chunks`, an NDJSON media type). */
+  readonly framing?: "ndjson" | "raw";
 }
 
 /** One response object (or its `$ref`) as the body type the client returns for it. */
@@ -1043,9 +1154,28 @@ function responseType(
   let schema: unknown;
   let stream = false;
   let events: TsType | undefined;
+  let framing: "ndjson" | "raw" | undefined;
   for (const [mediaType, media] of Object.entries(response.content)) {
     const kind = mediaKind(mediaType);
     const mediaSchema = isRecord(media) ? media.schema : undefined;
+    const cut = framingOf(mediaType, mediaSchema);
+    if (cut !== undefined) {
+      // A streamed body (`other-transports.md` §4): the client iterates it,
+      // one value per NDJSON line or the raw bytes.
+      framing = cut;
+      types.push({
+        kind: "ref",
+        name: "AsyncIterable",
+        args: [
+          cut === "raw"
+            ? { kind: "ref", name: "Uint8Array" }
+            : mediaSchema === undefined
+              ? UNKNOWN
+              : schemaToType(mediaSchema, context, at),
+        ],
+      });
+      continue;
+    }
     const declared =
       isRecord(mediaSchema) && isRecord(mediaSchema["x-sse-events"])
         ? mediaSchema["x-sse-events"]
@@ -1093,6 +1223,7 @@ function responseType(
     stream,
     ...(schema === undefined ? {} : { schema }),
     ...(events === undefined ? {} : { events }),
+    ...(framing === undefined ? {} : { framing }),
   };
 }
 

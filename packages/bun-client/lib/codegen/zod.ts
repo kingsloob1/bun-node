@@ -25,10 +25,15 @@
  *   stricter, than the document); keywords the types cannot express either
  *   (`not`, `if`, …) leave their schema `z.unknown()`, with a warning.
  * - **Per route**: `params`, `query` and `headers` from the documented
- *   parameters (loose objects of them), `body` from a JSON request body, and
- *   `responses` by numeric status: a JSON body's schema, `z.string()` for a
- *   text one, `null` for none. A part, or a status, with nothing to check
- *   (a multipart body, an event stream, a binary download) is left out.
+ *   parameters (loose objects of them), `body` from a JSON request body or
+ *   a form's fields (multipart or urlencoded), `files` from a multipart
+ *   body's files (`z.file()` with `z.maxSize` from `x-bun-max-bytes` and
+ *   `z.mime` from the part's exact media types, a list `z.array` with its
+ *   `maxItems`; a wildcard media type is not checked), and `responses` by
+ *   numeric status: a JSON body's schema, an NDJSON stream's line schema,
+ *   `z.string()` for a text one, `null` for none. A part, or a status, with
+ *   nothing to check (a raw body, an event stream, a binary download, a raw
+ *   stream) is left out.
  *
  * The module is laid out as Prettier lays it out (`./doc`), so `bun fmt`
  * leaves it unchanged (`__tests__/codegen/format.test.ts`).
@@ -36,6 +41,7 @@
 import type { Doc } from "./doc";
 import type { FoundOperation } from "./openapi";
 import type { SchemaContext } from "./schema";
+import type { FileField } from "./form";
 import { pathParams } from "../path";
 import {
   breakParent,
@@ -51,6 +57,7 @@ import {
   printDoc,
   softline,
 } from "./doc";
+import { framingOf, splitMultipart } from "./form";
 import { componentIdentifiers, RESERVED } from "./openapi";
 import { jsDoc, propertyKey, quote } from "./print";
 import {
@@ -865,23 +872,57 @@ function routeSchemas(
   const headers = parametersObject(parameters, "header", walk, key);
   if (headers !== undefined) members.push(["headers", headers]);
 
-  /* body: a JSON request body only. */
+  /* body: a JSON body or a form's fields; files: a multipart body's. */
   let body: unknown = operation.requestBody;
   if (isRecord(body) && typeof body.$ref === "string")
     body = resolvePointer(walk.context.document, body.$ref);
   if (isRecord(body) && isRecord(body.content)) {
     const media = Object.entries(body.content);
+    const forms = new Set(["json", "multipart", "form"]);
     if (
       media.length > 0 &&
-      media.every(([type]) => mediaKind(type) === "json")
+      media.every(([type]) => forms.has(mediaKind(type)))
     ) {
-      const schemas = media.map(([, entry]) =>
-        isRecord(entry) && "schema" in entry
-          ? convert(entry.schema, walk, `${key} body`)
-          : UNKNOWN_SCHEMA,
-      );
-      const expr = unionOf(schemas);
-      members.push(["body", body.required === true ? expr : optional(expr)]);
+      const schemas: Expr[] = [];
+      const files = new Map<string, Expr>();
+      let fieldless = false;
+      for (const [type, entry] of media) {
+        const schema =
+          isRecord(entry) && "schema" in entry ? entry.schema : undefined;
+        if (mediaKind(type) !== "multipart") {
+          schemas.push(
+            schema === undefined
+              ? UNKNOWN_SCHEMA
+              : convert(schema, walk, `${key} body`),
+          );
+          continue;
+        }
+        if (schema === undefined) {
+          schemas.push(UNKNOWN_SCHEMA);
+          continue;
+        }
+        const split = splitMultipart(
+          schema,
+          isRecord(entry) ? entry.encoding : undefined,
+          walk.context,
+        );
+        if (split.fields === undefined) fieldless = true;
+        else schemas.push(convert(split.fields, walk, `${key} body`));
+        for (const file of split.files)
+          if (!files.has(file.name)) files.set(file.name, fileSchema(file));
+      }
+      if (schemas.length > 0) {
+        const expr = unionOf(schemas);
+        members.push([
+          "body",
+          body.required === true && !fieldless ? expr : optional(expr),
+        ]);
+      }
+      if (files.size > 0)
+        members.push([
+          "files",
+          z("looseObject", { kind: "object", members: [...files] }),
+        ]);
     }
   }
 
@@ -901,6 +942,21 @@ function routeSchemas(
     if (media.length === 0) {
       responses.push([status, atom("null", true)]);
       continue;
+    }
+    if (media.length === 1) {
+      const [type, entry] = media[0];
+      const schema = isRecord(entry) ? entry.schema : undefined;
+      const framing = framingOf(type, schema);
+      if (framing !== undefined) {
+        // A streamed status: an NDJSON line's schema (the client checks
+        // each line with it); a raw stream has nothing to check.
+        if (framing === "ndjson" && schema !== undefined)
+          responses.push([
+            status,
+            convert(schema, walk, `${key} response ${status}`),
+          ]);
+        continue;
+      }
     }
     const kinds = new Set(media.map(([type]) => mediaKind(type)));
     const sse = media.some(
@@ -927,6 +983,32 @@ function routeSchemas(
     members.push(["responses", { kind: "object", members: responses }]);
 
   return members.length === 0 ? undefined : { kind: "object", members };
+}
+
+/**
+ * One file field's schema: `z.file()` with its size and exact media types
+ * (zod's `z.mime` takes no wildcard, so a list holding one is not checked:
+ * looser, never stricter, than the document), a list of them as `z.array`
+ * with its `maxItems`, optional unless required.
+ */
+function fileSchema(file: FileField): Expr {
+  const checks: Expr[] = [];
+  if (isBound(file.maxBytes)) checks.push(z("maxSize", num(file.maxBytes)));
+  if (
+    file.mediaTypes !== undefined &&
+    file.mediaTypes.every((type) => !type.includes("*"))
+  )
+    checks.push(
+      z("mime", { kind: "array", elements: file.mediaTypes.map(str) }),
+    );
+  const one = checked(z("file"), checks);
+  const expr = file.multiple
+    ? checked(
+        z("array", one),
+        isBound(file.maxItems) ? [z("maxLength", num(file.maxItems))] : [],
+      )
+    : one;
+  return file.required ? expr : optional(expr);
 }
 
 /**

@@ -120,7 +120,7 @@ export class TimeoutError extends ClientError {
  * the status, on a response), plus which check found it.
  */
 export interface ValidationErrorIssue extends ValidationIssue<
-  "params" | "query" | "body" | "headers" | "response"
+  "params" | "query" | "body" | "headers" | "files" | "response"
 > {
   /** `"builtin"`: the route's built-in schema; `"custom"`: a BYO schema (§5.4). */
   source: "builtin" | "custom";

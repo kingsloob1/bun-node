@@ -336,6 +336,7 @@ describe("keywords", () => {
     headers: z.looseObject({
       "x-tenant": z.string(),
     }),
+    body: z.optional(z.looseObject({})),
     responses: {
       200: z.string(),
     },

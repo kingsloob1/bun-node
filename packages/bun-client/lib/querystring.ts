@@ -44,12 +44,16 @@ function leaf(value: unknown): string | undefined {
   return undefined;
 }
 
-/** Writes `value` under the already-encoded `path` into `out`. */
-function append(out: string[], path: string, value: unknown): void {
+/** Writes `value` under the already-encoded `path` into `out`, as `[path, scalar]` pairs. */
+function append(
+  out: (readonly [string, string])[],
+  path: string,
+  value: unknown,
+): void {
   if (value === undefined || value === null) return;
   const scalar = leaf(value);
   if (scalar !== undefined) {
-    out.push(`${path}=${encodeURIComponent(scalar)}`);
+    out.push([path, scalar]);
     return;
   }
   if (Array.isArray(value)) {
@@ -71,15 +75,28 @@ function append(out: string[], path: string, value: unknown): void {
 }
 
 /**
- * A query object as a query string, without the leading `?`; `""` when it
- * writes nothing.
+ * An object as the `[key, value]` pairs the parser reads back into it: the
+ * key encoded (as {@link serializeQuery} writes it), the value as it is. A
+ * multipart body's fields are these pairs (bun-common reads a multipart
+ * field name through the same parser); `[]` for anything but an object.
  */
-export function serializeQuery(query: unknown): string {
-  if (query === null || typeof query !== "object") return "";
-  const out: string[] = [];
+export function queryPairs(query: unknown): (readonly [string, string])[] {
+  if (query === null || typeof query !== "object") return [];
+  const out: (readonly [string, string])[] = [];
   for (const [key, value] of Object.entries(query)) {
     if (UNSAFE_KEYS.has(key) || key === "") continue;
     append(out, encodeKey(key), value);
   }
-  return out.join("&");
+  return out;
+}
+
+/**
+ * A query object as a query string, without the leading `?`; `""` when it
+ * writes nothing. Also an `application/x-www-form-urlencoded` body's text,
+ * which bun-common parses with the same parser.
+ */
+export function serializeQuery(query: unknown): string {
+  return queryPairs(query)
+    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+    .join("&");
 }

@@ -30,6 +30,18 @@
  * PR-C4's (11,106 bytes minified, 4,690 gzipped): `./query` adds nothing to
  * it.
  *
+ * Since PR-C9 the entry also loads its bodies (`lib/bodies.ts`: multipart
+ * forms, downloads, NDJSON and raw streams) with `import()`, only when a
+ * call sends files or a multipart body, or a response is a download or
+ * streams: a third figure, {@link BODIES_BUDGET}, and the eager figure
+ * leaves that module out too. Measured 2026-11-03 (Bun
+ * 1.4.4-canary.1+11c367163, over PR-C8): eager 11,922 bytes minified,
+ * 5,019 gzipped (PR-C4's 11,106 and 4,690: the body encoding, the `files`
+ * gate, the manifest's `bodyType` and `chunks`, the `filename` on a
+ * result); the bodies chunk 2,258 and 1,165; the checks chunk 18,209 and
+ * 6,571 (the `files` part). The minified limit was raised from
+ * 11 KiB to 12.5 KiB for that growth; the gzipped one, the plan's, holds.
+ *
  * Since PR-C6 the `./react` entry has its own budget, {@link REACT_BUDGET}:
  * the binding's own code over `@tanstack/react-query`, query-core and React
  * (external: the app shares them). Measured 2026-11-03 (the same build):
@@ -50,8 +62,9 @@ import { describe, expect, it } from "bun:test";
  * Byte limits for the `.` entry's eager code.
  *
  * - Gzipped: the plan's 5 KB (§10.3), "without the guards". Measured above.
- * - Minified: about 10% above C1's measured figure, so a growth the gzip
- *   limit still absorbs is noticed early.
+ * - Minified: about 5% above the measured figure (C1's 10% until PR-C9,
+ *   whose growth it absorbed), so a growth the gzip limit still absorbs is
+ *   noticed early.
  *
  * To raise one deliberately: measure with the build below, set the limit
  * above the new figure, update the measurements here and say why the entry
@@ -59,7 +72,7 @@ import { describe, expect, it } from "bun:test";
  */
 const BUNDLE_BUDGET = {
   /** The entry, minified, in bytes. */
-  minifiedBytes: 11 * 1024,
+  minifiedBytes: 12.5 * 1024,
   /** The entry gzipped (`Bun.gzipSync`, default level), in bytes. */
   gzipBytes: 5 * 1024,
 } as const;
@@ -74,6 +87,18 @@ const CHECKS_BUDGET = {
   minifiedBytes: 19 * 1024,
   /** The chunk gzipped, in bytes. */
   gzipBytes: 7 * 1024,
+} as const;
+
+/**
+ * Byte limits for the lazily loaded bodies chunk (PR-C9): the plan sets no
+ * figure, so about 10% above the measured sizes. The same rule for raising
+ * them.
+ */
+const BODIES_BUDGET = {
+  /** The chunk, minified, in bytes. */
+  minifiedBytes: 2.5 * 1024,
+  /** The chunk gzipped, in bytes. */
+  gzipBytes: 1.25 * 1024,
 } as const;
 
 /**
@@ -118,11 +143,11 @@ function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
-/** Leaves `./validation` out of a build: the entry's own code alone. */
+/** Leaves the lazy modules (`./validation`, `./bodies`) out of a build: the entry's own code alone. */
 const checksExternal: Bun.BunPlugin = {
   name: "checks-external",
   setup(build) {
-    build.onResolve({ filter: /^\.\/validation$/ }, (args) => ({
+    build.onResolve({ filter: /^\.\/(?:validation|bodies)$/ }, (args) => ({
       path: args.path,
       external: true,
     }));
@@ -195,17 +220,33 @@ describe("the bundle budget", () => {
     );
   });
 
-  it("splits the checks into one chunk of their own: the entry and that chunk, nothing shared", () => {
+  it("splits the checks and the bodies into a chunk each: the entry and those two, nothing shared", () => {
     expect(split.success).toBe(true);
     expect(split.outputs.map((output) => output.kind).sort()).toEqual([
+      "chunk",
       "chunk",
       "entry-point",
     ]);
   });
 
+  /** A lazy chunk of the split build, by a word only its code holds. */
+  const chunkWith = async (marker: string): Promise<Bun.BuildArtifact> => {
+    for (const output of split.outputs) {
+      if (output.kind === "chunk" && (await output.text()).includes(marker))
+        return output;
+    }
+    throw new Error(`no chunk holds ${marker}`);
+  };
+
   it(`keeps the checks chunk within ${kib(CHECKS_BUDGET.gzipBytes)} gzipped and ${kib(CHECKS_BUDGET.minifiedBytes)} minified`, async () => {
-    const chunk = split.outputs.find((output) => output.kind === "chunk")!;
+    const chunk = await chunkWith("createReceiver");
     expect(verdict(await sizes(chunk), CHECKS_BUDGET)).toBe("within budget");
+  });
+
+  it(`keeps the bodies chunk within ${kib(BODIES_BUDGET.gzipBytes)} gzipped and ${kib(BODIES_BUDGET.minifiedBytes)} minified`, async () => {
+    const chunk = await chunkWith("FormData");
+    expect(chunk).not.toBe(await chunkWith("createReceiver"));
+    expect(verdict(await sizes(chunk), BODIES_BUDGET)).toBe("within budget");
   });
 });
 

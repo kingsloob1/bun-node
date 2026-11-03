@@ -7,14 +7,18 @@ call returns a result discriminated by status. It also has named operations
 (`api.op.getUser(…)`), retries with backoff and `Retry-After`, timeouts,
 middleware, an auth refresh that runs once for any number of concurrent
 401s, and validation of what it sends and receives
-([below](#validation)), on in development and off in production. It runs in
-browsers: a browser bundle of the entry is 4.6 KiB gzipped, and the checks
-(bun-contract's guards, its one dependency) load only when a call validates.
+([below](#validation)), on in development and off in production. Bodies
+beyond JSON are typed too: multipart uploads with their files, forms,
+downloads and NDJSON or raw streams ([below](#bodies-beyond-json)). It runs
+in browsers: a browser bundle of the entry is 4.9 KiB gzipped, and the
+checks (bun-contract's guards, its one dependency) and the code for those
+bodies load only when a call needs them.
 
 This is the core of the typed-client plan
 ([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
 its generator (PR-C2), its watcher (PR-C3), validation (PR-C4), the query
-layer (PR-C5), the React binding (PR-C6) and persistence (PR-C8): `bun-client generate` writes the route map from the server's
+layer (PR-C5), the React binding (PR-C6), persistence (PR-C8) and bodies
+(PR-C9): `bun-client generate` writes the route map from the server's
 OpenAPI document ([below](#generating-the-map-bun-client-generate)), with its
 zod schemas beside it on request, `bun-client watch` keeps both in step with
 a running dev server ([below](#keeping-it-in-step-bun-client-watch)), and
@@ -86,8 +90,9 @@ There are three ways to get one:
 
 Types do not exist at run time, so a few facts need a small object beside
 the map: each route's `operationId`, for `api.op`, its declared statuses, for
-`undeclaredStatus`, and its cache tags, for the query layer
-([below](#the-query-layer-query)). The generator writes it beside the map. A
+`undeclaredStatus`, its cache tags, for the query layer
+([below](#the-query-layer-query)), and how its bodies travel (`bodyType`
+and `chunks`, [below](#bodies-beyond-json)). The generator writes it beside the map. A
 hand-written one is checked against the map:
 
 ```ts
@@ -976,6 +981,81 @@ takes the same `persister` and `buster` in its `persistOptions`.
 | `throttleTime` | `1_000` | ms between writes, the latest cache winning (TanStack's default) |
 | `indexedDB` | `globalThis.indexedDB` | another IndexedDB (`fake-indexeddb` in a test, say) |
 | `onError` | none | called with a failure's error |
+
+## Bodies beyond JSON
+
+A route map entry says what kind of body each side carries, and the client
+builds or reads it (the plan's `other-transports.md` §3–§4):
+
+```ts
+interface Routes {
+  "POST /users/:id/avatar": {
+    params: { id: string };
+    body: { caption?: string } | FormData; // the form's fields
+    files: { avatar: Blob; extras?: Blob[] }; // one file, or a list
+    responses: { 201: { ok: boolean } };
+  };
+  "POST /sessions": { body: { user: string }; responses: { 200: Session } };
+  "GET /users/:id/report": { params: { id: string }; responses: { 200: Blob; 404: Problem } };
+  "GET /exports/users": { responses: { 200: AsyncIterable<User> } }; // NDJSON
+  "GET /users/:id/avatar": { params: { id: string }; responses: { 200: AsyncIterable<Uint8Array> } };
+}
+
+const manifest = {
+  "POST /users/:id/avatar": { bodyType: "multipart" },
+  "POST /sessions": { bodyType: "urlencoded" },
+  "GET /exports/users": { chunks: { 200: "ndjson" } },
+  "GET /users/:id/avatar": { chunks: { 200: "raw" } },
+} as const satisfies RouteManifest<Routes>;
+```
+
+The generator writes both from the OpenAPI document. bun-common documents
+an upload's files with `.describe({ request: { files } })` (each a
+`format: binary` property beside the validator's fields), a form with
+`requestMediaTypes`, and a stream with `x-bun-chunks` from its `chunks()`
+declaration; any server's `format: binary` or `contentMediaType` property, a
+part's `encoding.contentType`, and an NDJSON media type work the same.
+
+- **Uploads.** `files` is a call option beside `body`: given, the body goes
+  out as `multipart/form-data`, its fields as bun-common's parser reads them
+  back (the [query string](#the-query-string)'s rules, objects nested with
+  dots), then each file under its field, a list repeated. A route whose
+  `bodyType` is `"multipart"` sends a plain-object body as `FormData` even
+  without files. A `Blob` that is not a named `File` goes out named
+  `"blob"`, as the spec says: Bun writes `filename=""`, and busboy then reads
+  a typed one as a text field (oven-sh/bun#35439). A pre-built `FormData`
+  passes through as it is, unchecked.
+- **Forms.** A route whose `bodyType` is `"urlencoded"` sends a plain-object
+  body as `application/x-www-form-urlencoded`, written as a query string is;
+  a `URLSearchParams` passes through.
+- **Downloads.** A body whose media type is neither JSON nor text arrives as
+  a `Blob` (a `File` named from `Content-Disposition` when the header gives a
+  name, `filename*` first) and the result carries that `filename`. The
+  call's `as` asks for it another way: `as: "stream"` hands over the unread
+  `ReadableStream`, `as: "arrayBuffer"` an `ArrayBuffer`. A JSON or text
+  body (an error's problem+json) is read as it always is.
+- **Streams.** A status the manifest's `chunks` names (or one served as
+  `application/x-ndjson`, `application/jsonl`, …) is an `AsyncIterable`,
+  read as it is iterated: one JSON value per NDJSON line (split across
+  chunks, a trailing `\r` dropped, blank lines skipped, the last line read
+  without its newline), or the raw `Uint8Array`s. Stopping early cancels the
+  body. A line that is not JSON ends the iteration with a `ClientError`.
+  The call's `timeout` covers the request, not the iteration; its `signal`
+  can end both.
+- **Streamed request bodies.** A `ReadableStream` body is sent with
+  `duplex: "half"` and is never retried (it cannot be read twice).
+
+**Validation** applies per kind. A form's fields are checked as a body,
+before the `FormData` is built; the files are their own part, `files`
+(`ValidationConfig.files`, `RouteSchemas.files`, issue target `"files"`),
+each a `File`: the generated module checks presence, count, size and exact
+media types with zod's `z.file()`. An NDJSON status's schema checks each
+line under the response's failure mode: `"warn"` logs a bad line and
+delivers it, `"throw"` makes the iteration throw a `ValidationError` there,
+after the lines before it. A server's own `chunks()` declaration, given as
+the status's schema, is read as its chunk schema. A download and a raw
+stream are not checked (as on the server, their content is not read); a
+pre-built `FormData` or `URLSearchParams` neither.
 
 ## The query string
 
