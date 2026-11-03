@@ -689,8 +689,14 @@ class CacheImpl<
     ) {
       return uncompressed;
     }
-    // A copy: a codec may answer a view into a larger buffer.
-    const compressed = algorithm.compress(plain.slice());
+    // A user compressor gets a copy, since it may keep or change it (and a
+    // codec may answer a view into a larger buffer); a built-in reads the
+    // view and lets go, so a 1 MiB payload is not copied for it.
+    const compressed = algorithm.compress(
+      algorithm.copiesInput
+        ? plain.slice()
+        : (plain as Uint8Array<ArrayBuffer>),
+    );
     const choose = (bytes: Uint8Array): Encoded => {
       if (!(bytes instanceof Uint8Array)) {
         throw new TypeError(

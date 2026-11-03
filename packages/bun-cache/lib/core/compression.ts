@@ -56,10 +56,17 @@ export interface ResolvedCompression {
   id: number;
   /** Compress at or above this many encoded bytes. */
   threshold: number;
-  /** Compresses a payload (a copy the compressor may keep). A user compressor's may answer a promise; the built-ins never do. */
+  /**
+   * Compresses a payload. A user compressor's may answer a promise; the
+   * built-ins never do, and answer the payload itself, unchanged, when their
+   * probe says compressing it would not pay ({@link probeSays}): the core
+   * then stores it uncompressed, as it stores any output that is not smaller.
+   */
   compress: (
     bytes: Uint8Array<ArrayBuffer>,
   ) => Uint8Array | PromiseLike<Uint8Array>;
+  /** Whether `compress` must be handed a copy of the payload: a user compressor may keep or change it; a built-in reads it and lets go. */
+  copiesInput: boolean;
 }
 
 /** The resolved `compress` option. */
@@ -102,6 +109,58 @@ function checkCompressor(compressor: CacheCompressor, where: string): void {
       `${where}: a user compressor needs compress and decompress functions`,
     );
   }
+}
+
+/** A payload at least this large is probed before a built-in algorithm compresses it whole. */
+export const PROBE_FROM_BYTES = 256 * 1024;
+
+/** How many slices a probe takes, spread over the payload: its start, its end and between. */
+const PROBE_SLICES = 4;
+
+/** A probe slice's length: 1/256 of the payload (so a probe reads 1/64 of it), at most 4 KiB. */
+const PROBE_SLICE_MAX = 4096;
+
+/** A probe says "compress" when its sample shrinks below this fraction of its size: by at least 2%. */
+const PROBE_KEEP_RATIO = 0.98;
+
+/**
+ * Whether compressing `bytes` whole is worth trying, by compressing a sample
+ * of it: {@link PROBE_SLICES} slices, evenly spread, each 1/256 of the
+ * payload and at most 4 KiB, so the probe costs about 1/64 of the whole and
+ * never more than 16 KiB of work. Data that will not shrink — random bytes,
+ * a JPEG, something compressed already — is then stored as it is, rather
+ * than compressed whole only to be thrown away by the "only if smaller"
+ * rule (§3.11): 1 MiB of random bytes cost zstd 319 µs for nothing
+ * (measured, 2026-11-02). The judgment is the sample's: a payload whose
+ * sample does not shrink by 2% is stored uncompressed even if a part the
+ * sample missed would have.
+ */
+export function probeSays(
+  compress: (bytes: Uint8Array<ArrayBuffer>) => Uint8Array,
+  bytes: Uint8Array<ArrayBuffer>,
+): boolean {
+  const slice = Math.min(PROBE_SLICE_MAX, Math.floor(bytes.byteLength / 256));
+  const sample = new Uint8Array(slice * PROBE_SLICES);
+  const step = (bytes.byteLength - slice) / (PROBE_SLICES - 1);
+  for (let index = 0; index < PROBE_SLICES; index++) {
+    const start = Math.floor(step * index);
+    sample.set(bytes.subarray(start, start + slice), index * slice);
+  }
+  return compress(sample).byteLength < sample.byteLength * PROBE_KEEP_RATIO;
+}
+
+/**
+ * A built-in algorithm's compress function, probing a payload of at least
+ * {@link PROBE_FROM_BYTES} first: one the probe judges will not shrink comes
+ * back as it was given, which the core stores uncompressed.
+ */
+function probing(
+  compress: (bytes: Uint8Array<ArrayBuffer>) => Uint8Array,
+): (bytes: Uint8Array<ArrayBuffer>) => Uint8Array {
+  return (bytes) =>
+    bytes.byteLength >= PROBE_FROM_BYTES && !probeSays(compress, bytes)
+      ? bytes
+      : compress(bytes);
 }
 
 /** The synchronous compress function of a built-in algorithm at `level`. */
@@ -166,6 +225,7 @@ export function resolveCompress(
       id: algorithm.id,
       threshold,
       compress: (bytes) => algorithm.compress(bytes),
+      copiesInput: true,
     };
   } else {
     const range = LEVELS[algorithm] as LevelRange | undefined;
@@ -187,7 +247,8 @@ export function resolveCompress(
     write = {
       id: COMPRESSOR_IDS[algorithm],
       threshold,
-      compress: builtInCompress(algorithm, level),
+      compress: probing(builtInCompress(algorithm, level)),
+      copiesInput: false,
     };
   }
   for (const [index, previous] of (option?.previous ?? []).entries()) {
