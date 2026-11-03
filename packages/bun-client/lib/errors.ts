@@ -8,6 +8,7 @@ import type {
   ChannelErrorCode,
   ValidationIssue,
 } from "@kingsleyweb/bun-contract";
+import type { GraphQLError } from "./graphql";
 import type { Jsonify } from "./jsonify";
 import type { ErrorStatus, ResponsesOf } from "./types";
 
@@ -179,6 +180,59 @@ export class ValidationError extends ClientError {
     this.direction = direction;
     this.status = status;
     this.issues = issues;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The GraphQL client's error (`./graphql`, `graphql.md` §3.1).             */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * A 2xx GraphQL response with `errors`, thrown instead of returned under
+ * `throwOnGraphQLErrors` (`graphql.md` §3.1). The partial data, if any,
+ * stays on it.
+ *
+ * @typeParam R The operation's result, for {@link data}: `error as
+ *   GraphQLResponseError<ResultOf<typeof UserQuery>>`.
+ */
+export class GraphQLResponseError<R = unknown> extends ClientError {
+  /** The status (a 2xx). */
+  readonly status: number;
+  /** The response's errors: at least one, as the server gave them. */
+  readonly errors: readonly GraphQLError[];
+  /** What the operation produced despite them: partial data, `null`, or `undefined` when the request itself failed. */
+  readonly data: R | null | undefined;
+  /** The response's `extensions`, when it has them. */
+  readonly extensions: Readonly<Record<string, unknown>> | undefined;
+  /** The response, its body read. */
+  readonly response: Response;
+
+  /**
+   * @param key        The call's route key (`"POST /graphql"`).
+   * @param status     The status.
+   * @param errors     The response's errors.
+   * @param data       Its `data`.
+   * @param extensions Its `extensions`.
+   * @param response   The response.
+   */
+  constructor(
+    key: string,
+    status: number,
+    errors: readonly GraphQLError[],
+    data: unknown,
+    extensions: Readonly<Record<string, unknown>> | undefined,
+    response: Response,
+  ) {
+    super(
+      `${key}: ${errors[0]?.message ?? "GraphQL error"}${errors.length > 1 ? ` (and ${errors.length - 1} more)` : ""}`,
+      { key },
+    );
+    this.name = "GraphQLResponseError";
+    this.status = status;
+    this.errors = errors;
+    this.data = data as R | null | undefined;
+    this.extensions = extensions;
+    this.response = response;
   }
 }
 

@@ -107,6 +107,21 @@
  * the live chunk with the channel and SSE clients under it would be 56,149
  * and 19,732, which is why each loads lazily. The `.` entry is unchanged
  * (12,074 and 5,085).
+ *
+ * Since PR-G1 the `./graphql` entry has its own budget,
+ * {@link GRAPHQL_BUDGET}: the GraphQL client (`lib/graphql.ts`: the
+ * document reader and its operation scanner, the GET form, the retry and
+ * throw switches, the result-schema wrapper, and the three error classes it
+ * shares with `.`), which imports nothing else (its checks are the HTTP
+ * client's, loaded by that client). Measured 2026-11-03 (Bun
+ * 1.4.4-canary.1+11c367163, over develop 62e68e27): 4,698 bytes minified,
+ * 2,298 gzipped, against the plan's 0.5 KB estimate (§10.3, "[I]"; the
+ * spike's thin POST was 0.3 KB): the operation scanner, the error class and
+ * the messages are the difference. `./query` grew by `q.graphql()` to 6,859
+ * and 2,855 (6,211 and 2,626 before), past its minified limit, which was
+ * raised from 6.5 to 7 KiB for it; the gzipped one, the plan's 3 KB, holds.
+ * The `.` entry is unchanged in size (12,074 minified; the new error class
+ * is shaken out of it).
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -160,8 +175,10 @@ const BODIES_BUDGET = {
  * same rule for raising them.
  */
 const QUERY_BUDGET = {
+  // Minified raised 6.5 to 7 KiB for `q.graphql()` (PR-G1, measured
+  // 2026-11-03 at 6,859 bytes; see the history above).
   /** The entry, minified, query-core external, in bytes. */
-  minifiedBytes: 6.5 * 1024,
+  minifiedBytes: 7 * 1024,
   /** The entry gzipped, query-core external, in bytes. */
   gzipBytes: 3 * 1024,
 } as const;
@@ -245,6 +262,18 @@ const LIVE_BUDGET = {
   minifiedBytes: 3.875 * 1024,
   /** The chunk gzipped, in bytes. */
   gzipBytes: 1.875 * 1024,
+} as const;
+
+/**
+ * Byte limits for the `./graphql` entry: about 10% above the measured
+ * sizes (the plan's 0.5 KB was an estimate, measured over by the PR that
+ * built the entry, as `./sse`'s was). The same rule for raising them.
+ */
+const GRAPHQL_BUDGET = {
+  /** The entry, minified, in bytes. */
+  minifiedBytes: 5.125 * 1024,
+  /** The entry gzipped, in bytes. */
+  gzipBytes: 2.5 * 1024,
 } as const;
 
 /** Formats bytes as KiB with one decimal, for failure messages. */
@@ -339,6 +368,12 @@ const sseEntry = await Bun.build({
   target: "browser",
   minify: true,
   plugins: [checksExternal],
+});
+
+const graphqlEntry = await Bun.build({
+  entrypoints: [join(import.meta.dir, "..", "lib", "graphql.ts")],
+  target: "browser",
+  minify: true,
 });
 
 /** An output's minified and gzipped sizes. */
@@ -520,5 +555,18 @@ describe("the ./channel budget", () => {
           'must be a route path (starting with "/")',
         ),
       ).toBe(false);
+  });
+});
+
+describe("the ./graphql budget", () => {
+  it("builds as one file", () => {
+    expect(graphqlEntry.success).toBe(true);
+    expect(graphqlEntry.outputs.length).toBe(1);
+  });
+
+  it(`keeps ./graphql within ${kib(GRAPHQL_BUDGET.gzipBytes)} gzipped and ${kib(GRAPHQL_BUDGET.minifiedBytes)} minified`, async () => {
+    expect(verdict(await sizes(graphqlEntry.outputs[0]), GRAPHQL_BUDGET)).toBe(
+      "within budget",
+    );
   });
 });

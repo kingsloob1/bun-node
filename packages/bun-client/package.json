@@ -74,6 +74,11 @@
       "types": "./dts/channel.d.ts",
       "default": "./lib/channel.ts"
     },
+    "./graphql": {
+      "@kingsleyweb/source": "./lib/graphql.ts",
+      "types": "./dts/graphql.d.ts",
+      "default": "./lib/graphql.ts"
+    },
     "./lib/codegen": {
       "@kingsleyweb/source": "./lib/codegen/index.ts",
       "types": "./dts/codegen/index.d.ts",

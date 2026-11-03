@@ -1,0 +1,22 @@
+# bun graphql/documents.ts — 1.4.4-canary.1+11c367163, gql.tada 1.11.4, graphql 17.0.2, @0no-co/graphql.web 1.3.4, 2026-11-03
+gql.tada operation: loc no
+gql.tada fragment: loc yes
+gql.tada operation with a fragment: loc no
+graphql-js parse: loc yes
+graphql-js parse, noLocation: loc no
+@0no-co/graphql.web parse: loc yes
+no print / gql.tada operation: throws: /graphql: the document carries no source (loc); pass createGraphQLClient a print (gql.tada's and graphql-codegen's documents need one)
+no print / gql.tada operation with a fragment: throws: /graphql: the document carries no source (loc); pass createGraphQLClient a print (gql.tada's and graphql-codegen's documents need one)
+no print / graphql-js parse: "query User($id: ID!) { user(id: $id) { id } }"
+no print / graphql-js parse, noLocation: throws: /graphql: the document carries no source (loc); pass createGraphQLClient a print (gql.tada's and graphql-codegen's documents need one)
+no print / @0no-co/graphql.web parse: "query User($id: ID!) { user(id: $id) { id } }"
+graphql.web print / gql.tada operation: "query User($id: ID!) {\n  user(id: $id) {\n    id\n  }\n}"
+graphql.web print / gql.tada operation with a fragment: "query User($id: ID!) {\n  user(id: $id) {\n    ...F\n  }\n}\n\nfragment F on User {\n  id\n}"
+graphql.web print / graphql-js parse: "query User($id: ID!) { user(id: $id) { id } }"
+graphql.web print / graphql-js parse, noLocation: "query User($id: ID!) {\n  user(id: $id) {\n    id\n  }\n}"
+graphql.web print / @0no-co/graphql.web parse: "query User($id: ID!) { user(id: $id) { id } }"
+graphql-js print / gql.tada operation: "query User($id: ID!) {\n  user(id: $id) {\n    id\n  }\n}"
+graphql-js print / gql.tada operation with a fragment: "query User($id: ID!) {\n  user(id: $id) {\n    ...F\n  }\n}\n\nfragment F on User {\n  id\n}"
+graphql-js print / graphql-js parse: "query User($id: ID!) { user(id: $id) { id } }"
+graphql-js print / graphql-js parse, noLocation: "query User($id: ID!) {\n  user(id: $id) {\n    id\n  }\n}"
+graphql-js print / @0no-co/graphql.web parse: "query User($id: ID!) { user(id: $id) { id } }"

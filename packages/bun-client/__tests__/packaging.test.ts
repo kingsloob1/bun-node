@@ -170,6 +170,14 @@ describe("package.json exports", () => {
     });
   });
 
+  it("publishes the GraphQL client as ./graphql (graphql.md, plan §10.1, §16)", () => {
+    expect(manifest.exports["./graphql"]).toEqual({
+      "@kingsleyweb/source": "./lib/graphql.ts",
+      types: "./dts/graphql.d.ts",
+      default: "./lib/graphql.ts",
+    });
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -456,5 +464,26 @@ describe("the consumer check", () => {
         dynamic: source.includes('import("./channelChecks")'),
       }).toEqual({ file, value: false, dynamic: file === "channel.ts" });
     }
+  });
+
+  it("keeps the GraphQL client out of every other entry: no lib/ module imports ./graphql at run time, only the errors and the query layer its types, and ./graphql none of the core client (PR-G1)", async () => {
+    for (const file of readdirSync(join(ROOT, "lib")).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
+    )) {
+      const source = await Bun.file(join(ROOT, "lib", file)).text();
+      expect({
+        file,
+        value: /^import(?! type)[^"]*from "\.\/graphql"/m.test(source),
+        types: /^import type[^"]*from "\.\/graphql"/m.test(source),
+        dynamic: source.includes('import("./graphql")'),
+      }).toEqual({
+        file,
+        value: false,
+        types: file === "errors.ts" || file === "query.ts",
+        dynamic: false,
+      });
+    }
+    const graphql = await Bun.file(join(ROOT, "lib", "graphql.ts")).text();
+    expect(/^import(?! type)[^"]*from "\.\/client"/m.test(graphql)).toBe(false);
   });
 });
