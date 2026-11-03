@@ -47,7 +47,8 @@
         "ResponseValidationInterceptor",
         "gatewayAsyncApi",
         "Describe",
-        "DevTypesModule"
+        "DevTypesModule",
+        "Invalidates"
       ],
       "types": [
         "BunBeforeWriteBody",

@@ -48,6 +48,37 @@ const reflect = Reflect as unknown as MetadataReflect;
  */
 const methodDocs = new WeakMap<object, RouteDoc>();
 
+/**
+ * Each method's `@Invalidates` templates (`./invalidates.ts`): its doc's
+ * `cache.invalidates`, whichever of `@Describe` and `@Invalidates` was
+ * applied last, since they are what the interceptor publishes.
+ */
+const methodInvalidates = new WeakMap<object, readonly string[]>();
+
+/** A method's own doc, with its `@Invalidates` templates as `cache.invalidates`. */
+function effectiveDoc(method: object): RouteDoc | undefined {
+  const own = methodDocs.get(method);
+  const invalidates = methodInvalidates.get(method);
+  if (invalidates === undefined) return own;
+  return { ...own, cache: { ...own?.cache, invalidates } };
+}
+
+/**
+ * Records a method's `@Invalidates` templates and rewrites its doc with
+ * them. Internal: `./invalidates.ts` calls it; not exported from the root.
+ *
+ * @param method    The decorated method.
+ * @param templates Its tag templates.
+ */
+export function setRouteInvalidates(
+  method: object,
+  templates: readonly string[],
+): void {
+  methodInvalidates.set(method, templates);
+  const doc = effectiveDoc(method);
+  if (doc !== undefined) writeDoc(method, doc);
+}
+
 /** The doc `target` (a controller class) carries itself, if any. */
 function ownDoc(target: object): RouteDoc | undefined {
   const doc = reflect.getOwnMetadata?.(DESCRIBE_METADATA, target);
@@ -108,7 +139,9 @@ function underClass(
  * response, declare it on `@Validate({ responses })`), and nothing is
  * checked at run time. `cache.invalidates` is published by bun-common's
  * `liveInvalidation()` when it is mounted, filled from the request's params,
- * on a 2xx.
+ * on a 2xx — or, with `@Invalidates` on the method, by its interceptor when
+ * the handler succeeds; `@Invalidates`' templates are then the route's
+ * `cache.invalidates`, whichever of the two was applied last.
  *
  * @param doc The route's doc; anything but a plain object throws a
  *   `TypeError` at decoration.
@@ -132,7 +165,7 @@ export function Describe(doc: RouteDoc): MethodDecorator & ClassDecorator {
       const existing = methodDocs.get(method);
       const own = existing === undefined ? doc : { ...existing, ...doc };
       methodDocs.set(method, own);
-      writeDoc(method, own);
+      writeDoc(method, effectiveDoc(method) ?? own);
       return;
     }
     // The class form: the constructor. Class decorators run after every
@@ -152,7 +185,7 @@ export function Describe(doc: RouteDoc): MethodDecorator & ClassDecorator {
       if (reflect.getOwnMetadata?.(NEST_METHOD_METADATA, value) === undefined) {
         continue;
       }
-      writeDoc(value, underClass(classDoc, methodDocs.get(value)));
+      writeDoc(value, underClass(classDoc, effectiveDoc(value)));
     }
   };
   return decorator;
