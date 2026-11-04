@@ -8,165 +8,246 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
 
-The first release candidate of 3.0.0, on npm's `next` tag. Since 2.2.0,
-bun-node has grown from two packages, bun-common and bun-nest, to eight
-packages released together at one version. The six new ones are
-bun-contract, bun-jobs, bun-jobs-ui, bun-api-docs-ui, bun-cache and
-bun-client. `npm install @kingsleyweb/bun-common@next` installs the
-candidate.
+The first release candidate of 3.0.0. Since 2.2.0, bun-node has grown from
+two packages to eight, all released together at one version. Install the
+candidate from npm's `next` tag:
+
+```bash
+bun add @kingsleyweb/bun-common@next
+```
+
+### The packages
+
+| Package | What it is | |
+|---|---|---|
+| [`@kingsleyweb/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-common) | An Express 5 style HTTP framework for `Bun.serve`: routing, typed and validated routes, OpenAPI and AsyncAPI documents, WebSocket channels, server-sent events | updated |
+| [`@kingsleyweb/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-nest) | Runs a NestJS 11 or 12 app on Bun, on top of bun-common | updated |
+| [`@kingsleyweb/bun-contract`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-contract) | The contract core shared by server and browser: schemas, guards, channel contracts. No dependencies | new |
+| [`@kingsleyweb/bun-client`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-client) | A typed client for your bun-common or bun-nest API: HTTP, SSE, WebSocket channels, GraphQL and WebRTC, with React hooks | new |
+| [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs) | Background jobs: queues, workers and scheduled scripts, on SQL, MongoDB, Redis, files or memory | new |
+| [`@kingsleyweb/bun-jobs-ui`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs-ui) | A ready-made web UI for managing bun-jobs | new |
+| [`@kingsleyweb/bun-cache`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-cache) | One cache API over 12 storage drivers, plus an HTTP response cache | new |
+| [`@kingsleyweb/bun-api-docs-ui`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-api-docs-ui) | A self-hosted viewer for your OpenAPI or AsyncAPI document | new |
 
 ### Breaking changes
 
-- **Bun ≥ 1.4.2.** `engines.bun` was `>=1.3.14` (bun-common) and `>=1.3.0`
-  (bun-nest). Every package now declares an optional `@types/bun >=1.4.2`
-  peer. The `typescript` peer is optional, `^5.9.3 || ^6.0.0`.
-- **`exports` maps.** Each package now has an `exports` map, and `types`
-  points at built declarations in `dts/`. Every 2.2.0 import of a file
-  under `lib/` still resolves. Imports outside the map, such as files
-  outside `lib/` or a directory path with a trailing slash
-  (`lib/multipart/storage/`), no longer resolve.
-- **Express 5 path syntax** (a port of path-to-regexp 8):
-  - A named wildcard is now an array under its name. `/w/*name` on
-    `/w/a/b` gives `{ name: ["a", "b"] }`, where it gave `{ "0": "a/b" }`.
-  - A named wildcard needs at least one segment: `/w/` no longer matches
-    `/w/*name`.
-  - `{…}` is an optional group.
-  - A malformed path throws `PathSyntaxError` when the route is
-    registered. Examples are an unclosed `{`, and old and new syntax mixed
-    in one path.
-  - Bare `*`, `:id?`, `:id(\d+)` and `:a-:b` keep their meaning in
-    bun-common.
-  - Nest controller paths go through Nest's own converter. There, `:id?`
-    and `:id(\d+)` throw at boot, and `*` becomes `{*path}`.
-- **Structured `Logger`.** It was `{ log, error, warn }` with any number of
-  arguments. Now it has six levels plus `log`, each taking
+These affect you only if you use **bun-common or bun-nest 2.2.0**. The six
+new packages have no earlier version, so nothing in them can break.
+"Upgrading from 2.2.0", below, says what to change.
+
+- **Bun 1.4.2 or later.** `engines.bun` was `>=1.3.14` (bun-common) and
+  `>=1.3.0` (bun-nest). Every package also declares an optional
+  `@types/bun >=1.4.2` peer, and an optional `typescript` peer,
+  `^5.9.3 || ^6.0.0`.
+- **Each package has an `exports` map.** `types` now points at built
+  declarations in `dts/`. Every 2.2.0 import of a file under `lib/` still
+  resolves. Imports outside the map no longer do: a file outside `lib/`, or
+  a directory path with a trailing slash such as `lib/multipart/storage/`.
+- **Route paths use Express 5 syntax** (a port of path-to-regexp 8):
+  - a named wildcard is an array under its name: `/w/*name` on `/w/a/b`
+    gives `{ name: ["a", "b"] }`, where it gave `{ "0": "a/b" }`;
+  - a named wildcard needs at least one segment, so `/w/` no longer
+    matches `/w/*name`;
+  - `{…}` is an optional group;
+  - a malformed path throws `PathSyntaxError` when the route is registered,
+    for example an unclosed `{`, or old and new syntax mixed in one path.
+
+  Bare `*`, `:id?`, `:id(\d+)` and `:a-:b` keep their 2.2.0 meaning in
+  bun-common. Nest controller paths go through Nest's own converter
+  instead, where `:id?` and `:id(\d+)` throw at boot and `*` becomes
+  `{*path}`.
+- **`Logger` is structured.** It was `{ log, error, warn }`, each taking any
+  number of arguments. It now has six levels (`trace`, `debug`, `info`,
+  `warn`, `error`, `fatal`) plus `log`, each taking
   `(message: string | Error, fields?)`, and adds `child()` and
-  `isLevelEnabled()`. Calls with several arguments, and custom objects
-  typed as `Logger`, need updating. Options take any `LoggerLike`: pino,
-  winston, bunyan, consola, log4js, tslog, Nest's logger or a console.
-- **bun-nest's Nest packages are peers.**
-  - `@nestjs/common`, `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs`
-    (`^7.1.0`) are required peers, so an app installs them itself.
-  - `@nestjs/websockets`, `@nestjs/microservices`, bun-jobs and bun-cache
-    are optional peers.
-  - Before, `@nestjs/common` and `rxjs` were runtime dependencies.
-- **`close()` drains.** Both adapters wait for requests in flight, for at
-  most `closeDrainTimeout` (10 s by default), before they force the server
-  closed. Before, `close()` stopped at once.
-- **Express 5 pipeline semantics:**
-  - A `next()` called later, from a timer, resumes the pipeline.
-  - `HEAD` on a route with only a GET handler runs the GET handler.
-  - `next(object)` passes the object unchanged.
+  `isLevelEnabled()`. Options accept any `LoggerLike`: pino, winston,
+  bunyan, consola, log4js, tslog, Nest's logger or a console.
+- **bun-nest's Nest packages are peers.** `@nestjs/common`, `@nestjs/core`
+  (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required peers, so your
+  app installs them. `@nestjs/websockets`, `@nestjs/microservices`, bun-jobs
+  and bun-cache are optional peers. In 2.2.0, `@nestjs/common` and `rxjs`
+  were dependencies.
+- **`close()` waits for requests in flight.** Both adapters drain for up to
+  `closeDrainTimeout` (10 s by default) before closing the server. In 2.2.0,
+  `close()` stopped at once.
+- **The middleware pipeline follows Express 5:**
+  - a `next()` called later, from a timer, resumes the pipeline;
+  - `HEAD` on a route with only a GET handler runs the GET handler;
+  - `next(object)` passes the object on unchanged;
   - `res.json()` keeps a `Content-Type` set earlier.
-- **bun-nest's router** defaults to `caseSensitive: false`, as Express does.
+- **bun-nest matches paths case-insensitively by default**
+  (`caseSensitive: false`), as `@nestjs/platform-express` does.
 - **bun-nest WebSockets:**
-  - A message with an ack id is acknowledged automatically.
-  - A `WsException` arrives as an `"exception"` event.
-  - New limits: `maxConcurrentMessages` (1000) and `maxSendBufferSize`
+  - a message sent with an ack id is acknowledged automatically;
+  - a `WsException` reaches the client as an `"exception"` event;
+  - two new limits: `maxConcurrentMessages` (1000) and `maxSendBufferSize`
     (128 MB).
 
-No export of bun-common or bun-nest was removed or renamed. bun-common
-has 581 exports, up from 169, and bun-nest 92, up from 33. Two exports
-changed shape: `Logger`, and bun-nest's `address()`, which now returns
-`AddressInfo | string`.
+No export of bun-common or bun-nest was removed or renamed. Two changed
+shape: `Logger`, and bun-nest's `address()`, which now returns
+`AddressInfo | string`. bun-common grew from 169 exports to 581, bun-nest
+from 33 to 92.
 
-### @kingsleyweb/bun-common
+### Upgrading from 2.2.0
 
-- Express 5 routing, with the `QUERY` verb.
-- Typed routes:
-  - `req.params` is inferred from the path literal.
-  - `validate()` (`BunValidate`) accepts any Standard Schema: zod,
-    valibot, arktype or yup.
-  - Responses can be checked too.
-- Contracts and API docs:
-  - OpenAPI 3.1 and AsyncAPI 3.0 generators.
-  - `defineRoutes`, `docsRouter` and `devTypes`.
-- `fetch()` runs a request through the real pipeline without a socket.
-- Compression and body decoding, including zstd and dictionaries.
-  Cache-Control.
-- Server-sent events (`./sse`), validated WebSocket channels, live
-  invalidation (`./live`) and WebRTC signalling (`./webrtc`).
+1. **Bun.** Run `bun upgrade`, and check that `bun --version` is 1.4.2 or
+   later.
+2. **bun-nest's peers.** Install them in your app:
 
-### @kingsleyweb/bun-nest
+   ```bash
+   bun add @nestjs/common @nestjs/core rxjs
+   ```
 
-- NestJS 11 (≥ 11.1.20) and 12 from one build, at parity with
-  platform-express 12.
-- Validation: `@Validate`, `StandardSchemaPipe` and
-  `StandardValidationPipe`. Gateways are validated with
-  `@ValidateMessage` and `@Emits`.
-- `BunCacheModule` and `BunCacheInterceptor` (`./cache`), and
-  `BunJobsApiModule` (`./jobs`).
-- Verified with `@nestjs/swagger`. AsyncAPI for gateways, `@Describe`,
-  `DevTypesModule` and `@Invalidates`.
-- The WebSocket adapter is at parity with platform-ws 12.2.0 and has flow
-  control. `MulterModule` options.
+3. **Deep imports.** Drop a trailing slash from a directory import, and
+   import from a documented entry rather than a file outside `lib/`:
 
-### @kingsleyweb/bun-contract (new)
+   ```ts
+   // 2.2.0
+   import { DiskStorage } from "@kingsleyweb/bun-common/lib/multipart/storage/";
+   // 3.0.0
+   import { DiskStorage } from "@kingsleyweb/bun-common/lib/multipart/storage";
+   ```
 
-bun-common's contract core, with no dependencies and safe to use in a
-browser. It provides transports, Standard Schema contracts,
-sender/receiver guards and channel contracts. bun-common re-exports it
-unchanged as `./contract`.
+4. **Named wildcards** now give an array:
 
-### @kingsleyweb/bun-jobs (new)
+   ```ts
+   // 2.2.0
+   app.get("/files/*path", (req, res) => res.send(req.params[0])); // "a/b"
+   // 3.0.0
+   app.get("/files/*path", (req, res) => res.send(req.params.path.join("/")));
+   ```
+
+5. **Logging.** Pass extra values as fields, and an error as the message or
+   as `error`:
+
+   ```ts
+   // 2.2.0
+   logger.error("upload failed", err, req.path);
+   // 3.0.0
+   logger.error("upload failed", { error: err, path: req.path });
+   ```
+
+   A custom object you typed as `Logger` needs the six levels. Or pass your
+   pino, winston or other logger directly: it is wrapped for you.
+6. **Shutdown.** To close at once, as 2.2.0 did, set `closeDrainTimeout`
+   to `0` (the adapter's second argument):
+
+   ```ts
+   new BunHttpAdapter(0, { closeDrainTimeout: 0 });
+   ```
+
+7. **Exact-case paths in bun-nest.** To keep them:
+
+   ```ts
+   new BunHttpAdapter(0, { router: { caseSensitive: true } });
+   ```
+
+### What's new in each package
+
+#### @kingsleyweb/bun-common
+
+- **Routing like Express 5**, including the `QUERY` method.
+- **Typed routes.** `req.params` is typed from the path you write.
+  `validate()` checks the query, body and params with any Standard Schema
+  library (zod, valibot, arktype, yup) and types them for the handler.
+  Responses can be validated too.
+- **API documents.** OpenAPI 3.1 and AsyncAPI 3.0, generated from your
+  routes and channels, with sections (`tags` and `tagGroups`). `docsRouter`
+  serves them with a viewer, and `devTypes` keeps a client's types in sync
+  while you develop.
+- **Testing without a socket.** `app.fetch()` runs a request through the
+  real pipeline and returns the `Response`.
+- **Compression and decoding** of requests and responses, including zstd
+  and dictionaries, and `Cache-Control` helpers.
+- **Realtime.** Server-sent events with `res.sse()` (`./sse`), validated
+  WebSocket channels, live cache invalidation for clients (`./live`) and
+  WebRTC signalling (`./webrtc`).
+
+#### @kingsleyweb/bun-nest
+
+- **NestJS 11 (from 11.1.20) and 12**, from one build, behaving like
+  `@nestjs/platform-express` 12.
+- **Validation.** `@Validate` on a controller method, `StandardSchemaPipe`
+  and `StandardValidationPipe`. Gateways validate messages with
+  `@ValidateMessage` and declare what they send with `@Emits`.
+- **Caching and jobs.** `BunCacheModule` and `BunCacheInterceptor`
+  (`./cache`), and `BunJobsApiModule` (`./jobs`).
+- **Documents and the typed client.** Works with `@nestjs/swagger`, and
+  documents gateways as AsyncAPI. `@Describe` adds docs to a route,
+  `DevTypesModule` keeps a bun-client's types in sync, and `@Invalidates`
+  refreshes clients' data after a change.
+- **WebSockets** behave like `@nestjs/platform-ws` 12.2.0, with flow
+  control. `MulterModule` options are supported for uploads.
+
+#### @kingsleyweb/bun-contract (new)
+
+The contract core that bun-common and bun-client share: transports,
+Standard Schema contracts, the checks run on each side of a request, and
+channel contracts. It has no dependencies and runs in a browser.
+bun-common re-exports it unchanged as `./contract`.
+
+#### @kingsleyweb/bun-client (new)
+
+A typed client for an API built with bun-common or bun-nest. It has no
+dependencies and runs in a browser.
+
+- **Types from your server.** `bun-client generate` builds the route map
+  from the server's OpenAPI document, and `watch` keeps it current.
+- **Typed results.** Each response is typed by its status code. Retries,
+  timeouts and auth refresh are built in, and validation runs where you
+  turn it on.
+- **Data fetching.** A TanStack Query layer, React hooks and persistence.
+- **Every transport.** Typed clients for server-sent events, WebSocket
+  channels, GraphQL and WebRTC data channels.
+
+#### @kingsleyweb/bun-jobs (new)
 
 Background work for Bun.
 
-- `BunQueue` and `BunQueueWorker`:
-  - priorities, delays, retries with backoff and repeatable jobs;
-  - debounce and throttle, and rate and concurrency limits across the
-    cluster;
-  - dead letters and flows.
-- `BunRunner` runs a JS or TS file on a schedule or on demand, in a child
-  process, a `Worker` or in-process.
-- Drivers:
-  - memory and file;
-  - SQL: SQLite, Postgres, MySQL and MariaDB;
-  - MongoDB and Redis.
-  - `syncSchema` updates an older SQL or MongoDB schema.
-- The `BunJobs` registry, with schedules written in words.
-- `createJobsApi`: a management HTTP and WebSocket API, with OpenAPI and
-  AsyncAPI documents.
-- Summoned workers, with a plugin API for compute providers.
+- **Queues.** `BunQueue` and `BunQueueWorker`: priorities, delays, retries
+  with backoff, repeatable jobs, debounce and throttle, rate and
+  concurrency limits shared across processes, dead letters and flows.
+- **Scheduled scripts.** `BunRunner` runs a JS or TS file on a schedule or
+  on demand, in a child process, a `Worker` or the same process.
+- **Storage.** Memory, file, SQLite, Postgres, MySQL, MariaDB, MongoDB and
+  Redis. `syncSchema` upgrades the tables or collections an older version
+  created.
+- **A registry** (`BunJobs`) with schedules written in plain words.
+- **A management API** (`createJobsApi`) over HTTP and WebSocket, with
+  OpenAPI and AsyncAPI documents.
+- **Workers on demand.** Summon workers from compute providers, through a
+  plugin API you can write your own provider for.
 
-### @kingsleyweb/bun-jobs-ui (new)
+#### @kingsleyweb/bun-jobs-ui (new)
 
-A React UI for bun-jobs' management API, with an API docs viewer. It is
-prebuilt into `dist/` and served by `jobsUi()` on bun-common or bun-nest.
-It shows queues, jobs, workers, runners, summon and providers, and has a
-live events console.
+A web UI for bun-jobs' management API, served by `jobsUi()` on bun-common
+or bun-nest. It is prebuilt, so there is nothing to bundle. It shows
+queues, jobs, workers, runners, summoned workers and providers, has a live
+events console, and includes an API docs viewer.
 
-### @kingsleyweb/bun-api-docs-ui (new)
-
-A self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document.
-`docsUi()` serves it with React bundled in, SRI and a strict self-only
-CSP. bun-common's `docsRouter` uses it for its `"self-hosted"` viewer.
-
-### @kingsleyweb/bun-cache (new)
+#### @kingsleyweb/bun-cache (new)
 
 One typed cache API:
 
-- TTLs, tags and single-flight `getOrSet`;
-- stale-while-revalidate and stale-if-error;
+- time-to-live, tags, and `getOrSet`, which runs a missing value's loader
+  once however many callers ask at the same time;
+- serving a stale value while it refreshes, or when the loader fails;
 - counters;
-- an L1 tier kept coherent by a bus;
-- encryption at rest.
+- an in-memory first tier, kept in step across processes;
+- encryption of stored values.
 
-It runs over 12 drivers: memory, file, SQLite, Postgres, MySQL, MariaDB,
-Redis, MongoDB, S3, Azure Blob, Cloudflare KV and D1. It also ships an
-HTTP response cache (`./http`), a Keyv store for cache-manager and
-`@nestjs/cache-manager` (`./keyv`), and a conformance kit (`./testing`).
+It works over 12 drivers: memory, file, SQLite, Postgres, MySQL, MariaDB,
+Redis, MongoDB, S3, Azure Blob Storage, Cloudflare KV and D1. It also
+ships an HTTP response cache (`./http`), a Keyv store for cache-manager and
+`@nestjs/cache-manager` (`./keyv`), and a test kit for driver authors
+(`./testing`).
 
-### @kingsleyweb/bun-client (new)
+#### @kingsleyweb/bun-api-docs-ui (new)
 
-A typed HTTP client over a `"VERB /path"` route map, with no dependencies
-and safe to use in a browser.
+A self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, with
+nothing loaded from a CDN. `docsUi()` serves it with React bundled in,
+under a strict self-only Content Security Policy. bun-common's
+`docsRouter` uses it as its `"self-hosted"` viewer.
 
-- `bun-client generate` and `watch` build the route map from the server's
-  OpenAPI document.
-- Each result is typed by its status. Retries, timeouts and auth refresh.
-- A TanStack query layer, React hooks and persistence.
-- Typed clients for SSE, WebSocket channels, GraphQL and WebRTC.
-
-Full list: [v2.2.0...v3.0.0-rc.0](https://github.com/kingsloob1/bun-node/compare/v2.2.0...v3.0.0-rc.0)
+Full list of changes: [v2.2.0...v3.0.0-rc.0](https://github.com/kingsloob1/bun-node/compare/v2.2.0...v3.0.0-rc.0)
 (1,786 commits).

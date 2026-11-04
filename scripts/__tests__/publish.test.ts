@@ -8,6 +8,7 @@ import type {
 } from "../publish";
 import {
   mkdirSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -28,7 +29,15 @@ import {
 } from "../publish";
 
 const scratch = mkdtempSync(join(tmpdir(), "publish-test-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+// runPublish makes its work directory under tmpdir() when none is given:
+// point that at this file's scratch, so every run here is removed with it.
+const tmpdirBefore = process.env.TMPDIR;
+process.env.TMPDIR = scratch;
+afterAll(() => {
+  if (tmpdirBefore === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = tmpdirBefore;
+  rmSync(scratch, { recursive: true, force: true });
+});
 
 const VERSION = "3.0.0-rc.0";
 const OTP = "135790";
@@ -731,6 +740,44 @@ describe("dry run", () => {
     expect(
       readFileSync(notes.slice("release notes: ".length), "utf8"),
     ).toContain("The release candidate.");
+  });
+});
+
+describe("the work directory", () => {
+  const madeWork = (log: string[], verb: string) =>
+    log
+      .find((l) => l.startsWith(`${verb} the work directory `))
+      ?.slice(`${verb} the work directory `.length)
+      .replace(/ \(remove it when done\)$/, "");
+
+  it("is removed after a real run publishes everything, when the run made it", async () => {
+    const { io, world } = fakes();
+    const report = await runPublish({ root: workspace(EIGHT) }, io);
+    expect(report.ok).toBe(true);
+    const dir = madeWork(world.log, "removed");
+    expect(dir).toBeDefined();
+    expect(existsSync(dir!)).toBe(false);
+    expect(report.work).toBe("");
+  });
+
+  it("is kept when the run fails, so the tarballs can be inspected", async () => {
+    const down = { code: 128, out: "Connection closed by remote host" };
+    const { io, world } = fakes({
+      git: { [`push origin refs/tags/v${VERSION}`]: [down, down, down] },
+    });
+    const report = await runPublish({ root: workspace(EIGHT) }, io);
+    expect(report.ok).toBe(false);
+    const dir = madeWork(world.log, "kept");
+    expect(dir).toBeDefined();
+    expect(existsSync(dir!)).toBe(true);
+  });
+
+  it("is never removed when it was given", async () => {
+    const { io } = fakes();
+    const work = join(scratch, "given-work");
+    const report = await runPublish({ root: workspace(EIGHT), work }, io);
+    expect(report.ok).toBe(true);
+    expect(existsSync(work)).toBe(true);
   });
 });
 
