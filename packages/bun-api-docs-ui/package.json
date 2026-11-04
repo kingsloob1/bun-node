@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-api-docs-ui",
   "type": "module",
-  "version": "0.1.0",
+  "version": "3.0.0-rc.0",
   "private": false,
   "description": "A self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a docsUi() handler: a bundled React app with hash-named immutable assets, computed SRI and a strict self-only CSP",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -105,12 +105,12 @@
     }
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^2.2.0"
+    "@kingsleyweb/bun-common": "^3.0.0-rc.0"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
     "@happy-dom/global-registrator": "^20.0.0",
-    "@kingsleyweb/bun-jobs": "^2.2.0",
+    "@kingsleyweb/bun-jobs": "^3.0.0-rc.0",
     "@tanstack/react-query": "^5.90.0",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.0",

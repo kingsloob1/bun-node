@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-jobs-ui",
   "type": "module",
-  "version": "0.1.0",
+  "version": "3.0.0-rc.0",
   "private": false,
   "description": "A React management UI and API documentation viewer for the @kingsleyweb/bun-jobs management API, served by a jobsUi() handler that mounts beside createJobsApi",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -61,7 +61,7 @@
     "format:check": "bun fmt --check"
   },
   "peerDependencies": {
-    "@kingsleyweb/bun-jobs": "^2.2.0",
+    "@kingsleyweb/bun-jobs": "^3.0.0-rc.0",
     "@types/bun": ">=1.4.2"
   },
   "peerDependenciesMeta": {
@@ -70,13 +70,13 @@
     }
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^2.2.0"
+    "@kingsleyweb/bun-common": "^3.0.0-rc.0"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
     "@happy-dom/global-registrator": "^20.0.0",
-    "@kingsleyweb/bun-jobs": "^2.2.0",
-    "@kingsleyweb/bun-nest": "^2.2.0",
+    "@kingsleyweb/bun-jobs": "^3.0.0-rc.0",
+    "@kingsleyweb/bun-nest": "^3.0.0-rc.0",
     "@nestjs/common": "^12.2.0",
     "@nestjs/core": "^12.2.0",
     "@tanstack/react-query": "^5.90.0",
@@ -98,6 +98,6 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "typescript": "^6.0.3",
-    "@kingsleyweb/bun-api-docs-ui": "^0.1.0"
+    "@kingsleyweb/bun-api-docs-ui": "^3.0.0-rc.0"
   }
 }

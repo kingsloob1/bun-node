@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-contract",
   "type": "module",
-  "version": "0.1.0",
+  "version": "3.0.0-rc.0",
   "private": false,
   "description": "The transport-agnostic contract core of the bun-* packages, with no dependencies and safe in a browser: transports and contracts over any Standard Schema, guards that check what a side sends or receives, contract descriptions and merges, and WebSocket channel contracts. Re-exported by @kingsleyweb/bun-common as ./contract",
   "author": "okafor obinna <kingsloob1@gmail.com>",

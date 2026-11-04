@@ -53,13 +53,15 @@ from there is checked.
 
 **Installing outside the bun-node repo.** The template's `package.json` has
 `overrides` pointing `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-common` at
-the repo's own package directories, which works only inside the repo. The
-packages are not on npm yet, so a copy elsewhere packs both from a checkout
-of bun-node (`bun pm pack`) and points `overrides` at the tarballs, as the
-template's README describes in step 2. Not at the checkout's directories:
+the repo's own package directories, which works only inside the repo. A copy
+elsewhere removes `overrides` and installs `@kingsleyweb/bun-jobs` from npm
+(`3.0.0-rc.0` is on the `next` tag until 3.0.0 is `latest`); to build
+against an unreleased checkout of bun-node, it packs the packages from it
+(`bun pm pack`) and points `overrides` at the tarballs, as the template's
+README describes in step 2. Not at the checkout's directories:
 installed that way from outside the repo, bun-common arrives without its own
 dependencies ([oven-sh/bun#44299](https://github.com/oven-sh/bun/issues/44299)).
-Once the packages are published, remove `overrides`.
+Remove `overrides` once you install from npm.
 
 ## 3. Identity and versions
 

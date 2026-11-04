@@ -1,9 +1,9 @@
 {
-  "npmClient": "yarn",
+  "npmClient": "bun",
   "packages": [
     "packages/*"
   ],
   "$schema": "node_modules/lerna/schemas/lerna-schema.json",
   "useNx": true,
-  "version": "2.2.0"
+  "version": "3.0.0-rc.0"
 }

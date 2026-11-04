@@ -20,9 +20,10 @@ Bun-first libraries for building servers: an Express-like HTTP layer for
 
 ## What this repository is
 
-A monorepo of three published packages, managed with Bun workspaces, lerna and
-nx. Each package ships its TypeScript source (`main` and `types` point at
-`lib/index.ts`), so there is no build step. Each has its own tests
+A monorepo of eight published packages, managed with Bun workspaces, lerna and
+nx, released together at one version (lerna's fixed mode). Each package ships
+its TypeScript source, which Bun runs as it is (`main` is `lib/index.ts`),
+and declarations built into `dts/` when it is packed. Each has its own tests
 (`bun:test`), `bun check` typecheck, and `bun lint` and `bun fmt` from the
 root `bunfig.toml`. The packages
 prefer Bun and native APIs over third-party dependencies.
@@ -36,8 +37,13 @@ prefer Bun and native APIs over third-party dependencies.
 | [bun-nest](packages/bun-nest/README.md) | `@kingsleyweb/bun-nest` | Run NestJS 11 or 12 on Bun: `BunHttpAdapter` in place of `@nestjs/platform-express`, multer-style file upload interceptors, and `BunWebSocketAdapter` for gateways over Bun's native WebSockets. |
 | [bun-jobs](packages/bun-jobs/README.md) | `@kingsleyweb/bun-jobs` | Background work for Bun: `BunRunner` runs a JS/TS file on a schedule or on demand (child process, `Worker` or in-process), and `BunQueue` / `BunQueueWorker` process jobs across processes and services over memory, file, Redis, SQL and MongoDB drivers. |
 | [bun-client](packages/bun-client/README.md) | `@kingsleyweb/bun-client` | A typed HTTP client for these servers, with no dependency and safe in a browser: one call per verb keyed by the server's own path literal, named operations, results discriminated by status, retries with `Retry-After`, timeouts, middleware and single-flight auth refresh; `./query` puts the routes on TanStack's query-core (an optional peer) with cache tags, `ETag` revalidation and optimistic updates. |
+| [bun-cache](packages/bun-cache/README.md) | `@kingsleyweb/bun-cache` | Caching over pluggable drivers: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage and Cloudflare drivers, an HTTP response cache for bun-common and a Keyv store. |
+| [bun-jobs-ui](packages/bun-jobs-ui/README.md) | `@kingsleyweb/bun-jobs-ui` | A React management UI and API documentation viewer for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi`. |
+| [bun-api-docs-ui](packages/bun-api-docs-ui/README.md) | `@kingsleyweb/bun-api-docs-ui` | A self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
 
-bun-nest and bun-jobs both depend on bun-common, which depends on bun-contract.
+bun-nest, bun-jobs, bun-cache, bun-jobs-ui and bun-api-docs-ui depend on
+bun-common, which depends on bun-contract; bun-client depends on bun-contract
+alone.
 
 ## Examples
 
@@ -81,6 +87,18 @@ bun add @kingsleyweb/bun-common
 bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
 bun add @kingsleyweb/bun-jobs
 ```
+
+**3.0.0-rc.0, the release candidate**, is on npm's `next` tag, all eight
+packages at one version. Until 3.0.0 reaches `latest`, a plain `bun add
+@kingsleyweb/bun-common` (or `bun-nest`) installs 2.2.0, so ask for the tag:
+
+```bash
+bun add @kingsleyweb/bun-common@next
+bun add @kingsleyweb/bun-nest@next @nestjs/common @nestjs/core rxjs reflect-metadata
+bun add @kingsleyweb/bun-jobs@next
+```
+
+[`docs/releasing.md`](docs/releasing.md) is how a release is cut.
 
 ## Development
 

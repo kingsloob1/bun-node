@@ -24,13 +24,13 @@ The summon facet only: bun-jobs has no execute facet yet.
 1. **Copy this directory** and rename the package `bun-jobs-provider-<platform>`
    (or `@<scope>/bun-jobs-provider-<platform>`). Keep the keywords
    `bun-jobs-provider` and `bun-jobs-provider-summon`: they make it findable.
-2. **Remove `private`** from `package.json`, and **`overrides`** once
-   `@kingsleyweb/bun-jobs` is on the registry: `overrides` points the install
-   at the bun-node repo's own packages, and works only inside that repo.
-   Until the packages are published, `@kingsleyweb/bun-jobs@2.2.x` cannot be
-   installed from a registry, so pack them from a checkout of bun-node (with
-   `@kingsleyweb/bun-contract`, which bun-common depends on) and point
-   `overrides` at the tarballs:
+2. **Remove `private`** from `package.json`, and **`overrides`**:
+   `overrides` points the install at the bun-node repo's own packages, and
+   works only inside that repo. Without it, `@kingsleyweb/bun-jobs` comes
+   from npm (`3.0.0-rc.0` is on the `next` tag until 3.0.0 is `latest`).
+   To build against an unreleased checkout of bun-node instead, pack the
+   packages from it (with `@kingsleyweb/bun-contract`, which bun-common
+   depends on) and point `overrides` at the tarballs:
 
    ```bash
    cd /path/to/bun-node && bun install
@@ -42,9 +42,9 @@ The summon facet only: bun-jobs has no execute facet yet.
    ```json
    {
      "overrides": {
-       "@kingsleyweb/bun-jobs": "file:/path/to/tarballs/kingsleyweb-bun-jobs-2.2.0.tgz",
-       "@kingsleyweb/bun-common": "file:/path/to/tarballs/kingsleyweb-bun-common-2.2.0.tgz",
-       "@kingsleyweb/bun-contract": "file:/path/to/tarballs/kingsleyweb-bun-contract-0.1.0.tgz"
+       "@kingsleyweb/bun-jobs": "file:/path/to/tarballs/kingsleyweb-bun-jobs-3.0.0-rc.0.tgz",
+       "@kingsleyweb/bun-common": "file:/path/to/tarballs/kingsleyweb-bun-common-3.0.0-rc.0.tgz",
+       "@kingsleyweb/bun-contract": "file:/path/to/tarballs/kingsleyweb-bun-contract-3.0.0-rc.0.tgz"
      }
    }
    ```
