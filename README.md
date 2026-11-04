@@ -98,7 +98,11 @@ bun add @kingsleyweb/bun-nest@next @nestjs/common @nestjs/core rxjs reflect-meta
 bun add @kingsleyweb/bun-jobs@next
 ```
 
-[`docs/releasing.md`](docs/releasing.md) is how a release is cut.
+[`docs/releasing.md`](docs/releasing.md) is how a release is cut: the
+version bump and its `CHANGELOG.md` entry in a PR, then `npm login`,
+`bun scripts/publish.ts --dry-run` and `bun scripts/publish.ts` (one
+one-time code for every package; it tags the commit and creates the GitHub
+release at the end).
 
 ## Development
 

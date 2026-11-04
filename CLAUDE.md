@@ -433,7 +433,8 @@ hand tests a constructor these examples never use, and it looks broken when it
 is not.
 
 The repo's own tooling in the root `scripts/` (`typecheck.ts`,
-`setup-databases.ts`, `consumer-check.ts`, `nest-matrix.ts`, `reformat.ts`, and the heavy-run
+`setup-databases.ts`, `consumer-check.ts`, `nest-matrix.ts`, `reformat.ts`,
+the release's `publish.ts`, `pack-guard.ts` and `changelog.ts`, and the heavy-run
 wrapper `heavy-run.sh`, `heavy-queue.sh` and `install-heavy-run.ts`) belongs to
 no package, so it has its own lint config and its own tests; after touching one,
 check it, from the root:
@@ -993,6 +994,17 @@ unchanged (keep the copies identical), a `consumer-check.json`, and
 in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
 `include`.
 
+- **Workspace protocol and catalog**: packages name each other `workspace:^`
+  and take a devDependency that two or more share at one range from the root's
+  `workspaces.catalog` (`catalog:`); `bun pm pack` rewrites both, `npm pack`
+  and `npm publish` from a package directory do not, so publishing is
+  `bun scripts/publish.ts` (`docs/releasing.md`), and `scripts/pack-guard.ts`
+  fails a tarball that still names either (publish and consumer-check run it).
+- **A new package is published by `scripts/publish.ts` once it has**: the
+  lerna version, `publishConfig.access: "public"`, `files`, a `prepack` that
+  builds its declarations, a `LICENSE`, a `consumer-check.json`, and
+  `workspace:^` internal dependencies (`docs/releasing.md`, "A new package");
+  the script refuses one without and needs no list.
 - **Build**: `bun run build:types` (`scripts/build-declarations.ts`, also run
   on `prepack`). It runs `tsc -p tsconfig.build.json` — tsc, because
   `bun check` never emits — (`emitDeclarationOnly`,

@@ -162,14 +162,14 @@
     }
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^3.0.0-rc.0"
+    "@kingsleyweb/bun-common": "workspace:^"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
-    "bun-types": "^1.4.3",
+    "@types/bun": "catalog:",
+    "bun-types": "catalog:",
     "miniflare": "4.20260730.0",
-    "mongodb": "^6",
-    "typescript": "^6.0.3",
-    "zod": "^4"
+    "mongodb": "catalog:",
+    "typescript": "catalog:",
+    "zod": "catalog:"
   }
 }
