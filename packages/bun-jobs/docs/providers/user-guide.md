@@ -51,7 +51,7 @@ which versions it supports:
 ```json
 {
   "peerDependencies": {
-    "@kingsleyweb/bun-jobs": ">=2.2.0 <2.3.0"
+    "@kingsleyweb/bun-jobs": ">=3.0.0-rc.0 <3.1.0"
   },
   "bun-jobs": {
     "facets": ["summon"],

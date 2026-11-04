@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-cache",
   "type": "module",
-  "version": "0.1.0",
+  "version": "3.0.0-rc.0",
   "private": false,
   "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage, Cloudflare KV and Cloudflare D1 drivers, an HTTP response cache for bun-common (./http), a Keyv store for cache-manager and @nestjs/cache-manager (./keyv), and a conformance kit for custom drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -162,7 +162,7 @@
     }
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^2.2.0"
+    "@kingsleyweb/bun-common": "^3.0.0-rc.0"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

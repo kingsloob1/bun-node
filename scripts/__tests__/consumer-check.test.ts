@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
 import type { CellResult, CellStatus, RunResult } from "../consumer-check";
-import { bareSpecifiers, failures, scanLeaks } from "../consumer-check";
+import {
+  bareSpecifiers,
+  consumerManifest,
+  failures,
+  scanLeaks,
+} from "../consumer-check";
 
 // The sentence that exposed the regex scanner, verbatim from bun-jobs'
 // `lib/drivers/jobCursor.ts`. tsc copies it into `dts/drivers/jobCursor.d.ts`,
@@ -229,5 +234,37 @@ describe("failures", () => {
     const v = failures(now, base);
     expect(v.fixed).toHaveLength(1);
     expect(v.failed).toEqual([expect.stringContaining("no longer checked")]);
+  });
+});
+
+describe("consumerManifest: the consumer's package.json", () => {
+  const manifest = consumerManifest({
+    name: "@scope/core",
+    tarball: "/t/scope-core-3.0.0-rc.0.tgz",
+    workspace: { "@scope/viewer": "file:/t/scope-viewer-3.0.0-rc.0.tgz" },
+    extra: { zod: "^4" },
+  }) as {
+    dependencies: Record<string, string>;
+    overrides: Record<string, string>;
+  };
+
+  it("depends on the package and its siblings by their tarballs", () => {
+    expect(manifest.dependencies).toEqual({
+      "@scope/core": "file:/t/scope-core-3.0.0-rc.0.tgz",
+      "@scope/viewer": "file:/t/scope-viewer-3.0.0-rc.0.tgz",
+      "@types/bun": "^1.4.2",
+      typescript: "^6.0.3",
+      zod: "^4",
+    });
+  });
+
+  it("overrides the package under test too, so a sibling depending on it never gets the registry's copy", () => {
+    // `@scope/viewer` depends on `@scope/core`: without this override that
+    // transitive range resolved from npm (bun-common 2.2.0 under
+    // bun-api-docs-ui, until the ranges moved to an unpublished 3.0.0-rc.0).
+    expect(manifest.overrides).toEqual({
+      "@scope/core": "file:/t/scope-core-3.0.0-rc.0.tgz",
+      "@scope/viewer": "file:/t/scope-viewer-3.0.0-rc.0.tgz",
+    });
   });
 });

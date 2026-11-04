@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-client",
   "type": "module",
-  "version": "0.1.0",
+  "version": "3.0.0-rc.0",
   "private": false,
   "description": "A typed, dependency-free HTTP client for the bun-node servers: one call per verb keyed by the server's own path literal, named operations, typed params, query and body, results discriminated by status, retries with backoff and Retry-After, timeouts, middleware and single-flight auth refresh; typed, resumable server-sent events; typed WebSocket channels with requests, reconnection and backpressure; WebRTC peers over a typed signalling channel. Browser-safe.",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -140,10 +140,10 @@
     "format:check": "bun fmt --check"
   },
   "dependencies": {
-    "@kingsleyweb/bun-contract": "^0.1.0"
+    "@kingsleyweb/bun-contract": "^3.0.0-rc.0"
   },
   "peerDependencies": {
-    "@kingsleyweb/bun-common": ">=2.2.0",
+    "@kingsleyweb/bun-common": "^3.0.0-rc.0",
     "@tanstack/query-core": "^5.90.0",
     "@tanstack/query-persist-client-core": "^5.90.0",
     "@tanstack/react-query": "^5.90.0",
@@ -180,8 +180,8 @@
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.0.0",
-    "@kingsleyweb/bun-cache": "^0.1.0",
-    "@kingsleyweb/bun-common": "^2.2.0",
+    "@kingsleyweb/bun-cache": "^3.0.0-rc.0",
+    "@kingsleyweb/bun-common": "^3.0.0-rc.0",
     "@tanstack/query-core": "^5.90.0",
     "@tanstack/query-persist-client-core": "5.103.1",
     "@tanstack/react-query": "^5.90.0",

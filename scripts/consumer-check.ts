@@ -348,6 +348,44 @@ function packageOf(specifier: string): string {
   return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
+/**
+ * The `package.json` of a consumer: the packed package and its packed
+ * workspace siblings as `file:` dependencies, each also an override.
+ *
+ * The package itself is overridden too, not only depended on: a sibling that
+ * depends on it (bun-api-docs-ui on bun-common) would otherwise resolve it
+ * from the registry, so the consumer checked a second, published copy. With
+ * the ranges at an unpublished version the install fails instead; at a
+ * published one (`^2.2.0`, until 3.0.0-rc.0) it passed with that copy.
+ */
+export function consumerManifest(options: {
+  /** The package under test's name. */
+  name: string;
+  /** The packed package under test, an absolute path. */
+  tarball: string;
+  /** Workspace siblings to install, name → `file:` spec of their tarball. */
+  workspace: Record<string, string>;
+  /** Registry dependencies from `consumerDependencies`, name → range. */
+  extra: Record<string, string>;
+  /** The TypeScript range to install; `--typescript`, else `^6.0.3`. */
+  typescript?: string;
+}): Record<string, unknown> {
+  const own = { [options.name]: `file:${options.tarball}` };
+  return {
+    name: "consumer-check",
+    private: true,
+    type: "module",
+    dependencies: {
+      ...own,
+      ...options.workspace,
+      "@types/bun": "^1.4.2",
+      typescript: options.typescript ?? "^6.0.3",
+      ...options.extra,
+    },
+    overrides: { ...own, ...options.workspace },
+  };
+}
+
 /** Recursively lists files under `dir` ending in `suffix`. */
 function walk(dir: string, suffix: string): string[] {
   if (!existsSync(dir)) return [];
@@ -521,19 +559,13 @@ async function main(): Promise<void> {
     writeFileSync(
       join(dir, "package.json"),
       JSON.stringify(
-        {
-          name: "consumer-check",
-          private: true,
-          type: "module",
-          dependencies: {
-            [manifest.name]: `file:${main}`,
-            ...workspace,
-            "@types/bun": "^1.4.2",
-            typescript: tsVersion ?? "^6.0.3",
-            ...(peers ? extra : withoutPeers(extra)),
-          },
-          overrides: workspace,
-        },
+        consumerManifest({
+          name: manifest.name,
+          tarball: main,
+          workspace,
+          extra: peers ? extra : withoutPeers(extra),
+          typescript: tsVersion,
+        }),
         null,
         2,
       ),
