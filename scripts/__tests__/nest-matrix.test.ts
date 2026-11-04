@@ -18,6 +18,7 @@ import {
   exitStatus,
   findInstalledCopies,
   findNestManifests,
+  hasNestDependency,
   formatCheck,
   formatSummary,
   judgeBunTest,
@@ -239,6 +240,49 @@ describe("rewriteManifest", () => {
     expect(widenRange("^11.1.20", "11.0.0")).toBe("^11.1.20 || ^11.0.0");
     const pre = widenRange("^12.0.0", "13.0.0-rc.1");
     expect(Bun.semver.satisfies("13.0.0-rc.1", pre)).toBe(true);
+  });
+
+  it("pins catalog: specifiers and the root catalog's @nestjs/* entries (the workspace's Nest comes from the catalog)", () => {
+    const root: Manifest = {
+      name: "root",
+      workspaces: {
+        packages: ["packages/*"],
+        catalog: {
+          "@nestjs/common": "^12.2.0",
+          "@nestjs/swagger": "12.0.4",
+          zod: "^4",
+        },
+        catalogs: { nest11: { "@nestjs/core": "^11.1.20" } },
+      },
+      devDependencies: { "@nestjs/common": "catalog:", typescript: "catalog:" },
+    };
+    const { manifest, changes } = rewriteManifest(root, "11.2.7");
+    const ws = manifest.workspaces as {
+      catalog: Record<string, string>;
+      catalogs: Record<string, Record<string, string>>;
+      packages: string[];
+    };
+    expect(ws.catalog).toEqual({
+      "@nestjs/common": "11.2.7",
+      "@nestjs/swagger": "11.4.6",
+      zod: "^4",
+    });
+    expect(ws.catalogs.nest11["@nestjs/core"]).toBe("11.2.7");
+    expect(ws.packages).toEqual(["packages/*"]);
+    expect(manifest.devDependencies).toEqual({
+      "@nestjs/common": "11.2.7",
+      typescript: "catalog:",
+    });
+    expect(changes).toEqual([
+      "devDependencies @nestjs/common: catalog: -> 11.2.7",
+      "workspaces.catalog @nestjs/common: ^12.2.0 -> 11.2.7",
+      "workspaces.catalog @nestjs/swagger: 12.0.4 -> 11.4.6",
+      "workspaces.catalogs.nest11 @nestjs/core: ^11.1.20 -> 11.2.7",
+    ]);
+    expect(
+      hasNestDependency({ workspaces: { catalog: { "@nestjs/core": "^12" } } }),
+    ).toBe(true);
+    expect(hasNestDependency({ workspaces: ["packages/*"] })).toBe(false);
   });
 
   it("finds the manifests that name Nest, skipping node_modules, dot directories and docs/", () => {

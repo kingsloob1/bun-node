@@ -20,6 +20,10 @@
  * 5. scans the shipped declarations for imports of packages a consumer is not
  *    guaranteed to have (optional peers, undeclared packages).
  *
+ * Every tarball first goes through the pack guard (`scripts/pack-guard.ts`):
+ * one whose `package.json` still names `workspace:` or `catalog:` fails the
+ * run before anything is installed.
+ *
  * ```bash
  * bun scripts/consumer-check.ts packages/bun-common                      # run, print the table
  * bun scripts/consumer-check.ts packages/bun-common --save base.json     # record a baseline
@@ -62,6 +66,7 @@ import { builtinModules } from "node:module";
 import { basename, join, relative, resolve } from "node:path";
 import process from "node:process";
 import ts from "typescript";
+import { guardTarball } from "./pack-guard";
 
 /** One import spelling a consumer may write. */
 interface EntryConfig {
@@ -533,6 +538,20 @@ async function main(): Promise<void> {
       }
     ).name;
     siblings[name] = `file:${pack(dir, tarballs)}`;
+  }
+  // A tarball still naming `workspace:` or `catalog:` (an `npm pack` from the
+  // package directory, or a Bun that stopped rewriting them) installs
+  // nowhere but here: refuse it before the consumer hides that.
+  const unresolved = [
+    main,
+    ...Object.values(siblings).map((s) => s.slice(5)),
+  ].flatMap((tarball) =>
+    guardTarball(tarball).map((p) => `${basename(tarball)}: ${p}`),
+  );
+  if (unresolved.length > 0) {
+    console.error(`pack guard: ${unresolved.length} problem(s)`);
+    for (const p of unresolved) console.error(`  ${p}`);
+    process.exit(1);
   }
 
   // 2. Install into a consumer that lives outside the repo, so nothing

@@ -140,10 +140,10 @@
     "format:check": "bun fmt --check"
   },
   "dependencies": {
-    "@kingsleyweb/bun-contract": "^3.0.0-rc.0"
+    "@kingsleyweb/bun-contract": "workspace:^"
   },
   "peerDependencies": {
-    "@kingsleyweb/bun-common": "^3.0.0-rc.0",
+    "@kingsleyweb/bun-common": "workspace:^",
     "@tanstack/query-core": "^5.90.0",
     "@tanstack/query-persist-client-core": "^5.90.0",
     "@tanstack/react-query": "^5.90.0",
@@ -179,21 +179,21 @@
     }
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.0.0",
-    "@kingsleyweb/bun-cache": "^3.0.0-rc.0",
-    "@kingsleyweb/bun-common": "^3.0.0-rc.0",
-    "@tanstack/query-core": "^5.90.0",
+    "@happy-dom/global-registrator": "catalog:",
+    "@kingsleyweb/bun-cache": "workspace:^",
+    "@kingsleyweb/bun-common": "workspace:^",
+    "@tanstack/query-core": "catalog:",
     "@tanstack/query-persist-client-core": "5.103.1",
-    "@tanstack/react-query": "^5.90.0",
-    "@types/bun": "^1.4.2",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "bun-types": "^1.4.3",
-    "happy-dom": "^20.0.0",
+    "@tanstack/react-query": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "bun-types": "catalog:",
+    "happy-dom": "catalog:",
     "node-datachannel": "0.33.6",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "typescript": "^6.0.3",
-    "zod": "^4"
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "zod": "catalog:"
   }
 }

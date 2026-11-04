@@ -332,8 +332,40 @@ export interface Manifest {
   devDependencies?: Record<string, string>;
   /** Peer dependencies. */
   peerDependencies?: Record<string, string>;
+  /**
+   * The root's workspaces: a list, or `{ packages, catalog, catalogs }`,
+   * whose catalog entries `catalog:` specifiers resolve to.
+   */
+  workspaces?: string[] | WorkspacesField;
   /** Every other field, kept as is. */
   [key: string]: unknown;
+}
+
+/** The object form of a root manifest's `workspaces`. */
+export interface WorkspacesField {
+  /** The member globs. */
+  packages?: string[];
+  /** The default catalog, name → range (`catalog:`). */
+  catalog?: Record<string, string>;
+  /** Named catalogs, catalog → name → range (`catalog:<name>`). */
+  catalogs?: Record<string, Record<string, string>>;
+  /** Every other field, kept as is. */
+  [key: string]: unknown;
+}
+
+/** The catalogs of a manifest's `workspaces`, each with the label a change line uses. */
+function catalogsOf(manifest: Manifest): [string, Record<string, string>][] {
+  const ws = manifest.workspaces;
+  if (!ws || Array.isArray(ws)) return [];
+  return [
+    ...(ws.catalog
+      ? [["workspaces.catalog", ws.catalog] as [string, Record<string, string>]]
+      : []),
+    ...Object.entries(ws.catalogs ?? {}).map(
+      ([name, c]) =>
+        [`workspaces.catalogs.${name}`, c] as [string, Record<string, string>],
+    ),
+  ];
 }
 
 /** {@link rewriteManifest}'s answer. */
@@ -367,8 +399,11 @@ export function widenRange(range: string, version: string): string {
  * Pins every `@nestjs/*` in `dependencies` and `devDependencies` to exactly
  * `version` — or to the package's {@link NEST_PACKAGE_OVERRIDES} entry, which
  * is consulted first — and, with `widenPeers`, widens the `@nestjs/*` peer
- * ranges that do not admit it. Pure: answers a new manifest and the list of
- * changes.
+ * ranges that do not admit it. A `catalog:` specifier is pinned like any
+ * range, and so is the root's catalog entry it would read
+ * (`workspaces.catalog`, `workspaces.catalogs`), so no member of the copy can
+ * still resolve the develop lock's Nest through it. Pure: answers a new
+ * manifest and the list of changes.
  */
 export function rewriteManifest(
   manifest: Manifest,
@@ -388,6 +423,15 @@ export function rewriteManifest(
       changes.push(`${field} ${name}: ${range} -> ${pin}`);
     }
   }
+  for (const [label, catalog] of catalogsOf(out)) {
+    for (const [name, range] of Object.entries(catalog)) {
+      if (!name.startsWith("@nestjs/")) continue;
+      const pin = NEST_PACKAGE_OVERRIDES[name]?.(version) ?? version;
+      if (range === pin) continue;
+      catalog[name] = pin;
+      changes.push(`${label} ${name}: ${range} -> ${pin}`);
+    }
+  }
   if (options.widenPeers && out.peerDependencies) {
     for (const [name, range] of Object.entries(out.peerDependencies)) {
       if (!name.startsWith("@nestjs/")) continue;
@@ -400,9 +444,13 @@ export function rewriteManifest(
   return { manifest: out, changes };
 }
 
-/** True when a manifest names an `@nestjs/*` package in `dependencies` or `devDependencies`. */
+/** True when a manifest names an `@nestjs/*` package in `dependencies`, `devDependencies` or a workspace catalog. */
 export function hasNestDependency(manifest: Manifest): boolean {
-  return [manifest.dependencies, manifest.devDependencies].some(
+  return [
+    manifest.dependencies,
+    manifest.devDependencies,
+    ...catalogsOf(manifest).map(([, c]) => c),
+  ].some(
     (deps) =>
       deps !== undefined &&
       Object.keys(deps).some((n) => n.startsWith("@nestjs/")),

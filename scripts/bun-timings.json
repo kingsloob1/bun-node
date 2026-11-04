@@ -1,9 +1,14 @@
 {
   "version": 1,
   "files": {
-    "__tests__/heavy-run.test.ts": 17184,
-    "__tests__/typecheck.test.ts": 2220,
-    "__tests__/consumer-check.test.ts": 814,
-    "__tests__/setup-databases.test.ts": 40
+    "__tests__/heavy-run.test.ts": 10366,
+    "__tests__/publish.test.ts": 944,
+    "__tests__/pack-guard.test.ts": 762,
+    "__tests__/reformat.test.ts": 747,
+    "__tests__/typecheck.test.ts": 612,
+    "__tests__/consumer-check.test.ts": 382,
+    "__tests__/changelog.test.ts": 283,
+    "__tests__/setup-databases.test.ts": 95,
+    "__tests__/nest-matrix.test.ts": 15
   }
 }
