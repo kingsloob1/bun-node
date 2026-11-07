@@ -44,7 +44,12 @@ export type JobStateMatches = Expect<JobStateEqual>;
 type JobRefEqual = Equal<Infer<typeof JobRefSchema>, JobRef>;
 export type JobRefMatches = Expect<JobRefEqual>;
 
-type ProblemEqual = Equal<Infer<typeof ProblemSchema>, ProblemDto>;
+// `code` is a string in the schema and the closed `ApiErrorCode` in the DTO
+// (api-contract.type-test.ts asserts both); the rest is one shape.
+type ProblemEqual = Equal<
+  Omit<Infer<typeof ProblemSchema>, "code">,
+  Omit<ProblemDto, "code">
+>;
 export type ProblemMatches = Expect<ProblemEqual>;
 
 // `cause` is loose in the schema (it cannot recurse), so a DTO fits the schema

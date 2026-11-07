@@ -162,7 +162,7 @@ describe("the Demand panel", () => {
       handlers: {
         "GET /queues/emails/demand": {
           status: 503,
-          body: problem(503, "UNAVAILABLE", "Down"),
+          body: problem(503, "DRIVER_ERROR", "Down"),
         },
       },
     });

@@ -1,4 +1,19 @@
-import type { ProblemDto, ProblemIssueDto } from "./types";
+import type { ApiErrorCode, ProblemDto, ProblemIssueDto } from "./types";
+
+/**
+ * Every code an {@link ApiError} carries: a problem's (the API's closed
+ * `ApiErrorCode`, `HTTP_<status>` among them, for an error that was not
+ * problem+json), or one the UI raises itself for a call that produced no
+ * usable answer. A comparison against a code outside it does not compile.
+ */
+export type UiErrorCode =
+  | ApiErrorCode
+  /** No response arrived. */
+  | "NETWORK_ERROR"
+  /** A 2xx whose body was not JSON. */
+  | "INVALID_RESPONSE"
+  /** A 2xx whose JSON lacked the fields a screen needs (`assertShape`). */
+  | "UNEXPECTED_RESPONSE";
 
 /** Where an {@link ApiError} came from. */
 export type ApiErrorKind =
@@ -17,8 +32,8 @@ export interface ApiErrorInit {
   kind: ApiErrorKind;
   /** HTTP status, or `0` for a network error. */
   status: number;
-  /** Machine code: the problem's `code`, or `NETWORK_ERROR` / `HTTP_<status>` / `INVALID_RESPONSE`. */
-  code: string;
+  /** Machine code: the problem's `code`, or `NETWORK_ERROR` / `HTTP_<status>` / `INVALID_RESPONSE` / `UNEXPECTED_RESPONSE`. */
+  code: UiErrorCode;
   /** Short title. */
   title: string;
   /** Human detail, when there is one. */
@@ -45,8 +60,8 @@ export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   /** HTTP status, or `0` for a network error. */
   readonly status: number;
-  /** Machine code, e.g. `QUEUE_NOT_FOUND`. */
-  readonly code: string;
+  /** Machine code, e.g. `QUEUE_NOT_FOUND`: a closed union, {@link UiErrorCode}. */
+  readonly code: UiErrorCode;
   /** Short, stable title. */
   readonly title: string;
   /** Human detail for this occurrence. */

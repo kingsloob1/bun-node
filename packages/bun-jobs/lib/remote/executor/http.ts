@@ -54,7 +54,7 @@ export function problemBody(
   status: number,
   code: RemoteProblemCode,
   extras: ProblemExtras = {},
-): ProblemDto & { supported?: number[] } {
+): ProblemDto<RemoteProblemCode> & { supported?: number[] } {
   return {
     type: `urn:bun-jobs:error:${code}`,
     title: TITLES[code] ?? code,

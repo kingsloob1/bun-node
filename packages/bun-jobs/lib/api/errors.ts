@@ -6,6 +6,7 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { JobsApiAction } from "./config";
+import type { ApiErrorCode } from "./contract/types";
 import type { ProblemDto, ProblemIssueDto } from "./serialize";
 import { PayloadTooLargeError, ValidationError } from "@kingsleyweb/bun-common";
 import {
@@ -31,6 +32,10 @@ import {
   UnrecoverableJobError,
   WorkerClosedError,
 } from "../shared/errors";
+import {
+  API_ERROR_STATUS,
+  API_INTERNAL_ERROR_CODES,
+} from "./contract/constants";
 
 /**
  * The API's error model: one body shape (RFC 9457 problem details), one table
@@ -43,71 +48,25 @@ import {
  * decides, because a message is prose and prose gets edited.
  */
 
-/**
- * The status each of the API's own codes is answered with. The OpenAPI
- * generator reads it to document a route's `errors` under the right status.
- */
-export const API_ERROR_STATUS = {
-  UNAUTHORIZED: 401,
-  FORBIDDEN: 403,
-  QUEUE_NOT_FOUND: 404,
-  JOB_NOT_FOUND: 404,
-  RUNNER_NOT_FOUND: 404,
-  RUN_NOT_FOUND: 404,
-  REPEATABLE_NOT_FOUND: 404,
-  WORKER_NOT_FOUND: 404,
-  PROVIDER_NOT_FOUND: 404,
-  PROVIDER_SCHEMA_NOT_FOUND: 404,
-  WORKER_GONE: 410,
-  ROUTE_NOT_FOUND: 404,
-  INVALID_NAME: 400,
-  INVALID_JSON: 400,
-  INVALID_SCHEDULE: 400,
-  JOB_STATE_CONFLICT: 409,
-  JOB_ACTIVE: 409,
-  RUNNER_NOT_LOCAL: 409,
-  WORKER_STATE_CONFLICT: 409,
-  WORKER_NOT_CONTROLLABLE: 409,
-  WORKER_PERSISTENCE_NOT_ALLOWED: 409,
-  CONTROL_CONTENDED: 409,
-  CONFIG_NOT_ALLOWED: 409,
-  RUNNER_NOT_CONFIGURABLE: 409,
-  LOGS_NOT_RETAINED: 409,
-  OPERATION_IN_PROGRESS: 409,
-  DEFAULTS_CHANGED: 409,
-  SUMMON_NOT_CONFIGURED: 409,
-  SUMMON_MARKER_CONTENDED: 409,
-  BULK_LIMIT: 400,
-  RANGE_NOT_RETAINED: 400,
-  ARGS_NOT_ALLOWED: 400,
-  NAME_NOT_ADDABLE: 403,
-  CSRF_REJECTED: 403,
-  ORIGIN_REJECTED: 403,
-  CONNECTION_LIMIT: 429,
-  UNSUPPORTED_SUBPROTOCOL: 400,
-  UNSUPPORTED_MEDIA_TYPE: 415,
-  PAYLOAD_TOO_LARGE: 413,
-  LIMITS_CONTENDED: 409,
-  INVALID_ARGUMENT: 400,
-  NOT_SUPPORTED: 501,
-  VALIDATION: 400,
-  SERIALIZATION: 400,
-  QUEUE_CLOSED: 503,
-  WORKER_CLOSED: 503,
-  JOBS_CLOSED: 503,
-  QUEUE_FULL: 503,
-  DRIVER_ERROR: 503,
-  RUNNER_STOPPED: 409,
-  LOCK_UNAVAILABLE: 409,
-  LOCK_LOST: 409,
-  INTERNAL: 500,
-} as const;
+// The codes are the contract's (`./contract/constants`), so a browser client
+// and this handler cannot disagree on them.
+export type {
+  ApiErrorCode,
+  ApiForeignErrorCode,
+  ApiInternalErrorCode,
+  ApiOwnErrorCode,
+} from "./contract/types";
+export { API_ERROR_STATUS, API_INTERNAL_ERROR_CODES };
 
-/** Codes the API itself raises, or maps a bun-jobs error to. */
-export type ApiOwnErrorCode = keyof typeof API_ERROR_STATUS;
+/** {@link API_INTERNAL_ERROR_CODES}, for lookups. */
+const INTERNAL_CODES: ReadonlySet<string> = new Set(API_INTERNAL_ERROR_CODES);
 
-/** Every code a problem may carry: the API's own, or a bun-jobs `JobsError.code`. */
-export type ApiErrorCode = ApiOwnErrorCode | (string & {});
+/** Whether a library error's code is one the API passes through as it is. */
+function isInternalErrorCode(
+  code: string,
+): code is (typeof API_INTERNAL_ERROR_CODES)[number] {
+  return INTERNAL_CODES.has(code);
+}
 
 /** Titles by code: short, stable, and safe to show for any occurrence. */
 const TITLES: Record<string, string> = {
@@ -226,6 +185,8 @@ export interface ApiErrorOptions {
  * still answers with the right status.
  */
 export class ApiError extends JobsError {
+  /** The problem code it is answered with. */
+  declare readonly code: ApiErrorCode;
   /** The HTTP status to answer with. */
   readonly status: number;
   /** Extra response headers. */
@@ -394,7 +355,7 @@ interface Classified {
   /** The HTTP status. */
   status: number;
   /** The code. */
-  code: string;
+  code: ApiErrorCode;
   /** A client-visible detail, used only below 500. */
   detail?: string;
   /** Safe context. */
@@ -406,7 +367,7 @@ interface Classified {
 }
 
 /** Foreign 4xx statuses with a conventional code. */
-const FOREIGN_CODES: Record<number, string> = {
+const FOREIGN_CODES: Partial<Record<number, ApiErrorCode>> = {
   401: "UNAUTHORIZED",
   403: "FORBIDDEN",
   404: "NOT_FOUND",
@@ -541,7 +502,15 @@ function classify(error: unknown): Classified {
   ) {
     // Their messages carry internal key text (`r:<id>`, lock names); the
     // title says what happened without it.
-    return { status: 409, code: error.code };
+    return {
+      status: 409,
+      code:
+        error instanceof RunnerStoppedError
+          ? "RUNNER_STOPPED"
+          : error instanceof LockUnavailableError
+            ? "LOCK_UNAVAILABLE"
+            : "LOCK_LOST",
+    };
   }
   if (
     error instanceof ProtocolError ||
@@ -553,7 +522,13 @@ function classify(error: unknown): Classified {
     error instanceof InvalidHandlerError ||
     error instanceof JobsError
   ) {
-    return { status: 500, code: error.code };
+    // Only a code the contract lists goes out as it is: a library error with
+    // a code of its own (a provider's, a subclass a host wrote) is INTERNAL,
+    // so `ProblemDto.code` stays a closed union. The log keeps the error.
+    return {
+      status: 500,
+      code: isInternalErrorCode(error.code) ? error.code : "INTERNAL",
+    };
   }
 
   const status = errorStatusCode(error);

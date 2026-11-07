@@ -182,9 +182,22 @@ describe("the generated document", () => {
         schema: { $ref: "#/components/schemas/Problem" },
       },
     });
-    expect(responses.default).toEqual({
-      $ref: "#/components/responses/Problem",
-    });
+    // No catch-all `default`: the operation lists the statuses it answers,
+    // as bun-common's generator does.
+    expect(responses.default).toBeUndefined();
+    // `x-bun-errors`: every code of every problem status, sorted, its own
+    // `errors` (`BULK_LIMIT`, `QUEUE_NOT_FOUND`) among them.
+    expect(retry["x-bun-errors"]).toEqual([
+      "BULK_LIMIT",
+      "CSRF_REJECTED",
+      "FORBIDDEN",
+      "INVALID_JSON",
+      "PAYLOAD_TOO_LARGE",
+      "QUEUE_NOT_FOUND",
+      "UNAUTHORIZED",
+      "UNSUPPORTED_MEDIA_TYPE",
+      "VALIDATION",
+    ]);
 
     expect(retry["x-bun-jobs-action"]).toBe("jobs.retry");
     expect(retry["x-bun-jobs-mutation"]).toBe(true);
@@ -198,7 +211,13 @@ describe("the generated document", () => {
       string,
       unknown
     >;
-    expect(Object.keys(meta).sort()).toEqual(["200", "401", "403", "default"]);
+    expect(Object.keys(meta).sort()).toEqual(["200", "401", "403"]);
+    // A route with no `errors` of its own lists only the codes every route
+    // gets: none of another route's.
+    expect(op(document, "/meta", "get")["x-bun-errors"]).toEqual([
+      "FORBIDDEN",
+      "UNAUTHORIZED",
+    ]);
     // With CSRF off, mutations document no CSRF problems.
     const noCsrf = op(
       documentFor({ csrf: false }),
@@ -208,6 +227,48 @@ describe("the generated document", () => {
     expect(
       (noCsrf.responses as Record<string, unknown>)["415"],
     ).toBeUndefined();
+  });
+
+  it("lists every operation's problem codes in x-bun-errors, and no default", () => {
+    for (const { name, overrides } of MATRIX) {
+      const document = documentFor(overrides);
+      const resolved = resolveConfig(apiConfig(overrides));
+      const defs = [...builtInRoutes(resolved), ...testRoutes()];
+      let operations = 0;
+      const paths = document.paths as Record<
+        string,
+        Record<string, Record<string, unknown>>
+      >;
+      for (const [path, item] of Object.entries(paths)) {
+        for (const [method, operation] of Object.entries(item)) {
+          operations++;
+          const at = `${name}: ${method.toUpperCase()} ${path}`;
+          const responses = operation.responses as Record<
+            string,
+            Record<string, unknown>
+          >;
+          expect(Object.hasOwn(responses, "default"), at).toBe(false);
+          // The extension is exactly the statuses' codes, flattened…
+          const fromStatuses = Object.values(responses)
+            .flatMap(
+              (response) => (response["x-bun-jobs-codes"] as string[]) ?? [],
+            )
+            .sort();
+          const codes = operation["x-bun-errors"] as string[];
+          expect(codes, at).toEqual(fromStatuses);
+          // …and holds the route's own `errors`, each once.
+          const def = defs.find(
+            (each) => each.operationId === operation.operationId,
+          );
+          expect(def, at).toBeDefined();
+          for (const code of def?.errors ?? []) {
+            expect(codes, at).toContain(code);
+          }
+          expect(new Set(codes).size, at).toBe(codes.length);
+        }
+      }
+      expect(operations, name).toBeGreaterThan(0);
+    }
   });
 
   it("keeps only the components something reaches", () => {
@@ -392,7 +453,10 @@ describe("generator guards", () => {
         config(),
       ),
     ).toThrow(/does not have/);
+    // A code with no status is a type error (a route's `errors` are
+    // `ApiOwnErrorCode`s), and still refused at run time for plain JS.
     expect(() =>
+      // @ts-expect-error "MADE_UP" is no ApiOwnErrorCode.
       generateOpenApi([{ ...base(), errors: ["MADE_UP"] }], config()),
     ).toThrow(/no known status/);
     expect(() =>

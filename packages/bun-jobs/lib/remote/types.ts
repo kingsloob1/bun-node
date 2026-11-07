@@ -675,8 +675,11 @@ export interface CloseMessage {
 export interface ProblemMessage {
   /** Discriminates the message. */
   op: "problem";
-  /** The problem. */
-  problem: ProblemDto;
+  /**
+   * The problem. Its `code` is a string: a peer of another version may send
+   * one this side does not know, and the message schema checks a string.
+   */
+  problem: ProblemDto<string>;
   /** Whether the session ends with it. */
   fatal: boolean;
   /** The sender's clock, epoch ms; informative. */

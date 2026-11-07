@@ -1091,3 +1091,88 @@ export function decodeJobId(encoded: string): string {
     })
     .join("");
 }
+
+/* ------------------------------------------------------------------ *
+ * Problem codes
+ * ------------------------------------------------------------------ */
+
+/**
+ * The status each of the API's own problem codes is answered with: the
+ * source of {@link ApiOwnErrorCode}. The OpenAPI generator reads it to
+ * document a route's `errors` under the right status; the server's error
+ * handler imports it from here, so the two cannot disagree.
+ */
+export const API_ERROR_STATUS = {
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  QUEUE_NOT_FOUND: 404,
+  JOB_NOT_FOUND: 404,
+  RUNNER_NOT_FOUND: 404,
+  RUN_NOT_FOUND: 404,
+  REPEATABLE_NOT_FOUND: 404,
+  WORKER_NOT_FOUND: 404,
+  PROVIDER_NOT_FOUND: 404,
+  PROVIDER_SCHEMA_NOT_FOUND: 404,
+  WORKER_GONE: 410,
+  ROUTE_NOT_FOUND: 404,
+  INVALID_NAME: 400,
+  INVALID_JSON: 400,
+  INVALID_SCHEDULE: 400,
+  JOB_STATE_CONFLICT: 409,
+  JOB_ACTIVE: 409,
+  RUNNER_NOT_LOCAL: 409,
+  WORKER_STATE_CONFLICT: 409,
+  WORKER_NOT_CONTROLLABLE: 409,
+  WORKER_PERSISTENCE_NOT_ALLOWED: 409,
+  CONTROL_CONTENDED: 409,
+  CONFIG_NOT_ALLOWED: 409,
+  RUNNER_NOT_CONFIGURABLE: 409,
+  LOGS_NOT_RETAINED: 409,
+  OPERATION_IN_PROGRESS: 409,
+  DEFAULTS_CHANGED: 409,
+  SUMMON_NOT_CONFIGURED: 409,
+  SUMMON_MARKER_CONTENDED: 409,
+  BULK_LIMIT: 400,
+  RANGE_NOT_RETAINED: 400,
+  ARGS_NOT_ALLOWED: 400,
+  NAME_NOT_ADDABLE: 403,
+  CSRF_REJECTED: 403,
+  ORIGIN_REJECTED: 403,
+  CONNECTION_LIMIT: 429,
+  UNSUPPORTED_SUBPROTOCOL: 400,
+  UNSUPPORTED_MEDIA_TYPE: 415,
+  PAYLOAD_TOO_LARGE: 413,
+  LIMITS_CONTENDED: 409,
+  INVALID_ARGUMENT: 400,
+  NOT_SUPPORTED: 501,
+  VALIDATION: 400,
+  SERIALIZATION: 400,
+  QUEUE_CLOSED: 503,
+  WORKER_CLOSED: 503,
+  JOBS_CLOSED: 503,
+  QUEUE_FULL: 503,
+  DRIVER_ERROR: 503,
+  RUNNER_STOPPED: 409,
+  LOCK_UNAVAILABLE: 409,
+  LOCK_LOST: 409,
+  INTERNAL: 500,
+} as const;
+
+/**
+ * Codes of bun-jobs' own errors the API answers with as they are, as a 500
+ * (its `detail` the generic title): a job's or a runner's failure reaching a
+ * management call. Any other library error with no mapping of its own is
+ * answered as `INTERNAL`, so a problem's `code` is always an
+ * {@link ApiErrorCode}.
+ */
+export const API_INTERNAL_ERROR_CODES = [
+  "PROTOCOL",
+  "JOB_TIMEOUT",
+  "UNRECOVERABLE_JOB",
+  "CHILD_EXIT",
+  "CHILD_FAILED",
+  "OUTPUT_LIMIT",
+  "RUN_KILLED",
+  "INVALID_HANDLER",
+  "JOB_DATA_VALIDATION",
+] as const;

@@ -6974,6 +6974,24 @@ at that field. A cron expression or time zone the scheduler refuses is 400
 | `INTERNAL` | 500 | | `PROVIDER_SCHEMA_NOT_FOUND` | 404 |
 | `JOBS_CLOSED` | 503 | | | |
 
+**A problem's `code` is a closed union**, `ApiErrorCode`, exported from the
+browser-safe contract (`@kingsleyweb/bun-jobs/api/contract`) with the table
+above as `API_ERROR_STATUS`. Beside the codes above it holds a bun-jobs
+error's own code passed through as a 500 (`API_INTERNAL_ERROR_CODES`:
+`JOB_TIMEOUT`, `CHILD_EXIT`, `PROTOCOL`, …) and a foreign error's
+(`NOT_FOUND`, `RATE_LIMITED`, `HTTP_<status>`, for a host middleware that
+threw `{ status }`). Any other library error is answered as 500 `INTERNAL`,
+so a client can switch on `code` exhaustively; `ProblemDto.code` is typed
+with it, and a comparison against a code that does not exist does not
+compile.
+
+Each OpenAPI operation lists its problem statuses only (no `default`
+response; `components.responses.Problem` describes the body any other status
+carries), each with its codes in `x-bun-jobs-codes`, and every code of the
+operation in `x-bun-errors`, sorted: the extension
+[`bun-client generate`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-client/README.md) narrows each error body's
+`code` to.
+
 ### Checking responses (`validateResponses`)
 
 `createJobsApi({ validateResponses })` checks the value each route's handler

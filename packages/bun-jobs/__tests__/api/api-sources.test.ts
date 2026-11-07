@@ -13,6 +13,7 @@ import type {
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { afterAll, describe, expect, it } from "bun:test";
 import { resolveConfig } from "../../lib/api/config";
+import type { ApiErrorCode } from "../../lib/api/errors";
 import { ApiError } from "../../lib/api/errors";
 import {
   JOB_LIST_INCLUDE,
@@ -58,7 +59,7 @@ function resolve(
 /** Awaits `promise`, expecting an ApiError with this code and status. */
 async function expectApiError(
   promise: Promise<unknown>,
-  code: string,
+  code: ApiErrorCode,
   status: number,
 ) {
   const error = await promise.then(

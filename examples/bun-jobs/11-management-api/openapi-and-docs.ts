@@ -68,6 +68,9 @@ show("one operation", {
   // can reason about permissions without a second source of truth.
   action: getJob["x-bun-jobs-action"],
   mutation: getJob["x-bun-jobs-mutation"],
+  // Every problem code it answers with, which a typed client (bun-client's
+  // generator) narrows each error body's `code` to.
+  errors: getJob["x-bun-errors"],
 });
 show(
   "the problems it documents",
@@ -104,14 +107,12 @@ checkEqual(
   rows.filter((row) => row.side === "inbound").map((row) => row.part),
   ["params", "query"],
 );
-// The document adds only its catch-all `default` problem; every status the
-// contract lists is the document's, and the document's are the contract's.
+// Every status the contract lists is the document's, and the document's are
+// the contract's: an operation lists only the statuses it answers.
 checkEqual(
   "it answers the statuses the document lists",
   rows.filter((row) => row.side === "outbound").map((row) => row.key),
-  Object.keys(
-    (getJob as { responses: Record<string, unknown> }).responses,
-  ).filter((status) => status !== "default"),
+  Object.keys((getJob as { responses: Record<string, unknown> }).responses),
 );
 // `api.routes` lists what was registered, with the base path; the router
 // holds the same routes relative to it, beside its middleware.

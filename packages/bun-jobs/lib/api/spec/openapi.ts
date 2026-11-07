@@ -179,7 +179,8 @@ function operation(
     };
   }
 
-  for (const { status, codes } of routeProblems(def, config)) {
+  const problems = routeProblems(def, config);
+  for (const { status, codes } of problems) {
     if (Object.hasOwn(responses, String(status))) {
       throw new ConfigError(
         `Route "${def.operationId}" declares ${status} both as a response and as a problem`,
@@ -196,7 +197,11 @@ function operation(
       "x-bun-jobs-codes": codes,
     };
   }
-  responses.default = { $ref: "#/components/responses/Problem" };
+  // No per-operation `default`: as bun-common's generator does, an
+  // operation lists the statuses it answers. A status it does not list (a
+  // 500 INTERNAL, a 503 from a closing queue) is still a problem, which
+  // `components.responses.Problem` describes; a typed client meets it as an
+  // undeclared status.
 
   return {
     operationId: def.operationId,
@@ -232,6 +237,11 @@ function operation(
           }
         : {}),
     responses,
+    // Every code the operation's problems carry, sorted: the typed-client
+    // plan's `x-bun-errors` (D7), which a generated client narrows each
+    // error body's `code` to. The same codes as the statuses' own
+    // `x-bun-jobs-codes`, flattened.
+    "x-bun-errors": problems.flatMap(({ codes }) => codes).sort(),
     "x-bun-jobs-action": def.action,
     "x-bun-jobs-mutation": mutation,
     "x-bun-jobs-requires": [...(def.requires ?? [])],
@@ -253,7 +263,11 @@ function operation(
  * - named schemas become `components.schemas`, referenced by `$ref`, and only
  *   the reachable ones are kept;
  * - every error status references the `Problem` schema and lists its codes
- *   in `x-bun-jobs-codes`;
+ *   in `x-bun-jobs-codes`, and each operation lists all of them in
+ *   `x-bun-errors`, the extension a typed client narrows `code` with;
+ * - an operation lists only the statuses it answers, with no `default`
+ *   response: `components.responses.Problem` describes the problem any
+ *   other status carries;
  * - operation ids must be unique, or `ConfigError` is thrown.
  */
 export function generateOpenApi(
@@ -344,7 +358,8 @@ export function generateOpenApi(
       ),
       responses: {
         Problem: {
-          description: "A problem, as RFC 9457 describes it.",
+          description:
+            "A problem, as RFC 9457 describes it: the body of every error status, including one an operation does not list (a 500 `INTERNAL`, a 503 while a queue closes).",
           content: {
             "application/problem+json": {
               schema: { $ref: "#/components/schemas/Problem" },

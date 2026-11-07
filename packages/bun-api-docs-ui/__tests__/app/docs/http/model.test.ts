@@ -76,10 +76,31 @@ describe("reading a real generated document", () => {
     )!;
     expect(notFound.codes).toContain("QUEUE_NOT_FOUND");
     expect(notFound.content[0].contentType).toBe("application/problem+json");
-    // `default` is a $ref to components.responses.Problem, resolved.
-    const fallback = list.responses.find(
-      (response) => response.status === "default",
-    )!;
+    // bun-jobs lists only the statuses an operation answers (no `default`,
+    // as bun-common's generator does)…
+    expectUndefined(
+      list.responses.find((response) => response.status === "default"),
+    );
+  });
+
+  it("resolves a response given as a $ref to components.responses", () => {
+    // …so the `$ref` case runs on a copy of the real document whose
+    // `listJobs` points a `default` at the `Problem` response it keeps.
+    const copy = structuredClone(doc);
+    const paths = copy.paths as Record<
+      string,
+      Record<string, { operationId?: string; responses: object }>
+    >;
+    const listJobs = Object.values(paths)
+      .flatMap((item) => Object.values(item))
+      .find((operation) => operation.operationId === "listJobs")!;
+    listJobs.responses = {
+      ...listJobs.responses,
+      default: { $ref: "#/components/responses/Problem" },
+    };
+    const fallback = listOperations(copy)
+      .find((operation) => operation.id === "listJobs")!
+      .responses.find((response) => response.status === "default")!;
     expect(fallback.ref).toBe("#/components/responses/Problem");
     expect(fallback.description).toContain("RFC 9457");
   });
