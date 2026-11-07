@@ -74,6 +74,33 @@ export interface TypedEmitter<
 }
 
 /**
+ * `opts` with the router's `trustProxy` and `clientIpHeader` filled in where
+ * `opts` leaves them out, so a dedicated WebSocket server resolves `req.ip`
+ * (and `ws.data.ip`) as the router's own requests do.
+ */
+function withRouterTrust<T extends object>(
+  opts: T & { trustProxy?: unknown; clientIpHeader?: unknown },
+  router: { trustProxy?: unknown; clientIpHeader?: unknown },
+): T {
+  const { trustProxy, clientIpHeader } = router;
+  if (
+    (trustProxy === undefined || opts.trustProxy !== undefined) &&
+    (clientIpHeader === undefined || opts.clientIpHeader !== undefined)
+  ) {
+    return opts;
+  }
+  return {
+    ...opts,
+    ...(opts.trustProxy === undefined && trustProxy !== undefined
+      ? { trustProxy }
+      : {}),
+    ...(opts.clientIpHeader === undefined && clientIpHeader !== undefined
+      ? { clientIpHeader }
+      : {}),
+  };
+}
+
+/**
  * Per-connection data stored on `ws.data`. The URL fields mirror what
  * `BunRequest.splitRequestUrl()` exposes for the upgrade request.
  */
@@ -96,6 +123,16 @@ export interface WebSocketClientData<TCustom = unknown> {
   headers: Headers;
   /** `req.user` at upgrade time, when an auth middleware set one. */
   user?: Record<string, unknown>;
+  /**
+   * The client's address at upgrade time: the upgrade request's `req.ip`,
+   * so resolved through the adapter's or router's `trustProxy` (and
+   * `clientIpHeader`) — the real client behind a trusted proxy, where
+   * Bun's `ws.remoteAddress` is always the socket peer (the proxy). `""`
+   * when there is no peer. Set on every upgrade this package performs
+   * unless an `onUpgrade` hook's `data` sets its own; absent on data built
+   * some other way.
+   */
+  ip?: string;
   /**
    * The route's `custom` value: what an `onUpgrade` hook returned as `custom`
    * (or the deprecated `customDataToWsClientFn` returned), else a router- or
@@ -790,11 +827,14 @@ export class BunWebSocket<
           (await BunRequest.init(
             nativeRequest,
             server,
-            createOpts?.bunRequestOpts || {
-              parseBody: true,
-              parseCookies: true,
-              parseQuery: true,
-            },
+            withRouterTrust(
+              createOpts?.bunRequestOpts || {
+                parseBody: true,
+                parseCookies: true,
+                parseQuery: true,
+              },
+              this.router,
+            ),
           ));
 
         const res =
@@ -1211,6 +1251,7 @@ export class BunWebSocket<
             ...result.data,
             route: result.data.route ?? path,
             params: result.data.params ?? params,
+            ip: result.data.ip ?? req.ip,
             ...(result.data.port === undefined && port !== undefined
               ? { port }
               : {}),
@@ -1227,6 +1268,7 @@ export class BunWebSocket<
             originalUrl: req.originalUrl,
             headers: req.headersObj,
             user: get<Record<string, unknown> | undefined>(req, "user"),
+            ip: req.ip,
             // `undefined` when nothing supplies one. `TCustom` is only
             // declared by a caller who supplies one, and defaults to `unknown`
             // (which admits `undefined`) otherwise.

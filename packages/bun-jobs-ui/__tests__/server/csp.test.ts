@@ -47,13 +47,23 @@ describe("connect-src", () => {
     ).toEqual(["'self'", "ws://127.0.0.1:3000"]);
   });
 
-  it("an https page gets wss:, from the URL or X-Forwarded-Proto", async () => {
+  it("an https page gets wss:, from the URL or a trusted X-Forwarded-Proto", async () => {
     const ui = fixtureUi();
     expect(
       await connectSrcFor(ui, "https://jobs.example/", {
         host: "jobs.example",
       }),
     ).toEqual(["'self'", "wss://jobs.example"]);
+    // X-Forwarded-Proto is a proxy's header: without trust (the default, as
+    // Express) a client sending it is ignored, so the page stays ws:.
+    expect(
+      await connectSrcFor(ui, "http://jobs.example/", {
+        host: "jobs.example",
+        "x-forwarded-proto": "https",
+      }),
+    ).toEqual(["'self'", "ws://jobs.example"]);
+    // Behind one trusted proxy, it is the page's protocol.
+    ui.router.trustProxy = 1;
     expect(
       await connectSrcFor(ui, "http://jobs.example/", {
         host: "jobs.example",

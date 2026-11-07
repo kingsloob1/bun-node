@@ -249,9 +249,15 @@ describe("BunRequest: construction & basics", () => {
     ).toEqual({ a: "1", b: "2" });
   });
 
-  it("derives protocol from X-Forwarded-Proto", async () => {
+  it("derives protocol from X-Forwarded-Proto only from a trusted peer", async () => {
+    const headers = { "X-Forwarded-Proto": "https, http" };
+    const untrusted = await makeRequest({ headers, peer: "10.0.0.2" });
+    expect(untrusted.protocol).toBe("http");
+    expect(untrusted.secure).toBe(false);
     const req = await makeRequest({
-      headers: { "X-Forwarded-Proto": "https, http" },
+      headers,
+      peer: "10.0.0.2",
+      options: { trustProxy: "10.0.0.0/8" },
     });
     expect(req.protocol).toBe("https");
     expect(req.secure).toBe(true);
@@ -960,12 +966,19 @@ describe("BunRequest: Express parity", () => {
     expect(req.fresh).toBe(true);
   });
 
-  it("ips is [] without X-Forwarded-For", async () => {
+  it("ips is [] without X-Forwarded-For, and without trustProxy", async () => {
     expect((await makeRequest()).ips).toEqual([]);
+    const headers = { "X-Forwarded-For": " 203.0.113.9 , 10.0.0.2," };
+    const untrusted = await makeRequest({ headers, peer: "10.0.0.3" });
+    expect(untrusted.ips).toEqual([]);
+    expect(untrusted.ip).toBe("10.0.0.3");
     const proxied = await makeRequest({
-      headers: { "X-Forwarded-For": " 203.0.113.9 , 10.0.0.2," },
+      headers,
+      peer: "10.0.0.3",
+      options: { trustProxy: true },
     });
     expect(proxied.ips).toEqual(["203.0.113.9", "10.0.0.2"]);
+    expect(proxied.ip).toBe("203.0.113.9");
   });
 
   it("url is the path and query, with originalUrl alongside and baseUrl ''", async () => {

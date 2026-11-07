@@ -3284,6 +3284,7 @@ export class BunResponse<
         "user",
         undefined,
       ),
+      ip: this.req.ip,
       custom: {} as customWebsocketDataType,
       // The router-wide base carries no custom type of its own.
       ...(defaults?.webSocketUpgradeData as

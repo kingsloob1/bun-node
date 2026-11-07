@@ -154,6 +154,12 @@ bun run check:client   # the same with --check: exit 1 when they are stale
 | [`gateway-channel.ts`](./12-typed-client/gateway-channel.ts) | a gateway's typed channel through the `"bun-nest"` codec: `request()` resolving the handler's ack typed by `@ValidateMessage`'s `ack` schema, an `@Emits` event as a typed push and a data-less event, opened from the generated descriptor (no `codec` option) and from the shared maps; a payload refused by the client before the write, and, with the client's checks off, by the gateway's `ValidationExceptionFilter` as a `ChannelError` on `$error`; four sends the compiler refuses |
 | [`invalidates.ts`](./12-typed-client/invalidates.ts) | `@Invalidates("user:{id}", "users")` with `liveInvalidation()` mounted first: another client's PATCH refetching this client's observed queries (the server counting the subscriber topics), a handler that throws (a 404) publishing nothing, and the tags documented in the manifest so the client's own `q.mutation()` invalidates by them |
 
+### 13 — Client IP behind proxies
+
+| File | Covers |
+|---|---|
+| [`client-ip.ts`](./13-trust-proxy/client-ip.ts) | `trust proxy` in a Nest app: off by default, `app.set("trust proxy", "loopback")` for `@Ip()`, `req.ips`, `req.protocol` and `@Controller({ host })` against the forwarded host, `behindCloudflare({ via })` reading `CF-Connecting-IP` only from a chain that checks out, and a gateway client's `client.data.ip` |
+
 ## Checking the examples
 
 ```bash

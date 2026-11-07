@@ -913,6 +913,17 @@ describe("the generated AsyncAPI document", () => {
 
   it("serves /asyncapi.json with the request's host, or the configured server", async () => {
     const api = createJobsApi(apiConfig());
+    // `X-Forwarded-Proto` counts only from a proxy the app trusts (bun-common's
+    // `trustProxy`, Express's `trust proxy`); a socket-free fetch has no peer,
+    // so a hop count trusts it by position.
+    const untrusted = await api.router.fetch("/asyncapi.json", {
+      headers: { host: "ops.example:8443", "x-forwarded-proto": "https" },
+    });
+    expect(
+      ((await untrusted.json()) as { servers: { api: { protocol: string } } })
+        .servers.api.protocol,
+    ).toBe("ws");
+    api.router.trustProxy = 1;
     const response = await api.router.fetch("/asyncapi.json", {
       headers: { host: "ops.example:8443", "x-forwarded-proto": "https" },
     });

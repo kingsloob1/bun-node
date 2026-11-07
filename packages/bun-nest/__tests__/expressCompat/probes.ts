@@ -23,6 +23,7 @@ import {
   QueryModule,
   signCookie,
   SmallModule,
+  TrustModule,
   VersionedModule,
   VIEWS,
   ViewsModule,
@@ -100,7 +101,94 @@ function jsonOfSize(n: number): string {
   return JSON.stringify({ pad: "x".repeat(Math.max(0, n - 10)) });
 }
 
+/**
+ * The `trust proxy` values the `trust-proxy-*` groups set on both apps, by
+ * group name. The socket peer is always `127.0.0.1`, so the values decide
+ * by hop count, address or preset whether it (and what is to its left) is
+ * believed.
+ */
+const TRUST_PROXY_VALUES: Record<string, unknown> = {
+  off: false,
+  true: true,
+  "hops-1": 1,
+  "hops-2": 2,
+  loopback: "loopback",
+  "loopback-and-private": "loopback, 10.0.0.0/8",
+  "list-with-mask": ["127.0.0.1", "10.0.0.0/255.0.0.0"],
+  "other-network": "192.0.2.0/24",
+};
+
+/** The forwarded-header requests sent under every `trust proxy` value. */
+const TRUST_PROXY_PROBES: Probe[] = [
+  { name: "no forwarded headers", path: "/trust" },
+  {
+    name: "a forwarded host and proto only",
+    path: "/trust",
+    init: {
+      headers: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "App.Example",
+      },
+    },
+  },
+  {
+    name: "one forwarded client",
+    path: "/trust",
+    init: {
+      headers: {
+        "x-forwarded-for": "203.0.113.9",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "app.example:8443",
+      },
+    },
+  },
+  {
+    name: "a chain through private proxies",
+    path: "/trust",
+    init: {
+      headers: {
+        "x-forwarded-for": "198.51.100.1, 203.0.113.9, 10.0.0.2 ,10.1.2.3",
+        "x-forwarded-proto": "https, http",
+        "x-forwarded-host": "app.example, edge.example",
+      },
+    },
+  },
+  {
+    name: "IPv6 and IPv4-mapped entries",
+    path: "/trust",
+    init: {
+      headers: {
+        "x-forwarded-for": "2001:db8::1, ::ffff:10.0.0.9",
+        "x-forwarded-host": "[2001:db8::7]:8080",
+      },
+    },
+  },
+  {
+    name: "junk entries",
+    path: "/trust",
+    init: { headers: { "x-forwarded-for": "not-an-ip, , 10.0.0.2,," } },
+  },
+];
+
 export const GROUPS: ProbeGroup[] = [
+  ...Object.entries(TRUST_PROXY_VALUES).map(([name, value]): ProbeGroup => ({
+    name: `trust-proxy-${name}`,
+    module: TrustModule,
+    configure: (app) => {
+      app.set?.("trust proxy", value);
+    },
+    // A fixed `Host`: the two servers listen on different ports.
+    probes: TRUST_PROXY_PROBES.map((probe) => ({
+      ...probe,
+      init: {
+        ...probe.init,
+        headers: {
+          host: "origin.test",
+          ...(probe.init?.headers as Record<string, string> | undefined),
+        },
+      },
+    })),
+  })),
   {
     name: "compat",
     module: CompatModule,
@@ -1034,8 +1122,7 @@ export const KNOWN: Record<string, KnownDifference> = {
   },
   "compat/request properties": {
     fields: BODY_CHANGES,
-    reason:
-      "X-Forwarded-* is always trusted (no `trust proxy`), and the query parser nests (Express 5's `simple` does not)",
+    reason: "the query parser nests (Express 5's `simple` does not)",
   },
   "compat/request properties, Host with subdomains": {
     fields: ["body"],
