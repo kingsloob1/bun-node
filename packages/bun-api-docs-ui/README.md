@@ -68,6 +68,42 @@ The WebSocket reference's "try it" links and permission markers of
 `@kingsleyweb/bun-jobs-ui`'s Events console are jobs-specific and are not part
 of this standalone viewer.
 
+## Embedding the screens (`./embed`)
+
+`docsUi()` needs nothing beyond this package: React and TanStack Query are
+bundled into `dist/`. The `./embed` entries are different. They export the
+viewer's screens as source, from `app/`, for a React app that renders them
+inside its own UI (`@kingsleyweb/bun-jobs-ui` does), and that app's bundler
+builds them with its own copies of React and TanStack Query. This package
+does not declare them, so install them yourself:
+
+```bash
+bun add react@^19.2.0 @tanstack/react-query@^5.90.0
+bun add -d @types/react@^19.2.0   # for TypeScript
+```
+
+| Entry | Imports |
+|---|---|
+| `./embed`, `./embed/router` | `react`, `@tanstack/react-query` |
+| `./embed/routing`, `./embed/context` | `react` |
+| `./embed/permissions`, `./embed/client`, `./embed/errors` | nothing outside this package |
+
+The screens also import their `.css` files, which your bundler has to
+handle (`Bun.build` does).
+
+Because the entries are source, your TypeScript checks them with your
+`tsconfig.json`, which needs two things (`skipLibCheck` does not cover `.ts`
+files):
+
+- `"allowImportingTsExtensions": true` (two modules import a `.ts` path;
+  `bun init`'s config already sets it), and
+- a declaration for the stylesheets, in any `.d.ts` your project includes,
+  since TypeScript 6 checks side-effect imports:
+
+  ```ts
+  declare module "*.css";
+  ```
+
 ## Development
 
 ```bash
