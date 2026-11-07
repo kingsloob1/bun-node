@@ -1,14 +1,7 @@
 import type { ApiClient } from "./client";
-import type {
-  SummonCheckDto,
-  SummonGroupListDto,
-  SummonListDto,
-  SummonResetBody,
-  SummonStatusDto,
-} from "./types";
-import { ApiError } from "./errors";
-import { queryKeys } from "./queryKeys";
-import { assertShape, isRecord } from "./shape";
+import type { SummonResetBody } from "./types";
+import { checkShape, isRecord } from "./shape";
+import { dataOf, failedError, toApiError, typedApi } from "./typed";
 
 /**
  * Summoning: `GET /queues/:queue/summon` (a queue's status), the two opt-in
@@ -26,33 +19,43 @@ import { assertShape, isRecord } from "./shape";
  * action is `queues.list`; each controller is then listed only where the
  * caller may read its queue (`queues.read`), so a caller without that sees
  * `{ controllers: [] }`.
+ *
+ * The domain the typed-client pilot moved onto `@kingsleyweb/bun-client`
+ * (`./typed.ts`): every call is typed by the generated route map, params,
+ * body and result alike, with no asserted type, and the keys are the query
+ * layer's (`[routeKey, { params, query }]`). The few fields a screen cannot
+ * draw without are still checked at run time ({@link checkShape}): the
+ * client checks no response without schemas, and a host answering `{}` (a
+ * misrouted proxy, a stub) should get the screen's error view, not a crash.
  */
 
 /** The code the status answers where no controller for the queue runs in the API's process. */
 export const SUMMON_NOT_CONFIGURED = "SUMMON_NOT_CONFIGURED";
 
-/** `/queues/:queue/summon…`, relative to the API base. */
-function summonPath(queue: string, suffix = ""): string {
-  return `/queues/${encodeURIComponent(queue)}/summon${suffix}`;
-}
-
-/** Query keys of the summon reads. */
+/**
+ * Query keys of the summon reads: the query layer's (`q.key`), so they are
+ * the keys `q.query()` would give the same calls, `[routeKey, { params,
+ * query }]`.
+ */
 export const summonKeys = {
   /** `GET /queues/:queue/summon`. */
-  status: (queue: string) => [...queryKeys.queue(queue), "summon"] as const,
+  status: (api: ApiClient, queue: string) =>
+    typedApi(api).q.key("GET /queues/:queue/summon", { params: { queue } }),
   /** `GET /summon`. */
-  list: ["summon"] as const,
+  list: (api: ApiClient) => typedApi(api).q.key("GET /summon", {}),
   /** `GET /summon/groups`. */
-  groups: ["summon", "groups"] as const,
+  groups: (api: ApiClient) => typedApi(api).q.key("GET /summon/groups", {}),
+  /** What a summon or a reset changes: the queue's status, and every list and group read. */
+  changed: (api: ApiClient, queue: string) => [
+    summonKeys.status(api, queue),
+    typedApi(api).q.key("GET /summon"),
+    typedApi(api).q.key("GET /summon/groups"),
+  ],
 };
 
-/** Whether `error` says the queue has no summoner here, or the server has no summon routes. */
-export function isNoSummoner(error: unknown): boolean {
-  return (
-    error instanceof ApiError &&
-    ((error.status === 409 && error.code === SUMMON_NOT_CONFIGURED) ||
-      error.status === 404)
-  );
+/** `/queues/:queue/summon…` under the API base, as an error's `instance`. */
+function summonPath(queue: string, suffix = ""): string {
+  return `/queues/${encodeURIComponent(queue)}/summon${suffix}`;
 }
 
 /** Whether `fields` has the parts of a status every answer carries. */
@@ -66,6 +69,25 @@ function isStatus(fields: Record<string, unknown>): boolean {
   );
 }
 
+/** Whether a `GET /summon` row has the parts every answer carries; `budget` is absent for summon state a newer bun-jobs wrote, an object otherwise. */
+function isListItem(item: unknown): boolean {
+  return (
+    isRecord(item) &&
+    typeof item.queue === "string" &&
+    (item.budget === undefined || isRecord(item.budget))
+  );
+}
+
+/** Whether `value` has the parts of a summon group every answer carries. */
+function isGroup(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    isRecord(value.budget) &&
+    isRecord(value.queues)
+  );
+}
+
 /**
  * `GET /queues/:queue/summon`: the queue's summon status, or `null` where the
  * queue has no summoner in the API's process (409 `SUMMON_NOT_CONFIGURED`)
@@ -75,22 +97,33 @@ export async function getSummonStatus(
   api: ApiClient,
   queue: string,
   signal?: AbortSignal,
-): Promise<SummonStatusDto | null> {
-  const path = summonPath(queue);
+) {
+  const instance = summonPath(queue);
+  let result;
   try {
-    const body = await api.request<unknown>("GET", path, { signal });
-    return assertShape<SummonStatusDto>(
-      body,
+    result = await typedApi(api).client.get("/queues/:queue/summon", {
+      params: { queue },
+      signal,
+    });
+  } catch (error) {
+    throw await toApiError(error, instance);
+  }
+  if (result.ok) {
+    return checkShape(
+      result.data,
       isStatus,
       "a queue's summon status",
-      path,
+      instance,
     );
-  } catch (error) {
-    if (isNoSummoner(error)) {
-      return null;
-    }
-    throw error;
   }
+  // The route's own code union: a misspelt code here does not compile.
+  if (
+    (result.status === 409 && result.error.code === SUMMON_NOT_CONFIGURED) ||
+    result.status === 404
+  ) {
+    return null;
+  }
+  throw failedError(result, instance);
 }
 
 /**
@@ -98,15 +131,17 @@ export async function getSummonStatus(
  * nothing else: the circuit, the budget, the attempts already on their way
  * and the compare-and-set still hold.
  */
-export async function summonNow(
-  api: ApiClient,
-  queue: string,
-  force: boolean,
-): Promise<SummonCheckDto> {
+export async function summonNow(api: ApiClient, queue: string, force: boolean) {
   const path = summonPath(queue);
-  const body = await api.request<unknown>("POST", path, { body: { force } });
-  return assertShape<SummonCheckDto>(
-    body,
+  const check = await dataOf(
+    typedApi(api).client.post("/queues/:queue/summon", {
+      params: { queue },
+      body: { force },
+    }),
+    path,
+  );
+  return checkShape(
+    check,
     (fields) => typeof fields.action === "string",
     "a summon check",
     path,
@@ -123,35 +158,15 @@ export async function summonNow(
 export async function listSummonControllers(
   api: ApiClient,
   signal?: AbortSignal,
-): Promise<SummonListDto> {
+) {
   const path = "/summon";
-  const body = await api.request<unknown>("GET", path, { signal });
-  return assertShape<SummonListDto>(
-    body,
+  const list = await dataOf(typedApi(api).client.get(path, { signal }), path);
+  return checkShape(
+    list,
     (fields) =>
-      Array.isArray(fields.controllers) &&
-      fields.controllers.every(
-        (item: unknown) =>
-          typeof item === "object" &&
-          item !== null &&
-          typeof (item as { queue?: unknown }).queue === "string" &&
-          // Absent for summon state a newer bun-jobs wrote; an object otherwise.
-          ((item as { budget?: unknown }).budget === undefined ||
-            (typeof (item as { budget?: unknown }).budget === "object" &&
-              (item as { budget?: unknown }).budget !== null)),
-      ),
+      Array.isArray(fields.controllers) && fields.controllers.every(isListItem),
     "the summon controllers",
     path,
-  );
-}
-
-/** Whether `value` has the parts of a summon group every answer carries. */
-function isGroup(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.name === "string" &&
-    isRecord(value.budget) &&
-    isRecord(value.queues)
   );
 }
 
@@ -161,14 +176,11 @@ function isGroup(value: unknown): boolean {
  * queues the caller may read (`queues.read`) — so a group's `queues` is never
  * its whole membership. Served where `features.summonStoredStatus` is on.
  */
-export async function listSummonGroups(
-  api: ApiClient,
-  signal?: AbortSignal,
-): Promise<SummonGroupListDto> {
+export async function listSummonGroups(api: ApiClient, signal?: AbortSignal) {
   const path = "/summon/groups";
-  const body = await api.request<unknown>("GET", path, { signal });
-  return assertShape<SummonGroupListDto>(
-    body,
+  const groups = await dataOf(typedApi(api).client.get(path, { signal }), path);
+  return checkShape(
+    groups,
     (fields) => Array.isArray(fields.groups) && fields.groups.every(isGroup),
     "the summon groups",
     path,
@@ -188,17 +200,14 @@ export async function resetSummon(
   api: ApiClient,
   queue: string,
   options: SummonResetBody = {},
-): Promise<SummonStatusDto> {
+) {
   const path = summonPath(queue, "/reset");
-  const body = await api.request<unknown>(
-    "POST",
-    path,
-    options.budget === true ? { body: { budget: true } } : undefined,
-  );
-  return assertShape<SummonStatusDto>(
-    body,
-    isStatus,
-    "a queue's summon status",
+  const status = await dataOf(
+    typedApi(api).client.post("/queues/:queue/summon/reset", {
+      params: { queue },
+      body: options.budget === true ? { budget: true } : undefined,
+    }),
     path,
   );
+  return checkShape(status, isStatus, "a queue's summon status", path);
 }

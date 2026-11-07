@@ -249,6 +249,7 @@
         "@antfu/eslint-config": "catalog:",
         "@happy-dom/global-registrator": "catalog:",
         "@kingsleyweb/bun-api-docs-ui": "workspace:^",
+        "@kingsleyweb/bun-client": "workspace:^",
         "@kingsleyweb/bun-jobs": "workspace:^",
         "@kingsleyweb/bun-nest": "workspace:^",
         "@nestjs/common": "catalog:",

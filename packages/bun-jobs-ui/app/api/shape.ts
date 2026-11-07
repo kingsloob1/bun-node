@@ -44,6 +44,31 @@ export function assertShape<T>(
   });
 }
 
+/**
+ * {@link assertShape} for a body whose type is already known — a typed
+ * client's result, typed by the route map — so nothing is asserted: `value`
+ * comes back as the type it went in as, once `check` passes. The run-time
+ * half of `assertShape` alone; it throws the same `UNEXPECTED_RESPONSE`.
+ */
+export function checkShape<T>(
+  value: T,
+  check: (fields: ShapeFields) => boolean,
+  what: string,
+  path: string,
+): T {
+  if (isRecord(value) && check(value)) {
+    return value;
+  }
+  throw new ApiError({
+    kind: "parse",
+    status: 200,
+    code: "UNEXPECTED_RESPONSE",
+    title: "The API answered an unexpected response",
+    detail: `Expected ${what}, got ${describe(value)}.`,
+    instance: path,
+  });
+}
+
 /** A short description of what arrived instead. */
 function describe(value: unknown): string {
   if (Array.isArray(value)) {

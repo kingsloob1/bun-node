@@ -959,8 +959,19 @@ it to the examples session before merging.
 through `Bun.WebView`, against a real `createJobsApi`; they skip visibly when
 no Chrome is found (`BUN_CHROME_PATH` points at one).
 
-**Pre-merge gate:** `bun scripts/typecheck.ts`; `bun run lint` and
-`bun run format:check` in the package; `bun run test` plus `bun test --randomize` with a couple of seeds
+**The typed client (the pilot, typed-client plan §11).** The summon domain
+(`app/api/summon.ts`) calls the API through `@kingsleyweb/bun-client`
+(`app/api/typed.ts`, over the app's own `fetch`, headers and `ApiError`),
+typed by `app/api/routes.gen.ts`: generated from the document a real
+`createJobsApi()` serves (`scripts/routes-openapi.ts`) and committed. A
+bun-jobs change to a route, a schema or an error code makes it stale:
+`bun run gen:client` in bun-jobs-ui rewrites it, and that change lands with
+the bun-jobs one. `bun run check:client` (and
+`__tests__/server/routesGen.test.ts`, in `bun run test`) fails while it is
+stale. The other domains still use `ApiClient.request`.
+
+**Pre-merge gate:** `bun scripts/typecheck.ts`; `bun run lint`,
+`bun run format:check` and `bun run check:client` in the package; `bun run test` plus `bun test --randomize` with a couple of seeds
 (serial — the only check left for order leaks, since `--parallel` isolates
 files); and
 `bun run-all.ts` in both `examples/bun-jobs-ui` and `examples/bun-nest`.

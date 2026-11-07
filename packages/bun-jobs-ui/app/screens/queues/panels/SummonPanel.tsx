@@ -111,7 +111,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
   // The status carries the controller's policy only where the API says so.
   const policyFeature = useFeature("summonPolicy") === true;
   const status = useQuery({
-    queryKey: summonKeys.status(queue),
+    queryKey: summonKeys.status(api, queue),
     queryFn: ({ signal }) => getSummonStatus(api, queue, signal),
     refetchInterval,
     placeholderData: keepPreviousData,
@@ -132,8 +132,7 @@ export function SummonPanel({ queue }: SummonPanelProps) {
     }
   };
   const invalidate = [
-    summonKeys.status(queue),
-    summonKeys.list,
+    ...summonKeys.changed(api, queue),
     demandKeys.queue(queue),
     queueKeys.workers(queue),
   ];
