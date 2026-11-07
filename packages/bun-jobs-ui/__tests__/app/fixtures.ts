@@ -1,5 +1,6 @@
 import type {
   AnalyticsRangeDto,
+  ApiErrorCode,
   AnalyticsSeriesDto,
   JobsBucketDto,
   JobsTotalsDto,
@@ -261,7 +262,7 @@ export const workersFixture: WorkerList = { items: [] };
 /** A problem body, as the API sends it. */
 export function problem(
   status: number,
-  code: string,
+  code: ApiErrorCode,
   title: string,
   extra: Partial<ProblemDto> = {},
 ): ProblemDto {

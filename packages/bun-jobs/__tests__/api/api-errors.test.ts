@@ -1,4 +1,5 @@
 import type { LogEvent } from "@kingsleyweb/bun-common";
+import type { ApiErrorCode } from "../../lib/api/errors";
 import {
   BunRouter,
   createTestLogger,
@@ -20,6 +21,7 @@ import {
 } from "../../lib/api/errors";
 import { s } from "../../lib/api/schema/builder";
 import { ProblemSchema } from "../../lib/api/schemas/common";
+import { ProviderError } from "../../lib/provider/errors";
 import { RemoteProblemSchema } from "../../lib/remote/schemas";
 import {
   ChildExitError,
@@ -27,12 +29,14 @@ import {
   ConfigError,
   DriverError,
   InvalidHandlerError,
+  JobDataValidationError,
   JobsClosedError,
   JobsError,
   JobTimeoutError,
   LockLostError,
   LockUnavailableError,
   NotSupportedError,
+  OutputLimitError,
   ProtocolError,
   QueueClosedError,
   QueueFullError,
@@ -228,10 +232,31 @@ describe("the §3.3 mapping", () => {
       code: "INVALID_HANDLER",
     },
     {
+      name: "OutputLimitError",
+      error: () => new OutputLimitError(1024, 2048, true, { secret: SECRET }),
+      status: 500,
+      code: "OUTPUT_LIMIT",
+    },
+    {
+      // Outside the `jobInput` call site (a result that failed its schema).
+      name: "JobDataValidationError",
+      error: () => new JobDataValidationError(SECRET, "mail", "result", []),
+      status: 500,
+      code: "JOB_DATA_VALIDATION",
+    },
+    {
+      // A code the contract does not list goes out as INTERNAL, so a
+      // problem's `code` is always an `ApiErrorCode`.
       name: "another JobsError",
       error: () => new JobsError(SECRET, "SOMETHING_ELSE"),
       status: 500,
-      code: "SOMETHING_ELSE",
+      code: "INTERNAL",
+    },
+    {
+      name: "a ProviderError reaching a route",
+      error: () => new ProviderError(SECRET, "auth"),
+      status: 500,
+      code: "INTERNAL",
     },
     {
       name: "an unknown Error",
@@ -363,7 +388,7 @@ describe("the §3.3 mapping", () => {
   });
 
   it("the API's own codes carry their status and title", () => {
-    const own: [string, number][] = [
+    const own: [ApiErrorCode, number][] = [
       ["UNAUTHORIZED", 401],
       ["FORBIDDEN", 403],
       ["QUEUE_NOT_FOUND", 404],
@@ -598,13 +623,14 @@ describe("the error handler and catch-all", () => {
       },
       {
         // Decided by the answer, not a list of codes: an ApiError the API
-        // raises itself as a 503 with Retry-After (any header case) is one too.
+        // raises itself as a 503 with Retry-After (any header case) is one
+        // too, even with a code whose own mapping (a DriverError) is not.
         name: "an ApiError 503 with a retry-after header",
         error: () =>
-          new ApiError("SOMETHING_BUSY", 503, `busy ${SECRET}`, {
+          new ApiError("DRIVER_ERROR", 503, `busy ${SECRET}`, {
             headers: { "retry-after": "5" },
           }),
-        code: "SOMETHING_BUSY",
+        code: "DRIVER_ERROR",
       },
     ];
 

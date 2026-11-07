@@ -15,7 +15,7 @@ import type {
   OpenApiDocument,
   ResolvedJobsApiConfig,
 } from "../config";
-import type { ApiErrorCode } from "../errors";
+import type { ApiOwnErrorCode } from "../errors";
 import type { Infer, Schema } from "../schema/builder";
 import type { QueueSource, RunnerSource } from "../sources";
 import {
@@ -176,7 +176,7 @@ export interface RouteDef<P, Q, B, R extends RouteResponses> {
    * Problem codes the route answers with, beyond the ones every route gets
    * (401/403, validation, CSRF and JSON errors where they apply).
    */
-  errors?: readonly ApiErrorCode[];
+  errors?: readonly ApiOwnErrorCode[];
   /** Reads the authorization target out of the validated inputs. */
   target?: (input: { params: P; query: Q; body: B }) => AuthorizeTarget;
   /**

@@ -32,6 +32,7 @@ import type {
 import type { ResolvedJobsApiSerializers } from "./config";
 import type { JobDefaultKey, JobInclude } from "./contract/constants";
 import type {
+  ApiErrorCode,
   ProviderDto,
   QueueDemandDto,
   SummonCapabilitiesDto,
@@ -69,16 +70,19 @@ export interface ProblemIssueDto {
   message: string;
 }
 
-/** Every error body, RFC 9457. Content-Type: `application/problem+json`. */
-export interface ProblemDto {
+/**
+ * Every error body, RFC 9457. Content-Type: `application/problem+json`.
+ * `TCode` is the union its `code` is drawn from, {@link ApiErrorCode} by default.
+ */
+export interface ProblemDto<TCode extends string = ApiErrorCode> {
   /** `urn:bun-jobs:error:<CODE>`; stable. */
   type: string;
   /** Short, stable, human title for the code (not the instance). */
   title: string;
   /** HTTP status, repeated for clients that lose it. */
   status: number;
-  /** Machine code: a bun-jobs `JobsError.code`, `VALIDATION`, or an API code. */
-  code: string;
+  /** Machine code: one of `TCode` (an {@link ApiErrorCode} by default). */
+  code: TCode;
   /** Human detail for this occurrence. For 5xx always the generic title: messages never leak. */
   detail?: string;
   /** The request path. */

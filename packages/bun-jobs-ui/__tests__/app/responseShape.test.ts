@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createApiClient } from "../../app/api/client";
+import type { UiErrorCode } from "../../app/api/errors";
 import { ApiError, isApiError } from "../../app/api/errors";
 import { getJob } from "../../app/api/jobs";
 import { getQueue } from "../../app/api/queues";
@@ -125,7 +126,7 @@ describe("displayText", () => {
 });
 
 describe("shouldRetry", () => {
-  const error = (kind: ApiError["kind"], status: number, code: string) =>
+  const error = (kind: ApiError["kind"], status: number, code: UiErrorCode) =>
     new ApiError({ kind, status, code, title: code });
 
   it("never retries a malformed response: asking again gets the same body", () => {

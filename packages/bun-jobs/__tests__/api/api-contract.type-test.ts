@@ -203,8 +203,21 @@ type DeepEqual<X, Y> = Equal<Deep<X>, Deep<Y>>;
 
 /* --- shared ---------------------------------------------------------- */
 
+// The document's Problem schema keeps `code` a string (an operation's
+// `x-bun-errors` narrows it; `HTTP_<status>` has no enum), while the contract
+// types it as the closed `ApiErrorCode`: the rest is equal, and the closed
+// union is a string the schema accepts.
 export type ProblemOk = Expect<
-  DeepEqual<Contract.ProblemDto, Infer<typeof ProblemSchema>>
+  DeepEqual<
+    Omit<Contract.ProblemDto, "code">,
+    Omit<Infer<typeof ProblemSchema>, "code">
+  >
+>;
+export type ProblemCodeOk = Expect<
+  Equal<Infer<typeof ProblemSchema>["code"], string>
+>;
+export type ProblemCodeClosedOk = Expect<
+  Equal<Contract.ProblemDto["code"], Contract.ApiErrorCode>
 >;
 export type PageInfoOk = Expect<
   DeepEqual<Contract.PageInfoDto, Infer<typeof PageInfoSchema>>

@@ -1,5 +1,7 @@
 import type {
   AnalyticsResolution,
+  API_ERROR_STATUS,
+  API_INTERNAL_ERROR_CODES,
   EXECUTION_MODES,
   JobDefaultBackoffType,
   JobDefaultKey,
@@ -65,16 +67,49 @@ export interface ProblemIssueDto {
   message: string;
 }
 
-/** Every error body, RFC 9457. Content-Type: `application/problem+json`. */
-export interface ProblemDto {
+/** Codes the API itself raises, or maps a bun-jobs error to: the keys of `API_ERROR_STATUS`. */
+export type ApiOwnErrorCode = keyof typeof API_ERROR_STATUS;
+
+/** A bun-jobs error's code the API answers with as it is, as a 500. See `API_INTERNAL_ERROR_CODES`. */
+export type ApiInternalErrorCode = (typeof API_INTERNAL_ERROR_CODES)[number];
+
+/**
+ * A code for a foreign error (a host middleware's, say) that named its own
+ * 4xx or 5xx status: the conventional name for 401, 403, 404, 413 and 429,
+ * else `HTTP_<status>`.
+ */
+export type ApiForeignErrorCode =
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "PAYLOAD_TOO_LARGE"
+  | "RATE_LIMITED"
+  | `HTTP_${number}`;
+
+/**
+ * Every code a problem from the management API may carry, a closed union:
+ * the API's own, a bun-jobs error's passed through, or a foreign error's.
+ * A route's OpenAPI operation lists the ones it documents in `x-bun-errors`.
+ */
+export type ApiErrorCode =
+  ApiOwnErrorCode | ApiInternalErrorCode | ApiForeignErrorCode;
+
+/**
+ * Every error body, RFC 9457. Content-Type: `application/problem+json`.
+ *
+ * `TCode` is the union its `code` is drawn from: the management API's
+ * {@link ApiErrorCode} by default; the remote worker protocol, which answers
+ * the same shape, names its own.
+ */
+export interface ProblemDto<TCode extends string = ApiErrorCode> {
   /** `urn:bun-jobs:error:<CODE>`; stable. */
   type: string;
   /** Short, stable, human title for the code (not the instance). */
   title: string;
   /** HTTP status, repeated for clients that lose it. */
   status: number;
-  /** Machine code: a bun-jobs `JobsError.code`, `VALIDATION`, or an API code. */
-  code: string;
+  /** Machine code: one of `TCode` (an {@link ApiErrorCode} by default). */
+  code: TCode;
   /** Human detail for this occurrence. For 5xx always the generic title. */
   detail?: string;
   /** The request path. */

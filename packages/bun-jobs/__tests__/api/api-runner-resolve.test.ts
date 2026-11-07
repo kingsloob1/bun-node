@@ -2,6 +2,7 @@ import type { ResolvedJobsApiConfig } from "../../lib/api/config";
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { DEFAULT_JOBS_API_LIMITS, resolveConfig } from "../../lib/api/config";
+import type { ApiErrorCode } from "../../lib/api/errors";
 import { ApiError } from "../../lib/api/errors";
 import { RunnerSource } from "../../lib/api/sources";
 import {
@@ -76,7 +77,7 @@ function countingSource(namespace: string) {
 /** Awaits `promise`, expecting an ApiError with this code and status. */
 async function expectApiError(
   promise: Promise<unknown>,
-  code: string,
+  code: ApiErrorCode,
   status: number,
 ) {
   const error = await promise.then(

@@ -4,6 +4,7 @@ import type {
 } from "../../../app/screens/job/addFlowForm";
 import type { AddJobForm } from "../../../app/screens/job/addJobForm";
 import { describe, expect, it } from "bun:test";
+import type { ApiErrorCode } from "../../../app/api/types";
 import { ApiError } from "../../../app/api/errors";
 import { flowInvalidation } from "../../../app/api/jobs";
 import {
@@ -81,7 +82,7 @@ function sampleTree() {
 /** An `ApiError` as the client builds it from a problem body. */
 function apiError(
   status: number,
-  code: string,
+  code: ApiErrorCode,
   extra: Parameters<typeof problem>[3] = {},
 ): ApiError {
   return ApiError.fromProblem(problem(status, code, code, extra));
