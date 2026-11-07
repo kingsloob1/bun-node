@@ -19,6 +19,7 @@ it and the test that guards it.
 | [A `Blob` appended to `FormData` without a name is sent as `filename=""`](./formdata-blob-empty-filename.md) | 1.4.4-canary.1 | [#35439](https://github.com/oven-sh/bun/issues/35439) (not ours) | bun-client's `asFile` (`lib/bodies.ts`) |
 | [A `node:net` write after the peer closed emits no `'error'`, so the `mongodb` driver can hang](./node-net-write-after-peer-close-no-error.md) | 1.4.4-canary.1 | [#47834](https://github.com/oven-sh/bun/issues/47834) | documented only: bun-jobs' README, "High availability" (MongoDB's `timeoutMS`) |
 | [`Bun.semver.satisfies` answers `true` for a string that is not a range](./semver-satisfies-non-range.md) | 1.4.4-canary.1 | [#47908](https://github.com/oven-sh/bun/issues/47908) | `scripts/publish.ts`'s tag and version checks |
+| [`bun install` resolves a `file:` dependency's devDependencies, so `catalog:` and `workspace:` there fail outside the workspace](./file-dependency-resolves-dev-dependencies.md) | 1.4.4-canary.1 | [#22879](https://github.com/oven-sh/bun/issues/22879) (feature request; our case [commented](https://github.com/oven-sh/bun/issues/22879#issuecomment-6712639232)) | documented only: CLAUDE.md, the compute-provider template (frozen installs) |
 
 Found earlier, while planning native routes, and filed upstream; their
 reproductions live with that plan's evidence

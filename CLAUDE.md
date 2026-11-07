@@ -606,7 +606,8 @@ type check. It is a standalone package like the bench ones — its own
 
 - **Resolution.** It declares `@kingsleyweb/bun-jobs` as a published plugin
   would (a peer range, a dev dependency), and `overrides` points it and
-  bun-common at `file:../../packages/…`, because neither is on a registry. Bun
+  bun-common at `file:../../packages/…`, so the template is checked against
+  the repo's source rather than the release on npm. Bun
   1.4.3 materialises a `file:` directory as a tree of per-file symlinks, so an
   edit to a package file is seen at once and a **new** file only after the next
   `bun install` there; 1.4.4-canary makes hardlinks instead, so an edit that
@@ -619,6 +620,13 @@ type check. It is a standalone package like the bench ones — its own
   inside the repo they resolve from the root `node_modules`, an ancestor; a
   copy outside the repo points `overrides` at packed tarballs instead (the
   template's README, step 2).
+  **Only `bun install --frozen-lockfile` works there** since the packages
+  took `workspace:^` and `catalog:` (#645): Bun resolves a `file:`
+  dependency's devDependencies, and those protocols mean nothing outside the
+  workspace, so a plain install fails (oven-sh/bun#22879,
+  `docs/bun-bugs/file-dependency-resolves-dev-dependencies.md`). The lock is
+  valid and every gate installs frozen; a change to the template's own
+  dependencies has to find a way to re-lock first.
 - **Types.** Its own `tsconfig.json` is a plugin author's: no source
   condition, so it would read bun-jobs' built `dts/`, which the repo does not
   keep. The repo checks the same files through `templates/tsconfig.json`
