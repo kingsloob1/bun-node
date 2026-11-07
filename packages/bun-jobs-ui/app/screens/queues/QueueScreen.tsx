@@ -222,7 +222,7 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
   // queue with no summoner in the API's process reads as `null` (409
   // `SUMMON_NOT_CONFIGURED`) and gets no tab; the panel reuses this read.
   const summon = useQuery({
-    queryKey: summonKeys.status(queue),
+    queryKey: summonKeys.status(api, queue),
     queryFn: ({ signal }) => getSummonStatus(api, queue, signal),
     enabled: canRead,
     retry: false,

@@ -77,6 +77,19 @@ export interface PermissionsTarget {
 export interface ApiClient {
   /** The API base URL requests are prefixed with. */
   readonly base: string;
+  /**
+   * The `fetch` every request goes through: the injected one, else
+   * `globalThis.fetch`, looked up per call. The typed client
+   * (`api/typed.ts`) sends through it too, so a test's mock sees both.
+   */
+  readonly fetch: FetchLike;
+  /**
+   * The headers a request with `method` carries: `Accept: application/json`,
+   * `Content-Type: application/json` on POST/PUT/PATCH (even without a body,
+   * which the API's `requireJson` needs), and the CSRF header on every
+   * mutation when `csrfHeader` is configured. The one place those rules live.
+   */
+  headers: (method: string) => Record<string, string>;
   /** Sends one request; resolves the parsed JSON (or `undefined` for a 204), rejects with an {@link ApiError}. */
   request: <T>(
     method: HttpMethod,
@@ -181,8 +194,12 @@ function tryParse(text: string): { value: unknown } | undefined {
   }
 }
 
-/** Turns an error response into an {@link ApiError}. */
-function errorFromResponse(response: Response, text: string, path: string) {
+/** Turns an error response into an {@link ApiError}: its problem's fields when it is problem+json, else an `http` error with a snippet of the body. */
+export function errorFromResponse(
+  response: Response,
+  text: string,
+  path: string,
+): ApiError {
   const parsed = isJsonType(response.headers.get("content-type") ?? "")
     ? tryParse(text)
     : undefined;
@@ -215,13 +232,8 @@ export function createApiClient(
 ): ApiClient {
   const base = config.apiBase.replace(/\/+$/, "");
 
-  /** Builds the URL and `RequestInit` of one request: every header rule lives here. */
-  function prepare(
-    method: HttpMethod,
-    path: string,
-    { query, body, signal }: RequestOptions,
-  ): { url: string; init: RequestInit } {
-    const url = `${base}${path}${serializeQuery(query)}`;
+  /** The headers of one request: every header rule lives here. */
+  function headersFor(method: string): Record<string, string> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (JSON_METHODS.has(method)) {
       headers["Content-Type"] = "application/json";
@@ -229,9 +241,23 @@ export function createApiClient(
     if (config.csrfHeader && MUTATING_METHODS.has(method)) {
       headers[config.csrfHeader] = CSRF_HEADER_VALUE;
     }
+    return headers;
+  }
+
+  /** The transport, looked up per call so a test can replace it. */
+  const fetchVia: FetchLike = (input, init) =>
+    (options.fetch ?? globalThis.fetch)(input, init);
+
+  /** Builds the URL and `RequestInit` of one request. */
+  function prepare(
+    method: HttpMethod,
+    path: string,
+    { query, body, signal }: RequestOptions,
+  ): { url: string; init: RequestInit } {
+    const url = `${base}${path}${serializeQuery(query)}`;
     const init: RequestInit = {
       method,
-      headers,
+      headers: headersFor(method),
       credentials: "same-origin",
     };
     if (body !== undefined) {
@@ -249,9 +275,8 @@ export function createApiClient(
     init: RequestInit,
     path: string,
   ): Promise<Response> {
-    const fetcher = options.fetch ?? globalThis.fetch;
     try {
-      return await fetcher(url, init);
+      return await fetchVia(url, init);
     } catch (error) {
       if (isAbort(error, init.signal ?? undefined)) {
         throw error;
@@ -338,6 +363,8 @@ export function createApiClient(
 
   return {
     base,
+    fetch: fetchVia,
+    headers: headersFor,
     request,
     requestRaw,
     getMeta: (signal) => request<MetaDto>("GET", "/meta", { signal }),

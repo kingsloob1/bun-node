@@ -56,7 +56,7 @@ export function SummonGroupsSection({
   const api = useApiClient();
   const selected = useSearchParams().get("group");
   const groups = useQuery({
-    queryKey: summonKeys.groups,
+    queryKey: summonKeys.groups(api),
     queryFn: ({ signal }) => listSummonGroups(api, signal),
     refetchInterval,
   });

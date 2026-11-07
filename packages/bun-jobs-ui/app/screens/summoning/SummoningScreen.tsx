@@ -53,7 +53,7 @@ export function SummoningScreen() {
   // queues whose controller runs in another process.
   const stored = useMeta().features.summonStoredStatus === true;
   const list = useQuery({
-    queryKey: summonKeys.list,
+    queryKey: summonKeys.list(api),
     queryFn: ({ signal }) => listSummonControllers(api, signal),
     refetchInterval: SUMMONING_REFRESH_MS,
     enabled: canList,
