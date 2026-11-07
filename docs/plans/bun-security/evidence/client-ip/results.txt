@@ -1,0 +1,49 @@
+{
+  "bun": "1.4.4",
+  "revision": "11c367163a4baa77d3627d14764c376c856a630a",
+  "plain": {
+    "requestIP": {
+      "address": "127.0.0.1",
+      "family": "IPv4",
+      "port": 50220
+    },
+    "xff": null,
+    "forwarded": null,
+    "xRealIp": null,
+    "hasTimeout": true
+  },
+  "spoofed": {
+    "requestIP": {
+      "address": "127.0.0.1",
+      "family": "IPv4",
+      "port": 50220
+    },
+    "xff": "203.0.113.7, 198.51.100.9",
+    "forwarded": "for=\"[2001:db8::1]:4711\";proto=https, for=192.0.2.60",
+    "xRealIp": "203.0.113.8",
+    "hasTimeout": true
+  },
+  "twoXffLines": {
+    "requestIP": {
+      "address": "127.0.0.1",
+      "family": "IPv4",
+      "port": 50220
+    },
+    "xff": "203.0.113.1, 198.51.100.2",
+    "forwarded": null,
+    "xRealIp": null,
+    "hasTimeout": true
+  },
+  "ipv6": {
+    "address": "::1",
+    "family": "IPv6",
+    "port": 59164
+  },
+  "unix": {
+    "ip": null
+  },
+  "idleTimeout_0": "accepted",
+  "idleTimeout_10": "accepted",
+  "idleTimeout_255": "accepted",
+  "idleTimeout_256": "rejected: TypeError [ERR_INVALID_ARG_TYPE]: Bun.serve expects idleTimeout to be 255 or less"
+}

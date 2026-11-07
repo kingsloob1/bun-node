@@ -221,6 +221,31 @@ blindly.
     HMAC and HKDF costs; a swap, tamper, tag-strip and replay attack run on
     the real `createCache`; zstd, gzip, deflate and Brotli at four sizes on
     JSON, HTML and incompressible bytes, sync and async.
+- **[`bun-security/`](bun-security/README.md)** — `@kingsleyweb/bun-security`
+  and `@kingsleyweb/bun-security-ui` (draft 2026-11-07, nothing built): a
+  request-defence engine (lists, bans, counted rules and escalation, request
+  shape, safe rules, deception, challenges, sensitive-endpoint profiles, API
+  keys, response controls) on the trust-proxy and throttle foundations, a
+  control plane for one service, one system or a fleet (signed bundles,
+  RBAC, step-up, approvals, a hash-chained audit log), pluggable storage
+  drivers, and a management UI with a live, paginated analytics page;
+  ConcaveHR's defence mapped onto it.
+  - [`layers.md`](bun-security/layers.md) — the layers L1–L14 in request
+    order, with defaults, actions and the v1 cut.
+  - [`topologies.md`](bun-security/topologies.md) — single service, one
+    host, several systems; shared state; failure modes.
+  - [`control-plane.md`](bun-security/control-plane.md) — policy model,
+    bundles, management API, RBAC, audit, agents, secrets, self-DoS bounds.
+  - [`storage.md`](bun-security/storage.md) — the security store's drivers,
+    a shared SQL module, schema sync, encryption, conformance.
+  - [`ui.md`](bun-security/ui.md) — the UI package, pagination, live
+    updates, the analytics page.
+  - Evidence: [`bun-security/evidence/`](bun-security/evidence/README.md) —
+    on Bun 1.4.4-canary.1+11c367163, behaviour only: what `requestIP()`
+    reports (IPv4-mapped addresses on a default listener), how Bun
+    normalises request targets on raw sockets and which limits it enforces
+    below the handler, a duplicate-`Host` reproduction, and the signing
+    primitives (Ed25519, HMAC).
 - **[`api-docs-generation/`](api-docs-generation/README.md)** — auto-generated
   API documentation: OpenAPI 3.1 for the HTTP adapter, AsyncAPI 3.0 for the
   WebSocket adapter.

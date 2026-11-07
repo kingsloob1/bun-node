@@ -1,0 +1,22 @@
+{
+  "bun": "1.4.4",
+  "revision": "11c367163a4baa77d3627d14764c376c856a630a",
+  "dualStackOverV4": {
+    "address": "::ffff:127.0.0.1",
+    "family": "IPv6",
+    "port": 54284
+  },
+  "dualStackOverV6": {
+    "address": "::1",
+    "family": "IPv6",
+    "port": 52900
+  },
+  "defaultHostOverV4": {
+    "ip": {
+      "address": "::ffff:127.0.0.1",
+      "family": "IPv6",
+      "port": 59048
+    },
+    "hostname": "localhost"
+  }
+}
