@@ -631,6 +631,7 @@ function describeOnUpgrade(name: string, start: Start) {
             "hash",
             "headers",
             "host",
+            "ip",
             "originalUrl",
             "params",
             "path",
@@ -643,6 +644,10 @@ function describeOnUpgrade(name: string, start: Start) {
         expect(data.custom).toBeUndefined();
         expect(data.search).toBe("?q=1");
         expect(data.params).toEqual({ id: "1" });
+        // The upgrade's `req.ip`: the loopback peer, nothing trusted.
+        expect(["127.0.0.1", "::1", "::ffff:127.0.0.1"]).toContain(
+          data.ip ?? "",
+        );
       });
     });
 

@@ -203,6 +203,45 @@ export {
   type TslogLike,
   type WinstonLike,
 } from "./logging";
+// Proxy trust (Express's `trust proxy`) and the client address behind
+// proxies; the IP parsing and range matching it uses are in native.ts.
+export {
+  behindCloudflare,
+  type BehindCloudflareOptions,
+  behindRailway,
+  type BehindRailwayOptions,
+  type ClientAddress,
+  type ClientAddressInput,
+  CLOUDFLARE_IP_RANGES,
+  CLOUDFLARE_IP_RANGES_DATE,
+  CLOUDFLARE_IP_RANGES_URL,
+  compileTrustProxy,
+  fetchCloudflareIpRanges,
+  type FetchCloudflareIpRangesOptions,
+  isTrustProxyOff,
+  parseForwardedFor,
+  type ProxyChainEntry,
+  type ProxyTrustSettings,
+  proxyAddressChain,
+  resolveClientAddress,
+  trustChain,
+  type TrustHop,
+  type TrustProxyFn,
+  type TrustProxyOption,
+} from "./trustProxy";
+export {
+  compileIpMatcher,
+  IP_RANGE_PRESETS,
+  type IpRange,
+  isIpAddress,
+  isIpv4MappedAddress,
+  parseIpAddress,
+  parseIpRange,
+  type ParsedIp,
+  type ParsedIpv4,
+  type ParsedIpv6,
+  toIpv4IfMapped,
+} from "./utils/native";
 export {
   cors,
   type CorsCustomOrigin,

@@ -1092,8 +1092,17 @@ checkEqual(
   [{ delimiter: "?" }, "tpl", dir],
 );
 checkEqual(
+  '"trust proxy" sets the adapter\'s trustProxy (15-trust-proxy covers it)',
+  [
+    configured.set("trust proxy", 1).trustProxy,
+    configured.enable("trust proxy").trustProxy,
+    configured.requestOpts.trustProxy,
+  ],
+  [1, true, true],
+);
+checkEqual(
   "any other setting is accepted and returns the adapter",
-  configured.set("trust proxy", true).enable("trust proxy"),
+  configured.set("subdomain offset", 3).set("subdomain offset", 4),
   configured,
 );
 checkEqual(
@@ -1102,7 +1111,7 @@ checkEqual(
     .filter((event) => event.level === "warn")
     .map((event) => event.message),
   [
-    'set("trust proxy") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply',
+    'set("subdomain offset") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply',
   ],
 );
 

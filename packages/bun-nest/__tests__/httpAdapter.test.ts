@@ -1463,10 +1463,13 @@ describe("BunHttpAdapter.set: x-powered-by", () => {
     const { adapter, warn } = withWarnings();
     adapter.enable("x-powered-by");
     adapter.enable("x-powered-by");
+    adapter.set("subdomain offset", 3);
+    // `trust proxy` is applied, not warned about (trustProxy.nest.test.ts).
     adapter.set("trust proxy", true);
+    expect(adapter.trustProxy).toBe(true);
     expect(warn.mock.calls.map(([message]) => String(message))).toEqual([
       expect.stringContaining('app.set("x-powered-by")'),
-      expect.stringContaining('app.set("trust proxy")'),
+      expect.stringContaining('app.set("subdomain offset")'),
     ]);
   });
 });

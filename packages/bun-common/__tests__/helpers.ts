@@ -36,6 +36,35 @@ export interface MakeRequestInit {
   body?: Bun.BodyInit;
   /** Extra {@link BunRequest} options, merged over the helper defaults. */
   options?: Partial<NonNullable<BunRequestOptions>>;
+  /**
+   * The socket peer the request reports (`server.requestIP()`), e.g. a
+   * proxy's `100.64.0.7`; `null` for none, as a socket-free `fetch()`. Unset,
+   * the request has {@link testServer}'s answer for a request it never
+   * served: no peer.
+   */
+  peer?: string | null;
+}
+
+/**
+ * A stand-in for {@link testServer} whose `requestIP()` reports `address` as
+ * the socket peer (port 40000, its family from its form), or no peer for
+ * `null`: lets a test put a request behind any proxy address, which a real
+ * loopback socket cannot.
+ */
+export function peerServer(address: string | null): Server<unknown> {
+  const family = address?.includes(":") ? "IPv6" : "IPv4";
+  return new Proxy(testServer, {
+    get(target, key, receiver) {
+      if (key === "requestIP") {
+        return () =>
+          address === null ? null : { address, port: 40000, family };
+      }
+      const value: unknown = Reflect.get(target, key, receiver);
+      return typeof value === "function"
+        ? (value as (...args: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
 }
 
 /** Builds and fully initialises a {@link BunRequest}. */
@@ -48,7 +77,8 @@ export async function makeRequest(
     body: init.body,
   });
 
-  return BunRequest.init(request, testServer, {
+  const server = init.peer === undefined ? testServer : peerServer(init.peer);
+  return BunRequest.init(request, server, {
     parseBody: !!init.body,
     parseCookies: true,
     parseQuery: true,

@@ -3982,3 +3982,431 @@ export function decompressBody(
   }
   return output;
 }
+
+// ---------------------------------------------------------------------------
+// IP addresses and ranges, as proxy-addr reads them
+// ---------------------------------------------------------------------------
+//
+// A port of the parts of `ipaddr.js` 1.9.1 (MIT, Vladimir Kolesnikov) that
+// `proxy-addr` 2.0.8 (MIT, Douglas Christopher Wilson) uses, and of
+// proxy-addr's range notation and matching, so `trustProxy` trusts exactly
+// the addresses Express 5's `trust proxy` trusts. Leniencies included: like
+// ipaddr.js, an IPv4 address may be written in the legacy `inet_aton` forms
+// (`127.1` is not accepted, but `2130706433`, `0x7f.0.0.1` and `0177.0.0.1`
+// are), and an IPv6 address may carry a `%zone`.
+
+/** An IPv4 address: four octets. */
+export interface ParsedIpv4 {
+  /** Always `"ipv4"`. */
+  readonly kind: "ipv4";
+  /** The four octets, most significant first. */
+  readonly octets: readonly number[];
+}
+
+/** An IPv6 address: eight 16-bit parts. */
+export interface ParsedIpv6 {
+  /** Always `"ipv6"`. */
+  readonly kind: "ipv6";
+  /** The eight 16-bit parts, most significant first. */
+  readonly parts: readonly number[];
+  /** The `%zone` suffix without its `%`, when the address had one. */
+  readonly zoneId?: string;
+}
+
+/** A parsed IP address; see {@link parseIpAddress}. */
+export type ParsedIp = ParsedIpv4 | ParsedIpv6;
+
+/** An address and prefix length, as {@link parseIpRange} reads one. */
+export interface IpRange {
+  /** The range's base address. */
+  readonly ip: ParsedIp;
+  /** The prefix length in bits: 1–32 for IPv4, 1–128 for IPv6. */
+  readonly bits: number;
+}
+
+// ipaddr.js's regular expressions, in equivalent forms: `0?\d+` is `\d+`,
+// `{1,}` is `+`, and an optional `(?:…)+` is a `(?:…)*`.
+// trustProxy.express.test.ts compares the parser with ipaddr.js itself.
+const IPV4_PART = "(\\d+|0x[a-f0-9]+)";
+const IPV4_FOUR_OCTET_RE = new RegExp(
+  `^${IPV4_PART}\\.${IPV4_PART}\\.${IPV4_PART}\\.${IPV4_PART}$`,
+  "i",
+);
+const IPV4_LONG_VALUE_RE = new RegExp(`^${IPV4_PART}$`, "i");
+const IPV6_ZONE = "%[0-9a-z]+";
+const IPV6_ZONE_RE = new RegExp(IPV6_ZONE, "i");
+const IPV6_NATIVE_RE = new RegExp(
+  `^(?:::)?(?:[0-9a-f]+::?)*[0-9a-f]*(?:::)?(?:${IPV6_ZONE})?$`,
+  "i",
+);
+const IPV6_TRANSITIONAL_RE = new RegExp(
+  `^((?:[0-9a-f]+::?)+|::(?:[0-9a-f]+::?)*)${IPV4_PART}\\.${IPV4_PART}\\.${IPV4_PART}\\.${IPV4_PART}(${IPV6_ZONE})?$`,
+  "i",
+);
+
+/** ipaddr.js's radix guess: a leading `0` (not `0x`) is octal. */
+function parseIntAuto(text: string): number {
+  return text[0] === "0" && text[1] !== "x"
+    ? Number.parseInt(text, 8)
+    : Number.parseInt(text);
+}
+
+/** ipaddr.js's `IPv4.parser` plus its constructor's octet check. */
+function parseIpv4(text: string): ParsedIpv4 | null {
+  let octets: number[];
+  const four = IPV4_FOUR_OCTET_RE.exec(text);
+  if (four) {
+    octets = [four[1], four[2], four[3], four[4]].map((part) =>
+      parseIntAuto(part ?? ""),
+    );
+  } else {
+    const long = IPV4_LONG_VALUE_RE.exec(text);
+    if (!long) {
+      return null;
+    }
+    const value = parseIntAuto(long[1] ?? "");
+    if (value > 0xffffffff || value < 0) {
+      return null;
+    }
+    octets = [24, 16, 8, 0].map((shift) => (value >> shift) & 0xff);
+  }
+  for (const octet of octets) {
+    if (!(octet >= 0 && octet <= 255)) {
+      return null;
+    }
+  }
+  return { kind: "ipv4", octets };
+}
+
+/** ipaddr.js's `expandIPv6`: `::` expanded to `parts` parts in all. */
+function expandIpv6(
+  input: string,
+  parts: number,
+): { parts: number[]; zoneId: string | undefined } | null {
+  let text = input;
+  if (text.indexOf("::") !== text.lastIndexOf("::")) {
+    return null;
+  }
+  let zoneId = IPV6_ZONE_RE.exec(text)?.[0];
+  if (zoneId) {
+    zoneId = zoneId.slice(1);
+    text = text.replace(/%.+$/, "");
+  }
+  let colonCount = 0;
+  for (
+    let colon = text.indexOf(":");
+    colon >= 0;
+    colon = text.indexOf(":", colon + 1)
+  ) {
+    colonCount++;
+  }
+  if (text.startsWith("::")) {
+    colonCount--;
+  }
+  if (text.endsWith("::")) {
+    colonCount--;
+  }
+  if (colonCount > parts) {
+    return null;
+  }
+  const replacement = `:${"0:".repeat(parts - colonCount)}`;
+  text = text.replace("::", replacement);
+  if (text.startsWith(":")) {
+    text = text.slice(1);
+  }
+  if (text.endsWith(":")) {
+    text = text.slice(0, -1);
+  }
+  return {
+    parts: text.split(":").map((part) => Number.parseInt(part, 16)),
+    zoneId,
+  };
+}
+
+/** ipaddr.js's `IPv6.parser` plus its constructor's part checks. */
+function parseIpv6(text: string): ParsedIpv6 | null {
+  if (!text.includes(":")) {
+    return null;
+  }
+  let parsed: { parts: number[]; zoneId: string | undefined } | null;
+  if (IPV6_NATIVE_RE.test(text)) {
+    parsed = expandIpv6(text, 8);
+  } else {
+    const match = IPV6_TRANSITIONAL_RE.exec(text);
+    if (!match) {
+      return null;
+    }
+    parsed = expandIpv6((match[1] ?? "").slice(0, -1) + (match[6] ?? ""), 6);
+    if (!parsed) {
+      return null;
+    }
+    // Plain `parseInt`, as ipaddr.js: `010` is ten here, not eight.
+    const octets = [match[2], match[3], match[4], match[5]].map((part) =>
+      Number.parseInt(part ?? ""),
+    );
+    for (const octet of octets) {
+      if (!(octet >= 0 && octet <= 255)) {
+        return null;
+      }
+    }
+    const [a = 0, b = 0, c = 0, d = 0] = octets;
+    parsed.parts.push((a << 8) | b, (c << 8) | d);
+  }
+  if (!parsed || parsed.parts.length !== 8) {
+    return null;
+  }
+  for (const part of parsed.parts) {
+    if (!(part >= 0 && part <= 0xffff)) {
+      return null;
+    }
+  }
+  return parsed.zoneId
+    ? { kind: "ipv6", parts: parsed.parts, zoneId: parsed.zoneId }
+    : { kind: "ipv6", parts: parsed.parts };
+}
+
+/**
+ * Parses an IPv4 or IPv6 address as proxy-addr does (`ipaddr.parse`, from
+ * `ipaddr.js` 1.9.1): IPv6 first, then IPv4, including the legacy IPv4
+ * forms (`2130706433`, `0x7f.0.0.1`, `0177.0.0.1`) and an IPv6 `%zone`.
+ * `null` for anything else, a non-string included. An IPv4-mapped IPv6
+ * address (`::ffff:1.2.3.4`) stays IPv6; see {@link toIpv4IfMapped}.
+ */
+export function parseIpAddress(value: unknown): ParsedIp | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return parseIpv6(value) ?? parseIpv4(value);
+}
+
+/**
+ * Whether `value` is an IP address as proxy-addr reads one (`ipaddr.isValid`;
+ * see {@link parseIpAddress}). Laxer than `node:net`'s `isIP`, which refuses
+ * the legacy IPv4 forms and a zone.
+ */
+export function isIpAddress(value: unknown): value is string {
+  return parseIpAddress(value) !== null;
+}
+
+/** Whether `ip` is an IPv4-mapped IPv6 address (`::ffff:0:0/96`). */
+export function isIpv4MappedAddress(ip: ParsedIp): ip is ParsedIpv6 {
+  if (ip.kind !== "ipv6") {
+    return false;
+  }
+  const p = ip.parts;
+  return (
+    p[0] === 0 &&
+    p[1] === 0 &&
+    p[2] === 0 &&
+    p[3] === 0 &&
+    p[4] === 0 &&
+    p[5] === 0xffff
+  );
+}
+
+/** `ip` as IPv4 when it is an IPv4-mapped IPv6 address; otherwise `ip`. */
+export function toIpv4IfMapped(ip: ParsedIp): ParsedIp {
+  if (!isIpv4MappedAddress(ip)) {
+    return ip;
+  }
+  const high = ip.parts[6] ?? 0;
+  const low = ip.parts[7] ?? 0;
+  return {
+    kind: "ipv4",
+    octets: [high >> 8, high & 0xff, low >> 8, low & 0xff],
+  };
+}
+
+/** An IPv4 address as its IPv4-mapped IPv6 form (`::ffff:a.b.c.d`). */
+function toIpv4Mapped(ip: ParsedIpv4): ParsedIpv6 {
+  const [a = 0, b = 0, c = 0, d = 0] = ip.octets;
+  return {
+    kind: "ipv6",
+    parts: [0, 0, 0, 0, 0, 0xffff, (a << 8) | b, (c << 8) | d],
+  };
+}
+
+/** ipaddr.js's `matchCIDR`: the first `bits` bits of both are equal. */
+function matchBits(
+  first: readonly number[],
+  second: readonly number[],
+  partSize: number,
+  bits: number,
+): boolean {
+  let remaining = bits;
+  let part = 0;
+  while (remaining > 0) {
+    const shift = Math.max(partSize - remaining, 0);
+    if ((first[part] ?? 0) >> shift !== (second[part] ?? 0) >> shift) {
+      return false;
+    }
+    remaining -= partSize;
+    part += 1;
+  }
+  return true;
+}
+
+/** `ip` is inside `range`; both of one kind. */
+function matchSameKind(ip: ParsedIp, range: IpRange): boolean {
+  return ip.kind === "ipv4"
+    ? matchBits(ip.octets, (range.ip as ParsedIpv4).octets, 8, range.bits)
+    : matchBits(ip.parts, (range.ip as ParsedIpv6).parts, 16, range.bits);
+}
+
+const DIGITS_RE = /^\d+$/;
+
+/** An IPv4 netmask's prefix length (ipaddr.js), or `null` when not one. */
+function prefixFromNetmask(mask: ParsedIp): number | null {
+  if (mask.kind !== "ipv4") {
+    return null;
+  }
+  const zeros: Record<number, number> = {
+    0: 8,
+    128: 7,
+    192: 6,
+    224: 5,
+    240: 4,
+    248: 3,
+    252: 2,
+    254: 1,
+    255: 0,
+  };
+  let cidr = 0;
+  let stop = false;
+  for (let i = 3; i >= 0; i--) {
+    const count = zeros[mask.octets[i] ?? -1];
+    if (count === undefined) {
+      return null;
+    }
+    if (stop && count !== 0) {
+      return null;
+    }
+    if (count !== 8) {
+      stop = true;
+    }
+    cidr += count;
+  }
+  return 32 - cidr;
+}
+
+/**
+ * Parses one address or range as proxy-addr's `trust` notation reads it:
+ * an address (`10.0.0.1`, `::1`, a whole-address range), a CIDR range
+ * (`10.0.0.0/8`, `fc00::/7`) or an IPv4 address with a netmask
+ * (`10.0.0.0/255.0.0.0`). An IPv4-mapped IPv6 address without a prefix is
+ * stored as IPv4, as proxy-addr stores it. Throws a `TypeError` with
+ * proxy-addr's message for anything else, a prefix of `0` included
+ * (`invalid IP address: …`, `invalid range on address: …`).
+ */
+export function parseIpRange(note: string): IpRange {
+  const slash = note.lastIndexOf("/");
+  const address = slash === -1 ? note : note.slice(0, slash);
+  let ip = parseIpAddress(address);
+  if (!ip) {
+    throw new TypeError(`invalid IP address: ${address}`);
+  }
+  if (slash === -1) {
+    ip = toIpv4IfMapped(ip);
+  }
+  const max = ip.kind === "ipv6" ? 128 : 32;
+  let bits: number | null;
+  if (slash === -1) {
+    bits = max;
+  } else {
+    const range = note.slice(slash + 1);
+    if (DIGITS_RE.test(range)) {
+      bits = Number.parseInt(range, 10);
+    } else if (ip.kind === "ipv4" && isIpAddress(range)) {
+      const mask = parseIpAddress(range);
+      bits = mask ? prefixFromNetmask(mask) : null;
+    } else {
+      bits = null;
+    }
+  }
+  if (bits === null || bits <= 0 || bits > max) {
+    throw new TypeError(`invalid range on address: ${note}`);
+  }
+  return { ip, bits };
+}
+
+/**
+ * Whether the address `addr` falls in `range`, as proxy-addr's compiled trust
+ * function decides it: an IPv4-mapped candidate is matched as IPv4, an IPv4
+ * candidate matches an IPv6 range only when the range is IPv4-mapped with a
+ * prefix of at least 96, and a native IPv6 candidate never matches an IPv4
+ * or IPv4-mapped range.
+ */
+function ipInRange(ip: ParsedIp, range: IpRange): boolean {
+  const rangeKind = range.ip.kind;
+  if (ip.kind !== rangeKind) {
+    if (rangeKind === "ipv4") {
+      // A native IPv6 candidate (a mapped one is IPv4 by now).
+      return false;
+    }
+    if (!(range.bits >= 96 && isIpv4MappedAddress(range.ip))) {
+      return false;
+    }
+    return matchSameKind(toIpv4Mapped(ip as ParsedIpv4), range);
+  }
+  if (ip.kind === "ipv6" && isIpv4MappedAddress(range.ip)) {
+    return false;
+  }
+  return matchSameKind(ip, range);
+}
+
+/**
+ * The address ranges proxy-addr names, for `trustProxy` and
+ * {@link compileIpMatcher}: `loopback`, `linklocal` and `uniquelocal`
+ * (private IPv4 and unique-local IPv6). `100.64.0.0/10`, the shared
+ * (CGNAT) range, is in none of them.
+ */
+export const IP_RANGE_PRESETS: Readonly<
+  Record<"loopback" | "linklocal" | "uniquelocal", readonly string[]>
+> = Object.freeze({
+  linklocal: Object.freeze(["169.254.0.0/16", "fe80::/10"]),
+  loopback: Object.freeze(["127.0.0.1/8", "::1/128"]),
+  uniquelocal: Object.freeze([
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "fc00::/7",
+  ]),
+});
+
+/**
+ * Compiles addresses, ranges and preset names ({@link IP_RANGE_PRESETS}) into
+ * a function telling whether an address string is in any of them: the
+ * matching proxy-addr's `compile()` returns, without the hop index. Throws a
+ * `TypeError` for an entry {@link parseIpRange} refuses. An empty list
+ * matches nothing; a string that is not an address (`undefined`, `""`, a
+ * host name) is never matched.
+ */
+export function compileIpMatcher(
+  entries: readonly string[],
+): (addr: string | undefined) => boolean {
+  const ranges: IpRange[] = [];
+  for (const entry of entries) {
+    const preset = Object.hasOwn(IP_RANGE_PRESETS, entry)
+      ? IP_RANGE_PRESETS[entry as keyof typeof IP_RANGE_PRESETS]
+      : undefined;
+    for (const note of preset ?? [entry]) {
+      ranges.push(parseIpRange(note));
+    }
+  }
+  if (ranges.length === 0) {
+    return () => false;
+  }
+  return (addr) => {
+    const parsed = parseIpAddress(addr);
+    if (!parsed) {
+      return false;
+    }
+    const ip = toIpv4IfMapped(parsed);
+    for (const range of ranges) {
+      if (ipInRange(ip, range)) {
+        return true;
+      }
+    }
+    return false;
+  };
+}

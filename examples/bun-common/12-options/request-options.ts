@@ -1504,21 +1504,32 @@ checkEqual(
   [0, false],
 );
 
-const proxied = await make("http://shop.example.com/", {
+const proxiedInit = {
   headers: {
     "X-Forwarded-Proto": "https, http",
     "X-Forwarded-For": "203.0.113.9, 10.0.0.2",
   },
+};
+const untrusting = await make("http://shop.example.com/", proxiedInit);
+checkEqual(
+  "without trustProxy, X-Forwarded-* is not read",
+  [untrusting.protocol, untrusting.secure, untrusting.ips],
+  ["http", false, []],
+);
+// No socket here: a hop count trusts the missing peer by position.
+const proxied = await make("http://shop.example.com/", proxiedInit, {
+  trustProxy: 2,
 });
 checkEqual(
-  "protocol from X-Forwarded-Proto (first entry)",
+  "protocol from X-Forwarded-Proto (first entry), with trustProxy",
   [proxied.protocol, proxied.secure],
   ["https", true],
 );
-checkEqual("ips from X-Forwarded-For", proxied.ips, [
+checkEqual("ips from X-Forwarded-For, with trustProxy", proxied.ips, [
   "203.0.113.9",
   "10.0.0.2",
 ]);
+checkEqual("ip is the first untrusted address", proxied.ip, "203.0.113.9");
 
 checkEqual(
   "getHeader, get, get with a default",
@@ -1588,6 +1599,11 @@ checkEqual("ip", full.ip, "203.0.113.7");
 checkEqual(
   "socket.localAddress / localPort / localFamily",
   [full.socket.localAddress, full.socket.localPort, full.socket.localFamily],
+  ["203.0.113.7", 51234, "IPv4"],
+);
+checkEqual(
+  "socket.remoteAddress / remotePort / remoteFamily (Node's names)",
+  [full.socket.remoteAddress, full.socket.remotePort, full.socket.remoteFamily],
   ["203.0.113.7", 51234, "IPv4"],
 );
 check(

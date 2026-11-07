@@ -11,6 +11,7 @@ import type {
   WebSocketRouteOptions,
 } from "./BunWebSocket";
 import type { Logger, LoggerLike } from "./logging";
+import type { TrustProxyOption } from "./trustProxy";
 import type {
   OutboundDef,
   ResponseOutputMode,
@@ -43,6 +44,7 @@ import {
 } from "./BunResponse";
 import { attachRouteDoc } from "./docs/routeDoc";
 import { resolveLogger } from "./logging";
+import { compileTrustProxy } from "./trustProxy";
 import { responseBindingOf, toOutboundDef } from "./responseValidation";
 import {
   CAPTURE_OPTIONAL_WILDCARD,
@@ -1478,10 +1480,30 @@ export class BunRouter<
        * throws a `TypeError` here. Read at registration.
        */
       commonResponses?: ResponseSchemas;
+      /**
+       * Which proxies in front of the app to believe about the client, as
+       * Express 5's `trust proxy`: `false` (the default), `true`, a hop
+       * count, addresses/ranges/presets, or a function (see
+       * {@link TrustProxyOption}). Applies to the requests this router
+       * builds itself — {@link fetch}, and a dedicated WebSocket server
+       * whose `bunRequestOpts` do not set it; an adapter applies its own to
+       * every request. A value proxy-addr refuses throws a `TypeError` here.
+       */
+      trustProxy?: TrustProxyOption;
+      /**
+       * A single-value client address header (`"cf-connecting-ip"`),
+       * believed only when {@link trustProxy} trusts the whole chain; see
+       * the request option of the same name. Defaults to none.
+       */
+      clientIpHeader?: string;
     },
   ) {
     super(pick(localOptions, ["caseSensitive", "host"]));
     this.#views = localOptions?.views;
+    // Compiled here so a bad value fails at startup.
+    compileTrustProxy(localOptions?.trustProxy);
+    this.#trustProxy = localOptions?.trustProxy;
+    this.#clientIpHeader = localOptions?.clientIpHeader;
 
     // `0` disables the cache; a positive value caps it; anything else
     // (negative, non-numeric, absent) falls back to the default.
@@ -1527,6 +1549,67 @@ export class BunRouter<
 
   /** The `commonResponses` option, checked and compiled; `undefined` without one. */
   readonly #commonResponses: OutboundDef | undefined;
+
+  /** {@link trustProxy}'s value. */
+  #trustProxy: TrustProxyOption | undefined;
+  /** {@link clientIpHeader}'s value. */
+  #clientIpHeader: string | undefined;
+
+  /**
+   * Which proxies to believe about the client (the `trustProxy` option), as
+   * Express's `trust proxy` setting; `undefined` when never set, which
+   * trusts nothing. Setting it compiles the value, so a bad one throws a
+   * `TypeError` and changes nothing. On an adapter it is the adapter's
+   * setting, applied to every request from the next one on.
+   */
+  get trustProxy(): TrustProxyOption | undefined {
+    return this.#trustProxy;
+  }
+
+  set trustProxy(value: TrustProxyOption | undefined) {
+    compileTrustProxy(value);
+    this.#trustProxy = value;
+    this.onProxyTrustChange();
+  }
+
+  /**
+   * The single-value client address header (the `clientIpHeader` option),
+   * believed only when {@link trustProxy} trusts the whole chain;
+   * `undefined` for none.
+   */
+  get clientIpHeader(): string | undefined {
+    return this.#clientIpHeader;
+  }
+
+  set clientIpHeader(value: string | undefined) {
+    this.#clientIpHeader = value;
+    this.onProxyTrustChange();
+  }
+
+  /**
+   * The request options carrying this router's {@link trustProxy} and
+   * {@link clientIpHeader}, only those set: spread into the options of a
+   * request the router builds.
+   */
+  protected proxyTrustRequestOptions(): {
+    trustProxy?: TrustProxyOption;
+    clientIpHeader?: string;
+  } {
+    return {
+      ...(this.#trustProxy !== undefined
+        ? { trustProxy: this.#trustProxy }
+        : {}),
+      ...(this.#clientIpHeader !== undefined
+        ? { clientIpHeader: this.#clientIpHeader }
+        : {}),
+    };
+  }
+
+  /**
+   * Called after {@link trustProxy} or {@link clientIpHeader} is set; an
+   * adapter copies them into its request options here.
+   */
+  protected onProxyTrustChange(): void {}
 
   /**
    * The application's views — where templates live, the default engine,
@@ -5817,6 +5900,7 @@ export class BunRouter<
       parseBody: true,
       parseCookies: true,
       parseQuery: true,
+      ...this.proxyTrustRequestOptions(),
     });
     const request =
       created instanceof BunRequestClass

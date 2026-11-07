@@ -4,6 +4,76 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
+## Unreleased
+
+<!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
+
+### Breaking changes
+
+- **bun-common and bun-nest read `X-Forwarded-*` only through `trustProxy`.**
+  This is Express 5's `trust proxy` setting, and it is off by default. In
+  3.0.0-rc.0, `req.ips` and `req.protocol` (and so `req.secure`) always
+  believed `X-Forwarded-For` and `X-Forwarded-Proto`, which any client can
+  send. Now, with trust off:
+  - `req.ips` is `[]`;
+  - `req.protocol` is the scheme the request arrived on;
+  - `X-Forwarded-Host` is ignored (it never moved `req.host`).
+
+  `req.ip` is still the socket peer.
+
+  Code reading these properties changes with them: bun-jobs' served AsyncAPI
+  document picks `ws`/`wss` from `req.secure`, and bun-jobs-ui's CSP picks
+  `wss:` from it.
+- `req.socket.localAddress` is the socket peer. It was `req.ip`, which is the
+  same with trust off.
+
+### What's new
+
+- **`trustProxy`** on both adapters, `BunRouter` and the request options,
+  and **`set("trust proxy", value)`** on both adapters (`app.set()` on a
+  Nest app). It takes every Express value: `true`, a hop count, addresses,
+  CIDR ranges, the presets `loopback`, `linklocal` and `uniquelocal`, or a
+  function. Through it:
+  - `req.ip` is the first untrusted address, walking from the socket
+    through `X-Forwarded-For` from right to left (proxy-addr's algorithm);
+  - `req.ips` is the trusted chain;
+  - `req.protocol`, `req.host` and `req.hostname` read `X-Forwarded-Proto`
+    and `X-Forwarded-Host` from a trusted peer.
+
+  A bun-nest `@Controller({ host })` matches the forwarded host the same
+  way.
+- **`clientIpHeader`** names a single-value header, such as
+  `CF-Connecting-IP`. It is believed only when `trustProxy` trusts the whole
+  chain the request came through.
+- **Platform helpers:** `behindCloudflare()` (with a dated
+  `CLOUDFLARE_IP_RANGES` snapshot, and an opt-in
+  `fetchCloudflareIpRanges()`), `behindRailway()` and `trustChain()`.
+- **`req.proxyChain`** shows how `req.ip` was resolved. **`ws.data.ip`**
+  carries an upgrade's `req.ip`, so a gateway sees the real client.
+- **IP helpers** in `native.ts`, as proxy-addr reads addresses:
+  `isIpAddress`, `parseIpAddress`, `parseIpRange`, `compileIpMatcher` and
+  `IP_RANGE_PRESETS`. The socket shim adds Node's `remoteAddress`,
+  `remotePort` and `remoteFamily`.
+
+### Upgrading
+
+If the app runs behind a proxy and reads `req.ips`, `req.protocol`,
+`req.secure` or a forwarded host, say which proxies to trust, as you would on
+Express:
+
+```ts
+new BunHttpAdapter(0, { trustProxy: "loopback" }); // nginx on the same host
+new BunHttpAdapter(0, { trustProxy: 1 }); // one proxy in front, by position
+new BunHttpAdapter(0, { ...behindCloudflare() }); // Cloudflare → app
+new BunHttpAdapter(0, { ...behindRailway() }); // Railway → app
+app.set("trust proxy", 1); // a Nest app, as on platform-express
+```
+
+bun-common's README, under
+[Client address behind proxies](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#client-address-behind-proxies-trustproxy),
+covers what to trust and the spoofing traps. Don't set `trustProxy: true` on
+a server clients can reach directly.
+
 ## 3.0.0-rc.0 (2026-11-04)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->

@@ -38,6 +38,7 @@ import {
   HostParam,
   HttpCode,
   HttpException,
+  Ip,
   Module,
   Next,
   Post,
@@ -122,6 +123,7 @@ interface CompatResponse {
 /** The request properties the controllers read through `@Req()`. */
 interface CompatRequest {
   ip?: string;
+  host?: string;
   ips?: string[];
   hostname?: string;
   protocol?: string;
@@ -746,6 +748,26 @@ export class SmallController {
 
 @Module({ controllers: [SmallController] })
 export class SmallModule {}
+
+/** What `trust proxy` decides, for the `trust-proxy-*` groups. */
+@Controller()
+export class TrustController {
+  @Get("trust")
+  trust(@Req() req: CompatRequest, @Ip() ip: string) {
+    return {
+      ip: req.ip ?? null,
+      decoratorIp: ip ?? null,
+      ips: req.ips,
+      protocol: req.protocol,
+      secure: req.secure,
+      host: req.host ?? null,
+      hostname: req.hostname ?? null,
+    };
+  }
+}
+
+@Module({ controllers: [TrustController] })
+export class TrustModule {}
 
 /** `@QueryMethod(path?)`, when the installed Nest has it (11.2.0+). */
 const NestQueryMethod = (

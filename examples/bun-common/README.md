@@ -26,13 +26,13 @@ with no socket at all.
 
 ### 01 — Quick start
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`index.ts`](./01-quick-start/index.ts) | a small API: routes, JSON body, params, error and not-found handlers, served on port 0, exercised, closed |
 
 ### 02 — Routing
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`verbs-and-params.ts`](./02-routing/verbs-and-params.ts) | every verb method, `query()` for HTTP `QUERY` (a JSON or text body beside `req.query`, a typed `:index`, the method matched in any case, no `GET`/`HEAD` fallback either way), `all`/`any`/`add`/`addRoute`, every param form (a named wildcard a `string[]` under its name only while a bare `*` keeps `0`, an optional wildcard that matched nothing leaving its key absent, `{…}` groups, `:from-:to` split greedy-first, the routejs forms still registering), a malformed path throwing `PathSyntaxError` at registration, route ordering and `setRouteSpecificity`, `HEAD` answered by the GET handler (served and through `fetch()`, a HEAD handler registered first winning), `toFetchResponse` and `markSocketFree` (no HEAD body, the wire's implicit text `Content-Type`) |
 | [`middleware-and-errors.ts`](./02-routing/middleware-and-errors.ts) | Express 5 pipeline: `use()` prefix matching vs exact routes, `useMethod`, the four ways into error mode, `next(object)` reaching the error handler as that same object while `next("text")` is wrapped in an `Error`, recovering with `next()`, `next('route')`, `next('router')`, `next()` called later from a timer or I/O callback, the request timeout (an async handler that never settles included), errors after the response started (`headersSent`, ending the stream from an error handler, an unhandled one cutting it off once what was written has gone out), `res.write()` then `next()`/a later `next(err)` moving on, an async handler that responds and keeps awaiting (its late rejection logged) |
@@ -47,7 +47,7 @@ with no socket at all.
 
 ### 03 — The HTTP adapter
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`listen-and-close.ts`](./03-http-adapter/listen-and-close.ts) | every `listen()` overload, address getters, events, `setListenOptions`, `close()` |
 | [`shutdown.ts`](./03-http-adapter/shutdown.ts) | `close()` draining: a slow request finishing during `close()`, answered in full; `closeDrainTimeout: 0` cutting it at once; an endless SSE stream holding `close()` for a 300 ms cap, then cut; a stream ended during `close()` delivered whole; an open WebSocket not waited for; `drainAndStop()` and `validateCloseDrainTimeout()` draining a plain `Bun.serve`; a bad `closeDrainTimeout` a `RangeError` at construction |
@@ -56,7 +56,7 @@ with no socket at all.
 
 ### 04 — The request
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`reading-a-request.ts`](./04-request/reading-a-request.ts) | every request property: url parts, params, query parsing options, headers, ip/host/protocol, freshness, ranges, content negotiation |
 | [`body-parsing.ts`](./04-request/body-parsing.ts) | every body-parsing option: JSON, text, urlencoded, raw, XML, custom content-type parsers, size limits, `PayloadTooLargeError`, compressed bodies and decompression bombs, `inflate: false` (415) and `decompressionFastPathLimit` set on the adapter's `parseBody`, raw bodies, per-request option setters that leave the adapter's options alone, body-parser middleware passing a request without a body (`req.hasBody`) straight on, a declared empty body (`Content-Length: 0`, no stream) parsed as `{}`, and with a refused encoding a POST refused before routing while a GET is routed and answered by `next(err)` only when read, bytes kept by default and dropped with `retainBuffer: false` — a JSON body read with `request.json()` (no `req.buffer` or `req.rawBody`, `end` only, no `err.body`), text, urlencoded and xml with `request.text()`, raw always kept; globally, through `requestParsing({ retainBuffer })`, or per kind with `contentTypes.<kind>.retainBuffer`; a capped body without bytes served but with them through `adapter.fetch()`, the one-read body path checked served against `adapter.fetch()` (JSON, `+json`, urlencoded, latin1 text, gzip, corrupt gzip 400, invalid JSON 400, a declared or chunked over-cap body 413, an understated `Content-Length` 413, `data`/`end` events), 4xx logged at `warn` and 5xx at `error` with `err.req` non-enumerable, invalid JSON as body-parser's 400 (a `SyntaxError`, `entity.parse.failed`, `err.body`, `req.bodyDecodingError`) reaching `setErrorHandler` before routing, answered with the adapter's HTML error page without one, or `next(err)` with `deferBody` + `requestParsing()`, while a bare router's `fetch()` routes it with `req.body` unset and the refusal on `req.bodyDecodingError`; on the adapter, served and through `adapter.fetch()`, a router built with `acceptUndecodableBody: true` and a route with the `acceptUndecodableBody()` marker routed bad JSON (400), a corrupt gzip stream (400) and an unsupported `Content-Encoding` (415) the same way, while a route beside them keeps the early refusal and an over-cap body is still a 413 before routing; an invalid size or decoding option failing where it is configured (constructor, `setRequestOpts()` keeping its old options, `requestParsing()`) and `validateParseBodyOption()` |
@@ -66,7 +66,7 @@ with no socket at all.
 
 ### 05 — The response
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`sending.ts`](./05-response/sending.ts) | status, every body type for `send`, `json`/`jsonp`, headers (`Set-Cookie` read back as an array, as Node), `location`, `links`, `vary`, ETags, `format()` negotiation, attachments |
 | [`files-and-streams.ts`](./05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming responses, server-sent events, Express 5's `redirect([status,] url)` (a body chosen by `Accept`, `Vary`, `Content-Length`, an encoded `Location`, earlier headers kept, HEAD without a body) beside Bun's `ResponseInit` form, a stream's first chunk sent before its async handler resolves, a stream outliving the request timeout, which quiet streams `idleTimeout` cuts (`req.socket.setTimeout(0)` and `write()` exempt one), an error before the first event answered 500 despite `setKeepAlive(true)`, `isStreamOpen`/`writableEnded`/`onceStreamEnded()`, `awaitPipelineOrStream()` |
@@ -76,7 +76,7 @@ with no socket at all.
 
 ### 06 — Validation
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`validate-requests.ts`](./06-validation/validate-requests.ts) | every validation target and failure mode, hooks, chained validators, `ValidationError` and issue paths |
 | [`schema-libraries.ts`](./06-validation/schema-libraries.ts) | the same schema in zod, yup, valibot and arktype directly, superstruct through `toStandardSchema` |
@@ -94,7 +94,7 @@ with no socket at all.
 
 ### 07 — CORS, static files and compression
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`cors.ts`](./07-cors-and-static/cors.ts) | every `CorsOptions` field, preflight vs simple requests, `QUERY` left out of the default `methods`, a `CorsOptionsDelegate` |
 | [`serve-static.ts`](./07-cors-and-static/serve-static.ts) | `createServeStaticHandler` with every option against a fixture folder, precompressed `.br`/`.gz` siblings and on-the-fly compression, byte ranges over a real socket |
@@ -102,7 +102,7 @@ with no socket at all.
 
 ### 08 — Multipart uploads
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`single-and-multiple.ts`](./08-multipart/single-and-multiple.ts) | the single, multiple, fields, any and no-files handlers; `uploadFieldsToMap`; nested and repeated fields |
 | [`storage.ts`](./08-multipart/storage.ts) | memory storage, disk storage with every option, a file part sent with no filename, a custom `Storage`, `removeStorageFiles` |
@@ -110,7 +110,7 @@ with no socket at all.
 
 ### 09 — WebSockets
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`echo-and-events.ts`](./09-websocket/echo-and-events.ts) | upgrading through the adapter, every event handler, client data, text and binary, ping/pong, backpressure, close codes |
 | [`rooms-and-broadcast.ts`](./09-websocket/rooms-and-broadcast.ts) | auth on upgrade, rooms as pub/sub topics, `ws.publish` vs `server.publish`, broadcasting, server stats |
@@ -118,7 +118,7 @@ with no socket at all.
 
 ### 10 — Logging
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`structured-logger.ts`](./10-logging/structured-logger.ts) | `createLogger` with every option, the six levels, `child`, `isLevelEnabled`, errors lifted onto the record |
 | [`sinks.ts`](./10-logging/sinks.ts) | `consoleSink` pretty and JSON, `multiSink`, `collectSink`, a custom sink, `noopLogger`, `createTestLogger` |
@@ -126,7 +126,7 @@ with no socket at all.
 
 ### 11 — Utilities
 
-| File | Shows |
+| File | Covers |
 |---|---|
 | [`objects-and-collections.ts`](./11-utilities/objects-and-collections.ts) | the type guards, `get`/`set`/`merge`/`pick`/`omit`/`orderBy`/…, `cloneDeep` vs `jsonClone` |
 | [`http-helpers.ts`](./11-utilities/http-helpers.ts) | `etag`, `fresh`, ranges, `vary`, `encodeUrl`, dates and byte sizes, every cookie helper, `accepts`, `typeIs`, `mime` |
@@ -199,6 +199,12 @@ bun run check:client   # the same with --check: exit 1 when they are stale
 | [`sse.ts`](./14-typed-client/sse.ts) | server-sent events: `res.sse()` with a declared `sse({ … })` contract, ids, `retry:`, a heartbeat comment and `resume` read off the wire; the typed `sse()` client iterating narrowed events, a connection the server dropped resumed with `Last-Event-ID` (nothing lost, nothing repeated), and an unresumable id answered with the declared `gap` |
 | [`webrtc.ts`](./14-typed-client/webrtc.ts) | a data channel between two headless peers: `signallingRelay` and the typed signalling channel (`join`/`peers`), `connectPeer` running offer, answer and ICE, `typedDataChannel` carrying typed messages, a push, a request/reply and a refused send; peers come from `node-datachannel/polyfill` (skips visibly when it is missing) |
 | [`graphql.ts`](./14-typed-client/graphql.ts) | `createGraphQLClient` against a hand-written GraphQL endpoint (bun-node serves none): documents typed as `TypedString<Result, Variables>`, complete, partial and failed results, a mutation, `method: "GET"`, `throwOnGraphQLErrors`, and `q.graphql()` with tags in the query layer |
+
+### 15 — Client address behind proxies
+
+| File | Covers |
+|---|---|
+| [`client-ip.ts`](./15-trust-proxy/client-ip.ts) | `trustProxy` (Express's `trust proxy`) over a real socket: off by default (the peer, no `X-Forwarded-*`), the walk from the socket leftwards with `set("trust proxy", …)` and a hop count, `req.proxyChain`, a bad value's `TypeError`, the Cloudflare → Railway chain with `CF-Connecting-IP` believed and a direct request's spoof ignored, `ws.data.ip`, and a socket-free `fetch()` with no peer. See the package README's [Client address behind proxies](../../packages/bun-common/README.md#client-address-behind-proxies-trustproxy) |
 
 ## Checking the examples
 

@@ -61,6 +61,7 @@ Underneath, routing is
   - [Response compression](#response-compression)
   - [Error handling](#error-handling)
   - [Instrumentation hooks and response checks](#instrumentation-hooks-and-response-checks)
+  - [Client IP behind proxies](#client-ip-behind-proxies-trust-proxy)
   - [Testing with `fetch()`](#testing-with-fetch)
   - [`listen()` and `close()`](#listen-and-close)
   - [Known differences from `@nestjs/platform-express`](#known-differences-from-nestjsplatform-express)
@@ -322,6 +323,8 @@ class under a second name. Its constructor is
 | `closeDrainTimeout` | `number` (ms) | `10_000` | The longest `close()` (and `app.close()`) waits for in-flight requests before cutting them. `0` waits for nothing; `forceCloseConnections: true` skips the wait whatever it says. A negative or non-finite value throws a `RangeError` at construction. See [`listen()` and `close()`](#listen-and-close). |
 | `server` | `BunServeNormalOptions` | `{}` | Base `Bun.serve` options (TLS, `idleTimeout`, `maxRequestBodySize`, …). `port`, `hostname`, `fetch`, `websocket`, `error` and `development` are set by the adapter and override these. `routes` serves constants (a health check, `robots.txt`) natively, ahead of Nest: every method, no middleware, guards or interceptors; see bun-common's [Native static routes](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#native-static-routes-serverroutes). |
 | `websocket` | `Partial<WebsocketOptions>` | bound to this adapter | Overrides for the built-in WebSocket adapter. See [the `websocket` option](#the-websocket-option). |
+| `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, as Express's `trust proxy`; `app.set("trust proxy", value)` sets it too. See [Client IP behind proxies](#client-ip-behind-proxies-trust-proxy). |
+| `clientIpHeader` | `string` | none | A header carrying the client address as one value (`"cf-connecting-ip"`), believed only when `trustProxy` trusts the whole chain. bun-common's `behindCloudflare()` sets both. |
 
 ```ts
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
@@ -981,6 +984,46 @@ const app = await NestFactory.create(AppModule, adapter);
 await app.listen(3000);
 ```
 
+### Client IP behind proxies (`trust proxy`)
+
+Behind a proxy, the socket peer is the proxy. Tell the adapter which proxies
+to believe, the way you do on `@nestjs/platform-express`:
+
+```ts
+import { behindCloudflare } from "@kingsleyweb/bun-common";
+import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
+import { NestFactory } from "@nestjs/core";
+
+const app = await NestFactory.create(AppModule, new BunHttpAdapter());
+app.set("trust proxy", "loopback"); // as on Express: nginx on the same host
+
+// or as an adapter option, with a platform preset:
+new BunHttpAdapter(0, { trustProxy: 1 });
+new BunHttpAdapter(0, { ...behindCloudflare() }); // reads CF-Connecting-IP
+```
+
+Every value Express accepts works, with Express's meaning: `false` (the
+default), `true`, a hop count, addresses, CIDR ranges and the presets
+`loopback`, `linklocal` and `uniquelocal`, or a function. It decides
+`req.ip` (and so `@Ip()`), `req.ips`, `req.protocol` and `req.secure`, and
+`req.hostname`. That includes matching a `@Controller({ host })` against
+`X-Forwarded-Host`, which is read only from a trusted peer. A gateway
+client's real address is `client.data.ip`, where `client.remoteAddress` is
+always the proxy. `adapter.trustProxy` reads and sets it.
+
+The `trust-proxy-*` groups of the Express differential
+(`__tests__/expressCompat.nest.test.ts`) check `ip`, `ips`, `protocol`,
+`secure`, `host` and `hostname` against `@nestjs/platform-express` over real
+sockets, for eight `trust proxy` values.
+
+bun-common's README covers the walk, the client address header, the
+Cloudflare and Railway helpers, a worked Cloudflare → Railway example and the
+spoofing traps:
+[Client address behind proxies](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#client-address-behind-proxies-trustproxy).
+
+Example:
+[`13-trust-proxy/client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/13-trust-proxy/client-ip.ts).
+
 ### Testing with `fetch()`
 
 After `app.init()`, `adapter.fetch()` runs a request through the whole adapter
@@ -1107,10 +1150,6 @@ answers the same status, headers and body.
 - An extended urlencoded body parses `d[]=x` as `"x"` (qs: `["x"]`).
 - `req.query` nests (`a[b]=1` → `{ a: { b: "1" } }`); Express 5's default
   `simple` parser does not.
-- `X-Forwarded-For` / `X-Forwarded-Proto` are always read (`req.ips`,
-  `req.protocol`, `req.secure`): there is no `trust proxy` setting, so only rely
-  on them behind a proxy that sets them. `app.set("trust proxy", …)` is
-  ignored with a warning.
 - `req.subdomains` comes from the public-suffix list, left to right
   (`a.b.example.com` → `["a", "b"]`; Express: `["b", "a"]`).
 - `res.cookie()` adds `SameSite=Lax` unless given, and orders the attributes
@@ -2976,6 +3015,7 @@ result, so a failed check fails the script:
 | [`10-options/interceptor-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/interceptor-options.ts) | every upload interceptor, its arguments, every `UploadOptions` field and `getMultipartRequest` |
 | [`10-options/websocket-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/websocket-adapter-options.ts) | every WebSocket adapter constructor shape, method, option and packet type |
 | [`10-options/jobs-api-module-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/jobs-api-module-options.ts) | every `BunJobsApiModule` option, the `bunJobsApi` marker, registration order and attaching across an adapter swap |
+| [`13-trust-proxy/client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/13-trust-proxy/client-ip.ts) | `app.set("trust proxy")`, `@Ip()` and a host-scoped controller behind a trusted proxy, `behindCloudflare()`, a gateway client's `client.data.ip` |
 
 To run them from a clone of the repository:
 

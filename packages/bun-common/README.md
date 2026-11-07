@@ -45,6 +45,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Per-route parsing](#per-route-parsing-requestparsing)
     - [Content negotiation](#content-negotiation)
     - [Request cookies](#request-cookies)
+    - [Client address behind proxies](#client-address-behind-proxies-trustproxy)
   - [Body decoding](#body-decoding)
   - [BunResponse](#bunresponse)
     - [Sending a body](#sending-a-body)
@@ -355,6 +356,8 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `debug` | `boolean` | `false` | Logs one `debug` record per pipeline layer run. The logger's level must also admit `debug`. |
 | `logger` | `LoggerLike` | console logger | See [Structured logging](#structured-logging). Also settable with `setLogger()` or `router.logger = ...`. |
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
+| `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, for the requests the router builds itself: `fetch()`, and a dedicated WebSocket server whose `bunRequestOpts` set none. Also `router.trustProxy`. See [Client address behind proxies](#client-address-behind-proxies-trustproxy). |
+| `clientIpHeader` | `string` | none | A single-value client address header, believed only when `trustProxy` trusts the whole chain. |
 | `acceptUndecodableBody` | `boolean` | unset (the default), which refuses | On an adapter, route a request whose body could not be decoded (bad JSON, a corrupt stream, an unsupported `Content-Encoding`) to this router's routes, with `req.bodyDecodingError` set, instead of refusing it before routing. Unset, the router takes its mount's setting; unset all the way up, the adapter refuses. `false` refuses inside an opted-in router. Set it before adding routes. See [Testing without a socket](#testing-without-a-socket). |
 | `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Runtime response checks for the validators on its routes that declare `responses` and no `responseValidation` of their own. A mounted router's setting wins over its parent's. Set it before adding routes. See [Responses](#responses). |
 | `responseOutput` | `"as-sent" \| "parsed"` | unset (`"as-sent"`) | What a passing buffered JSON body is sent as: the schema's output under `"parsed"`, for validators on its routes with no `responseOutput` of their own. A mounted router's wins over its parent's. Set it before adding routes. See [Responses](#responses). |
@@ -658,6 +661,8 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `commonResponses` | `validate()`'s `responses` form | none | Forwarded to the router, over `router.commonResponses`. See [Responses](#responses). |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
+| `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, as Express's `trust proxy` (also `set("trust proxy", value)` and `app.trustProxy`). Decides `req.ip`, `req.ips`, `req.protocol`, `req.host`/`hostname` and `ws.data.ip`. Wins over `request.trustProxy`; a bad value throws a `TypeError` here. See [Client address behind proxies](#client-address-behind-proxies-trustproxy). |
+| `clientIpHeader` | `string` | none | A header carrying the client address as one value (`"cf-connecting-ip"`), believed only when `trustProxy` trusts the whole chain. `behindCloudflare()` sets both. |
 | `views` | `BunViews` | a `BunViews` of its own | The views every response renders through, its error handlers' included; see the router's `views` option. Configure them with the [view helpers](#adapter-helpers). After `setInstance()` the adapter's views still apply. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
 | `closeDrainTimeout` | `number` | `10_000` | The longest `close()` waits for in-flight requests to finish before cutting them, in milliseconds. `0` waits for nothing: in-flight requests are cut at once. A streamed response is in flight until it ends, so an endless server-sent events stream holds `close()` for the whole cap. WebSockets are not waited for. A negative or non-finite value throws a `RangeError` here. See [Listening and closing](#listening-and-closing). |
@@ -989,7 +994,7 @@ lazily, so a request that only routes pays for nothing else.
 |---|---|
 | URL | `url`, `originalUrl`, `path`, `search` / `querystring`, `hash`, `baseUrl`, `parsedUrl` |
 | Routing | `method`, `params`, `query`, `route` (the matched route while a route handler runs) |
-| Connection | `host`, `hostname`, `protocol`, `secure`, `ip`, `ips`, `subdomains`, `xhr`, `httpVersion`, `socket`, `server` |
+| Connection | `host`, `hostname`, `protocol`, `secure`, `ip`, `ips`, `proxyChain`, `forwardedHost`, `subdomains`, `xhr`, `httpVersion`, `socket`, `server` (`ip`, `ips`, `protocol` and the host read forwarded headers only through [`trustProxy`](#client-address-behind-proxies-trustproxy)) |
 | Headers | `headers`, `headersDistinct`, `rawHeaders`, `get(name, default?)`, `getHeader`, `getHeaders`, `getHeaderNames`, `hasHeader` |
 | Body | `body`, `buffer` (the exact bytes received), `rawBody` (set by a parser registered with `rawBody: true`), `files` / `file` (uploads), `hasBody` (a `Content-Length`, `Transfer-Encoding` or body stream — type-is's test, plus in-process bodies), `isBodyParsed`, `isPayloadTooLarge`, `bodyDecodingError` |
 | Caching | `fresh`, `stale`, `range(size, { combine })` (`-1` unsatisfiable, `-2` malformed) |
@@ -1022,6 +1027,8 @@ a boolean on either side replaces the other.
 | `cookieSecret` | `string \| string[]` | none | **Deprecated**: use `parseCookies: { secret }`. Still honoured where the object form leaves `secret` out. |
 | `deferBody` | `boolean` | `false` | Read the body on first need instead of while the request is built. See [Per-route parsing](#per-route-parsing-requestparsing). |
 | `retainBuffer` | `boolean` | `true` | Keep (`true`) or drop (`false`) the exact bytes of every body; `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind. See [Bodies read without their bytes](#body-decoding). bun-nest's `rawBody: true` turns it on. |
+| `trustProxy` | `TrustProxyOption` | `false` | Which proxies to believe about the client. The adapter's top-level `trustProxy` sets it, and wins over it. See [Client address behind proxies](#client-address-behind-proxies-trustproxy). |
+| `clientIpHeader` | `string` | none | A single-value client address header, believed only when `trustProxy` trusts the whole chain. |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
 #### Query parsing
@@ -1233,6 +1240,177 @@ app.use((req, _res, next) => {
 
 Example:
 [`cookies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/cookies.ts).
+
+#### Client address behind proxies (`trustProxy`)
+
+Behind a proxy, the socket peer is the proxy. `trustProxy` says which
+proxies to believe. It is Express 5's `trust proxy` setting, ported value for
+value (its `compileTrust`, `proxy-addr` and `forwarded`), and it decides
+`req.ip`, `req.ips`, `req.protocol`, `req.host` and `req.hostname`:
+
+| `trustProxy` | Meaning |
+|---|---|
+| `false` (default) | Trust nothing. `req.ip` is the socket peer, `req.ips` is `[]`, and no `X-Forwarded-*` header is read. |
+| `true` | Trust every hop. `req.ip` is the left-most `X-Forwarded-For` entry, which the client can write. |
+| `n` (a number) | Trust the first `n` hops from the socket inward. `1` trusts the socket peer only. |
+| `"loopback, 10.0.0.0/8"` or an array | Addresses, CIDR ranges, IPv4 netmasks (`10.0.0.0/255.0.0.0`) and the presets `loopback`, `linklocal` and `uniquelocal`. |
+| `(addr, i) => boolean` | Your own test, given each address and its hop index (`0` is the socket peer). |
+
+**How `req.ip` is found.** The request's chain is the socket peer, then the
+`X-Forwarded-For` entries from right to left. Each address is checked while
+it is trusted, and `req.ip` is the first one that is not. If all are
+trusted, `req.ip` is the left-most entry. It is never simply "the left-most
+entry" or "the right-most entry".
+
+`req.ips` is that chain without the socket, client first. `req.protocol`
+reads `X-Forwarded-Proto`, and `req.host` and `req.hostname` read
+`X-Forwarded-Host`, only when the socket peer itself is trusted.
+`req.proxyChain` lists every address read, each marked trusted or not, for
+logging and auditing.
+
+An IPv4-mapped address (`::ffff:10.0.0.1`, which a dual-stack `Bun.serve`
+listener reports for IPv4 clients) is matched as IPv4, so `10.0.0.0/8`
+trusts it. It is returned as written, as Express returns it.
+
+Set it on the adapter, or with `set("trust proxy", value)` as on Express.
+A router's own option covers its socket-free `fetch()`:
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+
+const app = new BunHttpAdapter(0, { trustProxy: "loopback" }); // nginx on the same host
+app.set("trust proxy", 1); // or Express's way
+app.get("/whoami", (req, res) => res.json({ ip: req.ip, ips: req.ips }));
+```
+
+A bad value throws a `TypeError` when it is set, with Express's message. The
+setting holds across `setRequestOpts()`, unless the new options set it.
+
+**A client address header.** Some proxies put the client in a header of
+their own: Cloudflare's `CF-Connecting-IP`, `X-Real-IP`, Fly.io's
+`Fly-Client-IP`. Name it with `clientIpHeader`. It is believed only when
+`trustProxy` trusts every address of the chain, the farthest one included,
+and its value is an IP address. So a request that reached the app without
+passing that proxy cannot choose its own `req.ip` by sending the header.
+When it is believed, it leads `req.ips`.
+
+**Platform helpers.** These return `{ trustProxy, clientIpHeader }`, to
+spread into the adapter's or router's options:
+
+```ts
+import {
+  behindCloudflare,
+  behindRailway,
+  BunHttpAdapter,
+  CLOUDFLARE_IP_RANGES,
+  fetchCloudflareIpRanges,
+} from "@kingsleyweb/bun-common";
+
+new BunHttpAdapter(0, { ...behindCloudflare() }); // Cloudflare → app
+new BunHttpAdapter(0, { ...behindCloudflare({ via: ["loopback"] }) }); // → nginx → app
+new BunHttpAdapter(0, { ...behindRailway() }); // Railway → app
+new BunHttpAdapter(0, { ...behindRailway({ cloudflare: true }) }); // Cloudflare → Railway → app
+
+// Cloudflare's ranges change: the package ships a dated snapshot
+// (CLOUDFLARE_IP_RANGES_DATE). Fetching fresh ones is opt-in; nothing here
+// calls the network by default.
+const ranges = await fetchCloudflareIpRanges().catch(() => CLOUDFLARE_IP_RANGES);
+new BunHttpAdapter(0, { ...behindCloudflare({ ranges }) });
+```
+
+- **`behindCloudflare({ ranges?, via?, header? })`** trusts the `via` hops,
+  then Cloudflare's edge ranges at the next hop, and reads `CF-Connecting-IP`
+  (`header: "true-client-ip"` on Enterprise).
+- **`behindRailway({ cloudflare? })`** trusts Railway's proxy and edge by
+  position (`trustProxy: 2`). Railway publishes no address range, and its
+  staff say `100.64.0.0/10` is not stable.
+- **`trustChain(hops)`** builds a trust function from one entry per hop:
+  `true` for any address, or addresses, ranges and presets. For example,
+  `trustChain(["loopback", CLOUDFLARE_IP_RANGES])`.
+
+The IP helpers underneath are exported too: `isIpAddress`,
+`parseIpAddress`, `parseIpRange`, `compileIpMatcher`, `IP_RANGE_PRESETS` and
+`toIpv4IfMapped`. So are the steps of the walk: `compileTrustProxy`,
+`parseForwardedFor`, `proxyAddressChain` and `resolveClientAddress`.
+
+**Worked example: Cloudflare → Railway → app.** A client at 198.51.100.23
+reaches the app through both. This is what each hop does to the request:
+
+| Hop | What it does | What the app sees |
+|---|---|---|
+| Cloudflare edge | Connects to Railway from `172.68.10.20` (one of its published ranges). Sets `CF-Connecting-IP: 198.51.100.23`, and appends the client to `X-Forwarded-For`. | |
+| Railway edge (`34.120.0.8`, rotating) | Replaces `X-Forwarded-For` with `<its client>, <itself>`, as measured in November 2026. Sets `X-Real-IP` to its client. | `X-Forwarded-For: 172.68.10.20, 34.120.0.8`, `CF-Connecting-IP: 198.51.100.23`, `X-Real-IP: 172.68.10.20` |
+| Railway proxy | Connects to the app. | socket peer `100.64.0.7` |
+
+What each setting gives on that request:
+
+| Setting | `req.ip` |
+|---|---|
+| none | `100.64.0.7`: Railway's proxy |
+| `behindRailway()` (`trustProxy: 2`) | `172.68.10.20`: Cloudflare's edge, Railway's client |
+| `behindRailway({ cloudflare: true })` | `198.51.100.23`: the client. The chain checks out: hop 2 is a Cloudflare address, so `CF-Connecting-IP` is believed. |
+
+Now suppose someone sends the request to Railway directly, with
+`CF-Connecting-IP: 1.1.1.1`. Railway leaves that header alone, but hop 2 is
+then their own address, not Cloudflare's. So `behindRailway({ cloudflare:
+true })` ignores the header, and `req.ip` is their real address.
+
+**Before you rely on it:** add a temporary route that returns
+`req.proxyChain` and the raw headers, and call it through your real chain
+and directly. Railway does not document its `X-Forwarded-For`, and every
+platform can change.
+
+**Traps.**
+
+- **`trustProxy: true` on a server anyone can reach directly** lets every
+  client choose its `req.ip`, by sending `X-Forwarded-For` or your
+  `clientIpHeader`. Use `true` only when nothing can reach the app except
+  through a proxy that overwrites those headers.
+- **A header the edge does not overwrite is the client's to write.** For
+  example, Cloudflare passes a client's own `X-Real-IP`, and Railway passes
+  a client's `CF-Connecting-IP`. Name a `clientIpHeader` only for a proxy
+  your `trustProxy` checks at its position, as `behindCloudflare` does with
+  ranges. A hop count cannot tell Cloudflare from anyone else.
+- **The left-most `X-Forwarded-For` entry is the client's own claim.**
+  Proxies like nginx's `$proxy_add_x_forwarded_for`, Heroku, an AWS ALB and
+  Cloudflare append the address that connected to them, and keep whatever
+  the client sent. So the right-most entries are the trustworthy ones, and
+  the client is the first untrusted address from the right. That is what
+  the walk finds, given the right `trustProxy`.
+- **The right-most entry is not always the client either.** Railway's edge
+  appends its own rotating address, so keying a rate limit on it spreads one
+  client over many keys. On Fly.io, the right-most entry is your app's own
+  address. Count the hops your platform adds.
+
+| Platform | What it sends | Suggested setting |
+|---|---|---|
+| [Cloudflare](https://developers.cloudflare.com/fundamentals/reference/http-headers/) | `CF-Connecting-IP`; appends to `X-Forwarded-For`; [published ranges](https://www.cloudflare.com/ips/) | `behindCloudflare()` |
+| [Railway](https://docs.railway.com/networking/public-networking/specs-and-limits) | `X-Real-IP` (documented); `X-Forwarded-For` undocumented, measured as `<client>, <edge>`; no published range | `behindRailway()` |
+| [Fly.io](https://fly.io/docs/networking/request-headers/) | `Fly-Client-IP`; the right-most `X-Forwarded-For` entry is your app's own address | `{ trustProxy: 2 }`, after checking with `req.proxyChain` |
+| [Vercel](https://vercel.com/docs/headers/request-headers) | Overwrites `X-Forwarded-For` with the client; `x-real-ip` is the same | `{ trustProxy: 1 }` |
+| [Render](https://render.com/docs) | Fronted by Cloudflare; forwarding undocumented | Check with `req.proxyChain` |
+| [Heroku](https://devcenter.heroku.com/articles/http-routing) | The router appends the client to `X-Forwarded-For` | `{ trustProxy: 1 }` |
+| [AWS ALB](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/x-forwarded-headers.html) | Appends by default (`xff_header_processing.mode`); connects from your VPC | `{ trustProxy: "<your VPC CIDR>" }` (turn off `xff_client_port`, whose `ip:port` entries are not addresses) |
+| [nginx](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) | `$proxy_add_x_forwarded_for` appends | `{ trustProxy: "loopback" }` on the same host |
+
+**WebSockets.** An upgrade carries its `req.ip` to the socket as
+`ws.data.ip`. Bun's `ws.remoteAddress` is always the socket peer, which
+behind a proxy is the proxy. A dedicated WebSocket server uses its router's
+`trustProxy` unless its `bunRequestOpts` set one.
+
+**Without a socket.** A socket-free `fetch()` has no peer, so `req.ip` is
+`""`. An address range never matches the missing peer. A hop count or
+`true` trusts it by position, so a test can set the client with
+`X-Forwarded-For`:
+
+```ts
+const router = new BunRouter({ trustProxy: 1 });
+router.get("/ip", (req, res) => res.send(req.ip));
+await router.fetch("/ip", { headers: { "X-Forwarded-For": "203.0.113.9" } }); // "203.0.113.9"
+```
+
+Example:
+[`15-trust-proxy/client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/15-trust-proxy/client-ip.ts).
 
 ### Body decoding
 
@@ -4026,6 +4204,7 @@ Each file is a standalone script whose opening comment says what it shows.
 | `12-options` | [`websocket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/websocket-options.ts) | Tour: every WebSocket option, event and emitter method |
 | `12-options` | [`logging-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/logging-options.ts) | Tour: every logger option, sink and adapter mapping |
 | `12-options` | [`native-utilities.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/native-utilities.ts) | Tour: every exported helper, with options and edge cases |
+| `15-trust-proxy` | [`client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/15-trust-proxy/client-ip.ts) | `trustProxy` and `clientIpHeader`: the walk, the Cloudflare → Railway chain and its spoofing attempts, `set("trust proxy")`, `ws.data.ip`, each asserted |
 
 The option tours in `12-options` do not just *show* behaviour, they
 **assert** it through

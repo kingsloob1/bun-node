@@ -16,8 +16,10 @@
  * - `req.fresh` compares against the response bound to the request; a
  *   `BunResponse` binds itself when constructed, so `fresh` is readable in
  *   any handler (`send()` itself answers 304 for a fresh request).
- * - `req.protocol` trusts `X-Forwarded-Proto` unconditionally — there is no
- *   `trust proxy` setting — and `req.ips` reads `X-Forwarded-For` the same way.
+ * - `req.protocol`, `req.ips` and a forwarded `req.hostname` read the
+ *   `X-Forwarded-*` headers only through `trustProxy` (Express's `trust
+ *   proxy`); this router sets `trustProxy: 1`, which trusts the (missing)
+ *   peer of a socket-free `fetch()` by position. `15-trust-proxy` covers it.
  * - Without a socket there is no peer: `req.ip` is `""` and
  *   `req.socketAddress` is `null` under `fetch()`.
  */
@@ -26,7 +28,7 @@ import { show, step, title } from "../shared/console";
 
 title("Reading a request");
 
-const router = new BunRouter();
+const router = new BunRouter({ trustProxy: 1 });
 
 /* ------------------------------------------------------------------ */
 step("method, url, path, search, hash, originalUrl, parsedUrl");

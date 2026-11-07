@@ -4,6 +4,11 @@ import type { IncomingMessage } from "node:http";
 import type { Readable } from "node:stream";
 import type { BunResponse } from "./BunResponse";
 import type { TypedEmitter } from "./BunWebSocket";
+import type {
+  ProxyChainEntry,
+  TrustProxyFn,
+  TrustProxyOption,
+} from "./trustProxy";
 import type { StorageFile } from "./multipart";
 import type { UploadErrorCode } from "./multipart/errors";
 import type {
@@ -38,6 +43,11 @@ import typeIs from "type-is";
 import { parseBufferedMultipart } from "./multipart/buffered";
 import { UploadError } from "./multipart/errors";
 import { checkFieldName, resolveFieldNameLimits } from "./multipart/fieldNames";
+import {
+  compileTrustProxy,
+  isTrustProxyOff,
+  resolveClientAddress,
+} from "./trustProxy";
 import { SOCKET_FREE, streamToBuffer } from "./utils/general";
 import {
   cloneDeep,
@@ -1070,10 +1080,24 @@ export interface BunRequestSocket {
   readonly destroyed: boolean;
   /** The peer's port, when the server reports one. */
   readonly localPort: number | undefined;
-  /** The peer's address (`req.ip`), or `""`. */
+  /**
+   * The peer's address, or `""`. It was `req.ip` before `trustProxy`
+   * existed, and still is with it off; with it on, `req.ip` may be a
+   * forwarded address while this stays the socket's.
+   */
   readonly localAddress: string;
   /** The peer's address family, when the server reports one. */
   readonly localFamily: SocketAddress["family"] | undefined;
+  /**
+   * The socket peer's address, as Node's `socket.remoteAddress` (what
+   * Express's `proxy-addr` starts from): `undefined` when there is no peer
+   * (a socket-free `fetch()`). Never a forwarded address; see `req.ip`.
+   */
+  readonly remoteAddress: string | undefined;
+  /** The socket peer's port, as Node's `socket.remotePort`. */
+  readonly remotePort: number | undefined;
+  /** The socket peer's address family, as Node's `socket.remoteFamily`. */
+  readonly remoteFamily: SocketAddress["family"] | undefined;
 }
 
 /**
@@ -2147,6 +2171,29 @@ export class BunRequest<
        * a body not read yet (with `deferBody`).
        */
       retainBuffer?: boolean;
+      /**
+       * Which proxies in front of the app to believe, as Express 5's
+       * `trust proxy` setting: `false` (the default), `true`, a hop count,
+       * addresses/ranges/presets (`"loopback, 10.0.0.0/8"`), or a function;
+       * see {@link TrustProxyOption}. It decides `ip`, `ips`, `protocol`,
+       * `host` and `hostname`: with the default, `ip` is the socket peer,
+       * `ips` is `[]`, and `X-Forwarded-For`, `X-Forwarded-Proto` and
+       * `X-Forwarded-Host` are never read. An adapter's or router's
+       * `trustProxy` option sets this for every request it builds.
+       */
+      trustProxy?: TrustProxyOption;
+      /**
+       * A header carrying the client's address as one value, set by the
+       * outermost proxy: `"cf-connecting-ip"` (Cloudflare), `"x-real-ip"`,
+       * `"fly-client-ip"`. `undefined` (the default) reads only
+       * `X-Forwarded-For`. The header is believed only when `trustProxy`
+       * trusts every address of the chain the request came through, the
+       * farthest included, and its value is an IP address; otherwise `ip`
+       * is resolved as if it were not set. So a request that reached the app
+       * without passing the proxy that sets the header cannot choose its own
+       * `ip` by sending it. Ignored with `trustProxy` off.
+       */
+      clientIpHeader?: string;
     } = {
       parseBody: true,
       parseCookies: true,
@@ -3261,7 +3308,16 @@ export class BunRequest<
         return that.socketAddress?.port;
       },
       get localAddress() {
-        return that.ip;
+        return that.socketAddress?.address || "";
+      },
+      get remoteAddress() {
+        return that.socketAddress?.address;
+      },
+      get remotePort() {
+        return that.socketAddress?.port;
+      },
+      get remoteFamily() {
+        return that.socketAddress?.family;
       },
       get localFamily() {
         return that.socketAddress?.family;
@@ -3366,7 +3422,7 @@ export class BunRequest<
   }
 
   private extractSubdomains(): string[] {
-    const parsed = parseDomain(this.parsedUrl.hostname, {
+    const parsed = parseDomain(this.hostname, {
       validation: Validation.Lax,
     });
 
@@ -5258,16 +5314,56 @@ export class BunRequest<
     return (this.#method ??= this.request.method.toUpperCase());
   }
 
+  /**
+   * The request's authority, `host[:port]`: Express 5's `req.host`. When
+   * `trustProxy` trusts the socket peer and the request has an
+   * `X-Forwarded-Host`, its first value ({@link forwardedHost}); otherwise
+   * the request URL's host (the `Host` header), else `"127.0.0.1"`. Host-
+   * scoped routes match against it.
+   */
   get host() {
     return (
-      this.splitRequestUrl().host || this.headersObj.get("Host") || "127.0.0.1"
+      this.forwardedHost ??
+      (this.splitRequestUrl().host ||
+        this.headersObj.get("Host") ||
+        "127.0.0.1")
     );
   }
 
+  /**
+   * `X-Forwarded-Host`'s first value when `trustProxy` trusts the socket
+   * peer, as Express 5's `req.host` reads it (cut at the first comma, trailing
+   * spaces dropped); `undefined` when the peer is not trusted, the header is
+   * absent or empty, and always with `trustProxy` off.
+   */
+  get forwardedHost(): string | undefined {
+    const trust = this.#trustFn();
+    if (trust === undefined) {
+      return undefined;
+    }
+    const value = this.headersObj.get("X-Forwarded-Host");
+    if (!value || !trust(this.#peerAddress(), 0)) {
+      return undefined;
+    }
+    const comma = value.indexOf(",");
+    return (
+      (comma === -1 ? value : value.slice(0, comma).trimEnd()) || undefined
+    );
+  }
+
+  /**
+   * `"http"` or `"https"`, as Express 5's `req.protocol`: the scheme the
+   * request arrived on, unless `trustProxy` trusts the socket peer, when
+   * `X-Forwarded-Proto`'s first value (trimmed) wins if the header is set.
+   */
   get protocol() {
     // `URL.protocol` includes a trailing ":" ("https:"); strip it so the
     // value matches Express (`"https"`) and `secure` compares correctly.
     const protocol = this.parsedUrl.protocol.replace(/:$/, "");
+    const trust = this.#trustFn();
+    if (trust === undefined || !trust(this.#peerAddress(), 0)) {
+      return protocol;
+    }
     const protocolHeader = this.getHeader("X-Forwarded-Proto") || protocol;
     const index = protocolHeader.indexOf(",");
 
@@ -5276,8 +5372,33 @@ export class BunRequest<
       : protocolHeader.trim();
   }
 
+  /**
+   * The host name without its port, as Express 5's `req.hostname`: from a
+   * trusted {@link forwardedHost} when there is one (an IPv6 literal keeps
+   * its brackets, its case kept), otherwise the request URL's host name.
+   */
   get hostname() {
-    return this.parsedUrl.hostname;
+    const forwarded = this.forwardedHost;
+    if (forwarded === undefined) {
+      return this.parsedUrl.hostname;
+    }
+    const offset = forwarded.startsWith("[") ? forwarded.indexOf("]") + 1 : 0;
+    const colon = forwarded.indexOf(":", offset);
+    return colon === -1 ? forwarded : forwarded.slice(0, colon);
+  }
+
+  /**
+   * The compiled `trustProxy` option, or `undefined` when it trusts nothing,
+   * so the default costs one check and reads no header.
+   */
+  #trustFn(): TrustProxyFn | undefined {
+    const value = this.options.trustProxy;
+    return isTrustProxyOff(value) ? undefined : compileTrustProxy(value);
+  }
+
+  /** The socket peer's address, `""` when there is none. */
+  #peerAddress(): string {
+    return this.socketAddress?.address ?? "";
   }
 
   getHeader(name: string) {
@@ -5359,25 +5480,71 @@ export class BunRequest<
     this.#headers = undefined;
   }
 
-  get ip() {
-    return this.socketAddress?.address || "";
+  /**
+   * The client's address, as Express 5's `req.ip`. With `trustProxy` off
+   * (the default), the socket peer. Otherwise the request's chain — the
+   * peer, then `X-Forwarded-For` from right to left — is read while each
+   * address is trusted, and `ip` is the first one that is not (the left-most
+   * entry if all are): what the trusted proxies say the client is. A
+   * `clientIpHeader` value replaces it when the whole chain is trusted.
+   * Returned as written (`::ffff:1.2.3.4` stays mapped); trust is decided on
+   * the IPv4 form. `""` when there is no peer and nothing trusted says
+   * otherwise: a socket-free `fetch()` has no peer.
+   */
+  get ip(): string {
+    const trust = this.#trustFn();
+    if (trust === undefined) {
+      return this.socketAddress?.address || "";
+    }
+    return this.#resolveClient(trust).ip;
   }
 
   /**
-   * The addresses in `X-Forwarded-For`, client first (Express's `req.ips` with
-   * proxy trust enabled). `[]` when the header is absent or empty. Unlike
-   * Express there is no `trust proxy` setting: the header is always read, so
-   * only rely on it behind a proxy that sets it.
+   * The trusted proxy chain, client first, as Express 5's `req.ips`: `[]`
+   * with `trustProxy` off, and otherwise every `X-Forwarded-For` entry read
+   * while resolving {@link ip} (the socket peer left out), farthest first —
+   * the trusted proxies plus `ip` itself. When `clientIpHeader` was believed,
+   * its value leads. `[]` too when the request has no `X-Forwarded-For`.
    */
   get ips(): string[] {
-    const header = this.headersObj.get("X-Forwarded-For");
-    if (!header) {
+    const trust = this.#trustFn();
+    if (trust === undefined) {
       return [];
     }
-    return header
-      .split(",")
-      .map((ip) => ip.trim())
-      .filter(Boolean);
+    return this.#resolveClient(trust).ips;
+  }
+
+  /**
+   * How {@link ip} was resolved, read-only and closest first: the socket
+   * peer, the `X-Forwarded-For` entries the walk read (right to left), and
+   * the `clientIpHeader` value when it was believed, each marked with
+   * whether `trustProxy` trusts it as a proxy. With `trustProxy` off, the
+   * socket peer alone, untrusted (`""` when there is none). Recomputed on
+   * each read, as `ip` is.
+   */
+  get proxyChain(): readonly ProxyChainEntry[] {
+    const trust = this.#trustFn();
+    if (trust === undefined) {
+      return Object.freeze([
+        Object.freeze({
+          address: this.#peerAddress(),
+          source: "socket" as const,
+          trusted: false,
+        }),
+      ]);
+    }
+    return this.#resolveClient(trust).chain;
+  }
+
+  /** {@link ip} and {@link ips}, resolved through `trust`. */
+  #resolveClient(trust: TrustProxyFn) {
+    const header = this.options.clientIpHeader;
+    return resolveClientAddress({
+      peer: this.#peerAddress(),
+      forwardedFor: this.headersObj.get("X-Forwarded-For"),
+      trust,
+      clientIpHeaderValue: header ? this.headersObj.get(header) : undefined,
+    });
   }
 
   get originalUrl() {

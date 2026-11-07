@@ -176,6 +176,23 @@ describe("BunHttpAdapter.getRequestHostname", () => {
     expect(await response.text()).toBe("real.test");
   });
 
+  it("reads X-Forwarded-Host from a trusted peer, as Express does with trust proxy", async () => {
+    // A socket-free fetch has no peer: a hop count trusts it by position.
+    const adapter = new BunHttpAdapter(0, { trustProxy: 1 });
+    adapter.get("/h", (req, res) => {
+      res.send(adapter.getRequestHostname(req as BunRequest));
+    });
+    const response = await adapter.fetch(
+      new Request("http://x.test/h", {
+        headers: {
+          host: "real.test",
+          "x-forwarded-host": "Proxy.test:8443, b.test",
+        },
+      }),
+    );
+    expect(await response.text()).toBe("Proxy.test");
+  });
+
   it("falls back to the URL's host name without a Host header", async () => {
     expect(await hostnameFor("http://y.test:81/h")).toBe("y.test");
   });

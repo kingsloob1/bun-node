@@ -1067,7 +1067,9 @@ status, `429` or `500` included, gives a 403.
   `connect-src` never allows a socket to just any host. After `'self'` it
   lists, per request:
   - the page's own origin as a socket, `ws://host[:port]`, or `wss://` when
-    the page is `https` (from the URL or `X-Forwarded-Proto`). Older WebKit
+    the page is `https` (from the URL, or `X-Forwarded-Proto` when the app
+    trusts the proxy that sent it: the adapter's `trustProxy`, Express's
+    `trust proxy`). Older WebKit
     does not let `'self'` match `ws:`/`wss:`. The origin is taken from the
     `Host` header and is left out when it is not a plain `host[:port]`, so a
     forged `Host` cannot inject a directive;

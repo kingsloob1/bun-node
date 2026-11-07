@@ -209,16 +209,25 @@ checkEqual(
   await connectSrcFor(app, new Request("https://jobs.example/admin/jobs")),
   ["'self'", "wss://jobs.example"],
 );
+// `X-Forwarded-Proto` is a proxy's header, so it counts only through the
+// app's trust (Express's `trust proxy`, the adapter's `trustProxy`): from an
+// untrusted client it is ignored, behind a trusted proxy it is the protocol.
+const forwardedHttps = () =>
+  new Request("http://jobs.example/admin/jobs", {
+    headers: { "X-Forwarded-Proto": "https" },
+  });
 checkEqual(
-  "https behind a proxy (X-Forwarded-Proto) → wss:// too",
-  await connectSrcFor(
-    app,
-    new Request("http://jobs.example/admin/jobs", {
-      headers: { "X-Forwarded-Proto": "https" },
-    }),
-  ),
+  "X-Forwarded-Proto from an untrusted client is ignored → ws://",
+  await connectSrcFor(app, forwardedHttps()),
+  ["'self'", "ws://jobs.example"],
+);
+app.set("trust proxy", 1);
+checkEqual(
+  "https behind a trusted proxy (X-Forwarded-Proto) → wss:// too",
+  await connectSrcFor(app, forwardedHttps()),
   ["'self'", "wss://jobs.example"],
 );
+app.set("trust proxy", false);
 checkEqual(
   "a Host with a port keeps the port",
   await connectSrcFor(

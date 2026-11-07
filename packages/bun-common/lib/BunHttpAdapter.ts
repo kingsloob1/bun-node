@@ -29,6 +29,7 @@ import type {
   WebSocketRouteOptions,
 } from "./index";
 import type { LoggerLike } from "./logging";
+import type { TrustProxyOption } from "./trustProxy";
 import type {
   ResponseSchemas,
   ResponseOutputMode,
@@ -402,9 +403,32 @@ export class BunHttpAdapter<
        * see that option.
        */
       commonResponses?: ResponseSchemas;
+      /**
+       * Which proxies in front of the app to believe about the client, as
+       * Express 5's `trust proxy` setting (which {@link set} also takes):
+       * `false` (the default), `true`, a hop count, addresses, CIDR ranges
+       * and the presets `loopback`, `linklocal` and `uniquelocal`, or a
+       * function — see {@link TrustProxyOption}. It decides every request's
+       * `ip`, `ips`, `protocol`, `host` and `hostname`, and a WebSocket's
+       * `ws.data.ip`. With the default, `req.ip` is the socket peer and no
+       * `X-Forwarded-*` header is read. Wins over `request.trustProxy`. A
+       * value proxy-addr refuses throws a `TypeError` here.
+       */
+      trustProxy?: TrustProxyOption;
+      /**
+       * A single-value header the outermost proxy puts the client address
+       * in (`"cf-connecting-ip"`, `"x-real-ip"`), believed only when
+       * `trustProxy` trusts every address the request came through.
+       * Defaults to none. `behindCloudflare()` sets both. Wins over
+       * `request.clientIpHeader`.
+       */
+      clientIpHeader?: string;
     },
   ) {
     const websocketOptions = options?.websocket || {};
+    const trustProxy = options?.trustProxy ?? options?.request?.trustProxy;
+    const clientIpHeader =
+      options?.clientIpHeader ?? options?.request?.clientIpHeader;
 
     // Resolved once here so the adapter and its router share one instance
     // rather than each adapting the same input separately.
@@ -429,11 +453,14 @@ export class BunHttpAdapter<
       ...(options?.commonResponses !== undefined
         ? { commonResponses: options.commonResponses }
         : {}),
+      ...(trustProxy !== undefined ? { trustProxy } : {}),
+      ...(clientIpHeader !== undefined ? { clientIpHeader } : {}),
       logger,
     });
 
-    // Merged over the defaults, not in place of them.
-    this.requestOpts = options?.request ?? {};
+    // Merged over the defaults, not in place of them. The trust settings
+    // resolved above (the top-level options winning) replace the request's.
+    this.requestOpts = { ...options?.request, trustProxy, clientIpHeader };
 
     // Checked here, so a bad value fails at startup, not on the first close.
     this.#closeDrainTimeout = validateCloseDrainTimeout(
@@ -917,7 +944,56 @@ export class BunHttpAdapter<
     if (this.#rawBodyNeedsBuffer && merged.retainBuffer === undefined) {
       merged.retainBuffer = true;
     }
-    this.#requestOpts = merged;
+    this.#requestOpts = this.#withProxyTrust(merged, opts);
+  }
+
+  /**
+   * `merged` carrying the adapter's proxy trust. The trust settings are the
+   * adapter's, held across a replacement of the request options: options
+   * that set `trustProxy` or `clientIpHeader` change the adapter's, and
+   * options that leave them out keep the adapter's.
+   */
+  #withProxyTrust(
+    merged: ResolvedBunRequestOptions,
+    given: Partial<BunRequestOptions> | undefined,
+  ): ResolvedBunRequestOptions {
+    if (
+      given?.trustProxy !== undefined &&
+      given.trustProxy !== this.trustProxy
+    ) {
+      this.#syncingTrust = true;
+      try {
+        this.trustProxy = given.trustProxy;
+      } finally {
+        this.#syncingTrust = false;
+      }
+    }
+    if (
+      given?.clientIpHeader !== undefined &&
+      given.clientIpHeader !== this.clientIpHeader
+    ) {
+      this.#syncingTrust = true;
+      try {
+        this.clientIpHeader = given.clientIpHeader;
+      } finally {
+        this.#syncingTrust = false;
+      }
+    }
+    const result: ResolvedBunRequestOptions = { ...merged };
+    delete result.trustProxy;
+    delete result.clientIpHeader;
+    return { ...result, ...this.proxyTrustRequestOptions() };
+  }
+
+  /** Set while {@link requestOpts} writes the trust settings back. */
+  #syncingTrust = false;
+
+  /** Copies a changed `trustProxy`/`clientIpHeader` into the request options. */
+  protected override onProxyTrustChange(): void {
+    if (this.#syncingTrust || this.#requestOpts === undefined) {
+      return;
+    }
+    this.#requestOpts = this.#withProxyTrust(this.#requestOpts, undefined);
   }
 
   /**
@@ -1769,12 +1845,18 @@ export class BunHttpAdapter<
   }
 
   /**
-   * Sets an Express application setting, as `app.set(setting, value)`. The
-   * view settings apply (`views`, `view engine`, `view cache` and
+   * Sets an Express application setting, as `app.set(setting, value)`.
+   * `trust proxy` sets {@link trustProxy} (so `enable("trust proxy")` trusts
+   * every hop; a value Express refuses throws its `TypeError`), and the view
+   * settings apply (`views`, `view engine`, `view cache` and
    * `view options`; see `BunViews.set`). Any other is accepted and has no
    * effect on this adapter, which logs a warning naming it once.
    */
   public set(setting: string, value: unknown) {
+    if (setting === "trust proxy") {
+      this.trustProxy = value as TrustProxyOption;
+      return this;
+    }
     if (
       !this.views.set(setting, value) &&
       !this.#ignoredSettings.has(setting)

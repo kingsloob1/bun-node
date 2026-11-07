@@ -25,6 +25,7 @@ import type {
   ServeHooks,
   ServeStaticOptions,
   SocketFreeExchange,
+  TrustProxyOption,
   UnmountedRouter,
   ValidatorMiddleware,
   ViewEngine,
@@ -1191,8 +1192,33 @@ export class BunHttpAdapter<
         WebSocketClientData<customWebsocketDataType>,
         routesType
       >;
+      /**
+       * Which proxies in front of the app to believe about the client, as
+       * Express 5's `trust proxy` setting, which `app.set("trust proxy",
+       * value)` also sets on a Nest app: `false` (the default), `true`, a
+       * hop count, addresses, CIDR ranges and the presets `loopback`,
+       * `linklocal` and `uniquelocal`, or a function — see
+       * `TrustProxyOption`. It decides every request's `ip`, `ips`,
+       * `protocol`, `host` and `hostname` (and so `@Ip()`,
+       * `@Controller({ host })` matching and a gateway client's
+       * `client.data.ip`). With the default, `req.ip` is the socket peer and
+       * no `X-Forwarded-*` header is read. Wins over `request.trustProxy`. A
+       * value proxy-addr refuses throws a `TypeError` here.
+       */
+      trustProxy?: TrustProxyOption;
+      /**
+       * A single-value header the outermost proxy puts the client address
+       * in (`"cf-connecting-ip"`, `"x-real-ip"`), believed only when
+       * `trustProxy` trusts every address the request came through.
+       * Defaults to none. bun-common's `behindCloudflare()` sets both. Wins
+       * over `request.clientIpHeader`.
+       */
+      clientIpHeader?: string;
     },
   ) {
+    const trustProxy = options?.trustProxy ?? options?.request?.trustProxy;
+    const clientIpHeader =
+      options?.clientIpHeader ?? options?.request?.clientIpHeader;
     const routerOptions: BunRouterOptions = {
       caseSensitive: false,
       debug: false,
@@ -1200,6 +1226,8 @@ export class BunHttpAdapter<
       ...(options?.routeCacheMax !== undefined
         ? { routeCacheMax: options.routeCacheMax }
         : {}),
+      ...(trustProxy !== undefined ? { trustProxy } : {}),
+      ...(clientIpHeader !== undefined ? { clientIpHeader } : {}),
     };
     // One BunViews for the adapter and its router, so the router's own
     // `fetch()` renders as the adapter does.
@@ -1213,8 +1241,9 @@ export class BunHttpAdapter<
     const logger = options?.logger || new Logger();
     this.setInstance(router);
 
-    // Merged over the defaults, not in place of them.
-    this.requestOpts = options?.request ?? {};
+    // Merged over the defaults, not in place of them. The trust settings
+    // resolved above (the top-level options winning) replace the request's.
+    this.requestOpts = { ...options?.request, trustProxy, clientIpHeader };
 
     // Checked here, so a bad value fails at startup, not on the first close.
     this.#closeDrainTimeout = validateCloseDrainTimeout(
@@ -2164,7 +2193,68 @@ export class BunHttpAdapter<
     if (this.#securityHookDefersBody && merged.deferBody === undefined) {
       merged.deferBody = true;
     }
-    this.#requestOpts = merged;
+    this.#requestOpts = this.#withProxyTrust(merged, opts);
+  }
+
+  /**
+   * `merged` carrying the adapter's proxy trust, which lives on its router
+   * ({@link trustProxy}) and is held across a replacement of the request
+   * options: options that set `trustProxy` or `clientIpHeader` change it,
+   * options that leave them out keep it.
+   */
+  #withProxyTrust(
+    merged: ResolvedBunRequestOptions,
+    given: Partial<BunRequestOptions> | undefined,
+  ): ResolvedBunRequestOptions {
+    const router = this.instance;
+    if (given?.trustProxy !== undefined) {
+      router.trustProxy = given.trustProxy;
+    }
+    if (given?.clientIpHeader !== undefined) {
+      router.clientIpHeader = given.clientIpHeader;
+    }
+    const result: ResolvedBunRequestOptions = { ...merged };
+    delete result.trustProxy;
+    delete result.clientIpHeader;
+    if (router.trustProxy !== undefined) {
+      result.trustProxy = router.trustProxy;
+    }
+    if (router.clientIpHeader !== undefined) {
+      result.clientIpHeader = router.clientIpHeader;
+    }
+    return result;
+  }
+
+  /**
+   * Which proxies to believe about the client, as Express's `trust proxy`
+   * setting (the `trustProxy` option, also set by
+   * `app.set("trust proxy", value)`); `undefined` when never set, which
+   * trusts nothing. Held by the adapter's router, so its own `fetch()` and a
+   * dedicated WebSocket server use it too. Setting it compiles the value: a
+   * bad one throws a `TypeError` and changes nothing. Applies from the next
+   * request on.
+   */
+  get trustProxy(): TrustProxyOption | undefined {
+    return this.instance.trustProxy;
+  }
+
+  set trustProxy(value: TrustProxyOption | undefined) {
+    this.instance.trustProxy = value;
+    this.#requestOpts = this.#withProxyTrust(this.#requestOpts, undefined);
+  }
+
+  /**
+   * The single-value client address header (the `clientIpHeader` option),
+   * believed only when {@link trustProxy} trusts the whole chain;
+   * `undefined` for none. Applies from the next request on.
+   */
+  get clientIpHeader(): string | undefined {
+    return this.instance.clientIpHeader;
+  }
+
+  set clientIpHeader(value: string | undefined) {
+    this.instance.clientIpHeader = value;
+    this.#requestOpts = this.#withProxyTrust(this.#requestOpts, undefined);
   }
 
   /**
@@ -3195,12 +3285,13 @@ export class BunHttpAdapter<
    * which `@nestjs/platform-express` returns and Nest matches
    * `@Controller({ host })` against: the `Host` header as sent (its case
    * kept), the port stripped (an IPv6 literal keeps its brackets,
-   * `[::1]:3000` is `[::1]`). `X-Forwarded-Host` is not read, as Express
-   * reads it only with `trust proxy` set. Without a `Host` header, the
+   * `[::1]:3000` is `[::1]`). `X-Forwarded-Host`'s first value replaces
+   * the `Host` header only when {@link trustProxy} trusts the socket peer,
+   * as Express reads it (`request.forwardedHost`). Without either, the
    * request URL's host name.
    */
   public getRequestHostname(request: BunRequest): string {
-    const host = request.headersObj.get("host");
+    const host = request.forwardedHost ?? request.headersObj.get("host");
     if (!host) {
       return request.hostname || "127.0.0.1";
     }
@@ -5278,7 +5369,10 @@ export class BunHttpAdapter<
   }
 
   /**
-   * Sets an Express application setting (`app.set()` on a Nest app). The
+   * Sets an Express application setting (`app.set()` on a Nest app).
+   * `trust proxy` sets {@link trustProxy}, as on `@nestjs/platform-express`
+   * (`app.set("trust proxy", 1)`, or `app.enable("trust proxy")` to trust
+   * every hop; a value Express refuses throws its `TypeError`). The
    * view settings apply: `views`, `view engine`, `view cache` and
    * `view options`. Turning `x-powered-by` off is accepted silently, since
    * this adapter never sends that header (Nest 12's `useSecurityHeaders()`
@@ -5288,6 +5382,10 @@ export class BunHttpAdapter<
    */
   public set(setting: string, value: unknown) {
     if (setting === "x-powered-by" && !value) {
+      return this;
+    }
+    if (setting === "trust proxy") {
+      this.trustProxy = value as TrustProxyOption;
       return this;
     }
     // `BunViews.set` holds the view settings, shared with bun-common's

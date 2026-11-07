@@ -140,11 +140,17 @@ describe("BunHttpAdapter views", () => {
     app.set("view options", { delimiter: "?" });
     expect(app.views.settings["view options"]).toEqual({ delimiter: "?" });
 
-    app.set("trust proxy", true);
+    // `trust proxy` is a setting the adapter applies (see trustProxy.test.ts).
+    app.set("trust proxy", 1);
+    expect(app.trustProxy).toBe(1);
     app.enable("trust proxy");
+    expect(app.trustProxy).toBe(true);
+    app.set("x-powered-by", false);
+    app.set("subdomain offset", 3);
     const warnings = events.filter((event) => event.level === "warn");
     expect(warnings.map((event) => event.message)).toEqual([
-      'set("trust proxy") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply',
+      'set("x-powered-by") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply',
+      'set("subdomain offset") has no effect on BunHttpAdapter: only the view settings ("views", "view engine", "view cache", "view options") apply',
     ]);
   });
 });
