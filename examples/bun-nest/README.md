@@ -127,6 +127,33 @@ caching decorators for service methods. Asserted with
 | [`module-and-decorators.ts`](./11-cache/module-and-decorators.ts) | `BunCacheModule.forRoot` (a global cache the module creates and owns) and a named `forRootAsync` (`inject` + `useFactory` returning `{ cache }`, one the module never closes); `@InjectCache()` and `@InjectCache("reports")` and `getCacheToken`; `@Cacheable` (two calls, one run; ten concurrent calls, one run); `@CacheEvict` by tag; `@CachePut` keyed by an id the method assigns, then a `@Cacheable` hit; `unless` (returned, not stored); a template key `"page:{0}:{1.size}"`; `CacheNotReadyError` before the application starts and after it closes; at `app.close()` the owned cache closed once and the passed-in one not |
 | [`interceptor.ts`](./11-cache/interceptor.ts) | `BunCacheInterceptor` on a controller with `@CacheTTL`: `MISS` then `HIT` (handler run once, an `Age`), an `ETag` and a `304`, a `POST` dropping the path's entry; `@CacheKey` (one entry for every query string), `@CacheTags` with `cache.invalidateTags()`, `@NoCache` on one route, exceptions never stored; a guard in front (403 for a request without the token even with the entry stored, because the interceptor runs after guards); the TTL fallback (no `Cache-Control` takes the cache's `ttl`, `max-age` keeps its own, `private` is not stored); `BunCacheInterceptor.with({ cache: "pages", varyBy })` on a named cache; `staleWhileRevalidate` (`STALE`, then a replayed, refreshed answer); `@nestjs/cache-manager`'s key and TTL only where that package resolves (it is not a dependency here, so the checks print a `skipped:` line) |
 
+### 12 — Typed client
+
+A Nest controller app on `BunHttpAdapter` and [`@kingsleyweb/bun-client`](../../packages/bun-client)
+typed from it. (The number 09 is taken by the AsyncAPI folder, so this is 12.)
+`helpers/app.ts` is the app (a `UsersController` with `@Validate`,
+`@Describe` and `@Invalidates`, a `ChatGateway` with `@ValidateMessage` and
+`@Emits`, and options to mount `DevTypesModule` and `liveInvalidation()`),
+`helpers/chat.shared.ts` the browser-safe maps both the gateway's decorators
+and the client import, and `helpers/api.gen.ts` / `helpers/api.zod.gen.ts` the
+committed output of `bun-client generate --module helpers/app.ts`;
+`run-all.ts` skips `helpers/`. Each file has `// @ts-expect-error` lines, calls
+the compiler must refuse, proved by `bun scripts/typecheck.ts`. Run them from
+this directory: Bun reads the decorator options from the working directory's
+`tsconfig.json` (oven-sh/bun#28605).
+
+```bash
+bun run gen:client     # rewrite helpers/api.gen.ts and helpers/api.zod.gen.ts
+bun run check:client   # the same with --check: exit 1 when they are stale
+```
+
+| File | Shows |
+|---|---|
+| [`controller-client.ts`](./12-typed-client/controller-client.ts) | the controllers' metadata as the client's types: `generate --check` passing on the committed files, `api.op.getUser()` from `@Describe({ operationId })`, a 404's `error.code` narrowed to the literal `"NOT_FOUND"` by `errors: ["NOT_FOUND"]`, the generated zod module as the client's `schemas` (an empty name refused before it is sent, the controller never running), the same body refused by the controller's `@Validate` with a 400 when the client's checks are off (an `UnexpectedStatusError`, the status being undeclared), and four calls the compiler refuses |
+| [`dev-types.ts`](./12-typed-client/dev-types.ts) | `DevTypesModule.forRoot({ enabled: true })`: the token file written on `listen()` and removed by `close()`, the endpoint's 404 without the bearer token, the documents with their hash as `ETag` and a `304`, and `generate --url … --token-file` writing the committed route map and zod module byte for byte. `bun-client watch` follows the same endpoint but runs until a signal, so it is described, not started |
+| [`gateway-channel.ts`](./12-typed-client/gateway-channel.ts) | a gateway's typed channel through the `"bun-nest"` codec: `request()` resolving the handler's ack typed by `@ValidateMessage`'s `ack` schema, an `@Emits` event as a typed push and a data-less event, opened from the generated descriptor (no `codec` option) and from the shared maps; a payload refused by the client before the write, and, with the client's checks off, by the gateway's `ValidationExceptionFilter` as a `ChannelError` on `$error`; four sends the compiler refuses |
+| [`invalidates.ts`](./12-typed-client/invalidates.ts) | `@Invalidates("user:{id}", "users")` with `liveInvalidation()` mounted first: another client's PATCH refetching this client's observed queries (the server counting the subscriber topics), a handler that throws (a 404) publishing nothing, and the tags documented in the manifest so the client's own `q.mutation()` invalidates by them |
+
 ## Checking the examples
 
 ```bash
