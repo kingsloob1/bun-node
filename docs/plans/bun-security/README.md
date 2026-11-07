@@ -22,6 +22,8 @@ systems; and a management UI with a live **analytics page**,
 > the plan, and other packages in the mono repo can be used to achieve the
 > package's intended result."
 
+**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (approved, landing as three PRs).
+
 Written 2026-11-07 against `develop` at `36be4163`, on Bun 1.4.4-canary.1
 (`11c367163`). **No product code was changed.** Every `file:line` is at
 `36be4163` and relative to `packages/` unless it says otherwise. The spikes
@@ -1080,6 +1082,8 @@ PR-T1 after S4 and CP4; PR-X1 per milestone; PR-X2 at M3.
 ## 16. Open questions for the user
 
 Each with a recommendation. Asked once; the answers go in the plan.
+
+**Answered 2026-11-07: the user approved every recommendation below as written** (Q19 needed no decision: the Bun bug was already filed as oven-sh/bun#44232). The Recommendation column is therefore the decision.
 
 | # | Question | Recommendation |
 |---|---|---|

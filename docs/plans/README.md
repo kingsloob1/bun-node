@@ -222,7 +222,7 @@ blindly.
     the real `createCache`; zstd, gzip, deflate and Brotli at four sizes on
     JSON, HTML and incompressible bytes, sync and async.
 - **[`bun-security/`](bun-security/README.md)** — `@kingsleyweb/bun-security`
-  and `@kingsleyweb/bun-security-ui` (draft 2026-11-07, nothing built): a
+  and `@kingsleyweb/bun-security-ui` (approved 2026-11-07, all open questions answered as recommended; nothing built yet): a
   request-defence engine (lists, bans, counted rules and escalation, request
   shape, safe rules, deception, challenges, sensitive-endpoint profiles, API
   keys, response controls) on the trust-proxy and throttle foundations, a
