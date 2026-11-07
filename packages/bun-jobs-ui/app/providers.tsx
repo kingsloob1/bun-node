@@ -3,6 +3,12 @@ import type { ReactNode } from "react";
 import type { UiConfig } from "../lib/shared/config.ts";
 import type { ApiClient } from "./api/client";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { useEffect, useMemo } from "react";
+import {
+  UnauthorizedRedirectContext,
+  createUnauthorizedRedirect,
+  watchAuthFailures,
+} from "./auth/redirect";
 import { ToastProvider } from "./components/ToastProvider";
 import { ApiClientContext, UiConfigContext } from "./context";
 import { MetaProvider } from "./meta/MetaProvider";
@@ -24,7 +30,9 @@ export interface AppProvidersProps {
  * Everything a screen needs above it: query cache, config, API client,
  * toasts, router, and the `/meta` bootstrap (which renders the loading and error
  * screens itself, so `children` only render once meta and permissions are
- * loaded).
+ * loaded). With `config.unauthorized`, every failed query and mutation is
+ * also watched here, and the first one with a configured status sends the
+ * browser to the sign-in target (`auth/redirect.ts`).
  */
 export function AppProviders({
   config,
@@ -32,16 +40,26 @@ export function AppProviders({
   queryClient,
   children,
 }: AppProvidersProps) {
+  const unauthorized = useMemo(
+    () => createUnauthorizedRedirect(config.unauthorized, config.basePath),
+    [config.unauthorized, config.basePath],
+  );
+  useEffect(
+    () => watchAuthFailures(queryClient, unauthorized),
+    [queryClient, unauthorized],
+  );
   return (
     <QueryClientProvider client={queryClient}>
       <UiConfigContext value={config}>
-        <ApiClientContext value={client}>
-          <ToastProvider>
-            <RouterProvider basePath={config.basePath}>
-              <MetaProvider>{children}</MetaProvider>
-            </RouterProvider>
-          </ToastProvider>
-        </ApiClientContext>
+        <UnauthorizedRedirectContext value={unauthorized}>
+          <ApiClientContext value={client}>
+            <ToastProvider>
+              <RouterProvider basePath={config.basePath}>
+                <MetaProvider>{children}</MetaProvider>
+              </RouterProvider>
+            </ToastProvider>
+          </ApiClientContext>
+        </UnauthorizedRedirectContext>
       </UiConfigContext>
     </QueryClientProvider>
   );

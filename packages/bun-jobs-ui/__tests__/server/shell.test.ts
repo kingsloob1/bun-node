@@ -94,6 +94,7 @@ describe("the shell", () => {
       docs: null,
       sections: { manage: true, docs: true },
       theme: "dark",
+      unauthorized: null,
     });
     expect(shell.config).toEqual(ui.config);
   });

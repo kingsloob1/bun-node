@@ -5,6 +5,7 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { JobsApi, JobsApiAuthorizeResult } from "@kingsleyweb/bun-jobs";
+import type { UiUnauthorizedStatus } from "./shared/unauthorized";
 import type { UiConfig, UiSections, UiTheme } from "./shared/config";
 
 /** What {@link JobsUiOptions.authorize} is told about the request being decided. */
@@ -34,6 +35,39 @@ export type JobsUiAuthorize = (
   req: BunRequest,
   context: JobsUiAuthorizeContext,
 ) => JobsUiAuthorizeResult | Promise<JobsUiAuthorizeResult>;
+
+/**
+ * Where to send the browser when an authorization check fails, instead of
+ * leaving it on a page whose screens report the failure. See
+ * {@link JobsUiBaseOptions.unauthorized}.
+ */
+export interface JobsUiUnauthorizedOptions {
+  /**
+   * Where to go: a path on this host starting with one `/` (`"/login"`,
+   * `"/auth/sign-in?app=jobs"`), or an absolute `http:`/`https:` URL (an
+   * identity provider's sign-in page). Required. A path inside the UI's own
+   * `basePath` is a `ConfigError`: the UI would redirect to itself.
+   * `javascript:`, `data:`, `//host` and anything else are refused.
+   */
+  redirectTo: string;
+  /**
+   * Query parameter that carries the page the user was on, so the sign-in
+   * page can send them back: path, query and (in the browser) fragment,
+   * always a relative URL starting with one `/` (e.g.
+   * `/login?returnTo=%2Fjobs%2Fqueues%2Fmail`). `false` adds nothing.
+   * Defaults to `"returnTo"`. Letters, digits, `_`, `.`, `~` and `-` only.
+   * The sign-in page must still check the value before redirecting to it.
+   */
+  returnParam?: string | false;
+  /**
+   * Which failures redirect. Defaults to `[401]`: only "not signed in". A 403
+   * means signed in but not allowed, which the screens explain themselves
+   * (a missing permission on one queue is not a reason to leave the app);
+   * add `403` to redirect on that too. Must be a non-empty array of `401`
+   * and `403`.
+   */
+  statuses?: readonly UiUnauthorizedStatus[];
+}
 
 /** Options shared by both ways of pointing the UI at its API. */
 export interface JobsUiBaseOptions {
@@ -66,6 +100,27 @@ export interface JobsUiBaseOptions {
    * is 500. Omitted: everyone may load the page.
    */
   authorize?: JobsUiAuthorize;
+  /**
+   * Sends the browser to a sign-in (or any other) page when the caller is not
+   * authorized, instead of showing the failure on every screen. Off by
+   * default (today's behaviour: the shell answers a problem, screens show
+   * their messages).
+   *
+   * With it set, for a status in `statuses` (`[401]` by default):
+   *
+   * - **The shell:** a browser navigation (`GET`/`HEAD` of a page, not a
+   *   bundle file) that `authorize` denies answers `303 See Other` to `redirectTo`.
+   *   A bundle file, and a request that is not a navigation (a script's
+   *   `fetch`, an `Accept` without `text/html`), keep the problem answer.
+   * - **The app:** the first API call (any query or mutation) or live-events
+   *   message that fails with such a status sends the browser to `redirectTo` with
+   *   `location.assign`, once per page load.
+   *
+   * A denial `middleware` answers itself is not redirected: only
+   * `authorize`'s. The target is fixed here, never read from the request, so
+   * it cannot be an open redirect. See {@link JobsUiUnauthorizedOptions}.
+   */
+  unauthorized?: JobsUiUnauthorizedOptions;
   /**
    * Middleware run before every UI route, on the `GET`/`HEAD` requests the UI
    * answers (session loading, a rate limiter). Runs before `authorize`.

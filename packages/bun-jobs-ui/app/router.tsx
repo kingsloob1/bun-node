@@ -1,6 +1,7 @@
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
 import type { NavigateOptions, RouteDef } from "./routing";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useUnauthorizedRedirect } from "./auth/redirect";
 import { ScreenErrorBoundary } from "./components/ScreenErrorBoundary";
 import {
   matchPath,
@@ -83,12 +84,21 @@ export interface RoutesProps {
  * Renders the first route matching the current location, inside a
  * {@link ScreenErrorBoundary}: a screen that crashes while rendering shows a
  * recoverable panel in its place instead of blanking the app, and moving to
- * another location tries again.
+ * another location tries again. With `unauthorized`, a crash also asks the
+ * server whether the page may still be loaded (`UnauthorizedRedirect.probe`): a
+ * screen's chunk refused by the shell's `authorize` crashes it with no
+ * status to read.
  */
 export function Routes({ routes, notFound }: RoutesProps) {
   const { path } = useLocation();
+  const unauthorized = useUnauthorizedRedirect();
   return (
-    <ScreenErrorBoundary resetKey={path ?? ""}>
+    <ScreenErrorBoundary
+      resetKey={path ?? ""}
+      onError={
+        unauthorized.enabled ? () => void unauthorized.probe() : undefined
+      }
+    >
       <MatchedRoute
         routes={routes}
         notFound={notFound}

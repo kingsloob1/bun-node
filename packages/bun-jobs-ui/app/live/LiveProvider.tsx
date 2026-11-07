@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { LiveContextValue, LiveOptions } from "./context";
 import { use, useEffect, useMemo } from "react";
 import { useUiConfig } from "../context";
+import { useUnauthorizedRedirect } from "../auth/redirect";
 import { useCan, useMeta } from "../meta/hooks";
 import { LiveClient, liveSocketUrl } from "./client";
 import { LiveContext, LiveOptionsContext, LOCAL_EVENTS_NOTE } from "./context";
@@ -30,6 +31,7 @@ export function LiveProvider({ children, options }: LiveProviderProps) {
   const config = useUiConfig();
   const canConnect = useCan("events.connect");
   const contextOptions = use(LiveOptionsContext);
+  const unauthorized = useUnauthorizedRedirect();
   // Kept as one object: the client is rebuilt only when it changes.
   const source = options ?? contextOptions;
   const disabled = source?.disabled === true;
@@ -64,10 +66,13 @@ export function LiveProvider({ children, options }: LiveProviderProps) {
     const { disabled: _disabled, ...overrides } = source ?? {};
     return new LiveClient({
       ...(heartbeatMs === undefined ? {} : { heartbeatMs }),
+      ...(unauthorized.enabled
+        ? { onAuthFailure: (status) => unauthorized.report(status) }
+        : {}),
       ...overrides,
       url,
     });
-  }, [url, heartbeatMs, source]);
+  }, [url, heartbeatMs, source, unauthorized]);
 
   useEffect(() => {
     if (!client) {

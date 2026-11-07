@@ -141,6 +141,16 @@ export interface LiveClientOptions {
   seenLimit?: number;
   /** Largest subscribe frame, in characters, below the server's 16 KiB default. Defaults to 12 000. */
   maxFrameChars?: number;
+  /**
+   * Told of every authorization failure the socket reports: `401` for the
+   * `UNAUTHORIZED` close (4401, reserved by protocol 1) and the status of each
+   * refused channel in an ack and of each `error` frame that carries 401 or
+   * 403. The client handles the failure as before either way; this is how the
+   * app's `unauthorized` hears of it. A refused upgrade is not reported: a
+   * browser cannot see its status (the app's HTTP reads see the same
+   * failure). Defaults to doing nothing.
+   */
+  onAuthFailure?: (status: 401 | 403) => void;
 }
 
 /** A registered holder. */
@@ -381,6 +391,7 @@ export class LiveClient {
       rateLimitPauseMs: options.rateLimitPauseMs ?? 2_000,
       seenLimit: options.seenLimit ?? 2_048,
       maxFrameChars: options.maxFrameChars ?? 12_000,
+      onAuthFailure: options.onAuthFailure ?? (() => {}),
     };
     this.#heartbeatMs = this.#options.heartbeatMs;
     this.#tokens = this.#options.messagesPerSecond * 2;
@@ -594,6 +605,7 @@ export class LiveClient {
     }
     if (code === JOBS_API_WS_CLOSE.UNAUTHORIZED) {
       this.#refuse("The live-events session is no longer authorized");
+      this.#options.onAuthFailure(401);
       return;
     }
     if (code === JOBS_API_WS_CLOSE.SLOW_CONSUMER) {
@@ -1133,6 +1145,9 @@ export class LiveClient {
         this.#refreshRejected(holder);
       }
     }
+    for (const rejection of rejected) {
+      this.#reportAuthFailure(rejection.status);
+    }
 
     if (
       ack.channels.length > 0 &&
@@ -1267,6 +1282,14 @@ export class LiveClient {
     }
     if (error.code === "EVENTS_UNAVAILABLE") {
       this.#setSnapshot({ detail: EVENTS_UNAVAILABLE });
+    }
+    this.#reportAuthFailure(error.status);
+  }
+
+  /** Passes a 401 or 403 to `onAuthFailure`, after the failure itself was handled. */
+  #reportAuthFailure(status: number | undefined): void {
+    if (status === 401 || status === 403) {
+      this.#options.onAuthFailure(status);
     }
   }
 }
