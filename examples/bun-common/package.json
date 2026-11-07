@@ -3,11 +3,13 @@
   "type": "module",
   "version": "0.0.0",
   "private": true,
-  "description": "Runnable, commented examples for @kingsleyweb/bun-common: routing, the HTTP adapter, requests and responses, validation, CORS, static files, multipart uploads, WebSockets, logging and utilities",
+  "description": "Runnable, commented examples for @kingsleyweb/bun-common: routing, the HTTP adapter, requests and responses, validation, CORS, static files, multipart uploads, WebSockets, logging, utilities and the typed client",
   "scripts": {
     "all": "bun run-all.ts",
     "lint": "bun lint",
     "format": "bun fmt",
-    "format:check": "bun fmt --check"
+    "format:check": "bun fmt --check",
+    "gen:client": "bun-client generate --module 14-typed-client/helpers/api.ts --out 14-typed-client/helpers/api.gen.ts --zod 14-typed-client/helpers/api.zod.gen.ts",
+    "check:client": "bun-client generate --module 14-typed-client/helpers/api.ts --out 14-typed-client/helpers/api.gen.ts --zod 14-typed-client/helpers/api.zod.gen.ts --check"
   }
 }

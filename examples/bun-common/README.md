@@ -171,6 +171,35 @@ effective contract and `toJsonSchema()` converts every row's schema;
 | [`class-dtos.ts`](./13-api-docs/class-dtos.ts) | `useClassDtos()` + a class-validator DTO on `query`: `"42"` → `42` by implicit conversion, the failing request's 400 issues, and the DTO's schema in the generated document through the injected `toJsonSchema`. Skips visibly when the libraries are absent; the `experimentalDecorators` requirement is printed. See the package README's [Class DTOs](../../packages/bun-common/README.md#class-dtos-useclassdtos) |
 | [`asyncapi-channels.ts`](./13-api-docs/asyncapi-channels.ts) | `defineChannel()` + `generateAsyncApi()` end to end: a channel documenting itself (the upgrade's params as `x-bun-common-schema`, the messages in their `{ type, id?, data }` envelope, the `reply` link, the implicit error frame, the meta as the `x-bun-common-*` extensions), its SSE fallback a channel of its own, a bare `ws()` route's honest stub enriched by `describeChannel()`, and the document served through `docsRouter`'s `asyncapi` with the official viewer page |
 
+### 14 — Typed client
+
+A `defineRoutes` registry on the server and [`@kingsleyweb/bun-client`](../../packages/bun-client)
+on the other end, with every call typed from the server's own declarations.
+The folder shares `helpers/api.ts` (the registry, with BunValidate schemas and
+`.describe({ errors, cache })`), `helpers/api.gen.ts` and `helpers/api.zod.gen.ts`
+(committed output of `bun-client generate` from it), `helpers/chat.contract.ts`
+(a browser-safe channel contract) and `helpers/serve.ts`; `run-all.ts` skips
+`helpers/`. Each file has `// @ts-expect-error` lines, calls the compiler must
+refuse, proved by `bun scripts/typecheck.ts`. Besides the workspace packages the
+folder imports `@tanstack/query-core` and `node-datachannel`, which the root
+`node_modules` holds as `@kingsleyweb/bun-client` dependencies.
+
+```bash
+bun run gen:client     # rewrite helpers/api.gen.ts and helpers/api.zod.gen.ts
+bun run check:client   # the same with --check: exit 1 when they are stale
+```
+
+| File | Shows |
+|---|---|
+| [`http-client.ts`](./14-typed-client/http-client.ts) | `createClient<RoutesOf<typeof registry>>()` with no generated file: `get`/`post`/`patch` typed by the registry's validators, a result discriminated by `ok` and `status` (a declared 404 is a result and its `error` is the 404's body), `api.url()` sending nothing, and six calls the compiler refuses (an unknown route, a numeric param, a missing body field, a wrong body type, an undeclared query, an undeclared status) |
+| [`generate-client.ts`](./14-typed-client/generate-client.ts) | `bun-client generate --module` run in process: the committed route map and zod module pass `--check`, a copy generated elsewhere is byte-identical, a hand-edited one fails `--check` with exit 1 and a rewrite fixes it; then the generated map typing `api.op.getUser()` and a 404's `error.code` narrowed to the literal `"NOT_FOUND"` by `.describe({ errors })`; a status the manifest does not list throwing `UnexpectedStatusError`; the generated zod module as the client's `schemas`, so a malformed email is refused before it is sent (the server sees nothing) and a drifted response is reported through the client's `logger` |
+| [`query-layer.ts`](./14-typed-client/query-layer.ts) | `queries()` on `@tanstack/query-core`, no React and no DOM: the `[routeKey, { params, query }]` key, tags filled from the params (`user:1`), `ETag` revalidation answered `304` keeping the identical data object, a mutation's `cache.invalidates` refetching the observed queries that carry the tag, `invalidateTags()` by hand, and an optimistic write that is rolled back when the request fails |
+| [`live-invalidation.ts`](./14-typed-client/live-invalidation.ts) | live invalidation: `liveInvalidation()` on the server publishes a route's `invalidates` tags on a 2xx, `live()` on a second client refetches its observed queries, over the WebSocket channel (the server counting the subscriber topics) and over the SSE fallback, and stops on `stop()` |
+| [`channel.ts`](./14-typed-client/channel.ts) | a typed WebSocket channel from one shared `channelContract()`: `defineChannel` on the server, `channel()` on the client; `send`, a push to another client, `request()`/reply, a send the contract refuses before it is written, a dropped socket reconnecting (`open` → `reconnecting` → `open`, `resubscribe`) and messages the compiler refuses |
+| [`sse.ts`](./14-typed-client/sse.ts) | server-sent events: `res.sse()` with a declared `sse({ … })` contract, ids, `retry:`, a heartbeat comment and `resume` read off the wire; the typed `sse()` client iterating narrowed events, a connection the server dropped resumed with `Last-Event-ID` (nothing lost, nothing repeated), and an unresumable id answered with the declared `gap` |
+| [`webrtc.ts`](./14-typed-client/webrtc.ts) | a data channel between two headless peers: `signallingRelay` and the typed signalling channel (`join`/`peers`), `connectPeer` running offer, answer and ICE, `typedDataChannel` carrying typed messages, a push, a request/reply and a refused send; peers come from `node-datachannel/polyfill` (skips visibly when it is missing) |
+| [`graphql.ts`](./14-typed-client/graphql.ts) | `createGraphQLClient` against a hand-written GraphQL endpoint (bun-node serves none): documents typed as `TypedString<Result, Variables>`, complete, partial and failed results, a mutation, `method: "GET"`, `throwOnGraphQLErrors`, and `q.graphql()` with tags in the query layer |
+
 ## Checking the examples
 
 ```bash
