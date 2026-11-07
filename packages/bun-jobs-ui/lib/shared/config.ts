@@ -7,6 +7,8 @@
  * sides import it, and the app side is bundled for the browser.
  */
 
+import type { UiUnauthorized } from "./unauthorized";
+
 /** Id of the `<script type="application/json">` element carrying {@link UiConfig}. */
 export const UI_CONFIG_ELEMENT_ID = "bun-jobs-ui-config";
 
@@ -54,4 +56,10 @@ export interface UiConfig {
   sections: UiSections;
   /** Initial colour scheme. */
   theme: UiTheme;
+  /**
+   * Where an authorization failure sends the browser (`jobsUi()`'s
+   * `unauthorized`), or `null` when it is off: the app then shows each
+   * screen's own message, as before.
+   */
+  unauthorized: UiUnauthorized | null;
 }

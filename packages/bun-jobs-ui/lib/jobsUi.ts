@@ -17,6 +17,10 @@ import type {
 } from "@kingsleyweb/bun-common";
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
 import type { UiAsset, UiAssets } from "./assets";
+import type {
+  UiUnauthorized,
+  UiUnauthorizedStatus,
+} from "./shared/unauthorized";
 import type { UiConfig, UiSections, UiTheme } from "./shared/config";
 import type { ShellRenderer } from "./shell";
 import type {
@@ -28,6 +32,7 @@ import type {
 import { BunRouter, resolveLogger } from "@kingsleyweb/bun-common";
 import { ConfigError } from "@kingsleyweb/bun-jobs";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
+import { unauthorizedRedirectUrl } from "./shared/unauthorized";
 import {
   connectSources,
   createNonce,
@@ -52,6 +57,22 @@ const PATH_SEGMENT = /^[\w.~-]+$/;
 
 /** A header name (an RFC 9110 token). */
 const HEADER_NAME = /^[!#$%&'*+.^`|~\w-]+$/;
+
+/** `unauthorized.returnParam` when unset. */
+export const DEFAULT_RETURN_PARAM = "returnTo";
+
+/** `unauthorized.statuses` when unset: only "not signed in". */
+export const DEFAULT_UNAUTHORIZED_STATUSES: readonly UiUnauthorizedStatus[] =
+  Object.freeze([401]);
+
+/** A query parameter name `unauthorized.returnParam` may be. */
+const RETURN_PARAM = /^[\w.~-]+$/;
+
+/** What a redirect target may not contain anywhere: whitespace, a control character or `\`. */
+const UNSAFE_TARGET_CHAR = /[\s\\\p{Cc}]/u;
+
+/** Any origin, to parse a path target with `new URL()`. */
+const PATH_TARGET_ORIGIN = "http://bun-jobs-ui.invalid";
 
 /** Where the bundle comes from; tests point these at a fixture. */
 export interface JobsUiInternals {
@@ -298,6 +319,157 @@ function resolveCsrfHeader(
   return value;
 }
 
+/** The `ConfigError` for a target that is neither a path nor an http(s) URL. */
+function badTarget(redirectTo: unknown): ConfigError {
+  return new ConfigError(
+    `unauthorized.redirectTo must be a path starting with "/" or an absolute http: or https: URL`,
+    { redirectTo },
+  );
+}
+
+/**
+ * Validates `unauthorized.redirectTo`: a path starting with one `/`, or an absolute
+ * `http(s)://` URL without credentials. A path is refused when it is the
+ * UI's own `basePath` or under it: the UI would answer it, deny it, and
+ * redirect again. The comparison resolves `..` as a browser does, and is
+ * case-insensitive, because the router matches paths case-insensitively, as
+ * Express does (`/JOBS/login` reaches a UI at `/jobs`). It also decodes
+ * percent-escapes, which the router does not: stricter than needed, and
+ * refusing such a target costs nothing. An absolute URL on the UI's own host is
+ * caught by the app instead, which knows its origin (see `app/auth`).
+ */
+function resolveRedirectTarget(redirectTo: unknown, basePath: string): string {
+  if (typeof redirectTo !== "string" || redirectTo === "") {
+    throw badTarget(redirectTo);
+  }
+  if (UNSAFE_TARGET_CHAR.test(redirectTo)) {
+    throw new ConfigError(
+      `unauthorized.redirectTo may not contain whitespace, control characters or "\\"`,
+      { redirectTo },
+    );
+  }
+  if (redirectTo.startsWith("/")) {
+    if (redirectTo.startsWith("//")) {
+      throw new ConfigError(
+        `unauthorized.redirectTo may not start with "//": a browser reads it as another host. Write the full https:// URL instead`,
+        { redirectTo },
+      );
+    }
+    const { pathname } = new URL(redirectTo, PATH_TARGET_ORIGIN);
+    let decoded = pathname;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
+      // A malformed escape: compare it as written.
+    }
+    const path = decoded.replace(/\/+$/, "").toLowerCase();
+    if (path !== "" && isWithin(path, basePath.toLowerCase())) {
+      throw new ConfigError(
+        `unauthorized.redirectTo ${redirectTo} is inside the UI's basePath ${basePath}: the UI would deny it again and redirect to itself, a redirect loop. Point it at a page outside ${basePath}`,
+        { redirectTo, basePath },
+      );
+    }
+    return redirectTo;
+  }
+  if (!/^https?:\/\//i.test(redirectTo)) {
+    throw badTarget(redirectTo);
+  }
+  let url: URL;
+  try {
+    url = new URL(redirectTo);
+  } catch {
+    throw badTarget(redirectTo);
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw new ConfigError("unauthorized.redirectTo may not carry credentials", {
+      redirectTo,
+    });
+  }
+  return redirectTo;
+}
+
+/** Validates `unauthorized`; `null` when it is unset. */
+function resolveUnauthorized(
+  value: unknown,
+  basePath: string,
+): UiUnauthorized | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ConfigError(
+      "unauthorized must be an object with a `redirectTo`",
+      {
+        value,
+      },
+    );
+  }
+  const option = value as Record<string, unknown>;
+  const redirectTo = resolveRedirectTarget(option.redirectTo, basePath);
+
+  let returnParam: string | null = DEFAULT_RETURN_PARAM;
+  if (option.returnParam === false) {
+    returnParam = null;
+  } else if (option.returnParam !== undefined) {
+    if (
+      typeof option.returnParam !== "string" ||
+      !RETURN_PARAM.test(option.returnParam)
+    ) {
+      throw new ConfigError(
+        `unauthorized.returnParam must be false or a name of letters, digits, "_", ".", "~" and "-"`,
+        { returnParam: option.returnParam },
+      );
+    }
+    returnParam = option.returnParam;
+  }
+
+  let statuses = DEFAULT_UNAUTHORIZED_STATUSES;
+  if (option.statuses !== undefined) {
+    const list: unknown = option.statuses;
+    if (
+      !Array.isArray(list) ||
+      list.length === 0 ||
+      !list.every((status) => status === 401 || status === 403)
+    ) {
+      throw new ConfigError(
+        "unauthorized.statuses must be a non-empty array of 401 and 403 (leave unauthorized out to switch it off)",
+        { statuses: list },
+      );
+    }
+    statuses = Object.freeze(
+      [...new Set(list as UiUnauthorizedStatus[])].sort((a, b) => a - b),
+    );
+  }
+  return { redirectTo, returnParam, statuses };
+}
+
+/**
+ * Whether a request is a browser navigation, the only kind a redirect helps:
+ * `Sec-Fetch-Mode: navigate` when the browser sends the header (every
+ * current one does), else an `Accept` naming `text/html`. A script's `fetch`,
+ * `curl` (whose `Accept` is the any-type wildcard) and a health probe are not, and keep the problem.
+ */
+function isNavigation(req: BunRequest): boolean {
+  const mode = req.get("sec-fetch-mode");
+  if (typeof mode === "string" && mode !== "") {
+    return mode.toLowerCase() === "navigate";
+  }
+  return (req.get("accept") ?? "").toLowerCase().includes("text/html");
+}
+
+/** Answers `303 See Other` to the sign-in target, carrying the request's own path and query back. */
+function sendUnauthorizedRedirect(
+  req: BunRequest,
+  res: BunResponse,
+  redirect: UiUnauthorized,
+): void {
+  res.status(303);
+  res.setHeader("Location", unauthorizedRedirectUrl(redirect, req.originalUrl));
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  void res.end();
+}
+
 /** A frozen copy of the config, nested objects included. */
 function freezeConfig(config: UiConfig): Readonly<UiConfig> {
   for (const value of Object.values(config)) {
@@ -374,11 +546,16 @@ function decide(result: unknown):
   return { allow: false, status: 403 };
 }
 
-/** The `authorize` step of every UI route. */
+/**
+ * The `authorize` step of every UI route. With `redirect`, a denial whose
+ * status it lists answers a page navigation with a 303 to the target; a
+ * bundle file and anything that is not a navigation keep the problem.
+ */
 function authorizeStep(
   authorize: JobsUiAuthorize,
   asset: boolean,
   logger: Logger,
+  redirect: UiUnauthorized | null,
 ): RouterHandler {
   return async (req, res, next) => {
     const context: JobsUiAuthorizeContext = { asset, path: req.path };
@@ -402,6 +579,15 @@ function authorizeStep(
     }
     if (decision.allow) {
       return next();
+    }
+    if (
+      redirect !== null &&
+      !asset &&
+      redirect.statuses.includes(decision.status) &&
+      isNavigation(req)
+    ) {
+      sendUnauthorizedRedirect(req, res, redirect);
+      return;
     }
     if (decision.status === 401) {
       sendProblem(
@@ -502,6 +688,7 @@ export function createJobsUi(
     docs: api ? docsFromApi(api) : null,
     sections: resolveSections(options.sections),
     theme: resolveTheme(options.theme),
+    unauthorized: resolveUnauthorized(options.unauthorized, basePath),
   });
 
   const logger = resolveLogger(options.logger).child({ component: "jobs-ui" });
@@ -641,7 +828,7 @@ export function createJobsUi(
     leaveApiAlone,
     ...middleware,
     ...(options.authorize
-      ? [authorizeStep(options.authorize, asset, logger)]
+      ? [authorizeStep(options.authorize, asset, logger, config.unauthorized)]
       : []),
   ];
 

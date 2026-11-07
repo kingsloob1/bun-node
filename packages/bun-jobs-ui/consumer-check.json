@@ -24,6 +24,9 @@
         "JobsUiAuthorize",
         "JobsUiAuthorizeContext",
         "JobsUiAuthorizeResult",
+        "JobsUiUnauthorizedOptions",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus",
         "UiConfig",
         "UiSections",
         "UiTheme"
@@ -51,6 +54,11 @@
       "spelling": "@kingsleyweb/bun-jobs-ui/lib/types",
       "types": ["JobsUi", "JobsUiOptions"],
       "runtime": false
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui/lib/shared/unauthorized",
+      "types": ["UiUnauthorized", "UiUnauthorizedStatus"],
+      "browser": true
     },
     {
       "spelling": "@kingsleyweb/bun-jobs-ui/lib/shared/config",

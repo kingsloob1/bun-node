@@ -59,6 +59,12 @@ import { playgroundOpenApi } from "./docs";
 import { startMailer } from "./mailer";
 import { startFlows } from "./flows";
 import { startRunners } from "./runners";
+import {
+  mountSignIn,
+  playgroundAuthorize,
+  playgroundUnauthorized,
+  SIGN_OUT_PATH,
+} from "./sign-in";
 import { startSimulation } from "./simulation";
 import { createSummoning } from "./summoning";
 import { CLIENT_BASE, mountTypedClientDemo } from "./typed-client";
@@ -124,8 +130,9 @@ const flows = await startFlows({
 const api = createJobsApi({
   jobs,
   basePath: "/jobs-api",
-  // A real host decides from a session; the playground allows everything.
-  authorize: () => true,
+  // A real host decides from a session; the playground allows everything,
+  // until you sign out at /playground/sign-out (sign-in.ts): then 401.
+  authorize: playgroundAuthorize,
   // Every action, the opt-in `jobs.add` and `jobs.update` included.
   actions: [...JOBS_API_ACTIONS],
   // `Add job` accepts any name.
@@ -151,6 +158,11 @@ const ui = jobsUi({
   // which the consumer check runs) leaves one behind, so the playground then
   // served a stale snapshot and hid every UI change made after it.
   dev: true,
+  // Signed out (sign-in.ts), the page is a 401 for the shell and the API:
+  // unauthorized sends the browser to /playground/sign-in instead, with
+  // returnTo, from the shell (a 303) and from the app (its first refused read).
+  authorize: playgroundAuthorize,
+  unauthorized: playgroundUnauthorized,
 });
 
 const app = new BunHttpAdapter();
@@ -176,6 +188,8 @@ const typedClient = await mountTypedClientDemo(app);
 // `app.ws(chat.path, chat.checks(), chat.handler(…), chat.options(…))` — at
 // `/playground/chat/:room`.
 mountChatChannel(app);
+// The pretend sign-in for unauthorized: /playground/sign-out, /playground/sign-in.
+mountSignIn(app, ui.basePath);
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 app
@@ -356,6 +370,7 @@ bun-node playground (${playgroundBackend()} driver)
   Shared unit   ${origin}${ui.basePath}/queues/ingest (uploads: ingest, captions, search-index; controller on the ${summoning.sharedUnitHost === "mailer" ? "mailer context, so this API shows it read-only" : "main context"})
   Units/faults  ${origin}${summoning.basePath}
   API           ${origin}${api.basePath}/meta
+  Sign out      ${origin}${SIGN_OUT_PATH}  (unauthorized: the UI then sends you to /playground/sign-in?returnTo=…; ${SIGN_OUT_PATH}?stay=1 to sign out from another tab, then click anything in the UI)
   API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page; the chat channel's AsyncAPI document at /playground/docs/asyncapi.json, its viewer at /playground/docs/asyncapi)
   Self-hosted  ${origin}/playground/api-docs  (bun-api-docs-ui: the same OpenAPI document, bundled viewer, no CDN)  ·  events: ${origin}/playground/ws-docs
   docsRouter SH ${origin}/playground/self-hosted-docs  (docsRouter's "self-hosted" viewer: the package's bundle served by bun-common)  ·  events: ${origin}/playground/self-hosted-docs/asyncapi

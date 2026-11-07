@@ -49,6 +49,7 @@ export function uiConfig(overrides: Partial<UiConfig> = {}): UiConfig {
     },
     sections: { manage: true, docs: true },
     theme: "system",
+    unauthorized: null,
     ...overrides,
   };
 }

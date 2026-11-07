@@ -20,11 +20,16 @@ export {
  * `JobsUiBaseOptions` stays public because both option interfaces extend it,
  * so it is part of the options' declared shape.
  */
+export type {
+  UiUnauthorized,
+  UiUnauthorizedStatus,
+} from "./shared/unauthorized";
 export type { UiConfig, UiSections, UiTheme } from "./shared/config";
 export { UI_CONFIG_ELEMENT_ID } from "./shared/config";
 export type {
   JobsUi,
   JobsUiApiOptions,
+  JobsUiUnauthorizedOptions,
   JobsUiAuthorize,
   JobsUiAuthorizeContext,
   JobsUiAuthorizeResult,

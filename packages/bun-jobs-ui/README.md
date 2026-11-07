@@ -82,6 +82,7 @@ call it and throws a `ConfigError` for anything unusable.
 | `sections` | `{ manage?, docs? }` | both `true` | Turn either one off, for example to serve the docs only. Turning both off is an error. |
 | `csrfHeader` | `string \| false` | none* | Must match the API's `csrf.header`. `false` or unset means none, and `config.csrfHeader` is then `null`. \*When the API exposes `api.info.csrf.header`, that value becomes the default. |
 | `authorize` | `(req, { asset, path }) => boolean \| { allow, status?, reason? }` | none | Guards the shell and the bundle. It can be sync or async and fails closed, as the API's does: a denial is 401 only for `status: 401` and 403 for any other status (`429` and `500` included), an unrecognised answer gives 403 and a throw gives 500. To answer 429, rate-limit in `middleware`. |
+| `unauthorized` | `{ redirectTo, returnParam?, statuses? }` | off | Sends the browser to a sign-in page (or any page) when the caller is not authorized, instead of leaving it on screens that report a 401. `redirectTo` is a path (`"/login"`) or an `http(s)` URL; `returnParam` (`"returnTo"`; `false` for none) carries the page the user was on; `statuses` is `[401]`, add `403` to redirect on that too. See [Sending the browser to sign in](#sending-the-browser-to-sign-in). |
 | `middleware` | `RouterHandler[]` | `[]` | Runs before `authorize` on the `GET`/`HEAD` requests the UI answers. An error it raises goes to the host's error handling. |
 | `theme` | `"system" \| "light" \| "dark"` | `"system"` | The initial colour scheme. |
 | `dev` | `boolean` | unset | Unset: serve `dist/` if it is there, otherwise build in memory on the first request (once per process, logged once). `true`: always build from `app/`. `false`: require `dist/`, or `jobsUi()` throws. |
@@ -95,6 +96,51 @@ through to the host):
   `If-None-Match` gets 304) and `nosniff`. An unknown file gets a 404
   problem, never the shell.
 - `/` and `/*` serve the HTML shell for every client route.
+
+### Sending the browser to sign in
+
+By default an authorization failure stays where it happens: the shell
+answers a 401 problem, and in the app each screen shows its own "Sign in
+required" or "Access denied". With `unauthorized`, a failure sends the
+browser to a page you choose:
+
+```ts
+const ui = jobsUi({
+  api,
+  basePath: "/admin/jobs",
+  authorize: (req) => (req.cookies.session ? true : { allow: false, status: 401 }),
+  unauthorized: { redirectTo: "/login" },
+});
+// A signed-out visit to /admin/jobs/queues/mail?state=failed
+// → 303 to /login?returnTo=%2Fadmin%2Fjobs%2Fqueues%2Fmail%3Fstate%3Dfailed
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `redirectTo` | — (required) | A path starting with one `/` (`"/login"`, `"/auth?app=jobs"`), or an absolute `http:`/`https:` URL (an identity provider). A path inside the UI's own `basePath` is a `ConfigError`, because the UI would deny it and redirect to itself. `javascript:`, `data:`, `//host`, a `\`, whitespace, control characters and credentials in a URL are refused too. |
+| `returnParam` | `"returnTo"` | The query parameter that carries the page the user was on: path, query and, in the browser, fragment. It is always a relative URL starting with one `/`. A parameter of that name already in `redirectTo` is replaced. `false` adds nothing. Letters, digits, `_`, `.`, `~` and `-` only. |
+| `statuses` | `[401]` | Which failures redirect: `401`, `403` or both. A 403 means signed in but not allowed, which the screens explain themselves (a missing permission on one queue is no reason to leave the app), so it is not redirected unless listed. |
+
+What redirects, for a status in `statuses`:
+
+- **The shell.** A page navigation that `authorize` denies answers
+  `303 See Other` with `Location: <redirectTo>?returnTo=<path and query>`. A
+  navigation is a `GET` or `HEAD` with `Sec-Fetch-Mode: navigate`, or, from a
+  client that sends no `Sec-Fetch-Mode`, an `Accept` naming `text/html`. A
+  bundle file (`/assets/…`), a script's `fetch` and `curl` keep the 401 or 403
+  problem. A denial that your `middleware` answers itself is not redirected.
+- **The app.** The first API call, query or mutation, that fails with such a
+  status, or a live-events message that reports one, sends the browser to
+  `redirectTo` with `location.assign`. It happens once per page load, so ten reads
+  failing together navigate once. The hook is the query cache, so a client
+  other than the app's own (one that throws an error with a numeric `status`)
+  is covered too. The API docs' "Try it" panel shows its responses and never
+  redirects. A target that resolves into this UI on the same origin (an
+  absolute URL that `jobsUi()` cannot check, since it does not know its
+  origin) is not followed, and the screens show their messages.
+
+A refused WebSocket upgrade does not redirect: a browser cannot see its
+status. The API reads that start with the page meet the same failure.
 
 ## Screens
 
@@ -1011,6 +1057,11 @@ status, `429` or `500` included, gives a 403.
 - **Shell auth is not API auth.** `authorize` here protects only the page and
   the bundle. The API's own `authorize` protects the data. With no UI
   `authorize`, the only thing exposed is the app's JavaScript.
+- **`unauthorized` is not an open redirect.** The target is fixed by the
+  server's options and never read from the request. The `returnTo` value
+  is, so the sign-in page must check it (a relative path on its own host)
+  before sending the user back to it. The UI always writes a path starting
+  with exactly one `/`.
 - **CSP.** Every shell response carries a fresh nonce and this policy:
   `default-src 'self'; script-src 'self' 'nonce-…'; style-src 'self'; img-src 'self' data:; connect-src 'self' <sockets>; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`.
   `connect-src` never allows a socket to just any host. After `'self'` it

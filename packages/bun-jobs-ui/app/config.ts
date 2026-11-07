@@ -46,7 +46,21 @@ export function parseUiConfig(value: unknown): UiConfig {
   if (!["system", "light", "dark"].includes(String(value.theme))) {
     throw new UiConfigError(`The UI configuration's "theme" is not valid.`);
   }
-  return value as unknown as UiConfig;
+  // Missing in a shell from before the option existed: off.
+  const unauthorized = value.unauthorized ?? null;
+  if (
+    unauthorized !== null &&
+    (!isRecord(unauthorized) ||
+      typeof unauthorized.redirectTo !== "string" ||
+      (unauthorized.returnParam !== null &&
+        typeof unauthorized.returnParam !== "string") ||
+      !Array.isArray(unauthorized.statuses))
+  ) {
+    throw new UiConfigError(
+      `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
+    );
+  }
+  return { ...value, unauthorized } as unknown as UiConfig;
 }
 
 /** Reads the {@link UiConfig} the server inlined as `<script type="application/json" id="bun-jobs-ui-config">`. */
