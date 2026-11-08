@@ -2055,7 +2055,7 @@ for (const backend of BACKENDS.filter((one) =>
         // counted with no detail, but not the case this proves.
         const gate = await makeTmpDir("bun-jobs-summon-a2");
         perTest.push(gate.cleanup);
-        const { queue, controller, events } = await setup(
+        const { driver, ref, queue, controller, events } = await setup(
           // Every worker, not only the first: exit(1) 400 ms after the
           // test's go file for its attempt appears.
           {
@@ -2064,9 +2064,10 @@ for (const backend of BACKENDS.filter((one) =>
           },
           false,
           {
-            // Room for a spawn and first report under load: an attempt
-            // nobody has claimed by its `until` is lost unseen, with no
-            // detail — not the case this proves.
+            // An attempt nobody has claimed by its `until` is lost unseen,
+            // with no detail — not the case this proves. No check runs
+            // while one is unclaimed (below), so a spawn slower than this
+            // (seen at loads of 20 and more) still registers once it claims.
             bootBudget: 4_000,
             backoff: { initial: 1, max: 1 },
             circuit: { failures: 2, resetAfter: 60_000 },
@@ -2086,13 +2087,22 @@ for (const backend of BACKENDS.filter((one) =>
         const told = new Set<string>();
         await waitFor(
           async () => {
+            // A check while an attempt is unclaimed could find it past its
+            // boot budget and give it up unseen: wait for its worker's claim
+            // instead, whatever the spawn takes.
+            for (const attempt of (await controller.status()).pending) {
+              const claim = await readClaim(driver, ref, attempt.id);
+              if ((claim?.holders.length ?? 0) === 0) {
+                return false;
+              }
+            }
             const result = await controller.check();
             if (atOpen === undefined && opening() !== undefined) {
               atOpen = events.slice();
             }
-            // Seen running: its worker may crash now. Given up on unseen
-            // (a spawn past the boot budget): its straggler, if any, too,
-            // rather than holding the job for good.
+            // Seen running: its worker may crash now. Lost (any other way
+            // than late): its straggler, if any, too, rather than holding
+            // the job for good.
             for (const event of events) {
               if (
                 (event.outcome === "registered" || event.outcome === "lost") &&
@@ -2109,15 +2119,13 @@ for (const backend of BACKENDS.filter((one) =>
           { timeout: 70_000, interval: 100 },
         );
         expect(opening()?.fields.failures).toBeGreaterThanOrEqual(2);
-        expect(
-          atOpen!.filter((event) => event.outcome === "lost").length,
-        ).toBeGreaterThanOrEqual(2);
+        const lostAtOpen = atOpen!.filter((event) => event.outcome === "lost");
+        expect(lostAtOpen.length).toBeGreaterThanOrEqual(2);
         // Seen running first, then counted as it died — the case a live
-        // record alone let through — and among what opened the circuit.
-        // Every worker crashes only once seen, so every loss is one, except
-        // an attempt whose spawn outlasted the boot budget, lost unseen and
-        // counted as before: so only one is required.
-        expect(lateLosses(atOpen!).length).toBeGreaterThanOrEqual(1);
+        // record alone let through — and what opened the circuit. Every
+        // attempt is checked only once claimed and every worker crashes only
+        // once seen, so every loss is a late one.
+        expect(lateLosses(atOpen!)).toEqual(lostAtOpen);
         for (const event of lateLosses(events)) {
           expect(event.detail).toBe("died");
         }
