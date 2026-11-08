@@ -3,7 +3,7 @@
  * and a thunk's document, and answer denials as RFC 9457 problems.
  */
 import type { RouterHandler } from "@kingsleyweb/bun-common";
-import type { DocsUiAuthorizeContext } from "../../lib/types";
+import type { DocsUiAuthorizeContext } from "../../../lib/docs/types";
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
 import { fetchShell, fixtureDocsUi } from "./helpers";

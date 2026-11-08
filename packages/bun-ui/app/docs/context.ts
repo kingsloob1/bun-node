@@ -1,4 +1,4 @@
-import type { DocsUiConfig } from "../lib/shared/config.ts";
+import type { DocsUiConfig } from "../../lib/docs/browser/config.ts";
 import type { DocsClient, FetchLike } from "./api/client";
 import { createContext, use } from "react";
 

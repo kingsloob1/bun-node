@@ -20,41 +20,6 @@
         "typescript": "catalog:",
       },
     },
-    "packages/bun-api-docs-ui": {
-      "name": "@kingsleyweb/bun-api-docs-ui",
-      "version": "3.0.0-rc.0",
-      "dependencies": {
-        "@kingsleyweb/bun-common": "workspace:^",
-      },
-      "devDependencies": {
-        "@antfu/eslint-config": "catalog:",
-        "@happy-dom/global-registrator": "catalog:",
-        "@kingsleyweb/bun-jobs": "workspace:^",
-        "@tanstack/react-query": "catalog:",
-        "@testing-library/dom": "catalog:",
-        "@testing-library/react": "catalog:",
-        "@types/bun": "catalog:",
-        "@types/react": "catalog:",
-        "@types/react-dom": "catalog:",
-        "bun-types": "catalog:",
-        "eslint": "catalog:",
-        "eslint-config-prettier": "catalog:",
-        "eslint-plugin-prettier": "catalog:",
-        "eslint-plugin-react-hooks": "catalog:",
-        "eslint-plugin-react-refresh": "catalog:",
-        "happy-dom": "catalog:",
-        "prettier": "catalog:",
-        "react": "catalog:",
-        "react-dom": "catalog:",
-        "typescript": "catalog:",
-      },
-      "peerDependencies": {
-        "@types/bun": ">=1.4.2",
-      },
-      "optionalPeers": [
-        "@types/bun",
-      ],
-    },
     "packages/bun-cache": {
       "name": "@kingsleyweb/bun-cache",
       "version": "3.0.0-rc.0",
@@ -148,7 +113,7 @@
       "devDependencies": {
         "@antfu/eslint-config": "catalog:",
         "@asyncapi/specs": "catalog:",
-        "@kingsleyweb/bun-api-docs-ui": "workspace:^",
+        "@kingsleyweb/bun-ui": "workspace:^",
         "@types/bun": "catalog:",
         "@types/supertest": "catalog:",
         "@valibot/to-json-schema": "1.8.0",
@@ -172,12 +137,12 @@
         "zod": "catalog:",
       },
       "peerDependencies": {
-        "@kingsleyweb/bun-api-docs-ui": "workspace:^",
+        "@kingsleyweb/bun-ui": "workspace:^",
         "@types/bun": ">=1.4.2",
         "typescript": "^5.9.3 || ^6.0.0",
       },
       "optionalPeers": [
-        "@kingsleyweb/bun-api-docs-ui",
+        "@kingsleyweb/bun-ui",
         "@types/bun",
         "typescript",
       ],
@@ -301,7 +266,6 @@
       "name": "@kingsleyweb/bun-ui",
       "version": "3.0.0-rc.0",
       "dependencies": {
-        "@kingsleyweb/bun-api-docs-ui": "workspace:^",
         "@kingsleyweb/bun-common": "workspace:^",
       },
       "devDependencies": {
@@ -761,8 +725,6 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.9", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.0.3", "@jridgewell/sourcemap-codec": "^1.4.10" } }, "sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ=="],
-
-    "@kingsleyweb/bun-api-docs-ui": ["@kingsleyweb/bun-api-docs-ui@workspace:packages/bun-api-docs-ui"],
 
     "@kingsleyweb/bun-cache": ["@kingsleyweb/bun-cache@workspace:packages/bun-cache"],
 

@@ -1,9 +1,9 @@
-import type { FetchLike } from "../../app/api/client";
-import type { SpecDocument } from "../../app/api/docs";
-import type { DocsUiConfig } from "../../lib/shared/config";
-import { App } from "../../app/App";
-import { createQueryClient } from "../../app/queryClient";
-import { DEFAULT_EXTENSION_PREFIXES } from "../../lib/shared/config";
+import type { FetchLike } from "../../../app/docs/api/client";
+import type { SpecDocument } from "../../../app/docs/api/docs";
+import type { DocsUiConfig } from "../../../lib/docs/browser/config";
+import { App } from "../../../app/docs/App";
+import { createQueryClient } from "../../../app/docs/queryClient";
+import { DEFAULT_EXTENSION_PREFIXES } from "../../../lib/docs/browser/config";
 import { render, visit } from "./dom";
 
 /**

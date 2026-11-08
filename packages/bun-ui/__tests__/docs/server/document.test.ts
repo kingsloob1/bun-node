@@ -5,7 +5,7 @@
  */
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
-import { DOCUMENT_SUBPATH } from "../../lib/docsUi";
+import { DOCUMENT_SUBPATH } from "../../../lib/docs/docsUi";
 import { fixtureDocsUi } from "./helpers";
 
 /** A small OpenAPI document. */

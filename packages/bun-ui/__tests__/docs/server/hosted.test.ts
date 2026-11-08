@@ -13,7 +13,7 @@ import {
   DEFAULT_ENTRY,
   resolveHostedAssets,
   resolveAssetSource,
-} from "../../lib/hosted";
+} from "../../../lib/docs/hosted";
 
 describe("lib/hosted", () => {
   it("re-exports the bundle and shell machinery", () => {

@@ -1,4 +1,4 @@
-import type { WsAddressOptions } from "@kingsleyweb/bun-api-docs-ui/embed";
+import type { WsAddressOptions } from "@kingsleyweb/bun-ui/docs/embed";
 import {
   encodeJobId,
   MAX_NAME_LENGTH,

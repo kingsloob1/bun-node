@@ -1,4 +1,4 @@
-import type { LimitInfo } from "@kingsleyweb/bun-api-docs-ui/embed";
+import type { LimitInfo } from "@kingsleyweb/bun-ui/docs/embed";
 
 /**
  * How the limits panel reads each `x-bun-jobs-limits` entry: a label, what it

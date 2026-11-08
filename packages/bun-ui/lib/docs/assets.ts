@@ -13,14 +13,14 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { ConfigError } from "@kingsleyweb/bun-common";
 
-/** The package root (`packages/bun-api-docs-ui`, or `node_modules/@kingsleyweb/bun-api-docs-ui`). */
-export const PACKAGE_DIR = resolve(import.meta.dir, "..");
+/** The package root (`packages/bun-ui`, or `node_modules/@kingsleyweb/bun-ui`). */
+export const PACKAGE_DIR = resolve(import.meta.dir, "..", "..");
 
 /** The React app's entry point, bundled by {@link buildAssets}. */
-export const DEFAULT_ENTRY = join(PACKAGE_DIR, "app", "main.tsx");
+export const DEFAULT_ENTRY = join(PACKAGE_DIR, "app", "docs", "main.tsx");
 
 /** Where `scripts/build.ts` writes the bundle and where `docsUi()` looks for it. */
-export const DEFAULT_DIST_DIR = join(PACKAGE_DIR, "dist");
+export const DEFAULT_DIST_DIR = join(PACKAGE_DIR, "dist", "docs");
 
 /** The manifest's file name inside a dist directory. */
 export const MANIFEST_FILE = "manifest.json";
@@ -161,12 +161,9 @@ export async function buildAssets(
 ): Promise<UiAssets> {
   const entry = options.entry ?? DEFAULT_ENTRY;
   if (!existsSync(entry)) {
-    throw new ConfigError(
-      `bun-api-docs-ui: the app entry ${entry} does not exist`,
-      {
-        entry,
-      },
-    );
+    throw new ConfigError(`bun-ui: the app entry ${entry} does not exist`, {
+      entry,
+    });
   }
   const sourcemap = options.sourcemap ?? "linked";
   const result = await Bun.build({
@@ -196,7 +193,7 @@ export async function buildAssets(
         : `${log.position.file}:${log.position.line}:${log.position.column}: ${log.message}`,
     );
     throw new Error(
-      `bun-api-docs-ui: building ${entry} failed:\n${messages.join("\n")}`,
+      `bun-ui: building ${entry} failed:\n${messages.join("\n")}`,
     );
   }
 
@@ -214,9 +211,7 @@ export async function buildAssets(
     }
   }
   if (js === undefined) {
-    throw new Error(
-      `bun-api-docs-ui: building ${entry} produced no entry module`,
-    );
+    throw new Error(`bun-ui: building ${entry} produced no entry module`);
   }
   return {
     entry: { js, css: entryStylesheets(js, css) },
@@ -307,7 +302,7 @@ export function loadDistAssets(dir: string = DEFAULT_DIST_DIR): UiAssets {
   const manifestPath = join(dir, MANIFEST_FILE);
   const corrupt = (why: string): ConfigError =>
     new ConfigError(
-      `bun-api-docs-ui: ${manifestPath} is not a usable build (${why}); rebuild it with \`bun scripts/build.ts\``,
+      `bun-ui: ${manifestPath} is not a usable build (${why}); rebuild it with \`bun scripts/build.ts\``,
       { dir },
     );
   let manifest: unknown;
@@ -381,7 +376,7 @@ export function buildAssetsOnce(
   let build = memoryBuilds.get(key);
   if (build === undefined) {
     logger.info(
-      "bun-api-docs-ui: no dist/ build, bundling the app in memory (run `bun scripts/build.ts` to prebuild)",
+      "bun-ui: no dist/docs build, bundling the app in memory (run `bun scripts/build.ts` to prebuild)",
       { entry: key },
     );
     build = buildAssets({ entry: key });
@@ -424,7 +419,7 @@ export function resolveAssetSource(
   }
   if (dev === false) {
     throw new ConfigError(
-      `bun-api-docs-ui: no build found at ${join(distDir, MANIFEST_FILE)} and \`dev: false\` forbids building in memory; run \`bun scripts/build.ts\` in the package, or leave \`dev\` unset`,
+      `bun-ui: no build found at ${join(distDir, MANIFEST_FILE)} and \`dev: false\` forbids building in memory; run \`bun scripts/build.ts\` in the package, or leave \`dev\` unset`,
       { distDir },
     );
   }

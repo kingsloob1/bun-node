@@ -1,4 +1,4 @@
-import type { DocsUiTheme } from "../lib/shared/config.ts";
+import type { DocsUiTheme } from "../../lib/docs/browser/config.ts";
 
 /** `localStorage` key the chosen theme is remembered under. */
 export const THEME_STORAGE_KEY = "bun-api-docs-ui:theme";

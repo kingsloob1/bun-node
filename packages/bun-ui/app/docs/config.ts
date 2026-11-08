@@ -1,6 +1,6 @@
-import type { DocsUiConfig } from "../lib/shared/config.ts";
-import { DOCS_UI_CONFIG_ELEMENT_ID } from "../lib/shared/config.ts";
-import { isUiUnauthorized } from "../lib/shared/unauthorized.ts";
+import type { DocsUiConfig } from "../../lib/docs/browser/config.ts";
+import { DOCS_UI_CONFIG_ELEMENT_ID } from "../../lib/docs/browser/config.ts";
+import { isUiUnauthorized } from "../../lib/kit/browser/unauthorized.ts";
 
 /** The injected configuration was missing or malformed. */
 export class DocsUiConfigError extends Error {

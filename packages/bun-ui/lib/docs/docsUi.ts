@@ -17,8 +17,8 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { UiAsset, UiAssets } from "./assets";
-import type { DocsUiConfig, DocsUiTheme } from "./shared/config";
-import type { UiUnauthorized } from "./shared/unauthorized";
+import type { DocsUiConfig, DocsUiTheme } from "./browser/config";
+import type { UiUnauthorized } from "../kit/browser/unauthorized";
 import type { ShellRenderer } from "./shell";
 import type {
   DocsUi,
@@ -28,8 +28,9 @@ import type {
 } from "./types";
 import { BunRouter, ConfigError, resolveLogger } from "@kingsleyweb/bun-common";
 import { Buffer } from "node:buffer";
+import { ASSET_CACHE_CONTROL } from "../kit/browser/shared";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
-import { DEFAULT_EXTENSION_PREFIXES } from "./shared/config";
+import { DEFAULT_EXTENSION_PREFIXES } from "./browser/config";
 import {
   createNonce,
   createShellRenderer,
@@ -40,7 +41,7 @@ import {
   redirectsDenial,
   resolveUnauthorized,
   sendUnauthorizedRedirect,
-} from "./unauthorized";
+} from "../kit/unauthorized";
 
 /** The viewer's default mount path. */
 export const DEFAULT_BASE_PATH = "/docs";
@@ -54,8 +55,7 @@ export const ASSETS_SUBPATH = "/assets";
 /** The path under `basePath` a `document` thunk is served from. */
 export const DOCUMENT_SUBPATH = "/document.json";
 
-/** `Cache-Control` for hashed bundle files: their name changes with their content. */
-export const ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
+export { ASSET_CACHE_CONTROL };
 
 /** A path segment `basePath` may contain — the bun-jobs API's own rule. */
 const PATH_SEGMENT = /^[\w.~-]+$/;

@@ -2,17 +2,17 @@
  * `app/unauthorized.ts` without a DOM: the redirect's decisions against a
  * fake location and fetch, and the cache watcher against a real QueryClient.
  */
-import type { RedirectLocation } from "../../app/unauthorized";
-import type { UiUnauthorized } from "../../lib/shared/unauthorized.ts";
+import type { RedirectLocation } from "../../../app/kit/unauthorized";
+import type { UiUnauthorized } from "../../../lib/kit/browser/unauthorized.ts";
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "bun:test";
-import { DocsUiConfigError, parseDocsUiConfig } from "../../app/config";
+import { DocsUiConfigError, parseDocsUiConfig } from "../../../app/docs/config";
 import {
   createUnauthorizedRedirect,
   NO_UNAUTHORIZED_REDIRECT,
   statusOf,
   watchAuthFailures,
-} from "../../app/unauthorized";
+} from "../../../app/kit/unauthorized";
 import { expectAbsent, expectUndefined } from "./assert";
 
 /** `unauthorized: { redirectTo: "/login" }`, resolved. */

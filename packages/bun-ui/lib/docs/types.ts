@@ -4,8 +4,8 @@ import type {
   LoggerLike,
   RouterHandler,
 } from "@kingsleyweb/bun-common";
-import type { DocsUiConfig, DocsUiTheme } from "./shared/config";
-import type { UnauthorizedOptions } from "./shared/unauthorized";
+import type { DocsUiConfig, DocsUiTheme } from "./browser/config";
+import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
 
 /**
  * Where to send the browser when an authorization check fails, instead of
@@ -112,7 +112,7 @@ export interface DocsUiOptions {
    *
    * A denial `middleware` answers itself is not redirected: only
    * `authorize`'s. The target is fixed here, never read from the request, so
-   * it cannot be an open redirect. bun-jobs-ui's `jobsUi()` takes the same
+   * it cannot be an open redirect. `jobsUi()` (`/jobs`) takes the same
    * option.
    */
   unauthorized?: DocsUiUnauthorizedOptions;

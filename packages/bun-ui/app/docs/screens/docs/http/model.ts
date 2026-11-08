@@ -1,5 +1,5 @@
 import type { SpecDocument } from "../../../api/docs";
-import { DEFAULT_EXTENSION_PREFIXES } from "../../../../lib/shared/config.ts";
+import { DEFAULT_EXTENSION_PREFIXES } from "../../../../../lib/docs/browser/config.ts";
 import { deref, isSchemaObject, refOf, resolveRef } from "../schema/resolve";
 
 /**
@@ -421,6 +421,34 @@ export interface DocSection {
   name: string;
   /** Its tags with their operations, in the section's order. */
   tags: DocTagGroup[];
+}
+
+/** A section with a React key unique among its siblings, and its position. */
+export interface KeyedSection {
+  /** Its name, suffixed `#2`, `#3`… when a hand-written document repeats one. */
+  key: string;
+  /** Its position in the document's order (for heading ids). */
+  index: number;
+  /** The section. */
+  section: DocSection;
+}
+
+/**
+ * Keys `sections` for rendering: two sections may share a name in a
+ * hand-written document, so the name alone is not a key, and a position is
+ * not a stable one (`react/no-array-index-key`).
+ */
+export function keyedSections(sections: readonly DocSection[]): KeyedSection[] {
+  const seen = new Map<string, number>();
+  return sections.map((section, index) => {
+    const count = (seen.get(section.name) ?? 0) + 1;
+    seen.set(section.name, count);
+    return {
+      key: count === 1 ? section.name : `${section.name}#${count}`,
+      index,
+      section,
+    };
+  });
 }
 
 /** The section the tags no `x-tagGroups` entry names go in. */

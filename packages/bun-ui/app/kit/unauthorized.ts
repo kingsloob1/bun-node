@@ -1,24 +1,24 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { UiUnauthorized } from "../lib/shared/unauthorized.ts";
+import type { UiUnauthorized } from "../../lib/kit/browser/unauthorized.ts";
 import { createContext, use } from "react";
-import { unauthorizedRedirectUrl } from "../lib/shared/unauthorized.ts";
+import { unauthorizedRedirectUrl } from "../../lib/kit/browser/unauthorized.ts";
 
 /**
  * `unauthorized` in the browser: the one place an authorization failure
  * becomes a navigation, once per page load. Shared by the docs viewer and
- * bun-jobs-ui (as `@kingsleyweb/bun-api-docs-ui/embed/unauthorized`).
+ * the jobs UI (as `@kingsleyweb/bun-ui/docs/embed/unauthorized`).
  *
  * Sources report here: the query and mutation caches through
  * {@link watchAuthFailures} (any failed call, whichever client made it: the
- * viewer's document read; every bun-jobs-ui API call), bun-jobs-ui's live
- * socket (`LiveClient`'s `onAuthFailure`), and bun-jobs-ui's crashed screens
+ * viewer's document read; every jobs UI API call), the jobs UI's live
+ * socket (`LiveClient`'s `onAuthFailure`), and the jobs UI's crashed screens
  * (through {@link UnauthorizedRedirect.probe}: a lazy screen's chunk the
  * shell's `authorize` refused fails with no status to read). No screen knows
  * about it; a failure that is not redirected shows its message as before.
  *
  * One per page: the app that owns the page creates it. The embedded docs
- * screens never do, so bun-jobs-ui's docs section redirects through
- * bun-jobs-ui's alone.
+ * screens never do, so the jobs UI's docs section redirects through
+ * the jobs UI's alone.
  */
 
 /** The parts of `window.location` the redirect reads and calls. */

@@ -1,6 +1,6 @@
 /**
  * The `unauthorized` option: where to send the browser when the caller turns
- * out not to be signed in. Shared by `docsUi()` and bun-jobs-ui's `jobsUi()`,
+ * out not to be signed in. Shared by `docsUi()` and `jobsUi()`,
  * on both sides of each: the server (the shell's 303) and the app (an API
  * 401). Types, defaults and pure functions only, with no runtime imports: the
  * apps bundle this file for the browser.

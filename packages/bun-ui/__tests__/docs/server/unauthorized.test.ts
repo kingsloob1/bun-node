@@ -2,18 +2,18 @@
  * `unauthorized` on the server: what `docsUi()` accepts and refuses, what it
  * puts in the page's config, and the shell's `303` for a denied navigation.
  * The validation and the redirect are `lib/unauthorized.ts`, which
- * bun-jobs-ui's `jobsUi()` shares; its own tests check the same rules through
+ * the jobs UI's `jobsUi()` shares; its own tests check the same rules through
  * `jobsUi()`.
  */
-import type { DocsUiUnauthorizedOptions } from "../../lib/types";
+import type { DocsUiUnauthorizedOptions } from "../../../lib/docs/types";
 import { BunRouter, ConfigError } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
 import {
   isUiUnauthorized,
   relativeReturnPath,
   unauthorizedRedirectUrl,
-} from "../../lib/shared/unauthorized";
-import { resolveUnauthorized } from "../../lib/unauthorized";
+} from "../../../lib/kit/browser/unauthorized";
+import { resolveUnauthorized } from "../../../lib/kit/unauthorized";
 import { fetchShell, fixtureDocsUi } from "./helpers";
 
 /** A browser's page navigation. */

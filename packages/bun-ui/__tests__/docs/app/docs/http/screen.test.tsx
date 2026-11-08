@@ -1,4 +1,4 @@
-import type { SpecDocument } from "../../../../app/api/docs";
+import type { SpecDocument } from "../../../../../app/docs/api/docs";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../../dom";

@@ -1,5 +1,5 @@
 /**
- * The `"self-hosted"` docs viewer (AD (f) F2): the `@kingsleyweb/bun-api-docs-ui`
+ * The `"self-hosted"` docs viewer (AD (f) F2): the `@kingsleyweb/bun-ui/docs`
  * bundle served from this origin — the shell at the mount root (and
  * `/asyncapi`), the client-route fallbacks, the hashed assets under
  * `/assets/` with SRI over the local bytes, the strict self-only CSP, the
@@ -251,7 +251,7 @@ describe("the self-hosted viewer", () => {
         },
       },
     );
-    expect(seen).toEqual([`${SELF_HOSTED_PACKAGE}/lib/hosted`]);
+    expect(seen).toEqual([`${SELF_HOSTED_PACKAGE}/docs/hosted`]);
   });
 
   it("a CDN viewer name still works on the same router shape (control)", async () => {

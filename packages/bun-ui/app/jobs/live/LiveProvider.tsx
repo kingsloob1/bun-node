@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { LiveContextValue, LiveOptions } from "./context";
 import { use, useEffect, useMemo } from "react";
 import { useUiConfig } from "../context";
-import { useUnauthorizedRedirect } from "@kingsleyweb/bun-api-docs-ui/embed/unauthorized";
+import { useUnauthorizedRedirect } from "@kingsleyweb/bun-ui/docs/embed/unauthorized";
 import { useCan, useMeta } from "../meta/hooks";
 import { LiveClient, liveSocketUrl } from "./client";
 import { LiveContext, LiveOptionsContext, LOCAL_EVENTS_NOTE } from "./context";

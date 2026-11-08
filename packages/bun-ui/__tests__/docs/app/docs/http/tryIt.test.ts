@@ -1,8 +1,8 @@
-import type { SpecDocument } from "../../../../app/api/docs";
-import type { DocOperation } from "../../../../app/screens/docs/http/model";
-import type { TryItRequest } from "../../../../app/screens/docs/http/tryIt";
+import type { SpecDocument } from "../../../../../app/docs/api/docs";
+import type { DocOperation } from "../../../../../app/docs/screens/docs/http/model";
+import type { TryItRequest } from "../../../../../app/docs/screens/docs/http/tryIt";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { listOperations } from "../../../../app/screens/docs/http/model";
+import { listOperations } from "../../../../../app/docs/screens/docs/http/model";
 import {
   bodySchema,
   buildRequest,
@@ -15,7 +15,7 @@ import {
   isDestructive,
   requestUrl,
   tryItGate,
-} from "../../../../app/screens/docs/http/tryIt";
+} from "../../../../../app/docs/screens/docs/http/tryIt";
 import { expectUndefined } from "../../assert";
 import { openApiFixture } from "./openapiFixture";
 

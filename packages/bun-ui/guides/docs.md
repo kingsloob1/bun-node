@@ -1,4 +1,4 @@
-# @kingsleyweb/bun-api-docs-ui
+# The docs viewer: `@kingsleyweb/bun-ui/docs`
 
 A self-hosted viewer for one **OpenAPI 3.1** or **AsyncAPI 3.0** document,
 served by a `docsUi()` handler you mount beside your API. The viewer is a
@@ -8,13 +8,18 @@ assets, computed Subresource Integrity and a strict self-only
 Content-Security-Policy (`default-src 'self'; script-src 'self' 'nonce-…';
 style-src 'self'`). Nothing comes from a CDN, so it works offline.
 
-Requires Bun ≥ 1.4.2.
+Requires Bun ≥ 1.4.2 and `bun add @kingsleyweb/bun-ui`. `/docs` needs no peer:
+not `@kingsleyweb/bun-jobs`, which only the package's `/jobs` entry uses. The
+browser-safe half (`DocsUiConfig`, `DOCS_UI_CONFIG_ELEMENT_ID`,
+`DEFAULT_EXTENSION_PREFIXES` and the `unauthorized` helpers) is
+`@kingsleyweb/bun-ui/docs/browser`; what bun-common's `docsRouter`
+`"self-hosted"` viewer loads is `@kingsleyweb/bun-ui/docs/hosted`.
 
 ## Usage
 
 ```ts
 import { BunRouter } from "@kingsleyweb/bun-common";
-import { docsUi } from "@kingsleyweb/bun-api-docs-ui";
+import { docsUi } from "@kingsleyweb/bun-ui/docs";
 
 const app = new BunRouter();
 
@@ -55,7 +60,7 @@ router answers with the shell.
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API itself). |
 | `unauthorized` | off | `{ redirectTo, returnParam?, statuses? }`: sends the browser to a sign-in page (or any page) when the caller is not authorized, instead of showing the failure. See [Sending the browser to sign in](#sending-the-browser-to-sign-in). |
 | `middleware` | none | Runs before every route. |
-| `dev` | auto | `true` always builds the bundle in memory; `false` requires the prebuilt `dist/` (a `ConfigError` names the fix without it). |
+| `dev` | auto | `true` always builds the bundle in memory; `false` requires the prebuilt `dist/docs/` (a `ConfigError` names the fix without it). |
 | `logger` | console | Anything `resolveLogger` accepts. |
 
 ### Sending the browser to sign in
@@ -63,8 +68,8 @@ router answers with the shell.
 By default an authorization failure stays where it happens: the shell
 answers a 401 problem, and a refused document read shows "Could not load the
 API document". With `unauthorized`, a failure sends the browser to a page you
-choose. bun-jobs-ui's `jobsUi()` takes the same option, and both run the same
-code (`lib/unauthorized.ts`, `./embed/unauthorized`).
+choose. The jobs UI's `jobsUi()` takes the same option, and both run the same
+code (`lib/kit/unauthorized.ts`, `./docs/embed/unauthorized`).
 
 ```ts
 const ui = docsUi({
@@ -100,21 +105,21 @@ page must still check `returnTo` before sending the user back to it.
 
 ## The bundle
 
-`prepack` builds `app/main.tsx` into `dist/` (`bun scripts/build.ts`): hashed
+`prepack` builds `app/docs/main.tsx` into `dist/docs/` (`bun scripts/build.ts`): hashed
 file names, a `manifest.json` with every file's SRI digest, type-checked
-first. Without a `dist/` (a source checkout), the first request builds the
+first. Without a `dist/docs/` (a source checkout), the first request builds the
 same bundle in memory, once per process, and logs one line saying so.
 
 The WebSocket reference's "try it" links and permission markers of
-`@kingsleyweb/bun-jobs-ui`'s Events console are jobs-specific and are not part
+the jobs UI's Events console are jobs-specific and are not part
 of this standalone viewer.
 
-## Embedding the screens (`./embed`)
+## Embedding the screens (`./docs/embed`)
 
 `docsUi()` needs nothing beyond this package: React and TanStack Query are
-bundled into `dist/`. The `./embed` entries are different. They export the
-viewer's screens as source, from `app/`, for a React app that renders them
-inside its own UI (`@kingsleyweb/bun-jobs-ui` does), and that app's bundler
+bundled into `dist/docs/`. The `./docs/embed` entries are different. They export the
+viewer's screens as source, from `app/docs/` and `app/kit/`, for a React app that renders them
+inside its own UI (the package's own jobs UI does, by this name), and that app's bundler
 builds them with its own copies of React and TanStack Query. This package
 does not declare them, so install them yourself:
 
@@ -125,19 +130,19 @@ bun add -d @types/react@^19.2.0   # for TypeScript
 
 | Entry | Imports |
 |---|---|
-| `./embed`, `./embed/router` | `react`, `@tanstack/react-query` |
-| `./embed/routing`, `./embed/context` | `react` |
-| `./embed/unauthorized` | `react`, and `@tanstack/react-query`'s types |
-| `./embed/permissions`, `./embed/client`, `./embed/errors` | nothing outside this package |
+| `./docs/embed`, `./docs/embed/router` | `react`, `@tanstack/react-query` |
+| `./docs/embed/routing`, `./docs/embed/context` | `react` |
+| `./docs/embed/unauthorized` | `react`, and `@tanstack/react-query`'s types |
+| `./docs/embed/permissions`, `./docs/embed/client`, `./docs/embed/errors` | nothing outside this package |
 
 The screens also import their `.css` files, which your bundler has to
 handle (`Bun.build` does).
 
 The screens never redirect on their own. A host app that embeds them passes
 `unauthorized: null` in the `DocsUiConfig` it provides, and sends the browser
-to sign in through its own app, once: `./embed/unauthorized`'s
+to sign in through its own app, once: `./docs/embed/unauthorized`'s
 `createUnauthorizedRedirect` and `watchAuthFailures` over the host's query
-client, as bun-jobs-ui does.
+client, as the jobs UI does.
 
 Because the entries are source, your TypeScript checks them with your
 `tsconfig.json`, which needs two things (`skipLibCheck` does not cover `.ts`
@@ -156,10 +161,10 @@ files):
 
 ```bash
 bun run check && bun run lint && bun run format:check && bun run test
-bun scripts/build.ts        # app/main.tsx → dist/
+bun scripts/build.ts --ui docs   # app/docs/main.tsx → dist/docs/
 ```
 
-The golden AsyncAPI fixtures under `__tests__/app/docs/ws/fixtures/` are what
+The golden AsyncAPI fixtures under `__tests__/docs/app/docs/ws/fixtures/` are what
 a real `@kingsleyweb/bun-jobs` API serves (a dev-only dependency, used by the
-fixture test); `UPDATE_WS_FIXTURES=1 bun test __tests__/server/docs-ws.integration.test.ts`
+fixture test); `UPDATE_WS_FIXTURES=1 bun test __tests__/docs/server/docs-ws.integration.test.ts`
 rewrites them.

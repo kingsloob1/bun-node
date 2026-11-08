@@ -1,20 +1,20 @@
 /**
  * The server half of the `unauthorized` option, shared by `docsUi()` and
- * bun-jobs-ui's `jobsUi()`: validating it, telling a page navigation from any
- * other request, and answering the shell's `303`. The browser half is
- * `app/unauthorized.ts` (`./embed/unauthorized`); what both need is
- * `shared/unauthorized.ts`.
+ * `jobsUi()`: validating it, telling a page navigation from any other
+ * request, and answering the shell's `303`. The browser half is
+ * `app/kit/unauthorized.ts` (`./docs/embed/unauthorized`); what both need is
+ * `lib/kit/browser/unauthorized.ts`.
  */
 import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
 import type {
   UiUnauthorized,
   UiUnauthorizedStatus,
-} from "./shared/unauthorized";
+} from "./browser/unauthorized";
 import {
   DEFAULT_RETURN_PARAM,
   DEFAULT_UNAUTHORIZED_STATUSES,
   unauthorizedRedirectUrl,
-} from "./shared/unauthorized";
+} from "./browser/unauthorized";
 
 /**
  * Builds the error a refused option throws: each caller passes its own

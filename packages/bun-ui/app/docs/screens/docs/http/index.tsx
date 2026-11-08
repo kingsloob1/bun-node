@@ -24,6 +24,7 @@ import {
   componentSchemaNames,
   filterGroups,
   groupBySection,
+  keyedSections,
   groupByTag,
   listOperations,
   readInfo,
@@ -170,9 +171,9 @@ function Overview({
               />
             </Card>
           ))
-        : sections.map((section, index) => (
+        : keyedSections(sections).map(({ key, section }) => (
             <Card
-              key={`${index}-${section.name}`}
+              key={key}
               title={section.name}
               className="http-overview-section"
             >

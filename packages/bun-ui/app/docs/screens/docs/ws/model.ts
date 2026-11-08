@@ -1,5 +1,5 @@
 import type { SpecDocument } from "../../../api/docs";
-import { DEFAULT_EXTENSION_PREFIXES } from "../../../../lib/shared/config.ts";
+import { DEFAULT_EXTENSION_PREFIXES } from "../../../../../lib/docs/browser/config.ts";
 import { resolveRef } from "../schema/resolve";
 
 /**
@@ -989,7 +989,7 @@ export function channelEventTypes(doc: WsDoc, channel: WsChannel): string[] {
 
 /**
  * How an embedding app applies its own contract to the try-it machinery:
- * bun-jobs-ui passes its name rule and job-id escaping; a standalone viewer
+ * the jobs UI passes its name rule and job-id escaping; a standalone viewer
  * passes nothing (the document's own schemas decide, and values fill
  * unescaped).
  */

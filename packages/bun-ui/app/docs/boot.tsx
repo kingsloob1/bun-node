@@ -1,5 +1,5 @@
 import type { Root } from "react-dom/client";
-import type { DocsUiConfig } from "../lib/shared/config.ts";
+import type { DocsUiConfig } from "../../lib/docs/browser/config.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";

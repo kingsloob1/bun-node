@@ -1,6 +1,7 @@
 import type { KeyboardEvent } from "react";
 import type { DocSection, DocTagGroup } from "./model";
 import { useRef } from "react";
+import { keyedSections } from "./model";
 import { TextInput } from "../../../components/inputs";
 import { arrowTarget } from "../../../components/listKeys";
 import { SEARCH_SHORTCUT } from "../../../shortcuts";
@@ -157,10 +158,9 @@ export function Sidebar({
                 hrefOf={hrefOf}
               />
             ))
-          : sections.map((section, index) => (
+          : keyedSections(sections).map(({ key, index, section }) => (
               <section
-                // Two sections may share a name in a hand-written document.
-                key={`${index}-${section.name}`}
+                key={key}
                 className="http-section"
                 aria-labelledby={`section-${index}`}
               >

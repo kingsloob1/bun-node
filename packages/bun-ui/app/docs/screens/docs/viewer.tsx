@@ -4,10 +4,9 @@
  * AsyncAPI 3.0 document, and routes to the matching reference — `/http[…]`
  * or `/ws[…]`, with `/` redirecting to it.
  */
-import type { DocumentKind, SpecDocument } from "../../api/docs";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { createContext, use, useMemo } from "react";
+import { useMemo } from "react";
 import { createDocsClient } from "../../api/client";
 import { documentKind, docsKeys, getDocument } from "../../api/docs";
 import { Card } from "../../components/Card";
@@ -17,28 +16,11 @@ import { Spinner } from "../../components/Spinner";
 import { useDocsFetch, useDocsUiConfig } from "../../context";
 import { Navigate, Link, Routes } from "../../router";
 import type { RouteDef } from "../../routing";
+import { DocumentContext, useDocument } from "./document";
 import { HttpReference } from "./http";
 import { WsReference } from "./ws";
 
-/** What the loaded document is. */
-export interface LoadedDocument {
-  /** The document. */
-  doc: SpecDocument;
-  /** Its kind. */
-  kind: DocumentKind;
-}
-
-/** Carries the loaded document. */
-const DocumentContext = createContext<LoadedDocument | null>(null);
-
-/** The loaded document, or a clear error outside {@link DocsViewer}. */
-export function useDocument(): LoadedDocument {
-  const loaded = use(DocumentContext);
-  if (!loaded) {
-    throw new Error("useDocument must be used inside <DocsViewer>");
-  }
-  return loaded;
-}
+export type { LoadedDocument } from "./document";
 
 /** `/http[…]` for an OpenAPI document; anything else is told there is none. */
 function HttpRoute() {

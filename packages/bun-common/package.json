@@ -147,7 +147,7 @@
   "peerDependencies": {
     "@types/bun": ">=1.4.2",
     "typescript": "^5.9.3 || ^6.0.0",
-    "@kingsleyweb/bun-api-docs-ui": "workspace:^"
+    "@kingsleyweb/bun-ui": "workspace:^"
   },
   "peerDependenciesMeta": {
     "@types/bun": {
@@ -156,7 +156,7 @@
     "typescript": {
       "optional": true
     },
-    "@kingsleyweb/bun-api-docs-ui": {
+    "@kingsleyweb/bun-ui": {
       "optional": true
     }
   },
@@ -198,7 +198,7 @@
     "valibot": "catalog:",
     "yup": "catalog:",
     "zod": "catalog:",
-    "@kingsleyweb/bun-api-docs-ui": "workspace:^"
+    "@kingsleyweb/bun-ui": "workspace:^"
   },
   "gitHead": "58f50ad7df6fde1d9853b1a23b7b2f8a3967b8a1"
 }

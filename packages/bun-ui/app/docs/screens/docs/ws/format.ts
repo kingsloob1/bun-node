@@ -4,7 +4,7 @@ import { formatNumber } from "../../../format";
  * How the limits panel reads each `<prefix>-limits` entry. A limit's unit is
  * read from its name's suffix (`…Bytes`, `…Ms`, `…PerSecond`); a viewer
  * embedding this reference can pass a {@link LimitInfo} per name for a label
- * and a meaning instead (bun-jobs-ui does, for its own vocabulary).
+ * and a meaning instead (the jobs UI does, for its own vocabulary).
  */
 
 /** A limit's unit. */

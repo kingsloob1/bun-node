@@ -1,10 +1,10 @@
-import type { WsConsole } from "../../../../app/screens/docs/ws/items";
+import type { WsConsole } from "../../../../../app/docs/screens/docs/ws/items";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "bun:test";
-import { createQueryClient } from "../../../../app/queryClient";
-import { RouterProvider } from "../../../../app/router";
-import { ParamsContext } from "../../../../app/routing";
-import { WsReference } from "../../../../app/screens/docs/ws/index";
+import { createQueryClient } from "../../../../../app/docs/queryClient";
+import { RouterProvider } from "../../../../../app/docs/router";
+import { ParamsContext } from "../../../../../app/docs/routing";
+import { WsReference } from "../../../../../app/docs/screens/docs/ws/index";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, page, render, setupDom, visit, within } from "../../dom";
 import { wsFixture } from "./fixtures";
@@ -72,7 +72,7 @@ describe("the console seam", () => {
     const link = main().getByTestId("ws-try-link");
     expect(link.textContent).toBe("Open in the Test console");
     // The console lives in the same app, so the link is app-relative: the
-    // router prepends the mount ("/docs" here; "/jobs" in bun-jobs-ui).
+    // router prepends the mount ("/docs" here; "/jobs" in the jobs UI).
     const href = new URL(link.getAttribute("href")!, "http://localhost");
     expect(href.pathname).toBe("/docs/console");
     expect(href.searchParams.get("channel")).toBe("queue/mail");

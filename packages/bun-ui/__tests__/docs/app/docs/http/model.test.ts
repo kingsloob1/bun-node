@@ -1,5 +1,5 @@
-import type { SpecDocument } from "../../../../app/api/docs";
-import type { DocOperation } from "../../../../app/screens/docs/http/model";
+import type { SpecDocument } from "../../../../../app/docs/api/docs";
+import type { DocOperation } from "../../../../../app/docs/screens/docs/http/model";
 import { beforeAll, describe, expect, it } from "bun:test";
 import {
   componentSchemaNames,
@@ -9,7 +9,7 @@ import {
   listOperations,
   readInfo,
   resolveServerUrl,
-} from "../../../../app/screens/docs/http/model";
+} from "../../../../../app/docs/screens/docs/http/model";
 import { expectUndefined } from "../../assert";
 import { openApiFixture } from "./openapiFixture";
 

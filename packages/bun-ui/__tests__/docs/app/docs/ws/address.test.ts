@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { WsAddressOptions } from "../../../../app/screens/docs/ws/model";
+import type { WsAddressOptions } from "../../../../../app/docs/screens/docs/ws/model";
 import {
   channelEventTypes,
   channelSubscribable,
@@ -8,7 +8,7 @@ import {
   parameterSchemas,
   readWsDoc,
   tryProblems,
-} from "../../../../app/screens/docs/ws/model";
+} from "../../../../../app/docs/screens/docs/ws/model";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { wsFixture } from "./fixtures";
 
@@ -23,7 +23,7 @@ function channel(key: string) {
   return found;
 }
 
-/** A bun-jobs-flavoured address contract, as bun-jobs-ui passes it. */
+/** A bun-jobs-flavoured address contract, as the jobs UI passes it. */
 const JOBS_LIKE: WsAddressOptions = {
   nameRule: (name, value) =>
     name === "jobId" || /^[\w.-]+$/.test(value) ? null : "bad name",

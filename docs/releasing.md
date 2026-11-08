@@ -97,7 +97,7 @@ In order, it:
    - a `v<version>` tag, locally or on origin, at another commit.
 3. **Orders the packages from the dependency graph** and prints the order.
    Dependencies and required peers come first. Optional peers do not order
-   packages, which is how bun-common and bun-api-docs-ui can name each
+   packages, which is how bun-common and bun-ui can name each
    other. Ties are broken by name.
 4. **Skips every `name@version` the registry already has**
    (`npm view <name>@<version> version`). A re-run after a failure

@@ -4,7 +4,7 @@
  * payload and, for an event, its try-it).
  *
  * The try-it deep-links a console the host app injects as {@link WsConsole}
- * (bun-jobs-ui passes its Events console); a standalone viewer passes none
+ * (the jobs UI passes its Events console); a standalone viewer passes none
  * and no try-it renders.
  */
 import type { ReactNode } from "react";
@@ -49,7 +49,7 @@ import { CloseCodesPanel, LimitsPanel, RefusalsPanel } from "./panels";
 import { PayloadSchema } from "./PayloadSchema";
 
 /**
- * A console the try-it cards deep-link (bun-jobs-ui's Events console). The
+ * A console the try-it cards deep-link (the jobs UI's Events console). The
  * link builders answer `null` when the console cannot open what was asked.
  */
 export interface WsConsole {

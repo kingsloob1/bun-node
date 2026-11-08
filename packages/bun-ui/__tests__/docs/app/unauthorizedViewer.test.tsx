@@ -9,8 +9,8 @@
  * target.
  */
 import type { Mock } from "bun:test";
-import type { SpecDocument } from "../../app/api/docs";
-import type { UiUnauthorized } from "../../lib/shared/unauthorized.ts";
+import type { SpecDocument } from "../../../app/docs/api/docs";
+import type { UiUnauthorized } from "../../../lib/kit/browser/unauthorized.ts";
 import {
   afterEach,
   beforeAll,

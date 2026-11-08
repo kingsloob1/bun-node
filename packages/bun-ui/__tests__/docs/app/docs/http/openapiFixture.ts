@@ -1,4 +1,4 @@
-import type { SpecDocument } from "../../../../app/api/docs";
+import type { SpecDocument } from "../../../../../app/docs/api/docs";
 
 /**
  * REAL OpenAPI documents for the HTTP reference's tests, generated at test

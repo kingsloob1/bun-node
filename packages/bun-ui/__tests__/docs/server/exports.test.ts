@@ -16,9 +16,9 @@ import type {
   DocsUiUnauthorizedOptions,
   UiUnauthorized,
   UiUnauthorizedStatus,
-} from "../../lib/index";
+} from "../../../lib/docs/index";
 import { describe, expect, it } from "bun:test";
-import * as entry from "../../lib/index";
+import * as entry from "../../../lib/docs/index";
 
 describe("lib/index.ts", () => {
   it("exports exactly the public runtime values", () => {

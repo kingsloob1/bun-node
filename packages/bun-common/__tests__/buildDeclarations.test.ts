@@ -288,7 +288,6 @@ const PUBLISHED = [
   "bun-nest",
   "bun-jobs",
   "bun-ui",
-  "bun-api-docs-ui",
   "bun-cache",
   "bun-client",
 ];

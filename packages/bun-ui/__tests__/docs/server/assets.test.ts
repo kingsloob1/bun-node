@@ -14,8 +14,8 @@ import {
   loadDistAssets,
   MANIFEST_FILE,
   writeAssets,
-} from "../../lib/assets";
-import { ASSET_CACHE_CONTROL } from "../../lib/docsUi";
+} from "../../../lib/docs/assets";
+import { ASSET_CACHE_CONTROL } from "../../../lib/docs/docsUi";
 import {
   BROKEN_ENTRY,
   fetchShell,

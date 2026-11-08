@@ -1,13 +1,13 @@
 /**
- * The embedding surface (`@kingsleyweb/bun-api-docs-ui/embed`): the viewer's
+ * The embedding surface (`@kingsleyweb/bun-ui/docs/embed`): the viewer's
  * screens and models for a host app to render inside its own shell, with the
  * host's router, client, permissions and console injected through the seam
- * props. bun-jobs-ui's docs section is built from these.
+ * props. The jobs UI's docs section is built from these.
  *
  * This is browser code (React, TSX, CSS side-effect imports): it is for a host
  * that bundles it (Bun.build does), never for a Node consumer, and it ships as
  * source — there are no declarations, the types ARE the source. It is covered
- * in-repo (bun-jobs-ui consumes it through the workspace); the package's
+ * in-repo (the jobs app imports it by this name); the package's
  * consumer check covers the server-side `lib/` surface.
  *
  * The two models come out as namespaces: both name a `filterGroups`, and the

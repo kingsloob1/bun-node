@@ -6,7 +6,7 @@
  * static graph).
  */
 import { describe, expect, it } from "bun:test";
-import { buildAssets } from "../../lib/assets";
+import { buildAssets } from "../../../lib/docs/assets";
 
 /**
  * Byte limits, each about 10% above what the build measured when it was set.
@@ -16,7 +16,7 @@ import { buildAssets } from "../../lib/assets";
  *   one entry (there is no lazy split: which reference renders depends on the
  *   document, known only after it loads).
  *
- * To raise one deliberately: run `bun scripts/build.ts --out <tmp dir>`,
+ * To raise one deliberately: run `bun scripts/build.ts --ui docs --out <tmp dir>`,
  * which prints every file's size and gzipped size, set the limit about 10%
  * above the new figure, update the measurement above, and say in the change
  * why the bundle grew. Never raise it only to make this test pass.

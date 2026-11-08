@@ -477,8 +477,8 @@
       "spelling": "@kingsleyweb/bun-common/lib/docs/selfHosted",
       "values": ["registerSelfHostedViewer", "SELF_HOSTED_PACKAGE"],
       "types": ["SelfHostedViewerOptions", "SelfHostedRegistration"],
-      "peers": ["@kingsleyweb/bun-api-docs-ui"]
+      "peers": ["@kingsleyweb/bun-ui"]
     }
   ],
-  "workspaceDependencies": ["packages/bun-contract", "packages/bun-api-docs-ui"]
+  "workspaceDependencies": ["packages/bun-contract", "packages/bun-ui"]
 }

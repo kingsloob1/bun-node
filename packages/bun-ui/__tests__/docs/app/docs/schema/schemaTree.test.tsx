@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { SchemaTree } from "../../../../app/screens/docs/schema";
+import { SchemaTree } from "../../../../../app/docs/screens/docs/schema";
 import { expectAbsent } from "../../assert";
 import { fireEvent, render, setupDom, within } from "../../dom";
 

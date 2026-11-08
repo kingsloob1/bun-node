@@ -4,5 +4,5 @@
   // tsconfig, which without this one is the package's DOM-free config.
   // `include` and `exclude` are inherited, so they resolve from app/ and
   // cover the same files.
-  "extends": "../../app/tsconfig.json"
+  "extends": "../../../app/tsconfig.json"
 }

@@ -25,7 +25,7 @@
  *    but never `latest` for a prerelease), and `npm whoami`.
  * 3. **Orders them** from the dependency graph (`dependencies` and required
  *    peers; optional peers do not order, which is how bun-common and
- *    bun-api-docs-ui name each other), ties by name, and prints the order.
+ *    bun-ui name each other), ties by name, and prints the order.
  * 4. **Skips what the registry has** (`npm view <name>@<version> version`),
  *    like lerna's `from-package`, so a re-run after a partial publish carries
  *    on from where it stopped.

@@ -17,7 +17,7 @@ import { parseUiConfig, UiConfigError } from "../../../app/jobs/config";
 import {
   UnauthorizedRedirectContext,
   createUnauthorizedRedirect,
-} from "@kingsleyweb/bun-api-docs-ui/embed/unauthorized";
+} from "@kingsleyweb/bun-ui/docs/embed/unauthorized";
 import { RouterProvider, Routes } from "../../../app/jobs/router";
 import { expectAbsent } from "./assert";
 import { act, LOADED, page, render, setupDom, visit, waitFor } from "./dom";

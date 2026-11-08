@@ -5,8 +5,8 @@
  */
 import { ConfigError } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
-import { normalizeBasePath } from "../../lib/docsUi";
-import { docsUi } from "../../lib/index";
+import { normalizeBasePath } from "../../../lib/docs/docsUi";
+import { docsUi } from "../../../lib/docs/index";
 import { fixtureDocsUi } from "./helpers";
 
 /** Expects `fn` to throw a `ConfigError` whose message matches `pattern`. */

@@ -3,15 +3,15 @@
  * fixture entry (`fixtures/app/entry.ts`) rather than the real app, so nothing
  * here depends on what `app/` renders.
  */
-import type { DocsUiInternals } from "../../lib/docsUi";
-import type { DocsUiConfig } from "../../lib/shared/config";
-import type { DocsUi, DocsUiOptions } from "../../lib/types";
+import type { DocsUiInternals } from "../../../lib/docs/docsUi";
+import type { DocsUiConfig } from "../../../lib/docs/browser/config";
+import type { DocsUi, DocsUiOptions } from "../../../lib/docs/types";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
-import { createDocsUi } from "../../lib/docsUi";
-import { DOCS_UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config";
+import { createDocsUi } from "../../../lib/docs/docsUi";
+import { DOCS_UI_CONFIG_ELEMENT_ID } from "../../../lib/docs/browser/config";
 
 /** The fixture app entry: one stylesheet, one split chunk. */
 export const FIXTURE_ENTRY = join(

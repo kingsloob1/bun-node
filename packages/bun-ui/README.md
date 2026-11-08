@@ -11,6 +11,10 @@ the host installs neither and has no build step.
 |---|---|---|
 | `@kingsleyweb/bun-ui/jobs` | `jobsUi()`: the management UI for the `@kingsleyweb/bun-jobs` management API. [Guide](guides/jobs.md) | `@kingsleyweb/bun-jobs` |
 | `@kingsleyweb/bun-ui/jobs/browser` | the jobs UI's browser-safe config contract (`UiConfig`, `UI_CONFIG_ELEMENT_ID`, …) | nothing |
+| `@kingsleyweb/bun-ui/docs` | `docsUi()`: a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document. [Guide](guides/docs.md) | nothing |
+| `@kingsleyweb/bun-ui/docs/browser` | the docs viewer's browser-safe config contract and the `unauthorized` helpers | nothing |
+| `@kingsleyweb/bun-ui/docs/hosted` | what bun-common's `docsRouter` `"self-hosted"` viewer loads to serve the viewer itself | nothing |
+| `@kingsleyweb/bun-ui/docs/embed`, `/docs/embed/{routing,router,context,permissions,client,errors,unauthorized}` | the viewer's screens as source, for a React app that bundles them into its own UI | the host's `react` and `@tanstack/react-query` |
 | `@kingsleyweb/bun-ui` | what every UI shares, browser-safe: `UiTheme`, the `unauthorized` option's types and defaults, `ASSET_CACHE_CONTROL` | nothing |
 
 Each UI's domain package is an **optional** peer that only its own subpath
@@ -20,6 +24,7 @@ UI never loads another's code or bundle.
 ## Install
 
 ```bash
+bun add @kingsleyweb/bun-ui                          # for /docs
 bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs   # for /jobs
 ```
 
@@ -45,6 +50,21 @@ await app.listen(3000);
 
 [guides/jobs.md](guides/jobs.md) has every option, the screens, the
 permissions each element needs and the security notes.
+
+## Quick start: the docs viewer
+
+```ts
+import { BunRouter } from "@kingsleyweb/bun-common";
+import { docsUi } from "@kingsleyweb/bun-ui/docs";
+
+const app = new BunRouter();
+const ui = docsUi({ document: "/api/openapi.json", basePath: "/docs" });
+app.use(ui.basePath, ui.router);
+```
+
+bun-common's `docsRouter({ viewer: { openapi: "self-hosted" } })` serves the
+same viewer from your own origin once `@kingsleyweb/bun-ui` is installed.
+[guides/docs.md](guides/docs.md) has every option and the embedding guide.
 
 ## Layout
 

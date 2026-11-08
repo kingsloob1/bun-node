@@ -109,8 +109,8 @@ through to the host):
 By default an authorization failure stays where it happens: the shell
 answers a 401 problem, and in the app each screen shows its own "Sign in
 required" or "Access denied". With `unauthorized`, a failure sends the
-browser to a page you choose. `@kingsleyweb/bun-api-docs-ui`'s `docsUi()`
-takes the same option, and owns the code both run:
+browser to a page you choose. The docs viewer's `docsUi()`
+(`@kingsleyweb/bun-ui/docs`) takes the same option, and both run the same code:
 
 ```ts
 const ui = jobsUi({

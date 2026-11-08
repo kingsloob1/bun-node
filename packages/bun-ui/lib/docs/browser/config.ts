@@ -1,6 +1,6 @@
 /**
- * The contract between `docsUi()` (server, `lib/`) and the React viewer
- * (`app/`).
+ * The contract between `docsUi()` (server, `lib/docs/`) and the React viewer
+ * (`app/docs/`).
  *
  * The server resolves this once per mount and inlines it into the HTML shell
  * as `<script type="application/json" id="bun-api-docs-ui-config" nonce="…">`.
@@ -8,7 +8,7 @@
  * imports: both sides import it, and the app side is bundled for the browser.
  */
 
-import type { UiUnauthorized } from "./unauthorized";
+import type { UiUnauthorized } from "../../kit/browser/unauthorized";
 
 /** Id of the `<script type="application/json">` element carrying {@link DocsUiConfig}. */
 export const DOCS_UI_CONFIG_ELEMENT_ID = "bun-api-docs-ui-config";

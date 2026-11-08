@@ -12,7 +12,7 @@ import {
   readWsDoc,
   selectItem,
   subprotocolSource,
-} from "../../../../app/screens/docs/ws/model";
+} from "../../../../../app/docs/screens/docs/ws/model";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { wsFixture } from "./fixtures";
 

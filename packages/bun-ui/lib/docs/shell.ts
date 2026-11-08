@@ -8,9 +8,9 @@ import type { UiAssets } from "./assets";
  * `<script type="application/json">`, escaped for a script context, so a title
  * containing `</script>` cannot end the element early.
  */
-import type { DocsUiConfig, DocsUiTheme } from "./shared/config";
+import type { DocsUiConfig, DocsUiTheme } from "./browser/config";
 import { Buffer } from "node:buffer";
-import { DOCS_UI_CONFIG_ELEMENT_ID } from "./shared/config";
+import { DOCS_UI_CONFIG_ELEMENT_ID } from "./browser/config";
 
 /** A fresh CSP nonce: 128 random bits, base64. */
 export function createNonce(): string {

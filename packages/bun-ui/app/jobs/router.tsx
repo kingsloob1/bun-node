@@ -1,7 +1,7 @@
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
 import type { NavigateOptions, RouteDef } from "./routing";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useUnauthorizedRedirect } from "@kingsleyweb/bun-api-docs-ui/embed/unauthorized";
+import { useUnauthorizedRedirect } from "@kingsleyweb/bun-ui/docs/embed/unauthorized";
 import { ScreenErrorBoundary } from "./components/ScreenErrorBoundary";
 import {
   matchPath,

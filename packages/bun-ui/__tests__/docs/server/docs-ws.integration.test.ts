@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, describe, expect, it } from "bun:test";
-import { readWsDoc } from "../../app/screens/docs/ws/model";
+import { readWsDoc } from "../../../app/docs/screens/docs/ws/model";
 
 /**
  * The WebSocket reference against a REAL `createJobsApi` with its socket.
@@ -18,7 +18,7 @@ import { readWsDoc } from "../../app/screens/docs/ws/model";
  * bun-jobs is a devDependency of this package, used by this file alone: the
  * golden net is the jobs vocabulary's documents, which this package's default
  * extension prefixes (`x-bun-common`, then `x-bun-jobs`) must keep reading.
- * bun-jobs-ui keeps its own copies of the fixtures until its migration (F2).
+ * The jobs UI's tests keep their own copies of the fixtures.
  */
 
 const BASE = "/jobs-api";

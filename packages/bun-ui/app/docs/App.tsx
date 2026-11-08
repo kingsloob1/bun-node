@@ -1,11 +1,14 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import type { FetchLike } from "./api/client";
-import type { DocsUiConfig } from "../lib/shared/config.ts";
+import type { DocsUiConfig } from "../../lib/docs/browser/config.ts";
 import { useEffect, useMemo } from "react";
 import { DocsFetchContext, DocsUiConfigContext } from "./context";
 import { RouterProvider } from "./router";
-import { createUnauthorizedRedirect, watchAuthFailures } from "./unauthorized";
+import {
+  createUnauthorizedRedirect,
+  watchAuthFailures,
+} from "../kit/unauthorized";
 import { DocsViewer } from "./screens/docs/viewer";
 import { findSearchBox, shortcutFor } from "./shortcuts";
 

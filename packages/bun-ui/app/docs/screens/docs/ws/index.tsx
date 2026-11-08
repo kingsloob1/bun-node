@@ -152,7 +152,7 @@ export interface WsReferenceProps {
   defaultSubprotocol?: string;
   /** Labels and meanings for the limits, when the embedding viewer knows them. */
   limitsInfo?: Readonly<Record<string, LimitInfo>>;
-  /** The console the try-it cards open (bun-jobs-ui's Events console), when the host has one. */
+  /** The console the try-it cards open (the jobs UI's Events console), when the host has one. */
   console?: WsConsole;
   /** Answers "does the caller hold this permission" (the have/lack markers). */
   probe?: PermissionProbe;

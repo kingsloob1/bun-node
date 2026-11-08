@@ -8,7 +8,7 @@ import {
   schemaFacts,
   schemaSkeleton,
   typeLabel,
-} from "../../../../app/screens/docs/schema";
+} from "../../../../../app/docs/screens/docs/schema";
 import { expectAbsent, expectUndefined } from "../../assert";
 
 /** A document with components, a cycle, a ref chain and an escaped name. */
