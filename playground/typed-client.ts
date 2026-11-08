@@ -46,7 +46,10 @@ import {
   UnexpectedStatusError,
   ValidationError,
 } from "@kingsleyweb/bun-client";
+import type { LiveBus } from "@kingsleyweb/bun-common/live";
 import { liveInvalidation } from "@kingsleyweb/bun-common/live";
+import { pgBus, redisBus } from "@kingsleyweb/bun-cache";
+import { cacheLiveBus } from "@kingsleyweb/bun-cache/live";
 import { runCli } from "@kingsleyweb/bun-client/codegen";
 import { channel } from "@kingsleyweb/bun-client/channel";
 import {
@@ -325,6 +328,26 @@ export const SCENARIOS: readonly ScenarioInfo[] = [
   },
 ];
 
+/**
+ * The live bus `PLAYGROUND_LIVE_BUS` asks for: a `redis://` URL (Redis
+ * pub/sub, channel `bun-node-playground:live`) or a `postgres://` one
+ * (`LISTEN`/`NOTIFY`, channel `bun_node_playground_live`), so two
+ * playgrounds on one server (`PORT=4001` for the second) hear each other's
+ * invalidations. Unset: none, this process's subscribers only. Made once:
+ * one bus per process.
+ */
+let liveBus: LiveBus | undefined;
+function liveBusFromEnv(): LiveBus | undefined {
+  const url = process.env.PLAYGROUND_LIVE_BUS;
+  if (!url) return undefined;
+  liveBus ??= cacheLiveBus(
+    /^postgres(?:ql)?:/.test(url)
+      ? pgBus({ url, channel: "bun_node_playground_live" })
+      : redisBus({ url, channel: "bun-node-playground:live" }),
+  );
+  return liveBus;
+}
+
 /** What the section owns, for the playground's shutdown and the banner. */
 export interface TypedClientDemo {
   /** The dev endpoint; its `tokenFile` is known once the adapter listens. */
@@ -367,10 +390,13 @@ export async function mountTypedClientDemo(
   // Live invalidation (bun-common's ./live), before the API so its routes'
   // cache.invalidates are published on a 2xx, and the API's cache as a
   // source. The playground answers loopback only, so every client is let in.
+  // With PLAYGROUND_LIVE_BUS, invalidations also cross to every playground
+  // on the same Redis or Postgres (bun-cache's cacheLiveBus).
   app.use(
     liveInvalidation(app, {
       authorize: (_req, _res, next) => next(),
       source: api.cache,
+      bus: liveBusFromEnv(),
     }),
   );
   app.use(CLIENT_BASE, api.router);

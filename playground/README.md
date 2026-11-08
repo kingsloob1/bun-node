@@ -15,6 +15,7 @@ PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts     # seed only, no new jobs
 PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgroup (Linux, cgroup v2)
 PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
 PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
+PLAYGROUND_LIVE_BUS=redis://127.0.0.1:6379/12 bun playground/index.ts  # live invalidation across playgrounds (also postgres://)
 bun playground/nest-gateway.ts                           # the validated Nest gateway (V9), on its own port (PORT_NEST, default 4001)
 bun playground/cache-smoke.ts                            # the cache lab's smoke check (see "The cache lab")
 bun playground/typed-client-smoke.ts                     # the typed client's smoke check (see "The typed client")
@@ -632,7 +633,7 @@ scenario's start), what the API saw, and the client's warnings.
 | `ETag` and 304 | the refetch sends `If-None-Match`; the 304 keeps the cached object, `dataUpdatedAt` moved |
 | A mutation's `invalidates` | `POST /api/users` invalidates `users`: the active list query refetches before the mutation settles (the scenario deletes the user it created, so the API keeps its seed) |
 | Tags from `Cache-Tag` | `GET /api/orgs/:id` is behind bun-cache's `cacheResponse({ surrogateKeys: "Cache-Tag" })` with `addCacheTags(res, "team:<team>")`; `invalidateTags(["team:blue"])` refetches org 7 and not org 8 |
-| Live invalidation | `live()` (`@kingsleyweb/bun-client/query`) over bun-common's `liveInvalidation()` (`@kingsleyweb/bun-common/live`, mounted on the playground's adapter before the API, the API's cache as a source): the observed list's `users` tag is subscribed over the real socket at `/__live`, then a plain `POST /api/users` (not this query client's mutation) is published by the route's `invalidates` and refetches the list (the scenario deletes the user it created) |
+| Live invalidation | `live()` (`@kingsleyweb/bun-client/query`) over bun-common's `liveInvalidation()` (`@kingsleyweb/bun-common/live`, mounted on the playground's adapter before the API, the API's cache as a source): the observed list's `users` tag is subscribed over the real socket at `/__live`, then a plain `POST /api/users` (not this query client's mutation) is published by the route's `invalidates` and refetches the list (the scenario deletes the user it created). With `PLAYGROUND_LIVE_BUS` set (a `redis://` or `postgres://` URL), the invalidations also go out on bun-cache's `cacheLiveBus` (`@kingsleyweb/bun-cache/live`): start a second playground with the same variable and `PORT=4001`, open `/playground/client` in both, and a `POST /api/users` on one refetches the observed list on the other |
 
 Each run gets a fresh `QueryClient`, with `staleTime: Infinity`, so only an
 invalidation or an explicit `staleTime: 0` refetches. The org route has a
