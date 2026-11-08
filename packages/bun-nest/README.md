@@ -107,6 +107,12 @@ Underneath, routing is
   - [`@Cacheable`, `@CachePut`, `@CacheEvict`](#cacheable-cacheput-cacheevict)
   - [The cache interceptor](#the-cache-interceptor)
   - [Installing bun-cache is what makes the subpath compile](#installing-bun-cache-is-what-makes-the-subpath-compile)
+- [Throttling](#throttling)
+  - [Module options](#module-options)
+  - [`@Throttle()` and `@SkipThrottle()`](#throttle-and-skipthrottle)
+  - [The guard](#the-guard)
+  - [A shared store](#a-shared-store)
+  - [Migrating from `@nestjs/throttler`](#migrating-from-nestjsthrottler)
 - [Exported API](#exported-api)
 - [Examples](#examples)
 - [Related packages](#related-packages)
@@ -325,6 +331,7 @@ class under a second name. Its constructor is
 | `websocket` | `Partial<WebsocketOptions>` | bound to this adapter | Overrides for the built-in WebSocket adapter. See [the `websocket` option](#the-websocket-option). |
 | `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, as Express's `trust proxy`; `app.set("trust proxy", value)` sets it too. See [Client IP behind proxies](#client-ip-behind-proxies-trust-proxy). |
 | `clientIpHeader` | `string` | none | A header carrying the client address as one value (`"cf-connecting-ip"`), believed only when `trustProxy` trusts the whole chain. bun-common's `behindCloudflare()` sets both. |
+| `throttle` | `ThrottleOptions \| ThrottleHandler` | none | bun-common's `throttle()`, run first: ahead of every route, Nest middleware, guard and the not-found handler, so 404s count. Refused with bun-common's `429` before Nest sees the request; `@Throttle()`/`@SkipThrottle()` do not affect it. See [Throttling](#throttling). |
 
 ```ts
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
@@ -2935,6 +2942,195 @@ runtime the subpath fails with "Cannot find module `@kingsleyweb/bun-cache`",
 while `@kingsleyweb/bun-nest/lib/cache/tokens` and `…/lib/cache/errors`,
 which import nothing, load without it.
 
+## Throttling
+
+Two layers, which can be used together:
+
+- **The adapter's `throttle` option** is bun-common's `throttle()`
+  middleware, run ahead of everything: every route, Nest middleware, every
+  guard and the not-found handler, so a burst of 404s counts too. One budget
+  per client across the application, refused with bun-common's `429`
+  problem document before Nest sees the request. Nest's decorators do not
+  reach it. See bun-common's
+  [Throttling](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#throttling).
+- **`BunThrottlerModule` and `BunThrottlerGuard`** are
+  [`@nestjs/throttler`](https://github.com/nestjs/throttler) 6's API over
+  the same `throttle()`: named throttlers counted **per route per client**,
+  `@Throttle()` and `@SkipThrottle()` on controllers and routes, a
+  `ThrottlerException` (`429`) through Nest's exception layer, and any
+  bun-common `ThrottleStore` (memory by default, Redis or SQL through
+  bun-cache).
+
+```ts
+import {
+  BunHttpAdapter,
+  BunThrottlerGuard,
+  BunThrottlerModule,
+  minutes,
+  SkipThrottle,
+  Throttle,
+} from "@kingsleyweb/bun-nest";
+import { Controller, Get, Module, Post } from "@nestjs/common";
+import { APP_GUARD, NestFactory } from "@nestjs/core";
+
+@Controller("auth")
+class AuthController {
+  // Two limits on one route, each keyed its own way.
+  @Throttle({
+    account: { limit: 10, ttl: "1m", getTracker: (req) => `${req.ip}|${req.body?.email}` },
+    address: { limit: 30, ttl: minutes(1) },
+  })
+  @Post("sign-in")
+  signIn() {}
+
+  @SkipThrottle()
+  @Get("health")
+  health() {}
+}
+
+@Module({
+  imports: [BunThrottlerModule.forRoot({ throttlers: [{ limit: 600, ttl: "1m" }] })],
+  controllers: [AuthController],
+  providers: [{ provide: APP_GUARD, useClass: BunThrottlerGuard }],
+})
+class AppModule {}
+
+const app = await NestFactory.create(
+  AppModule,
+  // Optional: a coarse limit on everything, 404s included, ahead of Nest.
+  new BunHttpAdapter(0, { throttle: { limit: 3000, window: "1m" } }),
+);
+```
+
+### Module options
+
+`BunThrottlerModule.forRoot(options)` takes `{ throttlers, ...options }` or
+a bare array of throttlers; `forRootAsync({ imports, useFactory, inject })`,
+`({ useClass })` or `({ useExisting })` (a `BunThrottlerOptionsFactory`)
+builds them while the application boots. The module is global. Options are
+checked at boot: a bad one fails it with a `ConfigError`.
+
+| Option | Default | Description |
+|---|---|---|
+| `throttlers` | (required) | The named throttlers: `{ name?, limit, ttl, allowSubSecond?, skipIf?, ignoreUserAgents?, getTracker?, generateKey?, algorithm?, headers? }`. `name` defaults to `"default"`; `limit` and `ttl` may be functions of the `ExecutionContext`. |
+| `ttl` (per throttler) | (required) | A duration: `"1m"`, `"30s"`, `{ minutes: 1 }`, `seconds(60)`. **Never a bare number** (a type error and a boot error), and under a second only with `allowSubSecond: true`. |
+| `skipIf` | none | `(context) => boolean \| Promise<boolean>`: requests it answers `true` for are not counted. On a throttler it applies to that throttler only; on the module, to every throttler without its own. |
+| `ignoreUserAgents` | none | `RegExp[]`: matching `User-Agent`s are not counted (a throttler's list wins over the module's). |
+| `getTracker` | the address | `(req, context) => string`: who a request counts against. Default `req.ip`, an IPv6 address reduced to `ipv6SubnetPrefix`, `"unknown"` without one. Per throttler, per module, per `@Throttle()`, or by overriding the guard's `getTracker()`. |
+| `generateKey` | per route, hashed | `(context, tracker, name) => string`: the counter key. Default SHA-256 of controller, handler, throttler and tracker, as `@nestjs/throttler`: one count per route per client, and no address or account in the store's keys. |
+| `ipv6SubnetPrefix` | `56` | The IPv6 prefix the default tracker keeps; `false` keeps the whole address. |
+| `store` | one memory store | Any bun-common `ThrottleStore`. Every guard of the module shares it. `cacheThrottleStore(cache)` from `@kingsleyweb/bun-nest/cache` holds a limit across processes and instances. |
+| `algorithm` | `"sliding-window"` | `"sliding-window"`, `"fixed-window"` or `"gcra"` (bun-common's), per module or per throttler. |
+| `headers` | `false` | `"legacy"` sends `@nestjs/throttler`'s `X-RateLimit-Limit`/`-Remaining`/`-Reset` (suffixed `-<name>` for a throttler not named `default`, with `Retry-After-<name>` on a refusal); `"ietf"` or `true` the IETF draft's `RateLimit-Policy`/`RateLimit`; `"both"`. A `429` always carries `Retry-After`: the longest wait among the throttlers that refused. |
+| `failMode` | `"open"` | When the store fails: `"open"` lets requests through (with a warning at most every 10 s), `"closed"` answers `503` (`ServiceUnavailableException`), a `ThrottleStore` counts in that store instead. |
+| `errorMessage` | `"ThrottlerException: Too Many Requests"` | The exception's message, or `(context, detail) => string`; `detail` is a `BunThrottlerLimitDetail` (`name`, `limit`, `ttl`, `tracker`, `totalHits`, `timeToBlockExpire`, …). |
+| `logLimited` | `false` | `true` (or a Nest log level) logs one line per refusal naming the controller, handler, throttler and limit, never the tracker. |
+| `prefix` | `"throttler"` | The namespace of the store keys. |
+| `guardCheck` | `"error"` | The boot check below: `"error"` logs, `"throw"` fails the boot, `false` skips it. |
+| `globalGuard` | `false` | Installs `BunThrottlerGuard` as an `APP_GUARD` from the module itself. Off by default, as global guards run in the order modules provide them. For `forRootAsync`, give it beside `useFactory`. |
+
+### `@Throttle()` and `@SkipThrottle()`
+
+- `@Throttle({ name: { limit?, ttl?, getTracker?, generateKey? } })` on a
+  controller or a route overrides the named module throttler's fields there,
+  each field separately; the route's win over its controller's.
+- A name the module does **not** define declares a throttler for those routes
+  only, which then needs both `limit` and `ttl` (on the route, its
+  controller, or between the two); the boot fails otherwise, naming the
+  route. Two such names give a route two limits with their own trackers, as
+  the sign-in route above.
+- `@SkipThrottle()` skips the throttler named `default` only, not every
+  throttler; `@SkipThrottle({ burst: true })` skips `burst`;
+  `@SkipThrottle({ default: false })` on a route re-enables what its
+  controller skipped.
+- To **replace** the default throttler on a route rather than add to it,
+  skip it and declare another:
+  `@SkipThrottle() @Throttle({ strict: { limit: 5, ttl: "1m" } })`.
+
+Each throttler not skipped counts the request, in parallel, and a request
+is refused when any of them refuses; a refused request counts against all of
+them (bun-common's count-then-check).
+
+### The guard
+
+`BunThrottlerGuard` counts only HTTP requests (`context.getType() ===
+"http"`); a gateway or microservice context passes. Install it as an
+`APP_GUARD`, with `@UseGuards(BunThrottlerGuard)` on a controller or route,
+with `app.useGlobalGuards(new BunThrottlerGuard(app.get(BunThrottlerService)))`,
+or with `forRoot({ globalGuard: true })`.
+
+Subclass it to change a step, as with `ThrottlerGuard`: `getTracker(req,
+context)`, `generateKey(context, tracker, name)`, `shouldSkip(context)`,
+`getErrorMessage(context, detail)` and `throwThrottlingException(context,
+detail)` are `protected`. Its one constructor dependency is declared
+explicitly (`@Inject(BunThrottlerService)`, applied by call), never read from
+emitted `design:paramtypes`, so a subclass without a constructor of its own
+resolves under any compiler settings. A subclass that declares a constructor
+declares its parameter the same way:
+
+```ts
+@Injectable()
+class ByUserGuard extends BunThrottlerGuard {
+  constructor(@Inject(BunThrottlerService) service: BunThrottlerService) {
+    super(service);
+  }
+
+  protected override getTracker(req: BunRequest) {
+    return Promise.resolve(String(req.headers["x-user-id"] ?? req.ip));
+  }
+}
+```
+
+**The boot check.** Importing the module throttles nothing by itself. Once
+the application has booted, the module looks for a `BunThrottlerGuard` (or a
+subclass) among the global guards (`APP_GUARD` and `useGlobalGuards()`, read
+from Nest's application config, the same on Nest 11 and 12) and in every
+controller's and route's `@UseGuards()`, and logs an error when there is
+none (`guardCheck: "throw"` fails the boot instead). It also works out every
+route's throttlers then, so a misconfigured `@Throttle()` fails the boot
+rather than its first request. Applications without an HTTP adapter are not
+checked.
+
+**At run time**, `BunThrottlerService` (injectable anywhere) changes a
+module throttler for every guard from the next request:
+`service.update("default", { limit: 1200 })`. Counts carry over a limit
+change; a `ttl` change starts fresh counts.
+
+### A shared store
+
+```ts
+import { createCache, redisDriver } from "@kingsleyweb/bun-cache";
+import { cacheThrottleStore } from "@kingsleyweb/bun-nest/cache";
+
+const cache = createCache({ driver: redisDriver({ url: Bun.env.REDIS_URL }) });
+BunThrottlerModule.forRoot({ throttlers: [{ limit: 600, ttl: "1m" }], store: cacheThrottleStore(cache) });
+```
+
+`cacheThrottleStore` is re-exported from the `./cache` subpath, where
+bun-nest's optional dependency on bun-cache starts; `BunThrottlerModule`
+itself is in the package root and never reaches bun-cache.
+
+### Migrating from `@nestjs/throttler`
+
+| `@nestjs/throttler` 6 | bun-nest |
+|---|---|
+| `ThrottlerModule.forRoot({ throttlers })`, `forRootAsync(...)` | `BunThrottlerModule.forRoot(...)`, `forRootAsync(...)`: same shapes (object or array, `useFactory`/`useClass`/`useExisting`) |
+| `ThrottlerGuard` as `APP_GUARD` | `BunThrottlerGuard`, same overridable methods |
+| `@Throttle({ default: { limit, ttl } })`, `@SkipThrottle()`, `@SkipThrottle({ name: false })` | the same, same precedence (route over controller, field by field) |
+| `seconds()`, `minutes()`, `hours()`, `days()`, `weeks()` | the same names; they return a duration object (`{ seconds: 60 }`), not milliseconds, so `ttl: seconds(60)` migrates unchanged |
+| `ttl: 60000` (milliseconds) | **refused**: write `"1m"` or `seconds(60)`. A bare number is ambiguous; `ttl: 60` meant 60 ms there, which turns throttling off |
+| `ThrottlerException`, its message and `errorMessage` | the same (`429`, `"ThrottlerException: Too Many Requests"`); `errorMessage`'s detail is `BunThrottlerLimitDetail` |
+| `getTracker`, `generateKey`, `skipIf`, `ignoreUserAgents` | the same, module-wide or per throttler; `getTracker` also per `@Throttle()` |
+| `X-RateLimit-*` headers on by default (`setHeaders`) | **off by default**: `headers: "legacy"` sends the same headers and suffixes; `setHeaders` is refused with that hint |
+| `storage` (a `ThrottlerStorage`) | `store`: a bun-common `ThrottleStore` (`memoryThrottleStore()`, `cacheThrottleStore(cache)` for Redis/SQL); `storage` is refused with that hint |
+| fixed windows | **sliding window** by default (no double burst across a window edge); `algorithm: "fixed-window"` counts as `@nestjs/throttler` does |
+| `blockDuration` | **not supported** yet: a refused client is refused only until its count falls back under the limit; refused at boot |
+| throttlers checked in `ttl` order, stopping at the first that blocks | every throttler counts the request, and a **refused request counts** against all of them |
+| `ipv6SubnetPrefix` default `64` | default `56` (bun-common's, express-rate-limit 8's) |
+| `@Throttle()` with an unknown name: ignored | declares a throttler for those routes (needs `limit` and `ttl`) |
+| a forgotten guard throttles nothing, silently | the boot check logs an error (`guardCheck`) |
+| `InjectThrottlerOptions()`, `InjectThrottlerStorage()` | `@Inject(BUN_THROTTLER_OPTIONS)`, and `BunThrottlerService` (its `store`, `throttlers`, `update()`) |
+
 ## Exported API
 
 Everything below is exported from the package root; see
@@ -2946,7 +3142,7 @@ and [the cache module](#the-cache-module), exported **only** from
 
 | Group | Exports |
 |---|---|
-| Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported |
+| Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
@@ -2955,6 +3151,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
 | [Typed clients](#typed-clients-documents-from-controllers) | `Describe`, `DevTypesModule`, `Invalidates`; type `DevTypesModuleOptions` |
+| [Throttling](#throttling) | `BunThrottlerModule`, `BunThrottlerGuard`, `BunThrottlerService`, `BUN_THROTTLER_OPTIONS`, `Throttle`, `SkipThrottle`, `ThrottlerException`, `throttlerMessage`, `seconds`, `minutes`, `hours`, `days`, `weeks`; types `BunThrottlerModuleOptions`, `BunThrottlerModuleConfig`, `BunThrottlerModuleAsyncOptions`, `BunThrottlerOptions`, `BunThrottlerOptionsFactory`, `BunThrottlerLimitDetail`, `BunThrottlerGetTracker`, `BunThrottlerGenerateKey`, `ThrottleDecoratorOptions`, `Resolvable` |
 | [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`; type `StandardValidationPipeOptions` |
 
 `BunRequest`, `BunResponse`, `UploadOptions`, `StorageFile`, `DiskStorage`,
@@ -3005,6 +3202,7 @@ describes the conventions they share.
 | `06-jobs-ui` | [`mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts) | the bun-jobs management UI, `jobsUi()`, mounted beside `BunJobsApiModule` with `adapter.use()` and served with and without a socket |
 | `08-openapi` | [`swagger-module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/08-openapi/swagger-module.ts) | [OpenAPI with `@nestjs/swagger`](#openapi-with-nestjsswagger): `createDocument` + `SwaggerModule.setup` on `BunHttpAdapter`, the JSON document, the UI page and its bundled assets, a mutating route beside the docs |
 | `07-validation` | [`standard-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/standard-validation.ts) | [Validation](#validation): `StandardValidationModule` with a `SchemaDto` body, `StandardSchemaPipe` on a query and a param, `ValidationExceptionFilter` over HTTP, WebSocket and a microservice, a gateway's `@UsePipes(...StandardValidationModule.gatewayPipes())` (and the double run a plain `@UsePipes` gives on Nest 12), `stripProtoKeys`, Nest 12's `@Body({ schema })` beside them, `forRoot({ messages })` |
+| `14-throttle` | [`throttling.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/14-throttle/throttling.ts) | [Throttling](#throttling): `BunThrottlerModule` with a global per-route limit, `@Throttle()` with two per-route trackers, a route that replaces the default, `@SkipThrottle()`, a service exemption by `skipIf`, `headers: "legacy"`, the adapter's `throttle` option counting 404s, a store shared by two applications, and the boot check |
 
 **Option tours** exercise every option of one part of the API and assert the
 result, so a failed check fails the script:
