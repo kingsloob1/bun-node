@@ -9,6 +9,19 @@ compare within a run. Nothing here is part of a published package, and the
 repo's tooling does not build, typecheck or lint it ([`../../README.md`](../../README.md)
 says why).
 
+**Refreshed 2026-11-08** against `develop` at `b1a9f80b`, on Bun
+`1.4.4-canary.1+11c367163`, with Nest **12.2.0** (the repo's lock, run from
+this folder) and **11.2.7** (a copy made with
+`bun scripts/nest-matrix.ts --dir ~/bun-node-nestjobs-b8-matrix --prepare 11.2.7`,
+run from the same folder inside it). The load average was about 3 to 7 on
+16 threads. The first run's `results-*.txt` are kept as they were; the
+re-runs are in [`rerun-2026-11-08/`](rerun-2026-11-08/), one file per spike
+and major. `refresh.ts` is new. `proto.ts` changed in one place: its own
+parameter types are numbered from 10, so they never meet Nest's
+`RouteParamtypes`, which `refresh.ts` borrows; the four re-run spikes gave
+the same results before and after that change. `boot-cost.ts` was not
+re-run (a timing measurement, and nothing it measures changed).
+
 `proto.ts` is a throwaway prototype of the integration, about 250 lines,
 just enough to run the real Nest pipeline around real bun-jobs workers. It
 is **not** the design. Its names, options and error handling are cut down to
@@ -24,9 +37,34 @@ what the spikes need. Every spike except `boot-cost.ts`,
 | `types.ts` | What TypeScript catches from an injected queue to a decorated handler, under `declaration: true` | `bunx tsc --noEmit -p .` | `results-types.txt` |
 | `decorator-config.ts`, `decorator-config/` | Why the spikes injected `undefined` before this folder had a `tsconfig.json` | `bun decorator-config.ts` | `results-decorator-config.txt` |
 | `prior-art.md` | What `@nestjs/bullmq`, `@nestjs/bull`, `@nestjs/schedule`, `@nestjs/event-emitter`, `@nestjs/cqrs`, `@nestjs/microservices`, `@nestjs/graphql`, `@nestjs/terminus`, `@golevelup/nestjs-rabbitmq` and `@wavezync/nestjs-pgboss` do, and Nest core's `DiscoveryService`, `MetadataScanner`, `Reflector`, `ModuleRef`, `ContextIdFactory`, `ConfigurableModuleBuilder`, lifecycle order and `ExternalContextCreator`. Read 2026-10-10 from the packed npm tarballs (Nest 11 and 12 lines) and docs.nestjs.com at `e0984c78`; each claim marked VERIFIED or INFERRED. The tarballs and saved doc pages it names under `research/` were not kept | — | — |
+| `refresh.ts` (2026-11-08) | What the refresh adds, on both majors: `ConfigurableModuleBuilder` with an `isGlobal` extra (forRoot and all three async forms); `ContextIdFactory.getByRequest(job)` with a durable strategy, and what it leaves on the job; Nest 12.2's `StandardSchemaValidationPipe` with a `{ schema }` job parameter, as a custom and as a BODY type; bun-validate V6's `StandardSchemaPipe` and global `StandardValidationPipe` on `@JobData`, as BODY and as custom; the `onModuleDestroy` order of two providers in one module | `bun refresh.ts` | `rerun-2026-11-08/refresh-12.2.0.txt`, `refresh-11.2.7.txt` |
 | `authorize.ts` | Can an app's own guard, built by DI and reading `Reflector` metadata, decide the management API's `authorize`, using only Nest's public interfaces? | `bun authorize.ts` | `results-authorize.txt` |
 
-## Headlines
+## Headlines of the refresh (2026-11-08)
+
+- **Unchanged on both majors**: every outcome of `pipeline.ts`,
+  `authorize.ts` and `scoped.ts`, and lifecycle scenarios A to E, G and H,
+  are the same on 12.2.0 and 11.2.7 as on 11.1.27.
+- **Lifecycle F differs by major**: on **12.2.0 the job completed**, because
+  Nest 12 runs a module's hooks in dependency order (dependents first on
+  destroy); on 11.2.7 it failed, as on 11.1.27. `refresh.ts` case 4 shows
+  the order directly: 12 destroyed the dependent first, 11 the dependency.
+- **`ConfigurableModuleBuilder`** with `setExtras({ isGlobal: true }, …)`:
+  all four forms worked, and `isGlobal: false` really was local, on both.
+- **`getByRequest(job)`** passed the `Job` to a durable strategy, and wrote
+  nothing on it (no own symbol, nothing in `JSON.stringify`), on both.
+- **Validation**: V6's `StandardSchemaPipe` validated `@JobData` on both
+  majors (issue `target` `"body"` or `"custom"` by the recorded type). The
+  global `StandardValidationPipe` with a `SchemaDto` parameter validated it
+  **only when `@JobData` was recorded as BODY**; as a custom type, a bad
+  payload completed. Nest 12.2's `StandardSchemaValidationPipe` likewise
+  validated `{ schema }` only for BODY or with `validateCustomDecorators`;
+  11.2.7 has no such pipe.
+- **Types**: the same verdict, now 64 `TS4094` and 7 `TS4023` at the
+  anonymous token only; `bun --check` agrees.
+- **Bun's decorator lookup (oven-sh/bun#28605)** still reproduces.
+
+## Headlines of the first run (2026-10-10)
 
 - **The whole Nest pipeline runs around a job handler** (`results-pipeline.txt`):
   - guards, including one reading `Reflector` metadata;

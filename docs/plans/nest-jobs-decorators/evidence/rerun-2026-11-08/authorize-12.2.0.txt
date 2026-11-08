@@ -1,0 +1,7 @@
+# bun authorize.ts — 2026-11-08, Bun 1.4.4-canary.1+11c367163, @nestjs/core 12.2.0
+GET  /admin/jobs/queues               x-role=reader -> 200 {"items":[{"name":"emails","counts":{"waiting":1,"delayed":0,"active":0,"completed":0,"fai
+GET  /admin/jobs/queues               x-role=nobody -> 403 {"type":"urn:bun-jobs:error:FORBIDDEN","title":"Forbidden","status":403,"code":"FORBIDDEN"
+POST /admin/jobs/queues/emails/pause  x-role=reader -> 403 {"type":"urn:bun-jobs:error:FORBIDDEN","title":"Forbidden","status":403,"code":"FORBIDDEN"
+POST /admin/jobs/queues/emails/pause  x-role=admin  -> 200 {"paused":true}
+GET  /health                          x-role=nobody -> 200 {"ok":true}
+queue paused afterwards: true

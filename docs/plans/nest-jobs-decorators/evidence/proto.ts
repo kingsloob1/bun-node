@@ -79,8 +79,10 @@ export function Processor(queue: string, options: ProcessorOptions = {}): ClassD
 /** Marks a method as the handler of `name`, or of every name when omitted. */
 export const Process = (name = "*"): MethodDecorator => SetMetadata(PROCESS, name);
 
+// Numbered from 10 so they never meet Nest's RouteParamtypes (0-9), which
+// refresh.ts borrows: it stores job data under BODY (3) to see what pipes do.
 enum JobParam {
-  Job,
+  Job = 10,
   Data,
   Id,
   Signal,
@@ -113,6 +115,7 @@ const paramsFactory: ParamsFactory = {
       case JobParam.Job:
         return job;
       case JobParam.Data:
+      case 3 as JobParam: // RouteParamtypes.BODY: refresh.ts case 3
         return job.data;
       case JobParam.Id:
         return job.id;

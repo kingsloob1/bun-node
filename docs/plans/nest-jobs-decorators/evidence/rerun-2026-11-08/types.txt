@@ -1,0 +1,13 @@
+# bunx tsc --noEmit -p . — 2026-11-08, TypeScript 6.0.3 (and a bare `bun --check` here: same 71 errors, 'Found 71 errors in 1 file')
+# Expected: errors ONLY at the 2a anonymous-class token. No TS2578: all 6 @ts-expect-error directives still needed.
+# counts: TS4094 64 (was 57), TS4023 7, TS2578 0, errors elsewhere 0
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'ADD_FLOW' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'DATA_CHECK' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'JOB_CHECKS' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'JOB_ROUTER' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'LOCAL_ADD_HOOKS' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'PlannedFlowNode' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4023: Exported variable 'AnonymousEmailsQueue' has or is using name 'QUEUE_CHECKS' from external module "<repo>/packages/bun-jobs/lib/queue/BunQueue" but cannot be named.
+types.ts(44,7): error TS4094: Property '#add' of exported anonymous class type may not be private or protected.
+types.ts(44,7): error TS4094: Property '#addBulk' of exported anonymous class type may not be private or protected.
+# (the rest: one TS4094 per #private member of BunQueue)

@@ -49,7 +49,7 @@ as of that commit.
 | [`api-docs-generation/`](api-docs-generation/README.md) | plan only | bun-validate's group 4 (AD (b0), V12, AD (e)) builds on it | the plan, and bun-validate §4.11–§4.12 |
 | [`typed-client/`](typed-client/README.md) (with [`nest-typed-routes.md`](typed-client/nest-typed-routes.md)) | plan only | **held**; reads bun-validate's runtime metadata (§4.11) | the plan |
 | [`bun-views/`](bun-views/README.md) | PR-C (#320) and PR-C2 (#328) merged; PR-0 and PR-1 to PR-8 not started | **held** | its Status |
-| [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | plan only; its validation pipe is replaced by bun-validate's V6 (merged) | **held** | the plan |
+| [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | plan only; its validation pipe is replaced by bun-validate's V6 (merged). Refreshed 2026-11-08 at `b1a9f80b`, after this table | **held** until the user approves the refresh | the plan's "Refreshed 2026-11-08" note and §14 |
 | [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
 
 **Held** means the user has not scheduled it, not that it is blocked. The
@@ -286,7 +286,9 @@ blindly.
     hydration in Chrome, and props typing per framework (was
     `react-views/`).
 - **[`nest-jobs-decorators/`](nest-jobs-decorators/README.md)** — bun-jobs in
-  NestJS: modules, decorators and the Nest pipeline for jobs.
+  NestJS: modules, decorators and the Nest pipeline for jobs. Refreshed
+  2026-11-08 against `b1a9f80b` (validation is bun-validate V6's, no jobs UI
+  module, Nest 11 and 12; not yet approved).
   - Evidence: [`nest-jobs-decorators/evidence/`](nest-jobs-decorators/evidence/README.md) —
     bun-jobs in NestJS through decorators, **measured** on Bun 1.4.3 and Nest
     11.1.27 against a throwaway prototype: the Nest pipeline (guards,
@@ -295,7 +297,11 @@ blindly.
     drain workers on `app.close()`; request-scoped processors per job; the
     per-attempt cost of a Nest context off-thread; what TypeScript catches
     from token to handler; Bun's decorator tsconfig lookup; guards as the
-    management API's `authorize`.
+    management API's `authorize`. Re-run 2026-11-08 on Bun 1.4.4-canary,
+    Nest 12.2.0 and 11.2.7 (`rerun-2026-11-08/`), with a new spike for the
+    refresh: module construction, durable request scope, V6's pipes and Nest
+    12's `StandardSchemaValidationPipe` on a job parameter, and hook order
+    within one module.
 - **[`nestjs-12-parity/`](nestjs-12-parity/README.md)** — bun-nest and
   bun-common on NestJS 12 (12.1.3, released): every change from 11.1.27
   classified, the adapter contract, routing parity with platform-express,

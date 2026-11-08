@@ -1,0 +1,18 @@
+# bun refresh.ts — 2026-11-08T22:26:40.746Z, Bun 1.4.4 (11c367163), @nestjs/core 12.2.0
+1. forRoot (default isGlobal: true)     -> feature module (no import) read namespace=sync; global=true
+1. forRootAsync useFactory              -> feature module (no import) read namespace=factory; global=true
+1. forRootAsync useClass                -> feature module (no import) read namespace=use-class; global=true
+1. forRootAsync useExisting             -> feature module (no import) read namespace=from-class; global=true
+1. forRoot isGlobal: false (expect failure) -> FAILED: Nest can't resolve dependencies of the Reader (?). Please make sure that the argument "CONFIGURABLE_MODULE_OPTIONS[d71e7d17c7989cead0978]" at index [0] is available in the FeatureModule module.
+2. job: completed: "ok"
+2. strategy saw: job(tenant=acme); REQUEST was the job: true
+2. own symbol properties on the job after getByRequest: 0; JSON carries a context id: false
+3. StandardSchemaValidationPipe, APP_PIPE, type custom           + { schema }: {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> completed: "sent:42"
+3. StandardSchemaValidationPipe, @UsePipes, type custom          + { schema }: {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> completed: "sent:42"
+3. StandardSchemaValidationPipe, @UsePipes validateCustomDecorators + { schema }: {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> dead: BadRequestException: Bad Request Exception (attemptsMade=1)
+3. StandardSchemaValidationPipe, APP_PIPE, type body             + { schema }: {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> dead: BadRequestException: Bad Request Exception (attemptsMade=1)
+5. StandardSchemaPipe, @JobData as BODY         : {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> dead: StandardValidationException: Validation failed — body.to: to must be a string (attemptsMade=1) issues=[{"target":"body","message":"to must be a string","path":"to"}]
+5. StandardSchemaPipe, @JobData as own type     : {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> dead: StandardValidationException: Validation failed — custom.to: to must be a string (attemptsMade=1) issues=[{"target":"custom","message":"to must be a string","path":"to"}]
+5. APP_PIPE StandardValidationPipe, SchemaDto, BODY: {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> dead: StandardValidationException: Validation failed — body.to: to must be a string (attemptsMade=1) issues=[{"target":"body","message":"to must be a string","path":"to"}]
+5. APP_PIPE StandardValidationPipe, SchemaDto, own : {"to":"ada@example.com"} -> completed: "sent:ada@example.com" | {"to":42} -> completed: "sent:42"
+4. onModuleDestroy order in one module (UsesDb depends on Db): UsesDb (after 20 ms) -> Db

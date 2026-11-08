@@ -38,7 +38,7 @@ standing rule).
 | This plan | **approved** by the user on 2026-11-08: Q1–Q12 (§12) answered as recommended, the names of §13 with them |
 | The two decisions above | **made by the user** (2026-11-08) |
 | [bun-security](../bun-security/README.md) | approved 2026-11-07 with a separate `@kingsleyweb/bun-security-ui`; **§7's edits applied** with this plan's approval: its UI is now bun-ui's `/security` entry |
-| Building | not started. **BU-1 starts now**; **BU-2, BU-3 and BU-5 start once the follow-up tracks have landed** (bun-common, bun-client, bun-cache and bun-jobs follow-ups); **BU-4 may follow rc.1** (§10.1) |
+| Building | **BU-1 merged** (#666); **BU-2, BU-3 and BU-5 merged** (#708, #709, #710; the old packages' leftover names cleaned up in #713); released in **3.0.0-rc.1** (#712), the old two deprecated on npm. **BU-4** (the shared kit) not started; it may follow rc.1 |
 
 ### Contents
 
