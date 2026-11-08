@@ -1061,6 +1061,11 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   1, one line per problem). With `--baseline`, a problem the baseline already
   had in the same status is known and passes; a cell that was `OK` is
   `NEW-BROKEN`.
+  Each run packs and installs in a fresh work directory of its own under
+  `~/.cache/consumer-check/<pkg>-XXXXXX` (`$XDG_CACHE_HOME` honoured; never
+  `/tmp`), so two sessions' runs cannot collide; it is removed when the run
+  passes and kept, its path printed, when it fails. `--work <dir>` still
+  names one yourself (wiped at the start, kept at the end).
   It runs each consumer's own tsc, deliberately not `bun check`: the point is
   what a consumer on TypeScript 5.9 or 6.0 sees.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
