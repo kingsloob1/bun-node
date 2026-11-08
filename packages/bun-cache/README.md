@@ -250,8 +250,9 @@ transaction), one transaction on SQLite, MySQL and MariaDB, one script per
 1,000 entries on Redis, one `bulkWrite` on MongoDB, and the cloud drivers' bulk
 paths. Tagged entries on a driver with a tag index need the write fence
 ([Tags](#tags)), which the contract's `setMany` does not take: the built-in
-index drivers (memory, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB) take
-such a batch in one call too (`setManyFenced`, each entry held to its own
+index drivers (memory, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB,
+Cloudflare D1, and `redundant()` when its first member does) take such a
+batch in one call too (`setManyFenced`, each entry held to its own
 fence, refused entries reported as `fenced` in their place), and a driver
 without it gets a fenced `set` per entry, all issued together. A key given
 twice keeps its last write.
@@ -1829,8 +1830,12 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
   plain `SET` (measured). So an entry whose frame is 8 KiB or more is
   written with a plain `SET` to a staging key (`w:`, in the namespace's hash
   tag, expiring in 60 s), pipelined with the script, which checks the fence
-  and renames it into place, or deletes it when fenced. Replacing or deleting
-  an entry reads only its header line (`GETRANGE` of its first 4 KiB).
+  and renames it into place, or deletes it when fenced. `setMany` stages its
+  large frames the same way, renaming each in the batch's script (staged
+  frames are outside a script's 8 MiB of arguments; one script renames at
+  most 64 MiB of them), and a script whose staged frame is gone writes
+  nothing and fails. Replacing or deleting an entry reads only its header
+  line (`GETRANGE` of its first 4 KiB).
 - **Expiry is native**: an entry's and a counter's keys expire with
   `PEXPIREAT`, and reads also treat a passed expiry as a miss. There is
   nothing for the core's sweeper to reclaim but what has no TTL — tag-set
@@ -2011,6 +2016,7 @@ from a Redis next to the app:
   | `set` replacing an entry | +1 per old tag it no longer carries |
   | `set` with the fence | +1 (one `MGET` of the stamps) |
   | `set` of an entry of 8 KiB or more (staged) | +1, and +1 more when it has no expiry |
+  | `setMany`, each entry of 8 KiB or more (staged) | as `set`'s, and 1 per script that stages (`EXISTS`) |
   | `touch` | 4 |
   | `increment` (an existing counter / a new one) | 3 / 6 |
   | `acquireLock`, `releaseLock` | 3 each |
@@ -2539,7 +2545,7 @@ filtered on read and reclaimed by the sweeper — with what HTTP changes:
 - **Parameters are strings** (the REST API's rule), which SQLite's type
   affinity stores and compares as numbers.
 - **Requests**: `get` is one; `getMany` one per ten keys; `set` one;
-  `setMany` one per 50 entries; `delete` one; `invalidateTags` one (its
+  `setMany` and its fenced form one per 50 entries; `delete` one; `invalidateTags` one (its
   count read just before the invalidation, in the same request); `clear`
   one; `sweep` one or two.
 - **No bus** (`bus: "none"`): a polled table over the REST API would spend

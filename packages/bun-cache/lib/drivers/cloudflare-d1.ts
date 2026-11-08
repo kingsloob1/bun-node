@@ -19,7 +19,8 @@
  *   ordered whole: measured in the spike, 0 of 60 pre-invalidation writes
  *   survived a concurrent invalidation, against 60 of 60 for a check, then a
  *   write (the race test keeps that as a regression test). A batch is used
- *   only to save round trips (the schema, `setMany`, `clear`, `sweep`).
+ *   only to save round trips (the schema, `setMany`, `setManyFenced`,
+ *   `clear`, `sweep`).
  * - **Parameters are strings** (the REST API's schema): SQLite's type
  *   affinity stores and compares them as numbers in the integer columns, and
  *   `NULLIF(?, '')` writes a null.
@@ -41,6 +42,7 @@ import type {
   CacheDriverCapabilities,
   SchemaChange,
   SchemaSyncOptions,
+  FencedWrite,
   StoredEntry,
   TagFence,
 } from "../core/types";
@@ -515,6 +517,67 @@ export class CloudflareD1CacheDriver implements CacheDriver {
     if (batch.length > 0) {
       await this.#query(batch);
     }
+  }
+
+  /**
+   * `setMany`'s batches, each entry's write `set`'s own statement: the plain
+   * upsert, or the fenced one, whose `WHERE NOT EXISTS (… stamps …)` is the
+   * fence in the write itself, so no invalidation lands between an entry's
+   * check and its write (D1 runs one statement at a time), whether or not the
+   * batch is a transaction. Each fenced statement's `RETURNING` row says
+   * whether it stored.
+   */
+  async setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    const now = this.#now();
+    const results: ("stored" | "fenced")[] = [];
+    let batch: D1Statement[] = [];
+    /** Per statement of the batch: whether its answer says if it stored (a fenced write). */
+    let fenced: boolean[] = [];
+    let hex = 0;
+    const flush = async (): Promise<void> => {
+      const answers = await this.#query(batch);
+      fenced.forEach((isFenced, index) => {
+        results.push(
+          !isFenced || (answers[index]?.length ?? 0) === 1
+            ? "stored"
+            : "fenced",
+        );
+      });
+      batch = [];
+      fenced = [];
+      hex = 0;
+    };
+    for (const { entry, fence } of writes) {
+      const params = this.#upsertParams(ns, entry, now);
+      if (
+        batch.length >= SET_MANY_STATEMENTS ||
+        (batch.length > 0 && hex + params[2].length > SET_MANY_HEX_BUDGET)
+      ) {
+        await flush();
+      }
+      if (fence === undefined || fence.tags.length === 0) {
+        batch.push({ sql: this.#sql.upsert, params });
+        fenced.push(false);
+      } else {
+        batch.push({
+          sql: this.#sql.upsertFenced,
+          params: [
+            ...params,
+            JSON.stringify(fence.tags),
+            String(fence.createdAt),
+          ],
+        });
+        fenced.push(true);
+      }
+      hex += params[2].length;
+    }
+    if (batch.length > 0) {
+      await flush();
+    }
+    return results;
   }
 
   /** One statement; the tag rows go by trigger. Counts entries and counters alike, as on SQLite. */

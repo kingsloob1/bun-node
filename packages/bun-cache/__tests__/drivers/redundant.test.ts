@@ -916,6 +916,167 @@ describe("redundant(): tags", () => {
   });
 });
 
+describe("redundant(): setManyFenced", () => {
+  /** `driver` counting its `set` and `setManyFenced` calls; `batch: false` takes `setManyFenced` away. */
+  function counted(
+    driver: CacheDriver,
+    batch = true,
+  ): { driver: CacheDriver; calls: { set: number; setManyFenced: number } } {
+    const calls = { set: 0, setManyFenced: 0 };
+    return {
+      calls,
+      driver: overriding(driver, {
+        set: async (ns, stored, fence) => {
+          calls.set++;
+          return await driver.set(ns, stored, fence);
+        },
+        setManyFenced: batch
+          ? async (ns, writes) => {
+              calls.setManyFenced++;
+              return await driver.setManyFenced!(ns, writes);
+            }
+          : undefined,
+      }),
+    };
+  }
+  /** A fence on `t` from a load that started `ago` ms before now (negative: after). */
+  const fenceOn = (ago: number) => ({
+    tags: ["t"],
+    createdAt: Date.now() - ago,
+  });
+
+  test("offered when the members index tags and the primary has it; not on a stamps combinator or without it on the primary", () => {
+    expect(
+      typeof redundant([memoryDriver(), memoryDriver()]).setManyFenced,
+    ).toBe("function");
+    // A secondary without it: still offered (it gets a set per entry).
+    expect(
+      typeof redundant([memoryDriver(), counted(memoryDriver(), false).driver])
+        .setManyFenced,
+    ).toBe("function");
+    expect(
+      redundant([counted(memoryDriver(), false).driver, memoryDriver()])
+        .setManyFenced,
+    ).toBeUndefined();
+    expect(
+      redundant([memoryDriver(), fileDriver({ root: join(dir, "smf") })])
+        .setManyFenced,
+    ).toBeUndefined();
+  });
+
+  test("one call per member; an entry any member fences is fenced, and deleted where it was stored", async () => {
+    const a = counted(memoryDriver());
+    const b = counted(memoryDriver());
+    const driver = redundant([a.driver, b.driver]);
+    // Only B saw the invalidation (as after an outage it rejoined from).
+    await b.driver.deleteByTags!("ns", ["t"], Date.now() + 60_000);
+    await a.driver.set("ns", entry("kept", 9));
+    a.calls.set = 0;
+    const outcomes = await driver.setManyFenced!("ns", [
+      { entry: entry("stale", 1, { tags: ["t"] }), fence: fenceOn(1_000) },
+      { entry: entry("fresh", 2, { tags: ["t"] }), fence: fenceOn(-1_000) },
+      { entry: entry("plain", 3) },
+      { entry: entry("kept", 4, { tags: ["t"] }), fence: fenceOn(1_000) },
+    ]);
+    expect(outcomes).toEqual(["fenced", "stored", "stored", "fenced"]);
+    expect(a.calls).toEqual({ set: 0, setManyFenced: 1 });
+    expect(b.calls).toEqual({ set: 0, setManyFenced: 1 });
+    for (const member of [a.driver, b.driver]) {
+      expect(await byteOn(member, "ns", "stale")).toBeUndefined();
+      expect(await byteOn(member, "ns", "fresh")).toBe(2);
+      expect(await byteOn(member, "ns", "plain")).toBe(3);
+    }
+    // A stored the refused write over its old value; the take-back deletes
+    // it (as `set` does), so neither member holds the stale value.
+    expect(await byteOn(a.driver, "ns", "kept")).toBeUndefined();
+    expect(await byteOn(b.driver, "ns", "kept")).toBeUndefined();
+  });
+
+  test("a member without setManyFenced gets a fenced set per entry, and its fence counts", async () => {
+    const a = counted(memoryDriver());
+    const b = counted(memoryDriver(), false);
+    const driver = redundant([a.driver, b.driver]);
+    await b.driver.deleteByTags!("ns", ["t"], Date.now() + 60_000);
+    const outcomes = await driver.setManyFenced!("ns", [
+      { entry: entry("stale", 1, { tags: ["t"] }), fence: fenceOn(1_000) },
+      { entry: entry("fresh", 2, { tags: ["t"] }), fence: fenceOn(-1_000) },
+    ]);
+    expect(outcomes).toEqual(["fenced", "stored"]);
+    expect(a.calls).toEqual({ set: 0, setManyFenced: 1 });
+    expect(b.calls).toEqual({ set: 2, setManyFenced: 0 });
+    expect(await byteOn(a.driver, "ns", "stale")).toBeUndefined();
+    expect(await byteOn(a.driver, "ns", "fresh")).toBe(2);
+    expect(await byteOn(b.driver, "ns", "fresh")).toBe(2);
+  });
+
+  test("secondaryTtl caps the batch's expiries on the secondaries only", async () => {
+    const a = memoryDriver();
+    const b = memoryDriver();
+    const driver = redundant([a, b], { secondaryTtl: 60_000 });
+    const before = Date.now();
+    await driver.setManyFenced!("ns", [
+      { entry: entry("k", 1, { tags: ["t"] }), fence: fenceOn(1_000) },
+    ]);
+    expect((await a.get("ns", "k"))?.expiresAt).toBeNull();
+    const capped = (await b.get("ns", "k"))?.expiresAt ?? 0;
+    expect(capped).toBeGreaterThanOrEqual(before + 60_000);
+    expect(capped).toBeLessThanOrEqual(Date.now() + 60_000);
+  });
+
+  test('write "primary": the writer alone applies the fences, and only what it stored is replicated', async () => {
+    const a = memoryDriver();
+    const b = counted(memoryDriver());
+    const driver = redundant([a, b.driver], { write: "primary" });
+    // An invalidation the writer saw: "stale" is fenced. One only the
+    // secondary saw does not fence there: the writer's answer is final.
+    await a.deleteByTags!("ns", ["t"], Date.now() + 60_000);
+    await b.driver.deleteByTags!("ns", ["u"], Date.now() + 60_000);
+    const outcomes = await driver.setManyFenced!("ns", [
+      { entry: entry("stale", 1, { tags: ["t"] }), fence: fenceOn(1_000) },
+      {
+        entry: entry("other", 2, { tags: ["u"] }),
+        fence: { tags: ["u"], createdAt: Date.now() - 1_000 },
+      },
+    ]);
+    expect(outcomes).toEqual(["fenced", "stored"]);
+    await waitFor(
+      "the queue to drain",
+      () => redundantDriverState(driver)[1]!.queued === 0,
+    );
+    // Taken off the queue is not yet written: wait for the copy itself.
+    const deadline = Date.now() + 3_000;
+    while (
+      (await byteOn(b.driver, "ns", "other")) === undefined &&
+      Date.now() < deadline
+    ) {
+      await Bun.sleep(5);
+    }
+    expect(b.calls.setManyFenced).toBe(0);
+    expect(await byteOn(a, "ns", "other")).toBe(2);
+    expect(await byteOn(b.driver, "ns", "other")).toBe(2);
+    expect(await byteOn(b.driver, "ns", "stale")).toBeUndefined();
+  });
+
+  test("a member answering the wrong number of outcomes failed the write: dirty, and the others' answers stand", async () => {
+    const a = memoryDriver();
+    const b = memoryDriver();
+    const driver = redundant([
+      a,
+      overriding(b, { setManyFenced: async () => ["stored"] }),
+    ]);
+    const seen = recordEvents(driver);
+    const outcomes = await driver.setManyFenced!("ns", [
+      { entry: entry("x", 1, { tags: ["t"] }), fence: fenceOn(1_000) },
+      { entry: entry("y", 2, { tags: ["t"] }), fence: fenceOn(1_000) },
+    ]);
+    expect(outcomes).toEqual(["stored", "stored"]);
+    expect(seen.of("member-dirty")).toMatchObject([
+      { index: 1, op: "setManyFenced", reason: "failed" },
+    ]);
+    expect(await byteOn(a, "ns", "y")).toBe(2);
+  });
+});
+
 describe('redundant(): write "primary"', () => {
   test("replicates in the background, in order", async () => {
     const a = memoryDriver();

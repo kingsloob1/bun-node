@@ -13,6 +13,7 @@
  * <p>:{<ns>}:t:<tag>   SET     the keys carrying the tag; no TTL (pruned by sweep)
  * <p>:{<ns>}:s:<tag>   STRING  the tag's stamp, "<at> <until>"; no TTL (pruned by sweep)
  * <p>:{<ns>}:l:<key>   STRING  a lock's owner, PX ttl
+ * <p>:{<ns>}:w:<uuid>  STRING  a frame of 8 KiB or more being staged, PX 60 s (its script renames it into place)
  * <p>:bus              CHANNEL the bus (redisBus's channel for the same prefix)
  * ```
  *
@@ -29,6 +30,9 @@
  *   each entry, chunked alike), `delete`, `deleteByTags` (stamps first, then every
  *   member, in one script), `increment` (create with its expiry, or add),
  *   `touch`, and the lock's take and compare-and-delete.
+ *   A frame of 8 KiB or more (`STAGE_FRAME_BYTES`) never passes through
+ *   Lua: `set`, `setMany` and `setManyFenced` stage it with a plain `SET`
+ *   pipelined ahead of the script, which renames it into place.
  * - **Expiry is native** (`PEXPIREAT`), so the core's sweeper never has
  *   entries to reclaim. `sweep` only prunes what carries no TTL: tag-set
  *   members whose entry is gone, empty tag sets, and lapsed stamps.
@@ -71,7 +75,6 @@ import type {
 } from "../core/types";
 import type { ThrottleCounters } from "../core/throttle-counters";
 import { counterNumber, THROTTLE_COUNTERS } from "../core/throttle-counters";
-import { chunkEntries } from "./batch";
 import { encodeSegment } from "./file-names";
 import type { ConnectionInput } from "./sql-connection";
 import { resolveConnectionUrl } from "./sql-connection";
@@ -97,8 +100,17 @@ const SCAN_COUNT = 1_000;
 /** The most entries one `setMany` script writes, so a large batch does not hold the server for one long script. */
 const SET_MANY_ROWS = 1_000;
 
-/** The most frame bytes one `setMany` script carries (a larger entry goes alone). */
+/** The most frame bytes one `setMany` script carries as arguments (a larger entry goes alone); staged frames are not counted. */
 const SET_MANY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The most bytes of staged frames (each one {@link STAGE_FRAME_BYTES} or
+ * more) one `setMany` or `setManyFenced` script renames into place (a larger
+ * entry goes alone). It bounds how long the chunk's first staging key waits
+ * for its script behind the others' `SET`s, which must stay well inside
+ * {@link STAGE_TTL_MS}, on a slow link too. Internal; read by the tests.
+ */
+export const SET_MANY_STAGED_BYTES = 64 * 1024 * 1024;
 
 /** The most `SCAN` calls one `sweep` makes, so a pass is bounded on a large keyspace; the next pass resumes. */
 const SWEEP_SCANS = 100;
@@ -218,6 +230,35 @@ export const STAGE_FRAME_BYTES = 8 * 1024;
 
 /** How long a staging key lives if its script never renames it (a crash between the two commands), in ms. */
 const STAGE_TTL_MS = 60_000;
+
+/**
+ * What `setMany`'s and `setManyFenced`'s scripts share for staged frames
+ * (`sid` is a staging key's id, `<base>w:<sid>`; `''` for a frame passed
+ * inline). `stagedPresent` checks every staging key of the script exists
+ * before anything is written; when one does not (its `SET` failed, or it
+ * outlived {@link STAGE_TTL_MS}), it unlinks the rest, and the script fails
+ * having written nothing, so a chunk stays whole. `writeFrame` is `set`'s
+ * write of a frame: renamed into place and given the entry's expiry (or
+ * none: the staging key's TTL must not carry over), or written inline.
+ */
+const LUA_STAGED = `
+local function stagedPresent(names)
+  if #names == 0 then return true end
+  if redis.call('EXISTS', unpack(names)) == #names then return true end
+  redis.call('UNLINK', unpack(names))
+  return false
+end
+local function writeFrame(base, ek, frame, sid, exp)
+  if sid ~= '' then
+    redis.call('RENAME', base .. 'w:' .. sid, ek)
+    if exp ~= '' then redis.call('PEXPIREAT', ek, exp) else redis.call('PERSIST', ek) end
+  else
+    redis.call('SET', ek, frame)
+    if exp ~= '' then redis.call('PEXPIREAT', ek, exp) end
+  end
+end
+local STAGED_GONE = 'bun-cache: a staged frame was gone before its script ran (its SET failed, or it outlived its ${STAGE_TTL_MS} ms); nothing was written'
+`;
 
 /**
  * Helpers every script carries. `dropEntry` deletes one entry and its tag
@@ -343,25 +384,32 @@ return 1
 
 /**
  * `setMany`: KEYS[1] the first entry; ARGV base, then per entry its key,
- * frame, expiresAt ('' none), a count and its tags. Does `set`'s write for
- * each in turn, unfenced (so a key twice ends with its last write). Answers
- * how many it wrote. Not `allow-oom`: it writes entries and memberships.
+ * frame ('' when staged), staging id ('' when inline), expiresAt ('' none),
+ * a count and its tags. Checks every staged frame is there, then does `set`'s
+ * write for each in turn, unfenced (so a key twice ends with its last
+ * write). Answers how many it wrote. Not `allow-oom`: it writes entries and
+ * memberships.
  */
-const SET_MANY = script(`
+const SET_MANY = script(`${LUA_STAGED}
 local base = ARGV[1]
+local staged = {}
 local i = 2
+while i <= #ARGV do
+  if ARGV[i + 2] ~= '' then staged[#staged + 1] = base .. 'w:' .. ARGV[i + 2] end
+  i = i + 5 + tonumber(ARGV[i + 4])
+end
+if not stagedPresent(staged) then return redis.error_reply(STAGED_GONE) end
+i = 2
 local n = 0
 while i <= #ARGV do
-  local key, frame, exp, nt = ARGV[i], ARGV[i + 1], ARGV[i + 2], tonumber(ARGV[i + 3])
+  local key, frame, sid, exp, nt = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3], tonumber(ARGV[i + 4])
   dropEntry(base, key)
   redis.call('UNLINK', base .. 'n:' .. key)
-  local ek = base .. 'e:' .. key
-  redis.call('SET', ek, frame)
-  if exp ~= '' then redis.call('PEXPIREAT', ek, exp) end
+  writeFrame(base, base .. 'e:' .. key, frame, sid, exp)
   for j = 1, nt do
-    redis.call('SADD', base .. 't:' .. ARGV[i + 3 + j], key)
+    redis.call('SADD', base .. 't:' .. ARGV[i + 4 + j], key)
   end
-  i = i + 4 + nt
+  i = i + 5 + nt
   n = n + 1
 end
 return n
@@ -369,40 +417,49 @@ return n
 
 /**
  * `setManyFenced`: KEYS[1] the first entry; ARGV base, now, then per entry its
- * key, frame, expiresAt ('' none), fence createdAt ('' none), a count and the
- * fence's tags, a count and its tags. Does `set`'s check and write for each
- * in turn, so no invalidation lands between an entry's check and its write.
- * Answers a 1 (stored) or 0 (fenced) per entry, in order. Not `allow-oom`:
- * it writes entries and memberships.
+ * key, frame ('' when staged), staging id ('' when inline), expiresAt ('' none),
+ * fence createdAt ('' none), a count and the fence's tags, a count and its
+ * tags. Checks every staged frame is there, then does `set`'s check and write
+ * for each in turn, so no invalidation lands between an entry's check and its
+ * write; a fenced entry's staged frame is unlinked. Answers a 1 (stored) or 0
+ * (fenced) per entry, in order. Not `allow-oom`: it writes entries and
+ * memberships.
  */
-const SET_MANY_FENCED = script(`
+const SET_MANY_FENCED = script(`${LUA_STAGED}
 local base, now = ARGV[1], tonumber(ARGV[2])
+local staged = {}
 local i = 3
+while i <= #ARGV do
+  if ARGV[i + 2] ~= '' then staged[#staged + 1] = base .. 'w:' .. ARGV[i + 2] end
+  local t = i + 6 + tonumber(ARGV[i + 5])
+  i = t + tonumber(ARGV[t]) + 1
+end
+if not stagedPresent(staged) then return redis.error_reply(STAGED_GONE) end
+i = 3
 local out = {}
 while i <= #ARGV do
-  local key, frame, exp, fenceAt = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3]
-  local nf = tonumber(ARGV[i + 4])
+  local key, frame, sid, exp, fenceAt = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3], ARGV[i + 4]
+  local nf = tonumber(ARGV[i + 5])
   local fenced = false
   if fenceAt ~= '' then
     local at = tonumber(fenceAt)
     for j = 1, nf do
-      local stamp = redis.call('GET', base .. 's:' .. ARGV[i + 4 + j])
+      local stamp = redis.call('GET', base .. 's:' .. ARGV[i + 5 + j])
       if stamp then
         local sat, suntil = string.match(stamp, '^(%S+) (%S+)$')
         if sat and tonumber(suntil) > now and tonumber(sat) >= at then fenced = true break end
       end
     end
   end
-  local t = i + 5 + nf
+  local t = i + 6 + nf
   local nt = tonumber(ARGV[t])
   if fenced then
+    if sid ~= '' then redis.call('UNLINK', base .. 'w:' .. sid) end
     out[#out + 1] = 0
   else
     dropEntry(base, key)
     redis.call('UNLINK', base .. 'n:' .. key)
-    local ek = base .. 'e:' .. key
-    redis.call('SET', ek, frame)
-    if exp ~= '' then redis.call('PEXPIREAT', ek, exp) end
+    writeFrame(base, base .. 'e:' .. key, frame, sid, exp)
     for j = 1, nt do
       redis.call('SADD', base .. 't:' .. ARGV[t + j], key)
     end
@@ -676,6 +733,56 @@ function redisEndpoint(url: string): string {
 /** The message `cluster: true`, and a connection to a cluster node, fail with. */
 function clusterUnsupported(what: string): string {
   return `${what}: Redis Cluster is not supported yet. Bun's RedisClient does not follow the cluster's MOVED and ASK redirects (${CLUSTER_ISSUE}), so a key on another node would fail. Point the driver at a single Redis, or a primary behind a stable address.`;
+}
+
+/** A frame staged outside Lua: its staging key and bytes. */
+interface StagedFrame {
+  /** The staging key, `<base>w:<uuid>`. */
+  key: string;
+  /** The entry's frame. */
+  frame: Uint8Array;
+}
+
+/**
+ * Cuts a batch into consecutive script chunks, keeping its order: at most
+ * {@link SET_MANY_ROWS} entries, {@link SET_MANY_BYTES} of frames passed
+ * inline and {@link SET_MANY_STAGED_BYTES} of staged frames (from
+ * {@link STAGE_FRAME_BYTES} up), each budget counted apart; an entry past a
+ * budget on its own gets a chunk of its own.
+ */
+function chunkFrames<T extends { frame: Uint8Array }>(
+  items: readonly T[],
+): T[][] {
+  const chunks: T[][] = [];
+  let chunk: T[] = [];
+  let inline = 0;
+  let staged = 0;
+  for (const item of items) {
+    const size = item.frame.byteLength;
+    const isStaged = size >= STAGE_FRAME_BYTES;
+    if (
+      chunk.length > 0 &&
+      (chunk.length >= SET_MANY_ROWS ||
+        (isStaged
+          ? staged + size > SET_MANY_STAGED_BYTES
+          : inline + size > SET_MANY_BYTES))
+    ) {
+      chunks.push(chunk);
+      chunk = [];
+      inline = 0;
+      staged = 0;
+    }
+    chunk.push(item);
+    if (isStaged) {
+      staged += size;
+    } else {
+      inline += size;
+    }
+  }
+  if (chunk.length > 0) {
+    chunks.push(chunk);
+  }
+  return chunks;
 }
 
 const ENCODER = new TextEncoder();
@@ -1143,10 +1250,14 @@ export class RedisCacheDriver implements CacheDriver {
 
   /**
    * Writes several entries: one script per {@link SET_MANY_ROWS} entries
-   * (or {@link SET_MANY_BYTES} of frames), each doing `set`'s write for every
-   * entry in turn, so a key written twice keeps its last write. A script
-   * runs whole, so each chunk is applied atomically; the chunks run one
-   * after another. No fence: a tagged batch goes to `setManyFenced`.
+   * (or {@link SET_MANY_BYTES} of frames passed inline, or
+   * {@link SET_MANY_STAGED_BYTES} staged), each doing `set`'s write for every
+   * entry in turn, so a key written twice keeps its last write. A frame of
+   * {@link STAGE_FRAME_BYTES} or more is staged as `set` stages one, and the
+   * script renames it into place. A script runs whole, so each chunk is
+   * applied atomically (a staged frame gone before its script ran fails the
+   * chunk with nothing written); the chunks run one after another. No fence:
+   * a tagged batch goes to `setManyFenced`.
    */
   async setMany(ns: string, entries: readonly StoredEntry[]): Promise<void> {
     if (entries.length === 0) {
@@ -1155,33 +1266,40 @@ export class RedisCacheDriver implements CacheDriver {
     await this.#ready();
     const base = this.#base(ns);
     const framed = entries.map((entry) => ({
-      ...entry,
-      value: RedisCacheDriver.#frame(entry),
+      entry,
+      frame: RedisCacheDriver.#frame(entry),
     }));
-    for (const chunk of chunkEntries(framed, {
-      rows: SET_MANY_ROWS,
-      bytes: SET_MANY_BYTES,
-    })) {
+    for (const chunk of chunkFrames(framed)) {
       const args: (string | Uint8Array)[] = [base];
-      for (const entry of chunk) {
+      const staged: StagedFrame[] = [];
+      for (const { entry, frame } of chunk) {
         const tags = [...new Set(entry.tags)];
+        const sid = RedisCacheDriver.#stage(base, frame, staged);
         args.push(
           entry.key,
-          entry.value,
+          sid === "" ? frame : "",
+          sid,
           expiryArg(entry.expiresAt),
           String(tags.length),
           ...tags,
         );
       }
-      await this.#run(SET_MANY, [`${base}e:${chunk[0].key}`], args);
+      await this.#runStaged(
+        SET_MANY,
+        [`${base}e:${chunk[0].entry.key}`],
+        args,
+        staged,
+      );
     }
   }
 
   /**
    * Writes several entries, each held to its own fence: one script per
-   * {@link SET_MANY_ROWS} entries (or {@link SET_MANY_BYTES} of frames), each
-   * doing `set`'s check and write for every entry in turn, so each entry's
-   * fence is as atomic as `set`'s. The chunks run one after another.
+   * {@link SET_MANY_ROWS} entries (or {@link SET_MANY_BYTES} of frames passed
+   * inline, or {@link SET_MANY_STAGED_BYTES} staged), each doing `set`'s
+   * check and write for every entry in turn, so each entry's fence is as
+   * atomic as `set`'s. A large frame is staged as in `setMany`, and unlinked
+   * when its entry is fenced. The chunks run one after another.
    */
   async setManyFenced(
     ns: string,
@@ -1193,38 +1311,40 @@ export class RedisCacheDriver implements CacheDriver {
     await this.#ready();
     const base = this.#base(ns);
     const framed = writes.map((write) => ({
-      ...write.entry,
-      value: RedisCacheDriver.#frame(write.entry),
+      entry: write.entry,
+      fence: write.fence,
+      frame: RedisCacheDriver.#frame(write.entry),
     }));
     const results: ("stored" | "fenced")[] = [];
-    let offset = 0;
-    for (const chunk of chunkEntries(framed, {
-      rows: SET_MANY_ROWS,
-      bytes: SET_MANY_BYTES,
-    })) {
+    for (const chunk of chunkFrames(framed)) {
       const args: (string | Uint8Array)[] = [base, String(this.#now())];
-      chunk.forEach((entry, index) => {
-        const fence = writes[offset + index].fence;
+      const staged: StagedFrame[] = [];
+      for (const { entry, fence, frame } of chunk) {
         const fenceTags =
           fence !== undefined && fence.tags.length > 0
             ? [...new Set(fence.tags)]
             : [];
         const tags = [...new Set(entry.tags)];
+        const sid = RedisCacheDriver.#stage(base, frame, staged);
         args.push(
           entry.key,
-          entry.value,
+          sid === "" ? frame : "",
+          sid,
           expiryArg(entry.expiresAt),
-          fenceTags.length > 0 ? String(fence!.createdAt) : "",
+          fence !== undefined && fenceTags.length > 0
+            ? String(fence.createdAt)
+            : "",
           String(fenceTags.length),
           ...fenceTags,
           String(tags.length),
           ...tags,
         );
-      });
-      const answered = await this.#run(
+      }
+      const answered = await this.#runStaged(
         SET_MANY_FENCED,
-        [`${base}e:${chunk[0].key}`],
+        [`${base}e:${chunk[0].entry.key}`],
         args,
+        staged,
       );
       if (!Array.isArray(answered) || answered.length !== chunk.length) {
         throw new TypeError(
@@ -1234,9 +1354,85 @@ export class RedisCacheDriver implements CacheDriver {
       for (const stored of answered) {
         results.push(Number(stored) === 1 ? "stored" : "fenced");
       }
-      offset += chunk.length;
     }
     return results;
+  }
+
+  /**
+   * A staging id for a frame of {@link STAGE_FRAME_BYTES} or more, recorded
+   * in `staged` (its key is `<base>w:<id>`, in the namespace's hash tag, so
+   * key locking holds); `""` for a smaller frame, passed inline.
+   */
+  static #stage(
+    base: string,
+    frame: Uint8Array,
+    staged: StagedFrame[],
+  ): string {
+    if (frame.byteLength < STAGE_FRAME_BYTES) {
+      return "";
+    }
+    const id = crypto.randomUUID();
+    staged.push({ key: `${base}w:${id}`, frame });
+    return id;
+  }
+
+  /**
+   * Runs a `setMany` script after staging its large frames: a plain `SET`
+   * each (`PX` {@link STAGE_TTL_MS}), sent ahead of the script on the one
+   * connection, so Bun pipelines them and they run first. When the script
+   * fails, its staging keys are unlinked (the script unlinks them itself
+   * when one was missing), and a staging write's own failure is the error
+   * thrown, when there is one.
+   */
+  async #runStaged(
+    which: Script,
+    keys: readonly string[],
+    args: readonly (string | Uint8Array)[],
+    staged: readonly StagedFrame[],
+  ): Promise<unknown> {
+    // Each staging write's failure is caught as it happens (it is awaited
+    // only after the script): a rejection left unhandled meanwhile would be
+    // reported as one.
+    const writes = staged.map(
+      async ({ key, frame }): Promise<{ error: unknown } | undefined> => {
+        try {
+          await this.#client.send("SET", [
+            key,
+            frame as unknown as string,
+            "PX",
+            String(STAGE_TTL_MS),
+          ]);
+          return undefined;
+        } catch (error) {
+          return { error };
+        }
+      },
+    );
+    let answered: unknown;
+    try {
+      answered = await this.#run(which, keys, args);
+    } catch (error) {
+      const failed = (await Promise.all(writes)).find(
+        (each) => each !== undefined,
+      );
+      if (staged.length > 0) {
+        void this.#client
+          .send(
+            "UNLINK",
+            staged.map((each) => each.key),
+          )
+          .catch(() => undefined);
+      }
+      throw failed === undefined ? error : failed.error;
+    }
+    const failed = (await Promise.all(writes)).find(
+      (each) => each !== undefined,
+    );
+    if (failed !== undefined) {
+      // Not reached: the script checks every staging key exists first.
+      throw failed.error;
+    }
+    return answered;
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

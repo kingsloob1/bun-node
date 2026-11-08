@@ -23,6 +23,14 @@
  *   invalidations, always wait for every member: their answers must agree.
  *   `write: "primary"` writes the first healthy member and copies to the rest
  *   in the background through a bounded queue per member, in order.
+ * - **A fenced batch** (`setManyFenced`, offered when the members index tags
+ *   and the primary has the method) is one call per member, under `set`'s
+ *   rules for a fenced write: it waits for every member, an entry any member
+ *   fences is fenced, and is deleted where it was stored. A member without
+ *   the method (a secondary, or the member writing while the primary is
+ *   down) gets a fenced `set` per entry, issued together, as the core would
+ *   send. Under `write: "primary"` the writer alone applies the fences, and
+ *   the others' queues receive the entries it stored.
  * - **Reads** (`read: "failover"`, the default) ask the first healthy member;
  *   on an error, a timeout, or a miss from a secondary, the next. A miss from
  *   a healthy primary is final. `read: "race"` asks every healthy member and
@@ -77,6 +85,7 @@ import type {
   CacheDriverCapabilities,
   CacheEventMap,
   CacheMemberEvent,
+  FencedWrite,
   SchemaChange,
   SchemaSyncOptions,
   StoredEntry,
@@ -349,6 +358,16 @@ export class RedundantDriver implements CacheDriver {
     stampUntil: number,
   ) => Promise<number>;
 
+  /**
+   * Writes a batch with each entry held to its own fence, on every member a
+   * write goes to (`tags: "index"`, and only when the primary has
+   * `setManyFenced`; see the module header).
+   */
+  readonly setManyFenced?: (
+    ns: string,
+    writes: readonly FencedWrite[],
+  ) => Promise<("stored" | "fenced")[]>;
+
   /** Updates a hard expiry on every member (only when every member has `touch`). */
   readonly touch?: (
     ns: string,
@@ -521,6 +540,10 @@ export class RedundantDriver implements CacheDriver {
     if (indexed) {
       this.deleteByTags = async (ns, tags, stampUntil) =>
         await this.#deleteByTags(ns, tags, stampUntil);
+      if (primary.setManyFenced !== undefined) {
+        this.setManyFenced = async (ns, writes) =>
+          await this.#setManyFenced(ns, writes);
+      }
     }
     if (drivers.every((driver) => driver.touch !== undefined)) {
       this.touch = async (ns, key, expiresAt) =>
@@ -1236,6 +1259,100 @@ export class RedundantDriver implements CacheDriver {
         ),
       () => entries.map((entry) => ({ kind: "set", ns, entry })),
     );
+  }
+
+  /**
+   * `setManyFenced`: the batch on every member a write goes to, waiting for
+   * all of them when any entry carries a fence (their answers must agree, as
+   * for `set`). An entry any member fenced is fenced, and deleted where it
+   * was stored. Under `write: "primary"` the writer's answers are final and
+   * its stored entries are replicated.
+   */
+  async #setManyFenced(
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    if (writes.length === 0) {
+      return [];
+    }
+    const answers = await this.#mutate(
+      "setManyFenced",
+      ns,
+      writes.map((write) => write.entry.key),
+      async (member) => await this.#fencedBatchOn(member, ns, writes),
+      (outcomes) =>
+        writes
+          .filter((_, index) => outcomes[index] === "stored")
+          .map((write) => ({ kind: "set", ns, entry: write.entry })),
+      writes.some((write) => write.fence !== undefined) ? "all" : this.#ack,
+    );
+    const outcomes = writes.map((_, index) =>
+      answers.some((answer) => answer.value[index] === "fenced")
+        ? ("fenced" as const)
+        : ("stored" as const),
+    );
+    // Fenced anywhere is fenced everywhere: delete what was stored.
+    await Promise.all(
+      answers.map(async ({ member, value }) => {
+        const keys = writes
+          .filter(
+            (_, index) =>
+              outcomes[index] === "fenced" && value[index] === "stored",
+          )
+          .map((write) => write.entry.key);
+        if (keys.length === 0) {
+          return;
+        }
+        try {
+          await this.#call(
+            member,
+            "delete",
+            async () =>
+              await this.#sequenced(
+                member,
+                ns,
+                keys,
+                async () => await member.driver.delete(ns, keys),
+              ),
+          );
+        } catch {
+          this.#miss(member, "delete", "failed");
+        }
+      }),
+    );
+    return outcomes;
+  }
+
+  /**
+   * A fenced batch on one member: its `setManyFenced` (an answer of the
+   * wrong length fails the member's call), or a fenced `set` per entry,
+   * issued together, for a member without it. Expiries as the member stores
+   * them ({@link #entryFor}).
+   */
+  async #fencedBatchOn(
+    member: Member,
+    ns: string,
+    writes: readonly FencedWrite[],
+  ): Promise<("stored" | "fenced")[]> {
+    const driver = member.driver;
+    const own = writes.map((write) => ({
+      entry: this.#entryFor(member, write.entry),
+      fence: write.fence,
+    }));
+    if (driver.setManyFenced === undefined) {
+      return await Promise.all(
+        own.map(
+          async (write) => await driver.set(ns, write.entry, write.fence),
+        ),
+      );
+    }
+    const outcomes = await driver.setManyFenced(ns, own);
+    if (outcomes.length !== own.length) {
+      throw new TypeError(
+        `${driver.name}: setManyFenced answered ${outcomes.length} outcomes for ${own.length} entries`,
+      );
+    }
+    return outcomes;
   }
 
   async delete(ns: string, keys: readonly string[]): Promise<number> {

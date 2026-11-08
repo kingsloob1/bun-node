@@ -24,7 +24,11 @@ import type { Socket } from "bun";
 import type { BusMessage, CacheBus, StoredEntry } from "../../lib/index";
 import { createCache, redisBus, redisDriver } from "../../lib/index";
 import type { RedisDriverOptions } from "../../lib/drivers/redis";
-import { RedisCacheDriver, STAGE_FRAME_BYTES } from "../../lib/drivers/redis";
+import {
+  RedisCacheDriver,
+  SET_MANY_STAGED_BYTES,
+  STAGE_FRAME_BYTES,
+} from "../../lib/drivers/redis";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import { deleteRedisPrefix, redisRawDump } from "./backends";
 import { registerSetManyChunkTests } from "./setManyChunks";
@@ -535,6 +539,269 @@ export async function registerRedisSuite(
         await helper.send("SET", [entryKey("foreign"), ""]);
         expect(await driver.delete(ns, ["foreign", "absent"])).toBe(1);
         expect(await helper.send("EXISTS", [entryKey("foreign")])).toBe(0);
+      });
+    });
+
+    // Local only, like the chunks: tens of MiB of writes, on a billed lane.
+    describe(`${lane.name} setMany and setManyFenced stage large frames`, () => {
+      const ns = `bigmany-${process.pid}`;
+      const client = new RedisClient(url);
+      /** Each staging `SET` the driver sends, by key. */
+      const staged: string[] = [];
+      /** Each script call's arguments after its keys. */
+      const scripts: (string | Uint8Array)[][] = [];
+      /** Faults to inject: a staging `SET` to refuse (its index among a call's), or a script failure. */
+      const faults: { failStage?: number; failScript?: boolean } = {};
+      const driver = new RedisCacheDriver({
+        prefix: prefix("bigmany"),
+        client: proxied(client, {
+          send: async (command: string, args: string[]) => {
+            if (command === "SET" && args[0].includes("}:w:")) {
+              staged.push(args[0]);
+              if (faults.failStage === staged.length - 1) {
+                throw new Error("staging SET refused (injected)");
+              }
+            }
+            return await client.send(command, args);
+          },
+          evalsha: async (
+            sha: string,
+            numkeys: number,
+            ...rest: (string | Uint8Array)[]
+          ) => {
+            scripts.push(rest.slice(numkeys));
+            if (faults.failScript === true) {
+              throw new Error("script failed (injected)");
+            }
+            return await client.evalsha(sha, numkeys, ...(rest as string[]));
+          },
+        }),
+      });
+      afterAll(async () => {
+        await driver.close();
+        client.close();
+      });
+      /** Bytes of `size`, each `seed`. */
+      const bytes = (size: number, seed: number): number[] =>
+        Array.from({ length: size }, () => seed);
+      /** A `size`-byte entry whose bytes are all `seed` (a typed array, so a MiB is cheap). */
+      const big = (
+        key: string,
+        size: number,
+        seed: number,
+        tags: readonly string[] = [],
+        expiresAt: number | null = null,
+      ): StoredEntry => ({
+        key,
+        value: new Uint8Array(size).fill(seed),
+        expiresAt,
+        tags,
+      });
+      /** The run's staging keys of this driver, once the commands sent before have run. */
+      const stagingKeys = async (): Promise<string[]> => {
+        // The driver's connection runs commands in order: a PING on it
+        // waits for an unlink it sent without awaiting.
+        await client.send("PING", []);
+        const keys = (await helper.send("KEYS", [
+          `${driver.prefix}:*`,
+        ])) as string[];
+        return keys.filter((key) => key.includes("}:w:"));
+      };
+      /** The server-side key of an entry. */
+      const entryKey = (key: string): string =>
+        `${driver.prefix}:{${ns}}:e:${key}`;
+      /** The largest byte argument any script was given since `from`. */
+      const largestArgument = (from = 0): number =>
+        Math.max(
+          0,
+          ...scripts
+            .slice(from)
+            .flat()
+            .map((each) => (typeof each === "string" ? 0 : each.byteLength)),
+        );
+      /** Clears the recordings and faults. */
+      const reset = (): void => {
+        staged.length = 0;
+        scripts.length = 0;
+        delete faults.failStage;
+        delete faults.failScript;
+      };
+
+      test("setMany stages each frame from STAGE_FRAME_BYTES up and renames it into place; no script argument carries one", async () => {
+        const at = Date.now() + 120_000;
+        await driver.set(ns, big("forever", 20_000, 1, [], at));
+        await driver.set(ns, big("dup", 10, 1));
+        reset();
+        await driver.setMany(ns, [
+          big("small", 100, 2, ["s"]),
+          big("edge", STAGE_FRAME_BYTES, 3, ["t"]),
+          big("ttl", 1024 * 1024, 4, ["t"], at),
+          // Had an expiry: the staged rename must not leave one.
+          big("forever", 100_000, 5),
+          // A key twice: the last write wins, and both staging keys go.
+          big("dup", 50_000, 6, ["t"]),
+          big("dup", 20, 7),
+        ]);
+        expect(staged).toHaveLength(4);
+        expect(staged.every((key) => key.includes(`{${ns}}:w:`))).toBe(true);
+        expect(scripts).toHaveLength(1);
+        expect(largestArgument()).toBeLessThan(STAGE_FRAME_BYTES);
+        expect(await stagingKeys()).toEqual([]);
+        const [small, edge, ttl, forever, dup] = await driver.getMany(ns, [
+          "small",
+          "edge",
+          "ttl",
+          "forever",
+          "dup",
+        ]);
+        expect(small?.value).toEqual(new Uint8Array(bytes(100, 2)));
+        expect(edge?.value).toEqual(new Uint8Array(STAGE_FRAME_BYTES).fill(3));
+        expect(ttl?.value).toEqual(new Uint8Array(1024 * 1024).fill(4));
+        expect(ttl?.expiresAt).toBe(at);
+        expect(
+          Number(await helper.send("PEXPIRETIME", [entryKey("ttl")])),
+        ).toBe(at);
+        expect(forever?.value.byteLength).toBe(100_000);
+        expect(Number(await helper.send("PTTL", [entryKey("forever")]))).toBe(
+          -1,
+        );
+        expect(dup?.value).toEqual(new Uint8Array(bytes(20, 7)));
+        // The tag index: "t" reaches edge and ttl, not dup (its last write is untagged).
+        expect(await driver.deleteByTags(ns, ["t"], Date.now() + 1000)).toBe(2);
+        expect(await driver.get(ns, "dup")).toBeDefined();
+      });
+
+      test("staged frames leave the script's 8 MiB argument budget: 70 MiB of 1 MiB entries is two scripts, cut by SET_MANY_STAGED_BYTES", async () => {
+        reset();
+        const size = 1024 * 1024;
+        const batch = Array.from({ length: 70 }, (_, index) =>
+          big(`m${index}`, size, index % 251),
+        );
+        await driver.setMany(ns, batch);
+        // A frame is the value and its 7-byte header ("1 - []\n").
+        const perScript = Math.floor(SET_MANY_STAGED_BYTES / (size + 7));
+        expect(perScript).toBe(63);
+        expect(scripts).toHaveLength(Math.ceil(70 / perScript));
+        expect(staged).toHaveLength(70);
+        expect(largestArgument()).toBeLessThan(STAGE_FRAME_BYTES);
+        expect(await stagingKeys()).toEqual([]);
+        const back = await driver.getMany(
+          ns,
+          batch.map((each) => each.key),
+        );
+        back.forEach((each, index) => {
+          expect(each?.value.byteLength).toBe(size);
+          expect(each?.value[size - 1]).toBe(index % 251);
+        });
+        await driver.delete(
+          ns,
+          batch.map((each) => each.key),
+        );
+      }, 60_000);
+
+      test("setManyFenced stages large frames too: a fenced one is unlinked and stores nothing, a stored one is renamed into place", async () => {
+        const now = Date.now();
+        await driver.setStamps(ns, ["f"], now, now + 60_000);
+        await driver.set(ns, big("kept", 10, 1));
+        reset();
+        const old = { tags: ["f"], createdAt: now - 1 };
+        const fresh = { tags: ["f"], createdAt: now + 1 };
+        const at = now + 120_000;
+        const outcomes = await driver.setManyFenced(ns, [
+          { entry: big("kept", 200_000, 2, ["f"]), fence: old },
+          { entry: big("bigok", 300_000, 3, ["f"], at), fence: fresh },
+          { entry: big("smallno", 10, 4, ["f"]), fence: old },
+          { entry: big("smallok", 10, 5, ["f"]), fence: fresh },
+          { entry: big("plain", 50_000, 6) },
+        ]);
+        expect(outcomes).toEqual([
+          "fenced",
+          "stored",
+          "fenced",
+          "stored",
+          "stored",
+        ]);
+        expect(staged).toHaveLength(3);
+        expect(scripts).toHaveLength(1);
+        expect(largestArgument()).toBeLessThan(STAGE_FRAME_BYTES);
+        expect(await stagingKeys()).toEqual([]);
+        const [kept, bigok, smallno, smallok, plain] = await driver.getMany(
+          ns,
+          ["kept", "bigok", "smallno", "smallok", "plain"],
+        );
+        expect(kept?.value).toEqual(new Uint8Array(bytes(10, 1)));
+        expect(bigok?.value).toEqual(new Uint8Array(300_000).fill(3));
+        expect(
+          Number(await helper.send("PEXPIRETIME", [entryKey("bigok")])),
+        ).toBe(at);
+        expect(smallno).toBeUndefined();
+        expect(smallok?.value).toEqual(new Uint8Array(bytes(10, 5)));
+        expect(Number(await helper.send("PTTL", [entryKey("plain")]))).toBe(-1);
+        expect(plain?.value.byteLength).toBe(50_000);
+      });
+
+      test("a staging write that failed fails its chunk whole: nothing is written, the other staging keys go, and the error is the write's", async () => {
+        for (const which of ["setMany", "setManyFenced"] as const) {
+          await driver.setMany(ns, [big("fa", 10, 1), big("fc", 10, 1)]);
+          reset();
+          faults.failStage = 1;
+          const batch = [
+            big("fa", 30_000, 2),
+            big("fb", 30_000, 3),
+            big("fc", 10, 4),
+            big("fd", 40_000, 5),
+          ];
+          const failure = await (
+            which === "setMany"
+              ? driver.setMany(ns, batch)
+              : driver.setManyFenced(
+                  ns,
+                  batch.map((entry) => ({ entry })),
+                )
+          )
+            .then(() => undefined)
+            .catch((error: unknown) => error as Error);
+          expect(failure?.message).toBe("staging SET refused (injected)");
+          // The script ran, found a staging key missing, and wrote nothing.
+          expect(scripts).toHaveLength(1);
+          expect(staged).toHaveLength(3);
+          const [fa, fb, fc, fd] = await driver.getMany(ns, [
+            "fa",
+            "fb",
+            "fc",
+            "fd",
+          ]);
+          expect(fa?.value).toEqual(new Uint8Array(bytes(10, 1)));
+          expect(fb).toBeUndefined();
+          expect(fc?.value).toEqual(new Uint8Array(bytes(10, 1)));
+          expect(fd).toBeUndefined();
+          expect(await stagingKeys()).toEqual([]);
+        }
+      });
+
+      test("a script that failed after its frames were staged leaves no staging key, and its error is thrown", async () => {
+        for (const which of ["setMany", "setManyFenced"] as const) {
+          reset();
+          faults.failScript = true;
+          const batch = [big("ga", 30_000, 2), big("gb", 40_000, 3)];
+          const failure = await (
+            which === "setMany"
+              ? driver.setMany(ns, batch)
+              : driver.setManyFenced(
+                  ns,
+                  batch.map((entry) => ({ entry })),
+                )
+          )
+            .then(() => undefined)
+            .catch((error: unknown) => error as Error);
+          expect(failure?.message).toBe("script failed (injected)");
+          expect(staged).toHaveLength(2);
+          expect(await stagingKeys()).toEqual([]);
+          expect(await driver.getMany(ns, ["ga", "gb"])).toEqual([
+            undefined,
+            undefined,
+          ]);
+        }
       });
     });
   }
@@ -1101,6 +1368,25 @@ export async function registerRedisSuite(
               createdAt: now - 20,
             }),
           ).toBe("fenced");
+          // setMany and setManyFenced, a staged and an inline frame each;
+          // fenced and stored.
+          await enforced.setMany(space, [
+            entry("m1", large, ["red"]),
+            entry("m2", [8], ["grey"]),
+          ]);
+          expect(
+            await enforced.setManyFenced(space, [
+              {
+                entry: entry("m1", large, ["f"]),
+                fence: { tags: ["f"], createdAt: now - 20 },
+              },
+              {
+                entry: entry("m3", large, ["f"]),
+                fence: { tags: ["f"], createdAt: now },
+              },
+              { entry: entry("m4", [9]) },
+            ]),
+          ).toEqual(["fenced", "stored", "stored"]);
           // increment: new, existing, over an entry.
           await enforced.increment(space, "n", 2, now + 60_000);
           expect(await enforced.increment(space, "n", 3, now + 60_000)).toBe(5);
@@ -1133,8 +1419,8 @@ export async function registerRedisSuite(
           expect(
             await enforced.sweep(Date.now(), 1_000),
           ).toBeGreaterThanOrEqual(2);
-          // All nine scripts ran under the rule.
-          expect(sources.size).toBe(9);
+          // All eleven scripts ran under the rule.
+          expect(sources.size).toBe(11);
         } finally {
           await enforced.close();
           client.close();
