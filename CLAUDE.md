@@ -1066,6 +1066,14 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   `/tmp`), so two sessions' runs cannot collide; it is removed when the run
   passes and kept, its path printed, when it fails. `--work <dir>` still
   names one yourself (wiped at the start, kept at the end).
+  **One consumer per optional-peer set** (bun-ui plan BU-1): entries without
+  `peers` are checked in `consumer/`, which has none of the package's optional
+  peers; each distinct sorted `peers` set gets a `consumer-peers-<set>/` with
+  exactly those optional peers and none of the others, shared by every entry
+  listing that set. So an entry scoped to one peer that also needs another
+  fails (`scripts/__tests__/consumer-check.test.ts` has the fixture, and the
+  former two-consumer rule passing it as the negative control). The run
+  prints each consumer's spellings and install time before the matrix.
   It runs each consumer's own tsc, deliberately not `bun check`: the point is
   what a consumer on TypeScript 5.9 or 6.0 sees.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
@@ -1105,10 +1113,10 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   (`checkPeerScopes`) walks the declarations' import graph from every literal
   `exports` key and every `consumer-check.json` spelling, and fails when a
   declaration importing an optional peer is reachable from one that does not
-  list it — the root above all. The consumer check installs two consumers:
-  entries without `peers` are checked in one with **no** optional peer
-  installed, so a root that reaches one breaks there; entries with `peers` in
-  one that has them. Measured for bun-nest: the root without bun-jobs is 6/6
+  list it — the root above all. The consumer check installs one consumer
+  per optional-peer set: entries without `peers` are checked in one with
+  **no** optional peer installed, so a root that reaches one breaks there;
+  entries with `peers` in one that has exactly the peers they list. Measured for bun-nest: the root without bun-jobs is 6/6
   OK and loads; `./jobs` without it is `TS2307` ×2 in `dts/jobs/*.d.ts` with
   `skipLibCheck` off, silently `any` bun-jobs types with it on, and "Cannot
   find module" at runtime — acceptable, since that subpath needs the peer.
