@@ -130,7 +130,9 @@ import { nextOccurrence, repeatJobId } from "./repeat";
 import {
   isRepeatDisabled,
   occurrenceRecord,
+  pointRepeatAt,
   removePendingOccurrence,
+  updateRepeatIfStored,
 } from "./repeatControl";
 import {
   RESERVED_STATE_PREFIX,
@@ -4578,7 +4580,7 @@ export class BunQueueWorker<
       }
 
       if (next === null) {
-        await this.driver.upsertRepeat(this.ref, {
+        await updateRepeatIfStored(this.driver, this.ref, {
           ...scheduled,
           nextRunAt: null,
           nextJobId: null,
@@ -4616,12 +4618,15 @@ export class BunQueueWorker<
         noteScheduled(this.driver, this.ref);
       }
 
-      await this.driver.upsertRepeat(this.ref, {
-        ...scheduled,
-        nextRunAt: next,
-        nextJobId: jobId,
-        updatedAt: now,
-      });
+      // Only while the series is still stored: one removed since it was read
+      // above is not written back, and the occurrence just added goes too.
+      await pointRepeatAt(
+        this.driver,
+        this.ref,
+        scheduled,
+        { id: jobId, runAt: next },
+        now,
+      );
     } catch (error) {
       this.#emitError(error, "scheduleNextRepeat");
     }
@@ -6112,12 +6117,8 @@ export class BunQueueWorker<
         noteScheduled(this.driver, this.ref);
       }
 
-      await this.driver.upsertRepeat(this.ref, {
-        ...definition,
-        nextRunAt: next,
-        nextJobId: record.id,
-        updatedAt: now,
-      });
+      // A series removed since `listRepeats` read it is not written back.
+      await pointRepeatAt(this.driver, this.ref, definition, record, now);
     }
   }
 

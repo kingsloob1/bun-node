@@ -2645,6 +2645,16 @@ export class MemoryDriver implements JobsDriver {
     this.#queue(q).repeats.set(def.key, jsonClone(def));
   }
 
+  async updateRepeat(q: QueueRef, def: RepeatRecord): Promise<boolean> {
+    // One synchronous step: nothing can remove the key between the two.
+    const repeats = this.#queue(q).repeats;
+    if (!repeats.has(def.key)) {
+      return false;
+    }
+    repeats.set(def.key, jsonClone(def));
+    return true;
+  }
+
   async getRepeat(q: QueueRef, key: string): Promise<RepeatRecord | null> {
     const repeat = this.#queue(q).repeats.get(key);
     return repeat ? { ...repeat } : null;

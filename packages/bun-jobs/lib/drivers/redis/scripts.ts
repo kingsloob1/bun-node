@@ -863,6 +863,23 @@ return 1
 `;
 
 /**
+ * Replaces a repeat definition only while the queue's repeats hash still has
+ * its key. One script rather than `HEXISTS` then `HSET`: between those two
+ * round trips a `removeRepeat` could delete the field, and the `HSET` then
+ * wrote the removed series back.
+ *
+ * KEYS: the queue's repeats hash. ARGV: the key, then the definition as
+ * JSON. Returns 1 when written.
+ */
+export const UPDATE_REPEAT = `
+if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then
+  return 0
+end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+return 1
+`;
+
+/**
  * Shared by {@link renderScripts}' `COMPLETE` and `FAIL`: counts one completion
  * or failed attempt in the minute — and, when per-second recording is on, in
  * the second — of `now`, in the same script as the write it counts.

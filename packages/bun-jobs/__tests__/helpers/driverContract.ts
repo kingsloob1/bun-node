@@ -3666,6 +3666,56 @@ export function driverContract(
         expect(await driver.getRepeat(q, "nightly")).toBeNull();
       });
 
+      it("updates a repeat definition only while it is stored", async () => {
+        // Every built-in driver has it; the core falls back without it.
+        expect(typeof driver.updateRepeat).toBe("function");
+        const q = scope("repeat-update");
+        const now = Date.now();
+        const definition = {
+          key: "hourly",
+          name: "report",
+          data: { n: 1 },
+          opts: makeJob().opts,
+          every: 3_600_000,
+          count: 0,
+          nextRunAt: now + 1000,
+          nextJobId: "repeat:hourly:1",
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        // Absent: nothing written, and it says so.
+        expect(await driver.updateRepeat!(q, definition)).toBe(false);
+        expect(await driver.getRepeat(q, "hourly")).toBeNull();
+        expect(await driver.listRepeats(q)).toEqual([]);
+
+        await driver.upsertRepeat(q, definition);
+        expect(
+          await driver.updateRepeat!(q, {
+            ...definition,
+            count: 1,
+            nextJobId: "repeat:hourly:2",
+          }),
+        ).toBe(true);
+        expect(await driver.getRepeat(q, "hourly")).toMatchObject({
+          count: 1,
+          nextJobId: "repeat:hourly:2",
+        });
+        // The same record again still counts as stored (MySQL and MariaDB
+        // count changed rows, not matched ones).
+        const same = (await driver.getRepeat(q, "hourly"))!;
+        expect(await driver.updateRepeat!(q, same)).toBe(true);
+        expect(await driver.listRepeats(q)).toHaveLength(1);
+
+        // Removed, it stays removed: the update does not write it back.
+        expect(await driver.removeRepeat(q, "hourly")).toBe(true);
+        expect(await driver.updateRepeat!(q, { ...definition, count: 2 })).toBe(
+          false,
+        );
+        expect(await driver.getRepeat(q, "hourly")).toBeNull();
+        expect(await driver.listRepeats(q)).toEqual([]);
+      });
+
       /* --- changing a stored job ---------------------------------------- */
 
       /** Claims whatever is due in `ref`, with a fresh token. */

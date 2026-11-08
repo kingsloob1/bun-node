@@ -5649,6 +5649,19 @@ export class MongoDriver implements JobsDriver {
     await this.#writeValue(q.ns, `q:${q.queue}:repeat:${def.key}`, def);
   }
 
+  async updateRepeat(q: QueueRef, def: RepeatRecord): Promise<boolean> {
+    const kv = await this.#kv();
+
+    // No upsert: a document `removeRepeat` deleted stays deleted. Matched,
+    // not modified, so a write identical to the stored record still counts.
+    const result = await kv.updateOne(
+      { _id: `${q.ns}:q:${q.queue}:repeat:${def.key}` },
+      { $set: { value: JSON.stringify(def), updatedAt: Date.now() } },
+    );
+
+    return result.matchedCount > 0;
+  }
+
   async getRepeat(q: QueueRef, key: string): Promise<RepeatRecord | null> {
     return await this.#readValue<RepeatRecord>(
       q.ns,

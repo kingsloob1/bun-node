@@ -3574,6 +3574,19 @@ export class RedisDriver implements JobsDriver {
     );
   }
 
+  async updateRepeat(q: QueueRef, def: RepeatRecord): Promise<boolean> {
+    await this.connect();
+    // One script, so a `removeRepeat` cannot land between the check and the
+    // write — see `UPDATE_REPEAT`.
+    const written = await this.#run(
+      scripts.UPDATE_REPEAT,
+      [this.keys.queue(q).repeats],
+      [def.key, JSON.stringify(def)],
+    );
+
+    return Number(written) === 1;
+  }
+
   async getRepeat(q: QueueRef, key: string): Promise<RepeatRecord | null> {
     await this.connect();
     const stored = await this.#client.hget(this.keys.queue(q).repeats, key);

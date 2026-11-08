@@ -59,6 +59,16 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
   `IP_RANGE_PRESETS`. The socket shim adds Node's `remoteAddress`,
   `remotePort` and `remoteFamily`.
 
+### Fixed
+
+- **bun-jobs: a removed repeat series could come back.** A worker scheduling
+  the series' next occurrence wrote the series back after
+  `removeRepeatable()` had removed it, and it ran on, listed again. Writes
+  that advance a series now go through a new optional driver method,
+  `updateRepeat`, which writes only while the series is stored (every
+  built-in driver has it), and the occurrence such a pass added is removed
+  too.
+
 ### Upgrading
 
 If the app runs behind a proxy and reads `req.ips`, `req.protocol`,

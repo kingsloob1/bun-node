@@ -531,9 +531,14 @@ for (const backend of backends) {
           true,
         );
         expect(await jobs.queue("images").listRepeatables()).toEqual([]);
+        const atRemoval = ran.length;
 
-        // Removing it took its pending occurrence; let one already claimed
-        // finish, and then nothing more may run.
+        // Removing it took its pending occurrence. What may still run is the
+        // one the worker had claimed, and one it was scheduling at that
+        // instant; then nothing more. A count of nothing pending is not proof
+        // of that on the file driver, whose count reads its state directories
+        // one after another and can miss a job moving from delayed to waiting
+        // to active between the reads: `ran` going quiet is.
         await waitFor(
           async () => {
             const counts = await jobs.queue("images").count();
@@ -541,6 +546,21 @@ for (const backend of backends) {
           },
           { timeout: 5_000 },
         );
+        let seen = ran.length;
+        let quietSince = Date.now();
+        await waitFor(
+          () => {
+            if (ran.length !== seen) {
+              seen = ran.length;
+              quietSince = Date.now();
+            }
+            // Five intervals with no run: a series still alive runs in each.
+            return Date.now() - quietSince >= 500;
+          },
+          { timeout: 5_000 },
+        );
+        expect(ran.length - atRemoval).toBeLessThanOrEqual(2);
+        expect(await jobs.queue("images").listRepeatables()).toEqual([]);
         const settled = ran.length;
         await Bun.sleep(400);
         expect(ran.length).toBe(settled);
