@@ -55,9 +55,13 @@ const encoder = new TextEncoder();
 function stream() {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   let cancelled = false;
+  const whenCancelled = Promise.withResolvers<void>();
   const body = new ReadableStream<Uint8Array>({
     start: (c) => void (controller = c),
-    cancel: () => void (cancelled = true),
+    cancel: () => {
+      cancelled = true;
+      whenCancelled.resolve();
+    },
   });
   return {
     response: (headers: Record<string, string> = {}) =>
@@ -81,6 +85,11 @@ function stream() {
     get cancelled() {
       return cancelled;
     },
+    /**
+     * Settles when the server cancels the body: the client's close travels
+     * over the socket, so a test waits for this rather than for a time.
+     */
+    whenCancelled: whenCancelled.promise,
   };
 }
 
@@ -176,7 +185,7 @@ describe("typed iteration and listeners", () => {
     expect(requests[0].headers.get("accept")).toBe("text/event-stream");
     // Breaking out closes the stream: the server sees the body cancelled.
     await events.closed;
-    await Bun.sleep(20);
+    await body.whenCancelled;
     expect(body.cancelled).toBe(true);
   });
 
@@ -393,6 +402,7 @@ describe("resume and reconnection (sse.md §3.2)", () => {
     const got = await take(sse(api, "GET /plain", { heartbeatMs: 10 }), 2);
     expect(got.map((event) => event.data)).toEqual([1, 2]);
     expect(requests[1].at - started).toBeGreaterThanOrEqual(5_020 - 50);
+    await quiet.whenCancelled;
     expect(quiet.cancelled).toBe(true);
   }, 15_000);
 });
@@ -487,7 +497,7 @@ describe("stops and errors (sse.md §3.2, §3.3)", () => {
     expect((error as Error).name).toBe("AbortError");
     expect(got).toHaveLength(1);
     await expect(events.closed).rejects.toBe(error);
-    await Bun.sleep(20);
+    await body.whenCancelled;
     expect(body.cancelled).toBe(true);
   });
 
