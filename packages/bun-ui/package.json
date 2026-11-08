@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-ui",
   "type": "module",
-  "version": "3.0.0-rc.0",
+  "version": "3.0.0-rc.1",
   "private": false,
   "description": "Every bun-node browser UI in one package, one subpath each: the bun-jobs management UI (./jobs, jobsUi()) and the OpenAPI/AsyncAPI docs viewer (./docs, docsUi()), each served by a bun-common router with a prebuilt React bundle, hash-named immutable assets, SRI and a strict CSP",
   "author": "okafor obinna <kingsloob1@gmail.com>",

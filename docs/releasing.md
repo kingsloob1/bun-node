@@ -28,6 +28,12 @@ the tarball with npm.
    tag and the release. When it refuses, it gives every reason at once.
 5. **`bun scripts/publish.ts`** (or `bun run release`): asks once for the
    npm one-time code, then publishes, verifies, tags and releases.
+6. **Deprecate what the release retired**, if anything
+   ([Retiring a package](#retiring-a-package)). For 3.0.0-rc.1, that is
+   `@kingsleyweb/bun-jobs-ui` and `@kingsleyweb/bun-api-docs-ui`.
+7. **Move `latest` where a candidate supersedes one**
+   ([Prereleases and promotion](#prereleases-and-promotion)). For
+   3.0.0-rc.1, that is bun-contract, bun-cache, bun-jobs and bun-client.
 
 ## The version-bump PR
 
@@ -160,7 +166,10 @@ verbatim.
 
 A release candidate such as `3.0.0-rc.0` goes to the `next` tag. A
 package's first publish also becomes its `latest`, because npm requires
-`latest` to exist.
+`latest` to exist. A later candidate on `next` does not move it: after
+3.0.0-rc.1, the packages first published at 3.0.0-rc.0 (bun-contract,
+bun-cache, bun-jobs, bun-client) still have `latest` at 3.0.0-rc.0, and
+bun-ui, first published at 3.0.0-rc.1, has it there.
 
 To promote the candidate to 3.0.0:
 
@@ -172,8 +181,54 @@ To promote the candidate to 3.0.0:
    so `next` does not lag behind.
 
 You can also point `latest` at the candidate itself
-(`npm dist-tag add @kingsleyweb/<pkg>@3.0.0-rc.0 latest`), but that leaves
+(`npm dist-tag add @kingsleyweb/<pkg>@3.0.0-rc.1 latest`), but that leaves
 a prerelease as `latest`.
+
+**For 3.0.0-rc.1, do that** (the maintainer's decision, 2026-11-08): rc.0 is
+superseded, and with `latest` left at it a plain `bun add` of these four
+installs rc.0. After `publish.ts` has finished, with `--otp=<code>` if npm
+asks:
+
+```bash
+npm dist-tag add @kingsleyweb/bun-contract@3.0.0-rc.1 latest
+npm dist-tag add @kingsleyweb/bun-cache@3.0.0-rc.1 latest
+npm dist-tag add @kingsleyweb/bun-jobs@3.0.0-rc.1 latest
+npm dist-tag add @kingsleyweb/bun-client@3.0.0-rc.1 latest
+```
+
+bun-common and bun-nest keep `latest` at 2.2.0 (their last final release)
+until 3.0.0; bun-ui's first publish sets its own. Check with
+`npm view @kingsleyweb/<pkg> dist-tags`.
+
+## Retiring a package
+
+A package that leaves the workspace is not unpublished: npm allows that
+only in the first 72 hours, and an install of a published version should
+keep working. It is **deprecated**, once the package that replaces it is on
+the registry, so every install of it prints where to go instead. The
+maintainer runs this, logged in to npm (`publish.ts` never deprecates).
+
+**After 3.0.0-rc.1 is published** (`npm view @kingsleyweb/bun-ui@next
+version` prints `3.0.0-rc.1`), deprecate the two packages `@kingsleyweb/bun-ui`
+replaced:
+
+```bash
+npm deprecate @kingsleyweb/bun-jobs-ui "moved into @kingsleyweb/bun-ui: import from @kingsleyweb/bun-ui/jobs"
+npm deprecate @kingsleyweb/bun-api-docs-ui "moved into @kingsleyweb/bun-ui: import from @kingsleyweb/bun-ui/docs"
+```
+
+With two-factor authentication, add `--otp=<code>` to each, a fresh code
+for each command. A name without a version deprecates every version it
+has (`3.0.0-rc.0` and the `0.0.0-stage` placeholder). Check it took:
+
+```bash
+npm view @kingsleyweb/bun-jobs-ui deprecated
+npm view @kingsleyweb/bun-api-docs-ui deprecated
+```
+
+Each prints its message. To undo one, deprecate it again with an empty
+message (`npm deprecate @kingsleyweb/bun-jobs-ui ""`). The packages and
+their imports are listed under 3.0.0-rc.1 in `CHANGELOG.md`.
 
 ## A new package
 
