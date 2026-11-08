@@ -49,11 +49,15 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-/** Polls `predicate` until true, or fails after `timeoutMs` naming `what`. */
+/**
+ * Polls `predicate` until true, or fails after `timeoutMs` naming `what`.
+ * The deadline only bounds a watcher that never gets there: a test waits on
+ * the condition, however long a loaded machine takes to meet it.
+ */
 async function until(
   what: string,
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 5000,
+  timeoutMs = 30_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await predicate())) {
@@ -109,6 +113,11 @@ async function text(): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** A generated module's `typesHash`, or `""` when it has none. */
+function hashOf(code: string): string {
+  return /typesHash: ([0-9a-f]+)/.exec(code)?.[1] ?? "";
 }
 
 /** The served hash, read with the server's token. */
@@ -389,11 +398,17 @@ describe("bun-client watch: atomic writes", () => {
       while (reading.on) {
         const read = await text();
         if (!read.endsWith(LAST_LINE)) partial.push(read.length);
-        else seen.add(/typesHash: ([0-9a-f]+)/.exec(read)?.[1] ?? "");
+        else seen.add(hashOf(read));
         await Bun.sleep(0);
       }
     })();
+    /** Waits until the reader has read the version the file holds now. */
+    const readerHasSeen = async (what: string) => {
+      const current = hashOf(await text());
+      await until(`the reader to read ${what}`, () => seen.has(current));
+    };
 
+    await readerHasSeen("write 1");
     const inodes = [statSync(out).ino];
     for (let i = 0; i < 5; i++) {
       server.addRoute(`/extra${i}`);
@@ -402,6 +417,10 @@ describe("bun-client watch: atomic writes", () => {
         () => regenerations(watcher.stdout).length === i + 2,
       );
       inodes.push(statSync(out).ino);
+      // Each version is read before the next is asked for, so the control
+      // below holds on a loaded machine too (a fixed number of versions
+      // "seen in passing" did not).
+      await readerHasSeen(`write ${i + 2}`);
     }
     reading.on = false;
     await reader;
@@ -409,11 +428,15 @@ describe("bun-client watch: atomic writes", () => {
     expect(partial).toEqual([]);
     // Every write replaced the file rather than rewriting it in place.
     expect(new Set(inodes).size).toBe(inodes.length);
-    // Control: the reader was fast enough to see the versions go by.
-    expect(seen.size).toBeGreaterThanOrEqual(3);
+    // Control: the reader read every version, so it was reading throughout.
+    expect(seen.size).toBe(6);
     // No temporary file is left beside it.
     expect(await readdir(join(dir, "src"))).toEqual(["api.gen.ts"]);
-  });
+    // The waits are conditions, not a wall clock: six regenerations of a
+    // 300-route document run past bun:test's 5 s default on a loaded
+    // machine (measured: 1 of 64 copies run 32 at a time), so the test's
+    // own limit only catches a watcher that hangs.
+  }, 120_000);
 });
 
 describe("the bin", () => {
