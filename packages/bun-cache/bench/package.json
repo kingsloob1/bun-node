@@ -6,6 +6,7 @@
   "description": "Cache benchmarks and the Keyv compatibility tests: @kingsleyweb/bun-cache vs cache-manager (over Keyv's stores), lru-cache, BentoCache and cacheable; toKeyvStore under Keyv 5 and 6, cache-manager and @nestjs/cache-manager",
   "scripts": {
     "cache": "bun cache.ts",
+    "throttle": "bun throttle.ts",
     "compat": "bun test --check ./compat/keyv.compat.ts ./compat/toKeyvStore.compat.ts"
   },
   "dependencies": {
