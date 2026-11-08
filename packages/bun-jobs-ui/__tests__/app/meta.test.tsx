@@ -3,7 +3,7 @@ import type { Permissions } from "../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { canPerform, useCan, useFeature } from "../../app/meta/hooks";
 import { expectAbsent } from "./assert";
-import { fireEvent, page, render, setupDom, waitFor } from "./dom";
+import { fireEvent, LOADED, page, render, setupDom, waitFor } from "./dom";
 import { metaFixture, permissionsFixture, problem } from "./fixtures";
 import { renderApp } from "./renderApp";
 
@@ -32,7 +32,7 @@ describe("the bootstrap", () => {
   it("loads meta and permissions, then marks the app ready", async () => {
     const { calls } = renderApp();
     expect(page().getByTestId("bootstrap-loading")).toBeTruthy();
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     const paths = calls.map((call) => call.path);
     expect(paths).toContain("/meta");
     expect(paths).toContain("/meta/permissions");
@@ -53,7 +53,7 @@ describe("the bootstrap", () => {
             : { body: metaFixture() },
       },
     });
-    const screen = await page().findByTestId("bootstrap-error");
+    const screen = await page().findByTestId("bootstrap-error", {}, LOADED);
     expect(screen.textContent).toContain("Sign in required");
     expect(screen.textContent).toContain("Your session expired");
     expect(screen.textContent).toContain("UNAUTHORIZED");
@@ -61,7 +61,7 @@ describe("the bootstrap", () => {
 
     denied = false;
     fireEvent.click(page().getByRole("button", { name: "Retry" }));
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
   });
 
   it("shows access denied on a 403 from permissions", async () => {
@@ -75,7 +75,7 @@ describe("the bootstrap", () => {
         },
       },
     });
-    const screen = await page().findByTestId("bootstrap-error");
+    const screen = await page().findByTestId("bootstrap-error", {}, LOADED);
     expect(screen.textContent).toContain("Access denied");
     expect(screen.textContent).toContain("Operators only");
   });
@@ -90,7 +90,7 @@ describe("the bootstrap", () => {
         }),
       },
     });
-    const screen = await page().findByTestId("bootstrap-error");
+    const screen = await page().findByTestId("bootstrap-error", {}, LOADED);
     expect(screen.textContent).toContain("The jobs API could not be loaded");
     expect(screen.textContent).toContain("upstream down");
     expect(screen.textContent).toContain("HTTP_502");

@@ -1,6 +1,6 @@
 import type { FetchLike } from "../../../app/api/client";
 import { jobScreenPath } from "../../../app/api/jobs";
-import { act, fireEvent, page, visit, waitFor, within } from "../dom";
+import { act, fireEvent, LOADED, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 
 /**
@@ -107,7 +107,7 @@ export async function mountJobLogs(
     awaitView,
     clear: async () => {
       fireEvent.click(page().getByRole("button", { name: "Clear logs…" }));
-      const dialog = await page().findByRole("alertdialog");
+      const dialog = await page().findByRole("alertdialog", {}, LOADED);
       const confirmation = dialog.textContent ?? "";
       await act(async () => {
         fireEvent.click(

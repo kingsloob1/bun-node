@@ -8,7 +8,15 @@ import {
   clearLogsBlocker,
 } from "../../../app/screens/job/clearLogs";
 import { expectAbsent, expectUndefined } from "../assert";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import { problem } from "../fixtures";
 import {
   allPermissions,
@@ -61,7 +69,7 @@ async function renderLogs(
     },
   });
   const invalidate = spyOn(result.queryClient, "invalidateQueries");
-  await page().findByText(/in all$/);
+  await page().findByText(/in all$/, {}, LOADED);
   return { ...result, invalidate };
 }
 
@@ -75,7 +83,7 @@ function clearButton(): HTMLButtonElement | null {
 /** Opens the confirmation and returns it. */
 async function openConfirm(): Promise<HTMLElement> {
   fireEvent.click(clearButton()!);
-  return page().findByRole("alertdialog");
+  return page().findByRole("alertdialog", {}, LOADED);
 }
 
 /** Confirms the open dialog. */
@@ -181,7 +189,7 @@ describe("clear logs: the request", () => {
     );
     expect(keys).toContainEqual(jobKeys.logsAll("emails", AWKWARD_ID));
     await waitFor(() => expect(reads()).toBeGreaterThan(before));
-    await page().findByText("No log lines yet.");
+    await page().findByText("No log lines yet.", {}, LOADED);
     expect(clearButton()!.disabled).toBe(true);
   });
 
@@ -206,7 +214,7 @@ describe("clear logs: the request", () => {
       ).toBe(true),
     );
     await confirm(await openConfirm());
-    await page().findByText("No log lines yet.");
+    await page().findByText("No log lines yet.", {}, LOADED);
     const last = calls
       .filter((call) => call.method === "GET" && call.path === LOGS)
       .at(-1)!;

@@ -23,7 +23,7 @@ import {
   summonStateKnown,
 } from "../../../app/screens/queues/panels/summonText";
 import { expectAbsent, expectNone, expectUndefined } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
   errorToasts,
@@ -83,17 +83,13 @@ async function openPanel(handlers: Record<string, MockHandler | MockReply>) {
     path: "/queues/emails?panel=summon",
     handlers,
   });
-  const panel = await page().findByTestId(
-    "queue-summon",
-    {},
-    { timeout: 5_000 },
-  );
+  const panel = await page().findByTestId("queue-summon", {}, LOADED);
   return { ...rendered, panel };
 }
 
 /** The panel tab labels once the screen loaded. */
 async function tabLabels(): Promise<string[]> {
-  await page().findByTestId("queue-total");
+  await page().findByTestId("queue-total", {}, LOADED);
   // The summon read decides the tab; give it a moment to answer.
   await new Promise((resolve) => setTimeout(resolve, 50));
   const list = page().queryByRole("tablist", { name: "Queue details" });
@@ -107,7 +103,10 @@ async function tabLabels(): Promise<string[]> {
 describe("the Summon tab", () => {
   it("is offered where the queue has a summoner, after Demand", async () => {
     renderQueue({ handlers: granted() });
-    await waitFor(async () => expect(await tabLabels()).toContain("Summon"));
+    await waitFor(
+      async () => expect(await tabLabels()).toContain("Summon"),
+      LOADED,
+    );
     const labels = await tabLabels();
     expect(labels.indexOf("Summon")).toBe(labels.indexOf("Demand") + 1);
   });
@@ -141,7 +140,7 @@ describe("the Summon tab", () => {
         },
       },
     });
-    await page().findByTestId("queue-screen");
+    await page().findByTestId("queue-screen", {}, LOADED);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expectAbsent(page().queryByRole("tab", { name: "Summon" }));
     expect(calls.some((call) => call.path === "/queues/emails/summon")).toBe(
@@ -531,9 +530,13 @@ describe("Summon now and Reset", () => {
   ) {
     const { panel } = await openPanel(handlers);
     if (!readOnly) {
-      const header = await page().findByRole("group", {
-        name: "Queue actions",
-      });
+      const header = await page().findByRole(
+        "group",
+        {
+          name: "Queue actions",
+        },
+        LOADED,
+      );
       await within(header).findByRole("button", { name: /Pause/ });
     }
     expectAbsent(within(panel).queryByRole("button", { name: "Summon now…" }));
@@ -766,7 +769,11 @@ describe("a shared summon unit", () => {
       unitHandlers({ emails: true, thumbs: true, previews: false }),
     );
     // The queue's own map has answered: its header's Pause is there.
-    const header = await page().findByRole("group", { name: "Queue actions" });
+    const header = await page().findByRole(
+      "group",
+      { name: "Queue actions" },
+      LOADED,
+    );
     await within(header).findByRole("button", { name: /Pause/ });
     expectAbsent(within(panel).queryByRole("button", { name: "Summon now…" }));
     expectAbsent(within(panel).queryByRole("button", { name: "Reset…" }));

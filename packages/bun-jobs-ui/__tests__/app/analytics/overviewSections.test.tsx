@@ -2,7 +2,7 @@ import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { MAX_ANALYTICS_SERIES } from "../../../app/api/contract";
 import { expectAbsent, expectNone } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import {
   ANALYTICS_NOW,
   clampedRangeFixture,
@@ -18,7 +18,7 @@ setupDom();
 
 /** The Overview once its counts have rendered. */
 async function overview() {
-  const screen = await page().findByTestId("overview");
+  const screen = await page().findByTestId("overview", {}, LOADED);
   await within(screen).findByTestId("state-counts");
   return screen;
 }
@@ -48,7 +48,7 @@ describe("the Overview's Workers section", () => {
       }),
     });
     await overview();
-    await page().findByTestId("worker-analytics-row-worker-1");
+    await page().findByTestId("worker-analytics-row-worker-1", {}, LOADED);
 
     const reads = calls.filter((call) => call.path === "/analytics/workers");
     // One roll-up (no `keys`) and one batch for the visible page. That is the
@@ -74,7 +74,11 @@ describe("the Overview's Workers section", () => {
   it("links a row's worker key to its worker page and its queue to the queue", async () => {
     renderOverview();
     await overview();
-    const row = await page().findByTestId("worker-analytics-row-emails-1");
+    const row = await page().findByTestId(
+      "worker-analytics-row-emails-1",
+      {},
+      LOADED,
+    );
     const [key, queue] = within(row).getAllByRole("link");
     // The key's page is addressed by queue and key: a key is unique only
     // within its queue.
@@ -93,7 +97,11 @@ describe("the Overview's Workers section", () => {
       },
     });
     await overview();
-    const row = await page().findByTestId("worker-analytics-row-emails-1");
+    const row = await page().findByTestId(
+      "worker-analytics-row-emails-1",
+      {},
+      LOADED,
+    );
     expect(row.textContent).toContain("emails-1");
     const links = within(row).getAllByRole("link");
     // Only the queue is still linked.
@@ -108,7 +116,11 @@ describe("the Overview's Workers section", () => {
       },
     });
     await overview();
-    const row = await page().findByTestId("worker-analytics-row-emails-1");
+    const row = await page().findByTestId(
+      "worker-analytics-row-emails-1",
+      {},
+      LOADED,
+    );
     expect(row.textContent).toContain("emails");
     expect(
       within(row)
@@ -123,7 +135,7 @@ describe("the Overview's Workers section", () => {
     // the app hides its pager there; these two used to show one.
     renderOverview();
     await overview();
-    await page().findByTestId("worker-analytics-row-emails-1");
+    await page().findByTestId("worker-analytics-row-emails-1", {}, LOADED);
     expectAbsent(page().queryByRole("navigation", { name: "Worker pages" }));
     expectAbsent(page().queryByRole("navigation", { name: "Runner pages" }));
   });
@@ -140,7 +152,7 @@ describe("the Overview's Workers section", () => {
       }),
     });
     await overview();
-    const note = await page().findByTestId("workers-truncated");
+    const note = await page().findByTestId("workers-truncated", {}, LOADED);
     expect(note.textContent).toContain("100 busiest worker keys of 214");
     // The headline counts every key, not the page or the capped rows.
     const totals = document.querySelector('[aria-label="Worker totals"]');
@@ -158,7 +170,7 @@ describe("the Overview's Workers section", () => {
       }),
     });
     await overview();
-    await page().findByTestId("worker-analytics-row-worker-1");
+    await page().findByTestId("worker-analytics-row-worker-1", {}, LOADED);
     const before = calls.filter(
       (call) => call.path === "/analytics/workers",
     ).length;
@@ -169,6 +181,8 @@ describe("the Overview's Workers section", () => {
     );
     await page().findByTestId(
       `worker-analytics-row-worker-${MAX_ANALYTICS_SERIES + 1}`,
+      {},
+      LOADED,
     );
     const reads = calls.filter((call) => call.path === "/analytics/workers");
     expect(reads).toHaveLength(before + 1);
@@ -180,9 +194,13 @@ describe("the Overview's Workers section", () => {
   it("draws each row's sparkline from the batch, labelled with the resolution served", async () => {
     renderOverview();
     await overview();
-    const spark = await page().findByRole("img", {
-      name: /^emails-1: 12 completed, 1 failed, 1-minute buckets/,
-    });
+    const spark = await page().findByRole(
+      "img",
+      {
+        name: /^emails-1: 12 completed, 1 failed, 1-minute buckets/,
+      },
+      LOADED,
+    );
     expect(spark.tagName.toLowerCase()).toBe("svg");
   });
 
@@ -199,7 +217,7 @@ describe("the Overview's Workers section", () => {
       },
     });
     await overview();
-    const note = await page().findByTestId("workers-range-caption");
+    const note = await page().findByTestId("workers-range-caption", {}, LOADED);
     expect(note.getAttribute("data-clamp-reason")).toBe("maxBuckets");
     expect(note.textContent).toContain("1-minute buckets");
   });
@@ -211,7 +229,7 @@ describe("the Overview's Workers section", () => {
       },
     });
     await overview();
-    await page().findByText("No workers to show");
+    await page().findByText("No workers to show", {}, LOADED);
     expectAbsent(page().queryByRole("table", { name: "Workers" }));
   });
 
@@ -237,7 +255,7 @@ describe("the Overview's Workers section", () => {
     expect(alert.textContent).toContain("Could not load worker analytics");
     fail = false;
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
-    await page().findByTestId("worker-analytics-row-emails-1");
+    await page().findByTestId("worker-analytics-row-emails-1", {}, LOADED);
   });
 
   it("explains RANGE_NOT_RETAINED rather than calling it a failure", async () => {
@@ -261,7 +279,11 @@ describe("the Overview's Workers section", () => {
     });
     await overview();
     for (const id of ["workers", "runners", "jobs"]) {
-      const note = await page().findByTestId(`${id}-range-not-retained`);
+      const note = await page().findByTestId(
+        `${id}-range-not-retained`,
+        {},
+        LOADED,
+      );
       expect(note.getAttribute("role")).toBe("note");
       expect(note.textContent).toContain("No numbers are kept for this range");
       expect(note.textContent).toContain(
@@ -289,7 +311,11 @@ describe("the Overview's Workers section", () => {
           : { body: workersAnalyticsFixture() },
     });
     await overview();
-    const row = await page().findByTestId("worker-analytics-row-emails-1");
+    const row = await page().findByTestId(
+      "worker-analytics-row-emails-1",
+      {},
+      LOADED,
+    );
     await waitFor(() => expect(row.textContent).toContain("unavailable"));
     expect(row.textContent).toContain("emails-1");
   });
@@ -299,7 +325,11 @@ describe("the Overview's Runners section", () => {
   it("links a row's runner to its runner page", async () => {
     renderOverview();
     await overview();
-    const row = await page().findByTestId("runner-analytics-row-nightly");
+    const row = await page().findByTestId(
+      "runner-analytics-row-nightly",
+      {},
+      LOADED,
+    );
     const link = within(row).getByRole("link");
     expect(link.getAttribute("href")).toContain("/runners/nightly");
     expect(link.textContent).toBe("nightly");
@@ -314,7 +344,11 @@ describe("the Overview's Runners section", () => {
       },
     });
     await overview();
-    const row = await page().findByTestId("runner-analytics-row-nightly");
+    const row = await page().findByTestId(
+      "runner-analytics-row-nightly",
+      {},
+      LOADED,
+    );
     expect(row.textContent).toContain("nightly");
     expectNone(within(row).queryAllByRole("link"));
   });
@@ -322,7 +356,7 @@ describe("the Overview's Runners section", () => {
   it("reads the roll-up and one batch, and labels the derived in-flight line", async () => {
     const { calls } = renderOverview();
     await overview();
-    await page().findByTestId("runner-analytics-row-nightly");
+    await page().findByTestId("runner-analytics-row-nightly", {}, LOADED);
     const reads = calls.filter((call) => call.path === "/analytics/runners");
     expect(reads).toHaveLength(2);
     expect(reads[1].query.getAll("ids")).toEqual(["nightly", "hourly"]);
@@ -343,7 +377,7 @@ describe("the Overview's Runners section", () => {
       "GET /analytics/runners": { body: runnersAnalyticsFixture([]) },
     });
     await overview();
-    await page().findByText("No runners");
+    await page().findByText("No runners", {}, LOADED);
   });
 });
 
@@ -373,7 +407,7 @@ describe("gating the analytics sections", () => {
       },
     });
     await overview();
-    await page().findByTestId("workers-analytics");
+    await page().findByTestId("workers-analytics", {}, LOADED);
     expectAbsent(page().queryByTestId("runners-analytics"));
     expect(calls.some((call) => call.path === "/analytics/runners")).toBe(
       false,
@@ -388,7 +422,7 @@ describe("gating the analytics sections", () => {
     const meta = metaFixture({ mode: "jobs" });
     meta.features = { ...meta.features, runnerMetrics: false };
     const { calls } = renderOverview({ "GET /meta": { body: meta } });
-    await page().findByTestId("workers-analytics");
+    await page().findByTestId("workers-analytics", {}, LOADED);
     expectAbsent(page().queryByTestId("runners-analytics"));
     expect(calls.some((call) => call.path === "/analytics/runners")).toBe(
       false,
@@ -402,7 +436,9 @@ describe("gating the analytics sections", () => {
     const meta = metaFixture({ mode: "jobs" });
     meta.features = { ...meta.features, runnerMetrics: true };
     renderOverview({ "GET /meta": { body: meta } });
-    expect(await page().findByTestId("runners-analytics")).toBeTruthy();
+    expect(
+      await page().findByTestId("runners-analytics", {}, LOADED),
+    ).toBeTruthy();
   });
 
   it("hides both without metrics.read — and invents no new action for them", async () => {
@@ -411,8 +447,8 @@ describe("gating the analytics sections", () => {
     const { calls } = renderOverview({
       "GET /meta/permissions": { body: permissions },
     });
-    await page().findByTestId("overview");
-    await page().findByTestId("queue-row-emails");
+    await page().findByTestId("overview", {}, LOADED);
+    await page().findByTestId("queue-row-emails", {}, LOADED);
     expectAbsent(page().queryByTestId("runners-analytics"));
     expectAbsent(page().queryByTestId("workers-analytics"));
     expect(calls.some((call) => call.path.startsWith("/analytics/"))).toBe(

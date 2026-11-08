@@ -1,7 +1,7 @@
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent, expectUndefined } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
   detailFixture,
@@ -16,9 +16,9 @@ setupDom();
 
 /** The queue screen once its header and actions loaded. */
 async function loaded() {
-  await page().findByTestId("queue-screen");
-  await page().findByTestId("queue-total");
-  return page().findByRole("group", { name: "Queue actions" });
+  await page().findByTestId("queue-screen", {}, LOADED);
+  await page().findByTestId("queue-total", {}, LOADED);
+  return page().findByRole("group", { name: "Queue actions" }, LOADED);
 }
 
 /** The one call to a path. */
@@ -77,7 +77,7 @@ describe("the queue header", () => {
       },
     });
     expect(
-      await page().findByText("Could not load the queue emails"),
+      await page().findByText("Could not load the queue emails", {}, LOADED),
     ).toBeTruthy();
   });
 });
@@ -426,8 +426,8 @@ describe("permissions", () => {
         },
       },
     });
-    await page().findByTestId("queue-total");
-    await page().findByRole("table", { name: "Jobs in emails" });
+    await page().findByTestId("queue-total", {}, LOADED);
+    await page().findByRole("table", { name: "Jobs in emails" }, LOADED);
     expectAbsent(page().queryByRole("group", { name: "Queue actions" }));
     expectAbsent(page().queryByRole("group", { name: "Bulk actions" }));
     expectAbsent(page().queryByRole("button", { name: "Add job" }));
@@ -435,7 +435,7 @@ describe("permissions", () => {
     // The limits panel is a summary, not an editor; repeatables have no remove.
     expectAbsent(page().queryByRole("button", { name: "Save limits" }));
     fireEvent.click(page().getByRole("tab", { name: "Repeatables" }));
-    await page().findByTestId("repeatable-row-digest:cron");
+    await page().findByTestId("repeatable-row-digest:cron", {}, LOADED);
     expectAbsent(page().queryByRole("button", { name: /Remove repeatable/ }));
   });
 });

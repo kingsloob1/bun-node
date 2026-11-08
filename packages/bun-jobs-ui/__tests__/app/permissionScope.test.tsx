@@ -1,6 +1,6 @@
 import type { MockHandler } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
-import { page, setupDom, waitFor, within } from "./dom";
+import { LOADED, page, setupDom, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
 import { renderQueue } from "./queues/fixtures";
 
@@ -19,8 +19,8 @@ const perQueue: MockHandler = (call) => ({
 
 /** The queue screen's action group, once loaded. */
 async function actions() {
-  await page().findByTestId("queue-total");
-  return page().findByRole("group", { name: "Queue actions" });
+  await page().findByTestId("queue-total", {}, LOADED);
+  return page().findByRole("group", { name: "Queue actions" }, LOADED);
 }
 
 describe("per-queue permissions", () => {

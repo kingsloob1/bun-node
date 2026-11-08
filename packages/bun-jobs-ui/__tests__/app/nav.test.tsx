@@ -2,7 +2,7 @@ import type { JobsApiAction } from "../../app/api/contract";
 import type { NavInputs } from "../../app/layout/nav";
 import { afterEach, describe, expect, it } from "bun:test";
 import { buildNav } from "../../app/layout/nav";
-import { page, setupDom, visit, waitFor } from "./dom";
+import { LOADED, page, setupDom, visit, waitFor } from "./dom";
 import { metaFixture, permissionsFixture } from "./fixtures";
 import { liveFake } from "./liveFake";
 import { renderApp } from "./renderApp";
@@ -232,7 +232,7 @@ describe("the rendered layout", () => {
         "GET /meta": { body: metaFixture({ mode: "jobs" }) },
       },
     });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     expect(sidebarLinks()).toEqual([
       "Overview",
       "Queues",
@@ -258,19 +258,19 @@ describe("the rendered layout", () => {
     const first = renderApp({
       handlers: { "GET /meta": { body: metaFixture({ mode: "jobs" }) } },
     });
-    await page().findByTestId("not-found");
+    await page().findByTestId("not-found", {}, LOADED);
     first.unmount();
 
     visit("/jobs/docs");
     renderApp();
-    expect(await page().findByTestId("docs-home")).toBeTruthy();
+    expect(await page().findByTestId("docs-home", {}, LOADED)).toBeTruthy();
   });
 
   it("redirects the start page to the first section when Overview is not available", async () => {
     renderApp({
       handlers: { "GET /meta": { body: metaFixture({ mode: "runner" }) } },
     });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     await waitFor(() => expect(window.location.pathname).toBe("/jobs/runners"));
   });
 
@@ -278,7 +278,7 @@ describe("the rendered layout", () => {
     renderApp({
       config: { sections: { manage: false, docs: false } },
     });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     expect(page().getByText("Nothing to show")).toBeTruthy();
     expect(sidebarLinks()).toEqual([]);
   });
@@ -294,13 +294,13 @@ describe("the rendered layout", () => {
 
     visit("/jobs/docs");
     const home = renderApp();
-    await page().findByTestId("docs-home");
+    await page().findByTestId("docs-home", {}, LOADED);
     expect(current()).toEqual(["API docs"]);
     home.unmount();
 
     visit("/jobs/docs/ws");
     renderApp();
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     await waitFor(() => expect(current()).toEqual(["WebSocket API"]));
   });
 
@@ -315,7 +315,7 @@ describe("the rendered layout", () => {
         },
       },
     });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     expect(sidebarLinks()).toEqual([
       "Overview",
       "Queues",
@@ -331,7 +331,7 @@ describe("the rendered layout", () => {
     renderApp({
       handlers: { "GET /meta": { body: metaFixture({ readOnly: true }) } },
     });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     expect(page().getByRole("banner").textContent).toContain("read-only");
   });
 });

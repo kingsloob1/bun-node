@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {
   advance,
@@ -28,7 +28,7 @@ function rowIds(table: HTMLElement): string[] {
 describe("the runner list screen", () => {
   it("shows a remote runner's shared paused flag, and any runner's run in flight", async () => {
     renderRunner({ path: "/runners" });
-    const table = await page().findByRole("table", { name: "Runners" });
+    const table = await page().findByRole("table", { name: "Runners" }, LOADED);
     const billing = within(table).getByTestId("runner-row-billing");
     expect(billing.textContent).toContain("Paused");
     expect(billing.textContent).not.toContain("Run in flight");
@@ -71,7 +71,7 @@ describe("the runner list screen", () => {
         },
       },
     });
-    const table = await page().findByRole("table", { name: "Runners" });
+    const table = await page().findByRole("table", { name: "Runners" }, LOADED);
     expect(rowIds(table)).toEqual([
       "nightly",
       "sync",
@@ -110,7 +110,7 @@ describe("the runner list screen", () => {
 
   it("filters by id or name in the browser, keeps the filter in the URL, and says when nothing matches", async () => {
     const { calls } = renderRunner({ path: "/runners" });
-    const table = await page().findByRole("table", { name: "Runners" });
+    const table = await page().findByRole("table", { name: "Runners" }, LOADED);
     const filter = page().getByLabelText("Filter runners by id or name");
 
     fireEvent.change(filter, { target: { value: "REPORT" } });
@@ -129,15 +129,15 @@ describe("the runner list screen", () => {
     ).toBe(true);
 
     fireEvent.change(filter, { target: { value: "ghost" } });
-    await page().findByText("No runners match");
+    await page().findByText("No runners match", {}, LOADED);
     fireEvent.change(filter, { target: { value: "" } });
-    const again = await page().findByRole("table", { name: "Runners" });
+    const again = await page().findByRole("table", { name: "Runners" }, LOADED);
     expect(rowIds(again)).toHaveLength(4);
   });
 
   it("starts from the filter in the URL", async () => {
     renderRunner({ path: "/runners?search=bill" });
-    const table = await page().findByRole("table", { name: "Runners" });
+    const table = await page().findByRole("table", { name: "Runners" }, LOADED);
     expect(rowIds(table)).toEqual(["billing"]);
     expect(
       (
@@ -153,7 +153,7 @@ describe("the runner list screen", () => {
       path: "/runners",
       handlers: { "GET /runners": { body: { items: [] } } },
     });
-    expect(await page().findByText("No runners yet")).toBeTruthy();
+    expect(await page().findByText("No runners yet", {}, LOADED)).toBeTruthy();
   });
 
   it("shows a load failure with a retry", async () => {
@@ -170,10 +170,12 @@ describe("the runner list screen", () => {
             : { body: runnerListFixture() },
       },
     });
-    expect(await page().findByText("Could not load runners")).toBeTruthy();
+    expect(
+      await page().findByText("Could not load runners", {}, LOADED),
+    ).toBeTruthy();
     fail = false;
     fireEvent.click(page().getByRole("button", { name: "Retry" }));
-    await page().findByRole("table", { name: "Runners" });
+    await page().findByRole("table", { name: "Runners" }, LOADED);
   });
 
   it("shows a spinner while loading", async () => {
@@ -190,9 +192,9 @@ describe("the runner list screen", () => {
         },
       },
     });
-    expect(await page().findByText("Loading runners")).toBeTruthy();
+    expect(await page().findByText("Loading runners", {}, LOADED)).toBeTruthy();
     answer?.();
-    await page().findByRole("table", { name: "Runners" });
+    await page().findByRole("table", { name: "Runners" }, LOADED);
   });
 
   it("has no runners section, and never requests the list, without runners.list", async () => {
@@ -200,7 +202,7 @@ describe("the runner list screen", () => {
       path: "/runners",
       permissions: permissionsFixture({ "runners.list": false }),
     });
-    await page().findByTestId("not-found");
+    await page().findByTestId("not-found", {}, LOADED);
     expectAbsent(page().queryByTestId("runners-list"));
     expect(calls.some((call) => call.path === "/runners")).toBe(false);
   });

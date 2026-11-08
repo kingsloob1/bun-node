@@ -1,5 +1,5 @@
 import type { FetchLike } from "../../../app/api/client";
-import { fireEvent, page, visit, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 
 /**
@@ -84,7 +84,7 @@ export async function mountWorkerPage(
       fireEvent.click(
         page().getByRole("button", { name: "Reset to code values…" }),
       );
-      const dialog = await page().findByRole("alertdialog");
+      const dialog = await page().findByRole("alertdialog", {}, LOADED);
       fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
       let toast = "";
       await waitFor(

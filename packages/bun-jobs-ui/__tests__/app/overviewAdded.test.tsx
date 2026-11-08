@@ -3,7 +3,7 @@ import type { RecordedCall } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
 import { formatNumber } from "../../app/format";
 import { expectAbsent, expectNone } from "./assert";
-import { page, setupDom, visit, waitFor, within } from "./dom";
+import { LOADED, page, setupDom, visit, waitFor, within } from "./dom";
 import { metaFixture, problem } from "./fixtures";
 import { renderApp } from "./renderApp";
 
@@ -57,7 +57,7 @@ function addedReads(calls: readonly RecordedCall[]): RecordedCall[] {
 
 /** The tile, once the analytics series has filled it. */
 async function tile(): Promise<HTMLElement> {
-  const found = await page().findByTestId("range-stat");
+  const found = await page().findByTestId("range-stat", {}, LOADED);
   await waitFor(() => expect(found.textContent).toContain("Failed attempts"));
   return found;
 }
@@ -69,8 +69,8 @@ describe("the Over the range tile's added-by-state group", () => {
     });
     const stat = await tile();
     // Let the rest of the page load too, then look at every request it made.
-    await page().findByTestId("jobs-series");
-    await page().findByTestId("queue-row-emails");
+    await page().findByTestId("jobs-series", {}, LOADED);
+    await page().findByTestId("queue-row-emails", {}, LOADED);
     expectNone(addedReads(calls));
     expectAbsent(within(stat).queryByTestId("range-stat-added"));
     expect(stat.textContent).not.toContain("Added in range");
@@ -83,7 +83,7 @@ describe("the Over the range tile's added-by-state group", () => {
   it("the shared meta fixture keeps the flag off", async () => {
     const { calls } = renderApp();
     await tile();
-    await page().findByTestId("queue-row-emails");
+    await page().findByTestId("queue-row-emails", {}, LOADED);
     expect(metaFixture().features.addedByState).toBe(false);
     expectNone(addedReads(calls));
   });
@@ -148,7 +148,7 @@ describe("the Over the range tile's added-by-state group", () => {
         "GET /overview/added": { body: added() },
       },
     });
-    const group = await page().findByTestId("range-stat-added");
+    const group = await page().findByTestId("range-stat-added", {}, LOADED);
     await waitFor(() => expect(group.textContent).toContain("Retrying4"));
     const stat = page().getByTestId("range-stat");
     expect(stat.textContent).not.toContain("Failed attempts");
@@ -165,7 +165,7 @@ describe("the Over the range tile's added-by-state group", () => {
         },
       },
     });
-    const group = await page().findByTestId("range-stat-added");
+    const group = await page().findByTestId("range-stat-added", {}, LOADED);
     await waitFor(() => expect(group.textContent).toContain("Could not load"));
     expect(page().getByTestId("range-stat").textContent).toContain(
       "Failed attempts",
@@ -180,7 +180,7 @@ describe("the Over the range tile's added-by-state group", () => {
         "GET /overview/added": { body: added() },
       },
     });
-    await page().findByTestId("range-stat-added");
+    await page().findByTestId("range-stat-added", {}, LOADED);
     await waitFor(() => expect(addedReads(calls).length).toBeGreaterThan(0));
     const [read] = addedReads(calls);
     expect(Number(read.query.get("to")) - Number(read.query.get("from"))).toBe(

@@ -102,16 +102,27 @@ function testFiles(): string[] {
   ];
 }
 
+/**
+ * The scans' budget. Walking every test file's import graph is CPU-bound:
+ * about half a second quiet, and 6.5 s once under a full `--parallel` run
+ * beside another heavy job, past bun:test's default 5 s.
+ */
+const SCAN_TIMEOUT = 30_000;
+
 describe("DOM isolation between test files", () => {
-  it("every test file that imports the DOM calls setupDom()", () => {
-    const files = testFiles();
-    expect(files.length).toBeGreaterThan(0);
-    const leaking = files
-      .filter((file) => loadsDom(file))
-      .filter((file) => !CALLS_SETUP_DOM.test(readFileSync(file, "utf8")))
-      .map((file) => relative(ROOT, file));
-    expect(leaking).toEqual([]);
-  });
+  it(
+    "every test file that imports the DOM calls setupDom()",
+    () => {
+      const files = testFiles();
+      expect(files.length).toBeGreaterThan(0);
+      const leaking = files
+        .filter((file) => loadsDom(file))
+        .filter((file) => !CALLS_SETUP_DOM.test(readFileSync(file, "utf8")))
+        .map((file) => relative(ROOT, file));
+      expect(leaking).toEqual([]);
+    },
+    SCAN_TIMEOUT,
+  );
 
   /**
    * react-dom decides at module evaluation whether it runs in a DOM. A test
@@ -120,12 +131,16 @@ describe("DOM isolation between test files", () => {
    * DOM file, and from then on no `onChange` fires in any file. `dom.ts`
    * therefore loads Testing Library dynamically, and so must everyone else.
    */
-  it("no test file imports react-dom statically", () => {
-    const eager = testFiles()
-      .filter((file) => loadsReactDom(file))
-      .map((file) => relative(ROOT, file));
-    expect(eager).toEqual([]);
-  });
+  it(
+    "no test file imports react-dom statically",
+    () => {
+      const eager = testFiles()
+        .filter((file) => loadsReactDom(file))
+        .map((file) => relative(ROOT, file));
+      expect(eager).toEqual([]);
+    },
+    SCAN_TIMEOUT,
+  );
 
   it("negative control: the scan sees a DOM import through a fixture, and only then", () => {
     expect(loadsDom(join(import.meta.dir, "queues", "helpers.test.ts"))).toBe(

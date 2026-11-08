@@ -1,7 +1,7 @@
 import type { JobDto, MetaDto } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent } from "../assert";
-import { page, setupDom, within } from "../dom";
+import { LOADED, page, setupDom, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { jobFixture, jobPageFixture, renderQueue } from "./fixtures";
 
@@ -40,7 +40,11 @@ async function open(attribution: boolean, workersList = true) {
       "GET /queues/emails/jobs": { body: jobPageFixture({ items: JOBS }) },
     },
   });
-  const table = await page().findByRole("table", { name: "Jobs in emails" });
+  const table = await page().findByRole(
+    "table",
+    { name: "Jobs in emails" },
+    LOADED,
+  );
   await within(table).findByTestId("job-row-keyed");
   return table;
 }

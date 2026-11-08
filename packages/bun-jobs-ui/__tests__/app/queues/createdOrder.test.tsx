@@ -2,7 +2,15 @@ import type { MetaDto } from "../../../app/api/types";
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "../workers/fixtures";
@@ -39,7 +47,7 @@ describe("the queue's jobs table", () => {
       path: "/queues/emails?state=completed",
       handlers: { "GET /meta": { body: meta(false) } },
     });
-    await page().findByRole("table", { name: "Jobs in emails" });
+    await page().findByRole("table", { name: "Jobs in emails" }, LOADED);
     fireEvent.click(page().getByLabelText("Count total"));
     await waitFor(() =>
       expect(jobReads(calls).at(-1)!.query.get("total")).toBe("true"),
@@ -55,7 +63,7 @@ describe("the queue's jobs table", () => {
       path: "/queues/emails?state=completed",
       handlers: { "GET /meta": { body: meta(true) } },
     });
-    await page().findByRole("table", { name: "Jobs in emails" });
+    await page().findByRole("table", { name: "Jobs in emails" }, LOADED);
     const read = jobReads(calls).at(-1)!;
     expect(read.query.get("state")).toBe("completed");
     expect(read.query.get("sort")).toBe("createdAt");
@@ -69,7 +77,7 @@ describe("the queue's jobs table", () => {
       path: "/queues/emails?state=dead",
       handlers: { "GET /meta": { body: meta(true) } },
     });
-    await page().findByRole("table", { name: "Jobs in emails" });
+    await page().findByRole("table", { name: "Jobs in emails" }, LOADED);
     expect(jobReads(calls).at(-1)!.query.get("sort")).toBe("createdAt");
     fireEvent.click(page().getByLabelText("Count total"));
     await waitFor(() =>
@@ -77,8 +85,13 @@ describe("the queue's jobs table", () => {
     );
     expect(jobReads(calls).at(-1)!.query.has("sort")).toBe(false);
     expect(
-      (await page().findByText(/keeps its own order, not creation order/))
-        .textContent,
+      (
+        await page().findByText(
+          /keeps its own order, not creation order/,
+          {},
+          LOADED,
+        )
+      ).textContent,
     ).toContain("While counting");
   });
 });
@@ -111,7 +124,7 @@ describe("the worker page's jobs section", () => {
 
   it("sends no sort without the flag", async () => {
     const { calls } = open(false);
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     await within(card).findByTestId("job-row-job-1");
     expect(jobReads(calls).length).toBeGreaterThan(0);
     expect(jobReads(calls).some((call) => call.query.has("sort"))).toBe(false);
@@ -119,7 +132,7 @@ describe("the worker page's jobs section", () => {
 
   it("sorts by creation time with the flag", async () => {
     const { calls } = open(true);
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     await within(card).findByTestId("job-row-job-1");
     const read = jobReads(calls).at(-1)!;
     expect(read.query.get("state")).toBe("delayed");

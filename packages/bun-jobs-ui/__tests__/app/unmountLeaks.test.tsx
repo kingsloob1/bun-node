@@ -43,6 +43,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  LOADED,
   page,
   render,
   setupDom,
@@ -808,9 +809,13 @@ describe("transient UI leaves nothing behind when unmounted mid-way", () => {
         ),
       );
     });
-    const dialog = await page().findByRole("dialog", {
-      name: "Add a flow to emails",
-    });
+    const dialog = await page().findByRole(
+      "dialog",
+      {
+        name: "Add a flow to emails",
+      },
+      LOADED,
+    );
     await act(async () => {
       fireEvent.click(
         within(dialog).getByRole("button", { name: "Add child to Top job" }),

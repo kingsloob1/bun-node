@@ -1,5 +1,5 @@
 import type { FetchLike } from "../../../../app/api/client";
-import { fireEvent, page, visit, waitFor, within } from "../../dom";
+import { fireEvent, LOADED, page, visit, waitFor, within } from "../../dom";
 import { renderApp } from "../../renderApp";
 
 /**
@@ -70,7 +70,7 @@ export async function tryJobChannel(
   const tryHref = link.getAttribute("href") ?? "";
   fireEvent.click(link);
 
-  const screen = await page().findByTestId("events-screen");
+  const screen = await page().findByTestId("events-screen", {}, LOADED);
   let consoleChannel = "";
   await waitFor(() => {
     consoleChannel =

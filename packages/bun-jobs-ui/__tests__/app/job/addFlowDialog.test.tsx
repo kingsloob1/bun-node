@@ -9,7 +9,15 @@ import { describe, expect, it, mock } from "bun:test";
 import { queueKeys } from "../../../app/api/queues";
 import { AddFlowDialog } from "../../../app/screens/job/AddFlowDialog";
 import { expectAbsent, expectNone } from "../assert";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import {
   metaFixture,
   permissionsFixture,
@@ -57,9 +65,13 @@ async function openFlow(
       },
     },
   );
-  const dialog = await page().findByRole("dialog", {
-    name: "Add a flow to emails",
-  });
+  const dialog = await page().findByRole(
+    "dialog",
+    {
+      name: "Add a flow to emails",
+    },
+    LOADED,
+  );
   const posts = () => result.calls.filter((call) => call.method === "POST");
   return { ...result, dialog, onClose, posts };
 }
@@ -149,8 +161,8 @@ describe("the Add flow button on the queue screen", () => {
         "GET /meta/permissions": { body: permissionsFixture(actions) },
       },
     });
-    await page().findByTestId("queue-total");
-    await page().findByRole("table", { name: "Jobs in emails" });
+    await page().findByTestId("queue-total", {}, LOADED);
+    await page().findByRole("table", { name: "Jobs in emails" }, LOADED);
     return rendered;
   }
 
@@ -195,9 +207,13 @@ describe("the Add flow button on the queue screen", () => {
       await act(async () => {
         fireEvent.click(button);
       });
-      const dialog = await page().findByRole("dialog", {
-        name: "Add a flow to emails",
-      });
+      const dialog = await page().findByRole(
+        "dialog",
+        {
+          name: "Add a flow to emails",
+        },
+        LOADED,
+      );
       expect(dialog.contains(document.activeElement)).toBe(true);
       if (close === "Cancel") {
         await press(dialog, "Cancel");

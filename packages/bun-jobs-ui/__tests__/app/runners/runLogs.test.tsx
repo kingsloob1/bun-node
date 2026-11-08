@@ -9,7 +9,7 @@ import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { CAPTURE_GAP_NOTE } from "../../../app/screens/runners/runLogFormat";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {
   advance,
@@ -112,7 +112,7 @@ async function renderWithLogs(
         typeof answer === "function" ? answer : { body: answer },
     },
   });
-  await page().findByText("History");
+  await page().findByText("History", {}, LOADED);
   await waitFor(() => {
     if (!document.querySelector(".history-table")) {
       throw new Error("no history yet");
@@ -146,7 +146,7 @@ describe("the run log on a history row", () => {
       ]),
     });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    await page().findByTestId("run-logs-run-3");
+    await page().findByTestId("run-logs-run-3", {}, LOADED);
     await waitFor(() => expect(lines()).toHaveLength(3));
 
     expect(logCalls(calls)).toHaveLength(1);
@@ -174,7 +174,7 @@ describe("the run log on a history row", () => {
   it("keeps the open log in the URL, and closing it takes it out", async () => {
     await renderWithLogs();
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    await page().findByTestId("run-logs-run-3");
+    await page().findByTestId("run-logs-run-3", {}, LOADED);
     expect(new URLSearchParams(window.location.search).get("logs")).toBe(
       "run-3",
     );
@@ -208,7 +208,7 @@ describe("the run log on a history row", () => {
       logs: logPage([logLine(1, { message: "from the run" })]),
     });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    await page().findByTestId("run-logs-run-3");
+    await page().findByTestId("run-logs-run-3", {}, LOADED);
     await waitFor(() => expect(lines()).toEqual(["from the run"]));
     await settle();
   });
@@ -271,7 +271,7 @@ describe("where a run's log is hosted", () => {
         },
       },
     });
-    await page().findByText("History");
+    await page().findByText("History", {}, LOADED);
     await waitFor(() => {
       if (!document.querySelector(".history-table")) {
         throw new Error("no history yet");
@@ -282,7 +282,7 @@ describe("where a run's log is hosted", () => {
     fireEvent.click(
       within(row(active.runId)).getByRole("button", { name: "Log" }),
     );
-    await page().findByTestId(`run-logs-${active.runId}`);
+    await page().findByTestId(`run-logs-${active.runId}`, {}, LOADED);
     // Now the same run's details are on screen twice, and its log once.
     expect(page().getAllByTestId(`run-${active.runId}`)).toHaveLength(2);
     expect(page().getAllByTestId(`run-logs-${active.runId}`)).toHaveLength(1);
@@ -301,7 +301,7 @@ describe("what the run log view says", () => {
       }),
     });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    const notes = await page().findByTestId("run-log-notes");
+    const notes = await page().findByTestId("run-log-notes", {}, LOADED);
     expect(notes.textContent).toContain("8 earlier lines dropped");
     expect(notes.textContent).toContain("A cap is trimming this log now");
     expect(page().getByTestId("run-logs-run-3").textContent).toContain(
@@ -314,7 +314,7 @@ describe("what the run log view says", () => {
       logs: logPage([logLine(1, { message: "xxxx", truncated: true })]),
     });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    await page().findByTestId("run-logs-run-3");
+    await page().findByTestId("run-logs-run-3", {}, LOADED);
     await waitFor(() =>
       expect(document.querySelector(".run-log-cut")).not.toBeNull(),
     );
@@ -326,9 +326,9 @@ describe("what the run log view says", () => {
   it("tells a run that logged nothing from a log that is not retained", async () => {
     const { unmount } = await renderWithLogs({ logs: logPage([]) });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    expect((await page().findByTestId("run-logs-empty")).textContent).toContain(
-      "This run logged nothing",
-    );
+    expect(
+      (await page().findByTestId("run-logs-empty", {}, LOADED)).textContent,
+    ).toContain("This run logged nothing");
     unmount();
 
     await renderWithLogs({
@@ -340,7 +340,7 @@ describe("what the run log view says", () => {
       }),
     });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    await page().findByText("Run logs are not retained");
+    await page().findByText("Run logs are not retained", {}, LOADED);
     expect(page().getByTestId("run-logs-run-3").textContent).toContain(
       "This run's log has been dropped.",
     );
@@ -358,7 +358,7 @@ describe("what the run log view says", () => {
       }),
     });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    await page().findByText("No log for this run");
+    await page().findByText("No log for this run", {}, LOADED);
     expect(page().getByTestId("run-logs-run-3").textContent).toContain(
       "aged out of the runs this runner keeps",
     );
@@ -447,7 +447,7 @@ describe("the stream filter", () => {
           : { body: logPage([logLine(1), logLine(2, { stream: "stderr" })]) },
     });
     fireEvent.click(within(row()).getByRole("button", { name: "Log" }));
-    await page().findByTestId("run-logs-run-3");
+    await page().findByTestId("run-logs-run-3", {}, LOADED);
     await waitFor(() => expect(lines()).toHaveLength(2));
 
     fireEvent.change(page().getByLabelText("Stream"), {

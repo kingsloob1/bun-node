@@ -9,6 +9,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  LOADED,
   page,
   setupDom,
   waitFor,
@@ -42,7 +43,7 @@ async function renderActions(
     },
   });
   const invalidate = spyOn(result.queryClient, "invalidateQueries");
-  await page().findByRole("heading", { level: 1 });
+  await page().findByRole("heading", { level: 1 }, LOADED);
   return { ...result, invalidate };
 }
 
@@ -82,9 +83,13 @@ describe("retry", () => {
       [`POST ${jobApiPath()}/retry`]: { body: { retried: true } },
     });
     clickAction("Retry");
-    const dialog = await page().findByRole("dialog", {
-      name: "Retry this job?",
-    });
+    const dialog = await page().findByRole(
+      "dialog",
+      {
+        name: "Retry this job?",
+      },
+      LOADED,
+    );
     const reset = within(dialog).getByLabelText(
       "Reset attempts",
     ) as HTMLInputElement;
@@ -107,9 +112,13 @@ describe("retry", () => {
       [`POST ${jobApiPath()}/retry`]: { body: { retried: true } },
     });
     clickAction("Retry");
-    const dialog = await page().findByRole("dialog", {
-      name: "Retry this job?",
-    });
+    const dialog = await page().findByRole(
+      "dialog",
+      {
+        name: "Retry this job?",
+      },
+      LOADED,
+    );
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
     });
@@ -130,9 +139,13 @@ describe("retry", () => {
       },
     });
     clickAction("Retry");
-    const dialog = await page().findByRole("dialog", {
-      name: "Retry this job?",
-    });
+    const dialog = await page().findByRole(
+      "dialog",
+      {
+        name: "Retry this job?",
+      },
+      LOADED,
+    );
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
     });
@@ -183,9 +196,13 @@ describe("remove", () => {
       [`DELETE ${jobApiPath()}`]: { status: 204 },
     });
     clickAction("Remove");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Remove this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Remove this job?",
+      },
+      LOADED,
+    );
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     });
@@ -213,9 +230,13 @@ describe("remove", () => {
       },
     });
     clickAction("Remove");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Remove this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Remove this job?",
+      },
+      LOADED,
+    );
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     });
@@ -228,9 +249,13 @@ describe("remove", () => {
 /** Opens the fail dialog, fills the reason, types the confirmation and confirms. */
 async function failWith(reason: string, typed = AWKWARD_ID) {
   clickAction("Fail…");
-  const dialog = await page().findByRole("alertdialog", {
-    name: "Fail this job?",
-  });
+  const dialog = await page().findByRole(
+    "alertdialog",
+    {
+      name: "Fail this job?",
+    },
+    LOADED,
+  );
   fireEvent.change(within(dialog).getByLabelText(/Reason/), {
     target: { value: reason },
   });
@@ -249,9 +274,13 @@ describe("fail", () => {
       [`POST ${jobApiPath()}/fail`]: { body: { failed: true } },
     });
     clickAction("Fail…");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Fail this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Fail this job?",
+      },
+      LOADED,
+    );
     const confirm = within(dialog).getByRole("button", { name: "Fail job" });
     const reason = within(dialog).getByLabelText(/Reason/) as HTMLInputElement;
     expect(reason.required).toBe(true);
@@ -289,9 +318,13 @@ describe("fail", () => {
   it("keeps confirm disabled while the typed id is wrong", async () => {
     await renderActions(jobFixture("delayed"));
     clickAction("Fail…");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Fail this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Fail this job?",
+      },
+      LOADED,
+    );
     fireEvent.change(within(dialog).getByLabelText(/Reason/), {
       target: { value: "no" },
     });
@@ -312,9 +345,13 @@ describe("fail", () => {
       [`POST ${jobApiPath()}/fail`]: { body: { failed: true } },
     });
     clickAction("Fail…");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Fail this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Fail this job?",
+      },
+      LOADED,
+    );
     const confirm = within(dialog).getByRole("button", {
       name: "Fail job",
     }) as HTMLButtonElement;
@@ -343,9 +380,13 @@ describe("fail", () => {
   it("refuses a reason over 4096 characters in place", async () => {
     await renderActions(jobFixture("waiting"));
     clickAction("Fail…");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Fail this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Fail this job?",
+      },
+      LOADED,
+    );
     fireEvent.change(within(dialog).getByLabelText(/Reason/), {
       target: { value: "x".repeat(4097) },
     });
@@ -365,9 +406,13 @@ describe("fail", () => {
   it("warns that failing an active job does not stop its code", async () => {
     await renderActions(jobFixture("active"));
     clickAction("Fail…");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Fail this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Fail this job?",
+      },
+      LOADED,
+    );
     expect(
       within(dialog).getByTestId("fail-active-note").textContent,
     ).toContain("does not stop its code");
@@ -439,9 +484,13 @@ describe("fail", () => {
       { id },
     );
     clickAction("Fail…");
-    const dialog = await page().findByRole("alertdialog", {
-      name: "Fail this job?",
-    });
+    const dialog = await page().findByRole(
+      "alertdialog",
+      {
+        name: "Fail this job?",
+      },
+      LOADED,
+    );
     expect(dialog.textContent).toContain(
       "Type the id's last 8 characters, tail1234, to confirm",
     );

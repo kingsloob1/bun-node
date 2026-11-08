@@ -18,7 +18,7 @@ import {
   RESET_CANNOT_RESTORE,
 } from "../../../app/screens/queues/panels/jobDefaults/text";
 import { expectAbsent, expectNone, expectUndefined } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {
   jobDefaultsFixture as defaultsFixture,
@@ -100,8 +100,12 @@ const BOTH = { "queues.defaults": true, "queues.applyDefaults": true };
 
 /** The panel tab labels once the screen loaded. */
 async function panelLabels(): Promise<string[]> {
-  await page().findByTestId("queue-total");
-  const list = await page().findByRole("tablist", { name: "Queue details" });
+  await page().findByTestId("queue-total", {}, LOADED);
+  const list = await page().findByRole(
+    "tablist",
+    { name: "Queue details" },
+    LOADED,
+  );
   return within(list)
     .getAllByRole("tab")
     .map((tab) => tab.textContent ?? "");
@@ -109,10 +113,10 @@ async function panelLabels(): Promise<string[]> {
 
 /** Opens the Job defaults tab and returns its panel once loaded. */
 async function openPanel(): Promise<HTMLElement> {
-  await page().findByTestId("queue-total");
-  const tab = await page().findByRole("tab", { name: "Job defaults" });
+  await page().findByTestId("queue-total", {}, LOADED);
+  const tab = await page().findByRole("tab", { name: "Job defaults" }, LOADED);
   fireEvent.click(tab);
-  return page().findByTestId("job-defaults-panel");
+  return page().findByTestId("job-defaults-panel", {}, LOADED);
 }
 
 /** Opens Settings… and returns the dialog. */
@@ -237,7 +241,7 @@ describe("the Job defaults panel's gate", () => {
     const { calls } = renderDefaults({
       actions: { ...BOTH, "queues.read": false },
     });
-    await page().findByTestId("queue-screen");
+    await page().findByTestId("queue-screen", {}, LOADED);
     await waitFor(() =>
       expect(callsTo(calls, "GET", "/meta/permissions").length).toBeGreaterThan(
         0,

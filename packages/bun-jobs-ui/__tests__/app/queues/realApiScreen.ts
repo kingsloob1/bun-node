@@ -1,5 +1,5 @@
 import type { FetchLike } from "../../../app/api/client";
-import { fireEvent, page, visit, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 
 /**
@@ -27,7 +27,11 @@ export interface QueueScreenDriver {
 
 /** Waits for the state tab labelled `label` and returns its text. */
 async function findTab(label: string): Promise<HTMLElement> {
-  const tabs = await page().findByRole("tablist", { name: "Job states" });
+  const tabs = await page().findByRole(
+    "tablist",
+    { name: "Job states" },
+    LOADED,
+  );
   let found: HTMLElement | undefined;
   await waitFor(() => {
     found = within(tabs)
@@ -48,15 +52,19 @@ export async function mountQueueScreen(
 ): Promise<QueueScreenDriver> {
   visit(`/jobs/queues/${encodeURIComponent(queue)}`);
   renderApp({ config: { csrfHeader }, fetch });
-  await page().findByTestId("queue-total");
+  await page().findByTestId("queue-total", {}, LOADED);
   return {
     tab: async (label) => (await findTab(label)).textContent ?? "",
     total: () => page().getByTestId("queue-total").textContent ?? "",
     openTab: async (label, rows) => {
       fireEvent.click(await findTab(label));
-      const table = await page().findByRole("table", {
-        name: `Jobs in ${queue}`,
-      });
+      const table = await page().findByRole(
+        "table",
+        {
+          name: `Jobs in ${queue}`,
+        },
+        LOADED,
+      );
       let names: string[] = [];
       await waitFor(() => {
         const body = table.querySelectorAll("tbody tr");

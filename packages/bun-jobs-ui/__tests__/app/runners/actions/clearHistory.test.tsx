@@ -8,7 +8,7 @@ import { runLogKeys } from "../../../../app/api/runnerLogs";
 import { runnerKeys } from "../../../../app/api/runners";
 import { clearHistoryMessage } from "../../../../app/screens/runners/actions/explain";
 import { expectAbsent, expectUndefined } from "../../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import {
   historyFixture,
@@ -200,7 +200,7 @@ describe("clear history on the runner screen", () => {
       },
     });
     // In the History card, above the runs it clears.
-    const card = await page().findByRole("region", { name: "History" });
+    const card = await page().findByRole("region", { name: "History" }, LOADED);
     const button = await within(card).findByRole("button", {
       name: "Clear history…",
     });
@@ -226,7 +226,7 @@ describe("clear history on the runner screen", () => {
         call.method === "GET" && call.path === "/runners/nightly/history",
     ).length;
     fireEvent.click(button);
-    const dialog = await page().findByRole("alertdialog");
+    const dialog = await page().findByRole("alertdialog", {}, LOADED);
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Clear history" }),
     );
@@ -238,6 +238,6 @@ describe("clear history on the runner screen", () => {
         ).length,
       ).toBeGreaterThan(before),
     );
-    await page().findByText(/Cleared 2 runs, kept 1 in progress/);
+    await page().findByText(/Cleared 2 runs, kept 1 in progress/, {}, LOADED);
   });
 });

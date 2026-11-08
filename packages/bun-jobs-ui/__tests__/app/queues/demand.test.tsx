@@ -7,7 +7,7 @@ import {
   qualify,
 } from "../../../app/screens/queues/panels/demand";
 import { expectAbsent } from "../assert";
-import { page, setupDom, visit, waitFor, within } from "../dom";
+import { LOADED, page, setupDom, visit, waitFor, within } from "../dom";
 import {
   demandFixture,
   metaFixture,
@@ -188,7 +188,7 @@ describe("the Demand panel", () => {
     ];
     for (const handlers of variants) {
       const { calls, unmount } = renderQueue({ handlers });
-      await page().findByTestId("queue-screen");
+      await page().findByTestId("queue-screen", {}, LOADED);
       await new Promise((resolve) => setTimeout(resolve, 50));
       expectAbsent(page().queryByRole("tab", { name: "Demand" }));
       expect(calls.some((call) => call.path.endsWith("/demand"))).toBe(false);
@@ -200,7 +200,7 @@ describe("the Demand panel", () => {
 describe("the Overview queue table's Demand column", () => {
   /** The Overview's queue table once its demand arrived. */
   async function queueTable() {
-    const table = await page().findByRole("table", { name: "Queues" });
+    const table = await page().findByRole("table", { name: "Queues" }, LOADED);
     await within(table).findByTestId("queue-demand-emails");
     return table;
   }
@@ -265,7 +265,7 @@ describe("the Overview queue table's Demand column", () => {
         },
       },
     });
-    const table = await page().findByRole("table", { name: "Queues" });
+    const table = await page().findByRole("table", { name: "Queues" }, LOADED);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(
       within(table)

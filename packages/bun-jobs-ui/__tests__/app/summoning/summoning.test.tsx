@@ -4,7 +4,15 @@ import { describe, expect, it } from "bun:test";
 import { summonInert } from "../../../app/screens/queues/panels/summonText";
 import { summonTabPath } from "../../../app/screens/summoning/paths";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";
 import { summonListFixtures } from "./fixtures";
@@ -80,7 +88,7 @@ describe("the Summoning nav entry and route", () => {
         "GET /summon": list([controller()]),
       },
     });
-    await page().findByTestId("not-found");
+    await page().findByTestId("not-found", {}, LOADED);
     expect(sidebarLinks()).not.toContain("Summoning");
     expect(calls.some((call) => call.path === "/summon")).toBe(false);
   });
@@ -95,7 +103,7 @@ describe("the Summoning nav entry and route", () => {
         "GET /summon": list([controller()]),
       },
     });
-    await page().findByTestId("not-found");
+    await page().findByTestId("not-found", {}, LOADED);
     expect(sidebarLinks()).not.toContain("Summoning");
     expect(sidebarLinks()).toContain("Workers");
     expect(calls.some((call) => call.path === "/summon")).toBe(false);

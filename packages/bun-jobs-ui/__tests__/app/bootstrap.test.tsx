@@ -11,7 +11,7 @@ import {
 } from "../../app/theme";
 import { UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config.ts";
 import { expectAbsent, expectUndefined } from "./assert";
-import { act, fireEvent, page, setupDom } from "./dom";
+import { act, fireEvent, LOADED, page, setupDom } from "./dom";
 import { uiConfig } from "./fixtures";
 import { mockFetch } from "./mockFetch";
 import { defaultHandlers } from "./renderApp";
@@ -122,7 +122,7 @@ describe("boot", () => {
       live: { disabled: true },
     });
     try {
-      await page().findByTestId("app-ready");
+      await page().findByTestId("app-ready", {}, LOADED);
       expect(document.documentElement.dataset.theme).toBe("dark");
       expect(document.title).toBe("Ops jobs");
       expect(api.calls[0].url).toBe("/jobs-api/meta");

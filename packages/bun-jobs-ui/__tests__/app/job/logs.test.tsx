@@ -1,7 +1,15 @@
 import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { expectAbsent } from "../assert";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import { jobApiPath, jobFixture, jobMeta, logPage } from "./fixtures";
 import { renderJobScreen } from "./render";
 
@@ -61,7 +69,7 @@ function query(call: RecordedCall) {
 describe("the job logs", () => {
   it("loads the first page at min(100, maxLogPage), oldest first, and pages forward and back", async () => {
     const { logCalls } = await renderLogs();
-    await page().findByRole("list", { name: "Log lines" });
+    await page().findByRole("list", { name: "Log lines" }, LOADED);
     expect(query(logCalls()[0])).toEqual({
       offset: "0",
       limit: "100",
@@ -93,7 +101,7 @@ describe("the job logs", () => {
 
   it("offers page sizes up to limits.maxLogPage only", async () => {
     await renderLogs("completed", 150);
-    await page().findByRole("list", { name: "Log lines" });
+    await page().findByRole("list", { name: "Log lines" }, LOADED);
     const pager = page().getByRole("navigation", { name: "Log pages" });
     const sizes = Array.from(
       within(pager).getByLabelText("Rows per page").querySelectorAll("option"),
@@ -105,13 +113,13 @@ describe("the job logs", () => {
 
   it("starts at maxLogPage when it is under 100", async () => {
     const { logCalls } = await renderLogs("completed", 30);
-    await page().findByRole("list", { name: "Log lines" });
+    await page().findByRole("list", { name: "Log lines" }, LOADED);
     expect(query(logCalls()[0]).limit).toBe("30");
   });
 
   it("switches to newest first from the start, numbering lines by their place in the log", async () => {
     const { logCalls } = await renderLogs();
-    await page().findByRole("list", { name: "Log lines" });
+    await page().findByRole("list", { name: "Log lines" }, LOADED);
     const pager = page().getByRole("navigation", { name: "Log pages" });
     fireEvent.click(within(pager).getByRole("button", { name: "Next" }));
     await waitFor(() => expect(lines()[0]).toBe("line 101"));

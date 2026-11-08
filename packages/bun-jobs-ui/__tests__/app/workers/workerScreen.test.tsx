@@ -7,7 +7,15 @@ import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { WORKER_CONFIG_KEYS } from "../../../app/api/contract";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import {
   ANALYTICS_NOW,
   metaFixture,
@@ -118,7 +126,7 @@ function open({
 describe("the worker page", () => {
   it("reads one key's instances with GET /workers?queue=&key=&includeOffline", async () => {
     const { calls } = open();
-    const screen = await page().findByTestId("worker-screen");
+    const screen = await page().findByTestId("worker-screen", {}, LOADED);
     expect(within(screen).getByRole("heading", { level: 1 }).textContent).toBe(
       "Worker api.emails",
     );
@@ -141,7 +149,7 @@ describe("the worker page", () => {
 
   it("names the queue (linked) and the service, and lists every instance with its controls", async () => {
     open();
-    const screen = await page().findByTestId("worker-screen");
+    const screen = await page().findByTestId("worker-screen", {}, LOADED);
     expect(
       within(screen).getByRole("link", { name: "emails" }).getAttribute("href"),
     ).toBe("/jobs/queues/emails");
@@ -171,7 +179,7 @@ describe("the worker page", () => {
         }),
       ],
     });
-    const instances = await page().findByTestId("worker-instances");
+    const instances = await page().findByTestId("worker-instances", {}, LOADED);
     const row = await within(instances).findByTestId(
       "worker-row-api.emails.a1",
     );
@@ -200,7 +208,7 @@ describe("the worker page", () => {
         workerFixture({ id: "api.emails.b2", heartbeatRttMs: undefined }),
       ],
     });
-    const instances = await page().findByTestId("worker-instances");
+    const instances = await page().findByTestId("worker-instances", {}, LOADED);
     await within(instances).findByTestId("worker-row-api.emails.a1");
     const heartbeatTitle = (id: string) =>
       within(instances)
@@ -221,7 +229,7 @@ describe("the worker page", () => {
 
   it("shows every setting: what it runs with, what the code asks for, and which are overridden", async () => {
     open();
-    const config = await page().findByTestId("worker-config");
+    const config = await page().findByTestId("worker-config", {}, LOADED);
     for (const setting of WORKER_CONFIG_KEYS) {
       expect(
         within(config).getByTestId(`worker-setting-${setting}`),
@@ -244,7 +252,7 @@ describe("the worker page", () => {
 
   it("offers no Edit settings… without workers.configure (opt-in)", async () => {
     open();
-    await page().findByTestId("worker-config");
+    await page().findByTestId("worker-config", {}, LOADED);
     expectAbsent(page().queryByRole("button", { name: "Edit settings…" }));
   });
 
@@ -260,9 +268,9 @@ describe("the worker page", () => {
       },
     });
     fireEvent.click(
-      await page().findByRole("button", { name: "Edit settings…" }),
+      await page().findByRole("button", { name: "Edit settings…" }, LOADED),
     );
-    const dialog = await page().findByRole("dialog");
+    const dialog = await page().findByRole("dialog", {}, LOADED);
     expect(dialog.textContent).toContain("Settings of api.emails");
     fireEvent.change(within(dialog).getByLabelText("concurrency"), {
       target: { value: "5" },
@@ -284,7 +292,7 @@ describe("the worker page", () => {
         }),
       ],
     });
-    const config = await page().findByTestId("worker-config");
+    const config = await page().findByTestId("worker-config", {}, LOADED);
     const card = config.closest("section")!;
     expect(within(card).getByText("Change pending")).toBeTruthy();
   });
@@ -296,7 +304,9 @@ describe("the worker page", () => {
       effective: { ...other.config!.effective, concurrency: 7 },
     };
     open({ items: [INSTANCES[0], other] });
-    expect(await page().findByTestId("worker-config-differs")).toBeTruthy();
+    expect(
+      await page().findByTestId("worker-config-differs", {}, LOADED),
+    ).toBeTruthy();
   });
 
   it("with no live instance, shows the stored override and still offers Reset", async () => {
@@ -321,7 +331,11 @@ describe("the worker page", () => {
         },
       },
     });
-    const offline = await page().findByTestId("worker-config-offline");
+    const offline = await page().findByTestId(
+      "worker-config-offline",
+      {},
+      LOADED,
+    );
     expect(offline.textContent).toContain("cannot be shown until one reports");
     expect(
       within(offline).getByTestId("worker-config-stored").textContent,
@@ -331,7 +345,7 @@ describe("the worker page", () => {
     fireEvent.click(
       within(offline).getByRole("button", { name: "Reset to code values…" }),
     );
-    const dialog = await page().findByRole("alertdialog");
+    const dialog = await page().findByRole("alertdialog", {}, LOADED);
     fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(deletes).toHaveLength(1));
   });
@@ -350,7 +364,11 @@ describe("the worker page", () => {
         },
       ],
     });
-    const offline = await page().findByTestId("worker-config-offline");
+    const offline = await page().findByTestId(
+      "worker-config-offline",
+      {},
+      LOADED,
+    );
     expectAbsent(
       within(offline).queryByRole("button", { name: "Reset to code values…" }),
     );
@@ -358,7 +376,11 @@ describe("the worker page", () => {
 
   it("says no override is stored when the listing has none for the key", async () => {
     open({ items: [], offline: [], grant: { "workers.configure": true } });
-    const offline = await page().findByTestId("worker-config-offline");
+    const offline = await page().findByTestId(
+      "worker-config-offline",
+      {},
+      LOADED,
+    );
     expect(
       within(offline).getByTestId("worker-config-none-stored"),
     ).toBeTruthy();
@@ -384,7 +406,11 @@ describe("the worker page", () => {
       ],
       grant: { "workers.configure": true },
     });
-    const offline = await page().findByTestId("worker-config-offline");
+    const offline = await page().findByTestId(
+      "worker-config-offline",
+      {},
+      LOADED,
+    );
     expect(
       within(offline).getByTestId("worker-config-none-stored"),
     ).toBeTruthy();
@@ -397,7 +423,7 @@ describe("the worker page", () => {
 
   it("charts the key's throughput and busyness, each captioned from its own range", async () => {
     const { calls } = open();
-    const analytics = await page().findByTestId("worker-analytics");
+    const analytics = await page().findByTestId("worker-analytics", {}, LOADED);
     await within(analytics).findByText("Throughput");
     const jobs = within(analytics).getByTestId("worker-jobs-range-caption");
     const busy = within(analytics).getByTestId("worker-busyness-range-caption");
@@ -418,7 +444,7 @@ describe("the worker page", () => {
     const { calls } = open({
       handlers: { "GET /meta": { body: metaFixture({ analytics: null }) } },
     });
-    await page().findByTestId("worker-config");
+    await page().findByTestId("worker-config", {}, LOADED);
     expectAbsent(page().queryByTestId("worker-analytics"));
     expect(calls.some((call) => call.path.includes("/analytics/"))).toBe(false);
   });
@@ -426,7 +452,11 @@ describe("the worker page", () => {
   it("says a backend without job attribution cannot list the key's jobs, and reads none", async () => {
     // The shared fixture's `features.jobAttribution` is false; workerJobsCard.test.tsx covers it on.
     const { calls } = open();
-    const jobs = await page().findByTestId("worker-jobs-unrecorded");
+    const jobs = await page().findByTestId(
+      "worker-jobs-unrecorded",
+      {},
+      LOADED,
+    );
     expect(jobs.textContent).toContain(
       "does not record which worker ran a job",
     );
@@ -447,8 +477,8 @@ describe("the worker page", () => {
         }),
       },
     });
-    await page().findByText("Instances hidden");
-    expect(await page().findByTestId("worker-jobs")).toBeTruthy();
+    await page().findByText("Instances hidden", {}, LOADED);
+    expect(await page().findByTestId("worker-jobs", {}, LOADED)).toBeTruthy();
     expectAbsent(page().queryByTestId("worker-instances"));
   });
 
@@ -468,8 +498,10 @@ describe("the worker page", () => {
         },
       },
     });
-    await page().findByText("Instances hidden");
-    expect(await page().findByTestId("worker-analytics")).toBeTruthy();
+    await page().findByText("Instances hidden", {}, LOADED);
+    expect(
+      await page().findByTestId("worker-analytics", {}, LOADED),
+    ).toBeTruthy();
     await waitFor(() =>
       expect(
         calls.some((call) =>
@@ -481,7 +513,7 @@ describe("the worker page", () => {
 
   it("is not routed without the Workers nav entry", async () => {
     open({ grant: { "workers.list": false } });
-    expect(await page().findByText(/not found/i)).toBeTruthy();
+    expect(await page().findByText(/not found/i, {}, LOADED)).toBeTruthy();
     expectAbsent(page().queryByTestId("worker-screen"));
   });
 });
@@ -494,7 +526,11 @@ describe("the queue panel's worker rows", () => {
         "GET /queues/emails/workers": { body: { items: INSTANCES } },
       },
     });
-    const link = await page().findByTestId("worker-key-link-api.emails.a1");
+    const link = await page().findByTestId(
+      "worker-key-link-api.emails.a1",
+      {},
+      LOADED,
+    );
     expect(link.getAttribute("href")).toBe("/jobs/workers/emails/api.emails");
   });
 });

@@ -11,7 +11,15 @@ import {
   validateAddForm,
 } from "../../../app/screens/job/addJobForm";
 import { expectAbsent, expectNone, expectUndefined } from "../assert";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import { problem } from "../fixtures";
 import { stubRawValue } from "../rawInput";
 import {
@@ -55,9 +63,13 @@ async function openAdd(
       },
     },
   );
-  const dialog = await page().findByRole("dialog", {
-    name: "Add a job to emails",
-  });
+  const dialog = await page().findByRole(
+    "dialog",
+    {
+      name: "Add a job to emails",
+    },
+    LOADED,
+  );
   const posts = () => result.calls.filter((call) => call.method === "POST");
   return { ...result, dialog, onClose, posts };
 }
