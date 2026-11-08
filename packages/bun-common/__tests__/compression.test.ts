@@ -37,7 +37,12 @@ const scratch = mkdtempSync(join(tmpdir(), "bun-common-compression-"));
 const DATA_FILE = join(scratch, "data.json");
 writeFileSync(DATA_FILE, TEXT);
 
-/** Servers started by a test, closed at the end. */
+/**
+ * Servers started by a test, closed at the end. The streaming tests' servers
+ * drain for no time (`closeDrainTimeout: 0`): a test that failed with its
+ * stream still open would otherwise hold `close()`, and this hook, for the
+ * default 10 s, failing it too.
+ */
 const started: BunHttpAdapter[] = [];
 
 afterAll(async () => {
@@ -717,58 +722,73 @@ describe("compression: sendFile and static files", () => {
   });
 });
 
-describe("compression: streaming over a socket", () => {
-  /** A `node:zlib` decoder that accumulates text as it goes. */
-  function streamingDecoder(encoding: string) {
-    const engine =
-      encoding === "gzip"
-        ? zlib.createGunzip()
-        : encoding === "br"
-          ? zlib.createBrotliDecompress()
-          : encoding === "zstd"
-            ? zlib.createZstdDecompress()
-            : zlib.createInflate();
-    let text = "";
-    engine.on("data", (chunk: Buffer) => {
-      text += chunk.toString();
-    });
-    return {
-      write: (chunk: Uint8Array) => engine.write(chunk),
-      get text() {
-        return text;
-      },
-    };
-  }
+/**
+ * A `node:zlib` decoder that accumulates text as it goes. `write()` resolves
+ * once the chunk is decoded and its text is in `text`: the write's callback,
+ * then a flush's (`Z_SYNC_FLUSH`, or Brotli's and zstd's flush), whose
+ * callback comes after every byte decoded so far was emitted. So a reader
+ * knows whether what it read held the text it waits for, rather than
+ * sleeping and hoping the decoder kept up, which under load it did not.
+ */
+function streamingDecoder(encoding: string) {
+  const engine =
+    encoding === "gzip"
+      ? zlib.createGunzip()
+      : encoding === "br"
+        ? zlib.createBrotliDecompress()
+        : encoding === "zstd"
+          ? zlib.createZstdDecompress()
+          : zlib.createInflate();
+  let text = "";
+  engine.on("data", (chunk: Buffer) => {
+    text += chunk.toString();
+  });
+  return {
+    write: async (chunk: Uint8Array): Promise<void> => {
+      await new Promise<void>((resolve, reject) =>
+        engine.write(chunk, (error) => (error ? reject(error) : resolve())),
+      );
+      await new Promise<void>((resolve) => engine.flush(() => resolve()));
+    },
+    get text() {
+      return text;
+    },
+  };
+}
 
-  /** Reads until the decoder's text includes `expected`, or times out. */
-  async function readUntil(
-    reader: { read: () => Promise<{ done: boolean; value?: Uint8Array }> },
-    decoder: ReturnType<typeof streamingDecoder>,
-    expected: string,
-  ) {
-    const deadline = Date.now() + 3000;
-    while (!decoder.text.includes(expected)) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          `timed out waiting for ${JSON.stringify(expected)}; got ${JSON.stringify(decoder.text)}`,
-        );
-      }
-      const { value, done } = await reader.read();
-      if (value) {
-        decoder.write(value);
-        await Bun.sleep(5);
-      }
-      if (done) {
-        await Bun.sleep(20);
-        break;
-      }
+/**
+ * Reads until the decoder's text includes `expected`, or the body ends. It
+ * waits on the reads and the decoder, never on a clock: a stall is the
+ * test's timeout ({@link STREAM_TEST_TIMEOUT}), however slow the machine.
+ */
+async function readUntil(
+  reader: { read: () => Promise<{ done: boolean; value?: Uint8Array }> },
+  decoder: ReturnType<typeof streamingDecoder>,
+  expected: string,
+) {
+  while (!decoder.text.includes(expected)) {
+    const { value, done } = await reader.read();
+    if (value) {
+      await decoder.write(value);
     }
-    return decoder.text;
+    if (done) {
+      break;
+    }
   }
+  return decoder.text;
+}
 
+/**
+ * The timeout of a test that waits for a streamed part to arrive: the only
+ * clock in it, there to end a real stall, and far above what a loaded
+ * machine needs (the 5 s default cut these off at a load of 140).
+ */
+const STREAM_TEST_TIMEOUT = 30_000;
+
+describe("compression: streaming over a socket", () => {
   /** Starts an adapter with compression() and `setup`'s routes. */
   async function serve(setup: (adapter: BunHttpAdapter) => void) {
-    const adapter = new BunHttpAdapter();
+    const adapter = new BunHttpAdapter(0, { closeDrainTimeout: 0 });
     adapter.use(compression());
     setup(adapter);
     await adapter.listen(0);
@@ -777,86 +797,96 @@ describe("compression: streaming over a socket", () => {
   }
 
   for (const encoding of SUPPORTED_COMPRESSION_ENCODINGS) {
-    it(`${encoding}: flushes each server-sent event as it is written`, async () => {
+    it(
+      `${encoding}: flushes each server-sent event as it is written`,
+      async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const base = await serve((adapter) => {
+          adapter.get("/events", (_req, res) => {
+            // As on Node, write() adds no Content-Type: an SSE endpoint sets it.
+            res.setHeader("Content-Type", "text/event-stream");
+            res.write("data: one\n\n");
+            void (async () => {
+              await gate;
+              res.write("data: two\n\n");
+              await res.end();
+            })();
+          });
+        });
+
+        const response = await fetch(`${base}/events`, {
+          headers: { "accept-encoding": encoding },
+          decompress: false,
+        });
+        expect(response.headers.get("content-encoding")).toBe(encoding);
+        expect(response.headers.get("content-type")).toStartWith(
+          "text/event-stream",
+        );
+        const reader = (
+          response.body as ReadableStream<Uint8Array>
+        ).getReader();
+        const decoder = streamingDecoder(encoding);
+
+        // The first event decodes while the handler is still holding the second.
+        expect(await readUntil(reader, decoder, "data: one\n\n")).toBe(
+          "data: one\n\n",
+        );
+        release();
+        expect(await readUntil(reader, decoder, "data: two\n\n")).toBe(
+          "data: one\n\ndata: two\n\n",
+        );
+      },
+      STREAM_TEST_TIMEOUT,
+    );
+  }
+
+  it(
+    "res.flush() pushes out what a stream has written so far",
+    async () => {
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
       const base = await serve((adapter) => {
-        adapter.get("/events", (_req, res) => {
-          // As on Node, write() adds no Content-Type: an SSE endpoint sets it.
-          res.setHeader("Content-Type", "text/event-stream");
-          res.write("data: one\n\n");
+        adapter.get("/flushed", (_req, res) => {
+          let controller!: ReadableStreamDefaultController<Uint8Array>;
+          const body = new ReadableStream<Uint8Array>({
+            start(c) {
+              controller = c;
+            },
+          });
+          res.type("text/plain").send(body);
           void (async () => {
+            controller.enqueue(new TextEncoder().encode("first part\n"));
+            await Bun.sleep(50);
+            res.flush();
             await gate;
-            res.write("data: two\n\n");
-            await res.end();
+            controller.enqueue(new TextEncoder().encode("second part\n"));
+            controller.close();
           })();
         });
       });
 
-      const response = await fetch(`${base}/events`, {
-        headers: { "accept-encoding": encoding },
+      const response = await fetch(`${base}/flushed`, {
+        headers: { "accept-encoding": "gzip" },
         decompress: false,
       });
-      expect(response.headers.get("content-encoding")).toBe(encoding);
-      expect(response.headers.get("content-type")).toStartWith(
-        "text/event-stream",
-      );
+      expect(response.headers.get("content-encoding")).toBe("gzip");
       const reader = (response.body as ReadableStream<Uint8Array>).getReader();
-      const decoder = streamingDecoder(encoding);
-
-      // The first event decodes while the handler is still holding the second.
-      expect(await readUntil(reader, decoder, "data: one\n\n")).toBe(
-        "data: one\n\n",
+      const decoder = streamingDecoder("gzip");
+      expect(await readUntil(reader, decoder, "first part\n")).toBe(
+        "first part\n",
       );
       release();
-      expect(await readUntil(reader, decoder, "data: two\n\n")).toBe(
-        "data: one\n\ndata: two\n\n",
+      expect(await readUntil(reader, decoder, "second part\n")).toBe(
+        "first part\nsecond part\n",
       );
-    });
-  }
-
-  it("res.flush() pushes out what a stream has written so far", async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const base = await serve((adapter) => {
-      adapter.get("/flushed", (_req, res) => {
-        let controller!: ReadableStreamDefaultController<Uint8Array>;
-        const body = new ReadableStream<Uint8Array>({
-          start(c) {
-            controller = c;
-          },
-        });
-        res.type("text/plain").send(body);
-        void (async () => {
-          controller.enqueue(new TextEncoder().encode("first part\n"));
-          await Bun.sleep(50);
-          res.flush();
-          await gate;
-          controller.enqueue(new TextEncoder().encode("second part\n"));
-          controller.close();
-        })();
-      });
-    });
-
-    const response = await fetch(`${base}/flushed`, {
-      headers: { "accept-encoding": "gzip" },
-      decompress: false,
-    });
-    expect(response.headers.get("content-encoding")).toBe("gzip");
-    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
-    const decoder = streamingDecoder("gzip");
-    expect(await readUntil(reader, decoder, "first part\n")).toBe(
-      "first part\n",
-    );
-    release();
-    expect(await readUntil(reader, decoder, "second part\n")).toBe(
-      "first part\nsecond part\n",
-    );
-  });
+    },
+    STREAM_TEST_TIMEOUT,
+  );
 });
 
 describe("compression: a streamed body runs to its end", () => {
@@ -904,7 +934,7 @@ describe("compression: a streamed body runs to its end", () => {
 
   /** Starts an adapter with compression() and `setup`'s routes. */
   async function serve(setup: (adapter: BunHttpAdapter) => void) {
-    const adapter = new BunHttpAdapter();
+    const adapter = new BunHttpAdapter(0, { closeDrainTimeout: 0 });
     adapter.use(compression());
     setup(adapter);
     await adapter.listen(0);
@@ -1074,123 +1104,108 @@ describe("compression: a streamed body runs to its end", () => {
       expect(text).toBe(events.join(""));
     });
 
-    it(`${encoding}: res.flush() mid-stream, then the stream ends`, async () => {
-      let release!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const base = await serve((adapter) => {
-        adapter.get("/flushed", (_req, res) => {
-          res.setHeader("Content-Type", "text/plain");
-          void (async () => {
-            res.write("first part\n");
-            await Bun.sleep(PAUSE);
-            res.flush();
-            await gate;
-            res.write("second part\n");
-            await Bun.sleep(PAUSE);
-            res.write("third part\n");
-            await res.end();
-          })();
-        });
-      });
-      const response = await fetch(`${base}/flushed`, {
-        headers: { "accept-encoding": encoding },
-        decompress: false,
-      });
-      expect(response.headers.get("content-encoding")).toBe(encoding);
-      // Read the first part before releasing the second: the flush alone
-      // must have pushed it out.
-      const reader = (response.body as ReadableStream<Uint8Array>).getReader();
-      const decoder =
-        encoding === "gzip"
-          ? zlib.createGunzip()
-          : encoding === "br"
-            ? zlib.createBrotliDecompress()
-            : encoding === "zstd"
-              ? zlib.createZstdDecompress()
-              : zlib.createInflate();
-      let early = "";
-      decoder.on("data", (chunk: Buffer) => {
-        early += chunk.toString();
-      });
-      const until = Date.now() + DEADLINE;
-      while (!early.includes("first part\n") && Date.now() < until) {
-        const { done, value } = await Promise.race([
-          reader.read(),
-          Bun.sleep(until - Date.now()).then(() => ({
-            done: true,
-            value: undefined,
-          })),
-        ]);
-        if (value) {
-          decoder.write(value);
-        }
-        if (done) {
-          break;
-        }
-        await Bun.sleep(5);
-      }
-      expect(early).toBe("first part\n");
-      reader.releaseLock();
-      release();
-      const rest = await readToEnd(response);
-      decoder.end(rest);
-      await new Promise((resolve) => decoder.once("end", resolve));
-      expect(early).toBe("first part\nsecond part\nthird part\n");
-    });
-
-    it(`${encoding}: a client abort mid-stream cancels the source`, async () => {
-      const rejections: unknown[] = [];
-      const onRejection = (reason: unknown) => {
-        rejections.push(reason);
-      };
-      process.on("unhandledRejection", onRejection);
-      try {
-        let cancelled!: (reason: unknown) => void;
-        const sourceCancelled = new Promise<unknown>((resolve) => {
-          cancelled = resolve;
+    it(
+      `${encoding}: res.flush() mid-stream, then the stream ends`,
+      async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
         });
         const base = await serve((adapter) => {
-          adapter.get("/endless", (_req, res) => {
-            const body = new ReadableStream<Uint8Array>({
-              async pull(controller) {
-                await Bun.sleep(5);
-                controller.enqueue(encoder.encode(noise(64 * 1024)));
-              },
-              cancel(reason) {
-                cancelled(reason);
-              },
-            });
-            res.type("text").send(body);
+          adapter.get("/flushed", (_req, res) => {
+            res.setHeader("Content-Type", "text/plain");
+            void (async () => {
+              res.write("first part\n");
+              await Bun.sleep(PAUSE);
+              res.flush();
+              await gate;
+              res.write("second part\n");
+              await Bun.sleep(PAUSE);
+              res.write("third part\n");
+              await res.end();
+            })();
           });
         });
-        const abort = new AbortController();
-        const response = await fetch(`${base}/endless`, {
+        const response = await fetch(`${base}/flushed`, {
           headers: { "accept-encoding": encoding },
           decompress: false,
-          signal: abort.signal,
         });
         expect(response.headers.get("content-encoding")).toBe(encoding);
+        // Read the first part before releasing the second: the flush alone
+        // must have pushed it out (the source waits for `release`, so a part
+        // that the flush did not push out never arrives).
         const reader = (
           response.body as ReadableStream<Uint8Array>
         ).getReader();
-        const first = await reader.read();
-        expect(first.done).toBe(false);
-        abort.abort();
-        await reader.read().catch(() => undefined);
+        const decoder = streamingDecoder(encoding);
+        expect(await readUntil(reader, decoder, "first part\n")).toBe(
+          "first part\n",
+        );
+        release();
+        expect(await readUntil(reader, decoder, "third part\n")).toBe(
+          "first part\nsecond part\nthird part\n",
+        );
+        expect((await reader.read()).done).toBe(true);
+      },
+      STREAM_TEST_TIMEOUT,
+    );
 
-        const outcome = await Promise.race([
-          sourceCancelled.then(() => "cancelled"),
-          Bun.sleep(DEADLINE).then(() => "still running"),
-        ]);
-        expect(outcome).toBe("cancelled");
-        await Bun.sleep(20);
-        expect(rejections).toEqual([]);
-      } finally {
-        process.off("unhandledRejection", onRejection);
-      }
-    });
+    it(
+      `${encoding}: a client abort mid-stream cancels the source`,
+      async () => {
+        const rejections: unknown[] = [];
+        const onRejection = (reason: unknown) => {
+          rejections.push(reason);
+        };
+        process.on("unhandledRejection", onRejection);
+        try {
+          let cancelled!: (reason: unknown) => void;
+          const sourceCancelled = new Promise<unknown>((resolve) => {
+            cancelled = resolve;
+          });
+          const base = await serve((adapter) => {
+            adapter.get("/endless", (_req, res) => {
+              const body = new ReadableStream<Uint8Array>({
+                async pull(controller) {
+                  await Bun.sleep(5);
+                  controller.enqueue(encoder.encode(noise(64 * 1024)));
+                },
+                cancel(reason) {
+                  cancelled(reason);
+                },
+              });
+              res.type("text").send(body);
+            });
+          });
+          const abort = new AbortController();
+          const response = await fetch(`${base}/endless`, {
+            headers: { "accept-encoding": encoding },
+            decompress: false,
+            signal: abort.signal,
+          });
+          expect(response.headers.get("content-encoding")).toBe(encoding);
+          const reader = (
+            response.body as ReadableStream<Uint8Array>
+          ).getReader();
+          const first = await reader.read();
+          expect(first.done).toBe(false);
+          abort.abort();
+          await reader.read().catch(() => undefined);
+
+          // Waits for the cancellation itself: a source never cancelled is the
+          // test's timeout.
+          expect(await sourceCancelled.then(() => "cancelled")).toBe(
+            "cancelled",
+          );
+          // Give a rejection from the cancelled pipeline time to surface.
+          await Bun.sleep(20);
+          expect(rejections).toEqual([]);
+        } finally {
+          process.off("unhandledRejection", onRejection);
+        }
+      },
+      STREAM_TEST_TIMEOUT,
+    );
 
     it(`${encoding}: HEAD on a streamed route ends, uncompressed`, async () => {
       const base = await serve((adapter) => {
