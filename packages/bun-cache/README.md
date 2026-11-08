@@ -2681,10 +2681,11 @@ for that invalidation before it reads. Every entry carries its path's tag,
 so `pages.invalidate(path | url | request)` drops a path's queries and
 variants. Either invalidation also runs a second time, in the background,
 once the writes this middleware had in flight for the path have landed (at
-most `coalesce.wait`): an uncoalesced write, or one whose body is still
-being read (a stream, a sent file), is issued after the invalidation and no
-fence covers it, so without the second pass it could put back what was just
-dropped; the `tags` option (a list, or `(req, res) => tags`) and
+most `coalesce.wait`), if one of them stored after it began: an uncoalesced
+write, or one whose body is still being read (a stream, a sent file), is
+issued after the invalidation and no fence covers it, so without the second
+pass it could put back what was just dropped (a write that landed before it
+began, or that a fence refused, needs none, and gets none); the `tags` option (a list, or `(req, res) => tags`) and
 `addCacheTags(res, ...tags)` from the handler add more for
 `cache.invalidateTags()`.
 
@@ -2923,7 +2924,13 @@ and [purge cache](https://developers.cloudflare.com/cache/how-to/purge-cache/)
 tags in plain text, in the process that called `invalidateTags()` (an
 unsafe method's invalidation and `pages.invalidate()` included; not in the
 processes that only hear of it over the bus), so one listener purges each
-invalidation once:
+invalidation once. One case emits twice, on purpose: when
+`pages.invalidate()` or an unsafe method lands while a `GET` of the path is
+still writing its answer (a streamed body is written at its end), and that
+write stores after the invalidation began, the path is invalidated again
+once it has, and `invalidate` fires again. The CDN may have taken that same
+answer, so the second purge is wanted too. A write that had already landed,
+or that the invalidation refused, causes no second pass.
 
 ```ts
 // Fastly: POST /service/{id}/purge, up to 256 keys a call. A soft purge

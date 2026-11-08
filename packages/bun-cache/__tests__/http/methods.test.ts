@@ -6,8 +6,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
-import { BunRouter } from "@kingsleyweb/bun-common";
-import type { CacheDriver } from "../../lib/index";
+import { BunRouter, createDeferred } from "@kingsleyweb/bun-common";
+import type { Cache, CacheDriver } from "../../lib/index";
 import type { CacheResponseOptions } from "../../lib/http/index";
 import { addCacheTags, cacheResponse } from "../../lib/http/index";
 import { createCache, memoryDriver } from "../../lib/index";
@@ -326,6 +326,122 @@ describe("an invalidation and a write in flight", () => {
     await router.fetch("/r", { method: "POST" });
     expect(await first.text()).toBe("#1");
     await Bun.sleep(80);
+    expect(await frameAt(cache, keyFor("/r"))).toBeUndefined();
+  });
+});
+
+describe("one invalidation, one pass: the second runs only for a write that landed after", () => {
+  /** Counts `cache.invalidateTags` calls and the `invalidate` events, by tag list. */
+  function counted(cache: Cache) {
+    const calls: string[][] = [];
+    const invalidate = cache.invalidateTags.bind(cache);
+    cache.invalidateTags = async (tags, options) => {
+      calls.push([...tags]);
+      await invalidate(tags, options);
+    };
+    const events: string[][] = [];
+    cache.on("invalidate", ({ tags }) => {
+      events.push([...tags]);
+    });
+    return { calls, events };
+  }
+
+  /** One event-loop turn: every microtask queued before it has run. */
+  const nextTurn = () =>
+    new Promise<void>((resolve) => setImmediate(() => resolve()));
+
+  for (const coalesce of [false, true]) {
+    test(`an invalidation right after the write landed runs once and emits once (coalesce: ${String(coalesce)})`, async () => {
+      const cache = makeHttpCache();
+      const router = new BunRouter();
+      const pages = cacheResponse(cache, { ttl: 60_000, coalesce });
+      router.get("/r", pages, (_req, res) => {
+        res.send("r");
+      });
+      const { calls, events } = counted(cache);
+      const written = nextSet(cache);
+      await router.fetch("/r");
+      // The write has landed; its capture is still settling for a few
+      // microtasks, the window that used to run a second pass.
+      await written;
+      await pages.invalidate("/r");
+      // A second pass would have been called by now: it waits only for the
+      // first and for the write's capture, both settled within this turn.
+      await nextTurn();
+      expect(calls).toEqual([["http:path:/r"]]);
+      expect(events).toEqual([["http:path:/r"]]);
+      expect(await frameAt(cache, keyFor("/r"))).toBeUndefined();
+    });
+  }
+
+  /** A streamed body that ends when `end` settles: its write is issued at its end. */
+  function bodyEndingOn(end: Promise<void>): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await end;
+        controller.enqueue(new TextEncoder().encode("r"));
+        controller.close();
+      },
+    });
+  }
+
+  test("a streamed write that lands after the invalidation began still gets the second pass", async () => {
+    const cache = makeHttpCache();
+    const router = new BunRouter();
+    const pages = cacheResponse(cache, {
+      ttl: 60_000,
+      coalesce: false,
+      streams: { buffer: 1024 },
+    });
+    // Its write is issued at the body's end, after the invalidation, so the
+    // core's fence (which refuses a write issued before an invalidation)
+    // does not cover it: only the second pass does.
+    const end = createDeferred<void>();
+    router.get("/r", pages, (_req, res) => {
+      res.send(bodyEndingOn(end.promise));
+    });
+    const { calls, events } = counted(cache);
+    const second = createDeferred<void>();
+    cache.on("invalidate", () => {
+      if (events.length === 2) {
+        second.resolve();
+      }
+    });
+    const written = nextSet(cache);
+    const first = await router.fetch("/r");
+    await pages.invalidate("/r");
+    end.resolve();
+    expect(await first.text()).toBe("r");
+    await written;
+    await second.promise;
+    expect(calls).toEqual([["http:path:/r"], ["http:path:/r"]]);
+    expect(await frameAt(cache, keyFor("/r"))).toBeUndefined();
+  });
+
+  test("a coalesced write in flight is fenced by the invalidation: nothing stored, one pass", async () => {
+    const cache = makeHttpCache();
+    const router = new BunRouter();
+    const pages = cacheResponse(cache, {
+      ttl: 60_000,
+      coalesce: true,
+      streams: { buffer: 1024 },
+    });
+    const end = createDeferred<void>();
+    router.get("/r", pages, (_req, res) => {
+      res.send(bodyEndingOn(end.promise));
+    });
+    const { calls, events } = counted(cache);
+    const fenced = createDeferred<void>();
+    cache.on("fenced", () => fenced.resolve());
+    const first = await router.fetch("/r");
+    await pages.invalidate("/r");
+    end.resolve();
+    expect(await first.text()).toBe("r");
+    // The local invalidation forgot the flight, so its write is refused.
+    await fenced.promise;
+    await nextTurn();
+    expect(calls).toEqual([["http:path:/r"]]);
+    expect(events).toEqual([["http:path:/r"]]);
     expect(await frameAt(cache, keyFor("/r"))).toBeUndefined();
   });
 });
