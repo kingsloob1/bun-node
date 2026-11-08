@@ -730,3 +730,115 @@ describe("issues and the schema source", () => {
     ).toContain("has no `schemas` object");
   });
 });
+
+describe("unknownKeys: the keys a BYO schema dropped", () => {
+  /** A strict-by-default zod object: it strips `age` from the body. */
+  const NameOnly = z.object({ name: z.string() });
+  const body = { name: "Ada", age: 36 };
+
+  it('"strip" (the default) drops them silently, as before', async () => {
+    const stub = server({ body: { id: "42", name: "Ada" } });
+    const { warnings, logger } = recorder();
+    const api = createClient<Routes>({
+      fetch: stub.fetch,
+      mode: "production",
+      logger,
+    });
+    await api.post("/users/:id", {
+      ...VALID,
+      body,
+      validate: { body: { custom: NameOnly } },
+    });
+    expect(await stub.sent[0].json()).toEqual({ name: "Ada" });
+    expect(warnings).toEqual([]);
+  });
+
+  it('"warn" logs the part and the paths, and still sends the output', async () => {
+    const stub = server({ body: { id: "42", name: "Ada", role: "admin" } });
+    const { warnings, logger } = recorder();
+    const api = createClient<Routes>({
+      fetch: stub.fetch,
+      mode: "production",
+      logger,
+      validate: { unknownKeys: "warn" },
+    });
+    const r = await api.post("/users/:id", {
+      ...VALID,
+      body,
+      validate: {
+        body: { custom: NameOnly },
+        response: { 200: { custom: User } },
+      },
+    });
+    expect(await stub.sent[0].json()).toEqual({ name: "Ada" });
+    expect(r.ok && r.data).toEqual({ id: "42", name: "Ada" });
+    expect(warnings).toEqual([
+      "POST /users/:id: the custom body schema dropped keys: age",
+      "POST /users/:id: the custom response schema dropped keys: role",
+    ]);
+  });
+
+  it('"reject" makes each dropped key an issue, under onFailure', async () => {
+    const stub = server({ body: { id: "42", name: "Ada", role: "admin" } });
+    const { warnings, logger } = recorder();
+    const api = createClient<Routes>({
+      fetch: stub.fetch,
+      mode: "production",
+      logger,
+      validate: { unknownKeys: "reject" },
+    });
+    const error = (await rejection(
+      api.post("/users/:id", {
+        ...VALID,
+        body,
+        validate: { body: { custom: NameOnly } },
+      }),
+    )) as ValidationError;
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.issues).toEqual([
+      {
+        target: "body",
+        message: "Unrecognized key",
+        path: "age",
+        source: "custom",
+      },
+    ]);
+    expect(stub.sent).toHaveLength(0);
+
+    // A response's: warned (the response default), and delivered as it arrived.
+    const r = await api.post("/users/:id", {
+      ...VALID,
+      validate: { response: { 200: { custom: User } } },
+    });
+    expect(r.ok && (r.data as unknown)).toEqual({
+      id: "42",
+      name: "Ada",
+      role: "admin",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Unrecognized key");
+
+    // Negative control: a loose schema keeps the key, so nothing is refused.
+    await api.post("/users/:id", {
+      ...VALID,
+      body,
+      validate: { body: { custom: NameOnly.loose() } },
+    });
+    expect(await stub.sent.at(-1)!.json()).toEqual(body);
+  });
+
+  it("a later level overrides an earlier one", async () => {
+    const stub = server({ body: {} });
+    const api = createClient<Routes>({
+      fetch: stub.fetch,
+      mode: "production",
+      validate: { unknownKeys: "reject" },
+    });
+    await api.post("/users/:id", {
+      ...VALID,
+      body,
+      validate: { body: { custom: NameOnly }, unknownKeys: "strip" },
+    });
+    expect(stub.sent).toHaveLength(1);
+  });
+});

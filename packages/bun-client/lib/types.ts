@@ -808,6 +808,19 @@ export interface ValidationConfig {
         /** For a response. Default: `"warn"`. */
         response?: FailureMode;
       };
+  /**
+   * What happens to the keys a BYO schema dropped (a `custom` schema of the
+   * query, the body or a response body): keys the value had that the
+   * schema's output, which is what is sent or delivered, no longer has, as
+   * zod's `z.object()` strips undeclared keys without a word. `"strip"` (the
+   * default): silently, as before. `"warn"`: the logger warns, naming the
+   * part and the dropped paths, and the output still goes. `"reject"`: an
+   * issue per dropped key (`Unrecognized key`, at its path), under
+   * {@link onFailure} like any other. The built-in schemas never drop a key
+   * (the generated ones are loose). Bun-common's `validate({ unknownKeys })`
+   * is the server's side of it.
+   */
+  unknownKeys?: "strip" | "warn" | "reject";
 }
 
 /**

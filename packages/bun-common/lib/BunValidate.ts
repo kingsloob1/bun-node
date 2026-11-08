@@ -26,6 +26,7 @@ import type { JsonValue } from "./utils/native";
 import { exemptResponseFromGate, installResponseGate } from "./BunResponse";
 import { fromDto, isDtoClass } from "./classDto";
 import { httpTransport } from "./contract/http";
+import { droppedKeys } from "@kingsleyweb/bun-contract/lib/unknownKeys";
 import { runSchema, validateStandard } from "./contract/issues";
 import { checkProtoKeyRule } from "./contract/protoKeys";
 import { documented, markImplicit, toConverter } from "./contract/schemas";
@@ -442,6 +443,29 @@ export interface BunValidateOptions<
    * `TypeError` here.
    */
   stripProtoKeys?: GuardOptions["stripProtoKeys"];
+  /**
+   * What happens to the keys of `body` and `query` that the schema dropped:
+   * keys the client sent that its output no longer has, which zod's
+   * `z.object()` (and valibot's `object`, yup's `stripUnknown`) strip
+   * without a word, so the handler never sees them and nobody is told.
+   *
+   * - `"strip"` (the default): as before, silently.
+   * - `"warn"`: as before, and the router's logger warns once per request
+   *   that dropped some (`"validate(): the schema dropped keys the client
+   *   sent"`, with the `target` and the dropped key `paths`, at most 20;
+   *   just their `count` under `redactPaths`, since a key's name is the
+   *   client's). For development: it finds a field the schema forgot.
+   * - `"reject"`: the request fails validation, an issue per dropped key
+   *   (`Unrecognized key`, at its path), as if every object in the schema
+   *   were strict, without rewriting the schema.
+   *
+   * Found by comparing the input with the output, so it works with any
+   * vendor and only for what was really dropped: a key the schema renamed or
+   * a value it transformed into a non-object is not looked into. `params`,
+   * `headers` and cookies are never checked (their keys are the route's, or
+   * the client's own business). Anything else throws a `TypeError` here.
+   */
+  unknownKeys?: "strip" | "warn" | "reject";
 }
 
 /**
@@ -776,6 +800,17 @@ export class BunValidate<
         `validate(): responseOutput must be "as-sent" or "parsed"`,
       );
     }
+    const unknownKeys = options.unknownKeys;
+    if (
+      unknownKeys !== undefined &&
+      unknownKeys !== "strip" &&
+      unknownKeys !== "warn" &&
+      unknownKeys !== "reject"
+    ) {
+      throw new TypeError(
+        `validate(): unknownKeys must be "strip", "warn" or "reject"`,
+      );
+    }
     this.#format = issueFormat(options.messages, options.redactPaths);
     const rule = checkProtoKeyRule("validate()", options.stripProtoKeys);
     // The request targets always strip, by Nest 12's rule unless told
@@ -851,9 +886,12 @@ export class BunValidate<
             ownOutput,
           )
         : undefined;
-    const handler = this.#handler(ownGate);
+    const handler = this.#handler(ownGate, defaultLogger);
     attachContract(handler, this.#contract);
-    if (responses === undefined) {
+    // `unknownKeys: "warn"` writes to the router's logger, so it is bound
+    // like a response table (the unbound handler warns to the default one).
+    const warns = this.#options.unknownKeys === "warn";
+    if (responses === undefined && !warns) {
       return handler;
     }
     // The router binds the validator to its own `responseValidation` and
@@ -862,23 +900,37 @@ export class BunValidate<
     const contract = this.#contract;
     const binding: ResponseBinding = {
       bind: (settings: RouterResponseSettings) => {
+        if (responses === undefined) {
+          // Only `unknownKeys: "warn"` binds: to the router's logger.
+          const bound = this.#handler(ownGate, settings.logger);
+          attachContract(bound, contract);
+          return Object.assign(bound, { [RESPONSE_BINDING]: binding });
+        }
         const mode = own ?? settings.mode ?? "off";
         const output = ownOutput ?? settings.output ?? "as-sent";
         const table =
           settings.common.length === 0
             ? responses
             : mergeOutboundDefs([...settings.common, responses]);
-        if (mode === "off" && !declaresVariants(table) && output !== "parsed") {
+        if (
+          mode === "off" &&
+          !declaresVariants(table) &&
+          output !== "parsed" &&
+          !warns
+        ) {
           return handler;
         }
-        const gate = new ResponseContractGate(
-          table,
-          mode,
-          settings.logger,
-          this.#format,
-          output,
-        );
-        const bound = this.#handler(gate);
+        const gate =
+          mode === "off" && !declaresVariants(table) && output !== "parsed"
+            ? undefined
+            : new ResponseContractGate(
+                table,
+                mode,
+                settings.logger,
+                this.#format,
+                output,
+              );
+        const bound = this.#handler(gate, settings.logger);
         attachContract(bound, contract);
         return Object.assign(bound, { [RESPONSE_BINDING]: binding });
       },
@@ -892,6 +944,7 @@ export class BunValidate<
    */
   #handler(
     gate: ResponseContractGate | undefined,
+    logger: () => Logger,
   ): SchemaCarrying<
     ValidatedShapeFor<S, H, R, RS>,
     DeclaredSchemas<S, RS, ResponseOutputMode | undefined>
@@ -913,6 +966,46 @@ export class BunValidate<
       | undefined;
     const targets = this.#targets;
     const format = this.#requestFormat;
+    const unknownKeys = this.#options.unknownKeys ?? "strip";
+    const redact = format?.redactPaths === true;
+
+    /**
+     * Applies `unknownKeys` to a target's passing outcome: under `"warn"`
+     * logs the keys its schema dropped, under `"reject"` fails it with an
+     * issue per key. Only `body` and `query`.
+     */
+    const checkDropped = (
+      target: ValidationTarget,
+      input: unknown,
+      outcome: StandardOutcome<unknown, ValidationTarget>,
+    ): StandardOutcome<unknown, ValidationTarget> => {
+      if (
+        !outcome.ok ||
+        unknownKeys === "strip" ||
+        (target !== "body" && target !== "query")
+      ) {
+        return outcome;
+      }
+      const paths = droppedKeys(input, outcome.value);
+      if (paths.length === 0) return outcome;
+      if (unknownKeys === "warn") {
+        logger().warn(
+          "validate(): the schema dropped keys the client sent",
+          redact
+            ? { target, count: paths.length }
+            : { target, paths, count: paths.length },
+        );
+        return outcome;
+      }
+      return {
+        ok: false,
+        issues: paths.map((path) => ({
+          target,
+          message: "Unrecognized key",
+          path: redact ? "" : path,
+        })),
+      };
+    };
 
     // Each target in turn, as before the core: a `normalize` hook may read
     // what an earlier target wrote back, and `abortEarly` stops the rest. It
@@ -1013,10 +1106,12 @@ export class BunValidate<
                 );
           if (outcome instanceof Promise) {
             return outcome.then((settled) =>
-              settle(target, settled) ? finish() : run(i + 1),
+              settle(target, checkDropped(target, input, settled))
+                ? finish()
+                : run(i + 1),
             );
           }
-          if (settle(target, outcome)) {
+          if (settle(target, checkDropped(target, input, outcome))) {
             return finish();
           }
         }

@@ -45,6 +45,7 @@ import {
   validateStandard,
 } from "@kingsleyweb/bun-contract";
 import { httpTransport } from "@kingsleyweb/bun-contract/lib/http";
+import { droppedKeys } from "@kingsleyweb/bun-contract/lib/unknownKeys";
 
 // The runner, for `./sseChecks` (loaded with this module, by `./sse`), and
 // the guards and `channelContract` for `./channelChecks` (loaded the same
@@ -313,6 +314,62 @@ export async function checkResponse(
   return { value, issues };
 }
 
+/**
+ * One part a BYO schema checked: its name (`"query"`, `"body"`,
+ * `"response"`), what the schema was given, and its output (falsy when no
+ * BYO schema ran: nothing to review).
+ */
+type Reviewed = readonly [
+  target: ValidationErrorIssue["target"],
+  input: unknown,
+  output: unknown,
+];
+
+/**
+ * `validate.unknownKeys` (`ValidationConfig.unknownKeys`): reviews BYO
+ * schemas' outputs against what they were given (bun-contract's
+ * `droppedKeys`): under `"warn"` logs the keys each dropped
+ * (`<call>: the custom <target> schema dropped keys: a, b.c`); under
+ * `"reject"` adds an `Unrecognized key` issue per key to `issues`.
+ *
+ * @param mode   `"warn"` or `"reject"`.
+ * @param call   The route key, for the warning.
+ * @param status The response's status, as the issues' `key`; `undefined` for a request part.
+ * @param issues The call's issues so far, returned as they are when nothing is added.
+ * @param logger Where `"warn"` writes.
+ * @param parts  The parts to review.
+ */
+function reviewDropped(
+  mode: "warn" | "reject",
+  call: string,
+  status: number | undefined,
+  issues: readonly ValidationErrorIssue[],
+  logger: Pick<Console, "warn">,
+  ...parts: Reviewed[]
+): readonly ValidationErrorIssue[] {
+  const found: ValidationErrorIssue[] = [];
+  for (const [target, input, output] of parts) {
+    // A schema that failed hands back its input: nothing was dropped.
+    const paths = output ? droppedKeys(input, output) : [];
+    if (paths.length === 0) continue;
+    if (mode === "warn") {
+      logger.warn(
+        `${call}: the custom ${target} schema dropped keys: ${paths.join(", ")}`,
+      );
+      continue;
+    }
+    for (const path of paths)
+      found.push({
+        target,
+        message: "Unrecognized key",
+        path,
+        source: "custom",
+        ...(status === undefined ? {} : { key: String(status) }),
+      });
+  }
+  return found.length === 0 ? issues : [...issues, ...found];
+}
+
 /* ------------------------------------------------------------------------ */
 /* The configuration (§6.2), resolved per call.                              */
 /* ------------------------------------------------------------------------ */
@@ -348,6 +405,8 @@ interface ResolvedValidation {
   onRequest: FailureMode;
   /** What a response failure does. */
   onResponse: FailureMode;
+  /** The keys a BYO schema dropped: looked for unless `"strip"`. */
+  unknownKeys: "strip" | "warn" | "reject";
 }
 
 /** A part turned off: nothing runs, BYO included. */
@@ -399,6 +458,7 @@ function resolveValidation(
     statuses: new Map(),
     onRequest: "throw",
     onResponse: "warn",
+    unknownKeys: "strip",
   };
   for (const level of levels) {
     if (level === undefined) continue;
@@ -424,6 +484,7 @@ function resolveValidation(
         out.statuses.set(status, state);
       }
     }
+    if (level.unknownKeys !== undefined) out.unknownKeys = level.unknownKeys;
     const failure = level.onFailure;
     if (typeof failure === "string" || typeof failure === "function") {
       out.onRequest = failure;
@@ -641,16 +702,24 @@ export function createChecks(context: ChecksContext): Checks {
         const list = Object.values(plans);
         if (list.length === 0) return options;
         // The server sees an absent params or query as an empty object.
-        const { value, issues } = await checkRequest(
-          await routeOf(key, list),
-          plans,
-          {
-            params: options.params ?? {},
-            query: options.query ?? {},
-            body: options.body,
-            files: options.files ?? {},
-          },
-        );
+        const checked = await checkRequest(await routeOf(key, list), plans, {
+          params: options.params ?? {},
+          query: options.query ?? {},
+          body: options.body,
+          files: options.files ?? {},
+        });
+        const value = checked.value;
+        let issues = checked.issues;
+        if (validation.unknownKeys !== "strip")
+          issues = reviewDropped(
+            validation.unknownKeys,
+            key,
+            undefined,
+            issues,
+            logger,
+            ["query", options.query, plans.query?.custom && value.query],
+            ["body", options.body, plans.body?.custom && value.body],
+          );
         if (issues.length > 0)
           failed(
             validation.onRequest,
@@ -682,7 +751,7 @@ export function createChecks(context: ChecksContext): Checks {
           hasSource,
         );
         if (plan === undefined) return body;
-        const { value, issues } = await checkResponse(
+        const checked = await checkResponse(
           await responseRouteOf(key, plan, headers !== undefined),
           status,
           plan,
@@ -694,6 +763,17 @@ export function createChecks(context: ChecksContext): Checks {
               : { headers: headersObject(headers) }),
           },
         );
+        const value = checked.value;
+        let issues = checked.issues;
+        if (validation.unknownKeys !== "strip")
+          issues = reviewDropped(
+            validation.unknownKeys,
+            key,
+            status,
+            issues,
+            logger,
+            ["response", body, plan.custom && value],
+          );
         if (issues.length > 0) {
           failed(
             validation.onResponse,
