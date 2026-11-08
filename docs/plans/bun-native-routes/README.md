@@ -962,6 +962,12 @@ fan-out baseline was recorded once, as the user asked
 queue, `false` past the mark) is not in it: a later, separate PR that
 comes back with an A/B plan first (the user's decision, 2026-11-03).
 PR-sse2b (channels), PR-sse3, PR-sse4 and PR-sse5 are not started.
+**S10 is built** (2026-11-08, follow-ups track A, PR 2): `res.write()`
+enqueues on a 64 KiB `ByteLengthQueuingStrategy` stream, answers `false`
+once the queue is full and emits `drain` from the stream's `pull` (no
+longer on every write); `res.writableNeedDrain` and `res.writableLength`
+are Node's. Measured A/B against `develop` with `bench/sse.ts` (the user's
+approval, 2026-11-08): see that PR's body.
 
 Every probe is
 in [`evidence/sse/`](evidence/sse/), each

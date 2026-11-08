@@ -1512,8 +1512,24 @@ flushed.on("drain", () => {
   drained++;
 });
 await writer.write("via writer");
-checkEqual("getWritable().write() emits drain", drained, 1);
+checkEqual(
+  "getWritable().write() queues the chunk (writableLength), no drain under the mark",
+  [flushed.writableLength, drained],
+  [10, 0],
+);
 checkEqual("…ready resolves", await writer.ready, undefined);
+checkEqual(
+  "write() answers false once 64 KiB wait for the client",
+  flushed.write(new Uint8Array(64 * 1024)),
+  false,
+);
+check("…writableNeedDrain", flushed.writableNeedDrain);
+const flushedReader = flushed.readableStream!.getReader();
+await flushedReader.read(); // "via writer"
+await flushedReader.read(); // the 64 KiB: the queue is under the mark again
+await Promise.resolve();
+checkEqual("…drain once the client has read it", drained, 1);
+flushedReader.releaseLock();
 await flushed.endLongLivedConnection();
 
 const keptAlive = await makeRes();

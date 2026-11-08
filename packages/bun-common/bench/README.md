@@ -59,8 +59,12 @@ of N clients. The targets are `raw-hwm` (the ceiling), `common-write` (the
 rival) and `common-sse`.
 
 `--compare` fails when `res.sse()` falls more than 35% behind its own
-baseline, or when `res.write()` delivers more events/s than it. The second is
-the sharper check, because a busy machine slows both.
+baseline, or when `res.write()` delivers more than 10% more events/s than it.
+The second is the sharper check, because a busy machine slows both. The
+margin came with S10 (2026-11-08): `res.write()` now streams on the same
+64 KiB byte-length queue as `res.sse()`, so the two are near ties (from 14%
+behind to 1% ahead in the A/B), where `res.write()` used to run at about
+half the speed.
 
 `baselines/sse.json` was recorded once on 2026-11-03, at the user's request
 (Bun 1.4.4-canary.1+11c367163, linux-x64, exclusive through the heavy-run
