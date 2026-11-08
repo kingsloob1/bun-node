@@ -145,6 +145,21 @@ describe("package.json exports", () => {
     ).toBe(true);
   });
 
+  it("checks the ./throttle subpath, the shared store for bun-common's throttle()", () => {
+    for (const key of ["./throttle", "./lib/throttle"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/throttle/index.ts",
+        types: "./dts/throttle/index.d.ts",
+        default: "./lib/throttle/index.ts",
+      });
+    }
+    expect(
+      checkConfig.entries?.some(
+        (entry) => entry.spelling === "@kingsleyweb/bun-cache/throttle",
+      ),
+    ).toBe(true);
+  });
+
   it("checks the ./cloudflare-worker subpath, the Worker users deploy, as a browser entry", () => {
     expect(manifest.exports["./cloudflare-worker"]).toEqual({
       "@kingsleyweb/source": "./lib/cloudflare/worker.ts",
@@ -160,10 +175,11 @@ describe("package.json exports", () => {
 });
 
 describe("this package's runtime dependencies", () => {
-  // ./http's declarations import bun-common's router types; a declaration
-  // must never import an undeclared package, so bun-common stays a runtime
-  // dependency (plan §14.1), not a peer or a devDependency.
-  it("declares bun-common, which ./http's declarations import", () => {
+  // ./http's declarations import bun-common's router types, and ./throttle's
+  // its ThrottleStore; a declaration must never import an undeclared
+  // package, so bun-common stays a runtime dependency (plan §14.1), not a
+  // peer or a devDependency.
+  it("declares bun-common, which ./http's and ./throttle's declarations import", () => {
     expect(manifest.dependencies["@kingsleyweb/bun-common"]).toBeDefined();
   });
 });

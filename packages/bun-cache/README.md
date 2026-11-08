@@ -188,6 +188,13 @@ And (PR-R1):
   write rejoining empty — with what it costs, and when a backend's own
   replication is the better answer ([Redundant drivers](#redundant-drivers))
 
+And (throttle):
+
+- a **shared throttle store**, `cacheThrottleStore(cache)` from
+  `@kingsleyweb/bun-cache/throttle`: bun-common's `throttle()` counting
+  through the cache, so one rate limit holds across every process on the
+  backend ([Throttling](#throttling))
+
 What comes next is in the plan's Status.
 
 ## Quick start
@@ -430,7 +437,8 @@ const n = await cache.increment("hits:/home", 1, { ttl: 86_400_000 });
 TTL is set only when the counter is created, so a rate-limit window does not
 slide. `get` on a counter key returns its number. A counter carries no tags.
 On a driver without `capabilities.atomicIncrement`, `increment` throws
-`UnsupportedOperationError`.
+`UnsupportedOperationError`. For request rate limits, use the counters
+through bun-common's `throttle()` ([Throttling](#throttling)).
 
 ## Codecs
 
@@ -3062,3 +3070,97 @@ cd packages/bun-cache/bench
 bun install --frozen-lockfile
 bun run compat
 ```
+
+## Throttling
+
+`@kingsleyweb/bun-cache/throttle` is a store for bun-common's
+[`throttle()`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md):
+the counts live in the cache's backend, so one limit holds across every
+process that shares it. bun-common's default store is in memory, per
+process: behind three instances, a limit of 100 lets 300 through.
+
+```ts
+import { BunRouter } from "@kingsleyweb/bun-common";
+import { createCache, redisDriver } from "@kingsleyweb/bun-cache";
+import { cacheThrottleStore } from "@kingsleyweb/bun-cache/throttle";
+
+const cache = createCache({ driver: redisDriver({ url: process.env.REDIS_URL }) });
+const router = new BunRouter({
+  throttle: { limit: 100, window: "1m", store: cacheThrottleStore(cache) },
+});
+```
+
+- **Two calls per request.** The default algorithm, the sliding window,
+  makes an `increment` of the current window's counter and a `get` of the
+  previous one's, side by side; the fixed window makes the `increment`
+  alone. `increment` is `cache.increment(key, cost, { ttl })`: atomic, and
+  the lifetime is set only when the counter is created ([Counters](#counters)).
+  `get` reads the driver with `tier: "l2"`: counters never enter an L1 tier,
+  so an L1 cannot make a count per-process.
+- **Keys.** `throttle()` builds every key whole — its `prefix`, the limit's
+  name, the window's length in milliseconds, the scope, the client and the
+  window's index — and the store keeps each as it is, in the cache namespace
+  `throttle` under the cache's own (`app:throttle` on a cache namespaced
+  `app`). `namespace` changes it; processes that share a limit share the
+  cache namespace, this `namespace` and `throttle()`'s `prefix`.
+- **Failures.** A failed `increment` throws even under the cache's default
+  failure policy, and an open circuit throws `CircuitOpenError` at once:
+  `throttle()`'s `failMode` decides what the request gets (`"open"`, the
+  default, lets it through with a warning at most every 10 s; `"closed"`
+  answers `503`). A failed `get` reads as a miss, as every cache read does
+  under the default policy (under `strict` it throws too): a request then
+  counts its current window alone.
+- **Costs are integers.** Redis counts with `HINCRBY` and SQL in a `BIGINT`,
+  so the store refuses a fractional `cost` on every driver, the memory one
+  included, rather than only in production.
+- **`delete(key)`** resets one counter (bun-common's `handler.reset`) and
+  **`clear()`** empties the store's namespace and nothing else.
+- **GCRA is not offered.** It needs a compare-and-set on one value, which a
+  cache counter cannot do atomically, so `throttle({ algorithm: "gcra" })`
+  refuses this store at construction. The sliding window is the default and
+  runs on every driver below.
+
+**Which drivers can count.** `cacheThrottleStore` refuses, at construction
+and with a `ConfigError` naming the driver, a cache whose driver has no
+atomic increment: a read-then-write counter lets concurrent requests through
+uncounted.
+
+| Driver | Atomic increment | Shares a limit across processes |
+|---|---|---|
+| memory | yes | no: one process (use bun-common's `memoryThrottleStore()`, which is synchronous) |
+| file | yes, under a lock file | processes on one host |
+| SQLite | yes | processes on one host |
+| Postgres, MySQL, MariaDB | yes | yes |
+| Redis | yes (Lua) | yes |
+| MongoDB | yes | yes |
+| S3, Azure Blob Storage | yes, compare-and-swap, batched per key (a request costs one or more HTTP round trips) | yes |
+| Cloudflare D1 | yes | yes |
+| Cloudflare KV | **no**: refused | — |
+| S3 with `conditionalWrites: false` | **no**: refused | — |
+| `fromSimpleDriver` | **no**: refused | — |
+| `redundant([...])` | the primary's (refused when the primary has none, or with `counters: "refuse"`) | as its primary; while the primary is down, increments throw and `failMode` decides |
+
+A `Cache` that `createCache` did not make cannot be inspected; it is
+accepted, and its own `increment` decides.
+
+**Clocks.** Each process puts a request in a window by its own clock
+(`throttle()`'s `now`), and a counter's expiry is computed by the process
+that creates it, from the cache's clock (`createCache`'s `now`): `Date.now()`
+by default, the client's, not the server's. On Redis the script also compares
+that expiry with the client's clock to decide whether a counter has lapsed,
+and the server deletes the key at `PEXPIREAT` by **its** clock; on the SQL
+drivers both the lapse check and the read filter use the client's clock. So
+processes sharing a store need synchronised clocks (NTP): a skew of `s` ms
+between two of them puts their window edges `s` ms apart, and a counter's
+lifetime moves by the creating process's skew. Because the window's index is
+in the key, a counter that lives a little longer changes no count, so the
+store adds `expiryMargin` (default 1 s) to every lifetime: a Redis server
+whose clock runs ahead of a client by less than that cannot delete a
+counter while that client still counts in its window.
+
+**Follow-ups, not built.** A Redis script could take the sliding window's
+two calls in one round trip (`INCRBY` the current counter and `GET` the
+previous one), and could run GCRA atomically, which would make
+`algorithm: "gcra"` available on Redis; the same script could read the
+window's index and the expiry from the server's `TIME` (and SQL from
+`now()`), so the processes' clocks would no longer need to agree.

@@ -407,6 +407,15 @@ class CacheImpl<
     return new CacheImpl<S, T>(view.#state, view.#ns, codec);
   }
 
+  /** The driver `cache` stores through; `undefined` when `cache` was not made by `createCache`. */
+  static driverOf(cache: unknown): CacheDriver | undefined {
+    // A brand check, not `instanceof`: an object whose prototype is a
+    // cache (`Object.create(cache)`) has no state of its own.
+    return typeof cache === "object" && cache !== null && #state in cache
+      ? cache.#state.driver
+      : undefined;
+  }
+
   /* ---------------------------------------------------------------- */
   /* small pieces                                                      */
   /* ---------------------------------------------------------------- */
@@ -3374,6 +3383,24 @@ export function cacheWithCodec<
   codec: "structured" | "json" | "raw" | Codec,
 ): Cache<Schema, Tag> | undefined {
   return CacheImpl.withCodec(cache, resolveCodec(codec));
+}
+
+/**
+ * The driver a cache stores through, for a module of this package that must
+ * know what the backend can do before it is used: `cacheThrottleStore`
+ * (`./throttle`) refuses a cache whose driver has no atomic increment at
+ * construction rather than on the first request. Answers `undefined` for a
+ * `Cache` that `createCache` did not make (a hand-written implementation),
+ * whose backend cannot be inspected.
+ *
+ * Not exported from the package root, like {@link cacheWithCodec}: the
+ * public `Cache` has no driver accessor, and this adds none.
+ */
+export function cacheDriverOf<
+  Schema extends CacheSchema = Record<string, unknown>,
+  Tag extends string = string,
+>(cache: Cache<Schema, Tag>): CacheDriver | undefined {
+  return CacheImpl.driverOf(cache);
 }
 
 /**
