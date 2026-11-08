@@ -82,6 +82,12 @@ try {
 
   await waitFor("A's user query refetched", () => hits("GET /users/1") === 2);
   await waitFor("A's list refetched", () => hits("GET /users") === 2);
+  // A request is counted when the controller runs, before its response
+  // reaches A's cache: wait for the data itself.
+  await waitFor(
+    "A's cache to hold B's change",
+    () => clientA.getQueryData(ada.queryKey)?.name === "Ada Lovelace",
+  );
   checkEqual(
     "A holds B's change without being asked",
     clientA.getQueryData(ada.queryKey)?.name,
