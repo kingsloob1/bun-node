@@ -2823,11 +2823,23 @@ export class BunQueue<
       return false;
     }
 
-    if (definition.nextJobId) {
-      await this.driver.removeJob(this.ref, definition.nextJobId);
+    // The definition goes first. From then on no scheduling pass can write
+    // the series back (they advance it with `updateRepeat`, which writes
+    // only while it is stored), and one that adds an occurrence afterwards
+    // removes it again itself. The occurrence pointed to goes next: as read
+    // just before the removal, so one a worker scheduled since `findRepeat`
+    // goes too.
+    const latest = await this.driver.getRepeat(this.ref, definition.key);
+    const removed = await this.driver.removeRepeat(this.ref, definition.key);
+    const pending = new Set(
+      [definition.nextJobId, latest?.nextJobId].filter(
+        (id): id is string => typeof id === "string",
+      ),
+    );
+    for (const id of pending) {
+      await this.driver.removeJob(this.ref, id);
     }
 
-    const removed = await this.driver.removeRepeat(this.ref, definition.key);
     await clearRepeatDisabled(this.driver, this.ref, definition.key);
     return removed;
   }

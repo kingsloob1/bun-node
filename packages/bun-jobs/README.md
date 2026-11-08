@@ -602,7 +602,7 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `setJobDefaults(patch, { expectedSeq? })` / `resetJobDefaults({ expectedSeq? })` | Merges into, or clears, the queue's stored job defaults. `null` clears one key. |
 | `applyJobDefaults({ seq, keys?, states?, limit?, cursor?, dryRun?, includeUnmarked? })` | Rewrites jobs already pending with the stored job defaults, one bounded call of a resumable walk. |
 | `cleanWindows({ limit = 1000 })` | Removes stale debounce and throttle pointers. Workers also do this once a minute. |
-| `listRepeatables()` / `removeRepeatable(key)` | Lists repeat series, each with `disabled`, or removes one along with its scheduled occurrence. Removing a series clears its disabled flag. |
+| `listRepeatables()` / `removeRepeatable(key)` | Lists repeat series, each with `disabled`, or removes one along with its scheduled occurrence. Removing a series clears its disabled flag. It stays removed even when a worker was scheduling its next occurrence at that moment. At most two occurrences still run: one already claimed, and one scheduled at that instant. |
 | `disableRepeatable(key)` / `enableRepeatable(key)` | Stops a series without removing it, or restarts it. See [Disabling a series](#disabling-a-series). |
 | `close()` | Closes the subscription, and the driver if the queue built it. |
 
@@ -8173,6 +8173,18 @@ the same id, exactly one gets the record. The built-in drivers do it with a
 synchronous check-and-shift (memory), the state lock file (file), a locked
 transaction (SQL), a Lua script (Redis) and a conditional `$pop` on the exact
 head (MongoDB).
+
+**`updateRepeat(q, def)` is optional, and worth having.** It replaces a repeat
+definition only while one is stored under `def.key`, answering `true` when it
+wrote and `false`, writing nothing, when there is none. The check and the
+write must be one atomic step against `removeRepeat`. Every write that
+advances a series goes through it, so a series `removeRepeatable()` removed
+while a worker was scheduling its next occurrence stays removed. Without it the
+core reads the definition and then calls `upsertRepeat`, which leaves the
+moment between the two open. The built-in drivers do it with a synchronous
+check (memory), a lock file shared with `removeRepeat` (file), a point
+`UPDATE` (SQL), a Lua script (Redis) and an `updateOne` without `upsert`
+(MongoDB).
 
 #### Minimum database versions
 

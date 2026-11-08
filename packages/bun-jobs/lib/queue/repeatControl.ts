@@ -156,7 +156,7 @@ export async function disableRepeatSeries(
   // maintenance find and remove that occurrence.
   const latest = await driver.getRepeat(q, storedKey);
   if (latest && latest.nextJobId === current.nextJobId) {
-    await driver.upsertRepeat(q, {
+    await updateRepeatIfStored(driver, q, {
       ...latest,
       nextRunAt: null,
       nextJobId: null,
@@ -230,6 +230,61 @@ export async function clearRepeatDisabled(
       return;
     }
   }
+}
+
+/**
+ * Writes `definition` back only while its series is still stored, answering
+ * whether it wrote: the driver's {@link JobsDriver.updateRepeat} when it has
+ * one, which checks and writes in one step, else a read and then an upsert.
+ *
+ * Every write that *advances* a series goes through here — the next
+ * occurrence a worker schedules, one maintenance replaces, a re-enabled
+ * series' first — never `upsertRepeat`, which would write back a series
+ * `removeRepeatable()` took away while the pass was between its read and its
+ * write: the removal answered `true`, and the series ran on, listed again.
+ */
+export async function updateRepeatIfStored(
+  driver: JobsDriver,
+  q: QueueRef,
+  definition: RepeatRecord,
+): Promise<boolean> {
+  if (typeof driver.updateRepeat === "function") {
+    return await driver.updateRepeat(q, definition);
+  }
+
+  if (!(await driver.getRepeat(q, definition.key))) {
+    return false;
+  }
+  await driver.upsertRepeat(q, definition);
+  return true;
+}
+
+/**
+ * Writes the next occurrence's pointer onto a series, after `occurrence` was
+ * added for it; when the series is no longer stored — removed since it was
+ * read — removes that occurrence again instead, while it is still pending,
+ * so a removed series leaves nothing behind to run. Answers whether the
+ * series was still there.
+ */
+export async function pointRepeatAt(
+  driver: JobsDriver,
+  q: QueueRef,
+  definition: RepeatRecord,
+  occurrence: { id: string; runAt: number },
+  now: number,
+): Promise<boolean> {
+  const pointed: RepeatRecord = {
+    ...definition,
+    nextRunAt: occurrence.runAt,
+    nextJobId: occurrence.id,
+    updatedAt: now,
+  };
+  if (await updateRepeatIfStored(driver, q, pointed)) {
+    return true;
+  }
+
+  await removePendingOccurrence(driver, q, pointed);
+  return false;
 }
 
 /**
@@ -319,7 +374,7 @@ async function scheduleFromNow(
   const next = nextOccurrence(definition, now);
 
   if (next === null) {
-    await driver.upsertRepeat(q, {
+    await updateRepeatIfStored(driver, q, {
       ...definition,
       nextRunAt: null,
       nextJobId: null,
@@ -338,12 +393,7 @@ async function scheduleFromNow(
   if (record.state === "delayed") {
     noteScheduled(driver, q);
   }
-  await driver.upsertRepeat(q, {
-    ...definition,
-    nextRunAt: next,
-    nextJobId: record.id,
-    updatedAt: now,
-  });
+  await pointRepeatAt(driver, q, definition, record, now);
 }
 
 /**

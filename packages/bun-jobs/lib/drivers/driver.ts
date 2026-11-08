@@ -2824,6 +2824,23 @@ export interface QueueDriver {
   isQueuePaused: (q: QueueRef) => Promise<boolean>;
   /** Creates or updates a repeat definition. */
   upsertRepeat: (q: QueueRef, def: RepeatRecord) => Promise<void>;
+  /**
+   * Replaces a repeat definition **only while one is stored under
+   * `def.key`**, the check and the write one step: `true` when it wrote,
+   * `false` when there was none (the series was removed), having written
+   * nothing.
+   *
+   * What advancing a series uses — a worker scheduling the next occurrence,
+   * maintenance replacing a lost one, `enableRepeatable()` — so that a
+   * series `removeRepeat` took away is never written back by a pass that
+   * read it a moment earlier. With `upsertRepeat` there, `removeRepeatable()`
+   * answered `true` and the series ran on, listed again.
+   *
+   * Optional: without it the core reads the definition and then upserts it,
+   * which leaves the moment between the two open. Every built-in driver has
+   * it; a third-party driver should.
+   */
+  updateRepeat?: (q: QueueRef, def: RepeatRecord) => Promise<boolean>;
   /** One repeat definition by key. */
   getRepeat: (q: QueueRef, key: string) => Promise<RepeatRecord | null>;
   /** Every repeat definition in the queue. */

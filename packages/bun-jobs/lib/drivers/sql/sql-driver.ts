@@ -7245,6 +7245,27 @@ export class SqlDriver implements JobsDriver {
     );
   }
 
+  async updateRepeat(q: QueueRef, def: RepeatRecord): Promise<boolean> {
+    await this.connect();
+    const key = this.#queueKvKey(q, "repeat", def.key);
+    this.#assertFits(q.ns, "namespace");
+    this.#assertFits(key, "kv key");
+
+    // A point UPDATE, never an insert: a row `removeRepeat` deleted stays
+    // deleted. Matched rather than changed rows (`#updateMatched`), so a
+    // write identical to the stored record still answers that it is there.
+    const written = await this.#updateMatched(
+      this.#tables.kv,
+      [
+        { column: "value", value: this.dialect.jsonIn(def), json: true },
+        { column: "updated_at", value: Date.now() },
+      ],
+      (bind) => `ns = ${bind(q.ns)} AND kv_key = ${bind(key)}`,
+    );
+
+    return written > 0;
+  }
+
   async getRepeat(q: QueueRef, key: string): Promise<RepeatRecord | null> {
     return await this.#readKv<RepeatRecord>(
       q.ns,

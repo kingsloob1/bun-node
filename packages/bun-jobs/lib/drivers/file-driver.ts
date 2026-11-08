@@ -88,7 +88,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import process from "node:process";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { MINUTE_BUCKET_MS } from "../api/contract/constants";
@@ -4197,6 +4197,24 @@ export class FileDriver implements JobsDriver {
     await this.#writeAtomic(this.#repeatPath(q, def.key), JSON.stringify(def));
   }
 
+  async updateRepeat(q: QueueRef, def: RepeatRecord): Promise<boolean> {
+    const path = this.#repeatPath(q, def.key);
+    // The check and the write under the lock `removeRepeat` takes, which is
+    // what makes them one step across processes: a definition removed between
+    // them would otherwise be written back by the rename.
+    const release = await this.#repeatLock(q, def.key);
+
+    try {
+      if (!(await this.#readJson<RepeatRecord>(path))) {
+        return false;
+      }
+      await this.#writeAtomic(path, JSON.stringify(def));
+      return true;
+    } finally {
+      await release();
+    }
+  }
+
   async getRepeat(q: QueueRef, key: string): Promise<RepeatRecord | null> {
     return await this.#readJson<RepeatRecord>(this.#repeatPath(q, key));
   }
@@ -4217,12 +4235,33 @@ export class FileDriver implements JobsDriver {
 
   async removeRepeat(q: QueueRef, key: string): Promise<boolean> {
     const path = this.#repeatPath(q, key);
-    if (!(await this.#readJson<RepeatRecord>(path))) {
-      return false;
-    }
+    // The lock `updateRepeat` takes: a removal never lands between its check
+    // and its write.
+    const release = await this.#repeatLock(q, key);
 
-    await rm(path, { force: true });
-    return true;
+    try {
+      if (!(await this.#readJson<RepeatRecord>(path))) {
+        return false;
+      }
+
+      await rm(path, { force: true });
+      return true;
+    } finally {
+      await release();
+    }
+  }
+
+  /**
+   * Takes the lock file `updateRepeat` and `removeRepeat` share for one
+   * definition. It lives in a directory of its own, beside `repeats/`, so
+   * `listRepeats` never reads a lock as a definition.
+   */
+  async #repeatLock(q: QueueRef, key: string): Promise<() => Promise<void>> {
+    const dir = join(this.#queueDir(q), "repeat-locks");
+    await mkdir(dir, { recursive: true });
+    return await this.#lockFile(
+      join(dir, `${basename(this.#repeatPath(q, key), ".json")}.lock`),
+    );
   }
 
   /* --- queue: waiting and events --------------------------------------- */
