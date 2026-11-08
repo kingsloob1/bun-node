@@ -2,7 +2,7 @@ import type { LiveStatus } from "../../app/live";
 import { describe, expect, it } from "bun:test";
 import { liveStatusInfo } from "../../app/layout/liveStatusInfo";
 import { expectAbsent } from "./assert";
-import { act, page, setupDom } from "./dom";
+import { act, LOADED, page, setupDom } from "./dom";
 import { installLiveFake } from "./liveFake";
 import { renderApp } from "./renderApp";
 
@@ -122,7 +122,7 @@ describe("the header badge", () => {
   it("says Live off when the UI shows documentation only", async () => {
     live.install(status({ state: "off", detail: "docs only" }));
     renderApp({ config: { sections: { manage: false, docs: true } } });
-    await page().findByTestId("live-status");
+    await page().findByTestId("live-status", {}, LOADED);
     expect(badge()).toMatchObject({
       text: "Live off",
       tone: "badge-neutral",
@@ -133,7 +133,7 @@ describe("the header badge", () => {
   it("follows the live status as it changes", async () => {
     live.install(status({ state: "connecting" }));
     renderApp();
-    await page().findByTestId("live-status");
+    await page().findByTestId("live-status", {}, LOADED);
     expect(badge()).toMatchObject({
       text: "Connecting…",
       tone: "badge-info",
@@ -176,7 +176,7 @@ describe("the live-status announcer", () => {
   it("is a polite live region outside the badge, silent on the first render", async () => {
     live.install(status({ state: "connecting" }));
     renderApp();
-    await page().findByTestId("live-status");
+    await page().findByTestId("live-status", {}, LOADED);
     expect(announcer().getAttribute("aria-live")).toBe("polite");
     expectAbsent(announcer().getAttribute("role"));
     expect(announcer().textContent).toBe("");
@@ -187,7 +187,7 @@ describe("the live-status announcer", () => {
   it("speaks once per state change, not for a new detail in the same state", async () => {
     live.install(status({ state: "connecting" }));
     renderApp();
-    await page().findByTestId("live-status");
+    await page().findByTestId("live-status", {}, LOADED);
 
     await act(async () => live.setStatus({ state: "live", detail: null }));
     expect(announcer().textContent).toBe("Live updates: Live");

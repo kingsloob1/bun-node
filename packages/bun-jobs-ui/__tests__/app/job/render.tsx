@@ -5,7 +5,7 @@ import { createApiClient } from "../../../app/api/client";
 import { jobScreenPath } from "../../../app/api/jobs";
 import { AppProviders } from "../../../app/providers";
 import { createQueryClient } from "../../../app/queryClient";
-import { act, page, render, visit } from "../dom";
+import { act, LOADED, page, render, visit } from "../dom";
 import { uiConfig } from "../fixtures";
 import { mockFetch } from "../mockFetch";
 import { renderApp } from "../renderApp";
@@ -58,7 +58,7 @@ export async function renderJobScreen(
     retry: options.retry,
   });
   if (options.wait !== false) {
-    await page().findByTestId(/job-(screen|not-found)/);
+    await page().findByTestId(/job-(screen|not-found)/, {}, LOADED);
   }
   return result;
 }
@@ -91,7 +91,7 @@ export async function renderWithProviders(
       <div data-testid="providers-ready">{element}</div>
     </AppProviders>,
   );
-  await page().findByTestId("providers-ready");
+  await page().findByTestId("providers-ready", {}, LOADED);
   return { ...result, calls: mock.calls, queryClient };
 }
 

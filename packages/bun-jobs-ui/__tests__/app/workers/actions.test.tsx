@@ -3,7 +3,15 @@ import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { WORKER_CONTROL_WAIT_MS } from "../../../app/api/workers";
 import { expectAbsent, expectUndefined } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";
 import { configResult, controlResult, workerFixture } from "./fixtures";
@@ -54,7 +62,7 @@ async function openWorkers({
   }
   visit("/jobs/workers");
   renderApp({ handlers });
-  const row = await page().findByTestId(`worker-row-${worker.id}`);
+  const row = await page().findByTestId(`worker-row-${worker.id}`, {}, LOADED);
   return { row, recorded };
 }
 
@@ -77,7 +85,9 @@ describe("a worker's lifecycle buttons", () => {
     // ignored and every instruction reads as unacknowledged.
     expect(recorded[0].query).toBe(`wait=${WORKER_CONTROL_WAIT_MS}`);
     expectUndefined(recorded[0].body);
-    expect(await page().findByText(/Paused api\.emails/)).toBeTruthy();
+    expect(
+      await page().findByText(/Paused api\.emails/, {}, LOADED),
+    ).toBeTruthy();
   });
 
   it("says an unacknowledged instruction was only recorded", async () => {
@@ -91,7 +101,7 @@ describe("a worker's lifecycle buttons", () => {
     });
     fireEvent.click(within(row).getByRole("button", { name: "Pause" }));
     expect(
-      await page().findByText(/Asked api\.emails.* to pause/),
+      await page().findByText(/Asked api\.emails.* to pause/, {}, LOADED),
     ).toBeTruthy();
   });
 
@@ -121,7 +131,11 @@ describe("a worker's lifecycle buttons", () => {
     });
     fireEvent.click(within(row).getByRole("button", { name: "Pause" }));
     expect(
-      await page().findByText(/no longer in the state that action needs/),
+      await page().findByText(
+        /no longer in the state that action needs/,
+        {},
+        LOADED,
+      ),
     ).toBeTruthy();
   });
 });
@@ -136,7 +150,7 @@ describe("the Stop dialog", () => {
       },
     });
     fireEvent.click(within(row).getByRole("button", { name: "Stop…" }));
-    const dialog = await page().findByRole("alertdialog");
+    const dialog = await page().findByRole("alertdialog", {}, LOADED);
     expect(dialog.textContent).toContain("finishes the job it is running");
     expect(dialog.textContent).toContain("A redeploy or a restart brings this");
     expectAbsent(within(dialog).queryByRole("combobox"));
@@ -162,7 +176,7 @@ describe("the Stop dialog", () => {
       },
     });
     fireEvent.click(within(row).getByRole("button", { name: "Stop…" }));
-    const dialog = await page().findByRole("alertdialog");
+    const dialog = await page().findByRole("alertdialog", {}, LOADED);
     fireEvent.change(within(dialog).getByRole("combobox"), {
       target: { value: "key" },
     });
@@ -174,7 +188,7 @@ describe("the Stop dialog", () => {
     expect(recorded[0].body).toEqual({ persist: "key" });
     expect(recorded[0].query).toBe(`wait=${WORKER_CONTROL_WAIT_MS}`);
     expect(
-      await page().findByText(/every replica of it stays stopped/),
+      await page().findByText(/every replica of it stays stopped/, {}, LOADED),
     ).toBeTruthy();
   });
 });
@@ -197,11 +211,15 @@ describe("the Stop toast", () => {
       },
     });
     fireEvent.click(within(row).getByRole("button", { name: "Stop…" }));
-    const dialog = await page().findByRole("alertdialog");
+    const dialog = await page().findByRole("alertdialog", {}, LOADED);
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Stop worker" }),
     );
-    const toasts = await page().findByRole("list", { name: "Notifications" });
+    const toasts = await page().findByRole(
+      "list",
+      { name: "Notifications" },
+      LOADED,
+    );
     await waitFor(() => expect(toasts.textContent).not.toBe(""));
     return toasts.textContent ?? "";
   }
@@ -339,7 +357,7 @@ describe("the Settings dialog", () => {
       },
     });
     fireEvent.click(within(row).getByRole("button", { name: "Settings…" }));
-    const dialog = await page().findByRole("dialog");
+    const dialog = await page().findByRole("dialog", {}, LOADED);
     expect(dialog.textContent).toContain("reaches every worker carrying");
     // Save is disabled until something differs from what it runs with.
     const save = within(dialog).getByRole("button", { name: "Save settings" });
@@ -351,7 +369,7 @@ describe("the Settings dialog", () => {
     await waitFor(() => expect(recorded).toHaveLength(1));
     expect(recorded[0].body).toEqual({ concurrency: 5, expectedSeq: 4 });
     expect(
-      await page().findByText(/Saved the settings of api\.emails/),
+      await page().findByText(/Saved the settings of api\.emails/, {}, LOADED),
     ).toBeTruthy();
   });
 
@@ -366,7 +384,7 @@ describe("the Settings dialog", () => {
     });
     expect(row.textContent).toContain("Change pending");
     fireEvent.click(within(row).getByRole("button", { name: "Settings…" }));
-    const dialog = await page().findByRole("dialog");
+    const dialog = await page().findByRole("dialog", {}, LOADED);
     expect(
       within(dialog).getByTestId("worker-config-pending").textContent,
     ).toContain("still runs with");
@@ -377,7 +395,7 @@ describe("the Settings dialog", () => {
       grant: { "workers.configure": true },
     });
     fireEvent.click(within(row).getByRole("button", { name: "Settings…" }));
-    const dialog = await page().findByRole("dialog");
+    const dialog = await page().findByRole("dialog", {}, LOADED);
     // concurrency is overridden to 3 where the code asks for 2.
     expect(dialog.textContent).toContain("Overridden; its code asks for 2");
     fireEvent.click(
@@ -399,7 +417,7 @@ describe("the Settings dialog", () => {
       },
     });
     fireEvent.click(within(row).getByRole("button", { name: "Settings…" }));
-    const dialog = await page().findByRole("dialog");
+    const dialog = await page().findByRole("dialog", {}, LOADED);
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Reset to code values" }),
     );

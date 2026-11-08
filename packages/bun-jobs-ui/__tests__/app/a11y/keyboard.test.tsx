@@ -8,7 +8,16 @@ import {
 } from "../../../app/layout/shortcuts";
 import { expectAbsent } from "../assert";
 import { wsFixture } from "../docs/ws/fixtures";
-import { act, fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { renderApp } from "../renderApp";
 
@@ -35,6 +44,8 @@ async function renderOverview(): Promise<HTMLInputElement> {
   renderApp();
   return (await page().findByLabelText(
     "Filter queues by name",
+    {},
+    LOADED,
   )) as HTMLInputElement;
 }
 
@@ -110,7 +121,7 @@ describe("the / shortcut", () => {
   it("does nothing on a screen without a search box", async () => {
     visit("/jobs/nowhere");
     renderApp();
-    await page().findByTestId("not-found");
+    await page().findByTestId("not-found", {}, LOADED);
     const before = document.activeElement;
     const event = fireEvent.keyDown(document.body, { key: "/" });
     expect(document.activeElement).toBe(before);
@@ -136,7 +147,7 @@ describe("the / shortcut", () => {
         },
       },
     });
-    const search = await page().findByLabelText("Search");
+    const search = await page().findByLabelText("Search", {}, LOADED);
     fireEvent.keyDown(document.body, { key: "/" });
     expect(document.activeElement).toBe(search);
   });
@@ -148,9 +159,13 @@ describe("the ? shortcut", () => {
     const toggle = page().getByRole("button", { name: /^Theme:/ });
     toggle.focus();
     fireEvent.keyDown(document.body, { key: "?" });
-    const dialog = await page().findByRole("dialog", {
-      name: "Keyboard shortcuts",
-    });
+    const dialog = await page().findByRole(
+      "dialog",
+      {
+        name: "Keyboard shortcuts",
+      },
+      LOADED,
+    );
     const list = within(dialog).getByTestId("shortcut-list");
     for (const entry of SHORTCUT_HELP) {
       expect(list.textContent).toContain(entry.description);

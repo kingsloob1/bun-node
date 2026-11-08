@@ -2,7 +2,7 @@ import type { RunnerInfoDto, RunnerScheduleDto } from "../../../app/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { NON_LOCAL_RUNNER_NOTE } from "../../../app/screens/runners/runnerFormat";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {
   advance,
@@ -29,7 +29,7 @@ setupDom();
 
 /** Waits for the loaded runner and returns its heading's text. */
 async function heading(): Promise<string> {
-  const title = await page().findByRole("heading", { level: 1 });
+  const title = await page().findByRole("heading", { level: 1 }, LOADED);
   return title.textContent ?? "";
 }
 
@@ -63,7 +63,7 @@ async function renderLoaded(
     runner,
     ...options,
   });
-  await page().findByText("Summary");
+  await page().findByText("Summary", {}, LOADED);
   await waitFor(() => {
     if (!document.querySelector(".runner-summary")) {
       throw new Error("no summary yet");
@@ -285,7 +285,11 @@ describe("the runner history", () => {
         },
       },
     });
-    const table = await page().findByRole("table", { name: "Run history" });
+    const table = await page().findByRole(
+      "table",
+      { name: "Run history" },
+      LOADED,
+    );
     const ids = Array.from(
       table.querySelectorAll<HTMLElement>("tbody tr"),
       (row) => row.dataset.testid?.replace(/^history-row-/, "") ?? "",
@@ -325,7 +329,7 @@ describe("the runner history", () => {
         limits: { ...runnerMeta().limits, maxHistory: 30 },
       }),
     });
-    await page().findByRole("table", { name: "Run history" });
+    await page().findByRole("table", { name: "Run history" }, LOADED);
     const history = () =>
       calls.filter(
         (call) => call.path === runnerApiPath("nightly", "/history"),
@@ -350,7 +354,7 @@ describe("the runner history", () => {
     const { calls } = await renderLoaded(runnerFixture(), {
       path: "/runners/nightly?history=500",
     });
-    await page().findByRole("table", { name: "Run history" });
+    await page().findByRole("table", { name: "Run history" }, LOADED);
     expect(
       calls
         .filter((call) => call.path === runnerApiPath("nightly", "/history"))
@@ -367,7 +371,7 @@ describe("the runner history", () => {
         },
       },
     });
-    expect(await page().findByText("No runs yet")).toBeTruthy();
+    expect(await page().findByText("No runs yet", {}, LOADED)).toBeTruthy();
     empty.unmount();
 
     await renderLoaded(runnerFixture(), {
@@ -378,7 +382,9 @@ describe("the runner history", () => {
         },
       },
     });
-    expect(await page().findByText("Could not load the history")).toBeTruthy();
+    expect(
+      await page().findByText("Could not load the history", {}, LOADED),
+    ).toBeTruthy();
     // The rest of the screen stays.
     expect(await heading()).toBe("Nightly report");
   });
@@ -413,7 +419,7 @@ function runnerReads(calls: { path: string }[]): number {
 describe("the runner screen's access gate", () => {
   it("hides the runner, and never requests it, without runners.read", async () => {
     const { calls } = renderRunner({ permissions: withoutRunnersRead() });
-    const panel = await page().findByTestId("runner-hidden");
+    const panel = await page().findByTestId("runner-hidden", {}, LOADED);
     expect(panel.textContent).toContain("Runner hidden");
     expect(
       within(panel)
@@ -497,7 +503,7 @@ describe("the runner screen's access gate", () => {
         [`GET ${runnerApiPath()}`]: denied(403, "Not your team's runner"),
       },
     });
-    const panel = await page().findByTestId("runner-hidden");
+    const panel = await page().findByTestId("runner-hidden", {}, LOADED);
     expect(panel.textContent).toContain("Not your team's runner");
     expectAbsent(page().queryByText("Could not load the runner"));
     await settle(50);
@@ -512,7 +518,7 @@ describe("the runner screen's access gate", () => {
     renderRunner({
       handlers: { [`GET ${runnerApiPath()}`]: denied(401, "Sign in again") },
     });
-    const panel = await page().findByTestId("runner-hidden");
+    const panel = await page().findByTestId("runner-hidden", {}, LOADED);
     expect(panel.textContent).toContain("Sign in again");
   });
 
@@ -528,7 +534,7 @@ describe("the runner screen's access gate", () => {
         },
       },
     });
-    const panel = await page().findByTestId("runner-not-found");
+    const panel = await page().findByTestId("runner-not-found", {}, LOADED);
     expect(panel.textContent).toContain("Runner not found");
     expect(panel.textContent).toContain("ghost");
     expectAbsent(page().queryByTestId("runner-hidden"));
@@ -549,13 +555,17 @@ describe("the runner screen's access gate", () => {
       },
     });
     // The failure replaces the screen, so it is the screen's h1.
-    expect((await page().findByRole("heading", { level: 1 })).textContent).toBe(
-      "Could not load the runner",
-    );
+    expect(
+      (await page().findByRole("heading", { level: 1 }, LOADED)).textContent,
+    ).toBe("Could not load the runner");
     fail = false;
     fireEvent.click(page().getByRole("button", { name: "Retry" }));
     expect(
-      await page().findByRole("heading", { level: 1, name: "Nightly report" }),
+      await page().findByRole(
+        "heading",
+        { level: 1, name: "Nightly report" },
+        LOADED,
+      ),
     ).toBeTruthy();
   });
 });

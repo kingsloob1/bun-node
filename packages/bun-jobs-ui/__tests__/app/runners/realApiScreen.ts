@@ -1,5 +1,5 @@
 import type { FetchLike } from "../../../app/api/client";
-import { page, visit, waitFor, within } from "../dom";
+import { LOADED, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 
 /**
@@ -42,7 +42,7 @@ export async function mountRunnerList(
 ): Promise<RunnerListRow[]> {
   visit("/jobs/runners");
   const rendered = renderApp({ fetch });
-  const table = await page().findByRole("table", { name: "Runners" });
+  const table = await page().findByRole("table", { name: "Runners" }, LOADED);
   const rows = Array.from(
     table.querySelectorAll<HTMLElement>("tbody tr"),
     (row) => ({
@@ -63,8 +63,12 @@ export async function mountRunnerScreen(
 ): Promise<RunnerScreenView> {
   visit(`/jobs/runners/${encodeURIComponent(id)}`);
   const rendered = renderApp({ fetch });
-  const title = await page().findByRole("heading", { level: 1 });
-  const table = await page().findByRole("table", { name: "Run history" });
+  const title = await page().findByRole("heading", { level: 1 }, LOADED);
+  const table = await page().findByRole(
+    "table",
+    { name: "Run history" },
+    LOADED,
+  );
   let history: string[] = [];
   await waitFor(() => {
     history = Array.from(

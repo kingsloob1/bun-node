@@ -1,6 +1,6 @@
 import { isServer } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { page, setupDom } from "../dom";
+import { LOADED, page, setupDom } from "../dom";
 import { advance, renderRunner } from "../runners/fixtures";
 
 /**
@@ -25,7 +25,7 @@ describe("a polling screen after TanStack Query loaded without a DOM", () => {
   // is not raced against fake time on a loaded machine.
   it("renders the runner list", async () => {
     renderRunner({ path: "/runners" });
-    await page().findByRole("table", { name: "Runners" });
+    await page().findByRole("table", { name: "Runners" }, LOADED);
   });
 
   it("still re-reads on its interval", async () => {

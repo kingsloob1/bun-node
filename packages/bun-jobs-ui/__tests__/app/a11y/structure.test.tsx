@@ -5,7 +5,7 @@ import { ErrorView } from "../../../app/components/ErrorView";
 import { Link, RouterProvider, Routes } from "../../../app/router";
 import { onDemand } from "../../../app/screens/lazy";
 import { expectAbsent } from "../assert";
-import { act, fireEvent, page, render, setupDom, visit } from "../dom";
+import { act, fireEvent, LOADED, page, render, setupDom, visit } from "../dom";
 import { auditDocument, formatFindings } from "./audit";
 
 setupDom();
@@ -162,7 +162,7 @@ describe("the per-screen error boundary", () => {
     explode = true;
     visit("/jobs/fragile");
     renderRoutes();
-    const panel = await page().findByTestId("screen-error");
+    const panel = await page().findByTestId("screen-error", {}, LOADED);
     expect(panel.textContent).toContain("render exploded");
     expect(
       page().getByRole("heading", {
@@ -178,7 +178,11 @@ describe("the per-screen error boundary", () => {
     explode = false;
     fireEvent.click(page().getByRole("button", { name: "Reload this screen" }));
     expect(
-      await page().findByRole("heading", { name: "Fragile, recovered" }),
+      await page().findByRole(
+        "heading",
+        { name: "Fragile, recovered" },
+        LOADED,
+      ),
     ).toBeTruthy();
     expectAbsent(page().queryByTestId("screen-error"));
   });
@@ -187,9 +191,9 @@ describe("the per-screen error boundary", () => {
     explode = true;
     visit("/jobs/fragile");
     renderRoutes();
-    await page().findByTestId("screen-error");
+    await page().findByTestId("screen-error", {}, LOADED);
     fireEvent.click(page().getByRole("button", { name: "Reload this screen" }));
-    expect(await page().findByTestId("screen-error")).toBeTruthy();
+    expect(await page().findByTestId("screen-error", {}, LOADED)).toBeTruthy();
 
     await act(async () => {
       fireEvent.click(page().getByRole("link", { name: "Fine" }));
@@ -218,11 +222,11 @@ describe("the per-screen error boundary", () => {
         />
       </RouterProvider>,
     );
-    const panel = await page().findByTestId("screen-error");
+    const panel = await page().findByTestId("screen-error", {}, LOADED);
     expect(panel.textContent).toContain("chunk failed to load");
     fireEvent.click(page().getByRole("button", { name: "Reload this screen" }));
     expect(
-      await page().findByRole("heading", { name: "Loaded on retry" }),
+      await page().findByRole("heading", { name: "Loaded on retry" }, LOADED),
     ).toBeTruthy();
     expect(attempts).toBe(2);
   });

@@ -7,6 +7,7 @@ import { expectAbsent, expectUndefined } from "../../assert";
 import {
   act,
   fireEvent,
+  LOADED,
   page,
   setupDom,
   visit,
@@ -95,7 +96,7 @@ describe("WsDocsScreen", () => {
         },
       },
     });
-    await page().findByText("This API has no live-events socket");
+    await page().findByText("This API has no live-events socket", {}, LOADED);
     expect(calls.some((call) => call.path === "/asyncapi.json")).toBe(false);
   });
 
@@ -177,7 +178,7 @@ describe("WsDocsScreen", () => {
         },
       },
     });
-    await page().findByText("Could not load the AsyncAPI document");
+    await page().findByText("Could not load the AsyncAPI document", {}, LOADED);
     expect(page().getByRole("button", { name: /retry/i })).toBeTruthy();
   });
 
@@ -217,7 +218,7 @@ describe("WsDocsScreen", () => {
     ).toBe("true");
 
     fireEvent.click(page().getByTestId("ws-nav-message-queue.completed"));
-    await page().findByTestId("ws-pane-message-queue.completed");
+    await page().findByTestId("ws-pane-message-queue.completed", {}, LOADED);
     expect(window.location.pathname).toBe(
       "/jobs/docs/ws/message-queue.completed",
     );
@@ -435,7 +436,7 @@ describe("WsDocsScreen", () => {
     delete messages.ping.examples;
     visit("/jobs/docs/ws/message-hello");
     renderApp({ handlers: { "GET /asyncapi.json": { body: document } } });
-    const pane = await page().findByTestId("ws-pane-message-hello");
+    const pane = await page().findByTestId("ws-pane-message-hello", {}, LOADED);
     expect(within(pane).getByTestId("ws-example-name").textContent).toBe(
       "Example 1",
     );
@@ -445,7 +446,7 @@ describe("WsDocsScreen", () => {
     ).toBeTruthy();
 
     fireEvent.click(page().getByTestId("ws-nav-message-ping"));
-    const ping = await page().findByTestId("ws-pane-message-ping");
+    const ping = await page().findByTestId("ws-pane-message-ping", {}, LOADED);
     expectAbsent(within(ping).queryByTestId("ws-example"));
     expectAbsent(within(ping).queryByText("Example"));
   });
@@ -554,7 +555,7 @@ describe("WsDocsScreen", () => {
     expect(new URLSearchParams(window.location.search).get("q")).toBe("1009");
 
     type("Search", "no-such-thing", within(nav));
-    await page().findByTestId("ws-search-empty");
+    await page().findByTestId("ws-search-empty", {}, LOADED);
   });
 
   it("security: every requirement, the AND note, and what a browser cannot send", async () => {
@@ -636,7 +637,7 @@ describe("WsDocsScreen try it", () => {
     };
     visit("/jobs/docs/ws/channel-queue");
     renderApp({ handlers: { "GET /asyncapi.json": { body: document } } });
-    const tryIt = await page().findByTestId("ws-try-channel");
+    const tryIt = await page().findByTestId("ws-try-channel", {}, LOADED);
     // "mail.v2" satisfies the contract's rule but not this document's.
     type("queue", "mail.v2", within(tryIt));
     expect(within(tryIt).getByTestId("ws-try-reason").textContent).toBe(
@@ -729,7 +730,7 @@ describe("WsDocsScreen try it", () => {
       config: { sections: { manage: false, docs: true } },
       handlers: { "GET /asyncapi.json": { body: wsFixture("both") } },
     });
-    await page().findByTestId("ws-pane-message-queue.failed");
+    await page().findByTestId("ws-pane-message-queue.failed", {}, LOADED);
     expect(within(main()).getByTestId("ws-try-unavailable")).toBeTruthy();
   });
 });

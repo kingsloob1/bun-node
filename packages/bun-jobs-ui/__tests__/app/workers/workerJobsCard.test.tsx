@@ -2,7 +2,15 @@ import type { JobDto, JobPageDto, MetaDto } from "../../../app/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent, expectNone } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { jobFixture } from "../queues/fixtures";
 import { renderApp } from "../renderApp";
@@ -104,10 +112,10 @@ describe("the worker page's jobs section", () => {
       // A link that asks for every filter the section has.
       path: "/workers/emails/api.emails?jobState=completed&finished=3600s&jobName=a&jobOffset=20",
     });
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     await within(card).findByTestId("worker-jobs-unrecorded");
     // Let the rest of the page settle, then look at every request it made.
-    await page().findByTestId("worker-config");
+    await page().findByTestId("worker-config", {}, LOADED);
     expectNone(jobReads(calls));
     expect(anyAttributionParam(calls)).toBe(false);
     expect(card.textContent).not.toContain("Could not load");
@@ -116,7 +124,7 @@ describe("the worker page's jobs section", () => {
   it("lists the key's jobs over the last 24 hours, newest first, with no total", async () => {
     const before = Date.now();
     const { calls } = open();
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     await within(card).findByTestId("job-row-job-1");
     const after = Date.now();
     const [read] = jobReads(calls);
@@ -155,7 +163,7 @@ describe("the worker page's jobs section", () => {
 
   it("has no Processed by column: every row there is this key", async () => {
     open();
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     const row = await within(card).findByTestId("job-row-job-1");
     const table = row.closest("table")!;
     const headers = Array.from(table.querySelectorAll("thead th")).map(
@@ -169,7 +177,7 @@ describe("the worker page's jobs section", () => {
 
   it("titles the Retrying tab: failed an attempt, waiting to retry", async () => {
     open();
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     await within(card).findByTestId("job-row-job-1");
     const tab = within(card).getByRole("tab", { name: "Retrying" });
     expect(tab.getAttribute("title")).toContain("waiting to retry");
@@ -180,7 +188,7 @@ describe("the worker page's jobs section", () => {
     const { calls } = open({
       path: "/workers/emails/api.emails?finished=3600s",
     });
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     await within(card).findByTestId("job-row-job-1");
     fireEvent.click(within(card).getByRole("tab", { name: /Active/ }));
     await waitFor(() =>
@@ -206,7 +214,7 @@ describe("the worker page's jobs section", () => {
     const { calls } = open({
       path: "/workers/emails/api.emails?jobState=dead&finished=1000-2000",
     });
-    await page().findByTestId("job-row-job-1");
+    await page().findByTestId("job-row-job-1", {}, LOADED);
     const [read] = jobReads(calls);
     expect(read.query.get("state")).toBe("dead");
     expect(read.query.get("finishedFrom")).toBe("1000");
@@ -215,7 +223,7 @@ describe("the worker page's jobs section", () => {
 
   it("pages with the pager, without a total", async () => {
     const { calls } = open({ jobs: { body: jobPage(JOBS, true) } });
-    const card = await page().findByTestId("worker-jobs");
+    const card = await page().findByTestId("worker-jobs", {}, LOADED);
     await within(card).findByTestId("job-row-job-1");
     const pager = within(card).getByRole("navigation", {
       name: "Pages of this key's jobs",
@@ -236,27 +244,27 @@ describe("the worker page's jobs section", () => {
 
   it("says retention decides what is listed when nothing matches", async () => {
     open({ jobs: { body: jobPage([]) } });
-    const empty = await page().findByTestId("worker-jobs-empty");
+    const empty = await page().findByTestId("worker-jobs-empty", {}, LOADED);
     expect(empty.textContent).toContain("removed on completion");
   });
 
   it("refuses to filter to a key holding a comma rather than send a wrong filter", async () => {
     const { calls } = open({ path: "/workers/emails/a%2Cb" });
-    await page().findByTestId("worker-jobs-unfilterable");
-    await page().findByTestId("worker-config");
+    await page().findByTestId("worker-jobs-unfilterable", {}, LOADED);
+    await page().findByTestId("worker-config", {}, LOADED);
     expectNone(jobReads(calls));
   });
 
   it("is hidden without jobs.list, and reads nothing", async () => {
     const { calls } = open({ grant: { "jobs.list": false } });
-    await page().findByTestId("worker-jobs-hidden");
-    await page().findByTestId("worker-config");
+    await page().findByTestId("worker-jobs-hidden", {}, LOADED);
+    await page().findByTestId("worker-config", {}, LOADED);
     expectNone(jobReads(calls));
   });
 
   it("shows ids as text when the job screen is not routed", async () => {
     open({ grant: { "queues.list": false } });
-    const row = await page().findByTestId("job-row-job-1");
+    const row = await page().findByTestId("job-row-job-1", {}, LOADED);
     expectAbsent(within(row).queryByRole("link", { name: "job-1" }));
     expect(row.textContent).toContain("job-1");
   });

@@ -8,7 +8,15 @@ import {
   workerListQuery,
 } from "../../../app/screens/workers/filters";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";
 
@@ -83,7 +91,7 @@ async function open(search = "", items: WorkerDto[] = WORKERS) {
       },
     },
   });
-  const screen = await page().findByTestId("workers-list");
+  const screen = await page().findByTestId("workers-list", {}, LOADED);
   return { ...rendered, screen };
 }
 

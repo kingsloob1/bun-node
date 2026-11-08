@@ -20,7 +20,7 @@ import {
 } from "@kingsleyweb/bun-api-docs-ui/embed/unauthorized";
 import { RouterProvider, Routes } from "../../app/router";
 import { expectAbsent } from "./assert";
-import { act, page, render, setupDom, visit, waitFor } from "./dom";
+import { act, LOADED, page, render, setupDom, visit, waitFor } from "./dom";
 import { metaFixture, problem, uiConfig } from "./fixtures";
 import { FakeSocket, hello, settle } from "./live/fakes";
 import { defaultHandlers, renderApp } from "./renderApp";
@@ -115,7 +115,7 @@ describe("unauthorized: API failures", () => {
       config: { unauthorized: TO_LOGIN },
       handlers: { "GET /meta/permissions": FORBIDDEN },
     });
-    const screen = await page().findByTestId("bootstrap-error");
+    const screen = await page().findByTestId("bootstrap-error", {}, LOADED);
     expect(screen.textContent).toContain("Access denied");
     expect(screen.textContent).toContain("Operators only");
     await settle();
@@ -172,7 +172,7 @@ describe("unauthorized: API failures", () => {
       config: { unauthorized: { ...TO_LOGIN, statuses: [403] } },
       handlers: { "GET /meta": UNAUTHORIZED },
     });
-    const screen = await page().findByTestId("bootstrap-error");
+    const screen = await page().findByTestId("bootstrap-error", {}, LOADED);
     expect(screen.textContent).toContain("Sign in required");
     await settle();
     expect(assign).not.toHaveBeenCalled();
@@ -222,7 +222,7 @@ describe("unauthorized: API failures", () => {
       },
       handlers: { "GET /meta": UNAUTHORIZED },
     });
-    const screen = await page().findByTestId("bootstrap-error");
+    const screen = await page().findByTestId("bootstrap-error", {}, LOADED);
     expect(screen.textContent).toContain("Sign in required");
     await settle();
     expect(assign).not.toHaveBeenCalled();
@@ -230,7 +230,7 @@ describe("unauthorized: API failures", () => {
 
   it("redirects on a failed mutation, and on any client's error that carries a status", async () => {
     const { queryClient } = renderApp({ config: { unauthorized: TO_LOGIN } });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     expect(assign).not.toHaveBeenCalled();
     // The shape of bun-client's HttpError: not an ApiError, a numeric status.
     const foreign = Object.assign(new Error("HTTP 401"), { status: 401 });
@@ -266,7 +266,7 @@ describe("unauthorized: API failures", () => {
 
   it("is off by default: a 401 navigates nowhere and the sign-in screen shows", async () => {
     renderApp({ handlers: { "GET /meta": UNAUTHORIZED } });
-    const screen = await page().findByTestId("bootstrap-error");
+    const screen = await page().findByTestId("bootstrap-error", {}, LOADED);
     expect(screen.textContent).toContain("Sign in required");
     expect(screen.textContent).toContain("Your session expired");
     await settle();
@@ -275,7 +275,7 @@ describe("unauthorized: API failures", () => {
 
   it("is off by default for every screen read too", async () => {
     renderApp({ handlers: everyScreenRead(UNAUTHORIZED) });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     for (let index = 0; index < 5; index++) {
       await act(async () => {
         await Bun.sleep(5);
@@ -313,7 +313,7 @@ describe("unauthorized: the live socket", () => {
       config: { unauthorized },
       live: { WebSocket: FakeSocket, random: () => 0 },
     });
-    await page().findByTestId("app-ready");
+    await page().findByTestId("app-ready", {}, LOADED);
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1));
     const socket = FakeSocket.last;
     await act(async () => {
@@ -417,7 +417,7 @@ describe("unauthorized: a crashed screen", () => {
 
   it("asks the server with a HEAD of the shell, and redirects on a listed status", async () => {
     const asked = renderBroken(401);
-    await page().findByTestId("screen-error");
+    await page().findByTestId("screen-error", {}, LOADED);
     await waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
     expect(asked).toEqual(["HEAD /jobs"]);
     expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fjobs");
@@ -425,7 +425,7 @@ describe("unauthorized: a crashed screen", () => {
 
   it("stays on the crash panel when the shell still loads", async () => {
     const asked = renderBroken(200);
-    await page().findByTestId("screen-error");
+    await page().findByTestId("screen-error", {}, LOADED);
     await waitFor(() => expect(asked).toEqual(["HEAD /jobs"]));
     await settle();
     expect(assign).not.toHaveBeenCalled();
@@ -433,7 +433,7 @@ describe("unauthorized: a crashed screen", () => {
 
   it("asks nothing when the option is off", async () => {
     const asked = renderBroken(401, false);
-    await page().findByTestId("screen-error");
+    await page().findByTestId("screen-error", {}, LOADED);
     await settle();
     expect(asked).toEqual([]);
     expect(assign).not.toHaveBeenCalled();

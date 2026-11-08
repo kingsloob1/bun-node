@@ -17,6 +17,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  LOADED,
   page,
   render,
   setupDom,
@@ -70,7 +71,7 @@ async function confirmAction(action: string, role: "dialog" | "alertdialog") {
       { name: action },
     ),
   );
-  const dialog = await page().findByRole(role);
+  const dialog = await page().findByRole(role, {}, LOADED);
   await act(async () => {
     fireEvent.click(within(dialog).getByRole("button", { name: action }));
   });
@@ -149,7 +150,11 @@ export function createJobUiHarness({
 
     async updatePriority(priority) {
       fireEvent.click(page().getByRole("button", { name: "Edit" }));
-      const dialog = await page().findByRole("dialog", { name: "Edit job" });
+      const dialog = await page().findByRole(
+        "dialog",
+        { name: "Edit job" },
+        LOADED,
+      );
       fireEvent.change(within(dialog).getByLabelText("Priority"), {
         target: { value: String(priority) },
       });
@@ -187,9 +192,13 @@ export function createJobUiHarness({
           { name: "Fail…" },
         ),
       );
-      const dialog = await page().findByRole("alertdialog", {
-        name: "Fail this job?",
-      });
+      const dialog = await page().findByRole(
+        "alertdialog",
+        {
+          name: "Fail this job?",
+        },
+        LOADED,
+      );
       fireEvent.change(within(dialog).getByLabelText(labelled("Reason")), {
         target: { value: reason },
       });

@@ -1,7 +1,7 @@
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent, expectNone, expectUndefined } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import {
   metaFixture,
   permissionsFixture,
@@ -28,13 +28,13 @@ function callsTo(calls: RecordedCall[], method: string, path: string) {
 
 /** The panels' tab list once the screen loaded. */
 async function panelTabs() {
-  await page().findByTestId("queue-total");
-  return page().findByRole("tablist", { name: "Queue details" });
+  await page().findByTestId("queue-total", {}, LOADED);
+  return page().findByRole("tablist", { name: "Queue details" }, LOADED);
 }
 
 /** The panel tab labels. */
 async function panelLabels(): Promise<string[]> {
-  await page().findByTestId("queue-total");
+  await page().findByTestId("queue-total", {}, LOADED);
   const list = page().queryByRole("tablist", { name: "Queue details" });
   return list
     ? within(list)
@@ -46,7 +46,7 @@ async function panelLabels(): Promise<string[]> {
 /** The limits editor. */
 async function limitsForm() {
   await panelTabs();
-  return page().findByRole("form", { name: "Queue limits" });
+  return page().findByRole("form", { name: "Queue limits" }, LOADED);
 }
 
 /** Sets an input's value. */
@@ -276,7 +276,7 @@ describe("the limits editor", () => {
       },
     });
     await panelTabs();
-    const panel = await page().findByRole("tabpanel");
+    const panel = await page().findByRole("tabpanel", {}, LOADED);
     await within(panel).findByText("Queue");
     expect(panel.textContent).toContain("10 per 1m");
     expect(panel.textContent).toContain("4 at once");
@@ -290,7 +290,7 @@ describe("the other panels", () => {
     fireEvent.click(
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
-    const row = await page().findByTestId("worker-row-w-1");
+    const row = await page().findByTestId("worker-row-w-1", {}, LOADED);
     expect(row.textContent).toContain("box-1");
     expect(row.textContent).toContain("4242");
     expect(row.textContent).toContain("2 / 4");
@@ -305,7 +305,7 @@ describe("the other panels", () => {
     fireEvent.click(
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
-    const row = await page().findByTestId("worker-row-w-1");
+    const row = await page().findByTestId("worker-row-w-1", {}, LOADED);
     const table = row.closest("table")!;
     // The panel is a narrow control surface: it does not ask for the column,
     // so the reported `rssBytes` is simply not shown here.
@@ -329,7 +329,7 @@ describe("the other panels", () => {
     fireEvent.click(
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
-    await page().findByTestId("worker-row-w-1");
+    await page().findByTestId("worker-row-w-1", {}, LOADED);
     expectAbsent(page().queryByTestId("sweep-warning"));
   });
 
@@ -346,7 +346,7 @@ describe("the other panels", () => {
     fireEvent.click(
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
-    const note = await page().findByTestId("sweep-warning");
+    const note = await page().findByTestId("sweep-warning", {}, LOADED);
     expect(note.dataset.uncertain).toBe("false");
     expect(note.textContent).toContain(
       "No live worker on this queue runs housekeeping",
@@ -372,7 +372,7 @@ describe("the other panels", () => {
     fireEvent.click(
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
-    const note = await page().findByTestId("sweep-warning");
+    const note = await page().findByTestId("sweep-warning", {}, LOADED);
     expect(note.dataset.uncertain).toBe("true");
     expect(note.textContent).toContain("there may be nobody doing it");
   });
@@ -393,7 +393,7 @@ describe("the other panels", () => {
     fireEvent.click(
       within(await panelTabs()).getByRole("tab", { name: "Workers" }),
     );
-    await page().findByTestId("worker-row-w-2");
+    await page().findByTestId("worker-row-w-2", {}, LOADED);
     expectAbsent(page().queryByTestId("sweep-warning"));
   });
 
@@ -405,9 +405,13 @@ describe("the other panels", () => {
       },
     });
     await panelTabs();
-    const chart = await page().findByRole("img", {
-      name: /42 completed, 1 failed/,
-    });
+    const chart = await page().findByRole(
+      "img",
+      {
+        name: /42 completed, 1 failed/,
+      },
+      LOADED,
+    );
     expect(chart.querySelectorAll("rect.bar-completed")).toHaveLength(3);
     expect(chart.querySelectorAll("rect.bar-failed")).toHaveLength(1);
     const table = page().getByRole("table", { name: /jobs per minute/ });
@@ -439,7 +443,11 @@ describe("the other panels", () => {
         "DELETE /queues/emails/repeatables/digest%3Acron": { status: 204 },
       },
     });
-    const row = await page().findByTestId("repeatable-row-digest:cron");
+    const row = await page().findByTestId(
+      "repeatable-row-digest:cron",
+      {},
+      LOADED,
+    );
     expect(row.textContent).toContain("0 9 * * * (Europe/London)");
     expect(row.textContent).toContain("4");
     expect(
@@ -597,7 +605,7 @@ describe("repeatables, disable and enable", () => {
 
   /** Opens the repeatables panel and returns the fixture series' row. */
   async function row() {
-    return page().findByTestId("repeatable-row-digest:cron");
+    return page().findByTestId("repeatable-row-digest:cron", {}, LOADED);
   }
 
   it("offers Disable on an enabled series, POSTs it, toasts and refetches the list", async () => {

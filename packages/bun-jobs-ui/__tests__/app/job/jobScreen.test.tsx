@@ -7,6 +7,7 @@ import { expectAbsent } from "../assert";
 import {
   act,
   fireEvent,
+  LOADED,
   page,
   render,
   setupDom,
@@ -35,7 +36,7 @@ setupDom();
 
 /** The loaded screen's heading text. */
 async function heading() {
-  const title = await page().findByRole("heading", { level: 1 });
+  const title = await page().findByRole("heading", { level: 1 }, LOADED);
   return title.textContent ?? "";
 }
 
@@ -133,7 +134,7 @@ describe("the job screen", () => {
       ).toBeTruthy();
 
       // Logs follow only while the job can still log.
-      await page().findByRole("list", { name: "Log lines" });
+      await page().findByRole("list", { name: "Log lines" }, LOADED);
       expect(Boolean(page().queryByTestId("logs-follow"))).toBe(
         state === "active" || state === "waiting",
       );
@@ -216,7 +217,7 @@ describe("the job screen", () => {
         context: { queue: "emails", id: AWKWARD_ID },
       }),
     });
-    const panel = await page().findByTestId("job-not-found");
+    const panel = await page().findByTestId("job-not-found", {}, LOADED);
     expect(panel.textContent).toContain("Job not found");
     expect(panel.textContent).toContain(AWKWARD_ID);
     const back = within(panel).getByRole("link", { name: "Back to emails" });
@@ -277,7 +278,7 @@ describe("the job screen", () => {
         [`POST ${jobApiPath()}/retry`]: { body: { retried: true } },
       },
     });
-    await page().findByRole("list", { name: "Log lines" });
+    await page().findByRole("list", { name: "Log lines" }, LOADED);
     await page()
       .findByRole("table", { name: "Children" })
       .catch(() => null);
@@ -288,9 +289,13 @@ describe("the job screen", () => {
       fireEvent(details, new Event("toggle"));
     });
     fireEvent.click(page().getByRole("button", { name: "Retry" }));
-    const dialog = await page().findByRole("dialog", {
-      name: "Retry this job?",
-    });
+    const dialog = await page().findByRole(
+      "dialog",
+      {
+        name: "Retry this job?",
+      },
+      LOADED,
+    );
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
     });
@@ -415,7 +420,7 @@ describe("the job screen's access gate", () => {
       handlers: sideHandlers(),
       wait: false,
     });
-    const panel = await page().findByTestId("job-hidden");
+    const panel = await page().findByTestId("job-hidden", {}, LOADED);
     expect(panel.textContent).toContain("Job hidden");
     expect(panel.textContent).toContain("may not read the jobs of queue");
     expect(
@@ -499,7 +504,7 @@ describe("the job screen's access gate", () => {
       denied(403, "Not allowed to read jobs of this tenant"),
       { handlers: sideHandlers(), wait: false },
     );
-    const panel = await page().findByTestId("job-hidden");
+    const panel = await page().findByTestId("job-hidden", {}, LOADED);
     expect(panel.textContent).toContain("Job hidden");
     expect(panel.textContent).toContain(
       "Not allowed to read jobs of this tenant",
@@ -519,7 +524,7 @@ describe("the job screen's access gate", () => {
       handlers: sideHandlers(),
       wait: false,
     });
-    const panel = await page().findByTestId("job-hidden");
+    const panel = await page().findByTestId("job-hidden", {}, LOADED);
     expect(panel.textContent).toContain("Sign in again");
   });
 
@@ -530,7 +535,7 @@ describe("the job screen's access gate", () => {
         detail: `No job "${AWKWARD_ID}" in queue "emails"`,
       }),
     });
-    expect(await page().findByTestId("job-not-found")).toBeTruthy();
+    expect(await page().findByTestId("job-not-found", {}, LOADED)).toBeTruthy();
     expectAbsent(page().queryByTestId("job-hidden"));
   });
 });

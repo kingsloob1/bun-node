@@ -7,7 +7,15 @@ import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { RUN_LOG_POLL_MS } from "../../../app/api/runnerLogs";
 import { REDACTION_NOTE } from "../../../app/screens/runners/runLogFormat";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import { installLiveFake, LIVE_SLOWDOWN, runnerEvent } from "../liveFake";
 import {
   advance,
@@ -107,7 +115,7 @@ async function openLiveLog(available: () => number) {
       },
     },
   });
-  await page().findByText("History");
+  await page().findByText("History", {}, LOADED);
   await waitFor(() => {
     if (!document.querySelector(".history-table")) {
       throw new Error("no history yet");
@@ -118,7 +126,7 @@ async function openLiveLog(available: () => number) {
       name: "Log",
     }),
   );
-  await page().findByTestId("run-logs-run-3");
+  await page().findByTestId("run-logs-run-3", {}, LOADED);
   return result;
 }
 

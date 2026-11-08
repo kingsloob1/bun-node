@@ -1,7 +1,7 @@
 import type { MetaDto } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent } from "../assert";
-import { page, setupDom, within } from "../dom";
+import { LOADED, page, setupDom, within } from "../dom";
 import {
   allPermissions,
   jobApiPath,
@@ -32,7 +32,7 @@ const handlers = {
 
 /** The "Processed by" row's value and hint, or `null` when the row is absent. */
 async function processedByRow(): Promise<HTMLElement | null> {
-  await page().findByTestId("job-id");
+  await page().findByTestId("job-id", {}, LOADED);
   const summary = document.querySelector(".job-summary")!;
   const row = Array.from(summary.querySelectorAll<HTMLElement>(".kv-row")).find(
     (candidate) =>

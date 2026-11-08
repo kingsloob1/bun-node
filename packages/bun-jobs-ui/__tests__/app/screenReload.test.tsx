@@ -1,7 +1,7 @@
 import type { RecordedCall } from "./mockFetch";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { expectAbsent } from "./assert";
-import { fireEvent, page, setupDom } from "./dom";
+import { fireEvent, LOADED, page, setupDom } from "./dom";
 import { allPermissions, jobApiPath, jobFixture } from "./job/fixtures";
 import { renderJobScreen } from "./job/render";
 
@@ -40,7 +40,7 @@ describe("Reload this screen, after a crash caused by the data", () => {
       },
       { permissions: NO_LOGS, wait: false },
     );
-    const panel = await page().findByTestId("screen-error");
+    const panel = await page().findByTestId("screen-error", {}, LOADED);
     expect(panel.textContent).toContain(
       "Objects are not valid as a React child",
     );
@@ -48,8 +48,8 @@ describe("Reload this screen, after a crash caused by the data", () => {
 
     const before = calls.length;
     fireEvent.click(page().getByRole("button", { name: "Reload this screen" }));
-    expect(await page().findByTestId("job-screen")).toBeTruthy();
-    expect(await page().findByText("worker-1")).toBeTruthy();
+    expect(await page().findByTestId("job-screen", {}, LOADED)).toBeTruthy();
+    expect(await page().findByText("worker-1", {}, LOADED)).toBeTruthy();
     expectAbsent(page().queryByTestId("screen-error"));
 
     // Exactly one new request, the job; the bootstrap reads were kept.
@@ -78,19 +78,27 @@ describe("a job read that answers the wrong shape", () => {
         },
         { permissions: NO_LOGS, wait: false },
       );
-      const title = await page().findByRole("heading", {
-        level: 1,
-        name: "Could not load the job",
-      });
+      const title = await page().findByRole(
+        "heading",
+        {
+          level: 1,
+          name: "Could not load the job",
+        },
+        LOADED,
+      );
       expect(title).toBeTruthy();
       expect(page().getByRole("alert").textContent).toContain(
         "UNEXPECTED_RESPONSE",
       );
       fireEvent.click(page().getByRole("button", { name: "Retry" }));
-      const loaded = await page().findByRole("heading", {
-        level: 1,
-        name: /send-welcome/,
-      });
+      const loaded = await page().findByRole(
+        "heading",
+        {
+          level: 1,
+          name: /send-welcome/,
+        },
+        LOADED,
+      );
       expect(loaded).toBeTruthy();
       expect(reads).toBe(2);
     });

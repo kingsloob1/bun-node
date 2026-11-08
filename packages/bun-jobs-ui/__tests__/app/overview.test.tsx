@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { formatNumber } from "../../app/format";
 import { expectAbsent, expectNone } from "./assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "./dom";
 import {
   clampedRangeFixture,
   jobsSeriesFixture,
@@ -53,8 +61,8 @@ afterEach(() => {
 
 /** The Overview after it loaded. */
 async function overview() {
-  const screen = await page().findByTestId("overview");
-  await within(screen).findByTestId("state-counts");
+  const screen = await page().findByTestId("overview", {}, LOADED);
+  await within(screen).findByTestId("state-counts", {}, LOADED);
   return screen;
 }
 
@@ -123,7 +131,7 @@ describe("the Overview's range control", () => {
       },
     });
     await overview();
-    const note = await page().findByTestId("jobs-range-caption");
+    const note = await page().findByTestId("jobs-range-caption", {}, LOADED);
     expect(note.getAttribute("data-clamp-reason")).toBe("retention");
     expect(note.textContent).toContain("not exactly the range asked for");
     expect(note.textContent).toContain("1-minute buckets");
@@ -132,7 +140,7 @@ describe("the Overview's range control", () => {
   it("captions nothing when the response covers exactly what was asked for", async () => {
     renderApp();
     await overview();
-    await page().findByTestId("jobs-series");
+    await page().findByTestId("jobs-series", {}, LOADED);
     expectAbsent(page().queryByTestId("jobs-range-caption"));
   });
 
@@ -191,7 +199,7 @@ describe("the Overview screen", () => {
     // with the resolution the response reports.
     // A compact breakdown: each figure a small label beside its number, not
     // one "42 completed" headline in the large stat font.
-    const tile = await page().findByTestId("range-stat");
+    const tile = await page().findByTestId("range-stat", {}, LOADED);
     await waitFor(() =>
       expect(tile.textContent ?? "").toContain(`Completed${formatNumber(42)}`),
     );
@@ -245,7 +253,7 @@ describe("the Overview screen", () => {
   it("renders the queue table with paused badges, per-state counts and totals", async () => {
     renderApp();
     await overview();
-    const table = await page().findByRole("table", { name: "Queues" });
+    const table = await page().findByRole("table", { name: "Queues" }, LOADED);
     const emails = within(table).getByTestId("queue-row-emails");
     const reports = within(table).getByTestId("queue-row-reports");
     expect(emails.textContent).toContain("emails");
@@ -267,7 +275,7 @@ describe("the Overview screen", () => {
       },
     });
     await overview();
-    await page().findByTestId("queues-truncated");
+    await page().findByTestId("queues-truncated", {}, LOADED);
     expect(page().getByTestId("queues-truncated").textContent).toContain(
       "Showing the first 2 queues",
     );
@@ -283,7 +291,7 @@ describe("the Overview screen", () => {
       },
     });
     await overview();
-    await page().findByText("No queues yet");
+    await page().findByText("No queues yet", {}, LOADED);
     expectAbsent(page().queryByRole("table", { name: "Queues" }));
   });
 
@@ -306,7 +314,7 @@ describe("the Overview screen", () => {
       },
     });
     await overview();
-    await page().findByTestId("queue-row-reports");
+    await page().findByTestId("queue-row-reports", {}, LOADED);
     fireEvent.change(page().getByLabelText("Filter queues by name"), {
       target: { value: "mail" },
     });
@@ -349,9 +357,13 @@ describe("the Overview screen", () => {
   it("draws a throughput sparkline per visible row", async () => {
     const { calls } = renderApp();
     await overview();
-    const spark = await page().findByRole("img", {
-      name: "emails: 42 completed, 1 failed, in 1-minute buckets",
-    });
+    const spark = await page().findByRole(
+      "img",
+      {
+        name: "emails: 42 completed, 1 failed, in 1-minute buckets",
+      },
+      LOADED,
+    );
     expect(spark.tagName.toLowerCase()).toBe("svg");
     const reads = calls.filter(
       (call) =>
@@ -375,7 +387,7 @@ describe("the Overview screen", () => {
       HiddenObserver as unknown as typeof IntersectionObserver;
     const { calls } = renderApp();
     await overview();
-    await page().findByRole("columnheader", { name: "Throughput" });
+    await page().findByRole("columnheader", { name: "Throughput" }, LOADED);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(
       calls.filter(
@@ -397,7 +409,7 @@ describe("the Overview screen", () => {
       },
     });
     await overview();
-    await page().findByTestId("queue-row-emails");
+    await page().findByTestId("queue-row-emails", {}, LOADED);
     expectAbsent(page().queryByRole("columnheader", { name: "Throughput" }));
     expectNone(
       within(page().getByRole("table", { name: "Queues" })).queryAllByRole(
@@ -419,8 +431,8 @@ describe("the Overview screen", () => {
     const { calls } = renderApp({
       handlers: { "GET /meta/permissions": { body: permissions } },
     });
-    await page().findByTestId("overview");
-    await page().findByTestId("queue-row-emails");
+    await page().findByTestId("overview", {}, LOADED);
+    await page().findByTestId("queue-row-emails", {}, LOADED);
     expectAbsent(page().queryByTestId("state-counts"));
     expectAbsent(page().queryByRole("columnheader", { name: "Throughput" }));
     expect(calls.some((call) => call.path === "/overview")).toBe(false);
@@ -453,12 +465,12 @@ describe("the Overview screen", () => {
             : { body: overviewFixture() },
       },
     });
-    const alert = await page().findByRole("alert");
+    const alert = await page().findByRole("alert", {}, LOADED);
     expect(alert.textContent).toContain("Could not load the overview");
     expect(alert.textContent).toContain("DRIVER_ERROR");
     fail = false;
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
-    await page().findByTestId("state-counts");
+    await page().findByTestId("state-counts", {}, LOADED);
   });
 
   it("polls: the overview is fetched again", async () => {

@@ -6,7 +6,7 @@ import type {
 import { describe, expect, it } from "bun:test";
 import { WORKER_TARGET_KINDS } from "../../../app/api/contract";
 import { expectAbsent, expectNone } from "../assert";
-import { page, setupDom, visit, within } from "../dom";
+import { LOADED, page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";
 
@@ -42,7 +42,7 @@ const FUTURE_KIND = "remote-pool" as WorkerTargetKind;
 async function openList(items: WorkerDto[]) {
   visit("/jobs/workers");
   renderApp({ handlers: { "GET /workers": { body: { items } } } });
-  return page().findByTestId("workers-list");
+  return page().findByTestId("workers-list", {}, LOADED);
 }
 
 /** Opens the page of key `api.emails` with `items` as its live instances. */
@@ -62,8 +62,8 @@ async function openWorkerPage(items: WorkerDto[]) {
       }),
     },
   });
-  await page().findByTestId("worker-screen");
-  return page().findByTestId("worker-target");
+  await page().findByTestId("worker-screen", {}, LOADED);
+  return page().findByTestId("worker-target", {}, LOADED);
 }
 
 /** The target badge of a row, or `null` when it shows none. */

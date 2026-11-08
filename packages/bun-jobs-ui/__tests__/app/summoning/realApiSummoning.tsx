@@ -1,5 +1,5 @@
 import type { FetchLike } from "../../../app/api/client";
-import { fireEvent, page, visit, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, visit, waitFor, within } from "../dom";
 import { findDialog, notifications } from "../queues/fixtures";
 import { renderApp } from "../renderApp";
 
@@ -101,7 +101,11 @@ export async function mountSummoning(
       return view!;
     },
     resetFromRow: async (queue, clearBudget, ready) => {
-      const row = await page().findByTestId(`summoning-row-${queue}`);
+      const row = await page().findByTestId(
+        `summoning-row-${queue}`,
+        {},
+        LOADED,
+      );
       fireEvent.click(within(row).getByRole("link", { name: queue }));
       const panel = await page().findByTestId(
         "queue-summon",

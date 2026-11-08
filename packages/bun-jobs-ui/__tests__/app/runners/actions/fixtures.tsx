@@ -14,7 +14,7 @@ import { AppProviders } from "../../../../app/providers";
 import { createQueryClient } from "../../../../app/queryClient";
 import { RunnerActions } from "../../../../app/screens/runners/actions";
 import { RunnerHistory } from "../../../../app/screens/runners/RunnerHistory";
-import { fireEvent, page, render, waitFor, within } from "../../dom";
+import { fireEvent, LOADED, page, render, waitFor, within } from "../../dom";
 import { metaFixture, permissionsFixture, uiConfig } from "../../fixtures";
 import { mockFetch } from "../../mockFetch";
 
@@ -182,7 +182,7 @@ export async function renderActions(options: RenderActionsOptions = {}) {
       </PermissionScope>
     </AppProviders>,
   );
-  await page().findByTestId("host");
+  await page().findByTestId("host", {}, LOADED);
   // Let the scoped permissions query answer.
   await waitFor(() =>
     expect(

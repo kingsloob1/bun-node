@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import { queuePageFixture, renderQueue } from "./fixtures";
 
@@ -21,7 +21,7 @@ describe("the queue list screen", () => {
       path: "/queues",
       handlers: { "GET /queues": { body: queuePageFixture(3) } },
     });
-    const table = await page().findByRole("table", { name: "Queues" });
+    const table = await page().findByRole("table", { name: "Queues" }, LOADED);
     const paused = within(table).getByTestId("queue-row-q-01");
     expect(paused.textContent).toContain("Paused");
     expect(
@@ -44,7 +44,7 @@ describe("the queue list screen", () => {
         }),
       },
     });
-    await page().findByRole("table", { name: "Queues" });
+    await page().findByRole("table", { name: "Queues" }, LOADED);
     expect(lastList(calls).query.get("offset")).toBe("20");
     fireEvent.change(page().getByLabelText("Search queues by name"), {
       target: { value: "Mail" },
@@ -75,7 +75,7 @@ describe("the queue list screen", () => {
         }),
       },
     });
-    await page().findByRole("table", { name: "Queues" });
+    await page().findByRole("table", { name: "Queues" }, LOADED);
     expect(lastList(calls).query.get("limit")).toBe("20");
     const pager = page().getByRole("navigation", { name: "Queue pages" });
     fireEvent.click(within(pager).getByRole("button", { name: "Next" }));
@@ -94,7 +94,7 @@ describe("the queue list screen", () => {
       path: "/queues?limit=9999",
       handlers: { "GET /queues": { body: queuePageFixture(2) } },
     });
-    await page().findByRole("table", { name: "Queues" });
+    await page().findByRole("table", { name: "Queues" }, LOADED);
     expect(lastList(calls).query.get("limit")).toBe(
       String(metaFixture().limits.maxQueues),
     );
@@ -105,7 +105,7 @@ describe("the queue list screen", () => {
       path: "/queues?search=zzz",
       handlers: { "GET /queues": { body: queuePageFixture(0) } },
     });
-    expect(await page().findByText("No queues match")).toBeTruthy();
+    expect(await page().findByText("No queues match", {}, LOADED)).toBeTruthy();
   });
 
   it("shows a load error with a retry", async () => {
@@ -118,7 +118,9 @@ describe("the queue list screen", () => {
         },
       },
     });
-    expect(await page().findByText("Could not load queues")).toBeTruthy();
+    expect(
+      await page().findByText("Could not load queues", {}, LOADED),
+    ).toBeTruthy();
   });
 
   it("is a notice without queues.list", async () => {

@@ -7,7 +7,15 @@ import type {
 import type { RecordedCall } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectNone } from "./assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "./dom";
 import { permissionsFixture } from "./fixtures";
 import {
   NOW as QUEUE_NOW,
@@ -128,7 +136,7 @@ async function openOverview(count: number) {
       "GET /queues": { body: { items: queues(count) } },
     },
   });
-  const table = await page().findByRole("table", { name: "Queues" });
+  const table = await page().findByRole("table", { name: "Queues" }, LOADED);
   return { ...rendered, table };
 }
 
@@ -184,8 +192,12 @@ async function openWorkers(count: number) {
   const rendered = renderApp({
     handlers: { "GET /workers": { body: { items: serverWorkers(count) } } },
   });
-  await page().findByTestId("workers-list");
-  const section = await page().findByTestId("worker-server-api-1:100");
+  await page().findByTestId("workers-list", {}, LOADED);
+  const section = await page().findByTestId(
+    "worker-server-api-1:100",
+    {},
+    LOADED,
+  );
   return { ...rendered, section };
 }
 
@@ -229,7 +241,11 @@ describe("the Workers page", () => {
     );
     visit("/jobs/workers");
     renderApp({ handlers: { "GET /workers": { body: { items } } } });
-    const section = await page().findByTestId("worker-server-api-1:100");
+    const section = await page().findByTestId(
+      "worker-server-api-1:100",
+      {},
+      LOADED,
+    );
     const table = within(section).getByRole("table");
     expect(rowIds(table)).toHaveLength(25);
     expect(
@@ -260,7 +276,7 @@ describe("a queue's Workers panel", () => {
       path: "/queues/emails?panel=workers",
       handlers: { "GET /queues/emails/workers": { body: { items } } },
     });
-    return page().findByRole("table", { name: "Workers of emails" });
+    return page().findByRole("table", { name: "Workers of emails" }, LOADED);
   }
 
   it("pages at 25 and turns to the rest", async () => {
@@ -299,7 +315,7 @@ describe("a worker page's Instances card", () => {
         "GET /queues/emails/analytics/workers/api.emails": { status: 404 },
       },
     });
-    const card = await page().findByTestId("worker-instances");
+    const card = await page().findByTestId("worker-instances", {}, LOADED);
     return within(card).findByRole("table");
   }
 
@@ -348,7 +364,11 @@ describe("the repeatables panel", () => {
       path: "/queues/emails?panel=repeatables",
       handlers: { "GET /queues/emails/repeatables": { body: { items } } },
     });
-    return page().findByRole("table", { name: "Repeatables of emails" });
+    return page().findByRole(
+      "table",
+      { name: "Repeatables of emails" },
+      LOADED,
+    );
   }
 
   it("pages at 20 and turns to the rest", async () => {
@@ -390,7 +410,7 @@ async function openRunners(count: number, query = "") {
     path: `/runners${query}`,
     handlers: { "GET /runners": { body: { ...runnerListFixture(), items } } },
   });
-  return page().findByRole("table", { name: "Runners" });
+  return page().findByRole("table", { name: "Runners" }, LOADED);
 }
 
 describe("the runners list", () => {
@@ -465,7 +485,11 @@ async function openHistory(count: number, query = "") {
       },
     },
   });
-  const table = await page().findByRole("table", { name: "Run history" });
+  const table = await page().findByRole(
+    "table",
+    { name: "Run history" },
+    LOADED,
+  );
   return { ...rendered, table };
 }
 
@@ -540,7 +564,7 @@ describe("a runner's history", () => {
     // page cannot be worked out from rows that do not hold it, so the card
     // says where the reader stands rather than opening nothing.
     const { table } = await openHistory(30, "?history=25&logs=run-27");
-    const note = await page().findByTestId("history-open-log-note");
+    const note = await page().findByTestId("history-open-log-note", {}, LOADED);
     expect(note.textContent).toContain("run-27");
     expect(rowIds(table)[0]).toBe("history-row-run-00");
 
@@ -567,7 +591,9 @@ describe("a runner's history", () => {
         "GET /runners/nightly/history": historyPager(runs(30)),
       },
     });
-    expect(await page().findByText("No runs on this page")).toBeTruthy();
+    expect(
+      await page().findByText("No runs on this page", {}, LOADED),
+    ).toBeTruthy();
     expectNone(document.querySelectorAll("[data-testid^=history-row-]"));
     // The history is not empty, so Clear history… stays live and the pager is
     // there to come back with.

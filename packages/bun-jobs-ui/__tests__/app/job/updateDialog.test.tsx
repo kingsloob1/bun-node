@@ -10,7 +10,15 @@ import {
   validateUpdateForm,
 } from "../../../app/screens/job/updateJobForm";
 import { expectAbsent, expectNone } from "../assert";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import { problem } from "../fixtures";
 import { stubRawValue } from "../rawInput";
 import { jobApiPath, jobFixture, jobMeta, logPage } from "./fixtures";
@@ -32,8 +40,12 @@ async function openEdit(
       [`PATCH ${jobApiPath()}`]: patch,
     },
   });
-  fireEvent.click(await page().findByRole("button", { name: "Edit" }));
-  const dialog = await page().findByRole("dialog", { name: "Edit job" });
+  fireEvent.click(await page().findByRole("button", { name: "Edit" }, LOADED));
+  const dialog = await page().findByRole(
+    "dialog",
+    { name: "Edit job" },
+    LOADED,
+  );
   const patches = () =>
     result.calls.filter((call: RecordedCall) => call.method === "PATCH");
   return { ...result, dialog, patches };

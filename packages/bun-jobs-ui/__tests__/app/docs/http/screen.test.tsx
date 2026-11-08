@@ -2,7 +2,15 @@ import type { SpecDocument } from "../../../../app/api/docs";
 import type { RenderAppOptions } from "../../renderApp";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { expectAbsent, expectUndefined } from "../../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../../dom";
 import { metaFixture, permissionsFixture, problem } from "../../fixtures";
 import { renderApp } from "../../renderApp";
 import { openApiFixture } from "./openapiFixture";
@@ -68,7 +76,11 @@ async function dialog(): Promise<HTMLElement> {
 describe("the HTTP reference", () => {
   it("lists operations by tag in the document's order, with method badges", async () => {
     open("");
-    const nav = await page().findByRole("navigation", { name: "Operations" });
+    const nav = await page().findByRole(
+      "navigation",
+      { name: "Operations" },
+      LOADED,
+    );
     const tags = within(nav)
       .getAllByRole("heading", { level: 2 })
       .map((heading) => heading.textContent);
@@ -97,7 +109,7 @@ describe("the HTTP reference", () => {
 
   it("shows the info header with the relative server resolved", async () => {
     open("");
-    await page().findByTestId("http-servers");
+    await page().findByTestId("http-servers", {}, LOADED);
     expect(page().getByRole("heading", { level: 1 }).textContent).toBe(
       "bun-jobs management API (shop)",
     );
@@ -111,7 +123,11 @@ describe("the HTTP reference", () => {
 
   it("searches from ?q=, keeps the search on links, and moves by keyboard", async () => {
     open("?q=post%20pause");
-    const nav = await page().findByRole("navigation", { name: "Operations" });
+    const nav = await page().findByRole(
+      "navigation",
+      { name: "Operations" },
+      LOADED,
+    );
     const links = () =>
       Array.from(nav.querySelectorAll<HTMLAnchorElement>("a.http-op-link"));
     // In the document's tag order. `resumeWorker` and `startWorker` are here
@@ -238,9 +254,9 @@ describe("the HTTP reference", () => {
 
   it("explains an unknown operation", async () => {
     open("/nope");
-    expect((await page().findByText("No such operation")).textContent).toBe(
-      "No such operation",
-    );
+    expect(
+      (await page().findByText("No such operation", {}, LOADED)).textContent,
+    ).toBe("No such operation");
   });
 });
 
@@ -249,7 +265,7 @@ describe("try it", () => {
     const { calls } = open("/getMeta");
     await operation();
     send("GET");
-    const result = await page().findByTestId("tryit-result");
+    const result = await page().findByTestId("tryit-result", {}, LOADED);
     await waitFor(() => expect(result.textContent).toContain("namespace"));
     expect(within(result).getByTestId("tryit-status").textContent).toBe("200");
     expect(within(result).getByTestId("tryit-timing").textContent).toMatch(
@@ -276,7 +292,7 @@ describe("try it", () => {
     });
     await operation();
     send("GET");
-    const result = await page().findByTestId("tryit-result");
+    const result = await page().findByTestId("tryit-result", {}, LOADED);
     await waitFor(() => expect(result.textContent).toContain("namespace"));
     const headers = within(result).getByTestId("tryit-headers");
     expect(headers.querySelector("summary")!.textContent).toBe("Headers (2)");
@@ -295,7 +311,7 @@ describe("try it", () => {
     });
     await operation();
     send("GET");
-    const result = await page().findByTestId("tryit-result");
+    const result = await page().findByTestId("tryit-result", {}, LOADED);
     await waitFor(() =>
       expect(within(result).getByTestId("tryit-status").textContent).toBe(
         "203",
@@ -320,7 +336,7 @@ describe("try it", () => {
     fireEvent.click(
       within(await dialog()).getByRole("button", { name: "Send DELETE" }),
     );
-    const result = await page().findByTestId("tryit-result");
+    const result = await page().findByTestId("tryit-result", {}, LOADED);
     await waitFor(() =>
       expect(within(result).getByTestId("tryit-status").textContent).toBe(
         "204",
@@ -342,7 +358,7 @@ describe("try it", () => {
     fireEvent.click(within(panel()).getByLabelText("failed"));
     fill("name", "send,build");
     send("GET");
-    await page().findByTestId("tryit-result");
+    await page().findByTestId("tryit-result", {}, LOADED);
     const call = calls.find((item) =>
       item.path.startsWith("/queues/a%2Fb/jobs"),
     )!;
@@ -361,7 +377,7 @@ describe("try it", () => {
     const confirm = await dialog();
     expect(calls.some((call) => call.method === "POST")).toBe(false);
     fireEvent.click(within(confirm).getByRole("button", { name: "Send POST" }));
-    const result = await page().findByTestId("tryit-result");
+    const result = await page().findByTestId("tryit-result", {}, LOADED);
     await waitFor(() => expect(result.textContent).toContain("paused"));
     const call = calls.find((item) => item.method === "POST")!;
     expect(call.path).toBe("/queues/emails/pause");
@@ -387,7 +403,7 @@ describe("try it", () => {
     });
     expect(button.disabled).toBe(false);
     fireEvent.click(button);
-    await page().findByTestId("tryit-result");
+    await page().findByTestId("tryit-result", {}, LOADED);
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
   });
 
@@ -411,7 +427,7 @@ describe("try it", () => {
     fireEvent.click(
       within(await dialog()).getByRole("button", { name: "Send POST" }),
     );
-    await page().findByTestId("tryit-result");
+    await page().findByTestId("tryit-result", {}, LOADED);
     const call = calls.find((item) => item.method === "POST")!;
     expect(JSON.parse(call.body!)).toEqual({
       state: "completed",
@@ -433,7 +449,7 @@ describe("try it", () => {
     await operation();
     fill("queue", "missing");
     send("GET");
-    const result = await page().findByTestId("tryit-result");
+    const result = await page().findByTestId("tryit-result", {}, LOADED);
     await waitFor(() =>
       expect(within(result).getByTestId("tryit-status").textContent).toBe(
         "404",

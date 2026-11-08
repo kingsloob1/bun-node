@@ -20,7 +20,16 @@ import {
   typesFor,
 } from "../../app/screens/events/eventLog";
 import { expectAbsent, expectNone, expectUndefined } from "./assert";
-import { act, fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
+import {
+  act,
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "./dom";
 import { metaFixture, queueListFixture } from "./fixtures";
 import {
   installLiveFake,
@@ -48,7 +57,7 @@ async function renderEvents(query = "", meta?: Partial<MetaDto>) {
       "GET /runners": { body: runnerListFixture() },
     },
   });
-  await page().findByTestId("events-screen");
+  await page().findByTestId("events-screen", {}, LOADED);
   await waitFor(() => expect(live.activeSubscriptions()).toHaveLength(1));
   return result;
 }
@@ -510,7 +519,7 @@ describe("the Events console", () => {
 
   it("notes unknown types instead of silently showing every type", async () => {
     await renderEvents("?channel=queues&types=bogus,runner.started");
-    const note = await page().findByTestId("events-types-ignored");
+    const note = await page().findByTestId("events-types-ignored", {}, LOADED);
     expect(note.textContent).toBe(
       "Ignored in the link's types: bogus (not an event type); runner.started (queues does not carry it). Showing every type.",
     );
@@ -707,7 +716,7 @@ describe("the Events console", () => {
         detail: "not yours",
       }),
     );
-    const alert = await page().findByTestId("events-rejected");
+    const alert = await page().findByTestId("events-rejected", {}, LOADED);
     expect(alert.textContent).toBe(
       "The server refused queue/secret: FORBIDDEN (not yours)",
     );

@@ -12,7 +12,7 @@ import { POLL_INTERVAL_MS } from "../../app/queryClient";
 import { COUNT_EVENTS, DETAIL_EVENTS } from "../../app/screens/queues/live";
 import { RUNNER_STATE_EVENTS } from "../../app/screens/runners/live";
 import { expectAbsent } from "./assert";
-import { act, page, setupDom, waitFor, within } from "./dom";
+import { act, LOADED, page, setupDom, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
 import {
   AWKWARD_ID,
@@ -66,8 +66,8 @@ function invalidations() {
 describe("live Overview", () => {
   it("invalidates the totals and the queue table on `queues`, and relaxes their polling", async () => {
     const { calls, queryClient } = renderApp();
-    await page().findByTestId("state-counts");
-    await page().findByTestId("queue-row-emails");
+    await page().findByTestId("state-counts", {}, LOADED);
+    await page().findByTestId("queue-row-emails", {}, LOADED);
     expect(invalidations()).toEqual(
       expect.arrayContaining([
         {
@@ -109,7 +109,7 @@ describe("live Overview", () => {
   it("polls at the base interval while not live", async () => {
     live.install({ state: "reconnecting", detail: "dropped" });
     const { queryClient } = renderApp();
-    await page().findByTestId("state-counts");
+    await page().findByTestId("state-counts", {}, LOADED);
     expect(intervalOf(queryClient, queryKeys.overview())).toBe(
       POLL_INTERVAL_MS,
     );
@@ -119,8 +119,8 @@ describe("live Overview", () => {
 describe("live Queues list", () => {
   it("invalidates its pages on `queues`", async () => {
     const { calls, queryClient } = renderQueue({ path: "/queues" });
-    await page().findByTestId("queues-list");
-    await page().findByTestId("queue-row-emails");
+    await page().findByTestId("queues-list", {}, LOADED);
+    await page().findByTestId("queue-row-emails", {}, LOADED);
     expect(invalidations()).toEqual([
       { channels: ["queues"], keys: [queueKeys.pages], events: COUNT_EVENTS },
     ]);
@@ -146,7 +146,7 @@ describe("live Queues list", () => {
       },
     });
     // The section is pruned, so the route is the 404 and nothing subscribes.
-    await page().findByTestId("not-found");
+    await page().findByTestId("not-found", {}, LOADED);
     await settle(30);
     expect(live.channels()).toEqual([]);
   });
@@ -155,7 +155,7 @@ describe("live Queues list", () => {
 describe("live Queue screen", () => {
   it("subscribes to queue/<q> for counts, jobs, detail and repeatables", async () => {
     renderQueue();
-    await page().findByTestId("queue-screen");
+    await page().findByTestId("queue-screen", {}, LOADED);
     await waitFor(() => expect(live.channels()).toEqual(["queue/emails"]));
     expect(invalidations()).toEqual(
       expect.arrayContaining([
@@ -180,7 +180,7 @@ describe("live Queue screen", () => {
 
   it("refetches counts and the jobs page on a state change, never on progress", async () => {
     const { calls } = renderQueue();
-    await page().findByRole("table", { name: "Jobs in emails" });
+    await page().findByRole("table", { name: "Jobs in emails" }, LOADED);
     await waitFor(() => expect(live.channels()).toEqual(["queue/emails"]));
     const jobs = () => gets(calls, "/queues/emails/jobs");
     const counts = () => gets(calls, "/queues/emails/counts");
@@ -204,7 +204,7 @@ describe("live Queue screen", () => {
 
   it("refetches the detail and counts on pause, resume, drain, clean and retry-all", async () => {
     const { calls } = renderQueue();
-    await page().findByTestId("queue-screen");
+    await page().findByTestId("queue-screen", {}, LOADED);
     await waitFor(() => expect(live.channels()).toEqual(["queue/emails"]));
     const detail = () => gets(calls, "/queues/emails");
     const counts = () => gets(calls, "/queues/emails/counts");
@@ -233,7 +233,7 @@ describe("live Queue screen", () => {
     const { queryClient } = renderQueue({
       path: "/queues/emails?panel=workers",
     });
-    await page().findByTestId("queue-screen");
+    await page().findByTestId("queue-screen", {}, LOADED);
     await waitFor(() =>
       expect(
         queryClient
@@ -257,7 +257,7 @@ describe("live Queue screen", () => {
         },
       },
     });
-    await page().findByTestId("queue-screen");
+    await page().findByTestId("queue-screen", {}, LOADED);
     await settle(50);
     expect(live.channels()).toEqual([]);
   });
@@ -328,7 +328,7 @@ describe("live Job screen", () => {
     const job = fullJobFixture("active", { progress: 10 });
     const { calls, queryClient } = await renderJobScreen(job);
     await waitFor(() => expect(live.channels()).toEqual([channel]));
-    await page().findByRole("progressbar", { name: "Progress" });
+    await page().findByRole("progressbar", { name: "Progress" }, LOADED);
     const path = `/queues/emails/jobs/${encodeURIComponent(AWKWARD_ID)}`;
     const before = gets(calls, path);
     await emit(
@@ -379,7 +379,7 @@ describe("live Job screen", () => {
       body: fullJobFixture(state),
     }));
     await waitFor(() => expect(live.channels()).toEqual([channel]));
-    await page().findByRole("button", { name: "Fail…" });
+    await page().findByRole("button", { name: "Fail…" }, LOADED);
     const path = `/queues/emails/jobs/${encodeURIComponent(AWKWARD_ID)}`;
     const before = gets(calls, path);
     state = "dead";
@@ -412,7 +412,7 @@ describe("live Job screen", () => {
       permissions: permissionsFixture({ "jobs.read": false }),
       wait: false,
     });
-    await page().findByTestId("job-hidden");
+    await page().findByTestId("job-hidden", {}, LOADED);
     await settle(50);
     expect(live.channels()).toEqual([]);
   });
@@ -421,7 +421,7 @@ describe("live Job screen", () => {
 describe("live Runners", () => {
   it("the list invalidates every runner list on `runners`", async () => {
     const { calls } = renderRunner({ path: "/runners" });
-    await page().findByTestId("runners-list");
+    await page().findByTestId("runners-list", {}, LOADED);
     await waitFor(() => expect(live.channels()).toEqual(["runners"]));
     expect(invalidations()).toEqual([
       {
@@ -447,7 +447,7 @@ describe("live Runners", () => {
 
   it("a runner's screen invalidates its detail, stats and history on runner/<id>", async () => {
     const { calls, queryClient } = renderRunner();
-    await page().findByTestId("runner-screen");
+    await page().findByTestId("runner-screen", {}, LOADED);
     await waitFor(() => expect(live.channels()).toEqual(["runner/nightly"]));
     expect(invalidations()).toEqual([
       {
@@ -510,7 +510,7 @@ describe("live Runners", () => {
 
   it("re-fetches on a gap", async () => {
     const { calls } = renderRunner();
-    await page().findByTestId("runner-screen");
+    await page().findByTestId("runner-screen", {}, LOADED);
     await waitFor(() => expect(live.channels()).toEqual(["runner/nightly"]));
     const before = gets(calls, "/runners/nightly");
     await act(async () =>

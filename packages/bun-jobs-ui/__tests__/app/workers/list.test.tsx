@@ -2,7 +2,15 @@ import type { WorkerDto } from "../../../app/api/types";
 import { describe, expect, it } from "bun:test";
 import { groupByServer, matchesWorker } from "../../../app/api/workers";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";
 
@@ -36,7 +44,7 @@ const WORKERS: WorkerDto[] = [
 async function open(items: WorkerDto[] = WORKERS) {
   visit("/jobs/workers");
   renderApp({ handlers: { "GET /workers": { body: { items } } } });
-  return page().findByTestId("workers-list");
+  return page().findByTestId("workers-list", {}, LOADED);
 }
 
 describe("groupByServer", () => {
@@ -227,12 +235,14 @@ describe("the workers screen", () => {
     fireEvent.change(within(screen).getByRole("searchbox"), {
       target: { value: "nothing-like-it" },
     });
-    expect(await page().findByText("No workers match")).toBeTruthy();
+    expect(
+      await page().findByText("No workers match", {}, LOADED),
+    ).toBeTruthy();
   });
 
   it("says when no worker has reported", async () => {
     await open([]);
-    expect(await page().findByText("No live workers")).toBeTruthy();
+    expect(await page().findByText("No live workers", {}, LOADED)).toBeTruthy();
   });
 
   it("shows queue names as text without queues.list", async () => {
@@ -245,7 +255,7 @@ describe("the workers screen", () => {
         "GET /meta/permissions": { body: permissions },
       },
     });
-    const screen = await page().findByTestId("workers-list");
+    const screen = await page().findByTestId("workers-list", {}, LOADED);
     await within(screen).findByTestId("worker-row-w-hooks");
     expectAbsent(within(screen).queryByRole("link", { name: "webhooks" }));
   });
@@ -260,6 +270,8 @@ describe("the workers screen", () => {
         },
       },
     });
-    expect(await page().findByText("Could not load workers")).toBeTruthy();
+    expect(
+      await page().findByText("Could not load workers", {}, LOADED),
+    ).toBeTruthy();
   });
 });

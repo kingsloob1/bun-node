@@ -10,7 +10,7 @@ import {
   summonUnitLabel,
 } from "../../../app/screens/workers/summon";
 import { expectAbsent } from "../assert";
-import { page, setupDom, visit, within } from "../dom";
+import { LOADED, page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";
 
@@ -41,15 +41,6 @@ function summon(
  * The contract's type cannot name it, which is the point.
  */
 const FUTURE_MODE = "on-demand" as SummonMode;
-
-/**
- * How long a wait for a screen, or for the rows its first `GET /workers`
- * brings, may take. Quiet, both arrive within milliseconds; under a full
- * `--parallel` run the list once stayed on the lazy Workers chunk's
- * "Loading the workers" spinner past Testing Library's 1 s default (1.2 s).
- * Five seconds, as the other screen tests wait.
- */
-const LOADED = { timeout: 5_000 } as const;
 
 /** Opens `/workers` listing `items`, and resolves the list. */
 async function openList(items: WorkerDto[]) {

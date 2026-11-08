@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { expectAbsent } from "../assert";
-import { page, setupDom, within } from "../dom";
+import { LOADED, page, setupDom, within } from "../dom";
 import { childrenFixture, jobApiPath, jobFixture, logPage } from "./fixtures";
 import { renderJobScreen } from "./render";
 
@@ -35,7 +35,7 @@ describe("the job's flow", () => {
     const { calls } = await renderJobScreen(parentJob, {
       handlers: handlers(),
     });
-    const flow = await page().findByRole("region", { name: "Flow" });
+    const flow = await page().findByRole("region", { name: "Flow" }, LOADED);
     const parent = within(flow).getByRole("link", { name: /orders/ });
     expect(parent.getAttribute("href")).toBe(
       "/jobs/queues/orders/jobs/order%209%2F1",
@@ -71,7 +71,7 @@ describe("the job's flow", () => {
     await renderJobScreen(parentJob, {
       handlers: handlers(childrenFixture({ truncated: true })),
     });
-    const note = await page().findByTestId("flow-truncated");
+    const note = await page().findByTestId("flow-truncated", {}, LOADED);
     expect(note.textContent).toContain("first 3 children");
   });
 
@@ -89,7 +89,7 @@ describe("the job's flow", () => {
       }),
       { handlers: handlers() },
     );
-    const flow = await page().findByRole("region", { name: "Flow" });
+    const flow = await page().findByRole("region", { name: "Flow" }, LOADED);
     expect(flow.textContent).toContain("None: this is the root");
     expect(flow.textContent).toContain("This job has no children.");
     expect(calls.some((call) => call.path.endsWith("/children"))).toBe(false);
@@ -99,7 +99,7 @@ describe("the job's flow", () => {
     const { calls } = await renderJobScreen(jobFixture("completed"), {
       handlers: handlers(),
     });
-    await page().findByRole("region", { name: "Data" });
+    await page().findByRole("region", { name: "Data" }, LOADED);
     expectAbsent(page().queryByRole("region", { name: "Flow" }));
     expect(calls.some((call) => call.path.endsWith("/children"))).toBe(false);
   });

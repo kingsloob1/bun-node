@@ -145,3 +145,17 @@ export function page() {
 export function visit(path: string): void {
   window.history.replaceState(null, "", path);
 }
+
+/**
+ * The wait for something to appear on the page, as the third argument of a
+ * `page().findBy*` query or the options of a `waitFor` on a screen: five
+ * seconds, where Testing Library's default is one. Every page-level lookup
+ * takes it. A screen's first lookup waits on `/meta`, the lazy screen's
+ * Suspense boundary and the screen's first read, and a later one on a read or
+ * a portal; quiet those are milliseconds, but under a full `--parallel` run
+ * beside another heavy job they passed one second (`workers/summon` 1.2 s,
+ * `queues/summonPanel` 1.3 s, `queues/jobDefaults` 2.5 s). Lookups inside a
+ * region already found (`within(region).findBy*`) and waits for something to
+ * go away keep the default, so a negative wait stays short.
+ */
+export const LOADED = { timeout: 5_000 } as const;

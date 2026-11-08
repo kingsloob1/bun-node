@@ -3,7 +3,15 @@ import type { MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { validationSummary } from "../../../app/screens/providers/providerText";
 import { expectAbsent } from "../assert";
-import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { renderApp } from "../renderApp";
 import { providerList as list, providerFixture as provider } from "./fixtures";
@@ -43,13 +51,13 @@ async function openScreen(handlers: Record<string, MockReply> = {}) {
       ...handlers,
     },
   });
-  const screen = await page().findByTestId("providers-screen");
+  const screen = await page().findByTestId("providers-screen", {}, LOADED);
   return { ...rendered, screen };
 }
 
 /** The card of provider `id`, once it rendered. */
 async function card(id = provider().id): Promise<HTMLElement> {
-  return page().findByTestId(`provider-${id}`);
+  return page().findByTestId(`provider-${id}`, {}, LOADED);
 }
 
 describe("the Providers screen", () => {
@@ -99,7 +107,7 @@ describe("the Providers screen", () => {
     const { calls } = renderApp({
       handlers: { "GET /providers": { body: list([provider()]) } },
     });
-    await page().findByRole("navigation", { name: "Sections" });
+    await page().findByRole("navigation", { name: "Sections" }, LOADED);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expectAbsent(page().queryByRole("link", { name: "Providers" }));
     expect(calls.some((call) => call.path === "/providers")).toBe(false);

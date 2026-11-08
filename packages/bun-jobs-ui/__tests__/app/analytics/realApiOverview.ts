@@ -1,5 +1,5 @@
 import type { FetchLike } from "../../../app/api/client";
-import { page, visit, waitFor } from "../dom";
+import { LOADED, page, visit, waitFor } from "../dom";
 import { renderApp } from "../renderApp";
 
 /**
@@ -129,7 +129,7 @@ export async function mountOverview(
 ): Promise<MountedOverview> {
   visit(`/jobs${search}`);
   const rendered = renderApp({ fetch });
-  await page().findByTestId("overview");
+  await page().findByTestId("overview", {}, LOADED);
   await page().findByTestId("state-counts", undefined, { timeout: 5_000 });
   return {
     section: async (id, ready, timeoutMs = 8_000) => {
