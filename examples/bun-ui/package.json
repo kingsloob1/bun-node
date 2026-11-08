@@ -1,0 +1,15 @@
+{
+  "name": "bun-node-examples-bun-ui",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runnable, commented examples for @kingsleyweb/bun-ui, one folder per UI: jobs/ mounts the management UI beside the bun-jobs management API, with its shell, bundle, security headers and every option",
+  "scripts": {
+    "all": "bun jobs/run-all.ts",
+    "quick-start": "bun jobs/01-quick-start/index.ts",
+    "demo": "bun jobs/05-demo/seeded-demo.ts --serve",
+    "lint": "bun lint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
+  }
+}

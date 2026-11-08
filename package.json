@@ -21,7 +21,7 @@
       "packages/bun-common",
       "packages/bun-nest",
       "packages/bun-jobs",
-      "packages/bun-jobs-ui",
+      "packages/bun-ui",
       "packages/bun-api-docs-ui",
       "packages/bun-cache",
       "packages/bun-client"

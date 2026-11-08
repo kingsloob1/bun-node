@@ -47,8 +47,8 @@ export const PROJECTS = [
   "packages/bun-nest/tsconfig.json",
   "packages/bun-jobs/tsconfig.json",
   "packages/bun-jobs/bench/tsconfig.json",
-  "packages/bun-jobs-ui/tsconfig.json",
-  "packages/bun-jobs-ui/app/tsconfig.json",
+  "packages/bun-ui/tsconfig.json",
+  "packages/bun-ui/app/tsconfig.json",
   "packages/bun-api-docs-ui/tsconfig.json",
   "packages/bun-cache/tsconfig.json",
   // Needs `bun install --frozen-lockfile` there first, like the other benches.
@@ -61,9 +61,9 @@ export const PROJECTS = [
   "examples/bun-jobs/tsconfig.json",
   "examples/bun-common/tsconfig.json",
   "examples/bun-nest/tsconfig.json",
-  "examples/bun-jobs-ui/tsconfig.json",
+  "examples/bun-ui/tsconfig.json",
   "examples/bun-cache/tsconfig.json",
-  "packages/bun-jobs-ui/__tests__/app/pkg/tsconfig.json",
+  "packages/bun-ui/__tests__/jobs/app/pkg/tsconfig.json",
   // The repo's view of `templates/compute-provider/`, whose own config is a
   // plugin author's (no source condition). Needs `bun install` there first.
   "templates/tsconfig.json",

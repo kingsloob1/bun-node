@@ -18,7 +18,7 @@
  * `@nestjs/core`, at the version. It installs, so it is not a heavy run.
  *
  * `--run` runs, in each copy, bun-nest's suite, a bare `bun --check` in
- * bun-nest, `examples/bun-nest`'s `run-all.ts`, bun-jobs-ui's Nest test and
+ * bun-nest, `examples/bun-nest`'s `run-all.ts`, bun-ui's jobs Nest test and
  * consumer-check, printing one line per check with what ran, and exits 1 on
  * any failure. It is a heavy run: through the wrapper, in the background.
  * Separate invocations may run at once (bun-nest's suite binds only port 0);
@@ -70,7 +70,7 @@ export const OWN_PACKAGES = [
   "@kingsleyweb/bun-common",
   "@kingsleyweb/bun-nest",
   "@kingsleyweb/bun-jobs",
-  "@kingsleyweb/bun-jobs-ui",
+  "@kingsleyweb/bun-ui",
   "@kingsleyweb/bun-cache",
   "@kingsleyweb/bun-client",
 ] as const;
@@ -102,7 +102,7 @@ export const NEST_PACKAGE_OVERRIDES: Readonly<
 export const NEST_CONSUMERS = [
   "packages/bun-nest",
   "examples/bun-nest",
-  "packages/bun-jobs-ui",
+  "packages/bun-ui",
 ] as const;
 
 /** Names left out of the copy, at any depth. */
@@ -267,7 +267,7 @@ export const USAGE = `usage: bun scripts/nest-matrix.ts [--prepare <version…>]
   --prepare <v…>  copy the checkout to <base>/<v>/, pin @nestjs/* to <v>,
                   widen bun-nest's peers, bun install, assert resolution
   --run <v…>      in each copy: bun-nest \`bun run test\`, \`bun --check\` in
-                  bun-nest, examples/bun-nest \`run-all.ts\`, bun-jobs-ui's
+                  bun-nest, examples/bun-nest \`run-all.ts\`, bun-ui's jobs
                   nest.nest.test.ts, consumer-check (--work <base>/cc-<v>)
   --dir <base>    where the copies live (or NEST_MATRIX_DIR); default
                   $HOME/bun-node-nest-matrix. No segment may start with "."
@@ -1177,9 +1177,14 @@ export function checkPlans(
     },
     {
       name: "ui",
-      label: "bun-jobs-ui nest test",
-      cmd: [bun, "test", "--check", "./__tests__/server/nest.nest.test.ts"],
-      cwd: "packages/bun-jobs-ui",
+      label: "bun-ui jobs nest test",
+      cmd: [
+        bun,
+        "test",
+        "--check",
+        "./__tests__/jobs/server/nest.nest.test.ts",
+      ],
+      cwd: "packages/bun-ui",
       checkerEnv: false,
     },
     {

@@ -1,5 +1,5 @@
 /**
- * A pretend sign-in for trying the `unauthorized` option by hand: bun-jobs-ui's
+ * A pretend sign-in for trying the `unauthorized` option by hand: the jobs UI's
  * (`/jobs`) and bun-api-docs-ui's (the `docsUi()` viewers at
  * `/playground/api-docs` and `/playground/ws-docs`).
  *

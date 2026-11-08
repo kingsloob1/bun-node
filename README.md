@@ -38,10 +38,10 @@ prefer Bun and native APIs over third-party dependencies.
 | [bun-jobs](packages/bun-jobs/README.md) | `@kingsleyweb/bun-jobs` | Background work for Bun: `BunRunner` runs a JS/TS file on a schedule or on demand (child process, `Worker` or in-process), and `BunQueue` / `BunQueueWorker` process jobs across processes and services over memory, file, Redis, SQL and MongoDB drivers. |
 | [bun-client](packages/bun-client/README.md) | `@kingsleyweb/bun-client` | A typed HTTP client for these servers, with no dependency and safe in a browser: one call per verb keyed by the server's own path literal, named operations, results discriminated by status, retries with `Retry-After`, timeouts, middleware and single-flight auth refresh; `./query` puts the routes on TanStack's query-core (an optional peer) with cache tags, `ETag` revalidation and optimistic updates. |
 | [bun-cache](packages/bun-cache/README.md) | `@kingsleyweb/bun-cache` | Caching over pluggable drivers: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage and Cloudflare drivers, an HTTP response cache for bun-common and a Keyv store. |
-| [bun-jobs-ui](packages/bun-jobs-ui/README.md) | `@kingsleyweb/bun-jobs-ui` | A React management UI and API documentation viewer for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi`. |
+| [bun-ui](packages/bun-ui/README.md) | `@kingsleyweb/bun-ui` | Every browser UI of the repo in one package, one subpath each: `@kingsleyweb/bun-ui/jobs` is the React management UI for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi` (bun-jobs is an optional peer only that subpath needs). |
 | [bun-api-docs-ui](packages/bun-api-docs-ui/README.md) | `@kingsleyweb/bun-api-docs-ui` | A self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
 
-bun-nest, bun-jobs, bun-cache, bun-jobs-ui and bun-api-docs-ui depend on
+bun-nest, bun-jobs, bun-cache, bun-ui and bun-api-docs-ui depend on
 bun-common, which depends on bun-contract; bun-client depends on bun-contract
 alone.
 
@@ -55,7 +55,7 @@ project per package. Each example is a single script you run with `bun`.
 | [`examples/bun-common`](examples/bun-common/README.md) | Routing, the HTTP adapter, requests and responses, validation, CORS, static files, compression, multipart uploads, WebSockets, logging and utilities, plus option tours |
 | [`examples/bun-nest`](examples/bun-nest/README.md) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, plus option tours |
 | [`examples/bun-jobs`](examples/bun-jobs/README.md) | Queues, workers, the job registry, scheduling, flow control, failures, the runner, every driver and integrations, plus option tours |
-| [`examples/bun-jobs-ui`](examples/bun-jobs-ui/README.md) | The management UI beside the management API: mounting, the shell and bundle with their security headers, a cross-origin API, plus an option tour |
+| [`examples/bun-ui`](examples/bun-ui/README.md) | bun-ui, a folder per UI; `jobs/`: the management UI beside the management API: mounting, the shell and bundle with their security headers, a cross-origin API, plus an option tour |
 
 ```bash
 bun install                 # at the repo root
@@ -206,7 +206,7 @@ bun-node/
 │   ├── bun-common/        # one runnable project per package
 │   ├── bun-nest/
 │   ├── bun-jobs/
-│   └── bun-jobs-ui/
+│   └── bun-ui/            # jobs/, a folder per UI
 ├── benchmarks/            # router benchmarks (its own package)
 ├── scripts/
 │   ├── typecheck.ts       # type-checks every project

@@ -1,0 +1,117 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has exactly them, and every entry without `peers` in one that has none, so the root and every `/<ui>/browser` entry are proved to need no domain package. `/jobs` needs bun-jobs (its types name `JobsApi`, and it throws bun-jobs' `ConfigError`).",
+  "workspaceDependencies": [
+    "packages/bun-contract",
+    "packages/bun-common",
+    "packages/bun-api-docs-ui",
+    "packages/bun-jobs"
+  ],
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-ui",
+      "values": [
+        "ASSET_CACHE_CONTROL",
+        "DEFAULT_RETURN_PARAM",
+        "DEFAULT_UNAUTHORIZED_STATUSES"
+      ],
+      "types": [
+        "UiTheme",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus",
+        "UnauthorizedOptions"
+      ],
+      "browser": true,
+      "snippet": "const _cache: Equal<typeof m.ASSET_CACHE_CONTROL, \"public, max-age=31536000, immutable\"> = true;\nconst _theme: t.UiTheme = \"dark\";"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/index",
+      "values": ["ASSET_CACHE_CONTROL"],
+      "types": ["UiTheme"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/jobs",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": [
+        "jobsUi",
+        "ASSET_CACHE_CONTROL",
+        "DEFAULT_BASE_PATH",
+        "DEFAULT_TITLE",
+        "UI_CONFIG_ELEMENT_ID"
+      ],
+      "types": [
+        "JobsUi",
+        "JobsUiOptions",
+        "JobsUiApiOptions",
+        "JobsUiUrlOptions",
+        "JobsUiBaseOptions",
+        "JobsUiAuthorize",
+        "JobsUiAuthorizeContext",
+        "JobsUiAuthorizeResult",
+        "JobsUiUnauthorizedOptions",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus",
+        "UiConfig",
+        "UiSections",
+        "UiTheme"
+      ],
+      "snippet": "const ui = m.jobsUi({ apiUrl: \"/jobs-api\", basePath: \"/jobs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;\nexport type _api = Expect<IsAny<t.JobsUiApiOptions[\"api\"]>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": ["jobsUi", "UI_CONFIG_ELEMENT_ID"],
+      "types": ["JobsUiOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs/index",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": ["jobsUi", "UI_CONFIG_ELEMENT_ID"],
+      "types": ["JobsUiOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs/index.ts",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": ["jobsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs/index.js",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": ["jobsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs/jobsUi",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": ["jobsUi", "DEFAULT_BASE_PATH"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs/types",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "types": ["JobsUi", "JobsUiOptions"],
+      "runtime": false
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/jobs/browser",
+      "values": ["UI_CONFIG_ELEMENT_ID"],
+      "types": [
+        "UiConfig",
+        "UiSections",
+        "UiTheme",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus"
+      ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs/browser/unauthorized",
+      "types": ["UiUnauthorized", "UiUnauthorizedStatus"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/jobs/browser/config",
+      "values": ["UI_CONFIG_ELEMENT_ID"],
+      "types": ["UiConfig", "UiTheme"],
+      "browser": true
+    }
+  ]
+}

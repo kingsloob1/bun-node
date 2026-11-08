@@ -1,5 +1,5 @@
 /**
- * The bun-node playground: bun-jobs, its management API and the bun-jobs-ui
+ * The bun-node playground: bun-jobs, its management API and the bun-ui jobs
  * app on one BunHttpAdapter, with a live simulation behind them, for trying
  * things by hand and seeing how they look.
  *
@@ -47,7 +47,7 @@ import {
   createJobsApi,
   JOBS_API_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { docsUi } from "@kingsleyweb/bun-api-docs-ui";
 import {
   isCrossProcess,

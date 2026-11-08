@@ -26,6 +26,21 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
   `wss:` from it.
 - `req.socket.localAddress` is the socket peer. It was `req.ip`, which is the
   same with trust off.
+- **`@kingsleyweb/bun-jobs-ui` is now `@kingsleyweb/bun-ui/jobs`**
+  ([plan](docs/plans/bun-ui/README.md)). One package, `@kingsleyweb/bun-ui`,
+  holds every browser UI, one subpath each; `@kingsleyweb/bun-jobs-ui` is
+  deprecated on npm, not shimmed. Only the import specifiers change:
+
+  | 3.0.0-rc.0 | Now |
+  |---|---|
+  | `import { jobsUi } from "@kingsleyweb/bun-jobs-ui"` | `import { jobsUi } from "@kingsleyweb/bun-ui/jobs"` |
+  | `import type { UiConfig } from "@kingsleyweb/bun-jobs-ui/lib/shared/config"` | `import type { UiConfig } from "@kingsleyweb/bun-ui/jobs/browser"` |
+  | `bun add @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-jobs` | `bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs` |
+
+  `@kingsleyweb/bun-jobs` becomes an **optional** peer that only `/jobs`
+  needs: installing bun-ui without it no longer warns, and importing
+  `/jobs` without it fails with "Cannot find module". The bundle moved from
+  `dist/` to `dist/jobs/`.
 
 ### What's new
 

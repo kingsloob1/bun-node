@@ -40,7 +40,7 @@
  *
  * The package supplies its own spellings in `<package>/consumer-check.json`
  * (see {@link CheckConfig}), so bun-common, bun-nest, bun-jobs and
- * bun-jobs-ui all run this script unchanged.
+ * bun-ui all run this script unchanged.
  *
  * Optional peers get one consumer per distinct peer set ({@link planConsumers}).
  * Entries without `peers` are checked in a `consumer/` that has none of the

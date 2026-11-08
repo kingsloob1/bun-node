@@ -1,0 +1,606 @@
+import type {
+  QueueSummaryDto,
+  RepeatableDto,
+  RunRecordDto,
+  WorkerDto,
+} from "../../../app/jobs/api/types";
+import type { RecordedCall } from "./mockFetch";
+import { describe, expect, it } from "bun:test";
+import { expectNone } from "./assert";
+import {
+  fireEvent,
+  LOADED,
+  page,
+  setupDom,
+  visit,
+  waitFor,
+  within,
+} from "./dom";
+import { permissionsFixture } from "./fixtures";
+import {
+  NOW as QUEUE_NOW,
+  renderQueue,
+  repeatablesFixture,
+} from "./queues/fixtures";
+import { renderApp } from "./renderApp";
+import {
+  historyPager,
+  renderRunner,
+  runFixture,
+  runnerListFixture,
+} from "./runners/fixtures";
+import { workerFixture } from "./workers/fixtures";
+
+/**
+ * Paging the list tables: the Overview's queues, a server's workers, a
+ * queue's workers and repeat series, a worker key's instances, the runners
+ * and a runner's history.
+ *
+ * Most of them are cut in the browser from rows already fetched, so each
+ * table is checked the same four ways: the pager appears, a page change shows
+ * the next rows, the rows-per-page select changes the window, and a table
+ * that fits one page grows no pager at all. The runner history is the
+ * exception: it pages on the server, so its section checks the requests too.
+ */
+
+setupDom();
+
+/** The `data-testid` of each body row of `table`, in order. */
+function rowIds(table: HTMLElement): string[] {
+  return Array.from(
+    table.querySelectorAll<HTMLElement>("tbody tr"),
+    (row) => row.dataset.testid ?? "",
+  );
+}
+
+/** The pager with this accessible name, or `null` when the table has none. */
+function pager(label: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`nav[aria-label="${label}"]`);
+}
+
+/**
+ * How many pagers carry this accessible name — `0` where a table has none.
+ *
+ * A count, not `expect(pager(label)).toBeNull()`: that assertion passed
+ * against a live happy-dom element here (the same query printed the element
+ * on the line above), so a single-page table growing a pager went unnoticed
+ * in two of these checks until a deliberately broken build was run past them.
+ * The same false pass is why every absence check here now goes through
+ * `./assert` (`expectAbsent`, `expectNone`), which compares before it prints.
+ * Bun's issue: https://github.com/oven-sh/bun/issues/37310.
+ */
+function pagerCount(label: string): number {
+  return document.querySelectorAll(`nav[aria-label="${label}"]`).length;
+}
+
+/** The pager with this accessible name; fails when it is absent. */
+function requirePager(label: string): HTMLElement {
+  const found = pager(label);
+  if (!found) {
+    throw new Error(`no pager labelled ${label}`);
+  }
+  return found;
+}
+
+/** Clicks a pager's button. */
+function turn(label: string, button: "Previous" | "Next"): void {
+  fireEvent.click(
+    within(requirePager(label)).getByRole("button", { name: button }),
+  );
+}
+
+/** Chooses a page size on a pager. */
+function setPageSize(label: string, size: number): void {
+  fireEvent.change(
+    within(requirePager(label)).getByLabelText("Rows per page"),
+    {
+      target: { value: String(size) },
+    },
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * The Overview's queue table
+ * ------------------------------------------------------------------ */
+
+/** `count` queues named `q-00`, `q-01`, … so row order is readable. */
+function queues(count: number): QueueSummaryDto[] {
+  return Array.from({ length: count }, (_unused, index) => ({
+    name: `q-${String(index).padStart(2, "0")}`,
+    counts: {
+      waiting: index,
+      delayed: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+      dead: 0,
+      "waiting-children": 0,
+    },
+    total: index,
+    paused: false,
+  }));
+}
+
+/**
+ * The Overview with `count` queues. `metrics.read` is refused so the card has
+ * no throughput column: a sparkline per row would need an
+ * `IntersectionObserver`, and this is a test of the table's pages.
+ */
+async function openOverview(count: number) {
+  visit("/jobs/");
+  const rendered = renderApp({
+    handlers: {
+      "GET /meta/permissions": {
+        body: permissionsFixture({ "metrics.read": false }),
+      },
+      "GET /queues": { body: { items: queues(count) } },
+    },
+  });
+  const table = await page().findByRole("table", { name: "Queues" }, LOADED);
+  return { ...rendered, table };
+}
+
+describe("the Overview's queue table", () => {
+  it("pages at 20, and Next shows the rows after the first page", async () => {
+    const { table } = await openOverview(25);
+    expect(rowIds(table)).toHaveLength(20);
+    expect(rowIds(table)[0]).toBe("queue-row-q-00");
+    expect(requirePager("Queue pages").textContent).toContain("1–20 of 25");
+
+    turn("Queue pages", "Next");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(5));
+    expect(rowIds(table)[0]).toBe("queue-row-q-20");
+    expect(requirePager("Queue pages").textContent).toContain("21–25 of 25");
+
+    turn("Queue pages", "Previous");
+    await waitFor(() => expect(rowIds(table)[0]).toBe("queue-row-q-00"));
+  });
+
+  it("changes the window with the rows-per-page select", async () => {
+    const { table } = await openOverview(25);
+    setPageSize("Queue pages", 10);
+    await waitFor(() => expect(rowIds(table)).toHaveLength(10));
+    expect(rowIds(table).at(-1)).toBe("queue-row-q-09");
+  });
+
+  it("has no pager when the queues fit one page", async () => {
+    const { table } = await openOverview(20);
+    expect(rowIds(table)).toHaveLength(20);
+    expect(pagerCount("Queue pages")).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The Workers page: one pager per server section
+ * ------------------------------------------------------------------ */
+
+/** `count` live workers, all on one server, so they land in one section. */
+function serverWorkers(count: number): WorkerDto[] {
+  const at = (index: number): WorkerDto =>
+    workerFixture({
+      id: `api.emails.${String(index).padStart(2, "0")}`,
+      key: `api.emails.${index}`,
+      host: "api-1",
+      pid: 100,
+    });
+  return Array.from({ length: count }, (_unused, index) => at(index));
+}
+
+/** `/workers` with `count` workers on one server. */
+async function openWorkers(count: number) {
+  visit("/jobs/workers");
+  const rendered = renderApp({
+    handlers: { "GET /workers": { body: { items: serverWorkers(count) } } },
+  });
+  await page().findByTestId("workers-list", {}, LOADED);
+  const section = await page().findByTestId(
+    "worker-server-api-1:100",
+    {},
+    LOADED,
+  );
+  return { ...rendered, section };
+}
+
+/** The pager of the one server section on the Workers page. */
+const SERVER_PAGER = "Pages of Workers on api-1 · pid 100";
+
+describe("the Workers page", () => {
+  it("pages each server's table at 25, inside its service card", async () => {
+    const { section } = await openWorkers(30);
+    const table = within(section).getByRole("table");
+    expect(rowIds(table)).toHaveLength(25);
+    expect(rowIds(table)[0]).toBe("worker-row-api.emails.00");
+    // The pager belongs to the server's table, inside its service card.
+    expect(section.contains(requirePager(SERVER_PAGER))).toBe(true);
+    // The heading still counts every worker on the server, not the page.
+    expect(section.textContent).toContain("30 workers");
+
+    turn(SERVER_PAGER, "Next");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(5));
+    expect(rowIds(table)[0]).toBe("worker-row-api.emails.25");
+  });
+
+  it("changes the window with the rows-per-page select", async () => {
+    const { section } = await openWorkers(30);
+    setPageSize(SERVER_PAGER, 10);
+    const table = within(section).getByRole("table");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(10));
+  });
+
+  it("has no pager when a server's workers fit one page", async () => {
+    const { section } = await openWorkers(25);
+    expect(rowIds(within(section).getByRole("table"))).toHaveLength(25);
+    expect(pagerCount(SERVER_PAGER)).toBe(0);
+  });
+
+  it("keeps a column decided over every worker, not the page", async () => {
+    // Only the last worker reports memory: the column must still be there on
+    // the first page, where no row does.
+    const items = serverWorkers(30).map((worker, index) =>
+      index === 29 ? worker : { ...worker, rssBytes: undefined },
+    );
+    visit("/jobs/workers");
+    renderApp({ handlers: { "GET /workers": { body: { items } } } });
+    const section = await page().findByTestId(
+      "worker-server-api-1:100",
+      {},
+      LOADED,
+    );
+    const table = within(section).getByRole("table");
+    expect(rowIds(table)).toHaveLength(25);
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((cell) => cell.textContent),
+    ).toContain("Memory");
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A queue's Workers panel and a worker page's Instances card
+ * ------------------------------------------------------------------ */
+
+describe("a queue's Workers panel", () => {
+  const LABEL = "Pages of Workers of emails";
+
+  /** The `emails` queue's Workers panel with `count` workers. */
+  async function open(count: number) {
+    const at = (index: number): WorkerDto =>
+      workerFixture({
+        id: `w-${String(index).padStart(2, "0")}`,
+        key: `k-${index}`,
+        queue: "emails",
+      });
+    const items = Array.from({ length: count }, (_unused, index) => at(index));
+    renderQueue({
+      path: "/queues/emails?panel=workers",
+      handlers: { "GET /queues/emails/workers": { body: { items } } },
+    });
+    return page().findByRole("table", { name: "Workers of emails" }, LOADED);
+  }
+
+  it("pages at 25 and turns to the rest", async () => {
+    const table = await open(30);
+    expect(rowIds(table)).toHaveLength(25);
+    turn(LABEL, "Next");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(5));
+    expect(rowIds(table)[0]).toBe("worker-row-w-25");
+  });
+
+  it("changes the window with the rows-per-page select", async () => {
+    const table = await open(30);
+    setPageSize(LABEL, 10);
+    await waitFor(() => expect(rowIds(table)).toHaveLength(10));
+  });
+
+  it("has no pager with a page of workers or fewer", async () => {
+    const table = await open(3);
+    expect(rowIds(table)).toHaveLength(3);
+    expect(pagerCount(LABEL)).toBe(0);
+  });
+});
+
+describe("a worker page's Instances card", () => {
+  const LABEL = "Pages of Instances of api.emails";
+
+  /** The `api.emails` worker page with `count` live instances. */
+  async function open(count: number) {
+    const at = (index: number): WorkerDto =>
+      workerFixture({ id: `api.emails.${String(index).padStart(2, "0")}` });
+    const items = Array.from({ length: count }, (_unused, index) => at(index));
+    visit("/jobs/workers/emails/api.emails");
+    renderApp({
+      handlers: {
+        "GET /workers": { body: { items } },
+        "GET /queues/emails/analytics/workers/api.emails": { status: 404 },
+      },
+    });
+    const card = await page().findByTestId("worker-instances", {}, LOADED);
+    return within(card).findByRole("table");
+  }
+
+  it("pages one key's instances at 10", async () => {
+    const table = await open(12);
+    expect(rowIds(table)).toHaveLength(10);
+    turn(LABEL, "Next");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(2));
+    expect(rowIds(table)[0]).toBe("worker-row-api.emails.10");
+  });
+
+  it("changes the window with the rows-per-page select", async () => {
+    const table = await open(12);
+    setPageSize(LABEL, 20);
+    await waitFor(() => expect(rowIds(table)).toHaveLength(12));
+    expect(pagerCount(LABEL)).toBe(0);
+  });
+
+  it("has no pager for the usual one or two instances", async () => {
+    const table = await open(2);
+    expect(rowIds(table)).toHaveLength(2);
+    expect(pagerCount(LABEL)).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A queue's repeatables panel
+ * ------------------------------------------------------------------ */
+
+describe("the repeatables panel", () => {
+  const LABEL = "Repeatable pages";
+
+  /** The `emails` queue's repeatables panel with `count` series. */
+  async function open(count: number) {
+    const one = repeatablesFixture.items[0];
+    const items: RepeatableDto[] = Array.from(
+      { length: count },
+      (_unused, index) => ({
+        ...one,
+        key: `series-${String(index).padStart(2, "0")}`,
+        name: `series-${index}`,
+        nextRunAt: QUEUE_NOW + index * 1_000,
+      }),
+    );
+    renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: { "GET /queues/emails/repeatables": { body: { items } } },
+    });
+    return page().findByRole(
+      "table",
+      { name: "Repeatables of emails" },
+      LOADED,
+    );
+  }
+
+  it("pages at 20 and turns to the rest", async () => {
+    const table = await open(25);
+    expect(rowIds(table)).toHaveLength(20);
+    expect(rowIds(table)[0]).toBe("repeatable-row-series-00");
+    turn(LABEL, "Next");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(5));
+    expect(rowIds(table)[0]).toBe("repeatable-row-series-20");
+  });
+
+  it("changes the window with the rows-per-page select", async () => {
+    const table = await open(25);
+    setPageSize(LABEL, 10);
+    await waitFor(() => expect(rowIds(table)).toHaveLength(10));
+  });
+
+  it("has no pager on a queue with a handful of series", async () => {
+    const table = await open(2);
+    expect(rowIds(table)).toHaveLength(2);
+    expect(pagerCount(LABEL)).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The runners list: its window is in the URL
+ * ------------------------------------------------------------------ */
+
+/** `/runners` with `count` remote runners named `r-00`, `r-01`, …. */
+async function openRunners(count: number, query = "") {
+  const items = Array.from({ length: count }, (_unused, index) => ({
+    id: `r-${String(index).padStart(2, "0")}`,
+    local: false,
+    isLocal: false,
+    isPaused: false,
+    isRunning: false,
+  }));
+  renderRunner({
+    path: `/runners${query}`,
+    handlers: { "GET /runners": { body: { ...runnerListFixture(), items } } },
+  });
+  return page().findByRole("table", { name: "Runners" }, LOADED);
+}
+
+describe("the runners list", () => {
+  it("pages at 25, keeping the window in the URL", async () => {
+    const table = await openRunners(30);
+    expect(rowIds(table)).toHaveLength(25);
+    expect(window.location.search).toBe("");
+
+    turn("Runner pages", "Next");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(5));
+    expect(rowIds(table)[0]).toBe("runner-row-r-25");
+    expect(window.location.search).toBe("?offset=25");
+  });
+
+  it("starts from the window in the URL, and the size select writes it", async () => {
+    const table = await openRunners(30, "?offset=25");
+    expect(rowIds(table)).toHaveLength(5);
+
+    setPageSize("Runner pages", 10);
+    await waitFor(() => expect(rowIds(table)).toHaveLength(10));
+    expect(rowIds(table)[0]).toBe("runner-row-r-20");
+    expect(new URLSearchParams(window.location.search).get("limit")).toBe("10");
+  });
+
+  it("restarts paging when the filter changes", async () => {
+    const table = await openRunners(30);
+    turn("Runner pages", "Next");
+    await waitFor(() => expect(window.location.search).toBe("?offset=25"));
+    fireEvent.change(page().getByLabelText("Filter runners by id or name"), {
+      target: { value: "r-0" },
+    });
+    await waitFor(() => expect(rowIds(table)).toHaveLength(10));
+    expect(new URLSearchParams(window.location.search).has("offset")).toBe(
+      false,
+    );
+  });
+
+  it("has no pager with a page of runners or fewer", async () => {
+    const table = await openRunners(25);
+    expect(rowIds(table)).toHaveLength(25);
+    expect(pagerCount("Runner pages")).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A runner's history: the server's pages, windowed from the URL
+ * ------------------------------------------------------------------ */
+
+/** `count` finished runs, newest first, named `run-00`, `run-01`, …. */
+function runs(count: number): RunRecordDto[] {
+  const at = (index: number): RunRecordDto =>
+    runFixture({
+      runId: `run-${String(index).padStart(2, "0")}`,
+      startedAt: Date.now() - index * 60_000,
+      logLines: 3,
+    });
+  return Array.from({ length: count }, (_unused, index) => at(index));
+}
+
+/**
+ * The `nightly` runner screen over a history of `count` stored runs, served
+ * by a handler that windows them as the route does — so a page turn here is
+ * the real thing: a new request, and rows only that request returned.
+ */
+async function openHistory(count: number, query = "") {
+  const rendered = renderRunner({
+    path: `/runners/nightly${query}`,
+    handlers: {
+      "GET /runners/nightly/history": historyPager(runs(count)),
+      "GET /runners/nightly/runs/run-27/logs": {
+        body: { runId: "run-27", lines: [], nextCursor: null, dropped: 0 },
+      },
+    },
+  });
+  const table = await page().findByRole(
+    "table",
+    { name: "Run history" },
+    LOADED,
+  );
+  return { ...rendered, table };
+}
+
+/** Every `GET /runners/nightly/history` the screen has made, in order. */
+function historyReads(calls: readonly RecordedCall[]): RecordedCall[] {
+  return calls.filter((call) => call.path === "/runners/nightly/history");
+}
+
+describe("a runner's history", () => {
+  it("pages the whole history on the server, re-reading with a new offset", async () => {
+    const { table, calls } = await openHistory(30, "?history=25");
+    expect(rowIds(table)).toHaveLength(25);
+    expect(rowIds(table)[0]).toBe("history-row-run-00");
+    expect(requirePager("History pages").textContent).toContain("1–25 of 30");
+    const before = historyReads(calls).length;
+
+    turn("History pages", "Next");
+    await waitFor(() => expect(rowIds(table)).toHaveLength(5));
+    expect(rowIds(table)[0]).toBe("history-row-run-25");
+    // The rows came from the server, not from a slice of what was already here.
+    expect(historyReads(calls).length).toBeGreaterThan(before);
+    expect(historyReads(calls).at(-1)!.query.get("offset")).toBe("25");
+    expect(historyReads(calls).at(-1)!.query.get("order")).toBe("desc");
+    expect(window.location.search).toContain("offset=25");
+  });
+
+  it("changes the page size with either select, and restarts paging", async () => {
+    const { table, calls } = await openHistory(30, "?history=25");
+    turn("History pages", "Next");
+    await waitFor(() => expect(rowIds(table)[0]).toBe("history-row-run-25"));
+
+    setPageSize("History pages", 10);
+    await waitFor(() => expect(rowIds(table)).toHaveLength(10));
+    expect(rowIds(table).at(-1)).toBe("history-row-run-09");
+    expect(historyReads(calls).at(-1)!.query.get("limit")).toBe("10");
+    // A new size starts again at the first page: the old offsets named
+    // different runs.
+    expect(historyReads(calls).at(-1)!.query.get("offset")).toBe("0");
+    expect(new URLSearchParams(window.location.search).has("offset")).toBe(
+      false,
+    );
+
+    // The card's own "Runs shown" select is the same value, and behaves the
+    // same way.
+    fireEvent.change(page().getByLabelText("Runs shown"), {
+      target: { value: "25" },
+    });
+    await waitFor(() => expect(rowIds(table)).toHaveLength(25));
+    expect(new URLSearchParams(window.location.search).get("history")).toBe(
+      "25",
+    );
+  });
+
+  it("lands a ?logs= link on the page its URL carries", async () => {
+    // A Log button writes `logs` into the query string it was pressed on, so
+    // a copied link carries the run's page with it.
+    const { table } = await openHistory(
+      30,
+      "?history=25&offset=25&logs=run-27",
+    );
+    expect(
+      table.querySelector('[data-testid="history-row-run-27"]'),
+    ).toBeTruthy();
+    expect(requirePager("History pages").textContent).toContain("26–30 of 30");
+    expect(
+      document.querySelectorAll('[data-testid="history-open-log-note"]').length,
+    ).toBe(0);
+  });
+
+  it("says so when the open log's run is not on the page, and closes it", async () => {
+    // `run-27` is on the last page; this link names it from the first. Its
+    // page cannot be worked out from rows that do not hold it, so the card
+    // says where the reader stands rather than opening nothing.
+    const { table } = await openHistory(30, "?history=25&logs=run-27");
+    const note = await page().findByTestId("history-open-log-note", {}, LOADED);
+    expect(note.textContent).toContain("run-27");
+    expect(rowIds(table)[0]).toBe("history-row-run-00");
+
+    fireEvent.click(within(note).getByRole("button", { name: "Close log" }));
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll('[data-testid="history-open-log-note"]')
+          .length,
+      ).toBe(0),
+    );
+    expect(new URLSearchParams(window.location.search).has("logs")).toBe(false);
+  });
+
+  it("has no pager when the whole history fits one page", async () => {
+    const { table } = await openHistory(25, "?history=25");
+    expect(rowIds(table)).toHaveLength(25);
+    expect(pagerCount("History pages")).toBe(0);
+  });
+
+  it("reports an offset past the end as an empty page, not an empty history", async () => {
+    renderRunner({
+      path: "/runners/nightly?history=25&offset=500",
+      handlers: {
+        "GET /runners/nightly/history": historyPager(runs(30)),
+      },
+    });
+    expect(
+      await page().findByText("No runs on this page", {}, LOADED),
+    ).toBeTruthy();
+    expectNone(document.querySelectorAll("[data-testid^=history-row-]"));
+    // The history is not empty, so Clear history… stays live and the pager is
+    // there to come back with.
+    const clear = page().getByRole("button", {
+      name: "Clear history…",
+    }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    expect(requirePager("History pages").textContent).toContain("0 of 30");
+  });
+});

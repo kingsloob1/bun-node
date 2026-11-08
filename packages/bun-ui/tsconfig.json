@@ -1,0 +1,19 @@
+{
+  // Compiler options live in the repo root's `tsconfig.base.json`. `app/` is
+  // every UI's browser bundle (`app/<ui>/`): it needs the DOM lib, so it is its
+  // own project, checked from `app/tsconfig.json`, and excluded here.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "lib/*": ["./lib/*"]
+    }
+  },
+  "include": [
+    "./lib/**/*",
+    "./scripts/**/*",
+    "./__tests__/*.ts",
+    "./__tests__/*/server/**/*",
+    "./__tests__/*/e2e/**/*",
+    "eslint.legacy.config.mjs"
+  ]
+}

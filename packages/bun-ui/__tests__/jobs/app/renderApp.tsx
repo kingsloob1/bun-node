@@ -1,0 +1,112 @@
+import type { FetchLike } from "../../../app/jobs/api/client";
+import type { LiveOptions } from "../../../app/jobs/live";
+import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
+import type { MockHandler, MockReply } from "./mockFetch";
+import { createApiClient } from "../../../app/jobs/api/client";
+import { App } from "../../../app/jobs/App";
+import { LiveOptionsContext } from "../../../app/jobs/live";
+import { AppProviders } from "../../../app/jobs/providers";
+import { createQueryClient } from "../../../app/jobs/queryClient";
+import { render } from "./dom";
+import {
+  demandFixture,
+  jobsSeriesFixture,
+  metaFixture,
+  overviewFixture,
+  permissionsFixture,
+  queueListFixture,
+  runnersAnalyticsFixture,
+  throughputFixture,
+  uiConfig,
+  workersAnalyticsFixture,
+  workersFixture,
+} from "./fixtures";
+import { mockFetch } from "./mockFetch";
+
+/** Handlers answering every route milestone 1 reads, from the fixtures. */
+export function defaultHandlers(): Record<string, MockHandler | MockReply> {
+  return {
+    "GET /meta": { body: metaFixture() },
+    "GET /meta/permissions": { body: permissionsFixture() },
+    "GET /overview": { body: overviewFixture() },
+    "GET /queues": { body: queueListFixture() },
+    "GET /queues/emails/throughput": { body: throughputFixture() },
+    "GET /queues/reports/throughput": { body: throughputFixture() },
+    "GET /queues/emails/demand": { body: demandFixture() },
+    "GET /queues/reports/demand": {
+      body: demandFixture({ queue: "reports", waiting: 4, demand: 4 }),
+    },
+    // Answers for the queues asked, in their order, as the route does.
+    "GET /demand": (call) => ({
+      body: {
+        queues: call.query
+          .getAll("queues")
+          .map((queue) => demandFixture({ queue })),
+        truncated: false,
+      },
+    }),
+    "GET /workers": { body: workersFixture },
+    // The analytics routes. The roll-ups answer the rows; the same route with
+    // `ids=` / `keys=` answers one series per name, which is how a visible
+    // page gets its sparklines in a single request.
+    "GET /analytics/jobs": { body: jobsSeriesFixture() },
+    "GET /queues/emails/analytics/jobs": { body: jobsSeriesFixture() },
+    "GET /queues/reports/analytics/jobs": { body: jobsSeriesFixture() },
+    "GET /analytics/runners": (call) => ({
+      body: runnersAnalyticsFixture(undefined, {
+        ids: call.query.getAll("ids"),
+      }),
+    }),
+    "GET /analytics/workers": (call) => ({
+      body: workersAnalyticsFixture(undefined, {
+        keys: call.query.getAll("keys"),
+      }),
+    }),
+  };
+}
+
+/** Options of {@link renderApp}. */
+export interface RenderAppOptions {
+  /** Config overrides. */
+  config?: Partial<UiConfig>;
+  /** Route handlers, merged over {@link defaultHandlers}. */
+  handlers?: Record<string, MockHandler | MockReply>;
+  /** Use this `fetch` instead of the mock. */
+  fetch?: FetchLike;
+  /**
+   * The live socket's options. Defaults to `{ disabled: true }`: there is no
+   * server to connect to, so live updates stay off and screens poll. Pass
+   * `{ WebSocket: FakeSocket }` (`live/fakes.ts`) to drive it.
+   */
+  live?: LiveOptions;
+  /**
+   * Retry failed reads with the app's real policy (`shouldRetry`). Defaults
+   * to `false`, so a failure shows at once.
+   */
+  retry?: boolean;
+}
+
+/** Live updates off: the default for {@link renderApp}. */
+const LIVE_OFF: LiveOptions = { disabled: true };
+
+/** Renders the whole app (providers + `<App>`) against a mocked API. */
+export function renderApp(options: RenderAppOptions = {}) {
+  const config = uiConfig(options.config);
+  const mock = mockFetch({ ...defaultHandlers(), ...options.handlers });
+  const client = createApiClient(config, {
+    fetch: options.fetch ?? mock.fetch,
+  });
+  const queryClient = createQueryClient({ retry: options.retry ?? false });
+  const result = render(
+    <LiveOptionsContext value={options.live ?? LIVE_OFF}>
+      <AppProviders
+        config={config}
+        client={client}
+        queryClient={queryClient}
+      >
+        <App />
+      </AppProviders>
+    </LiveOptionsContext>,
+  );
+  return { ...result, calls: mock.calls, config, client, queryClient };
+}
