@@ -5,8 +5,9 @@
  * §10.1–§10.3).
  *
  * This subpath, and only this subpath, depends on `@kingsleyweb/bun-cache`
- * (an optional peer), and so does `cacheThrottleStore`, the shared store
- * for `BunThrottlerModule`. The package barrel never reaches it, so a Nest app
+ * (an optional peer), and so do `cacheThrottleStore`, the shared store
+ * for `BunThrottlerModule`, and `cacheLiveBus`, the bus that carries live
+ * invalidations (`@Invalidates`) between instances. The package barrel never reaches it, so a Nest app
  * without bun-cache neither compiles nor loads a line of it.
  *
  * ```ts
@@ -68,6 +69,22 @@ export {
   type CacheThrottleStore,
   type CacheThrottleStoreOptions,
 } from "@kingsleyweb/bun-cache/throttle";
+
+/**
+ * A bun-cache bus (`redisBus`, `pgBus`) as bun-common's live bus, so a
+ * `@Invalidates` (or any `publishTags()`) in one instance reaches the live
+ * subscribers of every instance (`@kingsleyweb/bun-cache/live`, re-exported
+ * here for the same reason as `cacheThrottleStore`).
+ *
+ * ```ts
+ * adapter.use(liveInvalidation(adapter, { authorize, bus: cacheLiveBus(redisBus(url)) }));
+ * ```
+ */
+export {
+  cacheLiveBus,
+  type CacheLiveBusOptions,
+  DEFAULT_LIVE_NAMESPACE,
+} from "@kingsleyweb/bun-cache/live";
 
 /**
  * The bun-cache types this module's surface is written in, re-exported so a
