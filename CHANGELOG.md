@@ -41,7 +41,11 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
     and `X-Forwarded-Host` from a trusted peer.
 
   A bun-nest `@Controller({ host })` matches the forwarded host the same
-  way.
+  way, and bun-jobs' management API follows it too: with its own
+  `trustProxy` unset, its CSRF and upgrade origin checks and its served
+  AsyncAPI server read the scheme and host as the request does. Its `true`
+  (believe the headers from any peer) and `false` (never) still override
+  the app's, and any other value is now a `ConfigError`.
 - **`clientIpHeader`** names a single-value header, such as
   `CF-Connecting-IP`. It is believed only when `trustProxy` trusts the whole
   chain the request came through.

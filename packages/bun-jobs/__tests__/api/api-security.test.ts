@@ -746,6 +746,64 @@ describe("origins", () => {
     ).toBe(200);
   });
 
+  it("unset, follows the app's trustProxy; true and false override it", async () => {
+    const forwarded = {
+      origin: "https://admin.example",
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "admin.example",
+    };
+    // The app trusts one proxy (bun-common's `trustProxy`, Express's `trust
+    // proxy`); a socket-free fetch has no peer, so a hop count trusts it by
+    // position.
+    const following = harness();
+    await following.jobs.queue("mail").add("send", {});
+    following.root.trustProxy = 1;
+    expect(
+      (await following.call("POST", "/queues/mail/pause", {}, forwarded))
+        .status,
+    ).toBe(200);
+    // The control: the same app with trust off refuses it, as before.
+    following.root.trustProxy = false;
+    expect(
+      (await following.call("POST", "/queues/mail/pause", {}, forwarded))
+        .status,
+    ).toBe(403);
+
+    // `false` pins the direct scheme and host even when the app trusts.
+    const pinned = harness({ jobs: following.jobs, trustProxy: false });
+    pinned.root.trustProxy = 1;
+    expect(
+      (await pinned.call("POST", "/queues/mail/pause", {}, forwarded)).status,
+    ).toBe(403);
+
+    // A trusted proxy is not a trusted origin: a forwarded host that is not
+    // the `Origin`'s is still cross-origin.
+    following.root.trustProxy = 1;
+    expect(
+      (
+        await following.call(
+          "POST",
+          "/queues/mail/pause",
+          {},
+          { ...forwarded, "x-forwarded-host": "other.example" },
+        )
+      ).status,
+    ).toBe(403);
+  });
+
+  it("refuses a trustProxy that is not a boolean", () => {
+    for (const trustProxy of [1, "loopback", ["10.0.0.0/8"], () => true]) {
+      expect(() =>
+        resolveConfig(apiConfig({ trustProxy: trustProxy as never })),
+      ).toThrow(/trustProxy must be true, false or unset/);
+    }
+    for (const trustProxy of [true, false, undefined]) {
+      expect(resolveConfig(apiConfig({ trustProxy })).trustProxy).toBe(
+        trustProxy,
+      );
+    }
+  });
+
   it("reads the scheme and host from the request, or the proxy headers when trusted", () => {
     const request = new Request("http://admin.example/x", {
       headers: { "x-forwarded-proto": "https, http" },

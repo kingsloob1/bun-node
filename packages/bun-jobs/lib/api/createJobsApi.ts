@@ -126,7 +126,7 @@ export function buildJobsApi(
     }
     const built = asyncDocument!;
     const asyncApiSource = (req: BunRequest): AsyncApiDocument =>
-      asyncApiForRequest(built, req, info);
+      asyncApiForRequest(built, req, info, { trustProxy: config.trustProxy });
     registerAsyncApiSource(config, asyncApiSource);
     // Only when the context says it does not publish: with `publishEvents`
     // set, the live events carry what its producers publish.

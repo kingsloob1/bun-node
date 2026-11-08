@@ -7196,8 +7196,22 @@ mirror re-encodes anything — or leave the pages off and use the JSON.
   refused; add `csrf.header` to force a preflight. CORS is off by default, and
   `credentials: true` with a wildcard origin is refused outright.
 - **The socket's `Origin` is checked** on upgrade (same-origin by default),
-  because browsers send cookies on cross-site WebSocket handshakes. Set
-  `trustProxy: true` only behind a proxy you control.
+  because browsers send cookies on cross-site WebSocket handshakes.
+- **Behind a proxy, trust it on the app.** The same-origin checks (CSRF and
+  the upgrade) and the served AsyncAPI document read the scheme and host the
+  way the request itself does: `X-Forwarded-Proto` and `X-Forwarded-Host`
+  count only when the `trustProxy` of the bun-common adapter or router
+  serving the API (Express's `trust proxy`) trusts the peer that sent them.
+  `createJobsApi`'s own `trustProxy` overrides that: `false` never reads
+  them, and `true` believes them from any peer, for a raw `Bun.serve` upgrade
+  or the dedicated `websocket.port` server, which have no app trust (only
+  behind a proxy that overwrites both headers).
+
+  ```ts
+  const adapter = new BunHttpAdapter(0, { trustProxy: "loopback" }); // a local proxy
+  const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize });
+  adapter.use(api.basePath, api.router); // follows the adapter's trust
+  ```
 - **Redact with the `serialize` hooks.** `lockToken`, event `origin` tokens,
   `driverConfig` and handler functions are never serialised; stacks
   (`exposeStacks`), runner file paths (`exposeRunnerFiles`), worker processor
