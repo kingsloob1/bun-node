@@ -5,8 +5,10 @@ export {
   jobsUi,
 } from "./jobsUi";
 /**
- * `@kingsleyweb/bun-jobs-ui`: a management UI and API documentation viewer
- * for the `@kingsleyweb/bun-jobs` management API.
+ * `@kingsleyweb/bun-ui/jobs`: a management UI and API documentation viewer
+ * for the `@kingsleyweb/bun-jobs` management API. Needs
+ * `@kingsleyweb/bun-jobs`, an optional peer of the package that this entry
+ * (and `./lib/jobs/*`) alone requires.
  *
  * ```ts
  * const api = createJobsApi({ jobs, basePath: "/jobs-api", authorize });
@@ -15,17 +17,17 @@ export {
  * app.use(ui.basePath, ui.router);
  * ```
  *
- * The bundle machinery (`lib/assets.ts`: building, writing and loading
- * `dist/`) is internal: `scripts/build.ts` and the tests import it directly.
+ * The bundle machinery (`lib/jobs/assets.ts`: building, writing and loading
+ * `dist/jobs/`) is internal: `scripts/build.ts` and the tests import it directly.
  * `JobsUiBaseOptions` stays public because both option interfaces extend it,
  * so it is part of the options' declared shape.
  */
 export type {
   UiUnauthorized,
   UiUnauthorizedStatus,
-} from "./shared/unauthorized";
-export type { UiConfig, UiSections, UiTheme } from "./shared/config";
-export { UI_CONFIG_ELEMENT_ID } from "./shared/config";
+} from "./browser/unauthorized";
+export type { UiConfig, UiSections, UiTheme } from "./browser/config";
+export { UI_CONFIG_ELEMENT_ID } from "./browser/config";
 export type {
   JobsUi,
   JobsUiApiOptions,

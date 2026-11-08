@@ -3,8 +3,8 @@
  * injected configuration — all through `router.fetch()`, no socket.
  */
 import { describe, expect, it } from "bun:test";
-import { UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config";
-import { cspHeader, escapeHtml, jsonForScript } from "../../lib/shell";
+import { UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config";
+import { cspHeader, escapeHtml, jsonForScript } from "../../../lib/jobs/shell";
 import {
   cspNonce,
   fetchShell,

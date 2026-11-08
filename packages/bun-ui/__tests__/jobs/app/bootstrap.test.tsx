@@ -1,6 +1,10 @@
-import type { UiConfig } from "../../lib/shared/config.ts";
+import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
 import { describe, expect, it } from "bun:test";
-import { parseUiConfig, readUiConfig, UiConfigError } from "../../app/config";
+import {
+  parseUiConfig,
+  readUiConfig,
+  UiConfigError,
+} from "../../../app/jobs/config";
 import {
   applyTheme,
   initialTheme,
@@ -8,8 +12,8 @@ import {
   readStoredTheme,
   storeTheme,
   THEME_STORAGE_KEY,
-} from "../../app/theme";
-import { UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config.ts";
+} from "../../../app/jobs/theme";
+import { UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config.ts";
 import { expectAbsent, expectUndefined } from "./assert";
 import { act, fireEvent, LOADED, page, setupDom } from "./dom";
 import { uiConfig } from "./fixtures";
@@ -25,7 +29,7 @@ setupDom();
  * run (`bun test --randomize`), and every later file's `onChange` would stop
  * firing. So it is loaded here, after the DOM exists (see `dom.ts`).
  */
-const { boot } = await import("../../app/boot");
+const { boot } = await import("../../../app/jobs/boot");
 
 /** Writes a shell like jobsUi() serves: the config script and #root. */
 function writeShell(config: unknown): void {

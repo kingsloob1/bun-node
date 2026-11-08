@@ -25,7 +25,7 @@ Developing needs **Bun ≥ 1.4.4**, the canary until it is stable
    already filters the known `TS2742`/`TS2883` `eslint.legacy.config.mjs` noise.
 
 Then, for **each affected package** (`packages/bun-common`, `packages/bun-nest`,
-`packages/bun-jobs`, `packages/bun-jobs-ui`), from that package's directory:
+`packages/bun-jobs`, `packages/bun-ui`), from that package's directory:
 
 2. **Lint and format** — `bun run lint` (`bun lint`, type-aware, over the
    whole package, against the root `bunfig.toml`) must report **0 errors**;

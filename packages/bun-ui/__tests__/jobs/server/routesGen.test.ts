@@ -1,7 +1,7 @@
 /**
- * The typed client's route map (`app/api/routes.gen.ts`) matches the API it
+ * The typed client's route map (`app/jobs/api/routes.gen.ts`) matches the API it
  * was generated from: `bun-client generate --check` over the document
- * `scripts/routes-openapi.ts` builds from bun-jobs as it is now, the same
+ * `scripts/jobs/routes-openapi.ts` builds from bun-jobs as it is now, the same
  * command as `bun run check:client`. A bun-jobs change to a route, a schema
  * or an error code makes the committed map stale, and this fails until
  * `bun run gen:client` is run and its output committed.
@@ -12,8 +12,8 @@ import { join, resolve } from "node:path";
 import { runCli } from "@kingsleyweb/bun-client/codegen";
 import { describe, expect, it } from "bun:test";
 
-const ROOT = resolve(import.meta.dir, "../..");
-const MAP = join(ROOT, "app/api/routes.gen.ts");
+const ROOT = resolve(import.meta.dir, "../../..");
+const MAP = join(ROOT, "app/jobs/api/routes.gen.ts");
 
 /** Runs `bun-client generate --check` for `out`, returning its exit code and what it wrote. */
 async function check(out: string): Promise<{ code: number; output: string }> {
@@ -22,7 +22,7 @@ async function check(out: string): Promise<{ code: number; output: string }> {
     [
       "generate",
       "--module",
-      "scripts/routes-openapi.ts",
+      "scripts/jobs/routes-openapi.ts",
       "--out",
       out,
       "--check",

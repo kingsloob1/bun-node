@@ -3,7 +3,7 @@ import type {
   RepeatableDto,
   RunRecordDto,
   WorkerDto,
-} from "../../app/api/types";
+} from "../../../app/jobs/api/types";
 import type { RecordedCall } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectNone } from "./assert";

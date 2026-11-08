@@ -1,6 +1,7 @@
 /**
- * Builds the app into `dist/`: the hashed files under `dist/assets/` and
- * `dist/manifest.json`, which `jobsUi()` serves from memory. Runs on
+ * Builds the jobs app into `dist/jobs/`: the hashed files under
+ * `dist/jobs/assets/` and `dist/jobs/manifest.json`, which `jobsUi()` serves
+ * from memory. Runs on
  * `prepack`, so the published tarball never needs a consumer build step.
  *
  * The bundle is type-checked first (`Bun.build`'s `check`, the app's
@@ -9,7 +10,7 @@
  * not check.
  *
  * ```bash
- * bun scripts/build.ts                      # app/main.tsx → dist/
+ * bun scripts/build.ts                      # app/jobs/main.tsx → dist/jobs/
  * bun scripts/build.ts --entry <file> --out <dir>
  * ```
  */
@@ -20,7 +21,7 @@ import {
   DEFAULT_DIST_DIR,
   DEFAULT_ENTRY,
   writeAssets,
-} from "../lib/assets";
+} from "../lib/jobs/assets";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),

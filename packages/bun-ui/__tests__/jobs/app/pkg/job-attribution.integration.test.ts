@@ -1,5 +1,5 @@
 import type { BunQueueWorker, JobsDriver } from "@kingsleyweb/bun-jobs";
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";

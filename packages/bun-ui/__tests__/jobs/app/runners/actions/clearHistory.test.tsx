@@ -2,11 +2,11 @@ import type { QueryKey } from "@tanstack/react-query";
 import type {
   RunnerConfigDto,
   RunnerHistoryDto,
-} from "../../../../app/api/types";
+} from "../../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
-import { runLogKeys } from "../../../../app/api/runnerLogs";
-import { runnerKeys } from "../../../../app/api/runners";
-import { clearHistoryMessage } from "../../../../app/screens/runners/actions/explain";
+import { runLogKeys } from "../../../../../app/jobs/api/runnerLogs";
+import { runnerKeys } from "../../../../../app/jobs/api/runners";
+import { clearHistoryMessage } from "../../../../../app/jobs/screens/runners/actions/explain";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";

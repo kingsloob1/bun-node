@@ -61,7 +61,7 @@ import {
   JOBS_API_ACTIONS,
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import {
   button,
   chromeOrSkip,

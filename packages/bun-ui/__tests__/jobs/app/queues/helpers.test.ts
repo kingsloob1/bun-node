@@ -1,44 +1,44 @@
 import { describe, expect, it } from "bun:test";
-import { serializeQuery } from "../../../app/api/client";
-import { queryKeys } from "../../../app/api/queryKeys";
+import { serializeQuery } from "../../../../app/jobs/api/client";
+import { queryKeys } from "../../../../app/jobs/api/queryKeys";
 import {
   jobListQuery,
   jobPath,
   mutationInvalidations,
   queueKeys,
-} from "../../../app/api/queues";
-import { POLL_INTERVAL_MS } from "../../../app/queryClient";
+} from "../../../../app/jobs/api/queues";
+import { POLL_INTERVAL_MS } from "../../../../app/jobs/queryClient";
 import {
   formatMs,
   parseWindow,
   toMs,
-} from "../../../app/screens/queues/duration";
+} from "../../../../app/jobs/screens/queues/duration";
 import {
   readJobFilters,
   truncate,
-} from "../../../app/screens/queues/jobFilters";
+} from "../../../../app/jobs/screens/queues/jobFilters";
 import {
   emptyWalk,
   walkBack,
   walkCursor,
   walkFor,
   walkForward,
-} from "../../../app/screens/queues/jobWalk";
-import { refreshInterval } from "../../../app/screens/queues/live";
+} from "../../../../app/jobs/screens/queues/jobWalk";
+import { refreshInterval } from "../../../../app/jobs/screens/queues/live";
 import {
   draftFromLimits,
   limitsBodyFromDraft,
-} from "../../../app/screens/queues/panels/limitsDraft";
-import { parseWindowParam } from "../../../app/screens/queues/panels/throughput";
+} from "../../../../app/jobs/screens/queues/panels/limitsDraft";
+import { parseWindowParam } from "../../../../app/jobs/screens/queues/panels/throughput";
 import {
   describeSchedule,
   listIds,
-} from "../../../app/screens/queues/queueFormat";
+} from "../../../../app/jobs/screens/queues/queueFormat";
 import {
   clampLimit,
   intParam,
   splitList,
-} from "../../../app/screens/queues/urlState";
+} from "../../../../app/jobs/screens/queues/urlState";
 import { expectUndefined } from "../assert";
 import { setupDom } from "../dom";
 import { repeatablesFixture } from "./fixtures";

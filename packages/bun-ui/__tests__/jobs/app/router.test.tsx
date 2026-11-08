@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Link, RouterProvider, Routes } from "../../app/router";
+import { Link, RouterProvider, Routes } from "../../../app/jobs/router";
 import {
   matchPath,
   normalizeBasePath,
@@ -7,7 +7,7 @@ import {
   useLocation,
   useParams,
   useQueryParam,
-} from "../../app/routing";
+} from "../../../app/jobs/routing";
 import { expectAbsent } from "./assert";
 import { act, fireEvent, page, render, setupDom, visit } from "./dom";
 

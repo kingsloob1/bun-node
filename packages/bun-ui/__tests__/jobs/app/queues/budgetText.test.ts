@@ -1,9 +1,9 @@
-import type { SummonBudgetDto } from "../../../app/api/types";
+import type { SummonBudgetDto } from "../../../../app/jobs/api/types";
 import type {
   BudgetOffView,
   BudgetOnView,
   BudgetUnknownView,
-} from "../../../app/screens/queues/panels/budgetText";
+} from "../../../../app/jobs/screens/queues/panels/budgetText";
 import { describe, expect, it } from "bun:test";
 import {
   budgetLimitsUnknown,
@@ -11,7 +11,7 @@ import {
   budgetUsedText,
   summonBudgetView,
   utcResetLabel,
-} from "../../../app/screens/queues/panels/budgetText";
+} from "../../../../app/jobs/screens/queues/panels/budgetText";
 import { expectUndefined } from "../assert";
 
 /**

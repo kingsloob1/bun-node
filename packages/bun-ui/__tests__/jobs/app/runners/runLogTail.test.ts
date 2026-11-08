@@ -2,9 +2,9 @@ import type {
   EventWire,
   RunLogLineDto,
   RunLogPageDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
-import { ApiError } from "../../../app/api/errors";
+import { ApiError } from "../../../../app/jobs/api/errors";
 import {
   hasRunLogs,
   isLogsNotRetained,
@@ -19,14 +19,14 @@ import {
   runLogPageLimit,
   runLogsPath,
   runLogsRefetchInterval,
-} from "../../../app/api/runnerLogs";
+} from "../../../../app/jobs/api/runnerLogs";
 import {
   followingNote,
   formatClockTime,
   isRunLogStream,
   levelTone,
   streamOptions,
-} from "../../../app/screens/runners/runLogFormat";
+} from "../../../../app/jobs/screens/runners/runLogFormat";
 import { expectUndefined } from "../assert";
 
 /** One line, `stdout` unless told otherwise. */

@@ -3,11 +3,11 @@ import type {
   JobDto,
   MetaDto,
   Permissions,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it, mock } from "bun:test";
-import { queueKeys } from "../../../app/api/queues";
-import { AddFlowDialog } from "../../../app/screens/job/AddFlowDialog";
+import { queueKeys } from "../../../../app/jobs/api/queues";
+import { AddFlowDialog } from "../../../../app/jobs/screens/job/AddFlowDialog";
 import { expectAbsent, expectNone } from "../assert";
 import {
   act,

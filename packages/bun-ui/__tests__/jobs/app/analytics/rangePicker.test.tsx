@@ -1,6 +1,6 @@
-import type { TimeRange } from "../../../app/analytics/range";
+import type { TimeRange } from "../../../../app/jobs/analytics/range";
 import { describe, expect, it } from "bun:test";
-import { RangePicker } from "../../../app/analytics/RangePicker";
+import { RangePicker } from "../../../../app/jobs/analytics/RangePicker";
 import { fireEvent, page, render, setupDom, within } from "../dom";
 
 setupDom();

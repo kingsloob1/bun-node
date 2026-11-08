@@ -8,7 +8,7 @@ import type {
   RepeatableListDto,
   SummonStatusDto,
   WorkerListDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import type { RenderAppOptions } from "../renderApp";
 import { visit } from "../dom";

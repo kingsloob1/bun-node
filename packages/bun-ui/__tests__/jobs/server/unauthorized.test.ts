@@ -2,7 +2,7 @@
  * `unauthorized` on the server: what `jobsUi()` accepts and refuses, what it
  * puts in the page's config, and the shell's `303` for a denied navigation.
  */
-import type { JobsUiUnauthorizedOptions } from "../../lib/types";
+import type { JobsUiUnauthorizedOptions } from "../../../lib/jobs/types";
 import { BunRouter } from "@kingsleyweb/bun-common";
 import { ConfigError } from "@kingsleyweb/bun-jobs";
 import { describe, expect, it } from "bun:test";

@@ -1,4 +1,4 @@
-import type { MetaDto } from "../../app/api/types";
+import type { MetaDto } from "../../../app/jobs/api/types";
 import {
   QUEUE_EVENT_TYPES,
   RUNNER_EVENT_TYPES,
@@ -18,7 +18,7 @@ import {
   readTypes,
   scopesFor,
   typesFor,
-} from "../../app/screens/events/eventLog";
+} from "../../../app/jobs/screens/events/eventLog";
 import { expectAbsent, expectNone, expectUndefined } from "./assert";
 import {
   act,

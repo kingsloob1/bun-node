@@ -45,7 +45,7 @@
  * untargeted map, the queue's or runner's own map, the queue's detail, the
  * job and the runner. It is written as `GATES`, one entry per element of the
  * package README's table "What each element needs"
- * (`packages/bun-jobs-ui/README.md`), and the next step **parses that table
+ * (`packages/bun-ui/guides/jobs.md`), and the next step **parses that table
  * and compares it with `GATES`**, row for row and action for action, so the
  * two cannot drift apart unnoticed.
  *
@@ -184,7 +184,7 @@ import type {
   MetaDto,
   SummonRequest,
 } from "@kingsleyweb/bun-jobs";
-import type { UiSections } from "@kingsleyweb/bun-jobs-ui";
+import type { UiSections } from "@kingsleyweb/bun-ui/jobs";
 import type {
   AnalyticsSeriesDto,
   JobDefaultsDto,
@@ -227,7 +227,7 @@ import {
   MemoryDriver,
   runSummoned,
 } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import {
   encodeJobId,
   MAX_NAME_LENGTH,
@@ -2769,10 +2769,10 @@ interface ReadmeRow {
   needs: string;
 }
 
-/** The package README, whose tables are the contract checked here. */
+/** The package's jobs guide, whose tables are the contract checked here. */
 const PACKAGE_README = join(
   import.meta.dir,
-  "../../../packages/bun-jobs-ui/README.md",
+  "../../../../packages/bun-ui/guides/jobs.md",
 );
 
 /**

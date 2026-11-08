@@ -1,7 +1,7 @@
-import type { JobsApiAction } from "../../app/api/contract";
-import type { NavInputs } from "../../app/layout/nav";
+import type { JobsApiAction } from "../../../app/jobs/api/contract";
+import type { NavInputs } from "../../../app/jobs/layout/nav";
 import { afterEach, describe, expect, it } from "bun:test";
-import { buildNav } from "../../app/layout/nav";
+import { buildNav } from "../../../app/jobs/layout/nav";
 import { LOADED, page, setupDom, visit, waitFor } from "./dom";
 import { metaFixture, permissionsFixture } from "./fixtures";
 import { liveFake } from "./liveFake";

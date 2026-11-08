@@ -5,16 +5,16 @@ import {
   RANGE_PRESETS,
   rangeProblem,
   readRange,
-} from "../../app/analytics/range";
+} from "../../../app/jobs/analytics/range";
 import {
   ADDED_BY_STATE_POLL_MS,
   addedByStateKey,
   addedByStateRequest,
-} from "../../app/api/added";
-import { serializeQuery } from "../../app/api/client";
-import { MAX_ADDED_BY_STATE_SPAN_MS } from "../../app/api/contract";
-import { jobListQuery, sortsByCreation } from "../../app/api/queues";
-import { readJobFilters } from "../../app/screens/queues/jobFilters";
+} from "../../../app/jobs/api/added";
+import { serializeQuery } from "../../../app/jobs/api/client";
+import { MAX_ADDED_BY_STATE_SPAN_MS } from "../../../app/jobs/api/contract";
+import { jobListQuery, sortsByCreation } from "../../../app/jobs/api/queues";
+import { readJobFilters } from "../../../app/jobs/screens/queues/jobFilters";
 
 /** The pure helpers behind `features.addedByState`: the range guard, the key, the poll, the sort. */
 

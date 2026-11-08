@@ -117,7 +117,7 @@ The machine rebooted on 2026-10-22, which empties `/tmp`. Before any gate:
 
 - Clone, then `bun upgrade --canary` (development needs Bun ≥ 1.4.4).
   Install as in step 6 above. Provide the databases with
-  `bun scripts/setup-databases.ts --docker`. For bun-jobs-ui's e2e tests and
+  `bun scripts/setup-databases.ts --docker`. For bun-ui's e2e tests and
   examples, provide a Chrome (`BUN_CHROME_PATH`).
 - **Signed commits.** develop's ruleset requires them. This machine signs
   with the repository's SSH key configuration (`gpg.format=ssh`,
@@ -333,7 +333,7 @@ edited or committed, including edits the user made and asked you to commit.
   fix deletes deliberate compile-time guards.
 - Don't edit generated code by hand: the typed verb overloads come from
   `bun scripts/generate-verb-overloads.ts`.
-- **Parsed READMEs are code**: the bun-jobs-ui "What each element needs"
+- **Parsed READMEs are code**: the bun-ui jobs guide's "What each element needs"
   table and bun-jobs' scaler recipes are read by examples. (2026-09: a
   docs-only edit turned develop red, #141.)
 - **Type-check with `bun check`**, not `tsc` (2026-10-10). tsc stays only
@@ -401,7 +401,7 @@ shows today, and think in roles.
 | **bun-common agent** | `packages/bun-common/**` | the HTTP layer: router, request/response, adapter, WebSocket, multipart, logging, `native.ts`; its tests, bench and package README |
 | **bun-nest agent** | `packages/bun-nest/**` | the NestJS adapter, WebSocket adapter, interceptors and decorators; its tests and package README |
 | **bun-jobs agent** | `packages/bun-jobs/**` (but see `lib/runner/**` below) | queues, drivers, schema sync, the management API; its tests, bench and package README; reviews every PR that touches `packages/bun-jobs/**` — compute providers, summon and host isolation are built by the features agent under this review |
-| **bun-jobs-ui agent** | `packages/bun-jobs-ui/**`, `playground/**` | the React UI and its server; its tests, e2e and package README; reviews every playground change |
+| **bun-ui agent** | `packages/bun-ui/**`, `playground/**` | every UI of `@kingsleyweb/bun-ui` (the React apps and their servers); their tests, e2e, README and guides; reviews every playground change. Whoever led the docs viewer (bun-api-docs-ui) reviews `/docs` changes (plan bun-ui Q12) |
 | **Examples agent** | `examples/**`, and the example links and tables in package READMEs | a self-asserting example for every user-facing change; reviews runner changes |
 | **Features agent** | nothing exclusively | cross-package and phase work: performance; summon and compute providers (`lib/summon/**`, `lib/provider/**`, `lib/providers/**`, `localCompute`); remote workers and the gateway (`lib/remote/**`); host isolation (the runner's executors, the container target); and their plans in `docs/plans/`. Built in the owner's package with the owner's review. Also the [main agent](#the-main-agent) |
 
@@ -427,7 +427,7 @@ started with:
 | Bun-Node Common, Validate & Cache Agent | bun-node-11 | `packages/bun-common/**` (the bun-common agent) | [`bun-validate/`](plans/bun-validate/README.md), [`bun-cache/`](plans/bun-cache/README.md) (and the `@kingsleyweb/bun-cache` package once it exists, except its S3 driver sub-plan), [`api-docs-generation/`](plans/api-docs-generation/README.md), [`bun-native-routes/`](plans/bun-native-routes/README.md) (including the SSE helpers, PR-sse2 to sse5) |
 | Bun-Node Nest Agent | bun-node-15 | `packages/bun-nest/**` (the bun-nest agent) | [`nestjs-12-parity/`](plans/nestjs-12-parity/README.md), [`nest-jobs-decorators/`](plans/nest-jobs-decorators/README.md), [`typed-client/nest-typed-routes.md`](plans/typed-client/nest-typed-routes.md) |
 | Bun-Node Jobs & Telemetry Agent | bun-node-e9 | `packages/bun-jobs/**` (the bun-jobs agent) | [`opentelemetry/`](plans/opentelemetry/README.md), [`bun-cache/bun-jobs-s3-driver.md`](plans/bun-cache/bun-jobs-s3-driver.md) |
-| Bun-Node UI, Views & Client Agent | bun-node-99 | `packages/bun-jobs-ui/**`, `playground/**` (the bun-jobs-ui agent) | [`bun-views/`](plans/bun-views/README.md) (and `@kingsleyweb/bun-views` once it exists), [`typed-client/`](plans/typed-client/README.md) (except its Nest sub-plan) |
+| Bun-Node UI, Views & Client Agent | bun-node-99 | `packages/bun-ui/**`, `playground/**` (the bun-ui agent) | [`bun-views/`](plans/bun-views/README.md) (and `@kingsleyweb/bun-views` once it exists), [`typed-client/`](plans/typed-client/README.md) (except its Nest sub-plan) |
 | Bun-Node Examples & Tooling Agent | bun-node-74 (until renamed) | `examples/**` (the examples agent) | [`bun-lint-fmt/`](plans/bun-lint-fmt/README.md): the lint and format tooling in every directory, each package's config changed under its owner's review |
 | Bun-Node Features Agent and Coordinator of other UI Agents | bun-node-ae | nothing exclusively (the features agent; also the [main agent](#the-main-agent)) | [`worker-runtimes/`](plans/worker-runtimes/README.md) and all its sub-plans (summon and compute providers, remote workers and the gateway, host isolation); performance; anything cross-package no one else leads |
 
@@ -490,7 +490,7 @@ failure this split exists to prevent.
 - **Done includes the playground.** Whoever builds a feature writes its
   addition to `playground/` (`bun playground/index.ts`, served at
   `http://localhost:4000/jobs`) so the user can see and try it, as its own
-  small PR or in the feature's last one. The playground is the bun-jobs-ui
+  small PR or in the feature's last one. The playground is the bun-ui
   agent's (the user's decision, 2026-10-06), so it reviews every playground
   change before merge: the typecheck, `cd playground && bun run lint && bun run format:check`,
   and a smoke run on `PORT=0` that exercises the feature, stops on SIGINT and
@@ -498,14 +498,14 @@ failure this split exists to prevent.
   flip a feature's capability flag last, after everything it advertises works.
 - **Contract fixtures are the one exception to one writer per file.** A
   change to bun-jobs' `api/contract` may make the minimal fixture additions in
-  bun-jobs-ui's tests that the typecheck needs (as #277 did), and tells the
-  bun-jobs-ui agent (the user's decision, 2026-10-06).
+  bun-ui's jobs tests that the typecheck needs (as #277 did), and tells the
+  bun-ui agent (the user's decision, 2026-10-06).
 - **A parsed table belongs to the package that states the rules.** The
-  bun-jobs-ui README's "What each element needs" table is the bun-jobs-ui
+  bun-ui jobs guide's "What each element needs" table is the bun-ui
   agent's; the examples agent parses it and owns `permissions.ts`. Likewise
   bun-jobs' scaler recipes are the bun-jobs agent's.
-- **Parsed READMEs are code.** `examples/bun-jobs-ui/04-screens/permissions.ts`
-  parses the bun-jobs-ui README's "What each element needs" table, and
+- **Parsed READMEs are code.** `examples/bun-ui/jobs/04-screens/permissions.ts`
+  parses the bun-ui jobs guide's "What each element needs" table, and
   `11-management-api/scaler-recipes.ts` parses bun-jobs' scaler recipes. A
   one-line, docs-only edit to those turned develop red (#141). Send the exact
   new row to the examples agent before merging, and run the parsing example.
@@ -679,16 +679,16 @@ short:
   `bun scripts/reformat.ts --resolve` (`CLAUDE.md` has the three steps), not by
   hand; `git config blame.ignoreRevsFile .git-blame-ignore-revs` once per clone.
 - `bun run test` in each changed package (it type-checks the tests first,
-  `bun test --check`), plus `bun test --randomize` (serial) for bun-jobs-ui
+  `bun test --check`), plus `bun test --randomize` (serial) for bun-ui
   and `bun run test:seeded` for bun-jobs: 4 serial shards side by side,
   without the database URLs, in an ordinary slot through the heavy-run
   wrapper with a ticket, about 6 minutes (the user's decision, 2026-10-10). bun-jobs' serial `--randomize` run with all
   five URLs is exclusive and runs once per merge window, not per PR. After a
   bun-common change, also bun-nest and bun-jobs;
-  after a bun-jobs `api/contract` change, also bun-jobs-ui, whose fixtures and
+  after a bun-jobs `api/contract` change, also bun-ui, whose jobs fixtures and
   tests type against the contract.
-- `bun run-all.ts` in each affected `examples/*` directory. A bun-jobs-ui
-  change runs both `examples/bun-jobs-ui` and `examples/bun-nest` (whose
+- `bun run-all.ts` in each affected `examples/*` directory. A bun-ui
+  change runs both `examples/bun-ui` and `examples/bun-nest` (whose
   `06-jobs-ui/mount.ts` serves the UI). For bun-jobs, set
   `EXAMPLE_DRIVER` **and** the five `EXAMPLE_*_URL`s (from
   `bun scripts/setup-databases.ts --dry-run`); a URL alone runs on memory, and
@@ -726,12 +726,12 @@ HEAVY_TICKET=c0-db-suite HEAVY_EXCLUSIVE=1 /tmp/claude-1000/bun-node-heavy-run.s
 - **Exclusive** (`HEAVY_EXCLUSIVE=1`): bun-jobs' full suite with database
   URLs, and its serial `--randomize` run with them, once per merge window.
   Its per-PR `bun run test:seeded` removes the URLs and takes a slot.
-- **Wrapper:** full suites, every bun-jobs-ui test (DOM and Chrome), the
-  bun-jobs and bun-jobs-ui run-alls, `check-types.ts`, benches, and repeat,
+- **Wrapper:** full suites, every bun-ui test (DOM and Chrome), the
+  bun-jobs and bun-ui run-alls, `check-types.ts`, benches, and repeat,
   concurrent-copy and load loops.
 - **Direct, no wrapper:** lint and format checks in any directory (`bun lint`, `bun fmt --check`), `bun scripts/typecheck.ts`,
   `bun scripts/consumer-check.ts`, every targeted test run in any package
-  except bun-jobs-ui (named files, directories or filters, with or without
+  except bun-ui (named files, directories or filters, with or without
   database URLs, e.g. `bun test __tests__/summon __tests__/api`), the
   bun-common and bun-nest suites and run-alls, single examples, the template
   test. (The user's rulings, 2026-10-07.)

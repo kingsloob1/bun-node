@@ -1,6 +1,6 @@
-import type { LiveStatus } from "../../app/live";
+import type { LiveStatus } from "../../../app/jobs/live";
 import { describe, expect, it } from "bun:test";
-import { liveStatusInfo } from "../../app/layout/liveStatusInfo";
+import { liveStatusInfo } from "../../../app/jobs/layout/liveStatusInfo";
 import { expectAbsent } from "./assert";
 import { act, LOADED, page, setupDom } from "./dom";
 import { installLiveFake } from "./liveFake";

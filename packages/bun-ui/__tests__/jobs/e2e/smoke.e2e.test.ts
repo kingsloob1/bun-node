@@ -21,8 +21,8 @@ import { existsSync } from "node:fs";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { buildAssets, DEFAULT_ENTRY } from "../../lib/assets";
-import { createJobsUi } from "../../lib/jobsUi";
+import { buildAssets, DEFAULT_ENTRY } from "../../../lib/jobs/assets";
+import { createJobsUi } from "../../../lib/jobs/jobsUi";
 import { chromeProfile } from "./profile";
 
 /** Where Chrome may be, in search order. */
@@ -150,7 +150,7 @@ describe.skipIf(skipReason !== undefined)(
           // compositor (2026-10-20) left the page rendering no frames, so the
           // suite hung. Bun.WebView cannot unset Chrome's environment; with GL
           // disabled Chrome never opens the display. As in
-          // examples/bun-jobs-ui/shared/browser.ts.
+          // examples/bun-ui/jobs/shared/browser.ts.
           argv: ["--use-gl=disabled"],
         },
         // Chrome always writes a profile; owning the directory is what lets

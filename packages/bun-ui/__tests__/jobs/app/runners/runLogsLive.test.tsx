@@ -2,11 +2,11 @@ import type {
   RunLogLineDto,
   RunLogPageDto,
   RunRecordDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { RUN_LOG_POLL_MS } from "../../../app/api/runnerLogs";
-import { REDACTION_NOTE } from "../../../app/screens/runners/runLogFormat";
+import { RUN_LOG_POLL_MS } from "../../../../app/jobs/api/runnerLogs";
+import { REDACTION_NOTE } from "../../../../app/jobs/screens/runners/runLogFormat";
 import {
   act,
   fireEvent,

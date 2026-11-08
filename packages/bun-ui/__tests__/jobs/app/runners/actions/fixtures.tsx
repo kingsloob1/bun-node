@@ -5,15 +5,15 @@ import type {
   RunnerHistoryDto,
   RunnerInfoDto,
   RunRecordDto,
-} from "../../../../app/api/types";
+} from "../../../../../app/jobs/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../../mockFetch";
 import { expect } from "bun:test";
-import { createApiClient } from "../../../../app/api/client";
-import { PermissionScope } from "../../../../app/meta/PermissionScope";
-import { AppProviders } from "../../../../app/providers";
-import { createQueryClient } from "../../../../app/queryClient";
-import { RunnerActions } from "../../../../app/screens/runners/actions";
-import { RunnerHistory } from "../../../../app/screens/runners/RunnerHistory";
+import { createApiClient } from "../../../../../app/jobs/api/client";
+import { PermissionScope } from "../../../../../app/jobs/meta/PermissionScope";
+import { AppProviders } from "../../../../../app/jobs/providers";
+import { createQueryClient } from "../../../../../app/jobs/queryClient";
+import { RunnerActions } from "../../../../../app/jobs/screens/runners/actions";
+import { RunnerHistory } from "../../../../../app/jobs/screens/runners/RunnerHistory";
 import { fireEvent, LOADED, page, render, waitFor, within } from "../../dom";
 import { metaFixture, permissionsFixture, uiConfig } from "../../fixtures";
 import { mockFetch } from "../../mockFetch";

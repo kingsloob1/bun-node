@@ -1,5 +1,5 @@
 /**
- * The contract between `jobsUi()` (server, `lib/`) and the React app (`app/`).
+ * The contract between `jobsUi()` (server, `lib/jobs/`) and the React app (`app/jobs/`).
  *
  * The server resolves this once per mount and inlines it into the HTML shell as
  * `<script type="application/json" id="bun-jobs-ui-config" nonce="…">`. The app
@@ -7,7 +7,10 @@
  * sides import it, and the app side is bundled for the browser.
  */
 
+import type { UiTheme } from "../../kit/browser/shared";
 import type { UiUnauthorized } from "./unauthorized";
+
+export type { UiTheme };
 
 /** Id of the `<script type="application/json">` element carrying {@link UiConfig}. */
 export const UI_CONFIG_ELEMENT_ID = "bun-jobs-ui-config";
@@ -19,9 +22,6 @@ export interface UiSections {
   /** The OpenAPI and AsyncAPI documentation viewers. Defaults to `true`. */
   docs: boolean;
 }
-
-/** Colour scheme the app starts in. `"system"` follows `prefers-color-scheme`. */
-export type UiTheme = "system" | "light" | "dark";
 
 /** Resolved configuration handed to the browser. Never carries secrets. */
 export interface UiConfig {

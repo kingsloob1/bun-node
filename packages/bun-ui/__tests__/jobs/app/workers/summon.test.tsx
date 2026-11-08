@@ -1,14 +1,14 @@
 import type {
   WorkerDto,
   WorkerSummonProvenanceDto,
-} from "../../../app/api/types";
-import type { SummonMode } from "../../../app/screens/workers/summon";
+} from "../../../../app/jobs/api/types";
+import type { SummonMode } from "../../../../app/jobs/screens/workers/summon";
 import { describe, expect, it } from "bun:test";
-import { INVALID_TEXT } from "../../../app/format";
+import { INVALID_TEXT } from "../../../../app/jobs/format";
 import {
   summonUnitHint,
   summonUnitLabel,
-} from "../../../app/screens/workers/summon";
+} from "../../../../app/jobs/screens/workers/summon";
 import { expectAbsent } from "../assert";
 import { LOADED, page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";

@@ -1,7 +1,7 @@
-import type { JobsApiAction } from "../../app/api/contract";
-import type { Permissions } from "../../app/api/types";
+import type { JobsApiAction } from "../../../app/jobs/api/contract";
+import type { Permissions } from "../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
-import { canPerform, useCan, useFeature } from "../../app/meta/hooks";
+import { canPerform, useCan, useFeature } from "../../../app/jobs/meta/hooks";
 import { expectAbsent } from "./assert";
 import { fireEvent, LOADED, page, render, setupDom, waitFor } from "./dom";
 import { metaFixture, permissionsFixture, problem } from "./fixtures";
@@ -108,9 +108,9 @@ function Probe({ action }: { action: JobsApiAction }) {
 
 describe("useCan and useFeature", () => {
   it("read the loaded permissions and features", async () => {
-    const { AppProviders } = await import("../../app/providers");
-    const { createApiClient } = await import("../../app/api/client");
-    const { createQueryClient } = await import("../../app/queryClient");
+    const { AppProviders } = await import("../../../app/jobs/providers");
+    const { createApiClient } = await import("../../../app/jobs/api/client");
+    const { createQueryClient } = await import("../../../app/jobs/queryClient");
     const { mockFetch } = await import("./mockFetch");
     const { uiConfig } = await import("./fixtures");
 

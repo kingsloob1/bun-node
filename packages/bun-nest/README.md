@@ -251,7 +251,7 @@ the `Host` header's case.
 The peers are `^11.1.20 || ^12.0.0`. `scripts/nest-matrix.ts` runs each
 column below in a copy of the repo pinned to that Nest: bun-nest's suite
 (the Express, routing and platform-ws differentials included), `bun --check`,
-the `examples/bun-nest` programs, bun-jobs-ui's Nest test and the consumer
+the `examples/bun-nest` programs, bun-ui's jobs Nest test and the consumer
 type check.
 
 | Nest | Express | Tested |
@@ -440,7 +440,7 @@ and
 `use()` mounts a bun-common `BunRouter` (or any `@routejs/router` `Router`) as
 it takes middleware, with or without a path prefix, and with no cast. That is
 how `BunJobsApiModule` mounts the jobs API, and how the
-[jobs UI](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs-ui/README.md)
+[jobs UI](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-ui/guides/jobs.md)
 mounts on a Nest app:
 
 ```ts
@@ -449,7 +449,7 @@ import { BunRouter, validate } from "@kingsleyweb/bun-common";
 const admin = new BunRouter();
 admin.get("/status", (_req, res) => res.json({ ok: true }));
 adapter.use("/admin", admin); // GET /admin/status
-adapter.use(ui.basePath, ui.router); // jobsUi() from @kingsleyweb/bun-jobs-ui
+adapter.use(ui.basePath, ui.router); // jobsUi() from @kingsleyweb/bun-ui/jobs
 
 // A router that declares its mount sees the mount's params and validated
 // query, and must be mounted exactly there: a different path, a different

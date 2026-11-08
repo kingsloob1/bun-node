@@ -1,15 +1,15 @@
-import type { MetaDto } from "../../../app/api/types";
+import type { MetaDto } from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { MAX_JOB_ID_LENGTH } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it, mock } from "bun:test";
-import { DATE_TIME_OUT_OF_RANGE } from "../../../app/components/inputValues";
-import { jsonEditorState } from "../../../app/components/jsonParse";
-import { AddJobDialog } from "../../../app/screens/job";
+import { DATE_TIME_OUT_OF_RANGE } from "../../../../app/jobs/components/inputValues";
+import { jsonEditorState } from "../../../../app/jobs/components/jsonParse";
+import { AddJobDialog } from "../../../../app/jobs/screens/job";
 import {
   addBody,
   checkJobId,
   validateAddForm,
-} from "../../../app/screens/job/addJobForm";
+} from "../../../../app/jobs/screens/job/addJobForm";
 import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import {
   act,

@@ -1,16 +1,16 @@
 import { describe, expect, it, mock } from "bun:test";
-import { ApiError } from "../../app/api/errors";
-import { Badge, Chip } from "../../app/components/Badge";
-import { Button } from "../../app/components/Button";
-import { Card } from "../../app/components/Card";
-import { EmptyState } from "../../app/components/EmptyState";
-import { ErrorView } from "../../app/components/ErrorView";
-import { Sparkline } from "../../app/components/Sparkline";
-import { sparkPoints } from "../../app/components/sparkPoints";
-import { Spinner } from "../../app/components/Spinner";
-import { StateBadge } from "../../app/components/StateBadge";
-import { Table } from "../../app/components/Table";
-import { createLimiter } from "../../app/limiter";
+import { ApiError } from "../../../app/jobs/api/errors";
+import { Badge, Chip } from "../../../app/jobs/components/Badge";
+import { Button } from "../../../app/jobs/components/Button";
+import { Card } from "../../../app/jobs/components/Card";
+import { EmptyState } from "../../../app/jobs/components/EmptyState";
+import { ErrorView } from "../../../app/jobs/components/ErrorView";
+import { Sparkline } from "../../../app/jobs/components/Sparkline";
+import { sparkPoints } from "../../../app/jobs/components/sparkPoints";
+import { Spinner } from "../../../app/jobs/components/Spinner";
+import { StateBadge } from "../../../app/jobs/components/StateBadge";
+import { Table } from "../../../app/jobs/components/Table";
+import { createLimiter } from "../../../app/jobs/limiter";
 import { expectAbsent } from "./assert";
 import { fireEvent, page, render, setupDom } from "./dom";
 

@@ -1,11 +1,11 @@
-import type { ShortcutKeyEvent } from "../../../app/layout/shortcuts";
+import type { ShortcutKeyEvent } from "../../../../app/jobs/layout/shortcuts";
 import { describe, expect, it } from "bun:test";
-import { arrowTarget } from "../../../app/components/listKeys";
+import { arrowTarget } from "../../../../app/jobs/components/listKeys";
 import {
   isTypingTarget,
   SHORTCUT_HELP,
   shortcutFor,
-} from "../../../app/layout/shortcuts";
+} from "../../../../app/jobs/layout/shortcuts";
 import { expectAbsent } from "../assert";
 import { wsFixture } from "../docs/ws/fixtures";
 import {

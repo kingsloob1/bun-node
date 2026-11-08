@@ -1,4 +1,7 @@
-import type { ProviderDto, ProviderListDto } from "../../../app/api/types";
+import type {
+  ProviderDto,
+  ProviderListDto,
+} from "../../../../app/jobs/api/types";
 
 /** Fixtures of the Providers screen, typed against the contract. */
 

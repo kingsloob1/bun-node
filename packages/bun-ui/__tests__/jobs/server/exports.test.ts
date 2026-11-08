@@ -19,9 +19,9 @@ import type {
   UiConfig,
   UiSections,
   UiTheme,
-} from "../../lib/index";
+} from "../../../lib/jobs/index";
 import { describe, expect, it } from "bun:test";
-import * as entry from "../../lib/index";
+import * as entry from "../../../lib/jobs/index";
 
 describe("lib/index.ts", () => {
   it("exports exactly the public runtime values", () => {

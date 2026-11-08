@@ -3,10 +3,10 @@
  * it, after the client has handled the failure as it always did; nothing
  * else does.
  */
-import type { LiveClientOptions } from "../../../app/live/client";
+import type { LiveClientOptions } from "../../../../app/jobs/live/client";
 import { JOBS_API_WS_CLOSE } from "@kingsleyweb/bun-jobs/api/contract";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { LiveClient } from "../../../app/live/client";
+import { LiveClient } from "../../../../app/jobs/live/client";
 import { FakeSocket, FakeTimers, hello, settle } from "./fakes";
 
 let timers: FakeTimers;

@@ -15,8 +15,8 @@ import { describe, expect, it } from "bun:test";
  * next and its requests went through happy-dom's `fetch`.
  */
 
-/** The test tree. */
-const ROOT = join(import.meta.dir, "..");
+/** The test tree: every UI's tests, which share one serial `--randomize` run. */
+const ROOT = join(import.meta.dir, "..", "..");
 
 /** The module whose import registers the DOM. */
 const REGISTER_DOM = join(import.meta.dir, "register-dom.ts");
@@ -146,9 +146,13 @@ describe("DOM isolation between test files", () => {
     expect(loadsDom(join(import.meta.dir, "queues", "helpers.test.ts"))).toBe(
       true,
     );
-    expect(loadsDom(join(ROOT, "server", "options.test.ts"))).toBe(false);
-    // app/boot imports react-dom/client; dom.ts only imports it dynamically.
-    expect(loadsReactDom(join(ROOT, "..", "app", "boot.tsx"))).toBe(true);
+    expect(loadsDom(join(ROOT, "jobs", "server", "options.test.ts"))).toBe(
+      false,
+    );
+    // app/jobs/boot imports react-dom/client; dom.ts only imports it dynamically.
+    expect(loadsReactDom(join(ROOT, "..", "app", "jobs", "boot.tsx"))).toBe(
+      true,
+    );
     expect(loadsReactDom(join(import.meta.dir, "dom.ts"))).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
-import type { FetchLike } from "../../../app/api/client";
-import type { LiveSocketConstructor } from "../../../app/live/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
+import type { LiveSocketConstructor } from "../../../../app/jobs/live/client";
 import { visit, waitFor } from "../dom";
 import { renderApp } from "../renderApp";
 

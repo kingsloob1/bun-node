@@ -1,19 +1,19 @@
-import type { JobListFilters } from "../../../app/api/queues";
+import type { JobListFilters } from "../../../../app/jobs/api/queues";
 import { describe, expect, it } from "bun:test";
-import { rangeProblem } from "../../../app/analytics/range";
-import { serializeQuery } from "../../../app/api/client";
+import { rangeProblem } from "../../../../app/jobs/analytics/range";
+import { serializeQuery } from "../../../../app/jobs/api/client";
 import {
   isSendableFilterValue,
   jobListQuery,
   queueKeys,
-} from "../../../app/api/queues";
+} from "../../../../app/jobs/api/queues";
 import {
   DEFAULT_FINISHED_RANGE,
   rangeApplies,
   readFinishedRange,
   readWorkerJobFilters,
   writeFinishedRange,
-} from "../../../app/screens/workers/workerJobs";
+} from "../../../../app/jobs/screens/workers/workerJobs";
 import { expectAbsent } from "../assert";
 
 /**

@@ -1,12 +1,12 @@
 import type {
   FlowLimits,
   FlowNode,
-} from "../../../app/screens/job/addFlowForm";
-import type { AddJobForm } from "../../../app/screens/job/addJobForm";
+} from "../../../../app/jobs/screens/job/addFlowForm";
+import type { AddJobForm } from "../../../../app/jobs/screens/job/addJobForm";
 import { describe, expect, it } from "bun:test";
-import type { ApiErrorCode } from "../../../app/api/types";
-import { ApiError } from "../../../app/api/errors";
-import { flowInvalidation } from "../../../app/api/jobs";
+import type { ApiErrorCode } from "../../../../app/jobs/api/types";
+import { ApiError } from "../../../../app/jobs/api/errors";
+import { flowInvalidation } from "../../../../app/jobs/api/jobs";
 import {
   addChildBlocked,
   addFlowChild,
@@ -25,8 +25,8 @@ import {
   resolveFlowPath,
   updateFlowNode,
   validateFlow,
-} from "../../../app/screens/job/addFlowForm";
-import { emptyAddForm } from "../../../app/screens/job/addJobForm";
+} from "../../../../app/jobs/screens/job/addFlowForm";
+import { emptyAddForm } from "../../../../app/jobs/screens/job/addJobForm";
 import { expectUndefined } from "../assert";
 import { problem } from "../fixtures";
 

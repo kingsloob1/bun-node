@@ -4,11 +4,11 @@ import type {
   JobsApiGapMessage,
   JobsApiServerMessage,
 } from "@kingsleyweb/bun-jobs/api/contract";
-import type { LiveSocketConstructor } from "../../../app/live/client";
+import type { LiveSocketConstructor } from "../../../../app/jobs/live/client";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterEach, describe, expect, it } from "bun:test";
-import { LiveClient, liveSocketUrl } from "../../../app/live/client";
+import { LiveClient, liveSocketUrl } from "../../../../app/jobs/live/client";
 import { expectNone } from "../assert";
 
 /**

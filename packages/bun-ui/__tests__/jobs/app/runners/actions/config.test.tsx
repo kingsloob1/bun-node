@@ -2,14 +2,14 @@ import type {
   RunnerConfigBody,
   RunnerConfigDto,
   RunnerInfoDto,
-} from "../../../../app/api/types";
+} from "../../../../../app/jobs/api/types";
 import {
   EXECUTION_MODES,
   RUNNER_CONFIG_BOUNDS,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
-import { formatNumber } from "../../../../app/format";
-import { RunnerSummary } from "../../../../app/screens/runners/RunnerScreen";
+import { formatNumber } from "../../../../../app/jobs/format";
+import { RunnerSummary } from "../../../../../app/jobs/screens/runners/RunnerScreen";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, page, render, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";

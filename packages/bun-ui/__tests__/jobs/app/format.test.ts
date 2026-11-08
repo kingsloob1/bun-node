@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatBytes, formatNumber } from "../../app/format";
+import { formatBytes, formatNumber } from "../../../app/jobs/format";
 
 /**
  * The shared formatters in `app/format.ts`. No DOM: they are pure functions

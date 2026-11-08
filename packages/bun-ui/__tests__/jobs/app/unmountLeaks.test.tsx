@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
-import type { EventWire, JobsApiServerMessage } from "../../app/api/types";
-import type { LiveOptions } from "../../app/live";
+import type {
+  EventWire,
+  JobsApiServerMessage,
+} from "../../../app/jobs/api/types";
+import type { LiveOptions } from "../../../app/jobs/live";
 import type { Handle, TrackedSocket } from "./handleLedger";
 import type { MockHandler, MockReply } from "./mockFetch";
 import {
@@ -17,13 +20,13 @@ import {
   it,
 } from "bun:test";
 import { StrictMode, use, useEffect } from "react";
-import { createApiClient } from "../../app/api/client";
-import { RUN_LOG_POLL_MS } from "../../app/api/runnerLogs";
-import { App } from "../../app/App";
-import { COPY_FEEDBACK_MS } from "../../app/components/copy";
-import { TOAST_DURATION_MS } from "../../app/components/toast";
-import { UiConfigContext, useApiClient } from "../../app/context";
-import { NOW_TICK_MS, sharedClockState } from "../../app/hooks/useNow";
+import { createApiClient } from "../../../app/jobs/api/client";
+import { RUN_LOG_POLL_MS } from "../../../app/jobs/api/runnerLogs";
+import { App } from "../../../app/jobs/App";
+import { COPY_FEEDBACK_MS } from "../../../app/jobs/components/copy";
+import { TOAST_DURATION_MS } from "../../../app/jobs/components/toast";
+import { UiConfigContext, useApiClient } from "../../../app/jobs/context";
+import { NOW_TICK_MS, sharedClockState } from "../../../app/jobs/hooks/useNow";
 import {
   LIVE_INVALIDATION_DELAY_MS,
   liveChannels,
@@ -31,14 +34,20 @@ import {
   LiveOptionsContext,
   LiveProvider,
   pollInterval,
-} from "../../app/live";
-import { MetaContext } from "../../app/meta/hooks";
-import { AppProviders } from "../../app/providers";
-import { createQueryClient, POLL_INTERVAL_MS } from "../../app/queryClient";
-import { JOB_POLL_MS, LOG_POLL_MS } from "../../app/screens/job/polling";
-import { QUEUE_REFRESH } from "../../app/screens/queues/live";
-import { RUNNER_REFRESH } from "../../app/screens/runners/live";
-import { WORKER_REFRESH } from "../../app/screens/workers/live";
+} from "../../../app/jobs/live";
+import { MetaContext } from "../../../app/jobs/meta/hooks";
+import { AppProviders } from "../../../app/jobs/providers";
+import {
+  createQueryClient,
+  POLL_INTERVAL_MS,
+} from "../../../app/jobs/queryClient";
+import {
+  JOB_POLL_MS,
+  LOG_POLL_MS,
+} from "../../../app/jobs/screens/job/polling";
+import { QUEUE_REFRESH } from "../../../app/jobs/screens/queues/live";
+import { RUNNER_REFRESH } from "../../../app/jobs/screens/runners/live";
+import { WORKER_REFRESH } from "../../../app/jobs/screens/workers/live";
 import {
   act,
   cleanup,
@@ -305,7 +314,7 @@ function clock(): Handle[] {
     (handle) =>
       handle.open &&
       handle.detail === `${NOW_TICK_MS}ms` &&
-      handle.origin.startsWith("app/hooks/useNow.ts"),
+      handle.origin.startsWith("app/jobs/hooks/useNow.ts"),
   );
 }
 
@@ -315,16 +324,17 @@ function coalescing(): Handle[] {
     "timeout",
     (handle) =>
       handle.detail === `${LIVE_INVALIDATION_DELAY_MS}ms` &&
-      handle.origin.startsWith("app/live/live.ts"),
+      handle.origin.startsWith("app/jobs/live/live.ts"),
   );
 }
 
-/** Timeouts `file` (under `app/`) opened of `ms`, open or not. */
+/** Timeouts `file` (under `app/jobs/`) opened of `ms`, open or not. */
 function timeoutsOf(file: string, ms: number): Handle[] {
   return ledger.opened(
     "timeout",
     (handle) =>
-      handle.detail === `${ms}ms` && handle.origin.startsWith(`app/${file}`),
+      handle.detail === `${ms}ms` &&
+      handle.origin.startsWith(`app/jobs/${file}`),
   );
 }
 

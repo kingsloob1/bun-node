@@ -1,12 +1,12 @@
-import type { JobDto, LogPageDto } from "../../../app/api/types";
+import type { JobDto, LogPageDto } from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it, spyOn } from "bun:test";
-import { jobKeys } from "../../../app/api/jobs";
+import { jobKeys } from "../../../../app/jobs/api/jobs";
 import {
   CLEAR_LOGS_ACTIVE_REASON,
   CLEAR_LOGS_EMPTY_REASON,
   clearLogsBlocker,
-} from "../../../app/screens/job/clearLogs";
+} from "../../../../app/jobs/screens/job/clearLogs";
 import { expectAbsent, expectUndefined } from "../assert";
 import {
   act,

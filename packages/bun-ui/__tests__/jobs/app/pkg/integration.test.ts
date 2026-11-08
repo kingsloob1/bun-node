@@ -1,10 +1,10 @@
 import type { JobsApiConfig } from "@kingsleyweb/bun-jobs";
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { createApiClient } from "../../../app/api/client";
-import { ApiError } from "../../../app/api/errors";
+import { createApiClient } from "../../../../app/jobs/api/client";
+import { ApiError } from "../../../../app/jobs/api/errors";
 
 /**
  * The app's client against a REAL `createJobsApi` (memory driver), through

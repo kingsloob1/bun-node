@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
 
 /** The package root, where `bun test` resolves its paths from. */
-const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
+const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 /**
  * `bun test` shares modules across files, and TanStack Query decides once, at
@@ -20,8 +20,8 @@ describe("test isolation: TanStack Query loaded before the DOM", () => {
         process.execPath,
         "test",
         "--preload",
-        "./__tests__/app/isolation/loadQueryFirst.ts",
-        "./__tests__/app/isolation/pollsAfterEarlyLoad.fixture.tsx",
+        "./__tests__/jobs/app/isolation/loadQueryFirst.ts",
+        "./__tests__/jobs/app/isolation/pollsAfterEarlyLoad.fixture.tsx",
       ],
       {
         cwd: PACKAGE_ROOT,

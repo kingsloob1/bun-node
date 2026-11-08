@@ -6,15 +6,15 @@ import type {
   JobsApiServerMessage,
   WorkerEventWire,
 } from "@kingsleyweb/bun-jobs/api/contract";
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 import type {
   LiveSocket,
   LiveSocketConstructor,
-} from "../../../app/live/client";
+} from "../../../../app/jobs/live/client";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { LiveClient, liveSocketUrl } from "../../../app/live/client";
+import { LiveClient, liveSocketUrl } from "../../../../app/jobs/live/client";
 
 /**
  * A new worker's FIRST `run()` announces itself on the live-events socket —

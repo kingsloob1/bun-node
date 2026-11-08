@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, jest, spyOn } from "bun:test";
 import {
   formatRelativeTime,
   toEpochMs,
-} from "../../../app/components/formatRelative";
-import { RelativeTime } from "../../../app/components/RelativeTime";
-import { NOW_TICK_MS, sharedClockState } from "../../../app/hooks/useNow";
+} from "../../../../app/jobs/components/formatRelative";
+import { RelativeTime } from "../../../../app/jobs/components/RelativeTime";
+import {
+  NOW_TICK_MS,
+  sharedClockState,
+} from "../../../../app/jobs/hooks/useNow";
 import { expectAbsent } from "../assert";
 import { act, page, render, setupDom } from "../dom";
 

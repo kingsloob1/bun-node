@@ -2,7 +2,7 @@ import type {
   SummonBudgetDto,
   SummonListDto,
   SummonListItemDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockReply } from "../mockFetch";
 
 /** Fixtures of the Summoning screen (`GET /summon`), typed against the contract. */

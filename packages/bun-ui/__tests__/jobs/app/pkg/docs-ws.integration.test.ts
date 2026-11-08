@@ -1,5 +1,5 @@
 import type { JobsApiConfig } from "@kingsleyweb/bun-jobs";
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 import { readFileSync, writeFileSync } from "node:fs";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";

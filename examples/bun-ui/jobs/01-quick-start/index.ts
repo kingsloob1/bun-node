@@ -7,7 +7,7 @@
  * PORT=3000 bun 01-quick-start/index.ts --serve
  * ```
  *
- * `jobsUi()` from `@kingsleyweb/bun-jobs-ui` is a router that serves a React
+ * `jobsUi()` from `@kingsleyweb/bun-ui/jobs` is a router that serves a React
  * app: one HTML shell for every client route under its `basePath`, and the
  * hashed bundle under `<basePath>/assets/`. It holds no data. Everything the
  * page shows comes from the API that `createJobsApi` builds, through that
@@ -35,7 +35,7 @@
 import process from "node:process";
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { parseShell } from "../shared/shell";

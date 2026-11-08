@@ -152,7 +152,7 @@ import {
   removeWorkerRecord,
   runSummoned,
 } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import {
   button,
   chromeOrSkip,
@@ -1985,7 +1985,7 @@ try {
     beating !== undefined,
     memoryList.map((worker) => [worker.id, worker.heartbeatRttMs]),
   );
-  /** The wording bun-jobs-ui puts under the instant, verbatim. */
+  /** The wording the jobs UI puts under the instant, verbatim. */
   const RTT_HINT =
     /^Last write took [\d.,]+ ms \(the previous report's round trip to the driver, not a network ping\)\.$/;
   const beatLines = (

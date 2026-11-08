@@ -1,4 +1,4 @@
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 import type { JobUiHarness, JobUiHarnessModule } from "../job/integrationSteps";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import {

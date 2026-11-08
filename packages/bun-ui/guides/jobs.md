@@ -1,8 +1,8 @@
-# @kingsleyweb/bun-jobs-ui
+# The jobs UI: `@kingsleyweb/bun-ui/jobs`
 
 A management UI and API documentation viewer for the
-[`@kingsleyweb/bun-jobs`](../bun-jobs) management API. It is a React app,
-prebuilt into `dist/`, served by a `jobsUi()` router that mounts beside
+[`@kingsleyweb/bun-jobs`](../../bun-jobs) management API. It is a React app,
+prebuilt into `dist/jobs/`, served by a `jobsUi()` router that mounts beside
 `createJobsApi` on any bun-common router: a bun-common `BunHttpAdapter`, a
 `BunRouter`, or bun-nest's `BunHttpAdapter`.
 
@@ -12,13 +12,20 @@ the API, through the API's own `authorize`.
 ## Install
 
 ```bash
-bun add @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-jobs
+bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs
 ```
 
-Requires Bun >= 1.4.2. `@kingsleyweb/bun-jobs` is a peer dependency. React and
-the rest of the app are bundled into `dist/`, so you have no build step.
+Requires Bun >= 1.4.2. `@kingsleyweb/bun-jobs` is an optional peer dependency
+of `@kingsleyweb/bun-ui` that the `/jobs` entry needs: install it beside the
+package (importing `@kingsleyweb/bun-ui/jobs` without it fails with "Cannot
+find module"). The package's other entries never need it. React and the rest
+of the app are bundled into `dist/jobs/`, so you have no build step.
 
-Bun runs the shipped TypeScript server source (`main` is `lib/index.ts`). Your
+The browser-safe half, the config the page carries and its types
+(`UiConfig`, `UiSections`, `UiTheme`, `UI_CONFIG_ELEMENT_ID`), is
+`@kingsleyweb/bun-ui/jobs/browser`: no server code and no peer.
+
+Bun runs the shipped TypeScript server source (`lib/jobs/index.ts`). Your
 type checker reads the built declarations in `dts/` (`types`), so your compiler
 options never apply to this package's source, and they describe `lib/` only:
 no React, TanStack or other browser-app type reaches your project.
@@ -28,7 +35,7 @@ no React, TanStack or other browser-app type reaches your project.
 ```ts
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
 import { createJobsApi } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 
 const api = createJobsApi({ jobs, basePath: "/admin/jobs-api", authorize });
 const ui = jobsUi({ api, basePath: "/admin/jobs" });
@@ -85,7 +92,7 @@ call it and throws a `ConfigError` for anything unusable.
 | `unauthorized` | `{ redirectTo, returnParam?, statuses? }` | off | Sends the browser to a sign-in page (or any page) when the caller is not authorized, instead of leaving it on screens that report a 401. `redirectTo` is a path (`"/login"`) or an `http(s)` URL; `returnParam` (`"returnTo"`; `false` for none) carries the page the user was on; `statuses` is `[401]`, add `403` to redirect on that too. See [Sending the browser to sign in](#sending-the-browser-to-sign-in). |
 | `middleware` | `RouterHandler[]` | `[]` | Runs before `authorize` on the `GET`/`HEAD` requests the UI answers. An error it raises goes to the host's error handling. |
 | `theme` | `"system" \| "light" \| "dark"` | `"system"` | The initial colour scheme. |
-| `dev` | `boolean` | unset | Unset: serve `dist/` if it is there, otherwise build in memory on the first request (once per process, logged once). `true`: always build from `app/`. `false`: require `dist/`, or `jobsUi()` throws. |
+| `dev` | `boolean` | unset | Unset: serve `dist/jobs/` if it is there, otherwise build in memory on the first request (once per process, logged once). `true`: always build from `app/jobs/` (in the repo only: the package does not ship it). `false`: require `dist/jobs/`, or `jobsUi()` throws. |
 | `logger` | `LoggerLike` | console | Anything that bun-common's `resolveLogger` accepts. |
 
 Routes, relative to `basePath` (`GET` and `HEAD` only; other methods fall
@@ -714,7 +721,7 @@ read only the untargeted map, since an operation has no one queue or runner:
   paths, which include the API's `basePath`, so each is made relative to
   `apiBase` (`/jobs-api/openapi.json` → `/openapi.json`) and requested like
   any other read, with the same credentials and error handling
-  (`app/api/docs.ts`).
+  (`app/jobs/api/docs.ts`).
 - **Try-it sends through the app's client too**, so the CSRF header and the
   `Content-Type` rules apply exactly as they do to the app's own buttons. The
   form is built from the path and query parameters (an enum is a select, an
@@ -944,34 +951,34 @@ These `data-testid` hooks are stable:
 - WebSocket try-it: `ws-try-channel`, `ws-try-address`, `ws-try-link`,
   `ws-try-unavailable`, `ws-try-disabled`, `ws-try-reason`.
 
-`__tests__/e2e/m2-flow.e2e.test.ts` drives the real app in headless Chrome
+`__tests__/jobs/e2e/m2-flow.e2e.test.ts` drives the real app in headless Chrome
 through `Bun.WebView`, against a real `createJobsApi` with CSRF on. It pauses a
 queue, opens a dead job and retries it, reads each step back from the API and
 checks that the page raised no CSP violation. It skips visibly when Chrome is
 not found. Set `BUN_CHROME_PATH` to point it at one.
 
 The runner screens' Chrome flow is in the examples:
-`examples/bun-jobs-ui/06-browser/pause-and-retry.ts` pauses a runner and
+`examples/bun-ui/jobs/06-browser/pause-and-retry.ts` pauses a runner and
 checks "Runner hidden" in Chrome. Live events have theirs in
-`examples/bun-jobs-ui/06-browser/live-events.ts`: the `live-status` badge,
+`examples/bun-ui/jobs/06-browser/live-events.ts`: the `live-status` badge,
 the Events console tailing a queue while a real worker completes a job, and
 the badge staying off, with its reason, on hosts that cannot or may not
 connect. The API docs screens have theirs in
-`examples/bun-jobs-ui/06-browser/api-docs.ts`: both references in real
+`examples/bun-ui/jobs/06-browser/api-docs.ts`: both references in real
 Chrome, try-it on the HTTP and WebSocket sides (a disabled one with its
 reason, a destructive one that needs its id typed), the WebSocket panels and
 "Open in the Events console".
-`__tests__/app/pkg/runners.integration.test.ts` and
+`__tests__/jobs/app/pkg/runners.integration.test.ts` and
 `runner-actions.integration.test.ts` render them under happy-dom against a
 real `createJobsApi` in `runner` mode with a real local `BunRunner`.
 
 The Providers screen and the Summon panel's summoner have theirs in
-`examples/bun-jobs-ui/06-browser/providers.ts`: the cards with their
+`examples/bun-ui/jobs/06-browser/providers.ts`: the cards with their
 readiness, facts and config schema; Test connection passing, passing with a
 warning, refused by the platform (with its code) and on a bad config; the
 read-only and opt-in gates; and a provider whose config validates
 asynchronously reading "Pending", then "Ready" on the card and on the Summon
-panel, each on its own refetch. `__tests__/app/pkg/providers.integration.test.ts`
+panel, each on its own refetch. `__tests__/jobs/app/pkg/providers.integration.test.ts`
 renders the Providers screen under happy-dom against a real `createJobsApi`
 and real configured providers.
 
@@ -991,7 +998,7 @@ assets path, which the CSP's `script-src 'self'` allows. Styles are not split
 the same way: Bun's entry stylesheet carries every rule, the lazily loaded
 screens' included, so the shell links only that one and never a chunk's
 stylesheet, which would repeat its rules (`entryStylesheets` in
-`lib/assets.ts`).
+`lib/jobs/assets.ts`).
 
 The API docs are one chunk for `/docs`, the HTTP reference and the WebSocket
 reference together, with the schema tree they share: 62.7 KiB (19.9 KiB
@@ -1022,14 +1029,14 @@ gzipped) when M5 was built.
 - **Reduced motion.** With `prefers-reduced-motion: reduce`, no transition or
   animation runs, except the spinner, which keeps turning slowly so it still
   reads as busy.
-- **Contrast.** Every colour pair in `app/styles/tokens.css` meets WCAG AA
+- **Contrast.** Every colour pair in `app/jobs/styles/tokens.css` meets WCAG AA
   in both themes: 4.5:1 for text, 3:1 for input outlines, the focus ring and
-  state colours. `__tests__/app/a11y/contrast.test.ts` reads the real file,
+  state colours. `__tests__/jobs/app/a11y/contrast.test.ts` reads the real file,
   so a token that stops reading fails the tests.
-- **Checked.** `__tests__/app/pkg/a11y.integration.test.ts` renders every
+- **Checked.** `__tests__/jobs/app/pkg/a11y.integration.test.ts` renders every
   screen against a real API and audits its structure: one `h1`, no skipped
   heading level, the landmarks, a name on every control, button, link and
-  table. `__tests__/e2e/responsive.e2e.test.ts` loads the screens in Chrome
+  table. `__tests__/jobs/e2e/responsive.e2e.test.ts` loads the screens in Chrome
   at 360px and fails if the page scrolls sideways. Wide tables scroll inside
   their own region instead.
 
@@ -1102,9 +1109,10 @@ status, `429` or `500` included, gives a 403.
 
 ## Building
 
-`bun scripts/build.ts` writes `dist/assets/*` (content-hashed, minified, with
-source maps) and `dist/manifest.json`. `prepack` runs it for you. `dist/` is
-gitignored. In the repo, `jobsUi()` builds in memory when `dist/` is absent.
+`bun scripts/build.ts` writes `dist/jobs/assets/*` (content-hashed, minified,
+with source maps) and `dist/jobs/manifest.json`. `prepack` runs it for you.
+`dist/` is gitignored. In the repo, `jobsUi()` builds in memory when
+`dist/jobs/` is absent.
 
 `bun run build:types` (`scripts/build-declarations.ts`) writes the declarations
 for `lib/` into `dts/`, and verifies them. `prepack` runs it too, after the

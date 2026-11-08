@@ -11,16 +11,29 @@
 import type { Logger } from "@kingsleyweb/bun-common";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { ConfigError } from "@kingsleyweb/bun-jobs";
 
-/** The package root (`packages/bun-jobs-ui`, or `node_modules/@kingsleyweb/bun-jobs-ui`). */
-export const PACKAGE_DIR = resolve(import.meta.dir, "..");
+/** The package root (`packages/bun-ui`, or `node_modules/@kingsleyweb/bun-ui`). */
+export const PACKAGE_DIR = resolve(import.meta.dir, "..", "..");
 
 /** The React app's entry point, bundled by {@link buildAssets}. */
-export const DEFAULT_ENTRY = join(PACKAGE_DIR, "app", "main.tsx");
+export const DEFAULT_ENTRY = join(PACKAGE_DIR, "app", "jobs", "main.tsx");
 
 /** Where `scripts/build.ts` writes the bundle and where `jobsUi()` looks for it. */
-export const DEFAULT_DIST_DIR = join(PACKAGE_DIR, "dist");
+export const DEFAULT_DIST_DIR = join(PACKAGE_DIR, "dist", "jobs");
+
+/**
+ * Makes the error this module throws for a bad configuration (a missing
+ * entry, a corrupt `dist/`, `dev: false` with no build). It imports no domain
+ * package: each UI passes its own domain's `ConfigError` (`jobsUi()` passes
+ * bun-jobs'), so the bundle code never makes an entry need a peer.
+ */
+export type AssetsFail = (
+  message: string,
+  context: Record<string, unknown>,
+) => Error;
+
+/** The {@link AssetsFail} used when a caller passes none: a plain `Error`. */
+export const plainFail: AssetsFail = (message) => new Error(message);
 
 /** The manifest's file name inside a dist directory. */
 export const MANIFEST_FILE = "manifest.json";
@@ -92,6 +105,8 @@ export interface BuildAssetsOptions {
    * also keeps it off a 1.4.2 runtime. Adds about 175 ms.
    */
   check?: boolean;
+  /** Makes the error for a missing entry. Defaults to {@link plainFail}. */
+  fail?: AssetsFail;
 }
 
 /** Content types by extension, so both sources agree whatever Bun reports. */
@@ -161,11 +176,9 @@ export async function buildAssets(
 ): Promise<UiAssets> {
   const entry = options.entry ?? DEFAULT_ENTRY;
   if (!existsSync(entry)) {
-    throw new ConfigError(
-      `bun-jobs-ui: the app entry ${entry} does not exist`,
-      {
-        entry,
-      },
+    throw (options.fail ?? plainFail)(
+      `bun-ui: the app entry ${entry} does not exist`,
+      { entry },
     );
   }
   const sourcemap = options.sourcemap ?? "linked";
@@ -196,7 +209,7 @@ export async function buildAssets(
         : `${log.position.file}:${log.position.line}:${log.position.column}: ${log.message}`,
     );
     throw new Error(
-      `bun-jobs-ui: building ${entry} failed:\n${messages.join("\n")}`,
+      `bun-ui: building ${entry} failed:\n${messages.join("\n")}`,
     );
   }
 
@@ -214,7 +227,7 @@ export async function buildAssets(
     }
   }
   if (js === undefined) {
-    throw new Error(`bun-jobs-ui: building ${entry} produced no entry module`);
+    throw new Error(`bun-ui: building ${entry} produced no entry module`);
   }
   return {
     entry: { js, css: entryStylesheets(js, css) },
@@ -301,11 +314,14 @@ function stringField(value: unknown, key: string): string | undefined {
  * hand-edited dist fails here, with the file named, rather than as a browser
  * refusing a script over SRI.
  */
-export function loadDistAssets(dir: string = DEFAULT_DIST_DIR): UiAssets {
+export function loadDistAssets(
+  dir: string = DEFAULT_DIST_DIR,
+  fail: AssetsFail = plainFail,
+): UiAssets {
   const manifestPath = join(dir, MANIFEST_FILE);
-  const corrupt = (why: string): ConfigError =>
-    new ConfigError(
-      `bun-jobs-ui: ${manifestPath} is not a usable build (${why}); rebuild it with \`bun scripts/build.ts\``,
+  const corrupt = (why: string): Error =>
+    fail(
+      `bun-ui: ${manifestPath} is not a usable build (${why}); rebuild it with \`bun scripts/build.ts\``,
       { dir },
     );
   let manifest: unknown;
@@ -379,7 +395,7 @@ export function buildAssetsOnce(
   let build = memoryBuilds.get(key);
   if (build === undefined) {
     logger.info(
-      "bun-jobs-ui: no dist/ build, bundling the app in memory (run `bun scripts/build.ts` to prebuild)",
+      "bun-ui: no dist/jobs build, bundling the app in memory (run `bun scripts/build.ts` to prebuild)",
       { entry: key },
     );
     build = buildAssets({ entry: key });
@@ -403,6 +419,8 @@ export interface AssetSourceOptions {
   entry: string;
   /** Receives the one-line notice of an in-memory build. */
   logger: Logger;
+  /** Makes the error for `dev: false` with no build, or a corrupt one: the UI's domain `ConfigError`. */
+  fail: AssetsFail;
 }
 
 /**
@@ -410,19 +428,19 @@ export interface AssetSourceOptions {
  * read synchronously right away, so a missing or corrupt one fails the call,
  * not the first request; an in-memory build is deferred to the first request.
  *
- * @throws ConfigError with `dev: false` and no dist, or a corrupt dist.
+ * @throws `options.fail`'s error with `dev: false` and no dist, or a corrupt dist.
  */
 export function resolveAssetSource(
   options: AssetSourceOptions,
 ): () => Promise<UiAssets> {
-  const { dev, distDir, entry, logger } = options;
+  const { dev, distDir, entry, logger, fail } = options;
   if (dev !== true && hasDist(distDir)) {
-    const assets = Promise.resolve(loadDistAssets(distDir));
+    const assets = Promise.resolve(loadDistAssets(distDir, fail));
     return () => assets;
   }
   if (dev === false) {
-    throw new ConfigError(
-      `bun-jobs-ui: no build found at ${join(distDir, MANIFEST_FILE)} and \`dev: false\` forbids building in memory; run \`bun scripts/build.ts\` in the package, or leave \`dev\` unset`,
+    throw fail(
+      `bun-ui: no build found at ${join(distDir, MANIFEST_FILE)} and \`dev: false\` forbids building in memory; run \`bun scripts/build.ts\` in the package, or leave \`dev\` unset`,
       { distDir },
     );
   }

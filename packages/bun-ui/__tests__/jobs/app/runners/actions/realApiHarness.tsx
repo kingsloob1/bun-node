@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { getRunner, runnerKeys } from "../../../../app/api/runners";
-import { useApiClient } from "../../../../app/context";
-import { RunnerActions } from "../../../../app/screens/runners/actions";
+import { getRunner, runnerKeys } from "../../../../../app/jobs/api/runners";
+import { useApiClient } from "../../../../../app/jobs/context";
+import { RunnerActions } from "../../../../../app/jobs/screens/runners/actions";
 
 /** Props of {@link RunnerHarness}. */
 export interface RunnerHarnessProps {

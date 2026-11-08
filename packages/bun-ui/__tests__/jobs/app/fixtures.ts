@@ -14,8 +14,8 @@ import type {
   RunnersAnalyticsDto,
   WorkerList,
   WorkersAnalyticsDto,
-} from "../../app/api/types";
-import type { UiConfig } from "../../lib/shared/config.ts";
+} from "../../../app/jobs/api/types";
+import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
 import {
   ANALYTICS_RESOLUTIONS,
   DEFAULT_SECOND_RETENTION_MS,
@@ -25,7 +25,7 @@ import {
   MAX_ANALYTICS_SERIES,
   MAX_ANALYTICS_SPAN_MS,
   MINUTE_RETENTION_MS,
-} from "../../app/api/contract";
+} from "../../../app/jobs/api/contract";
 
 /**
  * Response fixtures, recorded from a real `createJobsApi` over the memory

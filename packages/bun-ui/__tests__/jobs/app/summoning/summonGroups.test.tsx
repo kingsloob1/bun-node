@@ -2,10 +2,10 @@ import type {
   SummonGroupListDto,
   SummonGroupStatusDto,
   SummonListDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
-import { utcResetLabel } from "../../../app/screens/queues/panels/budgetText";
+import { utcResetLabel } from "../../../../app/jobs/screens/queues/panels/budgetText";
 import { expectAbsent } from "../assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, problem } from "../fixtures";

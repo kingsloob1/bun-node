@@ -1,4 +1,4 @@
-import type { JobDto, MetaDto } from "../../../app/api/types";
+import type { JobDto, MetaDto } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent } from "../assert";
 import { LOADED, page, setupDom, within } from "../dom";

@@ -1,10 +1,10 @@
-import type { FetchLike } from "../../../app/api/client";
-import { createApiClient } from "../../../app/api/client";
-import { queueKeys } from "../../../app/api/queues";
-import { PermissionScope } from "../../../app/meta/PermissionScope";
-import { AppProviders } from "../../../app/providers";
-import { createQueryClient } from "../../../app/queryClient";
-import { WorkersPanel } from "../../../app/screens/queues/panels/WorkersPanel";
+import type { FetchLike } from "../../../../app/jobs/api/client";
+import { createApiClient } from "../../../../app/jobs/api/client";
+import { queueKeys } from "../../../../app/jobs/api/queues";
+import { PermissionScope } from "../../../../app/jobs/meta/PermissionScope";
+import { AppProviders } from "../../../../app/jobs/providers";
+import { createQueryClient } from "../../../../app/jobs/queryClient";
+import { WorkersPanel } from "../../../../app/jobs/screens/queues/panels/WorkersPanel";
 import { page, render, waitFor } from "../dom";
 import { uiConfig } from "../fixtures";
 

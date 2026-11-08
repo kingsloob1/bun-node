@@ -38,7 +38,7 @@
  */
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { cspDirectives, fetchShell } from "../shared/shell";

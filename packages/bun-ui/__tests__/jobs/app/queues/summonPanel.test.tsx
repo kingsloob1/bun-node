@@ -2,7 +2,7 @@ import type {
   SummonCheckDto,
   SummonOutcomeKind,
   SummonStatusDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { SUMMON_OUTCOMES } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
@@ -21,7 +21,7 @@ import {
   summonOutcome,
   summonPartialText,
   summonStateKnown,
-} from "../../../app/screens/queues/panels/summonText";
+} from "../../../../app/jobs/screens/queues/panels/summonText";
 import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";

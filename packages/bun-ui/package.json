@@ -1,9 +1,9 @@
 {
-  "name": "@kingsleyweb/bun-jobs-ui",
+  "name": "@kingsleyweb/bun-ui",
   "type": "module",
   "version": "3.0.0-rc.0",
   "private": false,
-  "description": "A React management UI and API documentation viewer for the @kingsleyweb/bun-jobs management API, served by a jobsUi() handler that mounts beside createJobsApi",
+  "description": "Every bun-node browser UI in one package, one subpath each: the bun-jobs management UI (./jobs, jobsUi()), each served by a bun-common router with a prebuilt React bundle, hash-named immutable assets, SRI and a strict CSP",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "exports": {
@@ -12,10 +12,30 @@
       "types": "./dts/index.d.ts",
       "default": "./lib/index.ts"
     },
+    "./jobs": {
+      "@kingsleyweb/source": "./lib/jobs/index.ts",
+      "types": "./dts/jobs/index.d.ts",
+      "default": "./lib/jobs/index.ts"
+    },
+    "./jobs/browser": {
+      "@kingsleyweb/source": "./lib/jobs/browser/index.ts",
+      "types": "./dts/jobs/browser/index.d.ts",
+      "default": "./lib/jobs/browser/index.ts"
+    },
     "./lib": {
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
       "default": "./lib/index.ts"
+    },
+    "./lib/jobs": {
+      "@kingsleyweb/source": "./lib/jobs/index.ts",
+      "types": "./dts/jobs/index.d.ts",
+      "default": "./lib/jobs/index.ts"
+    },
+    "./lib/jobs/browser": {
+      "@kingsleyweb/source": "./lib/jobs/browser/index.ts",
+      "types": "./dts/jobs/browser/index.d.ts",
+      "default": "./lib/jobs/browser/index.ts"
     },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
@@ -43,6 +63,7 @@
   "files": [
     "dist",
     "dts",
+    "guides",
     "lib"
   ],
   "engines": {
@@ -55,9 +76,9 @@
     "test": "bun test --check --parallel --timings=bun-timings.json",
     "test:serial": "bun test --check",
     "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
-    "check": "bun check && bun check -p app && bun check -p __tests__/app/pkg",
-    "gen:client": "bun-client generate --module scripts/routes-openapi.ts --out app/api/routes.gen.ts",
-    "check:client": "bun-client generate --module scripts/routes-openapi.ts --out app/api/routes.gen.ts --check",
+    "check": "bun check && bun check -p app && bun check -p __tests__/jobs/app/pkg",
+    "gen:client": "bun-client generate --module scripts/jobs/routes-openapi.ts --out app/jobs/api/routes.gen.ts",
+    "check:client": "bun-client generate --module scripts/jobs/routes-openapi.ts --out app/jobs/api/routes.gen.ts --check",
     "lint": "bun lint",
     "format": "bun fmt",
     "format:check": "bun fmt --check"
@@ -67,6 +88,9 @@
     "@types/bun": ">=1.4.2"
   },
   "peerDependenciesMeta": {
+    "@kingsleyweb/bun-jobs": {
+      "optional": true
+    },
     "@types/bun": {
       "optional": true
     }

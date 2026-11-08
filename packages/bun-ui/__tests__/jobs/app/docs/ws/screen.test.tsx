@@ -1,8 +1,8 @@
-import type { SpecDocument } from "../../../../app/api/docs";
-import type { MetaDto, Permissions } from "../../../../app/api/types";
+import type { SpecDocument } from "../../../../../app/jobs/api/docs";
+import type { MetaDto, Permissions } from "../../../../../app/jobs/api/types";
 import type { WsFixtureName } from "./fixtures";
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { liveChannels } from "../../../../app/live";
+import { liveChannels } from "../../../../../app/jobs/live";
 import { expectAbsent, expectUndefined } from "../../assert";
 import {
   act,

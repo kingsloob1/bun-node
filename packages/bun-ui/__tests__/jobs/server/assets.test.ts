@@ -15,8 +15,8 @@ import {
   loadDistAssets,
   MANIFEST_FILE,
   writeAssets,
-} from "../../lib/assets";
-import { ASSET_CACHE_CONTROL } from "../../lib/jobsUi";
+} from "../../../lib/jobs/assets";
+import { ASSET_CACHE_CONTROL } from "../../../lib/jobs/jobsUi";
 import {
   BROKEN_ENTRY,
   fetchShell,
@@ -98,10 +98,32 @@ describe("buildAssets", () => {
     );
   });
 
-  it("refuses a missing entry with a ConfigError", async () => {
+  it("refuses a missing entry with the caller's error", async () => {
     await expect(
-      buildAssets({ entry: "/nope/main.tsx" }),
+      buildAssets({
+        entry: "/nope/main.tsx",
+        fail: (message, context) => new ConfigError(message, context),
+      }),
     ).rejects.toBeInstanceOf(ConfigError);
+  });
+
+  // The module imports no domain package (plan bun-ui D7): without a
+  // factory it throws a plain Error, never bun-jobs' ConfigError.
+  it("throws a plain Error when the caller passes no factory", async () => {
+    const missing = buildAssets({ entry: "/nope/main.tsx" });
+    await expect(missing).rejects.toThrow(/does not exist/);
+    await expect(missing).rejects.not.toBeInstanceOf(ConfigError);
+    const { dir, cleanup } = tempDir();
+    cleanups.push(cleanup);
+    writeFileSync(join(dir, MANIFEST_FILE), "{ not json");
+    expect(() => loadDistAssets(dir)).toThrow(/is not a usable build/);
+    let thrown: unknown;
+    try {
+      loadDistAssets(dir);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).not.toBeInstanceOf(ConfigError);
   });
 
   it("maps content types by extension", () => {

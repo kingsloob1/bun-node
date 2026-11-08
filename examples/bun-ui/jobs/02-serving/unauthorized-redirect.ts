@@ -30,7 +30,7 @@
  *   a `ConfigError`.
  */
 import type { BunRequest } from "@kingsleyweb/bun-common";
-import type { JobsUiAuthorize } from "@kingsleyweb/bun-jobs-ui";
+import type { JobsUiAuthorize } from "@kingsleyweb/bun-ui/jobs";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
@@ -38,7 +38,7 @@ import {
   createJobsApi,
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { parseShell } from "../shared/shell";

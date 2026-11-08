@@ -1,8 +1,8 @@
-import type { FetchLike } from "../../../../app/api/client";
-import { createApiClient } from "../../../../app/api/client";
-import { PermissionScope } from "../../../../app/meta/PermissionScope";
-import { AppProviders } from "../../../../app/providers";
-import { createQueryClient } from "../../../../app/queryClient";
+import type { FetchLike } from "../../../../../app/jobs/api/client";
+import { createApiClient } from "../../../../../app/jobs/api/client";
+import { PermissionScope } from "../../../../../app/jobs/meta/PermissionScope";
+import { AppProviders } from "../../../../../app/jobs/providers";
+import { createQueryClient } from "../../../../../app/jobs/queryClient";
 import { fireEvent, page, render, waitFor, within } from "../../dom";
 import { uiConfig } from "../../fixtures";
 import { RunnerHarness } from "./realApiHarness";

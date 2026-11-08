@@ -1,11 +1,11 @@
-import type { FetchLike } from "../../app/api/client";
+import type { FetchLike } from "../../../app/jobs/api/client";
 import { describe, expect, it } from "bun:test";
 import {
   createApiClient,
   CSRF_HEADER_VALUE,
   serializeQuery,
-} from "../../app/api/client";
-import { ApiError, isApiError } from "../../app/api/errors";
+} from "../../../app/jobs/api/client";
+import { ApiError, isApiError } from "../../../app/jobs/api/errors";
 import { expectUndefined } from "./assert";
 import { problem, queueListFixture } from "./fixtures";
 import { mockFetch } from "./mockFetch";

@@ -88,7 +88,7 @@
  *   what `authorize` was asked.
  */
 import type { JobsApiAuthorize } from "@kingsleyweb/bun-jobs";
-import type { UiSections } from "@kingsleyweb/bun-jobs-ui";
+import type { UiSections } from "@kingsleyweb/bun-ui/jobs";
 import type { RemoteProcess } from "./helpers/remote-process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -96,7 +96,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import {
   button,
   chromeOrSkip,

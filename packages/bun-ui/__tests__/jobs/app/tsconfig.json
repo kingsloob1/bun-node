@@ -5,5 +5,5 @@
   // (measured: 1,715 errors in the app tests). `include` and `exclude` are
   // inherited, so they resolve from app/ and cover the same files.
   // `pkg/` keeps its own, nearer tsconfig.
-  "extends": "../../app/tsconfig.json"
+  "extends": "../../../app/tsconfig.json"
 }

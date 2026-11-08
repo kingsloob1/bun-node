@@ -17,8 +17,8 @@ import type {
 } from "@kingsleyweb/bun-common";
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
 import type { UiAsset, UiAssets } from "./assets";
-import type { UiUnauthorized } from "./shared/unauthorized";
-import type { UiConfig, UiSections, UiTheme } from "./shared/config";
+import type { UiUnauthorized } from "./browser/unauthorized";
+import type { UiConfig, UiSections, UiTheme } from "./browser/config";
 import type { ShellRenderer } from "./shell";
 import type {
   JobsUi,
@@ -29,6 +29,7 @@ import type {
 import { BunRouter, resolveLogger } from "@kingsleyweb/bun-common";
 import { ConfigError } from "@kingsleyweb/bun-jobs";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
+import { ASSET_CACHE_CONTROL } from "../kit/browser/shared";
 import {
   redirectsDenial,
   resolveUnauthorized,
@@ -50,8 +51,7 @@ export const DEFAULT_TITLE = "Jobs";
 /** The path under `basePath` the bundle is served from. */
 export const ASSETS_SUBPATH = "/assets";
 
-/** `Cache-Control` for hashed bundle files: their name changes with their content. */
-export const ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
+export { ASSET_CACHE_CONTROL };
 
 /** A path segment `basePath` may contain — the API's own rule. */
 const PATH_SEGMENT = /^[\w.~-]+$/;
@@ -537,6 +537,7 @@ export function createJobsUi(
     distDir: internals.distDir ?? DEFAULT_DIST_DIR,
     entry: internals.entry ?? DEFAULT_ENTRY,
     logger,
+    fail: (message, context) => new ConfigError(message, context),
   });
 
   // The shell is rendered from the bundle, so it waits for the first load.

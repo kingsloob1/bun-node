@@ -1,6 +1,9 @@
-import type { RunnerInfoDto, RunnerScheduleDto } from "../../../app/api/types";
+import type {
+  RunnerInfoDto,
+  RunnerScheduleDto,
+} from "../../../../app/jobs/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { NON_LOCAL_RUNNER_NOTE } from "../../../app/screens/runners/runnerFormat";
+import { NON_LOCAL_RUNNER_NOTE } from "../../../../app/jobs/screens/runners/runnerFormat";
 import { expectAbsent } from "../assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";

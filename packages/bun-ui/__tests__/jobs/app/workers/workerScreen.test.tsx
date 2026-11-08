@@ -2,10 +2,10 @@ import type {
   WorkerAnalyticsDto,
   WorkerConfigOverrideDto,
   WorkerDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
-import { WORKER_CONFIG_KEYS } from "../../../app/api/contract";
+import { WORKER_CONFIG_KEYS } from "../../../../app/jobs/api/contract";
 import { expectAbsent } from "../assert";
 import {
   fireEvent,

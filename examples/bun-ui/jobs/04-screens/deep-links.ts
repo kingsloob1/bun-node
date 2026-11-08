@@ -52,7 +52,7 @@
 import { join } from "node:path";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { jobsUi, UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi, UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-ui/jobs";
 import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
@@ -338,7 +338,10 @@ interface DocumentedParam {
 
 /** That table, one entry per parameter: a row may name several. */
 async function documentedParams(): Promise<DocumentedParam[]> {
-  const path = join(import.meta.dir, "../../../packages/bun-jobs-ui/README.md");
+  const path = join(
+    import.meta.dir,
+    "../../../../packages/bun-ui/guides/jobs.md",
+  );
   const lines = (await Bun.file(path).text()).split("\n");
   const heading = lines.findIndex(
     (line) => line.trim() === "### URL parameters",

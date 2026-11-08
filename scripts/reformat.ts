@@ -47,10 +47,10 @@ import process from "node:process";
 
 /** Files that are one file in several places: each set must stay byte-identical. */
 export const COPIED_FILE_SETS: readonly (readonly string[])[] = [
-  ["bun-common", "bun-nest", "bun-jobs", "bun-jobs-ui"].map(
+  ["bun-common", "bun-nest", "bun-jobs", "bun-ui"].map(
     (p) => `packages/${p}/scripts/build-declarations.ts`,
   ),
-  ["bun-common", "bun-nest", "bun-jobs", "bun-jobs-ui"].map(
+  ["bun-common", "bun-nest", "bun-jobs", "bun-ui"].map(
     (p) => `packages/${p}/tsconfig.build.json`,
   ),
 ];

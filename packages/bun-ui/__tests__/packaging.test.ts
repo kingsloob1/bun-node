@@ -2,12 +2,12 @@
  * The published shape: `exports` and the declaration build.
  *
  * The end-to-end proof is the consumer check against a packed tarball
- * (`bun scripts/consumer-check.ts packages/bun-jobs-ui` from the repo root),
+ * (`bun scripts/consumer-check.ts packages/bun-ui` from the repo root),
  * which is too slow for `bun test`. These are the invariants that check
  * depends on, cheap enough to hold on every run.
  */
 
-import type { CheckConfig, Manifest } from "../../scripts/build-declarations";
+import type { CheckConfig, Manifest } from "../scripts/build-declarations";
 import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,9 +17,9 @@ import {
   checkPeerScopes,
   rewrite,
   typesTarget,
-} from "../../scripts/build-declarations";
+} from "../scripts/build-declarations";
 
-const ROOT = resolve(import.meta.dir, "../..");
+const ROOT = resolve(import.meta.dir, "..");
 
 /** One conditional `exports` entry. */
 interface Conditions {
@@ -117,7 +117,7 @@ describe("package.json exports", () => {
 
 describe("build-declarations rewrite", () => {
   it("makes relative specifiers explicit and leaves bare ones alone", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "bun-jobs-ui-dts-"));
+    const dir = await mkdtemp(join(tmpdir(), "bun-ui-dts-"));
     try {
       await mkdir(join(dir, "sub"));
       await writeFile(join(dir, "b.d.ts"), "export type B = 1;\n");
@@ -226,14 +226,43 @@ describe("this package's peers and the browser bundle", () => {
       .map(([name]) => name),
   );
 
-  // The declarations name `JobsApi` and `ConfigError`, so bun-jobs is a
-  // required peer: optional, the root would reach an optional peer and the
-  // build's verify step would fail.
-  it("keeps @kingsleyweb/bun-jobs a required peer, and no entry needs an optional one", () => {
+  // bun-jobs is an optional peer that only `/jobs` (and its `./lib/jobs/*`
+  // spellings) may need: the build's `checkPeerScopes` fails a declaration
+  // reaching it from any other entry, and the consumer check proves the root
+  // and `/jobs/browser` in a consumer without it.
+  it("keeps @kingsleyweb/bun-jobs an optional peer, needed by the jobs server entries alone", () => {
     expect(manifest.peerDependencies["@kingsleyweb/bun-jobs"]).toBeDefined();
-    expect(optional).toEqual(new Set(["@types/bun"]));
-    for (const entry of checkConfig.entries ?? [])
-      expect(entry.peers ?? []).toEqual([]);
+    expect(optional).toEqual(new Set(["@kingsleyweb/bun-jobs", "@types/bun"]));
+    for (const entry of checkConfig.entries ?? []) {
+      const jobsServer =
+        /^@kingsleyweb\/bun-ui\/(?:lib\/)?jobs(?:\/|$)/.test(entry.spelling) &&
+        !/\/browser(?:\/|$)/.test(entry.spelling);
+      expect({
+        spelling: entry.spelling,
+        peers: entry.peers ?? [],
+      }).toEqual({
+        spelling: entry.spelling,
+        peers: jobsServer ? ["@kingsleyweb/bun-jobs"] : [],
+      });
+    }
+  });
+
+  it("marks the root and every browser entry browser-safe", () => {
+    const entries = (checkConfig.entries ?? []) as {
+      /** The specifier a consumer writes. */
+      spelling: string;
+      /** Optional peers the entry needs. */
+      peers?: string[];
+      /** Checked as a browser entry (no Bun or Node types in its graph). */
+      browser?: boolean;
+    }[];
+    for (const entry of entries) {
+      if (entry.peers !== undefined) continue;
+      expect({ spelling: entry.spelling, browser: entry.browser }).toEqual({
+        spelling: entry.spelling,
+        browser: true,
+      });
+    }
   });
 
   it("packs bun-jobs beside bun-common in the consumer check", () => {
@@ -246,7 +275,7 @@ describe("this package's peers and the browser bundle", () => {
     );
   });
 
-  // `dist/` is the prebuilt browser bundle `jobsUi()` serves; `dts/` is the
+  // `dist/` holds the prebuilt browser bundles (`dist/jobs/` is the one `jobsUi()` serves); `dts/` is the
   // declarations. A pack must build and publish both.
   it("publishes dist/ as well, and builds both on prepack", () => {
     expect(manifest.files).toEqual(

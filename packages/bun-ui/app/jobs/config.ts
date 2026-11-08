@@ -1,6 +1,6 @@
-import type { UiConfig } from "../lib/shared/config.ts";
+import type { UiConfig } from "../../lib/jobs/browser/config.ts";
 import { isUiUnauthorized } from "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized";
-import { UI_CONFIG_ELEMENT_ID } from "../lib/shared/config.ts";
+import { UI_CONFIG_ELEMENT_ID } from "../../lib/jobs/browser/config.ts";
 
 /** The injected configuration was missing or malformed. */
 export class UiConfigError extends Error {

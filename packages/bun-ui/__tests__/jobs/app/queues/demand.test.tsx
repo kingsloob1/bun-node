@@ -1,11 +1,11 @@
-import type { QueueDemandDto } from "../../../app/api/types";
+import type { QueueDemandDto } from "../../../../app/jobs/api/types";
 import type { MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
-import { demandUrls } from "../../../app/api/demand";
+import { demandUrls } from "../../../../app/jobs/api/demand";
 import {
   formatDemandFigure,
   qualify,
-} from "../../../app/screens/queues/panels/demand";
+} from "../../../../app/jobs/screens/queues/panels/demand";
 import { expectAbsent } from "../assert";
 import { LOADED, page, setupDom, visit, waitFor, within } from "../dom";
 import {

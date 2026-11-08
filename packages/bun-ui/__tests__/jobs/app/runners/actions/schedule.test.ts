@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ApiError } from "../../../../app/api/errors";
+import { ApiError } from "../../../../../app/jobs/api/errors";
 import {
   cronShapeError,
   emptyScheduleForm,
@@ -11,7 +11,7 @@ import {
   scheduleFieldErrors,
   splitInterval,
   validateScheduleForm,
-} from "../../../../app/screens/runners/actions/schedule";
+} from "../../../../../app/jobs/screens/runners/actions/schedule";
 import { expectAbsent, expectUndefined } from "../../assert";
 
 const ZONES = ["UTC", "Europe/London", "America/New_York"];

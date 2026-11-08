@@ -1,4 +1,4 @@
-import type { WorkerDto } from "../../../app/api/types";
+import type { WorkerDto } from "../../../../app/jobs/api/types";
 
 /**
  * Worker fixtures for the Workers screen and the queue panel: a record

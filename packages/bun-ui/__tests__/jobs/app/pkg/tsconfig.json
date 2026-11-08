@@ -4,7 +4,7 @@
   // lib, because the package's raw-.ts source graph conflicts with it. Checked
   // by `typecheck.test.ts` in this directory (so `bun test` enforces it), and
   // registrable in `scripts/typecheck.ts`.
-  "extends": "../../../../../tsconfig.base.json",
+  "extends": "../../../../../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["bun"]
   },

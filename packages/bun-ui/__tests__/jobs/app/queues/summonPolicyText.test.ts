@@ -1,8 +1,8 @@
 import type {
   SummonCapabilitiesDto,
   SummonTriggerDto,
-} from "../../../app/api/types";
-import type { SummonPolicyRow } from "../../../app/screens/queues/panels/summonPolicyText";
+} from "../../../../app/jobs/api/types";
+import type { SummonPolicyRow } from "../../../../app/jobs/screens/queues/panels/summonPolicyText";
 import { SUMMON_POLICY_KEYS } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
 import {
@@ -13,7 +13,7 @@ import {
   summonPolicyPerQueue,
   summonPolicyRows,
   summonPolicyVisibility,
-} from "../../../app/screens/queues/panels/summonPolicyText";
+} from "../../../../app/jobs/screens/queues/panels/summonPolicyText";
 import { expectUndefined } from "../assert";
 import { policyFixture } from "./summonPolicyFixture";
 

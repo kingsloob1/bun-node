@@ -3,15 +3,15 @@
  * entry (`fixtures/app/entry.ts`) rather than the real app, so nothing here
  * depends on what `app/` renders.
  */
-import type { JobsUiInternals } from "../../lib/jobsUi";
-import type { UiConfig } from "../../lib/shared/config";
-import type { JobsUi, JobsUiOptions } from "../../lib/types";
+import type { JobsUiInternals } from "../../../lib/jobs/jobsUi";
+import type { UiConfig } from "../../../lib/jobs/browser/config";
+import type { JobsUi, JobsUiOptions } from "../../../lib/jobs/types";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
-import { createJobsUi } from "../../lib/jobsUi";
-import { UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config";
+import { createJobsUi } from "../../../lib/jobs/jobsUi";
+import { UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config";
 
 /** The fixture app entry: one stylesheet, one split chunk. */
 export const FIXTURE_ENTRY = join(

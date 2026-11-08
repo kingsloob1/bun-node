@@ -1,4 +1,4 @@
-import type { MetaDto } from "../../../app/api/types";
+import type { MetaDto } from "../../../../app/jobs/api/types";
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent } from "../assert";

@@ -37,7 +37,7 @@ import {
   ASSET_CACHE_CONTROL,
   jobsUi,
   UI_CONFIG_ELEMENT_ID,
-} from "@kingsleyweb/bun-jobs-ui";
+} from "@kingsleyweb/bun-ui/jobs";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { cspDirectives, fetchShell, parseShell } from "../shared/shell";

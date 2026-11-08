@@ -1,13 +1,13 @@
-import type { ApplyJobDefaultsResultDto } from "../../../app/api/types";
+import type { ApplyJobDefaultsResultDto } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
-import { JOB_DEFAULT_KEYS } from "../../../app/api/contract";
-import { runApplyLoop } from "../../../app/screens/queues/panels/jobDefaults/applyLoop";
+import { JOB_DEFAULT_KEYS } from "../../../../app/jobs/api/contract";
+import { runApplyLoop } from "../../../../app/jobs/screens/queues/panels/jobDefaults/applyLoop";
 import {
   canonical,
   KEY_KIND,
   parseBackoff,
   parseRetention,
-} from "../../../app/screens/queues/panels/jobDefaults/draft";
+} from "../../../../app/jobs/screens/queues/panels/jobDefaults/draft";
 
 /**
  * The job-defaults model without a DOM: the form's parsing and comparison,

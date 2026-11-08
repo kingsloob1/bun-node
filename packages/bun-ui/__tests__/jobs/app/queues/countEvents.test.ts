@@ -1,6 +1,6 @@
 import { QUEUE_EVENT_TYPES } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
-import { COUNT_EVENTS } from "../../../app/screens/queues/live";
+import { COUNT_EVENTS } from "../../../../app/jobs/screens/queues/live";
 
 /**
  * Which queue events make the queue screens re-read their counts, pages and

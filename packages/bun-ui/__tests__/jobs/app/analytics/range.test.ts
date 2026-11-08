@@ -8,7 +8,7 @@ import {
   rangeProblem,
   readRange,
   writeRange,
-} from "../../../app/analytics/range";
+} from "../../../../app/jobs/analytics/range";
 import { expectAbsent } from "../assert";
 
 /** A fixed clock, so a rolling preset resolves to known instants. */

@@ -113,7 +113,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { exampleBackend, exampleDriver } from "../shared/backend";
 import { button, chromeOrSkip, openView } from "../shared/browser";
 import { check, checkEqual, summary } from "../shared/check";

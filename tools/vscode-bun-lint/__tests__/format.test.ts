@@ -60,7 +60,7 @@ describe("formatText", () => {
   });
 
   test("the repository's [fmt] config applies (singleAttributePerLine)", async () => {
-    const tsx = join(REPO, "packages/bun-jobs-ui/app/__probe_format__.tsx");
+    const tsx = join(REPO, "packages/bun-ui/app/jobs/__probe_format__.tsx");
     const text = 'export const X = () => <a href="/" title="t">x</a>;\n';
     const out = apply(text, await formatText(tsx, text, { bunPath }));
     expect(out).toBe(

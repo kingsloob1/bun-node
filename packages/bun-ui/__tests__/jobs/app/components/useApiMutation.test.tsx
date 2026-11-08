@@ -1,13 +1,13 @@
-import type { UseApiMutationResult } from "../../../app/hooks/useApiMutation";
+import type { UseApiMutationResult } from "../../../../app/jobs/hooks/useApiMutation";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, spyOn } from "bun:test";
-import { ApiError } from "../../../app/api/errors";
-import { ToastProvider } from "../../../app/components/ToastProvider";
+import { ApiError } from "../../../../app/jobs/api/errors";
+import { ToastProvider } from "../../../../app/jobs/components/ToastProvider";
 import {
   issuesToFieldErrors,
   useApiMutation,
-} from "../../../app/hooks/useApiMutation";
-import { createQueryClient } from "../../../app/queryClient";
+} from "../../../../app/jobs/hooks/useApiMutation";
+import { createQueryClient } from "../../../../app/jobs/queryClient";
 import { act, render, setupDom, waitFor } from "../dom";
 
 setupDom();

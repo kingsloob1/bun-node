@@ -1,8 +1,8 @@
-import type { JobState } from "../../../app/api/types";
+import type { JobState } from "../../../../app/jobs/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { JOB_STATES } from "../../../app/api/contract";
-import { STATE_LABELS } from "../../../app/format";
-import { ProgressValue } from "../../../app/screens/job/JobScreen";
+import { JOB_STATES } from "../../../../app/jobs/api/contract";
+import { STATE_LABELS } from "../../../../app/jobs/format";
+import { ProgressValue } from "../../../../app/jobs/screens/job/JobScreen";
 import { expectAbsent } from "../assert";
 import {
   act,

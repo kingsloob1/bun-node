@@ -6,7 +6,7 @@
  */
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
 import { describe, expect, it } from "bun:test";
-import { connectSources, cspHeader } from "../../lib/shell";
+import { connectSources, cspHeader } from "../../../lib/jobs/shell";
 import { fixtureUi, parseCsp } from "./helpers";
 
 /** The `connect-src` of the shell served for a request with this `Host`. */

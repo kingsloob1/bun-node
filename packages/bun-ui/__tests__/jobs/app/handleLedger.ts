@@ -1,4 +1,4 @@
-import type { FetchLike } from "../../app/api/client";
+import type { FetchLike } from "../../../app/jobs/api/client";
 import { FakeSocket } from "./live/fakes";
 
 /**
@@ -64,7 +64,7 @@ export interface Handle {
   kind: HandleKind;
   /** Which one: `5000ms`, `window popstate`, the URL, the observer's class. */
   detail: string;
-  /** Who opened it, from the stack: `app/live/live.ts:252`, `tanstack`, `test …`, `unknown`. For messages and start assertions only. */
+  /** Who opened it, from the stack: `app/jobs/live/live.ts:252`, `tanstack`, `test …`, `unknown`. For messages and start assertions only. */
   origin: string;
   /** The opening stack, without the ledger's own frames: printed when it outlives the unmount. */
   stack: string;
@@ -97,11 +97,11 @@ function originOf(stack: string): string {
     if (/node_modules\/happy-dom\//.test(frame)) {
       return "happy-dom";
     }
-    const app = /bun-jobs-ui\/(app\/[^:)]+:\d+)/.exec(frame);
+    const app = /bun-ui\/(app\/[^:)]+:\d+)/.exec(frame);
     if (app) {
       return app[1];
     }
-    const test = /bun-jobs-ui\/(__tests__\/[^:)]+:\d+)/.exec(frame);
+    const test = /bun-ui\/(__tests__\/[^:)]+:\d+)/.exec(frame);
     if (test) {
       return `test ${test[1]}`;
     }

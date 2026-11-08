@@ -9,16 +9,16 @@
  */
 import type { Mock } from "bun:test";
 import type { MockReply } from "./mockFetch";
-import type { UiUnauthorized } from "../../lib/shared/unauthorized.ts";
+import type { UiUnauthorized } from "../../../lib/jobs/browser/unauthorized.ts";
 import { JOBS_API_WS_CLOSE } from "@kingsleyweb/bun-jobs/api/contract";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { ApiError } from "../../app/api/errors";
-import { parseUiConfig, UiConfigError } from "../../app/config";
+import { ApiError } from "../../../app/jobs/api/errors";
+import { parseUiConfig, UiConfigError } from "../../../app/jobs/config";
 import {
   UnauthorizedRedirectContext,
   createUnauthorizedRedirect,
 } from "@kingsleyweb/bun-api-docs-ui/embed/unauthorized";
-import { RouterProvider, Routes } from "../../app/router";
+import { RouterProvider, Routes } from "../../../app/jobs/router";
 import { expectAbsent } from "./assert";
 import { act, LOADED, page, render, setupDom, visit, waitFor } from "./dom";
 import { metaFixture, problem, uiConfig } from "./fixtures";

@@ -60,7 +60,7 @@ describe("nearestBunfig / isConfigured", () => {
       nearestBunfig(join(REPO, "templates/compute-provider/src"))?.path,
     ).toBe(join(REPO, "templates/compute-provider/bunfig.toml"));
     for (const file of [
-      "packages/bun-jobs-ui/app/App.tsx",
+      "packages/bun-ui/app/jobs/App.tsx",
       "templates/compute-provider/src/config.ts",
       "scripts/typecheck.ts",
     ]) {

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { createApiClient } from "../../app/api/client";
-import type { UiErrorCode } from "../../app/api/errors";
-import { ApiError, isApiError } from "../../app/api/errors";
-import { getJob } from "../../app/api/jobs";
-import { getQueue } from "../../app/api/queues";
-import { getRunner } from "../../app/api/runners";
-import { assertShape } from "../../app/api/shape";
-import { displayText, INVALID_TEXT } from "../../app/format";
-import { shouldRetry } from "../../app/queryClient";
+import { createApiClient } from "../../../app/jobs/api/client";
+import type { UiErrorCode } from "../../../app/jobs/api/errors";
+import { ApiError, isApiError } from "../../../app/jobs/api/errors";
+import { getJob } from "../../../app/jobs/api/jobs";
+import { getQueue } from "../../../app/jobs/api/queues";
+import { getRunner } from "../../../app/jobs/api/runners";
+import { assertShape } from "../../../app/jobs/api/shape";
+import { displayText, INVALID_TEXT } from "../../../app/jobs/format";
+import { shouldRetry } from "../../../app/jobs/queryClient";
 import { jobFixture } from "./job/fixtures";
 import { mockFetch } from "./mockFetch";
 

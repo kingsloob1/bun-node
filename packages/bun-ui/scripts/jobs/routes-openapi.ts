@@ -1,10 +1,10 @@
 /**
  * The management API's OpenAPI document, for `bun-client generate --module`:
- * the source of `app/api/routes.gen.ts`, the typed client's route map
+ * the source of `app/jobs/api/routes.gen.ts`, the typed client's route map
  * (typed-client plan §11, the pilot).
  *
  * ```bash
- * bun run gen:client     # rewrites app/api/routes.gen.ts
+ * bun run gen:client     # rewrites app/jobs/api/routes.gen.ts
  * bun run check:client   # the same with --check: exit 1 when it is stale
  * ```
  *

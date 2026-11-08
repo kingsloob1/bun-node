@@ -1,4 +1,7 @@
-import type { SummonBudgetDto, SummonStatusDto } from "../../../app/api/types";
+import type {
+  SummonBudgetDto,
+  SummonStatusDto,
+} from "../../../../app/jobs/api/types";
 import type { MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent, expectUndefined } from "../assert";

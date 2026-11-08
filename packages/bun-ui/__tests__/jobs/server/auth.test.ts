@@ -3,7 +3,7 @@
  * bundle, and answer denials in the API's problem shape.
  */
 import type { RouterHandler } from "@kingsleyweb/bun-common";
-import type { JobsUiAuthorizeContext } from "../../lib/types";
+import type { JobsUiAuthorizeContext } from "../../../lib/jobs/types";
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
 import { fetchShell, fixtureUi } from "./helpers";

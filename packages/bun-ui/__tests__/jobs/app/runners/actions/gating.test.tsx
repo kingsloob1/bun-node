@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { runnerActionGates } from "../../../../app/screens/runners/actions/gating";
+import { runnerActionGates } from "../../../../../app/jobs/screens/runners/actions/gating";
 import { expectAbsent } from "../../assert";
 import { fireEvent, page, setupDom, within } from "../../dom";
 import {

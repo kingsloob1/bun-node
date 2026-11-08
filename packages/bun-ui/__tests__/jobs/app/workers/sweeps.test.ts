@@ -1,6 +1,6 @@
-import type { WorkerDto } from "../../../app/api/types";
+import type { WorkerDto } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
-import { sweepWarning } from "../../../app/screens/workers/sweeps";
+import { sweepWarning } from "../../../../app/jobs/screens/workers/sweeps";
 import { expectAbsent } from "../assert";
 
 /**

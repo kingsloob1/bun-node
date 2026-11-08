@@ -1,4 +1,4 @@
-import type { FetchLike } from "../../app/api/client";
+import type { FetchLike } from "../../../app/jobs/api/client";
 
 /** One request the mock received. */
 export interface RecordedCall {

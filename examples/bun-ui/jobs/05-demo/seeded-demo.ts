@@ -86,7 +86,7 @@ import {
   createJobsApi,
   JOBS_API_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import {
   exampleBackend,
   exampleDriver,

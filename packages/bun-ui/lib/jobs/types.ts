@@ -6,7 +6,7 @@ import type {
 } from "@kingsleyweb/bun-common";
 import type { JobsApi, JobsApiAuthorizeResult } from "@kingsleyweb/bun-jobs";
 import type { UnauthorizedOptions } from "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized";
-import type { UiConfig, UiSections, UiTheme } from "./shared/config";
+import type { UiConfig, UiSections, UiTheme } from "./browser/config";
 
 /** What {@link JobsUiOptions.authorize} is told about the request being decided. */
 export interface JobsUiAuthorizeContext {

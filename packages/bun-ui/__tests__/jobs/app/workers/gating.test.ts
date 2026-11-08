@@ -1,9 +1,9 @@
-import type { JobsApiAction } from "../../../app/api/contract";
+import type { JobsApiAction } from "../../../../app/jobs/api/contract";
 import { describe, expect, it } from "bun:test";
 import {
   WORKER_BLOCKED_HINT,
   workerActionGates,
-} from "../../../app/screens/workers/actions/gating";
+} from "../../../../app/jobs/screens/workers/actions/gating";
 import { workerFixture } from "./fixtures";
 
 /** Every worker action permitted. */

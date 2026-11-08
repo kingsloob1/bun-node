@@ -1,4 +1,4 @@
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 import { fireEvent, page, visit, waitFor } from "../dom";
 import { renderApp } from "../renderApp";
 
@@ -11,8 +11,8 @@ import { renderApp } from "../renderApp";
  * the screens show and leaves the assertions to the test.
  */
 
-export { ADDED_BY_STATE_POLL_MS } from "../../../app/api/added";
-export { POLL_INTERVAL_MS } from "../../../app/queryClient";
+export { ADDED_BY_STATE_POLL_MS } from "../../../../app/jobs/api/added";
+export { POLL_INTERVAL_MS } from "../../../../app/jobs/queryClient";
 export { mountOverview } from "./realApiOverview";
 
 /** One labelled group of the tile: its heading and its `label → value` rows. */

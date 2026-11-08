@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { formatNumber } from "../../app/format";
+import { formatNumber } from "../../../app/jobs/format";
 import { expectAbsent, expectNone } from "./assert";
 import {
   fireEvent,

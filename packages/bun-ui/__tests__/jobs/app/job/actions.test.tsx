@@ -1,9 +1,9 @@
-import type { JobsApiAction } from "../../../app/api/contract";
-import type { JobDto } from "../../../app/api/types";
+import type { JobsApiAction } from "../../../../app/jobs/api/contract";
+import type { JobDto } from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it, spyOn } from "bun:test";
-import { JOB_STATES } from "../../../app/api/contract";
-import { failConfirmation } from "../../../app/screens/job/failConfirm";
+import { JOB_STATES } from "../../../../app/jobs/api/contract";
+import { failConfirmation } from "../../../../app/jobs/screens/job/failConfirm";
 import { expectAbsent, expectUndefined } from "../assert";
 import {
   act,

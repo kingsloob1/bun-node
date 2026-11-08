@@ -3,12 +3,12 @@ import {
   runnerInvalidations,
   runnerKeys,
   runnerPath,
-} from "../../../app/api/runners";
+} from "../../../../app/jobs/api/runners";
 import {
   listRefetchInterval,
   RUNNER_REFRESH,
   runnerRefetchInterval,
-} from "../../../app/screens/runners/live";
+} from "../../../../app/jobs/screens/runners/live";
 import {
   defaultHistoryLimit,
   describeConcurrency,
@@ -20,7 +20,7 @@ import {
   orderRunners,
   runDuration,
   runnerBadges,
-} from "../../../app/screens/runners/runnerFormat";
+} from "../../../../app/jobs/screens/runners/runnerFormat";
 import { expectAbsent } from "../assert";
 import { setupDom } from "../dom";
 import {

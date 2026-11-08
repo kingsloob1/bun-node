@@ -566,8 +566,8 @@ describe("the checks", () => {
       ["packages/bun-nest", "bun --check"],
       ["examples/bun-nest", "bun run-all.ts"],
       [
-        "packages/bun-jobs-ui",
-        "bun test --check ./__tests__/server/nest.nest.test.ts",
+        "packages/bun-ui",
+        "bun test --check ./__tests__/jobs/server/nest.nest.test.ts",
       ],
       [
         ".",

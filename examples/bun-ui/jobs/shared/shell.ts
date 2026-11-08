@@ -1,5 +1,5 @@
-import type { UiConfig } from "@kingsleyweb/bun-jobs-ui";
-import { UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-jobs-ui";
+import type { UiConfig } from "@kingsleyweb/bun-ui/jobs";
+import { UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-ui/jobs";
 
 /**
  * Reading the HTML shell `jobsUi()` serves, the way a test would.

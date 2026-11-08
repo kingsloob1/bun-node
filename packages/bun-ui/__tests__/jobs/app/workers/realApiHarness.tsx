@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { listWorkers, workerKeys } from "../../../app/api/workers";
-import { useApiClient } from "../../../app/context";
-import { WorkerTable } from "../../../app/screens/workers/WorkerTable";
+import { listWorkers, workerKeys } from "../../../../app/jobs/api/workers";
+import { useApiClient } from "../../../../app/jobs/context";
+import { WorkerTable } from "../../../../app/jobs/screens/workers/WorkerTable";
 
 /** Props of {@link WorkersHarness}. */
 export interface WorkersHarnessProps {

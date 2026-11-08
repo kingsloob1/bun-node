@@ -66,7 +66,7 @@ formatting on save changes only what you edit.
   from `bun lint --stdin --stdin-filename <file> -f json` with the buffer on
   standard input, so unsaved text is linted. The root `bunfig.toml` has
   `typeAware = true`, so the type-aware rules run in the editor too, typed by
-  the file's own `tsconfig.json` (the bun-jobs-ui app's has the DOM). Errors
+  the file's own `tsconfig.json` (the bun-ui apps' has the DOM). Errors
   and warnings keep the config's severities. The rule name in the Problems
   panel and the hover links to `bun lint --explain=<rule>`, served as a
   read-only page (the "Show documentation" quick fix opens the same page
@@ -155,7 +155,7 @@ environment, the floor check, the report mapping, the edits), and
   `regexp/*` everywhere but the template, `no-console` off in `scripts/`,
   `playground/` and `examples/`, the type-aware `no-floating-promises`
   everywhere, and the React rules under their override
-  (`packages/bun-jobs-ui/**` and `examples/bun-jobs-ui/**`): `jsx-key` and
+  (`packages/bun-ui/**` and `examples/bun-ui/**`): `jsx-key` and
   `only-export-components` in a `.tsx` component, `rules-of-hooks` (error)
   and `exhaustive-deps` (warning) in a `.ts` hook in `app/` and `lib/`, and
   none of them in bun-common. In `__tests__/app/**`, the DOM-typed

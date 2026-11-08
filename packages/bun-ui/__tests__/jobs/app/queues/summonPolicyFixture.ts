@@ -1,4 +1,4 @@
-import type { SummonPolicyDto } from "../../../app/api/types";
+import type { SummonPolicyDto } from "../../../../app/jobs/api/types";
 
 /**
  * A summon status's policy (`SummonPolicyDto`) for the Policy block's tests:

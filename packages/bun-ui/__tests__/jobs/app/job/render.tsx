@@ -1,10 +1,14 @@
 import type { ReactNode } from "react";
-import type { JobDto, MetaDto, Permissions } from "../../../app/api/types";
+import type {
+  JobDto,
+  MetaDto,
+  Permissions,
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
-import { createApiClient } from "../../../app/api/client";
-import { jobScreenPath } from "../../../app/api/jobs";
-import { AppProviders } from "../../../app/providers";
-import { createQueryClient } from "../../../app/queryClient";
+import { createApiClient } from "../../../../app/jobs/api/client";
+import { jobScreenPath } from "../../../../app/jobs/api/jobs";
+import { AppProviders } from "../../../../app/jobs/providers";
+import { createQueryClient } from "../../../../app/jobs/queryClient";
 import { act, LOADED, page, render, visit } from "../dom";
 import { uiConfig } from "../fixtures";
 import { mockFetch } from "../mockFetch";

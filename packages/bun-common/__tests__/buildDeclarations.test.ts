@@ -287,7 +287,7 @@ const PUBLISHED = [
   "bun-contract",
   "bun-nest",
   "bun-jobs",
-  "bun-jobs-ui",
+  "bun-ui",
   "bun-api-docs-ui",
   "bun-cache",
   "bun-client",

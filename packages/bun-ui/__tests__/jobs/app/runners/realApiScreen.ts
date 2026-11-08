@@ -1,4 +1,4 @@
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 import { LOADED, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 

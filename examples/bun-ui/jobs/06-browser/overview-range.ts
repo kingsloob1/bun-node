@@ -105,7 +105,7 @@ import {
   MemoryDriver,
   runnerKey,
 } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { chromeOrSkip, openView, textOf } from "../shared/browser";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";

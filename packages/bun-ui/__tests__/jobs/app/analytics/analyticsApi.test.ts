@@ -1,4 +1,4 @@
-import type { TimeRange } from "../../../app/analytics/range";
+import type { TimeRange } from "../../../../app/jobs/analytics/range";
 import { describe, expect, it } from "bun:test";
 import {
   analyticsKeys,
@@ -15,12 +15,12 @@ import {
   getWorkersAnalytics,
   rangeKey,
   requestResolution,
-} from "../../../app/api/analytics";
-import { createApiClient } from "../../../app/api/client";
+} from "../../../../app/jobs/api/analytics";
+import { createApiClient } from "../../../../app/jobs/api/client";
 import {
   DEFAULT_ANALYTICS_RESOLUTION,
   MAX_ANALYTICS_SERIES,
-} from "../../../app/api/contract";
+} from "../../../../app/jobs/api/contract";
 import { expectAbsent, expectUndefined } from "../assert";
 import {
   jobsSeriesFixture,

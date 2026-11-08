@@ -1,4 +1,4 @@
-import type { FetchLike } from "../../../app/api/client";
+import type { FetchLike } from "../../../../app/jobs/api/client";
 
 /**
  * The steps `pkg/job.integration.test.ts` drives through the real UI. This

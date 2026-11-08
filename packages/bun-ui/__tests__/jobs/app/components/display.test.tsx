@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, jest, mock } from "bun:test";
-import { ApiError } from "../../../app/api/errors";
-import { COPY_FEEDBACK_MS } from "../../../app/components/copy";
-import { CopyButton } from "../../../app/components/CopyButton";
-import { KeyValue } from "../../../app/components/KeyValue";
-import { ProblemBanner } from "../../../app/components/ProblemBanner";
+import { ApiError } from "../../../../app/jobs/api/errors";
+import { COPY_FEEDBACK_MS } from "../../../../app/jobs/components/copy";
+import { CopyButton } from "../../../../app/jobs/components/CopyButton";
+import { KeyValue } from "../../../../app/jobs/components/KeyValue";
+import { ProblemBanner } from "../../../../app/jobs/components/ProblemBanner";
 import { act, fireEvent, page, render, setupDom } from "../dom";
 
 // Ahead of setupDom()'s hooks, which need real timers to settle.

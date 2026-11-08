@@ -4,10 +4,10 @@ import type {
   RunLogLineDto,
   RunLogPageDto,
   RunRecordDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { CAPTURE_GAP_NOTE } from "../../../app/screens/runners/runLogFormat";
+import { CAPTURE_GAP_NOTE } from "../../../../app/jobs/screens/runners/runLogFormat";
 import { expectAbsent } from "../assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";

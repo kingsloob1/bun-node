@@ -1,6 +1,6 @@
-import type { SkipReason } from "../../../../app/screens/runners/actions/explain";
+import type { SkipReason } from "../../../../../app/jobs/screens/runners/actions/explain";
 import { describe, expect, it } from "bun:test";
-import { SKIP_REASONS } from "../../../../app/screens/runners/actions/explain";
+import { SKIP_REASONS } from "../../../../../app/jobs/screens/runners/actions/explain";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { fireEvent, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";

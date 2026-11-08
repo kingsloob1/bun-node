@@ -1,5 +1,5 @@
-import type { FetchLike } from "../../../app/api/client";
-import { runnerPath } from "../../../app/api/runners";
+import type { FetchLike } from "../../../../app/jobs/api/client";
+import { runnerPath } from "../../../../app/jobs/api/runners";
 import { act, fireEvent, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 

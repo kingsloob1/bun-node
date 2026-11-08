@@ -1,12 +1,12 @@
-import type { WorkerDto } from "../../../app/api/types";
+import type { WorkerDto } from "../../../../app/jobs/api/types";
 import type { RecordedCall } from "../mockFetch";
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
-import { workerKeys } from "../../../app/api/workers";
+import { workerKeys } from "../../../../app/jobs/api/workers";
 import {
   readWorkerFilters,
   workerListQuery,
-} from "../../../app/screens/workers/filters";
+} from "../../../../app/jobs/screens/workers/filters";
 import { expectAbsent } from "../assert";
 import {
   fireEvent,
@@ -271,7 +271,9 @@ describe("the filter row's layout", () => {
         "..",
         "..",
         "..",
+        "..",
         "app",
+        "jobs",
         "screens",
         "workers",
         "workers.css",

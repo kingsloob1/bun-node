@@ -14,7 +14,7 @@
 // The plants also prove that each directory gets its own config: the regexp
 // plugin runs everywhere but the template (whose bunfig.toml leaves it out),
 // `no-console` is off in scripts/, playground/ and examples/, the React rules
-// run only in bun-jobs-ui, and `no-floating-promises` shows the type-aware
+// run only in bun-ui, and `no-floating-promises` shows the type-aware
 // rules run (`typeAware = true`).
 //
 // No file is written: the planted text exists only on standard input.
@@ -42,7 +42,7 @@ interface Case {
   regexp: boolean;
   /**
    * Whether to plant JSX and a DOM-typed line: a `.tsx` component file under
-   * the React override (`packages/bun-jobs-ui/**`; `examples/bun-jobs-ui/**`
+   * the React override (`packages/bun-ui/**`; `examples/bun-ui/**`
    * has no `.tsx`). The hooks rules, which also fire in `.ts`, and the test
    * override are planted separately below.
    */
@@ -72,8 +72,8 @@ const CASES: Case[] = [
     react: false,
   },
   {
-    dir: "packages/bun-jobs-ui",
-    file: "app/App.tsx",
+    dir: "packages/bun-ui",
+    file: "app/jobs/App.tsx",
     console: true,
     regexp: true,
     react: true,
@@ -121,8 +121,8 @@ const CASES: Case[] = [
     react: false,
   },
   {
-    dir: "examples/bun-jobs-ui",
-    file: "06-browser/helpers/page.ts",
+    dir: "examples/bun-ui",
+    file: "jobs/06-browser/helpers/page.ts",
     console: false,
     regexp: true,
     react: false,
@@ -245,8 +245,8 @@ describe.each(CASES)("$dir", (c) => {
   });
 });
 
-test("control: the DOM line is not clean in a DOM-free project, so the bun-jobs-ui plant can fail", async () => {
-  const path = join(REPO, "packages/bun-jobs-ui/lib/__probe__.ts");
+test("control: the DOM line is not clean in a DOM-free project, so the bun-ui plant can fail", async () => {
+  const path = join(REPO, "packages/bun-ui/lib/__probe__.ts");
   const rules = (await lintText(path, `${DOM_LINE}\n`, { bunPath }))
     .map((p) => p.rule)
     .sort();
@@ -267,7 +267,7 @@ async function lintVirtual(file: string, text: string): Promise<Finding[]> {
   return findings(await lintText(join(REPO, file), text, { bunPath }));
 }
 
-describe("bun-jobs-ui beyond .tsx: the hooks rules and the test override", () => {
+describe("bun-ui beyond .tsx: the hooks rules and the test override", () => {
   // A hook in a `.ts` file: a conditional hook call (line 5) and an effect
   // that reads `n` without listing it (line 10).
   const HOOK = [
@@ -303,25 +303,25 @@ describe("bun-jobs-ui beyond .tsx: the hooks rules and the test override", () =>
 
   test("app/hooks/*.ts: rules-of-hooks (error) and exhaustive-deps (warning)", async () => {
     expect(
-      await lintVirtual("packages/bun-jobs-ui/app/hooks/__probe__.ts", HOOK),
+      await lintVirtual("packages/bun-ui/app/jobs/hooks/__probe__.ts", HOOK),
     ).toEqual([
       ["react-hooks/rules-of-hooks", 5, "error"],
       ["react-hooks/exhaustive-deps", 10, "warning"],
     ]);
   });
 
-  test("lib/*.ts and examples/bun-jobs-ui: the same hooks rules (no DOM in lib, so line 9 is unsafe)", async () => {
+  test("lib/*.ts and examples/bun-ui: the same hooks rules (no DOM in lib, so line 9 is unsafe)", async () => {
     const expected: Finding[] = [
       ["react-hooks/rules-of-hooks", 5, "error"],
       ["@typescript-eslint/no-unsafe-member-access", 9, "warning"],
       ["react-hooks/exhaustive-deps", 10, "warning"],
     ];
-    expect(
-      await lintVirtual("packages/bun-jobs-ui/lib/__probe__.ts", HOOK),
-    ).toEqual(expected);
-    expect(
-      await lintVirtual("examples/bun-jobs-ui/__probe__.ts", HOOK),
-    ).toEqual(expected);
+    expect(await lintVirtual("packages/bun-ui/lib/__probe__.ts", HOOK)).toEqual(
+      expected,
+    );
+    expect(await lintVirtual("examples/bun-ui/__probe__.ts", HOOK)).toEqual(
+      expected,
+    );
   });
 
   test("control: outside the React override the hooks plant reports no hooks rule", async () => {
@@ -333,7 +333,7 @@ describe("bun-jobs-ui beyond .tsx: the hooks rules and the test override", () =>
   test("__tests__/app/**: the DOM-typed assertion is reported, the no-unsafe-* lines are not", async () => {
     expect(
       await lintVirtual(
-        "packages/bun-jobs-ui/__tests__/app/__probe__.test.ts",
+        "packages/bun-ui/__tests__/jobs/app/__probe__.test.ts",
         DOM_TEST,
       ),
     ).toEqual([
@@ -344,7 +344,7 @@ describe("bun-jobs-ui beyond .tsx: the hooks rules and the test override", () =>
   test("control: without the DOM lib the assertion is not reported", async () => {
     expect(
       await lintVirtual(
-        "packages/bun-jobs-ui/__tests__/server/__probe__.test.ts",
+        "packages/bun-ui/__tests__/jobs/server/__probe__.test.ts",
         DOM_TEST,
       ),
     ).toEqual([]);
@@ -352,7 +352,7 @@ describe("bun-jobs-ui beyond .tsx: the hooks rules and the test override", () =>
 
   test("control: outside a test file the no-unsafe-* lines are reported", async () => {
     expect(
-      await lintVirtual("packages/bun-jobs-ui/app/__probe__.ts", DOM_TEST),
+      await lintVirtual("packages/bun-ui/app/jobs/__probe__.ts", DOM_TEST),
     ).toEqual([
       ["@typescript-eslint/no-unnecessary-type-assertion", 3, "warning"],
       ["@typescript-eslint/no-unsafe-assignment", 4, "warning"],

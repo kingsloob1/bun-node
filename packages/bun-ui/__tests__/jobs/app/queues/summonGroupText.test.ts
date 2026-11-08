@@ -1,4 +1,4 @@
-import type { SummonGroupStatusDto } from "../../../app/api/types";
+import type { SummonGroupStatusDto } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
 import {
   circuitKindLabel,
@@ -7,7 +7,7 @@ import {
   groupShares,
   groupSharesText,
   groupUnitLabel,
-} from "../../../app/screens/queues/panels/summonGroupText";
+} from "../../../../app/jobs/screens/queues/panels/summonGroupText";
 import { expectNone, expectUndefined } from "../assert";
 
 /**

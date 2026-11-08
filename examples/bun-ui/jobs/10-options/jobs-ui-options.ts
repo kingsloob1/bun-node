@@ -37,7 +37,7 @@ import type {
   JobsUiAuthorize,
   JobsUiAuthorizeContext,
   JobsUiOptions,
-} from "@kingsleyweb/bun-jobs-ui";
+} from "@kingsleyweb/bun-ui/jobs";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,14 +47,14 @@ import {
   noopLogger,
 } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import * as entry from "@kingsleyweb/bun-jobs-ui";
+import * as entry from "@kingsleyweb/bun-ui/jobs";
 import {
   ASSET_CACHE_CONTROL,
   DEFAULT_BASE_PATH,
   DEFAULT_TITLE,
   jobsUi,
   UI_CONFIG_ELEMENT_ID,
-} from "@kingsleyweb/bun-jobs-ui";
+} from "@kingsleyweb/bun-ui/jobs";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { cspDirectives, fetchShell } from "../shared/shell";
@@ -156,13 +156,14 @@ checkEqual(
 /* ================================================================== */
 step("logger — anything resolveLogger accepts; hears the one-time build");
 
-// Where the package lives, to tell whether a prebuilt dist/ is there.
+// Where the package lives, to tell whether a prebuilt dist/jobs/ is there.
 const packageDir = join(
-  dirname(fileURLToPath(import.meta.resolve("@kingsleyweb/bun-jobs-ui"))),
+  dirname(fileURLToPath(import.meta.resolve("@kingsleyweb/bun-ui/jobs"))),
+  "..",
   "..",
 );
-const hasDist = existsSync(join(packageDir, "dist", "manifest.json"));
-show("prebuilt dist/ present", hasDist);
+const hasDist = existsSync(join(packageDir, "dist", "jobs", "manifest.json"));
+show("prebuilt dist/jobs/ present", hasDist);
 
 const first = createTestLogger();
 const logged = ui({ api, logger: first.logger });

@@ -2,9 +2,9 @@ import type {
   WorkerDto,
   WorkerTargetInfoDto,
   WorkerTargetKind,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
-import { WORKER_TARGET_KINDS } from "../../../app/api/contract";
+import { WORKER_TARGET_KINDS } from "../../../../app/jobs/api/contract";
 import { expectAbsent, expectNone } from "../assert";
 import { LOADED, page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";

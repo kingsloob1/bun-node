@@ -1,5 +1,5 @@
-import type { FetchLike } from "../../../app/api/client";
-import { jobScreenPath } from "../../../app/api/jobs";
+import type { FetchLike } from "../../../../app/jobs/api/client";
+import { jobScreenPath } from "../../../../app/jobs/api/jobs";
 import { act, fireEvent, LOADED, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
 

@@ -6,7 +6,7 @@ import type {
   RunnerListDto,
   RunnerStatsDto,
   RunRecordDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { jest } from "bun:test";
 import { act, visit } from "../dom";

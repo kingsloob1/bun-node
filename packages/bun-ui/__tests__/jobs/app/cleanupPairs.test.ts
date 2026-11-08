@@ -24,7 +24,7 @@ import { describe, expect, it } from "bun:test";
  */
 
 /** The app's sources. */
-const APP = join(import.meta.dir, "..", "..", "app");
+const APP = join(import.meta.dir, "..", "..", "..", "app", "jobs");
 
 /** An opener and the closer it needs. */
 interface Pair {

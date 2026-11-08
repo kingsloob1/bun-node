@@ -7,7 +7,7 @@ import type {
   LogPageDto,
   MetaDto,
   Permissions,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import { metaFixture, permissionsFixture } from "../fixtures";
 
 /**

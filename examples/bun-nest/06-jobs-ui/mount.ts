@@ -1,7 +1,7 @@
 import type { INestApplication } from "@nestjs/common";
 /**
  * The bun-jobs management UI in a NestJS application: `jobsUi()` from
- * `@kingsleyweb/bun-jobs-ui`, mounted beside `BunJobsApiModule` on bun-nest's
+ * `@kingsleyweb/bun-ui/jobs`, mounted beside `BunJobsApiModule` on bun-nest's
  * `BunHttpAdapter`.
  *
  * ```bash
@@ -26,7 +26,7 @@ import type { INestApplication } from "@nestjs/common";
  * - **Mount before `listen()`** (or `init()`), like any adapter middleware.
  */
 import { BunJobs, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
 import { BUN_JOBS_API, BunJobsApiModule } from "@kingsleyweb/bun-nest/jobs";
 import { Controller, Get, Module } from "@nestjs/common";

@@ -5,7 +5,7 @@
  * the Overview can render; a chunk is what opening one screen costs.
  */
 import { describe, expect, it } from "bun:test";
-import { buildAssets } from "../../lib/assets";
+import { buildAssets } from "../../../lib/jobs/assets";
 
 /**
  * Byte limits, each about 10% above what the build measured when it was set.

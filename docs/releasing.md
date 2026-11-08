@@ -151,7 +151,7 @@ names the package, checking dependencies, then optionalDependencies, then
 devDependencies, then peerDependencies (`updateLocalDependency`). A
 package that names another workspace package as both a peer and a
 devDependency would ship its peer as `workspace:^`. Four packages here do
-that: bun-common, bun-client, bun-jobs-ui, and bun-nest (twice). lerna
+that: bun-common, bun-client, bun-ui, and bun-nest (twice). lerna
 also has no support for `catalog:` at all. It packs the manifest as it is,
 with npm-packlist and tar, so every `catalog:` devDependency would ship
 verbatim.

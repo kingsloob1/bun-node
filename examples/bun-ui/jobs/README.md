@@ -1,8 +1,8 @@
-# `@kingsleyweb/bun-jobs-ui` examples
+# `@kingsleyweb/bun-ui/jobs` examples
 
-Runnable examples for [`@kingsleyweb/bun-jobs-ui`](../../packages/bun-jobs-ui):
+Runnable examples for the jobs UI of [`@kingsleyweb/bun-ui`](../../../packages/bun-ui/guides/jobs.md):
 the React management UI for the
-[`@kingsleyweb/bun-jobs`](../../packages/bun-jobs) management API. `jobsUi()`
+[`@kingsleyweb/bun-jobs`](../../../packages/bun-jobs) management API. `jobsUi()`
 returns a bun-common router that serves the app's HTML shell for every client
 route under its `basePath` and the hashed bundle under `<basePath>/assets/`.
 Mount it beside `createJobsApi` and the page does the rest through the API.
@@ -13,7 +13,7 @@ Its opening comment says what it shows and how to run it. Every file also
 wrong answer fails the script.
 
 ```bash
-cd examples/bun-jobs-ui
+cd examples/bun-ui/jobs
 bun 01-quick-start/index.ts            # start here
 bun 01-quick-start/index.ts --serve    # and keep serving, to open it in a browser
 bun 05-demo/seeded-demo.ts --serve     # every queue, runner and Events screen, seeded and live, with a URL for each
@@ -21,7 +21,7 @@ bun run-all.ts                         # every example; prints ok / skip / FAIL
 bun run-all.ts 02 10                   # only folders 02-* and 10-*
 ```
 
-No install step: `@kingsleyweb/bun-jobs-ui`, `@kingsleyweb/bun-jobs` and
+No install step: `@kingsleyweb/bun-ui`, `@kingsleyweb/bun-jobs` and
 `@kingsleyweb/bun-common` resolve from the repo's root `node_modules`. The
 memory driver keeps every job in the process, so no database is needed.
 
@@ -41,13 +41,13 @@ Folders 04–06 cover the screens: their URLs, the permissions they are drawn
 from, a seeded demo to click through, and a browser driving them.
 
 `05-demo/seeded-demo.ts` reads `EXAMPLE_DRIVER` like the
-[`bun-jobs` examples](../bun-jobs/README.md#choosing-a-backend) do (`memory` by
+[`bun-jobs` examples](../../bun-jobs/README.md#choosing-a-backend) do (`memory` by
 default; `file` and `sqlite` need nothing; a server backend needs its URL, and
 skips without one).
 
-The repo has no prebuilt `dist/`, so the first request in each process bundles
+The repo has no prebuilt `dist/jobs/`, so the first request in each process bundles
 the app in memory. That takes tens of milliseconds and logs one line. A
-published package ships `dist/` and never builds.
+published package ships `dist/jobs/` and never builds.
 
 ## The examples
 
@@ -70,7 +70,7 @@ published package ships `dist/` and never builds.
 |---|---|
 | [`cross-origin.ts`](./03-deployments/cross-origin.ts) | the UI and the API on two origins: `apiUrl`, `csrfHeader` set by hand, and the API's `cors`, `csrf.allowedOrigins` and `websocket.allowedOrigins`, each checked with the requests a browser on the UI's origin would send, and the API's origin in `connect-src` as `http(s)` and `ws(s)` (keep the socket on the API's port: a dedicated one is not listed with `apiUrl`) |
 
-For NestJS, see [`bun-nest/06-jobs-ui/mount.ts`](../bun-nest/06-jobs-ui/mount.ts):
+For NestJS, see [`bun-nest/06-jobs-ui/mount.ts`](../../bun-nest/06-jobs-ui/mount.ts):
 `jobsUi()` over the API that `BunJobsApiModule` built, mounted with
 `adapter.use(ui.basePath, ui.router)`.
 
@@ -137,8 +137,8 @@ and tries every value `jobsUi()` refuses, which must throw a `ConfigError`.
 ## Checking the examples
 
 ```bash
-bun scripts/typecheck.ts        # from the repo root — includes examples/bun-jobs-ui
-cd examples/bun-jobs-ui
+bun scripts/typecheck.ts        # from the repo root — includes examples/bun-ui
+cd examples/bun-ui/jobs
 bun run lint                    # the package's lint rules, minus no-console
 bun run format:check            # bun fmt --check
 bun run-all.ts                  # run them all

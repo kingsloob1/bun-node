@@ -10,7 +10,7 @@
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
-import { buildAssets, DEFAULT_ENTRY } from "../../../lib/assets";
+import { buildAssets, DEFAULT_ENTRY } from "../../../../lib/jobs/assets";
 
 /** Text that only server code contains. */
 const SERVER_MARKERS: readonly RegExp[] = [

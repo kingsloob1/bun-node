@@ -1,12 +1,12 @@
-import type { FetchLike } from "../../app/api/client";
-import type { LiveOptions } from "../../app/live";
-import type { UiConfig } from "../../lib/shared/config.ts";
+import type { FetchLike } from "../../../app/jobs/api/client";
+import type { LiveOptions } from "../../../app/jobs/live";
+import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
 import type { MockHandler, MockReply } from "./mockFetch";
-import { createApiClient } from "../../app/api/client";
-import { App } from "../../app/App";
-import { LiveOptionsContext } from "../../app/live";
-import { AppProviders } from "../../app/providers";
-import { createQueryClient } from "../../app/queryClient";
+import { createApiClient } from "../../../app/jobs/api/client";
+import { App } from "../../../app/jobs/App";
+import { LiveOptionsContext } from "../../../app/jobs/live";
+import { AppProviders } from "../../../app/jobs/providers";
+import { createQueryClient } from "../../../app/jobs/queryClient";
 import { render } from "./dom";
 import {
   demandFixture,

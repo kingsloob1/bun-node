@@ -1,7 +1,7 @@
 import type {
   ApplyJobDefaultsBody,
   ApplyJobDefaultsResultDto,
-} from "../../../app/api/types";
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import {
@@ -9,14 +9,14 @@ import {
   JOB_DEFAULT_KEYS,
   JOB_DEFAULTS_APPLY_STATES,
   JOB_DEFAULTS_BOUNDS,
-} from "../../../app/api/contract";
+} from "../../../../app/jobs/api/contract";
 import {
   APPLY_IRREVERSIBLE,
   CODE_SOURCE_HINT,
   EXHAUSTED_WARNING,
   INCLUDE_UNMARKED_HINT,
   RESET_CANNOT_RESTORE,
-} from "../../../app/screens/queues/panels/jobDefaults/text";
+} from "../../../../app/jobs/screens/queues/panels/jobDefaults/text";
 import { expectAbsent, expectNone, expectUndefined } from "../assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";

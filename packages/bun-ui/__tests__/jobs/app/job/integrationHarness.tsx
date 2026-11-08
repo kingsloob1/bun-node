@@ -6,12 +6,12 @@ import type {
   JobUiHarnessOptions,
 } from "./integrationSteps";
 import { expect } from "bun:test";
-import { createApiClient } from "../../../app/api/client";
-import { jobScreenPath, queueScreenPath } from "../../../app/api/jobs";
-import { App } from "../../../app/App";
-import { AppProviders } from "../../../app/providers";
-import { createQueryClient } from "../../../app/queryClient";
-import { AddJobDialog } from "../../../app/screens/job";
+import { createApiClient } from "../../../../app/jobs/api/client";
+import { jobScreenPath, queueScreenPath } from "../../../../app/jobs/api/jobs";
+import { App } from "../../../../app/jobs/App";
+import { AppProviders } from "../../../../app/jobs/providers";
+import { createQueryClient } from "../../../../app/jobs/queryClient";
+import { AddJobDialog } from "../../../../app/jobs/screens/job";
 import { expectAbsent } from "../assert";
 import {
   act,

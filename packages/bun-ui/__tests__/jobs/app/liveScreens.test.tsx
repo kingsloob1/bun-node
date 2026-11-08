@@ -1,16 +1,19 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import type { JobDto } from "../../app/api/types";
+import type { JobDto } from "../../../app/jobs/api/types";
 import type { RecordedCall } from "./mockFetch";
 import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
-import { analyticsKeys, rangeKey } from "../../app/api/analytics";
-import { jobKeys } from "../../app/api/jobs";
-import { queryKeys } from "../../app/api/queryKeys";
-import { queueKeys } from "../../app/api/queues";
-import { runnerKeys } from "../../app/api/runners";
-import { POLL_INTERVAL_MS } from "../../app/queryClient";
-import { COUNT_EVENTS, DETAIL_EVENTS } from "../../app/screens/queues/live";
-import { RUNNER_STATE_EVENTS } from "../../app/screens/runners/live";
+import { analyticsKeys, rangeKey } from "../../../app/jobs/api/analytics";
+import { jobKeys } from "../../../app/jobs/api/jobs";
+import { queryKeys } from "../../../app/jobs/api/queryKeys";
+import { queueKeys } from "../../../app/jobs/api/queues";
+import { runnerKeys } from "../../../app/jobs/api/runners";
+import { POLL_INTERVAL_MS } from "../../../app/jobs/queryClient";
+import {
+  COUNT_EVENTS,
+  DETAIL_EVENTS,
+} from "../../../app/jobs/screens/queues/live";
+import { RUNNER_STATE_EVENTS } from "../../../app/jobs/screens/runners/live";
 import { expectAbsent } from "./assert";
 import { act, LOADED, page, setupDom, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";

@@ -1,8 +1,8 @@
 import type {
   JobsApiClientMessage,
   JobsApiServerMessage,
-} from "../../../app/api/types";
-import type { LiveSocket, LiveTimers } from "../../../app/live/client";
+} from "../../../../app/jobs/api/types";
+import type { LiveSocket, LiveTimers } from "../../../../app/jobs/live/client";
 
 /**
  * A fake WebSocket and fake timers for driving `LiveClient` frame by frame:

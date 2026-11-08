@@ -5,13 +5,13 @@ import {
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { wsModel } from "@kingsleyweb/bun-api-docs-ui/embed";
 import { describe, expect, it } from "bun:test";
-import { liveChannels } from "../../../../app/live";
-import { eventsConsole } from "../../../../app/screens/docs/ws/console";
+import { liveChannels } from "../../../../../app/jobs/live";
+import { eventsConsole } from "../../../../../app/jobs/screens/docs/ws/console";
 import {
   eventsLink,
   isKnownAction,
-} from "../../../../app/screens/docs/ws/links";
-import { JOBS_ADDRESS } from "../../../../app/screens/docs/ws/address";
+} from "../../../../../app/jobs/screens/docs/ws/links";
+import { JOBS_ADDRESS } from "../../../../../app/jobs/screens/docs/ws/address";
 import { expectAbsent, expectUndefined } from "../../assert";
 import { wsFixture } from "./fixtures";
 

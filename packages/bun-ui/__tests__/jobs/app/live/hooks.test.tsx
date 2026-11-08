@@ -1,11 +1,11 @@
 import type { QueryKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { MetaDto, Permissions } from "../../../app/api/types";
-import type { LiveClientOverrides } from "../../../app/live";
+import type { MetaDto, Permissions } from "../../../../app/jobs/api/types";
+import type { LiveClientOverrides } from "../../../../app/jobs/live";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { StrictMode, useState } from "react";
-import { UiConfigContext } from "../../../app/context";
+import { UiConfigContext } from "../../../../app/jobs/context";
 import {
   LiveOptionsContext,
   LiveProvider,
@@ -15,9 +15,9 @@ import {
   useLiveStatus,
   useLiveSubscription,
   usePollInterval,
-} from "../../../app/live";
-import { MetaContext } from "../../../app/meta/hooks";
-import { createQueryClient } from "../../../app/queryClient";
+} from "../../../../app/jobs/live";
+import { MetaContext } from "../../../../app/jobs/meta/hooks";
+import { createQueryClient } from "../../../../app/jobs/queryClient";
 import { expectAbsent, expectNone } from "../assert";
 import { act, render, setupDom, waitFor } from "../dom";
 import { metaFixture, permissionsFixture, uiConfig } from "../fixtures";

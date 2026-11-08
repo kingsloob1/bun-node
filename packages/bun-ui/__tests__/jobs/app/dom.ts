@@ -69,7 +69,9 @@ const LAZY_SCREENS = join(
   import.meta.dir,
   "..",
   "..",
+  "..",
   "app",
+  "jobs",
   "screens",
   "lazy.tsx",
 );

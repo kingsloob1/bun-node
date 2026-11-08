@@ -1,4 +1,4 @@
-import type { SpecDocument } from "../../../../app/api/docs";
+import type { SpecDocument } from "../../../../../app/jobs/api/docs";
 import { readFileSync } from "node:fs";
 
 /**

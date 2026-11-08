@@ -1,9 +1,9 @@
-import type { TabItem } from "../../../app/components/Tabs";
+import type { TabItem } from "../../../../app/jobs/components/Tabs";
 import { describe, expect, it, mock } from "bun:test";
 import { useState } from "react";
-import { Tabs, UrlTabs } from "../../../app/components/Tabs";
-import { useUrlTab } from "../../../app/hooks/useUrlTab";
-import { RouterProvider } from "../../../app/router";
+import { Tabs, UrlTabs } from "../../../../app/jobs/components/Tabs";
+import { useUrlTab } from "../../../../app/jobs/hooks/useUrlTab";
+import { RouterProvider } from "../../../../app/jobs/router";
 import { expectAbsent } from "../assert";
 import { act, fireEvent, page, render, setupDom, visit } from "../dom";
 

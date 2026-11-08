@@ -4,11 +4,11 @@
  * first request.
  */
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
-import type { JobsUiOptions } from "../../lib/types";
+import type { JobsUiOptions } from "../../../lib/jobs/types";
 import { ConfigError } from "@kingsleyweb/bun-jobs";
 import { describe, expect, it } from "bun:test";
-import { jobsUi } from "../../lib/index";
-import { normalizeBasePath } from "../../lib/jobsUi";
+import { jobsUi } from "../../../lib/jobs/index";
+import { normalizeBasePath } from "../../../lib/jobs/jobsUi";
 import { fixtureUi, parseCsp } from "./helpers";
 
 /** A structural stand-in for a `JobsApi`, enough for option resolution. */

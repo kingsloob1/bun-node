@@ -1,4 +1,8 @@
-import type { JobDto, JobPageDto, MetaDto } from "../../../app/api/types";
+import type {
+  JobDto,
+  JobPageDto,
+  MetaDto,
+} from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { expectAbsent, expectNone } from "../assert";

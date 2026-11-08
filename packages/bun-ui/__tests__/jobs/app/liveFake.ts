@@ -7,8 +7,8 @@ import type {
   QueueEventName,
   RunnerEventName,
   WorkerEventName,
-} from "../../app/api/types";
-import type * as LiveModule from "../../app/live";
+} from "../../../app/jobs/api/types";
+import type * as LiveModule from "../../../app/jobs/live";
 import { useQueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, mock } from "bun:test";
 import { useEffect, useRef, useSyncExternalStore } from "react";
@@ -32,7 +32,9 @@ type LiveSubscription = LiveModule.LiveSubscription;
  */
 
 /** The real module, captured before it is mocked. */
-const real = { ...(await import("../../app/live")) } as typeof LiveModule;
+const real = {
+  ...(await import("../../../app/jobs/live")),
+} as typeof LiveModule;
 
 /** How much the fake's `usePollInterval` slows a base interval while live. */
 export const LIVE_SLOWDOWN = 12;
@@ -310,7 +312,7 @@ function pick<F>(fake: F, actual: F): F {
   return liveFake.installed ? fake : actual;
 }
 
-void mock.module("../../app/live", () => ({
+void mock.module("../../../app/jobs/live", () => ({
   ...real,
   useLiveStatus: () => pick(useFakeLiveStatus, real.useLiveStatus)(),
   usePollInterval: (base: number | false) =>
