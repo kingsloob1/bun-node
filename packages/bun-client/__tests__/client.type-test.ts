@@ -60,7 +60,7 @@ interface Routes {
   };
   "GET /search": {
     query: { q: string };
-    headers: { "x-version": "1" | "2" };
+    headers: { "x-version": "1" | "2"; "x-limit"?: number; "x-dry"?: boolean };
     responses: { "200": { hits: number } };
   };
 }
@@ -122,6 +122,20 @@ void api.get("/search", {
 });
 // @ts-expect-error -- wrong header value
 void api.get("/search", { query: { q: "x" }, headers: { "x-version": "3" } });
+// A header declared a number or a boolean takes that type (sent as its
+// string); undeclared ones take any scalar.
+void api.get("/search", {
+  query: { q: "x" },
+  headers: { "x-version": "1", "x-limit": 10, "x-dry": true, "x-n": 2 },
+});
+// @ts-expect-error -- a number header is a number, not its string
+void api.get("/search", { query: { q: "x" }, headers: { "x-limit": "10" } });
+// @ts-expect-error -- a boolean header is not a number
+void api.get("/search", { query: { q: "x" }, headers: { "x-dry": 1 } });
+// @ts-expect-error -- not a bigint (the client writes an object's headers through JSON)
+void api.get("/search", { query: { q: "x" }, headers: { "x-n": 1n } });
+// @ts-expect-error -- an undeclared header is a scalar, not an object
+void api.get("/search", { query: { q: "x" }, headers: { "x-o": {} } });
 
 // --- 6. The result, discriminated by status (§4.4) -----------------------------
 async function results() {

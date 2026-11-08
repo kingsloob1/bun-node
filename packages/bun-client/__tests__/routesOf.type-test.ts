@@ -110,5 +110,38 @@ async function views() {
   void viewed.get("/things/:id", { params: { id: 1 } });
 }
 
+// 6. A coerced header (`z.coerce.number()`, `z.coerce.boolean()`) is its
+// output on the wire's send view, a number or a boolean; the call takes it,
+// and the client sends its string.
+export const tenants = defineRoutes("/tenants", (r) => ({
+  list: r.get(
+    "/",
+    validate(
+      {
+        headers: z.object({
+          "x-limit": z.coerce.number(),
+          "x-dry-run": z.coerce.boolean().optional(),
+          "x-tenant": z.string(),
+        }),
+      },
+      { responses: { 200: z.array(z.string()) } },
+    ),
+    (_req, res) => res.status(200).json([]),
+  ),
+}));
+declare const tenantApi: Client<RoutesOf<typeof tenants>>;
+async function coercedHeaders() {
+  type Sent = RoutesOf<typeof tenants>["GET /tenants/"]["send"]["headers"];
+  type _limit = Expect<Equal<Sent["x-limit"], number>>;
+  void tenantApi.get("/tenants/", {
+    headers: { "x-limit": 10, "x-dry-run": true, "x-tenant": "t" },
+  });
+  // @ts-expect-error -- the wire type is the coercion's output, a number
+  void tenantApi.get("/tenants/", { headers: { "x-limit": "10" } });
+  // @ts-expect-error -- a string header stays a string
+  void tenantApi.get("/tenants/", { headers: { "x-tenant": 1 } });
+}
+
 void inferred;
 void views;
+void coercedHeaders;

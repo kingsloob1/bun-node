@@ -56,7 +56,11 @@ interface Routes {
     responses: { 200: { path: string[] } };
   };
   "GET /echo": {
-    headers: { "x-version"?: "1" | "2" };
+    headers: {
+      "x-version"?: "1" | "2";
+      "x-count"?: number;
+      "x-dry-run"?: boolean;
+    };
     responses: { 200: Record<string, unknown> };
   };
   "POST /raw": {
@@ -280,6 +284,32 @@ describe("headers at three levels (§6.2)", () => {
       "x-c": "call",
       "x-version": "2",
     });
+  });
+
+  it("sends a number or boolean header as its string, and no header for undefined (control: a string passes as it is)", async () => {
+    const levels = createClient<Routes>({
+      fetch: fetchRouter,
+      headers: { "x-client": "kept", "x-version": "1" },
+    });
+    const result = await levels.get("/echo", {
+      headers: {
+        "x-count": 42,
+        "x-dry-run": false,
+        "x-version": undefined,
+        "x-absent": undefined,
+      },
+    });
+    const echoed = result.ok ? result.data : {};
+    expect(echoed).toMatchObject({
+      "x-count": "42",
+      "x-dry-run": "false",
+      "x-client": "kept",
+      // An undefined call header leaves the level below it in place.
+      "x-version": "1",
+    });
+    // `new Headers({ h: undefined })` sends the text "undefined": not here.
+    expect(echoed).not.toHaveProperty("x-absent");
+    expect(new Headers({ h: undefined } as never).get("h")).toBe("undefined");
   });
 
   it("calls a headers function per request, with the request context, in level order", async () => {

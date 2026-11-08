@@ -141,6 +141,11 @@
  * limits were raised from 2.8 and 2 KiB to 11.5 and 4.5 KiB for it. Its
  * checks are `./channel`'s chunk, byte for byte (17,447 and 6,406), against
  * {@link CHANNEL_CHECKS_BUDGET}.
+ *
+ * Non-string request headers (2026-11-08, Bun 1.4.4-canary.1+11c367163):
+ * eager 12,143 bytes minified, 5,103 gzipped (12,074 and 5,086 on develop
+ * 5a8c331e: a call's `undefined` header dropped, a number sent as its
+ * string), 17 bytes under the gzip limit. No limit changed.
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";

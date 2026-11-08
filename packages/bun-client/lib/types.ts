@@ -152,8 +152,12 @@ type KeyedPart<K extends string, T> = [keyof T] extends [never]
     ? { [P in K]?: T }
     : { [P in K]: T };
 
-/** A header value as a call writes it. */
-type HeaderValue = string | undefined;
+/**
+ * A header value as a call writes it: a string, or a number or boolean,
+ * sent as its string (a header crosses as a string, which the server
+ * coerces back, as it does a param); `undefined` sends none.
+ */
+type HeaderValue = string | number | boolean | undefined;
 
 /** The `params` option for entry `E`. */
 type ParamsPart<E> =
@@ -181,7 +185,9 @@ type BodyPart<E> =
  * The `headers` option for entry `E`. A route that declares headers takes
  * them typed (optional at the call, since the client's or the route's
  * configuration may supply them) beside any other header; one that does not
- * takes any {@link HeadersOption}.
+ * takes any {@link HeadersOption}. A header declared a number or a boolean
+ * (a server's `z.coerce.number()`, which documents `integer`) takes that
+ * type, and is sent as its string ({@link HeaderValue}).
  */
 type HeadersPart<E> =
   Declares<E, "headers"> extends true
