@@ -1,0 +1,192 @@
+$ bun lint
+172 |     // shows, and nothing crashes.
+173 |     const renamed = structuredClone(doc) as Record<string, never>;
+174 |     for (const item of Object.values(renamed.paths ?? {}) as Record<
+                             ^
+warn: The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.  @typescript-eslint/no-unnecessary-type-assertion
+   at __tests__/app/docs/http/screen.test.tsx:174:24
+
+199 |   it("reads the same extensions under x-bun-common when configured first", async () => {
+200 |     const moved = structuredClone(doc) as Record<string, never>;
+201 |     for (const item of Object.values(moved.paths ?? {}) as Record<
+                             ^
+warn: The type arguments for this generic call may be inferred from the assertion. Specify them explicitly instead.  @typescript-eslint/no-unnecessary-type-assertion
+   at __tests__/app/docs/http/screen.test.tsx:201:24
+
+352 |     fill("queue", "mail");
+353 |     await page().findByTestId("snippet-curl", {}, { timeout: 3_000 });
+354 |     const curl = page().getByTestId("snippet-curl").textContent!;
+                       ^
+warn: This assertion is unnecessary since it does not change the type of the expression.  @typescript-eslint/no-unnecessary-type-assertion
+   at __tests__/app/docs/http/screen.test.tsx:354:18
+
+358 |     expect(curl).toContain(`-H '${CSRF}: 1'`);
+359 |     fireEvent.click(within(panel()).getByRole("tab", { name: "fetch()" }));
+360 |     const fetched = page().getByTestId("snippet-fetch").textContent!;
+                          ^
+warn: This assertion is unnecessary since it does not change the type of the expression.  @typescript-eslint/no-unnecessary-type-assertion
+   at __tests__/app/docs/http/screen.test.tsx:360:21
+
+136 |     );
+137 |     // The mutation confirms first.
+138 |     let confirm: HTMLElement | null = null;
+              ^
+warn: The value assigned to 'confirm' is not used in subsequent statements.  no-useless-assignment
+   at __tests__/app/docs/http/seams.test.tsx:138:9
+
+note: Reassigned on line 140 before it's read.
+
+22 |  * why the bundle grew. Never raise it only to make this test pass.
+23 |  */
+24 | export const BUNDLE_BUDGET = {
+                  ^
+warn: Do not export from a test file.  bun:test/no-export
+   at __tests__/server/budget.test.ts:24:14
+
+note: If you want to share code between tests, move it into a separate file and import it from there.
+
+106 |     }
+107 |     const message =
+108 |       error instanceof Error ? error.message : String(error ?? "Unknown error");
+                                                            ^
+warn: 'error ?? "Unknown error"' will use Object's default stringification format ('[object Object]') when stringified.  @typescript-eslint/no-base-to-string
+   at app/components/ScreenErrorBoundary.tsx:108:55
+
+70 |       ({ index }) => tabId(index) === event.currentTarget.id,
+71 |     );
+72 |     let next: number | null = null;
+             ^
+warn: The value assigned to 'next' is not used in subsequent statements.  no-useless-assignment
+   at app/components/Tabs.tsx:72:9
+
+note: Reassigned on lines 75, 78, 81 and 1 more before it's read.
+
+161 |               <section
+162 |                 // Two sections may share a name in a hand-written document.
+163 |                 key={`${index}-${section.name}`}
+                           ^
+warn: Do not use Array index in keys  react/no-array-index-key
+   at app/screens/docs/http/Sidebar.tsx:163:22
+
+142 |                 onChange(
+143 |                   checked
+144 |                     ? [...picked, option]
+                             ^
+warn: Unsafe spread of an `any` value in an array.  @typescript-eslint/no-unsafe-assignment
+   at app/screens/docs/http/TryItPanel.tsx:144:24
+
+173 |         : sections.map((section, index) => (
+174 |             <Card
+175 |               key={`${index}-${section.name}`}
+                         ^
+warn: Do not use Array index in keys  react/no-array-index-key
+   at app/screens/docs/http/index.tsx:175:20
+
+267 |   for (const item of [
+268 |     ...shared,
+269 |     ...(Array.isArray(raw.parameters) ? raw.parameters : []),
+          ^
+warn: Unsafe spread of an `any` value in an array.  @typescript-eslint/no-unsafe-assignment
+   at app/screens/docs/http/model.ts:269:5
+
+160 |   if (kind.kind === "enum-list") {
+161 |     const picked = Array.isArray(value) ? value : [];
+162 |     return { value: picked.length > 0 ? [...picked] : undefined };
+                                               ^
+warn: Unsafe spread of an `any` value in an array.  @typescript-eslint/no-unsafe-assignment
+   at app/screens/docs/http/tryIt.ts:162:42
+
+44 |     const options = node[key];
+45 |     if (Array.isArray(options) && options.length > 0) {
+46 |       const option =
+                 ^
+warn: Unsafe assignment of an `any` value.  @typescript-eslint/no-unsafe-assignment
+   at app/screens/docs/schema/skeleton.ts:46:13
+
+34 | /** The loaded document, or a clear error outside {@link DocsViewer}. */
+35 | export function useDocument(): LoadedDocument {
+                     ^
+error: Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.  react/only-export-components
+    at app/screens/docs/viewer.tsx:35:17
+
+470 | function eventOf(key: string): WsMessage["event"] {
+471 |   const match = /^([^.]+)\.(.+)$/.exec(key);
+472 |   return match ? { kind: match[1]!, type: match[2]! } : null;
+                               ^
+warn: This assertion is unnecessary since it does not change the type of the expression.  @typescript-eslint/no-unnecessary-type-assertion
+   at app/screens/docs/ws/model.ts:472:26
+
+470 | function eventOf(key: string): WsMessage["event"] {
+471 |   const match = /^([^.]+)\.(.+)$/.exec(key);
+472 |   return match ? { kind: match[1]!, type: match[2]! } : null;
+                                                ^
+warn: This assertion is unnecessary since it does not change the type of the expression.  @typescript-eslint/no-unnecessary-type-assertion
+   at app/screens/docs/ws/model.ts:472:43
+
+175 |     }
+176 |   }
+177 |   return Object.freeze([...value]);
+        ^
+warn: Unsafe return of a value of type `any[]`.  @typescript-eslint/no-unsafe-return
+   at lib/docsUi.ts:177:3
+
+175 |     }
+176 |   }
+177 |   return Object.freeze([...value]);
+                              ^
+warn: Unsafe spread of an `any` value in an array.  @typescript-eslint/no-unsafe-assignment
+   at lib/docsUi.ts:177:25
+
+582 |   };
+583 | 
+584 |   const guards = (route: "asset" | "document" | "shell"): RouterHandler[] => [
+                                                                                   ^
+warn: Unsafe return of a value of type `any[]`.  @typescript-eslint/no-unsafe-return
+   at lib/docsUi.ts:584:78
+
+584 |   const guards = (route: "asset" | "document" | "shell"): RouterHandler[] => [
+585 |     ...middleware,
+          ^
+warn: Unsafe spread of an `any` value in an array.  @typescript-eslint/no-unsafe-assignment
+   at lib/docsUi.ts:585:5
+
+543 |   if (!process.argv.includes("--verify")) {
+544 |     const rewritten = await build(outDir);
+545 |     console.log(
+          ^
+warn: Unexpected console statement.  no-console
+   at scripts/build-declarations.ts:545:5
+
+548 |     );
+549 |   } else if (!existsSync(outDir)) {
+550 |     console.error(`${outName}/ does not exist; run \`bun run build:types\``);
+          ^
+warn: Unexpected console statement.  no-console
+   at scripts/build-declarations.ts:550:5
+
+553 |   const problems = await verify(outDir);
+554 |   if (problems.length > 0) {
+555 |     console.error(`${outName}/ is not publishable:`);
+          ^
+warn: Unexpected console statement.  no-console
+   at scripts/build-declarations.ts:555:5
+
+554 |   if (problems.length > 0) {
+555 |     console.error(`${outName}/ is not publishable:`);
+556 |     for (const p of problems) console.error(`  ${p}`);
+                                    ^
+warn: Unexpected console statement.  no-console
+   at scripts/build-declarations.ts:556:31
+
+557 |     process.exit(1);
+558 |   }
+559 |   console.log(
+        ^
+warn: Unexpected console statement.  no-console
+   at scripts/build-declarations.ts:559:3
+
+26 problems (1 error, 25 warnings)
+4 can be fixed with --fix
+Linted 112 files [905.46ms]
+note: typescript 6.0.3 is installed, but bun lint checks types like TypeScript 7
+error: script "lint" exited with code 1
