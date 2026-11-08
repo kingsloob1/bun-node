@@ -18,7 +18,7 @@
  * keys under the prefixes it used.
  */
 import process from "node:process";
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { RedisClient } from "bun";
 import type { Socket } from "bun";
 import type { BusMessage, CacheBus, StoredEntry } from "../../lib/index";
@@ -626,6 +626,9 @@ export async function registerRedisSuite(
         delete faults.failStage;
         delete faults.failScript;
       };
+      // A fault a test injects never reaches the next one, in any order
+      // (`--randomize` put a test after one that left failScript set).
+      afterEach(reset);
 
       test("setMany stages each frame from STAGE_FRAME_BYTES up and renames it into place; no script argument carries one", async () => {
         const at = Date.now() + 120_000;
@@ -777,6 +780,48 @@ export async function registerRedisSuite(
           expect(fd).toBeUndefined();
           expect(await stagingKeys()).toEqual([]);
         }
+      });
+
+      test("set(): a staging write that failed rejects with its error, leaves the old entry as it was and no staging key", async () => {
+        // Faults another test left set must not reach the setup write.
+        reset();
+        await driver.set(ns, big("sa", 10, 1, ["sa-tag"]));
+        faults.failStage = 0;
+        const failure = await driver
+          .set(ns, big("sa", 30_000, 2))
+          .then(() => undefined)
+          .catch((error: unknown) => error as Error);
+        expect(failure?.message).toBe("staging SET refused (injected)");
+        expect(staged).toHaveLength(1);
+        // The script found its staged frame missing and dropped nothing: the
+        // old entry, and its tag membership, so an invalidation still
+        // reaches it.
+        expect((await driver.get(ns, "sa"))?.value).toEqual(
+          new Uint8Array(bytes(10, 1)),
+        );
+        expect(await stagingKeys()).toEqual([]);
+        expect(
+          await driver.deleteByTags(ns, ["sa-tag"], Date.now() + 1000),
+        ).toBe(1);
+        expect(await driver.get(ns, "sa")).toBeUndefined();
+        reset();
+      });
+
+      test("set(): a script that failed after its frame was staged leaves no staging key, and its error is thrown", async () => {
+        reset();
+        await driver.set(ns, big("sb", 10, 1));
+        faults.failScript = true;
+        const failure = await driver
+          .set(ns, big("sb", 30_000, 2))
+          .then(() => undefined)
+          .catch((error: unknown) => error as Error);
+        expect(failure?.message).toBe("script failed (injected)");
+        expect(staged).toHaveLength(1);
+        expect(await stagingKeys()).toEqual([]);
+        reset();
+        expect((await driver.get(ns, "sb"))?.value).toEqual(
+          new Uint8Array(bytes(10, 1)),
+        );
       });
 
       test("a script that failed after its frames were staged leaves no staging key, and its error is thrown", async () => {

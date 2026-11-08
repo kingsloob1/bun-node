@@ -2236,7 +2236,16 @@ its 60 s TTL); each script first checks every staging key exists and, when
 one is gone, unlinks the rest and fails having written nothing. Tests: the
 kit's two `setManyFenced` cases now run on both; redundant (6), D1 (2) and
 Redis (5, local lane, plus both scripts in the key-locking rule case).
-Negative controls: see the PR.
+Negative controls: see the PR. **Then `set` too** (approved 2026-11-08):
+it staged its frame with a `SET` it awaited only after the script, so a
+failed staging write was an unhandled rejection meanwhile, and its script
+renamed a missing staging key after dropping the old entry's tag
+memberships (the entry stayed, but an invalidation no longer reached it).
+`set` now runs through `setMany`'s staging path: the write's failure caught
+as it happens and thrown, the script checking the staged frame exists before
+it drops anything, the staging key unlinked when the script fails. Tests:
+two Redis cases (a failed staging write; a failed script), the first failing
+before the fix.
 
 **§16's docs item: bun-jobs' "High availability" README section, built
 2026-11-03** (scheduled by the user; §19 Q10). bun-jobs' README now has a

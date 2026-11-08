@@ -338,14 +338,18 @@ function script(body: string, freesOnly = false): Script {
 }
 
 /**
- * `set`: KEYS[1] the entry; ARGV base, key, frame, expiresAt ('' none), now,
- * fence createdAt ('' none), then a count and the fence's tags, then a count
- * and the entry's tags. Answers 1 stored, 0 fenced. Not `allow-oom`: it
+ * `set`: KEYS[1] the entry, KEYS[2] its staged frame when it was staged;
+ * ARGV base, key, frame ('' when staged), expiresAt ('' none), now, fence
+ * createdAt ('' none), then a count and the fence's tags, then a count and
+ * the entry's tags. Answers 1 stored, 0 fenced. A staged frame that is gone
+ * (its `SET` failed, or it outlived its TTL) fails the script before it
+ * drops anything, so the old entry stays as it was. Not `allow-oom`: it
  * writes the entry and its tag memberships.
  */
-const SET = script(`
+const SET = script(`${LUA_STAGED}
 local base, key, frame, exp, now, fenceAt = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5]), ARGV[6]
 local staged = KEYS[2]
+if staged and not stagedPresent({staged}) then return redis.error_reply(STAGED_GONE) end
 local i = 7
 local nf = tonumber(ARGV[i])
 if fenceAt ~= '' and nf > 0 then
@@ -1227,24 +1231,15 @@ export class RedisCacheDriver implements CacheDriver {
     }
     // A large frame skips Lua: staged with a plain `SET` (in the namespace's
     // hash tag, so key locking holds), which the script renames into place,
-    // or unlinks when fenced. Bun pipelines the two on the one connection.
+    // or unlinks when fenced. Bun pipelines the two on the one connection,
+    // as `setMany` does (`#runStaged`): the staging write's failure is caught
+    // as it happens and is the error thrown, the script checks the staged
+    // frame is there before it drops the old entry, and a failed script's
+    // staging key is unlinked.
     const staging = `${base}w:${crypto.randomUUID()}`;
-    const staged = this.#client.send("SET", [
-      staging,
-      frame as unknown as string,
-      "PX",
-      String(STAGE_TTL_MS),
+    const stored = await this.#runStaged(SET, [ek, staging], rest(""), [
+      { key: staging, frame },
     ]);
-    let stored: unknown;
-    try {
-      stored = await this.#run(SET, [ek, staging], rest(""));
-    } catch (error) {
-      // The staging write's own failure is the cause when there is one.
-      await staged;
-      void this.#client.unlink(staging).catch(() => undefined);
-      throw error;
-    }
-    await staged;
     return stored === 1 ? "stored" : "fenced";
   }
 
@@ -1377,7 +1372,7 @@ export class RedisCacheDriver implements CacheDriver {
   }
 
   /**
-   * Runs a `setMany` script after staging its large frames: a plain `SET`
+   * Runs a `set` or `setMany` script after staging its large frames: a plain `SET`
    * each (`PX` {@link STAGE_TTL_MS}), sent ahead of the script on the one
    * connection, so Bun pipelines them and they run first. When the script
    * fails, its staging keys are unlinked (the script unlinks them itself
