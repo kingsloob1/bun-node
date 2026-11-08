@@ -3,10 +3,11 @@
   "type": "module",
   "version": "0.0.0",
   "private": true,
-  "description": "bun-common benchmarks: parseXmlToObject vs fast-xml-parser, htmlparser2 and Bun's HTMLRewriter; SSE fan-out of res.sse() vs res.write() and a raw Bun.serve stream",
+  "description": "bun-common benchmarks: parseXmlToObject vs fast-xml-parser, htmlparser2 and Bun's HTMLRewriter; SSE fan-out of res.sse() vs res.write() and a raw Bun.serve stream; trustProxy's per-request cost",
   "scripts": {
     "xml": "bun xml.ts",
-    "sse": "bun sse.ts"
+    "sse": "bun sse.ts",
+    "trust-proxy": "bun trustProxy.ts"
   },
   "dependencies": {
     "fast-xml-parser": "^5.11.1",

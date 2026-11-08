@@ -5,6 +5,11 @@
 `Bun.serve` stream with the same byte-length queue and against `res.write()`.
 It needs no install. See [SSE fan-out](#sse-fan-out) below.
 
+**`trustProxy.ts`** is the `trustProxy` per-request cost guard: nanoseconds
+per request through the adapter's own request path under four trust
+settings, and the `server.requestIP()` calls each request makes. See
+[trustProxy](#trustproxy) below.
+
 **`xml.ts`** measures `parseXmlToObject` (from `lib/utils/native.ts`) against
 **fast-xml-parser**, **htmlparser2** (a DOM build and a SAX build) and Bun's
 native **`HTMLRewriter`**.
@@ -72,3 +77,32 @@ wrapper, 1-minute load 1.54 at the start and the end). It records each
 cell's events/s; a baseline is meaningful only on the machine that recorded
 it. Run the guard through the heavy-run wrapper, alone, and only with the
 maintainer's go-ahead (no speed comparisons without asking).
+
+## trustProxy
+
+```bash
+bun trustProxy.ts                   # print the table
+bun trustProxy.ts --compare         # fail on a regression
+bun trustProxy.ts --save-baseline   # record baselines/trustProxy.json
+TP_REQUESTS=2000 bun trustProxy.ts  # a smoke run
+```
+
+Each request goes through `BunHttpAdapter`'s `serveNativeRequest`, the
+method its `Bun.serve` handler calls, with a stand-in server whose
+`requestIP()` returns a fresh address object per call (as Bun's does) and
+counts the calls. No socket: the figure is the framework's cost alone, which
+a loopback socket's 20-50 µs would drown. The settings are `off`, `hop1`
+(`trustProxy: 1`), `cidr` (four private and CGNAT ranges) and `cloudflare`
+(`behindCloudflare()`: 22 ranges plus `clientIpHeader`); the handler reads
+nothing, `req.ip`, `req.protocol`, `req.host`, or all three. Every request
+carries `X-Forwarded-For`, `-Proto`, `-Host` and `CF-Connecting-IP` from a
+trusted peer, so each trusted walk runs in full. Each cell is warmed, then
+timed over `TP_REQUESTS` requests (20,000) in `TP_ROUNDS` rounds (5), in a
+rotating order, and the median kept.
+
+`--compare` fails when a cell makes more `requestIP()` calls per request than
+the baseline (exact, so it holds on any machine), or when a trusted setting's
+overhead over `off` for the same reads, measured in the same run, is more
+than twice the baseline's plus 2 µs. `baselines/trustProxy.json` records the
+Bun revision, the platform and the load; run it through the heavy-run
+wrapper, exclusive.

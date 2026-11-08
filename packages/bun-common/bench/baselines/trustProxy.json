@@ -1,0 +1,133 @@
+{
+  "bun": "11c367163a4baa77d3627d14764c376c856a630a",
+  "platform": "linux-x64",
+  "date": "2026-11-08T08:26:26.244Z",
+  "requests": 20000,
+  "rounds": 5,
+  "load": [
+    45.15,
+    41.85
+  ],
+  "cells": [
+    {
+      "setting": "off",
+      "read": "none",
+      "nsPerRequest": 2413,
+      "requestIPPerRequest": 0
+    },
+    {
+      "setting": "off",
+      "read": "ip",
+      "nsPerRequest": 2420,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "off",
+      "read": "protocol",
+      "nsPerRequest": 2690,
+      "requestIPPerRequest": 0
+    },
+    {
+      "setting": "off",
+      "read": "host",
+      "nsPerRequest": 2314,
+      "requestIPPerRequest": 0
+    },
+    {
+      "setting": "off",
+      "read": "all",
+      "nsPerRequest": 2747,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "hop1",
+      "read": "none",
+      "nsPerRequest": 2302,
+      "requestIPPerRequest": 0
+    },
+    {
+      "setting": "hop1",
+      "read": "ip",
+      "nsPerRequest": 3637,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "hop1",
+      "read": "protocol",
+      "nsPerRequest": 3004,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "hop1",
+      "read": "host",
+      "nsPerRequest": 2550,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "hop1",
+      "read": "all",
+      "nsPerRequest": 4753,
+      "requestIPPerRequest": 3
+    },
+    {
+      "setting": "cidr",
+      "read": "none",
+      "nsPerRequest": 2279,
+      "requestIPPerRequest": 0
+    },
+    {
+      "setting": "cidr",
+      "read": "ip",
+      "nsPerRequest": 5442,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "cidr",
+      "read": "protocol",
+      "nsPerRequest": 3549,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "cidr",
+      "read": "host",
+      "nsPerRequest": 3113,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "cidr",
+      "read": "all",
+      "nsPerRequest": 7369,
+      "requestIPPerRequest": 3
+    },
+    {
+      "setting": "cloudflare",
+      "read": "none",
+      "nsPerRequest": 2330,
+      "requestIPPerRequest": 0
+    },
+    {
+      "setting": "cloudflare",
+      "read": "ip",
+      "nsPerRequest": 4912,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "cloudflare",
+      "read": "protocol",
+      "nsPerRequest": 3622,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "cloudflare",
+      "read": "host",
+      "nsPerRequest": 3166,
+      "requestIPPerRequest": 1
+    },
+    {
+      "setting": "cloudflare",
+      "read": "all",
+      "nsPerRequest": 6878,
+      "requestIPPerRequest": 3
+    }
+  ]
+}
