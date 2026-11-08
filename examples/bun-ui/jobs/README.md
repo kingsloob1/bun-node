@@ -114,14 +114,14 @@ Bun makes a profile of its own, `/tmp/.<hash>-00000000.bun-chrome`, which
 a few hundred files and about 5 MB each, and 670 of them had piled up before
 anyone noticed, most of what used up `/tmp`'s inodes. So
 [`shared/browser.ts`](./shared/browser.ts)'s `openView` gives the process a
-profile it owns, `bun-jobs-ui-example-chrome-p<pid>-<random>`, made once,
+profile it owns, `bun-ui-jobs-example-chrome-p<pid>-<random>`, made once,
 removed when the process exits. Removing it cannot be the whole answer: a
 run killed before it exits never gets to remove its profile, and a
 departing Chrome writes a few last files (about 8 KB) after its owner has
 removed it. So the first view of each run also sweeps the profiles whose
 owning process has exited, which is what collects both, and it never takes
 one whose owner is still running. The name follows the package's e2e
-profiles (`bun-jobs-ui-<label>-p<pid>-…`), so each sweep collects the
+profiles (`bun-ui-jobs-<label>-p<pid>-…`), so each sweep collects the
 other's leftovers and neither touches a live one.
 
 ### 10 — Option tour

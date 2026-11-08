@@ -1,5 +1,5 @@
 /**
- * Unmounting releases what the hooks opened (plan §7.1; bun-jobs-ui's
+ * Unmounting releases what the hooks opened (plan §7.1; bun-ui's jobs
  * `unmountLeaks.test.tsx` in small): every query observer, every timer
  * TanStack Query started for a component (its `refetchInterval`), and with
  * them any refetch. A ledger of the global timers records what is opened

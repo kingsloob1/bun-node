@@ -1,6 +1,6 @@
 /**
  * The DOM for the React binding's tests, with react-dom loaded AFTER it:
- * bun-jobs-ui's rules (`packages/bun-jobs-ui/__tests__/app/dom.ts`, CLAUDE.md
+ * bun-ui's jobs rules (`packages/bun-ui/__tests__/jobs/app/dom.ts`, CLAUDE.md
  * "DOM tests — rules learned the hard way"), cut to what a hooks test needs.
  *
  * - happy-dom is registered before react-dom is evaluated: react-dom decides

@@ -5,7 +5,7 @@
  * way; then (PR-R2) a `typedDataChannel` on each side answers a request
  * and carries a binary frame. The page (`fixtures/webrtc-page.ts`) is bundled for a browser and
  * served beside the relay on port 0; headless Chrome loads it through
- * `Bun.WebView`, as bun-jobs-ui's e2e tests do.
+ * `Bun.WebView`, as bun-ui's jobs e2e tests do.
  *
  * Skips visibly when no Chrome is found (`BUN_CHROME_PATH` overrides the
  * search).
@@ -98,7 +98,7 @@ describe.skipIf(chromePath === undefined)(
           type: "chrome",
           url: false,
           path: chromePath,
-          // Keeps headless Chrome off the desktop's display (bun-jobs-ui's
+          // Keeps headless Chrome off the desktop's display (bun-ui's jobs
           // e2e tests: a hung compositor once left a page rendering nothing).
           argv: ["--use-gl=disabled"],
         },

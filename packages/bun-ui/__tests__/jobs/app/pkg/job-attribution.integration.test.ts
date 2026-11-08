@@ -441,7 +441,7 @@ async function oldTable(file: string): Promise<void> {
 }
 
 beforeAll(async () => {
-  tmp = mkdtempSync(join(tmpdir(), "bun-jobs-ui-attribution-"));
+  tmp = mkdtempSync(join(tmpdir(), "bun-ui-jobs-attribution-"));
 
   memory = await populate(
     "memory",

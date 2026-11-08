@@ -47,15 +47,15 @@ export function chromeOrSkip(): string {
 
 /**
  * What every Chrome profile these examples make is named with, before the pid
- * of the process that owns it: `bun-jobs-ui-example-chrome-p<pid>-<random>`.
+ * of the process that owns it: `bun-ui-jobs-example-chrome-p<pid>-<random>`.
  * The pid is what lets a later run tell a profile nobody owns any more from
  * one still in use, and the shape matches the e2e suites' own profiles, so
  * either sweep can collect the other's leftovers and neither can take one
  * whose owner is alive.
  */
-const PROFILE_PREFIX = "bun-jobs-ui-example-chrome-p";
-/** A profile's name, with its owner's pid. */
-const PROFILE_NAME = /^bun-jobs-ui-example-chrome-p(\d+)-[^-]+$/;
+const PROFILE_PREFIX = "bun-ui-jobs-example-chrome-p";
+/** A profile's name, with its owner's pid; the old `bun-jobs-ui-` prefix too, so its leftovers are still swept. */
+const PROFILE_NAME = /^bun-(?:ui-jobs|jobs-ui)-example-chrome-p(\d+)-[^-]+$/;
 
 /** Whether a process with this pid is running (or exists but is not ours to signal). */
 function isAlive(pid: number): boolean {

@@ -48,7 +48,7 @@ describe("the typed client's route map", () => {
   });
 
   it("is refused when stale (the negative control)", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "bun-jobs-ui-routes-gen-"));
+    const dir = await mkdtemp(join(tmpdir(), "bun-ui-jobs-routes-gen-"));
     try {
       // The committed map with one route's type changed, as a map generated
       // before a bun-jobs change would be.

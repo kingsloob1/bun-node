@@ -51,7 +51,7 @@ export function exampleBackend(): ExampleBackend {
 
 /** A fresh temporary directory, removed when the process exits. */
 function tempDir(label: string): string {
-  const path = mkdtempSync(join(tmpdir(), `bun-jobs-ui-example-${label}-`));
+  const path = mkdtempSync(join(tmpdir(), `bun-ui-jobs-example-${label}-`));
   process.once("exit", () => {
     rmSync(path, { recursive: true, force: true });
   });

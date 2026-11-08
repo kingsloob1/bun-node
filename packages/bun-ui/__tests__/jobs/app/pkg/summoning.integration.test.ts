@@ -186,7 +186,7 @@ async function summonNow(queue: string): Promise<void> {
 }
 
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "bun-jobs-ui-summoning-"));
+  dir = await mkdtemp(join(tmpdir(), "bun-ui-jobs-summoning-"));
   jobs = new BunJobs({
     namespace: `ui-summoning-${Date.now().toString(36)}`,
     driver: { type: "sql", url: `sqlite://${join(dir, "jobs.db")}` },

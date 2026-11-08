@@ -82,7 +82,7 @@ Applications listen on port `0`.
 
 | File | Shows |
 |---|---|
-| [`mount.ts`](./06-jobs-ui/mount.ts) | `jobsUi()` from `@kingsleyweb/bun-ui/jobs` over the API `BunJobsApiModule` built (`app.get(BUN_JOBS_API)`), mounted with `adapter.use()` (no cast) and served with and without a socket, a page `authorize` sharing the API's session, and what a global prefix does not touch. More in [`../bun-jobs-ui`](../bun-jobs-ui) |
+| [`mount.ts`](./06-jobs-ui/mount.ts) | `jobsUi()` from `@kingsleyweb/bun-ui/jobs` over the API `BunJobsApiModule` built (`app.get(BUN_JOBS_API)`), mounted with `adapter.use()` (no cast) and served with and without a socket, a page `authorize` sharing the API's session, and what a global prefix does not touch. More in [`../bun-ui/jobs`](../bun-ui/jobs) |
 
 ### 07 — OpenAPI
 

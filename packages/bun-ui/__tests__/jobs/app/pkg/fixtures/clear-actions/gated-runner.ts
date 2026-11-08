@@ -9,7 +9,7 @@ import { defineHandler } from "@kingsleyweb/bun-jobs";
  */
 
 /** Where the test keeps its gates: promises by name. */
-export const GATES = Symbol.for("bun-jobs-ui.clear-actions.gates");
+export const GATES = Symbol.for("bun-ui-jobs.clear-actions.gates");
 
 export default defineHandler<{ hold?: string }, { held: boolean }>(
   async (ctx) => {
