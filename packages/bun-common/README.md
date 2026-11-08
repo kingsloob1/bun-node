@@ -1705,6 +1705,12 @@ The semantics are Node's:
   `Content-Type: text/event-stream` yourself before writing, as NestJS's
   `@Sse()` does, or use [`res.sse()`](#server-sent-events-ressse), which
   does that and more. `compression()` flushes each chunk only for that type.
+- `write()` returns `false` once 64 KiB are waiting for the client, and the
+  response emits `drain` when the client has read them back under that mark.
+  The chunk is still queued; a producer that keeps writing regardless buffers
+  without bound, so wait for `drain` (`res.once("drain", resume)`), or pipe a
+  Node `Readable` into `res`, which does. `res.writableNeedDrain` and
+  `res.writableLength` (the bytes not yet read) are Node's.
 - A write after the response has ended returns `false` and emits
   `ERR_STREAM_WRITE_AFTER_END`.
 - A chunk that is not text or bytes throws `ERR_INVALID_ARG_TYPE`.
@@ -1721,7 +1727,10 @@ import { BunHttpAdapter } from "@kingsleyweb/bun-common";
 
 async function tick(res: BunResponse) {
   for (let n = 1; n <= 3; n++) {
-    res.write(`data: tick ${n}\n\n`);
+    if (!res.write(`data: tick ${n}\n\n`)) {
+      // The client is behind: let it catch up.
+      await new Promise((resolve) => res.once("drain", resolve));
+    }
     await Bun.sleep(100);
   }
   await res.end();

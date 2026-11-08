@@ -26,7 +26,7 @@ import type {
 } from "./types/responseTyping";
 import type { SseEvents } from "./sse/declaration";
 import type { SseWriterOptions } from "./sse/writer";
-import type { CookieSerializeOptions, Deferred } from "./utils/native";
+import type { CookieSerializeOptions } from "./utils/native";
 import type { RenderCallback, RenderLocals } from "./views";
 import { EventEmitter } from "node:events";
 import { stat } from "node:fs/promises";
@@ -51,7 +51,6 @@ import {
 } from "./utils/general";
 import {
   appendVary,
-  createDeferred,
   each,
   encodeUrl,
   etag,
@@ -443,6 +442,18 @@ function parseTokenList(value: string): string[] {
 
 /** Shared encoder for streamed text chunks. */
 const textEncoder = new TextEncoder();
+
+/**
+ * The bytes a streamed response (`res.write()`) queues for a client before
+ * `write()` answers `false`: 64 KiB, `res.sse()`'s writer's and Node's
+ * default stream high-water mark.
+ */
+const STREAM_HIGH_WATER_MARK = 64 * 1024;
+
+/** The bytes in `controller`'s byte-length queue that its reader has not taken. */
+function queuedBytes(controller: ReadableStreamDefaultController): number {
+  return STREAM_HIGH_WATER_MARK - (controller.desiredSize ?? 0);
+}
 
 /**
  * How a response tags a body with an `ETag` (see {@link BunResponse.etag}):
@@ -1575,13 +1586,8 @@ class BunResponseState<customWebsocketDataType = unknown> {
   readableStreamClosePromise: Promise<undefined> | undefined = undefined;
   /** Backs BunResponse's `#readableStreamCloseResolve`; see its documentation there. */
   readableStreamCloseResolve: (() => void) | undefined = undefined;
-  /** Backs BunResponse's `#readableStreamEventMap`; see its documentation there. */
-  readableStreamEventMap:
-    Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined =
-    undefined;
-
-  /** Backs BunResponse's `#streamWriteNotifier`; see its documentation there. */
-  streamWriteNotifier: Deferred<void> | undefined = undefined;
+  /** Backs BunResponse's `#needDrain`; see its documentation there. */
+  needDrain: boolean = false;
   /** Backs BunResponse's `#streamEnding`; see its documentation there. */
   streamEnding: boolean = false;
   /** Backs BunResponse's `#streamClosed`; see its documentation there. */
@@ -1914,48 +1920,23 @@ export class BunResponse<
   }
 
   /**
-   * Chunks written but not yet enqueued on {@link readableStream}, keyed by an
-   * arrival-ordered token. Values are text or binary (`Buffer`, typed array,
-   * `DataView`, `ArrayBuffer`); binary is enqueued verbatim.
+   * Set when a {@link write} answered `false` (the stream's queue reached
+   * {@link STREAM_HIGH_WATER_MARK}); cleared, and `drain` emitted, once the
+   * reader takes the queue back under it.
    */
-  get #readableStreamEventMap():
-    Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined {
+  get #needDrain(): boolean {
     const holder = this.#state;
-    return holder === undefined ? undefined : holder.readableStreamEventMap;
+    return holder === undefined ? false : holder.needDrain;
   }
 
-  set #readableStreamEventMap(
-    value: Map<string, string | ArrayBufferView | ArrayBufferLike> | undefined,
-  ) {
+  set #needDrain(value: boolean) {
     (this.#state ??=
-      new BunResponseState<customWebsocketDataType>()).readableStreamEventMap =
-      value;
-  }
-
-  /** The pending-chunk map, created on the first buffered write. */
-  get #pendingChunks(): Map<
-    string,
-    string | ArrayBufferView | ArrayBufferLike
-  > {
-    return (this.#readableStreamEventMap ??= new Map());
-  }
-
-  /** Notifies a parked stream `pull` that data is available to enqueue. */
-  get #streamWriteNotifier(): Deferred<void> | undefined {
-    const holder = this.#state;
-    return holder === undefined ? undefined : holder.streamWriteNotifier;
-  }
-
-  set #streamWriteNotifier(value: Deferred<void> | undefined) {
-    (this.#state ??=
-      new BunResponseState<customWebsocketDataType>()).streamWriteNotifier =
-      value;
+      new BunResponseState<customWebsocketDataType>()).needDrain = value;
   }
 
   /**
-   * Set once the stream has been asked to end. The pending chunks are still
-   * flushed first: by the parked `pull` when one is waiting, immediately when
-   * the controller is idle, or by the first `pull` when nothing has read yet.
+   * Set once the stream has been asked to end. What was written is still
+   * delivered first: the controller's close waits for its queue.
    */
   get #streamEnding(): boolean {
     const holder = this.#state;
@@ -2672,8 +2653,7 @@ export class BunResponse<
     slot.streaming = verdict !== undefined || slot.chain !== undefined;
     this.#openStream();
     if (chunk !== undefined) {
-      // Not awaited: the write is synchronous, and the promise only reports it.
-      void this.getWritable().write(chunk);
+      this.#enqueueChunk(chunk);
     }
     return true;
   }
@@ -2722,7 +2702,7 @@ export class BunResponse<
     }
     const check = slot.stream;
     if (check === undefined) {
-      void this.getWritable().write(chunk);
+      this.#enqueueChunk(chunk);
       return true;
     }
     const verdict = check.chunk(chunk);
@@ -2744,7 +2724,7 @@ export class BunResponse<
       this.destroy(verdict);
       return false;
     }
-    void this.getWritable().write(chunk);
+    this.#enqueueChunk(chunk);
     return true;
   }
 
@@ -3743,38 +3723,19 @@ export class BunResponse<
     }
 
     if (!this.response && !this.#readableStream) {
-      this.#readableStreamEventMap?.clear();
       noteStreamingBody(this.req.request);
 
+      // A byte-length queue, as `res.sse()`'s writer: a write enqueues at
+      // once, and the reader's pulls say when the queue went back under the
+      // mark (`drain`). A chunk-count mark of one with a map of pending
+      // chunks delivered the same bytes 4-5x slower on fan-out (plan
+      // bun-native-routes §16.9) and never pushed back.
       this.#readableStream = new ReadableStream(
         {
-          pull: async (controller) => {
+          start: (controller) => {
             this.#readableStreamController = controller;
-            if (this.#destroyed) {
-              await this.#pullDestroyed(controller);
-              return;
-            }
-
-            // Park until a write (or the end) notifies us instead of
-            // busy-polling.
-            if (
-              (this.#readableStreamEventMap?.size ?? 0) === 0 &&
-              !this.#streamEnding
-            ) {
-              this.#streamWriteNotifier = createDeferred<void>();
-              await this.#streamWriteNotifier.promise;
-              this.#streamWriteNotifier = undefined;
-            }
-
-            if (this.#destroyed) {
-              await this.#pullDestroyed(controller);
-              return;
-            }
-            this.#flushPendingChunks(controller);
-            if (this.#streamEnding) {
-              this.#closeController(controller);
-            }
           },
+          pull: (controller) => this.#pull(controller),
           cancel: async (reason: string) => {
             this.req.emit("abort", reason);
             // A cancel with a reason is a stream error on the response.
@@ -3784,9 +3745,9 @@ export class BunResponse<
             await this.endLongLivedConnection();
           },
         },
-        {
-          highWaterMark: 1,
-        },
+        new ByteLengthQueuingStrategy({
+          highWaterMark: STREAM_HIGH_WATER_MARK,
+        }),
       );
 
       this.#readableStreamClosePromise = new Promise((resolve) => {
@@ -3818,45 +3779,39 @@ export class BunResponse<
     await this.#readableStream?.cancel(reason);
   }
 
-  /** Enqueues every pending chunk, in arrival order, on `controller`. */
-  #flushPendingChunks(controller: ReadableStreamDefaultController): void {
-    const pending = this.#readableStreamEventMap;
-    if (!pending || this.#streamClosed) {
-      return;
+  /**
+   * The stream's `pull`: the reader took the queue under the mark. Emits
+   * `drain` when a {@link write} answered `false` since the last one, and on
+   * a destroyed stream errors it once what was written has been read (see
+   * {@link #pullDestroyed}).
+   */
+  #pull(controller: ReadableStreamDefaultController): Promise<void> | void {
+    if (this.#destroyed) {
+      return this.#pullDestroyed(controller);
     }
-
-    for (const [key, value] of pending) {
-      // Binary chunks (Buffer, typed array, DataView, ArrayBuffer) are
-      // enqueued as bytes; anything else is text-encoded.
-      controller.enqueue(
-        isArrayBufferView(value)
-          ? value
-          : isAnyArrayBuffer(value)
-            ? new Uint8Array(value)
-            : textEncoder.encode(String(value)),
-      );
-      pending.delete(key);
+    if (this.#needDrain) {
+      this.#needDrain = false;
+      this.#emitter?.emit("drain");
     }
   }
 
   /**
    * A `pull` on a destroyed stream: what was written before {@link destroy}
-   * goes out first — the error waits for the next pull, which comes once the
-   * reader has taken it — and the error itself waits for a timer, i.e. the
-   * next turn of the event loop. Bun answers a body stream that errors before
-   * it has written the chunk it just read with a connection reset, headers
-   * and chunk lost, so a handler that wrote an event and then threw would
-   * send nothing at all. What matters is the loop turn, not the duration:
-   * on the first request of a fresh server (whose `Response` the adapter
-   * hands Bun synchronously), erroring at once lost it 50 of 50 times and
-   * after one `setImmediate` (same turn) 6 of 15, while two `setImmediate`s,
-   * `setTimeout(0)` and this 1 ms timer (each the next turn) lost 0 of 40,
-   * also with four processes at once. Load only delays the timer, which is
-   * harmless: the stream is already closed to writes.
+   * goes out first — the error waits for a pull with nothing queued, which
+   * comes once the reader has taken it all — and the error itself waits for
+   * a timer, i.e. the next turn of the event loop. Bun answers a body stream
+   * that errors before it has written the chunk it just read with a
+   * connection reset, headers and chunk lost, so a handler that wrote an
+   * event and then threw would send nothing at all. What matters is the loop
+   * turn, not the duration: on the first request of a fresh server (whose
+   * `Response` the adapter hands Bun synchronously), erroring at once lost it
+   * 50 of 50 times and after one `setImmediate` (same turn) 6 of 15, while
+   * two `setImmediate`s, `setTimeout(0)` and this 1 ms timer (each the next
+   * turn) lost 0 of 40, also with four processes at once. Load only delays
+   * the timer, which is harmless: the stream is already closed to writes.
    */
   async #pullDestroyed(controller: ReadableStreamDefaultController) {
-    if ((this.#readableStreamEventMap?.size ?? 0) > 0) {
-      this.#flushPendingChunks(controller);
+    if (queuedBytes(controller) > 0) {
       return;
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
@@ -3893,20 +3848,12 @@ export class BunResponse<
     this.#destroyed = true;
     this.#destroyedWith = error ?? new Error("The response was destroyed");
     if (this._isLongLived && !this.#streamClosed) {
-      // Nothing more may be written. A parked `pull` wakes and errors, after
-      // flushing what was written (see `#pullDestroyed`); with no pull
-      // parked, the next one does, unless the controller is idle with
-      // nothing queued, which is errored here (a macrotask later, likewise).
+      // Nothing more may be written. With nothing queued the stream errors
+      // now (a macrotask later, see `#pullDestroyed`); otherwise the pull
+      // that follows the reader taking the last of it does.
       this.#streamEnding = true;
-      const notifier = this.#streamWriteNotifier;
       const controller = this.#readableStreamController;
-      if (notifier) {
-        notifier.resolve();
-      } else if (
-        controller !== undefined &&
-        (this.#readableStreamEventMap?.size ?? 0) === 0 &&
-        (controller.desiredSize ?? 0) > 0
-      ) {
+      if (controller !== undefined && queuedBytes(controller) === 0) {
         void this.#pullDestroyed(controller);
       }
     }
@@ -3934,52 +3881,65 @@ export class BunResponse<
   }
 
   /**
-   * Ends the stream **after** every chunk written so far. Closing the
-   * controller directly would drop chunks no `pull` had enqueued yet — and if
-   * nothing had pulled, there is no controller to close, so the client would
-   * wait forever.
+   * Ends the stream **after** every chunk written so far: the controller's
+   * close waits for its queue to be read. The close itself is a microtask
+   * later, so a client that left first cancels the stream before it closes:
+   * Bun aborts the request's signal (which ends the stream here) and then
+   * cancels the body with the same reason, which is reported as the
+   * response's `error`, and a closed stream would swallow.
    */
   private async closeWritableStream() {
     this.#streamEnding = true;
-
-    // A parked pull wakes, flushes and closes.
-    const notifier = this.#streamWriteNotifier;
-    if (notifier) {
-      notifier.resolve();
-      return;
-    }
-
-    // An idle controller is flushed and closed now; with no controller yet,
-    // the first pull does both.
     const controller = this.#readableStreamController;
     if (controller) {
-      this.#flushPendingChunks(controller);
-      this.#closeController(controller);
+      queueMicrotask(() => this.#closeController(controller));
     }
   }
 
-  private async writeToWritableStream(chunk: BunResponseChunk) {
-    let key = String(Bun.nanoseconds());
-    while (this.#pendingChunks.has(key)) {
-      key = `${key}${Bun.nanoseconds()}`;
-    }
-
-    this.#pendingChunks.set(key, chunk);
+  /**
+   * Enqueues `chunk` on the open stream (text is UTF-8 encoded, binary
+   * enqueued as bytes) and answers whether the queue is still under
+   * {@link STREAM_HIGH_WATER_MARK}: `false` sets {@link #needDrain}, so
+   * `drain` follows once the reader catches up. `false` too when the stream
+   * is already closed, errored or cancelled, and nothing is written.
+   */
+  #enqueueChunk(chunk: BunResponseChunk): boolean {
     // Accumulate streamed chunks so `getBody()` can report them too — in the
     // response's own list, never an array body a caller passed to `send`.
     (this.#streamedChunks ??= []).push(chunk);
     this.#sentBody = this.#streamedChunks;
-    // Wake any `pull` parked waiting for data.
-    this.#streamWriteNotifier?.resolve();
-    // The write buffer is unbounded, so the writer is always ready for more.
-    this.#emitter?.emit("drain");
+    const controller = this.#readableStreamController;
+    if (controller === undefined || this.#streamClosed) {
+      return false;
+    }
+    try {
+      controller.enqueue(
+        isArrayBufferView(chunk)
+          ? chunk
+          : isAnyArrayBuffer(chunk)
+            ? new Uint8Array(chunk)
+            : textEncoder.encode(String(chunk)),
+      );
+    } catch {
+      // Cancelled or errored by the client.
+      return false;
+    }
+    if ((controller.desiredSize ?? 0) > 0) {
+      return true;
+    }
+    this.#needDrain = true;
+    return false;
+  }
+
+  private async writeToWritableStream(chunk: BunResponseChunk) {
+    this.#enqueueChunk(chunk);
   }
 
   /** A writer onto the long-lived response stream; it takes {@link BunResponseChunk}s. */
   getWritable(): WritableStreamDefaultWriter<BunResponseChunk> {
     return {
       closed: this.#readableStreamClosePromise || Promise.resolve(undefined),
-      desiredSize: this.#readableStreamController?.desiredSize || null,
+      desiredSize: this.#readableStreamController?.desiredSize ?? null,
       ready: Promise.resolve(undefined),
       abort: this.abortWritableStream.bind(this),
       close: this.closeWritableStream.bind(this),
@@ -3989,12 +3949,37 @@ export class BunResponse<
   }
 
   /**
+   * Whether a {@link write} answered `false` and `drain` has not followed
+   * yet, as Node's `writable.writableNeedDrain`.
+   */
+  get writableNeedDrain(): boolean {
+    return this.#needDrain;
+  }
+
+  /**
+   * The bytes written to the open stream that its reader has not taken yet,
+   * as Node's `writable.writableLength`; `0` with no stream open.
+   */
+  get writableLength(): number {
+    const controller = this.#readableStreamController;
+    return controller === undefined || this.#streamClosed
+      ? 0
+      : queuedBytes(controller);
+  }
+
+  /**
    * Streams a chunk, opening the long-lived response on the first write, as
    * Node's `ServerResponse.write`. The first write sends the headers set so
    * far and adds none: set `Content-Type` (`text/event-stream` for
    * server-sent events) before it.
    *
-   * - `true` while the response is open (the write buffer is unbounded);
+   * - `true` while the response is open and fewer than
+   *   {@link STREAM_HIGH_WATER_MARK} bytes (64 KiB) are waiting for the
+   *   client; `false` once that many are, as Node's: the chunk is still
+   *   queued, and `drain` is emitted when the client has read the queue back
+   *   under the mark. A writer that keeps writing regardless buffers without
+   *   bound, so a producer should wait for `drain` (`once(res, "drain")`, or
+   *   `Readable.pipe(res)`, which does);
    * - once it has ended (a body was sent, or `end()` called) nothing is
    *   written, it answers `false` and `ERR_STREAM_WRITE_AFTER_END` is emitted
    *   as an `error` event on the next tick;
@@ -4015,11 +4000,13 @@ export class BunResponse<
       if (slot.refused && !slot.reportOnly) {
         return false;
       }
+      // A governed write is still to be checked, possibly asynchronously:
+      // `false` when it is refused, or when the queue is already full.
       if (slot.streaming) {
-        return this.#gatedWrite(slot, chunk);
+        return this.#gatedWrite(slot, chunk) && !this.#needDrain;
       }
       if (!slot.done && !this._isLongLived) {
-        return this.#openGated(slot, chunk);
+        return this.#openGated(slot, chunk) && !this.#needDrain;
       }
     }
 
@@ -4028,12 +4015,7 @@ export class BunResponse<
       void this.initLongLivedConnection();
     }
 
-    if (this._isLongLived) {
-      // Not awaited: the write is synchronous, and the promise only reports it.
-      void this.getWritable()?.write(chunk);
-    }
-
-    return true;
+    return this._isLongLived ? this.#enqueueChunk(chunk) : true;
   }
 
   /**

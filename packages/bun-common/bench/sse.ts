@@ -16,8 +16,9 @@
  * Like every benchmark here it runs through the heavy-run wrapper, alone, and
  * a comparison or a baseline needs the maintainer's yes first (CLAUDE.md).
  * `--compare` fails when `res.sse()` falls more than 35% behind its own
- * baseline, or when `res.write()` delivers more events/s than it (the
- * overtaken check, which a busy machine cannot fake: it slows both).
+ * baseline, or when `res.write()` delivers more than 10% more events/s than
+ * it (the overtaken check, which a busy machine cannot fake: it slows both;
+ * a margin since S10 put `res.write()` on the same queue).
  */
 import { join } from "node:path";
 import process from "node:process";
@@ -25,6 +26,13 @@ import process from "node:process";
 const SELF = import.meta.path;
 const BASELINE = join(import.meta.dir, "baselines/sse.json");
 const TARGETS = ["raw-hwm", "common-write", "common-sse"] as const;
+/**
+ * How far `res.write()` may lead `res.sse()` before it counts as overtaking:
+ * since S10 both stream on a 64 KiB byte-length queue, they are near ties
+ * (measured 2026-11-08: from 14% behind to 1% ahead), and a strict
+ * comparison would fail on noise.
+ */
+const OVERTAKE_MARGIN = 0.1;
 type Target = (typeof TARGETS)[number];
 
 /** One measured cell. */
@@ -248,8 +256,15 @@ async function main(): Promise<number> {
       (c) => c.target === "common-sse" && c.n === n,
     );
     if (ours === undefined) continue;
-    if (rival !== undefined && rival.eventsPerSec > ours.eventsPerSec) {
-      failures.push(`n=${n}: res.write() overtook res.sse()`);
+    // Since S10 res.write() streams on the same byte-length queue, so the two
+    // are near ties: overtaken means ahead by more than OVERTAKE_MARGIN.
+    if (
+      rival !== undefined &&
+      rival.eventsPerSec > ours.eventsPerSec * (1 + OVERTAKE_MARGIN)
+    ) {
+      failures.push(
+        `n=${n}: res.write() overtook res.sse() by more than ${OVERTAKE_MARGIN * 100}%`,
+      );
     }
     if (
       before !== undefined &&

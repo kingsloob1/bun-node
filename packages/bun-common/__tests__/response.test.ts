@@ -745,14 +745,25 @@ describe("BunResponse: ServerResponse-style events", () => {
     expect(received).toBe(failure);
   });
 
-  it("emits drain when a chunk is written to a streaming response", async () => {
+  it("emits drain once a write that answered false has been read, not on every write", async () => {
     const res = await makeResponse();
-    let drained = false;
+    let drained = 0;
     res.on("drain", () => {
-      drained = true;
+      drained++;
     });
-    res.write("chunk");
-    expect(drained).toBe(true);
+    expect(res.write("chunk")).toBe(true);
+    expect(drained).toBe(0);
+    // Fill the 64 KiB queue (writeBackpressure.test.ts has the details).
+    expect(res.write(new Uint8Array(64 * 1024))).toBe(false);
+    const reader = res.readableStream!.getReader();
+    // "chunk" first: the 64 KiB behind it still fill the queue.
+    await reader.read();
+    await Promise.resolve();
+    expect(drained).toBe(0);
+    await reader.read();
+    await Promise.resolve();
+    expect(drained).toBe(1);
+    reader.releaseLock();
   });
 
   it("emits pipe and unpipe for stream piping", async () => {
