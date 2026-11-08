@@ -100,6 +100,31 @@ async function writes(fake: FakeIndexedDb, count: number): Promise<void> {
   }
 }
 
+/**
+ * An `onError` that records each error and resolves `first` with the first:
+ * a test waits for the report itself, never for a time.
+ */
+function errorSink(): {
+  errors: unknown[];
+  first: Promise<unknown>;
+  onError: (error: unknown) => void;
+} {
+  const errors: unknown[] = [];
+  const { promise: first, resolve } = Promise.withResolvers<unknown>();
+  return {
+    errors,
+    first,
+    onError: (error) => {
+      errors.push(error);
+      resolve(error);
+    },
+  };
+}
+
+/** One event-loop turn: an unhandled rejection from the work before it has been reported by now. */
+const nextTurn = () =>
+  new Promise<void>((resolve) => setImmediate(() => resolve()));
+
 /** One timer turn: a `throttleTime: 0` write's timer, set before, has fired. */
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -426,17 +451,17 @@ describe("writing", () => {
 describe("failures never reject", () => {
   it("a value IndexedDB cannot clone goes to onError, and the next write still lands", async () => {
     const fake = new FakeIndexedDb();
-    const errors: unknown[] = [];
+    const { errors, first, onError } = errorSink();
     const persister = idbPersister({
       indexedDB: fake.factory,
       throttleTime: 0,
-      onError: (error) => errors.push(error),
+      onError,
     });
     persister.persistClient({
       ...persisted("bad"),
       clientState: { mutations: [], queries: [{ fn: () => {} }] } as never,
     });
-    await Bun.sleep(10);
+    await first;
     expect(errors).toHaveLength(1);
     expect((errors[0] as DOMException).name).toBe("DataCloneError");
     expect(fake.puts).toHaveLength(0);
@@ -467,14 +492,14 @@ describe("failures never reject", () => {
 
   it("a failed write (quota, say) goes to onError; persistQueryClient sees no rejection", async () => {
     const fake = new FakeIndexedDb();
-    const errors: unknown[] = [];
+    const { errors, first, onError } = errorSink();
     const client = newQueryClient();
     await persist(
       client,
       idbPersister({
         indexedDB: fake.factory,
         throttleTime: 0,
-        onError: (error) => errors.push(error),
+        onError,
       }),
       "h",
     );
@@ -484,7 +509,10 @@ describe("failures never reject", () => {
     try {
       fake.failNext("put", new DOMException("full", "QuotaExceededError"));
       client.setQueryData(["k"], 1);
-      await Bun.sleep(20);
+      // The failure is reported, then one more turn lets a rejection from
+      // the same work reach the listener.
+      await first;
+      await nextTurn();
     } finally {
       process.off("unhandledRejection", onRejection);
     }
