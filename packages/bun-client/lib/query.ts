@@ -647,7 +647,18 @@ export interface LiveOptions {
    * 3 s after the start (a proxy refusing upgrades) gives way to `"sse"`.
    */
   transport?: "websocket" | "sse";
+  /**
+   * Called with the tags the server refused to subscribe this client to
+   * (its per-tag authorization: a `hello` listing them as `denied`), each
+   * time it says so (a reconnect, or a new tag, asks again). Those queries
+   * are not kept fresh by the server. Default: each refused tag is logged
+   * once, as a warning, through the client's `logger`.
+   */
+  onDenied?: (tags: string[]) => void;
 }
+
+/** The symbol {@link queries} keeps `live()` over its client under, for `./react`'s `useLive`. */
+const LIVE = Symbol.for("@kingsleyweb/bun-client/query#live");
 
 /** The implementation, loaded on the first {@link live} call. */
 let liveModule: Promise<typeof import("./live")> | undefined;
@@ -1139,6 +1150,14 @@ export function queries<R extends RouteMap<R>, F extends ClientFlags>(
     mutation,
     graphql,
     invalidateTags,
+    // `./react`'s `useLive`: `live()` over this layer's client, so the
+    // React entry starts it without importing this module.
+    [LIVE]: (queryClient: QueryClient, liveOptions?: LiveOptions) =>
+      live(
+        client as unknown as Parameters<typeof live>[0],
+        queryClient,
+        liveOptions,
+      ),
   };
   return factories as unknown as Queries<R>;
 }

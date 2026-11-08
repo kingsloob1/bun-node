@@ -971,6 +971,14 @@ const stop = live(api, queryClient);
 - A query observed again after a time with no observer missed what was
   invalidated meanwhile; query-core's `staleTime` decides whether it
   refetches on its return.
+- `onDenied(tags)`: a server with per-tag authorization lists the tags it
+  refused in its `hello` (`denied`); their queries are not kept fresh. They
+  are reported here each time the server says so (a reconnect, or a new
+  tag, asks again), or, without `onDenied`, logged once each as a warning
+  through the client's `logger`.
+
+In React, `useLive()` ([below](#react-react)) starts and stops it with a
+component.
 
 ## React (`/react`)
 
@@ -982,7 +990,7 @@ interval refetches are react-query's, and everything under them (keys, tags,
 `ETag` revalidation, `invalidates`, optimistic writes and their rollback) is
 `./query`'s. `react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) are
 optional peers: install them beside the client and `@tanstack/query-core`.
-The entry is 390 bytes gzipped over react-query.
+The entry is 567 bytes gzipped over react-query.
 
 ```tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -1055,8 +1063,28 @@ provider of ours), and `q` serves prefetching, `getQueryData` and
   `refetchInterval`), so an invalidation no longer refetches a query no
   component reads; react-query's `gcTime` then collects it.
 
-**Not yet:** `useLive(tags)` comes with live invalidation (`live(api)`, the
-plan's PR-W4), and `<ApiHydrate state>` with bun-views' hydration (BVW
+**`useLive(options?)`** keeps the provider's queries fresh over the live
+channel while the calling component is mounted: [`live()`](#live-invalidation-live)
+over the client `q` was made from and react-query's `QueryClient`, started
+in an effect and stopped on unmount. Call it once, near the root, under the
+`QueryClientProvider` (each call opens its own connection):
+
+```tsx
+export const { useApi, useLive } = createApiHooks(q);
+
+function App() {
+  useLive({ onDenied: (tags) => console.warn("not live:", tags) });
+  return <Pages />;
+}
+```
+
+Its options are `live()`'s, `transport` and `onDenied`. A new `QueryClient`
+or `transport` restarts it; `onDenied` is read when the server refuses tags,
+so an inline function does not (giving one where there was none, or taking
+it away, does). Under StrictMode's double mount the first start stops
+before it connects, so one connection opens.
+
+**Not yet:** `<ApiHydrate state>` comes with bun-views' hydration (BVW
 PR-5, §6.6). Until then, server-rendered data reaches the client through
 react-query's own `HydrationBoundary`: the queries' keys and data are plain
 JSON, so `dehydrate(queryClient)` of them serialises as it is.

@@ -18,7 +18,11 @@ import type { Server, ServerWebSocket } from "bun";
 import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
 import type { RouteManifest } from "../lib/index";
 import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
-import { BunHttpAdapter, createTestLogger } from "@kingsleyweb/bun-common";
+import {
+  BunHttpAdapter,
+  BunRouter,
+  createTestLogger,
+} from "@kingsleyweb/bun-common";
 import {
   liveContract,
   liveInvalidation,
@@ -346,6 +350,88 @@ describe("live(): the SSE fallback", () => {
     await Bun.sleep(100);
     publishTags(["user:1"]);
     await until(() => app.hits("GET /users/1") === 2);
+  });
+});
+
+describe("live(): tags the server refuses (hello's `denied`)", () => {
+  /**
+   * A live fallback that answers every stream with one `hello`, listing
+   * `denied` when given, then holds the stream open; and a client of it
+   * through `router.fetch()`. (bun-common's `liveInvalidation()` sends
+   * `denied` once per-tag authorization lands; the frame is scripted here.)
+   */
+  function scripted(denied?: string[], onDenied?: (tags: string[]) => void) {
+    const router = new BunRouter();
+    const asked: string[][] = [];
+    router.get("/__live/sse", (req: BunRequest, res: BunResponse) => {
+      const tags = (req.query as { tag?: string | string[] }).tag ?? [];
+      asked.push(Array.isArray(tags) ? tags : [tags]);
+      res.setHeader("content-type", "text/event-stream");
+      res.status(200);
+      res.write(
+        `event: hello\ndata: ${JSON.stringify({ epoch: "e1", seq: 0, ...(denied ? { denied } : {}) })}\n\n`,
+      );
+    });
+    router.get("/users/:id", (req: BunRequest, res: BunResponse) => {
+      res.json({ id: req.params.id, name: "Ada" });
+    });
+    const warnings: unknown[][] = [];
+    const api = createClient<Routes>({
+      baseUrl: "http://live.test",
+      fetch: (request) => router.fetch(request),
+      manifest,
+      logger: {
+        warn: (...args: unknown[]) => void warnings.push(args),
+        error: (...args: unknown[]) => void warnings.push(args),
+        debug: () => {},
+      },
+    });
+    const q = queries(api, { manifest });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+    const stop = live(api, queryClient, {
+      transport: "sse",
+      ...(onDenied ? { onDenied } : {}),
+    });
+    stops.push(stop);
+    stops.push(() => queryClient.clear());
+    return { q, queryClient, warnings, asked };
+  }
+
+  it("reports the refused tags to onDenied (control: a hello without `denied` reports nothing)", async () => {
+    const reported: string[][] = [];
+    const { q, queryClient, asked } = scripted(["user:1"], (tags) =>
+      reported.push(tags),
+    );
+    await watched(queryClient, q.query("/users/:id", { params: { id: "1" } }));
+    await until(() => reported.length === 1);
+    expect(reported).toEqual([["user:1"]]);
+    expect(asked.at(-1)).toContain("user:1");
+
+    const quiet: string[][] = [];
+    const control = scripted(undefined, (tags) => quiet.push(tags));
+    await watched(
+      control.queryClient,
+      control.q.query("/users/:id", { params: { id: "1" } }),
+    );
+    await until(() => control.asked.length >= 1);
+    await Bun.sleep(50);
+    expect(quiet).toEqual([]);
+  });
+
+  it("without onDenied, logs each refused tag once, as a warning", async () => {
+    const { q, queryClient, warnings } = scripted(["user:1", "users"]);
+    await watched(queryClient, q.query("/users/:id", { params: { id: "1" } }));
+    await until(() => warnings.length > 0);
+    expect(String(warnings[0]?.[0])).toContain(
+      "refused the tags user:1, users",
+    );
+    // A second hello (another query's tag reopens the stream) says the same:
+    // nothing more is logged.
+    await watched(queryClient, q.query("/users/:id", { params: { id: "2" } }));
+    await Bun.sleep(50);
+    expect(warnings).toHaveLength(1);
   });
 });
 

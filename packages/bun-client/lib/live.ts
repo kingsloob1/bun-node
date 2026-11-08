@@ -18,6 +18,10 @@
  *   with every tag it holds, then `resume` with the cursor it had, and the
  *   server replays what it missed. A `gap`, or a `hello` or `invalidate` of another
  *   epoch (a restarted server), invalidates every query.
+ * - **Denials**: a `hello` may list tags the server refused (`denied`,
+ *   per-tag authorization): they are reported to `onDenied`, else logged
+ *   once each as a warning, and stay held, so a later subscription (a
+ *   reconnect, another login) asks for them again.
  * - **Transports**: bun-common's live channel (`./channel`, at `/__live`
  *   under the client's `baseUrl`), or its SSE fallback (`./sse`, at
  *   `/__live/sse`, the tags in the query, the cursor as `Last-Event-ID`):
@@ -54,8 +58,8 @@ interface LiveEntry {
     invalidate: Cursor & { tags: string[] };
     /** The server cannot replay what was missed. */
     gap: Cursor;
-    /** Where the server is. */
-    hello: Cursor;
+    /** Where the server is; `denied` lists the tags it refused, if any. */
+    hello: Cursor & { denied?: string[] };
   };
   /** The replied types. */
   replies: { subscribe: "hello"; resume: "hello" };
@@ -91,6 +95,8 @@ export interface LiveApi {
 export interface StartOptions {
   /** `"websocket"` or `"sse"`; `undefined` picks. */
   readonly transport?: "websocket" | "sse";
+  /** Called with the tags a `hello` says were refused; `undefined` logs them. */
+  readonly onDenied?: (tags: string[]) => void;
 }
 
 /** A transport: what the layer tells the server. */
@@ -152,6 +158,8 @@ export function startLive(
   /** The invalidation (`epoch:seq`) each query last took. */
   const taken = new WeakMap<Query, string>();
   let transport: Transport | undefined;
+  /** Denied tags already logged (without an `onDenied`). */
+  const logged = new Set<string>();
 
   /** Every query invalid; the active ones refetch. */
   const invalidateAll = (): void => {
@@ -175,6 +183,22 @@ export function startLive(
     hello(data: unknown): void {
       const next = asCursor(data);
       if (next !== undefined) moveTo(next, false);
+      const denied = (data as { denied?: unknown } | null)?.denied;
+      if (!Array.isArray(denied)) return;
+      const tags = denied.filter(
+        (tag): tag is string => typeof tag === "string",
+      );
+      if (tags.length === 0 || stopped) return;
+      if (options.onDenied) {
+        options.onDenied(tags);
+        return;
+      }
+      const fresh = tags.filter((tag) => !logged.has(tag));
+      for (const tag of fresh) logged.add(tag);
+      if (fresh.length > 0)
+        logger.warn(
+          `live(): the server refused ${fresh.length === 1 ? "the tag" : "the tags"} ${fresh.join(", ")}; their queries are not kept fresh`,
+        );
     },
     gap(data: unknown): void {
       const next = asCursor(data);
