@@ -1833,8 +1833,10 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
   and renames it into place, or deletes it when fenced. `setMany` stages its
   large frames the same way, renaming each in the batch's script (staged
   frames are outside a script's 8 MiB of arguments; one script renames at
-  most 64 MiB of them), and a script whose staged frame is gone writes
-  nothing and fails. Replacing or deleting an entry reads only its header
+  most 64 MiB of them). A script whose staged frame is gone (its `SET`
+  failed, or it outlived the 60 s) writes nothing and fails, `set`'s
+  included, so the old entry and its tag memberships stay as they were; the
+  staging write's own error is the one thrown. Replacing or deleting an entry reads only its header
   line (`GETRANGE` of its first 4 KiB).
 - **Expiry is native**: an entry's and a counter's keys expire with
   `PEXPIREAT`, and reads also treat a passed expiry as a miss. There is
@@ -2015,7 +2017,7 @@ from a Redis next to the app:
   | `set`, each tag | +1 |
   | `set` replacing an entry | +1 per old tag it no longer carries |
   | `set` with the fence | +1 (one `MGET` of the stamps) |
-  | `set` of an entry of 8 KiB or more (staged) | +1, and +1 more when it has no expiry |
+  | `set` of an entry of 8 KiB or more (staged) | +2 (the staging `SET`, and the script's `EXISTS` of it), and +1 more when it has no expiry |
   | `setMany`, each entry of 8 KiB or more (staged) | as `set`'s, and 1 per script that stages (`EXISTS`) |
   | `touch` | 4 |
   | `increment` (an existing counter / a new one) | 3 / 6 |
