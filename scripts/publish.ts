@@ -545,17 +545,6 @@ export async function runPublish(
   // A failed run keeps it, to inspect the tarballs; a dry run keeps it, for
   // its release notes.
   const madeWork = options.work === undefined;
-  const finish = async (work: string): Promise<PublishReport> => {
-    const done = await finishRun(work);
-    if (madeWork && !dryRun && done.ok) {
-      rmSync(work, { recursive: true, force: true });
-      log(`removed the work directory ${work}`);
-      done.work = "";
-    } else if (madeWork) {
-      log(`kept the work directory ${work} (remove it when done)`);
-    }
-    return done;
-  };
   const finishRun = async (work: string): Promise<PublishReport> => {
     await verify(report, dryRun, io);
     if (!release) {
@@ -577,6 +566,17 @@ export async function runPublish(
     );
     report.ok = report.release !== "failed";
     return report;
+  };
+  const finish = async (work: string): Promise<PublishReport> => {
+    const done = await finishRun(work);
+    if (madeWork && !dryRun && done.ok) {
+      rmSync(work, { recursive: true, force: true });
+      log(`removed the work directory ${work}`);
+      done.work = "";
+    } else if (madeWork) {
+      log(`kept the work directory ${work} (remove it when done)`);
+    }
+    return done;
   };
   if (todo.length === 0) {
     log(`nothing to publish: every package is on the registry at ${version}`);
