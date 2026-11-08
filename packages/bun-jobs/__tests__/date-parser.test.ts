@@ -1,5 +1,8 @@
 import type { DateParser, DateParseResult } from "../lib/index";
-import { noopLogger } from "@kingsleyweb/bun-common";
+import {
+  noopLogger,
+  parseDuration as commonParseDuration,
+} from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
 import {
   BunJobs,
@@ -11,6 +14,7 @@ import {
 import {
   checkChrono,
   missingChronoError,
+  parseDuration,
   parseWhen,
   readRecurrence,
 } from "../lib/shared/humanTime";
@@ -50,6 +54,37 @@ function paydayParser(calls: string[] = []): DateParser {
     },
   };
 }
+
+describe("durations", () => {
+  it("are bun-common's parseDuration, with bun-jobs' grammar pinned", () => {
+    // One parser for the repo: bun-jobs' grammar moved to bun-common, and
+    // bun-jobs reads durations through it.
+    expect(parseDuration).toBe(commonParseDuration);
+    // What every(), delay(), rate limits and ttl windows rely on. A change in
+    // bun-common that moves any of these is a change to bun-jobs' API.
+    const cases: [string, number | null][] = [
+      ["90s", 90_000],
+      ["1h 30m", 5_400_000],
+      ["1h30m", 5_400_000],
+      ["2 days", 172_800_000],
+      ["1.5 hours", 5_400_000],
+      ["250ms", 250],
+      ["1 week", 604_800_000],
+      ["1mo", 2_629_800_000],
+      ["1 year", 31_557_600_000],
+      ["  3 MINS  ", 180_000],
+      ["1h, 30m", null],
+      ["500", null],
+      ["", null],
+      ["0 0 * * *", null],
+      ["2 days after friday", null],
+      ["5 fortnights", null],
+    ];
+    for (const [input, expected] of cases) {
+      expect([input, parseDuration(input)]).toEqual([input, expected]);
+    }
+  });
+});
 
 describe("a custom date parser", () => {
   let jobs: BunJobs | undefined;
