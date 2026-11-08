@@ -3,7 +3,9 @@
 A sub-plan of [`README.md`](README.md) (**TC**): typed, validated event
 streams over SSE, with `Last-Event-ID` resume, for bun-common routes and
 Nest's `@Sse()`. SSE is also the fallback transport of the live channel
-([`websocket.md`](websocket.md) §9).
+([`websocket.md`](websocket.md) §9). Since the 2026-11-08 follow-ups it
+answers a request whose every tag `authorizeTag` refuses with a `403` problem
+(`LIVE_TAGS_DENIED`), and a partly refused one with `hello.denied`.
 
 Written 2026-11-02 against `develop` at `e80ab379`. **No product code was
 changed.** `file:line` at `e80ab379`, relative to `packages/`. Markings as in

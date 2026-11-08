@@ -384,6 +384,13 @@ publishTags(["user:42"]);
   client over the channel's `fallback` endpoint.
 - It is authenticated by the app's `authorize`, like bun-jobs' API
   (`bun-jobs/lib/api/config.ts:543`) [S].
+- **Follow-ups, built 2026-11-08** (README's status row "PR-W4 follow-ups"):
+  a pluggable bus carries invalidations between processes (`connectLiveBus`,
+  `liveInvalidation({ bus })`, bun-cache's `cacheLiveBus`), each process
+  numbering what arrives in its own epoch, with a `gap` whenever one may have
+  been lost; and `authorizeTag(tag, req)` decides per tag, a refused tag never
+  held and listed in `hello.denied` (an SSE request refusing every tag is a
+  `403`).
 
 ---
 
@@ -493,4 +500,5 @@ TC §14 Q19–Q21, **answered 2026-11-02: approved as recommended.**
 | `defineChannel(contract)` | overload | bun-common root |
 | `send(…, { id })`, `send`/`publish` returning `Promise<number>` | signature changes | bun-common `Channel` |
 | `liveContract`, `liveInvalidation`, `publishTags` | constant, functions | bun-common `./live` (new entry) |
+| `connectLiveBus`, `LiveBus`, `LiveBusMessage`, `authorizeTag`, `LiveHello` (`hello.denied`); bun-cache `cacheLiveBus` | functions, types | bun-common `./live`; bun-cache `./live` (the follow-ups, approved 2026-11-08) |
 | `live` | function | bun-client `./query` (built there, TC §16; approved 2026-11-03) |
