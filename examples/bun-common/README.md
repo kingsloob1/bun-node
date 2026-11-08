@@ -206,6 +206,20 @@ bun run check:client   # the same with --check: exit 1 when they are stale
 |---|---|
 | [`client-ip.ts`](./15-trust-proxy/client-ip.ts) | `trustProxy` (Express's `trust proxy`) over a real socket: off by default (the peer, no `X-Forwarded-*`), the walk from the socket leftwards with `set("trust proxy", …)` and a hop count, `req.proxyChain`, a bad value's `TypeError`, the Cloudflare → Railway chain with `CF-Connecting-IP` believed and a direct request's spoof ignored, `ws.data.ip`, and a socket-free `fetch()` with no peer. See the package README's [Client address behind proxies](../../packages/bun-common/README.md#client-address-behind-proxies-trustproxy) |
 
+### 16 — Throttling
+
+`throttle()` counts each client's requests and answers `429` past a limit; the
+`throttle` option of `BunRouter`/`BunHttpAdapter` puts it ahead of every route.
+Every count runs on a fake clock, so the figures are exact.
+
+| File | Covers |
+|---|---|
+| [`adapter-wide.ts`](./16-throttle/adapter-wide.ts) | the adapter's `throttle` option: mounted routers and the not-found handler counted, the `RateLimit-Policy`/`RateLimit` headers (`headers: "ietf"`), the `429` problem+json with `Retry-After`, `getThrottleResults(req)`, a client of its own per `key`, the window moving on, and the default `req.ip` key over a real socket |
+| [`per-route.ts`](./16-throttle/per-route.ts) | `skipThrottle()` and `skipThrottle("burst")`; a route's `throttle()` with a same-named limit replacing the outer one while other names add (a login keyed on address+account plus address alone); `scope: "global"` sharing one budget through one store |
+| [`stores-and-failures.ts`](./16-throttle/stores-and-failures.ts) | `memoryThrottleStore({ maxKeys })`, one store shared by two routers, a broken store failing open (one warning) vs `failMode: "closed"` (`ThrottleStoreError`, 503), `onLimited`, the three algorithms and GCRA refill |
+| [`runtime-update.ts`](./16-throttle/runtime-update.ts) | the handler's controls: `update({ limits })` while serving (a kept limit's count carried over, a new name fresh, a bad update changing nothing), `peek(req)` consuming nothing, `reset(key)`, and `failMode: memoryThrottleStore()` as a fallback store while the primary is down |
+| [`openapi.ts`](./16-throttle/openapi.ts) | the generated `429` and `x-bun-throttle` on throttled operations, none on a skipped route, a route's own `429` winning |
+
 ## Checking the examples
 
 ```bash

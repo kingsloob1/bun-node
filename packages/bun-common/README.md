@@ -66,6 +66,11 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [Response compression](#response-compression)
     - [Writing a response transform](#writing-a-response-transform)
   - [Cache-Control](#cache-control)
+  - [Throttling](#throttling)
+    - [Limits, keys and scopes](#limits-keys-and-scopes)
+    - [Per-route overrides and opt-outs](#per-route-overrides-and-opt-outs)
+    - [Algorithms and stores](#algorithms-and-stores)
+    - [Changing limits while serving](#changing-limits-while-serving)
   - [Multipart uploads](#multipart-uploads)
   - [WebSockets](#websockets)
     - [Headers on the 101](#headers-on-the-101)
@@ -362,6 +367,7 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Runtime response checks for the validators on its routes that declare `responses` and no `responseValidation` of their own. A mounted router's setting wins over its parent's. Set it before adding routes. See [Responses](#responses). |
 | `responseOutput` | `"as-sent" \| "parsed"` | unset (`"as-sent"`) | What a passing buffered JSON body is sent as: the schema's output under `"parsed"`, for validators on its routes with no `responseOutput` of their own. A mounted router's wins over its parent's. Set it before adding routes. See [Responses](#responses). |
 | `commonResponses` | `validate()`'s `responses` form | none | Statuses every route may answer without declaring them (an auth `401`, the error handler's `500`), merged under each validator's `responses` per status and part, and under a mounted router's own (the inner winning). Only routes whose validators declare `responses` are checked. See [Responses](#responses). |
+| `throttle` | `ThrottleOptions \| ThrottleHandler` | none | Throttles every request the router runs: a `throttle()` registered as its first middleware, ahead of every route and the not-found handlers. See [Throttling](#throttling). |
 | `views` | `BunViews` | a `BunViews` of its own, made on first read | The views `res.render` uses in every response the router builds: `fetch()`, a `BunWebSocket` dedicated server and, on the adapter, every request and error handler. One instance, so its cache and `locals` are shared. Read it as `router.views`. A mounted sub-router renders with the views of the router serving the request. See [Redirects, views and format](#redirects-views-and-format). |
 
 Examples:
@@ -659,6 +665,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Forwarded to the router, over `router.responseValidation`. See [Responses](#responses). |
 | `responseOutput` | `"as-sent" \| "parsed"` | unset (`"as-sent"`) | Forwarded to the router, over `router.responseOutput`. See [Responses](#responses). |
 | `commonResponses` | `validate()`'s `responses` form | none | Forwarded to the router, over `router.commonResponses`. See [Responses](#responses). |
+| `throttle` | `ThrottleOptions \| ThrottleHandler` | none | Throttles every route, first in the chain (404s count). Forwarded to the router, over `router.throttle`. See [Throttling](#throttling). |
 | `etag` | `boolean \| "weak" \| "strong" \| (body) => string \| undefined` | `false` | How every response is tagged with an `ETag` (opt-in: hashing every body has a cost): `true`/`"strong"` a strong tag over the body, `"weak"` the same tag weak (`W/…`), a function the tag it returns (`undefined` for none). Each response starts from it and may overrule it with `res.setEtag()`/`res.etag`. An invalid value throws a `TypeError` here. |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
 | `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, as Express's `trust proxy` (also `set("trust proxy", value)` and `app.trustProxy`). Decides `req.ip`, `req.ips`, `req.protocol`, `req.host`/`hostname` and `ws.data.ip`. Wins over `request.trustProxy`; a bad value throws a `TypeError` here. See [Client address behind proxies](#client-address-behind-proxies-trustproxy). |
@@ -2829,6 +2836,7 @@ extensions a client needs beside the standard fields:
 | `x-bun-chunks` | a `chunks()` body's schema | `"ndjson"` or `"raw"` | the declaration's `framing`: a client iterates the stream, one JSON value per line or its bytes |
 | `x-sse-data` | an `sse()` body's schema, beside its `x-sse-events` | `"json"` or `"text"` | the declaration's `data`: how a client decodes each event's `data:` lines |
 | `x-bun-max-bytes` | a documented file's schema | `1000000` | `.describe({ request: { files } })`'s `maxBytes` |
+| `x-bun-throttle` | an operation a throttle covers | `[{ "name": "default", "limit": 600, "window": 60000, "algorithm": "sliding-window", "scope": "global" }]` | the throttles ahead of the route and among its callbacks, less what it skips or overrides (`listRoutes()`'s `throttle`); the operation also gets a `429` (problem+json, `Retry-After`, `RateLimit-Policy`, `RateLimit`) unless it declares its own |
 
 ```ts
 app
@@ -3383,6 +3391,125 @@ It follows RFC 9111 §5.2:
 
 `parseCacheControl(formatCacheControl(d))` gives back `d` for any `d` with
 no `false` or `undefined` entries.
+
+### Throttling
+
+`throttle(options)` counts each client's requests in a store and answers
+`429 Too Many Requests` past a limit. Give it to a router or an adapter to
+cover everything, or put it on a mount or a route, as express-rate-limit is
+used:
+
+```ts
+import { BunHttpAdapter, skipThrottle, throttle } from "@kingsleyweb/bun-common";
+
+const app = new BunHttpAdapter(0, {
+  // First in the chain: ahead of every route, middleware and the
+  // not-found handler, so a burst of 404s counts too.
+  throttle: { limit: 600, window: "1m", scope: "route" },
+});
+app.post(
+  "/login",
+  throttle({
+    limits: {
+      account: { limit: 10, window: "1m", key: (req) => `${req.ip}|${req.body?.email}` },
+      address: { limit: 30, window: "1m" },
+    },
+  }),
+  login,
+);
+app.get("/health", skipThrottle(), health);
+```
+
+A refused request gets a `429` `application/problem+json` body
+(`{ type: "urn:bun-common:error:TOO_MANY_REQUESTS", title, status, code:
+"TOO_MANY_REQUESTS", detail }`), `Cache-Control: no-store` and
+`Retry-After` in seconds. Nothing names the limit, the key or the count.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `limit`, `window` | `window: "1m"` | One limit, named `default`. A window always carries its unit: `"30s"`, `"1m"`, `"1h 30m"`, `{ seconds: 30 }`. A bare number is refused, by the type and at run time (is `60` seconds or ms?), and so is a window under a second unless `allowSubSecond: true`. |
+| `limits` | none | Several named limits (`{ burst: { limit: 20, window: "1s" }, sustained: { limit: 600, window: "1m" } }`), each with its own `key` and `cost` if it likes. Any of them refuses; every one counts. |
+| `key` | `req.ip`, IPv6 reduced to its `/56`, IPv4-mapped unmapped | Who a request counts against: `ip\|account`, a user id, an API key. `"unknown"` for a request without an address (a socket-free `fetch()`). Behind a proxy, `req.ip` is the client only when the adapter's `trustProxy` trusts the proxy; otherwise every client behind it shares the proxy's count. |
+| `ipv6Subnet` | `56` | The prefix an IPv6 address is reduced to by the default key (express-rate-limit 8's default); `false` keeps the whole address. |
+| `cost` | `1` | What a request costs: a number, or a function of the request. |
+| `skip` | none | `(req, res) => boolean`: a skipped request is neither counted nor refused (a service token, an allow-listed network). |
+| `scope` | `"global"` ahead of the routes, `"route"` on a route | `"global"` counts a client across every route it covers; `"route"` per client and route (method and path pattern, never the raw path). |
+| `algorithm` | `"sliding-window"` | See [Algorithms and stores](#algorithms-and-stores). |
+| `store` | a `memoryThrottleStore()` of its own | Where the counts live. One limit across processes needs a shared store: `cacheThrottleStore(cache)` from `@kingsleyweb/bun-cache/throttle`. |
+| `prefix` | `"throttle"` | The namespace of its keys; two throttles sharing a store need different ones (or different limit names). |
+| `headers` | `false` | `"ietf"` (or `true`): `RateLimit-Policy` and `RateLimit` (draft-ietf-httpapi-ratelimit-headers-11) on every throttled response; `"legacy"`: `X-RateLimit-Limit`/`-Remaining`/`-Reset`, as `@nestjs/throttler` sends them; `"both"`. Off by default so a client cannot pace itself just under a limit. `Retry-After` is on every `429` regardless. |
+| `onLimited` | `sendTooManyRequests` | `(req, res, next, info)`: answers a refused request (express-rate-limit's `handler`). `info` holds each limit's result (`name`, `key`, `used`, `remaining`, `resetAfter`, `retryAfter`), the refusing ones, and the route. `next()` lets the request through. |
+| `failMode` | `"open"` | When the store fails: `"open"` lets the request through and warns at most every 10 s; `"closed"` passes a `ThrottleStoreError` (`503`) to the error handlers; a `ThrottleStore` counts there instead (degrade to local). |
+| `logLimited` | `false` | One log line per `429` at this level (`true`: `warn`), naming the route and the limits, never the key. |
+| `logger`, `now` | the router's logger, `Date.now` | For the warnings and lines above; the clock that places a request in a window. |
+
+`getThrottleResults(req)` answers what the throttles a request met counted
+(express-rate-limit's `req.rateLimit`). A throttle runs synchronously over
+the memory store, so it keeps a synchronous request synchronous.
+
+The adapter reads a request's body before any middleware runs, so a refused
+request's body has been read (within its size cap). With
+`request: { deferBody: true }` the throttle runs first and a refused
+request's body is never read.
+
+#### Limits, keys and scopes
+
+Each limit counts against its own key, so one route can hold ConcaveHR's
+sign-in rules: 10 a minute per address and account, 30 per address alone.
+A throttle ahead of the routes counts per client across them (`"global"`);
+`scope: "route"` gives each route a count of its own, as `@nestjs/throttler`
+does. A request no route handles counts under `"(no route)"`.
+
+#### Per-route overrides and opt-outs
+
+A route overrides the throttles ahead of it by limit name: a `throttle()`
+among its callbacks with a limit called `default` replaces the outer
+`default` there (`@nestjs/throttler`'s `@Throttle({ default: … })`), while
+other names add to the outer limits. `skipThrottle()` turns every outer
+limit off for the route, and `skipThrottle("burst")` only that one
+(`@SkipThrottle()`); a throttle among the route's own callbacks still runs.
+`skipThrottle()` registered with `use()` skips nothing, and the router warns.
+
+#### Algorithms and stores
+
+| Algorithm | Counts | Store needs | Notes |
+|---|---|---|---|
+| `"sliding-window"` (default) | two fixed windows, the previous weighted by its overlap (Cloudflare's sliding-window counter) | `increment` with a lifetime, and `get` | Smooth at window edges; approximate, as it assumes the previous window was spread evenly. |
+| `"fixed-window"` | one counter per aligned window | `increment` | Exact and cheapest, but a client can send twice the limit across a boundary. |
+| `"gcra"` | a token bucket of `limit` refilling over `window` | an atomic `consumeGcra` | Exact and smooth; the memory store has it, other stores are refused at construction. A refused request takes nothing. |
+
+Under the window algorithms a refused request counts too (counted, then
+checked, in one step, as express-rate-limit and `@nestjs/throttler` do), so
+a client that keeps sending stays refused.
+
+`ThrottleStore` is structural: `increment(key, cost, ttl)` (atomic; the
+lifetime set only when the counter is created), `get(key)`, and optionally
+`consumeGcra`, `delete` (for `reset()`) and `clear`. Each may answer
+synchronously or with a promise. `memoryThrottleStore({ maxKeys })` is
+bounded: past `maxKeys` (default `100_000`) it drops expired counters, then
+the oldest, so a client inventing keys cannot grow it. Processes sharing a
+store need synchronised clocks, as a skew shifts their window edges.
+
+#### Changing limits while serving
+
+The middleware is a handle:
+
+| Member | Does |
+|---|---|
+| `update({ limit, window } \| { limits })` | Replaces its limits without re-registering it; a bad update throws and changes nothing. A limit whose name and window are unchanged keeps its counts. |
+| `peek(req)` | Each limit's result as if the request were counted, consuming nothing. |
+| `reset(key, { limits?, scope? })` | Forgets one key's counts (an unban); needs a store with `delete`. |
+| `policies`, `store` | Its limits as documented, and its store. |
+
+Generated documents mark every throttled operation: a `429` and
+`x-bun-throttle` (see [the `x-bun-*` extensions](#the-documents-as-a-typed-clients-model-x-bun--and-typeshash)).
+
+Examples:
+[`adapter-wide.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/adapter-wide.ts),
+[`per-route.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/per-route.ts),
+[`stores-and-failures.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/stores-and-failures.ts),
+[`runtime-update.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/runtime-update.ts),
+[`openapi.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/openapi.ts).
 
 ### Multipart uploads
 
@@ -4205,6 +4332,11 @@ Each file is a standalone script whose opening comment says what it shows.
 | `12-options` | [`logging-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/logging-options.ts) | Tour: every logger option, sink and adapter mapping |
 | `12-options` | [`native-utilities.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/native-utilities.ts) | Tour: every exported helper, with options and edge cases |
 | `15-trust-proxy` | [`client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/15-trust-proxy/client-ip.ts) | `trustProxy` and `clientIpHeader`: the walk, the Cloudflare → Railway chain and its spoofing attempts, `set("trust proxy")`, `ws.data.ip`, each asserted |
+| `16-throttle` | [`adapter-wide.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/adapter-wide.ts) | The adapter's `throttle` option over mounted routers and the not-found handler, the headers, the `429`, the default `req.ip` key over a socket |
+| `16-throttle` | [`per-route.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/per-route.ts) | `skipThrottle()`, same-name overrides, a login keyed on address+account and on address, `scope: "global"` |
+| `16-throttle` | [`stores-and-failures.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/stores-and-failures.ts) | The bounded memory store, a shared store, fail-open and fail-closed, `onLimited`, the three algorithms |
+| `16-throttle` | [`runtime-update.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/runtime-update.ts) | `update()` while serving, `peek()`, `reset()`, a fallback store |
+| `16-throttle` | [`openapi.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/openapi.ts) | The generated `429` and `x-bun-throttle` |
 
 The option tours in `12-options` do not just *show* behaviour, they
 **assert** it through

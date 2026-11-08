@@ -26,6 +26,7 @@ import {
   getPort,
   listRoutes,
   noopLogger,
+  throttle,
   toJsonSchema,
   useClassDtos,
   validate,
@@ -190,6 +191,15 @@ const typedClient = await mountTypedClientDemo(app);
 mountChatChannel(app);
 // The pretend sign-in for unauthorized: /playground/sign-out, /playground/sign-in.
 mountSignIn(app, ui.basePath);
+// A throttled route (bun-common's throttle()): five requests per 30 s per
+// client, with the IETF RateLimit headers, then a 429 with Retry-After.
+app
+  .get(
+    "/playground/throttle",
+    throttle({ limit: 5, window: "30s", headers: "ietf" }),
+    (_req, res) => res.json({ ok: true, at: new Date().toISOString() }),
+  )
+  .describe({ hidden: true });
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 app
@@ -378,6 +388,7 @@ bun-node playground (${playgroundBackend()} driver)
   Cache lab     ${origin}/playground/cache  (bun-cache: cached routes with X-Cache HIT/MISS/STALE/BYPASS/UNCACHEABLE, Age and timing, SWR and stale-if-error, invalidation by path and tag, live stats; switch driver, compression, L1)
   Cache report  ${origin}/playground/cache/report  (PR-C1's getOrSet demo: a 250 ms report, cached 10 s + 30 s stale — fire ten at once, one build)
   Typed client  ${origin}${CLIENT_BASE}  (bun-client: the generated route map beside its OpenAPI document, live typed calls, validation, the query layer; devTypes() for bun-client watch${typedClient.dev.token === undefined ? " — off under NODE_ENV=production" : ""})
+  Throttle      ${origin}/playground/throttle  (throttle(): 5 requests per 30 s, RateLimit headers, then a 429 with Retry-After — try curl -i in a loop)
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.

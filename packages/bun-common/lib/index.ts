@@ -660,6 +660,53 @@ export {
   parseCacheControl,
   type ParsedCacheControl,
 } from "./cacheControl";
+/* ------------------------------------------------------------------ *
+ * Throttling (`lib/throttle.ts`, `lib/throttleStore.ts`) — the `throttle()`
+ * middleware and the router/adapter `throttle` option, `skipThrottle()`,
+ * the store contract and the bounded memory store; durations
+ * (`lib/utils/duration.ts`).
+ * ------------------------------------------------------------------ */
+export {
+  defaultThrottleKey,
+  getThrottleResults,
+  isThrottleHandler,
+  sendTooManyRequests,
+  skipThrottle,
+  slidingWindowResult,
+  throttle,
+  throttleAddressKey,
+  type ThrottleAlgorithm,
+  type ThrottleCost,
+  type ThrottleHandler,
+  type ThrottleHeaders,
+  type ThrottleKey,
+  type ThrottleLimit,
+  type ThrottleLimitedHandler,
+  type ThrottleLimitedInfo,
+  type ThrottleLimits,
+  type ThrottleOptions,
+  type ThrottlePolicy,
+  type ThrottleResetOptions,
+  type ThrottleResult,
+  type ThrottleScope,
+  ThrottleStoreError,
+} from "./throttle";
+export {
+  DEFAULT_MEMORY_THROTTLE_MAX_KEYS,
+  type GcraOutcome,
+  type GcraRequest,
+  type MaybePromise,
+  memoryThrottleStore,
+  type MemoryThrottleStore,
+  type MemoryThrottleStoreOptions,
+  type ThrottleStore,
+} from "./throttleStore";
+export {
+  type Duration,
+  type DurationObject,
+  parseDuration,
+  toDurationMs,
+} from "./utils/duration";
 export type { ServeStaticPrecompressedOptions } from "./types/general";
 export type { ExtractRouteParams, ParamsDictionary } from "./types/routeParams";
 export {
