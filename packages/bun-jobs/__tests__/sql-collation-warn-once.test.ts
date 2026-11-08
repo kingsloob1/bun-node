@@ -62,6 +62,18 @@ function isCollationWarning(text: string): boolean {
   return text.includes("identifier column") && text.includes("alterColumns");
 }
 
+/**
+ * The collation warnings among a logger's `warn` records. A runner's logger
+ * says other things too, and under load it does: a worker thread that
+ * outlives its reap window, a run-log or analytics write the busy database
+ * refused. Counting every `warn` read one of those as the collation warning
+ * said twice (`worker-thread` on MySQL, once, under a full parallel run).
+ * Only the collation warning is counted, so saying *it* twice still fails.
+ */
+function collationWarnings(events: LogEvent[]): LogEvent[] {
+  return warnings(events).filter((event) => isCollationWarning(event.message));
+}
+
 /** The guard key a driver checks under, read as a runner reads it. */
 async function keyOf(driver: SqlDriver): Promise<string> {
   const [key] = await collationKeysForRuns(driver, undefined, noopLogger);
@@ -553,7 +565,7 @@ for (const { adapter, url, legacy } of MYSQL_FAMILY) {
           expect(lines.filter(isCollationWarning)).toEqual([]);
         }
 
-        const warned = warnings(events);
+        const warned = collationWarnings(events);
         expect(warned).toHaveLength(1);
         expect(warned[0].message).toContain(`${prefix}kv: kv_key`);
         // Through the runner's own logger, bindings and all.
@@ -579,10 +591,10 @@ for (const { adapter, url, legacy } of MYSQL_FAMILY) {
 
       // At start, before any run: the check is started by `start()`.
       const deadline = Date.now() + 10_000;
-      while (warnings(events).length === 0 && Date.now() < deadline) {
+      while (collationWarnings(events).length === 0 && Date.now() < deadline) {
         await Bun.sleep(20);
       }
-      expect(warnings(events)).toHaveLength(1);
+      expect(collationWarnings(events)).toHaveLength(1);
 
       for (let run = 0; run < 3; run += 1) {
         const record = await runOnce(runner);
@@ -591,7 +603,7 @@ for (const { adapter, url, legacy } of MYSQL_FAMILY) {
         expect(lines.filter(isCollationWarning)).toEqual([]);
       }
 
-      const warned = warnings(events);
+      const warned = collationWarnings(events);
       expect(warned).toHaveLength(1);
       expect(warned[0].message).toContain(`${child}kv: kv_key`);
       expect(warned[0].message).not.toContain(own);
