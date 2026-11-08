@@ -1,4 +1,4 @@
-import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
+import type { JobsUiConfig } from "../../../lib/jobs/browser/config.ts";
 import { describe, expect, it } from "bun:test";
 import {
   parseUiConfig,
@@ -13,7 +13,7 @@ import {
   storeTheme,
   THEME_STORAGE_KEY,
 } from "../../../app/jobs/theme";
-import { UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config.ts";
+import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config.ts";
 import { expectAbsent, expectUndefined } from "./assert";
 import { act, fireEvent, LOADED, page, setupDom } from "./dom";
 import { uiConfig } from "./fixtures";
@@ -35,7 +35,7 @@ const { boot } = await import("../../../app/jobs/boot");
 function writeShell(config: unknown): void {
   const script = document.createElement("script");
   script.type = "application/json";
-  script.id = UI_CONFIG_ELEMENT_ID;
+  script.id = JOBS_UI_CONFIG_ELEMENT_ID;
   script.textContent =
     typeof config === "string" ? config : JSON.stringify(config);
   const root = document.createElement("div");
@@ -117,7 +117,7 @@ describe("theme", () => {
 
 describe("boot", () => {
   it("renders the app from the injected config and marks it ready", async () => {
-    const config: UiConfig = uiConfig({ theme: "dark", title: "Ops jobs" });
+    const config: JobsUiConfig = uiConfig({ theme: "dark", title: "Ops jobs" });
     writeShell(config);
     const api = mockFetch(defaultHandlers());
     const { root } = boot({

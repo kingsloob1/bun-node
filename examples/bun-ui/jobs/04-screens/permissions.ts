@@ -184,7 +184,7 @@ import type {
   MetaDto,
   SummonRequest,
 } from "@kingsleyweb/bun-jobs";
-import type { UiSections } from "@kingsleyweb/bun-ui/jobs";
+import type { JobsUiSections } from "@kingsleyweb/bun-ui/jobs";
 import type {
   AnalyticsSeriesDto,
   JobDefaultsDto,
@@ -529,7 +529,7 @@ interface ScreenInputs {
   /** `GET /meta`. */
   meta: MetaDto;
   /** The `sections` the UI was configured with (`ui.config.sections`). */
-  sections: UiSections;
+  sections: JobsUiSections;
   /** The untargeted `GET /meta/permissions`: the nav, `/`, `/queues*`, `/runners*`. */
   boot: PermissionsBody;
   /**
@@ -813,7 +813,7 @@ interface Gate {
   /** `/meta` features that must all be on. */
   readonly features?: readonly Feature[];
   /** UI sections that must all be on. */
-  readonly sections?: readonly (keyof UiSections)[];
+  readonly sections?: readonly (keyof JobsUiSections)[];
   /** The `meta.mode` values the element exists in. */
   readonly modes?: readonly MetaDto["mode"][];
   /** The gate this one adds to ("the above" in the README). */
@@ -867,7 +867,7 @@ interface Gate {
    */
   readonly denied?: Denied;
   /** UI sections the README row says are **not** needed ("`sections.x` is not needed"). */
-  readonly notNeeded?: readonly (keyof UiSections)[];
+  readonly notNeeded?: readonly (keyof JobsUiSections)[];
   /** Which documented item it is about: an HTTP operation or a WebSocket one. */
   readonly itemKind?: DocItem["kind"];
   /** The item's `x-bun-jobs-action` must be granted, on the untargeted map. */

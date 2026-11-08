@@ -1,14 +1,14 @@
-import type { UiConfig } from "../../lib/jobs/browser/config.ts";
+import type { JobsUiConfig } from "../../lib/jobs/browser/config.ts";
 import type { ApiClient } from "./api/client";
 import { createContext, use } from "react";
 
-/** Carries the injected {@link UiConfig}. */
-export const UiConfigContext = createContext<UiConfig | null>(null);
+/** Carries the injected {@link JobsUiConfig}. */
+export const UiConfigContext = createContext<JobsUiConfig | null>(null);
 /** Carries the {@link ApiClient}. */
 export const ApiClientContext = createContext<ApiClient | null>(null);
 
-/** The resolved {@link UiConfig} the server injected. */
-export function useUiConfig(): UiConfig {
+/** The resolved {@link JobsUiConfig} the server injected. */
+export function useUiConfig(): JobsUiConfig {
   const config = use(UiConfigContext);
   if (!config) {
     throw new Error("useUiConfig must be used inside <AppProviders>");

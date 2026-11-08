@@ -1,5 +1,5 @@
-import type { UiConfig } from "@kingsleyweb/bun-ui/jobs";
-import { UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-ui/jobs";
+import type { JobsUiConfig } from "@kingsleyweb/bun-ui/jobs";
+import { JOBS_UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-ui/jobs";
 
 /**
  * Reading the HTML shell `jobsUi()` serves, the way a test would.
@@ -25,7 +25,7 @@ export interface ParsedShell {
   /** The `<title>` text, still HTML-escaped. */
   title: string;
   /** The configuration the page hands the app, parsed. */
-  config: UiConfig;
+  config: JobsUiConfig;
   /** The nonce on the configuration `<script>`. */
   configNonce: string;
   /** The module `<script>`: its `src`, SRI `integrity` and `nonce`. */
@@ -44,9 +44,9 @@ function attribute(tag: string, name: string): string {
  * shell page. Throws, naming the missing part, when the page is not a shell.
  */
 export function parseShell(html: string): ParsedShell {
-  // The configuration element: `id` is the exported UI_CONFIG_ELEMENT_ID.
+  // The configuration element: `id` is the exported JOBS_UI_CONFIG_ELEMENT_ID.
   const configMatch = new RegExp(
-    `(<script type="application/json" id="${UI_CONFIG_ELEMENT_ID}"[^>]*>)([\\s\\S]*?)</script>`,
+    `(<script type="application/json" id="${JOBS_UI_CONFIG_ELEMENT_ID}"[^>]*>)([\\s\\S]*?)</script>`,
   ).exec(html);
   if (!configMatch) {
     throw new Error("not a shell: no configuration <script>");
@@ -60,7 +60,7 @@ export function parseShell(html: string): ParsedShell {
   return {
     html,
     title: /<title>([\s\S]*?)<\/title>/.exec(html)?.[1] ?? "",
-    config: JSON.parse(configMatch[2]) as UiConfig,
+    config: JSON.parse(configMatch[2]) as JobsUiConfig,
     configNonce: attribute(configMatch[1], "nonce"),
     script: {
       src: attribute(scriptTag, "src"),

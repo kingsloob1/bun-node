@@ -52,7 +52,7 @@
 import { join } from "node:path";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { jobsUi, UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-ui/jobs";
+import { jobsUi, JOBS_UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-ui/jobs";
 import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
@@ -553,9 +553,9 @@ checkEqual(
   "/jobs/docs is the shell; /jobs-api/docs 404 (docs.ui is off); /jobs-api/openapi.json JSON",
   [
     docsScreen.status,
-    (await docsScreen.text()).includes(`id="${UI_CONFIG_ELEMENT_ID}"`),
+    (await docsScreen.text()).includes(`id="${JOBS_UI_CONFIG_ELEMENT_ID}"`),
     apiDocsPage.status,
-    apiDocsHtml.includes(`id="${UI_CONFIG_ELEMENT_ID}"`),
+    apiDocsHtml.includes(`id="${JOBS_UI_CONFIG_ELEMENT_ID}"`),
     document.status,
     document.headers.get("content-type")?.split(";")[0],
   ],

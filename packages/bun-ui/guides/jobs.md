@@ -22,7 +22,7 @@ find module"). The package's other entries never need it. React and the rest
 of the app are bundled into `dist/jobs/`, so you have no build step.
 
 The browser-safe half, the config the page carries and its types
-(`UiConfig`, `UiSections`, `UiTheme`, `UI_CONFIG_ELEMENT_ID`), is
+(`JobsUiConfig`, `JobsUiSections`, `UiTheme`, `JOBS_UI_CONFIG_ELEMENT_ID`), is
 `@kingsleyweb/bun-ui/jobs/browser`: no server code and no peer.
 
 Bun runs the shipped TypeScript server source (`lib/jobs/index.ts`). Your
@@ -77,7 +77,7 @@ cross-origin API needs `cors`, `csrf.allowedOrigins` and
 ## `jobsUi(options)`
 
 It returns `{ router, basePath, config }`, all read-only. `config` is the
-exact `UiConfig` the page receives. `jobsUi()` checks every option when you
+exact `JobsUiConfig` the page receives. `jobsUi()` checks every option when you
 call it and throws a `ConfigError` for anything unusable.
 
 | Option | Type | Default | Notes |

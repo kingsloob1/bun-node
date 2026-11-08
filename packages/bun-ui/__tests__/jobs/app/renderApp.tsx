@@ -1,6 +1,6 @@
 import type { FetchLike } from "../../../app/jobs/api/client";
 import type { LiveOptions } from "../../../app/jobs/live";
-import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
+import type { JobsUiConfig } from "../../../lib/jobs/browser/config.ts";
 import type { MockHandler, MockReply } from "./mockFetch";
 import { createApiClient } from "../../../app/jobs/api/client";
 import { App } from "../../../app/jobs/App";
@@ -68,7 +68,7 @@ export function defaultHandlers(): Record<string, MockHandler | MockReply> {
 /** Options of {@link renderApp}. */
 export interface RenderAppOptions {
   /** Config overrides. */
-  config?: Partial<UiConfig>;
+  config?: Partial<JobsUiConfig>;
   /** Route handlers, merged over {@link defaultHandlers}. */
   handlers?: Record<string, MockHandler | MockReply>;
   /** Use this `fetch` instead of the mock. */

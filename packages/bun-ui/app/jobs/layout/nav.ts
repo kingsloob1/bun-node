@@ -1,4 +1,4 @@
-import type { UiSections } from "../../../lib/jobs/browser/config.ts";
+import type { JobsUiSections } from "../../../lib/jobs/browser/config.ts";
 import type { JobsApiAction } from "../api/contract";
 import type { MetaDto } from "../api/types";
 
@@ -31,8 +31,8 @@ export interface NavItem {
 export interface NavInputs {
   /** `GET /meta`. */
   meta: MetaDto;
-  /** `UiConfig.sections`. */
-  sections: UiSections;
+  /** `JobsUiConfig.sections`. */
+  sections: JobsUiSections;
   /** Whether the caller may perform an action (absent = no). */
   can: (action: JobsApiAction) => boolean;
 }

@@ -8,7 +8,10 @@
  * imports: both sides import it, and the app side is bundled for the browser.
  */
 
+import type { UiTheme } from "../../kit/browser/shared";
 import type { UiUnauthorized } from "../../kit/browser/unauthorized";
+
+export type { UiTheme };
 
 /** Id of the `<script type="application/json">` element carrying {@link DocsUiConfig}. */
 export const DOCS_UI_CONFIG_ELEMENT_ID = "bun-api-docs-ui-config";
@@ -22,8 +25,11 @@ export const DOCS_UI_CONFIG_ELEMENT_ID = "bun-api-docs-ui-config";
  */
 export const DEFAULT_EXTENSION_PREFIXES = ["x-bun-common", "x-bun-jobs"];
 
-/** Colour scheme the viewer starts in. `"system"` follows `prefers-color-scheme`. */
-export type DocsUiTheme = "system" | "light" | "dark";
+/**
+ * Colour scheme the viewer starts in: the package's shared {@link UiTheme}
+ * (`"system"` follows `prefers-color-scheme`), under the docs viewer's name.
+ */
+export type DocsUiTheme = UiTheme;
 
 /** Resolved configuration handed to the browser. Never carries secrets. */
 export interface DocsUiConfig {

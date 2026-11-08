@@ -3,7 +3,7 @@
  * injected configuration — all through `router.fetch()`, no socket.
  */
 import { describe, expect, it } from "bun:test";
-import { UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config";
+import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config";
 import { cspHeader, escapeHtml, jsonForScript } from "../../../lib/jobs/shell";
 import {
   cspNonce,
@@ -123,7 +123,7 @@ describe("the shell", () => {
     const ui = fixtureUi();
     const { html } = await fetchShell(ui.router, "/");
     expect(html).toContain(
-      `<script type="application/json" id="${UI_CONFIG_ELEMENT_ID}" nonce=`,
+      `<script type="application/json" id="${JOBS_UI_CONFIG_ELEMENT_ID}" nonce=`,
     );
   });
 

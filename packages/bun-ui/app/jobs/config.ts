@@ -1,6 +1,6 @@
-import type { UiConfig } from "../../lib/jobs/browser/config.ts";
+import type { JobsUiConfig } from "../../lib/jobs/browser/config.ts";
 import { isUiUnauthorized } from "../../lib/kit/browser/unauthorized";
-import { UI_CONFIG_ELEMENT_ID } from "../../lib/jobs/browser/config.ts";
+import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../lib/jobs/browser/config.ts";
 
 /** The injected configuration was missing or malformed. */
 export class UiConfigError extends Error {
@@ -20,7 +20,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * re-validate everything the server resolved — only enough that a stale or
  * hand-edited shell fails with a message instead of a blank page.
  */
-export function parseUiConfig(value: unknown): UiConfig {
+export function parseUiConfig(value: unknown): JobsUiConfig {
   if (!isRecord(value)) {
     throw new UiConfigError("The UI configuration is not an object.");
   }
@@ -54,15 +54,15 @@ export function parseUiConfig(value: unknown): UiConfig {
       `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
     );
   }
-  return { ...value, unauthorized } as unknown as UiConfig;
+  return { ...value, unauthorized } as unknown as JobsUiConfig;
 }
 
-/** Reads the {@link UiConfig} the server inlined as `<script type="application/json" id="bun-jobs-ui-config">`. */
-export function readUiConfig(doc: Document = document): UiConfig {
-  const element = doc.getElementById(UI_CONFIG_ELEMENT_ID);
+/** Reads the {@link JobsUiConfig} the server inlined as `<script type="application/json" id="bun-jobs-ui-config">`. */
+export function readUiConfig(doc: Document = document): JobsUiConfig {
+  const element = doc.getElementById(JOBS_UI_CONFIG_ELEMENT_ID);
   if (!element) {
     throw new UiConfigError(
-      `The page has no #${UI_CONFIG_ELEMENT_ID} element: it was not served by jobsUi().`,
+      `The page has no #${JOBS_UI_CONFIG_ELEMENT_ID} element: it was not served by jobsUi().`,
     );
   }
   let parsed: unknown;

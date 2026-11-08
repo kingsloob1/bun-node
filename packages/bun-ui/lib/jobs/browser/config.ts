@@ -12,11 +12,11 @@ import type { UiUnauthorized } from "./unauthorized";
 
 export type { UiTheme };
 
-/** Id of the `<script type="application/json">` element carrying {@link UiConfig}. */
-export const UI_CONFIG_ELEMENT_ID = "bun-jobs-ui-config";
+/** Id of the `<script type="application/json">` element carrying {@link JobsUiConfig}. */
+export const JOBS_UI_CONFIG_ELEMENT_ID = "bun-jobs-ui-config";
 
 /** Sections of the app a mount can switch off. */
-export interface UiSections {
+export interface JobsUiSections {
   /** Job/queue/runner management screens. Defaults to `true`. */
   manage: boolean;
   /** The OpenAPI and AsyncAPI documentation viewers. Defaults to `true`. */
@@ -24,7 +24,7 @@ export interface UiSections {
 }
 
 /** Resolved configuration handed to the browser. Never carries secrets. */
-export interface UiConfig {
+export interface JobsUiConfig {
   /** Shape version of this object, bumped on a breaking change. Currently `1`. */
   version: 1;
   /** Page title and brand text. Defaults to `"Jobs"`. */
@@ -53,7 +53,7 @@ export interface UiConfig {
   /** Full paths of the API's spec documents, or `null` when docs are off. */
   docs: { openapi: string; asyncapi: string | null } | null;
   /** Which sections are enabled. */
-  sections: UiSections;
+  sections: JobsUiSections;
   /** Initial colour scheme. */
   theme: UiTheme;
   /**

@@ -1,5 +1,5 @@
 import type { Root } from "react-dom/client";
-import type { UiConfig } from "../../lib/jobs/browser/config.ts";
+import type { JobsUiConfig } from "../../lib/jobs/browser/config.ts";
 import type { ApiClientOptions } from "./api/client";
 import type { LiveOptions } from "./live";
 import { StrictMode } from "react";
@@ -27,7 +27,7 @@ export interface BootOptions {
 /** What {@link boot} started. */
 export interface BootResult {
   /** The config it read. */
-  config: UiConfig;
+  config: JobsUiConfig;
   /** The React root; `unmount()` tears the app down. */
   root: Root;
 }
@@ -43,7 +43,7 @@ export function boot(options: BootOptions = {}): BootResult {
   if (!container) {
     throw new Error("The page has no #root element.");
   }
-  let config: UiConfig;
+  let config: JobsUiConfig;
   try {
     config = readUiConfig(doc);
   } catch (error) {

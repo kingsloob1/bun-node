@@ -53,7 +53,7 @@ import {
   DEFAULT_BASE_PATH,
   DEFAULT_TITLE,
   jobsUi,
-  UI_CONFIG_ELEMENT_ID,
+  JOBS_UI_CONFIG_ELEMENT_ID,
 } from "@kingsleyweb/bun-ui/jobs";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
@@ -130,7 +130,11 @@ checkEqual(
   ASSET_CACHE_CONTROL,
   "public, max-age=31536000, immutable",
 );
-checkEqual("UI_CONFIG_ELEMENT_ID", UI_CONFIG_ELEMENT_ID, "bun-jobs-ui-config");
+checkEqual(
+  "JOBS_UI_CONFIG_ELEMENT_ID",
+  JOBS_UI_CONFIG_ELEMENT_ID,
+  "bun-jobs-ui-config",
+);
 
 // The package's whole runtime surface: jobsUi and the four constants. The
 // bundle machinery (building, writing and loading dist/) is internal.
@@ -141,7 +145,7 @@ checkEqual(
     "ASSET_CACHE_CONTROL",
     "DEFAULT_BASE_PATH",
     "DEFAULT_TITLE",
-    "UI_CONFIG_ELEMENT_ID",
+    "JOBS_UI_CONFIG_ELEMENT_ID",
     "jobsUi",
   ],
 );

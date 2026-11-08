@@ -1,4 +1,4 @@
-import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
+import type { JobsUiConfig } from "../../../lib/jobs/browser/config.ts";
 import type {
   MetaDto,
   Overview,
@@ -218,7 +218,7 @@ export function errorFromResponse(
 }
 
 /**
- * Creates the API client for a resolved {@link UiConfig}.
+ * Creates the API client for a resolved {@link JobsUiConfig}.
  *
  * Every request carries `Accept: application/json` and
  * `credentials: "same-origin"`; POST/PUT/PATCH always carry
@@ -227,7 +227,7 @@ export function errorFromResponse(
  * carries `config.csrfHeader: 1` when one is configured.
  */
 export function createApiClient(
-  config: Pick<UiConfig, "apiBase" | "csrfHeader">,
+  config: Pick<JobsUiConfig, "apiBase" | "csrfHeader">,
   options: ApiClientOptions = {},
 ): ApiClient {
   const base = config.apiBase.replace(/\/+$/, "");

@@ -35,7 +35,7 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
   | 3.0.0-rc.0 | Now |
   |---|---|
   | `import { jobsUi } from "@kingsleyweb/bun-jobs-ui"` | `import { jobsUi } from "@kingsleyweb/bun-ui/jobs"` |
-  | `import type { UiConfig } from "@kingsleyweb/bun-jobs-ui/lib/shared/config"` | `import type { UiConfig } from "@kingsleyweb/bun-ui/jobs/browser"` |
+  | `import type { UiConfig } from "@kingsleyweb/bun-jobs-ui/lib/shared/config"` | `import type { JobsUiConfig } from "@kingsleyweb/bun-ui/jobs/browser"` (renamed) |
   | `bun add @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-jobs` | `bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs` |
   | `import { docsUi } from "@kingsleyweb/bun-api-docs-ui"` | `import { docsUi } from "@kingsleyweb/bun-ui/docs"` |
   | `import … from "@kingsleyweb/bun-api-docs-ui/lib/shared/config"` | `import … from "@kingsleyweb/bun-ui/docs/browser"` |
@@ -50,6 +50,12 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
   `dist/` to `dist/jobs/` and `dist/docs/`. bun-common's optional peer for the
   `"self-hosted"` viewer is now `@kingsleyweb/bun-ui` (`SELF_HOSTED_PACKAGE`),
   and the option keeps its name.
+- **The jobs UI's generic names are now jobs-shaped**, as `@kingsleyweb/bun-ui`
+  holds more than one UI: `UiConfig` is `JobsUiConfig`, `UiSections` is
+  `JobsUiSections` and `UI_CONFIG_ELEMENT_ID` is `JOBS_UI_CONFIG_ELEMENT_ID`
+  (its value, the page's element id, is unchanged). No aliases. `UiTheme`
+  keeps its name as the one theme type every UI shares (the root and every
+  `/<ui>/browser`), and `DocsUiTheme` is now an alias of it.
 
 ### What's new
 

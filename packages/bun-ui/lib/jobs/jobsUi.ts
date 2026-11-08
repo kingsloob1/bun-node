@@ -18,7 +18,7 @@ import type {
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
 import type { UiAsset, UiAssets } from "./assets";
 import type { UiUnauthorized } from "./browser/unauthorized";
-import type { UiConfig, UiSections, UiTheme } from "./browser/config";
+import type { JobsUiConfig, JobsUiSections, UiTheme } from "./browser/config";
 import type { ShellRenderer } from "./shell";
 import type {
   JobsUi,
@@ -113,7 +113,7 @@ function isWithin(path: string, base: string): boolean {
 
 /** Where the API is, as the browser will reach it. */
 interface ResolvedApiTarget {
-  /** `UiConfig.apiBase`. */
+  /** `JobsUiConfig.apiBase`. */
   apiBase: string;
   /** The API's same-origin path, when known: requests under it are left to the API. */
   apiPath: string | undefined;
@@ -227,7 +227,7 @@ function csrfHeaderFromApi(api: JobsApi): string | undefined {
 }
 
 /** The docs paths: `api.info.docs` when present, else from the API's routes. */
-function docsFromApi(api: JobsApi): UiConfig["docs"] {
+function docsFromApi(api: JobsApi): JobsUiConfig["docs"] {
   const info = infoOf(api);
   if (info !== undefined && info.docs !== undefined) {
     return info.docs === null
@@ -244,7 +244,7 @@ function docsFromApi(api: JobsApi): UiConfig["docs"] {
 }
 
 /** The socket: `api.info.websocket` when present, else `api.websocket`. */
-function websocketFromApi(api: JobsApi): UiConfig["websocket"] {
+function websocketFromApi(api: JobsApi): JobsUiConfig["websocket"] {
   const info = infoOf(api);
   if (info !== undefined && info.websocket !== undefined) {
     return info.websocket === null
@@ -256,11 +256,11 @@ function websocketFromApi(api: JobsApi): UiConfig["websocket"] {
 }
 
 /** Validates `sections`, defaulting each to `true`. */
-function resolveSections(value: JobsUiOptions["sections"]): UiSections {
+function resolveSections(value: JobsUiOptions["sections"]): JobsUiSections {
   if (value !== undefined && (typeof value !== "object" || value === null)) {
     throw new ConfigError("sections must be an object", { value });
   }
-  const sections: UiSections = { manage: true, docs: true };
+  const sections: JobsUiSections = { manage: true, docs: true };
   for (const key of ["manage", "docs"] as const) {
     const flag = value?.[key];
     if (flag !== undefined && typeof flag !== "boolean") {
@@ -312,7 +312,7 @@ function resolveCsrfHeader(
 }
 
 /** A frozen copy of the config, nested objects included. */
-function freezeConfig(config: UiConfig): Readonly<UiConfig> {
+function freezeConfig(config: JobsUiConfig): Readonly<JobsUiConfig> {
   for (const value of Object.values(config)) {
     if (typeof value === "object" && value !== null) {
       Object.freeze(value);

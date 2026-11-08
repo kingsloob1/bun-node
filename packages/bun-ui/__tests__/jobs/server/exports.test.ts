@@ -16,8 +16,8 @@ import type {
   JobsUiUrlOptions,
   UiUnauthorized,
   UiUnauthorizedStatus,
-  UiConfig,
-  UiSections,
+  JobsUiConfig,
+  JobsUiSections,
   UiTheme,
 } from "../../../lib/jobs/index";
 import { describe, expect, it } from "bun:test";
@@ -29,7 +29,7 @@ describe("lib/index.ts", () => {
       "ASSET_CACHE_CONTROL",
       "DEFAULT_BASE_PATH",
       "DEFAULT_TITLE",
-      "UI_CONFIG_ELEMENT_ID",
+      "JOBS_UI_CONFIG_ELEMENT_ID",
       "jobsUi",
     ]);
   });
@@ -47,8 +47,8 @@ export type PublicTypes = [
   JobsUiAuthorizeContext,
   JobsUiAuthorizeResult,
   JobsUiUnauthorizedOptions,
-  UiConfig,
-  UiSections,
+  JobsUiConfig,
+  JobsUiSections,
   UiTheme,
   UiUnauthorized,
   UiUnauthorizedStatus,

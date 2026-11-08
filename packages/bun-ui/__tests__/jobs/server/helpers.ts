@@ -4,14 +4,14 @@
  * depends on what `app/` renders.
  */
 import type { JobsUiInternals } from "../../../lib/jobs/jobsUi";
-import type { UiConfig } from "../../../lib/jobs/browser/config";
+import type { JobsUiConfig } from "../../../lib/jobs/browser/config";
 import type { JobsUi, JobsUiOptions } from "../../../lib/jobs/types";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { createJobsUi } from "../../../lib/jobs/jobsUi";
-import { UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config";
+import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config";
 
 /** The fixture app entry: one stylesheet, one split chunk. */
 export const FIXTURE_ENTRY = join(
@@ -63,7 +63,7 @@ export interface ParsedShell {
   /** The raw text of the config `<script>`. */
   configText: string;
   /** The config, parsed. */
-  config: UiConfig;
+  config: JobsUiConfig;
   /** The config `<script>`'s nonce. */
   configNonce: string;
   /** The module `<script>`: its `src`, `integrity` and `nonce`. */
@@ -82,7 +82,7 @@ function attribute(tag: string, name: string): string {
 /** Parses the parts of a shell page the tests assert on. */
 export function parseShell(html: string): ParsedShell {
   const configMatch = new RegExp(
-    `(<script type="application/json" id="${UI_CONFIG_ELEMENT_ID}"[^>]*>)([\\s\\S]*?)</script>`,
+    `(<script type="application/json" id="${JOBS_UI_CONFIG_ELEMENT_ID}"[^>]*>)([\\s\\S]*?)</script>`,
   ).exec(html);
   if (!configMatch) {
     throw new Error("no config script in the shell");
@@ -98,7 +98,7 @@ export function parseShell(html: string): ParsedShell {
   return {
     title: /<title>([\s\S]*?)<\/title>/.exec(html)?.[1] ?? "",
     configText: configMatch[2],
-    config: JSON.parse(configMatch[2]) as UiConfig,
+    config: JSON.parse(configMatch[2]) as JobsUiConfig,
     configNonce: attribute(configMatch[1], "nonce"),
     script: {
       src: attribute(scriptTag, "src"),
