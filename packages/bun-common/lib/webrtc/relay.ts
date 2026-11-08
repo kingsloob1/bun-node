@@ -21,6 +21,10 @@
  *   nothing crosses rooms), or for the sender itself; a `join` while joined,
  *   under a name the room already has, or into a full room. The socket stays
  *   open.
+ * - **Identity** (`identify`): a socket may join only under the name its
+ *   authenticated session owns, so a client cannot take another peer's
+ *   name (and receive the offers meant for it). Without `identify` any free
+ *   name is taken first come, first served.
  * - Every frame is checked both ways by the channel (`defineChannel`), so
  *   nothing undeclared is relayed.
  *
@@ -30,7 +34,10 @@
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import type { BunRequest } from "../BunRequest";
 import type { BunResponse } from "../BunResponse";
-import type { WebSocketRouteOptions } from "../BunWebSocket";
+import type {
+  WebSocketClientData,
+  WebSocketRouteOptions,
+} from "../BunWebSocket";
 import type { ChannelContract } from "../contract/channel";
 import type { NextFunction, RouterHandler } from "../types/general";
 import type { SignallingOptions, SignallingSpec } from "./signalling";
@@ -52,6 +59,21 @@ export interface SignallingRelayOptions {
    * the room.
    */
   readonly maxPeersPerRoom?: number;
+  /**
+   * The peer name the socket's session owns, from what the upgrade
+   * authenticated: typically `ws.data.user` (the `req.user` an
+   * {@link authorize} middleware set) or a claim in `ws.data.custom`. A
+   * `join` must name exactly that peer, or it is refused (`"This name
+   * belongs to another session"`, at `peer`); a socket it answers
+   * `undefined` (or `""`) for cannot join at all (`"This socket has no
+   * identity to join as"`), and neither can one it throws for. Called once
+   * per `join`, synchronously. Default: none, so a socket may join under any
+   * name not taken in the room, and a client that knows a peer's name can
+   * claim it first.
+   */
+  readonly identify?: (
+    ws: ServerWebSocket<WebSocketClientData>,
+  ) => string | undefined;
 }
 
 /** What `app.ws(...)` takes from {@link signallingRelay}: the path, the upgrade's middleware, the handler, the route options. */
@@ -95,14 +117,20 @@ function roomOf(ws: ServerWebSocket<unknown>): string {
  *
  * @param contract The `signallingContract()` result, from the module the
  *   client shares.
- * @param options The upgrade's `authorize` middleware and the room size.
- * @throws TypeError when `maxPeersPerRoom` is not a whole number 1–1024.
+ * @param options The upgrade's `authorize` middleware, the room size and
+ *   `identify`, which pins a peer's name to its session.
+ * @throws TypeError when `maxPeersPerRoom` is not a whole number 1–1024, or
+ *   `identify` is given and is not a function.
  */
 export function signallingRelay<const O extends SignallingOptions>(
   contract: ChannelContract<SignallingSpec<O>>,
   options: SignallingRelayOptions = {},
 ): SignallingRoute<O["path"]> {
   const max = options.maxPeersPerRoom ?? 8;
+  const identify = options.identify;
+  if (identify !== undefined && typeof identify !== "function") {
+    throw new TypeError("signallingRelay(): identify must be a function");
+  }
   if (!Number.isInteger(max) || max < 1 || max > 1_024) {
     throw new TypeError(
       "signallingRelay(): maxPeersPerRoom must be a whole number from 1 to 1024",
@@ -174,6 +202,34 @@ export function signallingRelay<const O extends SignallingOptions>(
       if (members.has(ws)) {
         refuse(ws, "join", "", "Already joined: send leave first", frame);
         return undefined;
+      }
+      if (identify !== undefined) {
+        let owned: string | undefined;
+        try {
+          owned = identify(ws as ServerWebSocket<WebSocketClientData>);
+        } catch {
+          owned = undefined;
+        }
+        if (typeof owned !== "string" || owned === "") {
+          refuse(
+            ws,
+            "join",
+            "",
+            "This socket has no identity to join as",
+            frame,
+          );
+          return undefined;
+        }
+        if (data.peer !== owned) {
+          refuse(
+            ws,
+            "join",
+            "peer",
+            "This name belongs to another session",
+            frame,
+          );
+          return undefined;
+        }
       }
       const key = roomOf(ws);
       let room = rooms.get(key);

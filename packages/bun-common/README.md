@@ -4218,6 +4218,32 @@ app.ws(...signallingRelay(signalling, { authorize, maxPeersPerRoom: 8 }));
   contract from `@kingsleyweb/bun-common/lib/webrtc/signalling`, which holds
   nothing else.
 
+##### Pinning a peer's name to its session: `identify`
+
+Without it a name is first come, first served: a client that knows a peer's
+name can join under it first and receive the offers meant for that peer.
+`identify(ws)` returns the name the socket's authenticated session owns, and
+a `join` must name exactly that peer:
+
+```ts
+app.ws(
+  ...signallingRelay(signalling, {
+    authorize: requireSession, // sets req.user; the upgrade copies it to ws.data.user
+    identify: (ws) => (ws.data.user as { id?: string } | undefined)?.id,
+  }),
+);
+```
+
+- A `join` under any other name is refused, `"This name belongs to another
+  session"` at `peer`, whether or not that peer is in the room (never
+  `"taken"`, which would say it is).
+- A socket `identify` answers `undefined` or `""` for, or throws for, cannot
+  join: `"This socket has no identity to join as"`. It can send nothing on,
+  since every other frame needs a joined socket.
+- `identify` runs once per `join`, synchronously, on what the upgrade
+  recorded (`ws.data.user`, `ws.data.custom`, `ws.data.headers`). The same
+  session in two tabs joins once per room: the second gets `"taken"`.
+
 ### Structured logging
 
 `Logger` is structured, not console-shaped:
