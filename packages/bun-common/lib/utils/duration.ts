@@ -2,9 +2,11 @@
  * Durations written the way people say them — `"90s"`, `"1m"`, `"1h 30m"`,
  * `"2 days"` — read as milliseconds.
  *
- * The grammar is bun-jobs' `parseDuration` (`packages/bun-jobs/lib/shared/
- * humanTime.ts`), copied rather than imported because bun-jobs depends on
- * bun-common and not the other way round: one or more `<number><unit>` pairs,
+ * The grammar is the one bun-jobs wrote, moved here (bun-jobs depends on
+ * bun-common, not the other way round), and bun-jobs now reads its durations
+ * through this function (`packages/bun-jobs/lib/shared/humanTime.ts`), so a
+ * change here is a change to bun-jobs' `every()`, `delay()`, rate limits and
+ * windows too: one or more `<number><unit>` pairs,
  * with or without spaces, units from `ms` to `y` in their short and long
  * spellings. A month is 30.4375 days and a year 365.25, the averages a
  * *duration* can mean.

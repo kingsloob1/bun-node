@@ -1,3 +1,4 @@
+import { parseDuration } from "@kingsleyweb/bun-common";
 import { ConfigError } from "./errors";
 
 /**
@@ -9,7 +10,7 @@ import { ConfigError } from "./errors";
  * place to be wrong by a factor of sixty.
  *
  * The two halves are split on purpose, because their costs differ. A *duration*
- * is a small, closed grammar and is parsed here, with no dependency: nothing
+ * is a small, closed grammar, parsed by bun-common with no dependency: nothing
  * about "90 seconds" needs a library. A *date* is not — "2nd december 2026",
  * "next friday", "tomorrow at 9" is natural language, and doing it properly is
  * what `chrono-node` exists for.
@@ -20,69 +21,19 @@ import { ConfigError } from "./errors";
  * every consumer's tree for a feature most will not use.
  */
 
-/** Milliseconds in each unit a duration may be written in. */
-const UNITS: [RegExp, number][] = [
-  [/^(?:ms|milliseconds?)$/i, 1],
-  [/^(?:s|secs?|seconds?)$/i, 1_000],
-  [/^(?:m|mins?|minutes?)$/i, 60_000],
-  [/^(?:h|hrs?|hours?)$/i, 3_600_000],
-  [/^(?:d|days?)$/i, 86_400_000],
-  [/^(?:w|wks?|weeks?)$/i, 604_800_000],
-  // Calendar months and years vary; these are the averages a *duration* can
-  // mean. Anything that has to land on a particular date is a date, and goes
-  // through `parseWhen` instead.
-  [/^(?:mo|mons?|months?)$/i, 2_629_800_000],
-  [/^(?:y|yrs?|years?)$/i, 31_557_600_000],
-];
-
-/** One `<number><unit>` pair, with or without a space between them. */
-const PART = /(\d+(?:\.\d+)?)\s*([a-z]+)/gi;
-
 /**
- * Reads a duration like `"2 days"`, `"90s"` or `"1h 30m"` as milliseconds.
+ * Reads a duration like `"2 days"`, `"90s"` or `"1h 30m"` as milliseconds:
+ * bun-common's `parseDuration`, whose grammar was copied from this file and
+ * is the same, unit for unit (a month 30.4375 days, a year 365.25; one or
+ * more `<number><unit>` pairs; anything else left over is not a duration).
  *
- * Returns `null` rather than throwing when the string is not a duration at
- * all, because the callers that use this also accept cron expressions and need
- * to tell the two apart — `"0 0 * * *"` is not a failed duration, it is a
- * different thing.
+ * It returns `null` rather than throwing when the string is not a duration
+ * at all, because the callers that use this also accept cron expressions and
+ * need to tell the two apart — `"0 0 * * *"` is not a failed duration, it is
+ * a different thing. Anything that has to land on a particular date is a
+ * date, and goes through `parseWhen` instead.
  */
-export function parseDuration(input: string): number | null {
-  const text = input.trim();
-
-  if (text.length === 0) {
-    return null;
-  }
-
-  let total = 0;
-  let matched = false;
-  let consumed = 0;
-
-  PART.lastIndex = 0;
-  for (let part = PART.exec(text); part !== null; part = PART.exec(text)) {
-    const unit = UNITS.find(([pattern]) => pattern.test(part[2]));
-
-    if (!unit) {
-      return null;
-    }
-
-    total += Number(part[1]) * unit[1];
-    consumed += part[0].length;
-    matched = true;
-  }
-
-  if (!matched) {
-    return null;
-  }
-
-  // Everything that was not a `<number><unit>` pair has to be separators. A
-  // string like "2 days after friday" parses "2 days" and leaves words behind,
-  // and answering 172800000 to that would be worse than admitting it is not a
-  // duration.
-  const leftover = text.replace(PART, "").trim();
-  void consumed;
-
-  return leftover.length === 0 ? total : null;
-}
+export { parseDuration };
 
 /** Whether a string looks like a cron expression rather than a duration. */
 export function looksLikeCron(input: string): boolean {
