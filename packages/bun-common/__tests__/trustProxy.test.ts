@@ -22,6 +22,7 @@ import {
   trustChain,
 } from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { BunRequest } from "../lib/BunRequest";
 import { BunRouter } from "../lib/BunRouter";
 import type { MakeRequestInit } from "./helpers";
 import { makeRequest, peerServer } from "./helpers";
@@ -636,6 +637,62 @@ describe("socket-free fetch() with a remoteAddress", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("the socket peer is asked for once per request", () => {
+  /** A server reporting `address` as the peer, counting `requestIP()`, a fresh object each call as Bun's. */
+  const counting = (address: string | null) => {
+    const counter = { calls: 0 };
+    const server = {
+      requestIP: () => {
+        counter.calls++;
+        return address === null
+          ? null
+          : { address, port: 40000, family: "IPv4" as const };
+      },
+      upgrade: () => false,
+      timeout: () => {},
+    } as unknown as BunServer<never>;
+    return { server, counter };
+  };
+
+  it("ip, ips, protocol, host, hostname and req.socket read one requestIP() between them", async () => {
+    const { server, counter } = counting("10.0.0.4");
+    const req = await BunRequest.init(
+      new Request("http://origin.test/", {
+        headers: {
+          "x-forwarded-for": "203.0.113.9",
+          "x-forwarded-proto": "https",
+          "x-forwarded-host": "app.example",
+        },
+      }),
+      server,
+      { parseBody: false, trustProxy: "10.0.0.0/8" },
+    );
+    expect([req.ip, req.ips, req.protocol, req.host, req.hostname]).toEqual([
+      "203.0.113.9",
+      ["203.0.113.9"],
+      "https",
+      "app.example",
+      "app.example",
+    ]);
+    expect([req.ip, req.socket.remoteAddress, req.socket.remotePort]).toEqual([
+      "203.0.113.9",
+      "10.0.0.4",
+      40000,
+    ]);
+    expect(counter.calls).toBe(1);
+  });
+
+  it("a request with no peer asks again (nothing is kept)", async () => {
+    const { server, counter } = counting(null);
+    const req = await BunRequest.init(
+      new Request("http://origin.test/"),
+      server,
+    );
+    expect([req.ip, req.ip]).toEqual(["", ""]);
+    expect(counter.calls).toBe(2);
   });
 });
 
