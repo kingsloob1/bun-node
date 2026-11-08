@@ -426,7 +426,7 @@ later level wins.
 | --- | --- | --- | --- |
 | `baseUrl` | `""` | client | |
 | `fetch` | `globalThis.fetch` | client | Pass `(r) => router.fetch(r)` to run in process. Outside a browser, a relative URL needs a custom fetch (it resolves against `http://localhost`) or an absolute `baseUrl`. |
-| `headers` | none | all three | merged by name, last wins; a function is called per request with the request context |
+| `headers` | none | all three | merged by name, last wins; a function is called per request with the request context. In an object, `undefined` sends no header (the level below stays) and a number or boolean is sent as its string: a header the route declares as `z.coerce.number()` (`integer` in the document) is typed `number` at the call |
 | `credentials` | `"same-origin"` | client | |
 | `timeout` | `30_000` ms; `false` for none | all three | last wins; covers retries and their waits |
 | `retry` | below; `false` for none | all three | merged per key; `false` turns it off, and an object at a later level turns it back on over the defaults |
@@ -709,7 +709,9 @@ export const schemas = schemasFromZod<Routes>({
 - **Headers cross as strings**, request and response alike: a header whose
   schema describes strings is checked by it, and any other (a server's
   `z.coerce.number()` documents `integer`) as `z.string()`. The route map
-  types a response header the same way.
+  types a response header the same way. A request header keeps its
+  documented type at the call (`"x-limit": 10`), as a param does, and is
+  checked as sent, `"10"`.
 - **Not checked**: a multipart or binary body, an event stream, a `default`
   status; other keywords (the check is looser than the document, never
   stricter). A keyword TypeScript cannot express either (`not`, `if`, …)

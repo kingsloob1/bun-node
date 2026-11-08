@@ -507,7 +507,14 @@ export function createClient(
     for (const level of resolved.headers) {
       if (level === undefined) continue;
       const given = typeof level === "function" ? await level(ctx) : level;
-      new Headers(given).forEach((value, name) => {
+      // An object's `undefined` sends no header (`Headers` would send
+      // "undefined"), and a number or boolean is sent as its string: JSON
+      // drops the one and keeps the other for `Headers` to write.
+      new Headers(
+        Array.isArray(given) || given instanceof Headers
+          ? given
+          : (JSON.parse(JSON.stringify(given)) as Record<string, string>),
+      ).forEach((value, name) => {
         ctx.request.headers.set(name, value);
       });
     }
