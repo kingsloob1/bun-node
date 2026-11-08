@@ -58,6 +58,11 @@ const DECODERS: ReadonlyMap<
  * Bun 1.4.2, 1.4.3 and 1.4.4: a frame declaring 15 MiB that holds 256 MiB grew
  * the process by 15 MiB before failing, one declaring 20 MiB by 384 MiB).
  * gzip and DEFLATE share it, so one figure bounds every native read.
+ *
+ * The Bun bugs this works around: a declared size above 16 MiB is not
+ * enforced (oven-sh/bun#48215), and a frame declaring none has no output
+ * limit at all (oven-sh/bun#28162); `docs/bun-bugs/zstd-declared-size-over-16mib.md`.
+ * Once both are fixed, a native zstd decode needs no bound but the cap.
  */
 export const NATIVE_LIMIT = 16 * 1024 * 1024;
 
