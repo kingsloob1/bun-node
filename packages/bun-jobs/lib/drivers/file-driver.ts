@@ -267,6 +267,40 @@ const STATES: JobState[] = [
   "waiting-children",
 ];
 
+/**
+ * The order `countJobs` reads the state directories in, chosen so a job
+ * moving between two of them mid-count is never missed.
+ *
+ * The reads are separate `readdir`s, so a job that leaves a state after it
+ * was read and arrives in one before it was read is in neither, and a count
+ * of nothing pending says the queue is empty while the job is about to run.
+ * A move from `X` to `Y` is missed exactly when every read of `X` comes after
+ * it and every read of `Y` before it; so each move needs a read of its source
+ * before the last read of its destination. The moves run both ways between
+ * the unfinished states (a claim takes `waiting` to `active`, recovery and an
+ * immediate retry take it back; promotion takes `delayed` and `failed` to
+ * `waiting`, a backoff takes `active` to them), which no single order serves.
+ * So the unfinished states are read twice, around the finished ones, which a
+ * job only enters from `active` and leaves (a retry) for an unfinished state
+ * read again afterwards. A job is counted once per state however many reads
+ * see it there (the marker names are unioned); one that moved can be counted
+ * in both states for that call — an instant's double count, never a miss.
+ */
+const COUNT_READ_ORDER: readonly JobState[] = [
+  "waiting-children",
+  "delayed",
+  "failed",
+  "active",
+  "waiting",
+  "completed",
+  "dead",
+  "waiting-children",
+  "delayed",
+  "failed",
+  "active",
+  "waiting",
+];
+
 /** States holding a job that is due later. */
 const SCHEDULED_STATES: JobState[] = ["delayed", "failed"];
 
@@ -2783,8 +2817,22 @@ export class FileDriver implements JobsDriver {
       "waiting-children": 0,
     } satisfies Record<JobState, number>;
 
+    // Unioned by marker name across the reads of a state: see
+    // COUNT_READ_ORDER for why some states are read twice.
+    const seen = new Map<JobState, Set<string>>();
+    for (const state of COUNT_READ_ORDER) {
+      let names = seen.get(state);
+      if (names === undefined) {
+        names = new Set();
+        seen.set(state, names);
+      }
+      for (const name of await this.#list(join(dir, "index", state))) {
+        names.add(name);
+      }
+    }
+
     for (const state of STATES) {
-      counts[state] = (await this.#list(join(dir, "index", state))).length;
+      counts[state] = seen.get(state)?.size ?? 0;
     }
 
     return counts;
