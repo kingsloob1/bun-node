@@ -1,5 +1,5 @@
 import type { matchedRoute, Route } from "@routejs/router";
-import type { WebSocketHandler } from "bun";
+import type { SocketAddress, WebSocketHandler } from "bun";
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
 import type { ValidatorMiddleware } from "./BunValidate";
@@ -34,6 +34,7 @@ import type {
   RoutePathPlan,
 } from "./utils/expressPath";
 import { Buffer } from "node:buffer";
+import { isIP } from "node:net";
 import path, { join } from "node:path";
 import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
@@ -621,15 +622,35 @@ export type UnmountedRouter = Router & {
 type GroupCallback = (router: never) => void;
 
 export type FetchInput =
-  string | URL | Request | (RequestInit & { url: string | URL });
+  string | URL | Request | (FetchInit & { url: string | URL });
+
+/**
+ * The `RequestInit` a socket-free `fetch()` takes ({@link BunRouter.fetch} and
+ * both adapters'), with what a socket would otherwise supply.
+ */
+export interface FetchInit extends RequestInit {
+  /**
+   * The socket peer's IP address the request reports, as a served request's
+   * `server.requestIP()` would: `req.ip` (before `trustProxy`),
+   * `req.socket.remoteAddress` and what `trustProxy` judges the proxy by, so
+   * a test can put a request behind any proxy or client address, e.g.
+   * `"203.0.113.5"` or `"::1"`. Its family follows its form and its port is
+   * `0`. Unset, the request has no peer (`req.ip` is `""`), as before. Read
+   * from `init` even when the input is a `Request`, and from the init form;
+   * `init`'s wins. Anything but an IPv4 or IPv6 address throws a `TypeError`.
+   */
+  remoteAddress?: string;
+}
 
 /** Origin used when {@link BunRouter.fetch} is given a bare path. */
 const FETCH_DEFAULT_ORIGIN = "http://localhost";
 
 /**
  * A stand-in for the `Bun.serve` server that {@link BunRouter.fetch} passes to
- * `BunRequest`. There is no socket, so there is no peer address, and an
- * upgrade cannot succeed — reporting that honestly is better than pretending.
+ * `BunRequest`. There is no socket, so there is no peer address (unless the
+ * caller names one, {@link FetchInit.remoteAddress}, which
+ * `SocketFreeExchange.serverFor` layers over this), and an upgrade cannot
+ * succeed — reporting that honestly is better than pretending.
  * Nor is there an idle timeout, so exempting a request from it
  * (`req.socket.setTimeout(0)`) is a no-op that succeeds, as it does served.
  */
@@ -863,12 +884,13 @@ function peekBodyBlob(body: unknown): Blob | undefined {
  */
 export function openSocketFree(
   input: FetchInput,
-  init?: RequestInit,
+  init?: FetchInit,
   origin: string = FETCH_DEFAULT_ORIGIN,
 ): SocketFreeExchange {
+  const peer = fetchPeer(input, init);
   const request = toNativeRequest(input, init, origin);
   if (isRequestLike(input)) {
-    return new SocketFreeExchange(request, undefined, true);
+    return new SocketFreeExchange(request, undefined, true, peer);
   }
   // The signal the request was built with, read from its `RequestInit`
   // rather than from the request, whose signal Bun creates on first read:
@@ -879,7 +901,33 @@ export function openSocketFree(
       : typeof input === "object" && "url" in input
         ? (input as RequestInit).signal
         : undefined;
-  return new SocketFreeExchange(request, caller, false);
+  return new SocketFreeExchange(request, caller, false, peer);
+}
+
+/**
+ * The socket peer a socket-free `fetch()` was told to report
+ * ({@link FetchInit.remoteAddress}), `init`'s over the init form's; `undefined`
+ * for none.
+ */
+function fetchPeer(
+  input: FetchInput,
+  init: FetchInit | undefined,
+): SocketAddress | undefined {
+  const address =
+    init?.remoteAddress ??
+    (typeof input === "object" && !isRequestLike(input) && "url" in input
+      ? input.remoteAddress
+      : undefined);
+  if (address === undefined) {
+    return undefined;
+  }
+  const version = typeof address === "string" ? isIP(address) : 0;
+  if (version === 0) {
+    throw new TypeError(
+      `fetch(): remoteAddress must be an IPv4 or IPv6 address, got ${JSON.stringify(address)}`,
+    );
+  }
+  return { address, port: 0, family: version === 6 ? "IPv6" : "IPv4" };
 }
 
 /** A step's result that came after the caller left, with nothing to release. */
@@ -5924,6 +5972,11 @@ export class BunRouter<
    * read only once the pipeline waits on a layer (see
    * {@link SocketFreeExchange.race}).
    *
+   * There is no socket, so the request has no peer (`req.ip` is `""`) unless
+   * the init names one: `{ remoteAddress: "203.0.113.5" }` reports it as the
+   * socket peer, so `req.ip`, `trustProxy` and anything keyed by the client
+   * address can be tested without a server.
+   *
    * @example
    * ```ts
    * await router.fetch("/users/42");                       // GET
@@ -5933,9 +5986,10 @@ export class BunRouter<
    *
    * @param input A `Request`, a path/URL (implying `GET`), or a `RequestInit`
    *   carrying a `url`.
-   * @param init  Extra `RequestInit` applied when `input` is a path or URL.
+   * @param init  Extra `RequestInit` applied when `input` is a path or URL;
+   *   its {@link FetchInit.remoteAddress} applies to any input.
    */
-  fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+  fetch(input: FetchInput, init?: FetchInit): Promise<Response> {
     const host = this.localOptions?.host;
     const exchange = openSocketFree(
       input,
@@ -5952,12 +6006,16 @@ export class BunRouter<
    * awaited, so a request routed synchronously never reads that signal.
    */
   async #fetchExchange(exchange: SocketFreeExchange): Promise<Response> {
-    const created = BunRequestClass.init(exchange.request, FETCH_STUB_SERVER, {
-      parseBody: true,
-      parseCookies: true,
-      parseQuery: true,
-      ...this.proxyTrustRequestOptions(),
-    });
+    const created = BunRequestClass.init(
+      exchange.request,
+      exchange.serverFor(FETCH_STUB_SERVER),
+      {
+        parseBody: true,
+        parseCookies: true,
+        parseQuery: true,
+        ...this.proxyTrustRequestOptions(),
+      },
+    );
     const request =
       created instanceof BunRequestClass
         ? created

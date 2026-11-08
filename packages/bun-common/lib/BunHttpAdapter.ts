@@ -2,7 +2,7 @@ import type { WebSocketHandler } from "bun";
 import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { EtagOption, SocketFreeExchange } from "./BunResponse";
-import type { FetchInput, ServeHooks } from "./BunRouter";
+import type { FetchInit, FetchInput, ServeHooks } from "./BunRouter";
 import type { ValidatorMiddleware } from "./BunValidate";
 import { drainAndStop, validateCloseDrainTimeout } from "./serverDrain";
 import type {
@@ -748,7 +748,7 @@ export class BunHttpAdapter<
    * expect(res.status).toBe(200);
    * ```
    */
-  override fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+  override fetch(input: FetchInput, init?: FetchInit): Promise<Response> {
     const exchange = openSocketFree(
       input,
       init,
@@ -767,7 +767,8 @@ export class BunHttpAdapter<
     const nativeRequest = exchange.request;
     // A live server when one exists, so `requestIP`/`upgrade` behave; a stub
     // otherwise, which reports no peer and refuses upgrades.
-    const server = this.getBunServer() ?? FETCH_STUB_SERVER;
+    // A peer the caller named (`remoteAddress`) is reported over either.
+    const server = exchange.serverFor(this.getBunServer() ?? FETCH_STUB_SERVER);
     let response: Response | undefined;
     try {
       const handled =

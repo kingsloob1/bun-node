@@ -14,6 +14,7 @@ import type {
   BunWebSocketServerType,
   EmptyShape,
   EtagOption,
+  FetchInit,
   FetchInput,
   matchedRoute,
   MountedHandler,
@@ -2121,7 +2122,7 @@ export class BunHttpAdapter<
    * expect(res.status).toBe(200);
    * ```
    */
-  public fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+  public fetch(input: FetchInput, init?: FetchInit): Promise<Response> {
     const exchange = openSocketFree(
       input,
       init,
@@ -2142,7 +2143,8 @@ export class BunHttpAdapter<
     // otherwise, which reports no peer and refuses upgrades. The stub is not
     // a real server (only `requestIP`/`upgrade` exist), which is exactly what
     // this method touches.
-    const server = this.getBunServer() ?? FETCH_STUB_SERVER;
+    // A peer the caller named (`remoteAddress`) is reported over either.
+    const server = exchange.serverFor(this.getBunServer() ?? FETCH_STUB_SERVER);
     let response: Response | undefined;
     try {
       const handled =

@@ -1370,6 +1370,12 @@ socket itself (WebSockets, streaming, keep-alive).
 
 Without a socket there is no peer, so `requestIP()` is `null` and an upgrade
 cannot succeed — a stub server reports both honestly rather than pretending.
+A test that needs a peer (`req.ip`, `trustProxy`, an IP-keyed throttle) names
+one in the init, `fetch("/ip", { remoteAddress: "10.0.0.4" })`
+(`FetchInit.remoteAddress`): `SocketFreeExchange.serverFor` reports it over
+the stub, or over the live server of a listening adapter. The test helpers'
+`peer` option (`makeRequest({ peer })`, `peerServer()`) does the same for a
+request built without `fetch()`.
 
 ## Testing conventions & gotchas
 
