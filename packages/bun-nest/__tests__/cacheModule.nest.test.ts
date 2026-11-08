@@ -16,6 +16,7 @@ import type {
   OnModuleDestroy,
 } from "@nestjs/common";
 import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
+import { fakeClock } from "@kingsleyweb/bun-cache/testing";
 import { Inject, Injectable, Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { afterEach, describe, expect, it } from "bun:test";
@@ -138,6 +139,10 @@ describe("BunCacheModule.forRootAsync", () => {
     Module({ providers: [Config], exports: [Config] })(ConfigModule);
 
     const seen: number[] = [];
+    // The cache stamps `createdAt` and `freshUntil` from two clock reads
+    // (the call, then the write), which can straddle a millisecond: a still
+    // clock makes the entry's window exactly its TTL.
+    const clock = fakeClock();
     class AppModule {}
     Module({
       imports: [
@@ -156,7 +161,11 @@ describe("BunCacheModule.forRootAsync", () => {
           useFactory: async (config: Config) => {
             await Bun.sleep(1);
             seen.push(config.ttl * 2);
-            return { driver: memoryDriver(), ttl: config.ttl * 2 };
+            return {
+              driver: memoryDriver(),
+              ttl: config.ttl * 2,
+              now: clock.now,
+            };
           },
         }),
       ],
