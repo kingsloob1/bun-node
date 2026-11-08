@@ -222,7 +222,7 @@ blindly.
     the real `createCache`; zstd, gzip, deflate and Brotli at four sizes on
     JSON, HTML and incompressible bytes, sync and async.
 - **[`bun-security/`](bun-security/README.md)** — `@kingsleyweb/bun-security`
-  and `@kingsleyweb/bun-security-ui` (approved 2026-11-07, all open questions answered as recommended; nothing built yet): a
+  and its UI as bun-ui's `/security` (approved 2026-11-07, all open questions answered as recommended; the UI's package changed by the user on 2026-11-08, [`bun-ui/`](bun-ui/README.md); nothing built yet): a
   request-defence engine (lists, bans, counted rules and escalation, request
   shape, safe rules, deception, challenges, sensitive-endpoint profiles, API
   keys, response controls) on the trust-proxy and throttle foundations, a
@@ -238,7 +238,7 @@ blindly.
     bundles, management API, RBAC, audit, agents, secrets, self-DoS bounds.
   - [`storage.md`](bun-security/storage.md) — the security store's drivers,
     a shared SQL module, schema sync, encryption, conformance.
-  - [`ui.md`](bun-security/ui.md) — the UI package, pagination, live
+  - [`ui.md`](bun-security/ui.md) — bun-ui's `/security`, pagination, live
     updates, the analytics page.
   - Evidence: [`bun-security/evidence/`](bun-security/evidence/README.md) —
     on Bun 1.4.4-canary.1+11c367163, behaviour only: what `requestIP()`
@@ -246,6 +246,22 @@ blindly.
     normalises request targets on raw sockets and which limits it enforces
     below the handler, a duplicate-`Host` reproduction, and the signing
     primitives (Ed25519, HMAC).
+- **[`bun-ui/`](bun-ui/README.md)** — `@kingsleyweb/bun-ui` (approved
+  2026-11-08, all open questions answered as recommended; to be built before
+  3.0.0-rc.1: BU-1 now, BU-2, BU-3 and BU-5 once the follow-up tracks have
+  landed, BU-4 may follow rc.1): one package for every UI, `/jobs` and
+  `/docs` first, then bun-security's `/security`; bun-jobs-ui and
+  bun-api-docs-ui moved in with `git mv`, a shared kit (shell, CSP, SRI,
+  assets, `unauthorized`, design system, DOM-test harness), domain packages
+  as optional peers scoped per entry, bun-common's `"self-hosted"` viewer
+  on `/docs/hosted`, the old names deprecated on npm; bun-security's UI
+  becomes its `/security` entry (applied to that plan).
+  - Evidence: [`bun-ui/evidence/`](bun-ui/evidence/README.md) — on Bun
+    1.4.4-canary.1+11c367163, bytes and behaviour only: both bundles built
+    and the rc.0 tarballs broken down (one bun-ui ≈ 6.8 MB unpacked, 71%
+    source maps); the React lint rules over the docs app (1 error, 2
+    warnings); a branch rebased over a pure `git mv` of the package (edits
+    follow the files; a new file needs one `git add`).
 - **[`api-docs-generation/`](api-docs-generation/README.md)** — auto-generated
   API documentation: OpenAPI 3.1 for the HTTP adapter, AsyncAPI 3.0 for the
   WebSocket adapter.

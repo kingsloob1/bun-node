@@ -7,8 +7,9 @@ OTP, signup and payment endpoints, API-key abuse detection, security headers
 and CSRF) usable as bun-common middleware, as a bun-nest module and around
 a plain `Bun.serve`; a **control plane** that configures it across one
 service, several services on one system, or services across several
-systems; and a management UI with a live **analytics page**,
-**`@kingsleyweb/bun-security-ui`**. The user asked, on 2026-11-07:
+systems; and a management UI with a live **analytics page**, the
+**`/security`** entry of **`@kingsleyweb/bun-ui`** (the user's decision of
+2026-11-08, [`bun-ui`](../bun-ui/README.md)). The user asked, on 2026-11-07:
 
 > "Due to some bad actors attempting to attack concavehr, we had to implement
 > a robust defence. ... have an agent draft out a robust plan to make it a
@@ -22,7 +23,7 @@ systems; and a management UI with a live **analytics page**,
 > the plan, and other packages in the mono repo can be used to achieve the
 > package's intended result."
 
-**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (approved, landing as three PRs).
+**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (approved, landing as three PRs). **Changed on 2026-11-08:** the management UI is no longer a package of its own, `@kingsleyweb/bun-security-ui`, but the `/security` entry (with `/security/browser`) of `@kingsleyweb/bun-ui`, because the user decided that every bun-node UI lives in one package ([`bun-ui`](../bun-ui/README.md), approved 2026-11-08; its §7 lists every edit made here). No security decision changed; PR-U1 drops to ~4 d and the optional shared-module PR (Q14) becomes bun-ui's BU-4.
 
 Written 2026-11-07 against `develop` at `36be4163`, on Bun 1.4.4-canary.1
 (`11c367163`). **No product code was changed.** Every `file:line` is at
@@ -39,6 +40,7 @@ rule: no benchmarks or speed comparisons without the user's yes).
 | Foundations being built beside this plan (§2.6) | the **trust-proxy client IP** (`feat/trust-proxy-client-ip`) and the **throttle plugin** (`feat/throttle`), both requested by the user; in progress, no code on their branches when this was written. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request |
 | Prerequisites in other packages (§15.1) | not started |
+| The UI's package | **changed 2026-11-08**: bun-ui's `/security` entry instead of `@kingsleyweb/bun-security-ui` (the user's single-UI-package decision, [`bun-ui`](../bun-ui/README.md) §7) |
 
 ### Contents
 
@@ -77,7 +79,7 @@ Sub-plans:
   the driver interface with optimistic concurrency and cursors, a shared SQL
   module instead of a third copy, v1 drivers, change feeds and last known
   good, schema sync, encryption at rest, the conformance kit.
-- [`ui.md`](ui.md) — `bun-security-ui`: screens, pagination, live updates,
+- [`ui.md`](ui.md) — bun-ui's `/security`: screens, pagination, live updates,
   the analytics page, tests.
 
 ---
@@ -123,7 +125,7 @@ locally, from a signed policy bundle and local state, on top of two
 foundations being built now (trusted-proxy client identity and a throttle
 plugin); a separate control
 plane, never on a public listener, owns the policy, the audit log and the
-analytics; a separate UI package talks only to the control plane.** The
+analytics; a UI (bun-ui's `/security` entry) talks only to the control plane.** The
 engine evaluates fourteen layers in request order (connection limits,
 trusted-proxy identity, lists, bans, IP intelligence, request shape, rules,
 deception, rate limits, bot signals and challenges, sensitive-endpoint
@@ -148,7 +150,7 @@ over a typed channel with SSE fallback, coalesced and resumable.
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | **Two packages**: `@kingsleyweb/bun-security` (engine, adapters, control plane, agent) and `@kingsleyweb/bun-security-ui` (bun-jobs-ui's shape). bun-nest's integration is a `./security` subpath **in bun-nest**, bun-security an optional peer | the protected services never install the UI's React bundle or its build; bun-nest already hosts `./cache` and `./jobs` this way (`bun-nest/package.json` exports) [S]. ui.md §1 |
+| D1 | **The engine package and a UI entry**: `@kingsleyweb/bun-security` (engine, adapters, control plane, agent) and the management UI as `@kingsleyweb/bun-ui/security` (with `/security/browser`), bun-security an optional peer of that entry only ([`bun-ui`](../bun-ui/README.md); the user's decision of 2026-11-08). bun-nest's integration is a `./security` subpath **in bun-nest**, bun-security an optional peer | the protected services never install the UI's React bundle or its build **through bun-security**, which never depends on bun-ui; bun-nest already hosts `./cache` and `./jobs` this way (`bun-nest/package.json` exports) [S]. ui.md §1 |
 | D2 | **The engine decides locally**: policy from a bundle in memory, bans and lists as in-memory structures, at most **one** store round trip per request (shared limits pipelined) and zero for bans | a defence that waits on the network for every request is a new single point of failure and a latency tax. topologies.md §3, §7 |
 | D3 | **The control plane never runs on a protected service's public listener**: a second listener on loopback or an admin interface in (a), its own process on an admin network in (b) and (c); agents only pull | the user's "bad actors have no access to critical web servers". control-plane.md §1 |
 | D4 | **Client identity is the trust-proxy foundation's `req.ip`** (Express's `trust proxy`, off by default, presets only through a trusted chain) [F]; bun-security keys IPv6 by /64, adds **service identity** (a verified service credential, never an address) and detects a wrong trust configuration | a default `Bun.serve` listener reports IPv4 clients as `::ffff:a.b.c.d` [M]; bun-common's `req.ips` reads `X-Forwarded-For` unconditionally today (`bun-common/lib/BunRequest.ts:5372`) [S]; ConcaveHR blocked its own service by address and keyed on the wrong hop (write-up §6, §8). layers.md L2 |
@@ -183,9 +185,9 @@ over a typed channel with SSE fallback, coalesced and resumable.
 | Storage: the shared SQL module, the store interface, memory, SQLite, Postgres, field encryption (PR-D0 to D3) | ~12 d | — |
 | The engine and adapters, bun-nest `./security` (PR-S1 to S11) | ~37 d | the foundations, PR-P2, P3, D1 |
 | The control plane and agent (PR-CP1 to CP7) | ~25.5 d | PR-S1, S4, P4, D1 |
-| The UI (PR-U1 to U6) | ~28 d | PR-CP2, CP5 |
+| The UI (PR-U1 to U6) | ~27 d | PR-CP2, CP5 |
 | Topology and attack test harnesses, examples, playground (PR-T1, T2, X1, X2) | ~13 d | each |
-| **Total** | **~121 d**, plus ~3.5 d optional (a shared UI-server module, the OTel bridge once OT lands) and ~11 d of later drivers | |
+| **Total** | **~120 d**, plus ~1.5 d optional (the OTel bridge once OT lands) and ~11 d of later drivers; the shared UI-server module is bun-ui's BU-4 | |
 
 Focused days for someone who knows the code; §15 has the order.
 
@@ -203,7 +205,7 @@ v1 is three milestones, each usable on its own (§15.6):
 - **M2, the control plane** (~32 d): the Postgres store, services and
   groups, inheritance, signed bundles, agents, topology (c), RBAC, step-up,
   approvals, audit, analytics ingestion and rollups, live hub, alerts.
-- **M3, the UI** (~28 d, overlapping M2): every screen of ui.md, the
+- **M3, the UI** (~27 d, overlapping M2): every screen of ui.md, the
   analytics page, e2e.
 
 Later, on demand: an OWASP CRS-derived rule set, body-field rules, VPN
@@ -340,12 +342,15 @@ build files, `publishConfig.access`, `files`, `LICENSE`, `workspace:^`
 internal dependencies, so `scripts/publish.ts` takes it without a list
 (CLAUDE.md, "A new package").
 
-### 3.2 `@kingsleyweb/bun-security-ui` [D]
+### 3.2 `@kingsleyweb/bun-ui/security` [D]
 
-bun-jobs-ui's shape; ui.md §1 argues the split. Dependencies:
-`@kingsleyweb/bun-common` (runtime, the served router),
-`@kingsleyweb/bun-security` (peer, for `api` mode, the bun-jobs-ui pattern),
-React, TanStack and bun-client bundled.
+An entry of bun-ui ([`bun-ui`](../bun-ui/README.md) §3), built on its kit;
+ui.md §1 argues why it is not in bun-security. `/security` (server:
+`securityUi()`) and `/security/browser` (the browser-safe config and types).
+`@kingsleyweb/bun-security` is an **optional peer scoped to those two
+entries** (`consumer-check.json` `peers`, checked by `checkPeerScopes` and a
+consumer of its own); bun-common is bun-ui's runtime dependency; React,
+TanStack and bun-client bundled into `dist/security/`.
 
 ### 3.3 bun-common: middleware in two stages [D]
 
@@ -800,8 +805,8 @@ arrive shows no duplicates and no gaps; no CSP violations).
   `/security`, and a simulated attacker loop (scanners, a stuffing run, a
   burst) so every analytics component moves (the user's rule: every
   finished feature reaches the playground).
-- The Nest matrix columns for `./security`; consumer-check for both
-  packages.
+- The Nest matrix columns for `./security`; consumer-check for
+  bun-security and bun-ui's `/security` entry (`peers: ["@kingsleyweb/bun-security"]`).
 
 ---
 
@@ -962,7 +967,7 @@ marked *(ConcaveHR's wish)*.
 | R6 | **Bun behaviour changes** under the engine (request normalisation, `requestIP` forms, header limits) | medium / medium | the spikes in `evidence/` become tests (T-L2-2, T-L6-1, T-L6-2) that fail on a change |
 | R7 | **Scope creep toward a full WAF** (CRS, bot management) | high / medium | the v1 cut; CRS later (Q10); hooks for commercial providers |
 | R8 | **IP-intel licence terms** misapplied by consumers | medium / medium | no data shipped; the docs per source; the UI's attribution line |
-| R9 | **The UI's size and test cost** (bun-jobs-ui's precedent: 57,000 lines of tests) | certain / medium | reuse its components and harness; lazy screens; a budget test from the first build |
+| R9 | **The UI's size and test cost** (bun-jobs-ui's precedent: 57,000 lines of tests) | certain / medium | bun-ui's kit and test harness; lazy screens; a `dist/security` budget from the first build |
 | R10 | **The trust-proxy foundation changes bun-common's `req.ips`/`req.protocol`** for existing users | certain / medium | the foundation's concern; in 3.0 (a major, rc.0 is out); Express's semantics; release notes |
 | R11 | **Clock skew** across systems breaks counter windows, expiries and signatures | medium / medium | store time in the new scripts; ±60 s windows; agents report skew in heartbeats |
 | R12 | **Privacy**: events hold IPs, identifiers and redacted request samples | certain / medium | hashed user and username keys, redaction (§8.1), retention tiers, the `viewer` role sees no details |
@@ -1036,17 +1041,17 @@ too (CLAUDE.md).
 | **PR-CP7** test-a-request and impact | `POST /rules/test` over `explain`; the draft impact estimate over stored events | PR-CP2, PR-CP1 | ~2.5 d |
 | | **Group 2 total** | | **~25.5 d** |
 
-### 15.4 Group 3: the UI (`bun-security-ui`)
+### 15.4 Group 3: the UI (bun-ui's `/security`)
 
 | PR | What it ships | Depends on | Effort |
 |---|---|---|---|
-| **PR-U1** package and shell | skeleton and recipe; `securityUi()` (shell, CSP, SRI, `dist/`); providers, nav, permissions, scope picker; bun-client typed calls; the live client; the URL-cursor `Pager`; the test harness and its guards | PR-CP2 | ~5 d |
+| **PR-U1** entry and shell | `lib/security/`, `app/security/`, the two `exports` keys and their consumer-check spellings; `securityUi()` on bun-ui's kit (shell, CSP, SRI, `dist/security/`); providers, nav, permissions, scope picker; bun-client typed calls; the live client; the URL-cursor `Pager`; the test harness and its guards | PR-CP2, bun-ui BU-4 | ~4 d |
 | **PR-U2** analytics page | every component of ui.md §7, SVG charts, live | PR-U1, PR-CP5 | ~6 d |
 | **PR-U3** bans, lists, events | ui.md §4.1, §4.2, the events list | PR-U1 | ~4 d |
 | **PR-U4** policies | services and groups, the editor with origins, draft, diff, publish, versions, rollback, dry run, impact, test a request | PR-U1, PR-CP7 | ~7 d |
 | **PR-U5** rules, audit, approvals, agents, alerts | ui.md §4.3, §8 | PR-U1, PR-CP3, PR-CP6 | ~4 d |
 | **PR-U6** e2e and accessibility | Chrome flows, responsive, contrast, the parsed permissions table and its example | PR-U2 to U5 | ~2 d |
-| | **Group 3 total** | | **~28 d** |
+| | **Group 3 total** | | **~27 d** |
 
 ### 15.5 Group 4: harnesses, examples, playground
 
@@ -1056,8 +1061,8 @@ too (CLAUDE.md).
 | **PR-T2** attack simulators | `./testing`'s simulators and the T-cases not owned by a layer PR | ~3 d |
 | **PR-X1** examples | `examples/bun-security/` (§11.6) | ~5 d |
 | **PR-X2** playground | `mountSecurityDemo` with the attacker loop | ~2 d |
-| *optional* | a shared internal module for the UI servers' shell, CSP and assets (Q14) ~2 d; the OTel bridge once OT lands ~1.5 d | ~3.5 d |
-| | **Group 4 total** | **~13 d** (+3.5 d) |
+| *optional* | the OTel bridge once OT lands | ~1.5 d |
+| | **Group 4 total** | **~13 d** (+1.5 d) |
 
 ### 15.6 Order and the v1 cut
 
@@ -1073,7 +1078,7 @@ PR-T1 after S4 and CP4; PR-X1 per milestone; PR-X2 at M3.
 |---|---|---|---|
 | **M1 the engine** | P2–P4, D0, D1, S1–S11, T2, the M1 examples | ~54 d + ~2 d examples | (a) and (b) with a policy file or a SQLite store; every v1 layer; bun-common, `Bun.serve`, bun-nest; **ConcaveHR's whole request path** (§12; its admin API and insights page arrive with M2 and M3) |
 | **M2 the control plane** | D2, D3, CP1–CP7, T1 | ~32 d | (c); the Postgres store; groups; signed bundles; audit; analytics data; alerts |
-| **M3 the UI** | U1–U6, X2, the remaining examples | ~33 d | the management UI and analytics page |
+| **M3 the UI** | U1–U6, X2, the remaining examples | ~32 d | the management UI and analytics page |
 
 **v1 = M1 + M2 + M3.** The "later" list is §1.4's.
 
@@ -1087,7 +1092,7 @@ Each with a recommendation. Asked once; the answers go in the plan.
 
 | # | Question | Recommendation |
 |---|---|---|
-| Q1 | **Packages**: `@kingsleyweb/bun-security` (engine, adapters, CP, agent, store drivers) and a separate `@kingsleyweb/bun-security-ui`; bun-nest's integration as `@kingsleyweb/bun-nest/security` | **Yes** (D1, ui.md §1) |
+| Q1 | **Packages**: `@kingsleyweb/bun-security` (engine, adapters, CP, agent, store drivers) and the UI as bun-ui's `/security` entry (the user's decision of 2026-11-08, [`bun-ui`](../bun-ui/README.md); asked on 2026-11-07 as a separate `@kingsleyweb/bun-security-ui`); bun-nest's integration as `@kingsleyweb/bun-nest/security` | **Yes** (D1, ui.md §1) |
 | Q2 | **v1 scope**: M1 + M2 + M3 as §15.6, with §1.4's "later" list out of v1 | **Yes**; land M1 first so ConcaveHR can replace its three in-repo copies with the package before the UI exists |
 | Q3 | **Counted rules and the offence score together**: counted rules as the operator's main form (ConcaveHR's), the score and ladder as escalation on top | **Yes** (D23, D10) |
 | Q4 | **Default fail mode** when the shared store is down | **`local`** (per-process limits), with `open` and `closed` per rule (D7) |
@@ -1100,7 +1105,7 @@ Each with a recommendation. Asked once; the answers go in the plan.
 | Q11 | **Break-glass account** for the CP when the identity provider is down | **Yes, opt-in**, TOTP required, every use alerted |
 | Q12 | **The signed envelope**: move bun-jobs' remote envelope into bun-common's utilities (PR-P4), or depend on bun-jobs | **Move it** (bun-jobs re-exports it unchanged); service identities (L2.4) use it too |
 | Q13 | **Bundle signing key**: held by the CP (encrypted, with a `sign` hook for a KMS), or an offline signer from v1 | **CP-held in v1** with the hook; offline signer later |
-| Q14 | **A third copy of the UI server code** (shell, CSP, assets): copy again, or extract a shared internal module first | **Extract** (optional PR, ~2 d) before PR-U1 |
+| Q14 | **A third copy of the UI server code** (shell, CSP, assets): copy again, or extract a shared internal module first | **Extract**: done by bun-ui's kit (BU-4), before PR-U1 |
 | Q15 | **Geography component**: a world map or a ranked table | **A table in v1** (no map data or dependency); a map later |
 | Q16 | **IETF `RateLimit` headers** by default (the throttle foundation's choice; this is bun-security's recommendation to it) | **Off by default** (a draft; it helps attackers pace) |
 | Q17 | **Two-person approval** default | **Off**, with the setup flow recommending it for production scopes in (c) |
@@ -1124,7 +1129,8 @@ Every new public name proposed (none built):
 
 | Name | Kind | Where |
 |---|---|---|
-| `@kingsleyweb/bun-security`, `@kingsleyweb/bun-security-ui` | packages | new |
+| `@kingsleyweb/bun-security` | package | new |
+| `@kingsleyweb/bun-ui/security`, `@kingsleyweb/bun-ui/security/browser` | subpaths | bun-ui |
 | `./http`, `./serve`, `./stores`, `./challenge`, `./intel`, `./agent`, `./control`, `./testing` | subpaths | bun-security |
 | `@kingsleyweb/bun-nest/security` | subpath | bun-nest |
 | `createSecurity`, `Security` (`evaluate`, `install`, `middleware`, `profile`, `signal`, `check`, `explain`, `load`, `close`), `compilePolicy`, `Decision`, `RuleHit`, `SecurityPolicy`, `SecurityRefusal` | function, types, class | `.` |
@@ -1139,7 +1145,7 @@ Every new public name proposed (none built):
 | `ipIntel`, `openMmdb` | functions | `./intel` |
 | `connectAgent` | function | `./agent` |
 | `createSecurityApi`, `secureAdmin` | functions | `./control` |
-| `securityUi` | function | bun-security-ui |
+| `securityUi` | function | bun-ui `/security` |
 | `SecurityModule`, `SecurityGuard`, `SecurityProfile`, `SkipSecurity`, `InjectSecurity` | module, guard, decorators | bun-nest `./security` |
 | actions `allow`, `log`, `tag`, `delay`, `challenge`, `block`, `ban`, `drop`; modes `enforce`, `dryRun`, `off`; `onStoreError` `local`/`open`/`closed`; state modes `local`/`shared`/`hybrid` | values | policy format |
 | roles `viewer`, `analyst`, `operator`, `admin`, `owner` | values | `./control` |

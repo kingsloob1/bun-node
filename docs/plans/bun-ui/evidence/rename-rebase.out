@@ -1,0 +1,18 @@
+Rebasing (1/1)CONFLICT (file location): packages/bun-jobs-ui/app/components/New.tsx added in f89c98d (feature) inside a directory that was renamed in HEAD, suggesting it should perhaps be moved to packages/bun-ui/app/jobs/components/New.tsx.
+UA packages/bun-ui/app/jobs/components/New.tsx
+M  packages/bun-ui/app/jobs/components/Pager.tsx
+[detached HEAD c358c68] feature
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+ create mode 100644 packages/bun-ui/app/jobs/components/New.tsx
+Successfully rebased and updated refs/heads/feat.
+--- after the rebase
+feature
+
+ packages/bun-ui/app/jobs/components/New.tsx   | 1 +
+ packages/bun-ui/app/jobs/components/Pager.tsx | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+edit carried to the new path: 1
+--- history of the moved file (git log --follow)
+c358c68 feature
+24ded96 move (pure)
+bdb891a base

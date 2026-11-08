@@ -1,0 +1,5 @@
+built <repo>/packages/bun-api-docs-ui/app/main.tsx → <scratch>/bun-api-docs-ui in 186 ms
+  main-gqyckthh.js                           339.4 KiB  gzip  106.1 KiB (entry)
+  main-cqgyvs86.css                           32.2 KiB  gzip    6.3 KiB (css)
+  main-gqyckthh.js.map                      1560.7 KiB  gzip  341.2 KiB
+  total (without source maps): 371.6 KiB, gzip 112.4 KiB

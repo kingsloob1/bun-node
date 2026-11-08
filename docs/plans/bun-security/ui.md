@@ -1,6 +1,7 @@
-# bun-security-ui: the management UI and the analytics page
+# bun-ui `/security`: the management UI and the analytics page
 
-Sub-plan of [`README.md`](README.md). It covers the UI package, its screens
+Sub-plan of [`README.md`](README.md). It covers the UI (bun-ui's `/security`
+entry, [`bun-ui`](../bun-ui/README.md)), its screens
 (policies per service and per group, lists, bans, rules, dry run, the
 test-a-request tool, audit, agents), the analytics page's components, server
 pagination on every list, and live updates. The data behind the analytics
@@ -8,9 +9,15 @@ pagination on every list, and live updates. The data behind the analytics
 README's (§0.3). Paths marked [S] are at `36be4163`, from the survey of
 bun-jobs-ui and bun-api-docs-ui.
 
+**Changed on 2026-11-08**: the UI was planned as its own package,
+`@kingsleyweb/bun-security-ui`; the user decided that every bun-node UI lives
+in one package, so it is bun-ui's `/security` entry
+([`bun-ui`](../bun-ui/README.md) §7 lists the edits). The screens, pagination,
+live updates and tests below are unchanged.
+
 ### Contents
 
-1. [The package, and why it is separate](#1-the-package-and-why-it-is-separate)
+1. [The `/security` entry, and why it is not in bun-security](#1-the-security-entry-and-why-it-is-not-in-bun-security)
 2. [Navigation and permissions](#2-navigation-and-permissions)
 3. [Policies: services, groups, inheritance](#3-policies-services-groups-inheritance)
 4. [Lists, bans, rules, dry run, test a request](#4-lists-bans-rules-dry-run-test-a-request)
@@ -22,48 +29,54 @@ bun-jobs-ui and bun-api-docs-ui.
 
 ---
 
-## 1. The package, and why it is separate
+## 1. The `/security` entry, and why it is not in bun-security
 
-**Recommendation: its own package, `@kingsleyweb/bun-security-ui`**, in
-bun-jobs-ui's shape [D] (Q1):
+**The `/security` entry of `@kingsleyweb/bun-ui`** (with `/security/browser`),
+on bun-ui's kit [D] (Q1; the user's decision of 2026-11-08):
 
-- `lib/` — the server, Bun only: `securityUi({ api | apiUrl, basePath,
+- `lib/security/` — the server, Bun only, on bun-ui's kit: `securityUi({ api | apiUrl, basePath,
   authorize, middleware, dev, theme, title })` returns a bun-common router
   serving the HTML shell (nonce CSP, SRI, injected config) and hashed assets,
   as `jobsUi()` does (`bun-jobs-ui/lib/jobsUi.ts:679`; CSP at
   `bun-jobs-ui/lib/shell.ts:73-88`; SRI sha384 at `lib/assets.ts:132`) [S].
-- `app/` — React 19 and TanStack Query, **bundled, not peers** (bun-jobs-ui
-  bundles them, `package.json` devDependencies) [S], prebuilt into `dist/` on
-  `prepack`, built in memory when `dist/` is missing in the repo.
-- `lib/shared/` — the browser-safe config contract.
+- `app/security/` — React 19 and TanStack Query on `app/kit/`, **bundled, not peers** (bun-jobs-ui
+  bundles them, `package.json` devDependencies) [S], prebuilt into `dist/security/` on
+  `prepack`, built in memory when `dist/security/` is missing in the repo.
+- `lib/security/browser/` — the browser-safe config contract, published as `/security/browser`.
 
-Why separate rather than a `./ui` subpath of bun-security:
+`@kingsleyweb/bun-security` is an optional peer of those two entries only
+(bun-ui §4). Why the UI is in bun-ui rather than a `./ui` subpath of
+bun-security:
 
-1. **The engine runs on the critical servers; the UI must not.** A separate
-   package means the protected services do not even install React, a 350 KB
-   bundle, its build scripts or its test surface (bun-jobs-ui's entry budget
-   is 348 KiB, `__tests__/server/budget.test.ts:38`) [S]. "Bad actors have
-   no access to critical web servers" is easier to show when the code is
-   not there.
-2. **Dependencies.** The engine has no third-party runtime dependency; the
-   UI package's dev tree has React, TanStack, happy-dom, Testing Library.
-3. **Cadence and size.** bun-jobs-ui's `app/` is ~40,000 lines with ~57,000
-   lines of tests [S]; a security UI of comparable scope should not gate the
-   engine's releases, or the engine's security fixes wait for UI work.
-4. **The pattern is proven here**: the same CSP, SRI, in-memory build,
+1. **The engine runs on the critical servers; the UI must not.** The
+   engine's package never depends on bun-ui, so the protected services do
+   not install React, a 350 KB bundle, its build scripts or its test surface
+   through it (bun-jobs-ui's entry budget is 348 KiB,
+   `__tests__/server/budget.test.ts:38`) [S]. A service that serves no UI
+   installs no UI code. A service that installs bun-ui for another UI (the
+   `/docs` viewer) carries the security bundle as inert static files, which
+   nothing mounts without `securityUi()` and its bun-security peer (bun-ui
+   §11, R2). "Bad actors have no access to critical web servers" is easier
+   to show when the code is not there.
+2. **Dependencies.** The engine has no third-party runtime dependency;
+   bun-ui's dev tree has React, TanStack, happy-dom, Testing Library.
+3. **The pattern is proven here**: the same CSP, SRI, in-memory build,
    bundle-safety and budget tests carry over.
 
-The cost: two packages to version and a typed contract between them (the
+(The cadence argument made here before 2026-11-08 is dropped: every package
+releases together at one version anyway, `CHANGELOG.md` line 3.)
+
+The cost: a typed contract between bun-security and the entry (the
 management API's OpenAPI document, which bun-client turns into types), the
-same cost bun-jobs and bun-jobs-ui pay.
+same cost bun-jobs and bun-ui's `/jobs` pay.
 
 **What it reuses** [S]:
 
 | From | What |
 |---|---|
-| bun-jobs-ui `lib/` | the shell, CSP builder, asset pipeline, `dist/` manifest verification; today duplicated between bun-jobs-ui and bun-api-docs-ui (`bun-api-docs-ui/lib/assets.ts` is a near-verbatim copy) — a third copy is the moment to extract them into a shared internal module (Q14) |
-| bun-jobs-ui `app/` | `Pager` and `pagerState`, `Sparkline`, `RangePicker`, `useRange`, the theme tokens and dark mode, `MetaProvider`/`useCan`, `LiveClient`'s reconnect/resume logic, `onDemand` lazy screens, the toast and mutation hooks — copied, as bun-api-docs-ui did, until a UI kit exists (Q14) |
-| bun-api-docs-ui | the management API's own reference, embedded as bun-jobs-ui embeds it (`./embed`) |
+| bun-ui's kit (`lib/kit/`) | the shell, CSP builder, asset pipeline, `dist/` manifest verification, `unauthorized`; once duplicated between bun-jobs-ui and bun-api-docs-ui, extracted by bun-ui's BU-4 (Q14) |
+| bun-ui `app/kit/` and `app/jobs/` | `Pager` and `pagerState`, `Sparkline`, `RangePicker`, `useRange`, the theme tokens and dark mode, `MetaProvider`/`useCan`, `LiveClient`'s reconnect/resume logic, `onDemand` lazy screens, the toast and mutation hooks — from `app/kit/` (Q14), or moved there from `app/jobs/` when PR-U1 needs one not yet shared |
+| bun-ui's `/docs/embed` | the management API's own reference, embedded as the jobs UI embeds it |
 | bun-client | the typed calls (`createClient`, `./query`, `./react`, `./sse`, `./channel`) instead of a hand-written API client (bun-jobs-ui predates bun-client and hand-writes one, `app/api/client.ts`) [S] |
 
 ---
@@ -78,8 +91,8 @@ As in bun-jobs-ui, an element the operator may not use is **absent, not
 disabled**, driven by `/meta/permissions` (`useCan`,
 `bun-jobs-ui/app/meta/hooks.ts:86`) [S], with a scoped refinement per
 service or group. Every screen has a scope picker (global, a group, a
-service) in the URL, so a link shares exactly what the sender saw. The
-README of the package gets the same parsed "What each element needs" table
+service) in the URL, so a link shares exactly what the sender saw.
+bun-ui's `guides/security.md` gets the same parsed "What each element needs" table
 bun-jobs-ui has (`bun-jobs-ui/README.md:342-519`) [S], with an example that
 checks it.
 
@@ -286,7 +299,9 @@ bounded, and everything else uses §5.
 
 ## 9. Tests
 
-The bun-jobs-ui rules (CLAUDE.md, "bun-jobs-ui") apply unchanged:
+The bun-jobs-ui rules (CLAUDE.md, "bun-jobs-ui") apply unchanged. The harness
+is bun-ui's (`__tests__/harness/`): one `domLeak` guard over every UI's
+tests, `setupDom({ preload })` with the security UI's lazy screens.
 
 - `setupDom()` at the top of every DOM test file; no static `react-dom` or
   `@testing-library/react` import; a `domLeak.test.ts` guard;
