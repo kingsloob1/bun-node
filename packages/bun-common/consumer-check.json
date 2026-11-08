@@ -449,9 +449,11 @@
         "LiveBus",
         "LiveBusMessage",
         "LiveBusConnection",
-        "ConnectLiveBusOptions"
+        "ConnectLiveBusOptions",
+        "AuthorizeTag",
+        "LiveHello"
       ],
-      "snippet": "declare const app: import(\"@kingsleyweb/bun-common\").BunRouter;\nconst _router: import(\"@kingsleyweb/bun-common\").BunRouter = m.liveInvalidation(app, { authorize: (_req, _res, next) => next() });\nexport type _authorizeNotAny = Expect<IsAny<t.LiveInvalidationOptions[\"authorize\"]>>;\nexport type _sourceNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"source\"]>>>;\nexport type _path = Equal<typeof m.liveContract.spec.path, \"/__live\">;\nexport type _publish = Equal<Parameters<typeof m.publishTags>[0], readonly string[]>;\nexport type _busNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"bus\"]>>>;\nexport type _connect = Equal<ReturnType<typeof m.connectLiveBus>, t.LiveBusConnection>;\nexport const _message: t.LiveBusMessage = { origin: \"p\", n: 1, tags: [\"user:1\"] };"
+      "snippet": "declare const app: import(\"@kingsleyweb/bun-common\").BunRouter;\nconst _router: import(\"@kingsleyweb/bun-common\").BunRouter = m.liveInvalidation(app, { authorize: (_req, _res, next) => next() });\nexport type _authorizeNotAny = Expect<IsAny<t.LiveInvalidationOptions[\"authorize\"]>>;\nexport type _sourceNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"source\"]>>>;\nexport type _path = Equal<typeof m.liveContract.spec.path, \"/__live\">;\nexport type _publish = Equal<Parameters<typeof m.publishTags>[0], readonly string[]>;\nexport type _busNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"bus\"]>>>;\nexport type _connect = Equal<ReturnType<typeof m.connectLiveBus>, t.LiveBusConnection>;\nexport const _message: t.LiveBusMessage = { origin: \"p\", n: 1, tags: [\"user:1\"] };\nexport type _authorizeTagNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"authorizeTag\"]>>>;\nexport type _authorizeTag = Equal<ReturnType<t.AuthorizeTag>, boolean | Promise<boolean>>;\nexport type _denied = Equal<t.LiveHello[\"denied\"], string[] | undefined>;"
     },
     {
       "$comment": "The live channel's contract alone, for a browser bundle (typed-client PR-W4).",
