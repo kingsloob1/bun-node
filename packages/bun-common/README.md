@@ -4127,7 +4127,7 @@ fallback at `/__live/sse`:
 ```ts
 import { liveInvalidation, publishTags } from "@kingsleyweb/bun-common/live";
 
-app.use(liveInvalidation(app, { authorize, source: cache })); // first, before the routes
+app.use(liveInvalidation(app, { authorize, source: cache, bus })); // first, before the routes
 
 app
   .patch("/users/:id", validate({ params: IdParams, body: UserPatch }), handler)
@@ -4172,10 +4172,35 @@ publishTags(["user:42"]); // or by hand, from anywhere in the process
   also for an id the process cannot read), then `hello`, then `invalidate`
   events, each checked by the channel's own schemas. Hidden from the OpenAPI document; the AsyncAPI document
   carries the channel with the fallback (`x-bun-common-sse-fallback`).
-- **Per process**: the ring, the epoch and the subscribers are the
-  process's. bun-cache's bus does not emit `invalidate` for another
-  process's invalidation, so behind a balancer each process publishes its
-  own.
+- **Across processes**: the ring, the epoch and the subscribers are the
+  process's. Without a bus, a client hears only what its own process
+  publishes. With `bus`, every invalidation reaches the subscribers of every
+  process on it:
+
+  ```ts
+  import { redisBus } from "@kingsleyweb/bun-cache";
+  import { cacheLiveBus } from "@kingsleyweb/bun-cache/live";
+
+  const bus = cacheLiveBus(redisBus({ url: process.env.REDIS_URL, channel: "app:live" }));
+  app.use(liveInvalidation(app, { authorize, bus }));
+  // A process that publishes without serving (a worker), or one that closes it:
+  const connection = connectLiveBus(bus); // …; await connection.close()
+  ```
+
+  A process delivers its own invalidations at once and publishes them on the
+  bus (one message per synchronous run, at most 256 tags, one in flight at a
+  time, so another process takes them in order); every other process numbers
+  them in its own epoch, so frames and resume are unchanged, and a client
+  that reconnects to another process gets a `gap` (another epoch). When
+  invalidations may have been lost, the process sends every socket and
+  stream a `gap` and answers older cursors with one: on every
+  (re)subscription to the bus, a reconnect, a hole in another process's
+  message numbers (a lost message, or one its bus never took), and a message
+  the bus could not carry whole (Postgres's 8,000-byte `NOTIFY`). A bus that
+  is down never stops local delivery: a failed publish is logged once per
+  outage, a failed subscription retried (0.5 s, doubling to 30 s). One bus
+  per process (`connectLiveBus` with another throws a `ConfigError`); any
+  object with `publish` and `subscribe` (`LiveBus`) will do.
 - `liveContract` alone is browser-safe:
   `@kingsleyweb/bun-common/lib/live/contract`.
 #### WebRTC signalling: `signallingContract` and `signallingRelay`

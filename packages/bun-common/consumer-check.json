@@ -438,9 +438,20 @@
     {
       "$comment": "Typed-client PR-W4: live invalidation, the server half with its contract. The contract alone is a browser entry (the next spelling).",
       "spelling": "@kingsleyweb/bun-common/live",
-      "values": ["liveContract", "liveInvalidation", "publishTags"],
-      "types": ["LiveInvalidationOptions"],
-      "snippet": "declare const app: import(\"@kingsleyweb/bun-common\").BunRouter;\nconst _router: import(\"@kingsleyweb/bun-common\").BunRouter = m.liveInvalidation(app, { authorize: (_req, _res, next) => next() });\nexport type _authorizeNotAny = Expect<IsAny<t.LiveInvalidationOptions[\"authorize\"]>>;\nexport type _sourceNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"source\"]>>>;\nexport type _path = Equal<typeof m.liveContract.spec.path, \"/__live\">;\nexport type _publish = Equal<Parameters<typeof m.publishTags>[0], readonly string[]>;"
+      "values": [
+        "liveContract",
+        "liveInvalidation",
+        "publishTags",
+        "connectLiveBus"
+      ],
+      "types": [
+        "LiveInvalidationOptions",
+        "LiveBus",
+        "LiveBusMessage",
+        "LiveBusConnection",
+        "ConnectLiveBusOptions"
+      ],
+      "snippet": "declare const app: import(\"@kingsleyweb/bun-common\").BunRouter;\nconst _router: import(\"@kingsleyweb/bun-common\").BunRouter = m.liveInvalidation(app, { authorize: (_req, _res, next) => next() });\nexport type _authorizeNotAny = Expect<IsAny<t.LiveInvalidationOptions[\"authorize\"]>>;\nexport type _sourceNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"source\"]>>>;\nexport type _path = Equal<typeof m.liveContract.spec.path, \"/__live\">;\nexport type _publish = Equal<Parameters<typeof m.publishTags>[0], readonly string[]>;\nexport type _busNotAny = Expect<IsAny<NonNullable<t.LiveInvalidationOptions[\"bus\"]>>>;\nexport type _connect = Equal<ReturnType<typeof m.connectLiveBus>, t.LiveBusConnection>;\nexport const _message: t.LiveBusMessage = { origin: \"p\", n: 1, tags: [\"user:1\"] };"
     },
     {
       "$comment": "The live channel's contract alone, for a browser bundle (typed-client PR-W4).",
