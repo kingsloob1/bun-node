@@ -16,7 +16,6 @@
  */
 import type { ServerWebSocket } from "bun";
 import type { BunHttpAdapter as Adapter } from "@kingsleyweb/bun-common";
-import { Buffer } from "node:buffer";
 import { afterEach, describe, expect, it } from "bun:test";
 import {
   BunHttpAdapter,
@@ -91,11 +90,19 @@ afterEach(async () => {
   for (const adapter of servers.splice(0)) await adapter.close();
 });
 
-/** Serves `chat` on port 0. */
-async function serve(contract = chat): Promise<Server> {
+/** Serves `chat` on port 0; `deflate: false` turns per-message deflate off. */
+async function serve(
+  contract = chat,
+  options: { deflate?: boolean } = {},
+): Promise<Server> {
   const ch = defineChannel(contract);
   const { logger } = createTestLogger();
-  const adapter = new BunHttpAdapter(0, { logger });
+  const adapter = new BunHttpAdapter(0, {
+    logger,
+    ...(options.deflate === false
+      ? { websocket: { wsOptions: { perMessageDeflate: false } } }
+      : {}),
+  });
   const server = {
     adapter,
     port: 0,
@@ -610,27 +617,39 @@ describe("channel(): the offline buffer and backpressure", () => {
   });
 
   it("sendWhenReady waits until bufferedAmount is under highWaterMark", async () => {
-    const server = await serve();
+    // Per-message deflate off: compressing and inflating the backlog was
+    // nine tenths of this test's time, and what is under test is the
+    // socket's buffer, not compression.
+    const server = await serve(chat, { deflate: false });
     const { api } = clientOf(server, { mode: "production" });
     const room = kept(channel(api, chat, { params: { room: "lobby" } }));
     await opened(room);
+    const highWaterMark = 1024 * 1024;
     // Frames under the server's 1 MiB maxPayloadLength, queued faster than
-    // the socket drains them; random, so per-message deflate cannot shrink
-    // them.
-    const big = Buffer.from(
-      crypto.getRandomValues(new Uint8Array(384 * 1024)),
-    ).toString("base64");
-    for (let i = 0; i < 40; i++) room.send("say", { text: big });
-    const queued = room.bufferedAmount;
-    expect(queued).toBeGreaterThan(1024 * 1024);
+    // the socket drains them (the server shares this event loop, so it reads
+    // nothing until the loop below ends). The kernel takes the first few
+    // MiB, how many depends on the machine, so frames are queued until the
+    // socket's own buffer holds twice the mark, not a fixed count: a fixed 40
+    // (20 MiB, deflated, each echoed back) outlasted the test's 5 s under
+    // load. `quiet` has no reply, so nothing comes back.
+    const big = "x".repeat(512 * 1024);
+    let frames = 0;
+    while (room.bufferedAmount < 2 * highWaterMark && frames < 200) {
+      room.send("quiet", { text: big });
+      frames++;
+    }
+    expect(room.bufferedAmount).toBeGreaterThanOrEqual(2 * highWaterMark);
     let sentAt = -1;
-    const ready = room.sendWhenReady("say", { text: "small" }).then(() => {
+    await room.sendWhenReady("say", { text: "small" }).then(() => {
       sentAt = room.bufferedAmount;
     });
-    await ready;
-    expect(sentAt).toBeLessThan(1024 * 1024 + 100);
-    await until(() => server.texts.length === 41, 10_000);
-    expect(server.texts[40]).toBe("small");
+    expect(sentAt).toBeLessThan(highWaterMark + 100);
+    await until(() => server.texts.length === 1, 10_000);
+    expect(server.texts).toEqual(["small"]);
+    expect(server.seen).toEqual([
+      ...Array.from({ length: frames }, () => "quiet"),
+      "say",
+    ]);
   });
 });
 
