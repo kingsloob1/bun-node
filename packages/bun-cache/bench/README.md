@@ -234,6 +234,51 @@ Two differences from bun-jobs':
   finding, not a figure — rather than left out. `--compare` lists those as
   not guarded until they pass and are re-recorded.
 
+## The throttle's overhead
+
+```bash
+bun throttle.ts                    # print the table
+bun throttle.ts --compare          # fail if a cell regressed against baselines/throttle.json
+bun throttle.ts --save-baseline    # re-record, after a deliberate change
+```
+
+What bun-common's `throttle()` costs a request (approved by the maintainer,
+2026-11-08): one `GET` served through `router.fetch()`, the production
+pipeline without a socket, so the router and the throttle are all that is
+timed. Five cells, each in a fresh process: no throttle (`none`); the
+default memory store with one limit and with three (`memory-1`,
+`memory-3`); `cacheThrottleStore()` on Redis, its default `clock: "store"`
+(one Lua script per limit), with one and with three (`redis-1`, `redis-3`).
+Headers off and the sliding window (both defaults), a limit nobody reaches,
+1,000 clients in turn: the allowed path. Each cell takes the median of five
+trials of two measures: µs per request with one in flight, and requests/s
+with 64 in flight. Redis is `BUN_CACHE_BENCH_REDIS_URL` (database 12), each
+cell's keys under its own run id, deleted when it ends.
+
+`--compare` fails when a cell's concurrent requests/s falls more than 35%
+behind its baseline, or when its ratio to `none` in the same run falls more
+than 20% below the baseline's ratio, the sharper check, since a busy machine
+slows both. Negative control: a baseline with `memory-1` doubled failed both
+checks (exit 1); the unchanged baseline passed.
+
+`baselines/throttle.json` was recorded on 2026-11-08 on Bun
+1.4.4-canary.1+11c367163, linux-x64 (16 cores), exclusive through the
+heavy-run wrapper, 1-minute load 5.4 at the start:
+
+| Cell | µs/request, sequential | over `none` | requests/s at 64 in flight | of `none` |
+|---|---|---|---|---|
+| `none` | 2.68 | — | 403,087 | 1.00× |
+| `memory-1` | 4.70 | +2.0 µs | 222,418 | 0.55× |
+| `memory-3` | 6.12 | +3.4 µs | 177,820 | 0.44× |
+| `redis-1` | 59.44 | +56.8 µs | 46,350 | 0.11× |
+| `redis-3` | 114.74 | +112.1 µs | 20,296 | 0.05× |
+
+Over Redis, one limit costs a request about one local round trip (a Lua
+script); three cost about twice that, not three times, since the three
+scripts go out side by side on the one connection. Over memory, about 2 µs
+for the first limit and 0.7 µs for each more. A baseline is meaningful
+only on the machine that recorded it.
+
 ## The Keyv compatibility harness
 
 ```bash

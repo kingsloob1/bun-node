@@ -1,0 +1,33 @@
+{
+  "bun": "11c367163a4baa77d3627d14764c376c856a630a",
+  "platform": "linux-x64",
+  "date": "2026-11-08T09:16:01.969Z",
+  "load": 5.46,
+  "cells": [
+    {
+      "name": "none",
+      "sequentialUs": 2.68,
+      "concurrentRps": 403087
+    },
+    {
+      "name": "memory-1",
+      "sequentialUs": 4.7,
+      "concurrentRps": 222418
+    },
+    {
+      "name": "memory-3",
+      "sequentialUs": 6.12,
+      "concurrentRps": 177820
+    },
+    {
+      "name": "redis-1",
+      "sequentialUs": 59.44,
+      "concurrentRps": 46350
+    },
+    {
+      "name": "redis-3",
+      "sequentialUs": 114.74,
+      "concurrentRps": 20296
+    }
+  ]
+}
