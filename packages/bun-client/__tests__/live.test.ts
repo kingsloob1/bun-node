@@ -360,12 +360,43 @@ describe("live(): tags the server refuses (hello's `denied`)", () => {
    * through `router.fetch()`. (bun-common's `liveInvalidation()` sends
    * `denied` once per-tag authorization lands; the frame is scripted here.)
    */
-  function scripted(denied?: string[], onDenied?: (tags: string[]) => void) {
+  function scripted(
+    denied?: string[],
+    onDenied?: (tags: string[]) => void,
+    refuse?: "problem" | "plain",
+  ) {
     const router = new BunRouter();
     const asked: string[][] = [];
     router.get("/__live/sse", (req: BunRequest, res: BunResponse) => {
       const tags = (req.query as { tag?: string | string[] }).tag ?? [];
-      asked.push(Array.isArray(tags) ? tags : [tags]);
+      const list = Array.isArray(tags) ? tags : [tags];
+      asked.push(list);
+      if (refuse !== undefined) {
+        // Every tag refused: track B's answer (`refuseEveryTag`), or, for
+        // the control, a 403 that is not that problem.
+        res.status(403);
+        res.setHeader(
+          "content-type",
+          refuse === "problem"
+            ? "application/problem+json"
+            : "application/json",
+        );
+        res.send(
+          JSON.stringify(
+            refuse === "problem"
+              ? {
+                  type: "urn:bun-common:error:LIVE_TAGS_DENIED",
+                  title: "Forbidden",
+                  status: 403,
+                  code: "LIVE_TAGS_DENIED",
+                  detail: "None of the requested tags may be watched.",
+                  denied: list,
+                }
+              : { error: "forbidden" },
+          ),
+        );
+        return;
+      }
       res.setHeader("content-type", "text/event-stream");
       res.status(200);
       res.write(
@@ -376,13 +407,17 @@ describe("live(): tags the server refuses (hello's `denied`)", () => {
       res.json({ id: req.params.id, name: "Ada" });
     });
     const warnings: unknown[][] = [];
+    const errors: unknown[][] = [];
     const api = createClient<Routes>({
       baseUrl: "http://live.test",
       fetch: (request) => router.fetch(request),
       manifest,
       logger: {
         warn: (...args: unknown[]) => void warnings.push(args),
-        error: (...args: unknown[]) => void warnings.push(args),
+        error: (...args: unknown[]) => {
+          warnings.push(args);
+          errors.push(args);
+        },
         debug: () => {},
       },
     });
@@ -396,7 +431,7 @@ describe("live(): tags the server refuses (hello's `denied`)", () => {
     });
     stops.push(stop);
     stops.push(() => queryClient.clear());
-    return { q, queryClient, warnings, asked };
+    return { q, queryClient, warnings, errors, asked };
   }
 
   it("reports the refused tags to onDenied (control: a hello without `denied` reports nothing)", async () => {
@@ -432,6 +467,51 @@ describe("live(): tags the server refuses (hello's `denied`)", () => {
     await watched(queryClient, q.query("/users/:id", { params: { id: "2" } }));
     await Bun.sleep(50);
     expect(warnings).toHaveLength(1);
+  });
+
+  it("takes the SSE fallback's 403 LIVE_TAGS_DENIED as final: onDenied gets the tags, no reconnect (control: another 403 is logged as an error)", async () => {
+    const reported: string[][] = [];
+    const { q, queryClient, asked, errors } = scripted(
+      undefined,
+      (tags) => reported.push(tags),
+      "problem",
+    );
+    await watched(queryClient, q.query("/users/:id", { params: { id: "1" } }));
+    await until(() => reported.length === 1);
+    expect(reported).toEqual([["user:1", "users"]]);
+    expect(errors).toEqual([]);
+    // Past the first reconnect delay (3 s): no second request.
+    await Bun.sleep(3500);
+    expect(asked).toHaveLength(1);
+    expect(reported).toHaveLength(1);
+
+    const plainReported: string[][] = [];
+    const control = scripted(
+      undefined,
+      (tags) => plainReported.push(tags),
+      "plain",
+    );
+    await watched(
+      control.queryClient,
+      control.q.query("/users/:id", { params: { id: "1" } }),
+    );
+    await until(() => control.errors.length === 1);
+    expect(String(control.errors[0]?.[0])).toContain("the live stream ended");
+    expect(plainReported).toEqual([]);
+  }, 20_000);
+
+  it("without onDenied, logs the 403's refused tags once, as a warning, not as an error", async () => {
+    const { q, queryClient, warnings, errors } = scripted(
+      undefined,
+      undefined,
+      "problem",
+    );
+    await watched(queryClient, q.query("/users/:id", { params: { id: "1" } }));
+    await until(() => warnings.length > 0);
+    expect(String(warnings[0]?.[0])).toContain(
+      "refused the tags user:1, users",
+    );
+    expect(errors).toEqual([]);
   });
 });
 

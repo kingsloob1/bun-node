@@ -649,9 +649,11 @@ export interface LiveOptions {
   transport?: "websocket" | "sse";
   /**
    * Called with the tags the server refused to subscribe this client to
-   * (its per-tag authorization: a `hello` listing them as `denied`), each
-   * time it says so (a reconnect, or a new tag, asks again). Those queries
-   * are not kept fresh by the server. Default: each refused tag is logged
+   * (its per-tag authorization: a `hello` listing them as `denied`, or the
+   * SSE fallback's `403` `LIVE_TAGS_DENIED` when it refuses every tag,
+   * which ends that stream without a reconnect), each time it says so (a
+   * reconnect, or a new tag, asks again). Those queries are not kept fresh
+   * by the server. Default: each refused tag is logged
    * once, as a warning, through the client's `logger`.
    */
   onDenied?: (tags: string[]) => void;

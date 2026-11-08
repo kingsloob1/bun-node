@@ -19,9 +19,12 @@
  *   server replays what it missed. A `gap`, or a `hello` or `invalidate` of another
  *   epoch (a restarted server), invalidates every query.
  * - **Denials**: a `hello` may list tags the server refused (`denied`,
- *   per-tag authorization): they are reported to `onDenied`, else logged
- *   once each as a warning, and stay held, so a later subscription (a
- *   reconnect, another login) asks for them again.
+ *   per-tag authorization), and the SSE fallback answers `403`
+ *   problem+json (`LIVE_TAGS_DENIED`, `denied`) when it refuses every tag:
+ *   either is reported to `onDenied`, else logged once per tag as a
+ *   warning. The `403` ends the stream (no reconnect); the tags stay held,
+ *   so a later subscription (a new tag, a reconnect, another login) asks
+ *   for them again.
  * - **Transports**: bun-common's live channel (`./channel`, at `/__live`
  *   under the client's `baseUrl`), or its SSE fallback (`./sse`, at
  *   `/__live/sse`, the tags in the query, the cursor as `Last-Event-ID`):
@@ -161,6 +164,23 @@ export function startLive(
   /** Denied tags already logged (without an `onDenied`). */
   const logged = new Set<string>();
 
+  /** Reports refused tags (`denied`): to `onDenied`, else a warning once per tag. */
+  const refused = (denied: unknown): void => {
+    if (!Array.isArray(denied)) return;
+    const tags = denied.filter((tag): tag is string => typeof tag === "string");
+    if (tags.length === 0 || stopped) return;
+    if (options.onDenied) {
+      options.onDenied(tags);
+      return;
+    }
+    const fresh = tags.filter((tag) => !logged.has(tag));
+    for (const tag of fresh) logged.add(tag);
+    if (fresh.length > 0)
+      logger.warn(
+        `live(): the server refused the tags ${fresh.join(", ")}; their queries are not kept fresh`,
+      );
+  };
+
   /** Every query invalid; the active ones refetch. */
   const invalidateAll = (): void => {
     void client.invalidateQueries();
@@ -183,22 +203,7 @@ export function startLive(
     hello(data: unknown): void {
       const next = asCursor(data);
       if (next !== undefined) moveTo(next, false);
-      const denied = (data as { denied?: unknown } | null)?.denied;
-      if (!Array.isArray(denied)) return;
-      const tags = denied.filter(
-        (tag): tag is string => typeof tag === "string",
-      );
-      if (tags.length === 0 || stopped) return;
-      if (options.onDenied) {
-        options.onDenied(tags);
-        return;
-      }
-      const fresh = tags.filter((tag) => !logged.has(tag));
-      for (const tag of fresh) logged.add(tag);
-      if (fresh.length > 0)
-        logger.warn(
-          `live(): the server refused ${fresh.length === 1 ? "the tag" : "the tags"} ${fresh.join(", ")}; their queries are not kept fresh`,
-        );
+      refused((data as { denied?: unknown } | null)?.denied);
     },
     gap(data: unknown): void {
       const next = asCursor(data);
@@ -309,8 +314,20 @@ export function startLive(
       opened.on("gap", (data: unknown) => handlers.gap(data));
       opened.on("hello", (data: unknown) => handlers.hello(data));
       opened.closed.catch((error: unknown) => {
-        if (stream === opened)
-          logger.error("live(): the live stream ended", error);
+        if (stream !== opened) return;
+        // Every tag refused: the fallback answers `403` problem+json
+        // (`LIVE_TAGS_DENIED`, the tags in `denied`) and opens no stream.
+        // A fatal status, so the stream does not reconnect; a new tag
+        // reopens it, and the server decides again. The client has read
+        // the body (an `HttpError`'s `error`).
+        const failed = error as { status?: unknown; error?: unknown };
+        const problem = failed.error as
+          { code?: unknown; denied?: unknown } | null | undefined;
+        if (failed.status === 403 && problem?.code === "LIVE_TAGS_DENIED") {
+          refused(problem.denied);
+          return;
+        }
+        logger.error("live(): the live stream ended", error);
       });
     };
     open();
