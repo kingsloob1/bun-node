@@ -131,4 +131,26 @@ describe("trust proxy on a Nest app", () => {
     );
     expect(((await direct.json()) as { ip: string }).ip).toBe("203.0.113.66");
   });
+
+  it("adapter.fetch() with a remoteAddress reaches @Ip() through trust proxy, without a socket", async () => {
+    const adapter = new BunHttpAdapter(0, { trustProxy: "10.0.0.0/8" });
+    await boot(adapter);
+    await app!.init();
+    const ask = async (remoteAddress: string) =>
+      (await (
+        await adapter.fetch("/who", { headers: FORWARDED, remoteAddress })
+      ).json()) as { ip: string; protocol: string };
+
+    // From a trusted proxy: the forwarded client and protocol.
+    expect(await ask("10.0.0.5")).toMatchObject({
+      ip: "203.0.113.9",
+      protocol: "https",
+    });
+    // Negative control: from a peer outside the range, the headers are a
+    // client's claim and @Ip() is the peer.
+    expect(await ask("198.51.100.7")).toMatchObject({
+      ip: "198.51.100.7",
+      protocol: "http",
+    });
+  });
 });

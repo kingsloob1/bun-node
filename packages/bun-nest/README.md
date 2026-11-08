@@ -1060,6 +1060,10 @@ await app.close();
 - With no live server there is no peer: `requestIP()` is `null` and a
   WebSocket upgrade is refused. When the adapter is listening, the live server
   is used instead.
+- To test `@Ip()`, `trust proxy` or a throttle keyed by the client address,
+  name the socket peer: `adapter.fetch("/who", { headers, remoteAddress:
+  "10.0.0.4" })` reports it as a served socket's would, listening or not
+  (bun-common's README, "Testing without a socket").
 
 See
 [`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts)

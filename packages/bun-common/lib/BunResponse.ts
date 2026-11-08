@@ -1,4 +1,4 @@
-import type { BunFile } from "bun";
+import type { BunFile, SocketAddress } from "bun";
 import type { Readable } from "node:stream";
 import type { BunRequest, SetCookieHeaderName } from "./BunRequest";
 import type {
@@ -775,19 +775,55 @@ export class SocketFreeExchange {
   #done = false;
 
   /**
+   * The peer the caller named (`remoteAddress` in the `fetch()` init), which
+   * {@link serverFor} reports as the socket peer; `undefined` for none, so the
+   * request has no peer, as before.
+   */
+  readonly peer: SocketAddress | undefined;
+
+  /**
    * @param request The native request, as {@link request}.
    * @param caller The caller's signal from its `RequestInit`, if any.
    * @param fromRequest The caller passed a `Request`: its signal is
    *   `request.signal`, read only when needed, and `caller` is ignored.
+   * @param peer The socket peer to report, as {@link peer}.
    */
   constructor(
     request: Request,
     caller: AbortSignal | null | undefined,
     fromRequest: boolean,
+    peer?: SocketAddress,
   ) {
     this.request = request;
     this.#caller = fromRequest ? UNREAD : (caller ?? undefined);
+    this.peer = peer;
     (request as SocketFreeRequest)[SOCKET_FREE] = this;
+  }
+
+  /**
+   * The server to build the request with: `server` itself when the caller
+   * named no peer, otherwise a view of it whose `requestIP()` reports
+   * {@link peer} (every other member is `server`'s own, bound to it). So
+   * `req.ip`, `req.socket.remoteAddress` and a `trustProxy` setting read the
+   * named peer, as they would a served socket's.
+   */
+  serverFor<TServer extends object>(server: TServer): TServer {
+    const peer = this.peer;
+    if (peer === undefined) {
+      return server;
+    }
+    const requestIP = (): SocketAddress => ({ ...peer });
+    return new Proxy(server, {
+      get(target, key) {
+        if (key === "requestIP") {
+          return requestIP;
+        }
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === "function"
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
   }
 
   /**

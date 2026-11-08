@@ -865,9 +865,28 @@ The adapter's `fetch()` calls `handleNativeRequest`, the same method its
 `Bun.serve` handler calls. Not-found handlers, error handlers, the payload
 guard and response finalisation all behave as in production. It never
 rejects for a pipeline error: it resolves the final error response instead.
-Without a socket there is no peer, so `requestIP()` is `null` and a WebSocket
-upgrade cannot succeed. A bare `BunRouter.fetch()` always parses with
-`parseBody: true`; use the adapter to test request options.
+Without a socket there is no peer, so `requestIP()` is `null` (`req.ip` is
+`""`) and a WebSocket upgrade cannot succeed. A bare `BunRouter.fetch()`
+always parses with `parseBody: true`; use the adapter to test request options.
+
+To test code that reads the client address — `req.ip`, `trustProxy`, a
+throttle keyed by IP — name the socket peer with `remoteAddress` in the init.
+It is reported as `requestIP()` would report a served socket's (its family
+from its form, port `0`), so `trustProxy` judges it as it would a real proxy:
+
+```ts
+const app = new BunHttpAdapter(0, { trustProxy: "10.0.0.0/8" });
+app.get("/ip", (req, res) => res.send(req.ip));
+const headers = { "X-Forwarded-For": "203.0.113.9" };
+
+await app.fetch("/ip", { headers, remoteAddress: "10.0.0.4" }); // "203.0.113.9"
+await app.fetch("/ip", { headers, remoteAddress: "198.51.100.7" }); // "198.51.100.7": not a trusted proxy
+await app.fetch(new Request("http://localhost/ip"), { remoteAddress: "::1" }); // any input
+```
+
+It is read from `init` whatever the input (a `Request` too), or from a
+`RequestInit` carrying a `url`; anything but an IPv4 or IPv6 address throws a
+`TypeError`. On a listening adapter it is reported over the live server.
 
 A body given as a path plus `RequestInit` (or a `RequestInit` with a `url`)
 is framed as Bun's `fetch` client frames it on the wire, since `req.is()` and

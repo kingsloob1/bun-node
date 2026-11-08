@@ -493,6 +493,152 @@ describe("socket-free fetch()", () => {
   });
 });
 
+describe("socket-free fetch() with a remoteAddress", () => {
+  const who = (req: { ip: string; ips: string[]; protocol: string }) => ({
+    ip: req.ip,
+    ips: req.ips,
+    proto: req.protocol,
+  });
+  const fromProxy = {
+    "X-Forwarded-For": "203.0.113.9",
+    "X-Forwarded-Proto": "https",
+  };
+
+  it("reports the address as the socket peer, its family from its form", async () => {
+    const router = new BunRouter();
+    router.get("/peer", (req, res) =>
+      res.json({
+        ip: req.ip,
+        address: req.socket.remoteAddress,
+        family: req.socket.remoteFamily,
+        port: req.socket.remotePort,
+      }),
+    );
+    expect(
+      await (
+        await router.fetch("/peer", { remoteAddress: "203.0.113.5" })
+      ).json(),
+    ).toEqual({
+      ip: "203.0.113.5",
+      address: "203.0.113.5",
+      family: "IPv4",
+      port: 0,
+    });
+    expect(
+      await (await router.fetch("/peer", { remoteAddress: "::1" })).json(),
+    ).toMatchObject({ ip: "::1", family: "IPv6" });
+    // Unset: no peer, as before.
+    expect(await (await router.fetch("/peer")).json()).toEqual({ ip: "" });
+  });
+
+  it("drives trustProxy: a trusted peer's forwarded client is believed, an untrusted one's is not", async () => {
+    const router = new BunRouter({ trustProxy: "10.0.0.0/8" });
+    router.get("/who", (req, res) => res.json(who(req)));
+
+    // The trusted proxy: the forwarded client and protocol are believed.
+    const trusted = await router.fetch("/who", {
+      headers: fromProxy,
+      remoteAddress: "10.0.0.4",
+    });
+    expect(await trusted.json()).toEqual({
+      ip: "203.0.113.9",
+      ips: ["203.0.113.9"],
+      proto: "https",
+    });
+
+    // Negative control: the same headers from a peer outside the range are a
+    // client's claim, and ignored.
+    const spoofed = await router.fetch("/who", {
+      headers: fromProxy,
+      remoteAddress: "198.51.100.7",
+    });
+    expect(await spoofed.json()).toEqual({
+      ip: "198.51.100.7",
+      ips: [],
+      proto: "http",
+    });
+  });
+
+  it("drives behindCloudflare(): only a Cloudflare peer's CF-Connecting-IP counts", async () => {
+    const router = new BunRouter(behindCloudflare());
+    router.get("/who", (req, res) => res.json(who(req)));
+    const headers = { "CF-Connecting-IP": "198.51.100.23" };
+    const edge = await router.fetch("/who", {
+      headers,
+      remoteAddress: "172.68.10.20",
+    });
+    expect(((await edge.json()) as { ip: string }).ip).toBe("198.51.100.23");
+    const direct = await router.fetch("/who", {
+      headers,
+      remoteAddress: "198.51.100.66",
+    });
+    expect(((await direct.json()) as { ip: string }).ip).toBe("198.51.100.66");
+  });
+
+  it("is read from the init form, and from init for a Request; init's wins", async () => {
+    const router = new BunRouter();
+    router.get("/ip", (req, res) => res.send(req.ip));
+    expect(
+      await (
+        await router.fetch({ url: "/ip", remoteAddress: "192.0.2.1" })
+      ).text(),
+    ).toBe("192.0.2.1");
+    expect(
+      await (
+        await router.fetch(new Request("http://localhost/ip"), {
+          remoteAddress: "192.0.2.2",
+        })
+      ).text(),
+    ).toBe("192.0.2.2");
+    expect(
+      await (
+        await router.fetch(
+          { url: "/ip", remoteAddress: "192.0.2.1" },
+          { remoteAddress: "192.0.2.3" },
+        )
+      ).text(),
+    ).toBe("192.0.2.3");
+  });
+
+  it("refuses anything but an IP address", () => {
+    const router = new BunRouter();
+    expect(() => router.fetch("/", { remoteAddress: "localhost" })).toThrow(
+      TypeError,
+    );
+    expect(() => router.fetch("/", { remoteAddress: "" })).toThrow(TypeError);
+  });
+
+  it("applies to the adapter's fetch(), listening or not", async () => {
+    const app = new BunHttpAdapter(0, {
+      trustProxy: "loopback",
+      logger: () => {},
+    });
+    app.get("/who", (req, res) => res.json(who(req)));
+    const ask = async (remoteAddress: string) =>
+      (await app.fetch("/who", { headers: fromProxy, remoteAddress })).json();
+    expect(await ask("127.0.0.1")).toMatchObject({
+      ip: "203.0.113.9",
+      proto: "https",
+    });
+    expect(await ask("203.0.113.200")).toMatchObject({
+      ip: "203.0.113.200",
+      proto: "http",
+    });
+
+    // Listening, the live server is used, with the named peer over it.
+    await app.listen(0);
+    try {
+      expect(await ask("::1")).toMatchObject({ ip: "203.0.113.9" });
+      expect(await ask("2001:db8::1")).toMatchObject({ ip: "2001:db8::1" });
+      // No remoteAddress: the live server has no peer for a request it never
+      // served.
+      expect(await (await app.fetch("/who")).json()).toMatchObject({ ip: "" });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 /** An adapter that can serve a request as if from any socket peer. */
 class PeerAdapter extends BunHttpAdapter {
   /** Serves `request` with `peer` as the socket address. */
