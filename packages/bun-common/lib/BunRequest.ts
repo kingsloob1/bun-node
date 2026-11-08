@@ -5,6 +5,7 @@ import type { Readable } from "node:stream";
 import type { BunResponse } from "./BunResponse";
 import type { TypedEmitter } from "./BunWebSocket";
 import type {
+  ClientAddress,
   ProxyChainEntry,
   TrustProxyFn,
   TrustProxyOption,
@@ -1480,6 +1481,26 @@ class BunRequestState {
   bodyEventsEmitted: boolean = false;
   /** Backs BunRequest's `#socket`; see its documentation there. */
   socket: BunRequestSocket | undefined = undefined;
+  /** Backs BunRequest's `#client`; see its documentation there. */
+  client: ResolvedClient | undefined = undefined;
+}
+
+/**
+ * One {@link resolveClientAddress} answer and every input it was resolved
+ * from, so a later read of `ip`, `ips` or `proxyChain` reuses it only while
+ * none of them has changed.
+ */
+interface ResolvedClient {
+  /** The compiled trust function it was resolved through. */
+  trust: TrustProxyFn;
+  /** The socket peer's address, `""` for none. */
+  peer: string;
+  /** The `X-Forwarded-For` header as it was read, `null` when absent. */
+  forwardedFor: string | null;
+  /** The `clientIpHeader` value as it was read; `undefined` with no header configured. */
+  headerValue: string | null | undefined;
+  /** The answer. */
+  result: ClientAddress;
 }
 
 export class BunRequest<
@@ -2033,6 +2054,22 @@ export class BunRequest<
    * peer is still found if it was not at first).
    */
   #socketAddress: SocketAddress | undefined;
+  /**
+   * The client address last resolved under `trustProxy`, with the inputs it
+   * came from: `ip`, `ips` and `proxyChain` each used to re-run the whole
+   * walk on every read. Reused only while the trust function, the peer,
+   * `X-Forwarded-For` and the `clientIpHeader` value are all as they were,
+   * so a header set or removed mid-request, or a changed option, is seen on
+   * the next read, as Express's per-read walk sees it.
+   */
+  get #client(): ResolvedClient | undefined {
+    return this.#state?.client;
+  }
+
+  set #client(value: ResolvedClient | undefined) {
+    (this.#state ??= new BunRequestState()).client = value;
+  }
+
   /** True once the `data`/`end`/`error` body events have been emitted. */
   get #bodyEventsEmitted(): boolean {
     const holder = this.#state;
@@ -5531,7 +5568,8 @@ export class BunRequest<
     if (trust === undefined) {
       return [];
     }
-    return this.#resolveClient(trust).ips;
+    // A fresh array per read, as Express's: the resolved one is kept.
+    return this.#resolveClient(trust).ips.slice();
   }
 
   /**
@@ -5539,8 +5577,8 @@ export class BunRequest<
    * peer, the `X-Forwarded-For` entries the walk read (right to left), and
    * the `clientIpHeader` value when it was believed, each marked with
    * whether `trustProxy` trusts it as a proxy. With `trustProxy` off, the
-   * socket peer alone, untrusted (`""` when there is none). Recomputed on
-   * each read, as `ip` is.
+   * socket peer alone, untrusted (`""` when there is none). Resolved once
+   * and shared with `ip` and `ips` while its inputs are unchanged.
    */
   get proxyChain(): readonly ProxyChainEntry[] {
     const trust = this.#trustFn();
@@ -5556,15 +5594,33 @@ export class BunRequest<
     return this.#resolveClient(trust).chain;
   }
 
-  /** {@link ip} and {@link ips}, resolved through `trust`. */
-  #resolveClient(trust: TrustProxyFn) {
+  /**
+   * {@link ip} and {@link ips}, resolved through `trust`: the walk runs once,
+   * and again only when one of its inputs has changed (see {@link #client}).
+   */
+  #resolveClient(trust: TrustProxyFn): ClientAddress {
     const header = this.options.clientIpHeader;
-    return resolveClientAddress({
-      peer: this.#peerAddress(),
-      forwardedFor: this.headersObj.get("X-Forwarded-For"),
+    const peer = this.#peerAddress();
+    const forwardedFor = this.headersObj.get("X-Forwarded-For");
+    const headerValue = header ? this.headersObj.get(header) : undefined;
+    const cached = this.#client;
+    if (
+      cached !== undefined &&
+      cached.trust === trust &&
+      cached.peer === peer &&
+      cached.forwardedFor === forwardedFor &&
+      cached.headerValue === headerValue
+    ) {
+      return cached.result;
+    }
+    const result = resolveClientAddress({
+      peer,
+      forwardedFor,
       trust,
-      clientIpHeaderValue: header ? this.headersObj.get(header) : undefined,
+      clientIpHeaderValue: headerValue,
     });
+    this.#client = { trust, peer, forwardedFor, headerValue, result };
+    return result;
   }
 
   get originalUrl() {
