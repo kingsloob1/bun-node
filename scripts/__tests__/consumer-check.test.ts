@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
@@ -7,6 +13,7 @@ import {
   bareSpecifiers,
   consumerManifest,
   failures,
+  resolveWorkDir,
   scanLeaks,
 } from "../consumer-check";
 
@@ -266,5 +273,44 @@ describe("consumerManifest: the consumer's package.json", () => {
       "@scope/core": "file:/t/scope-core-3.0.0-rc.0.tgz",
       "@scope/viewer": "file:/t/scope-viewer-3.0.0-rc.0.tgz",
     });
+  });
+});
+
+describe("resolveWorkDir", () => {
+  const cache = mkdtempSync(join(tmpdir(), "cc-workdir-"));
+  afterAll(() => rmSync(cache, { recursive: true, force: true }));
+
+  it("gives every run without --work a fresh directory of its own", () => {
+    const a = resolveWorkDir("/repo/packages/bun-common", undefined, cache);
+    const b = resolveWorkDir("/repo/packages/bun-common", undefined, cache);
+    // The old default was one fixed path per package, so two runs shared it.
+    expect(a.dir).not.toBe(b.dir);
+    expect(a.ephemeral).toBe(true);
+    expect(existsSync(a.dir)).toBe(true);
+    expect(existsSync(b.dir)).toBe(true);
+  });
+
+  it("puts it under <cache>/consumer-check, named for the package", () => {
+    const { dir } = resolveWorkDir("/repo/packages/bun-nest", undefined, cache);
+    expect(dir.startsWith(join(cache, "consumer-check", "bun-nest-"))).toBe(
+      true,
+    );
+  });
+
+  it("uses an explicit --work as given, creates nothing and calls it not ephemeral", () => {
+    const explicit = join(cache, "mine", "..", "mine");
+    const w = resolveWorkDir("/repo/packages/bun-nest", explicit, cache);
+    expect(w).toEqual({ dir: join(cache, "mine"), ephemeral: false });
+    expect(existsSync(w.dir)).toBe(false);
+  });
+
+  it("defaults the cache root to ~/.cache, never /tmp", () => {
+    const { dir } = resolveWorkDir("/repo/packages/bun-nest", undefined);
+    try {
+      expect(dir.startsWith("/tmp/")).toBe(false);
+      expect(dir).toContain("/consumer-check/bun-nest-");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

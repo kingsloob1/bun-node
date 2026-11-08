@@ -31,7 +31,12 @@
  * bun scripts/consumer-check.ts packages/bun-common --tarball x.tgz      # check a pre-packed tarball
  * bun scripts/consumer-check.ts packages/bun-common --typescript 5.9.3   # a different compiler
  * bun scripts/consumer-check.ts --show after.json --baseline base.json   # re-print a saved run
+ * bun scripts/consumer-check.ts packages/bun-common --work ~/dir         # a work directory of your own
  * ```
+ *
+ * Without `--work`, each run packs and installs in a fresh directory of its
+ * own under `~/.cache/consumer-check/` ({@link resolveWorkDir}), removed when
+ * the run passes and kept, with its path printed, when it fails.
  *
  * The package supplies its own spellings in `<package>/consumer-check.json`
  * (see {@link CheckConfig}), so bun-common, bun-nest, bun-jobs and
@@ -57,12 +62,14 @@
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { builtinModules } from "node:module";
+import { homedir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import process from "node:process";
 import ts from "typescript";
@@ -476,6 +483,39 @@ async function pool<T>(
   return results;
 }
 
+/** Where a run packs, installs and checks: the directory and whether this run made it. */
+export interface WorkDir {
+  /** Absolute path of the work directory. */
+  dir: string;
+  /** True for a fresh per-run directory (removed after a passing run); false for an explicit `--work`. */
+  ephemeral: boolean;
+}
+
+/**
+ * Chooses the run's work directory. An explicit `--work` is used as given
+ * (resolved, never removed at the end). Without one, each run gets a fresh
+ * directory of its own under `<cache>/consumer-check/` (`$XDG_CACHE_HOME`, or
+ * `~/.cache`; never `/tmp`), so two runs, from two sessions or two packages,
+ * cannot collide on one shared default.
+ *
+ * @param packageDir The package being checked; its name prefixes the directory.
+ * @param explicit The `--work` value, when given.
+ * @param cacheHome The cache root. Defaults to `$XDG_CACHE_HOME` or `~/.cache`.
+ */
+export function resolveWorkDir(
+  packageDir: string,
+  explicit?: string,
+  cacheHome: string = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"),
+): WorkDir {
+  if (explicit) return { dir: resolve(explicit), ephemeral: false };
+  const parent = join(cacheHome, "consumer-check");
+  mkdirSync(parent, { recursive: true });
+  return {
+    dir: mkdtempSync(join(parent, `${basename(packageDir)}-`)),
+    ephemeral: true,
+  };
+}
+
 async function main(): Promise<void> {
   const show = flag("--show");
   if (show) {
@@ -514,14 +554,8 @@ async function main(): Promise<void> {
   };
   const tsVersion = flag("--typescript");
 
-  const work = resolve(
-    flag("--work") ??
-      join(
-        process.env.TMPDIR ?? "/tmp",
-        `consumer-check-${basename(packageDir)}`,
-      ),
-  );
-  rmSync(work, { recursive: true, force: true });
+  const { dir: work, ephemeral } = resolveWorkDir(packageDir, flag("--work"));
+  if (!ephemeral) rmSync(work, { recursive: true, force: true });
   const tarballs = join(work, "tarballs");
   mkdirSync(tarballs, { recursive: true });
 
@@ -727,6 +761,12 @@ async function main(): Promise<void> {
       ? (JSON.parse(readFileSync(resolve(baselinePath), "utf8")) as RunResult)
       : undefined,
   );
+  if (ephemeral) {
+    // A fresh per-run directory is ours to remove, but only after a pass: a
+    // failing run keeps it, so the installed consumer can be inspected.
+    if (failed) console.error(`work directory kept: ${work}`);
+    else rmSync(work, { recursive: true, force: true });
+  }
   process.exit(failed ? 1 : 0);
 }
 
