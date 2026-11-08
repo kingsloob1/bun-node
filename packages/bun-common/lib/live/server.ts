@@ -34,26 +34,47 @@
  *   publishes its own: bun-nest's `@Invalidates`); and a cache's tag invalidations when `source`
  *   is given (bun-cache's `invalidate` event, which `invalidateTags`
  *   emits, either mode).
- * - **Per process**: the ring, the epoch and the subscribers are this
- *   process's. bun-cache's bus does not emit `invalidate` for another
- *   process's invalidation, so several processes behind one balancer each
- *   publish their own; a client sees another process's only by its own
- *   route, cache or `publishTags` call.
+ * - **Across processes**: the ring, the epoch and the subscribers are this
+ *   process's. With a `bus` (or `connectLiveBus()`, `./bus.ts`), every
+ *   invalidation is also published to the other processes on the bus, which
+ *   number it in their own epoch and deliver it to their subscribers; when
+ *   one may have been lost, they send a `gap`. Without one, a client sees
+ *   another process's invalidations only by its own route, cache or
+ *   `publishTags` call (bun-cache's bus does not emit `invalidate` for
+ *   another process's invalidation).
  */
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import type { BunRequest } from "../BunRequest";
 import type { BunResponse } from "../BunResponse";
-import type { Channel } from "../channel";
 import type { BunServer, NextFunction, RouterHandler } from "../types/general";
 import type { SseSendOf } from "../sse/writer";
-import type { LiveCursor, LiveInvalidate } from "./contract";
+import type { LiveBus } from "./bus";
+import type { LiveCursor } from "./contract";
+import type { LiveChannel, Stream } from "./hub";
 import { BunRouter } from "../BunRouter";
 import { defineChannel } from "../channel";
 import { attachContract, getContract } from "../contract/transport";
 import { routeDocFor } from "../docs/routeDoc";
 import { ConfigError } from "../errors";
 import { sse } from "../sse/declaration";
-import { LIVE_MAX_TAG_LENGTH, LIVE_MAX_TAGS, liveContract } from "./contract";
+import { connectLiveBus, forwardToBus } from "./bus";
+import { LIVE_MAX_TAG_LENGTH, liveContract } from "./contract";
+import {
+  chunked,
+  cursorNow,
+  deliverLocally,
+  GAP_TOPIC,
+  hub,
+  isGap,
+  isTag,
+  MAX_SUBSCRIBED,
+  missed,
+  ref,
+  topicOf,
+  unref,
+} from "./hub";
+
+export { restartLiveEpoch } from "./hub";
 
 /* ------------------------------------------------------------------ *
  * Options
@@ -82,39 +103,22 @@ export interface LiveInvalidationOptions {
       listener: (event: { readonly tags: readonly string[] }) => void,
     ) => () => void;
   };
+  /**
+   * A bus to the other processes serving (or publishing) live invalidation,
+   * so an invalidation published in any of them reaches the subscribers of
+   * every one: bun-cache's `cacheLiveBus(redisBus(url))`
+   * (`@kingsleyweb/bun-cache/live`), or any {@link LiveBus}. Connected with
+   * `connectLiveBus(bus, { logger: app.logger })` for the life of the
+   * process; call `connectLiveBus` yourself to close it, or in a process
+   * that publishes without serving. One bus per process: another one throws
+   * a `ConfigError`. Default: none (this process's subscribers only).
+   */
+  bus?: LiveBus;
 }
 
 /* ------------------------------------------------------------------ *
- * The process's hub
+ * Publishing
  * ------------------------------------------------------------------ */
-
-/** How many invalidations the ring keeps for resume. */
-const RING_SIZE = 1024;
-
-/** The most tags one socket or stream may hold; the rest of a `subscribe` is ignored (and logged). */
-const MAX_SUBSCRIBED = 10_000;
-
-/** The pub/sub topic of a tag. */
-const topicOf = (tag: string): string => `bun-common/live:${tag}`;
-
-/** One invalidation, as the ring keeps it. */
-interface Entry {
-  /** Its number. */
-  readonly seq: number;
-  /** Its tags (de-duplicated). */
-  readonly tags: readonly string[];
-}
-
-/** An SSE subscriber. */
-interface Stream {
-  /** Its tags. */
-  readonly tags: ReadonlySet<string>;
-  /** Sends one invalidation (its id is `<epoch>:<seq>`). */
-  readonly write: (data: LiveInvalidate) => void;
-}
-
-/** The live channel's binding type. */
-type LiveChannel = Channel<typeof liveContract.spec>;
 
 /** What a live socket carries as `ws.data.custom`: the server it was upgraded on, which its topics are published on. */
 interface LiveSocketData {
@@ -122,115 +126,14 @@ interface LiveSocketData {
   readonly server: BunServer | undefined;
 }
 
-/** A socket's live state. */
-interface SocketState {
-  /** The tags it holds. */
-  readonly tags: Set<string>;
-  /** The server it is on, counted in {@link Hub.servers}. */
-  readonly server: BunServer | undefined;
-}
-
-/** The process's live state. */
-interface Hub {
-  /** This process's epoch: random, so a restarted process never matches. */
-  epoch: string;
-  /** The last invalidation's number; `0` before any. */
-  seq: number;
-  /** The last {@link RING_SIZE} invalidations, oldest first. */
-  ring: Entry[];
-  /** Every tag somebody holds, with how many sockets and streams hold it. */
-  readonly refs: Map<string, number>;
-  /** The servers with live sockets: the channel to publish through, and how many sockets. */
-  readonly servers: Map<BunServer, { channel: LiveChannel; sockets: number }>;
-  /** The SSE subscribers. */
-  readonly streams: Set<Stream>;
-  /** Every live socket's state. */
-  readonly sockets: WeakMap<ServerWebSocket<unknown>, SocketState>;
-}
-
-/** The hub. */
-const hub: Hub = {
-  epoch: crypto.randomUUID(),
-  seq: 0,
-  ring: [],
-  refs: new Map(),
-  servers: new Map(),
-  streams: new Set(),
-  sockets: new WeakMap(),
-};
-
-/**
- * Starts a new epoch, as a restarted process would: a new random epoch, the
- * count from `0` and an empty ring (the subscribers stay). A client
- * resuming from before it gets a `gap`.
- *
- * @internal For tests.
- */
-export function restartLiveEpoch(): void {
-  hub.epoch = crypto.randomUUID();
-  hub.seq = 0;
-  hub.ring = [];
-}
-
-/** The hub's position now. */
-const cursorNow = (): LiveCursor => ({ epoch: hub.epoch, seq: hub.seq });
-
-/** Adds a holder of `tag`. */
-function ref(tag: string): void {
-  hub.refs.set(tag, (hub.refs.get(tag) ?? 0) + 1);
-}
-
-/** Removes a holder of `tag`. */
-function unref(tag: string): void {
-  const count = (hub.refs.get(tag) ?? 0) - 1;
-  if (count > 0) hub.refs.set(tag, count);
-  else hub.refs.delete(tag);
-}
-
-/** `tags` split into frames of at most {@link LIVE_MAX_TAGS}. */
-function chunked(tags: readonly string[]): string[][] {
-  const out: string[][] = [];
-  for (let at = 0; at < tags.length; at += LIVE_MAX_TAGS)
-    out.push(tags.slice(at, at + LIVE_MAX_TAGS));
-  return out;
-}
-
-/** Whether `tag` is one a frame can carry. */
-function isTag(tag: unknown): tag is string {
-  return (
-    typeof tag === "string" &&
-    tag.length > 0 &&
-    tag.length <= LIVE_MAX_TAG_LENGTH
-  );
-}
-
-/** Whether a client at `cursor` cannot be replayed what it missed: another epoch, a cursor ahead of the server, or one the ring no longer reaches. */
-function isGap(cursor: LiveCursor): boolean {
-  if (cursor.epoch !== hub.epoch || cursor.seq > hub.seq) return true;
-  const oldest = hub.ring[0]?.seq ?? hub.seq + 1;
-  return cursor.seq < oldest - 1;
-}
-
-/** The invalidations after `after` that hit `tags`, each with the tags it hit. */
-function missed(
-  after: number,
-  tags: ReadonlySet<string>,
-): { seq: number; tags: string[] }[] {
-  const out: { seq: number; tags: string[] }[] = [];
-  for (const entry of hub.ring) {
-    if (entry.seq <= after) continue;
-    const hit = entry.tags.filter((tag) => tags.has(tag));
-    if (hit.length > 0) out.push({ seq: entry.seq, tags: hit });
-  }
-  return out;
-}
-
 /**
  * Publishes an invalidation of `tags`: numbered, kept in the ring for
  * resume, and sent to every socket and SSE stream subscribed to one of them
- * (a tag nobody holds costs nothing but its place in the ring). Duplicates
- * are dropped; an empty list does nothing. Synchronous: the sends are
- * queued, and reach each socket in publication order.
+ * (a tag nobody holds costs nothing but its place in the ring); with a live
+ * bus connected, also published on it, to every other process's
+ * subscribers. Duplicates are dropped; an empty list does nothing.
+ * Synchronous: the sends are queued, and reach each socket in publication
+ * order (the bus publish follows, in a microtask).
  *
  * @param tags The invalidated tags, as the client files its queries under
  *   them (`"user:42"`): each a string of 1 to 512 characters.
@@ -248,26 +151,8 @@ export function publishTags(tags: readonly string[]): void {
   }
   const unique = [...new Set(tags)];
   if (unique.length === 0) return;
-  const seq = ++hub.seq;
-  hub.ring.push({ seq, tags: unique });
-  if (hub.ring.length > RING_SIZE) hub.ring.shift();
-  const { epoch } = hub;
-  for (const tag of unique) {
-    if (!hub.refs.has(tag)) continue;
-    for (const [server, { channel }] of hub.servers) {
-      // One frame per topic: Bun's pub/sub sends it once to every socket
-      // holding the tag. The data is the contract's, so the check passes.
-      void channel.publish(server, topicOf(tag), "invalidate", {
-        tags: [tag],
-        seq,
-        epoch,
-      });
-    }
-  }
-  for (const stream of hub.streams) {
-    const hit = unique.filter((tag) => stream.tags.has(tag));
-    for (const part of chunked(hit)) stream.write({ tags: part, seq, epoch });
-  }
+  deliverLocally(unique);
+  forwardToBus(unique);
 }
 
 /* ------------------------------------------------------------------ *
@@ -440,6 +325,8 @@ function sseHandler(req: BunRequest, res: BunResponse): void {
     tags: held,
     write: (data) =>
       void writer.send({ event: "invalidate", data, id: eventId(data.seq) }),
+    gap: (cursor) =>
+      void writer.send({ event: "gap", data: cursor, id: eventId(cursor.seq) }),
   };
   for (const tag of held) ref(tag);
   hub.streams.add(stream);
@@ -458,6 +345,8 @@ function opened(ws: ServerWebSocket<unknown>, channel: LiveChannel): void {
   const data = ws.data as { custom?: LiveSocketData } | undefined;
   const server = data?.custom?.server;
   hub.sockets.set(ws, { tags: new Set(), server });
+  // Every socket hears a gap (the bus's), whatever tags it holds.
+  ws.subscribe(GAP_TOPIC);
   if (server === undefined) return;
   const known = hub.servers.get(server);
   if (known === undefined) hub.servers.set(server, { channel, sockets: 1 });
@@ -504,8 +393,10 @@ export function liveInvalidation(
       "liveInvalidation(): `authorize` is required — an invalidation names the data that changed; pass (req, res, next) => next() to open it to everyone",
     );
   }
-  const { authorize, source } = options;
+  const { authorize, source, bus } = options;
   const logger = app.logger;
+  // First: a second bus throws before anything is registered.
+  if (bus !== undefined) connectLiveBus(bus, { logger });
   const router = new BunRouter();
   router.use(invalidatesOnSuccess);
   const fallback = liveContract.meta.fallback ?? "/__live/sse";

@@ -160,6 +160,21 @@ describe("package.json exports", () => {
     ).toBe(true);
   });
 
+  it("checks the ./live subpath, the bus for bun-common's live invalidation", () => {
+    for (const key of ["./live", "./lib/live"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/live/index.ts",
+        types: "./dts/live/index.d.ts",
+        default: "./lib/live/index.ts",
+      });
+    }
+    expect(
+      checkConfig.entries?.some(
+        (entry) => entry.spelling === "@kingsleyweb/bun-cache/live",
+      ),
+    ).toBe(true);
+  });
+
   it("checks the ./cloudflare-worker subpath, the Worker users deploy, as a browser entry", () => {
     expect(manifest.exports["./cloudflare-worker"]).toEqual({
       "@kingsleyweb/source": "./lib/cloudflare/worker.ts",

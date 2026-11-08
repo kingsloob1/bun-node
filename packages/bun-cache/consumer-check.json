@@ -163,6 +163,18 @@
       "types": ["CacheThrottleStore"]
     },
     {
+      "$comment": "The live bus: cacheLiveBus(bus) is a bun-common LiveBus over a bun-cache bus, so live invalidation reaches every process. Its declarations import bun-common/live, a runtime dependency.",
+      "spelling": "@kingsleyweb/bun-cache/live",
+      "values": ["cacheLiveBus", "DEFAULT_LIVE_NAMESPACE"],
+      "types": ["CacheLiveBusOptions"],
+      "snippet": "import type { LiveBus } from \"@kingsleyweb/bun-common/live\";\nimport { redisBus } from \"@kingsleyweb/bun-cache\";\nconst bus = m.cacheLiveBus(redisBus(\"redis://127.0.0.1:6379\"), { namespace: \"app/live\" });\nexport type _busNotAny = Expect<IsAny<typeof bus>>;\nexport const _asLiveBus: LiveBus = bus;\nexport type _publish = Equal<ReturnType<typeof bus.publish>, Promise<void>>;\nexport const _options: t.CacheLiveBusOptions = { namespace: \"live\" };\nexport const _namespace: string = m.DEFAULT_LIVE_NAMESPACE;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/live",
+      "values": ["cacheLiveBus"],
+      "types": ["CacheLiveBusOptions"]
+    },
+    {
       "$comment": "The Worker the Cloudflare drivers' endpoint points at, which users deploy (plan Status, PR-C10). It runs on Cloudflare's runtime, so it is checked as a browser entry: no Node or Bun types in its graph, and it imports nothing.",
       "spelling": "@kingsleyweb/bun-cache/cloudflare-worker",
       "browser": true,

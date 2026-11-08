@@ -194,6 +194,10 @@ And (throttle):
   `@kingsleyweb/bun-cache/throttle`: bun-common's `throttle()` counting
   through the cache, so one rate limit holds across every process on the
   backend ([Throttling](#throttling))
+- a **live bus**, `cacheLiveBus(bus)` from `@kingsleyweb/bun-cache/live`:
+  bun-common's live invalidation over a Redis or Postgres bus, so an
+  invalidation published in one process reaches the live subscribers of
+  every process ([Live invalidation across processes](#live-invalidation-across-processes))
 
 What comes next is in the plan's Status.
 
@@ -3078,6 +3082,34 @@ cd packages/bun-cache/bench
 bun install --frozen-lockfile
 bun run compat
 ```
+
+## Live invalidation across processes
+
+`@kingsleyweb/bun-cache/live` adapts a bun-cache bus to bun-common's live
+invalidation (`@kingsleyweb/bun-common/live`), whose subscribers are
+otherwise per process: behind three instances, a client hears only what its
+own instance publishes.
+
+```ts
+import { liveInvalidation } from "@kingsleyweb/bun-common/live";
+import { redisBus } from "@kingsleyweb/bun-cache";
+import { cacheLiveBus } from "@kingsleyweb/bun-cache/live";
+
+const bus = redisBus({ url: process.env.REDIS_URL, channel: "app:live" });
+app.use(liveInvalidation(app, { authorize, bus: cacheLiveBus(bus) }));
+```
+
+- **Any bus**: `redisBus()` or `pgBus()`, or any `CacheBus`. The bus stays
+  yours: close it at shutdown; closing the live connection never does.
+- **The wire**: a live message is an `invalidate-tags` bus message in the
+  namespace `"bun-common/live"` (`namespace` changes it; every process must
+  agree), its origin `<process>:<n>`. A cache on the same channel acts only
+  on its own namespaces, and the live bus ignores every other one, so a
+  channel can be shared; a channel of its own keeps them apart all the same.
+- **Postgres's 8,000 bytes**: `pgBus` turns a larger message into a `clear`,
+  which arrives as a gap: the receivers' clients invalidate everything.
+- What a gap is, the ordering and what happens while the bus is down are
+  bun-common's: see its README, "Live invalidation".
 
 ## Throttling
 
