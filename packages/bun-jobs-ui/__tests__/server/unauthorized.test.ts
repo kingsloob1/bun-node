@@ -6,10 +6,6 @@ import type { JobsUiUnauthorizedOptions } from "../../lib/types";
 import { BunRouter } from "@kingsleyweb/bun-common";
 import { ConfigError } from "@kingsleyweb/bun-jobs";
 import { describe, expect, it } from "bun:test";
-import {
-  unauthorizedRedirectUrl,
-  relativeReturnPath,
-} from "../../lib/shared/unauthorized";
 import { fetchShell, fixtureUi } from "./helpers";
 
 /** A browser's page navigation. */
@@ -314,29 +310,5 @@ describe("unauthorized: the shell", () => {
     const response = await mounted(ui).fetch("/jobs", { headers: NAVIGATE });
     expect(response.status).toBe(200);
     await response.text();
-  });
-});
-
-describe("unauthorizedRedirectUrl / relativeReturnPath", () => {
-  it("never hands back a path a browser would read as another host", () => {
-    expect(relativeReturnPath("//evil.example/x")).toBe("/evil.example/x");
-    expect(relativeReturnPath("/\\evil.example")).toBe("/evil.example");
-    expect(relativeReturnPath("https://evil.example/")).toBe("/");
-    expect(relativeReturnPath("/jobs/q?a=1#h")).toBe("/jobs/q?a=1#h");
-  });
-
-  it("adds nothing without a returnParam or a return path", () => {
-    expect(
-      unauthorizedRedirectUrl(
-        { redirectTo: "/login?x=1", returnParam: null },
-        "/jobs",
-      ),
-    ).toBe("/login?x=1");
-    expect(
-      unauthorizedRedirectUrl(
-        { redirectTo: "/login", returnParam: "returnTo" },
-        undefined,
-      ),
-    ).toBe("/login");
   });
 });

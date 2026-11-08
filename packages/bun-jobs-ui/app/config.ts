@@ -1,4 +1,5 @@
 import type { UiConfig } from "../lib/shared/config.ts";
+import { isUiUnauthorized } from "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized";
 import { UI_CONFIG_ELEMENT_ID } from "../lib/shared/config.ts";
 
 /** The injected configuration was missing or malformed. */
@@ -48,14 +49,7 @@ export function parseUiConfig(value: unknown): UiConfig {
   }
   // Missing in a shell from before the option existed: off.
   const unauthorized = value.unauthorized ?? null;
-  if (
-    unauthorized !== null &&
-    (!isRecord(unauthorized) ||
-      typeof unauthorized.redirectTo !== "string" ||
-      (unauthorized.returnParam !== null &&
-        typeof unauthorized.returnParam !== "string") ||
-      !Array.isArray(unauthorized.statuses))
-  ) {
+  if (unauthorized !== null && !isUiUnauthorized(unauthorized)) {
     throw new UiConfigError(
       `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
     );

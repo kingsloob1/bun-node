@@ -243,12 +243,12 @@
       "name": "@kingsleyweb/bun-jobs-ui",
       "version": "3.0.0-rc.0",
       "dependencies": {
+        "@kingsleyweb/bun-api-docs-ui": "workspace:^",
         "@kingsleyweb/bun-common": "workspace:^",
       },
       "devDependencies": {
         "@antfu/eslint-config": "catalog:",
         "@happy-dom/global-registrator": "catalog:",
-        "@kingsleyweb/bun-api-docs-ui": "workspace:^",
         "@kingsleyweb/bun-client": "workspace:^",
         "@kingsleyweb/bun-jobs": "workspace:^",
         "@kingsleyweb/bun-nest": "workspace:^",

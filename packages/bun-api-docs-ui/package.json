@@ -67,6 +67,11 @@
       "@kingsleyweb/source": "./app/api/errors.ts",
       "types": "./app/api/errors.ts",
       "default": "./app/api/errors.ts"
+    },
+    "./embed/unauthorized": {
+      "@kingsleyweb/source": "./app/unauthorized.ts",
+      "types": "./app/unauthorized.ts",
+      "default": "./app/unauthorized.ts"
     }
   },
   "main": "lib/index.ts",

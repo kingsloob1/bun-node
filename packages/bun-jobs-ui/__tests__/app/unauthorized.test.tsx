@@ -13,14 +13,15 @@ import type { UiUnauthorized } from "../../lib/shared/unauthorized.ts";
 import { JOBS_API_WS_CLOSE } from "@kingsleyweb/bun-jobs/api/contract";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { ApiError } from "../../app/api/errors";
+import { parseUiConfig, UiConfigError } from "../../app/config";
 import {
   UnauthorizedRedirectContext,
   createUnauthorizedRedirect,
-} from "../../app/auth/redirect";
+} from "@kingsleyweb/bun-api-docs-ui/embed/unauthorized";
 import { RouterProvider, Routes } from "../../app/router";
 import { expectAbsent } from "./assert";
 import { act, page, render, setupDom, visit, waitFor } from "./dom";
-import { metaFixture, problem } from "./fixtures";
+import { metaFixture, problem, uiConfig } from "./fixtures";
 import { FakeSocket, hello, settle } from "./live/fakes";
 import { defaultHandlers, renderApp } from "./renderApp";
 
@@ -139,6 +140,21 @@ describe("unauthorized: API failures", () => {
     expect(calls.map((call) => call.path)).toContain("/summon");
     expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith("/login?returnTo=%2Fjobs%2Fsummon");
+  });
+
+  it("redirects once from the docs section: the embedded viewer screens add no redirect of their own", async () => {
+    visit("/jobs/docs/http");
+    const { calls } = renderApp({
+      config: { unauthorized: TO_LOGIN },
+      handlers: { "GET /openapi.json": UNAUTHORIZED },
+    });
+    await navigated();
+    // Negative control on the source: the document read is what was refused.
+    expect(calls.map((call) => call.path)).toContain("/openapi.json");
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith(
+      "/login?returnTo=%2Fjobs%2Fdocs%2Fhttp",
+    );
   });
 
   it("redirects a 403 too when statuses lists it", async () => {
@@ -267,6 +283,25 @@ describe("unauthorized: API failures", () => {
     }
     expect(assign).not.toHaveBeenCalled();
     expectAbsent(page().queryByTestId("bootstrap-error"));
+  });
+});
+
+describe("parseUiConfig: unauthorized", () => {
+  it("reads a missing field as off, passes a resolved option, and refuses a malformed one", () => {
+    const { unauthorized: _omit, ...withoutField } = uiConfig();
+    expectAbsent(parseUiConfig(withoutField).unauthorized);
+    expect(
+      parseUiConfig(uiConfig({ unauthorized: TO_LOGIN })).unauthorized,
+    ).toEqual(TO_LOGIN);
+    for (const unauthorized of [
+      "/login",
+      { redirectTo: "/login" },
+      { ...TO_LOGIN, statuses: [500] },
+    ]) {
+      expect(() => parseUiConfig({ ...uiConfig(), unauthorized })).toThrow(
+        UiConfigError,
+      );
+    }
   });
 });
 

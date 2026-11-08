@@ -18,6 +18,10 @@ export {
  * `dist/`) is internal: `scripts/build.ts` and the tests import it directly.
  */
 export type { DocsUiConfig, DocsUiTheme } from "./shared/config";
+export type {
+  UiUnauthorized,
+  UiUnauthorizedStatus,
+} from "./shared/unauthorized";
 export {
   DEFAULT_EXTENSION_PREFIXES,
   DOCS_UI_CONFIG_ELEMENT_ID,
@@ -29,4 +33,5 @@ export type {
   DocsUiAuthorizeResult,
   DocsUiDocumentThunk,
   DocsUiOptions,
+  DocsUiUnauthorizedOptions,
 } from "./types";

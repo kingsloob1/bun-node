@@ -1,18 +1,19 @@
 /**
- * `app/auth/redirect.ts` without a DOM: the redirect's decisions against a
+ * `app/unauthorized.ts` without a DOM: the redirect's decisions against a
  * fake location and fetch, and the cache watcher against a real QueryClient.
  */
-import type { RedirectLocation } from "../../app/auth/redirect";
-import { expectUndefined } from "./assert";
+import type { RedirectLocation } from "../../app/unauthorized";
 import type { UiUnauthorized } from "../../lib/shared/unauthorized.ts";
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "bun:test";
+import { DocsUiConfigError, parseDocsUiConfig } from "../../app/config";
 import {
   createUnauthorizedRedirect,
   NO_UNAUTHORIZED_REDIRECT,
   statusOf,
   watchAuthFailures,
-} from "../../app/auth/redirect";
+} from "../../app/unauthorized";
+import { expectAbsent, expectUndefined } from "./assert";
 
 /** `unauthorized: { redirectTo: "/login" }`, resolved. */
 const TO_LOGIN: UiUnauthorized = {
@@ -198,5 +199,41 @@ describe("watchAuthFailures", () => {
     expect(queryClient.getQueryCache().hasListeners()).toBe(false);
     expect(queryClient.getMutationCache().hasListeners()).toBe(false);
     stop();
+  });
+});
+
+describe("parseDocsUiConfig: unauthorized", () => {
+  /** A valid config, as `docsUi()` injects it. */
+  const base = {
+    version: 1,
+    title: "API docs",
+    basePath: "/docs",
+    assetsPath: "/docs/assets",
+    documentUrl: "/docs/document.json",
+    csrfHeader: null,
+    extensions: ["x-bun-common"],
+    theme: "system",
+  };
+
+  it("reads a missing field as off (an older shell, or bun-common's docsRouter, which mirrors the config)", () => {
+    expectAbsent(parseDocsUiConfig(base).unauthorized);
+    expectAbsent(
+      parseDocsUiConfig({ ...base, unauthorized: null }).unauthorized,
+    );
+  });
+
+  it("passes a resolved option through, and refuses a malformed one", () => {
+    expect(
+      parseDocsUiConfig({ ...base, unauthorized: TO_LOGIN }).unauthorized,
+    ).toEqual(TO_LOGIN);
+    for (const unauthorized of [
+      "/login",
+      { redirectTo: "/login" },
+      { ...TO_LOGIN, statuses: [500] },
+    ]) {
+      expect(() => parseDocsUiConfig({ ...base, unauthorized })).toThrow(
+        DocsUiConfigError,
+      );
+    }
   });
 });

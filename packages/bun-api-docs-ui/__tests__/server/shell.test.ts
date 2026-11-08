@@ -104,6 +104,7 @@ describe("the shell", () => {
       csrfHeader: null,
       extensions: ["x-bun-common", "x-bun-jobs"],
       theme: "dark",
+      unauthorized: null,
     });
     expect(shell.config).toEqual(ui.config);
   });

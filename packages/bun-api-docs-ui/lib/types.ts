@@ -5,6 +5,15 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { DocsUiConfig, DocsUiTheme } from "./shared/config";
+import type { UnauthorizedOptions } from "./shared/unauthorized";
+
+/**
+ * Where to send the browser when an authorization check fails, instead of
+ * leaving it on a viewer that reports the failure. See
+ * {@link DocsUiOptions.unauthorized}; the fields are described on
+ * `UnauthorizedOptions`.
+ */
+export type DocsUiUnauthorizedOptions = UnauthorizedOptions;
 
 /** What {@link DocsUiOptions.authorize} is told about the request being decided. */
 export interface DocsUiAuthorizeContext {
@@ -84,6 +93,29 @@ export interface DocsUiOptions {
    * the page.
    */
   authorize?: DocsUiAuthorize;
+  /**
+   * Sends the browser to a sign-in (or any other) page when the caller is not
+   * authorized, instead of showing the failure. Off by default (today's
+   * behaviour: the shell answers a problem, the viewer shows the error).
+   *
+   * With it set, for a status in `statuses` (`[401]` by default):
+   *
+   * - **The shell:** a browser navigation (`GET`/`HEAD` of a page, not a
+   *   bundle file and not `document.json`) that `authorize` denies answers
+   *   `303 See Other` to `redirectTo`. A bundle file, the document, and a
+   *   request that is not a navigation (a script's `fetch`, an `Accept`
+   *   without `text/html`) keep the problem answer.
+   * - **The viewer:** a document read that fails with such a status sends
+   *   the browser to `redirectTo` with `location.assign`, once per page
+   *   load. The try-it panel's calls never do: their 401 is the documented
+   *   API's answer to the request being tried, not the viewer's.
+   *
+   * A denial `middleware` answers itself is not redirected: only
+   * `authorize`'s. The target is fixed here, never read from the request, so
+   * it cannot be an open redirect. bun-jobs-ui's `jobsUi()` takes the same
+   * option.
+   */
+  unauthorized?: DocsUiUnauthorizedOptions;
   /**
    * Middleware run before every route, on the `GET`/`HEAD` requests the
    * viewer answers (session loading, a rate limiter). Runs before

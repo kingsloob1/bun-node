@@ -2,9 +2,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import type { FetchLike } from "./api/client";
 import type { DocsUiConfig } from "../lib/shared/config.ts";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { DocsFetchContext, DocsUiConfigContext } from "./context";
 import { RouterProvider } from "./router";
+import { createUnauthorizedRedirect, watchAuthFailures } from "./unauthorized";
 import { DocsViewer } from "./screens/docs/viewer";
 import { findSearchBox, shortcutFor } from "./shortcuts";
 
@@ -35,9 +36,23 @@ function useSearchShortcut() {
   }, []);
 }
 
-/** The whole viewer: providers, routing, the document. */
+/**
+ * The whole viewer: providers, routing, the document. With
+ * `config.unauthorized`, a failed document read whose status it lists sends
+ * the browser to the sign-in target, once (`unauthorized.ts`). Only the
+ * viewer's own queries reach the cache: the try-it panel's calls do not, so
+ * the documented API's 401 to a tried request never redirects.
+ */
 export function App({ config, queryClient, fetch }: AppProps) {
   useSearchShortcut();
+  const unauthorized = useMemo(
+    () => createUnauthorizedRedirect(config.unauthorized, config.basePath),
+    [config.unauthorized, config.basePath],
+  );
+  useEffect(
+    () => watchAuthFailures(queryClient, unauthorized),
+    [queryClient, unauthorized],
+  );
   return (
     <DocsUiConfigContext value={config}>
       <DocsFetchContext value={fetch ?? null}>

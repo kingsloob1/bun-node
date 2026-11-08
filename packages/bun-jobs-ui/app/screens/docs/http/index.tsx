@@ -87,6 +87,9 @@ export function HttpDocsScreen() {
       csrfHeader: config.csrfHeader,
       extensions: ["x-bun-common", "x-bun-jobs"],
       theme: config.theme,
+      // This app redirects through its own `unauthorized` (AppProviders):
+      // the embedded screens never do, so a failure redirects once.
+      unauthorized: null,
     }),
     [config, path],
   );

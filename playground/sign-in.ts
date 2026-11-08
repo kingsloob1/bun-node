@@ -1,5 +1,7 @@
 /**
- * A pretend sign-in for trying bun-jobs-ui's `unauthorized` by hand.
+ * A pretend sign-in for trying the `unauthorized` option by hand: bun-jobs-ui's
+ * (`/jobs`) and bun-api-docs-ui's (the `docsUi()` viewers at
+ * `/playground/api-docs` and `/playground/ws-docs`).
  *
  * The playground stays open by default: everyone is "signed in". Visiting
  * `/playground/sign-out` sets a cookie that makes the UI's and the API's
@@ -16,7 +18,7 @@
  * is a path on this host, as a real sign-in page must.
  */
 import type { BunHttpAdapter, BunRequest } from "@kingsleyweb/bun-common";
-import type { JobsUiUnauthorizedOptions } from "@kingsleyweb/bun-jobs-ui";
+import type { DocsUiUnauthorizedOptions } from "@kingsleyweb/bun-api-docs-ui";
 
 /** The cookie that marks this browser as signed out. */
 const SIGNED_OUT_COOKIE = "playground-signed-out";
@@ -27,8 +29,8 @@ export const SIGN_IN_PATH = "/playground/sign-in";
 /** The sign-out link's path. */
 export const SIGN_OUT_PATH = "/playground/sign-out";
 
-/** `jobsUi()`'s `unauthorized`: to the sign-in page, carrying `returnTo`. */
-export const playgroundUnauthorized: JobsUiUnauthorizedOptions = {
+/** The `unauthorized` option of `jobsUi()` and both `docsUi()` viewers: to the sign-in page, carrying `returnTo`. */
+export const playgroundUnauthorized: DocsUiUnauthorizedOptions = {
   redirectTo: SIGN_IN_PATH,
 };
 

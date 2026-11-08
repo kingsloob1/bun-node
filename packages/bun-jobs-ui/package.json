@@ -72,6 +72,7 @@
     }
   },
   "dependencies": {
+    "@kingsleyweb/bun-api-docs-ui": "workspace:^",
     "@kingsleyweb/bun-common": "workspace:^"
   },
   "devDependencies": {
@@ -100,7 +101,6 @@
     "react-dom": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:",
-    "typescript": "catalog:",
-    "@kingsleyweb/bun-api-docs-ui": "workspace:^"
+    "typescript": "catalog:"
   }
 }

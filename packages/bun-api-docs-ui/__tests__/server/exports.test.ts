@@ -13,6 +13,9 @@ import type {
   DocsUiDocumentThunk,
   DocsUiOptions,
   DocsUiTheme,
+  DocsUiUnauthorizedOptions,
+  UiUnauthorized,
+  UiUnauthorizedStatus,
 } from "../../lib/index";
 import { describe, expect, it } from "bun:test";
 import * as entry from "../../lib/index";
@@ -42,4 +45,7 @@ export type PublicTypes = [
   DocsUiDocumentThunk,
   DocsUiConfig,
   DocsUiTheme,
+  DocsUiUnauthorizedOptions,
+  UiUnauthorized,
+  UiUnauthorizedStatus,
 ];

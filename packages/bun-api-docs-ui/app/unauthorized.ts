@@ -1,17 +1,24 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { UiUnauthorized } from "../../lib/shared/unauthorized.ts";
+import type { UiUnauthorized } from "../lib/shared/unauthorized.ts";
 import { createContext, use } from "react";
-import { unauthorizedRedirectUrl } from "../../lib/shared/unauthorized.ts";
+import { unauthorizedRedirectUrl } from "../lib/shared/unauthorized.ts";
 
 /**
  * `unauthorized` in the browser: the one place an authorization failure
- * becomes a navigation. Every source reports here: the query and mutation
- * caches (any API call, whichever client made it, through
- * {@link watchAuthFailures}), the live-events socket (`LiveClient`'s
- * `onAuthFailure`), and a crashed screen (`Routes`, through
- * {@link UnauthorizedRedirect.probe}: a screen's chunk the shell's `authorize`
- * refused fails with no status to read). No screen knows about it; a screen
- * whose failure is not redirected shows its message as before.
+ * becomes a navigation, once per page load. Shared by the docs viewer and
+ * bun-jobs-ui (as `@kingsleyweb/bun-api-docs-ui/embed/unauthorized`).
+ *
+ * Sources report here: the query and mutation caches through
+ * {@link watchAuthFailures} (any failed call, whichever client made it: the
+ * viewer's document read; every bun-jobs-ui API call), bun-jobs-ui's live
+ * socket (`LiveClient`'s `onAuthFailure`), and bun-jobs-ui's crashed screens
+ * (through {@link UnauthorizedRedirect.probe}: a lazy screen's chunk the
+ * shell's `authorize` refused fails with no status to read). No screen knows
+ * about it; a failure that is not redirected shows its message as before.
+ *
+ * One per page: the app that owns the page creates it. The embedded docs
+ * screens never do, so bun-jobs-ui's docs section redirects through
+ * bun-jobs-ui's alone.
  */
 
 /** The parts of `window.location` the redirect reads and calls. */
@@ -61,7 +68,7 @@ export function statusOf(error: unknown): number | undefined {
   if (typeof error !== "object" || error === null || !("status" in error)) {
     return undefined;
   }
-  const { status } = error as { status: unknown };
+  const { status } = error;
   return typeof status === "number" ? status : undefined;
 }
 
