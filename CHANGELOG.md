@@ -68,6 +68,12 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
   `updateRepeat`, which writes only while the series is stored (every
   built-in driver has it), and the occurrence such a pass added is removed
   too.
+- **bun-jobs: the file driver's `count()` could miss a job.** It read one
+  state directory after another, so a job moving between two of them
+  mid-count (a promotion, a claim, a retry) was in neither, and a queue about
+  to run a job could count as empty. The unfinished states are now read
+  before and after the finished ones; a moving job may be counted twice for
+  that call, never missed.
 
 ### Upgrading
 
