@@ -38,7 +38,7 @@ import type { WireInput } from "./contract/model";
 import type { RouteDoc } from "./docs/routeDoc";
 import { attachRouteDoc } from "./docs/routeDoc";
 import type { RouterHandler } from "./types/general";
-import type { ReceivedResponses } from "./types/responseTyping";
+import type { ReceivedResponses, ReceivedStream } from "./types/responseTyping";
 import type { ExtractRouteParams } from "./types/routeParams";
 import type {
   EmptyShape,
@@ -369,6 +369,13 @@ function makeVerb<TMount extends string, TMethod extends string>(
  *   JSON, or of the raw bytes); `undefined` for a status declared bodiless;
  *   `{ 200: unknown }` when nothing is declared. A router-wide
  *   `responseOutput` is invisible to the types; declare it on the validator.
+ * - `stream: "sse"` and `events`, when a 2xx status declares an `sse()`
+ *   body: each event's data as a client receives it (`undefined` for a
+ *   `null` event, the `Jsonify` of its schema's wire input, or under
+ *   `data: "text"` the text: its schema's type when that is a string,
+ *   `string` otherwise), so a typed client's `sse()` reads the route. The
+ *   status's `receive` body stays `unknown` (the client reads no body for
+ *   it).
  *
  * The reserved `mount` and `router` properties of the registry contribute no
  * entry.
@@ -390,20 +397,30 @@ type RouteKeyOf<D> =
 /** One entry of the flat map; `never` for a property that is not a definition. */
 type RouteEntryOf<D> =
   D extends RouteDef<string, infer P, infer S, infer X>
-    ? {
-        params: ResolveParams<P, S>;
-        query: ResolveQuery<S>;
-        body: S extends { body: infer B } ? B : undefined;
-        responses: S extends { responses: infer R } ? R : { 200: unknown };
-        send: SendView<P, RequestSchemasOf<X>>;
-        receive: X extends {
-          responses: infer RS;
-          responseOutput: infer O;
-        }
-          ? ReceivedResponses<RS, O>
-          : { 200: unknown };
-      }
+    ? WithStream<
+        {
+          params: ResolveParams<P, S>;
+          query: ResolveQuery<S>;
+          body: S extends { body: infer B } ? B : undefined;
+          responses: S extends { responses: infer R } ? R : { 200: unknown };
+          send: SendView<P, RequestSchemasOf<X>>;
+          receive: X extends {
+            responses: infer RS;
+            responseOutput: infer O;
+          }
+            ? ReceivedResponses<RS, O>
+            : { 200: unknown };
+        },
+        X extends { responses: infer RS } ? ReceivedStream<RS> : EmptyShape
+      >
     : never;
+
+/**
+ * An entry with an event stream's `stream` and `events` added when its 2xx
+ * response is an `sse()` declaration, and left as it is otherwise (so a
+ * route that streams no events keeps exactly the shape it had).
+ */
+type WithStream<E, T> = [keyof T] extends [never] ? E : E & T;
 
 /** The request schemas a validator's `__schemas` phantom recorded; none for anything else. */
 type RequestSchemasOf<X> = X extends { request: infer S } ? S : EmptyShape;

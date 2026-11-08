@@ -13,7 +13,12 @@
  */
 import type { Client, Jsonify, Result } from "../lib/index";
 import type { RoutesOf } from "@kingsleyweb/bun-common";
-import { defineRoutes, validate } from "@kingsleyweb/bun-common";
+import {
+  defineRoutes,
+  sse as declareSse,
+  validate,
+} from "@kingsleyweb/bun-common";
+import { sse } from "../lib/sse";
 import { z } from "zod";
 
 type Equal<X, Y> =
@@ -142,6 +147,47 @@ async function coercedHeaders() {
   void tenantApi.get("/tenants/", { headers: { "x-tenant": 1 } });
 }
 
+// 7. An event stream: `RoutesOf` marks it `stream: "sse"` with its events,
+// so `sse()` reads it typed, and the verbs do not offer it.
+export const feeds = defineRoutes("/feeds", (r) => ({
+  ticks: r.get(
+    "/:id",
+    validate(
+      { params: z.object({ id: z.string() }) },
+      {
+        responses: {
+          200: declareSse({
+            tick: z.object({ n: z.number() }),
+            gap: null,
+          }),
+        },
+      },
+    ),
+    (_req, res) => res.status(200).send(""),
+  ),
+}));
+declare const feedApi: Client<RoutesOf<typeof feeds>>;
+async function eventStreams() {
+  const stream = sse(feedApi, "GET /feeds/:id", { params: { id: "1" } });
+  for await (const event of stream) {
+    if (event.event === "tick") {
+      type _tick = Expect<Equal<typeof event.data, { n: number }>>;
+    } else {
+      type _gap = Expect<Equal<typeof event.data, undefined>>;
+    }
+  }
+  stream.on("$gap", (_data) => {
+    type _gapData = Expect<Equal<typeof _data, undefined>>;
+  });
+  // @ts-expect-error -- no such event
+  stream.on("tock", () => {});
+  // @ts-expect-error -- an event stream is read with sse(), not a verb
+  void feedApi.get("/feeds/:id", { params: { id: "1" } });
+  // @ts-expect-error -- and its params are the validator's
+  void sse(feedApi, "GET /feeds/:id", { params: { id: 1 } });
+}
+
 void inferred;
 void views;
 void coercedHeaders;
+void eventStreams;

@@ -19,7 +19,10 @@
  *   generated body is still assignable to the inferred one.
  * - **An SSE status** is `undefined` in the generated map (the client reads
  *   no body for an event stream; `sse()` does, PR-S1) and `unknown` in
- *   `RoutesOf`.
+ *   `RoutesOf`. The stream itself agrees: both mark the route `stream:
+ *   "sse"` and type its `events` alike, from `x-sse-events` and
+ *   `x-sse-data` on one side and the `sse()` declaration on the other (a
+ *   text event's data the text, its schema's type when that is a string).
  * - **A form's body** (multipart, urlencoded) also takes a pre-built
  *   `FormData` or `URLSearchParams` in the generated map (passed through,
  *   unchecked); `RoutesOf` has the fields alone. The fields agree.
@@ -31,7 +34,7 @@
 import type { RoutesOf } from "@kingsleyweb/bun-common";
 import type { Result } from "../../lib/index";
 import type { api } from "./fixtures/app";
-import type { Routes as Generated } from "./fixtures/app.gen";
+import type { manifest, Routes as Generated } from "./fixtures/app.gen";
 
 type Equal<X, Y> =
   (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
@@ -83,7 +86,10 @@ type _send = Expect<Equal<SendParity[Key], true>>;
 // The receiver views agree outright where nothing differs on purpose.
 type Plain = Exclude<
   Key,
-  "GET /api/users/:id" | "POST /api/users" | "GET /api/users/:id/events"
+  | "GET /api/users/:id"
+  | "POST /api/users"
+  | "GET /api/users/:id/events"
+  | "GET /api/users/:id/log"
 >;
 type ReceiveParity = { [K in Plain]: Mutual<GenReceive<K>, InfReceive<K>> };
 type _receive = Expect<Equal<ReceiveParity[Plain], true>>;
@@ -137,6 +143,44 @@ type _sseNarrower = Expect<
   >
 >;
 
+// Event streams: the same routes are marked, and their events agree.
+type GenStreams = {
+  [K in Key]: Generated[K] extends { stream: "sse" } ? K : never;
+}[Key];
+type InfStreams = {
+  [K in Key]: Inferred[K] extends { stream: "sse" } ? K : never;
+}[Key];
+type _streams = Expect<
+  Equal<GenStreams, "GET /api/users/:id/events" | "GET /api/users/:id/log">
+>;
+type _sameStreams = Expect<Equal<GenStreams, InfStreams>>;
+/** A stream's events, generated or inferred, by key. */
+type EventsAt<M, K> = K extends keyof M
+  ? M[K] extends { events: infer E }
+    ? E
+    : never
+  : never;
+type EventParity = {
+  [K in GenStreams]: Mutual<EventsAt<Generated, K>, EventsAt<Inferred, K>>;
+};
+type _events = Expect<Equal<EventParity[GenStreams], true>>;
+// Spelled out: JSON data (the default), and text data from `x-sse-data`.
+type _jsonEvents = Expect<
+  Equal<
+    EventsAt<Inferred, "GET /api/users/:id/events">,
+    { progress: { percent: number }; done: { ok: boolean } }
+  >
+>;
+type _textEvents = Expect<
+  Equal<
+    EventsAt<Generated, "GET /api/users/:id/log">,
+    { count: string; end: undefined; level: "info" | "warn"; line: string }
+  >
+>;
+type _sseDataManifest = Expect<
+  Equal<(typeof manifest)["GET /api/users/:id/log"]["sseData"], "text">
+>;
+
 // Pinned: a form's body also takes a pre-built FormData / URLSearchParams in
 // the generated map; the fields alone are what RoutesOf has.
 type _uploadPrebuilt = Expect<
@@ -184,6 +228,18 @@ type _download = Expect<
 >;
 
 // Negative controls: the comparisons can fail.
+type CountAsNumber = Mutual<
+  EventsAt<Inferred, "GET /api/users/:id/log">,
+  { count: number; end: undefined; level: "info" | "warn"; line: string }
+>;
+// @ts-expect-error -- a text event's coerced number arrives as text
+type _countAsNumber = Expect<CountAsNumber>;
+type EventsCrossed = Mutual<
+  EventsAt<Generated, "GET /api/users/:id/events">,
+  EventsAt<Inferred, "GET /api/users/:id/log">
+>;
+// @ts-expect-error -- two streams' events differ
+type _eventsCrossed = Expect<EventsCrossed>;
 type StreamAsValue = Mutual<
   GenReceive<"GET /api/exports/users">[200],
   { id: string; name: string }

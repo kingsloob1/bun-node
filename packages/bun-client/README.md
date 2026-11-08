@@ -90,8 +90,10 @@ There are three ways to get one:
   generate` (the default, plan §3.4): [below](#generating-the-map-bun-client-generate).
 - **Infer it** from a `defineRoutes` registry with bun-common's `RoutesOf`:
   `createClient<RoutesOf<typeof users>>()`. The client reads its `send` and
-  `receive` views (PR-M1), the same wire side the generator writes; a test
-  holds the two equal for a fixture app.
+  `receive` views (PR-M1), the same wire side the generator writes, and an
+  event stream's `stream: "sse"` and `events` (from the route's `sse()`
+  declaration), which `sse()` reads; a test holds the two equal for a
+  fixture app.
 - **Write it by hand**, in the shape above. `query: Record<never, never>`
   declares no query (any key is then an error), and `body: undefined` declares
   no body. A part left out is undeclared, and loosely typed.
@@ -102,7 +104,8 @@ Types do not exist at run time, so a few facts need a small object beside
 the map: each route's `operationId`, for `api.op`, its declared statuses, for
 `undeclaredStatus`, its cache tags, for the query layer
 ([below](#the-query-layer-query)), and how its bodies travel (`bodyType`
-and `chunks`, [below](#bodies-beyond-json)). The generator writes it beside the map. A
+and `chunks`, [below](#bodies-beyond-json); `sseData`,
+[below](#server-sent-events-sse)). The generator writes it beside the map. A
 hand-written one is checked against the map:
 
 ```ts
@@ -312,7 +315,12 @@ export const manifest = {
   `x-sse-events` reads no body through the HTTP call (`undefined`); the entry
   is marked `stream: "sse"` and its `events` are typed by name, for `sse()`
   ([below](#server-sent-events-sse)), which the verbs then refuse; with
-  `--zod`, the zod module gains the route's `events` schemas.
+  `--zod`, the zod module gains the route's `events` schemas. Under
+  `x-sse-data: "text"` (bun-common's `sse(events, { data: "text" })`) an
+  event's data is the text as it arrives: typed by its schema when that
+  describes strings (a `z.enum`), `string` otherwise (a `z.coerce.number()`
+  still arrives as text), checked the same way, and the manifest's
+  `sseData: "text"` has `sse()` deliver it undecoded.
 - **Bodies by media type**: JSON as its schema; `multipart/form-data` as
   `FormData` and `application/x-www-form-urlencoded` as `URLSearchParams`
   (typed fields come with PR-C9); anything else as
@@ -1180,7 +1188,8 @@ pre-built `FormData` or `URLSearchParams` neither.
 An event stream is a route of the map marked `stream: "sse"`, its events by
 name in `events`, each its data's wire type (`undefined` for one that
 carries none). The generator writes both from the document's `x-sse-events`
-(bun-common's `sse({ … })` declaration), and `--zod` the events' schemas.
+and `x-sse-data` (bun-common's `sse({ … }, { data })` declaration), and
+`--zod` the events' schemas; `RoutesOf` reads the same declaration.
 `sse()` reads it (the plan's [`sse.md`](../../docs/plans/typed-client/sse.md)):
 
 ```ts
@@ -1241,8 +1250,9 @@ await stream.closed;                        // settles when it ends
   discards the event and fires `on("$invalid", error)`; `"throw"` ends the
   stream with the `ValidationError` (`target: "data"`, `key` the event's
   name). `data: "text"` delivers each event's data as its text (bun-common's
-  `sse(events, { data: "text" })`); by default it is parsed as JSON, and
-  data that does not parse is delivered as its text.
+  `sse(events, { data: "text" })`); by default it is the manifest's
+  `sseData` (which the generator writes from `x-sse-data`), else parsed as
+  JSON, and data that does not parse is delivered as its text.
 - **Backpressure.** The iterator reads the body only as fast as it is
   consumed; listeners read eagerly and drop nothing (an iterator beside
   them buffers what it has not taken).

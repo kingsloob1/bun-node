@@ -121,6 +121,62 @@ describe("the generated map drives the client through the app", () => {
     expect(health).toMatchObject({ ok: true, status: 200, data: { ok: true } });
   });
 
+  it("reads a text event stream as text, from the manifest's x-sse-data, checked by the generated schemas (control: without the manifest it is JSON)", async () => {
+    const issues: unknown[] = [];
+    const checked = createClient<Routes>({
+      baseUrl: "http://app.test",
+      fetch: (request) => router.fetch(request),
+      manifest,
+      retry: false,
+      mode: "development",
+      schemas: () => import("./fixtures/app.zod-mini.gen"),
+      logger: { ...console, warn: (...args: unknown[]) => issues.push(args) },
+    });
+    const read = async (client: typeof api, data?: "json") => {
+      const events: { event: string; data: unknown }[] = [];
+      const stream = sse(client, "GET /api/users/:id/log", {
+        params: { id: "42" },
+        reconnect: false,
+        ...(data === undefined ? {} : { data }),
+      });
+      for await (const event of stream) {
+        if (event.event === "count") {
+          // `z.coerce.number()` under `data: "text"`: the text, typed so.
+          const _count: Equal<typeof event.data, string> = true;
+          void _count;
+        }
+        if (event.event === "level") {
+          const _level: Equal<typeof event.data, "info" | "warn"> = true;
+          void _level;
+        }
+        events.push({ event: event.event, data: event.data });
+      }
+      return events;
+    };
+    expect(await read(checked)).toEqual([
+      { event: "line", data: "{not json}" },
+      { event: "count", data: "42" },
+      { event: "level", data: "warn" },
+      { event: "end", data: undefined },
+    ]);
+    // Every event passed the generated (text) checks.
+    expect(issues).toEqual([]);
+    // Control: a client without the manifest decodes the data as JSON.
+    const bare = createClient<Routes>({
+      baseUrl: "http://app.test",
+      fetch: (request) => router.fetch(request),
+      retry: false,
+    });
+    expect((await read(bare))[1]).toEqual({ event: "count", data: 42 });
+    // Control: the checks ran; read as JSON (the option wins over the
+    // manifest), the unparsable line and the number fail them.
+    expect((await read(checked, "json"))[1]).toEqual({
+      event: "count",
+      data: 42,
+    });
+    expect(issues.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("throws for a status the manifest does not declare (§4.3)", async () => {
     // Without the tenant header the server's validator answers 400, which
     // the route does not declare.

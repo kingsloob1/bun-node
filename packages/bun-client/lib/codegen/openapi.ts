@@ -19,7 +19,10 @@
  * client reads through `Jsonify`. `x-bun-errors` narrows the `code` of every
  * declared error body (§4.3); `x-bun-cache` becomes `cache`; a response
  * declaring `x-sse-events` (or served as `text/event-stream`) marks the entry
- * `stream: "sse"` with its `events` by name (`sse.md` S-D1).
+ * `stream: "sse"` with its `events` by name (`sse.md` S-D1); under
+ * `x-sse-data: "text"` each event's data is the text as it arrives (its
+ * schema's type when that describes strings, `string` otherwise), and the
+ * manifest's `sseData: "text"` tells `sse()` to deliver it undecoded.
  *
  * The output is deterministic: routes sorted by path then method, components
  * by name, statuses numerically, events by name; properties keep the
@@ -475,6 +478,8 @@ export function generateRoutes(
     }
     if (built.bodyType !== undefined)
       facts.push(`bodyType: ${quote(built.bodyType)}`);
+    if (built.sseData !== undefined)
+      facts.push(`sseData: ${quote(built.sseData)}`);
     if (built.chunks !== undefined)
       facts.push([
         "chunks: ",
@@ -721,6 +726,8 @@ interface BuiltEntry {
   readonly bodyType?: "multipart" | "urlencoded";
   /** The streamed statuses, by framing. */
   readonly chunks?: readonly (readonly [number, "ndjson" | "raw"])[];
+  /** `"text"` when the event stream's data is text (`x-sse-data`). */
+  readonly sseData?: "text";
 }
 
 /** Builds one route's entry from its operations (two when an optional param documents as two paths). */
@@ -919,6 +926,9 @@ function buildEntry(
       ? {}
       : { bodyType: requestBody.bodyType }),
     ...(responses.chunks === undefined ? {} : { chunks: responses.chunks }),
+    ...(responses.stream && responses.sseData !== undefined
+      ? { sseData: responses.sseData }
+      : {}),
   };
 }
 
@@ -1051,6 +1061,8 @@ interface BuiltResponses {
   readonly stream: boolean;
   /** The events by name, from `x-sse-events`. */
   readonly events?: TsType;
+  /** `"text"` when the events' data is text (`x-sse-data`), for the manifest. */
+  readonly sseData?: "text";
   /** The statuses whose body streams, by framing, for the manifest. */
   readonly chunks?: readonly (readonly [number, "ndjson" | "raw"])[];
 }
@@ -1079,6 +1091,7 @@ function buildResponses(
   const chunks: [number, "ndjson" | "raw"][] = [];
   let stream = false;
   let events: TsType | undefined;
+  let sseData: "text" | undefined;
   let narrowed = false;
   let unnumbered: unknown;
 
@@ -1105,7 +1118,10 @@ function buildResponses(
     const read = responseType(raw[String(status)], context, at, warn);
     if (read.framing !== undefined) chunks.push([status, read.framing]);
     let type = read.type;
-    if (read.events !== undefined) events = read.events;
+    if (read.events !== undefined) {
+      events = read.events;
+      sseData = read.sseData;
+    }
     if (read.stream && status >= 200 && status < 300) stream = true;
     if (codes.length > 0 && (status < 200 || status >= 300)) {
       const result = withCodes(type, read.schema, codes, context);
@@ -1142,6 +1158,7 @@ function buildResponses(
       },
       stream: read.stream,
       ...(read.events === undefined ? {} : { events: read.events }),
+      ...(read.sseData === undefined ? {} : { sseData: read.sseData }),
     };
   }
   return {
@@ -1149,6 +1166,7 @@ function buildResponses(
     statuses,
     stream,
     ...(events === undefined ? {} : { events }),
+    ...(sseData === undefined ? {} : { sseData }),
     ...(chunks.length === 0 ? {} : { chunks }),
   };
 }
@@ -1210,6 +1228,8 @@ interface ReadResponse {
   readonly stream: boolean;
   /** Its events, from `x-sse-events`. */
   readonly events?: TsType;
+  /** `"text"` when its events' data is text (`x-sse-data`); JSON otherwise. */
+  readonly sseData?: "text";
   /** How its body streams, when it does (`x-bun-chunks`, an NDJSON media type). */
   readonly framing?: "ndjson" | "raw";
 }
@@ -1235,6 +1255,7 @@ function responseType(
   let schema: unknown;
   let stream = false;
   let events: TsType | undefined;
+  let sseData: "text" | undefined;
   let framing: "ndjson" | "raw" | undefined;
   for (const [mediaType, media] of Object.entries(response.content)) {
     const kind = mediaKind(mediaType);
@@ -1267,6 +1288,16 @@ function responseType(
       // entry's.
       stream = true;
       types.push(keyword("undefined"));
+      // How each event's data decodes (bun-common's `sse({ … }, { data })`):
+      // as text, an event arrives as the string sent, so a schema that
+      // describes strings types it and any other is `string`, as a header's.
+      const data = isRecord(mediaSchema)
+        ? mediaSchema["x-sse-data"]
+        : undefined;
+      if (data !== undefined && data !== "json" && data !== "text")
+        warn(at, "`x-sse-data` is neither `json` nor `text`; read as `json`");
+      const text = data === "text";
+      if (text) sseData = "text";
       if (declared !== undefined)
         events = {
           kind: "object",
@@ -1279,11 +1310,13 @@ function responseType(
                 // A `null` event carries no data (bun-common's `sse()`).
                 declared[name] === null
                   ? keyword("undefined")
-                  : schemaToType(
-                      declared[name],
-                      context,
-                      `${at} event "${name}"`,
-                    ),
+                  : text && !isStringSchema(context.document, declared[name])
+                    ? keyword("string")
+                    : schemaToType(
+                        declared[name],
+                        context,
+                        `${at} event "${name}"`,
+                      ),
             })),
         };
     } else if (kind === "json") {
@@ -1304,6 +1337,7 @@ function responseType(
     stream,
     ...(schema === undefined ? {} : { schema }),
     ...(events === undefined ? {} : { events }),
+    ...(sseData === undefined ? {} : { sseData }),
     ...(framing === undefined ? {} : { framing }),
   };
 }

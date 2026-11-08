@@ -33,7 +33,8 @@
  *   numeric status: a JSON body's schema, an NDJSON stream's line schema,
  *   `z.string()` for a text one, `null` for none; and an event stream's
  *   `events` (`x-sse-events`): each event's data schema by name, `null` for
- *   one that carries none (`sse.md` §3.3). A part, or a status, with
+ *   one that carries none (`sse.md` §3.3), and under `x-sse-data: "text"`
+ *   checked as text, as a header is (below). A part, or a status, with
  *   nothing to check (a raw body, an event stream's status, a binary
  *   download, a raw stream) is left out. `responseHeaders` by numeric
  *   status, from the headers each declares (`Content-Type` and
@@ -827,7 +828,8 @@ function parameterSchemaOf(param: Record<string, unknown>): unknown {
  * A header value's schema: a header crosses as a string, so a schema that
  * describes strings is checked as it is, and any other (`integer`,
  * `boolean`, none) as `z.string()`: looser than the document, never
- * stricter (`./headers`).
+ * stricter (`./headers`). A text event's data (`x-sse-data: "text"`) is
+ * checked the same way.
  */
 function headerSchema(schema: unknown, walk: Walk, at: string): Expr {
   return isStringSchema(walk.context.document, schema)
@@ -1021,19 +1023,29 @@ function routeSchemas(
           (schema): schema is Record<string, unknown> =>
             isRecord(schema) && isRecord(schema["x-sse-events"]),
         )?.["x-sse-events"] as Record<string, unknown> | undefined;
+      // Under `x-sse-data: "text"` an event's data arrives as text, so it
+      // is checked as a header is: by a schema that describes strings, else
+      // as `z.string()` (looser than the document, never stricter).
+      const text = media.some(
+        ([, entry]) =>
+          isRecord(entry) &&
+          isRecord(entry.schema) &&
+          entry.schema["x-sse-data"] === "text",
+      );
       if (events === undefined && declared !== undefined && status < 300)
         events = Object.keys(declared)
           .sort()
-          .map((name) => [
-            name,
-            declared[name] === null
-              ? atom("null", true)
-              : convert(
-                  declared[name],
-                  walk,
-                  `${key} response ${status} event "${name}"`,
-                ),
-          ]);
+          .map((name) => {
+            const at = `${key} response ${status} event "${name}"`;
+            return [
+              name,
+              declared[name] === null
+                ? atom("null", true)
+                : text
+                  ? headerSchema(declared[name], walk, at)
+                  : convert(declared[name], walk, at),
+            ];
+          });
       continue;
     }
     if (kinds.size !== 1) continue;

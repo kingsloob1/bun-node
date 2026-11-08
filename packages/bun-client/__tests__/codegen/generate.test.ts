@@ -82,7 +82,7 @@ describe("golden outputs", () => {
       documentWarnings: loaded.warnings,
     });
     expect(result.code).toBe(await text("app.gen.ts"));
-    expect(result.routes).toBe(12);
+    expect(result.routes).toBe(13);
   });
 });
 
@@ -362,5 +362,105 @@ describe("route keys", () => {
       },
     });
     expect(code).toContain("    params: {\n      path: string[];\n    };");
+  });
+});
+
+describe("event streams' x-sse-data (sse.md §3.1, a PR-S1 follow-up)", () => {
+  /** A one-route document whose 200 is an event stream with `extra` on its schema. */
+  const streamDocument = (extra: Record<string, unknown>) => ({
+    openapi: "3.1.0",
+    info: { title: "t", version: "1" },
+    paths: {
+      "/s": {
+        get: {
+          responses: {
+            "200": {
+              description: "events",
+              content: {
+                "text/event-stream": {
+                  schema: {
+                    type: "string",
+                    ...extra,
+                    "x-sse-events": {
+                      count: { type: "integer" },
+                      level: { type: "string", enum: ["info", "warn"] },
+                      line: { type: "string" },
+                      user: {
+                        type: "object",
+                        properties: { id: { type: "string" } },
+                        required: ["id"],
+                      },
+                      end: null,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  /** The generated entry's `events` block. */
+  const eventsOf = (code: string) =>
+    code.slice(code.indexOf("events: {"), code.indexOf("};\n  };"));
+
+  it('types text data as the text: a string schema as declared, any other as `string`; the manifest says `sseData: "text"`', () => {
+    const { code, warnings } = generateRoutes(
+      streamDocument({ "x-sse-data": "text" }),
+    );
+    expect(warnings).toEqual([]);
+    expect(eventsOf(code)).toBe(
+      [
+        "events: {",
+        "      count: string;",
+        "      end: undefined;",
+        '      level: "info" | "warn";',
+        "      line: string;",
+        "      user: string;",
+        "    ",
+      ].join("\n"),
+    );
+    expect(code).toContain('"GET /s": { statuses: [200], sseData: "text" },');
+  });
+
+  it("types JSON data (`json`, or none) by its schema, and writes nothing to the manifest (control for the above)", () => {
+    for (const extra of [{ "x-sse-data": "json" }, {}]) {
+      const { code, warnings } = generateRoutes(streamDocument(extra));
+      expect(warnings).toEqual([]);
+      expect(eventsOf(code)).toContain("      count: number;\n");
+      expect(eventsOf(code)).toContain("      user: {\n        id: string;\n");
+      expect(code).toContain('"GET /s": { statuses: [200] },');
+      expect(code).not.toContain("sseData");
+    }
+  });
+
+  it("warns for an x-sse-data it does not know, and reads it as JSON", () => {
+    const { code, warnings } = generateRoutes(
+      streamDocument({ "x-sse-data": "binary" }),
+    );
+    expect(warnings).toEqual([
+      {
+        at: "GET /s response 200",
+        message: "`x-sse-data` is neither `json` nor `text`; read as `json`",
+      },
+    ]);
+    expect(eventsOf(code)).toContain("      count: number;\n");
+    expect(code).not.toContain("sseData");
+  });
+
+  it("checks text data as text in the zod module: a string schema as declared, any other as `z.string()`", () => {
+    const text = generateRoutes(streamDocument({ "x-sse-data": "text" }), {
+      zod: { flavour: "mini", routesModule: "./api.gen" },
+    }).zod?.code;
+    const json = generateRoutes(streamDocument({}), {
+      zod: { flavour: "mini", routesModule: "./api.gen" },
+    }).zod?.code;
+    expect(text).toContain("count: z.string(),");
+    expect(text).toContain('level: z.enum(["info", "warn"]),');
+    expect(text).toContain("user: z.string(),");
+    // Control: as JSON, the schemas are the document's.
+    expect(json).toContain("count: z.int(),");
+    expect(json).toContain("user: z.looseObject({");
   });
 });
