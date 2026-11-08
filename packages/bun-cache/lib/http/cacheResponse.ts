@@ -415,6 +415,37 @@ interface CaptureHandle {
   onTransformed: (() => void) | undefined;
 }
 
+/** A capture's write, tracked under its path's tag until it settles. */
+interface TrackedWrite {
+  /** Settles when the write has (or `wait` has passed). */
+  settled: Promise<void>;
+  /** The `set` count at its key's last landing; `undefined` until one, infinite when its key is unknown. */
+  landedAt: number | undefined;
+}
+
+/** The set `map` holds at `key`, created empty when there is none. */
+function setIn<K, V>(map: Map<K, Set<V>>, key: K): Set<V> {
+  let set = map.get(key);
+  if (set === undefined) {
+    set = new Set();
+    map.set(key, set);
+  }
+  return set;
+}
+
+/** Removes `value` from `set`, and `set` from `map` at `key` once it is empty (and still the one there). */
+function dropFrom<K, V>(
+  map: Map<K, Set<V>>,
+  key: K,
+  set: Set<V>,
+  value: V,
+): void {
+  set.delete(value);
+  if (set.size === 0 && map.get(key) === set) {
+    map.delete(key);
+  }
+}
+
 /** A background replay a middleware is waiting on, by its id. */
 interface Replay {
   /** The base key the replayed request must produce. */
@@ -654,12 +685,49 @@ export function cacheResponse(
    * path runs again once they have settled: a plain `set` (an uncoalesced
    * miss) is fenced only against invalidations after it was issued, and a
    * streamed body's is issued when the stream ends, so without the second
-   * pass it could put back what the invalidation just dropped.
+   * pass it could put back what the invalidation just dropped. The second
+   * pass runs only when one of them stored after the invalidation began:
+   * one that had already landed was dropped by the first (its promise
+   * settles a few microtasks after the store, which once made an
+   * invalidation in that gap run, and emit `invalidate`, twice).
    */
-  const writing = new Map<string, Set<Promise<void>>>();
+  const writing = new Map<string, Set<TrackedWrite>>();
 
-  /** Tracks `settled`, a capture's write, under `tag` until it settles or `wait` passes. */
-  const trackWrite = (tag: string, settled: Promise<void>): void => {
+  /** The tracked writes by the key they store at, for {@link landings}. */
+  const writingByKey = new Map<string, Set<TrackedWrite>>();
+
+  /**
+   * Counts the cache's `set` events for keys a tracked write stores at: the
+   * store itself, synchronous with it, so it orders a landing against the
+   * start of an invalidation exactly. Another write to the same key marks
+   * the tracked one too, which only ever adds a second pass.
+   */
+  let landings = 0;
+  /** Whether the `set` listener is on: added with the first tracked write, so building the middleware reads nothing of the cache. */
+  let watchingSets = false;
+  const watchSets = (): void => {
+    if (watchingSets) {
+      return;
+    }
+    watchingSets = true;
+    cache.on("set", ({ key }) => {
+      const writes = writingByKey.get(key);
+      if (writes === undefined) {
+        return;
+      }
+      landings++;
+      for (const write of writes) {
+        write.landedAt = landings;
+      }
+    });
+  };
+
+  /** Tracks `settled`, a capture's write to `key`, under `tag` until it settles or `wait` passes. */
+  const trackWrite = (
+    tag: string,
+    key: string | undefined,
+    settled: Promise<void>,
+  ): void => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const capped = Promise.race([
       settled,
@@ -670,17 +738,22 @@ export function cacheResponse(
     ]).finally(() => {
       clearTimeout(timer);
     });
-    let writes = writing.get(tag);
-    if (writes === undefined) {
-      writes = new Set();
-      writing.set(tag, writes);
+    // Without its key a landing cannot be seen: always run the second pass.
+    const write: TrackedWrite = {
+      settled: capped,
+      landedAt: key === undefined ? Number.POSITIVE_INFINITY : undefined,
+    };
+    if (key !== undefined) {
+      watchSets();
     }
-    const own = writes;
-    own.add(capped);
+    const own = setIn(writing, tag);
+    own.add(write);
+    const byKey = key === undefined ? undefined : setIn(writingByKey, key);
+    byKey?.add(write);
     void capped.then(() => {
-      own.delete(capped);
-      if (own.size === 0 && writing.get(tag) === own) {
-        writing.delete(tag);
+      dropFrom(writing, tag, own, write);
+      if (key !== undefined && byKey !== undefined) {
+        dropFrom(writingByKey, key, byKey, write);
       }
     });
   };
@@ -688,10 +761,12 @@ export function cacheResponse(
   /**
    * Invalidates `tags`, tracked in {@link pending} until it settles; and
    * again, in the background, once the writes in flight under them have
-   * settled (see {@link writing}). The caller waits for the first pass only.
+   * settled, if one of them stored after this began (see {@link writing}).
+   * The caller waits for the first pass only.
    */
   const invalidateTracked = (tags: readonly string[]): Promise<void> => {
-    const inflight: Promise<void>[] = [];
+    const began = landings;
+    const inflight: TrackedWrite[] = [];
     for (const tag of tags) {
       for (const write of writing.get(tag) ?? []) {
         inflight.push(write);
@@ -702,9 +777,15 @@ export function cacheResponse(
       // cache's throw must not become an unhandled rejection here.
     });
     if (inflight.length > 0) {
-      void Promise.all([done, ...inflight])
+      void Promise.all([done, ...inflight.map((write) => write.settled)])
         .then(async () => {
-          await cache.invalidateTags(tags);
+          if (
+            inflight.some(
+              (write) => write.landedAt !== undefined && write.landedAt > began,
+            )
+          ) {
+            await cache.invalidateTags(tags);
+          }
         })
         .catch(() => {
           // Reported by the failure policy, as above.
@@ -839,11 +920,14 @@ export function cacheResponse(
    * a streamed body is swapped for a copying tap, whose end reaches the
    * client only once the promise `onOutcome` returns has settled (at most
    * `wait`): return the write, so a request after the end finds it.
+   * `key` is the key the write stores at, so an invalidation can tell
+   * whether it landed before it began (see {@link writing}).
    */
   const capture = (
     exchange: Exchange,
     onOutcome: (outcome: Outcome) => Promise<unknown> | undefined,
     stale?: StaleEntry,
+    key?: string,
   ): CaptureHandle => {
     const { req, res } = exchange;
     /** Settles once the outcome has been reported and what `onOutcome` returned has settled. */
@@ -891,7 +975,7 @@ export function cacheResponse(
           }
           // From here the outcome is always reported: an invalidation of
           // the path waits for what it writes.
-          trackWrite(exchange.tag, handled.promise);
+          trackWrite(exchange.tag, key, handled.promise);
           const now = Date.now();
           if (
             stale !== undefined &&
@@ -1192,6 +1276,7 @@ export function cacheResponse(
       (outcome) =>
         outcome.ok ? storeOutcome(exchange, key, variant, outcome) : undefined,
       stale,
+      key,
     );
     armHardTimeout(exchange, handle, stale);
     exchange.next();
@@ -1431,6 +1516,7 @@ export function cacheResponse(
         return undefined;
       },
       stale,
+      key,
     );
     armHardTimeout(exchange, handle, stale, () => {
       if (!settled && stale !== undefined) {
@@ -1696,10 +1782,15 @@ export function cacheResponse(
     replay.exchange = exchange;
     // No wait at a buffered stream's end here: the replay's load, which
     // holds the flight, is what reads that end.
-    replay.handle = capture(exchange, (outcome) => {
-      replay.settle(outcome);
-      return undefined;
-    });
+    replay.handle = capture(
+      exchange,
+      (outcome) => {
+        replay.settle(outcome);
+        return undefined;
+      },
+      undefined,
+      key,
+    );
     exchange.next();
   };
 

@@ -614,12 +614,9 @@ describe("purging a CDN by the same tags (the README recipe)", () => {
       .get("surrogate-key")!
       .split(" ");
     await written;
-    // The miss's write stays tracked for a few microtasks after its `set`
-    // event, and an invalidation of the path in that window runs a second
-    // time once it settles, a fourth event. `invalidateTags` below usually
-    // outlasts the window, but not when it skips its 1 ms wait for the clock
-    // (under load the clock has often moved already): let the write settle.
-    await new Promise((resolve) => setImmediate(resolve));
+    // The write has landed, so the invalidations below run once each: no
+    // second pass, and no fourth event (methods.test.ts, "one invalidation,
+    // one pass").
     await f.cache.invalidateTags(["post:7"]);
     await f.pages.invalidate("/posts/7");
     await f.router.fetch("/posts/7", { method: "DELETE" });
