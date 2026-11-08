@@ -35,6 +35,7 @@ import type {
   ResponseOutputMode,
   ResponseValidationMode,
 } from "./responseValidation";
+import type { ThrottleHandler, ThrottleOptions } from "./throttle";
 import type { ViewEngine } from "./views";
 import { EventEmitter } from "node:events";
 import { STATUS_CODES } from "node:http";
@@ -423,6 +424,19 @@ export class BunHttpAdapter<
        * `request.clientIpHeader`.
        */
       clientIpHeader?: string;
+      /**
+       * Throttles every route: a `throttle()` built from these options (or
+       * the `throttle()` middleware given) runs first, ahead of every route,
+       * every middleware and the not-found handlers, so a request no route
+       * handles (a burst of 404s) counts too. Keyed on `req.ip` by default.
+       * The body is read before it unless `request.deferBody` is set, in
+       * which case a refused request's body is never read. A route's own
+       * `throttle()` overrides a limit of the same name, and
+       * `skipThrottle()` opts a route out. Forwarded to the underlying
+       * {@link BunRouter} (it wins over `router.throttle`); see that option.
+       * Default: none.
+       */
+      throttle?: ThrottleHandler | ThrottleOptions;
     },
   ) {
     const websocketOptions = options?.websocket || {};
@@ -455,6 +469,9 @@ export class BunHttpAdapter<
         : {}),
       ...(trustProxy !== undefined ? { trustProxy } : {}),
       ...(clientIpHeader !== undefined ? { clientIpHeader } : {}),
+      ...(options?.throttle !== undefined
+        ? { throttle: options.throttle }
+        : {}),
       logger,
     });
 

@@ -34,6 +34,8 @@ import type {
   ResponseValidationMode,
 } from "./responseValidation";
 import { mergeOutboundDefs, toOutboundDef } from "./responseValidation";
+import type { ThrottlePolicy } from "./throttle";
+import { throttlePoliciesFor } from "./throttle";
 import type { Jsonify } from "./utils/native";
 import { CAPTURE_PARAM } from "./utils/expressPath";
 import type { BunRouter } from "./BunRouter";
@@ -214,6 +216,14 @@ export interface ListedRoute {
    * built from the route's own callbacks alone.
    */
   readonly partial?: true;
+  /**
+   * The throttle limits that apply to the route: those of every `throttle()`
+   * running ahead of it (the router or adapter option, `use()`) that the
+   * route neither skips (`skipThrottle()`) nor overrides by name, then
+   * those among its own callbacks. Absent when none applies. A document
+   * generator answers a `429` for them.
+   */
+  readonly throttle?: readonly ThrottlePolicy[];
 }
 
 /** What {@link listRoutes} takes. */
@@ -305,6 +315,8 @@ export function listRoutes(
     const synthesized = synthesizePath(route);
     let callbacks: unknown[] | undefined;
     let originNames: string[] | undefined;
+    /** The callbacks of other routes (middleware) that run before this one. */
+    const outer: unknown[] = [];
     if (synthesized !== undefined) {
       const layers = router.getMatchedLayers({
         requestHost: "localhost",
@@ -326,6 +338,7 @@ export function listRoutes(
           const layer = layers[index];
           if (layer.isErrorHandler) continue;
           callbacks.push(layer.callback);
+          if (layer.routeIndex !== routeIndex) outer.push(layer.callback);
           originNames.push(
             layer.routeIndex === routeIndex
               ? own
@@ -367,6 +380,8 @@ export function listRoutes(
         : { commonResponses: route.commonResponses }),
     });
 
+    const throttled = throttlePoliciesFor(outer, route.callbacks);
+
     listed.push({
       key: own,
       method,
@@ -381,6 +396,7 @@ export function listRoutes(
         ? {}
         : { responseOutput: route.responseOutput }),
       ...(partial ? { partial: true as const } : {}),
+      ...(throttled.length > 0 ? { throttle: throttled } : {}),
     });
   });
   return listed;

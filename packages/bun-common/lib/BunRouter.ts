@@ -25,6 +25,7 @@ import type {
   RouterErrorMiddlewareHandler,
   RouterHandler,
 } from "./types/general";
+import type { ThrottleHandler, ThrottleOptions } from "./throttle";
 import type { ParamsDictionary } from "./types/routeParams";
 import type { EmptyShape, MountedHandler } from "./types/routeTyping";
 import type {
@@ -46,6 +47,13 @@ import { attachRouteDoc } from "./docs/routeDoc";
 import { resolveLogger } from "./logging";
 import { compileTrustProxy } from "./trustProxy";
 import { responseBindingOf, toOutboundDef } from "./responseValidation";
+import {
+  bindThrottleLogger,
+  isSkipThrottleMarker,
+  isThrottleCallback,
+  recordThrottlePipeline,
+  toThrottleHandler,
+} from "./throttle";
 import {
   CAPTURE_OPTIONAL_WILDCARD,
   CAPTURE_PARAM,
@@ -1335,6 +1343,14 @@ export class BunRouter<
   #anyUndecodableBodyOptIn = false;
 
   /**
+   * Whether any route of this router carries a `throttle()` or a
+   * `skipThrottle()`: while `true`, each pipeline records its matched layers
+   * for the throttles ahead of the routes to find the route a request
+   * reaches (see `recordThrottlePipeline`). `false` costs nothing.
+   */
+  #throttled = false;
+
+  /**
    * The route being flattened in from another router, while
    * {@link mergeRoute} registers its copy: its `acceptUndecodableBody` and
    * `mountDepth` carry over. Consumed (reset) by {@link setRoute}.
@@ -1496,6 +1512,18 @@ export class BunRouter<
        * the request option of the same name. Defaults to none.
        */
       clientIpHeader?: string;
+      /**
+       * Throttles every request this router runs: a `throttle()` built from
+       * these options (or the `throttle()` middleware given) is registered
+       * as the router's first middleware, ahead of every route, every other
+       * middleware and the not-found handlers, so a request no route handles
+       * counts too. A route's own `throttle()` with a limit of the same name
+       * overrides that limit for the route, and `skipThrottle()` turns it off
+       * there. Its scope defaults to `"global"` (one count per client across
+       * the router); `scope: "route"` counts each route apart, as
+       * `@nestjs/throttler` does. Default: none.
+       */
+      throttle?: ThrottleHandler | ThrottleOptions;
     },
   ) {
     super(pick(localOptions, ["caseSensitive", "host"]));
@@ -1545,6 +1573,13 @@ export class BunRouter<
       common === undefined
         ? undefined
         : toOutboundDef(common, "BunRouter: commonResponses");
+
+    // Last, so a bad option above fails first; first in the chain, since no
+    // route exists yet.
+    const throttleOption = localOptions?.throttle;
+    if (throttleOption !== undefined) {
+      this.use(toThrottleHandler(throttleOption));
+    }
   }
 
   /** The `commonResponses` option, checked and compiled; `undefined` without one. */
@@ -1825,6 +1860,7 @@ export class BunRouter<
     if (flattenSource !== undefined) {
       route.mountDepth = (flattenSource.mountDepth ?? 0) + 1;
     }
+    this.#noteThrottles(route.callbacks, isEndpoint);
     this.#bindResponseSettings(route, flattenSource);
     if (route.hostRegexp) {
       this.#hostScoped = true;
@@ -1841,6 +1877,26 @@ export class BunRouter<
     this.#routeTree.invalidate();
     this.#routesVersion++;
     return this;
+  }
+
+  /**
+   * Notes a route's `throttle()` and `skipThrottle()` callbacks: the router
+   * then records each pipeline's layers for them, and gives each throttle
+   * its logger. A `skipThrottle()` registered as middleware skips nothing,
+   * which is said once.
+   */
+  #noteThrottles(callbacks: unknown, isEndpoint: boolean): void {
+    const list: unknown[] = Array.isArray(callbacks) ? callbacks : [callbacks];
+    for (const callback of list) {
+      if (!isThrottleCallback(callback)) continue;
+      this.#throttled = true;
+      bindThrottleLogger(callback, () => this.logger);
+      if (!isEndpoint && isSkipThrottleMarker(callback)) {
+        this.logger.warn(
+          "skipThrottle() registered as middleware (use) skips nothing: put it among a route's own callbacks",
+        );
+      }
+    }
   }
 
   /**
@@ -6495,6 +6551,9 @@ export class BunRouter<
     serve: ServeHooks<unknown> | undefined,
   ): PipelineState {
     const layers = this.getMatchedLayers(options);
+    if (this.#throttled) {
+      recordThrottlePipeline(options.request, layers);
+    }
     // Where a bare `res.upgradeToWebsocket()` reads router-wide upgrade
     // defaults: the outermost router running the request.
     options.response.webSocketUpgradeDefaults ??= this;

@@ -24,7 +24,8 @@
  *   {@link OpenApiOptions.tagGroups} declares (the `x-tagGroups` extension);
  * - the typed client's extensions (typed-client plan §3.0, §8.2):
  *   `x-bun-route-key` on every operation (the listing's key), `x-bun-errors`
- *   from `.describe({ errors })` and `x-bun-cache` from `.describe({ cache })`;
+ *   from `.describe({ errors })`, `x-bun-cache` from `.describe({ cache })`
+ *   and `x-bun-throttle` from the throttles covering the route (with a `429`);
  *   on a body's schema, `x-bun-chunks` for a `chunks()` stream's framing and
  *   `x-bun-max-bytes` for a documented file's size limit.
  *
@@ -1704,6 +1705,55 @@ const ROUTE_KEY_EXTENSION = "x-bun-route-key";
 const ERRORS_EXTENSION = "x-bun-errors";
 /** The extension carrying `.describe({ cache })` (typed-client plan §6.4). */
 const CACHE_EXTENSION = "x-bun-cache";
+/** The extension carrying the route's throttle limits (`ListedRoute.throttle`). */
+const THROTTLE_EXTENSION = "x-bun-throttle";
+
+/**
+ * The `429` a throttled route answers (`throttle()`'s default
+ * `onLimited`), documented unless the route declares its own `429`.
+ */
+function throttledResponse(): Record<string, unknown> {
+  return {
+    description:
+      "Too Many Requests: a throttle limit is exceeded (see x-bun-throttle).",
+    headers: {
+      "Retry-After": {
+        description: "Seconds to wait before retrying.",
+        schema: { type: "integer", minimum: 1 },
+        required: true,
+      },
+      "RateLimit-Policy": {
+        description:
+          'The limits, as draft-ietf-httpapi-ratelimit-headers-11 defines them: `"<name>";q=<quota>;w=<window seconds>`, one item per limit. Sent on every throttled response unless the throttle turns headers off.',
+        schema: { type: "string" },
+      },
+      RateLimit: {
+        description:
+          'What is left of each limit: `"<name>";r=<remaining>;t=<seconds until reset>`, one item per limit.',
+        schema: { type: "string" },
+      },
+    },
+    content: {
+      "application/problem+json": {
+        schema: {
+          type: "object",
+          description: "RFC 9457 problem details.",
+          properties: {
+            type: {
+              type: "string",
+              const: "urn:bun-common:error:TOO_MANY_REQUESTS",
+            },
+            title: { type: "string" },
+            status: { type: "integer", const: 429 },
+            code: { type: "string", const: "TOO_MANY_REQUESTS" },
+            detail: { type: "string" },
+          },
+          required: ["type", "title", "status", "code"],
+        },
+      },
+    },
+  };
+}
 
 /** One emitted `x-tagGroups` entry. */
 interface TagGroupEntry {
@@ -1900,6 +1950,18 @@ function bunExtensionsFor(
     }
     agree(CACHE_EXTENSION, cache, ".describe({ cache })");
     out[CACHE_EXTENSION] = cache;
+  }
+
+  if (route.throttle !== undefined) {
+    const policies = route.throttle.map((policy) => ({
+      name: policy.name,
+      limit: policy.limit,
+      window: policy.window,
+      algorithm: policy.algorithm,
+      scope: policy.scope,
+    }));
+    agree(THROTTLE_EXTENSION, policies, "the route's throttle");
+    out[THROTTLE_EXTENSION] = policies;
   }
   return out;
 }
@@ -2280,6 +2342,11 @@ function buildResponses(
       route.key,
     );
     responses.default = { description: "Unspecified" };
+  }
+  /* A throttled route answers 429 (after the check above, so a throttle
+   * never hides a route that declares nothing). */
+  if (route.throttle !== undefined && !Object.hasOwn(responses, "429")) {
+    responses["429"] = throttledResponse();
   }
   return Object.fromEntries(
     Object.entries(responses).sort(([a], [b]) => {
