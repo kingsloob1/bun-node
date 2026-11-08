@@ -1,6 +1,7 @@
 /**
  * The child half of `servers.test.ts`'s two-process proof: a process of its
- * own that builds its own cache over the job's Redis or Postgres URL, its own
+ * own that builds its own cache over the job's backend (Redis, Postgres,
+ * MySQL, MariaDB or a SQLite file), its own
  * `cacheThrottleStore` and its own `throttle()`, prints `{"ready":true}`,
  * waits at the start barrier (its stdin closing) so that both children start
  * together, then sends its requests for one client through `router.fetch()`
@@ -13,14 +14,21 @@ import process from "node:process";
 import type { RouterErrorMiddlewareHandler } from "@kingsleyweb/bun-common";
 import { BunRouter } from "@kingsleyweb/bun-common";
 import type { CacheDriver } from "../../lib/index";
-import { createCache, postgresDriver, redisDriver } from "../../lib/index";
+import {
+  createCache,
+  mariadbDriver,
+  mysqlDriver,
+  postgresDriver,
+  redisDriver,
+  sqliteDriver,
+} from "../../lib/index";
 import { cacheThrottleStore } from "../../lib/throttle/index";
 
 /** The job the parent passes on the command line, as JSON. */
 export interface ThrottleWorkerJob {
   /** Which backend to build the cache on. */
-  backend: "redis" | "postgres";
-  /** The backend's URL. */
+  backend: "redis" | "postgres" | "mysql" | "mariadb" | "sqlite";
+  /** The backend's URL (a SQLite file's path). */
   url: string;
   /** The driver's key prefix (Redis) or table prefix (Postgres): this run's own. */
   prefix: string;
@@ -30,10 +38,12 @@ export interface ThrottleWorkerJob {
   limit: number;
   /** How many requests this child sends. */
   requests: number;
-  /** The throttle's fixed clock, epoch ms: every child counts in the same window. */
+  /** The throttle's fixed clock, epoch ms (each child may be given its own: a skewed clock). */
   now: number;
   /** The algorithm; default the sliding window. */
-  algorithm?: "fixed-window" | "sliding-window";
+  algorithm?: "fixed-window" | "gcra" | "sliding-window";
+  /** `cacheThrottleStore`'s `clock`; default `"process"`, so `now` places every request. */
+  clock?: "process" | "store";
 }
 
 /** What the child prints when it is done. */
@@ -53,9 +63,18 @@ async function emit(value: unknown): Promise<void> {
 
 /** Builds the job's driver. */
 function driverFor(job: ThrottleWorkerJob): CacheDriver {
-  return job.backend === "redis"
-    ? redisDriver({ url: job.url, prefix: job.prefix })
-    : postgresDriver({ url: job.url, prefix: job.prefix });
+  switch (job.backend) {
+    case "redis":
+      return redisDriver({ url: job.url, prefix: job.prefix });
+    case "postgres":
+      return postgresDriver({ url: job.url, prefix: job.prefix });
+    case "mysql":
+      return mysqlDriver({ url: job.url, prefix: job.prefix });
+    case "mariadb":
+      return mariadbDriver({ url: job.url, prefix: job.prefix });
+    case "sqlite":
+      return sqliteDriver({ path: job.url });
+  }
 }
 
 /** Runs the job. */
@@ -65,7 +84,10 @@ async function main(): Promise<void> {
   const cache = createCache({ driver, sweepInterval: 0 });
   try {
     await driver.connect?.();
-    const store = cacheThrottleStore(cache, { namespace: job.namespace });
+    const store = cacheThrottleStore(cache, {
+      namespace: job.namespace,
+      clock: job.clock ?? "process",
+    });
     const router = new BunRouter({
       throttle: {
         limit: job.limit,

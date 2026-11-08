@@ -55,7 +55,10 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import type { ThrottleCounters } from "../core/throttle-counters";
+import { THROTTLE_COUNTERS } from "../core/throttle-counters";
 import { entryCapExcess, entryCapStatements } from "./entry-cap";
+import { sqliteThrottleCounters } from "./throttle-sql";
 import type { EntryCapStatements } from "./entry-cap";
 import type { SqlCacheTable } from "./sql-tables";
 import {
@@ -350,6 +353,20 @@ class SqliteDriver implements CacheDriver {
 
   /** The table set's statements. */
   readonly #sql: Statements;
+
+  /** The throttle's counters (`core/throttle-counters.ts`), built on first use. */
+  #throttleCounters: ThrottleCounters | undefined;
+
+  /**
+   * The throttle's counters, one round trip a step, timed by the host's clock
+   * (SQLite's `julianday('now')`) unless given a time (`drivers/throttle-sql.ts`).
+   */
+  get [THROTTLE_COUNTERS](): ThrottleCounters {
+    return (this.#throttleCounters ??= sqliteThrottleCounters({
+      write: async (work) => await this.#write(work),
+      entries: this.#tables.entries,
+    }));
+  }
 
   /** The clock (the `now` option, or `Date.now`). */
   readonly #now: () => number;

@@ -59,9 +59,10 @@ import { parseIpAddress, toIpv4IfMapped } from "./utils/native";
  *   increment), but a client can send `2 × limit` across a window boundary.
  * - `"gcra"`: the generic cell rate algorithm, a token bucket of `limit`
  *   tokens refilling over `window`. Exact and smooth, but needs a store with
- *   an atomic {@link ThrottleStore.consumeGcra} (the memory store has one);
- *   any other store is refused at construction. A refused request takes no
- *   tokens.
+ *   an atomic {@link ThrottleStore.consumeGcra} (the memory store has one,
+ *   and so has bun-cache's `cacheThrottleStore` on Redis, Postgres, MySQL,
+ *   MariaDB and SQLite); any other store is refused at construction. A
+ *   refused request takes no tokens.
  */
 export type ThrottleAlgorithm = "fixed-window" | "gcra" | "sliding-window";
 
@@ -232,8 +233,11 @@ export interface ThrottleOptions extends ThrottleLimits {
   /**
    * The clock, epoch milliseconds, that places a request in a window.
    * Default `Date.now`; tests pass a fake one. Processes sharing a store
-   * must have synchronised clocks (NTP): a skew shifts their window edges by
-   * as much.
+   * must have synchronised clocks (NTP), since a skew shifts their window
+   * edges by as much, unless the store keeps its own clock: one whose
+   * {@link ThrottleStore.countWindow} and `consumeGcra` read the server's
+   * time (bun-cache's `cacheThrottleStore` on Redis and SQL does, by
+   * default) ignores this clock for counting.
    */
   readonly now?: () => number;
 }
@@ -337,7 +341,9 @@ export interface ThrottleHandler extends RouterHandler {
   /**
    * Forgets one key's counts (an operator's unban, an allow-list entry), in
    * the current and previous windows of each limit. Needs a store with
-   * {@link ThrottleStore.delete}; throws a `ConfigError` without one.
+   * {@link ThrottleStore.delete} (or, for a window algorithm on a store with
+   * `countWindow`, {@link ThrottleStore.deleteWindow}); throws a
+   * `ConfigError` without one.
    *
    * @param key The key, as the throttle's `key` answered it (for the default key, {@link throttleAddressKey} of the address).
    */
@@ -1109,6 +1115,41 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
       );
     }
     const base = `${prefix}:${limit.name}:${window}:${of.scope}:${of.key}`;
+    const countWindow = counter.countWindow?.bind(counter);
+    if (countWindow !== undefined) {
+      // One call, and the store's clock when it keeps one: it places the
+      // request in a window and says how far into it the request is.
+      return then(
+        guarded(() =>
+          countWindow(base, {
+            window,
+            cost: peek ? 0 : cost,
+            previous: algorithm === "sliding-window",
+            now: at,
+          }),
+        ),
+        (counted) => {
+          const current = Number(counted.current) + (peek ? cost : 0);
+          const elapsed = Math.min(
+            window,
+            Math.max(0, Number(counted.elapsed)),
+          );
+          return algorithm === "fixed-window"
+            ? fixedWindowResult(limit, of, current, elapsed)
+            : slidingWindowResult(
+                {
+                  limit: limit.limit,
+                  window,
+                  cost,
+                  elapsed,
+                  current,
+                  previous: Number(counted.previous),
+                },
+                of,
+              );
+        },
+      );
+    }
     const index = Math.floor(at / window);
     const elapsed = at - index * window;
     const currentKey = `${base}:${index}`;
@@ -1422,7 +1463,13 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     resetOptions: ThrottleResetOptions = {},
   ): MaybePromise<void> => {
     const remove = store.delete?.bind(store);
-    if (remove === undefined) {
+    // The store placed the counters, by its own clock if it keeps one, so it
+    // names the ones to forget.
+    const removeWindow =
+      algorithm === "gcra" || store.countWindow === undefined
+        ? undefined
+        : store.deleteWindow?.bind(store);
+    if (remove === undefined && removeWindow === undefined) {
       throw new ConfigError(
         `throttle(): reset() needs a store with delete(key); store "${store.name}" has none`,
       );
@@ -1434,6 +1481,7 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
         : new Set(resetOptions.limits);
     const at = now();
     const keys: string[] = [];
+    const windows: [string, number][] = [];
     for (const limit of state.limits) {
       if (names !== undefined && !names.has(limit.name)) continue;
       if (algorithm === "gcra") {
@@ -1443,10 +1491,21 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
         continue;
       }
       const base = `${prefix}:${limit.name}:${limit.window}:${scopeKey}:${key}`;
-      const index = Math.floor(at / limit.window);
-      keys.push(`${base}:${index}`, `${base}:${index - 1}`);
+      if (removeWindow === undefined) {
+        const index = Math.floor(at / limit.window);
+        keys.push(`${base}:${index}`, `${base}:${index - 1}`);
+      } else {
+        windows.push([base, limit.window]);
+      }
     }
-    return then(all(keys.map((k) => remove(k))), () => undefined);
+    const done: MaybePromise<void>[] = [];
+    for (const k of keys) if (remove !== undefined) done.push(remove(k));
+    for (const [base, window] of windows) {
+      if (removeWindow !== undefined) {
+        done.push(removeWindow(base, { window, now: at }));
+      }
+    }
+    return then(all(done), () => undefined);
   };
 
   Object.defineProperty(handler, THROTTLE, { value: state });

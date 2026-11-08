@@ -1348,3 +1348,134 @@ describe("the client address behind proxies (trustProxy)", () => {
     expect(await outcome("203.0.113.10")).toBe(200);
   });
 });
+
+/**
+ * A store that keeps its own clock, as bun-cache's scripted store does: it
+ * places every request by `serverNow`, ignoring the throttle's `now`, and
+ * implements only `countWindow` and `deleteWindow` past the two required
+ * methods, which throw so a fall back to them shows.
+ */
+function serverClockStore(serverNow: () => number): ThrottleStore & {
+  calls: string[];
+  counters: Map<string, number>;
+} {
+  const counters = new Map<string, number>();
+  const calls: string[] = [];
+  return {
+    name: "server-clock",
+    calls,
+    counters,
+    increment: () => {
+      throw new Error("increment() must not be called");
+    },
+    get: () => {
+      throw new Error("get() must not be called");
+    },
+    countWindow(base, request) {
+      calls.push(`count ${request.cost} ${request.previous}`);
+      const at = serverNow();
+      const index = Math.floor(at / request.window);
+      const key = `${base}:${index}`;
+      const current = (counters.get(key) ?? 0) + request.cost;
+      if (request.cost > 0) counters.set(key, current);
+      return {
+        current,
+        previous: request.previous
+          ? (counters.get(`${base}:${index - 1}`) ?? 0)
+          : 0,
+        elapsed: at - index * request.window,
+      };
+    },
+    deleteWindow(base, request) {
+      calls.push(`delete ${request.window}`);
+      const index = Math.floor(serverNow() / request.window);
+      counters.delete(`${base}:${index}`);
+      counters.delete(`${base}:${index - 1}`);
+    },
+  };
+}
+
+describe("a store that counts a window itself (countWindow)", () => {
+  it("is used in place of increment() and get(), placed by the store's clock", async () => {
+    const server = clock(T0 + 30_000);
+    const store = serverClockStore(server.now);
+    // The throttle's own clock is a window behind the store's: the store's
+    // clock decides, so the requests still count in the store's window.
+    const router = new BunRouter({
+      throttle: byHeader({
+        limit: 2,
+        window: "1m",
+        store,
+        now: () => T0 - 60_000,
+      }),
+    });
+    router.get("/x", ok);
+    expect(await statuses(router, "/x", 3)).toEqual([200, 200, 429]);
+    expect(store.calls).toEqual([
+      "count 1 true",
+      "count 1 true",
+      "count 1 true",
+    ]);
+    // 30 s into the store's window, 4 counted: the wait is the 30 s left of
+    // it plus 45 s of the next (by the throttle's own clock, 0 s in, it
+    // would be 105).
+    const refused = await router.fetch("/x");
+    expect(refused.headers.get("RateLimit")).toBe('"default";r=0;t=75');
+    // The store's next window, half-way: the previous 4 weigh 2, plus 1.
+    server.set(T0 + 90_000);
+    expect(await statuses(router, "/x", 1)).toEqual([429]);
+  });
+
+  it("asks for the previous window only for the sliding window", async () => {
+    const store = serverClockStore(() => T0);
+    const router = new BunRouter({
+      throttle: byHeader({ limit: 5, algorithm: "fixed-window", store }),
+    });
+    router.get("/x", ok);
+    await statuses(router, "/x", 1);
+    expect(store.calls).toEqual(["count 1 false"]);
+  });
+
+  it("peek() reads with cost 0 and counts nothing", async () => {
+    const store = serverClockStore(() => T0 + 1_000);
+    const handler = throttle(byHeader({ limit: 3, store }));
+    const router = new BunRouter();
+    router.use(handler);
+    router.get("/x", ok);
+    await statuses(router, "/x", 2);
+    const before = [...store.counters.values()];
+    const results = await handler.peek(
+      await makeRequest({ url: "http://localhost/x" }),
+    );
+    expect(results[0].used).toBe(3);
+    expect(results[0].limited).toBe(false);
+    expect([...store.counters.values()]).toEqual(before);
+    expect(store.calls.at(-1)).toBe("count 0 true");
+  });
+
+  it("reset() goes through deleteWindow(), and needs no delete()", async () => {
+    const store = serverClockStore(() => T0 + 1_000);
+    const handler = throttle(byHeader({ limit: 1, store }));
+    const router = new BunRouter();
+    router.use(handler);
+    router.get("/x", ok);
+    expect(await statuses(router, "/x", 2)).toEqual([200, 429]);
+    await handler.reset("anon");
+    expect(store.calls.at(-1)).toBe("delete 60000");
+    expect(await statuses(router, "/x", 1)).toEqual([200]);
+  });
+
+  it("a store failure in countWindow() fails open like any other", async () => {
+    const store: ThrottleStore = {
+      ...serverClockStore(() => T0),
+      countWindow: () => Promise.reject(new Error("down")),
+    };
+    const { logger, events } = createTestLogger();
+    const router = new BunRouter({
+      throttle: byHeader({ limit: 1, store, logger }),
+    });
+    router.get("/x", ok);
+    expect(await statuses(router, "/x", 2)).toEqual([200, 200]);
+    expect(events.some((event) => event.level === "warn")).toBe(true);
+  });
+});

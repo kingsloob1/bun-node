@@ -700,6 +700,9 @@ export {
   type MemoryThrottleStore,
   type MemoryThrottleStoreOptions,
   type ThrottleStore,
+  type WindowCount,
+  type WindowCountRequest,
+  type WindowDeleteRequest,
 } from "./throttleStore";
 export {
   type Duration,
