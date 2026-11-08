@@ -570,6 +570,39 @@ try {
       JSON.stringify(o.refused),
     );
   }
+  {
+    const r = await run("graphql");
+    const o = rec(r.outcome);
+    const partial = rec(o.partial);
+    const errors = (partial.errors ?? []) as { message: string }[];
+    check(
+      "graphql: complete data typed by the document, then the renamed user over GET",
+      r.ok &&
+        rec(rec(o.complete).user).name === "Ada" &&
+        rec(rec(o.renamed).rename).name === "Ada Lovelace" &&
+        rec(rec(o.viaGet).user).name === "Ada Lovelace",
+      JSON.stringify(r.outcome),
+    );
+    check(
+      "graphql: an unknown user is ok with errors (partial data), not a failed status",
+      partial.ok === true &&
+        rec(partial.data).user === null &&
+        errors[0]?.message === "No user with that id",
+      JSON.stringify(partial),
+    );
+    check(
+      "graphql: throwOnGraphQLErrors threw the same error",
+      JSON.stringify(o.thrown) === '["No user with that id"]',
+      JSON.stringify(o.thrown),
+    );
+    check(
+      "graphql: the endpoint saw four POSTs and one GET, in order",
+      (o.endpointSaw as { method: string; operationName: string }[])
+        .map((e) => `${e.method} ${e.operationName}`)
+        .join() === "POST User,POST User,POST Rename,GET User,POST User",
+      JSON.stringify(o.endpointSaw),
+    );
+  }
   check(
     "an unknown scenario is a 404",
     (await post("/run/nope")).status === 404,
