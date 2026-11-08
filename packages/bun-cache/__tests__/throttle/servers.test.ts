@@ -458,6 +458,54 @@ function registerSuite(backend: Backend): void {
       expect(await statusesOf(app, 4)).toEqual([200, 200, 200, 429]);
     });
 
+    it("skipSuccessfulRequests gives back on the backend: both windows and GCRA", async () => {
+      const store = cacheThrottleStore(cacheOn(), { namespace: "refund" });
+      await clearOfHourBoundary();
+      /** Each status, waiting a little after each so the refund lands first. */
+      const settled = async (
+        app: BunRouter,
+        path: string,
+        n: number,
+      ): Promise<number[]> => {
+        const out: number[] = [];
+        for (let i = 0; i < n; i++) {
+          out.push((await app.fetch(path)).status);
+          await Bun.sleep(40);
+        }
+        return out;
+      };
+      for (const algorithm of [
+        "sliding-window",
+        "fixed-window",
+        "gcra",
+      ] as const) {
+        const app = new BunRouter();
+        app.use(
+          throttle({
+            limit: 1,
+            window: "1h",
+            algorithm,
+            store,
+            prefix: algorithm,
+            key: () => "c1",
+            skipSuccessfulRequests: true,
+          }),
+        );
+        app.get("/", ok);
+        app.get("/fail", (_req, res) => {
+          res.status(500).send("no");
+        });
+        expect({ algorithm, statuses: await settled(app, "/", 3) }).toEqual({
+          algorithm,
+          statuses: [200, 200, 200],
+        });
+        expect({
+          algorithm,
+          statuses: await settled(app, "/fail", 2),
+        }).toEqual({ algorithm, statuses: [500, 429] });
+      }
+    });
+
     it("skewed clocks, backend's clock: two processes an hour apart hold one fixed-window limit (N)", async () => {
       const limit = 20;
       const counts = await twoProcesses(backend, ["skew", "skew"], limit, 30, {

@@ -581,7 +581,7 @@ end
 /**
  * The throttle's window step (`lib/core/throttle-counters.ts`): KEYS[1] a key
  * of the namespace's tag; ARGV base, the counter's base name, window ms, cost
- * (0 reads only), whether the previous window is wanted ('1'), now ms ('' the
+ * (0 reads only; negative gives back to a live counter, creating none), whether the previous window is wanted ('1'), now ms ('' the
  * server's), margin ms. Adds to `<base>n:<name>:<index>` (created with its
  * expiry, as `increment` creates a counter) and answers its count, the
  * previous window's and the time. The expiry is set relative (`PEXPIRE`)
@@ -609,6 +609,8 @@ if cost > 0 then
     redis.call('PEXPIRE', ck, fmt(math.max(1, math.ceil(exp - now))))
     cur = cost
   end
+elseif cost < 0 and live(h, now) then
+  cur = redis.call('HINCRBY', ck, 'n', cost)
 end
 local p = 0
 if prev then
@@ -630,18 +632,19 @@ return redis.call('UNLINK', base .. 'n:' .. name .. ':' .. fmt(idx), base .. 'n:
 
 /**
  * The throttle's GCRA step: KEYS[1] the bucket `<base>n:<key>`; ARGV the
- * step µs (0 reads only), the capacity µs, now µs ('' the server's), margin
+ * step µs (0 reads only; negative gives back to a bucket, creating none), the capacity µs, now µs ('' the server's), margin
  * ms. The bucket's `n` is its theoretical arrival time (µs). Answers
  * allowed ('1'/'0'), the arrival time and the time. Not `allow-oom`.
  */
 const THROTTLE_GCRA = script(`${THROTTLE_HELPERS}
 local step, cap, margin = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[4])
 local now = clock(ARGV[3], 1000000)
-local tat = tonumber(redis.call('HGET', KEYS[1], 'n')) or now
+local stored = tonumber(redis.call('HGET', KEYS[1], 'n'))
+local tat = stored or now
 if tat < now then tat = now end
 local nxt = tat + step
 if nxt - now > cap then return {'0', fmt(tat), fmt(now)} end
-if step > 0 then
+if step > 0 or (step < 0 and stored) then
   local exp = math.ceil(nxt / 1000) + margin
   redis.call('HSET', KEYS[1], 'n', fmt(nxt), 'x', fmt(exp), 'c', fmt(math.floor(now / 1000)))
   redis.call('PEXPIRE', KEYS[1], fmt(math.max(1, math.ceil((nxt - now) / 1000) + margin)))

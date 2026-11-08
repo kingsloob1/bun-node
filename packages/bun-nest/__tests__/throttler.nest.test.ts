@@ -38,9 +38,12 @@ import {
   Get,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   Module,
   Post,
+  Req,
+  UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD, NestFactory } from "@nestjs/core";
@@ -926,5 +929,93 @@ describe("the boot check that a guard is installed", () => {
       }
     }
     expect(await errorsOf(throttlers, [], [RouteGuarded])).toEqual([]);
+  });
+});
+
+@Controller("outcome")
+class OutcomeController {
+  @Throttle({ default: { skipSuccessfulRequests: true } })
+  @Get("login")
+  login(@Req() req: BunRequest) {
+    if (req.headers["x-ok"] !== "1") throw new UnauthorizedException();
+    return "welcome";
+  }
+
+  @Get("work")
+  work(@Req() req: BunRequest) {
+    if (req.headers["x-ok"] !== "1") throw new InternalServerErrorException();
+    return "done";
+  }
+}
+
+describe("skipSuccessfulRequests and skipFailedRequests", () => {
+  it("@Throttle({ default: { skipSuccessfulRequests: true } }): only failed logins count", async () => {
+    const { adapter } = await boot(
+      { throttlers: [{ limit: 2, ttl: "1m" }], getTracker: byHeader },
+      [OutcomeController],
+    );
+    const good = as("c1", { headers: { "x-ok": "1" } });
+    expect(await statuses(adapter, "/outcome/login", 4, good)).toEqual([
+      200, 200, 200, 200,
+    ]);
+    expect(await statuses(adapter, "/outcome/login", 3, as("c1"))).toEqual([
+      401, 401, 429,
+    ]);
+    expect(await statuses(adapter, "/outcome/login", 1, good)).toEqual([429]);
+    // The route without it counts every request.
+    expect(await statuses(adapter, "/outcome/work", 3, good)).toEqual([
+      200, 200, 429,
+    ]);
+  });
+
+  it("the module's skipFailedRequests: errors and refusals are given back", async () => {
+    const { adapter } = await boot(
+      {
+        throttlers: [{ limit: 2, ttl: "1m" }],
+        getTracker: byHeader,
+        skipFailedRequests: true,
+      },
+      [OutcomeController],
+    );
+    expect(await statuses(adapter, "/outcome/work", 3, as("c2"))).toEqual([
+      500, 500, 500,
+    ]);
+    const good = as("c2", { headers: { "x-ok": "1" } });
+    expect(await statuses(adapter, "/outcome/work", 4, good)).toEqual([
+      200, 200, 429, 429,
+    ]);
+  });
+
+  it("requestWasSuccessful decides what success is", async () => {
+    const { adapter } = await boot(
+      {
+        throttlers: [{ limit: 1, ttl: "1m", skipSuccessfulRequests: true }],
+        getTracker: byHeader,
+        requestWasSuccessful: (_req, res) => res.statusCode < 500,
+      },
+      [OutcomeController],
+    );
+    expect(await statuses(adapter, "/outcome/work", 2, as("c3"))).toEqual([
+      500, 429,
+    ]);
+    expect(await statuses(adapter, "/outcome/login", 3, as("c4"))).toEqual([
+      401, 401, 401,
+    ]);
+  });
+
+  it("refuses a flag that is not a boolean, at startup", async () => {
+    let error: unknown;
+    try {
+      await boot(
+        {
+          // @ts-expect-error not a boolean
+          throttlers: [{ limit: 1, ttl: "1m", skipFailedRequests: "yes" }],
+        },
+        [OutcomeController],
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toContain("skipFailedRequests");
   });
 });

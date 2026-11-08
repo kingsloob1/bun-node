@@ -38,6 +38,10 @@ export interface ThrottleDecoratorOptions {
   readonly getTracker?: BunThrottlerGetTracker;
   /** The counter key under this throttler here; see `BunThrottlerOptions.generateKey`. */
   readonly generateKey?: BunThrottlerGenerateKey;
+  /** Gives a successful request's count back here (only failures count); see `BunThrottlerOptions.skipSuccessfulRequests`. Default the throttler's. */
+  readonly skipSuccessfulRequests?: boolean;
+  /** Gives a failed request's count back here (only successes count); see `BunThrottlerOptions.skipFailedRequests`. Default the throttler's. */
+  readonly skipFailedRequests?: boolean;
   /**
    * Not supported: `@nestjs/throttler`'s block after a refusal has no
    * equivalent yet (a refused client is refused only until its count falls

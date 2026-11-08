@@ -4,6 +4,7 @@ import type {
   ThrottleAlgorithm,
   ThrottleHeaders,
   ThrottleOptions,
+  ThrottleRequestWasSuccessful,
   ThrottleStore,
 } from "@kingsleyweb/bun-common";
 import type {
@@ -86,6 +87,21 @@ export interface BunThrottlerOptions {
   /** Which rate-limit headers this throttler sends; default the module's {@link BunThrottlerModuleOptions.headers}. */
   readonly headers?: ThrottleHeaders;
   /**
+   * Gives a successful request's count back once its response is sent, so
+   * only failures count (a login throttler that counts failed attempts):
+   * express-rate-limit's `skipSuccessfulRequests`, through bun-common's
+   * `throttle()`. Success is the module's {@link BunThrottlerModuleOptions.requestWasSuccessful}.
+   * Default the module's, else `false`.
+   */
+  readonly skipSuccessfulRequests?: boolean;
+  /**
+   * Gives a failed request's count back once its response is sent (or the
+   * client went away first), so only successes count: express-rate-limit's
+   * `skipFailedRequests`. A refusal is a `429`, a failure, so it is given
+   * back too. Default the module's, else `false`.
+   */
+  readonly skipFailedRequests?: boolean;
+  /**
    * Not supported: `@nestjs/throttler`'s block after a refusal has no
    * equivalent yet. A type error, and refused at startup.
    */
@@ -136,6 +152,17 @@ export interface BunThrottlerModuleOptions {
   readonly ipv6SubnetPrefix?: false | number;
   /** How every throttler counts. Default `"sliding-window"` (bun-common's; `@nestjs/throttler` counts fixed windows). */
   readonly algorithm?: ThrottleAlgorithm;
+  /** {@link BunThrottlerOptions.skipSuccessfulRequests} for every throttler without its own. Default `false`. */
+  readonly skipSuccessfulRequests?: boolean;
+  /** {@link BunThrottlerOptions.skipFailedRequests} for every throttler without its own. Default `false`. */
+  readonly skipFailedRequests?: boolean;
+  /**
+   * What `skipSuccessfulRequests` and `skipFailedRequests` call success.
+   * Default `res.statusCode < 400` (express-rate-limit's
+   * `requestWasSuccessful`), read once the response has been sent, so an
+   * exception Nest answered counts by the status it answered with.
+   */
+  readonly requestWasSuccessful?: ThrottleRequestWasSuccessful;
   /**
    * Which rate-limit headers a throttled response carries: `false` (the
    * default, as bun-common's `throttle()`), `"legacy"` for
@@ -256,6 +283,10 @@ export interface ResolvedThrottler {
   readonly algorithm?: ThrottleAlgorithm;
   /** Its own headers, if any. */
   readonly headers?: ThrottleHeaders;
+  /** Its own `skipSuccessfulRequests`, if any. */
+  readonly skipSuccessfulRequests?: boolean;
+  /** Its own `skipFailedRequests`, if any. */
+  readonly skipFailedRequests?: boolean;
 }
 
 /** The module's options, checked and with their defaults. */
@@ -280,6 +311,12 @@ export interface ResolvedThrottlerOptions {
   readonly algorithm: ThrottleAlgorithm;
   /** The default headers. */
   readonly headers: ThrottleHeaders;
+  /** The default `skipSuccessfulRequests`. */
+  readonly skipSuccessfulRequests: boolean;
+  /** The default `skipFailedRequests`. */
+  readonly skipFailedRequests: boolean;
+  /** See {@link BunThrottlerModuleOptions.requestWasSuccessful}. */
+  readonly requestWasSuccessful?: ThrottleRequestWasSuccessful;
   /** The store failure policy. */
   readonly failMode: NonNullable<ThrottleOptions["failMode"]>;
   /** The level refusals are logged at, or `false`. */
@@ -421,6 +458,12 @@ export function resolveThrottlerOptions(
           : { generateKey: spec.generateKey }),
         ...(spec.algorithm === undefined ? {} : { algorithm: spec.algorithm }),
         ...(spec.headers === undefined ? {} : { headers: spec.headers }),
+        ...(spec.skipSuccessfulRequests === undefined
+          ? {}
+          : { skipSuccessfulRequests: spec.skipSuccessfulRequests }),
+        ...(spec.skipFailedRequests === undefined
+          ? {}
+          : { skipFailedRequests: spec.skipFailedRequests }),
       };
     },
   );
@@ -459,15 +502,28 @@ export function resolveThrottlerOptions(
   const algorithm = options.algorithm ?? "sliding-window";
   const headers = options.headers ?? false;
   const failMode = options.failMode ?? "open";
+  const skipSuccessfulRequests = options.skipSuccessfulRequests ?? false;
+  const skipFailedRequests = options.skipFailedRequests ?? false;
   // bun-common checks the store, the algorithm, the headers and the fail
   // mode when a throttle is built; build one now so a bad value fails here,
   // at startup, not on the first request a guard counts. Each throttler's
   // own algorithm and headers are checked the same way.
   for (const probe of [
-    { algorithm, headers },
+    {
+      algorithm,
+      headers,
+      skipSuccessfulRequests,
+      skipFailedRequests,
+      ...(options.requestWasSuccessful === undefined
+        ? {}
+        : { requestWasSuccessful: options.requestWasSuccessful }),
+    },
     ...throttlers.map((t) => ({
       algorithm: t.algorithm ?? algorithm,
       headers: t.headers ?? headers,
+      skipSuccessfulRequests:
+        t.skipSuccessfulRequests ?? skipSuccessfulRequests,
+      skipFailedRequests: t.skipFailedRequests ?? skipFailedRequests,
     })),
   ]) {
     throttle({
@@ -497,6 +553,11 @@ export function resolveThrottlerOptions(
     ipv6SubnetPrefix: subnet,
     algorithm,
     headers,
+    skipSuccessfulRequests,
+    skipFailedRequests,
+    ...(options.requestWasSuccessful === undefined
+      ? {}
+      : { requestWasSuccessful: options.requestWasSuccessful }),
     failMode,
     logLimited,
     prefix,

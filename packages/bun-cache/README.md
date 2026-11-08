@@ -3128,6 +3128,13 @@ const router = new BunRouter({
 - **Costs are integers.** Redis counts with `HINCRBY` and SQL in a `BIGINT`,
   so the store refuses a fractional `cost` on every driver, the memory one
   included, rather than only in production.
+- **Refunds** (`throttle()`'s `skipSuccessfulRequests` and
+  `skipFailedRequests`) are a negative cost: subtracted from a counter that
+  is still live, never creating one (a GCRA refund moves the bucket's
+  arrival time back, never below an empty bucket). On a backend that counts
+  by its own clock a refund lands in the window the backend is in when the
+  response ends, so a request that straddles a window's edge gives back to
+  the new window, not the one it counted in.
 - **`delete(key)`** resets one counter (bun-common's `handler.reset`) and
   **`clear()`** empties the store's namespace and nothing else.
 

@@ -99,10 +99,28 @@ export type ThrottleKey = (req: BunRequest) => MaybePromise<string>;
 /** How much a request counts: a fixed number, or one per request. */
 export type ThrottleCost = number | ((req: BunRequest) => MaybePromise<number>);
 
+/**
+ * A limit's quota: a fixed number, or one per request (express-rate-limit's
+ * `limit` as a function: a premium account gets more). A function answers a
+ * positive integer; anything else is a `TypeError` for the error handlers.
+ */
+export type ThrottleQuota =
+  number | ((req: BunRequest) => MaybePromise<number>);
+
+/** Whether a request succeeded, for {@link ThrottleOptions.skipSuccessfulRequests} and {@link ThrottleOptions.skipFailedRequests}. */
+export type ThrottleRequestWasSuccessful = (
+  req: BunRequest,
+  res: BunResponse,
+) => MaybePromise<boolean>;
+
 /** One named limit. */
 export interface ThrottleLimit {
-  /** The most a client may spend per {@link window}: a positive integer. */
-  readonly limit: number;
+  /**
+   * The most a client may spend per {@link window}: a positive integer, or a
+   * function answering one per request (see {@link ThrottleQuota}). A
+   * function's limit is documented as `"dynamic"` ({@link ThrottlePolicy}).
+   */
+  readonly limit: ThrottleQuota;
   /**
    * The window, its unit explicit: `"1m"`, `"30s"`, `"1h"`, `{ seconds: 30 }`.
    * Default `"1m"`. A bare number is refused (is it seconds or ms?), as is a
@@ -122,9 +140,10 @@ export interface ThrottleLimit {
 export interface ThrottleLimits {
   /**
    * The limit, as shorthand for `limits: { default: { limit, window } }`
-   * (express-rate-limit's `limit`). Give it or {@link limits}, not both.
+   * (express-rate-limit's `limit`): a positive integer, or a function
+   * answering one per request. Give it or {@link limits}, not both.
    */
-  readonly limit?: number;
+  readonly limit?: ThrottleQuota;
   /** The shorthand limit's window (express-rate-limit's `windowMs`, but with a unit). Default `"1m"`. */
   readonly window?: Duration;
   /** The shorthand limit's {@link ThrottleLimit.allowSubSecond}. */
@@ -173,6 +192,34 @@ export interface ThrottleOptions extends ThrottleLimits {
   readonly skip?: (req: BunRequest, res: BunResponse) => MaybePromise<boolean>;
   /** How every limit counts. Default `"sliding-window"`; see {@link ThrottleAlgorithm}. */
   readonly algorithm?: ThrottleAlgorithm;
+  /**
+   * Gives a successful request's cost back once its response is known, so
+   * only failures count: a login limit that counts failed attempts alone.
+   * express-rate-limit's `skipSuccessfulRequests`: on the response's
+   * `finish`, a request {@link requestWasSuccessful} calls successful is
+   * refunded from every limit it counted against. The refund comes after
+   * the request was counted and let through, so concurrent requests still
+   * see it counted while it runs. Default `false`.
+   */
+  readonly skipSuccessfulRequests?: boolean;
+  /**
+   * Gives a failed request's cost back once its response is known, so only
+   * successes count. express-rate-limit's `skipFailedRequests`: refunded on
+   * the response's `finish` when {@link requestWasSuccessful} says it
+   * failed, on `close` before the response ended (the client went away),
+   * and on `error`. A refused request is answered `429`, a failure, so it is
+   * refunded too and a client that keeps sending is not held back by its
+   * refusals; under `"gcra"` a refused request took nothing and gets
+   * nothing back. Default `false`.
+   */
+  readonly skipFailedRequests?: boolean;
+  /**
+   * What {@link skipSuccessfulRequests} and {@link skipFailedRequests} call
+   * success. Default: `res.statusCode < 400` (express-rate-limit's
+   * `requestWasSuccessful`). An error it throws or rejects with counts the
+   * request as successful for neither option: nothing is refunded.
+   */
+  readonly requestWasSuccessful?: ThrottleRequestWasSuccessful;
   /**
    * Where the counts live. Default a {@link memoryThrottleStore} of this
    * throttle's own (per process). For one limit across processes, a shared
@@ -292,8 +339,8 @@ export type ThrottleLimitedHandler = (
 export interface ThrottlePolicy {
   /** The limit's name. */
   readonly name: string;
-  /** Its quota per window. */
-  readonly limit: number;
+  /** Its quota per window; `"dynamic"` when a function answers it per request. */
+  readonly limit: number | "dynamic";
   /** Its window, in milliseconds. */
   readonly window: number;
   /** How it counts. */
@@ -387,7 +434,7 @@ const SKIP: unique symbol = Symbol.for("@kingsleyweb/bun-common.skipThrottle");
 /** A compiled limit. */
 interface CompiledLimit {
   readonly name: string;
-  readonly limit: number;
+  readonly limit: ThrottleQuota;
   readonly window: number;
   readonly key: ThrottleKey;
   readonly cost: ThrottleCost;
@@ -717,9 +764,27 @@ export function slidingWindowResult(
   };
 }
 
+/** A limit's quota and window, as one request sees them. */
+interface Quota {
+  /** The quota, resolved for the request. */
+  readonly limit: number;
+  /** The window, ms. */
+  readonly window: number;
+}
+
+/** A limit as it applies to one request: who it counts against, the cost and the quota, resolved. */
+interface Input {
+  /** The key. */
+  readonly key: string;
+  /** The cost. */
+  readonly cost: number;
+  /** The quota. */
+  readonly limit: number;
+}
+
 /** The fixed-window outcome, from the window's count. */
 function fixedWindowResult(
-  limit: CompiledLimit,
+  limit: Quota,
   of: ResultOf,
   current: number,
   elapsed: number,
@@ -741,7 +806,7 @@ function fixedWindowResult(
 
 /** The GCRA outcome, from the store's answer. */
 function gcraResult(
-  limit: CompiledLimit,
+  limit: Quota,
   of: ResultOf,
   outcome: GcraOutcome,
 ): ThrottleResult {
@@ -873,9 +938,12 @@ function compileLimits(
     if (spec === null || typeof spec !== "object") {
       throw new ConfigError(`${where}: limits.${name} must be an object`);
     }
-    if (!Number.isInteger(spec.limit) || spec.limit < 1) {
+    if (
+      typeof spec.limit !== "function" &&
+      (!Number.isInteger(spec.limit) || spec.limit < 1)
+    ) {
       throw new ConfigError(
-        `${where}: limits.${name}.limit must be a positive integer; got ${JSON.stringify(spec.limit)}`,
+        `${where}: limits.${name}.limit must be a positive integer or a function; got ${JSON.stringify(spec.limit)}`,
       );
     }
     const window = toDurationMs(
@@ -1023,6 +1091,19 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
   const baseCost = checkCost(options.cost ?? 1, "cost");
   const now = options.now ?? Date.now;
   const onLimited = options.onLimited ?? sendTooManyRequests;
+  const skipSuccessful = options.skipSuccessfulRequests ?? false;
+  const skipFailed = options.skipFailedRequests ?? false;
+  if (typeof skipSuccessful !== "boolean" || typeof skipFailed !== "boolean") {
+    throw new ConfigError(
+      `${where}: skipSuccessfulRequests and skipFailedRequests must be booleans`,
+    );
+  }
+  const requestWasSuccessful: ThrottleRequestWasSuccessful =
+    options.requestWasSuccessful ?? ((_req, res) => res.statusCode < 400);
+  if (typeof requestWasSuccessful !== "function") {
+    throw new ConfigError(`${where}: requestWasSuccessful must be a function`);
+  }
+  const refunds = skipSuccessful || skipFailed;
 
   const state: ThrottleState = {
     limits: compileLimits(options, baseKey, baseCost),
@@ -1074,26 +1155,31 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     return plan;
   };
 
+  /** A GCRA bucket's key: a fixed quota is part of it, a per-request one is not (its bucket survives a change of quota). */
+  const gcraKey = (limit: CompiledLimit, of: ResultOf): string =>
+    `${prefix}:${limit.name}:gcra:${limit.window}:${typeof limit.limit === "number" ? limit.limit : "dynamic"}:${of.scope}:${of.key}`;
+
   /** One limit, counted in `counter` (or only read, with `peek`). */
   const count = (
     counter: ThrottleStore,
     limit: CompiledLimit,
     of: ResultOf,
-    cost: number,
+    input: Input,
     at: number,
     peek: boolean,
   ): MaybePromise<ThrottleResult> => {
     const window = limit.window;
+    const cost = input.cost;
+    const quota: Quota = { limit: input.limit, window };
     if (algorithm === "gcra") {
       const consume = counter.consumeGcra?.bind(counter);
       if (consume === undefined) {
         throw new StoreFailure(new Error("the store has no consumeGcra()"));
       }
-      const key = `${prefix}:${limit.name}:gcra:${window}:${limit.limit}:${of.scope}:${of.key}`;
       return then(
         guarded(() =>
-          consume(key, {
-            limit: limit.limit,
+          consume(gcraKey(limit, of), {
+            limit: quota.limit,
             window,
             cost: peek ? 0 : cost,
             now: at,
@@ -1101,7 +1187,7 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
         ),
         (outcome) =>
           gcraResult(
-            limit,
+            quota,
             of,
             peek && cost > 0
               ? // As if counted: it fits when `cost` more units do.
@@ -1135,10 +1221,10 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
             Math.max(0, Number(counted.elapsed)),
           );
           return algorithm === "fixed-window"
-            ? fixedWindowResult(limit, of, current, elapsed)
+            ? fixedWindowResult(quota, of, current, elapsed)
             : slidingWindowResult(
                 {
-                  limit: limit.limit,
+                  limit: quota.limit,
                   window,
                   cost,
                   elapsed,
@@ -1168,14 +1254,14 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     );
     if (algorithm === "fixed-window") {
       return then(current, (value) =>
-        fixedWindowResult(limit, of, Number(value), elapsed),
+        fixedWindowResult(quota, of, Number(value), elapsed),
       );
     }
     const previous = guarded(() => counter.get(`${base}:${index - 1}`));
     return then(all<number | undefined>([current, previous]), ([c, p]) =>
       slidingWindowResult(
         {
-          limit: limit.limit,
+          limit: quota.limit,
           window,
           cost,
           elapsed,
@@ -1191,7 +1277,7 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
   const countAll = (
     counter: ThrottleStore,
     plan: Plan,
-    inputs: readonly [string, number][],
+    inputs: readonly Input[],
     scopeKey: string,
     at: number,
     peek: boolean,
@@ -1201,25 +1287,81 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
         count(
           counter,
           limit,
-          { name: limit.name, key: inputs[index][0], scope: scopeKey },
-          inputs[index][1],
+          { name: limit.name, key: inputs[index].key, scope: scopeKey },
+          inputs[index],
           at,
           peek,
         ),
       ),
     );
 
-  /** The keys and costs of `plan`'s limits for the request: the caller's own functions. */
-  const inputsOf = (
-    req: BunRequest,
+  /**
+   * Gives back what a request counted, in `counter` (`skipSuccessfulRequests`,
+   * `skipFailedRequests`): its cost from the window it counted in (placed by
+   * `at`, or by the store's clock on a store that keeps one), or, under
+   * GCRA, the tokens it took (a refused request took none). A refund that
+   * fails is lost: the request stays counted.
+   */
+  const refundAll = (
+    counter: ThrottleStore,
     plan: Plan,
-  ): MaybePromise<[string, number][]> =>
+    inputs: readonly Input[],
+    scopeKey: string,
+    at: number,
+    results: readonly ThrottleResult[],
+  ): MaybePromise<unknown> =>
+    all(
+      plan.limits.map((limit, index): MaybePromise<unknown> => {
+        const input = inputs[index];
+        if (input.cost === 0) return undefined;
+        const of = { name: limit.name, key: input.key, scope: scopeKey };
+        const window = limit.window;
+        if (algorithm === "gcra") {
+          const consume = counter.consumeGcra?.bind(counter);
+          if (consume === undefined || results[index]?.limited !== false) {
+            return undefined;
+          }
+          return guarded(() =>
+            consume(gcraKey(limit, of), {
+              limit: input.limit,
+              window,
+              cost: -input.cost,
+              now: now(),
+            }),
+          );
+        }
+        const base = `${prefix}:${limit.name}:${window}:${of.scope}:${of.key}`;
+        const countWindow = counter.countWindow?.bind(counter);
+        if (countWindow !== undefined) {
+          return guarded(() =>
+            countWindow(base, {
+              window,
+              cost: -input.cost,
+              previous: false,
+              now: at,
+            }),
+          );
+        }
+        // A lifetime of 1 ms: a counter that has expired since is not
+        // brought back (only a negative one, gone at once, would be).
+        return guarded(() =>
+          counter.increment(
+            `${base}:${Math.floor(at / window)}`,
+            -input.cost,
+            1,
+          ),
+        );
+      }),
+    );
+
+  /** The keys, costs and quotas of `plan`'s limits for the request: the caller's own functions. */
+  const inputsOf = (req: BunRequest, plan: Plan): MaybePromise<Input[]> =>
     all(
       plan.limits.map((limit) =>
         then(limit.key(req), (client) =>
           then(
             typeof limit.cost === "number" ? limit.cost : limit.cost(req),
-            (cost): [string, number] => {
+            (cost) => {
               if (
                 typeof cost !== "number" ||
                 !Number.isFinite(cost) ||
@@ -1229,12 +1371,85 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
                   `throttle(): cost must be a non-negative finite number; got ${String(cost)}`,
                 );
               }
-              return [String(client), cost];
+              return then(
+                typeof limit.limit === "number"
+                  ? limit.limit
+                  : limit.limit(req),
+                (quota): Input => {
+                  if (
+                    typeof quota !== "number" ||
+                    !Number.isInteger(quota) ||
+                    quota < 1
+                  ) {
+                    throw new TypeError(
+                      `throttle(): limit "${limit.name}" must be a positive integer; its function answered ${String(quota)}`,
+                    );
+                  }
+                  return { key: String(client), cost, limit: quota };
+                },
+              );
             },
           ),
         ),
       ),
     );
+
+  /**
+   * Arranges the refund of a counted request once its response is known
+   * (express-rate-limit's `skipSuccessfulRequests` / `skipFailedRequests`):
+   * at most once, on `finish`, `close` or `error` as those options say.
+   */
+  const refundWhenDone = (
+    req: BunRequest,
+    res: BunResponse,
+    refund: () => MaybePromise<unknown>,
+  ): void => {
+    let done = false;
+    const give = (): void => {
+      if (done) return;
+      done = true;
+      let given: MaybePromise<unknown>;
+      try {
+        given = refund();
+      } catch (error) {
+        warnStoreFailure(
+          error instanceof StoreFailure ? error.cause : error,
+          "a refund was lost",
+        );
+        return;
+      }
+      if (isThenable(given)) {
+        given.then(undefined, (error: unknown) => {
+          warnStoreFailure(
+            error instanceof StoreFailure ? error.cause : error,
+            "a refund was lost",
+          );
+        });
+      }
+    };
+    const judged = (wanted: boolean): void => {
+      let verdict: MaybePromise<boolean>;
+      try {
+        verdict = requestWasSuccessful(req, res);
+      } catch {
+        return;
+      }
+      const settled = then(verdict, (succeeded) => {
+        if (Boolean(succeeded) === wanted) give();
+      });
+      if (isThenable(settled)) settled.then(undefined, () => undefined);
+    };
+    if (skipFailed) {
+      res.on("finish", () => judged(false));
+      res.on("close", () => {
+        if (!res.writableEnded) give();
+      });
+      res.on("error", give);
+    }
+    if (skipSuccessful) {
+      res.on("finish", () => judged(true));
+    }
+  };
 
   /** Sets the headers, then lets the request on or refuses it. */
   const conclude = (
@@ -1243,7 +1458,9 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     next: NextFunction,
     results: ThrottleResult[],
     route: string,
+    refund: (() => MaybePromise<unknown>) | undefined,
   ): unknown => {
+    if (refund !== undefined) refundWhenDone(req, res, refund);
     const recorded = RESULTS.get(req);
     if (recorded === undefined) RESULTS.set(req, results);
     else recorded.push(...results);
@@ -1320,16 +1537,20 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     const at = now();
     // The caller's functions first: an error there is a bug, for the error
     // handlers; only the store's failures go to `failMode`.
-    let inputs: MaybePromise<[string, number][]>;
+    let inputs: MaybePromise<Input[]>;
     try {
       inputs = inputsOf(req, plan);
     } catch (error) {
       return next(error as Error);
     }
-    const onStoreError = (
-      error: unknown,
-      resolved: [string, number][],
-    ): unknown => {
+    /** The refund of what `counter` counted, when the options ask for one. */
+    const refundIn =
+      (counter: ThrottleStore, resolved: Input[]) =>
+      (list: ThrottleResult[]): (() => MaybePromise<unknown>) | undefined =>
+        refunds
+          ? () => refundAll(counter, plan, resolved, scopeKey, at, list)
+          : undefined;
+    const onStoreError = (error: unknown, resolved: Input[]): unknown => {
       if (!(error instanceof StoreFailure)) throw error;
       if (failMode === "closed") {
         return next(new ThrottleStoreError(store.name, error.cause));
@@ -1353,12 +1574,27 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
       }
       return isThenable(degraded)
         ? degraded.then(
-            (list) => conclude(req, res, next, list, route),
+            (list) =>
+              conclude(
+                req,
+                res,
+                next,
+                list,
+                route,
+                refundIn(fallback, resolved)(list),
+              ),
             () => next(),
           )
-        : conclude(req, res, next, degraded, route);
+        : conclude(
+            req,
+            res,
+            next,
+            degraded,
+            route,
+            refundIn(fallback, resolved)(degraded),
+          );
     };
-    const counted = (resolved: [string, number][]): unknown => {
+    const counted = (resolved: Input[]): unknown => {
       let results: MaybePromise<ThrottleResult[]>;
       try {
         results = countAll(store, plan, resolved, scopeKey, at, false);
@@ -1367,11 +1603,26 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
       }
       if (isThenable(results)) {
         return results.then(
-          (list) => conclude(req, res, next, list, route),
+          (list) =>
+            conclude(
+              req,
+              res,
+              next,
+              list,
+              route,
+              refundIn(store, resolved)(list),
+            ),
           (error: unknown) => onStoreError(error, resolved),
         );
       }
-      return conclude(req, res, next, results, route);
+      return conclude(
+        req,
+        res,
+        next,
+        results,
+        route,
+        refundIn(store, resolved)(results),
+      );
     };
     if (isThenable(inputs)) {
       return inputs.then(counted, (error: unknown) => next(error as Error));
@@ -1423,7 +1674,7 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
       state.limits.map((limit): ThrottlePolicy =>
         Object.freeze({
           name: limit.name,
-          limit: limit.limit,
+          limit: typeof limit.limit === "number" ? limit.limit : "dynamic",
           window: limit.window,
           algorithm,
           scope: scope ?? "global",
@@ -1485,9 +1736,7 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     for (const limit of state.limits) {
       if (names !== undefined && !names.has(limit.name)) continue;
       if (algorithm === "gcra") {
-        keys.push(
-          `${prefix}:${limit.name}:gcra:${limit.window}:${limit.limit}:${scopeKey}:${key}`,
-        );
+        keys.push(gcraKey(limit, { name: limit.name, key, scope: scopeKey }));
         continue;
       }
       const base = `${prefix}:${limit.name}:${limit.window}:${scopeKey}:${key}`;
