@@ -84,7 +84,8 @@ documents in reading order and lists the rules that must never be broken.
 The machine rebooted on 2026-10-22, which empties `/tmp`. Before any gate:
 
 1. **Bun.** `bun --revision` should be a 1.4.4 canary. Everything was last
-   verified on `1.4.4-canary.1+6bb5dc195`. If a later canary changes lint or
+   verified on `1.4.4-canary.1+11c367163` (2026-11-08; before that
+   `6bb5dc195`). If a later canary changes lint or
    format output, that change is the canary's (CLAUDE.md, "Dev workflow").
 2. **The heavy-run wrapper is not installed** after the reboot:
    `bun scripts/install-heavy-run.ts` from an up-to-date develop

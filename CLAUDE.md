@@ -67,7 +67,11 @@ and the plan's figures are as old as that build. The machine moved to
 **1.4.4-canary.1+6bb5dc195** on 2026-10-20 (the user's decision): `bun lint`
 gave the same findings, rule by rule, in all 12 linted directories,
 `bun fmt --check` flagged the same 92 files (before PR E's reformat), and `scripts/typecheck.ts` stayed
-clean (measured against the old binary on develop f325f269). **A later canary can change
+clean (measured against the old binary on develop f325f269). It has run
+**1.4.4-canary.1+11c367163** since early November: on develop 5a8c331e
+(2026-11-08) `bun lint` has 0 errors in every linted directory and `scripts/`,
+and `bun fmt --check` is clean (2611 files); its warnings were not compared
+rule by rule with 6bb5dc195's. **A later canary can change
 rule or format output**: a new finding or a reformatted file after
 `bun upgrade --canary` is the canary's, and goes to the bun-lint-fmt plan's
 lead with both revisions rather than being fixed in passing. Using the
