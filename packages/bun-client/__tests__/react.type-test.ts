@@ -66,11 +66,15 @@ interface Routes {
 
 type UserError = HttpError<Routes["GET /users/:id"]> | ClientError;
 
-// The hooks' factory returns the four hooks, typed by the map.
+// The hooks' factory returns the five hooks, typed by the map.
 export type _hooks = Expect<
   Equal<
     keyof ReturnType<typeof createApiHooks<Routes>>,
-    "useApi" | "useApiSuspense" | "useApiInfinite" | "useApiMutation"
+    | "useApi"
+    | "useApiSuspense"
+    | "useApiInfinite"
+    | "useApiMutation"
+    | "useLive"
   >
 >;
 
@@ -320,3 +324,23 @@ function UseApiByo() {
   type _createdType = Expect<Equal<typeof _created.data, Parsed | undefined>>;
 }
 void UseApiByo;
+
+/* ---- useLive ---- */
+
+const { useLive } = createApiHooks(q);
+function UseLive() {
+  useLive();
+  useLive({ transport: "sse" });
+  useLive({
+    onDenied: (_tags) => {
+      type _tagsType = Expect<Equal<typeof _tags, string[]>>;
+    },
+  });
+  const _returns: void = useLive();
+  void _returns;
+  // @ts-expect-error no such transport
+  useLive({ transport: "polling" });
+  // @ts-expect-error the client comes from `q`, not an argument
+  useLive(createClient<Routes>());
+}
+void UseLive;

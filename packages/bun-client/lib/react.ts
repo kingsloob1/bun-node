@@ -25,11 +25,13 @@
  * rollback. The `QueryClient` comes from react-query's own
  * `QueryClientProvider`; there is no provider of ours.
  *
- * Not here yet, by the plan: `useLive(tags)` waits for the live channel
- * (`live(api)`, PR-W4), and `<ApiHydrate state>` for bun-views' hydration
- * (BVW PR-5, §6.6). Until then react-query's `HydrationBoundary` takes a
- * `dehydrate(queryClient)` state of these queries as it is: their keys and
- * data are plain JSON.
+ * `useLive` keeps the provider's queries fresh over bun-common's live
+ * channel (`./query`'s `live()`) while a component is mounted.
+ *
+ * Not here yet, by the plan: `<ApiHydrate state>` waits for bun-views'
+ * hydration (BVW PR-5, §6.6). Until then react-query's `HydrationBoundary`
+ * takes a `dehydrate(queryClient)` state of these queries as it is: their
+ * keys and data are plain JSON.
  *
  * `react` and `@tanstack/react-query` are optional peers: only this entry
  * imports react-query, and nothing else of the package imports this entry.
@@ -40,6 +42,7 @@ import type {
   ApiQueryOptions,
   InfiniteCallOptions,
   InfiniteConfig,
+  LiveOptions,
   MutationConfig,
   OptimisticSnapshot,
   Queries,
@@ -54,6 +57,7 @@ import type {
 } from "./types";
 import type {
   InfiniteData,
+  QueryClient,
   UseInfiniteQueryOptions,
   UseInfiniteQueryResult,
   UseMutationOptions,
@@ -67,8 +71,10 @@ import {
   useInfiniteQuery,
   useMutation,
   useQuery,
+  useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                                */
@@ -299,14 +305,34 @@ export interface ApiHooks<R> {
     MutationVariables<R[K]>,
     OptimisticSnapshot
   >;
+  /**
+   * Keeps the provider's queries fresh over bun-common's live channel while
+   * the calling component is mounted (`websocket.md` §9;
+   * `liveInvalidation()` on the server): `./query`'s `live()` over the
+   * client `q` was made from and react-query's `QueryClient`, started in an
+   * effect and stopped on unmount, so the server's invalidations refetch
+   * the queries the page shows. Call it once, near the root, under the
+   * `QueryClientProvider`: each call opens its own connection. A new
+   * `QueryClient` or `transport` restarts it; `onDenied` is read when the
+   * server refuses tags, so a new function each render does not (giving
+   * one where there was none, or taking it away, does). Under StrictMode's
+   * double mount the first start is stopped before it connects (the
+   * implementation loads first), so one connection opens.
+   */
+  useLive: (options?: LiveOptions) => void;
 }
 
 /* ------------------------------------------------------------------ */
 /* The hooks                                                            */
 /* ------------------------------------------------------------------ */
 
+/** The symbol `queries()` keeps `live()` over its client under (`./query`). */
+const LIVE = Symbol.for("@kingsleyweb/bun-client/query#live");
+
 /** A query layer's factories, called untyped. */
 interface RuntimeQueries {
+  /** `live()` over the layer's client. */
+  [LIVE]: (queryClient: QueryClient, options?: LiveOptions) => () => void;
   /** `Queries.query`. */
   query: (path: string, options?: object) => QueryShape;
   /** `Queries.infinite`. */
@@ -366,7 +392,7 @@ function compose(
 
 /**
  * The React hooks over a query layer (plan §7.1): `useApi`,
- * `useApiSuspense`, `useApiInfinite` and `useApiMutation`, typed by the
+ * `useApiSuspense`, `useApiInfinite`, `useApiMutation` and `useLive`, typed by the
  * route map of the client `q` was made from. Call it once per client, at
  * module level, and export the hooks; they read the `QueryClient` from
  * react-query's `QueryClientProvider`.
@@ -443,6 +469,33 @@ export function createApiHooks<R>(q: Queries<R>): ApiHooks<R> {
     } as unknown as UseMutationOptions);
   };
 
-  const hooks = { useApi, useApiSuspense, useApiInfinite, useApiMutation };
+  const useLive = (options?: LiveOptions) => {
+    const queryClient = useQueryClient();
+    const onDenied = useRef(options?.onDenied);
+    useEffect(() => {
+      onDenied.current = options?.onDenied;
+    });
+    const transport = options?.transport;
+    // Whether there is a callback, not which: the latest is read when called.
+    const reports = options?.onDenied !== undefined;
+    useEffect(
+      () =>
+        factories[LIVE](queryClient, {
+          ...(transport === undefined ? {} : { transport }),
+          ...(reports
+            ? { onDenied: (tags: string[]) => onDenied.current?.(tags) }
+            : {}),
+        }),
+      [queryClient, transport, reports],
+    );
+  };
+
+  const hooks = {
+    useApi,
+    useApiSuspense,
+    useApiInfinite,
+    useApiMutation,
+    useLive,
+  };
   return hooks as unknown as ApiHooks<R>;
 }

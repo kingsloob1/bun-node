@@ -310,11 +310,11 @@ describe("the ./react entry (plan §7.1, §10.1)", () => {
       (match) => match[1],
     );
 
-  it("imports react-query and nothing else, and holds nothing of a server, the query layer or the core client", async () => {
+  it("imports react-query and React (`useLive`'s effect) and nothing else, and holds nothing of a server, the query layer or the core client", async () => {
     const { code, logs } = await build(REACT, PEERS);
     expect(logs).toEqual([]);
     expect(code!.includes("function createApiHooks")).toBe(true);
-    expect(importsOf(code!)).toEqual(["@tanstack/react-query"]);
+    expect(importsOf(code!).sort()).toEqual(["@tanstack/react-query", "react"]);
     expect(serverMarkersIn(code!)).toEqual([]);
     expect(code!.includes("function createClient")).toBe(false);
     expect(code!.includes("function queries")).toBe(false);

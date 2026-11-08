@@ -265,7 +265,7 @@ describe("dependencies (plan D17, §10.1)", () => {
     }
   });
 
-  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, query-core in ./query alone (its types in the live layer), react-query in ./react alone, and query-persist-client-core's types in ./persist alone (plan §12.1)", async () => {
+  it("imports in lib/ only its own modules, types from bun-contract and zod, bun-contract's guards in one place, query-core in ./query alone (its types in the live layer), react-query and React in ./react alone, and query-persist-client-core's types in ./persist alone (plan §12.1)", async () => {
     for (const file of readdirSync(join(ROOT, "lib")).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     )) {
@@ -293,8 +293,12 @@ describe("dependencies (plan D17, §10.1)", () => {
           ).toBe(true);
           continue;
         }
-        // react-query: the ./react entry alone (its optional peer).
-        if (found.specifier === "@tanstack/react-query") {
+        // react-query and React: the ./react entry alone (its optional
+        // peers; React for `useLive`'s effect).
+        if (
+          found.specifier === "@tanstack/react-query" ||
+          found.specifier === "react"
+        ) {
           expect(found.file).toBe("react.ts");
           continue;
         }

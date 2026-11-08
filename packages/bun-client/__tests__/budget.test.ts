@@ -49,6 +49,14 @@
  * (React external) 17.9 KiB and 6.0 KiB. The `.` and `./query` entries are
  * unchanged by it (no file they bundle changed).
  *
+ * `useLive` (2026-11-08, the same build): `./react` 1,186 bytes minified,
+ * 567 gzipped (855 and 390 before; it starts `live()` through a symbol
+ * `queries()` puts on its factories, so the entry still imports nothing of
+ * `./query`); the limits were raised from 0.95 and 0.5 KiB to 1.3 and
+ * 0.6 KiB for it. `./query` 6,978 and 2,890 (that symbol, and a
+ * mutation's `validate`); the live chunk 3,897 and 1,773 (`hello`'s
+ * `denied`). No other limit changed.
+ *
  * Since PR-C8 the `./persist` entry has its own budget,
  * {@link PERSIST_BUDGET}: the IndexedDB persister, which imports only
  * types from `@tanstack/query-persist-client-core`, so the bundle is its own
@@ -220,10 +228,11 @@ const QUERY_BUDGET = {
  * for raising them.
  */
 const REACT_BUDGET = {
+  // Raised from 0.95 and 0.5 KiB for `useLive` (measured above).
   /** The entry, minified, react-query, query-core and React external, in bytes. */
-  minifiedBytes: 0.95 * 1024,
+  minifiedBytes: 1.3 * 1024,
   /** The entry gzipped, its peers external, in bytes. */
-  gzipBytes: 0.5 * 1024,
+  gzipBytes: 0.6 * 1024,
 } as const;
 
 /**
