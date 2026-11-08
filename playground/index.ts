@@ -10,6 +10,7 @@
  * PLAYGROUND_DRIVER=memory bun playground/index.ts   # no disk, no summoning
  * PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts   # seed only, then quiet
  * PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts  # uploads unit's controller on the mailer
+ * PLAYGROUND_LIVE_BUS=redis://127.0.0.1:6379/12 bun playground/index.ts  # live invalidation across playgrounds
  * cd playground && bun run dev                    # restart on file changes
  * ```
  *
