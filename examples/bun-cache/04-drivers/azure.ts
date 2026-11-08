@@ -332,9 +332,17 @@ try {
     namespace: "expiring",
     sweepInterval: 0,
   });
-  await expiring.set("read", "gone soon", { ttl: 200 });
+  // Fresh for a minute, so the read below is fresh however long the round
+  // trips take (a shared Azurite under load took over a second for these
+  // three), then `touch` cuts it to 200 ms from now.
+  await expiring.set("read", "gone soon", { ttl: 60_000 });
   await expiring.set("unread", "gone soon too", { ttl: 200 });
   checkEqual("it reads while fresh", await expiring.get("read"), "gone soon");
+  checkEqual(
+    "touch shortens its life to 200 ms",
+    await expiring.touch("read", 200),
+    true,
+  );
   await waitFor("the entry to expire", async () => {
     return (await expiring.get("read")) === undefined;
   });
@@ -345,17 +353,20 @@ try {
   );
   // The read above is a miss because the entry's header says so; deleting the
   // blob is housekeeping (done in the background on a read, or by a sweep).
-  // The sweeper learns each blob's expiry from the listing alone.
-  const swept = await expiringDriver.sweep!(Date.now(), 1_000);
-  show("entries and counters the sweep removed", swept);
-  await waitFor(
-    "the expired blobs to be gone",
-    async () =>
+  // The sweeper learns each blob's expiry from the listing alone. It runs
+  // until the namespace is empty, as the cache's own sweeper would, a pass
+  // per `sweepInterval`: the check waits on the blobs being gone, not on one
+  // pass having taken them all (a pooled run once saw a pass remove nothing,
+  // and the blobs outlive a 15 s wait).
+  let swept = 0;
+  await waitFor("the sweeper to reclaim the expired blobs", async () => {
+    swept += await expiringDriver.sweep!(Date.now(), 1_000);
+    return (
       (await namesUnder(prefix)).filter((name) => name.includes("/expiring/"))
-        .length === 0,
-    // The default deadline: the deletes run in the background, and a pooled
-    // run shares Azurite with the other examples (a 5 s bound flaked there).
-  );
+        .length === 0
+    );
+  });
+  show("entries and counters the sweeps removed", swept);
   checkEqual(
     "no blob of the expired namespace is left",
     (await namesUnder(prefix)).filter((name) => name.includes("/expiring/")),
