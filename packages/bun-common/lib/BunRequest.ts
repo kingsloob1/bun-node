@@ -2025,6 +2025,14 @@ export class BunRequest<
    * `undefined` only when a caller constructed the request without one.
    */
   readonly #server: BunServer | undefined;
+  /**
+   * The socket peer, once {@link socketAddress} found one: the peer of a
+   * request never changes, and `server.requestIP()` builds a new object per
+   * call, which `ip`, `protocol`, `host` and `hostname` each asked for under
+   * `trustProxy`. `undefined` until found (a `null` answer is not kept, so a
+   * peer is still found if it was not at first).
+   */
+  #socketAddress: SocketAddress | undefined;
   /** True once the `data`/`end`/`error` body events have been emitted. */
   get #bodyEventsEmitted(): boolean {
     const holder = this.#state;
@@ -3177,8 +3185,20 @@ export class BunRequest<
     this.#parsedUrl = value;
   }
 
+  /**
+   * The socket peer (`server.requestIP()`), asked for once and kept for the
+   * request's life; `null` when there is none (a socket-free `fetch()`
+   * without a `remoteAddress`).
+   */
   get socketAddress(): SocketAddress | null {
-    return this.#server?.requestIP(this.request) || null;
+    if (this.#socketAddress !== undefined) {
+      return this.#socketAddress;
+    }
+    const found = this.#server?.requestIP(this.request) || null;
+    if (found !== null) {
+      this.#socketAddress = found;
+    }
+    return found;
   }
 
   /**
