@@ -45,7 +45,13 @@ import type {
   Queries,
   QueryCallOptions,
 } from "./query";
-import type { CallArgs, EntryAt, PathsOf, SuccessData } from "./types";
+import type {
+  CallArgs,
+  EntryAt,
+  PathsOf,
+  SuccessData,
+  ValidationConfig,
+} from "./types";
 import type {
   InfiniteData,
   UseInfiniteQueryOptions,
@@ -163,11 +169,25 @@ export type UseApiMutationOptions<TData, TError, TVariables> = Omit<
   "mutationKey" | "mutationFn" | "onMutate"
 >;
 
-/** A query hook's arguments: the call's options (required when the route has a required part), then react-query's. */
-type HookArgs<E, X> =
+/** A response validation a hook's options may carry (`validate.response`, §5.4). */
+type ResponseValidation = ValidationConfig["response"];
+
+/**
+ * A query hook's arguments: the call's options (required when the route has
+ * a required part), their `validate.response` captured as `V`, then
+ * react-query's.
+ */
+type HookArgs<E, X, V extends ResponseValidation = undefined> =
   [] extends CallArgs<E>
-    ? [options?: QueryCallOptions<E>, query?: X]
-    : [options: QueryCallOptions<E>, query?: X];
+    ? [options?: QueryCallOptions<E, V>, query?: X]
+    : [options: QueryCallOptions<E, V>, query?: X];
+
+/** A GET route's success data, as a BYO response schema `V` may type it. */
+type DataAt<R, P, V extends ResponseValidation> = SuccessData<
+  GetEntry<R, P>,
+  undefined,
+  V
+>;
 
 /** The hooks {@link createApiHooks} returns, typed by route map `R`. */
 export interface ApiHooks<R> {
@@ -176,18 +196,24 @@ export interface ApiHooks<R> {
    * `useApi("/users/:id", { params: { id } })`. `data` is the route's
    * success body (or `select`'s result), `error` the client's error for it
    * (`HttpError` with the route's declared error bodies, or another
-   * `ClientError`).
+   * `ClientError`). A BYO schema in the options' `validate.response` for a
+   * success status types `data` as its output (§5.4).
    */
-  useApi: <P extends PathsOf<R, "GET">, TSelect = SuccessData<GetEntry<R, P>>>(
+  useApi: <
+    P extends PathsOf<R, "GET">,
+    V extends ResponseValidation = undefined,
+    TSelect = DataAt<R, P, V>,
+  >(
     path: P,
     ...args: HookArgs<
       GetEntry<R, P>,
       UseApiOptions<
-        SuccessData<GetEntry<R, P>>,
+        DataAt<R, P, V>,
         ErrorOf<GetEntry<R, P>>,
         TSelect,
         `GET ${P}`
-      >
+      >,
+      V
     >
   ) => UseQueryResult<TSelect, ErrorOf<GetEntry<R, P>>>;
   /**
@@ -200,17 +226,19 @@ export interface ApiHooks<R> {
    */
   useApiSuspense: <
     P extends PathsOf<R, "GET">,
-    TSelect = SuccessData<GetEntry<R, P>>,
+    V extends ResponseValidation = undefined,
+    TSelect = DataAt<R, P, V>,
   >(
     path: P,
     ...args: HookArgs<
       GetEntry<R, P>,
       UseApiSuspenseOptions<
-        SuccessData<GetEntry<R, P>>,
+        DataAt<R, P, V>,
         ErrorOf<GetEntry<R, P>>,
         TSelect,
         `GET ${P}`
-      >
+      >,
+      V
     >
   ) => UseSuspenseQueryResult<TSelect, ErrorOf<GetEntry<R, P>>>;
   /**
@@ -222,23 +250,24 @@ export interface ApiHooks<R> {
   useApiInfinite: <
     P extends PathsOf<R, "GET">,
     F extends keyof QueryOf<GetEntry<R, P>> & string,
+    V extends ResponseValidation = undefined,
   >(
     path: P,
-    options: InfiniteCallOptions<GetEntry<R, P>, F>,
+    options: InfiniteCallOptions<GetEntry<R, P>, F, V>,
     page: InfiniteConfig<
-      SuccessData<GetEntry<R, P>>,
+      DataAt<R, P, V>,
       FieldOf<QueryOf<GetEntry<R, P>>, F>,
       F
     >,
     query?: UseApiInfiniteOptions<
-      SuccessData<GetEntry<R, P>>,
+      DataAt<R, P, V>,
       ErrorOf<GetEntry<R, P>>,
       FieldOf<QueryOf<GetEntry<R, P>>, F>,
       `GET ${P}`
     >,
   ) => UseInfiniteQueryResult<
     InfiniteData<
-      SuccessData<GetEntry<R, P>>,
+      DataAt<R, P, V>,
       FieldOf<QueryOf<GetEntry<R, P>>, F> | undefined
     >,
     ErrorOf<GetEntry<R, P>>
@@ -249,18 +278,23 @@ export interface ApiHooks<R> {
    * `mutate({ params, body })`. On success it invalidates the route's
    * declared `invalidates` tags, and settles after their refetches;
    * `optimistic` writes the named GET routes' cached queries first and puts
-   * them back if the request fails.
+   * them back if the request fails. A BYO schema in the config's
+   * `validate.response` for a success status types `data` as its output
+   * (§5.4).
    */
-  useApiMutation: <K extends keyof R & string>(
+  useApiMutation: <
+    K extends keyof R & string,
+    S extends ResponseValidation = undefined,
+  >(
     key: K,
-    config?: MutationConfig<R, MutationVariables<R[K]>>,
+    config?: MutationConfig<R, MutationVariables<R[K]>, S>,
     options?: UseApiMutationOptions<
-      SuccessData<R[K]>,
+      SuccessData<R[K], undefined, S>,
       ErrorOf<R[K]>,
       MutationVariables<R[K]>
     >,
   ) => UseMutationResult<
-    SuccessData<R[K]>,
+    SuccessData<R[K], undefined, S>,
     ErrorOf<R[K]>,
     MutationVariables<R[K]>,
     OptimisticSnapshot

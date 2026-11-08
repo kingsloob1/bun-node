@@ -11,6 +11,7 @@
 import type { ClientError, HttpError, Jsonify } from "../lib/index";
 import type { OptimisticSnapshot } from "../lib/query";
 import type { InfiniteData } from "@tanstack/react-query";
+import { z } from "zod";
 import { createClient } from "../lib/index";
 import { queries } from "../lib/query";
 import { createApiHooks } from "../lib/react";
@@ -260,3 +261,62 @@ function UseApiMutation() {
   useApiMutation("DELETE /users/:id").mutate({ params: { id: "1" } });
 }
 void UseApiMutation;
+
+/* ---- BYO response types (§5.4) ---- */
+
+const UserWithDate = z.object({
+  id: z.string(),
+  name: z.string(),
+  createdAt: z.iso.datetime().transform((at) => new Date(at)),
+});
+type Parsed = z.output<typeof UserWithDate>;
+const byo = { response: { 200: { custom: UserWithDate } } } as const;
+
+function UseApiByo() {
+  const _one = useApi("/users/:id", { params: { id: "1" }, validate: byo });
+  type _oneType = Expect<Equal<typeof _one.data, Parsed | undefined>>;
+  // `select` reads the BYO output.
+  const _at = useApi(
+    "/users/:id",
+    { params: { id: "1" }, validate: byo },
+    { select: (user) => user.createdAt },
+  );
+  type _atType = Expect<Equal<typeof _at.data, Date | undefined>>;
+  const _suspended = useApiSuspense("/users/:id", {
+    params: { id: "1" },
+    validate: byo,
+  });
+  type _suspendedType = Expect<Equal<typeof _suspended.data, Parsed>>;
+  // Control: without it, the wire type.
+  const _wire = useApi("/users/:id", { params: { id: "1" } });
+  type _wireType = Expect<Equal<typeof _wire.data, Jsonify<User> | undefined>>;
+  // @ts-expect-error the wire's createdAt is a string, not the BYO Date
+  type _wireIsParsed = Expect<Equal<typeof _wire.data, Parsed | undefined>>;
+  const _pages = useApiInfinite(
+    "/users",
+    {
+      validate: {
+        response: {
+          200: {
+            custom: z.object({
+              items: z.array(UserWithDate),
+              next: z.number().nullable(),
+            }),
+          },
+        },
+      },
+    },
+    { pageParam: "page", next: (last) => last.next },
+  );
+  type _pagesType = Expect<
+    Equal<
+      NonNullable<typeof _pages.data>["pages"][number]["items"][number],
+      Parsed
+    >
+  >;
+  const _created = useApiMutation("POST /users", {
+    validate: { response: { 201: { custom: UserWithDate } } },
+  });
+  type _createdType = Expect<Equal<typeof _created.data, Parsed | undefined>>;
+}
+void UseApiByo;

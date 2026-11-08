@@ -642,7 +642,11 @@ createClient<Routes>({
   The type holds when the check passes. Under `"warn"` (the response
   default), or a hook that returns, a failed check delivers the body as it
   arrived, so a call whose BYO schema transforms is safest with
-  `onFailure: { response: "throw" }`.
+  `onFailure: { response: "throw" }`. The query layer and the React hooks
+  type their data the same way, from the options' `validate.response`
+  (`q.query`, `q.infinite`, `useApi`, `useApiSuspense`, `useApiInfinite`)
+  or a mutation's config (`q.mutation(key, { validate })`,
+  `useApiMutation`): [below](#the-query-layer-query).
 - A part's `custom` runs whatever the mode (it was asked for), unless a
   `false` turns the part off; a call's replaces the route's.
 
@@ -793,6 +797,17 @@ client's error (`HttpError`, `UnexpectedStatusError`, `NetworkError`, …),
 whatever the client's `throwOnError`, because that is how query-core tells
 success from failure. Both retry layers apply, the client's per request and
 query-core's per query: turn one off.
+
+A BYO schema set in the options' `validate.response` for a success status
+types the data as its output, as on the HTTP client
+([above](#bring-your-own)): `q.query("/events/:id", { params, validate: {
+response: { 200: { custom: EventWithDate } } } })` caches `EventWithDate`'s
+output, and so do `q.infinite` (each page) and the React hooks. The key does
+not hold the validation, so two queries of one route and params share one
+cache entry whatever they validate: give a route one BYO schema. A
+mutation's data is typed by its config's `validate` (`q.mutation(key, {
+validate })`), which applies to every call of it; variables that carry
+their own `validate` use theirs instead.
 
 `queries(api, { manifest })` takes the manifest the client was given; it
 holds the routes' declared tags. Without it only the tags the responses send

@@ -77,6 +77,7 @@ import type {
   RouteManifest,
   RouteMap,
   SuccessData,
+  ValidationConfig,
 } from "./types";
 import {
   hashKey,
@@ -98,14 +99,35 @@ type ErrorOf<E> = HttpError<E> | ClientError;
  * (query-core's is used), and no `throwOnError`/`undeclaredStatus`: a query
  * function always resolves the success body and throws the client's error
  * otherwise.
+ *
+ * @typeParam V The call's `validate.response`, as `q.query()` and
+ *   `q.infinite()` capture it: a BYO schema set there for a 2xx status
+ *   types the query's data as the schema's output (§5.4), as on the HTTP
+ *   client. Default: any, typing nothing.
  */
-export type QueryCallOptions<E> = CallParts<E> & Omit<RouteConfig, "headers">;
+export type QueryCallOptions<
+  E,
+  V extends ValidationConfig["response"] = ValidationConfig["response"],
+> = CallParts<E> &
+  Omit<RouteConfig, "headers" | "validate"> & {
+    /**
+     * Validation for this call, merged per key over the route's and the
+     * client's; `false` turns it all off. A BYO schema set for a success
+     * status (`response: { 200: { custom } }`) types the data as its output,
+     * which is what the client delivers when the check passes (§5.4; a
+     * failed check under `"warn"` delivers the body as it arrived, so
+     * `onFailure: { response: "throw" }` is the safe pairing). The query's
+     * key does not hold it: two queries of one route and params share one
+     * cache entry whatever they validate. Default: the route's.
+     */
+    validate?: false | (ValidationConfig & { response?: V });
+  };
 
 /** The options argument, required when the route has a required part. */
-type QueryArgs<E> =
+type QueryArgs<E, V extends ValidationConfig["response"] = undefined> =
   [] extends CallArgs<E>
-    ? [options?: QueryCallOptions<E>]
-    : [options: QueryCallOptions<E>];
+    ? [options?: QueryCallOptions<E, V>]
+    : [options: QueryCallOptions<E, V>];
 
 /** A mutation's variables: its call options, or nothing when no part is required. */
 type MutationVariables<E> =
@@ -204,8 +226,20 @@ type OptimisticWriters<R, V> = {
   ) => SuccessData<EntryAt<R, `GET ${P}`>> | undefined;
 };
 
-/** The options of `q.mutation()`. */
-export interface MutationConfig<R, V> {
+/**
+ * The options of `q.mutation()`.
+ *
+ * @typeParam R The route map.
+ * @typeParam V The mutation's variables.
+ * @typeParam S Its `validate.response`, captured so a BYO schema set for a
+ *   success status types the mutation's data (§5.4). Default: any, typing
+ *   nothing.
+ */
+export interface MutationConfig<
+  R,
+  V,
+  S extends ValidationConfig["response"] = ValidationConfig["response"],
+> {
   /**
    * Writes to the cache before the request is sent, put back if it fails
    * (§6.4): per GET route key, a function from a cached query's data and the
@@ -218,6 +252,14 @@ export interface MutationConfig<R, V> {
    * settles. Default: none.
    */
   optimistic?: OptimisticWriters<R, V>;
+  /**
+   * Validation for every call of the mutation, as a call's `validate`
+   * (merged per key over the route's and the client's). A BYO schema set
+   * for a success status (`response: { 201: { custom } }`) types the
+   * mutation's data as the schema's output (§5.4). Variables that carry
+   * their own `validate` use it instead of this one. Default: the route's.
+   */
+  validate?: false | (ValidationConfig & { response?: S });
 }
 
 /** What `q.mutation()` returns: mutation options for a `MutationObserver` or `useMutation`. */
@@ -304,12 +346,19 @@ export interface Queries<R> {
       query?: object;
     },
   ) => QueryKey;
-  /** Query options for a GET route, by path: `q.query("/users/:id", { params: { id } })`. */
-  query: <P extends PathsOf<R, "GET">>(
+  /**
+   * Query options for a GET route, by path: `q.query("/users/:id", { params:
+   * { id } })`. A BYO schema in the options' `validate.response` for a
+   * success status types the data as its output (§5.4).
+   */
+  query: <
+    P extends PathsOf<R, "GET">,
+    V extends ValidationConfig["response"] = undefined,
+  >(
     path: P,
-    ...args: QueryArgs<EntryAt<R, `GET ${P}`>>
+    ...args: QueryArgs<EntryAt<R, `GET ${P}`>, V>
   ) => ApiQueryOptions<
-    SuccessData<EntryAt<R, `GET ${P}`>>,
+    SuccessData<EntryAt<R, `GET ${P}`>, undefined, V>,
     ErrorOf<EntryAt<R, `GET ${P}`>>,
     `GET ${P}`
   >;
@@ -322,26 +371,34 @@ export interface Queries<R> {
   infinite: <
     P extends PathsOf<R, "GET">,
     F extends keyof QueryOf<EntryAt<R, `GET ${P}`>> & string,
+    V extends ValidationConfig["response"] = undefined,
   >(
     path: P,
-    options: InfiniteCallOptions<EntryAt<R, `GET ${P}`>, F>,
+    options: InfiniteCallOptions<EntryAt<R, `GET ${P}`>, F, V>,
     page: InfiniteConfig<
-      SuccessData<EntryAt<R, `GET ${P}`>>,
+      SuccessData<EntryAt<R, `GET ${P}`>, undefined, V>,
       FieldOf<QueryOf<EntryAt<R, `GET ${P}`>>, F>,
       F
     >,
   ) => ApiInfiniteOptions<
-    SuccessData<EntryAt<R, `GET ${P}`>>,
+    SuccessData<EntryAt<R, `GET ${P}`>, undefined, V>,
     ErrorOf<EntryAt<R, `GET ${P}`>>,
     FieldOf<QueryOf<EntryAt<R, `GET ${P}`>>, F>,
     `GET ${P}`
   >;
-  /** Mutation options for any route, by key: `q.mutation("POST /users", { optimistic })`. */
-  mutation: <K extends keyof R & string>(
+  /**
+   * Mutation options for any route, by key: `q.mutation("POST /users", {
+   * optimistic })`. A BYO schema in the config's `validate.response` for a
+   * success status types the data as its output (§5.4).
+   */
+  mutation: <
+    K extends keyof R & string,
+    S extends ValidationConfig["response"] = undefined,
+  >(
     key: K,
-    config?: MutationConfig<R, MutationVariables<R[K]>>,
+    config?: MutationConfig<R, MutationVariables<R[K]>, S>,
   ) => ApiMutationOptions<
-    SuccessData<R[K]>,
+    SuccessData<R[K], undefined, S>,
     ErrorOf<R[K]>,
     MutationVariables<R[K]>,
     K
@@ -421,11 +478,16 @@ type RequiredKeysOf<T> = {
 /** The query with field `F` optional. */
 type PageQuery<Q, F extends keyof Q> = Omit<Q, F> & Partial<Pick<Q, F>>;
 
-/** An infinite query's call options: the page field optional in `query`. */
-export type InfiniteCallOptions<E, F extends keyof QueryOf<E>> = Omit<
-  QueryCallOptions<E>,
-  "query"
-> &
+/**
+ * An infinite query's call options: the page field optional in `query`.
+ * `V` is its `validate.response`, as {@link QueryCallOptions}' (each page's
+ * data typed by a BYO schema's output).
+ */
+export type InfiniteCallOptions<
+  E,
+  F extends keyof QueryOf<E>,
+  V extends ValidationConfig["response"] = ValidationConfig["response"],
+> = Omit<QueryCallOptions<E, V>, "query"> &
   ([RequiredKeysOf<PageQuery<QueryOf<E>, F>>] extends [never]
     ? {
         /** The query, the page field optional. */
@@ -891,6 +953,7 @@ export function queries<R extends RouteMap<R>, F extends ClientFlags>(
           ((old: unknown, variables: unknown) => unknown) | undefined
         >
       >;
+      validate?: unknown;
     } = {},
   ) => {
     const invalidates = manifest[routeKey]?.cache?.invalidates ?? [];
@@ -923,6 +986,9 @@ export function queries<R extends RouteMap<R>, F extends ClientFlags>(
       mutationKey: [routeKey] as const,
       mutationFn: (variables: unknown) =>
         client.request(routeKey, {
+          ...(config.validate === undefined
+            ? {}
+            : { validate: config.validate }),
           ...asRecord(variables),
           throwOnError: true,
         }),

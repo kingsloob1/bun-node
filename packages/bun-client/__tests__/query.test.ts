@@ -17,6 +17,7 @@ import { addCacheTags, cacheResponse } from "@kingsleyweb/bun-cache/http";
 import { BunRouter } from "@kingsleyweb/bun-common";
 import { hashKey, MutationObserver, QueryClient } from "@tanstack/query-core";
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { z } from "zod";
 import { createClient, HttpError } from "../lib/index";
 import { invalidateTags, observe, queries, tagsOfQuery } from "../lib/query";
 
@@ -520,6 +521,71 @@ describe("ETag and 304 (§6.4, D14)", () => {
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(HttpError);
     expect((failure as HttpError).status).toBe(404);
+  });
+});
+
+describe("BYO response schemas (§5.4)", () => {
+  /** A BYO schema that transforms, so its output is told from the wire's. */
+  const Shouted = z.object({
+    id: z.string(),
+    name: z.string().transform((name) => name.toUpperCase()),
+  });
+
+  it("q.query delivers (and caches) a BYO schema's output for the status it is set for (control: without it, the wire body)", async () => {
+    const client = newQueryClient();
+    const shouted = q.query("/users/:id", {
+      params: { id: "1" },
+      validate: { response: { 200: { custom: Shouted } } },
+    });
+    const fetched = await client.fetchQuery(shouted);
+    expect(fetched.name).toBe("ADA");
+    expect(dataOf(client, shouted.queryKey)).toEqual({ id: "1", name: "ADA" });
+    const plain = await newQueryClient().fetchQuery(
+      q.query("/users/:id", { params: { id: "1" } }),
+    );
+    expect(plain.name).toBe("Ada");
+  });
+
+  it("q.infinite delivers each page as the schema's output", async () => {
+    const client = newQueryClient();
+    const pages = await client.fetchInfiniteQuery(
+      q.infinite(
+        "/users",
+        {
+          validate: {
+            response: {
+              200: {
+                custom: z.object({
+                  items: z.array(Shouted),
+                  next: z.number().nullable(),
+                }),
+              },
+            },
+          },
+        },
+        { pageParam: "page", next: (last) => last.next },
+      ),
+    );
+    expect(pages.pages[0]?.items.map((user) => user.name)).toEqual(
+      expect.arrayContaining(["ADA"]),
+    );
+  });
+
+  it("q.mutation's validate applies to every call (control: variables carrying their own validate use it instead)", async () => {
+    const client = newQueryClient();
+    const created = new MutationObserver(
+      client,
+      q.mutation("POST /users", {
+        validate: { response: { 201: { custom: Shouted } } },
+      }),
+    );
+    const data = await created.mutate({ body: { name: "Barbara" } });
+    expect(data.name).toBe("BARBARA");
+    const raw = await created.mutate({
+      body: { name: "Edsger" },
+      validate: false,
+    });
+    expect(raw.name).toBe("Edsger");
   });
 });
 
