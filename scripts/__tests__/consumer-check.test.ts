@@ -8,13 +8,23 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
-import type { CellResult, CellStatus, RunResult } from "../consumer-check";
+import type {
+  CellResult,
+  CellStatus,
+  ConsumerPlan,
+  ConsumerPlanner,
+  EntryConfig,
+  RunResult,
+} from "../consumer-check";
 import {
   bareSpecifiers,
   consumerManifest,
   failures,
+  planConsumers,
   resolveWorkDir,
+  runCheck,
   scanLeaks,
+  withoutOtherPeers,
 } from "../consumer-check";
 
 // The sentence that exposed the regex scanner, verbatim from bun-jobs'
@@ -313,4 +323,282 @@ describe("resolveWorkDir", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe("planConsumers: one consumer per optional-peer set", () => {
+  const optional = new Set(["@x/jobs", "@x/cache", "zod", "typescript"]);
+  const entry = (spelling: string, peers?: string[]): EntryConfig => ({
+    spelling,
+    peers,
+  });
+
+  it("checks entries without peers in the peerless consumer", () => {
+    expect(planConsumers([entry("@x/nest")], optional)).toEqual([
+      { name: "consumer", peers: [], spellings: ["@x/nest"] },
+    ]);
+  });
+
+  it("gives each distinct peer set its own consumer, holding that set only", () => {
+    // bun-nest's shape: `./jobs` and `./cache` were checked together, in one
+    // consumer that had both peers.
+    const plans = planConsumers(
+      [
+        entry("@x/nest"),
+        entry("@x/nest/jobs", ["@x/jobs"]),
+        entry("@x/nest/cache", ["@x/cache"]),
+      ],
+      optional,
+    );
+    expect(plans).toEqual([
+      { name: "consumer", peers: [], spellings: ["@x/nest"] },
+      {
+        name: "consumer-peers-x_jobs",
+        peers: ["@x/jobs"],
+        spellings: ["@x/nest/jobs"],
+      },
+      {
+        name: "consumer-peers-x_cache",
+        peers: ["@x/cache"],
+        spellings: ["@x/nest/cache"],
+      },
+    ]);
+  });
+
+  it("shares one install between entries listing the same set, in any order", () => {
+    const plans = planConsumers(
+      [
+        entry("@x/nest/both", ["@x/jobs", "@x/cache"]),
+        entry("@x/nest/lib/both", ["@x/cache", "@x/jobs", "@x/cache"]),
+      ],
+      optional,
+    );
+    expect(plans).toHaveLength(2);
+    expect(plans[1]).toEqual({
+      name: "consumer-peers-x_cache_x_jobs",
+      peers: ["@x/cache", "@x/jobs"],
+      spellings: ["@x/nest/both", "@x/nest/lib/both"],
+    });
+  });
+
+  it("always plans the peerless consumer first, even when every entry lists a peer", () => {
+    const plans = planConsumers([entry("@x/z", ["zod"])], optional);
+    expect(plans.map((p) => p.name)).toEqual([
+      "consumer",
+      "consumer-peers-zod",
+    ]);
+    expect(plans[0].spellings).toEqual([]);
+  });
+
+  it("keys only on optional peers: a listed package that is not one changes no install", () => {
+    const plans = planConsumers(
+      [entry("@x/a", ["react"]), entry("@x/b", ["zod", "react"])],
+      optional,
+    );
+    expect(plans).toEqual([
+      { name: "consumer", peers: [], spellings: ["@x/a"] },
+      { name: "consumer-peers-zod", peers: ["zod"], spellings: ["@x/b"] },
+    ]);
+  });
+});
+
+describe("planConsumers: directory names", () => {
+  it("never gives two sets one directory, even when their names coincide", () => {
+    const plans = planConsumers(
+      [
+        { spelling: "@x/one", peers: ["a", "b"] },
+        { spelling: "@x/two", peers: ["a_b"] },
+      ],
+      new Set(["a", "b", "a_b"]),
+    );
+    expect(plans.map((p) => p.name)).toEqual([
+      "consumer",
+      "consumer-peers-a_b",
+      "consumer-peers-a_b-2",
+    ]);
+  });
+});
+
+describe("withoutOtherPeers", () => {
+  it("drops every optional peer except the ones kept, and nothing else", () => {
+    const deps = {
+      "@x/common": "file:/t/common.tgz",
+      "@x/jobs": "file:/t/jobs.tgz",
+      "@x/cache": "file:/t/cache.tgz",
+    };
+    const optional = new Set(["@x/jobs", "@x/cache"]);
+    expect(withoutOtherPeers(deps, optional, [])).toEqual({
+      "@x/common": "file:/t/common.tgz",
+    });
+    expect(withoutOtherPeers(deps, optional, ["@x/jobs"])).toEqual({
+      "@x/common": "file:/t/common.tgz",
+      "@x/jobs": "file:/t/jobs.tgz",
+    });
+  });
+});
+
+/**
+ * The rule before one consumer per peer set: entries without `peers` in a
+ * peerless consumer, every entry with `peers` in one consumer holding all
+ * of the package's optional peers. Kept here as the negative control.
+ */
+const formerPlan: ConsumerPlanner = (entries, optionalPeers) => {
+  const plans: ConsumerPlan[] = [
+    {
+      name: "consumer",
+      peers: [],
+      spellings: entries.filter((e) => !e.peers?.length).map((e) => e.spelling),
+    },
+  ];
+  const scoped = entries.filter((e) => e.peers?.length);
+  if (scoped.length > 0)
+    plans.push({
+      name: "consumer-peers",
+      peers: [...optionalPeers].sort(),
+      spellings: scoped.map((e) => e.spelling),
+    });
+  return plans;
+};
+
+/** Writes `files` under `dir`, creating directories. */
+function writeTree(dir: string, files: Record<string, string>): void {
+  for (const [name, text] of Object.entries(files)) {
+    const path = join(dir, name);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  }
+}
+
+/** A package of one module, `index`, exporting `name` as a number. */
+function peerPackage(dir: string, pkg: string, name: string): void {
+  writeTree(dir, {
+    "package.json": JSON.stringify({
+      name: pkg,
+      version: "1.0.0",
+      type: "module",
+      exports: { ".": { types: "./index.d.ts", default: "./index.js" } },
+    }),
+    "index.js": `export const ${name} = 1;\n`,
+    "index.d.ts": `export declare const ${name}: number;\n`,
+  });
+}
+
+// End to end against real tarballs and installs (the registry supplies
+// TypeScript and @types/bun): a fixture with two optional peers, A and B,
+// where entry `./a` lists A but imports B. bun-nest's `./jobs` and `./cache`
+// have this shape.
+describe("runCheck: an entry scoped to one peer that needs another", () => {
+  const root = mkdtempSync(join(tmpdir(), "cc-peer-sets-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const peerA = join(root, "peer-a");
+  const peerB = join(root, "peer-b");
+  const pkg = join(root, "pkg");
+  peerPackage(peerA, "@fixture/peer-a", "a");
+  peerPackage(peerB, "@fixture/peer-b", "b");
+  const entry = (sub: string) => ({
+    types: `./${sub}.d.ts`,
+    default: `./${sub}.js`,
+  });
+  writeTree(pkg, {
+    "package.json": JSON.stringify({
+      name: "@fixture/pkg",
+      version: "1.0.0",
+      type: "module",
+      exports: { ".": entry("root"), "./a": entry("a"), "./b": entry("b") },
+      peerDependencies: { "@fixture/peer-a": "*", "@fixture/peer-b": "*" },
+      peerDependenciesMeta: {
+        "@fixture/peer-a": { optional: true },
+        "@fixture/peer-b": { optional: true },
+      },
+    }),
+    "root.js": `export const root = 1;\n`,
+    "root.d.ts": `export declare const root: number;\n`,
+    // The bug: `./a` lists peer A, and reaches peer B as well.
+    "a.js": `import { a } from "@fixture/peer-a";\nimport { b } from "@fixture/peer-b";\nexport const fromA = a + b;\n`,
+    "a.d.ts": `import { a } from "@fixture/peer-a";\nimport { b } from "@fixture/peer-b";\nexport declare const fromA: typeof a & typeof b;\n`,
+    "b.js": `import { b } from "@fixture/peer-b";\nexport const fromB = b;\n`,
+    "b.d.ts": `import { b } from "@fixture/peer-b";\nexport declare const fromB: typeof b;\n`,
+    "consumer-check.json": JSON.stringify({
+      workspaceDependencies: [peerA, peerB],
+      entries: [
+        { spelling: "@fixture/pkg", values: ["root"] },
+        {
+          spelling: "@fixture/pkg/a",
+          values: ["fromA"],
+          peers: ["@fixture/peer-a"],
+        },
+        {
+          spelling: "@fixture/pkg/b",
+          values: ["fromB"],
+          peers: ["@fixture/peer-b"],
+        },
+      ],
+    }),
+  });
+  // One column is enough to tell the consumers apart; strict, so an import
+  // the consumer cannot resolve inside a declaration is reported, not skipped.
+  const columns = ["bundler/strict"];
+  const statuses = (result: RunResult, spelling: string) => [
+    ...new Set(
+      result.cells.filter((c) => c.spelling === spelling).map((c) => c.status),
+    ),
+  ];
+
+  it("fails under one consumer per peer set: ./a is checked without peer B", async () => {
+    const work = join(root, "work-sets");
+    const result = await runCheck({ packageDir: pkg, work, columns });
+    expect(
+      result.consumers?.map(({ name, peers, spellings }) => ({
+        name,
+        peers,
+        spellings,
+      })),
+    ).toEqual([
+      { name: "consumer", peers: [], spellings: ["@fixture/pkg"] },
+      {
+        name: "consumer-peers-fixture_peer-a",
+        peers: ["@fixture/peer-a"],
+        spellings: ["@fixture/pkg/a"],
+      },
+      {
+        name: "consumer-peers-fixture_peer-b",
+        peers: ["@fixture/peer-b"],
+        spellings: ["@fixture/pkg/b"],
+      },
+    ]);
+    // Each consumer holds its own set and none of the others.
+    const has = (consumer: string, peer: string) =>
+      existsSync(join(work, consumer, "node_modules", peer, "package.json"));
+    expect(has("consumer", "@fixture/peer-a")).toBe(false);
+    expect(has("consumer", "@fixture/peer-b")).toBe(false);
+    expect(has("consumer-peers-fixture_peer-a", "@fixture/peer-a")).toBe(true);
+    expect(has("consumer-peers-fixture_peer-a", "@fixture/peer-b")).toBe(false);
+    expect(has("consumer-peers-fixture_peer-b", "@fixture/peer-b")).toBe(true);
+
+    expect(statuses(result, "@fixture/pkg")).toEqual(["OK"]);
+    expect(statuses(result, "@fixture/pkg/b")).toEqual(["OK"]);
+    expect(statuses(result, "@fixture/pkg/a")).not.toContain("OK");
+    expect(result.runtime["@fixture/pkg/a"]).toContain("@fixture/peer-b");
+    const { failed } = failures(result);
+    expect(failed.length).toBeGreaterThan(0);
+    expect(failed.every((f) => f.includes("@fixture/pkg/a"))).toBe(true);
+    expect(failed).toContainEqual(
+      expect.stringMatching(/^RUNTIME-FAIL {2}@fixture\/pkg @fixture\/pkg\/a:/),
+    );
+  }, 180_000);
+
+  it("passes under the former two consumers, which gave ./a every peer (negative control)", async () => {
+    const result = await runCheck({
+      packageDir: pkg,
+      work: join(root, "work-former"),
+      plan: formerPlan,
+      columns,
+    });
+    expect(result.consumers?.map((c) => c.name)).toEqual([
+      "consumer",
+      "consumer-peers",
+    ]);
+    expect(statuses(result, "@fixture/pkg/a")).toEqual(["OK"]);
+    expect(result.runtime["@fixture/pkg/a"]).toBe("ok");
+    expect(failures(result).failed).toEqual([]);
+  }, 180_000);
 });

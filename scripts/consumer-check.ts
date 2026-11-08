@@ -42,11 +42,14 @@
  * (see {@link CheckConfig}), so bun-common, bun-nest, bun-jobs and
  * bun-jobs-ui all run this script unchanged.
  *
- * Optional peers get two consumers. Entries without `peers` are checked in a
- * `consumer/` that has none of the package's optional peers installed (a
- * workspace dependency or consumer dependency that is an optional peer is
- * left out of it), so a root that reaches one fails there. Entries with
- * `peers` are checked in `consumer-peers/`, which has everything.
+ * Optional peers get one consumer per distinct peer set ({@link planConsumers}).
+ * Entries without `peers` are checked in a `consumer/` that has none of the
+ * package's optional peers installed (a workspace dependency or consumer
+ * dependency that is an optional peer is left out of it), so a root that
+ * reaches one fails there. An entry with `peers` is checked in a
+ * `consumer-peers-<set>/` that has exactly the optional peers it lists and none
+ * of the others, so an entry scoped to one peer that silently needs another
+ * fails too. Entries listing the same set share one install.
  *
  * A cell is `OK` only with zero diagnostics anywhere, and only `OK` passes:
  * a cell in any other status (`UNRESOLVED`, `ANY`, `PROBE-ERRORS`,
@@ -76,7 +79,7 @@ import ts from "typescript";
 import { guardTarball } from "./pack-guard";
 
 /** One import spelling a consumer may write. */
-interface EntryConfig {
+export interface EntryConfig {
   /** The module specifier exactly as a consumer writes it, e.g. `@scope/pkg/lib/utils/native`. */
   spelling: string;
   /** Value exports that must resolve to a non-`any` type (and, at runtime, to something defined). */
@@ -100,15 +103,17 @@ interface EntryConfig {
   /**
    * Optional peers this entry legitimately needs (e.g. bun-nest's `./jobs`
    * needs `@kingsleyweb/bun-jobs`). The entry is checked in a consumer that
-   * has them installed; every entry without `peers` is checked in one that
-   * has none of the package's optional peers, which is what proves the root
-   * does not reach them. The build's verify step reads the same field.
+   * has exactly these optional peers installed and none of the package's
+   * others, which proves it needs no peer it does not list; every entry
+   * without `peers` is checked in one that has none of them, which is what
+   * proves the root does not reach them. The build's verify step reads the
+   * same field.
    */
   peers?: string[];
 }
 
 /** `<package>/consumer-check.json`. */
-interface CheckConfig {
+export interface CheckConfig {
   /**
    * Other workspace packages (paths relative to the repo root) this package
    * depends on. They are packed too and installed from their tarballs, so
@@ -163,7 +168,31 @@ export interface RunResult {
   leaks: string[];
   /** Spellings checked in the consumer with optional peers, and which peers. Absent in older runs. */
   peerScoped?: Record<string, string[]>;
+  /** The consumers the run installed, one per optional-peer set, with their install time. Absent in older runs. */
+  consumers?: InstalledConsumer[];
 }
+
+/** One consumer project a run installs: the optional peers it has and the spellings checked in it. */
+export interface ConsumerPlan {
+  /** Its directory under the work directory: `consumer`, or `consumer-peers-<set>`. */
+  name: string;
+  /** The package's optional peers installed in it, sorted; empty for the peerless `consumer`. */
+  peers: string[];
+  /** The spellings checked in it, in `consumer-check.json` order. */
+  spellings: string[];
+}
+
+/** A {@link ConsumerPlan} after its install. */
+export interface InstalledConsumer extends ConsumerPlan {
+  /** Wall time of its `bun install`, in seconds. */
+  installSeconds: number;
+}
+
+/** Chooses the consumers for a run's entries; {@link planConsumers} unless a test supplies its own. */
+export type ConsumerPlanner = (
+  entries: EntryConfig[],
+  optionalPeers: Set<string>,
+) => ConsumerPlan[];
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 
@@ -516,32 +545,99 @@ export function resolveWorkDir(
   };
 }
 
-async function main(): Promise<void> {
-  const show = flag("--show");
-  if (show) {
-    // Re-print a saved result (optionally against a baseline) without re-running.
-    const saved = JSON.parse(readFileSync(resolve(show), "utf8")) as RunResult;
-    report(saved);
-    const against = flag("--baseline");
-    process.exit(
-      reportFailures(
-        saved,
-        against
-          ? (JSON.parse(readFileSync(resolve(against), "utf8")) as RunResult)
-          : undefined,
-      )
-        ? 1
-        : 0,
-    );
+/**
+ * One consumer per distinct optional-peer set. The peerless `consumer` comes
+ * first and always exists (the leak scan and the compiler are read from it);
+ * then one `consumer-peers-<set>` per distinct sorted set an entry lists, in
+ * the order the sets first appear. A listed peer that is not one of the
+ * package's optional peers is ignored for the keying, since no consumer
+ * differs in it, so an entry listing only such peers shares `consumer`. Two
+ * sets whose names would coincide (`a+b` and `a_b` both read `a_b`) get a
+ * numbered suffix, so no two consumers share a directory.
+ *
+ * @param entries The entries of `consumer-check.json`.
+ * @param optionalPeers The package's optional peers (`peerDependenciesMeta`).
+ */
+export function planConsumers(
+  entries: EntryConfig[],
+  optionalPeers: Set<string>,
+): ConsumerPlan[] {
+  const plans = new Map<string, ConsumerPlan>([
+    ["", { name: "consumer", peers: [], spellings: [] }],
+  ]);
+  for (const entry of entries) {
+    const peers = [
+      ...new Set((entry.peers ?? []).filter((p) => optionalPeers.has(p))),
+    ].sort();
+    const key = peers.join("\n");
+    let plan = plans.get(key);
+    if (!plan) {
+      const base = `consumer-peers-${idOf(peers.join("+"))}`;
+      const taken = new Set([...plans.values()].map((p) => p.name));
+      let name = base;
+      for (let n = 2; taken.has(name); n++) name = `${base}-${n}`;
+      plan = { name, peers, spellings: [] };
+      plans.set(key, plan);
+    }
+    plan.spellings.push(entry.spelling);
   }
-  const target = process.argv[2];
-  if (!target || target.startsWith("--")) {
-    console.error(
-      "usage: bun scripts/consumer-check.ts <package-dir> [--save f] [--baseline f] [--tarball f] [--typescript v] [--work dir]",
-    );
-    process.exit(2);
+  return [...plans.values()];
+}
+
+/**
+ * Drops the optional peers a consumer must not have from a set of
+ * dependencies: every optional peer of the package except `keep`.
+ */
+export function withoutOtherPeers(
+  deps: Record<string, string>,
+  optionalPeers: Set<string>,
+  keep: readonly string[],
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(deps).filter(
+      ([name]) => !optionalPeers.has(name) || keep.includes(name),
+    ),
+  );
+}
+
+/** A tarball still naming `workspace:` or `catalog:`; what {@link runCheck} throws before installing. */
+export class PackGuardError extends Error {
+  /** One line per problem, prefixed with the tarball's file name. */
+  readonly problems: string[];
+
+  /** @param problems One line per problem, prefixed with the tarball's file name. */
+  constructor(problems: string[]) {
+    super(`pack guard: ${problems.length} problem(s)`);
+    this.name = "PackGuardError";
+    this.problems = problems;
   }
-  const packageDir = resolve(REPO_ROOT, target);
+}
+
+/** What {@link runCheck} needs. */
+export interface CheckOptions {
+  /** The package to check, an absolute path; it holds `consumer-check.json`. */
+  packageDir: string;
+  /** The work directory, an absolute path; created if missing, never removed here. */
+  work: string;
+  /** A pre-packed tarball of the package (`--tarball`), instead of packing it. */
+  tarball?: string;
+  /** The TypeScript range the consumers install (`--typescript`); default `^6.0.3`. */
+  typescript?: string;
+  /** Chooses the consumers; default {@link planConsumers}. The tests pass the former two-consumer rule as a negative control. */
+  plan?: ConsumerPlanner;
+  /** Only these column labels (e.g. `bundler/strict`); default every column. The tests use one, to keep their compiler runs few. */
+  columns?: string[];
+}
+
+/**
+ * Packs, installs and checks one package: steps 1 to 5 of the header, with
+ * nothing printed but each consumer's install time and nothing decided. The
+ * verdict is {@link failures}'s.
+ *
+ * @throws {PackGuardError} when a tarball still names `workspace:` or `catalog:`.
+ */
+export async function runCheck(options: CheckOptions): Promise<RunResult> {
+  const { packageDir, work } = options;
   const config = JSON.parse(
     readFileSync(join(packageDir, "consumer-check.json"), "utf8"),
   ) as CheckConfig;
@@ -552,17 +648,11 @@ async function main(): Promise<void> {
     peerDependencies?: Record<string, string>;
     peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   };
-  const tsVersion = flag("--typescript");
-
-  const { dir: work, ephemeral } = resolveWorkDir(packageDir, flag("--work"));
-  if (!ephemeral) rmSync(work, { recursive: true, force: true });
   const tarballs = join(work, "tarballs");
   mkdirSync(tarballs, { recursive: true });
 
   // 1. Pack.
-  const main = flag("--tarball")
-    ? resolve(flag("--tarball")!)
-    : pack(packageDir, tarballs);
+  const main = options.tarball ?? pack(packageDir, tarballs);
   const siblings: Record<string, string> = {};
   for (const dep of config.workspaceDependencies ?? []) {
     const dir = resolve(REPO_ROOT, dep);
@@ -582,15 +672,11 @@ async function main(): Promise<void> {
   ].flatMap((tarball) =>
     guardTarball(tarball).map((p) => `${basename(tarball)}: ${p}`),
   );
-  if (unresolved.length > 0) {
-    console.error(`pack guard: ${unresolved.length} problem(s)`);
-    for (const p of unresolved) console.error(`  ${p}`);
-    process.exit(1);
-  }
+  if (unresolved.length > 0) throw new PackGuardError(unresolved);
 
-  // 2. Install into a consumer that lives outside the repo, so nothing
-  // resolves through the workspace's node_modules. Entries that need an
-  // optional peer get a second consumer; the first never has one.
+  // 2. Install into consumers that live outside the repo, so nothing
+  // resolves through the workspace's node_modules: one per distinct set of
+  // optional peers the entries list, each holding exactly that set.
   const extra = Object.fromEntries(
     (config.consumerDependencies ?? []).map((d) => {
       const at = d.lastIndexOf("@");
@@ -602,37 +688,45 @@ async function main(): Promise<void> {
       (p) => manifest.peerDependenciesMeta?.[p]?.optional,
     ),
   );
-  const withoutPeers = (deps: Record<string, string>) =>
-    Object.fromEntries(
-      Object.entries(deps).filter(([name]) => !optionalPeers.has(name)),
-    );
-  const install = (dir: string, peers: boolean): string => {
+  const consumers: InstalledConsumer[] = [];
+  const consumerDirs = new Map<string, string>();
+  for (const plan of (options.plan ?? planConsumers)(
+    config.entries,
+    optionalPeers,
+  )) {
+    const dir = join(work, plan.name);
     mkdirSync(dir, { recursive: true });
-    const workspace = peers ? siblings : withoutPeers(siblings);
     writeFileSync(
       join(dir, "package.json"),
       JSON.stringify(
         consumerManifest({
           name: manifest.name,
           tarball: main,
-          workspace,
-          extra: peers ? extra : withoutPeers(extra),
-          typescript: tsVersion,
+          workspace: withoutOtherPeers(siblings, optionalPeers, plan.peers),
+          extra: withoutOtherPeers(extra, optionalPeers, plan.peers),
+          typescript: options.typescript,
         }),
         null,
         2,
       ),
     );
+    const started = performance.now();
     run(["bun", "install", "--no-save"], dir);
+    const installSeconds = Math.round((performance.now() - started) / 10) / 100;
+    consumers.push({ ...plan, installSeconds });
+    for (const s of plan.spellings) consumerDirs.set(s, dir);
+    console.log(
+      `installed ${plan.name}/ (${plan.peers.length > 0 ? plan.peers.join(", ") : "no optional peer"}) in ${installSeconds}s`,
+    );
+  }
+  const consumer = join(work, consumers[0].name);
+  /** The consumer an entry is checked in. */
+  const consumerOf = (entry: EntryConfig): string => {
+    const dir = consumerDirs.get(entry.spelling);
+    if (!dir) throw new Error(`no consumer planned for ${entry.spelling}`);
     return dir;
   };
-  const consumer = install(join(work, "consumer"), false);
   const scoped = new Set(config.entries.flatMap((e) => e.peers ?? []));
-  const consumerWithPeers =
-    scoped.size > 0 ? install(join(work, "consumer-peers"), true) : consumer;
-  /** The consumer an entry is checked in. */
-  const consumerOf = (entry: EntryConfig) =>
-    entry.peers?.length ? consumerWithPeers : consumer;
   const tsc = join(consumer, "node_modules/typescript/bin/tsc");
   const typescript = (
     JSON.parse(
@@ -657,6 +751,7 @@ async function main(): Promise<void> {
     for (const column of columns) {
       for (const skipLibCheck of [true, false]) {
         const label = `${column}/${skipLibCheck ? "slc" : "strict"}`;
+        if (options.columns && !options.columns.includes(label)) continue;
         const tsconfig = `tsconfig.${id}.${column}.${skipLibCheck ? "slc" : "strict"}.json`;
         writeFileSync(
           join(dir, tsconfig),
@@ -736,7 +831,7 @@ async function main(): Promise<void> {
   const installed = join(consumer, "node_modules", manifest.name);
   const leaks = scanLeaks(installed, scoped);
 
-  const result: RunResult = {
+  return {
     package: manifest.name,
     typescript,
     cells,
@@ -747,7 +842,55 @@ async function main(): Promise<void> {
         .filter((e) => e.peers?.length)
         .map((e) => [e.spelling, e.peers!]),
     ),
+    consumers,
   };
+}
+
+async function main(): Promise<void> {
+  const show = flag("--show");
+  if (show) {
+    // Re-print a saved result (optionally against a baseline) without re-running.
+    const saved = JSON.parse(readFileSync(resolve(show), "utf8")) as RunResult;
+    report(saved);
+    const against = flag("--baseline");
+    process.exit(
+      reportFailures(
+        saved,
+        against
+          ? (JSON.parse(readFileSync(resolve(against), "utf8")) as RunResult)
+          : undefined,
+      )
+        ? 1
+        : 0,
+    );
+  }
+  const target = process.argv[2];
+  if (!target || target.startsWith("--")) {
+    console.error(
+      "usage: bun scripts/consumer-check.ts <package-dir> [--save f] [--baseline f] [--tarball f] [--typescript v] [--work dir]",
+    );
+    process.exit(2);
+  }
+  const packageDir = resolve(REPO_ROOT, target);
+
+  const { dir: work, ephemeral } = resolveWorkDir(packageDir, flag("--work"));
+  if (!ephemeral) rmSync(work, { recursive: true, force: true });
+
+  let result: RunResult;
+  try {
+    const tarball = flag("--tarball");
+    result = await runCheck({
+      packageDir,
+      work,
+      tarball: tarball ? resolve(tarball) : undefined,
+      typescript: flag("--typescript"),
+    });
+  } catch (error) {
+    if (!(error instanceof PackGuardError)) throw error;
+    console.error(error.message);
+    for (const p of error.problems) console.error(`  ${p}`);
+    process.exit(1);
+  }
   report(result);
 
   const save = flag("--save");
@@ -783,6 +926,20 @@ function report(result: RunResult): void {
   if (result.leaks.length > 0) {
     console.log(`\ndeclarations import packages a consumer may not have:`);
     for (const l of result.leaks) console.log(`  ${l}`);
+  }
+  const consumers = result.consumers ?? [];
+  if (consumers.length > 0) {
+    // One install per optional-peer set; each set beyond the peerless one is
+    // what scoping an entry to its own peers costs.
+    console.log(`\nconsumers (one per optional-peer set):`);
+    for (const c of consumers)
+      console.log(
+        `  ${`${c.name}/`.padEnd(44)}${String(c.spellings.length).padStart(3)} spelling(s)  install ${`${c.installSeconds}s`.padEnd(7)} ${c.peers.length > 0 ? c.peers.join(", ") : "no optional peer"}`,
+      );
+    const total = consumers.reduce((s, c) => s + c.installSeconds, 0);
+    console.log(
+      `  ${consumers.length} install(s), ${Math.round(total * 100) / 100}s in all`,
+    );
   }
   console.log(
     `\n${result.package} — TypeScript ${result.typescript}   (cell = status(total diagnostics); slc = skipLibCheck)\n`,
