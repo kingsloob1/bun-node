@@ -599,18 +599,31 @@ describe("purging a CDN by the same tags (the README recipe)", () => {
       res.status(204).send("");
     });
     const purged: string[][] = [];
+    // The DELETE's invalidation runs after its answer is sent, and its event
+    // comes once the clock has passed the stamp it wrote (a 1 ms timer that
+    // can take far longer under load): wait for the third event itself.
+    const third = createDeferred<void>();
     f.cache.on("invalidate", (event: CacheEventMap["invalidate"]) => {
       purged.push([...event.tags]);
+      if (purged.length === 3) {
+        third.resolve();
+      }
     });
     const written = nextSet(f.cache);
     const sent = (await f.router.fetch("/posts/7")).headers
       .get("surrogate-key")!
       .split(" ");
     await written;
+    // The miss's write stays tracked for a few microtasks after its `set`
+    // event, and an invalidation of the path in that window runs a second
+    // time once it settles, a fourth event. `invalidateTags` below usually
+    // outlasts the window, but not when it skips its 1 ms wait for the clock
+    // (under load the clock has often moved already): let the write settle.
+    await new Promise((resolve) => setImmediate(resolve));
     await f.cache.invalidateTags(["post:7"]);
     await f.pages.invalidate("/posts/7");
     await f.router.fetch("/posts/7", { method: "DELETE" });
-    await Bun.sleep(5);
+    await third.promise;
     expect(purged).toEqual([
       ["post:7"],
       [pathTagOf("/posts/7")],
