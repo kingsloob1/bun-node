@@ -379,7 +379,7 @@ beforeAll(async () => {
   }
 
   // ---- file ----------------------------------------------------------------
-  fileRoot = mkdtempSync(join(tmpdir(), "bun-jobs-ui-analytics-"));
+  fileRoot = mkdtempSync(join(tmpdir(), "bun-ui-jobs-analytics-"));
   const fileJobs = new BunJobs({
     namespace: "ui-analytics-file",
     service: SERVICE,

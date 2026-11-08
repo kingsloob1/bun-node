@@ -439,7 +439,7 @@ function populate(
 }
 
 beforeAll(() => {
-  tmp = mkdtempSync(join(tmpdir(), "bun-jobs-ui-defaults-"));
+  tmp = mkdtempSync(join(tmpdir(), "bun-ui-jobs-defaults-"));
   let files = 0;
   populate("memory", () => new MemoryDriver(), "ui-defaults-memory");
   populate(

@@ -1382,7 +1382,7 @@ const room = channel(api, channels["/rooms/:room"], { params: { room: "lobby" } 
   frame is always checked for its fixed shape. A generated descriptor is
   checked by the zod module's `channelSchemas` (`--zod`), through the
   client's `schemas` source.
-- **Reconnection**, bun-jobs-ui's tuned values: 500 ms doubling to 30 s,
+- **Reconnection**, bun-ui's jobs UI tuned values: 500 ms doubling to 30 s,
   half-jittered, the count reset after a socket has stayed open 60 s
   (`reconnect: { initialMs, maxMs, stableAfterMs }`, or `false`). A close
   code in `fatalCloseCodes` (1007, 1008, 4400–4499; codes or `[from, to]`

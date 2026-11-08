@@ -507,7 +507,7 @@ function populate(
 
 beforeAll(() => {
   (globalThis as Record<symbol, unknown>)[GATES] = gates;
-  tmp = mkdtempSync(join(tmpdir(), "bun-jobs-ui-config-"));
+  tmp = mkdtempSync(join(tmpdir(), "bun-ui-jobs-config-"));
   populate(
     "memory",
     new MemoryDriver(),

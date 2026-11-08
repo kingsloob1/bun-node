@@ -48,7 +48,7 @@ export function fixtureDocsUi(
 
 /** A fresh temporary directory, removed by the returned cleanup. */
 export function tempDir(): { dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "bun-api-docs-ui-"));
+  const dir = mkdtempSync(join(tmpdir(), "bun-ui-docs-"));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 

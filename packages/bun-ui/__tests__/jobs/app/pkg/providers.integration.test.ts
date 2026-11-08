@@ -83,7 +83,7 @@ const configured: unknown[] = [];
 /** A provider named uniquely, whose preflight answers `preflight`. */
 function provider(label: string, preflight: () => Promise<unknown>) {
   const make = defineComputeProvider({
-    name: `bun-jobs-ui-test-${label}-${STAMP}`,
+    name: `bun-ui-jobs-test-${label}-${STAMP}`,
     version: "1.0.0",
     kind: label,
     displayName: `Test ${label}`,

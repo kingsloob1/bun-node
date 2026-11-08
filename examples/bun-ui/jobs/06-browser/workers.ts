@@ -185,7 +185,7 @@ const chromePath = chromeOrSkip();
 /** The namespace every context, process and API here shares. */
 const NAMESPACE = "examples-ui-workers";
 /** Where the file driver keeps it: shared with the child process, removed on exit. */
-const ROOT = mkdtempSync(join(tmpdir(), "bun-jobs-ui-example-workers-"));
+const ROOT = mkdtempSync(join(tmpdir(), "bun-ui-jobs-example-workers-"));
 process.once("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 
 /** The stable keys, as `[service.]queue[.name]` derives them. */

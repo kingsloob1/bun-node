@@ -46,7 +46,7 @@ describe("the e2e Chrome profiles", () => {
   it("names each profile after the process that owns it", async () => {
     const profile = chromeProfile("smoke", root);
     expect(basename(profile.dataStore.directory)).toMatch(
-      new RegExp(`^bun-jobs-ui-smoke-p${process.pid}-[^-]+$`),
+      new RegExp(`^bun-ui-jobs-smoke-p${process.pid}-[^-]+$`),
     );
     await profile.remove();
     expect(readdirSync(root)).toEqual([]);
@@ -54,9 +54,9 @@ describe("the e2e Chrome profiles", () => {
 
   it("sweeps a profile whose owning process has exited", async () => {
     const pid = await deadPid();
-    leftover(`bun-jobs-ui-m2-flow-p${pid}-abc123`);
+    leftover(`bun-ui-jobs-m2-flow-p${pid}-abc123`);
     expect(sweepStaleProfiles(root)).toEqual([
-      `bun-jobs-ui-m2-flow-p${pid}-abc123`,
+      `bun-ui-jobs-m2-flow-p${pid}-abc123`,
     ]);
     expect(readdirSync(root)).toEqual([]);
   });
@@ -64,15 +64,15 @@ describe("the e2e Chrome profiles", () => {
   it("keeps a profile whose owner is still running, however old", () => {
     const child = Bun.spawn(["sleep", "5"]);
     try {
-      const name = `bun-jobs-ui-smoke-p${child.pid}-live01`;
+      const name = `bun-ui-jobs-smoke-p${child.pid}-live01`;
       const directory = leftover(name);
       const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000);
       utimesSync(directory, old, old);
       // This process's own profiles are never swept either.
-      leftover(`bun-jobs-ui-smoke-p${process.pid}-self01`);
+      leftover(`bun-ui-jobs-smoke-p${process.pid}-self01`);
       expect(sweepStaleProfiles(root)).toEqual([]);
       expect(readdirSync(root).sort()).toEqual(
-        [name, `bun-jobs-ui-smoke-p${process.pid}-self01`].sort(),
+        [name, `bun-ui-jobs-smoke-p${process.pid}-self01`].sort(),
       );
     } finally {
       child.kill();
@@ -80,8 +80,8 @@ describe("the e2e Chrome profiles", () => {
   });
 
   it("sweeps an untagged profile only once it is a day old", () => {
-    const fresh = "bun-jobs-ui-smoke-Ab12Cd";
-    const stale = "bun-jobs-ui-responsive-Ef34Gh";
+    const fresh = "bun-ui-jobs-smoke-Ab12Cd";
+    const stale = "bun-ui-jobs-responsive-Ef34Gh";
     leftover(fresh);
     const directory = leftover(stale);
     const old = new Date(Date.now() - 25 * 60 * 60 * 1_000);
@@ -95,7 +95,7 @@ describe("the e2e Chrome profiles", () => {
     const other = `consumer-check-p${pid}-abc123`;
     leftover(other);
     // An example's file-driver root shares the prefix but is not a profile.
-    const example = "bun-jobs-ui-example-workers-Xy12Zw";
+    const example = "bun-ui-jobs-example-workers-Xy12Zw";
     const directory = leftover(example);
     const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000);
     utimesSync(directory, old, old);
@@ -103,9 +103,23 @@ describe("the e2e Chrome profiles", () => {
     expect(readdirSync(root).sort()).toEqual([example, other].sort());
   });
 
+  it("still sweeps profiles left under the old bun-jobs-ui- prefix", async () => {
+    const pid = await deadPid();
+    const owned = `bun-jobs-ui-smoke-p${pid}-old111`;
+    leftover(owned);
+    const live = `bun-jobs-ui-smoke-p${process.pid}-self02`;
+    leftover(live);
+    const untagged = "bun-jobs-ui-responsive-Ij56Kl";
+    const directory = leftover(untagged);
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1_000);
+    utimesSync(directory, old, old);
+    expect(sweepStaleProfiles(root).sort()).toEqual([owned, untagged].sort());
+    expect(readdirSync(root)).toEqual([live]);
+  });
+
   it("sweeps before it makes a new profile", async () => {
     const pid = await deadPid();
-    leftover(`bun-jobs-ui-smoke-p${pid}-old999`);
+    leftover(`bun-ui-jobs-smoke-p${pid}-old999`);
     const profile = chromeProfile("smoke", root);
     expect(readdirSync(root)).toEqual([basename(profile.dataStore.directory)]);
     await profile.remove();

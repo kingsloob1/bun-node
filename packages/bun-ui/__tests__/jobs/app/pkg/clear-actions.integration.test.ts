@@ -508,7 +508,7 @@ async function populate(
 }
 
 beforeAll(async () => {
-  tmp = mkdtempSync(join(tmpdir(), "bun-jobs-ui-clear-"));
+  tmp = mkdtempSync(join(tmpdir(), "bun-ui-jobs-clear-"));
   await populate("memory", new MemoryDriver(), "ui-clear-memory");
   await populate(
     "file",

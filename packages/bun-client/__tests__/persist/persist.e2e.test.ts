@@ -1,6 +1,6 @@
 /**
  * The persister on a real IndexedDB: headless Chrome through `Bun.WebView`
- * (CDP, no new dependency), as bun-jobs-ui's e2e suites drive it. The page
+ * (CDP, no new dependency), as bun-ui's jobs e2e suites drive it. The page
  * (`fixtures/page.ts`, bundled for the browser here) runs query-core's
  * `persistQueryClient` over `idbPersister`, and the test reads the result
  * after a **navigation**, a fresh JavaScript realm: nothing but the browser's
@@ -118,7 +118,7 @@ describe.skipIf(chromePath === undefined)(
           type: "chrome",
           url: false,
           path: chromePath!,
-          // Off the desktop's display, as bun-jobs-ui's suites run it.
+          // Off the desktop's display, as bun-ui's jobs suites run it.
           argv: ["--use-gl=disabled"],
         },
         dataStore: { directory: profile },

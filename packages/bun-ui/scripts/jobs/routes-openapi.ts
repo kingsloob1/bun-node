@@ -29,7 +29,7 @@ import {
 } from "@kingsleyweb/bun-jobs";
 
 /** The namespace the document is built in: it names nothing in the routes. */
-const NAMESPACE = "bun-jobs-ui";
+const NAMESPACE = "bun-ui-jobs";
 
 /** Builds the document `generate --module` reads: `{ openapi }`. */
 export default async function routesOpenApi(): Promise<{

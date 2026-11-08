@@ -16,22 +16,28 @@ const CHROME_EXIT_MS = 300;
 const CHROME_EXIT_SWEEPS = 6;
 
 /** Every profile directory this helper makes starts with this. */
-const PREFIX = "bun-jobs-ui-";
+const PREFIX = "bun-ui-jobs-";
 
 /**
- * A profile directory's name: `bun-jobs-ui-<label>-p<pid>-<random>`. The pid
+ * The prefix before the package moved into bun-ui. Profiles an earlier run
+ * left under it are still swept, so no leftover outlives the rename.
+ */
+const LEGACY_PREFIX = "bun-jobs-ui-";
+
+/**
+ * A profile directory's name: `bun-ui-jobs-<label>-p<pid>-<random>`. The pid
  * is the test process that owns it, so a later run can tell a profile whose
  * owner is gone from one still in use.
  */
-const OWNED = /^bun-jobs-ui-.+-p(\d+)-[^-]+$/;
+const OWNED = /^bun-(?:ui-jobs|jobs-ui)-.+-p(\d+)-[^-]+$/;
 
 /**
  * A profile in the format before the pid was added: one of the e2e suites'
- * own labels and a random suffix. Only these, so another `bun-jobs-ui-*`
+ * own labels and a random suffix. Only these, so another `bun-ui-jobs-*`
  * temporary directory — an example's file-driver root, say — is never taken
  * for one.
  */
-const LEGACY = /^bun-jobs-ui-(?:smoke|m2-flow|responsive)-[^-]+$/;
+const LEGACY = /^bun-(?:ui-jobs|jobs-ui)-(?:smoke|m2-flow|responsive)-[^-]+$/;
 
 /**
  * How old a directory in the format before the pid was added must be before a
@@ -118,7 +124,7 @@ export function sweepStaleProfiles(
   }
   const removed: string[] = [];
   for (const name of names) {
-    if (!name.startsWith(PREFIX)) {
+    if (!name.startsWith(PREFIX) && !name.startsWith(LEGACY_PREFIX)) {
       continue;
     }
     const directory = join(root, name);

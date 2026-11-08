@@ -6,7 +6,7 @@
  * contains: a `node:` or `bun:` import, a `Bun.` API, an import of bun-common
  * or any other package (the client has no runtime dependency at all). A
  * negative control builds an entry that does import bun-common, and the
- * check must catch it. Copied from bun-jobs-ui's
+ * check must catch it. Copied from bun-ui's jobs
  * `__tests__/app/pkg/bundle-safety.test.ts`.
  *
  * Since PR-C4 it also proves the lazy load (plan §10.1): a splitting build

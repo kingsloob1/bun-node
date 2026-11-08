@@ -52,7 +52,7 @@ export function fixtureUi(
 
 /** A fresh temporary directory, removed by the returned cleanup. */
 export function tempDir(): { dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "bun-jobs-ui-"));
+  const dir = mkdtempSync(join(tmpdir(), "bun-ui-jobs-"));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 

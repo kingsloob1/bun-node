@@ -320,7 +320,7 @@ async function serveHost(label: string, driver: DriverConfig): Promise<Host> {
 }
 
 /** Where the file host keeps its jobs; removed when the process exits. */
-const FILE_ROOT = mkdtempSync(join(tmpdir(), "bun-jobs-ui-example-paging-"));
+const FILE_ROOT = mkdtempSync(join(tmpdir(), "bun-ui-jobs-example-paging-"));
 process.once("exit", () => rmSync(FILE_ROOT, { recursive: true, force: true }));
 
 const main = await serveHost(exampleBackend(), exampleDriver());

@@ -441,7 +441,7 @@ async function populate(
 }
 
 beforeAll(async () => {
-  tmp = mkdtempSync(join(tmpdir(), "bun-jobs-ui-added-"));
+  tmp = mkdtempSync(join(tmpdir(), "bun-ui-jobs-added-"));
   memory = await populate("memory", new MemoryDriver(), "ui-added-memory");
   sqlite = await populate(
     "SQLite",

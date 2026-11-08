@@ -160,7 +160,7 @@ later `--parallel=N` wins over the script's bare one. The heavy-run
 wrapper decides how many heavy jobs share the machine, so a suite no
 longer has to hold back for other sessions' runs (the user's decision,
 2026-10-07). Measured serial against `bun run test` on this 16-core host:
-bun-common 7.2 s → 3.5 s, bun-nest 3.4 s → 1.1 s, bun-jobs-ui (now bun-ui's jobs tests) 136 s →
+bun-common 7.2 s → 3.5 s, bun-nest 3.4 s → 1.1 s, bun-ui's jobs tests 136 s →
 22–46 s at 16 workers, bun-jobs with all five database URLs about 24 min →
 391–445 s at 16 (458–498 s at its former 4). Every figure here was measured at 16 workers or fewer;
 a bigger host runs more, untested. Each worker of a database-backed suite
@@ -244,7 +244,7 @@ So plain `bun test` is still the one-process run, as is
   bar: three seeded runs at 16, exclusive, all five database URLs, 0
   failures. A test that starts failing at 16 is fixed, not answered by
   lowering the count.
-- **bun-ui runs one worker per core** (16 here): measured 2026-10-07 under the wrapper, as bun-jobs-ui,
+- **bun-ui runs one worker per core** (16 here): measured 2026-10-07 under the wrapper, as the jobs UI's tests,
   three runs, one beside a second heavy job (load peaking at 51): 1716 of
   1716 each time, in 22–46 s. Its earlier cap at 4 came from several
   unwrapped suites running at once (load 24–88), which the wrapper now
@@ -771,8 +771,8 @@ canary (TS2322, TS2339, TS2307, TS7006, TS2578, TS2584, TS2305; tsc exits 2,
   `--parallel` run printed one error and ran no tests. Every package's `test`
   scripts carry it. The check itself takes 0.3–0.6 s in bun-common (78 files),
   0.4–0.7 s in bun-nest (246), 0.7–0.8 s in bun-jobs (537) and 2.0–2.5 s in
-  bun-jobs-ui (822, three projects; now bun-ui); whole suites measured 21.9/23.0 s → 27.1/26.4 s
-  for bun-jobs-ui and 229.9/230.2 s → 220.9 s for bun-jobs (no database
+  bun-ui's jobs tests (822, three projects); whole suites measured 21.9/23.0 s → 27.1/26.4 s
+  for bun-ui's jobs tests and 229.9/230.2 s → 220.9 s for bun-jobs (no database
   URLs), the latter inside the noise. It checks each file with its **nearest** `tsconfig.json`,
   so bun-ui has `__tests__/jobs/app/tsconfig.json`, which only extends
   `app/tsconfig.json`: without it the app tests were checked with the
@@ -1138,7 +1138,7 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   It runs each consumer's own tsc, deliberately not `bun check`: the point is
   what a consumer on TypeScript 5.9 or 6.0 sees.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
-  bun-jobs-ui: 44/44 OK on TS 6.0 (its browser-safe `lib/shared/config` also
+  bun-ui's jobs entries: 44/44 OK on TS 6.0 (its browser-safe `lib/shared/config` also
   under `browser`), against 28 OK on raw `.ts` (before it became bun-ui).
   bun-nest: 66/66 OK on TS 6.0, against 34/66 on raw `.ts` (its last 8, the
   `./jobs` cells under `bun-init`/`node16`, cleared once bun-jobs shipped

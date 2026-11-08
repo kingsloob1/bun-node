@@ -41,7 +41,7 @@ export default antfu({
     // and Bun's native `react/*` rules take over the rest with `bun lint`.
     // The options are the ones antfu chose here (no Vite, Next.js or Remix).
     files: ["**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}"],
-    name: "bun-jobs-ui/react-refresh",
+    name: "bun-ui-jobs/react-refresh",
     plugins: {
       "react-refresh": reactRefresh,
     },
@@ -66,7 +66,7 @@ export default antfu({
       "app/screens/job/JobScreen.tsx",
       "app/screens/queues/panels/SummonPanel.tsx",
     ],
-    name: "bun-jobs-ui/react-directive-names",
+    name: "bun-ui-jobs/react-directive-names",
     plugins: {
       react: {
         rules: {

@@ -137,7 +137,7 @@ const silentJobs = new BunJobs({
 /** The namespace of the cross-process host, over a file driver. */
 const CROSS_NAMESPACE = "examples-ui-live-cross";
 /** Where that file driver keeps it: shared with the child process, removed on exit. */
-const CROSS_ROOT = mkdtempSync(join(tmpdir(), "bun-jobs-ui-example-live-"));
+const CROSS_ROOT = mkdtempSync(join(tmpdir(), "bun-ui-jobs-example-live-"));
 process.once("exit", () => {
   rmSync(CROSS_ROOT, { recursive: true, force: true });
 });
