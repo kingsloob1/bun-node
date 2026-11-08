@@ -222,9 +222,17 @@ try {
     namespace: "expiring",
     sweepInterval: 0,
   });
-  await expiring.set("read", "gone soon", { ttl: 200 });
+  // Fresh for a minute, so the read below is fresh however long the round
+  // trips take (a shared server under load took over a second for these
+  // three), then `touch` cuts it to 200 ms from now.
+  await expiring.set("read", "gone soon", { ttl: 60_000 });
   await expiring.set("unread", "gone soon too", { ttl: 200 });
   checkEqual("it reads while fresh", await expiring.get("read"), "gone soon");
+  checkEqual(
+    "touch shortens its life to 200 ms",
+    await expiring.touch("read", 200),
+    true,
+  );
   await waitFor("the entry to expire", async () => {
     return (await expiring.get("read")) === undefined;
   });
@@ -235,15 +243,19 @@ try {
   );
   // The read above is a miss because the entry's header says so; deleting the
   // object is housekeeping (done in the background on a read, or by a sweep).
-  const swept = await expiringDriver.sweep!(Date.now(), 1_000);
-  show("entries and counters the sweep removed", swept);
-  await waitFor(
-    "the expired objects to be gone",
-    async () =>
+  // The sweeper runs until the namespace is empty, as the cache's own sweeper
+  // would, a pass per `sweepInterval`: the check waits on the objects being
+  // gone, not on one pass having taken them all (a pooled run once saw a
+  // single pass leave them for good).
+  let swept = 0;
+  await waitFor("the sweeper to reclaim the expired objects", async () => {
+    swept += await expiringDriver.sweep!(Date.now(), 1_000);
+    return (
       (await keysUnder(prefix)).filter((key) => key.includes("/expiring/"))
-        .length === 0,
-    { timeout: 5_000 },
-  );
+        .length === 0
+    );
+  });
+  show("entries and counters the sweeps removed", swept);
   checkEqual(
     "no object of the expired namespace is left",
     (await keysUnder(prefix)).filter((key) => key.includes("/expiring/")),
