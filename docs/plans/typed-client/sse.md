@@ -20,7 +20,8 @@ BNR PR-sse2 (§4) **is built** (2026-11-03, branch
 validation, ids: "auto", resume, retry, heartbeatMs })`, with an end-to-end
 test against this client (`bun-client/__tests__/sseServer.test.ts`), and
 `x-sse-data` (`"json"`/`"text"`) beside `x-sse-events` for the generator
-(not read by it yet). Approved by the user as built on 2026-11-03
+(read by it since #686, 2026-11-08: `"text"` events are typed and checked as
+text, and the manifest's `sseData` is `sse()`'s default). Approved by the user as built on 2026-11-03
 (BNR §16's Status lists the names and behaviours).
 
 ---
