@@ -26,6 +26,8 @@ import type {
   ServeStaticOptions,
   SocketFreeExchange,
   TrustProxyOption,
+  ThrottleHandler,
+  ThrottleOptions,
   UnmountedRouter,
   ValidatorMiddleware,
   ViewEngine,
@@ -1214,6 +1216,20 @@ export class BunHttpAdapter<
        * over `request.clientIpHeader`.
        */
       clientIpHeader?: string;
+      /**
+       * Throttles every request: a bun-common `throttle()` built from these
+       * options (or the `throttle()` middleware given) runs first, ahead of
+       * every route, every Nest middleware, every guard and the not-found
+       * handler, so a request no route handles (a burst of 404s) counts too.
+       * Keyed on `req.ip` by default. A refusal is bun-common's `429`
+       * problem document, answered before Nest sees the request, so Nest's
+       * exception filters do not shape it. Nest's `@Throttle()` and
+       * `@SkipThrottle()` do **not** affect it: they configure
+       * `BunThrottlerGuard` (`BunThrottlerModule`), which counts per route
+       * behind it. Forwarded to the underlying {@link BunRouter} (it wins
+       * over `router.throttle`). Default: none.
+       */
+      throttle?: ThrottleHandler | ThrottleOptions;
     },
   ) {
     const trustProxy = options?.trustProxy ?? options?.request?.trustProxy;
@@ -1228,6 +1244,9 @@ export class BunHttpAdapter<
         : {}),
       ...(trustProxy !== undefined ? { trustProxy } : {}),
       ...(clientIpHeader !== undefined ? { clientIpHeader } : {}),
+      ...(options?.throttle !== undefined
+        ? { throttle: options.throttle }
+        : {}),
     };
     // One BunViews for the adapter and its router, so the router's own
     // `fetch()` renders as the adapter does.

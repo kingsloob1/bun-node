@@ -160,6 +160,16 @@ bun run check:client   # the same with --check: exit 1 when they are stale
 |---|---|
 | [`client-ip.ts`](./13-trust-proxy/client-ip.ts) | `trust proxy` in a Nest app: off by default, `app.set("trust proxy", "loopback")` for `@Ip()`, `req.ips`, `req.protocol` and `@Controller({ host })` against the forwarded host, `behindCloudflare({ via })` reading `CF-Connecting-IP` only from a chain that checks out, and a gateway client's `client.data.ip` |
 
+### 14 — Throttling
+
+`BunThrottlerModule` and `BunThrottlerGuard` (`@nestjs/throttler` 6's API
+over bun-common's `throttle()`) and the adapter's `throttle` option.
+Asserted with [`shared/check.ts`](./shared/check.ts), like the tours.
+
+| File | Shows |
+|---|---|
+| [`throttling.ts`](./14-throttle/throttling.ts) | on a served application: a default throttler per route per client with `headers: "legacy"` (`X-RateLimit-*`, the sixth request a `429` with `@nestjs/throttler`'s body and `Retry-After`, the refusal logged by `logLimited` without the address); two instances sharing one count through `cacheThrottleStore(cache)` from `@kingsleyweb/bun-nest/cache`; a service token exempt from the default throttler by its `skipIf` while a strict route (`@SkipThrottle()` plus a `@Throttle()`-declared throttler) still counts it; a sign-in route with two `@Throttle()`-declared limits, one keyed on address and account, one on the address; `@SkipThrottle()` on a health check; the adapter's `throttle` option counting 404s ahead of Nest and answering bun-common's problem document; a bare-number `ttl` failing the boot, and the boot check logging a forgotten guard. See the package README's [Throttling](../../packages/bun-nest/README.md#throttling) |
+
 ## Checking the examples
 
 ```bash

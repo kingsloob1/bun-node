@@ -5,7 +5,8 @@
  * §10.1–§10.3).
  *
  * This subpath, and only this subpath, depends on `@kingsleyweb/bun-cache`
- * (an optional peer). The package barrel never reaches it, so a Nest app
+ * (an optional peer), and so does `cacheThrottleStore`, the shared store
+ * for `BunThrottlerModule`. The package barrel never reaches it, so a Nest app
  * without bun-cache neither compiles nor loads a line of it.
  *
  * ```ts
@@ -50,6 +51,23 @@ export {
   NoCache,
 } from "./interceptor";
 export { BUN_CACHE, BUN_CACHE_OPTIONS, getCacheToken } from "./tokens";
+
+/**
+ * A bun-cache cache as `BunThrottlerModule`'s (or bun-common's
+ * `throttle()`'s) store, so a limit holds across processes and instances
+ * (`@kingsleyweb/bun-cache/throttle`, re-exported here because this subpath
+ * is where bun-nest's dependency on bun-cache starts; the package root,
+ * where `BunThrottlerModule` lives, never reaches it).
+ *
+ * ```ts
+ * BunThrottlerModule.forRoot({ throttlers: [...], store: cacheThrottleStore(cache) })
+ * ```
+ */
+export {
+  cacheThrottleStore,
+  type CacheThrottleStore,
+  type CacheThrottleStoreOptions,
+} from "@kingsleyweb/bun-cache/throttle";
 
 /**
  * The bun-cache types this module's surface is written in, re-exported so a

@@ -48,7 +48,20 @@
         "gatewayAsyncApi",
         "Describe",
         "DevTypesModule",
-        "Invalidates"
+        "Invalidates",
+        "BunThrottlerModule",
+        "BunThrottlerGuard",
+        "BunThrottlerService",
+        "BUN_THROTTLER_OPTIONS",
+        "Throttle",
+        "SkipThrottle",
+        "ThrottlerException",
+        "throttlerMessage",
+        "seconds",
+        "minutes",
+        "hours",
+        "days",
+        "weeks"
       ],
       "types": [
         "BunBeforeWriteBody",
@@ -84,9 +97,18 @@
         "EmitsEventMap",
         "EmitsSchemas",
         "TypedSocket",
-        "GatewayAsyncApiOptions"
+        "GatewayAsyncApiOptions",
+        "BunThrottlerModuleOptions",
+        "BunThrottlerModuleConfig",
+        "BunThrottlerModuleAsyncOptions",
+        "BunThrottlerOptions",
+        "BunThrottlerOptionsFactory",
+        "BunThrottlerLimitDetail",
+        "BunThrottlerGetTracker",
+        "BunThrottlerGenerateKey",
+        "ThrottleDecoratorOptions"
       ],
-      "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;\nexport type _gwDocNotAny = Expect<IsAny<ReturnType<typeof m.gatewayAsyncApi>[\"document\"]>>;\nconst _gwOpts: t.GatewayAsyncApiOptions = { title: \"g\", strict: \"lenient\" };"
+      "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;\nexport type _gwDocNotAny = Expect<IsAny<ReturnType<typeof m.gatewayAsyncApi>[\"document\"]>>;\nconst _gwOpts: t.GatewayAsyncApiOptions = { title: \"g\", strict: \"lenient\" };\nexport type _throttlerModule = Expect<IsAny<ReturnType<typeof m.BunThrottlerModule.forRoot>>>;\nconst _throttlers: t.BunThrottlerModuleOptions = { throttlers: [{ limit: 600, ttl: m.minutes(1) }, { name: \"strict\", limit: 5, ttl: \"1m\" }], headers: \"legacy\" };\n// @ts-expect-error ttl is a duration, never a bare number\nconst _bareTtl: t.BunThrottlerOptions = { limit: 1, ttl: 60 };\nm.Throttle({ default: { limit: 5 } });\nm.SkipThrottle({ default: false });"
     },
     {
       "spelling": "@kingsleyweb/bun-nest/jobs",
@@ -131,7 +153,8 @@
         "CacheKey",
         "CacheTTL",
         "CacheTags",
-        "NoCache"
+        "NoCache",
+        "cacheThrottleStore"
       ],
       "types": [
         "BunCacheInterceptorOptions",
@@ -141,7 +164,9 @@
         "CacheEvictOptions",
         "CachePutOptions",
         "Cache",
-        "CreateCacheOptions"
+        "CreateCacheOptions",
+        "CacheThrottleStore",
+        "CacheThrottleStoreOptions"
       ],
       "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunCacheModule.forRoot>>>;\nexport type _cacheNotAny = Expect<IsAny<t.Cache>>;\nexport const _token: symbol = m.getCacheToken(\"reports\");\ndeclare const ok: TypedPropertyDescriptor<(id: number, q: { page: number }) => Promise<string>>;\nm.Cacheable({ key: (id: number) => `u:${id}`, unless: (r: string) => r === \"\" })({}, \"find\", ok);\ndeclare const wrongParams: TypedPropertyDescriptor<(id: string) => Promise<string>>;\n// @ts-expect-error a key function typed for other parameters is refused\nm.Cacheable({ key: (id: number) => `u:${id}` })({}, \"find\", wrongParams);\ndeclare const notAsync: TypedPropertyDescriptor<(id: number) => string>;\n// @ts-expect-error a method that does not return a Promise is refused\nm.Cacheable()({}, \"find\", notAsync);\nm.CacheEvict({ tags: (id: number) => [`u:${id}`], beforeInvocation: true })({}, \"update\", ok);\nexport const _interceptor = m.BunCacheInterceptor.with({ cache: \"pages\", varyBy: [\"accept-language\"], revalidate: false });\nm.CacheTTL(async () => 1_000);\nm.CacheKey((ctx) => ctx.getType());\nm.CacheTags(\"posts\", \"lists\");\nm.NoCache();\n// @ts-expect-error the key is @CacheKey's, not an option\nm.BunCacheInterceptor.with({ key: () => \"k\" });"
     },

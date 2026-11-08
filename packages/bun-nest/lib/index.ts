@@ -47,6 +47,27 @@ export {
   type WsResponse,
   type WsResponseTransform,
 } from "./BunWebSocketAdapter";
+export {
+  SkipThrottle,
+  Throttle,
+  type ThrottleDecoratorOptions,
+} from "./throttler/decorators";
+export { days, hours, minutes, seconds, weeks } from "./throttler/durations";
+export { ThrottlerException, throttlerMessage } from "./throttler/exception";
+export { BunThrottlerGuard } from "./throttler/guard";
+export { BUN_THROTTLER_OPTIONS, BunThrottlerModule } from "./throttler/module";
+export {
+  type BunThrottlerGenerateKey,
+  type BunThrottlerGetTracker,
+  type BunThrottlerLimitDetail,
+  type BunThrottlerModuleAsyncOptions,
+  type BunThrottlerModuleConfig,
+  type BunThrottlerModuleOptions,
+  type BunThrottlerOptions,
+  type BunThrottlerOptionsFactory,
+  BunThrottlerService,
+  type Resolvable,
+} from "./throttler/options";
 export { UploadedFile, UploadedFiles } from "./decorators";
 export { Describe } from "./describe";
 export { DevTypesModule, type DevTypesModuleOptions } from "./devTypesModule";
