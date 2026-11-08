@@ -25,9 +25,13 @@
  *   argument. Both wait at a start barrier (their stdin closing) so their
  *   requests overlap, and each counts with `failMode: "closed"`, so a store
  *   failure is a 503, never a request let through.
- * - Every process puts a request in a window by its own clock, so processes
- *   sharing a store need synchronised clocks (NTP). Here both use one fixed
- *   instant, so the proof cannot straddle a window's edge.
+ * - **Clocks.** On these backends the store counts by the backend's own
+ *   clock (`clock: "store"`, the default): the last proof gives the two
+ *   processes clocks two minutes apart, either side of an hour's edge, and
+ *   still exactly 20 get through (a fixed window, which shares nothing
+ *   between two windows). Its control counts by each process's own
+ *   clock (`clock: "process"`): they land in two windows and 40 get
+ *   through, which is why processes counting by their own clocks need NTP.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -79,16 +83,21 @@ function driverFor(target: Target): CacheDriver {
 }
 
 /* ------------------------------------------------------------------ */
-// The second process: `bun two-processes.ts child <target JSON> <now> <namespace>`.
+// The second process: `bun two-processes.ts child <target JSON> <now> <namespace> <clock> <algorithm>`.
 if (process.argv[2] === "child") {
   const target = JSON.parse(process.argv[3]) as Target;
   const now = Number(process.argv[4]);
   const cache = createCache({ driver: driverFor(target), sweepInterval: 0 });
-  const store = cacheThrottleStore(cache, { namespace: process.argv[5] });
+  const store = cacheThrottleStore(cache, {
+    namespace: process.argv[5],
+    clock: process.argv[6] === "process" ? "process" : "store",
+  });
   const router = new BunRouter({
     throttle: {
       limit: LIMIT,
       window: "1h",
+      algorithm:
+        process.argv[7] === "fixed-window" ? "fixed-window" : "sliding-window",
       store,
       failMode: "closed",
       key: () => "one-client",
@@ -132,7 +141,13 @@ interface Counts {
 }
 
 /** Starts one child; answers once it is connected. */
-async function startChild(target: Target, now: number, namespace: string) {
+async function startChild(
+  target: Target,
+  now: number,
+  namespace: string,
+  clock: "process" | "store",
+  algorithm: "fixed-window" | "sliding-window",
+) {
   const child = Bun.spawn(
     [
       process.execPath,
@@ -141,6 +156,8 @@ async function startChild(target: Target, now: number, namespace: string) {
       JSON.stringify(target),
       String(now),
       namespace,
+      clock,
+      algorithm,
     ],
     { stdin: "pipe", stdout: "pipe", stderr: "inherit" },
   );
@@ -169,14 +186,26 @@ async function startChild(target: Target, now: number, namespace: string) {
   };
 }
 
-/** Runs two children on `target` in `namespaces`, and answers their totals. */
+/**
+ * Runs two children on `target` in `namespaces`, each with its own clock
+ * (`offsets` from the start of the hour), and answers their totals. Waits
+ * out the last 15 s of an hour first, so a proof timed by the backend's
+ * clock never straddles the hour's edge.
+ */
 async function race(
   target: Target,
   namespaces: readonly [string, string],
+  clock: "process" | "store" = "store",
+  offsets: readonly [number, number] = [1_000, 1_000],
+  algorithm: "fixed-window" | "sliding-window" = "sliding-window",
 ): Promise<{ total: Counts; each: Counts[] }> {
-  const now = Math.floor(Date.now() / HOUR) * HOUR + 1_000;
+  const left = HOUR - (Date.now() % HOUR);
+  if (left < 15_000) await Bun.sleep(left + 250);
+  const hour = Math.floor(Date.now() / HOUR) * HOUR;
   const children = await Promise.all(
-    namespaces.map(async (namespace) => startChild(target, now, namespace)),
+    namespaces.map(async (namespace, index) =>
+      startChild(target, hour + offsets[index], namespace, clock, algorithm),
+    ),
   );
   await Promise.all(children.map(async (child) => child.release()));
   const each = await Promise.all(
@@ -207,6 +236,33 @@ async function prove(target: Target): Promise<void> {
   checkEqual(
     `two namespaces (the control): each counts alone, ${2 * LIMIT} allowed`,
     apart.total,
+    { allowed: 2 * LIMIT, limited: 2 * REQUESTS - 2 * LIMIT, failed: 0 },
+  );
+  // Clocks a minute either side of the hour: one process in each hour. The
+  // fixed window, whose windows share nothing, shows the difference whole.
+  const skew = [-60_000, 60_000] as const;
+  const skewed = await race(
+    target,
+    ["skew", "skew"],
+    "store",
+    skew,
+    "fixed-window",
+  );
+  checkEqual(
+    `clocks 2 minutes apart, across the hour, counted by the backend's clock: still ${LIMIT}`,
+    skewed.total,
+    { allowed: LIMIT, limited: 2 * REQUESTS - LIMIT, failed: 0 },
+  );
+  const local = await race(
+    target,
+    ["skew-local", "skew-local"],
+    "process",
+    skew,
+    "fixed-window",
+  );
+  checkEqual(
+    `the same clocks counted by each process's own (clock: "process"): two windows, ${2 * LIMIT}`,
+    local.total,
     { allowed: 2 * LIMIT, limited: 2 * REQUESTS - 2 * LIMIT, failed: 0 },
   );
 }

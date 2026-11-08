@@ -17,8 +17,9 @@
  * - `delete(key)` resets one client; `clear()` empties the store's namespace
  *   and leaves the cache's own entries alone.
  * - The refusals: a Cloudflare KV cache (no atomic increment) at
- *   construction, a fractional cost, and `algorithm: "gcra"`, which this
- *   store cannot run atomically.
+ *   construction, a fractional cost, and `algorithm: "gcra"`, which a store
+ *   over a memory cache cannot run atomically (one over Redis, Postgres,
+ *   MySQL, MariaDB or SQLite can: `store-clock.ts`).
  *
  * Across processes, see `two-processes.ts` beside this file.
  */

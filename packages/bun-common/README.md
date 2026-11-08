@@ -3572,7 +3572,8 @@ Examples:
 [`per-route.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/per-route.ts),
 [`stores-and-failures.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/stores-and-failures.ts),
 [`runtime-update.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/runtime-update.ts),
-[`openapi.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/openapi.ts).
+[`openapi.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/openapi.ts),
+[`refunds.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/refunds.ts).
 
 ### Multipart uploads
 
@@ -4426,6 +4427,7 @@ Each file is a standalone script whose opening comment says what it shows.
 | `16-throttle` | [`stores-and-failures.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/stores-and-failures.ts) | The bounded memory store, a shared store, fail-open and fail-closed, `onLimited`, the three algorithms |
 | `16-throttle` | [`runtime-update.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/runtime-update.ts) | `update()` while serving, `peek()`, `reset()`, a fallback store |
 | `16-throttle` | [`openapi.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/openapi.ts) | The generated `429` and `x-bun-throttle` |
+| `16-throttle` | [`refunds.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/refunds.ts) | `skipSuccessfulRequests`, `skipFailedRequests` (refusals given back), `requestWasSuccessful`, a `limit(req)` per plan, refunds under GCRA |
 
 The option tours in `12-options` do not just *show* behaviour, they
 **assert** it through
