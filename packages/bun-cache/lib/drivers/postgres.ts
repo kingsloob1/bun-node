@@ -47,6 +47,9 @@ import type {
 } from "./sql-base";
 import type { EntryOrCounterReader } from "../core/read";
 import { ENTRY_OR_COUNTER } from "../core/read";
+import type { ThrottleCounters } from "../core/throttle-counters";
+import { THROTTLE_COUNTERS } from "../core/throttle-counters";
+import { postgresThrottleCounters } from "./throttle-sql";
 import { entryCapExcess, entryCapStatements } from "./entry-cap";
 import type { EntryCapStatements } from "./entry-cap";
 import { SqlCacheDriverBase } from "./sql-base";
@@ -146,6 +149,22 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
       64,
       BigInt(Bun.hash(`${sqlCacheStoreKey(this.tables)}\n${ns}`)),
     ).toString();
+  }
+
+  /** The throttle's counters (`core/throttle-counters.ts`), built on first use. */
+  #throttleCounters: ThrottleCounters | undefined;
+
+  /**
+   * The throttle's counters, one round trip a step, timed by the database's
+   * clock unless given a time (`drivers/throttle-sql.ts`).
+   */
+  get [THROTTLE_COUNTERS](): ThrottleCounters {
+    return (this.#throttleCounters ??= postgresThrottleCounters({
+      ready: async () => await this.ready(),
+      sql: this.sql,
+      entries: this.tables.entries,
+      fit: (name) => this.fit(name),
+    }));
   }
 
   /**

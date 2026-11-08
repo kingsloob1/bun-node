@@ -3090,13 +3090,28 @@ const router = new BunRouter({
 });
 ```
 
-- **Two calls per request.** The default algorithm, the sliding window,
-  makes an `increment` of the current window's counter and a `get` of the
-  previous one's, side by side; the fixed window makes the `increment`
-  alone. `increment` is `cache.increment(key, cost, { ttl })`: atomic, and
-  the lifetime is set only when the counter is created ([Counters](#counters)).
+- **The backend counts, on Redis, Postgres, MySQL, MariaDB and SQLite.**
+  There the store has `countWindow` and `consumeGcra`, and `throttle()` uses
+  them: each request is **one round trip** per limit (a Lua script on Redis,
+  one statement on Postgres, one multi-statement query on MySQL and MariaDB,
+  one `BEGIN IMMEDIATE` transaction on SQLite), which adds to the current
+  window's counter, reads the previous one's and reads the time, together.
+  **GCRA** (`algorithm: "gcra"`) runs there too, across processes: the
+  bucket's arrival time is read, judged and written in that one step. These
+  steps go to the driver directly, past the cache's failure policy, circuit
+  breaker, events and statistics; a failure is the store's, and
+  `throttle()`'s `failMode` decides.
+- **Two calls per request elsewhere** (memory, file, MongoDB, D1, S3,
+  Azure, `redundant()`, a wrapped driver). The sliding window makes an
+  `increment` of the current window's counter and a `get` of the previous
+  one's, side by side; the fixed window makes the `increment` alone.
+  `increment` is `cache.increment(key, cost, { ttl })`: atomic, and the
+  lifetime is set only when the counter is created ([Counters](#counters)).
   `get` reads the driver with `tier: "l2"`: counters never enter an L1 tier,
-  so an L1 cannot make a count per-process.
+  so an L1 cannot make a count per-process. GCRA is not offered there: it
+  needs a compare-and-set on one value, which a cache counter cannot do
+  atomically, so `throttle({ algorithm: "gcra" })` refuses the store at
+  construction.
 - **Keys.** `throttle()` builds every key whole — its `prefix`, the limit's
   name, the window's length in milliseconds, the scope, the client and the
   window's index — and the store keeps each as it is, in the cache namespace
@@ -3115,10 +3130,6 @@ const router = new BunRouter({
   included, rather than only in production.
 - **`delete(key)`** resets one counter (bun-common's `handler.reset`) and
   **`clear()`** empties the store's namespace and nothing else.
-- **GCRA is not offered.** It needs a compare-and-set on one value, which a
-  cache counter cannot do atomically, so `throttle({ algorithm: "gcra" })`
-  refuses this store at construction. The sliding window is the default and
-  runs on every driver below.
 
 **Which drivers can count.** `cacheThrottleStore` refuses, at construction
 and with a `ConfigError` naming the driver, a cache whose driver has no
@@ -3143,24 +3154,33 @@ uncounted.
 A `Cache` that `createCache` did not make cannot be inspected; it is
 accepted, and its own `increment` decides.
 
-**Clocks.** Each process puts a request in a window by its own clock
-(`throttle()`'s `now`), and a counter's expiry is computed by the process
-that creates it, from the cache's clock (`createCache`'s `now`): `Date.now()`
-by default, the client's, not the server's. On Redis the script also compares
-that expiry with the client's clock to decide whether a counter has lapsed,
-and the server deletes the key at `PEXPIREAT` by **its** clock; on the SQL
-drivers both the lapse check and the read filter use the client's clock. So
-processes sharing a store need synchronised clocks (NTP): a skew of `s` ms
-between two of them puts their window edges `s` ms apart, and a counter's
-lifetime moves by the creating process's skew. Because the window's index is
-in the key, a counter that lives a little longer changes no count, so the
-store adds `expiryMargin` (default 1 s) to every lifetime: a Redis server
-whose clock runs ahead of a client by less than that cannot delete a
-counter while that client still counts in its window.
+**Clocks.** Where the backend counts (above), `clock` decides which clock
+places a request in a window:
 
-**Follow-ups, not built.** A Redis script could take the sliding window's
-two calls in one round trip (`INCRBY` the current counter and `GET` the
-previous one), and could run GCRA atomically, which would make
-`algorithm: "gcra"` available on Redis; the same script could read the
-window's index and the expiry from the server's `TIME` (and SQL from
-`now()`), so the processes' clocks would no longer need to agree.
+- **`clock: "store"`, the default:** the backend's own: Redis `TIME`,
+  Postgres `clock_timestamp()`, MySQL and MariaDB `UTC_TIMESTAMP(6)` (so the
+  session's time zone plays no part), SQLite `julianday('now')` (the host's
+  clock, never the driver's `now` option). Every process sharing the store
+  agrees on the window, the counters' expiry and a GCRA bucket's time
+  whatever its own clock says, so **no process needs NTP**; `throttle()`'s
+  `now` is not used for counting. Measured: two processes whose clocks sat
+  either side of an hour's boundary, a fixed window of 20 per hour, allowed
+  20 of 60 on every one of the five backends, and so did the sliding window
+  and GCRA; the same two processes through the cache's own counters allowed
+  40 (the sliding window 29–32).
+- **`clock: "process"`:** `throttle()`'s `now`, as everywhere else: what a
+  test that drives a fake clock wants. Still one round trip, and GCRA still
+  runs across processes. Redis sets the counter's lifetime relative to the
+  step's time (`PEXPIRE`), so a process clock that is not the server's
+  gives it the life it would have had.
+
+Elsewhere each process puts a request in a window by its own clock
+(`throttle()`'s `now`), and a counter's expiry is computed by the process
+that creates it, from the cache's clock (`createCache`'s `now`), so processes
+sharing the store need synchronised clocks (NTP): a skew of `s` ms between
+two of them puts their window edges `s` ms apart, and a counter's lifetime
+moves by the creating process's skew. Because the window's index is in the
+key, a counter that lives a little longer changes no count, so the store adds
+`expiryMargin` (default 1 s) to every lifetime: it also covers the SQL
+drivers' sweeper, which judges a counter's expiry by the process's clock, on
+a backend that counts by its own.

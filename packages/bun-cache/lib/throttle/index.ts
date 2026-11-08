@@ -35,23 +35,48 @@
  * index — so two windows (or two window lengths) never share a counter, and
  * the store keeps each key as it is, under its own namespace of the cache.
  *
- * GCRA is not offered: it needs a compare-and-set on one value, which a
- * cache counter cannot give atomically, so `throttle({ algorithm: "gcra" })`
- * refuses this store. The sliding window (the default) and the fixed window
- * run on it.
+ * **On Redis, Postgres, MySQL, MariaDB and SQLite the backend counts.** The
+ * store then has `countWindow` and `consumeGcra` too, and `throttle()` uses
+ * them: each step is one round trip (a Lua script on Redis, one statement on
+ * Postgres, one multi-statement query on MySQL and MariaDB, one transaction
+ * on SQLite), and, with `clock: "store"` (the default), the backend's own
+ * clock places it (Redis `TIME`, Postgres `clock_timestamp()`, MySQL and
+ * MariaDB `UTC_TIMESTAMP(6)`, SQLite `julianday('now')`). The processes
+ * sharing the store then need no synchronised clocks, and GCRA
+ * (`algorithm: "gcra"`) runs across processes: the bucket is read, judged
+ * and written in that one step. These steps go to the driver directly,
+ * past the cache's failure policy, circuit breaker, events and statistics;
+ * a failure is the store's, for `throttle()`'s `failMode`.
  *
- * **Clocks.** Each process places a request in a window by its own clock
- * (`throttle()`'s `now`), and a counter's expiry is computed from the cache's
- * clock (`createCache`'s `now`) in the process that creates it. Processes
- * sharing a store therefore need synchronised clocks (NTP): a skew of `s` ms
- * between two of them moves their window edges, and the counters' lifetimes,
- * `s` ms apart. {@link CacheThrottleStoreOptions.expiryMargin} covers a
- * backend that expires keys by its own clock (Redis's `PEXPIREAT`).
+ * **Elsewhere** (memory, file, MongoDB, D1, Azure, S3, `redundant()`, a
+ * wrapped driver) the two calls above are all there is. GCRA is not offered
+ * there, since a cache counter cannot do a compare-and-set, so
+ * `throttle({ algorithm: "gcra" })` refuses the store; and each process
+ * places a request in a window by its own clock (`throttle()`'s `now`), with
+ * a counter's expiry computed from the cache's clock (`createCache`'s
+ * `now`) in the process that creates it. Those processes need synchronised
+ * clocks (NTP): a skew of `s` ms between two of them moves their window
+ * edges, and the counters' lifetimes, `s` ms apart.
+ * {@link CacheThrottleStoreOptions.expiryMargin} covers a backend that
+ * expires keys by its own clock (Redis's `PEXPIREAT`).
  */
-import type { ThrottleStore } from "@kingsleyweb/bun-common";
+import type {
+  GcraOutcome,
+  GcraRequest,
+  ThrottleStore,
+  WindowCount,
+  WindowCountRequest,
+  WindowDeleteRequest,
+} from "@kingsleyweb/bun-common";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import type { Cache, CacheDriver, CacheSchema } from "../core/types";
 import { cacheDriverOf } from "../core/cache";
+import { storedKey } from "../core/keys";
+import type { ThrottleCounters } from "../core/throttle-counters";
+import {
+  THROTTLE_BASE_MAX,
+  throttleCountersOf,
+} from "../core/throttle-counters";
 import { RedundantDriver } from "../drivers/redundant";
 
 /** The default {@link CacheThrottleStoreOptions.namespace}. */
@@ -82,6 +107,20 @@ export interface CacheThrottleStoreOptions {
    * non-negative finite number.
    */
   readonly expiryMargin?: number;
+  /**
+   * Which clock places a request in a window, on a backend that counts
+   * itself (Redis, Postgres, MySQL, MariaDB, SQLite; see the module header):
+   *
+   * - `"store"` (the default): the backend's own clock. Every process
+   *   sharing the store agrees on the window whatever its clock says, so
+   *   none needs NTP; `throttle()`'s `now` is not used for counting.
+   * - `"process"`: `throttle()`'s `now`, as on every other backend: what a
+   *   test that drives a fake clock wants. Still one round trip a step, and
+   *   GCRA still works across processes.
+   *
+   * Ignored elsewhere, where the process's clock is the only one.
+   */
+  readonly clock?: "process" | "store";
 }
 
 /** What {@link cacheThrottleStore} returns: a `ThrottleStore` whose every method answers a promise. */
@@ -105,6 +144,27 @@ export interface CacheThrottleStore extends ThrottleStore {
   ) => Promise<number>;
   /** Reads the counter at `key` from the driver (never an L1 tier); `undefined` when there is none or it has expired. */
   readonly get: (key: string) => Promise<number | undefined>;
+  /**
+   * The clock that places a request: `"store"` when the backend counts by
+   * its own clock, `"process"` when `throttle()`'s `now` does (the
+   * `clock` option, or a backend that cannot count itself).
+   */
+  readonly clock: "process" | "store";
+  /** One window step in one round trip; present only on a backend that counts itself (see the module header). */
+  readonly countWindow?: (
+    base: string,
+    request: WindowCountRequest,
+  ) => Promise<WindowCount>;
+  /** Forgets the current and previous windows under `base`, as {@link countWindow} placed them; present with it. */
+  readonly deleteWindow?: (
+    base: string,
+    request: WindowDeleteRequest,
+  ) => Promise<void>;
+  /** One GCRA step, atomically on the backend; present only on a backend that counts itself, so `algorithm: "gcra"` runs across processes. */
+  readonly consumeGcra?: (
+    key: string,
+    request: GcraRequest,
+  ) => Promise<GcraOutcome>;
   /** Deletes the counter at `key`: the client's count starts again from zero (bun-common's `handler.reset`). */
   readonly delete: (key: string) => Promise<void>;
   /** Deletes every counter in this store's namespace, and nothing outside it. */
@@ -164,14 +224,37 @@ export function cacheThrottleStore<
       { expiryMargin: margin },
     );
   }
+  const clockOption = options.clock ?? "store";
+  if (clockOption !== "store" && clockOption !== "process") {
+    throw new ConfigError(
+      `cacheThrottleStore: clock must be "store" or "process"; got ${JSON.stringify(clockOption)}`,
+      { clock: clockOption },
+    );
+  }
   // Any cache, a typed one included: the store reads and writes the keys
   // throttle() builds, which no schema of the cache describes.
   const counters = (cache as unknown as Cache).namespace(segment);
   const name = driver === undefined ? "bun-cache" : `bun-cache:${driver.name}`;
+  const namespace = counters.describeKey("_").namespace;
+  const scripted =
+    driver === undefined ? undefined : throttleCountersOf(driver);
+  const backend =
+    scripted === undefined
+      ? {}
+      : backendSteps(
+          scripted,
+          namespace,
+          (key) => counters.describeKey(key).key,
+          margin,
+          clockOption === "store",
+        );
 
   return {
     name,
-    namespace: counters.describeKey("_").namespace,
+    namespace,
+    clock:
+      scripted !== undefined && clockOption === "store" ? "store" : "process",
+    ...backend,
     async increment(key, cost, ttl) {
       if (!Number.isSafeInteger(cost)) {
         throw new TypeError(
@@ -189,6 +272,96 @@ export function cacheThrottleStore<
     },
     async clear() {
       await counters.clear();
+    },
+  };
+}
+
+/**
+ * A base name as the backend's counters take it: the cache's stored form of
+ * the key (its hash under `encrypt.hashNames`), hashed again when longer than
+ * {@link THROTTLE_BASE_MAX} bytes so `<base>:<index>` fits a SQL key column.
+ */
+function counterName(stored: string): string {
+  return storedKey(stored, THROTTLE_BASE_MAX);
+}
+
+/** The store's `countWindow`, `deleteWindow` and `consumeGcra` over a driver's own counters. */
+function backendSteps(
+  scripted: ThrottleCounters,
+  namespace: string,
+  stored: (key: string) => string,
+  margin: number,
+  storeClock: boolean,
+): Pick<CacheThrottleStore, "consumeGcra" | "countWindow" | "deleteWindow"> {
+  const checkCost = (cost: number): void => {
+    if (!Number.isSafeInteger(cost) || cost < 0) {
+      throw new TypeError(
+        `cacheThrottleStore: a request's cost must be a non-negative integer (the shared backends count in integers); got ${String(cost)}`,
+      );
+    }
+  };
+  return {
+    async countWindow(base, request) {
+      checkCost(request.cost);
+      const counted = await scripted.window(
+        namespace,
+        counterName(stored(base)),
+        {
+          window: request.window,
+          cost: request.cost,
+          previous: request.previous,
+          now: storeClock ? undefined : request.now,
+          margin,
+        },
+      );
+      const at = storeClock ? counted.now : request.now;
+      return {
+        current: counted.current,
+        previous: counted.previous,
+        elapsed: at - Math.floor(at / request.window) * request.window,
+      };
+    },
+    async deleteWindow(base, request) {
+      await scripted.deleteWindow(
+        namespace,
+        counterName(stored(base)),
+        request.window,
+        storeClock ? undefined : request.now,
+      );
+    },
+    async consumeGcra(key, request) {
+      checkCost(request.cost);
+      // In µs, so a fractional emission interval loses nothing that matters.
+      const interval = (request.window * 1000) / request.limit;
+      const step = Math.ceil(request.cost * interval);
+      const capacity = request.window * 1000;
+      const answer = await scripted.gcra(namespace, counterName(stored(key)), {
+        step,
+        capacity,
+        now: storeClock ? undefined : request.now * 1000,
+        margin,
+      });
+      const ahead = answer.tat - answer.now;
+      if (!answer.allowed) {
+        return {
+          allowed: false,
+          remaining: Math.max(
+            0,
+            Math.floor((capacity - ahead) / interval + 1e-9),
+          ),
+          resetAfter: ahead / 1000,
+          retryAfter: Math.max(0, ahead + step - capacity) / 1000,
+        };
+      }
+      return {
+        allowed: true,
+        remaining: Math.max(
+          0,
+          Math.floor((capacity - ahead) / interval + 1e-9),
+        ),
+        resetAfter: ahead / 1000,
+        retryAfter: 0,
+      };
     },
   };
 }

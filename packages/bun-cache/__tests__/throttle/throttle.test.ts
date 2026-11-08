@@ -26,6 +26,7 @@ import {
   memoryDriver,
   redundant,
   s3Driver,
+  sqliteDriver,
 } from "../../lib/index";
 import type { CacheThrottleStore } from "../../lib/throttle/index";
 import {
@@ -417,5 +418,43 @@ describe("cacheThrottleStore under throttle()", () => {
     const open = router({ limit: 1, window: "1m", store, logger }, clock);
     expect(await statuses(open, 2)).toEqual([200, 200]);
     expect(events.some((event) => event.level === "warn")).toBe(true);
+  });
+});
+
+describe("cacheThrottleStore: the backend's own counters", () => {
+  it("has none on a backend that cannot count itself: process clock, no countWindow, no GCRA", () => {
+    const { store } = setup();
+    expect(store.clock).toBe("process");
+    expect(store.countWindow).toBeUndefined();
+    expect(store.deleteWindow).toBeUndefined();
+    expect(store.consumeGcra).toBeUndefined();
+    // A wrapped driver is not the driver: it keeps the cache's path.
+    const wrapped = cacheThrottleStore(
+      createCache({ driver: faulty(sqliteDriver({ path: ":memory:" })) }),
+    );
+    expect(wrapped.countWindow).toBeUndefined();
+  });
+
+  it("has them on SQLite: the store clock by default, the process clock on request", async () => {
+    const cache = createCache({
+      driver: sqliteDriver({ path: ":memory:" }),
+      sweepInterval: 0,
+    });
+    try {
+      expect(cacheThrottleStore(cache).clock).toBe("store");
+      const local = cacheThrottleStore(cache, { clock: "process" });
+      expect(local.clock).toBe("process");
+      expect(typeof local.consumeGcra).toBe("function");
+    } finally {
+      await cache.close();
+    }
+  });
+
+  it("refuses a clock that is neither", () => {
+    const { cache } = setup();
+    expect(() =>
+      // @ts-expect-error not a clock
+      cacheThrottleStore(cache, { clock: "server" }),
+    ).toThrow(ConfigError);
   });
 });

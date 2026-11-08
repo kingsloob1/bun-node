@@ -69,6 +69,8 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import type { ThrottleCounters } from "../core/throttle-counters";
+import { counterNumber, THROTTLE_COUNTERS } from "../core/throttle-counters";
 import { chunkEntries } from "./batch";
 import { encodeSegment } from "./file-names";
 import type { ConnectionInput } from "./sql-connection";
@@ -556,6 +558,98 @@ return 1
   true,
 );
 
+/**
+ * The time a throttle script places its step by: `ARGV[i]` when given
+ * (epoch ms, or µs with `scale` 1e6), else the server's `TIME`, which a
+ * script may read before writing since Redis replicates a script's effects
+ * (the default from Redis 5, the only mode from 7). `fmt` writes a number
+ * without Lua's exponent notation.
+ */
+const THROTTLE_HELPERS = `
+local function fmt(x) return string.format('%.0f', x) end
+local function clock(given, scale)
+  if given ~= '' then return tonumber(given) end
+  local t = redis.call('TIME')
+  if scale == 1000 then return tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000) end
+  return tonumber(t[1]) * 1000000 + tonumber(t[2])
+end
+local function live(h, now)
+  return h[1] and not (h[2] and h[2] ~= '-' and tonumber(h[2]) <= now)
+end
+`;
+
+/**
+ * The throttle's window step (`lib/core/throttle-counters.ts`): KEYS[1] a key
+ * of the namespace's tag; ARGV base, the counter's base name, window ms, cost
+ * (0 reads only), whether the previous window is wanted ('1'), now ms ('' the
+ * server's), margin ms. Adds to `<base>n:<name>:<index>` (created with its
+ * expiry, as `increment` creates a counter) and answers its count, the
+ * previous window's and the time. The expiry is set relative (`PEXPIRE`)
+ * to the time the step was placed by, so a given time (`clock: "process"`)
+ * that is not the server's gives the counter the life it would have had.
+ * Not `allow-oom`: it writes the counter.
+ */
+const THROTTLE_WINDOW = script(`${THROTTLE_HELPERS}
+local base, name, w, cost, prev, margin = ARGV[1], ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4]), ARGV[5] == '1', tonumber(ARGV[7])
+local now = clock(ARGV[6], 1000)
+local idx = math.floor(now / w)
+local ck = base .. 'n:' .. name .. ':' .. fmt(idx)
+local h = redis.call('HMGET', ck, 'n', 'x')
+local cur = 0
+if live(h, now) then cur = tonumber(h[1]) end
+if cost > 0 then
+  if live(h, now) then
+    cur = redis.call('HINCRBY', ck, 'n', cost)
+  else
+    local span = 1
+    if prev then span = 2 end
+    local exp = (idx + span) * w + margin
+    redis.call('UNLINK', ck)
+    redis.call('HSET', ck, 'n', fmt(cost), 'x', fmt(exp), 'c', fmt(now))
+    redis.call('PEXPIRE', ck, fmt(math.max(1, math.ceil(exp - now))))
+    cur = cost
+  end
+end
+local p = 0
+if prev then
+  local ph = redis.call('HMGET', base .. 'n:' .. name .. ':' .. fmt(idx - 1), 'n', 'x')
+  if live(ph, now) then p = tonumber(ph[1]) end
+end
+return {fmt(cur), fmt(p), tostring(now)}
+`);
+
+/** The throttle's window delete: KEYS[1] a key of the namespace's tag; ARGV base, name, window ms, now ms ('' the server's). Unlinks the current and previous windows' counters. `allow-oom` when key-locked: `TIME` and `UNLINK` only. */
+const THROTTLE_DELETE_WINDOW = script(
+  `${THROTTLE_HELPERS}
+local base, name, w = ARGV[1], ARGV[2], tonumber(ARGV[3])
+local idx = math.floor(clock(ARGV[4], 1000) / w)
+return redis.call('UNLINK', base .. 'n:' .. name .. ':' .. fmt(idx), base .. 'n:' .. name .. ':' .. fmt(idx - 1))
+`,
+  true,
+);
+
+/**
+ * The throttle's GCRA step: KEYS[1] the bucket `<base>n:<key>`; ARGV the
+ * step µs (0 reads only), the capacity µs, now µs ('' the server's), margin
+ * ms. The bucket's `n` is its theoretical arrival time (µs). Answers
+ * allowed ('1'/'0'), the arrival time and the time. Not `allow-oom`.
+ */
+const THROTTLE_GCRA = script(`${THROTTLE_HELPERS}
+local step, cap, margin = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[4])
+local now = clock(ARGV[3], 1000000)
+local tat = tonumber(redis.call('HGET', KEYS[1], 'n')) or now
+if tat < now then tat = now end
+local nxt = tat + step
+if nxt - now > cap then return {'0', fmt(tat), fmt(now)} end
+if step > 0 then
+  local exp = math.ceil(nxt / 1000) + margin
+  redis.call('HSET', KEYS[1], 'n', fmt(nxt), 'x', fmt(exp), 'c', fmt(math.floor(now / 1000)))
+  redis.call('PEXPIRE', KEYS[1], fmt(math.max(1, math.ceil((nxt - now) / 1000) + margin)))
+  return {'1', fmt(nxt), fmt(now)}
+end
+return {'1', fmt(tat), fmt(now)}
+`);
+
 /** Escapes Redis glob characters (`*?[]\`) so a prefix matches only itself in `SCAN … MATCH`. */
 function globEscape(text: string): string {
   return text.replace(/[*?[\]\\]/g, (char) => `\\${char}`);
@@ -599,6 +693,62 @@ export class RedisCacheDriver implements CacheDriver {
     bus: "push",
     // A Redis string holds 512 MB; a MiB is left for the frame's header.
     maxEntryBytes: 511 * 1024 * 1024,
+  };
+
+  /**
+   * The throttle's counters, a script each (`lib/core/throttle-counters.ts`):
+   * one round trip per step, timed by the server's `TIME` unless given a time.
+   */
+  readonly [THROTTLE_COUNTERS]: ThrottleCounters = {
+    window: async (ns, name, step) => {
+      await this.#ready();
+      const base = this.#base(ns);
+      const answer = (await this.#run(
+        THROTTLE_WINDOW,
+        [`${base}n:${name}`],
+        [
+          base,
+          name,
+          String(step.window),
+          String(step.cost),
+          step.previous ? "1" : "0",
+          step.now === undefined ? "" : String(step.now),
+          String(step.margin),
+        ],
+      )) as unknown[];
+      return {
+        current: counterNumber(answer[0]),
+        previous: counterNumber(answer[1]),
+        now: counterNumber(answer[2]),
+      };
+    },
+    deleteWindow: async (ns, name, window, now) => {
+      await this.#ready();
+      const base = this.#base(ns);
+      await this.#run(
+        THROTTLE_DELETE_WINDOW,
+        [`${base}n:${name}`],
+        [base, name, String(window), now === undefined ? "" : String(now)],
+      );
+    },
+    gcra: async (ns, key, step) => {
+      await this.#ready();
+      const answer = (await this.#run(
+        THROTTLE_GCRA,
+        [`${this.#base(ns)}n:${key}`],
+        [
+          String(step.step),
+          String(step.capacity),
+          step.now === undefined ? "" : String(Math.floor(step.now)),
+          String(step.margin),
+        ],
+      )) as unknown[];
+      return {
+        allowed: counterNumber(answer[0]) === 1,
+        tat: counterNumber(answer[1]),
+        now: counterNumber(answer[2]),
+      };
+    },
   };
 
   /** The key prefix, as resolved. Internal; read by the tests. */

@@ -3524,7 +3524,7 @@ limit off for the route, and `skipThrottle("burst")` only that one
 |---|---|---|---|
 | `"sliding-window"` (default) | two fixed windows, the previous weighted by its overlap (Cloudflare's sliding-window counter) | `increment` with a lifetime, and `get` | Smooth at window edges; approximate, as it assumes the previous window was spread evenly. |
 | `"fixed-window"` | one counter per aligned window | `increment` | Exact and cheapest, but a client can send twice the limit across a boundary. |
-| `"gcra"` | a token bucket of `limit` refilling over `window` | an atomic `consumeGcra` | Exact and smooth; the memory store has it, other stores are refused at construction. A refused request takes nothing. |
+| `"gcra"` | a token bucket of `limit` refilling over `window` | an atomic `consumeGcra` | Exact and smooth; the memory store has it, and so has bun-cache's `cacheThrottleStore` on Redis, Postgres, MySQL, MariaDB and SQLite; other stores are refused at construction. A refused request takes nothing. |
 
 Under the window algorithms a refused request counts too (counted, then
 checked, in one step, as express-rate-limit and `@nestjs/throttler` do), so
@@ -3532,11 +3532,23 @@ a client that keeps sending stays refused.
 
 `ThrottleStore` is structural: `increment(key, cost, ttl)` (atomic; the
 lifetime set only when the counter is created), `get(key)`, and optionally
-`consumeGcra`, `delete` (for `reset()`) and `clear`. Each may answer
-synchronously or with a promise. `memoryThrottleStore({ maxKeys })` is
-bounded: past `maxKeys` (default `100_000`) it drops expired counters, then
-the oldest, so a client inventing keys cannot grow it. Processes sharing a
-store need synchronised clocks, as a skew shifts their window edges.
+`consumeGcra`, `countWindow` and `deleteWindow`, `delete` (for `reset()`)
+and `clear`. Each may answer synchronously or with a promise.
+`memoryThrottleStore({ maxKeys })` is bounded: past `maxKeys` (default
+`100_000`) it drops expired counters, then the oldest, so a client inventing
+keys cannot grow it.
+
+A store with `countWindow(base, { window, cost, previous, now })` counts a
+window step itself, in one call: it adds the cost to the current window's
+counter and answers `{ current, previous, elapsed }`, and the two window
+algorithms use it instead of `increment` and `get`; `reset()` then calls its
+`deleteWindow(base, { window, now })`. Such a store may place the request by
+its own clock rather than `now`, as bun-cache's `cacheThrottleStore` does on
+Redis, Postgres, MySQL, MariaDB and SQLite (the server's `TIME` or `now()`),
+and `consumeGcra` may likewise ignore `now`. **Clocks:** processes sharing a
+store that counts by their clocks (`increment` and `get`, or a store that
+uses `now`) need synchronised clocks (NTP), as a skew shifts their window
+edges; a store that keeps its own clock needs none.
 
 #### Changing limits while serving
 

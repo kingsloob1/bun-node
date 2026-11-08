@@ -16,6 +16,12 @@
  * implements the optional {@link ThrottleStore.consumeGcra}. The memory
  * store does (one process, one thread); `throttle({ algorithm: "gcra" })`
  * refuses a store without it at construction.
+ *
+ * A shared store may also offer {@link ThrottleStore.countWindow} (and
+ * {@link ThrottleStore.deleteWindow}): one window step in one round trip,
+ * placed by the store's own clock when it keeps one. bun-cache's store does,
+ * over a script or a statement per backend, so the processes sharing it no
+ * longer need synchronised clocks.
  */
 import { ConfigError } from "./errors";
 
@@ -30,7 +36,52 @@ export interface GcraRequest {
   readonly window: number;
   /** How many units this request takes; `0` only reads. */
   readonly cost: number;
-  /** The current time, epoch milliseconds, from the throttle's clock. */
+  /**
+   * The current time, epoch milliseconds, from the throttle's clock. A store
+   * that keeps its own clock (one that reads the server's time, so that
+   * processes need no synchronised clocks) ignores it.
+   */
+  readonly now: number;
+}
+
+/** What {@link ThrottleStore.countWindow} is asked to do. */
+export interface WindowCountRequest {
+  /** The window, in milliseconds; windows are aligned to the epoch (`floor(now / window)`). */
+  readonly window: number;
+  /**
+   * Units added to the current window's counter. `0` only reads: no counter
+   * is created.
+   */
+  readonly cost: number;
+  /**
+   * Whether the previous window's count is wanted too (the sliding window).
+   * `false` for the fixed window, whose counter then only needs to live to
+   * its window's end; with `true` it lives until the next window ends, when
+   * it is read as the previous one.
+   */
+  readonly previous: boolean;
+  /**
+   * The current time, epoch milliseconds, from the throttle's clock. A store
+   * that keeps its own clock places the request by that clock instead.
+   */
+  readonly now: number;
+}
+
+/** What {@link ThrottleStore.countWindow} answers. */
+export interface WindowCount {
+  /** The current window's count, this request's cost included. */
+  readonly current: number;
+  /** The previous window's count; `0` when there is none or it was not asked for. */
+  readonly previous: number;
+  /** Milliseconds into the current window, by the clock that placed the request. */
+  readonly elapsed: number;
+}
+
+/** What {@link ThrottleStore.deleteWindow} is asked to do. */
+export interface WindowDeleteRequest {
+  /** The window, in milliseconds. */
+  readonly window: number;
+  /** The current time, epoch milliseconds, from the throttle's clock (ignored by a store with its own clock). */
   readonly now: number;
 }
 
@@ -79,6 +130,32 @@ export interface ThrottleStore {
     key: string,
     request: GcraRequest,
   ) => MaybePromise<GcraOutcome>;
+  /**
+   * One window step in one call: add `request.cost` to the current window's
+   * counter under `base` (creating it with its lifetime), and answer it with
+   * the previous window's count and how far into the window the request is.
+   * Optional. A store that has it is used through it by the sliding and fixed
+   * windows instead of {@link increment} and {@link get}: one round trip
+   * rather than two, and, for a store that keeps its own clock (the
+   * server's `TIME` or `now()`), a window index every process agrees on
+   * whatever its own clock says. The store names the window's counter
+   * itself (`base` plus the window's index is the usual choice).
+   */
+  countWindow?: (
+    base: string,
+    request: WindowCountRequest,
+  ) => MaybePromise<WindowCount>;
+  /**
+   * Forgets the current and previous windows' counters under `base`, as
+   * placed by the clock {@link countWindow} uses: what
+   * `ThrottleHandler.reset()` calls on a store that has `countWindow`.
+   * Optional; without it `reset()` deletes the counters it would have named
+   * itself, which needs {@link delete}.
+   */
+  deleteWindow?: (
+    base: string,
+    request: WindowDeleteRequest,
+  ) => MaybePromise<void>;
   /**
    * Forgets the counter (or GCRA state) at `key`: what
    * `ThrottleHandler.reset()` calls for one client. Optional; `reset()`
