@@ -317,11 +317,142 @@ describe("signallingRelay: checks", () => {
     });
   });
 
+  it("throws on an identify that is not a function", () => {
+    expect(() =>
+      signallingRelay(signalling, { identify: "alice" as never }),
+    ).toThrow(TypeError);
+  });
+
   it("throws on a maxPeersPerRoom that is not a whole number 1–1024", () => {
     for (const bad of [0, 1.5, 1_025, Number.NaN]) {
       expect(() =>
         signallingRelay(signalling, { maxPeersPerRoom: bad }),
       ).toThrow(TypeError);
     }
+  });
+});
+
+describe("signallingRelay: identify pins a peer's name to its session", () => {
+  /**
+   * The app's auth: `?as=<name>` stands for a verified session token, and
+   * `authorize` puts its user on `req.user`, which the upgrade copies to
+   * `ws.data.user`; a missing token is a socket with no user.
+   */
+  const withSessions = (
+    identify: SignallingRelayOptions["identify"],
+  ): SignallingRelayOptions => ({
+    authorize: (req, _res, next) => {
+      const as = req.query.as;
+      if (typeof as === "string") {
+        (req as unknown as { user: { name: string } }).user = { name: as };
+      }
+      next();
+    },
+    identify,
+  });
+  const byUser: SignallingRelayOptions["identify"] = (ws) =>
+    (ws.data.user as { name?: string } | undefined)?.name;
+
+  /** Opens `room` as session `as` (none when `undefined`) and joins as `peer`. */
+  async function joinAs(
+    base: string,
+    room: string,
+    as: string | undefined,
+    peer: string,
+  ): Promise<{ client: Client; reply: Record<string, unknown> }> {
+    const client = await open(
+      `${base}/rtc/${room}${as === undefined ? "" : `?as=${as}`}`,
+    );
+    client.send({ type: "join", id: `j-${peer}`, data: { peer } });
+    return { client, reply: await client.next((f) => f.id === `j-${peer}`) };
+  }
+
+  it("lets a session join under its own name", async () => {
+    const base = await serve(withSessions(byUser));
+    const alice = await joinAs(base, "r1", "alice", "alice");
+    expect(alice.reply).toEqual({
+      type: "peers",
+      id: "j-alice",
+      data: { peers: [] },
+    });
+  });
+
+  it("refuses a session claiming another peer's name, before and after that peer joined; the real peer is unaffected", async () => {
+    const base = await serve(withSessions(byUser));
+    // Mallory claims alice's name before alice arrives.
+    const early = await joinAs(base, "r1", "mallory", "alice");
+    expect(early.reply).toMatchObject({
+      type: "error",
+      code: "VALIDATION",
+      issues: [
+        { path: "peer", message: "This name belongs to another session" },
+      ],
+    });
+    // Alice still gets her own name.
+    const alice = await joinAs(base, "r1", "alice", "alice");
+    expect(alice.reply).toMatchObject({ type: "peers", data: { peers: [] } });
+    const bob = await joinAs(base, "r1", "bob", "bob");
+    // And after: the answer is the same, never "taken" (which would confirm
+    // the name is in the room).
+    const late = await joinAs(base, "r1", "mallory", "alice");
+    expect(late.reply).toMatchObject({
+      issues: [
+        { path: "peer", message: "This name belongs to another session" },
+      ],
+    });
+    // Value-free: the issue names no peer (the id is the client's own, echoed).
+    expect(JSON.stringify(late.reply.issues)).not.toContain("alice");
+    // Not joined, mallory can send nothing on: an offer to bob is refused,
+    // and bob receives nothing from it.
+    const seen = bob.client.frames.length;
+    late.client.send({
+      type: "offer",
+      id: "o",
+      data: { to: "bob", description: { type: "offer", sdp: SDP } },
+    });
+    expect(await late.client.next((f) => f.id === "o")).toMatchObject({
+      type: "error",
+      issues: [{ message: "Join the room first" }],
+    });
+    await settle();
+    expect(bob.client.frames.slice(seen)).toEqual([]);
+    // Alice's offers still reach bob from her name.
+    alice.client.send({
+      type: "offer",
+      data: { to: "bob", description: { type: "offer", sdp: SDP } },
+    });
+    expect(
+      await bob.client.next((f) => f.type === "offer", seen),
+    ).toMatchObject({ data: { from: "alice" } });
+  });
+
+  it("refuses a socket with no identity, and one whose identify throws", async () => {
+    const base = await serve(withSessions(byUser));
+    const anonymous = await joinAs(base, "r1", undefined, "alice");
+    expect(anonymous.reply).toMatchObject({
+      type: "error",
+      issues: [{ path: "", message: "This socket has no identity to join as" }],
+    });
+    const throwing = await serve(
+      withSessions(() => {
+        throw new Error("session store down");
+      }),
+    );
+    expect(
+      (await joinAs(throwing, "r1", "alice", "alice")).reply,
+    ).toMatchObject({
+      issues: [{ message: "This socket has no identity to join as" }],
+    });
+  });
+
+  it("without identify, the hole it closes: any session can take a free name (control)", async () => {
+    const base = await serve(withSessions(undefined));
+    const mallory = await joinAs(base, "r1", "mallory", "alice");
+    expect(mallory.reply).toMatchObject({ type: "peers" });
+    // The real alice is then locked out of her own name.
+    const alice = await joinAs(base, "r1", "alice", "alice");
+    expect(alice.reply).toMatchObject({
+      issues: [{ message: "This name is taken in the room" }],
+    });
   });
 });
