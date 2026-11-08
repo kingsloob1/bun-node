@@ -219,6 +219,7 @@ Every count runs on a fake clock, so the figures are exact.
 | [`stores-and-failures.ts`](./16-throttle/stores-and-failures.ts) | `memoryThrottleStore({ maxKeys })`, one store shared by two routers, a broken store failing open (one warning) vs `failMode: "closed"` (`ThrottleStoreError`, 503), `onLimited`, the three algorithms and GCRA refill |
 | [`runtime-update.ts`](./16-throttle/runtime-update.ts) | the handler's controls: `update({ limits })` while serving (a kept limit's count carried over, a new name fresh, a bad update changing nothing), `peek(req)` consuming nothing, `reset(key)`, and `failMode: memoryThrottleStore()` as a fallback store while the primary is down |
 | [`openapi.ts`](./16-throttle/openapi.ts) | the generated `429` and `x-bun-throttle` on throttled operations, none on a skipped route, a route's own `429` winning |
+| [`refunds.ts`](./16-throttle/refunds.ts) | what counts: `skipSuccessfulRequests` (a sign-in counting failures only), `skipFailedRequests` (an export counting what worked, its refusals given back), `requestWasSuccessful` (a `404` as a success), `limit(req)` per plan (`"dynamic"` in the policy, the quota in `RateLimit-Policy`), and refunds under GCRA |
 
 ## Checking the examples
 

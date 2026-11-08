@@ -169,6 +169,7 @@ Asserted with [`shared/check.ts`](./shared/check.ts), like the tours.
 | File | Shows |
 |---|---|
 | [`throttling.ts`](./14-throttle/throttling.ts) | on a served application: a default throttler per route per client with `headers: "legacy"` (`X-RateLimit-*`, the sixth request a `429` with `@nestjs/throttler`'s body and `Retry-After`, the refusal logged by `logLimited` without the address); two instances sharing one count through `cacheThrottleStore(cache)` from `@kingsleyweb/bun-nest/cache`; a service token exempt from the default throttler by its `skipIf` while a strict route (`@SkipThrottle()` plus a `@Throttle()`-declared throttler) still counts it; a sign-in route with two `@Throttle()`-declared limits, one keyed on address and account, one on the address; `@SkipThrottle()` on a health check; the adapter's `throttle` option counting 404s ahead of Nest and answering bun-common's problem document; a bare-number `ttl` failing the boot, and the boot check logging a forgotten guard. See the package README's [Throttling](../../packages/bun-nest/README.md#throttling) |
+| [`refunds.ts`](./14-throttle/refunds.ts) | what counts, through `adapter.fetch()`: `@Throttle({ default: { skipSuccessfulRequests: true, skipFailedRequests: false } })` on a sign-in counting failures only, over the module's `skipFailedRequests` (an export's `500`s and refusals given back); the module's `requestWasSuccessful` counting a `404`; a `@Throttle()`-declared throttler whose `limit` depends on the plan; a non-boolean flag failing the boot |
 
 ## Checking the examples
 
