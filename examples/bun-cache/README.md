@@ -3,7 +3,7 @@
 Runnable examples for
 [`@kingsleyweb/bun-cache`](../../packages/bun-cache): caching over pluggable
 drivers — TTLs, tags, single-flight `getOrSet`, staleness, counters, events
-and stats, typed keys, runtime-checked reads, and HTTP response caching (`@kingsleyweb/bun-cache/http`).
+and stats, typed keys, runtime-checked reads, HTTP response caching (`@kingsleyweb/bun-cache/http`), and a shared store for bun-common's `throttle()` (`@kingsleyweb/bun-cache/throttle`).
 
 Each file is a script. Its opening comment says what it shows and how to run
 it; its output narrates what happened, and the `✓` lines are assertions (a
@@ -61,3 +61,5 @@ root `node_modules`; `03-typed` uses zod from the same place.
 | `08-redundant` | `failover.ts` — `redundant([a, b])` over two memory members, one behind `faulty()`: `write: "all"` with `ack: "one"` and `"all"`, a failover read served by the secondary with the primary down (a healthy primary's miss is final), `member-down` / `member-dirty` / `member-up` (`cleared: true`) through `cache.on`, a member that missed a write rejoining empty, `read: "race"` taking a secondary's hit, `secondaryTtl` capping the secondaries' expiry |
 | `08-redundant` | `primary-writes.ts` — `write: "primary"`: the replication queue, `maxQueue` overflow as `member-dirty` with `reason: "overflow"` then an emptied rejoin, counters and locks on the primary only (`UnsupportedOperationError` with it down, the lock falling back to single-flight, `counters: "refuse"`), and the fence: an invalidation from another cache, then a stale load refused (`fenced`, `reason: "fence"`) |
 | `08-redundant` | `servers.ts` — `redundant([redisDriver(...), postgresDriver(...)])`: a write and a tag invalidation reaching both servers, counters on Redis only, and Postgres serving the read with Redis "down" (`EXAMPLE_REDIS_URL` and `EXAMPLE_POSTGRES_URL`; skips when either is unset; its own key prefix and tables, removed by name) |
+| `09-throttle` | `basics.ts` — `cacheThrottleStore(cache)` from `@kingsleyweb/bun-cache/throttle` under bun-common's `throttle()`, on the memory driver and a `fakeClock`: the sliding window (a 429 with `Retry-After`, half of the last minute's count still weighing), the fixed window's new budget, the counters in the `throttle` namespace (`app:throttle`) with the window's lifetime set once plus the 1 s expiry margin, `delete(key)` and `clear()` sparing the cache's own entries, and the refusals: a Cloudflare KV cache at construction, a fractional cost, `algorithm: "gcra"` |
+| `09-throttle` | `two-processes.ts` — two `bun` processes, each with its own cache, store and `throttle()` of limit 20, together sending 60 requests for one client: exactly 20 allowed, on SQLite always, on Redis with `EXAMPLE_REDIS_URL` and on Postgres with `EXAMPLE_POSTGRES_URL` (each sits out by name when unset), and the control: two namespaces allow 40; deletes exactly its own keys and tables |

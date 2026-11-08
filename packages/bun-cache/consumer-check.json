@@ -147,6 +147,22 @@
       "types": ["BunCacheKeyvStore"]
     },
     {
+      "$comment": "The throttle store: cacheThrottleStore(cache) is a bun-common ThrottleStore over a bun-cache Cache, so throttle() holds one limit across processes. Its declarations import bun-common, a runtime dependency.",
+      "spelling": "@kingsleyweb/bun-cache/throttle",
+      "values": [
+        "cacheThrottleStore",
+        "DEFAULT_THROTTLE_NAMESPACE",
+        "DEFAULT_THROTTLE_EXPIRY_MARGIN"
+      ],
+      "types": ["CacheThrottleStore", "CacheThrottleStoreOptions"],
+      "snippet": "import type { ThrottleStore } from \"@kingsleyweb/bun-common\";\nimport { createCache, memoryDriver } from \"@kingsleyweb/bun-cache\";\nconst store = m.cacheThrottleStore(createCache({ driver: memoryDriver() }), { namespace: \"limits\", expiryMargin: 2_000 });\nexport type _storeNotAny = Expect<IsAny<typeof store>>;\nexport const _asThrottleStore: ThrottleStore = store;\nexport type _increment = Equal<ReturnType<typeof store.increment>, Promise<number>>;\nexport type _get = Equal<ReturnType<typeof store.get>, Promise<number | undefined>>;\nexport const _options: t.CacheThrottleStoreOptions = { namespace: \"throttle\" };\nexport const _name: string = store.name;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/throttle",
+      "values": ["cacheThrottleStore"],
+      "types": ["CacheThrottleStore"]
+    },
+    {
       "$comment": "The Worker the Cloudflare drivers' endpoint points at, which users deploy (plan Status, PR-C10). It runs on Cloudflare's runtime, so it is checked as a browser entry: no Node or Bun types in its graph, and it imports nothing.",
       "spelling": "@kingsleyweb/bun-cache/cloudflare-worker",
       "browser": true,
