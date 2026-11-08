@@ -22,7 +22,7 @@
     },
     "packages/bun-cache": {
       "name": "@kingsleyweb/bun-cache",
-      "version": "3.0.0-rc.0",
+      "version": "3.0.0-rc.1",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
       },
@@ -47,7 +47,7 @@
     },
     "packages/bun-client": {
       "name": "@kingsleyweb/bun-client",
-      "version": "3.0.0-rc.0",
+      "version": "3.0.0-rc.1",
       "bin": {
         "bun-client": "./lib/codegen/cli.ts",
       },
@@ -95,7 +95,7 @@
     },
     "packages/bun-common": {
       "name": "@kingsleyweb/bun-common",
-      "version": "3.0.0-rc.0",
+      "version": "3.0.0-rc.1",
       "dependencies": {
         "@kingsleyweb/bun-contract": "workspace:^",
         "@routejs/router": "^3.0.3",
@@ -149,7 +149,7 @@
     },
     "packages/bun-contract": {
       "name": "@kingsleyweb/bun-contract",
-      "version": "3.0.0-rc.0",
+      "version": "3.0.0-rc.1",
       "devDependencies": {
         "@types/bun": "catalog:",
         "arktype": "catalog:",
@@ -171,7 +171,7 @@
     },
     "packages/bun-jobs": {
       "name": "@kingsleyweb/bun-jobs",
-      "version": "3.0.0-rc.0",
+      "version": "3.0.0-rc.1",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
       },
@@ -206,7 +206,7 @@
     },
     "packages/bun-nest": {
       "name": "@kingsleyweb/bun-nest",
-      "version": "3.0.0-rc.0",
+      "version": "3.0.0-rc.1",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
       },
@@ -264,7 +264,7 @@
     },
     "packages/bun-ui": {
       "name": "@kingsleyweb/bun-ui",
-      "version": "3.0.0-rc.0",
+      "version": "3.0.0-rc.1",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
       },
