@@ -34,7 +34,7 @@ export const THROTTLE_BASE_MAX = 200;
 export interface WindowStep {
   /** The window, ms. */
   window: number;
-  /** Units to add; `0` reads only (nothing is created). A safe integer. */
+  /** Units to add; `0` reads only (nothing is created); negative gives back to a live counter (nothing is created). A safe integer. */
   cost: number;
   /** Whether the previous window's count is wanted (sliding window), which also makes the counter live one window longer. */
   previous: boolean;
@@ -56,7 +56,7 @@ export interface WindowStepResult {
 
 /** One GCRA step, as {@link ThrottleCounters.gcra} takes it. */
 export interface GcraStep {
-  /** The emission interval times the cost, µs, rounded up: how far the arrival time moves. `0` reads only. */
+  /** The emission interval times the cost, µs, rounded up: how far the arrival time moves. `0` reads only; negative gives back to an existing bucket (none is created). */
   step: number;
   /** The bucket's depth, µs: the window. A step fits while the new arrival time is at most this far ahead. */
   capacity: number;

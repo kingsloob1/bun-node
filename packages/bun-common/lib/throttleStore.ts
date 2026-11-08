@@ -34,7 +34,11 @@ export interface GcraRequest {
   readonly limit: number;
   /** The window, in milliseconds: a full bucket refills over this long. */
   readonly window: number;
-  /** How many units this request takes; `0` only reads. */
+  /**
+   * How many units this request takes; `0` only reads. Negative gives units
+   * back (`skipSuccessfulRequests`, `skipFailedRequests`): the arrival time
+   * moves back, never below an empty bucket, and no bucket is created.
+   */
   readonly cost: number;
   /**
    * The current time, epoch milliseconds, from the throttle's clock. A store
@@ -50,7 +54,9 @@ export interface WindowCountRequest {
   readonly window: number;
   /**
    * Units added to the current window's counter. `0` only reads: no counter
-   * is created.
+   * is created. Negative gives units back (`skipSuccessfulRequests`,
+   * `skipFailedRequests`, with `previous: false`): subtracted from a live
+   * counter, and no counter is created.
    */
   readonly cost: number;
   /**
@@ -115,7 +121,10 @@ export interface ThrottleStore {
    * atomically across everything that shares the store. A counter that does
    * not exist is created at `0` first, with a lifetime of `ttl` milliseconds;
    * the lifetime is set **only** on creation (Redis `PEXPIRE … NX`), so a
-   * busy key still expires on time.
+   * busy key still expires on time. A refund (`skipSuccessfulRequests`,
+   * `skipFailedRequests`) is a negative `cost` with a `ttl` of 1 ms, so a
+   * counter that has expired meanwhile comes back, if at all, only for a
+   * moment.
    */
   increment: (key: string, cost: number, ttl: number) => MaybePromise<number>;
   /** Reads the counter at `key`; `undefined` (or `0`) when there is none. */
@@ -301,14 +310,12 @@ export function memoryThrottleStore(
           retryAfter: next - at - request.window,
         };
       }
-      if (request.cost > 0) {
-        if (entry === undefined) {
-          admit(at);
-          entries.set(key, { value: next, expiresAt: next });
-        } else {
-          entry.value = next;
-          entry.expiresAt = next;
-        }
+      if (entry !== undefined && request.cost !== 0) {
+        entry.value = next;
+        entry.expiresAt = next;
+      } else if (request.cost > 0) {
+        admit(at);
+        entries.set(key, { value: next, expiresAt: next });
       }
       return {
         allowed: true,

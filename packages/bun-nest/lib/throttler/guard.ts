@@ -67,6 +67,10 @@ export interface ThrottlePlanEntry {
   readonly algorithm: ThrottleAlgorithm;
   /** Which headers it sends. */
   readonly headers: ThrottleHeaders;
+  /** Whether a successful request's count is given back (only failures count). */
+  readonly skipSuccessfulRequests: boolean;
+  /** Whether a failed request's count is given back (only successes count). */
+  readonly skipFailedRequests: boolean;
 }
 
 /** A class or method name for messages, `anonymous` when it has none. */
@@ -159,8 +163,30 @@ export function throttlePlanFor(
       ...(generateKey === undefined ? {} : { generateKey }),
       algorithm: base?.algorithm ?? options.algorithm,
       headers: base?.headers ?? options.headers,
+      skipSuccessfulRequests: flag(
+        method.skipSuccessfulRequests ??
+          cls.skipSuccessfulRequests ??
+          base?.skipSuccessfulRequests ??
+          options.skipSuccessfulRequests,
+        `${at}: skipSuccessfulRequests`,
+      ),
+      skipFailedRequests: flag(
+        method.skipFailedRequests ??
+          cls.skipFailedRequests ??
+          base?.skipFailedRequests ??
+          options.skipFailedRequests,
+        `${at}: skipFailedRequests`,
+      ),
     };
   });
+}
+
+/** A boolean option, checked: anything else is a `ConfigError` at startup. */
+function flag(value: unknown, what: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new ConfigError(`${what} must be a boolean`);
+  }
+  return value;
 }
 
 /** Carries a refusal out of a bun-common `throttle()` through its `next`. */
@@ -433,7 +459,7 @@ export class BunThrottlerGuard implements CanActivate {
     limit: number,
     ttl: number,
   ): BuiltThrottle {
-    const shape = `${entry.name}|${limit}|${ttl}|${entry.algorithm}|${String(entry.headers)}`;
+    const shape = `${entry.name}|${limit}|${ttl}|${entry.algorithm}|${String(entry.headers)}|${entry.skipSuccessfulRequests ? "s" : ""}${entry.skipFailedRequests ? "f" : ""}`;
     let built = this.#throttles.get(shape);
     if (built !== undefined) return built;
     if (this.#throttles.size >= MAX_THROTTLES) this.#throttles.clear();
@@ -453,6 +479,11 @@ export class BunThrottlerGuard implements CanActivate {
       scope: "global",
       algorithm: entry.algorithm,
       headers: entry.headers,
+      skipSuccessfulRequests: entry.skipSuccessfulRequests,
+      skipFailedRequests: entry.skipFailedRequests,
+      ...(options.requestWasSuccessful === undefined
+        ? {}
+        : { requestWasSuccessful: options.requestWasSuccessful }),
       failMode: options.failMode,
       logger: this.logger,
       onLimited: (_req, _res, next, info) => next(new Limited(info)),

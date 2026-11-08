@@ -176,6 +176,8 @@
         "MemoryThrottleStore",
         "WindowCount",
         "WindowCountRequest",
+        "ThrottleQuota",
+        "ThrottleRequestWasSuccessful",
         "Duration",
         "DurationObject"
       ],

@@ -77,8 +77,15 @@ export function postgresThrottleCounters(
       const reset = `(${e}.v IS NOT NULL OR ${e}.n IS NULL OR (${e}.exp IS NOT NULL AND ${e}.exp <= excluded.ca))`;
       const head = `WITH w AS (SELECT now, floor(now / $4::double precision)::bigint AS idx FROM (SELECT ${pgNow("$3", 1000)} AS now) c)`;
       const statement =
-        step.cost > 0
+        step.cost < 0
           ? `${head},
+             up AS (
+               UPDATE ${e} SET n = ${e}.n + $5::bigint
+               WHERE ${e}.ns = $1 AND ${e}.k = $2 || ':' || (SELECT idx FROM w) AND ${live(e, "(SELECT now FROM w)")}
+               RETURNING n)
+             SELECT w.now, (SELECT n FROM up) AS cur, ${previous} AS prev FROM w`
+          : step.cost > 0
+            ? `${head},
              up AS (
                INSERT INTO ${e} (ns, k, v, n, exp, ca, tg)
                SELECT $1, $2 || ':' || w.idx, NULL, $5::bigint, ceil((w.idx + $6::bigint) * $4::double precision + $7::double precision)::bigint, floor(w.now)::bigint, NULL FROM w
@@ -89,7 +96,7 @@ export function postgresThrottleCounters(
                  v = NULL, tg = NULL
                RETURNING n)
              SELECT w.now, (SELECT n FROM up) AS cur, ${previous} AS prev FROM w`
-          : `${head} SELECT w.now, ${read("w.idx")} AS cur, ${previous} AS prev FROM w`;
+            : `${head} SELECT w.now, ${read("w.idx")} AS cur, ${previous} AS prev FROM w`;
       const rows = await target.sql.unsafe<
         { now: unknown; cur: unknown; prev: unknown }[]
       >(statement, [
@@ -99,7 +106,9 @@ export function postgresThrottleCounters(
         step.window,
         ...(step.cost > 0
           ? [step.cost, step.previous ? 2 : 1, step.margin]
-          : []),
+          : step.cost < 0
+            ? [step.cost]
+            : []),
       ]);
       return {
         current: counterNumber(rows[0].cur),
@@ -123,8 +132,16 @@ export function postgresThrottleCounters(
       // plus the step. `excluded.n` is now + step.
       const tat = `GREATEST(CASE WHEN ${e}.v IS NULL AND ${e}.n IS NOT NULL THEN ${e}.n + $4::bigint ELSE 0 END, excluded.n)`;
       const writes = step.step > 0 && step.step <= step.capacity;
-      const statement = writes
-        ? `${head},
+      const statement =
+        step.step < 0
+          ? `${head},
+           up AS (
+             UPDATE ${e} SET n = GREATEST(${e}.n, (SELECT now FROM c)) + $4::bigint
+             WHERE ${e}.ns = $1 AND ${e}.k = $2 AND ${e}.v IS NULL AND ${e}.n IS NOT NULL
+             RETURNING n)
+           SELECT c.now, (SELECT n FROM up) AS written, ${old} AS read FROM c`
+          : writes
+            ? `${head},
            up AS (
              INSERT INTO ${e} (ns, k, v, n, exp, ca, tg)
              SELECT $1, $2, NULL, c.now + $4::bigint, ceil((c.now + $4::bigint) / 1000.0)::bigint + $6::bigint, c.now / 1000, NULL FROM c
@@ -135,14 +152,18 @@ export function postgresThrottleCounters(
              WHERE ${tat} - (excluded.n - $4::bigint) <= $5::bigint
              RETURNING n)
            SELECT c.now, (SELECT n FROM up) AS written, ${old} AS read FROM c`
-        : `${head} SELECT c.now, NULL AS written, ${old} AS read FROM c`;
+            : `${head} SELECT c.now, NULL AS written, ${old} AS read FROM c`;
       const rows = await target.sql.unsafe<
         { now: unknown; written: unknown; read: unknown }[]
       >(statement, [
         target.fit(ns),
         key,
         step.now === undefined ? null : Math.floor(step.now),
-        ...(writes ? [step.step, step.capacity, step.margin] : []),
+        ...(writes
+          ? [step.step, step.capacity, step.margin]
+          : step.step < 0
+            ? [step.step]
+            : []),
       ]);
       return gcraAnswer(
         counterNumber(rows[0].now),
@@ -222,7 +243,12 @@ export function mysqlThrottleCounters(
         `SET @bct_k = ${keyed(`CONCAT(${b}, ':', @bct_i)`)};`,
         `SET @bct_p = ${keyed(`CONCAT(${b}, ':', CAST(@bct_i - 1 AS SIGNED))`)};`,
       ];
-      if (step.cost > 0) {
+      if (step.cost < 0) {
+        statements.push(
+          `UPDATE ${e} SET n = n + ${cost} WHERE ns = ${n} AND k = @bct_k AND v IS NULL AND n IS NOT NULL AND (exp IS NULL OR exp > @bct_now);`,
+          `SELECT @bct_now AS now, ${read("@bct_k")} AS cur, ${step.previous ? read("@bct_p") : "0"} AS prev;`,
+        );
+      } else if (step.cost > 0) {
         statements.push(
           `INSERT INTO ${e} (ns, k, v, n, exp, ca, tg) VALUES (${n}, @bct_k, NULL, CAST(LAST_INSERT_ID(${cost}) AS SIGNED), ${exp}, @bct_now, NULL)
            ON DUPLICATE KEY UPDATE
@@ -276,7 +302,12 @@ export function mysqlThrottleCounters(
           1000000,
         ),
       ];
-      if (writes) {
+      if (step.step < 0) {
+        statements.push(
+          `UPDATE ${e} SET n = GREATEST(n, @bct_now) + ${by} WHERE ns = ${n} AND k = ${k} AND v IS NULL AND n IS NOT NULL;`,
+          `SELECT @bct_now AS now, ${read} AS written, ${read} AS \`read\`;`,
+        );
+      } else if (writes) {
         // The arrival time after the step, and whether it fits, both from
         // the old row: `exp` and `ca` are assigned before `n` changes. A
         // refused step leaves `n` and resets LAST_INSERT_ID to 0 (the
@@ -353,6 +384,11 @@ export function sqliteThrottleCounters(
         const now = clock(db, step.now);
         const index = Math.floor(now / step.window);
         const key = `${base}:${index}`;
+        if (step.cost < 0) {
+          db.query(
+            `UPDATE ${e} SET n = n + ?3 WHERE ns = ?1 AND k = ?2 AND v IS NULL AND n IS NOT NULL AND (exp IS NULL OR exp > ?4)`,
+          ).run(ns, key, step.cost, now);
+        }
         const current =
           step.cost > 0
             ? db
@@ -400,7 +436,7 @@ export function sqliteThrottleCounters(
         const tat = Math.max(row === null ? now : counterNumber(row.n), now);
         const next = tat + step.step;
         if (next - now > step.capacity) return { allowed: false, tat, now };
-        if (step.step > 0) {
+        if (step.step > 0 || (step.step < 0 && row !== null)) {
           db.query(
             `INSERT INTO ${e} (ns, k, v, n, exp, tg, ca) VALUES (?1, ?2, NULL, ?3, ?4, NULL, ?5) ON CONFLICT (ns, k) DO UPDATE SET n = excluded.n, exp = excluded.exp, ca = excluded.ca, v = NULL, tg = NULL`,
           ).run(

@@ -3016,7 +3016,7 @@ checked at boot: a bad one fails it with a `ConfigError`.
 
 | Option | Default | Description |
 |---|---|---|
-| `throttlers` | (required) | The named throttlers: `{ name?, limit, ttl, allowSubSecond?, skipIf?, ignoreUserAgents?, getTracker?, generateKey?, algorithm?, headers? }`. `name` defaults to `"default"`; `limit` and `ttl` may be functions of the `ExecutionContext`. |
+| `throttlers` | (required) | The named throttlers: `{ name?, limit, ttl, allowSubSecond?, skipIf?, ignoreUserAgents?, getTracker?, generateKey?, algorithm?, headers?, skipSuccessfulRequests?, skipFailedRequests? }`. `name` defaults to `"default"`; `limit` and `ttl` may be functions of the `ExecutionContext`. |
 | `ttl` (per throttler) | (required) | A duration: `"1m"`, `"30s"`, `{ minutes: 1 }`, `seconds(60)`. **Never a bare number** (a type error and a boot error), and under a second only with `allowSubSecond: true`. |
 | `skipIf` | none | `(context) => boolean \| Promise<boolean>`: requests it answers `true` for are not counted. On a throttler it applies to that throttler only; on the module, to every throttler without its own. |
 | `ignoreUserAgents` | none | `RegExp[]`: matching `User-Agent`s are not counted (a throttler's list wins over the module's). |
@@ -3025,6 +3025,8 @@ checked at boot: a bad one fails it with a `ConfigError`.
 | `ipv6SubnetPrefix` | `56` | The IPv6 prefix the default tracker keeps; `false` keeps the whole address. |
 | `store` | one memory store | Any bun-common `ThrottleStore`. Every guard of the module shares it. `cacheThrottleStore(cache)` from `@kingsleyweb/bun-nest/cache` holds a limit across processes and instances. |
 | `algorithm` | `"sliding-window"` | `"sliding-window"`, `"fixed-window"` or `"gcra"` (bun-common's), per module or per throttler. |
+| `skipSuccessfulRequests`, `skipFailedRequests` | `false` | express-rate-limit's (bun-common's `throttle()` options): once the response is sent, a successful (or a failed) request is given back, so only failures (or only successes) count: `@Throttle({ default: { skipSuccessfulRequests: true } })` on a login route counts failed logins alone. Per module, per throttler and per `@Throttle()`. A refusal is a `429`, so `skipFailedRequests` gives it back too. `@nestjs/throttler` has neither. |
+| `requestWasSuccessful` | `res.statusCode < 400` | `(req, res) => boolean`: what the two options above call success, read once Nest has answered (an exception counts by the status it was answered with). |
 | `headers` | `false` | `"legacy"` sends `@nestjs/throttler`'s `X-RateLimit-Limit`/`-Remaining`/`-Reset` (suffixed `-<name>` for a throttler not named `default`, with `Retry-After-<name>` on a refusal); `"ietf"` or `true` the IETF draft's `RateLimit-Policy`/`RateLimit`; `"both"`. A `429` always carries `Retry-After`: the longest wait among the throttlers that refused. |
 | `failMode` | `"open"` | When the store fails: `"open"` lets requests through (with a warning at most every 10 s), `"closed"` answers `503` (`ServiceUnavailableException`), a `ThrottleStore` counts in that store instead. |
 | `errorMessage` | `"ThrottlerException: Too Many Requests"` | The exception's message, or `(context, detail) => string`; `detail` is a `BunThrottlerLimitDetail` (`name`, `limit`, `ttl`, `tracker`, `totalHits`, `timeToBlockExpire`, …). |

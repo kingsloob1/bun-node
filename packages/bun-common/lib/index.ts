@@ -686,6 +686,8 @@ export {
   type ThrottleLimits,
   type ThrottleOptions,
   type ThrottlePolicy,
+  type ThrottleQuota,
+  type ThrottleRequestWasSuccessful,
   type ThrottleResetOptions,
   type ThrottleResult,
   type ThrottleScope,

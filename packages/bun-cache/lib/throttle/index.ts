@@ -294,9 +294,9 @@ function backendSteps(
   storeClock: boolean,
 ): Pick<CacheThrottleStore, "consumeGcra" | "countWindow" | "deleteWindow"> {
   const checkCost = (cost: number): void => {
-    if (!Number.isSafeInteger(cost) || cost < 0) {
+    if (!Number.isSafeInteger(cost)) {
       throw new TypeError(
-        `cacheThrottleStore: a request's cost must be a non-negative integer (the shared backends count in integers); got ${String(cost)}`,
+        `cacheThrottleStore: a request's cost must be an integer (the shared backends count in integers; a negative one is a refund); got ${String(cost)}`,
       );
     }
   };

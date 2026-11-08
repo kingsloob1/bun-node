@@ -1377,7 +1377,9 @@ function serverClockStore(serverNow: () => number): ThrottleStore & {
       const index = Math.floor(at / request.window);
       const key = `${base}:${index}`;
       const current = (counters.get(key) ?? 0) + request.cost;
-      if (request.cost > 0) counters.set(key, current);
+      if (request.cost > 0 || (request.cost < 0 && counters.has(key))) {
+        counters.set(key, current);
+      }
       return {
         current,
         previous: request.previous
@@ -1477,5 +1479,233 @@ describe("a store that counts a window itself (countWindow)", () => {
     router.get("/x", ok);
     expect(await statuses(router, "/x", 2)).toEqual([200, 200]);
     expect(events.some((event) => event.level === "warn")).toBe(true);
+  });
+});
+
+/** A router throttled by `options`, with `/ok` (200), `/fail` (500) and `/missing` (404). */
+function outcomes(options: ThrottleOptions): BunRouter {
+  const router = new BunRouter({ throttle: options });
+  router.get("/ok", ok);
+  router.get("/fail", (_req, res) => {
+    res.status(500).send("no");
+  });
+  router.get("/missing", (_req, res) => {
+    res.status(404).send("none");
+  });
+  return router;
+}
+
+describe("skipSuccessfulRequests and skipFailedRequests (express-rate-limit's)", () => {
+  it("skipFailedRequests: only successes count, and a refusal (a 429) is given back", async () => {
+    const router = outcomes(byHeader({ limit: 2, skipFailedRequests: true }));
+    expect(await statuses(router, "/fail", 4)).toEqual([500, 500, 500, 500]);
+    expect(await statuses(router, "/ok", 2)).toEqual([200, 200]);
+    // Refused, refunded: the count stays at 2, however often it is refused.
+    expect(await statuses(router, "/ok", 3)).toEqual([429, 429, 429]);
+    expect(await statuses(router, "/fail", 1)).toEqual([429]);
+  });
+
+  it("negative control: without it, the failures count", async () => {
+    const router = outcomes(byHeader({ limit: 2 }));
+    expect(await statuses(router, "/fail", 3)).toEqual([500, 500, 429]);
+  });
+
+  it("skipSuccessfulRequests: only failures count", async () => {
+    const router = outcomes(
+      byHeader({ limit: 2, skipSuccessfulRequests: true }),
+    );
+    expect(await statuses(router, "/ok", 5)).toEqual([200, 200, 200, 200, 200]);
+    expect(await statuses(router, "/missing", 2)).toEqual([404, 404]);
+    expect(await statuses(router, "/ok", 1)).toEqual([429]);
+  });
+
+  it("requestWasSuccessful decides what success is", async () => {
+    const router = outcomes(
+      byHeader({
+        limit: 1,
+        skipSuccessfulRequests: true,
+        requestWasSuccessful: (_req, res) => res.statusCode < 500,
+      }),
+    );
+    expect(await statuses(router, "/missing", 3)).toEqual([404, 404, 404]);
+    expect(await statuses(router, "/fail", 2)).toEqual([500, 429]);
+  });
+
+  it("a requestWasSuccessful that throws refunds nothing", async () => {
+    const router = outcomes(
+      byHeader({
+        limit: 1,
+        skipSuccessfulRequests: true,
+        requestWasSuccessful: () => {
+          throw new Error("no verdict");
+        },
+      }),
+    );
+    expect(await statuses(router, "/ok", 2)).toEqual([200, 429]);
+  });
+
+  it("skipFailedRequests: a request whose client goes away before the response ends is given back", async () => {
+    let release: () => void = () => {};
+    const router = new BunRouter({
+      throttle: byHeader({ limit: 1, skipFailedRequests: true }),
+    });
+    router.get("/slow", async (_req, res) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      res.send("late");
+    });
+    router.get("/ok", ok);
+    const controller = new AbortController();
+    const pending = router
+      .fetch(
+        new Request("http://localhost/slow", { signal: controller.signal }),
+      )
+      .catch(() => undefined);
+    await Bun.sleep(5);
+    controller.abort();
+    await Bun.sleep(5);
+    release();
+    await pending;
+    expect(await statuses(router, "/ok", 2)).toEqual([200, 429]);
+  });
+
+  it("gives back to the window it counted in, through increment() with a 1 ms lifetime", async () => {
+    const time = clock(T0 + 1_000);
+    const memory = memoryThrottleStore({ now: time.now });
+    const calls: [string, number, number][] = [];
+    const store: ThrottleStore = {
+      name: "spy",
+      get: (key) => memory.get(key),
+      increment: (key, cost, ttl) => {
+        calls.push([key, cost, ttl]);
+        return memory.increment(key, cost, ttl);
+      },
+    };
+    const router = outcomes(
+      byHeader({
+        limit: 5,
+        skipSuccessfulRequests: true,
+        store,
+        now: time.now,
+      }),
+    );
+    await statuses(router, "/ok", 1);
+    expect(calls.map(([, cost, ttl]) => [cost, ttl])).toEqual([
+      [1, 119_000],
+      [-1, 1],
+    ]);
+    expect(calls[0][0]).toBe(calls[1][0]);
+  });
+
+  it("gives back through countWindow() with a negative cost", async () => {
+    const store = serverClockStore(() => T0 + 1_000);
+    const router = outcomes(
+      byHeader({ limit: 1, skipSuccessfulRequests: true, store }),
+    );
+    expect(await statuses(router, "/ok", 3)).toEqual([200, 200, 200]);
+    expect(store.calls.slice(0, 2)).toEqual(["count 1 true", "count -1 false"]);
+    expect(await statuses(router, "/fail", 2)).toEqual([500, 429]);
+  });
+
+  it("gcra: a success gives its tokens back; a refusal took none and gets none", async () => {
+    const time = clock();
+    const router = outcomes(
+      byHeader({
+        limit: 2,
+        window: "10s",
+        algorithm: "gcra",
+        skipFailedRequests: true,
+        now: time.now,
+      }),
+    );
+    expect(await statuses(router, "/fail", 3)).toEqual([500, 500, 500]);
+    expect(await statuses(router, "/ok", 3)).toEqual([200, 200, 429]);
+    // The refused request was not given anything back: still empty.
+    expect(await statuses(router, "/ok", 1)).toEqual([429]);
+    time.advance(5_000);
+    expect(await statuses(router, "/ok", 2)).toEqual([200, 429]);
+  });
+
+  it("refuses non-boolean flags and a requestWasSuccessful that is not a function", () => {
+    expect(() =>
+      // @ts-expect-error not a boolean
+      throttle({ limit: 1, skipFailedRequests: "yes" }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      // @ts-expect-error not a function
+      throttle({ limit: 1, requestWasSuccessful: true }),
+    ).toThrow(ConfigError);
+  });
+});
+
+describe("a per-request limit (express-rate-limit's limit as a function)", () => {
+  it("resolves the limit for each request", async () => {
+    const router = new BunRouter({
+      throttle: byHeader({
+        limit: (req) => (req.get("x-tier") === "pro" ? 3 : 1),
+      }),
+    });
+    router.get("/x", ok);
+    const pro = { headers: { "x-client": "p", "x-tier": "pro" } };
+    const free = { headers: { "x-client": "f" } };
+    expect(await statuses(router, "/x", 4, pro)).toEqual([200, 200, 200, 429]);
+    expect(await statuses(router, "/x", 2, free)).toEqual([200, 429]);
+    const head = await router.fetch("/x", pro);
+    expect(head.headers.get("RateLimit-Policy")).toBe('"default";q=3;w=60');
+  });
+
+  it("per named limit, async, and documented as dynamic", async () => {
+    const handler = throttle(
+      byHeader({
+        limits: {
+          burst: { limit: async () => 2, window: "1s" },
+          sustained: { limit: 10 },
+        },
+      }),
+    );
+    expect(handler.policies.map((policy) => policy.limit)).toEqual([
+      "dynamic",
+      10,
+    ]);
+    const router = new BunRouter({ throttle: handler });
+    router.get("/x", ok);
+    expect(await statuses(router, "/x", 3)).toEqual([200, 200, 429]);
+  });
+
+  it("a limit function answering no positive integer goes to the error handlers", async () => {
+    const router = new BunRouter({
+      throttle: byHeader({ limit: () => 0 }),
+    });
+    router.get("/x", ok);
+    router.use(((err, _req, res, _next) => {
+      res.status(500).send(String((err as Error).message));
+    }) satisfies RouterErrorMiddlewareHandler);
+    const answer = await router.fetch("/x");
+    expect(answer.status).toBe(500);
+    expect(await answer.text()).toContain(
+      'limit "default" must be a positive integer',
+    );
+  });
+
+  it("gcra keys a per-request limit's bucket without its quota, so a change of tier keeps it", async () => {
+    let quota = 2;
+    const time = clock();
+    const router = new BunRouter({
+      throttle: byHeader({
+        limit: () => quota,
+        window: "10s",
+        algorithm: "gcra",
+        now: time.now,
+      }),
+    });
+    router.get("/x", ok);
+    expect(await statuses(router, "/x", 2)).toEqual([200, 200]);
+    quota = 3;
+    // The same bucket, still full (a new one would take three): a token now
+    // refills every 3.33 s rather than every 5 s.
+    expect(await statuses(router, "/x", 1)).toEqual([429]);
+    time.advance(3_334);
+    expect(await statuses(router, "/x", 2)).toEqual([200, 429]);
   });
 });

@@ -3475,12 +3475,15 @@ A refused request gets a `429` `application/problem+json` body
 
 | Option | Default | Meaning |
 |---|---|---|
-| `limit`, `window` | `window: "1m"` | One limit, named `default`. A window always carries its unit: `"30s"`, `"1m"`, `"1h 30m"`, `{ seconds: 30 }`. A bare number is refused, by the type and at run time (is `60` seconds or ms?), and so is a window under a second unless `allowSubSecond: true`. |
+| `limit`, `window` | `window: "1m"` | One limit, named `default`. `limit` is a positive integer, or a function of the request answering one (express-rate-limit's `limit` as a function: a premium account gets more); such a limit is documented as `"dynamic"`, and under `"gcra"` its bucket survives a change of quota. A window always carries its unit: `"30s"`, `"1m"`, `"1h 30m"`, `{ seconds: 30 }`. A bare number is refused, by the type and at run time (is `60` seconds or ms?), and so is a window under a second unless `allowSubSecond: true`. |
 | `limits` | none | Several named limits (`{ burst: { limit: 20, window: "1s" }, sustained: { limit: 600, window: "1m" } }`), each with its own `key` and `cost` if it likes. Any of them refuses; every one counts. |
 | `key` | `req.ip`, IPv6 reduced to its `/56`, IPv4-mapped unmapped | Who a request counts against: `ip\|account`, a user id, an API key. `"unknown"` for a request without an address (a socket-free `fetch()`). Behind a proxy, `req.ip` is the client only when the adapter's `trustProxy` trusts the proxy; otherwise every client behind it shares the proxy's count. |
 | `ipv6Subnet` | `56` | The prefix an IPv6 address is reduced to by the default key (express-rate-limit 8's default); `false` keeps the whole address. |
 | `cost` | `1` | What a request costs: a number, or a function of the request. |
 | `skip` | none | `(req, res) => boolean`: a skipped request is neither counted nor refused (a service token, an allow-listed network). |
+| `skipSuccessfulRequests` | `false` | express-rate-limit's: once the response is sent (`finish`), a request `requestWasSuccessful` calls successful is given back to every limit it counted against, so only failures count (failed logins). It was counted while it ran. |
+| `skipFailedRequests` | `false` | express-rate-limit's: a failed request is given back on `finish`, on `close` before the response ended (the client went away) and on `error`, so only successes count. A refusal is a `429`, a failure, so it is given back too; under `"gcra"` a refused request took nothing and gets nothing. |
+| `requestWasSuccessful` | `res.statusCode < 400` | `(req, res) => boolean`: what the two options above call success. One that throws gives nothing back. |
 | `scope` | `"global"` ahead of the routes, `"route"` on a route | `"global"` counts a client across every route it covers; `"route"` per client and route (method and path pattern, never the raw path). |
 | `algorithm` | `"sliding-window"` | See [Algorithms and stores](#algorithms-and-stores). |
 | `store` | a `memoryThrottleStore()` of its own | Where the counts live. One limit across processes needs a shared store: `cacheThrottleStore(cache)` from `@kingsleyweb/bun-cache/throttle`. |
