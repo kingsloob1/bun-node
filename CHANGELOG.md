@@ -4,125 +4,433 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
-## Unreleased
+## 3.0.0-rc.1 (2026-11-08)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
 
-### Breaking changes
+The second release candidate of 3.0.0. It adds rate limiting to bun-common,
+bun-cache and bun-nest, and the real client address behind a proxy. Live
+invalidation now reaches every process, and checks each tag a client asks
+for. Every browser UI moves into one new package, `@kingsleyweb/bun-ui`.
+Install it from npm's `next` tag:
+
+```bash
+bun add @kingsleyweb/bun-common@next
+bun add @kingsleyweb/bun-ui@next @kingsleyweb/bun-jobs@next   # the jobs UI
+```
+
+### The packages
+
+Seven packages, all at 3.0.0-rc.1. The two UI packages of rc.0 are not
+released again: `@kingsleyweb/bun-ui` replaces them, and they are deprecated
+on npm.
+
+| Package | What it is | |
+|---|---|---|
+| [`@kingsleyweb/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-common) | An Express 5 style HTTP framework for `Bun.serve` | updated |
+| [`@kingsleyweb/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-nest) | Runs a NestJS 11 or 12 app on Bun, on top of bun-common | updated |
+| [`@kingsleyweb/bun-contract`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-contract) | The contract core shared by server and browser | updated |
+| [`@kingsleyweb/bun-client`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-client) | A typed client for your bun-common or bun-nest API | updated |
+| [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs) | Background jobs: queues, workers and scheduled scripts | updated |
+| [`@kingsleyweb/bun-cache`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-cache) | One cache API over 12 storage drivers, plus an HTTP response cache | updated |
+| [`@kingsleyweb/bun-ui`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui) | Every browser UI in one package: `/jobs` (the bun-jobs UI) and `/docs` (the API docs viewer) | new |
+| `@kingsleyweb/bun-jobs-ui` | Replaced by `@kingsleyweb/bun-ui/jobs` | deprecated |
+| `@kingsleyweb/bun-api-docs-ui` | Replaced by `@kingsleyweb/bun-ui/docs` | deprecated |
+
+### Breaking changes since rc.0
+
+Coming from 2.2.0, read the 3.0.0-rc.0 entry below first.
+
+- **The UI packages moved into `@kingsleyweb/bun-ui`**
+  ([plan](docs/plans/bun-ui/README.md)). `@kingsleyweb/bun-jobs-ui` is now
+  `@kingsleyweb/bun-ui/jobs`, and `@kingsleyweb/bun-api-docs-ui` is now
+  `@kingsleyweb/bun-ui/docs`. The old packages are deprecated on npm, not
+  shimmed. Only the import specifiers change ("Upgrading from rc.0", below,
+  has the full table):
+
+  ```ts
+  // 3.0.0-rc.0
+  import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+  import { docsUi } from "@kingsleyweb/bun-api-docs-ui";
+  // 3.0.0-rc.1
+  import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
+  import { docsUi } from "@kingsleyweb/bun-ui/docs";
+  ```
+
+  - `@kingsleyweb/bun-jobs` becomes an **optional** peer that only `/jobs`
+    needs. Installing bun-ui without it no longer warns, and importing
+    `/jobs` without it fails with "Cannot find module".
+  - The bundles moved from `dist/` to `dist/jobs/` and `dist/docs/`.
+  - bun-common's optional peer for `docsRouter`'s `"self-hosted"` viewer is
+    now `@kingsleyweb/bun-ui` (`SELF_HOSTED_PACKAGE`). The option keeps its
+    name.
+- **The jobs UI's generic names are now jobs-shaped**, since bun-ui holds
+  more than one UI. No aliases:
+  - `UiConfig` is `JobsUiConfig`;
+  - `UiSections` is `JobsUiSections`;
+  - `UI_CONFIG_ELEMENT_ID` is `JOBS_UI_CONFIG_ELEMENT_ID` (its value, the
+    page's element id, is unchanged).
+
+  `UiTheme` keeps its name, as the one theme type every UI shares (the root
+  and every `/<ui>/browser`). `DocsUiTheme` is now an alias of it.
+
+  ```ts
+  // 3.0.0-rc.0
+  import type { UiConfig } from "@kingsleyweb/bun-jobs-ui/lib/shared/config";
+  // 3.0.0-rc.1
+  import type { JobsUiConfig } from "@kingsleyweb/bun-ui/jobs/browser";
+  ```
 
 - **bun-common and bun-nest read `X-Forwarded-*` only through `trustProxy`.**
   This is Express 5's `trust proxy` setting, and it is off by default. In
-  3.0.0-rc.0, `req.ips` and `req.protocol` (and so `req.secure`) always
-  believed `X-Forwarded-For` and `X-Forwarded-Proto`, which any client can
-  send. Now, with trust off:
+  rc.0, `req.ips` and `req.protocol` (and so `req.secure`) always believed
+  `X-Forwarded-For` and `X-Forwarded-Proto`, which any client can send. Now,
+  with trust off:
   - `req.ips` is `[]`;
   - `req.protocol` is the scheme the request arrived on;
   - `X-Forwarded-Host` is ignored (it never moved `req.host`).
 
   `req.ip` is still the socket peer.
 
+  ```ts
+  // A request from a client through nginx on the same host, which sent
+  // X-Forwarded-For: 203.0.113.9 and X-Forwarded-Proto: https.
+
+  // 3.0.0-rc.0, with no option: the headers were believed, from anyone
+  req.ips; // ["203.0.113.9"]
+  req.protocol; // "https"
+
+  // 3.0.0-rc.1, with no option: nothing forwarded is believed
+  req.ips; // []
+  req.protocol; // "http"
+
+  // 3.0.0-rc.1, trusting the proxy: the headers are believed from it alone
+  new BunHttpAdapter(0, { trustProxy: "loopback" });
+  req.ip; // "203.0.113.9"
+  req.protocol; // "https"
+  ```
+
   Code reading these properties changes with them: bun-jobs' served AsyncAPI
-  document picks `ws`/`wss` from `req.secure`, and bun-jobs-ui's CSP picks
+  document picks `ws`/`wss` from `req.secure`, and the jobs UI's CSP picks
   `wss:` from it.
 - `req.socket.localAddress` is the socket peer. It was `req.ip`, which is the
   same with trust off.
-- **`@kingsleyweb/bun-jobs-ui` is now `@kingsleyweb/bun-ui/jobs`, and
-  `@kingsleyweb/bun-api-docs-ui` is now `@kingsleyweb/bun-ui/docs`**
-  ([plan](docs/plans/bun-ui/README.md)). One package, `@kingsleyweb/bun-ui`,
-  holds every browser UI, one subpath each; the two old packages are
-  deprecated on npm, not shimmed. Only the import specifiers change:
+- **bun-jobs' management API follows the app's trust.** With its own
+  `trustProxy` unset (the default), its CSRF and WebSocket upgrade origin
+  checks, and its served AsyncAPI server, now read the scheme and host as the
+  request does: forwarded ones count when the **app** trusts the proxy. In
+  rc.0 they never did. The AsyncAPI server's `host` is the trusted
+  `X-Forwarded-Host`; it was always the raw `Host`. `true` (believe the
+  headers from any peer) and `false` (never) still override the app's. Any
+  other value is now a `ConfigError`, where rc.0 read a truthy value such as
+  `1` as `true`:
 
-  | 3.0.0-rc.0 | Now |
-  |---|---|
-  | `import { jobsUi } from "@kingsleyweb/bun-jobs-ui"` | `import { jobsUi } from "@kingsleyweb/bun-ui/jobs"` |
-  | `import type { UiConfig } from "@kingsleyweb/bun-jobs-ui/lib/shared/config"` | `import type { JobsUiConfig } from "@kingsleyweb/bun-ui/jobs/browser"` (renamed) |
-  | `bun add @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-jobs` | `bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs` |
-  | `import { docsUi } from "@kingsleyweb/bun-api-docs-ui"` | `import { docsUi } from "@kingsleyweb/bun-ui/docs"` |
-  | `import … from "@kingsleyweb/bun-api-docs-ui/lib/shared/config"` | `import … from "@kingsleyweb/bun-ui/docs/browser"` |
-  | `import … from "@kingsleyweb/bun-api-docs-ui/lib/hosted"` | `import … from "@kingsleyweb/bun-ui/docs/hosted"` |
-  | `import { HttpReference } from "@kingsleyweb/bun-api-docs-ui/embed"` | `import { HttpReference } from "@kingsleyweb/bun-ui/docs/embed"` |
-  | `"@kingsleyweb/bun-api-docs-ui/embed/unauthorized"` (and the other six `./embed/*`) | `"@kingsleyweb/bun-ui/docs/embed/unauthorized"` (and the same six) |
-  | `docsRouter({ viewer: { openapi: "self-hosted" } })` with `bun add @kingsleyweb/bun-api-docs-ui` | the same call, with `bun add @kingsleyweb/bun-ui` |
+  ```ts
+  // 3.0.0-rc.0
+  createJobsApi({ jobs, trustProxy: 1 }); // meant true
+  // 3.0.0-rc.1: trust the proxy on the app, and leave the API's unset
+  const app = new BunHttpAdapter(0, { trustProxy: 1 });
+  createJobsApi({ jobs });
+  ```
 
-  `@kingsleyweb/bun-jobs` becomes an **optional** peer that only `/jobs`
-  needs: installing bun-ui without it no longer warns, and importing
-  `/jobs` without it fails with "Cannot find module". The bundles moved from
-  `dist/` to `dist/jobs/` and `dist/docs/`. bun-common's optional peer for the
-  `"self-hosted"` viewer is now `@kingsleyweb/bun-ui` (`SELF_HOSTED_PACKAGE`),
-  and the option keeps its name.
-- **The jobs UI's generic names are now jobs-shaped**, as `@kingsleyweb/bun-ui`
-  holds more than one UI: `UiConfig` is `JobsUiConfig`, `UiSections` is
-  `JobsUiSections` and `UI_CONFIG_ELEMENT_ID` is `JOBS_UI_CONFIG_ELEMENT_ID`
-  (its value, the page's element id, is unchanged). No aliases. `UiTheme`
-  keeps its name as the one theme type every UI shares (the root and every
-  `/<ui>/browser`), and `DocsUiTheme` is now an alias of it.
+  `ResolvedJobsApiConfig.trustProxy` is `boolean | undefined` (was
+  `boolean`).
+- **bun-jobs' `ApiErrorCode` is closed.** It was
+  `ApiOwnErrorCode | (string & {})`, so any string was a code. It is now
+  `ApiOwnErrorCode | ApiInternalErrorCode | ApiForeignErrorCode`: the API's
+  own codes, the bun-jobs codes it passes through as a 500
+  (`API_INTERNAL_ERROR_CODES`), and the codes of errors that are not the API's
+  (`UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `PAYLOAD_TOO_LARGE`,
+  `RATE_LIMITED`, `` `HTTP_${number}` ``). At run time, a 500 from a library
+  error whose code is not listed answers `INTERNAL`. The status, the title,
+  the `detail` and the log are unchanged.
 
-### What's new
+  ```ts
+  // A provider error (PROVIDER_THROTTLED) reaching the management API.
+  // 3.0.0-rc.0
+  { status: 500, code: "PROVIDER_THROTTLED" }
+  // 3.0.0-rc.1
+  { status: 500, code: "INTERNAL" }
+  ```
 
-- **`trustProxy`** on both adapters, `BunRouter` and the request options,
-  and **`set("trust proxy", value)`** on both adapters (`app.set()` on a
-  Nest app). It takes every Express value: `true`, a hop count, addresses,
-  CIDR ranges, the presets `loopback`, `linklocal` and `uniquelocal`, or a
-  function. Through it:
+  A comparison with a code outside the union no longer type-checks.
+  `ProblemDto` takes the union as a type parameter
+  (`ProblemDto<TCode extends string = ApiErrorCode>`), and `API_ERROR_STATUS`
+  moved into the browser-safe `@kingsleyweb/bun-jobs/api/contract` (the
+  server still exports it).
+- **bun-jobs' OpenAPI document lists only the statuses each operation
+  answers.** The per-operation `default` response is gone, and every
+  operation carries `x-bun-errors`, the problem codes it documents.
+  `components.responses.Problem` stays, as the body of any status an
+  operation does not list.
+- **`res.write()` emits `drain` only after it returned `false`**, as Node
+  does. In rc.0 the buffer was unbounded and `drain` followed every write.
+  Now `write()` returns `false` once 64 KiB are queued for the client (the
+  chunk is still queued), and `drain` comes when the client has read them
+  back under that mark:
+
+  ```ts
+  // 3.0.0-rc.0: drain after every write
+  res.write(chunk);
+  await new Promise((resolve) => res.once("drain", resolve));
+  // 3.0.0-rc.1: wait only when write() says so (waiting as above would hang)
+  if (!res.write(chunk)) await new Promise((resolve) => res.once("drain", resolve));
+  ```
+
+  bun-nest's `@Sse()` pipes into `res.write()`, so it now meets backpressure
+  too.
+- **bun-cache's `invalidate` event fires once per invalidation.**
+  `cacheResponse()` ran a second pass of `pages.invalidate()`, or of an
+  unsafe method's invalidation, while a write for the path was still being
+  tracked, even one that had already landed or that the invalidation refused.
+  That pass fired `invalidate` again, and the README's CDN-purge recipe
+  purged twice. Now the second pass, and its event, happen only when a write
+  stored after the invalidation began. A listener that counted two events
+  per invalidation now sees one.
+- **bun-client sends no header for `undefined`.** A header set to `undefined`
+  at any level (client, route or call) now sends nothing and leaves the level
+  below in place. rc.0 sent the text `"undefined"`, overriding it.
+
+### Upgrading from rc.0
+
+1. **The UI packages.** Swap the packages, then the import specifiers:
+
+   ```bash
+   bun remove @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-api-docs-ui
+   bun add @kingsleyweb/bun-ui@next
+   ```
+
+   | 3.0.0-rc.0 | 3.0.0-rc.1 |
+   |---|---|
+   | `import { jobsUi } from "@kingsleyweb/bun-jobs-ui"` | `import { jobsUi } from "@kingsleyweb/bun-ui/jobs"` |
+   | `import type { UiConfig } from "@kingsleyweb/bun-jobs-ui/lib/shared/config"` | `import type { JobsUiConfig } from "@kingsleyweb/bun-ui/jobs/browser"` (renamed) |
+   | `bun add @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-jobs` | `bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs` |
+   | `import { docsUi } from "@kingsleyweb/bun-api-docs-ui"` | `import { docsUi } from "@kingsleyweb/bun-ui/docs"` |
+   | `import … from "@kingsleyweb/bun-api-docs-ui/lib/shared/config"` | `import … from "@kingsleyweb/bun-ui/docs/browser"` |
+   | `import … from "@kingsleyweb/bun-api-docs-ui/lib/hosted"` | `import … from "@kingsleyweb/bun-ui/docs/hosted"` |
+   | `import { HttpReference } from "@kingsleyweb/bun-api-docs-ui/embed"` | `import { HttpReference } from "@kingsleyweb/bun-ui/docs/embed"` |
+   | `"@kingsleyweb/bun-api-docs-ui/embed/unauthorized"` (and the other six `./embed/*`) | `"@kingsleyweb/bun-ui/docs/embed/unauthorized"` (and the same six) |
+   | `docsRouter({ viewer: { openapi: "self-hosted" } })` with `bun add @kingsleyweb/bun-api-docs-ui` | the same call, with `bun add @kingsleyweb/bun-ui` |
+
+   Then rename `UiConfig`, `UiSections` and `UI_CONFIG_ELEMENT_ID` as above.
+2. **Behind a proxy**, if the app reads `req.ips`, `req.protocol`,
+   `req.secure` or a forwarded host, say which proxies to trust, as you would
+   on Express:
+
+   ```ts
+   new BunHttpAdapter(0, { trustProxy: "loopback" }); // nginx on the same host
+   new BunHttpAdapter(0, { trustProxy: 1 }); // one proxy in front, by position
+   new BunHttpAdapter(0, { ...behindCloudflare() }); // Cloudflare → app
+   new BunHttpAdapter(0, { ...behindRailway() }); // Railway → app
+   app.set("trust proxy", 1); // a Nest app, as on platform-express
+   ```
+
+   bun-common's README, under
+   [Client address behind proxies](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#client-address-behind-proxies-trustproxy),
+   covers what to trust and the spoofing traps. Don't set `trustProxy: true`
+   on a server clients can reach directly. bun-jobs' management API follows
+   the app's setting: drop a `trustProxy` other than `true` or `false` from
+   `createJobsApi()`.
+3. **bun-jobs error codes.** Compare `code` with the codes in `ApiErrorCode`,
+   and treat a 500 with `INTERNAL` as any server failure.
+4. **Streaming.** Wait for `drain` only after `res.write()` returned `false`.
+
+### What's new in each package
+
+#### @kingsleyweb/bun-common
+
+- **Rate limiting.** `throttle(options)` counts each client's requests in a
+  store and answers `429` past a limit, as express-rate-limit is used: on a
+  router, a mount or a route. The adapters' and `BunRouter`'s `throttle`
+  option puts one first in the chain, ahead of every route and the not-found
+  handler.
+
+  ```ts
+  const app = new BunHttpAdapter(0, {
+    throttle: { limit: 600, window: "1m", scope: "route" },
+  });
+  app.post("/login", throttle({ limit: 10, window: "1m" }), login);
+  app.get("/health", skipThrottle(), health);
+  ```
+
+  - Several named limits, each with its own `key` and `cost`. A route's
+    limit of the same name replaces the outer one, and `skipThrottle()`
+    turns them off.
+  - Three algorithms: `"sliding-window"` (the default), `"fixed-window"` and
+    `"gcra"` (the token bucket).
+  - The default key is `req.ip`, as `trustProxy` resolves it, with IPv6
+    reduced to its `/56`.
+  - `limit` may be a function of the request (a premium account gets more).
+  - `skipSuccessfulRequests`, `skipFailedRequests` and
+    `requestWasSuccessful`, as in express-rate-limit.
+  - `RateLimit-Policy`/`RateLimit` (`headers: "ietf"`) or `X-RateLimit-*`
+    (`"legacy"`) headers, off by default.
+  - `failMode` (`"open"` by default) says what a store failure does.
+  - `onLimited` replaces the `429`, and `logLimited` logs each one.
+  - The store is `memoryThrottleStore()`, bounded, or any `ThrottleStore`,
+    such as bun-cache's `cacheThrottleStore()` to share a limit across
+    processes. A store can count a window itself, by its own clock, in one
+    round trip (`countWindow`, `deleteWindow`, `consumeGcra`).
+- **The real client address behind proxies.** `trustProxy` on both adapters,
+  `BunRouter` and the request options, and `set("trust proxy", value)` on
+  both adapters (`app.set()` on a Nest app). It takes every Express value:
+  `true`, a hop count, addresses, CIDR ranges, the presets `loopback`,
+  `linklocal` and `uniquelocal`, or a function. Through it:
   - `req.ip` is the first untrusted address, walking from the socket
     through `X-Forwarded-For` from right to left (proxy-addr's algorithm);
   - `req.ips` is the trusted chain;
   - `req.protocol`, `req.host` and `req.hostname` read `X-Forwarded-Proto`
     and `X-Forwarded-Host` from a trusted peer.
 
-  A bun-nest `@Controller({ host })` matches the forwarded host the same
-  way, and bun-jobs' management API follows it too: with its own
-  `trustProxy` unset, its CSRF and upgrade origin checks and its served
-  AsyncAPI server read the scheme and host as the request does. Its `true`
-  (believe the headers from any peer) and `false` (never) still override
-  the app's, and any other value is now a `ConfigError`.
-- **`clientIpHeader`** names a single-value header, such as
-  `CF-Connecting-IP`. It is believed only when `trustProxy` trusts the whole
-  chain the request came through.
-- **Platform helpers:** `behindCloudflare()` (with a dated
-  `CLOUDFLARE_IP_RANGES` snapshot, and an opt-in
-  `fetchCloudflareIpRanges()`), `behindRailway()` and `trustChain()`.
-- **`req.proxyChain`** shows how `req.ip` was resolved. **`ws.data.ip`**
-  carries an upgrade's `req.ip`, so a gateway sees the real client.
-- **IP helpers** in `native.ts`, as proxy-addr reads addresses:
-  `isIpAddress`, `parseIpAddress`, `parseIpRange`, `compileIpMatcher` and
-  `IP_RANGE_PRESETS`. The socket shim adds Node's `remoteAddress`,
-  `remotePort` and `remoteFamily`.
+  The rest of it:
+  - **`clientIpHeader`** names a single-value header, such as
+    `CF-Connecting-IP`. It is believed only when `trustProxy` trusts the
+    whole chain the request came through.
+  - **Platform helpers:** `behindCloudflare()` (with a dated
+    `CLOUDFLARE_IP_RANGES` snapshot, and an opt-in
+    `fetchCloudflareIpRanges()`), `behindRailway()` and `trustChain()`.
+  - **`req.proxyChain`** shows how `req.ip` was resolved. **`ws.data.ip`**
+    carries an upgrade's `req.ip`, so a gateway sees the real client.
+  - **IP helpers** in `native.ts`, as proxy-addr reads addresses:
+    `isIpAddress`, `parseIpAddress`, `parseIpRange`, `compileIpMatcher` and
+    `IP_RANGE_PRESETS`. The socket shim adds Node's `remoteAddress`,
+    `remotePort` and `remoteFamily`.
+  - A request asks `server.requestIP()` once, and walks the trust chain
+    once, however often `req.ip`, `req.ips` or `req.proxyChain` are read.
+- **Testing the client address without a socket.** `fetch()` takes a
+  `remoteAddress` (`FetchInit`), reported as a served socket's peer, so
+  `req.ip`, `trustProxy` and anything keyed by the address can be tested
+  socket-free.
+- **Backpressure on `res.write()`**: `false` past 64 KiB queued, `drain` once
+  read, and Node's `res.writableNeedDrain` and `res.writableLength`.
+- **Keys a schema drops.** `validate(schemas, { unknownKeys })` reports the
+  `body` and `query` keys a schema silently stripped: `"strip"` (the
+  default, as before), `"warn"` (one log line per request) or `"reject"` (an
+  `Unrecognized key` issue per key).
+- **Live invalidation across processes.** `liveInvalidation(app, { bus })`
+  delivers every invalidation to the subscribers of every process on a
+  `LiveBus` (bun-cache's `cacheLiveBus()` makes one from its Redis or
+  Postgres bus), and `connectLiveBus(bus)` connects a process that publishes
+  without serving. A process delivers its own invalidations at once; a lost
+  message becomes a `gap` for the clients.
+- **Per-tag live authorization.** `liveInvalidation(app, { authorizeTag })`
+  decides which tags a connected client may hold. The `hello` answering a
+  subscription lists the refused tags in `denied`. An SSE request whose
+  every tag is refused is answered `403` (`LIVE_TAGS_DENIED`) and opens no
+  stream.
+- **`signallingRelay({ identify })`** pins a WebRTC peer's name to its
+  authenticated session, so a client cannot join under another's name.
+- **`RoutesOf` marks event streams.** A route whose 2xx status is an `sse()`
+  body gains `stream: "sse"` and its `events`, so bun-client's `sse()` is
+  typed from the server's routes.
+
+#### @kingsleyweb/bun-nest
+
+- **Throttling modelled on `@nestjs/throttler`**: `BunThrottlerModule`
+  (`forRoot`, `forRootAsync`), `BunThrottlerGuard`, `BunThrottlerService`,
+  `@Throttle()`, `@SkipThrottle()`, `ThrottlerException` and the duration
+  helpers `seconds()` to `weeks()`. A `ttl` always carries its unit, and a
+  boot check (`guardCheck`) reports a guard that was never installed.
+
+  ```ts
+  @Module({
+    imports: [BunThrottlerModule.forRoot({ throttlers: [{ limit: 600, ttl: "1m" }] })],
+    providers: [{ provide: APP_GUARD, useClass: BunThrottlerGuard }],
+  })
+  class AppModule {}
+  ```
+
+  The adapter's `throttle` option limits everything ahead of Nest, 404s
+  included.
+- **`trustProxy`** on the adapter and `app.set("trust proxy", value)`, as on
+  `@nestjs/platform-express`. `@Ip()` and `@Controller({ host })` follow it.
+- **`./cache`** re-exports `cacheThrottleStore` (a limit shared across
+  instances) and `cacheLiveBus` (live invalidation across instances) from
+  bun-cache.
+- `fetch()` takes a `remoteAddress`, as bun-common's does.
+
+#### @kingsleyweb/bun-cache
+
+- **`cacheThrottleStore(cache)`** (`./throttle`): bun-common's
+  `ThrottleStore` over a cache, so one limit holds across processes. On
+  Redis, Postgres, MySQL, MariaDB and SQLite it counts a window in one round
+  trip, on the **backend's clock** (`clock: "store"`, the default), so
+  processes need no NTP, and runs GCRA too. It gives back refunds for
+  `skipSuccessfulRequests` and `skipFailedRequests`. A driver without an
+  atomic increment (Cloudflare KV, `fromSimpleDriver`) is refused.
+- **`cacheLiveBus(bus)`** (`./live`) adapts `redisBus` or `pgBus` into
+  bun-common's `LiveBus`, sharing the channel with the caches.
+- **Redis `setMany` stages large frames** (8 KiB or more) as `set` does, and
+  a chunk is written whole or not at all.
+- **`setManyFenced`** on `redundant()` and the Cloudflare D1 driver.
+
+#### @kingsleyweb/bun-client
+
+- **`useLive()`** in `./react` keeps the provider's queries fresh over
+  bun-common's live invalidation, and **`live()`'s `onDenied`** reports the
+  tags the server refused (a `hello`'s `denied`, or the SSE fallback's
+  `403`, which ends the stream for good).
+- **Typed event streams from `RoutesOf`**, and the generator reads
+  `x-sse-data`: a text stream is typed and delivered as text.
+- **Typed headers.** A header declared a number or a boolean takes that
+  type at the call, and is sent as text.
+- **Bring-your-own response schemas type the data** of `./query`
+  (`q.query()`, `q.infinite()`, and `q.mutation(key, { validate })`) and of
+  the React hooks.
+- **`unknownKeys`** in `ValidationConfig`, as bun-common's, for the schemas
+  you bring for the query, the body and the response.
+
+#### @kingsleyweb/bun-jobs
+
+- **`x-bun-errors`** on every operation of its OpenAPI document, so
+  `bun-client generate` narrows every error status's `code` (and warns about
+  nothing).
+- A new optional driver method, **`updateRepeat`**, which every built-in
+  driver has (see Fixed).
+
+#### @kingsleyweb/bun-ui (new)
+
+Every browser UI of the repo in one package, one subpath each:
+
+- **`/jobs`**: the bun-jobs management UI, `jobsUi()`, as
+  `@kingsleyweb/bun-jobs-ui` was. `/jobs/browser` holds its browser-safe
+  types.
+- **`/docs`**: the self-hosted OpenAPI and AsyncAPI viewer, `docsUi()`, as
+  `@kingsleyweb/bun-api-docs-ui` was, with `/docs/browser`, `/docs/hosted`,
+  `/docs/embed` and its seven `/docs/embed/*` modules.
+- **`unauthorized: { redirectTo, returnParam?, statuses? }`** for both
+  `jobsUi()` and `docsUi()` sends a signed-out browser to a sign-in page (a
+  `303` for a page navigation that `authorize` denies, and a redirect when
+  the app's reads fail with a listed status). Off by default.
+
+#### @kingsleyweb/bun-contract
+
+No change to its entry. A `lib/unknownKeys` module holds the dropped-key walk
+bun-common and bun-client share.
 
 ### Fixed
 
 - **bun-jobs: a removed repeat series could come back.** A worker scheduling
   the series' next occurrence wrote the series back after
   `removeRepeatable()` had removed it, and it ran on, listed again. Writes
-  that advance a series now go through a new optional driver method,
-  `updateRepeat`, which writes only while the series is stored (every
-  built-in driver has it), and the occurrence such a pass added is removed
-  too.
+  that advance a series now go through `updateRepeat`, which writes only
+  while the series is stored, and the occurrence such a pass added is
+  removed too.
 - **bun-jobs: the file driver's `count()` could miss a job.** It read one
   state directory after another, so a job moving between two of them
   mid-count (a promotion, a claim, a retry) was in neither, and a queue about
   to run a job could count as empty. The unfinished states are now read
   before and after the finished ones; a moving job may be counted twice for
   that call, never missed.
+- **bun-cache: a failed Redis `set()` of a large value could strip the old
+  entry's tags.** When the staging write failed, the old entry stayed without
+  its tag memberships, so a later `invalidateTags` no longer reached it, and
+  the failure was an unhandled rejection meanwhile. The script now checks
+  the staged frame before it changes anything, and the staging write's error
+  is the one thrown.
 
-### Upgrading
-
-If the app runs behind a proxy and reads `req.ips`, `req.protocol`,
-`req.secure` or a forwarded host, say which proxies to trust, as you would on
-Express:
-
-```ts
-new BunHttpAdapter(0, { trustProxy: "loopback" }); // nginx on the same host
-new BunHttpAdapter(0, { trustProxy: 1 }); // one proxy in front, by position
-new BunHttpAdapter(0, { ...behindCloudflare() }); // Cloudflare → app
-new BunHttpAdapter(0, { ...behindRailway() }); // Railway → app
-app.set("trust proxy", 1); // a Nest app, as on platform-express
-```
-
-bun-common's README, under
-[Client address behind proxies](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#client-address-behind-proxies-trustproxy),
-covers what to trust and the spoofing traps. Don't set `trustProxy: true` on
-a server clients can reach directly.
+Full list of changes: [v3.0.0-rc.0...v3.0.0-rc.1](https://github.com/kingsloob1/bun-node/compare/v3.0.0-rc.0...v3.0.0-rc.1)
+(65 pull requests, #647 to #711).
 
 ## 3.0.0-rc.0 (2026-11-04)
 

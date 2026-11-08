@@ -20,7 +20,7 @@ Bun-first libraries for building servers: an Express-like HTTP layer for
 
 ## What this repository is
 
-A monorepo of eight published packages, managed with Bun workspaces, lerna and
+A monorepo of seven published packages, managed with Bun workspaces, lerna and
 nx, released together at one version (lerna's fixed mode). Each package ships
 its TypeScript source, which Bun runs as it is (`main` is `lib/index.ts`),
 and declarations built into `dts/` when it is packed. Each has its own tests
@@ -87,7 +87,7 @@ bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
 bun add @kingsleyweb/bun-jobs
 ```
 
-**3.0.0-rc.0, the release candidate**, is on npm's `next` tag, all eight
+**3.0.0-rc.1, the release candidate**, is on npm's `next` tag, all seven
 packages at one version. Until 3.0.0 reaches `latest`, a plain `bun add
 @kingsleyweb/bun-common` (or `bun-nest`) installs 2.2.0, so ask for the tag:
 
