@@ -297,10 +297,13 @@ const CHANNEL_CHECKS_BUDGET = {
  * measured sizes. The same rule for raising them.
  */
 const LIVE_BUDGET = {
+  // Raised from 3.875 and 1.875 KiB for the SSE fallback's `403`
+  // `LIVE_TAGS_DENIED` (measured 2026-11-08: 3,968 and 1,825 bytes, the
+  // minified figure at the old limit to the byte; 3,547 and 1,643 at PR-W4).
   /** The chunk, minified, in bytes. */
-  minifiedBytes: 3.875 * 1024,
+  minifiedBytes: 4.375 * 1024,
   /** The chunk gzipped, in bytes. */
-  gzipBytes: 1.875 * 1024,
+  gzipBytes: 2 * 1024,
 } as const;
 
 /**

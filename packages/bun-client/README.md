@@ -972,10 +972,13 @@ const stop = live(api, queryClient);
   invalidated meanwhile; query-core's `staleTime` decides whether it
   refetches on its return.
 - `onDenied(tags)`: a server with per-tag authorization lists the tags it
-  refused in its `hello` (`denied`); their queries are not kept fresh. They
-  are reported here each time the server says so (a reconnect, or a new
-  tag, asks again), or, without `onDenied`, logged once each as a warning
-  through the client's `logger`.
+  refused in its `hello` (`denied`); their queries are not kept fresh. When
+  it refuses every tag, the SSE fallback answers `403`
+  `application/problem+json` (`code: "LIVE_TAGS_DENIED"`, the tags in
+  `denied`) and opens no stream: that ends the stream, with no reconnect,
+  and the tags are reported the same way. They are reported here each time
+  the server says so (a reconnect, or a new tag, asks again), or, without
+  `onDenied`, logged once each as a warning through the client's `logger`.
 
 In React, `useLive()` ([below](#react-react)) starts and stops it with a
 component.

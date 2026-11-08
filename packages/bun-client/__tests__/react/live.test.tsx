@@ -223,4 +223,45 @@ describe("useLive's onDenied (hello's `denied`)", () => {
     await waitFor(() => expect(second.flat()).toContain("user:2"));
     expect(first).toEqual([["user:1"]]);
   });
+
+  it("reports a 403 LIVE_TAGS_DENIED (every tag refused, no stream) to onDenied, and asks once", async () => {
+    const refusingAll = new BunRouter();
+    let asked = 0;
+    refusingAll.get("/__live/sse", (req: BunRequest, res: BunResponse) => {
+      asked++;
+      const tags = (req.query as { tag?: string | string[] }).tag ?? [];
+      res.status(403);
+      res.setHeader("content-type", "application/problem+json");
+      res.send(
+        JSON.stringify({
+          type: "urn:bun-common:error:LIVE_TAGS_DENIED",
+          title: "Forbidden",
+          status: 403,
+          code: "LIVE_TAGS_DENIED",
+          detail: "None of the requested tags may be watched.",
+          denied: Array.isArray(tags) ? tags : [tags],
+        }),
+      );
+    });
+    refusingAll.get("/users/:id", (req: BunRequest, res: BunResponse) => {
+      res.json({ id: req.params.id, name: "Ada" });
+    });
+    const hooks = hooksOf(refusingAll);
+    function AllRefused(props: { onDenied: (tags: string[]) => void }) {
+      hooks.useLive({ transport: "sse", onDenied: props.onDenied });
+      const user = hooks.useApi("/users/:id", { params: { id: "1" } });
+      return <p>{user.data?.name ?? "loading"}</p>;
+    }
+    const reported: string[][] = [];
+    const view = await render(
+      within(
+        newQueryClient(),
+        <AllRefused onDenied={(tags) => reported.push(tags)} />,
+      ),
+    );
+    await waitFor(() => expect(view.text()).toBe("Ada"));
+    await waitFor(() => expect(reported).toEqual([["user:1"]]));
+    await settle();
+    expect(asked).toBe(1);
+  });
 });
