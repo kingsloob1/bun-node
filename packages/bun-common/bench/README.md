@@ -92,16 +92,20 @@ method its `Bun.serve` handler calls, with a stand-in server whose
 `requestIP()` returns a fresh address object per call (as Bun's does) and
 counts the calls. No socket: the figure is the framework's cost alone, which
 a loopback socket's 20-50 µs would drown. The settings are `off`, `hop1`
-(`trustProxy: 1`), `cidr` (four private and CGNAT ranges) and `cloudflare`
-(`behindCloudflare()`: 22 ranges plus `clientIpHeader`); the handler reads
-nothing, `req.ip`, `req.protocol`, `req.host`, or all three. Every request
+(`trustProxy: 1`), `cidr` (four private and CGNAT ranges), `cloudflare`
+(`behindCloudflare()`: 22 ranges plus `clientIpHeader`) and `counted`
+(`cidr`'s ranges behind a function counting the walks); the handler reads
+nothing, `req.ip`, `req.protocol`, `req.host`, all three, or `repeat`
+(`req.ip`, `req.ips`, `req.ip`, `req.ips`). The `walks/req` column, on
+`counted` only, is how many times a request walked `X-Forwarded-For`: `ip`,
+`ips` and `proxyChain` share one walk per request. Every request
 carries `X-Forwarded-For`, `-Proto`, `-Host` and `CF-Connecting-IP` from a
 trusted peer, so each trusted walk runs in full. Each cell is warmed, then
 timed over `TP_REQUESTS` requests (20,000) in `TP_ROUNDS` rounds (5), in a
 rotating order, and the median kept.
 
-`--compare` fails when a cell makes more `requestIP()` calls per request than
-the baseline (exact, so it holds on any machine), or when a trusted setting's
+`--compare` fails when a cell makes more `requestIP()` calls or walks per
+request than the baseline (exact, so it holds on any machine), or when a trusted setting's
 overhead over `off` for the same reads, measured in the same run, is more
 than twice the baseline's plus 2 µs. `baselines/trustProxy.json` records the
 Bun revision, the platform and the load; run it through the heavy-run

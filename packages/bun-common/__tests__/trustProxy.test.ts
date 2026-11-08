@@ -696,6 +696,112 @@ describe("the socket peer is asked for once per request", () => {
   });
 });
 
+describe("the trustProxy walk runs once per request", () => {
+  /** A trust function trusting 10.0.0.0/8, counting its calls: one walk calls it once per address read. */
+  const countingTrust = () => {
+    const counter = { calls: 0 };
+    const inner = compileTrustProxy("10.0.0.0/8");
+    const trust = (addr: string, i: number) => {
+      counter.calls++;
+      return inner(addr, i);
+    };
+    return { trust, counter };
+  };
+  /** A request from the trusted peer 10.0.0.4, through two proxies. */
+  const request = async (
+    options: Parameters<typeof BunRequest.init>[2],
+    headers: Record<string, string> = {
+      "x-forwarded-for": "203.0.113.9, 10.0.0.7",
+    },
+  ) =>
+    await BunRequest.init(
+      new Request("http://origin.test/", { headers }),
+      peerServer("10.0.0.4"),
+      options,
+    );
+
+  it("ip, ips and proxyChain, read again and again, walk the chain once between them", async () => {
+    const once = countingTrust();
+    const single = await request({ parseBody: false, trustProxy: once.trust });
+    expect(single.ip).toBe("203.0.113.9");
+    const oneWalk = once.counter.calls;
+    expect(oneWalk).toBeGreaterThan(0);
+
+    const many = countingTrust();
+    const req = await request({ parseBody: false, trustProxy: many.trust });
+    for (let read = 0; read < 3; read++) {
+      expect(req.ip).toBe("203.0.113.9");
+      expect(req.ips).toEqual(["203.0.113.9", "10.0.0.7"]);
+      expect(req.proxyChain.map((entry) => entry.address)).toEqual([
+        "10.0.0.4",
+        "10.0.0.7",
+        "203.0.113.9",
+      ]);
+    }
+    expect(many.counter.calls).toBe(oneWalk);
+  });
+
+  it("each read of ips is a fresh array, as Express's", async () => {
+    const req = await request({ parseBody: false, trustProxy: "10.0.0.0/8" });
+    const first = req.ips;
+    first.push("tampered");
+    expect(req.ips).toEqual(["203.0.113.9", "10.0.0.7"]);
+    expect(req.ips).not.toBe(req.ips);
+  });
+
+  it("an X-Forwarded-For set or removed mid-request is read on the next read", async () => {
+    const { trust, counter } = countingTrust();
+    const req = await request({ parseBody: false, trustProxy: trust });
+    expect(req.ip).toBe("203.0.113.9");
+    const afterOne = counter.calls;
+    req.setHeader("X-Forwarded-For", "198.51.100.1, 10.0.0.9");
+    expect(req.ip).toBe("198.51.100.1");
+    expect(req.ips).toEqual(["198.51.100.1", "10.0.0.9"]);
+    expect(counter.calls).toBeGreaterThan(afterOne);
+    req.removeHeader("X-Forwarded-For");
+    expect([req.ip, req.ips]).toEqual(["10.0.0.4", []]);
+    req.headersObj.set("x-forwarded-for", "192.0.2.5");
+    expect(req.ip).toBe("192.0.2.5");
+  });
+
+  it("a clientIpHeader value changed mid-request is read on the next read", async () => {
+    const req = await request(
+      {
+        parseBody: false,
+        trustProxy: "10.0.0.0/8",
+        clientIpHeader: "x-real-ip",
+      },
+      { "x-forwarded-for": "10.0.0.7", "x-real-ip": "203.0.113.9" },
+    );
+    expect([req.ip, req.ips]).toEqual([
+      "203.0.113.9",
+      ["203.0.113.9", "10.0.0.7"],
+    ]);
+    req.setHeader("x-real-ip", "198.51.100.1");
+    expect([req.ip, req.ips]).toEqual([
+      "198.51.100.1",
+      ["198.51.100.1", "10.0.0.7"],
+    ]);
+    req.removeHeader("x-real-ip");
+    expect([req.ip, req.ips]).toEqual(["10.0.0.7", ["10.0.0.7"]]);
+  });
+
+  it("a trust setting changed mid-request is used on the next read", async () => {
+    const options: Parameters<typeof BunRequest.init>[2] = {
+      parseBody: false,
+      trustProxy: "10.0.0.0/8",
+    };
+    const req = await request(options);
+    expect(req.ip).toBe("203.0.113.9");
+    options.trustProxy = 1;
+    expect([req.ip, req.ips]).toEqual(["10.0.0.7", ["10.0.0.7"]]);
+    options.trustProxy = false;
+    expect([req.ip, req.ips]).toEqual(["10.0.0.4", []]);
+    options.trustProxy = "10.0.0.0/8";
+    expect(req.ip).toBe("203.0.113.9");
+  });
+});
+
 /** An adapter that can serve a request as if from any socket peer. */
 class PeerAdapter extends BunHttpAdapter {
   /** Serves `request` with `peer` as the socket address. */
