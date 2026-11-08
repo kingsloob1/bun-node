@@ -505,6 +505,37 @@ describe("connecting", () => {
     ).toMatchObject({ status: 403, body: { code: "ORIGIN_REJECTED" } });
   });
 
+  it("unset, follows the serving adapter's trustProxy on the upgrade", async () => {
+    const forwarded = {
+      Origin: "https://ops.example",
+      "X-Forwarded-Host": "ops.example",
+      "X-Forwarded-Proto": "https",
+    };
+    // The adapter trusts its loopback peer (the test's client), as an app
+    // behind a local proxy would; bun-jobs' own option is left unset.
+    const following = await served();
+    following.adapter.trustProxy = "loopback";
+    const client = await connect(following.url, { headers: forwarded });
+    await client.next("hello");
+    expect(following.api.websocket!.sessions).toBe(1);
+
+    // `false` refuses the same upgrade even though the adapter trusts.
+    const pinned = await served({ trustProxy: false });
+    pinned.adapter.trustProxy = "loopback";
+    expect(await refusedUpgrade(pinned.origin, forwarded)).toMatchObject({
+      status: 403,
+      body: { code: "ORIGIN_REJECTED" },
+    });
+
+    // And an adapter trusting a peer that is not this one believes nothing.
+    const elsewhere = await served();
+    elsewhere.adapter.trustProxy = "10.0.0.0/8";
+    expect(await refusedUpgrade(elsewhere.origin, forwarded)).toMatchObject({
+      status: 403,
+      body: { code: "ORIGIN_REJECTED" },
+    });
+  });
+
   it("marks its own connections, and ignores one it did not mark", async () => {
     const h = await served();
     const opened: unknown[] = [];

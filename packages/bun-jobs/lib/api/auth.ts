@@ -336,9 +336,19 @@ export type OriginAllowList = readonly (string | RegExp)[] | "*";
 /** How a request's own origin is worked out. */
 export interface RequestOriginOptions {
   /**
-   * Trust `X-Forwarded-Proto` and `X-Forwarded-Host` for the request's scheme
-   * and host. Only behind a proxy that sets them and strips any a client sent.
-   * Defaults to `false`: the request URL's scheme and the `Host` header.
+   * Whether `X-Forwarded-Proto` and `X-Forwarded-Host` give the request's
+   * scheme and host.
+   *
+   * - Absent (the default): the request's own trust decides. A `BunRequest`'s
+   *   `protocol` and `forwardedHost` follow the app's `trustProxy`
+   *   (bun-common's adapters and routers, Express's `trust proxy`), which
+   *   believes the headers only from a trusted socket peer; with that off, or
+   *   for a plain `Request`, which carries no trust, they are never read.
+   * - `true`: always, whoever sent them. Only behind a proxy that sets both
+   *   and strips any a client sent; prefer the app's `trustProxy`, which also
+   *   checks the peer.
+   * - `false`: never, even when the app trusts a proxy: the request URL's
+   *   scheme and the `Host` header.
    */
   trustProxy?: boolean;
 }
@@ -461,8 +471,9 @@ function headerOf(req: BunRequest | Request, name: string): string | null {
 }
 
 /**
- * The `Host` a request was sent to: `X-Forwarded-Host` when `trustProxy` is on
- * and it is present, else the header, else the URL's host.
+ * The `Host` a request was sent to: `X-Forwarded-Host` when it is believed
+ * (see {@link RequestOriginOptions.trustProxy}) and present, else the header,
+ * else the URL's host.
  *
  * A `BunRequest` may carry a path-only `url` and no `Host` header (one built by
  * `router.fetch()` has both), so its own `host` getter — which already falls
@@ -472,39 +483,64 @@ export function requestHost(
   req: BunRequest | Request,
   options?: RequestOriginOptions,
 ): string | null {
-  if (options?.trustProxy) {
+  const trustProxy = options?.trustProxy;
+  if (trustProxy === true) {
     const forwarded = firstForwarded(headerOf(req, "x-forwarded-host"));
     if (forwarded) {
       return forwarded;
     }
   }
   if (!(req instanceof Request)) {
-    return req.getHeader("host") || req.host || null;
+    if (trustProxy === false) {
+      // Never forwarded: not `req.host`, which is the forwarded host when the
+      // app trusts the peer and the request has no `Host` header.
+      return req.getHeader("host") || urlHost(req.request.url);
+    }
+    // Absent: the app's trust, which `forwardedHost` applies (the peer
+    // checked, as Express's `req.host`).
+    return (
+      (trustProxy === undefined ? req.forwardedHost : undefined) ||
+      req.getHeader("host") ||
+      req.host ||
+      null
+    );
   }
-  const header = req.headers.get("host");
-  if (header) {
-    return header;
-  }
+  return req.headers.get("host") || urlHost(req.url);
+}
+
+/** A URL's host, or `null` when it has none or does not parse. */
+function urlHost(url: string): string | null {
   try {
-    return new URL(req.url).host || null;
+    return new URL(url).host || null;
   } catch {
     return null;
   }
 }
 
 /**
- * The scheme a request arrived over, without the colon: `X-Forwarded-Proto`
- * when `trustProxy` is on and it is present, else the request URL's. `null`
- * when neither says.
+ * The scheme a request arrived over, lower case, without the colon:
+ * `X-Forwarded-Proto` when it is believed (see
+ * {@link RequestOriginOptions.trustProxy}) and present, else the request
+ * URL's. `null` when neither says.
  */
 export function requestProtocol(
   req: BunRequest | Request,
   options?: RequestOriginOptions,
 ): string | null {
-  if (options?.trustProxy) {
+  const trustProxy = options?.trustProxy;
+  if (trustProxy === true) {
     const forwarded = firstForwarded(headerOf(req, "x-forwarded-proto"));
     if (forwarded) {
       return forwarded.toLowerCase();
+    }
+  }
+  if (trustProxy === undefined && !(req instanceof Request)) {
+    // Absent: the app's trust, which `protocol` applies (Express's
+    // `req.protocol`: the forwarded scheme only from a trusted peer).
+    try {
+      return req.protocol.toLowerCase() || null;
+    } catch {
+      return null;
     }
   }
   try {

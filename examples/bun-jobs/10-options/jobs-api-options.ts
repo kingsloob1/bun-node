@@ -1644,7 +1644,10 @@ checkEqual(
 );
 
 // Behind a TLS-terminating proxy the forwarded headers are the truth — but
-// only when you say they can be trusted.
+// only from a proxy the app trusts. Left unset, the API's `trustProxy`
+// follows the app's: the `trustProxy` of the bun-common router or adapter
+// serving it (Express's `trust proxy`), which believes `X-Forwarded-Proto`
+// and `X-Forwarded-Host` only from a trusted peer.
 const forwarded = {
   origin: "https://admin.example",
   "x-forwarded-proto": "https",
@@ -1653,16 +1656,68 @@ const forwarded = {
 const direct = mount({ actions: [...JOBS_API_ACTIONS] });
 await direct.jobs.queue("mail").add("send", {});
 checkEqual(
-  "without trustProxy a forwarded origin is cross-origin",
+  "with the app trusting no proxy, a forwarded origin is cross-origin",
   (await direct.call("POST", "/queues/mail/pause", {}, forwarded)).status,
   403,
 );
+// One proxy in front, by position (a socket-free fetch has no peer address).
+direct.root.trustProxy = 1;
+checkEqual(
+  "with the app trusting its proxy, the same request is same-origin",
+  (await direct.call("POST", "/queues/mail/pause", {}, forwarded)).status,
+  200,
+);
+// The served AsyncAPI document names the same host and scheme: the one a
+// browser reaches through the proxy.
+const proxiedServer = (
+  await direct.call("GET", "/asyncapi.json", undefined, {
+    host: "10.0.0.5:3000",
+    "x-forwarded-proto": "https",
+    "x-forwarded-host": "admin.example",
+  })
+).body.servers.api as { host: string; protocol: string };
+checkEqual(
+  "and the AsyncAPI server is the proxy's host, over wss",
+  { host: proxiedServer.host, protocol: proxiedServer.protocol },
+  { host: "admin.example", protocol: "wss" },
+);
+
+// The API's own `trustProxy` overrides the app's. `false` never reads the
+// headers, whatever the app trusts.
+const pinned = mount({ actions: [...JOBS_API_ACTIONS], trustProxy: false });
+await pinned.jobs.queue("mail").add("send", {});
+pinned.root.trustProxy = 1;
+checkEqual(
+  "trustProxy: false keeps the forwarded origin cross-origin",
+  (await pinned.call("POST", "/queues/mail/pause", {}, forwarded)).status,
+  403,
+);
+// `true` believes them from any peer, with no app trust: for a raw
+// `Bun.serve` upgrade or the dedicated socket port, which have no app. Only
+// behind a proxy that overwrites both headers.
 const trusting = mount({ actions: [...JOBS_API_ACTIONS], trustProxy: true });
 await trusting.jobs.queue("mail").add("send", {});
 checkEqual(
-  "with it, the same request is same-origin",
+  "trustProxy: true makes it same-origin without the app's trust",
   (await trusting.call("POST", "/queues/mail/pause", {}, forwarded)).status,
   200,
+);
+// Anything but a boolean is refused: a hop count or an address list belongs
+// on the app.
+await checkRejects(
+  "trustProxy: 1 on the API",
+  () =>
+    createJobsApi({
+      jobs: context("tp1"),
+      basePath: "/admin/jobs",
+      authorize: () => true,
+      trustProxy: 1 as never,
+    }),
+  {
+    name: "ConfigError",
+    code: "CONFIG",
+    message: /trustProxy must be true, false or unset/,
+  },
 );
 
 // CORS is off by default; an explicit list is accepted with credentials.

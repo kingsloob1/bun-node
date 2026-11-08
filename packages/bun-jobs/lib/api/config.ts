@@ -576,12 +576,24 @@ export interface JobsApiConfig {
    */
   cors?: CorsOptions | false;
   /**
-   * Trust `X-Forwarded-Proto` and `X-Forwarded-Host` when deciding whether a
-   * request's `Origin` is the same origin (the CSRF check on mutations and the
-   * WebSocket upgrade check). Enable only behind a proxy that sets both and
-   * strips any a client sent. Defaults to `false`: the request URL's scheme and
-   * its `Host` are compared — so behind a TLS-terminating proxy that does not
-   * preserve them, list the public origin in `csrf.allowedOrigins` instead.
+   * Whether `X-Forwarded-Proto` and `X-Forwarded-Host` decide the scheme and
+   * host a request's `Origin` is compared with (the CSRF check on mutations
+   * and the WebSocket upgrade check) and that the served AsyncAPI document
+   * names.
+   *
+   * Leave it unset to follow the app: the request's own `protocol` and
+   * `forwardedHost`, which honour the `trustProxy` of the bun-common adapter
+   * or router serving it (Express's `trust proxy`, believed only from a
+   * trusted socket peer). With the app's `trustProxy` off, the default, the
+   * headers are never read. A raw `Bun.serve` upgrade and the dedicated
+   * `websocket.port` server have no app trust, so unset reads none there.
+   *
+   * `true` overrides it and believes the headers from any peer: only behind a
+   * proxy that sets both and strips any a client sent (set the app's
+   * `trustProxy` instead where there is an app). `false` overrides it and
+   * never reads them, even when the app trusts a proxy. Behind a
+   * TLS-terminating proxy that is not trusted, list the public origin in
+   * `csrf.allowedOrigins`.
    */
   trustProxy?: boolean;
   /**
@@ -805,12 +817,13 @@ export interface ResolvedJobsApiConfig {
   csrf: ResolvedJobsApiCsrfOptions;
   /**
    * Whether `X-Forwarded-Host` and `X-Forwarded-Proto` are trusted when the
-   * same-origin and CSRF checks decide what origin a request was sent to.
-   * Defaults to `false`: a header a client can set must not be able to make a
-   * cross-site request look same-origin. Turn it on only behind a proxy that
-   * overwrites both headers.
+   * same-origin and CSRF checks decide what origin a request was sent to:
+   * `undefined` (the default) follows the app's `trustProxy` through the
+   * request's own `protocol` and `forwardedHost`; `true` believes them from
+   * any peer; `false` never reads them. A header a client can set must not be
+   * able to make a cross-site request look same-origin.
    */
-  trustProxy: boolean;
+  trustProxy: boolean | undefined;
   /** Docs options, or `false`. */
   docs: ResolvedJobsApiDocsOptions | false;
   /** Socket options, or `false`. */
@@ -1474,6 +1487,19 @@ export function resolveConfig(config: JobsApiConfig): ResolvedJobsApiConfig {
     );
   }
 
+  // A boolean or nothing: unset follows the app, so a value the checks would
+  // read as neither (a bun-common hop count or address list, say) is refused
+  // rather than silently meaning `false`.
+  if (
+    config.trustProxy !== undefined &&
+    typeof config.trustProxy !== "boolean"
+  ) {
+    throw new ConfigError(
+      "trustProxy must be true, false or unset: to trust particular proxies, set `trustProxy` on the bun-common adapter or router serving the API and leave this unset",
+      { trustProxy: config.trustProxy },
+    );
+  }
+
   const serialize = config.serialize ?? {};
 
   return {
@@ -1493,7 +1519,7 @@ export function resolveConfig(config: JobsApiConfig): ResolvedJobsApiConfig {
     middleware: Object.freeze([...middleware]),
     cors: resolveCors(config.cors),
     csrf: resolveCsrf(config.csrf),
-    trustProxy: config.trustProxy ?? false,
+    trustProxy: config.trustProxy,
     docs: resolveDocs(config.docs),
     websocket: resolveWebSocket(config.websocket),
     limits: resolveLimits(config.limits),

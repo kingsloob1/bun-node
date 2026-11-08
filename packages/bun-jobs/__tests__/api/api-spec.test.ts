@@ -961,6 +961,55 @@ describe("the generated AsyncAPI document", () => {
     await fixed.close();
   });
 
+  it("names the forwarded host and scheme as the origin checks read them", async () => {
+    /** The served document's server, for one request. */
+    const serverFor = async (
+      api: ReturnType<typeof createJobsApi>,
+      headers: Record<string, string>,
+    ) =>
+      (
+        (await (
+          await api.router.fetch("/asyncapi.json", { headers })
+        ).json()) as { servers: { api: { host: string; protocol: string } } }
+      ).servers.api;
+    const proxied = {
+      host: "10.0.0.5:3000",
+      "x-forwarded-host": "jobs.example",
+      "x-forwarded-proto": "https",
+    };
+
+    // Unset: the app's trust. Off, the direct host and scheme.
+    const following = createJobsApi(apiConfig());
+    expect(await serverFor(following, proxied)).toMatchObject({
+      host: "10.0.0.5:3000",
+      protocol: "ws",
+    });
+    // Trusted, the proxy's: the host a browser reaches, as well as `wss`.
+    following.router.trustProxy = 1;
+    expect(await serverFor(following, proxied)).toMatchObject({
+      host: "jobs.example",
+      protocol: "wss",
+    });
+    await following.close();
+
+    // `false` pins the direct ones even when the app trusts.
+    const pinned = createJobsApi(apiConfig({ trustProxy: false }));
+    pinned.router.trustProxy = 1;
+    expect(await serverFor(pinned, proxied)).toMatchObject({
+      host: "10.0.0.5:3000",
+      protocol: "ws",
+    });
+    await pinned.close();
+
+    // `true` believes the headers with no app trust at all.
+    const trusting = createJobsApi(apiConfig({ trustProxy: true }));
+    expect(await serverFor(trusting, proxied)).toMatchObject({
+      host: "jobs.example",
+      protocol: "wss",
+    });
+    await trusting.close();
+  });
+
   it("reports the socket and the AsyncAPI path in /meta", async () => {
     const api = createJobsApi(
       apiConfig({ websocket: { heartbeatMs: 1000, maxSubscriptions: 7 } }),

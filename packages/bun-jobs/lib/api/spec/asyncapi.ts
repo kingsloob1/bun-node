@@ -1,11 +1,13 @@
 import type { BunRequest } from "@kingsleyweb/bun-common";
 import type { QueueEventName } from "../../shared/events";
+import type { RequestOriginOptions } from "../auth";
 import type { AsyncApiDocument, ResolvedJobsApiConfig } from "../config";
 import type { Schema } from "../schema/builder";
 import type { JsonSchema } from "../schema/validate";
 import type { ChannelDef } from "../ws/channels";
 import type { EventDescriptor } from "../ws/events";
 import { NOT_JOB_ID_EVENTS } from "../../shared/events";
+import { requestHost, requestProtocol } from "../auth";
 import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { s, toJsonSchema } from "../schema/builder";
 import {
@@ -669,28 +671,41 @@ function packageVersion(): string {
 
 /**
  * A copy of `document` whose server names the host a docs request was sent
- * to: the request's `Host` (with the dedicated port instead, when there is
- * one), and `wss` for a secure request. A document whose server was fixed by
- * `docs.asyncapiServer` is returned as a copy, unchanged.
+ * to: the request's host (its host name with the dedicated port instead, when
+ * there is one), and `wss` for a request that arrived over `https`. Both are
+ * read as the origin checks read them ({@link requestHost},
+ * {@link requestProtocol}): a forwarded host and scheme count when `origin`'s
+ * `trustProxy` says so, or, unset, when the app's `trustProxy` trusts the
+ * peer. A document whose server was fixed by `docs.asyncapiServer` is
+ * returned as a copy, unchanged.
  */
 export function asyncApiForRequest(
   document: AsyncApiDocument,
   req: BunRequest,
   socket: AsyncApiSocketInfo,
+  origin?: RequestOriginOptions,
 ): AsyncApiDocument {
   const copy = structuredClone(document);
   const server = (copy.servers as Record<string, Record<string, unknown>>).api;
   if (server.variables === undefined) {
     return copy;
   }
+  const authority = requestHost(req, origin);
   const host =
-    socket.port === undefined
-      ? req.getHeader("host") || req.host
-      : `${req.hostname}:${socket.port}`;
+    socket.port === undefined || !authority
+      ? authority
+      : `${hostWithoutPort(authority)}:${socket.port}`;
   if (host) {
     server.host = host;
     delete server.variables;
   }
-  server.protocol = req.secure ? "wss" : "ws";
+  server.protocol = requestProtocol(req, origin) === "https" ? "wss" : "ws";
   return copy;
+}
+
+/** `host[:port]` without its port; an IPv6 literal keeps its brackets. */
+function hostWithoutPort(authority: string): string {
+  const offset = authority.startsWith("[") ? authority.indexOf("]") + 1 : 0;
+  const colon = authority.indexOf(":", offset);
+  return colon === -1 ? authority : authority.slice(0, colon);
 }
