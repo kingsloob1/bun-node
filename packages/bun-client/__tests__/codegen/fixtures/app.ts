@@ -212,6 +212,37 @@ export const api = defineRoutes("/api", (r) => ({
       res.status(200).send('event: done\ndata: {"ok":true}\n\n');
     },
   ),
+  userLog: r.get(
+    "/users/:id/log",
+    validate(
+      { params: z.object({ id: z.string() }) },
+      {
+        responses: {
+          200: {
+            content: {
+              "text/event-stream": sse(
+                {
+                  line: z.string(),
+                  level: z.enum(["info", "warn"]),
+                  count: z.coerce.number(),
+                  end: null,
+                },
+                { data: "text" },
+              ),
+            },
+          },
+        },
+      },
+    ),
+    (_req, res) => {
+      res.setHeader("content-type", "text/event-stream");
+      res
+        .status(200)
+        .send(
+          "event: line\ndata: {not json}\n\nevent: count\ndata: 42\n\nevent: level\ndata: warn\n\nevent: end\n\n",
+        );
+    },
+  ),
   listCategories: r.get(
     "/categories",
     validate({}, { responses: { 200: z.array(Category) } }),

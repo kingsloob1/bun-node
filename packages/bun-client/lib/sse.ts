@@ -209,8 +209,9 @@ interface StreamConfig {
   /**
    * How each event's `data` is decoded: `"json"` parses it (data that does
    * not parse is delivered as its text, and is a validation issue), `"text"`
-   * delivers it as it is; as bun-common's `sse(events, { data })`. Default
-   * `"json"`.
+   * delivers it as it is; as bun-common's `sse(events, { data })`. Default:
+   * the manifest's `sseData` (the generator writes it from `x-sse-data`),
+   * else `"json"`.
    */
   data?: "json" | "text";
 }
@@ -574,7 +575,16 @@ class Stream {
       middleware,
       ...call
     } = this.#options;
-    const format = data ?? "json";
+    const facts = (
+      this.#config.manifest as
+        | Record<
+            string,
+            | { statuses?: readonly number[]; sseData?: "json" | "text" }
+            | undefined
+          >
+        | undefined
+    )?.[key];
+    const format = data ?? facts?.sseData ?? "json";
     const initialMs = (reconnect || {}).initialMs ?? 3_000;
     const maxMs = (reconnect || {}).maxMs ?? 30_000;
     const fatal = (status: number) =>
@@ -590,10 +600,7 @@ class Stream {
             onFailure: { ...validate.onFailure, response: "warn" },
           }
         : validate;
-    const declared = (
-      this.#config.manifest as
-        Record<string, { statuses?: readonly number[] } | undefined> | undefined
-    )?.[key]?.statuses;
+    const declared = facts?.statuses;
     const checks = await this.#checks();
     // Innermost: what the stream asks for, and where it resumes from.
     const resume: ClientMiddleware = (ctx, next) => {

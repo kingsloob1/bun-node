@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: d319a81765552482
+ * typesHash: e6d401fb390f94c1
  *
  * Warnings:
  * - GET /api/health: no responses declared (neither the validator nor .describe() declares any); a placeholder `default` was emitted — strict mode rejects this
@@ -18,7 +18,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "d319a81765552482";
+export const typesHash = "e6d401fb390f94c1";
 
 /** Where a user lives. */
 export interface Address {
@@ -256,6 +256,25 @@ export interface Routes {
       };
     };
   };
+  "GET /api/users/:id/log": {
+    operationId: "userLog";
+    params: {
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: undefined;
+    };
+    stream: "sse";
+    events: {
+      count: string;
+      end: undefined;
+      level: "info" | "warn";
+      line: string;
+    };
+  };
   "GET /api/users/:id/report": {
     operationId: "report";
     params: {
@@ -307,5 +326,10 @@ export const manifest = {
     bodyType: "multipart",
   },
   "GET /api/users/:id/events": { operationId: "userEvents", statuses: [200] },
+  "GET /api/users/:id/log": {
+    operationId: "userLog",
+    statuses: [200],
+    sseData: "text",
+  },
   "GET /api/users/:id/report": { operationId: "report", statuses: [200, 404] },
 } as const satisfies RouteManifest<Routes>;

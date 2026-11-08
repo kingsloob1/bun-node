@@ -588,3 +588,71 @@ export type ReceivedResponses<RS, O = undefined> = [RS] extends [undefined]
         ? { [N in keyof T & string]: ReceivedBody<T[N], O> }[keyof T & string]
         : ReceivedBody<RS[K], O>;
     };
+
+/** An `sse()` declaration, structurally (`sse/declaration.ts`'s `SseEvents`): its events and how their data decodes. */
+interface SseDecl {
+  /** Always `"sse"`. */
+  readonly kind: "sse";
+  /** Event name to its data's schema, or `null`. */
+  readonly events: object;
+  /** How each event's `data` is decoded. */
+  readonly data: "json" | "text";
+}
+
+/** The `sse()` declarations among one status's media types (a `variants()` status has none). */
+type SseIn<Sp> =
+  ContentOf<Sp> extends infer C
+    ? C extends object
+      ? Extract<C[keyof C], SseDecl>
+      : never
+    : never;
+
+/** The `sse()` declarations of a `responses` table's 2xx statuses. */
+type SseOf<RS> = {
+  [K in keyof RS]: `${K & (string | number)}` extends `2${string}`
+    ? SseIn<RS[K]>
+    : never;
+}[keyof RS];
+
+/**
+ * One event's `data` as a client receives it (`sse.md` §3.1): `undefined`
+ * for a `null` event; under `data: "json"` the `Jsonify` of the schema's
+ * wire input (as a JSON body); under `"text"` the string as it arrives, its
+ * schema's own type when that is a string (a `z.enum` of names), `string`
+ * otherwise (a `z.coerce.number()` still arrives as text) — what the client
+ * generator writes from `x-sse-data`.
+ */
+type ReceivedEvent<V, D> = V extends null
+  ? undefined
+  : [D] extends ["text"]
+    ? WireOf<V> extends infer W
+      ? [W] extends [string]
+        ? W
+        : string
+      : never
+    : Jsonify<WireOf<V>>;
+
+/**
+ * What a `responses` table adds to a route's entry when a 2xx status is an
+ * event stream (typed-client `sse.md` §3.1): `stream: "sse"` and its
+ * `events`, each event's data as {@link ReceivedEvent} gives it, as the
+ * client generator writes them from `x-sse-events` and `x-sse-data`. `{}`
+ * for a route that does not stream events.
+ *
+ * @internal
+ */
+export type ReceivedStream<RS> = [SseOf<RS>] extends [never]
+  ? Record<never, never>
+  : SseOf<RS> extends infer S extends SseDecl
+    ? {
+        /** The route answers a `text/event-stream`, read with the client's `sse()`. */
+        stream: "sse";
+        /** Its events by name, each its data as the client receives it. */
+        events: {
+          -readonly [N in keyof S["events"]]: ReceivedEvent<
+            S["events"][N],
+            S["data"]
+          >;
+        };
+      }
+    : never;

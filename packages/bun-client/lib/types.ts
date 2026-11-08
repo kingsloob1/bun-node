@@ -630,6 +630,13 @@ export type RouteManifest<R> = {
      */
     readonly bodyType?: "json" | "multipart" | "urlencoded";
     /**
+     * How an event stream's data is decoded (`sse.md` §3.1, `x-sse-data`,
+     * bun-common's `sse(events, { data })`): `"json"`, or `"text"`,
+     * delivered as it arrives. `sse()`'s own `data` option wins. Default:
+     * `"json"`.
+     */
+    readonly sseData?: "json" | "text";
+    /**
      * The statuses whose body streams (`other-transports.md` §4), by how
      * it is cut, as bun-common's `chunks()` says: `"ndjson"`, one JSON value
      * per line, each checked as the status's response schema; `"raw"`, the
