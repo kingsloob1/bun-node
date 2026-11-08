@@ -14,6 +14,7 @@ import type {
 } from "../lib/query";
 import type { InfiniteData } from "@tanstack/query-core";
 import { MutationObserver, QueryClient } from "@tanstack/query-core";
+import { z } from "zod";
 import { createClient } from "../lib/index";
 import { invalidateTags, observe, queries } from "../lib/query";
 
@@ -286,3 +287,88 @@ export type _observedPages = Expect<
 void observedPages.fetchNextPage();
 // @ts-expect-error a plain query has no pages
 void observed.fetchNextPage();
+
+/* ---- BYO response types (§5.4) ---- */
+
+/** A BYO schema whose output differs from the wire: `createdAt` a `Date`. */
+const UserWithDate = z.object({
+  id: z.string(),
+  name: z.string(),
+  createdAt: z.iso.datetime().transform((at) => new Date(at)),
+});
+type Parsed = z.output<typeof UserWithDate>;
+const PageWithDates = z.object({
+  items: z.array(UserWithDate),
+  next: z.number().nullable(),
+});
+
+// q.query: the data is the schema's output, in the query function and the key.
+const parsedUser = q.query("/users/:id", {
+  params: { id: "1" },
+  validate: { response: { 200: { custom: UserWithDate } } },
+});
+export type _parsedData = Expect<
+  Equal<Awaited<ReturnType<typeof parsedUser.queryFn>>, Parsed>
+>;
+const _parsedCached = client.getQueryData(parsedUser.queryKey);
+export type _parsedCachedType = Expect<
+  Equal<typeof _parsedCached, Parsed | undefined>
+>;
+// Only a success status's schema types the data; an error status's does not.
+const _errorOnlyQuery = q.query("/users/:id", {
+  params: { id: "1" },
+  validate: { response: { 404: { custom: z.object({ code: z.string() }) } } },
+});
+export type _errorSchemaOnly = Expect<
+  Equal<Awaited<ReturnType<typeof _errorOnlyQuery.queryFn>>, Jsonify<User>>
+>;
+// Turned off, or a plain switch: the wire type.
+const _offQuery = q.query("/users/:id", {
+  params: { id: "1" },
+  validate: { response: { 200: false } },
+});
+export type _switchedOff = Expect<
+  Equal<Awaited<ReturnType<typeof _offQuery.queryFn>>, Jsonify<User>>
+>;
+// @ts-expect-error the BYO output (a Date) is not the wire's string
+export type _parsedIsWire = Expect<Equal<Parsed, Jsonify<User>>>;
+
+// q.infinite: each page.
+const _pagesQuery = q.infinite(
+  "/users",
+  { validate: { response: { 200: { custom: PageWithDates } } } },
+  {
+    pageParam: "page",
+    next: (last) => {
+      const _at: Equal<(typeof last.items)[number]["createdAt"], Date> = true;
+      void _at;
+      return last.next;
+    },
+  },
+);
+export type _parsedPages = Expect<
+  Equal<
+    Awaited<ReturnType<typeof _pagesQuery.queryFn>>,
+    z.output<typeof PageWithDates>
+  >
+>;
+
+// q.mutation: the config's validate types the data.
+const parsedCreate = new MutationObserver(
+  client,
+  q.mutation("POST /users", {
+    validate: { response: { 201: { custom: UserWithDate } } },
+  }),
+);
+async function parsedMutates() {
+  const _value = await parsedCreate.mutate({ body: { name: "Ada" } });
+  const _created: Equal<typeof _value, Parsed> = true;
+  void _created;
+  // The variables may still carry their own validate (used instead).
+  await parsedCreate.mutate({ body: { name: "Ada" }, validate: false });
+}
+void parsedMutates;
+q.mutation("POST /users", {
+  // @ts-expect-error a custom schema is a Standard Schema
+  validate: { response: { 201: { custom: { parse: () => 1 } } } },
+});
