@@ -42,11 +42,20 @@ function summon(
  */
 const FUTURE_MODE = "on-demand" as SummonMode;
 
+/**
+ * How long a wait for a screen, or for the rows its first `GET /workers`
+ * brings, may take. Quiet, both arrive within milliseconds; under a full
+ * `--parallel` run the list once stayed on the lazy Workers chunk's
+ * "Loading the workers" spinner past Testing Library's 1 s default (1.2 s).
+ * Five seconds, as the other screen tests wait.
+ */
+const LOADED = { timeout: 5_000 } as const;
+
 /** Opens `/workers` listing `items`, and resolves the list. */
 async function openList(items: WorkerDto[]) {
   visit("/jobs/workers");
   renderApp({ handlers: { "GET /workers": { body: { items } } } });
-  return page().findByTestId("workers-list");
+  return page().findByTestId("workers-list", {}, LOADED);
 }
 
 /** Opens the page of key `api.emails` with `items` as its live instances, once its Target card is in. */
@@ -66,9 +75,9 @@ async function openWorkerPage(items: WorkerDto[]) {
       }),
     },
   });
-  await page().findByTestId("worker-screen");
+  await page().findByTestId("worker-screen", {}, LOADED);
   // The Target card renders with the instances; the Summoned card beside it.
-  await page().findByTestId("worker-target");
+  await page().findByTestId("worker-target", {}, LOADED);
   return page().queryByTestId("worker-summon");
 }
 
@@ -109,7 +118,7 @@ describe("the summon badge in a worker table", () => {
         }),
       }),
     ]);
-    await within(list).findByTestId("worker-row-w-ecs");
+    await within(list).findByTestId("worker-row-w-ecs", {}, LOADED);
     const badge = badgeOf(list, "w-ecs")!;
     expect(badge.textContent).toBe("Summoned by ecs");
     expect(badge.title).toContain("attempt sum-7f3a");
@@ -130,7 +139,7 @@ describe("the summon badge in a worker table", () => {
     const list = await openList([
       workerFixture({ id: "w-bare", summon: summon() }),
     ]);
-    await within(list).findByTestId("worker-row-w-bare");
+    await within(list).findByTestId("worker-row-w-bare", {}, LOADED);
     const badge = badgeOf(list, "w-bare")!;
     expect(badge.textContent).toBe("Summoned");
     expect(badge.title).toContain("attempt sum-7f3a");
@@ -142,7 +151,7 @@ describe("the summon badge in a worker table", () => {
       workerFixture({ id: "w-plain" }),
       workerFixture({ id: "w-summoned", summon: summon({ kind: "fly" }) }),
     ]);
-    await within(list).findByTestId("worker-row-w-plain");
+    await within(list).findByTestId("worker-row-w-plain", {}, LOADED);
     expectAbsent(badgeOf(list, "w-plain"));
     const row = within(list).getByTestId("worker-row-w-plain");
     expect(row.textContent).not.toMatch(/summon/i);
@@ -159,7 +168,7 @@ describe("the summon badge in a worker table", () => {
         summon: summon({ resolvedMode: "until-stopped", mode: "exit-on-idle" }),
       }),
     ]);
-    await within(list).findByTestId("worker-row-w-resolved");
+    await within(list).findByTestId("worker-row-w-resolved", {}, LOADED);
     const hint = badgeOf(list, "w-resolved")!.title;
     expect(hint).toContain("Runs as: Run until stopped.");
     expect(hint).toContain("requested mode: Exit when idle");
@@ -169,7 +178,7 @@ describe("the summon badge in a worker table", () => {
     const list = await openList([
       workerFixture({ id: "w-future", summon: summon({ mode: FUTURE_MODE }) }),
     ]);
-    await within(list).findByTestId("worker-row-w-future");
+    await within(list).findByTestId("worker-row-w-future", {}, LOADED);
     expect(badgeOf(list, "w-future")!.title).toContain(
       "requested mode: on-demand",
     );
@@ -183,7 +192,7 @@ describe("the summon badge in a worker table", () => {
       }),
       workerFixture({ id: "w-single", summon: summon({ kind: "ecs" }) }),
     ]);
-    await within(list).findByTestId("worker-row-w-unit");
+    await within(list).findByTestId("worker-row-w-unit", {}, LOADED);
     expect(badgeOf(list, "w-unit")!.textContent).toBe("Summoned by ecs");
     const unit = unitOf(list, "w-unit")!;
     expect(unit.textContent).toBe("Unit of media");
