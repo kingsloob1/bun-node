@@ -320,11 +320,16 @@ app.use(
 // bundles its own React app (nothing from a CDN, a strict self-only CSP),
 // serving each thunk's document itself at <basePath>/document.json. `dev`
 // rebuilds from the source on disk, for the same reason the jobs UI's does.
+// Both share the jobs UI's pretend session (sign-in.ts): signed out, a page
+// answers a 303 to /playground/sign-in, and a refused document read in an open
+// viewer sends the browser there too.
 const apiDocs = docsUi({
   document: openApiDocument,
   basePath: "/playground/api-docs",
   logger: noopLogger,
   dev: true,
+  authorize: playgroundAuthorize,
+  unauthorized: playgroundUnauthorized,
 });
 const wsDocs = docsUi({
   document: () =>
@@ -336,6 +341,8 @@ const wsDocs = docsUi({
   title: "bun-node playground (events)",
   logger: noopLogger,
   dev: true,
+  authorize: playgroundAuthorize,
+  unauthorized: playgroundUnauthorized,
 });
 app.use(apiDocs.basePath, apiDocs.router);
 app.use(wsDocs.basePath, wsDocs.router);

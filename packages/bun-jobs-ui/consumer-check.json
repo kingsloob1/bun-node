@@ -3,6 +3,7 @@
   "workspaceDependencies": [
     "packages/bun-contract",
     "packages/bun-common",
+    "packages/bun-api-docs-ui",
     "packages/bun-jobs"
   ],
   "entries": [

@@ -21,7 +21,10 @@
         "DocsUiAuthorizeResult",
         "DocsUiDocumentThunk",
         "DocsUiConfig",
-        "DocsUiTheme"
+        "DocsUiTheme",
+        "DocsUiUnauthorizedOptions",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus"
       ],
       "snippet": "const ui = m.docsUi({ document: \"/jobs-api/openapi.json\", basePath: \"/docs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;"
     },
@@ -52,6 +55,32 @@
       "values": ["DOCS_UI_CONFIG_ELEMENT_ID", "DEFAULT_EXTENSION_PREFIXES"],
       "types": ["DocsUiConfig", "DocsUiTheme"],
       "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized",
+      "values": [
+        "DEFAULT_RETURN_PARAM",
+        "DEFAULT_UNAUTHORIZED_STATUSES",
+        "isUiUnauthorized",
+        "unauthorizedRedirectUrl",
+        "relativeReturnPath"
+      ],
+      "types": [
+        "UnauthorizedOptions",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus"
+      ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-api-docs-ui/lib/unauthorized",
+      "values": [
+        "resolveUnauthorized",
+        "isNavigation",
+        "redirectsDenial",
+        "sendUnauthorizedRedirect"
+      ],
+      "types": ["UnauthorizedConfigError"]
     },
     {
       "spelling": "@kingsleyweb/bun-api-docs-ui/lib/hosted",

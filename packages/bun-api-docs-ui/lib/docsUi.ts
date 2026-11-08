@@ -18,6 +18,7 @@ import type {
 } from "@kingsleyweb/bun-common";
 import type { UiAsset, UiAssets } from "./assets";
 import type { DocsUiConfig, DocsUiTheme } from "./shared/config";
+import type { UiUnauthorized } from "./shared/unauthorized";
 import type { ShellRenderer } from "./shell";
 import type {
   DocsUi,
@@ -35,6 +36,11 @@ import {
   cspHeader,
   documentOriginSource,
 } from "./shell";
+import {
+  redirectsDenial,
+  resolveUnauthorized,
+  sendUnauthorizedRedirect,
+} from "./unauthorized";
 
 /** The viewer's default mount path. */
 export const DEFAULT_BASE_PATH = "/docs";
@@ -272,12 +278,20 @@ function decide(result: unknown):
   return { allow: false, status: 403 };
 }
 
-/** The `authorize` step of every viewer route. */
+/**
+ * The `authorize` step of every viewer route. With `unauthorized`, a denial
+ * whose status it lists answers a page navigation of the shell with a 303 to
+ * the target; a bundle file, the document and anything that is not a
+ * navigation keep the problem.
+ */
 function authorizeStep(
   authorize: DocsUiAuthorize,
-  asset: boolean,
+  route: "asset" | "document" | "shell",
   logger: Logger,
+  unauthorized: UiUnauthorized | null,
 ): RouterHandler {
+  const asset = route === "asset";
+  const shell = route === "shell";
   return async (req, res, next) => {
     const context: DocsUiAuthorizeContext = { asset, path: req.path };
     let decision: ReturnType<typeof decide>;
@@ -300,6 +314,10 @@ function authorizeStep(
     }
     if (decision.allow) {
       return next();
+    }
+    if (redirectsDenial(unauthorized, shell, decision.status, req)) {
+      sendUnauthorizedRedirect(req, res, unauthorized);
+      return;
     }
     if (decision.status === 401) {
       sendProblem(
@@ -383,6 +401,11 @@ export function createDocsUi(
     csrfHeader: resolveCsrfHeader(options.csrfHeader),
     extensions: resolveExtensions(options.extensions),
     theme: resolveTheme(options.theme),
+    unauthorized: resolveUnauthorized(
+      options.unauthorized,
+      basePath,
+      (message, context) => new ConfigError(message, context),
+    ),
   });
 
   const logger = resolveLogger(options.logger).child({
@@ -558,10 +581,10 @@ export function createDocsUi(
     );
   };
 
-  const guards = (asset: boolean): RouterHandler[] => [
+  const guards = (route: "asset" | "document" | "shell"): RouterHandler[] => [
     ...middleware,
     ...(options.authorize
-      ? [authorizeStep(options.authorize, asset, logger)]
+      ? [authorizeStep(options.authorize, route, logger, config.unauthorized)]
       : []),
   ];
 
@@ -574,12 +597,12 @@ export function createDocsUi(
     // `:file` is one segment; anything deeper under the assets path is a 404,
     // never the shell. (A named `*file` would lose its name when the router is
     // mounted — bun-common flattens it to a positional wildcard.)
-    register(`${ASSETS_SUBPATH}/:file`, ...guards(true), serveAsset);
-    register(ASSETS_SUBPATH, ...guards(true), notFound);
-    register(`${ASSETS_SUBPATH}/*`, ...guards(true), notFound);
-    register(DOCUMENT_SUBPATH, ...guards(false), serveDocument);
-    register("/", ...guards(false), serveShell);
-    register("/*", ...guards(false), serveShell);
+    register(`${ASSETS_SUBPATH}/:file`, ...guards("asset"), serveAsset);
+    register(ASSETS_SUBPATH, ...guards("asset"), notFound);
+    register(`${ASSETS_SUBPATH}/*`, ...guards("asset"), notFound);
+    register(DOCUMENT_SUBPATH, ...guards("document"), serveDocument);
+    register("/", ...guards("shell"), serveShell);
+    register("/*", ...guards("shell"), serveShell);
   }
 
   return Object.freeze({ router, basePath, config });

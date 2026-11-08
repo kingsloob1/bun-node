@@ -8,7 +8,7 @@ import {
   UnauthorizedRedirectContext,
   createUnauthorizedRedirect,
   watchAuthFailures,
-} from "./auth/redirect";
+} from "@kingsleyweb/bun-api-docs-ui/embed/unauthorized";
 import { ToastProvider } from "./components/ToastProvider";
 import { ApiClientContext, UiConfigContext } from "./context";
 import { MetaProvider } from "./meta/MetaProvider";
@@ -32,7 +32,7 @@ export interface AppProvidersProps {
  * screens itself, so `children` only render once meta and permissions are
  * loaded). With `config.unauthorized`, every failed query and mutation is
  * also watched here, and the first one with a configured status sends the
- * browser to the sign-in target (`auth/redirect.ts`).
+ * browser to the sign-in target (`@kingsleyweb/bun-api-docs-ui/embed/unauthorized`).
  */
 export function AppProviders({
   config,

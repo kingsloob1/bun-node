@@ -8,6 +8,8 @@
  * imports: both sides import it, and the app side is bundled for the browser.
  */
 
+import type { UiUnauthorized } from "./unauthorized";
+
 /** Id of the `<script type="application/json">` element carrying {@link DocsUiConfig}. */
 export const DOCS_UI_CONFIG_ELEMENT_ID = "bun-api-docs-ui-config";
 
@@ -48,4 +50,11 @@ export interface DocsUiConfig {
   extensions: readonly string[];
   /** Initial colour scheme. */
   theme: DocsUiTheme;
+  /**
+   * Where an authorization failure sends the browser (`docsUi()`'s
+   * `unauthorized`), or `null` when it is off: the viewer then shows the
+   * failure, as before. A host app that embeds the viewer's screens passes
+   * `null` and redirects through its own option.
+   */
+  unauthorized: UiUnauthorized | null;
 }

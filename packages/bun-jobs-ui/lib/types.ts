@@ -5,7 +5,7 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { JobsApi, JobsApiAuthorizeResult } from "@kingsleyweb/bun-jobs";
-import type { UiUnauthorizedStatus } from "./shared/unauthorized";
+import type { UnauthorizedOptions } from "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized";
 import type { UiConfig, UiSections, UiTheme } from "./shared/config";
 
 /** What {@link JobsUiOptions.authorize} is told about the request being decided. */
@@ -39,35 +39,10 @@ export type JobsUiAuthorize = (
 /**
  * Where to send the browser when an authorization check fails, instead of
  * leaving it on a page whose screens report the failure. See
- * {@link JobsUiBaseOptions.unauthorized}.
+ * {@link JobsUiBaseOptions.unauthorized}; the fields are described on
+ * `UnauthorizedOptions`, which bun-api-docs-ui's `docsUi()` takes too.
  */
-export interface JobsUiUnauthorizedOptions {
-  /**
-   * Where to go: a path on this host starting with one `/` (`"/login"`,
-   * `"/auth/sign-in?app=jobs"`), or an absolute `http:`/`https:` URL (an
-   * identity provider's sign-in page). Required. A path inside the UI's own
-   * `basePath` is a `ConfigError`: the UI would redirect to itself.
-   * `javascript:`, `data:`, `//host` and anything else are refused.
-   */
-  redirectTo: string;
-  /**
-   * Query parameter that carries the page the user was on, so the sign-in
-   * page can send them back: path, query and (in the browser) fragment,
-   * always a relative URL starting with one `/` (e.g.
-   * `/login?returnTo=%2Fjobs%2Fqueues%2Fmail`). `false` adds nothing.
-   * Defaults to `"returnTo"`. Letters, digits, `_`, `.`, `~` and `-` only.
-   * The sign-in page must still check the value before redirecting to it.
-   */
-  returnParam?: string | false;
-  /**
-   * Which failures redirect. Defaults to `[401]`: only "not signed in". A 403
-   * means signed in but not allowed, which the screens explain themselves
-   * (a missing permission on one queue is not a reason to leave the app);
-   * add `403` to redirect on that too. Must be a non-empty array of `401`
-   * and `403`.
-   */
-  statuses?: readonly UiUnauthorizedStatus[];
-}
+export type JobsUiUnauthorizedOptions = UnauthorizedOptions;
 
 /** Options shared by both ways of pointing the UI at its API. */
 export interface JobsUiBaseOptions {

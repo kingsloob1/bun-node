@@ -51,6 +51,7 @@ export function viewerConfig(
     csrfHeader: null,
     extensions: DEFAULT_EXTENSION_PREFIXES,
     theme: "system",
+    unauthorized: null,
     ...overrides,
   };
 }

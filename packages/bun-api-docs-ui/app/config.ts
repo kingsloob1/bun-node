@@ -1,5 +1,6 @@
 import type { DocsUiConfig } from "../lib/shared/config.ts";
 import { DOCS_UI_CONFIG_ELEMENT_ID } from "../lib/shared/config.ts";
+import { isUiUnauthorized } from "../lib/shared/unauthorized.ts";
 
 /** The injected configuration was missing or malformed. */
 export class DocsUiConfigError extends Error {
@@ -56,7 +57,15 @@ export function parseDocsUiConfig(value: unknown): DocsUiConfig {
   if (!["system", "light", "dark"].includes(String(value.theme))) {
     throw new DocsUiConfigError(`The UI configuration's "theme" is not valid.`);
   }
-  return value as unknown as DocsUiConfig;
+  // Missing in a shell from before the option existed, or from a host that
+  // mirrors the config (bun-common's docsRouter): off.
+  const unauthorized = value.unauthorized ?? null;
+  if (unauthorized !== null && !isUiUnauthorized(unauthorized)) {
+    throw new DocsUiConfigError(
+      `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
+    );
+  }
+  return { ...value, unauthorized } as unknown as DocsUiConfig;
 }
 
 /** Reads the {@link DocsUiConfig} the server inlined as `<script type="application/json" id="bun-api-docs-ui-config">`. */

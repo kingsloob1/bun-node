@@ -30,6 +30,10 @@
  *   and a failed dynamic import never says why. So when a screen crashes,
  *   the app asks the server with one `HEAD` of the shell, and redirects if
  *   that answers a listed status. Both paths are shown below.
+ * - **`docsUi()` takes the same option.** The two viewers mounted beside the
+ *   jobs UI show both of its paths: a guarded viewer's signed-out page is the
+ *   shell's 303, and a public viewer whose document needs a session loads,
+ *   has its document read refused, and redirects from the browser.
  * - **The sign-in page checks `returnTo`.** It is only ever a relative path
  *   from the UI, but anyone can type a link to `/login?returnTo=…`: the
  *   `/login/submit` handler below follows it only when it starts with one
@@ -37,6 +41,7 @@
  */
 import type { BunRequest } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
+import { docsUi } from "@kingsleyweb/bun-api-docs-ui";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
 import { chromeOrSkip, openView, waitForSelector } from "../shared/browser";
@@ -127,6 +132,60 @@ app.get("/login/submit", (req, res) => {
 });
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
+
+/* --- two docsUi() viewers beside it, with the same option ----------- */
+
+/** A small OpenAPI document for the viewers. */
+const openApi = {
+  openapi: "3.1.0",
+  info: { title: "Internal API", version: "1.0.0" },
+  paths: {
+    "/ping": {
+      get: { operationId: "ping", responses: { 200: { description: "pong" } } },
+    },
+  },
+};
+/** Every page the guarded viewer was asked to serve. */
+const viewerShellRequests: string[] = [];
+// Guarded like the jobs UI: a signed-out page is the shell's 303.
+const guardedDocs = docsUi({
+  document: () => openApi,
+  basePath: "/docs",
+  authorize,
+  unauthorized: { redirectTo: "/login" },
+  middleware: [
+    (req, _res, next) => {
+      if (!req.path.startsWith("/docs/assets/")) {
+        viewerShellRequests.push(req.originalUrl);
+      }
+      next();
+    },
+  ],
+  logger: noopLogger,
+});
+// A public page whose document is not: the host serves it only to a session.
+// Signed out, the page loads, the document read is refused with 401, and the
+// viewer itself sends the browser to sign in.
+app.get("/private/openapi.json", (req, res) => {
+  if (!signedIn(req)) {
+    res.status(401).json({
+      type: "urn:example:error:UNAUTHORIZED",
+      title: "Authentication required",
+      status: 401,
+      code: "UNAUTHORIZED",
+    });
+    return;
+  }
+  res.json(openApi);
+});
+const publicDocs = docsUi({
+  document: "/private/openapi.json",
+  basePath: "/public-docs",
+  unauthorized: { redirectTo: "/login" },
+  logger: noopLogger,
+});
+app.use(guardedDocs.basePath, guardedDocs.router);
+app.use(publicDocs.basePath, publicDocs.router);
 await app.listen(0);
 const origin = app.url.replace(/\/$/, "");
 
@@ -254,6 +313,58 @@ try {
     await view.evaluate<boolean>(waitForSelector("#sign-in")),
   );
   checkEqual("and no second redirect followed it", signInPages.length, 3);
+
+  /* ---------------------------------------------------------------- */
+  step("docsUi() beside it, same option: a signed-out page is the shell's 303");
+
+  sessions.clear();
+  await view.navigate(`${origin}/docs/http/ping`);
+  await waitFor(
+    "the sign-in page, from the viewer",
+    () => signInPages.length === 4,
+    {
+      timeout: 20_000,
+    },
+  );
+  checkEqual(
+    "/login, carrying the viewer's page",
+    signInPages[3],
+    "/login?returnTo=%2Fdocs%2Fhttp%2Fping",
+  );
+  checkEqual(
+    "the viewer's shell was asked once, and answered with the redirect",
+    viewerShellRequests,
+    ["/docs/http/ping"],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("A public viewer whose document needs a session: the viewer redirects");
+
+  await view.navigate(`${origin}/public-docs/http`);
+  await waitFor(
+    "the sign-in page, from the viewer's own document read",
+    () => signInPages.length === 5,
+    { timeout: 20_000 },
+  );
+  checkEqual(
+    "/login, carrying the page the viewer was on",
+    signInPages[4],
+    "/login?returnTo=%2Fpublic-docs%2Fhttp",
+  );
+  check(
+    "and the browser shows the sign-in page",
+    await view.evaluate<boolean>(waitForSelector("#sign-in")),
+  );
+
+  // Signed in, the same viewer shows the document.
+  await view.navigate(
+    `${origin}/login/submit?returnTo=${encodeURIComponent("/public-docs/http")}`,
+  );
+  check(
+    "signed in, the viewer shows the document (data-testid=http-docs)",
+    await view.evaluate<boolean>(waitForSelector('[data-testid="http-docs"]')),
+  );
+  checkEqual("no further redirect", signInPages.length, 5);
 } catch (error) {
   console.log(`page console:\n${pageConsole.join("\n")}`);
   throw error;
