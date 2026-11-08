@@ -4150,9 +4150,31 @@ publishTags(["user:42"]); // or by hand, from anywhere in the process
 - **`authorize` is required** and runs before the upgrade and the SSE
   fallback (`next()` lets the client in; answering refuses it). An
   invalidation names the data that changed.
+- **`authorizeTag(tag, req)`**, optional, decides per tag: `req` is the
+  request `authorize` let in (the WebSocket's upgrade, kept for the socket's
+  life, or the SSE request), and only `true` allows the tag (a throw or a
+  rejection refuses it, logged). A refused tag is never held, so nothing
+  invalidated under it reaches the client, live or by resume; the `hello`
+  answering the `subscribe` lists it in `denied` (on SSE, the stream's
+  `hello`). An SSE request whose every tag is refused gets a `403`
+  (`application/problem+json`, `code: "LIVE_TAGS_DENIED"`, the tags in
+  `denied`) and no stream; a `subscribe` whose every tag is refused gets its
+  `hello` all the same, and the socket stays open for its other tags. A tag the
+  socket already holds is not asked again. It may be async: the socket's
+  next frames wait, and what was published under the allowed tags meanwhile
+  is replayed.
+
+  ```ts
+  liveInvalidation(app, {
+    authorize,
+    authorizeTag: (tag, req) =>
+      !tag.startsWith("tenant:") || tag === `tenant:${userOf(req).tenantId}`,
+  });
+  ```
 - **Frames** (bun-common's envelope): the client sends `subscribe { tags }`,
   `unsubscribe { tags }` and `resume { epoch, seq }`; the server answers
-  `subscribe` and `resume` with `hello { epoch, seq }` and sends
+  `subscribe` and `resume` with `hello { epoch, seq, denied? }` (`denied`:
+  the `subscribe`'s refused tags, with `authorizeTag`) and sends
   `invalidate { tags, seq, epoch }` and `gap { epoch, seq }`. Tags are
   strings of 1 to 512 characters, at most 256 per frame.
 - **Topics**: each tag is a Bun pub/sub topic, refcounted: an invalidation is

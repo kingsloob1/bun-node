@@ -49,7 +49,8 @@ import type { BunResponse } from "../BunResponse";
 import type { BunServer, NextFunction, RouterHandler } from "../types/general";
 import type { SseSendOf } from "../sse/writer";
 import type { LiveBus } from "./bus";
-import type { LiveCursor } from "./contract";
+import type { Logger } from "../logging";
+import type { LiveCursor, LiveHello } from "./contract";
 import type { LiveChannel, Stream } from "./hub";
 import { BunRouter } from "../BunRouter";
 import { defineChannel } from "../channel";
@@ -114,7 +115,33 @@ export interface LiveInvalidationOptions {
    * a `ConfigError`. Default: none (this process's subscribers only).
    */
   bus?: LiveBus;
+  /**
+   * Decides, per tag, whether this client may hold it (`"tenant:42"` only
+   * for tenant 42's users): called with the tag and the request `authorize`
+   * let in — the WebSocket's upgrade request, kept for the socket's life, or
+   * the SSE fallback's request — for each tag a `subscribe` adds (a tag the
+   * socket already holds is not asked again) and each tag of an SSE
+   * request. Answer `true` to allow it; `false`, a throw or a rejection
+   * (logged) refuses it. A refused tag is never held, so nothing
+   * invalidated under it reaches the client, live or by resume; the
+   * `hello` answering the `subscribe` (on SSE, the stream's `hello`) lists
+   * it in `denied`, and the rest of the request is served. An SSE request
+   * whose every tag is refused is answered `403` (`application/problem+json`,
+   * code `LIVE_TAGS_DENIED`, the tags in `denied`); a `subscribe` whose every
+   * tag is refused is still answered with its `hello`, and the socket stays
+   * open for the tags it holds or asks for later. May be
+   * asynchronous: the socket's next frames wait for it, and what was
+   * published under the allowed tags while it ran is replayed. Default:
+   * every tag is allowed.
+   */
+  authorizeTag?: AuthorizeTag;
 }
+
+/** {@link LiveInvalidationOptions.authorizeTag}: whether the client of `req` may hold `tag`. */
+export type AuthorizeTag = (
+  tag: string,
+  req: BunRequest,
+) => boolean | Promise<boolean>;
 
 /* ------------------------------------------------------------------ *
  * Publishing
@@ -124,6 +151,57 @@ export interface LiveInvalidationOptions {
 interface LiveSocketData {
   /** The accepting server. */
   readonly server: BunServer | undefined;
+  /** The upgrade request, kept for `authorizeTag` (only when it is given). */
+  readonly req?: BunRequest;
+}
+
+/** The tags of a request, sorted by {@link LiveInvalidationOptions.authorizeTag}. */
+interface Verdict {
+  /** The tags it may hold, in the order asked. */
+  readonly granted: string[];
+  /** The tags it may not, in the order asked. */
+  readonly denied: string[];
+}
+
+/**
+ * Asks `authorizeTag` about each of `tags` for `req`: synchronously when
+ * every answer is a boolean, otherwise a promise. Only `true` allows a tag;
+ * a throw or a rejection refuses it, and is logged.
+ */
+function judge(
+  tags: readonly string[],
+  req: BunRequest | undefined,
+  authorizeTag: AuthorizeTag,
+  logger: Logger,
+): Verdict | Promise<Verdict> {
+  const refused = (tag: string, error: unknown): false => {
+    logger.error(
+      "liveInvalidation(): authorizeTag failed, so the tag is refused",
+      { tag, error },
+    );
+    return false;
+  };
+  const answers = tags.map((tag): boolean | Promise<boolean> => {
+    if (req === undefined) return false;
+    try {
+      const answer = authorizeTag(tag, req);
+      return answer instanceof Promise
+        ? answer.then(
+            (value) => value === true,
+            (error: unknown) => refused(tag, error),
+          )
+        : answer === true;
+    } catch (error) {
+      return refused(tag, error);
+    }
+  });
+  const sort = (allowed: readonly boolean[]): Verdict => ({
+    granted: tags.filter((_tag, at) => allowed[at]),
+    denied: tags.filter((_tag, at) => !allowed[at]),
+  });
+  return answers.some((answer) => answer instanceof Promise)
+    ? Promise.all(answers).then(sort)
+    : sort(answers as boolean[]);
 }
 
 /**
@@ -300,16 +378,76 @@ function missedEvents(after: number, tags: ReadonlySet<string>): LiveEvent[] {
  * `idleTimeout`, backpressure and its bound). Its `resume` answers what the
  * cursor missed (or a `gap`, for one this process cannot replay or cannot
  * read) before any live event; then `hello`, then every invalidation of its
- * tags as it happens, each with the id `<epoch>:<seq>`.
+ * tags as it happens, each with the id `<epoch>:<seq>`. With `authorizeTag`,
+ * only the tags it allows are held, and `hello` lists the others in
+ * `denied`; when it allows none, the answer is a `403` problem
+ * (`LIVE_TAGS_DENIED`, the tags in `denied`) and no stream opens.
  */
-function sseHandler(req: BunRequest, res: BunResponse): void {
-  const tags = queryTags(req.query.tag).slice(0, MAX_SUBSCRIBED);
-  if (tags.length === 0) {
-    res.status(400);
-    res.json({ error: "Name the tags to watch: ?tag=<tag>, repeated" });
+function sseHandlerFor(
+  authorizeTag: AuthorizeTag | undefined,
+  logger: Logger,
+): (req: BunRequest, res: BunResponse) => void | Promise<void> {
+  return (req, res) => {
+    const tags = queryTags(req.query.tag).slice(0, MAX_SUBSCRIBED);
+    if (tags.length === 0) {
+      res.status(400);
+      res.json({ error: "Name the tags to watch: ?tag=<tag>, repeated" });
+      return;
+    }
+    if (authorizeTag === undefined) {
+      stream(res, tags, []);
+      return;
+    }
+    const verdict = judge(tags, req, authorizeTag, logger);
+    if (!(verdict instanceof Promise)) {
+      stream(res, verdict.granted, verdict.denied);
+      return;
+    }
+    return verdict.then(({ granted, denied }) => {
+      stream(res, granted, denied);
+    });
+  };
+}
+
+/**
+ * The fallback's answer when `authorizeTag` refused every tag asked for:
+ * `403` with an RFC 9457 `application/problem+json` body in bun-common's
+ * error style (`urn:bun-common:error:LIVE_TAGS_DENIED`), its `denied`
+ * member listing the tags (the request's own), and `Cache-Control:
+ * no-store`. A stream that could never deliver anything is not opened.
+ */
+function refuseEveryTag(res: BunResponse, denied: readonly string[]): void {
+  if (res.headersSent) return;
+  res.status(403);
+  res.setHeader("Content-Type", "application/problem+json");
+  res.setHeader("Cache-Control", "no-store");
+  res.send(
+    JSON.stringify({
+      type: "urn:bun-common:error:LIVE_TAGS_DENIED",
+      title: "Forbidden",
+      status: 403,
+      code: "LIVE_TAGS_DENIED",
+      detail: "None of the requested tags may be watched.",
+      denied,
+    }),
+  );
+}
+
+/**
+ * Opens the fallback's stream on `res` for the tags it may hold (`denied`
+ * listed in its `hello`), or answers `403` when it may hold none
+ * ({@link refuseEveryTag}). See {@link sseHandlerFor}.
+ */
+function stream(
+  res: BunResponse,
+  granted: readonly string[],
+  denied: readonly string[],
+): void {
+  if (granted.length === 0 && denied.length > 0) {
+    refuseEveryTag(res, denied);
     return;
   }
-  const held = new Set(tags);
+  const held = new Set(granted);
   const writer = res.sse({
     contract: LIVE_EVENTS,
     resume: (lastEventId): LiveEvent[] => {
@@ -320,8 +458,10 @@ function sseHandler(req: BunRequest, res: BunResponse): void {
     },
   });
   // Behind the replay, as every live event is.
-  void writer.send({ event: "hello", data: cursorNow(), id: eventId(hub.seq) });
-  const stream: Stream = {
+  const hello: LiveHello =
+    denied.length > 0 ? { ...cursorNow(), denied: [...denied] } : cursorNow();
+  void writer.send({ event: "hello", data: hello, id: eventId(hub.seq) });
+  const subscriber: Stream = {
     tags: held,
     write: (data) =>
       void writer.send({ event: "invalidate", data, id: eventId(data.seq) }),
@@ -329,9 +469,9 @@ function sseHandler(req: BunRequest, res: BunResponse): void {
       void writer.send({ event: "gap", data: cursor, id: eventId(cursor.seq) }),
   };
   for (const tag of held) ref(tag);
-  hub.streams.add(stream);
+  hub.streams.add(subscriber);
   writer.onClose(() => {
-    if (!hub.streams.delete(stream)) return;
+    if (!hub.streams.delete(subscriber)) return;
     for (const tag of held) unref(tag);
   });
 }
@@ -393,14 +533,24 @@ export function liveInvalidation(
       "liveInvalidation(): `authorize` is required — an invalidation names the data that changed; pass (req, res, next) => next() to open it to everyone",
     );
   }
-  const { authorize, source, bus } = options;
+  if (
+    options.authorizeTag !== undefined &&
+    typeof options.authorizeTag !== "function"
+  ) {
+    throw new ConfigError(
+      "liveInvalidation(): `authorizeTag` must be a function (tag, req) => boolean | Promise<boolean>",
+    );
+  }
+  const { authorize, source, bus, authorizeTag } = options;
   const logger = app.logger;
   // First: a second bus throws before anything is registered.
   if (bus !== undefined) connectLiveBus(bus, { logger });
   const router = new BunRouter();
   router.use(invalidatesOnSuccess);
   const fallback = liveContract.meta.fallback ?? "/__live/sse";
-  router.get(fallback, authorize, sseHandler).describe({ hidden: true });
+  router
+    .get(fallback, authorize, sseHandlerFor(authorizeTag, logger))
+    .describe({ hidden: true });
 
   if (app.getBunWebsocket() === undefined) {
     logger.warn(
@@ -413,20 +563,52 @@ export function liveInvalidation(
       subscribe(ws, data) {
         const state = hub.sockets.get(ws);
         if (state === undefined) return cursorNow();
-        for (const tag of data.tags) {
-          if (state.tags.has(tag)) continue;
-          if (state.tags.size >= MAX_SUBSCRIBED) {
-            logger.warn(
-              "liveInvalidation(): a socket holds the most tags it may; the rest of its subscribe is ignored",
-              { limit: MAX_SUBSCRIBED },
-            );
-            break;
+        /** Holds `tags`, up to the socket's limit. */
+        const hold = (tags: readonly string[]): void => {
+          for (const tag of tags) {
+            if (state.tags.has(tag)) continue;
+            if (state.tags.size >= MAX_SUBSCRIBED) {
+              logger.warn(
+                "liveInvalidation(): a socket holds the most tags it may; the rest of its subscribe is ignored",
+                { limit: MAX_SUBSCRIBED },
+              );
+              break;
+            }
+            state.tags.add(tag);
+            ws.subscribe(topicOf(tag));
+            ref(tag);
           }
-          state.tags.add(tag);
-          ws.subscribe(topicOf(tag));
-          ref(tag);
+        };
+        if (authorizeTag === undefined) {
+          hold(data.tags);
+          return cursorNow();
         }
-        return cursorNow();
+        const asked = [...new Set(data.tags)].filter(
+          (tag) => !state.tags.has(tag),
+        );
+        const from = cursorNow();
+        const settle = ({ granted, denied }: Verdict): LiveHello => {
+          if (hub.sockets.get(ws) !== state) return cursorNow();
+          hold(granted);
+          // Published while an asynchronous check ran: replayed for the
+          // tags it allowed (or a gap, when that cannot be done).
+          if (from.epoch !== hub.epoch || from.seq !== hub.seq) {
+            if (isGap(from)) void channel.send(ws, "gap", cursorNow());
+            else
+              for (const { seq, tags } of missed(from.seq, new Set(granted)))
+                for (const part of chunked(tags))
+                  void channel.send(ws, "invalidate", {
+                    tags: part,
+                    seq,
+                    epoch: hub.epoch,
+                  });
+          }
+          return denied.length > 0 ? { ...cursorNow(), denied } : cursorNow();
+        };
+        const verdict = judge(asked, ws.data.custom.req, authorizeTag, logger);
+        return verdict instanceof Promise
+          ? verdict.then(settle)
+          : settle(verdict);
       },
       unsubscribe(ws, data) {
         const state = hub.sockets.get(ws);
@@ -473,7 +655,10 @@ export function liveInvalidation(
       channel.checks(),
       handler,
       channel.options<LiveSocketData>((req) => ({
-        custom: { server: req.server },
+        custom: {
+          server: req.server,
+          ...(authorizeTag === undefined ? {} : { req }),
+        },
       })),
     );
   }

@@ -14,8 +14,9 @@ export {
   type LiveBusConnection,
   type LiveBusMessage,
 } from "./bus";
-export { liveContract } from "./contract";
+export { type LiveHello, liveContract } from "./contract";
 export {
+  type AuthorizeTag,
   type LiveInvalidationOptions,
   liveInvalidation,
   publishTags,

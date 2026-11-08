@@ -12,18 +12,25 @@
  *   kept, sent after a reconnect once it has subscribed again: what it
  *   missed is replayed for the tags it holds); `subscribe` and `resume` are
  *   answered with `hello`.
- * - server → client: `hello { epoch, seq }` (where the server is now),
+ * - server → client: `hello { epoch, seq, denied? }` (where the server is
+ *   now; answering a `subscribe`, `denied` lists its tags the server
+ *   refused, which are never delivered),
  *   `invalidate { tags, seq, epoch }` (each invalidation is numbered by a
  *   per-process `seq`; a frame carries one of the invalidation's tags the
  *   socket subscribed to, so one invalidation may arrive as several frames
  *   with the same `seq`), and `gap { epoch, seq }` (the server cannot replay
  *   what the client missed: its epoch changed, or the cursor fell off the
- *   replay ring; the client invalidates everything).
+ *   replay ring; the client invalidates everything). With a live bus, a
+ *   `gap` may also arrive unasked, whenever invalidations from another
+ *   process may have been lost; it numbers a `seq` of its own.
  *
  * The SSE fallback (`/__live/sse`, the contract's `fallback`) carries the
  * same `hello`, `invalidate` and `gap` as events, each with the id
  * `<epoch>:<seq>`, so `Last-Event-ID` is the cursor; its tags are the
- * request's `tag` query values.
+ * request's `tag` query values. When the server refuses every one of them
+ * (`liveInvalidation()`'s `authorizeTag`), it answers `403`
+ * `application/problem+json` (`code: "LIVE_TAGS_DENIED"`, the tags in
+ * `denied`) instead of a stream.
  *
  * Nothing here imports a Bun or Node API or bun-common's server code: only
  * the contract core (`@kingsleyweb/bun-contract`), so a browser client can
@@ -164,6 +171,19 @@ export interface LiveCursor {
   seq: number;
 }
 
+/**
+ * `hello`'s data: where the server is now and, answering a `subscribe`, the
+ * tags of it the server refused (`liveInvalidation()`'s `authorizeTag`).
+ */
+export interface LiveHello extends LiveCursor {
+  /**
+   * The tags of the `subscribe` this answers that the client may not hold:
+   * not subscribed, so nothing invalidated under them reaches it, live or by
+   * resume. Absent when none was refused (and on `resume`'s `hello`).
+   */
+  denied?: string[];
+}
+
 /** `invalidate`'s data: tags one invalidation hit, its number and epoch. */
 export interface LiveInvalidate extends LiveCursor {
   /** The invalidated tags (those of the invalidation this socket subscribed to). */
@@ -184,6 +204,44 @@ const Cursor = liveSchema<LiveCursor>(cursorIssues, {
   required: ["epoch", "seq"],
 });
 
+/** The issues of `hello`'s optional `denied`: tags, as many as a socket may ask for. */
+function deniedIssues(denied: unknown): Issue[] {
+  if (denied === undefined) return [];
+  if (!Array.isArray(denied))
+    return [{ message: "Expected an array of tags", path: ["denied"] }];
+  const issues: Issue[] = [];
+  denied.forEach((tag: unknown, index) => {
+    if (
+      typeof tag !== "string" ||
+      tag.length === 0 ||
+      tag.length > LIVE_MAX_TAG_LENGTH
+    )
+      issues.push({
+        message: `Expected a tag: a string of 1 to ${LIVE_MAX_TAG_LENGTH} characters`,
+        path: ["denied", index],
+      });
+  });
+  return issues;
+}
+
+/** `hello`: a cursor, and the refused tags of the `subscribe` it answers. */
+const Hello = liveSchema<LiveHello>(
+  (value) => [...cursorIssues(value), ...deniedIssues(value.denied)],
+  {
+    type: "object",
+    properties: {
+      ...CURSOR_PROPERTIES,
+      denied: {
+        type: "array",
+        items: { type: "string", minLength: 1, maxLength: LIVE_MAX_TAG_LENGTH },
+        description:
+          "The tags of the subscribe this answers that the client may not hold (never delivered); absent when none was refused",
+      },
+    },
+    required: ["epoch", "seq"],
+  },
+);
+
 /** An invalidation. */
 const Invalidate = liveSchema<LiveInvalidate>(
   (value) => [...tagIssues(value.tags), ...cursorIssues(value)],
@@ -203,7 +261,7 @@ const Invalidate = liveSchema<LiveInvalidate>(
 export const liveContract = channelContract({
   path: "/__live",
   receives: { subscribe: Tags, unsubscribe: Tags, resume: Cursor },
-  sends: { invalidate: Invalidate, gap: Cursor, hello: Cursor },
+  sends: { invalidate: Invalidate, gap: Cursor, hello: Hello },
   replies: { subscribe: "hello", resume: "hello" },
   fallback: "/__live/sse",
   meta: {
