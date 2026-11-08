@@ -398,6 +398,55 @@ describe("cloudflareD1Driver: the fence, one statement", () => {
     expect(survivors).toBe(0);
   });
 
+  test("setManyFenced: each write is set's own statement, fenced or plain, 50 a request, answered in order", async () => {
+    const now = Date.now();
+    const driver = make({ now: () => now });
+    await driver.deleteByTags("ns", ["t"], now + 60_000);
+    await driver.set("ns", entry("w0", [9]));
+    const before = driver.client.requests;
+    const writes = Array.from({ length: 120 }, (_, index) => ({
+      entry: entry(`w${index}`, [index % 256], ["t"]),
+      // 0: a load from before the stamp; 1: after it; 2: no fence.
+      fence:
+        index % 3 === 2
+          ? undefined
+          : { tags: ["t"], createdAt: index % 3 === 0 ? now - 1 : now + 1 },
+    }));
+    const outcomes = await driver.setManyFenced("ns", writes);
+    expect(driver.client.requests - before).toBe(3);
+    expect(outcomes).toEqual(
+      writes.map((_, index) => (index % 3 === 0 ? "fenced" : "stored")),
+    );
+    const read = await driver.getMany("ns", ["w0", "w1", "w2", "w3", "w119"]);
+    // A refused write leaves what the key held.
+    expect(read.map((each) => each?.value[0])).toEqual([
+      9,
+      1,
+      2,
+      undefined,
+      119,
+    ]);
+    expect(await driver.setManyFenced("ns", [])).toEqual([]);
+  });
+
+  test("setManyFenced: a pre-invalidation write in a batch never survives a concurrent invalidation (60 rounds)", async () => {
+    const driver = make();
+    await driver.connect();
+    const survivors = await race(
+      driver,
+      async (ns, createdAt) =>
+        await driver.setManyFenced(ns, [
+          { entry: entry("j", [1]) },
+          {
+            entry: entry("k", [1], ["g"]),
+            fence: { tags: ["g"], createdAt },
+          },
+        ]),
+      60,
+    );
+    expect(survivors).toBe(0);
+  });
+
   test("the control: a check, then a write, in two requests, loses that race", async () => {
     const driver = make();
     await driver.connect();

@@ -2200,8 +2200,8 @@ because the contract's `setMany` takes no fence. Now:
   per 1,000 entries, `set`'s check and write for each entry), MongoDB
   (`set`'s check-then-write with its take-back, for the whole batch: one
   stamp read, one `bulkWrite`, one re-read, one take-back by write id).
-  `faulty` forwards it; `redundant()` and the Cloudflare D1 driver do not
-  have it, and fall back.
+  `faulty` forwards it; `redundant()` and the Cloudflare D1 driver did not
+  have it, and fell back (built since: the follow-ups below).
 - **The A/B** (base and new libraries in one process, trials interleaved,
   best of five, exclusive; batches/s of 100 entries, two tags each, and half
   tagged): memory 3,145 → 3,584 (1.14×) and 3,183 → 3,652; SQLite 79 → 765
@@ -2219,6 +2219,24 @@ because the contract's `setMany` takes no fence. Now:
   `__tests__/core/setMany.test.ts`; MongoDB's deterministic re-check and
   take-back cases; type-level cases in `cache.type-test.ts`. Negative
   controls: see the PR.
+
+**Driver follow-ups: `setManyFenced` on `redundant()` and D1, and Redis
+`setMany` staging large frames, built 2026-11-08** (approved by the user;
+no speed comparison). `redundant()` offers `setManyFenced` when its members
+index tags and the primary has it: one call per member under `set`'s rules
+for a fenced write (every member waited for; an entry any member fences is
+fenced and deleted where it was stored), a member without the method getting
+a fenced `set` per entry; under `write: "primary"` the writer alone fences
+and the others' queues get what it stored. D1 sends `setMany`'s batches of
+50 with each entry's own statement, the fenced upsert's `RETURNING` giving
+its answer. Redis `setMany` and `setManyFenced` stage every frame of 8 KiB
+or more as `set` does, outside the 8 MiB argument budget (a script renames
+at most 64 MiB of staged frames, so the first staging key never waits near
+its 60 s TTL); each script first checks every staging key exists and, when
+one is gone, unlinks the rest and fails having written nothing. Tests: the
+kit's two `setManyFenced` cases now run on both; redundant (6), D1 (2) and
+Redis (5, local lane, plus both scripts in the key-locking rule case).
+Negative controls: see the PR.
 
 **§16's docs item: bun-jobs' "High availability" README section, built
 2026-11-03** (scheduled by the user; §19 Q10). bun-jobs' README now has a
@@ -2320,7 +2338,8 @@ What changed:
   it when fenced. Measured on raw commands: 1 MiB 1,883 µs through Lua
   against 340 µs staged, 64 KiB 123 against 45, 8 KiB 31 against 24, 4 KiB
   25 against 24. On Upstash it costs one more command (two with no expiry).
-  `setMany`'s script is unchanged.
+  `setMany`'s script was unchanged (it stages too since 2026-11-08: the
+  driver follow-ups, above).
 - **Redis reads only a frame's header line** to drop an entry (`GETRANGE`
   of its first 4 KiB; the whole frame only when its tags run longer).
   `GETRANGE` answers `""` for a missing key, so `delete`, which counts, also
