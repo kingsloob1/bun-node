@@ -8,9 +8,9 @@ import type { UiAssets } from "./assets";
  * `<script type="application/json">`, escaped for a script context, so a title
  * containing `</script>` cannot end the element early.
  */
-import type { UiConfig, UiTheme } from "./browser/config";
+import type { JobsUiConfig, UiTheme } from "./browser/config";
 import { Buffer } from "node:buffer";
-import { UI_CONFIG_ELEMENT_ID } from "./browser/config";
+import { JOBS_UI_CONFIG_ELEMENT_ID } from "./browser/config";
 
 /** A fresh CSP nonce: 128 random bits, base64. */
 export function createNonce(): string {
@@ -163,7 +163,7 @@ export type ShellRenderer = (nonce: string) => string;
  * splices a nonce in.
  */
 export function createShellRenderer(
-  config: UiConfig,
+  config: JobsUiConfig,
   assets: UiAssets,
 ): ShellRenderer {
   const href = (name: string): string =>
@@ -193,7 +193,7 @@ export function createShellRenderer(
     <title>${title}</title>
     <link rel="icon" href="data:,">
     ${stylesheets}
-    <script type="application/json" id="${UI_CONFIG_ELEMENT_ID}" nonce="${n}">${json}</script>
+    <script type="application/json" id="${JOBS_UI_CONFIG_ELEMENT_ID}" nonce="${n}">${json}</script>
     <script type="module" src="${href(js)}" integrity="${integrity(js)}" nonce="${n}"></script>
   </head>
   <body>

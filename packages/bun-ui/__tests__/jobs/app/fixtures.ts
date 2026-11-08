@@ -15,7 +15,7 @@ import type {
   WorkerList,
   WorkersAnalyticsDto,
 } from "../../../app/jobs/api/types";
-import type { UiConfig } from "../../../lib/jobs/browser/config.ts";
+import type { JobsUiConfig } from "../../../lib/jobs/browser/config.ts";
 import {
   ANALYTICS_RESOLUTIONS,
   DEFAULT_SECOND_RETENTION_MS,
@@ -34,7 +34,7 @@ import {
  */
 
 /** A resolved UI config, as `jobsUi()` would inject it. */
-export function uiConfig(overrides: Partial<UiConfig> = {}): UiConfig {
+export function uiConfig(overrides: Partial<JobsUiConfig> = {}): JobsUiConfig {
   return {
     version: 1,
     title: "Shop jobs",

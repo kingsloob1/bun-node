@@ -36,7 +36,7 @@
         "ASSET_CACHE_CONTROL",
         "DEFAULT_BASE_PATH",
         "DEFAULT_TITLE",
-        "UI_CONFIG_ELEMENT_ID"
+        "JOBS_UI_CONFIG_ELEMENT_ID"
       ],
       "types": [
         "JobsUi",
@@ -50,8 +50,8 @@
         "JobsUiUnauthorizedOptions",
         "UiUnauthorized",
         "UiUnauthorizedStatus",
-        "UiConfig",
-        "UiSections",
+        "JobsUiConfig",
+        "JobsUiSections",
         "UiTheme"
       ],
       "snippet": "const ui = m.jobsUi({ apiUrl: \"/jobs-api\", basePath: \"/jobs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;\nexport type _api = Expect<IsAny<t.JobsUiApiOptions[\"api\"]>>;"
@@ -59,13 +59,13 @@
     {
       "spelling": "@kingsleyweb/bun-ui/lib/jobs",
       "peers": ["@kingsleyweb/bun-jobs"],
-      "values": ["jobsUi", "UI_CONFIG_ELEMENT_ID"],
+      "values": ["jobsUi", "JOBS_UI_CONFIG_ELEMENT_ID"],
       "types": ["JobsUiOptions"]
     },
     {
       "spelling": "@kingsleyweb/bun-ui/lib/jobs/index",
       "peers": ["@kingsleyweb/bun-jobs"],
-      "values": ["jobsUi", "UI_CONFIG_ELEMENT_ID"],
+      "values": ["jobsUi", "JOBS_UI_CONFIG_ELEMENT_ID"],
       "types": ["JobsUiOptions"]
     },
     {
@@ -91,10 +91,10 @@
     },
     {
       "spelling": "@kingsleyweb/bun-ui/jobs/browser",
-      "values": ["UI_CONFIG_ELEMENT_ID"],
+      "values": ["JOBS_UI_CONFIG_ELEMENT_ID"],
       "types": [
-        "UiConfig",
-        "UiSections",
+        "JobsUiConfig",
+        "JobsUiSections",
         "UiTheme",
         "UiUnauthorized",
         "UiUnauthorizedStatus"
@@ -108,8 +108,8 @@
     },
     {
       "spelling": "@kingsleyweb/bun-ui/lib/jobs/browser/config",
-      "values": ["UI_CONFIG_ELEMENT_ID"],
-      "types": ["UiConfig", "UiTheme"],
+      "values": ["JOBS_UI_CONFIG_ELEMENT_ID"],
+      "types": ["JobsUiConfig", "UiTheme"],
       "browser": true
     },
     {
@@ -176,7 +176,8 @@
         "DocsUiTheme",
         "UnauthorizedOptions",
         "UiUnauthorized",
-        "UiUnauthorizedStatus"
+        "UiUnauthorizedStatus",
+        "UiTheme"
       ],
       "browser": true
     },

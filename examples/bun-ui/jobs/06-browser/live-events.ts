@@ -88,7 +88,7 @@
  *   what `authorize` was asked.
  */
 import type { JobsApiAuthorize } from "@kingsleyweb/bun-jobs";
-import type { UiSections } from "@kingsleyweb/bun-ui/jobs";
+import type { JobsUiSections } from "@kingsleyweb/bun-ui/jobs";
 import type { RemoteProcess } from "./helpers/remote-process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -190,7 +190,7 @@ async function serveHost(
     /** Socket actions `authorize` refuses. */
     refuse?: readonly string[];
     /** The UI's sections; both on when absent. */
-    sections?: Partial<UiSections>;
+    sections?: Partial<JobsUiSections>;
   } = {},
 ): Promise<Host> {
   const socketCalls: SocketCall[] = [];

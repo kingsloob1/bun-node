@@ -26,8 +26,8 @@ export type {
   UiUnauthorized,
   UiUnauthorizedStatus,
 } from "./browser/unauthorized";
-export type { UiConfig, UiSections, UiTheme } from "./browser/config";
-export { UI_CONFIG_ELEMENT_ID } from "./browser/config";
+export type { JobsUiConfig, JobsUiSections, UiTheme } from "./browser/config";
+export { JOBS_UI_CONFIG_ELEMENT_ID } from "./browser/config";
 export type {
   JobsUi,
   JobsUiApiOptions,

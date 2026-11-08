@@ -36,7 +36,7 @@ import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import {
   ASSET_CACHE_CONTROL,
   jobsUi,
-  UI_CONFIG_ELEMENT_ID,
+  JOBS_UI_CONFIG_ELEMENT_ID,
 } from "@kingsleyweb/bun-ui/jobs";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
@@ -71,11 +71,11 @@ checkEqual("200", first.status, 200);
 
 // The recipe, without helpers: the config is a JSON <script> with a fixed id.
 const raw = new RegExp(
-  `<script type="application/json" id="${UI_CONFIG_ELEMENT_ID}"[^>]*>([\\s\\S]*?)</script>`,
+  `<script type="application/json" id="${JOBS_UI_CONFIG_ELEMENT_ID}"[^>]*>([\\s\\S]*?)</script>`,
 ).exec(html)![1];
 checkEqual(
   "the config element's id",
-  UI_CONFIG_ELEMENT_ID,
+  JOBS_UI_CONFIG_ELEMENT_ID,
   "bun-jobs-ui-config",
 );
 checkEqual(

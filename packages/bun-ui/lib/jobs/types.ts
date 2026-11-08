@@ -6,7 +6,7 @@ import type {
 } from "@kingsleyweb/bun-common";
 import type { JobsApi, JobsApiAuthorizeResult } from "@kingsleyweb/bun-jobs";
 import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
-import type { UiConfig, UiSections, UiTheme } from "./browser/config";
+import type { JobsUiConfig, JobsUiSections, UiTheme } from "./browser/config";
 
 /** What {@link JobsUiOptions.authorize} is told about the request being decided. */
 export interface JobsUiAuthorizeContext {
@@ -66,7 +66,7 @@ export interface JobsUiBaseOptions {
    * Sections to enable. Each defaults to `true`; switching both off is a
    * `ConfigError`.
    */
-  sections?: Partial<UiSections>;
+  sections?: Partial<JobsUiSections>;
   /**
    * Guards the shell and the bundle — **not** the data, which the API's own
    * `authorize` protects. Same result shape as the API's, and fails closed
@@ -158,5 +158,5 @@ export interface JobsUi {
   /** The normalised `basePath`, no trailing slash. */
   readonly basePath: string;
   /** The configuration injected into every page, frozen. */
-  readonly config: Readonly<UiConfig>;
+  readonly config: Readonly<JobsUiConfig>;
 }

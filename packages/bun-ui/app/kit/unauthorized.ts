@@ -106,8 +106,8 @@ export const NO_UNAUTHORIZED_REDIRECT: UnauthorizedRedirect = Object.freeze({
  * not know its own origin): it would load the UI, fail again and loop, so
  * the screens show their messages instead.
  *
- * @param redirect `UiConfig.unauthorized`.
- * @param basePath `UiConfig.basePath`.
+ * @param redirect The UI config's `unauthorized` (`JobsUiConfig`, `DocsUiConfig`).
+ * @param basePath The UI config's `basePath`.
  * @param options Where to navigate and what to fetch with; see {@link UnauthorizedRedirectOptions}.
  */
 export function createUnauthorizedRedirect(

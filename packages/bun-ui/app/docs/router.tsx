@@ -20,7 +20,7 @@ import {
 
 /** Props of {@link RouterProvider}. */
 export interface RouterProviderProps {
-  /** The mount path (`UiConfig.basePath`). */
+  /** The mount path (`DocsUiConfig.basePath`). */
   basePath: string;
   /** The app. */
   children: ReactNode;

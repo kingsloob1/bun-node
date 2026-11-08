@@ -5,7 +5,7 @@
  * (the redirect URL, the shape check, the defaults). No runtime import beyond
  * constants and pure functions, and no domain package.
  */
-export type { DocsUiConfig, DocsUiTheme } from "./config";
+export type { DocsUiConfig, DocsUiTheme, UiTheme } from "./config";
 export {
   DEFAULT_EXTENSION_PREFIXES,
   DOCS_UI_CONFIG_ELEMENT_ID,

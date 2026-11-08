@@ -10,7 +10,7 @@ export type SpecDocument = Record<string, unknown>;
 /**
  * The API's own spec documents, as the docs screens read them.
  *
- * `/meta.docs` (and `UiConfig.docs`) give FULL paths, which include the API's
+ * `/meta.docs` (and `JobsUiConfig.docs`) give FULL paths, which include the API's
  * `basePath`, while the client prefixes every request with `apiBase`. So the
  * path is made relative to `apiBase`'s path before it is requested: this keeps
  * the CSRF, credentials and error handling of every other API read.

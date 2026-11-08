@@ -93,7 +93,7 @@
  *   DOM until what it wants is there.
  */
 import type { JobsApiAuthorize } from "@kingsleyweb/bun-jobs";
-import type { UiSections } from "@kingsleyweb/bun-ui/jobs";
+import type { JobsUiSections } from "@kingsleyweb/bun-ui/jobs";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
@@ -180,7 +180,7 @@ async function serveHost(
     /** `false` builds the API with no socket, and so no AsyncAPI document. */
     websocket?: false;
     /** The UI's sections; both on when absent. */
-    sections?: Partial<UiSections>;
+    sections?: Partial<JobsUiSections>;
   } = {},
 ): Promise<Host> {
   const api = createJobsApi({

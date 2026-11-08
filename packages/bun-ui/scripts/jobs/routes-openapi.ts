@@ -13,7 +13,7 @@
  * action (the opt-in ones included: `queues.summon`, `jobs.add`, …), not
  * read-only. Its CSRF defence is the API's default (`requireJson`, no
  * header), so the map types no CSRF header: the header's name is the
- * deployment's (`UiConfig.csrfHeader`), and the app's client adds it to
+ * deployment's (`JobsUiConfig.csrfHeader`), and the app's client adds it to
  * every mutation itself (`ApiClient.headers`). The problems it documents
  * (403 `CSRF_REJECTED`, 415 `UNSUPPORTED_MEDIA_TYPE`) are typed all the same.
  *
