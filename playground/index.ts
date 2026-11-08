@@ -48,7 +48,7 @@ import {
   JOBS_API_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
-import { docsUi } from "@kingsleyweb/bun-api-docs-ui";
+import { docsUi } from "@kingsleyweb/bun-ui/docs";
 import {
   isCrossProcess,
   playgroundBackend,
@@ -390,7 +390,7 @@ bun-node playground (${playgroundBackend()} driver)
   API           ${origin}${api.basePath}/meta
   Sign out      ${origin}${SIGN_OUT_PATH}  (unauthorized: the UI then sends you to /playground/sign-in?returnTo=…; ${SIGN_OUT_PATH}?stay=1 to sign out from another tab, then click anything in the UI)
   API reference ${origin}/playground/docs  (docsRouter: the adapter's live OpenAPI document + a Redoc page; the chat channel's AsyncAPI document at /playground/docs/asyncapi.json, its viewer at /playground/docs/asyncapi)
-  Self-hosted  ${origin}/playground/api-docs  (bun-api-docs-ui: the same OpenAPI document, bundled viewer, no CDN)  ·  events: ${origin}/playground/ws-docs
+  Self-hosted  ${origin}/playground/api-docs  (bun-ui/docs: the same OpenAPI document, bundled viewer, no CDN)  ·  events: ${origin}/playground/ws-docs
   docsRouter SH ${origin}/playground/self-hosted-docs  (docsRouter's "self-hosted" viewer: the package's bundle served by bun-common)  ·  events: ${origin}/playground/self-hosted-docs/asyncapi
   Class DTO     ${origin}/playground/dto-search?q=bun&page=42  (a class-validator DTO on query — try page=0)
   Cache lab     ${origin}/playground/cache  (bun-cache: cached routes with X-Cache HIT/MISS/STALE/BYPASS/UNCACHEABLE, Age and timing, SWR and stale-if-error, invalidation by path and tag, live stats; switch driver, compression, L1)

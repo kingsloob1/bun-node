@@ -18,8 +18,10 @@ import { describe, expect, it } from "bun:test";
 /** The test tree: every UI's tests, which share one serial `--randomize` run. */
 const ROOT = join(import.meta.dir, "..", "..");
 
-/** The module whose import registers the DOM. */
-const REGISTER_DOM = join(import.meta.dir, "register-dom.ts");
+/** The modules whose import registers the DOM: each UI's `app/register-dom.ts`. */
+const REGISTER_DOM = new Set(
+  new Bun.Glob("*/app/register-dom.ts").scanSync({ cwd: ROOT, absolute: true }),
+);
 
 /**
  * A top-level `setupDom()` call (or the job harness's `installDom()`, which
@@ -84,7 +86,7 @@ function staticallyReaches(
 
 /** Whether `file` statically imports `register-dom.ts`, however indirectly. */
 function loadsDom(file: string): boolean {
-  return staticallyReaches(file, (module) => module === REGISTER_DOM);
+  return staticallyReaches(file, (module) => REGISTER_DOM.has(module));
 }
 
 /** Whether `file` statically imports react-dom, however indirectly. */
@@ -143,9 +145,15 @@ describe("DOM isolation between test files", () => {
   );
 
   it("negative control: the scan sees a DOM import through a fixture, and only then", () => {
+    expect(
+      [...REGISTER_DOM].map((file) => relative(ROOT, file)).sort(),
+    ).toEqual(["docs/app/register-dom.ts", "jobs/app/register-dom.ts"]);
     expect(loadsDom(join(import.meta.dir, "queues", "helpers.test.ts"))).toBe(
       true,
     );
+    expect(
+      loadsDom(join(ROOT, "docs", "app", "unauthorizedViewer.test.tsx")),
+    ).toBe(true);
     expect(loadsDom(join(ROOT, "jobs", "server", "options.test.ts"))).toBe(
       false,
     );

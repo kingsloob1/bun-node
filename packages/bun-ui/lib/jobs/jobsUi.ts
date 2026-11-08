@@ -34,7 +34,7 @@ import {
   redirectsDenial,
   resolveUnauthorized,
   sendUnauthorizedRedirect,
-} from "@kingsleyweb/bun-api-docs-ui/lib/unauthorized";
+} from "../kit/unauthorized";
 import {
   connectSources,
   createNonce,
@@ -60,11 +60,11 @@ const PATH_SEGMENT = /^[\w.~-]+$/;
 const HEADER_NAME = /^[!#$%&'*+.^`|~\w-]+$/;
 
 // The option's defaults, kept here for `./lib/jobsUi` importers; the
-// option itself is bun-api-docs-ui's (`lib/unauthorized`), shared with docsUi().
+// option itself is the kit's (`lib/kit/unauthorized`), shared with docsUi().
 export {
   DEFAULT_RETURN_PARAM,
   DEFAULT_UNAUTHORIZED_STATUSES,
-} from "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized";
+} from "../kit/browser/unauthorized";
 
 /** Where the bundle comes from; tests point these at a fixture. */
 export interface JobsUiInternals {

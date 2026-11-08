@@ -394,7 +394,7 @@ function packageOf(specifier: string): string {
  * workspace siblings as `file:` dependencies, each also an override.
  *
  * The package itself is overridden too, not only depended on: a sibling that
- * depends on it (bun-api-docs-ui on bun-common) would otherwise resolve it
+ * depends on it (bun-ui on bun-common) would otherwise resolve it
  * from the registry, so the consumer checked a second, published copy. With
  * the ranges at an unpublished version the install fails instead; at a
  * published one (`^2.2.0`, until 3.0.0-rc.0) it passed with that copy.

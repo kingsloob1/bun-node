@@ -8,7 +8,7 @@ import { parseChannel, typesFor } from "../../events/eventLog";
 /**
  * The Events-console links of the WebSocket reference's try-it: the one
  * jobs-specific piece. The reading of the document and the address machinery
- * are the package's (`@kingsleyweb/bun-api-docs-ui/embed`); what a filled
+ * are the package's (`@kingsleyweb/bun-ui/docs/embed`); what a filled
  * channel LINKS to is the app's.
  */
 

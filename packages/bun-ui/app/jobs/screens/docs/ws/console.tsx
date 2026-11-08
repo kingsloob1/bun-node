@@ -1,5 +1,5 @@
 import type { EventName, JobsApiMode } from "../../../api/types";
-import type { WsConsole, wsModel } from "@kingsleyweb/bun-api-docs-ui/embed";
+import type { WsConsole, wsModel } from "@kingsleyweb/bun-ui/docs/embed";
 import { parseChannel } from "../../events/eventLog";
 import { eventsLink } from "./links";
 

@@ -26,9 +26,10 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
   `wss:` from it.
 - `req.socket.localAddress` is the socket peer. It was `req.ip`, which is the
   same with trust off.
-- **`@kingsleyweb/bun-jobs-ui` is now `@kingsleyweb/bun-ui/jobs`**
+- **`@kingsleyweb/bun-jobs-ui` is now `@kingsleyweb/bun-ui/jobs`, and
+  `@kingsleyweb/bun-api-docs-ui` is now `@kingsleyweb/bun-ui/docs`**
   ([plan](docs/plans/bun-ui/README.md)). One package, `@kingsleyweb/bun-ui`,
-  holds every browser UI, one subpath each; `@kingsleyweb/bun-jobs-ui` is
+  holds every browser UI, one subpath each; the two old packages are
   deprecated on npm, not shimmed. Only the import specifiers change:
 
   | 3.0.0-rc.0 | Now |
@@ -36,11 +37,19 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
   | `import { jobsUi } from "@kingsleyweb/bun-jobs-ui"` | `import { jobsUi } from "@kingsleyweb/bun-ui/jobs"` |
   | `import type { UiConfig } from "@kingsleyweb/bun-jobs-ui/lib/shared/config"` | `import type { UiConfig } from "@kingsleyweb/bun-ui/jobs/browser"` |
   | `bun add @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-jobs` | `bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs` |
+  | `import { docsUi } from "@kingsleyweb/bun-api-docs-ui"` | `import { docsUi } from "@kingsleyweb/bun-ui/docs"` |
+  | `import … from "@kingsleyweb/bun-api-docs-ui/lib/shared/config"` | `import … from "@kingsleyweb/bun-ui/docs/browser"` |
+  | `import … from "@kingsleyweb/bun-api-docs-ui/lib/hosted"` | `import … from "@kingsleyweb/bun-ui/docs/hosted"` |
+  | `import { HttpReference } from "@kingsleyweb/bun-api-docs-ui/embed"` | `import { HttpReference } from "@kingsleyweb/bun-ui/docs/embed"` |
+  | `"@kingsleyweb/bun-api-docs-ui/embed/unauthorized"` (and the other six `./embed/*`) | `"@kingsleyweb/bun-ui/docs/embed/unauthorized"` (and the same six) |
+  | `docsRouter({ viewer: { openapi: "self-hosted" } })` with `bun add @kingsleyweb/bun-api-docs-ui` | the same call, with `bun add @kingsleyweb/bun-ui` |
 
   `@kingsleyweb/bun-jobs` becomes an **optional** peer that only `/jobs`
   needs: installing bun-ui without it no longer warns, and importing
-  `/jobs` without it fails with "Cannot find module". The bundle moved from
-  `dist/` to `dist/jobs/`.
+  `/jobs` without it fails with "Cannot find module". The bundles moved from
+  `dist/` to `dist/jobs/` and `dist/docs/`. bun-common's optional peer for the
+  `"self-hosted"` viewer is now `@kingsleyweb/bun-ui` (`SELF_HOSTED_PACKAGE`),
+  and the option keeps its name.
 
 ### What's new
 

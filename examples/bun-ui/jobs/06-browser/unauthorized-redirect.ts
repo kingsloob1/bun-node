@@ -41,7 +41,7 @@
  */
 import type { BunRequest } from "@kingsleyweb/bun-common";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
-import { docsUi } from "@kingsleyweb/bun-api-docs-ui";
+import { docsUi } from "@kingsleyweb/bun-ui/docs";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { chromeOrSkip, openView, waitForSelector } from "../shared/browser";

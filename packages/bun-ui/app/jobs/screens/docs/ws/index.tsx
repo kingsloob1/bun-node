@@ -1,6 +1,6 @@
 /**
  * The WebSocket API reference (AsyncAPI 3.0): `/docs/ws` and `/docs/ws/:item`.
- * The viewer is the package's (`@kingsleyweb/bun-api-docs-ui/embed`); this
+ * The viewer is the package's (`@kingsleyweb/bun-ui/docs/embed`); this
  * wrapper fetches the document with the app's client and injects the app's
  * seams: the Events console for the try-it cards, the contract's address
  * rules, the permission probe, the limits vocabulary and the subprotocol the
@@ -8,7 +8,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { WsReference } from "@kingsleyweb/bun-api-docs-ui/embed";
+import { WsReference } from "@kingsleyweb/bun-ui/docs/embed";
 import { docsKeys, getAsyncApiDocument } from "../../../api/docs";
 import { Card } from "../../../components/Card";
 import { EmptyState } from "../../../components/EmptyState";

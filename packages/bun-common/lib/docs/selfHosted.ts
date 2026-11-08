@@ -1,6 +1,6 @@
 /**
  * The `"self-hosted"` docs viewer (AD (f) F2): the pages and assets of
- * `@kingsleyweb/bun-api-docs-ui`, served from this origin — nothing from a
+ * `@kingsleyweb/bun-ui`'s docs viewer (`/docs`), served from this origin — nothing from a
  * CDN. Where the CDN viewers (./viewer) load a pinned third-party bundle,
  * this serves the package's own prebuilt one: hash-named immutable files,
  * SRI computed over the local bytes when the bundle is read, and the strict
@@ -24,10 +24,10 @@ import { ConfigError } from "../errors";
 import { noopLogger } from "../logging";
 
 /** The optional peer's package name, in every message that names it. */
-export const SELF_HOSTED_PACKAGE = "@kingsleyweb/bun-api-docs-ui";
+export const SELF_HOSTED_PACKAGE = "@kingsleyweb/bun-ui";
 
-/** The subpath of the peer this module loads. */
-const HOSTED_SUBPATH = `${SELF_HOSTED_PACKAGE}/lib/hosted`;
+/** The subpath of the peer this module loads: the docs viewer's server half for a host. */
+const HOSTED_SUBPATH = `${SELF_HOSTED_PACKAGE}/docs/hosted`;
 
 /** A viewer page's own options (the `{ name, ...options }` pass-through). */
 export interface SelfHostedViewerOptions {

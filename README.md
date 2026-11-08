@@ -38,10 +38,9 @@ prefer Bun and native APIs over third-party dependencies.
 | [bun-jobs](packages/bun-jobs/README.md) | `@kingsleyweb/bun-jobs` | Background work for Bun: `BunRunner` runs a JS/TS file on a schedule or on demand (child process, `Worker` or in-process), and `BunQueue` / `BunQueueWorker` process jobs across processes and services over memory, file, Redis, SQL and MongoDB drivers. |
 | [bun-client](packages/bun-client/README.md) | `@kingsleyweb/bun-client` | A typed HTTP client for these servers, with no dependency and safe in a browser: one call per verb keyed by the server's own path literal, named operations, results discriminated by status, retries with `Retry-After`, timeouts, middleware and single-flight auth refresh; `./query` puts the routes on TanStack's query-core (an optional peer) with cache tags, `ETag` revalidation and optimistic updates. |
 | [bun-cache](packages/bun-cache/README.md) | `@kingsleyweb/bun-cache` | Caching over pluggable drivers: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage and Cloudflare drivers, an HTTP response cache for bun-common and a Keyv store. |
-| [bun-ui](packages/bun-ui/README.md) | `@kingsleyweb/bun-ui` | Every browser UI of the repo in one package, one subpath each: `@kingsleyweb/bun-ui/jobs` is the React management UI for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi` (bun-jobs is an optional peer only that subpath needs). |
-| [bun-api-docs-ui](packages/bun-api-docs-ui/README.md) | `@kingsleyweb/bun-api-docs-ui` | A self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
+| [bun-ui](packages/bun-ui/README.md) | `@kingsleyweb/bun-ui` | Every browser UI of the repo in one package, one subpath each: `@kingsleyweb/bun-ui/jobs` is the React management UI for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi` (bun-jobs is an optional peer only that subpath needs); `@kingsleyweb/bun-ui/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
 
-bun-nest, bun-jobs, bun-cache, bun-ui and bun-api-docs-ui depend on
+bun-nest, bun-jobs, bun-cache and bun-ui depend on
 bun-common, which depends on bun-contract; bun-client depends on bun-contract
 alone.
 

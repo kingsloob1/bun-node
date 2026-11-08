@@ -27,17 +27,14 @@ published packages under `packages/`:
 - **`@kingsleyweb/bun-ui`** — every browser UI, one subpath each:
   `/jobs` is a React management UI and API docs viewer for bun-jobs'
   management API (`createJobsApi`), prebuilt into `dist/jobs/` and served by
-  a `jobsUi()` router; bun-jobs is an optional peer only `/jobs` needs. It
-  replaced `@kingsleyweb/bun-jobs-ui` (BU-2). See
+  a `jobsUi()` router; bun-jobs is an optional peer only `/jobs` needs.
+  `/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0
+  document (`docsUi()`, under a strict self-only CSP), whose screens the jobs
+  UI's docs section renders (`/docs/embed`) and whose bundle bun-common's
+  `docsRouter` `"self-hosted"` viewer serves (`/docs/hosted`; bun-ui is an
+  optional peer of bun-common). It replaced `@kingsleyweb/bun-jobs-ui` (BU-2)
+  and `@kingsleyweb/bun-api-docs-ui` (BU-3). See
   [bun-ui](#bun-ui-the-browser-uis) below.
-- **`@kingsleyweb/bun-api-docs-ui`** — a self-hosted viewer for one
-  OpenAPI 3.1 or AsyncAPI 3.0 document, extracted from the jobs UI's docs
-  screens (AD (f) F1): `docsUi()` serves the bundled app (React and
-  TanStack Query are bundled, never peers) under a strict self-only CSP;
-  the jobs UI's docs section renders the package's screens (F2), and
-  `docsRouter`'s `"self-hosted"` viewer (bun-common, optional peer) serves
-  its bundle. Its `check` is `bun check && bun check -p app`; only the
-  DOM-free root project is in `scripts/typecheck.ts`.
 - **`@kingsleyweb/bun-client`** — the typed-client plan's HTTP client
   (PR-C1): `createClient` over a `"VERB /path"` route map; no runtime
   dependency, browser-safe.
@@ -944,7 +941,8 @@ serial `--randomize` process:
 `bun run format:check` and `bun run check:client` in the package; `bun run test` plus `bun test --randomize` with a couple of seeds
 (serial — the only check left for order leaks, since `--parallel` isolates
 files); and
-`bun run-all.ts` in every `examples/bun-ui/<ui>` and in `examples/bun-nest`.
+`bun run-all.ts` in every `examples/bun-ui/<ui>` and in `examples/bun-nest`
+(and `examples/bun-common/13-api-docs` for a `/docs` change).
 
 ### The jobs UI (`/jobs`)
 
@@ -1014,6 +1012,34 @@ bun-jobs change to a route, a schema or an error code makes it stale:
 the bun-jobs one. `bun run check:client` (and
 `__tests__/jobs/server/routesGen.test.ts`, in `bun run test`) fails while it
 is stale. The other domains still use `ApiClient.request`.
+
+### The docs viewer (`/docs`)
+
+`docsUi(options)` (`lib/docs/`) serves one OpenAPI 3.1 or AsyncAPI 3.0
+document's viewer (`app/docs/`) under a strict self-only CSP; it needs no
+peer (bun-common's `ConfigError`). Its other entries:
+
+- **`/docs/hosted`** (`lib/docs/hosted.ts`) — what bun-common's `docsRouter`
+  `"self-hosted"` viewer loads, lazily with `createRequire` and no static
+  import (`bun-common/lib/docs/selfHosted.ts`, `SELF_HOSTED_PACKAGE`): bun-ui
+  is an **optional peer of bun-common**, and bun-common is bun-ui's runtime
+  dependency, so the two name each other without a publish-order cycle.
+- **`/docs/embed`, `/docs/embed/*`** — the viewer's screens as **TSX source**
+  (`types` and `default` both point into `app/docs/` or `app/kit/`), for a
+  host app that bundles them. The jobs app's docs section imports them **by
+  this name** (`@kingsleyweb/bun-ui/docs/embed`), a package self-reference:
+  measured to resolve under `Bun.build`, `bun test` and `bun check`, with or
+  without the workspace symlink. The consumer check leaves them out (a
+  bundler-only surface); `entryIsolation.test.ts` walks them.
+- **`/docs/browser`** — `DocsUiConfig`, the element id, the extension
+  prefixes and the `unauthorized` helpers (`lib/kit/browser/unauthorized.ts`).
+
+`__tests__/docs/server/budget.test.ts` caps its bundle;
+`__tests__/docs/server/bundle-safety.test.ts` proves no server marker reaches
+it; `__tests__/docs/e2e/smoke.e2e.test.ts` loads it in headless Chrome, opens
+an operation and asserts no CSP violation. The `unauthorized` option's code
+is the kit's (`lib/kit/unauthorized.ts`, `lib/kit/browser/unauthorized.ts`,
+`app/kit/unauthorized.ts`), shared with `jobsUi()`.
 
 ## Dependency policy
 

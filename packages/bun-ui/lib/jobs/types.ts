@@ -5,7 +5,7 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { JobsApi, JobsApiAuthorizeResult } from "@kingsleyweb/bun-jobs";
-import type { UnauthorizedOptions } from "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized";
+import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
 import type { UiConfig, UiSections, UiTheme } from "./browser/config";
 
 /** What {@link JobsUiOptions.authorize} is told about the request being decided. */
@@ -40,7 +40,7 @@ export type JobsUiAuthorize = (
  * Where to send the browser when an authorization check fails, instead of
  * leaving it on a page whose screens report the failure. See
  * {@link JobsUiBaseOptions.unauthorized}; the fields are described on
- * `UnauthorizedOptions`, which bun-api-docs-ui's `docsUi()` takes too.
+ * `UnauthorizedOptions`, which `docsUi()` takes too.
  */
 export type JobsUiUnauthorizedOptions = UnauthorizedOptions;
 

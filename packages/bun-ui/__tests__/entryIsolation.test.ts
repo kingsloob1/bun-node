@@ -18,26 +18,45 @@ import { describe, expect, it } from "bun:test";
 
 const ROOT = resolve(import.meta.dir, "..");
 
+/** The jobs UI's server entries: bun-common, and its own domain package. */
+const JOBS = ["@kingsleyweb/bun-common", "@kingsleyweb/bun-jobs"] as const;
+
+/** The docs viewer's server entries: bun-common alone (no peer). */
+const DOCS = ["@kingsleyweb/bun-common"] as const;
+
 /** The `@kingsleyweb/*` packages each entry may load at run time. */
 const ALLOWED: Record<string, readonly string[]> = {
-  ".": ["@kingsleyweb/bun-api-docs-ui"],
-  "./lib": ["@kingsleyweb/bun-api-docs-ui"],
-  "./jobs": [
-    "@kingsleyweb/bun-api-docs-ui",
-    "@kingsleyweb/bun-common",
-    "@kingsleyweb/bun-jobs",
-  ],
-  "./lib/jobs": [
-    "@kingsleyweb/bun-api-docs-ui",
-    "@kingsleyweb/bun-common",
-    "@kingsleyweb/bun-jobs",
-  ],
+  ".": [],
+  "./lib": [],
+  "./jobs": JOBS,
+  "./lib/jobs": JOBS,
   "./jobs/browser": [],
   "./lib/jobs/browser": [],
+  "./docs": DOCS,
+  "./lib/docs": DOCS,
+  "./docs/hosted": DOCS,
+  "./docs/browser": [],
+  "./lib/docs/browser": [],
+  "./docs/embed": [],
+  "./docs/embed/routing": [],
+  "./docs/embed/router": [],
+  "./docs/embed/context": [],
+  "./docs/embed/permissions": [],
+  "./docs/embed/client": [],
+  "./docs/embed/errors": [],
+  "./docs/embed/unauthorized": [],
 };
 
 /** Entries a browser bundle may import: no Node or Bun built-in either. */
-const BROWSER = new Set([".", "./lib", "./jobs/browser", "./lib/jobs/browser"]);
+const BROWSER = new Set(
+  Object.keys(ALLOWED).filter(
+    (key) =>
+      key === "." ||
+      key === "./lib" ||
+      key.endsWith("/browser") ||
+      key.startsWith("./docs/embed"),
+  ),
+);
 
 const manifest = (await Bun.file(join(ROOT, "package.json")).json()) as {
   exports: Record<string, string | { default: string }>;
@@ -50,7 +69,13 @@ const ENTRIES = Object.entries(manifest.exports).flatMap(([key, value]) =>
     : [],
 );
 
-const transpiler = new Bun.Transpiler({ loader: "ts" });
+const transpilers = {
+  ts: new Bun.Transpiler({ loader: "ts" }),
+  tsx: new Bun.Transpiler({ loader: "tsx" }),
+};
+
+/** Files the walk reads: source modules (a stylesheet import is a leaf). */
+const SOURCE = /\.tsx?$/;
 
 /** Resolves a relative specifier as Bun would for a `.ts` source tree. */
 function resolveRelative(from: string, specifier: string): string {
@@ -58,8 +83,10 @@ function resolveRelative(from: string, specifier: string): string {
   for (const candidate of [
     base,
     `${base}.ts`,
+    `${base}.tsx`,
     `${base.replace(/\.js$/, "")}.ts`,
     join(base, "index.ts"),
+    join(base, "index.tsx"),
   ]) {
     if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   }
@@ -84,8 +111,9 @@ function reach(
   const queue = [entry];
   while (queue.length > 0) {
     const file = queue.pop()!;
-    if (seen.has(file)) continue;
+    if (seen.has(file) || !SOURCE.test(file)) continue;
     seen.add(file);
+    const transpiler = file.endsWith(".tsx") ? transpilers.tsx : transpilers.ts;
     for (const { path } of transpiler.scanImports(read(file))) {
       if (path.startsWith(".")) queue.push(resolveRelative(file, path));
       else found.add(packageOf(path));
@@ -130,6 +158,11 @@ describe("entry isolation", () => {
     expect(reach(jobs).has("@kingsleyweb/bun-jobs")).toBe(true);
   });
 
+  it("walks the embed's TSX and reaches React from it", () => {
+    const embed = ENTRIES.find(([key]) => key === "./docs/embed")![1];
+    expect(reach(embed).has("react")).toBe(true);
+  });
+
   // The negative control: a domain import planted in the shared kit (the
   // mistake plan D7 guards against) is named on every entry that loads it.
   it("names the entries a domain import planted in lib/kit reaches", () => {
@@ -142,6 +175,10 @@ describe("entry isolation", () => {
     );
     expect(found).toContain(`exports["."] loads @kingsleyweb/bun-jobs`);
     expect(found).toContain(`exports["./lib"] loads @kingsleyweb/bun-jobs`);
+    expect(found).toContain(`exports["./docs"] loads @kingsleyweb/bun-jobs`);
+    expect(found).not.toContain(
+      `exports["./jobs"] loads @kingsleyweb/bun-jobs`,
+    );
   });
 
   it("names a Node built-in reached from a browser entry", () => {

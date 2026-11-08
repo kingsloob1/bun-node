@@ -3,7 +3,7 @@ import {
   QUEUE_EVENT_TYPES,
   WORKER_EVENT_TYPES,
 } from "@kingsleyweb/bun-jobs/api/contract";
-import { wsModel } from "@kingsleyweb/bun-api-docs-ui/embed";
+import { wsModel } from "@kingsleyweb/bun-ui/docs/embed";
 import { describe, expect, it } from "bun:test";
 import { liveChannels } from "../../../../../app/jobs/live";
 import { eventsConsole } from "../../../../../app/jobs/screens/docs/ws/console";

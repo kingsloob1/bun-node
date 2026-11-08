@@ -21,7 +21,7 @@ import { buildAssets } from "../../../lib/jobs/assets";
  *   rather than move the Overview's range control and queue table out of the
  *   entry.
  * - Chunks, raised 2026-10-27 (the AD (f) F2 migration): the API docs chunk
- *   is the package's screens now (`@kingsleyweb/bun-api-docs-ui/embed`),
+ *   is the package's screens now (`@kingsleyweb/bun-ui/docs/embed`),
  *   measured 92.0 KiB (29.9 KiB gzipped), up from 66.7 KiB (21.2 KiB
  *   gzipped) on 2026-09-21. Why it grew: the package's screens bundle the
  *   package's own copies of the shared components (Card, Dialog, JsonView,
@@ -30,7 +30,7 @@ import { buildAssets } from "../../../lib/jobs/assets";
  *   are the same code, now shared. The alternative (the host's components
  *   injected into the package) was declined for F2 as too invasive.
  *
- * To raise one deliberately: run `bun scripts/build.ts --out <tmp dir>`,
+ * To raise one deliberately: run `bun scripts/build.ts --ui jobs --out <tmp dir>`,
  * which prints every file's size and gzipped size, set the limit about 10%
  * above the new figure, update the measurements above, and say in the
  * change why the bundle grew. Never raise it only to make this test pass.

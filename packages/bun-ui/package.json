@@ -3,7 +3,7 @@
   "type": "module",
   "version": "3.0.0-rc.0",
   "private": false,
-  "description": "Every bun-node browser UI in one package, one subpath each: the bun-jobs management UI (./jobs, jobsUi()), each served by a bun-common router with a prebuilt React bundle, hash-named immutable assets, SRI and a strict CSP",
+  "description": "Every bun-node browser UI in one package, one subpath each: the bun-jobs management UI (./jobs, jobsUi()) and the OpenAPI/AsyncAPI docs viewer (./docs, docsUi()), each served by a bun-common router with a prebuilt React bundle, hash-named immutable assets, SRI and a strict CSP",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "exports": {
@@ -22,6 +22,61 @@
       "types": "./dts/jobs/browser/index.d.ts",
       "default": "./lib/jobs/browser/index.ts"
     },
+    "./docs": {
+      "@kingsleyweb/source": "./lib/docs/index.ts",
+      "types": "./dts/docs/index.d.ts",
+      "default": "./lib/docs/index.ts"
+    },
+    "./docs/browser": {
+      "@kingsleyweb/source": "./lib/docs/browser/index.ts",
+      "types": "./dts/docs/browser/index.d.ts",
+      "default": "./lib/docs/browser/index.ts"
+    },
+    "./docs/hosted": {
+      "@kingsleyweb/source": "./lib/docs/hosted.ts",
+      "types": "./dts/docs/hosted.d.ts",
+      "default": "./lib/docs/hosted.ts"
+    },
+    "./docs/embed": {
+      "@kingsleyweb/source": "./app/docs/embed.ts",
+      "types": "./app/docs/embed.ts",
+      "default": "./app/docs/embed.ts"
+    },
+    "./docs/embed/routing": {
+      "@kingsleyweb/source": "./app/docs/routing.ts",
+      "types": "./app/docs/routing.ts",
+      "default": "./app/docs/routing.ts"
+    },
+    "./docs/embed/router": {
+      "@kingsleyweb/source": "./app/docs/router.tsx",
+      "types": "./app/docs/router.tsx",
+      "default": "./app/docs/router.tsx"
+    },
+    "./docs/embed/context": {
+      "@kingsleyweb/source": "./app/docs/context.ts",
+      "types": "./app/docs/context.ts",
+      "default": "./app/docs/context.ts"
+    },
+    "./docs/embed/permissions": {
+      "@kingsleyweb/source": "./app/docs/screens/docs/permissions.ts",
+      "types": "./app/docs/screens/docs/permissions.ts",
+      "default": "./app/docs/screens/docs/permissions.ts"
+    },
+    "./docs/embed/client": {
+      "@kingsleyweb/source": "./app/docs/api/client.ts",
+      "types": "./app/docs/api/client.ts",
+      "default": "./app/docs/api/client.ts"
+    },
+    "./docs/embed/errors": {
+      "@kingsleyweb/source": "./app/docs/api/errors.ts",
+      "types": "./app/docs/api/errors.ts",
+      "default": "./app/docs/api/errors.ts"
+    },
+    "./docs/embed/unauthorized": {
+      "@kingsleyweb/source": "./app/kit/unauthorized.ts",
+      "types": "./app/kit/unauthorized.ts",
+      "default": "./app/kit/unauthorized.ts"
+    },
     "./lib": {
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
@@ -36,6 +91,16 @@
       "@kingsleyweb/source": "./lib/jobs/browser/index.ts",
       "types": "./dts/jobs/browser/index.d.ts",
       "default": "./lib/jobs/browser/index.ts"
+    },
+    "./lib/docs": {
+      "@kingsleyweb/source": "./lib/docs/index.ts",
+      "types": "./dts/docs/index.d.ts",
+      "default": "./lib/docs/index.ts"
+    },
+    "./lib/docs/browser": {
+      "@kingsleyweb/source": "./lib/docs/browser/index.ts",
+      "types": "./dts/docs/browser/index.d.ts",
+      "default": "./lib/docs/browser/index.ts"
     },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
@@ -61,6 +126,8 @@
     "registry": "https://registry.npmjs.org/"
   },
   "files": [
+    "app/docs",
+    "app/kit",
     "dist",
     "dts",
     "guides",
@@ -96,7 +163,6 @@
     }
   },
   "dependencies": {
-    "@kingsleyweb/bun-api-docs-ui": "workspace:^",
     "@kingsleyweb/bun-common": "workspace:^"
   },
   "devDependencies": {

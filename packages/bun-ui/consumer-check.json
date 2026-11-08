@@ -1,9 +1,8 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has exactly them, and every entry without `peers` in one that has none, so the root and every `/<ui>/browser` entry are proved to need no domain package. `/jobs` needs bun-jobs (its types name `JobsApi`, and it throws bun-jobs' `ConfigError`).",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has exactly them, and every entry without `peers` in one that has none, so the root and every `/<ui>/browser` entry are proved to need no domain package. `/jobs` needs bun-jobs (its types name `JobsApi`, and it throws bun-jobs' `ConfigError`); `/docs` and `/docs/hosted` need none. The `./docs/embed*` entries (the viewer's screens, for a host app that bundles them) are NOT here: TSX with CSS side-effect imports and React types, shipped as source, a bundler-only surface covered in-repo by the jobs app importing them by name (`app/jobs`), and by `__tests__/entryIsolation.test.ts`.",
   "workspaceDependencies": [
     "packages/bun-contract",
     "packages/bun-common",
-    "packages/bun-api-docs-ui",
     "packages/bun-jobs"
   ],
   "entries": [
@@ -112,6 +111,122 @@
       "values": ["UI_CONFIG_ELEMENT_ID"],
       "types": ["UiConfig", "UiTheme"],
       "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/docs",
+      "values": [
+        "docsUi",
+        "ASSET_CACHE_CONTROL",
+        "DEFAULT_BASE_PATH",
+        "DEFAULT_TITLE",
+        "DOCUMENT_SUBPATH",
+        "DEFAULT_EXTENSION_PREFIXES",
+        "DOCS_UI_CONFIG_ELEMENT_ID"
+      ],
+      "types": [
+        "DocsUi",
+        "DocsUiOptions",
+        "DocsUiAuthorize",
+        "DocsUiAuthorizeContext",
+        "DocsUiAuthorizeResult",
+        "DocsUiDocumentThunk",
+        "DocsUiConfig",
+        "DocsUiTheme",
+        "DocsUiUnauthorizedOptions",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus"
+      ],
+      "snippet": "const ui = m.docsUi({ document: \"/jobs-api/openapi.json\", basePath: \"/docs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/docs",
+      "values": ["docsUi", "DOCS_UI_CONFIG_ELEMENT_ID"],
+      "types": ["DocsUiOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/docs/index.ts",
+      "values": ["docsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/docs/index.js",
+      "values": ["docsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/docs/docsUi",
+      "values": ["docsUi", "DEFAULT_BASE_PATH"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/docs/types",
+      "types": ["DocsUi", "DocsUiOptions"],
+      "runtime": false
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/docs/browser",
+      "values": [
+        "DOCS_UI_CONFIG_ELEMENT_ID",
+        "DEFAULT_EXTENSION_PREFIXES",
+        "DEFAULT_RETURN_PARAM",
+        "DEFAULT_UNAUTHORIZED_STATUSES",
+        "isUiUnauthorized",
+        "unauthorizedRedirectUrl",
+        "relativeReturnPath"
+      ],
+      "types": [
+        "DocsUiConfig",
+        "DocsUiTheme",
+        "UnauthorizedOptions",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus"
+      ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/docs/browser/config",
+      "values": ["DOCS_UI_CONFIG_ELEMENT_ID", "DEFAULT_EXTENSION_PREFIXES"],
+      "types": ["DocsUiConfig", "DocsUiTheme"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/kit/browser/unauthorized",
+      "values": [
+        "DEFAULT_RETURN_PARAM",
+        "DEFAULT_UNAUTHORIZED_STATUSES",
+        "isUiUnauthorized",
+        "unauthorizedRedirectUrl",
+        "relativeReturnPath"
+      ],
+      "types": [
+        "UnauthorizedOptions",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus"
+      ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/kit/unauthorized",
+      "values": [
+        "resolveUnauthorized",
+        "isNavigation",
+        "redirectsDenial",
+        "sendUnauthorizedRedirect"
+      ],
+      "types": ["UnauthorizedConfigError"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/docs/hosted",
+      "values": [
+        "resolveHostedAssets",
+        "createNonce",
+        "createShellRenderer",
+        "cspHeader",
+        "ASSET_CACHE_CONTROL"
+      ],
+      "types": ["UiAssets", "UiAsset"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/docs/hosted",
+      "values": ["resolveHostedAssets", "ASSET_CACHE_CONTROL"],
+      "types": ["UiAssets"]
     }
   ]
 }

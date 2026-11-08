@@ -1,7 +1,7 @@
 /**
  * The HTTP API reference (OpenAPI 3.1): `/docs/http` and
  * `/docs/http/:operationId`. The viewer is the package's
- * (`@kingsleyweb/bun-api-docs-ui/embed`); this wrapper fetches the document
+ * (`@kingsleyweb/bun-ui/docs/embed`); this wrapper fetches the document
  * with the app's client and injects the app's seams: its client for the
  * try-it (so the CSRF header and `Content-Type` rules are the app's own), the
  * permission probe, the read-only flag, and the query invalidation after a
@@ -12,14 +12,14 @@ import type {
   ApiError as DocsApiErrorShape,
   DocsClient,
   SpecDocument,
-} from "@kingsleyweb/bun-api-docs-ui/embed";
+} from "@kingsleyweb/bun-ui/docs/embed";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import {
   ApiError as DocsApiError,
   DocsUiConfigContext,
   HttpReference,
-} from "@kingsleyweb/bun-api-docs-ui/embed";
+} from "@kingsleyweb/bun-ui/docs/embed";
 import { docsKeys, getOpenApiDocument } from "../../../api/docs";
 import { EmptyState } from "../../../components/EmptyState";
 import { ErrorView } from "../../../components/ErrorView";

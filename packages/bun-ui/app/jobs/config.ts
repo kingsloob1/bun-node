@@ -1,5 +1,5 @@
 import type { UiConfig } from "../../lib/jobs/browser/config.ts";
-import { isUiUnauthorized } from "@kingsleyweb/bun-api-docs-ui/lib/shared/unauthorized";
+import { isUiUnauthorized } from "../../lib/kit/browser/unauthorized";
 import { UI_CONFIG_ELEMENT_ID } from "../../lib/jobs/browser/config.ts";
 
 /** The injected configuration was missing or malformed. */

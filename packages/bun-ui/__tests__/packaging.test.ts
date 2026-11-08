@@ -75,7 +75,15 @@ describe("package.json exports", () => {
   });
 
   it("maps every types target to the dts/ mirror of its lib/ source", () => {
-    for (const [, { types, default: source }] of conditional) {
+    for (const [key, { types, default: source }] of conditional) {
+      // `./docs/embed` and its subpaths are the viewer's screens for a host
+      // app: TS source (the types ARE the source), no dts mirror. See
+      // consumer-check.json's $comment.
+      if (key === "./docs/embed" || key.startsWith("./docs/embed/")) {
+        expect(types).toBe(source);
+        expect(types).toMatch(/^\.\/app\/(?:docs|kit)\//);
+        continue;
+      }
       expect(types).toBe(
         source.replace(/^\.\/lib\//, "./dts/").replace(/\.ts$/, ".d.ts"),
       );
@@ -247,7 +255,7 @@ describe("this package's peers and the browser bundle", () => {
     }
   });
 
-  it("marks the root and every browser entry browser-safe", () => {
+  it("marks the root and every browser entry browser-safe, and nothing else", () => {
     const entries = (checkConfig.entries ?? []) as {
       /** The specifier a consumer writes. */
       spelling: string;
@@ -256,11 +264,17 @@ describe("this package's peers and the browser bundle", () => {
       /** Checked as a browser entry (no Bun or Node types in its graph). */
       browser?: boolean;
     }[];
+    const browserSafe = (spelling: string) =>
+      /\/browser(?:\/|$)/.test(spelling) ||
+      spelling === "@kingsleyweb/bun-ui" ||
+      spelling === "@kingsleyweb/bun-ui/lib/index";
     for (const entry of entries) {
-      if (entry.peers !== undefined) continue;
-      expect({ spelling: entry.spelling, browser: entry.browser }).toEqual({
+      expect({
         spelling: entry.spelling,
-        browser: true,
+        browser: entry.browser ?? false,
+      }).toEqual({
+        spelling: entry.spelling,
+        browser: browserSafe(entry.spelling),
       });
     }
   });

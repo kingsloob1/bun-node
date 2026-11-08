@@ -2967,7 +2967,7 @@ A route's `.describe({ tags })` puts its operation in a section of the
 viewers' sidebars; `generateOpenApi`'s `tags` option describes each one.
 `tagGroups` adds the level above: groups of tags, emitted as the document's
 top-level `x-tagGroups` extension, the shape Redoc, Scalar and the
-self-hosted viewer (`@kingsleyweb/bun-api-docs-ui`) read.
+self-hosted viewer (`@kingsleyweb/bun-ui/docs`) read.
 
 ```ts
 app.get("/users", listUsers).describe({ tags: ["Users"] });

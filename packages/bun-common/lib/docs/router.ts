@@ -46,7 +46,7 @@ import {
 /**
  * The viewers an OpenAPI page can use. `"scalar"` is the default — docsRouter
  * is a new, opt-in surface, so the modern default is free of compat weight.
- * `"self-hosted"` is `@kingsleyweb/bun-api-docs-ui`'s own viewer, served from
+ * `"self-hosted"` is `@kingsleyweb/bun-ui`'s own docs viewer, served from
  * this origin (an optional peer — see `./selfHosted`).
  */
 export type OpenApiViewerName =

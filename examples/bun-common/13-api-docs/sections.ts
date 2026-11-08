@@ -2,7 +2,7 @@
  * Sections and subsections — `.describe({ tags })` puts each operation under
  * a tag, and `generateOpenApi({ tagGroups })` groups the tags into sections:
  * the document's top-level `x-tagGroups`, which Redoc, Scalar and the
- * self-hosted viewer (`@kingsleyweb/bun-api-docs-ui`) show as a sidebar two
+ * self-hosted viewer (`@kingsleyweb/bun-ui/docs`) show as a sidebar two
  * levels deep.
  *
  * ```bash
