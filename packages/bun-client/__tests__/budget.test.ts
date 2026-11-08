@@ -168,12 +168,18 @@ const BUNDLE_BUDGET = {
  * Byte limits for the lazily loaded checks chunk: the plan's 7 KB for the
  * guards (§10.3, measured 6.8 KB there with `channelContract`), and about
  * 10% above the measured minified figure. The same rule for raising them.
+ *
+ * Raised 2026-11-08 for `validate.unknownKeys` (bun-contract's
+ * `droppedKeys` and its review in `./validation`): 19,278 → 20,544 bytes minified,
+ * 6,895 → 7,313 gzipped, so 19 → 20.5 KiB and 7 → 7.5 KiB. Loading it with
+ * its own `import()` kept this chunk under 7 KiB gzipped but made Bun add a
+ * chunk-preload runtime and two chunks, a worse trade.
  */
 const CHECKS_BUDGET = {
   /** The chunk, minified, in bytes. */
-  minifiedBytes: 19 * 1024,
+  minifiedBytes: 20.5 * 1024,
   /** The chunk gzipped, in bytes. */
-  gzipBytes: 7 * 1024,
+  gzipBytes: 7.5 * 1024,
 } as const;
 
 /**

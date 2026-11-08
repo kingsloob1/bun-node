@@ -583,6 +583,7 @@ await api.get("/feed", { validate: false });                // this call: nothin
 | `params`, `query`, `body`, `headers` | one part: `true`, `false`, or `{ enabled, custom, replace }` |
 | `response` | `true`/`false` for every status, or `{ [status]: true \| false \| { enabled, custom, replace } }`; covers the status's body and its declared headers |
 | `onFailure` | `"throw"`, `"warn"`, or a hook `(error) => void` (it may throw), for both directions or `{ request, response }`; default `{ request: "throw", response: "warn" }` |
+| `unknownKeys` | the keys a BYO (`custom`) schema of the query, the body or a response dropped, which zod's `z.object()` strips without a word: `"strip"` (default) silently, `"warn"` logs the part and the paths, `"reject"` makes each an `Unrecognized key` issue under `onFailure`. The built-in schemas are loose and drop nothing |
 
 A `false` anywhere turns off everything under it, BYO schemas included, until
 a later level turns it back on.

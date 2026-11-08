@@ -1911,6 +1911,7 @@ middleware is built, rather than being ignored. An option given as
 | `messages` | unset (the scrub) | `"generic"` replaces every issue's message with `Invalid value` (plus the vendor's issue code when it has one), instead of withholding only a message found to quote the received value. |
 | `redactPaths` | `false` | `true` empties every issue's `path`, for schemas keyed by user data (an e-mail-keyed record, an unknown key's name). |
 | `stripProtoKeys` | `"nest"` | Which prototype-pollution keys are deleted before the schemas run: `"nest"` (Nest 12's rule, a `prototype` or `constructor` field included) or `"minimal"` (only `__proto__`, and a `constructor` holding a `prototype`). See below. |
+| `unknownKeys` | `"strip"` | What happens to the `body` and `query` keys the schema dropped (zod's `z.object()` strips undeclared keys without a word): `"strip"` silently, `"warn"` logs them on the router's logger (the target and the paths, or only their `count` under `redactPaths`), `"reject"` fails with an `Unrecognized key` issue per key, as if every object were strict. See below. |
 
 `ValidationError` carries `issues` (each `{ target, message, path }`, with
 `path` dot-joined), `targets` and `status`. A message that quotes the
@@ -1932,6 +1933,25 @@ the same option with the same default; a response is never touched.
 `validateStandard` strips only when its options name a rule, since it also
 checks values a server built itself (a response body whose `__proto__`-named
 record key is data).
+
+A schema that strips unknown keys (zod's `z.object()`, valibot's `object`,
+yup's `stripUnknown`) leaves the handler without a field the client sent,
+and tells nobody: a field the schema forgot looks like a client that never
+sent it. `unknownKeys` finds them by comparing the input with the output,
+whatever the vendor, at any depth (`address.zip`, `tags.0.colour`; at most
+20 per request):
+
+```ts
+// Development: hear about them.
+app.post("/users", validate({ body: User }, { unknownKeys: "warn" }), create);
+// Or refuse them, without rewriting the schema as z.strictObject().
+app.post("/users", validate({ body: User }, { unknownKeys: "reject" }), create);
+```
+
+Only what the output really lost counts: a key the schema renamed, or a value
+it transformed into a non-object (a `Date`, a number), is not looked into.
+`params`, `headers` and cookies are never checked. bun-client's
+`validate.unknownKeys` does the same for its BYO schemas.
 
 `messages: "generic"` and `redactPaths: true` are the contract guards'
 options of the same names (see [Contracts](#contracts)), set per validator;
