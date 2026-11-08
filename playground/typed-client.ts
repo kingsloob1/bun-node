@@ -49,6 +49,10 @@ import {
 import { liveInvalidation } from "@kingsleyweb/bun-common/live";
 import { runCli } from "@kingsleyweb/bun-client/codegen";
 import { channel } from "@kingsleyweb/bun-client/channel";
+import {
+  createGraphQLClient,
+  GraphQLResponseError,
+} from "@kingsleyweb/bun-client/graphql";
 import { sse } from "@kingsleyweb/bun-client/sse";
 import {
   invalidateTags,
@@ -61,6 +65,11 @@ import { MutationObserver, QueryClient } from "@tanstack/query-core";
 import { z } from "zod/mini";
 import { chatContract } from "./chat";
 import { createApi } from "./typed-client-api";
+import {
+  mountGraphQL,
+  RenameMutation,
+  UserQuery,
+} from "./typed-client-graphql";
 import { manifest } from "./typed-client-api.gen";
 import { typedClientPage } from "./typed-client-page";
 
@@ -74,6 +83,9 @@ export const CLIENT_BASE = "/playground/client";
 
 /** Where the dev endpoint is served (bun-common's `devTypes({ path })`). */
 export const DEV_TYPES_PATH = `${CLIENT_BASE}/__bun/types`;
+
+/** Where the GraphQL stand-in is served, under the section's base URL (the typed client's `url: "/graphql"`). */
+export const GRAPHQL_PATH = `${CLIENT_BASE}/graphql`;
 
 /** The options the API is documented with, by the CLI's `--module` and by the dev endpoint alike. */
 const DOCUMENT_INFO = { title: "API", version: "1" } as const;
@@ -157,6 +169,7 @@ export type ScenarioName =
   | "sse"
   | "sse-resume"
   | "channel"
+  | "graphql"
   | "request-invalid"
   | "response-invalid"
   | "query-key"
@@ -253,6 +266,13 @@ export const SCENARIOS: readonly ScenarioInfo[] = [
     title: "A WebSocket channel",
     about:
       "channel() from @kingsleyweb/bun-client/channel opens the playground's chat channel over a real socket, typed by its shared contract: a request resolved by the reply echoing its id, and a send the contract refuses before anything is written",
+  },
+  {
+    name: "graphql",
+    section: "calls",
+    title: "A typed GraphQL operation",
+    about:
+      "createGraphQLClient (@kingsleyweb/bun-client/graphql) over the HTTP client: a query typed by its document, a partial result (data with errors), a mutation, a GET query, and throwOnGraphQLErrors; the endpoint is a hand-written resolver, no GraphQL library",
   },
   {
     name: "request-invalid",
@@ -354,6 +374,9 @@ export async function mountTypedClientDemo(
     }),
   );
   app.use(CLIENT_BASE, api.router);
+  // A hand-written GraphQL endpoint for the "graphql" scenario; hidden from
+  // the documents (the OpenAPI document is the API's alone).
+  const graphql = mountGraphQL(app, GRAPHQL_PATH);
 
   const snippets = await readSnippets();
 
@@ -635,6 +658,56 @@ export async function mountTypedClientDemo(
       } finally {
         room.close();
       }
+      // #endregion
+    },
+
+    graphql: async ({ api }) => {
+      graphql.reset();
+      // #region graphql
+      // A typed GraphQL client over the same HTTP client: its base URL,
+      // headers, middleware and retries apply. The documents are
+      // TypedStrings (what gql.tada or graphql-codegen emit), so the result
+      // and the variables are typed without a code generator.
+      const gql = createGraphQLClient({ client: api, url: "/graphql" });
+      const complete = await gql.query(UserQuery, { id: "1" });
+      if (!complete.ok || complete.errors) throw new Error("expected data");
+      const _name: Equal<
+        typeof complete.data.user,
+        { id: string; name: string } | null
+      > = true;
+      // ok with errors: partial data (here null), not a failed status
+      const partial = await gql.query(UserQuery, { id: "404" });
+      const renamed = await gql.mutate(RenameMutation, {
+        id: "1",
+        name: "Ada Lovelace",
+      });
+      // method: "GET" sends the operation in the URL
+      const viaGet = await gql.query(UserQuery, { id: "1" }, { method: "GET" });
+      // throwOnGraphQLErrors turns a partial result into a thrown error
+      const strict = createGraphQLClient({
+        client: api,
+        url: "/graphql",
+        throwOnGraphQLErrors: true,
+      });
+      let thrown: string[] = [];
+      try {
+        await strict.query(UserQuery, { id: "404" });
+      } catch (error) {
+        if (!(error instanceof GraphQLResponseError)) throw error;
+        thrown = error.errors.map((e) => e.message);
+      }
+      return {
+        complete: complete.data,
+        partial: {
+          ok: partial.ok,
+          data: partial.ok ? partial.data : undefined,
+          errors: partial.ok ? partial.errors : undefined,
+        },
+        renamed: renamed.ok ? renamed.data : undefined,
+        viaGet: viaGet.ok ? viaGet.data : undefined,
+        thrown,
+        endpointSaw: graphql.seen,
+      };
       // #endregion
     },
 
