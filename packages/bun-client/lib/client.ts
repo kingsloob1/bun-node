@@ -101,7 +101,11 @@ interface RuntimeOptions extends CallConfig {
   params?: Readonly<Record<string, unknown>>;
   /** The query object. */
   query?: unknown;
-  /** The body: JSON, a form's fields, or a type `fetch` takes as it is. */
+  /**
+   * The body: JSON, a form's fields, or a type `fetch` takes as it is. A server
+   * on bun-common or Express answers 400 to a JSON body that is not an object
+   * or an array, unless it turned `strict` off; this does not check it.
+   */
   body?: unknown;
   /** A multipart body's files, by field. */
   files?: FilesInput;

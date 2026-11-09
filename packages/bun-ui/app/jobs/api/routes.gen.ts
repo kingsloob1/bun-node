@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 67edc9ae31e94474
+ * typesHash: 572b0657fd84256a
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
@@ -12,7 +12,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "67edc9ae31e94474";
+export const typesHash = "572b0657fd84256a";
 
 /** One job of a flow, with the jobs it waits on. A flow holds at most 100 jobs and nests at most 10 levels (the top job is level 1); more is 400 VALIDATION at the first job past the bound. */
 export interface AddFlowNode {
@@ -5037,7 +5037,7 @@ export interface Routes {
       };
     };
   };
-  /** Replace the queue's limits, or remove them with null */
+  /** Replace the queue's limits */
   "PUT /queues/:queue/limits": {
     operationId: "setQueueLimits";
     params: {
@@ -5062,7 +5062,7 @@ export interface Routes {
           concurrency?: number;
         }
       >;
-    } | null;
+    };
     responses: {
       200: QueueLimits | null;
       400: Omit<Problem, "code"> & {
@@ -5154,6 +5154,111 @@ export interface Routes {
           | "CSRF_REJECTED"
           | "FORBIDDEN"
           | "INVALID_ARGUMENT"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "LIMITS_CONTENDED"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+    };
+  };
+  /** Remove the queue's limits */
+  "DELETE /queues/:queue/limits": {
+    operationId: "removeQueueLimits";
+    params: {
+      /** A queue name: letters, digits, "_", "." and "-", and not "." or "..". Anything else is 400 INVALID_NAME. */
+      queue: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: QueueLimits | null;
+      400: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "LIMITS_CONTENDED"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      401: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "LIMITS_CONTENDED"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      403: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "LIMITS_CONTENDED"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      404: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "LIMITS_CONTENDED"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      409: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "LIMITS_CONTENDED"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      413: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "LIMITS_CONTENDED"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      415: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
           | "INVALID_JSON"
           | "INVALID_NAME"
           | "LIMITS_CONTENDED"
@@ -8837,6 +8942,10 @@ export const manifest = {
   },
   "PUT /queues/:queue/limits": {
     operationId: "setQueueLimits",
+    statuses: [200, 400, 401, 403, 404, 409, 413, 415],
+  },
+  "DELETE /queues/:queue/limits": {
+    operationId: "removeQueueLimits",
     statuses: [200, 400, 401, 403, 404, 409, 413, 415],
   },
   "POST /queues/:queue/pause": {

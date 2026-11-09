@@ -1772,29 +1772,52 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "queues.limits",
       mode: "jobs",
       requires: LIMITS_METHODS,
-      summary: "Replace the queue's limits, or remove them with null",
+      summary: "Replace the queue's limits",
       description:
-        "Stored on the queue, so every worker in every process enforces them; running workers adopt a change within their `limitsRefreshInterval`. 409 `LIMITS_CONTENDED` means the stored limits kept changing underneath: retry.",
+        "Stored on the queue, so every worker in every process enforces them; running workers adopt a change within their `limitsRefreshInterval`. `DELETE` removes them. 409 `LIMITS_CONTENDED` means the stored limits kept changing underneath: retry.",
       tags: ["Queues"],
       params: QueueParams,
-      body: s.nullable(QueueLimitsInputSchema),
+      body: QueueLimitsInputSchema,
       responses: { 200: s.nullable(StoredLimitsSchema) },
       errors: [...QUEUE_ERRORS, "INVALID_ARGUMENT", "LIMITS_CONTENDED"],
       target: ({ params }) => queueTarget(params.queue),
       handler: async ({ params, body, services }) => {
         const queue = await services.queues.get(params.queue);
-        if (body !== null) {
-          // Refuses bad input (400, with the message that describes it)
-          // before the call whose own ConfigError can then only mean
-          // contention.
-          try {
-            normalizeLimits(body);
-          } catch (error) {
-            throw mapCallSiteError(error, "limitsInput");
-          }
+        // Refuses bad input (400, with the message that describes it)
+        // before the call whose own ConfigError can then only mean
+        // contention.
+        try {
+          normalizeLimits(body);
+        } catch (error) {
+          throw mapCallSiteError(error, "limitsInput");
         }
         try {
           await queue.setLimits(body);
+        } catch (error) {
+          throw mapCallSiteError(error, "setLimits");
+        }
+        return { body: await queue.getLimits() };
+      },
+    }),
+    defineRoute({
+      method: "DELETE",
+      path: "/queues/:queue/limits",
+      operationId: "removeQueueLimits",
+      action: "queues.limits",
+      mode: "jobs",
+      requires: LIMITS_METHODS,
+      summary: "Remove the queue's limits",
+      description:
+        "Workers stop rate-limiting and capping this queue once they refresh, within their `limitsRefreshInterval`. Answers `null`, and does so for a queue with none too. 409 `LIMITS_CONTENDED` means the stored limits kept changing underneath: retry.",
+      tags: ["Queues"],
+      params: QueueParams,
+      responses: { 200: s.nullable(StoredLimitsSchema) },
+      errors: [...QUEUE_ERRORS, "LIMITS_CONTENDED"],
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ params, services }) => {
+        const queue = await services.queues.get(params.queue);
+        try {
+          await queue.setLimits(null);
         } catch (error) {
           throw mapCallSiteError(error, "setLimits");
         }

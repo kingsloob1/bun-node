@@ -205,7 +205,7 @@ export function probeFeatures(driver: JobsDriver): MetaDto["features"] {
 export const FEATURE_ROUTES = {
   logs: ["getJobLogs"],
   update: ["updateJob"],
-  limits: ["getQueueLimits", "setQueueLimits"],
+  limits: ["getQueueLimits", "setQueueLimits", "removeQueueLimits"],
   flows: ["getJobChildren"],
   // Its action is opt-in, which a flag deliberately ignores, as for
   // `providers`: the route `requires` `DRIVER_FEATURES.addFlow`, so only the

@@ -1114,6 +1114,22 @@ app.post("/echo", (req, res) => res.json({ body: req.body }));
 | `contentTypes` | `"all"` | An allowlist keyed by kind: `json`, `urlencoded`, `xml`, `multipart`, `text` or `raw`. Each is `true` or `{ opts, maxContentLength, retainBuffer }` (`retainBuffer`: keep this kind's bytes; see [Bodies read without their bytes](#body-decoding)). A kind left out is not parsed: `req.body` is the raw `Buffer`. |
 | `inflate`, `decompressionFastPathLimit`, `encodings`, `maxContentCodings`, `compressionDictionaries` | see [Body decoding](#body-decoding) | How a `Content-Encoding` body is decoded. |
 
+- **A body declared JSON is strict, as body-parser's `json()` is.** It must be
+  an object or an array: `null`, `1` or `"s"` is refused with 400 and
+  `req.bodyDecodingError` (a `SyntaxError`, `type: "entity.parse.failed"`), the
+  same refusal as a body that does not parse. An empty body is `{}`. Turn it off
+  with the request option `strictJson: false`, per route with
+  `parseBody.contentTypes.json.opts.strict`, or with
+  `useBodyParser("json", rawBody, { strict: false })`, which sets `strictJson`
+  for the adapter, since the body is read before its middleware runs. A body sent
+  with no `Content-Type` is only tried as JSON, so this does not apply to it.
+- **A JSON body's `charset` must be `utf-*`.** Anything else, and a `utf-*` no
+  decoder knows (`utf-nope`), is refused with 415 (`type: "charset.unsupported"`)
+  before the body is parsed. `utf-16`, `utf-16le` and `utf-16be` are decoded;
+  `utf-32` and `utf-7` are read as UTF-8, and `utf8` with no dash is taken as
+  UTF-8 where body-parser refuses it. A leading byte-order mark is dropped.
+  **Up to 3.0.0-rc.1 all of these were accepted**, and a client sending a bare
+  JSON value or another charset now gets the error.
 - `PayloadTooLargeError` (`status` and `statusCode` 413, `limit`, `length`)
   is thrown by `parseBody()` and by a parser middleware's `limit`.
 - `req.setParseBodyOptions()` and `req.parseBodyWithOptions()` change the

@@ -2014,4 +2014,65 @@ api.removeAllListeners();
 checkEqual("removeAllListeners()", api.eventNames(), []);
 checkEqual("end() is a no-op", api.end(), undefined);
 
+/* ------------------------------------------------------------------ */
+step("A body declared JSON: strict, and its charset");
+{
+  /** What a JSON POST of `body` under `type` left on the request. */
+  const jsonPost = async (
+    body: string,
+    type: string,
+    options: Options = { parseBody: true },
+  ) => {
+    const req = await make("http://localhost/", postInit(body, type), options);
+    return {
+      body: req.body as unknown,
+      status: req.bodyDecodingError?.status,
+      message: req.bodyDecodingError?.message,
+    };
+  };
+  const JSON_TYPE = "application/json";
+
+  checkEqual("an object is taken", await jsonPost('{"a":1}', JSON_TYPE), {
+    body: { a: 1 },
+    status: undefined,
+    message: undefined,
+  });
+  checkEqual(
+    "a bare value is refused, naming its first character, as body-parser does",
+    await jsonPost("null", JSON_TYPE),
+    {
+      body: undefined,
+      status: 400,
+      message: "JSON Parse error: Unrecognized token 'n'",
+    },
+  );
+  checkEqual(
+    "strictJson: false takes it",
+    await jsonPost("1", JSON_TYPE, { parseBody: true, strictJson: false }),
+    { body: 1, status: undefined, message: undefined },
+  );
+  checkEqual(
+    "as does parseBody.contentTypes.json.opts.strict: false, overriding it",
+    await jsonPost("1", JSON_TYPE, {
+      parseBody: { contentTypes: { json: { opts: { strict: false } } } },
+      strictJson: true,
+    }),
+    { body: 1, status: undefined, message: undefined },
+  );
+  checkEqual(
+    "a charset that is not utf-* is refused with 415",
+    await jsonPost("{}", `${JSON_TYPE}; charset=latin1`),
+    {
+      body: undefined,
+      status: 415,
+      message: 'unsupported charset "LATIN1"',
+    },
+  );
+  checkEqual(
+    "utf8 with no dash is taken as UTF-8, where Express refuses it",
+    await jsonPost("{}", `${JSON_TYPE}; charset=utf8`),
+    { body: {}, status: undefined, message: undefined },
+  );
+}
+
 summary();

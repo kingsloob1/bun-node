@@ -241,6 +241,13 @@ export class BunHttpAdapter<
    * they say otherwise, whenever they are replaced.
    */
   #rawBodyNeedsBuffer = false;
+
+  /**
+   * Set by `useBodyParser("json", { strict: false })`: every request takes
+   * `strictJson: false`, as a body is parsed while the request is built, before
+   * the parser's middleware could say so. {@link requestOpts} applies it.
+   */
+  #jsonParserNotStrict = false;
   #nodeHttpServer!: NodeServer;
   private _instance!: BunRouter;
   private _websocketAdapter!: BunWebSocket<customWebsocketDataType>;
@@ -962,6 +969,9 @@ export class BunHttpAdapter<
     if (this.#rawBodyNeedsBuffer && merged.retainBuffer === undefined) {
       merged.retainBuffer = true;
     }
+    if (this.#jsonParserNotStrict && merged.strictJson === undefined) {
+      merged.strictJson = false;
+    }
     this.#requestOpts = this.#withProxyTrust(merged, opts);
   }
 
@@ -1479,6 +1489,12 @@ export class BunHttpAdapter<
     // `request.json()` does not keep: keep them for every request.
     if (rawBody && !this.#rawBodyNeedsBuffer) {
       this.#rawBodyNeedsBuffer = true;
+      this.requestOpts = this.#requestOpts;
+    }
+    // As `strict: false` reaches body-parser: it must reach the parse too, which
+    // runs while the request is built, before this parser's middleware.
+    if (parser === "json" && options?.strict === false) {
+      this.#jsonParserNotStrict = true;
       this.requestOpts = this.#requestOpts;
     }
 

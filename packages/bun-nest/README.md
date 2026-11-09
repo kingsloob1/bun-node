@@ -804,8 +804,8 @@ On top of that, NestJS's body-parser hooks map to two adapter methods:
 | `maxContentCodings` | `5` | Most codings one `Content-Encoding` may stack; more is `415`. |
 | `decompressionFastPathLimit` | 32 MiB | Worst-case memory one layer may use on Bun's faster decoders before falling back to `node:zlib`. |
 | `compressionDictionaries` | none | Dictionaries (or a resolver) for `dcb`/`dcz` bodies. |
-| `reviver` | none | `JSON.parse`'s reviver, for a JSON body. |
-| anything else | | Other parser-specific options are accepted and not read, `strict` and `extended` included (see [known differences](#known-differences-from-nestjsplatform-express)). |
+| `strict` | `true` | For a JSON body: `false` takes any JSON value, where the default refuses a body that is not an object or array with `400`. It applies to the whole adapter (the request option `strictJson`), as the body is read before this parser's middleware runs. |
+| anything else | | Other parser-specific options are accepted and not read, `reviver` and `extended` included. The adapter's `request.parseBody.contentTypes.json.opts` takes a `reviver`. |
 
 - **A request with no body is passed on at once.** No `Content-Length`, no
   `Transfer-Encoding` and no body stream (`req.hasBody` is `false`): the
@@ -1229,10 +1229,16 @@ answers the same status, headers and body.
   on Express sends it as JSON (`{"type":"Buffer","data":[…]}`).
 - Nest's default body parsing parses every body type; on Express only JSON and
   urlencoded bodies are parsed, so a `text/plain` body is `undefined` there.
-- A JSON body may be any JSON value, where body-parser's `strict` default
-  answers `400` for one that is not an object or array (`null`, `1`, `"s"`);
-  and any `charset` is read as UTF-8, where body-parser answers `415` for one
-  that is not `utf-*`. Both sit in bun-common's body parsing.
+- A JSON body is strict and its `charset` read as body-parser's are, with four
+  exceptions: `charset=utf8` with no dash is taken as UTF-8 (Express: `415`);
+  `utf-32` and `utf-7` are read as UTF-8, so a real UTF-32 body is a `400`
+  (Express decodes them); a form's and a text body's `charset` are not read
+  (Express refuses a form's other than `utf-8` and `iso-8859-1`, and a text
+  body's it cannot decode, and decodes the rest); and with `retainBuffer: false`
+  a body that does not parse is refused with `JSON.parse`'s own message, as its
+  text was not kept. A body is judged while the request is built, so one
+  refused for what it is and also over a `useBodyParser` `limit` is a `400`,
+  where Express checks the limit first (`413`).
 - There is no default body size limit (body-parser's is `100kb`); set one with
   `app.useBodyParser(type, { limit })` or the adapter's `request.parseBody`
   options. The `413` message names the limit and the size received.

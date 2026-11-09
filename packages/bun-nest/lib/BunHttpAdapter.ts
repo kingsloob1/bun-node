@@ -1070,6 +1070,13 @@ export class BunHttpAdapter<
   #rawBodyNeedsBuffer = false;
 
   /**
+   * Set by `useBodyParser("json", { strict: false })`: every request takes
+   * `strictJson: false`, as a body is parsed while the request is built, before
+   * the parser's middleware could say so. {@link requestOpts} applies it.
+   */
+  #jsonParserNotStrict = false;
+
+  /**
    * Set once a security hook is registered (`app.enableCsrfProtection()` or
    * `app.useSecurityHeaders()`, through {@link registerSecurityHook}): the
    * hook must run before the body is read, so the request options defer it
@@ -2292,6 +2299,9 @@ export class BunHttpAdapter<
     if (this.#rawBodyNeedsBuffer && merged.retainBuffer === undefined) {
       merged.retainBuffer = true;
     }
+    if (this.#jsonParserNotStrict && merged.strictJson === undefined) {
+      merged.strictJson = false;
+    }
     if (this.#securityHookDefersBody && merged.deferBody === undefined) {
       merged.deferBody = true;
     }
@@ -2572,6 +2582,12 @@ export class BunHttpAdapter<
     // `request.json()` does not keep: keep them for every request.
     if (rawBody && !this.#rawBodyNeedsBuffer) {
       this.#rawBodyNeedsBuffer = true;
+      this.requestOpts = this.#requestOpts;
+    }
+    // As `strict: false` reaches body-parser: it must reach the parse too, which
+    // runs while the request is built, before this parser's middleware.
+    if (parser === "json" && options?.strict === false) {
+      this.#jsonParserNotStrict = true;
       this.requestOpts = this.#requestOpts;
     }
 

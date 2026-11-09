@@ -117,9 +117,9 @@ describe("invalid JSON in a body declared JSON", () => {
     const valid = await app.fetch("/e", {
       method: "POST",
       headers: JSON_HEADERS,
-      body: '"just a string"',
+      body: '["a list"]',
     });
-    expect(await valid.json()).toEqual({ body: "just a string" });
+    expect(await valid.json()).toEqual({ body: ["a list"] });
     const empty = await app.fetch("/e", {
       method: "POST",
       headers: { ...JSON_HEADERS, "content-length": "0" },

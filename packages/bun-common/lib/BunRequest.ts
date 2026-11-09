@@ -171,6 +171,13 @@ export interface ContentTypeParserOptsMap {
     // `unknown` on purpose: a reviver sees values other revivers already
     // replaced, and may return anything, exactly as `JSON.parse` allows.
     reviver?: (this: unknown, key: string, value: unknown) => unknown;
+    /**
+     * Whether a JSON body must be an object or an array, as body-parser's
+     * `strict`. `true` by default: `null`, `1` or `"s"` is refused with 400.
+     * `false` accepts any JSON value. Overrides the `strictJson` request
+     * option; through {@link requestParsing}, for one route.
+     */
+    strict?: boolean;
   };
   /** `picoquery` options for an `x-www-form-urlencoded` body. */
   urlencoded: QueryParserOpts;
@@ -602,6 +609,152 @@ function plainFieldRecord(
   const record: Record<string, unknown> = Object.create(null);
   record[name] = value;
   return record;
+}
+
+/** The first index at or after `index` that is not optional whitespace. */
+function skipWhitespace(text: string, index: number): number {
+  let at = index;
+  while (at < text.length && (text[at] === " " || text[at] === "\t")) {
+    at++;
+  }
+  return at;
+}
+
+/** `text` from `start` to `end`, with its trailing optional whitespace dropped. */
+function trimmedSlice(text: string, start: number, end: number): string {
+  let stop = end;
+  while (stop > start && (text[stop - 1] === " " || text[stop - 1] === "\t")) {
+    stop--;
+  }
+  return text.slice(start, stop);
+}
+
+/**
+ * The lower-cased `charset` of a `Content-Type`, as body-parser reads it, or
+ * `undefined` for none or an empty one: the `content-type` package's parameter
+ * walk, which skips what it cannot read, and takes the first of a repeated name.
+ */
+function charsetOf(contentType: string): string | undefined {
+  if (!/charset/iu.test(contentType)) {
+    return undefined;
+  }
+  const { length } = contentType;
+  let index = contentType.indexOf(";");
+  while (index !== -1 && index < length) {
+    const keyStart = skipWhitespace(contentType, index + 1);
+    let at = keyStart;
+    while (at < length && contentType[at] !== ";" && contentType[at] !== "=") {
+      at++;
+    }
+    if (at === length || contentType[at] === ";") {
+      index = at === length ? -1 : at;
+      continue;
+    }
+    const isCharset =
+      trimmedSlice(contentType, keyStart, at).toLowerCase() === "charset";
+    const valueStart = skipWhitespace(contentType, at + 1);
+    let value = "";
+    if (contentType[valueStart] === '"') {
+      at = valueStart + 1;
+      while (at < length && contentType[at] !== '"') {
+        if (contentType[at] === "\\" && at + 1 < length) {
+          at++;
+        }
+        value += contentType[at];
+        at++;
+      }
+      // An unterminated quote names no value, and ends the parameters.
+      if (at >= length) {
+        return undefined;
+      }
+      at = contentType.indexOf(";", at);
+    } else {
+      at = contentType.indexOf(";", valueStart);
+      value = trimmedSlice(contentType, valueStart, at === -1 ? length : at);
+    }
+    if (isCharset) {
+      return value.toLowerCase() || undefined;
+    }
+    index = at;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a JSON body may declare `charset`: what body-parser accepts, `utf-*`
+ * of the encodings its `iconv-lite` knows, and `utf8` with no dash, which it
+ * refuses and clients do send.
+ */
+function isJsonCharset(charset: string): boolean {
+  return (
+    charset === "utf8" ||
+    (charset.startsWith("utf-") &&
+      /^(?:7|7imap|8|16|16le|16be|32|32le|32be)$/u.test(
+        charset.slice(4).replaceAll(/[^0-9a-z]/gu, ""),
+      ))
+  );
+}
+
+/** Whether a declared JSON charset reads as UTF-8, so the native reads may decode it. */
+function isUtf8JsonCharset(charset: string | undefined): boolean {
+  return charset === undefined || charset === "utf-8" || charset === "utf8";
+}
+
+/**
+ * The text of a JSON body in its declared `charset`. UTF-16 is decoded, with
+ * `utf-16`'s byte order from its BOM or, without one, its first byte (a JSON
+ * text starts with ASCII). Anything else is read as UTF-8, so UTF-32 and UTF-7
+ * are not decoded, where body-parser's `iconv-lite` decodes them.
+ */
+function jsonTextOf(buffer: Buffer, charset: string | undefined): string {
+  if (charset === undefined || !charset.startsWith("utf-16")) {
+    return buffer.toString();
+  }
+  const name = charset.slice(4).replaceAll(/[^0-9a-z]/gu, "");
+  const bigEndian =
+    name === "16be" ||
+    (name === "16" &&
+      ((buffer[0] === 0xfe && buffer[1] === 0xff) ||
+        (buffer[0] === 0 && buffer[1] !== 0)));
+  return new TextDecoder(bigEndian ? "utf-16be" : "utf-16le").decode(buffer);
+}
+
+/** The first character of a JSON text that is not whitespace (RFC 8259 `ws`). */
+const JSON_FIRST_CHAR = /^[\t\n\r ]*([^\t\n\r ])/u;
+
+/**
+ * The message of a strict refusal, as body-parser's `createStrictSyntaxError`
+ * builds it: what `JSON.parse` says of a token that cannot start a JSON text,
+ * naming `first` (`undefined`: a body of whitespace, which says it ended).
+ */
+function strictJsonMessage(first: string | undefined): string {
+  try {
+    JSON.parse(first === undefined ? "" : "#");
+  } catch (error) {
+    return (error as Error).message.replaceAll(/#+/gu, first ?? "");
+  }
+  return "strict violation";
+}
+
+/**
+ * The first character a parsed JSON value was written with when the value is
+ * one strict parsing refuses, else `undefined`: for a body read with
+ * `request.json()`, whose text is not kept.
+ */
+function strictViolationOf(value: unknown): string | undefined {
+  if (value === null) {
+    return "n";
+  }
+  switch (typeof value) {
+    case "string":
+      return '"';
+    case "boolean":
+      return value ? "t" : "f";
+    case "number":
+      return value < 0 || Object.is(value, -0) ? "-" : String(value)[0];
+    default:
+      return undefined;
+  }
 }
 
 /** The first non-whitespace character of a JSON text, as `JSON.parse` reads it. */
@@ -2217,6 +2370,16 @@ export class BunRequest<
        */
       retainBuffer?: boolean;
       /**
+       * Whether a body declared JSON must be an object or an array, as
+       * body-parser's `strict`. `true` by default: `null`, `1` or `"s"` is
+       * refused with 400 (`type: "entity.parse.failed"`), as a body that does
+       * not parse is. `false` accepts any JSON value.
+       * `parseBody.contentTypes.json.opts.strict` overrides it; an adapter's
+       * `useBodyParser("json", { strict: false })` sets it. A body sent with
+       * no `Content-Type` is only tried as JSON, so this does not apply to it.
+       */
+      strictJson?: boolean;
+      /**
        * Which proxies in front of the app to believe, as Express 5's
        * `trust proxy` setting: `false` (the default), `true`, a hop count,
        * addresses/ranges/presets (`"loopback, 10.0.0.0/8"`), or a function;
@@ -2519,7 +2682,7 @@ export class BunRequest<
     const limit = this.resolveContentLimit(declaredKind);
     if (
       this.parseBody === BunRequest.prototype.parseBody &&
-      this.#canReadDirect(declaredKind, limit)
+      this.#canReadDirect(declaredKind, limit, contentTypeHeader)
     ) {
       return this.#readDirectInitial(
         declaredKind as "json" | "text" | "urlencoded" | "xml",
@@ -2580,8 +2743,9 @@ export class BunRequest<
    * JSON, `request.text()` for text, urlencoded and XML — with nothing
    * observable lost but those bytes, which `retainBuffer` asks to keep:
    * declared one of those kinds and allowed as it, no `Content-Encoding`
-   * (nothing to decode), no JSON `reviver` and no non-UTF-8 text `encoding`
-   * (the native reads decode UTF-8), a declared non-zero length or a chunked
+   * (nothing to decode), no JSON `reviver`, no JSON `charset` other than UTF-8
+   * (refused or decoded from the bytes) and no non-UTF-8 text `encoding` (the
+   * native reads decode UTF-8), a declared non-zero length or a chunked
    * body (a `Content-Length: 0` body is the declared-empty one), never read.
    *
    * Under a cap, only a served request whose `Content-Length` is within it
@@ -2593,6 +2757,7 @@ export class BunRequest<
   #canReadDirect(
     declaredKind: ContentParserType | undefined,
     limit: number | undefined,
+    contentTypeHeader: string | null | undefined,
   ): boolean {
     if (
       (declaredKind !== "json" &&
@@ -2608,7 +2773,8 @@ export class BunRequest<
     }
     if (
       declaredKind === "json"
-        ? this.getParserOpts("json")?.reviver !== undefined
+        ? this.getParserOpts("json")?.reviver !== undefined ||
+          !isUtf8JsonCharset(charsetOf(contentTypeHeader ?? ""))
         : declaredKind === "text" &&
           !isUtf8Encoding(this.getParserOpts("text")?.encoding)
     ) {
@@ -2676,13 +2842,13 @@ export class BunRequest<
         value = await this.request.json();
       } catch (error) {
         if (error instanceof SyntaxError) {
-          throw this.#refuseBody(
-            httpError(400, error.message),
-            "entity.parse.failed",
-            undefined,
-          );
+          throw this.#refuseJson(error.message, undefined);
         }
         throw error;
+      }
+      const violation = this.#strictJsonViolation(value);
+      if (violation !== undefined) {
+        throw this.#refuseJson(strictJsonMessage(violation), undefined);
       }
       this._body = value as DefaultRequestBody;
       this._contentType = "json";
@@ -2727,6 +2893,12 @@ export class BunRequest<
     if (kind === "json") {
       return this.request.json().then(
         (value: unknown) => {
+          const violation = this.#strictJsonViolation(value);
+          if (violation !== undefined) {
+            return this.#failed(
+              this.#refuseJson(strictJsonMessage(violation), undefined),
+            );
+          }
           this._body = value as DefaultRequestBody;
           this._contentType = "json";
           this.#bodyParsed = true;
@@ -2736,11 +2908,7 @@ export class BunRequest<
         (error: unknown) =>
           this.#failed(
             error instanceof SyntaxError
-              ? this.#refuseBody(
-                  httpError(400, error.message),
-                  "entity.parse.failed",
-                  undefined,
-                )
+              ? this.#refuseJson(error.message, undefined)
               : error,
           ),
       );
@@ -4145,33 +4313,75 @@ export class BunRequest<
   }
 
   /**
-   * Parses a JSON body into `req.body`. A body sent without a content type is
-   * only tried as JSON (`false` when it is not, so another kind can be
-   * tried); one declared JSON that does not parse is refused with a 400, as
-   * body-parser's `json()` does (`type: "entity.parse.failed"`, the text in
-   * `body`), and recorded as {@link bodyDecodingError}.
+   * Parses a JSON body into `req.body`, a UTF-8 BOM dropped, as body-parser's
+   * decoding drops it. A body sent without a content type is only tried as
+   * JSON (`false` when it is not, so another kind can be tried). One declared
+   * JSON that does not parse is refused with a 400, as body-parser's `json()`
+   * does (`type: "entity.parse.failed"`, the text in `body`), and recorded as
+   * {@link bodyDecodingError}; so is one that is not an object or an array,
+   * unless strict parsing is off (see {@link #isJsonStrict}), judged by its
+   * first character as body-parser judges it, so a reviver has no say.
    */
   private handleJsonBodyParsing(data: string, declared = false): boolean {
+    const text = data.charCodeAt(0) === 0xfeff ? data.slice(1) : data;
+    if (declared) {
+      if (text.length === 0) {
+        this._body = {};
+        this._contentType = "json";
+        return true;
+      }
+      if (this.#isJsonStrict()) {
+        const first = JSON_FIRST_CHAR.exec(text)?.[1];
+        if (first !== "{" && first !== "[") {
+          throw this.#refuseJson(strictJsonMessage(first), data);
+        }
+      }
+    }
     try {
-      this._body = JSON.parse(data, this.getParserOpts("json")?.reviver);
+      this._body = JSON.parse(text, this.getParserOpts("json")?.reviver);
       this._contentType = "json";
       return true;
     } catch (error) {
       if (declared) {
         // A `SyntaxError`, as body-parser's is: NestJS answers one with a
         // `BadRequestException` (its `mapExternalException`).
-        throw this.#refuseBody(
-          Object.assign(new SyntaxError((error as Error).message), {
-            status: 400,
-            statusCode: 400,
-            expose: true as const,
-          }),
-          "entity.parse.failed",
-          data,
-        );
+        throw this.#refuseJson((error as Error).message, data);
       }
     }
     return false;
+  }
+
+  /**
+   * Whether a body declared JSON must be an object or an array:
+   * `parseBody.contentTypes.json.opts.strict`, else the `strictJson` request
+   * option, else `true`, as body-parser's `strict`.
+   */
+  #isJsonStrict(): boolean {
+    return (
+      (this.getParserOpts("json")?.strict ?? this.options.strictJson) !== false
+    );
+  }
+
+  /** What `value`, read with `request.json()`, starts with if strict parsing refuses it. */
+  #strictJsonViolation(value: unknown): string | undefined {
+    return this.#isJsonStrict() ? strictViolationOf(value) : undefined;
+  }
+
+  /**
+   * Builds, and records as {@link bodyDecodingError}, the refusal of a body
+   * declared JSON: a `SyntaxError` as body-parser's is, carrying its text when
+   * it was kept.
+   */
+  #refuseJson(message: string, body: string | undefined): BunHttpClientError {
+    return this.#refuseBody(
+      Object.assign(new SyntaxError(message), {
+        status: 400,
+        statusCode: 400,
+        expose: true as const,
+      }),
+      "entity.parse.failed",
+      body,
+    );
   }
 
   private handleXmlBodyParsing(data: string): boolean {
@@ -4842,7 +5052,7 @@ export class BunRequest<
 
     if (
       this.parseBody === BunRequest.prototype.parseBody &&
-      this.#canReadDirect(declaredKind, limit)
+      this.#canReadDirect(declaredKind, limit, contentTypeHeader)
     ) {
       await this.#readDirectBody(
         declaredKind as "json" | "text" | "urlencoded" | "xml",
@@ -4929,6 +5139,25 @@ export class BunRequest<
     this._buffer = buffer;
     this.#bodyParsed = true;
 
+    // Before anything is parsed, as body-parser checks it first: what the
+    // charset says of the body outranks what the body turns out to be.
+    const jsonCharset =
+      declaredKind === "json" &&
+      contentTypeHeader &&
+      this.isParserAllowed("json")
+        ? charsetOf(contentTypeHeader)
+        : undefined;
+    if (jsonCharset !== undefined && !isJsonCharset(jsonCharset)) {
+      throw this.#refuseBody(
+        Object.assign(
+          httpError(415, `unsupported charset "${jsonCharset.toUpperCase()}"`),
+          { charset: jsonCharset },
+        ),
+        "charset.unsupported",
+        undefined,
+      );
+    }
+
     if (buffer.length === 0) {
       this._body = undefined;
       // `as unknown as IncomingMessage` here and below: `type-is` and
@@ -5004,7 +5233,7 @@ export class BunRequest<
           }
 
           case "json": {
-            this.handleJsonBodyParsing(buffer.toString(), true);
+            this.handleJsonBodyParsing(jsonTextOf(buffer, jsonCharset), true);
             break;
           }
 
@@ -5120,6 +5349,12 @@ export class BunRequest<
       return;
     }
 
+    if (
+      options?.strict !== undefined &&
+      (parser === undefined || parser === "json")
+    ) {
+      this.#writableOptions().strictJson = options.strict;
+    }
     if (options?.decompressionFastPathLimit !== undefined) {
       this.#decompressionFastPathLimit = resolveDecompressionFastPathLimit(
         options.decompressionFastPathLimit,

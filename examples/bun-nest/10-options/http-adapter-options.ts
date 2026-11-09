@@ -1436,7 +1436,12 @@ step("registerParserMiddleware() and useBodyParser()");
   );
   checkEqual(
     "…and a second registration of the same kind is ignored",
-    (await kinds.fetch("/in", postAs("application/json", `"${big}"`))).status,
+    (
+      await kinds.fetch(
+        "/in",
+        postAs("application/json", JSON.stringify({ other: big })),
+      )
+    ).status,
     413,
   );
   checkEqual(

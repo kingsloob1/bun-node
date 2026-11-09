@@ -3,7 +3,11 @@ import type { QueueLimitsBody, QueueLimitsDto } from "../../../api/types";
 import type { LimitsDraftRow } from "./limitsDraft";
 import { useState } from "react";
 import { isApiError } from "../../../api/errors";
-import { mutationInvalidations, setQueueLimits } from "../../../api/queues";
+import {
+  mutationInvalidations,
+  removeQueueLimits,
+  setQueueLimits,
+} from "../../../api/queues";
 import { Button } from "../../../components/Button";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { Field } from "../../../components/Field";
@@ -160,7 +164,9 @@ function LimitsEditor({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const save = useApiMutation({
     mutationFn: (body: QueueLimitsBody | null) =>
-      setQueueLimits(api, queue, body),
+      body === null
+        ? removeQueueLimits(api, queue)
+        : setQueueLimits(api, queue, body),
     successMessage: (_result, body) =>
       body === null
         ? `Removed the limits of ${queue}`
