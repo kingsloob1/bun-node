@@ -54,6 +54,19 @@ export function getWorkerToken(name: string, context?: string): string {
 }
 
 /**
+ * The token of a runner `BunJobsModule.registerRunner()` registered, which
+ * `@InjectRunner()` injects.
+ *
+ * @param id The runner's id.
+ * @param context The context's `name`; the default context when left out.
+ */
+export function getRunnerToken(id: string, context?: string): string {
+  return context === undefined
+    ? `bun-jobs:runner:${id}`
+    : `bun-jobs:${context}:runner:${id}`;
+}
+
+/**
  * The token of the `JobsNotifier` that `@InjectJobsNotifier()` injects.
  *
  * @param context The context's `name`; the default context when left out.

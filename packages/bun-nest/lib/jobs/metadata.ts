@@ -24,6 +24,8 @@ export const PROCESSOR_METADATA = "bun-jobs:processor";
 export const PROCESS_METADATA = "bun-jobs:process";
 /** Where `@DefineJob()` records its job name and options. */
 export const DEFINE_JOB_METADATA = "bun-jobs:define-job";
+/** Where `@Cron()` and `@Every()` record their series. */
+export const SCHEDULE_METADATA = "bun-jobs:schedule";
 /** Where the event decorators record what a method listens to. */
 export const EVENT_LISTENERS_METADATA = "bun-jobs:event-listeners";
 

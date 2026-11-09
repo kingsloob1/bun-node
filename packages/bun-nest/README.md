@@ -113,6 +113,8 @@ Underneath, routing is
   - [Files and other threads: `registerWorker`](#files-and-other-threads-registerworker)
   - [The registry: `@DefineJob`](#the-registry-definejob)
   - [Events](#events)
+  - [Scheduling: `@Cron` and `@Every`](#scheduling-cron-and-every)
+  - [Runners: `registerRunner`](#runners-registerrunner)
   - [Starting and draining](#starting-and-draining)
   - [The checks at boot](#the-checks-at-boot)
 - [The jobs API module](#the-jobs-api-module)
@@ -2697,6 +2699,8 @@ through untouched, and these of its own:
 | `shutdown` | `{ timeout: 30_000 }` | `{ timeout?, force? }`, given to each `worker.close()` on `app.close()`. |
 | `registryWorker` | none | What `jobs.start()` is given for `@DefineJob`: the registry worker's options. |
 | `enhancers` | `true` | Whether handlers run through the Nest pipeline. A class's own `enhancers` wins. |
+| `scheduleQueue` | `"nest-schedule"` | The queue `@Cron` and `@Every` use unless they name one. |
+| `pruneSchedules` | `false` | Whether undeclared schedule series are removed at boot rather than warned about. |
 
 `forRootAsync` takes the same options from a factory (`useFactory` with `inject`
 and `imports`), a class with a `createBunJobsOptions()` method (`useClass`) or a
@@ -2735,8 +2739,8 @@ BunJobsModule.registerQueueAsync({
 `options` are what `jobs.queue(name, options)` takes, `schema` and
 `dataValidation` included, and an entry may leave them out. **`schema` is
 `{ data, result }`, each optional, never a bare schema**: `options: { schema: { data:
-Email } }`. The types refuse a bare one and so does the boot, since bun-jobs would find
-no `schema.data` and check nothing. The same goes for `schema` on `@Processor`, `@DefineJob`
+Email } }`. The types refuse a bare one, and so does the boot, which is what stops one
+typed `any`. The same goes for `schema` on `@Processor`, `@DefineJob`
 and `registerWorker`. A call makes the
 queues injectable in the module that imports it: `@InjectQueue(name, context?)`,
 or `getQueueToken(name, context?)` in a provider or a test
@@ -3165,6 +3169,87 @@ form exists only for the job events that have one. A method can carry several.
 wants the stream (`notifier.on("event", …)`, or `for await`). It is opened only when a class
 asks for it, and to hear workers call `notifier.hold("worker", queue)`.
 
+### Scheduling: `@Cron` and `@Every`
+
+```ts
+@Injectable()
+export class Maintenance {
+  @Cron("0 3 * * *", { tz: "Europe/London", name: "nightly-cleanup" })
+  async nightly(@JobSignal() signal: AbortSignal) { … }
+
+  @Every("5 minutes", { immediately: true })
+  async refreshRates() { … }
+}
+```
+
+Each is **a bun-jobs repeat series**, added at bootstrap on `scheduleQueue`, or on
+`{ queue }`. A worker there runs each occurrence through the pipeline, so guards,
+parameter decorators and `attempts` all apply. **It runs once per occurrence across every
+replica**, since an occurrence's id comes from the series and its due time.
+
+|  | `@nestjs/schedule` | `@Cron` here |
+|---|---|---|
+| Runs | in every replica, on a local timer | once per occurrence, cluster-wide, as a job |
+| Survives a restart mid-run | no | yes: retries, `attempts`, the stalled sweep |
+| In the management API and the UI | no | yes: repeatables, runs, logs, analytics |
+| Needs a backend | no | yes: a driver with queue state, which every built-in one has |
+| `@Interval(ms)` / `@Timeout(ms)` | yes | `@Every(ms)`; a one-shot is `@Every(ms, { limit: 1 })` |
+
+They are different tools, and the integration does not import `@nestjs/schedule`: a
+per-replica timer, refreshing a local cache say, belongs there. The names clash only on
+import, so alias one side.
+
+- **The series key is `name`, else `<Class>.<method>`**, and it is the job's name too, so a
+  restart updates the series rather than adding one. Renaming the class or method leaves
+  the old series behind unless `name` is given.
+- **The options** are bun-jobs' `tz`, `limit`, `startAt`, `endAt`, `immediately` and
+  `catchUp`, and the job options `attempts`, `backoff`, `timeout` and `deadLetter`, beside
+  `context`, `enhancers`, `onDenied` and `onInvalid`.
+- **`@Every` takes** what `every` reads: milliseconds, a duration (`"1h 30m"`), a cron
+  expression, or words (`"every monday"`). Its occurrences fall on one grid every replica
+  agrees on, multiples of the interval from the epoch unless you give `startAt`, so the
+  first comes within one interval of the boot rather than exactly one after it.
+- **`immediately`** runs when the series is created, not at every restart. Two replicas
+  creating it in the same moment can each run it once.
+- **Checked at boot.** A cron expression, a zone or an interval it cannot read is a
+  `ConfigError` naming the class and method, before anything is written. So are two series
+  with one key, and a schedule beside `@Process` on one method. A series that has finished,
+  a `limit` reached or an `endAt` passed, is not a failure.
+- **An operator's off survives a deploy.** After `queue.disableRepeatable(key)`, or the UI's,
+  adding the series again at the next boot does not re-enable it. `@Cron(expr, { disabled:
+  true })` declares a series without adding it, and does not stop one already stored.
+- **A removed decorator leaves its series behind**, and its next occurrence fails here with
+  "No @Process, @Cron or @Every handler". Deleting it automatically is unsafe during a rolling
+  deploy, where the old version still declares it, so the module logs one `warn` naming every
+  stored series that nothing in this process declares. `pruneSchedules: true` removes them
+  instead, for an app that deploys one version at a time. It looks only at a queue this process
+  schedules on, or its own `scheduleQueue` with `pruneSchedules`, so a service that schedules
+  nothing leaves another's series alone; so removing the *last* `@Cron` warns about nothing.
+  It counts only a series whose job name is its key, as these decorators add them.
+
+### Runners: `registerRunner`
+
+A `BunRunner` runs a **file** on a schedule or on demand, so a DI method cannot be its handler.
+Runners get registration rather than a decorator:
+
+```ts
+BunJobsModule.registerRunner({
+  id: "cleanup",
+  file: new URL("./runners/cleanup.ts", import.meta.url),
+  schedule: "0 */10 * * * *",
+  executionMode: "child-process",
+  args: { days: 30 },
+});
+```
+
+It takes `jobs.runner()`'s options and `context`. The runner starts at bootstrap, unless
+`autoStart: false`, and stops when workers drain. `@InjectRunner(id, context?)` injects it where
+this module is imported, for `trigger()`, `pause()`, `kill()` and `updateSchedule()`, and
+`@OnRunnerEvent("cleanup", "failed")` listens to it.
+
+Use `@Cron` for a method that should run once cluster-wide on a schedule, and a runner for a
+script with its own process, a single-run lock, kill escalation and run logs.
+
 ### Starting and draining
 
 **Workers start at `onApplicationBootstrap`**, so whatever another module opens in
@@ -3192,7 +3277,7 @@ a processor's own module closes while its jobs drain: give the resources their o
 module. Nest 12 orders them by dependency, so the processor goes first.
 
 What has no instance to hook drains last, in the jobs module's own
-`onModuleDestroy`: a request-scoped processor and a `registerWorker` file. A
+`onModuleDestroy`: a request-scoped processor, a `registerWorker` file and a runner. A
 request-scoped processor's services may already be gone by then, so give it resources
 that outlive the close, or a job it can stop on its signal.
 
@@ -3805,7 +3890,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Group | Exports |
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
-| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions` |
+| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `Cron`, `Every`, `InjectRunner`, `getRunnerToken`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `CronOptions`, `EveryOptions`, `ScheduleOptions`, `RegisterRunnerOptions`, `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions`, `BunRunner`, `BunRunnerOptions` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |

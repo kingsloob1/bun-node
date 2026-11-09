@@ -6,6 +6,7 @@ import {
   getBunJobsToken,
   getJobsNotifierToken,
   getQueueToken,
+  getRunnerToken,
   getWorkerToken,
 } from "../tokens";
 import { processorOf } from "./consumer";
@@ -79,6 +80,21 @@ export function InjectWorker(
     );
   }
   return Inject(getWorkerToken(metadata.queue, metadata.context));
+}
+
+/**
+ * Injects a `BunRunner` that `BunJobsModule.registerRunner()` registered, for
+ * `trigger()`, `pause()`, `kill()` and `updateSchedule()`. Import that module where
+ * this is injected.
+ *
+ * @param id The runner's id.
+ * @param context The context's `name`; the default context when left out.
+ */
+export function InjectRunner(
+  id: string,
+  context?: string,
+): PropertyDecorator & ParameterDecorator {
+  return Inject(getRunnerToken(id, context));
 }
 
 /**

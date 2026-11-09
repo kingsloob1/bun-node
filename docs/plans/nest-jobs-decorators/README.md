@@ -1,11 +1,11 @@
 # bun-jobs in NestJS: modules, decorators and the Nest pipeline for jobs
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
-§16 name accepted (§14 records the answers). PR-n1 to PR-n3 are merged (#721, #722,
-#724), and PR-n4 is built. PR-n5 onward are not started.** The sections below were
-corrected to match what was built, each correction marked; §2 still describes
-`develop` as it was before this work, and everything §3 to §12 assign to PR-n5 and
-later is still a design.
+§16 name accepted (§14 records the answers). PR-n1 to PR-n4 are merged (#721, #722,
+#724, #727), and PR-n5 is built. PR-n6 to PR-n10 are not started.** The sections
+below were corrected to match what was built, each correction marked; §2 still
+describes `develop` as it was before this work, and everything §3 to §12 assign to
+PR-n6 and later is still a design.
 
 Implementation plan for integrating `@kingsleyweb/bun-jobs` into NestJS
 through `@kingsleyweb/bun-nest`. The user asked for this on 2026-10-10:
@@ -561,8 +561,8 @@ Each entry provides `getQueueToken(name, context)` as
   - Two `forRoot()`s for one context are a `ConfigError` as well, even with
     identical options (added while building; the user kept it).
   - A `schema` is `{ data, result }`. A bare schema is refused by the types (weak-type
-    detection, TS2559, measured with zod, valibot and yup), and at boot too, since one
-    typed `any` would otherwise validate nothing in silence (PR-n4). `registerQueue("emails")`,
+    detection, TS2559, measured with zod, valibot and yup), and at boot too, for one typed
+    `any` (PR-n4); bun-jobs' `compileJobCheck` refuses it as well since #728. `registerQueue("emails")`,
     which the types also refuse, is a `ConfigError` naming `{ name: "emails" }`.
 - A queue that is never registered can still be reached through
   `jobs.queue(name)` or the builder's `toQueue(name)`. Registration exists
@@ -1113,7 +1113,7 @@ So:
    `@DefineJob`'s registry worker. It also closes the notifier. **As built
    (PR-n2):** a singleton `@DefineJob` provider gets the per-instance drain too,
    since the fallback is measured to fail for a service in an imported module
-   (scenario C). Runners arrive with PR-n5.
+   (scenario C).
 3. **Queues stay open until `onApplicationShutdown`.** A provider's own
    `onModuleDestroy` may still enqueue a job, an "account closed" email
    for example. Then the context is closed, if the module built it (§3.2).
@@ -1479,10 +1479,20 @@ occurrence to the method, through the pipeline:
   (`packages/bun-jobs/lib/queue/BunQueue.ts:3423`, `:3457-3460`) [S]. So N
   replicas adding the same `@Cron` at boot is still idempotent, and
   `pruneSchedules` (§8.2) removing an undeclared series cannot be undone by
-  a worker in flight. **[I]**: N replicas creating a brand-new `every`
-  series in the same moment each anchor `createdAt` on their own clock, so
-  there could briefly be two first occurrences; cron series are unaffected.
-  PR-n5's two-instance test covers `@Every` as well as `@Cron`.
+  a worker in flight. N replicas creating a brand-new `every` series in the same
+  moment each anchor `createdAt` on their own clock, which gives two first occurrences
+  [M, PR-n5: two pending where one was due; first written as [I]]; cron series are
+  unaffected. **As built:** `@Every` passes `startAt: 0` unless it was given a start of
+  its own, which puts every replica on one grid, multiples of the interval from the
+  epoch. So the first occurrence comes within one interval of the boot, not exactly one
+  after it. Asserted by a test that fails without it.
+- **`immediately` runs when the series is created, not at every restart** (as built):
+  bun-jobs takes it as "due now" on each add, so the module drops it for a series already
+  stored. Two replicas creating one in the same moment can still each run it once.
+- **A finished series does not fail the boot** (as built): a `limit` reached or an `endAt`
+  passed makes bun-jobs' add throw, which the module reads as nothing left to do.
+- **Series are added at `start()`**, so `autoStart: false` writes nothing until
+  `BunJobsLifecycle.start()`.
 
 ### 8.2 Removed decorators leave series behind [D]
 
@@ -1497,6 +1507,12 @@ version still declares the series while the new one starts. So:
   `@Cron` or `@Every` in this process declares.
 - `pruneSchedules: true` (a module option, off by default) removes them, for
   apps that deploy one version at a time.
+- **As built (PR-n5):** it looks only at a queue this process declares a series on,
+  or its own with `pruneSchedules`, so a service that schedules nothing neither pays for
+  the read nor warns about another service's series. A consequence: removing the *last*
+  `@Cron` warns about nothing. And it counts only a series shaped as these decorators add
+  them, whose job name is its key, so one a person added through `queue.add` is left alone.
+  The failure message is "No @Process, @Cron or @Every handler for job or series".
 - Q8 asks the user.
 
 ### 8.3 `@nestjs/schedule`: coexist, do not replace [D]
@@ -2302,6 +2318,10 @@ the module option `registryWorker`; `{ context, enhancers, onDenied, onInvalid }
 `QueueJobData`, `QueueJobResult`, `QueueJobName`, `TypedProcessDecorator`. bun-jobs'
 `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`,
 `NameLimits` and `ProcessorContext` are re-exported as types.
+
+**Added while building PR-n5:** the type `ScheduleOptions`, which `CronOptions` and
+`EveryOptions` alias, and bun-jobs' `BunRunner` and `BunRunnerOptions` re-exported as
+types.
 
 **Added while building PR-n4:** `getJobsNotifierToken`; the types `JobsEventKind`,
 `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`;
