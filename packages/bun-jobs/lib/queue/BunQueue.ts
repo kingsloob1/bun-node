@@ -106,6 +106,7 @@ import {
   JobsError,
   NotSupportedError,
   QueueClosedError,
+  RepeatExhaustedError,
 } from "../shared/errors";
 import { queueEvent } from "../shared/events";
 import { fitName } from "../shared/fit";
@@ -3471,10 +3472,7 @@ export class BunQueue<
         updatedAt: now,
       });
 
-      throw new ConfigError(
-        `The repeat "${series.key}" has no occurrences left to schedule`,
-        { key: series.key },
-      );
+      throw new RepeatExhaustedError(series.key);
     }
 
     // Shortened, never refused: a series key is derived from the job's name

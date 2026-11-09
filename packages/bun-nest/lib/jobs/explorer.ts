@@ -1410,7 +1410,7 @@ export class BunJobsExplorer
       );
     } catch (error) {
       // A `limit` reached, or an `endAt` passed: a finished series is not a failed boot.
-      if (!String((error as Error).message).includes("no occurrences left")) {
+      if ((error as { code?: unknown }).code !== "REPEAT_EXHAUSTED") {
         throw new ConfigError(`${label}: ${(error as Error).message}`, {
           key,
         });

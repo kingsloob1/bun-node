@@ -871,6 +871,7 @@ export {
   QueueClosedError,
   QueueFullError,
   RemoteMessageTooLargeError,
+  RepeatExhaustedError,
   RunKilledError,
   RunnerStoppedError,
   SerializationError,

@@ -841,6 +841,7 @@ export class BunJobs<
       throw new ConfigError(
         `No summon policy for queue "${queue}": pass one, or name the queue in the summon option`,
         { queue },
+        "NO_SUMMON_POLICY",
       );
     }
     return this.#buildSummonController({

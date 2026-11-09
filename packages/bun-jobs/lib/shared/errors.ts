@@ -481,8 +481,37 @@ export class ConfigError extends JobsError {
     message: string,
     /** The offending values, safe to log. */
     context?: Record<string, unknown>,
+    /** The stable code. Defaults to `"CONFIG"`; a subclass with a failure worth branching on names its own. */
+    code = "CONFIG",
   ) {
-    super(message, "CONFIG", context);
+    super(message, code, context);
+  }
+}
+
+/**
+ * A repeat series has nothing left to schedule: its `limit` is reached, or its
+ * `endAt` has passed. The series is stored, finished, before this is thrown.
+ *
+ * A {@link ConfigError}, so a caller that already catches one keeps working,
+ * with a code of its own, `"REPEAT_EXHAUSTED"`: a caller re-adding a series at
+ * every start (a restart after the last occurrence) can tell a finished series
+ * from a bad option without matching the message.
+ */
+export class RepeatExhaustedError extends ConfigError {
+  /** The series' key, plus any detail the throwing site added. */
+  declare readonly context: { key: string } & Record<string, unknown>;
+
+  constructor(
+    /** The series' key. */
+    key: string,
+    /** Extra detail, safe to log. May not set `key`. */
+    context?: ErrorContext<"key">,
+  ) {
+    super(
+      `The repeat "${key}" has no occurrences left to schedule`,
+      { ...context, key },
+      "REPEAT_EXHAUSTED",
+    );
   }
 }
 
