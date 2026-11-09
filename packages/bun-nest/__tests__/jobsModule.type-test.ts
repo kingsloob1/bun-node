@@ -123,6 +123,15 @@ BunJobsModule.registerQueue(
   EmailsQueue,
   { name: EmailsQueue, options: { subscribe: true } },
 );
+// @ts-expect-error -- `schema` is { data, result }, never a bare schema
+BunJobsModule.registerQueue({ name: "x", options: { schema: z.string() } });
+BunJobsModule.registerQueueAsync({
+  name: "x",
+  // @ts-expect-error -- the same from a factory
+  useFactory: () => ({ options: { schema: z.string() } }),
+});
+// @ts-expect-error -- an entry is an object or a token class
+BunJobsModule.registerQueue("emails");
 // @ts-expect-error -- a queue's context and driver are the context's
 BunJobsModule.registerQueue({ name: "x", options: { namespace: "y" } });
 // A class that is not a token is refused at run time alone: every class has a

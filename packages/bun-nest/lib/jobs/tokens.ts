@@ -54,6 +54,17 @@ export function getWorkerToken(name: string, context?: string): string {
 }
 
 /**
+ * The token of the `JobsNotifier` that `@InjectJobsNotifier()` injects.
+ *
+ * @param context The context's `name`; the default context when left out.
+ */
+export function getJobsNotifierToken(context?: string): string {
+  return context === undefined
+    ? "bun-jobs:notifier"
+    : `bun-jobs:${context}:notifier`;
+}
+
+/**
  * The token of the options `BunJobsModule.forRoot()` was given (or
  * `forRootAsync()` built). A registered symbol, so two copies of the package
  * agree on it.

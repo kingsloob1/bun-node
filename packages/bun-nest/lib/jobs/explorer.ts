@@ -3,6 +3,8 @@ import type {
   BunQueueWorker,
   Job,
   JobProcessor,
+  JobsNotifier,
+  JobsNotifierOptions,
   NameLimits,
   ProcessorContext,
 } from "@kingsleyweb/bun-jobs";
@@ -18,6 +20,7 @@ import type {
   ProcessMetadata,
   ProcessorMetadata,
 } from "./decorators/consumer";
+import type { EventListenerMetadata } from "./decorators/events";
 import type { JobsHostBinding } from "./JobsHost";
 import type { StartableWorkers } from "./lifecycle";
 import type { FailurePolicy } from "./pipeline";
@@ -29,6 +32,7 @@ import { Logger } from "@nestjs/common";
 import { ContextIdFactory, MetadataScanner } from "@nestjs/core";
 import { CACHE_WRAPPED_METADATA } from "../cache/tokens";
 import { processorOf } from "./decorators/consumer";
+import { listenersOf } from "./decorators/events";
 import { recordHandlerName } from "./executionContext";
 import { JOBS_HOST_BINDING, JobsHost } from "./JobsHost";
 import {
@@ -43,7 +47,11 @@ import {
   mapPipelineFailure,
   undecoratedParams,
 } from "./pipeline";
-import { assertNoProblems, differingOptions } from "./registry";
+import {
+  assertNoProblems,
+  bareSchemaProblem,
+  differingOptions,
+} from "./registry";
 
 /** The parts of Nest's `InstanceWrapper` the explorer reads. */
 interface Wrapper {
@@ -142,6 +150,10 @@ export interface ExplorerOptions {
   readonly registryWorker?: Parameters<BunJobs["start"]>[0];
   /** Whether handlers run through the Nest pipeline. Defaults to `true`. */
   readonly enhancers?: boolean;
+  /** Whether this process publishes its events, for `@OnJobsEvent`'s reminder. */
+  readonly publishEvents?: boolean;
+  /** A borrowed context, whose `publishEvents` the module cannot read. */
+  readonly jobs?: unknown;
 }
 
 /** The default wait for jobs in flight on `app.close()`. */
@@ -186,6 +198,18 @@ interface QueueGroup {
   readonly instances: Set<object>;
 }
 
+/** One method listening to events, on a singleton. */
+interface ListenerEntry {
+  /** `Class.method`, for messages. */
+  readonly label: string;
+  /** What it listens to. */
+  readonly listener: EventListenerMetadata;
+  /** The class's queue, for `@OnWorkerEvent`. */
+  readonly ownQueue: string | undefined;
+  /** Calls it; what it throws or rejects with is logged. */
+  readonly call: (...args: unknown[]) => void;
+}
+
 /** One running worker the explorer owns. */
 interface ManagedWorker {
   /** The worker. */
@@ -214,6 +238,34 @@ function workerOptionsOf(metadata: ProcessorMetadata): BunJobsWorkerOptions {
     ...options
   } = metadata.options;
   return options;
+}
+
+/**
+ * What a notifier follows for `@OnJobsEvent`: the union of what the decorators name,
+ * or `"all"` when one leaves its target out. Worker events only when asked for by
+ * kind, since they cost a second subscription per queue.
+ */
+function notifierOptionsFor(entries: ListenerEntry[]): JobsNotifierOptions {
+  const targetsOf = (
+    wanted: (kind: string | undefined) => boolean,
+  ): "all" | string[] => {
+    const targets = new Set<string>();
+    for (const { listener } of entries) {
+      if (listener.source === "jobs" && wanted(listener.options.kind)) {
+        const { target } = listener.options;
+        if (target === undefined) {
+          return "all";
+        }
+        targets.add(target);
+      }
+    }
+    return [...targets];
+  };
+  return {
+    queues: targetsOf((kind) => kind === undefined || kind === "queue"),
+    runners: targetsOf((kind) => kind === undefined || kind === "runner"),
+    workers: targetsOf((kind) => kind === "worker"),
+  };
 }
 
 /** Whether a worker target can run a DI-built method. */
@@ -251,6 +303,12 @@ export class BunJobsExplorer
   #registryWorker: BunQueueWorker<any, any, any> | undefined;
   /** Whether any `@DefineJob` was found. */
   #hasDefinitions = false;
+  /** The notifiers this explorer opened, closed in the fallback drain. */
+  readonly #notifiers: JobsNotifier[] = [];
+  /** `@OnJobsEvent` listeners, for the notifier opened at bootstrap. */
+  #jobsListeners: ListenerEntry[] = [];
+  /** Queues with `@OnQueueEvent` listeners, connected at bootstrap. */
+  readonly #listenedQueues = new Set<string>();
   /** Per-name limits to store, by queue, before the first start. */
   #limits: { queue: string; limits: Record<string, NameLimits> }[] = [];
   /** Whether bootstrap has built the workers. */
@@ -281,6 +339,7 @@ export class BunJobsExplorer
   async onApplicationBootstrap(): Promise<void> {
     this.#build();
     this.#built = true;
+    await this.#openListeners();
     if (this.options.autoStart !== false) {
       await this.start();
     }
@@ -334,7 +393,7 @@ export class BunJobsExplorer
     ]);
   }
 
-  /** The fallback drain: every worker no instance hook has closed. */
+  /** The fallback drain: every worker no instance hook has closed, then the notifiers. */
   async onModuleDestroy(): Promise<void> {
     this.#closing = true;
     await Promise.all([
@@ -343,6 +402,14 @@ export class BunJobsExplorer
         ? []
         : [this.#close(this.#registryWorker)]),
     ]);
+    await Promise.all(this.#notifiers.map((notifier) => notifier.close()));
+  }
+
+  /** The notifier `@InjectJobsNotifier()` injects, opened on `jobs.notifier()`. */
+  async openInjectedNotifier(): Promise<JobsNotifier> {
+    const notifier = await this.jobs.notifier();
+    this.#notifiers.push(notifier);
+    return notifier;
   }
 
   /** Closes a worker within the module's budget. A failure is logged: the close goes on. */
@@ -388,10 +455,14 @@ export class BunJobsExplorer
           ProcessMetadata | undefined;
         const define = Reflect.getMetadata(DEFINE_JOB_METADATA, handler) as
           DefineJobMetadata | undefined;
-        return process === undefined && define === undefined
+        const listeners = listenersOf(handler);
+        return process === undefined &&
+          define === undefined &&
+          listeners.length === 0
           ? []
-          : [{ method, process, define }];
+          : [{ method, process, define, listeners }];
       });
+    const listenerEntries: ListenerEntry[] = [];
 
     for (const wrapper of this.discovery.getControllers() as unknown as Wrapper[]) {
       const target = classOf(wrapper);
@@ -401,7 +472,7 @@ export class BunJobsExplorer
           methodsOf(target as { prototype: object }).length > 0)
       ) {
         problems.push(
-          `${target.name}: a controller cannot consume jobs. Nest builds a job's pipeline for providers only, so make it a provider`,
+          `${target.name}: a controller cannot consume jobs or listen to their events. Nest builds a job's pipeline for providers only, so make it a provider`,
         );
       }
     }
@@ -477,6 +548,7 @@ export class BunJobsExplorer
             method: "process",
             process: { name: undefined, options: undefined },
             define: undefined,
+            listeners: [],
           });
         }
         if (named.length === 0) {
@@ -550,6 +622,10 @@ export class BunJobsExplorer
           continue;
         }
         const entryLabel = `${label}.${method}`;
+        const bare = bareSchemaProblem(define.options?.schema, entryLabel);
+        if (bare !== undefined) {
+          problems.push(bare);
+        }
         const existing = definitions.get(define.name);
         if (existing !== undefined) {
           problems.push(
@@ -584,9 +660,55 @@ export class BunJobsExplorer
           });
         }
       }
+
+      for (const { method, listeners } of methods) {
+        for (const listener of listeners) {
+          const entryLabel = `${label}.${method}`;
+          const context =
+            listener.source === "worker"
+              ? metadata?.context
+              : listener.source === "jobs"
+                ? (listener.options.context as string | undefined)
+                : listener.context;
+          if (listener.source === "worker" && metadata === undefined) {
+            problems.push(
+              `${entryLabel}: @OnWorkerEvent listens to a @Processor class's own worker, and ${label} has no @Processor. @OnQueueEvent or @OnJobsEvent work from any provider`,
+            );
+            continue;
+          }
+          if (!this.registry.hasContext(context)) {
+            problems.push(
+              `${entryLabel}: its event decorator names context "${String(context)}", which no forRoot() provides`,
+            );
+            continue;
+          }
+          if (context !== this.context) {
+            continue;
+          }
+          if (perJob) {
+            problems.push(
+              `${entryLabel}: an event listener needs one instance to call, and ${label} is built per job. Put listeners on a singleton`,
+            );
+            continue;
+          }
+          listenerEntries.push({
+            label: entryLabel,
+            listener,
+            ownQueue: metadata?.queue,
+            call: this.#listenerCall(instance, method, entryLabel),
+          });
+        }
+      }
     }
 
     for (const file of files) {
+      const bare = bareSchemaProblem(
+        file.options?.schema,
+        `registerWorker on queue "${file.queue}"`,
+      );
+      if (bare !== undefined) {
+        problems.push(bare);
+      }
       if (groups.has(file.queue)) {
         problems.push(
           `queue "${file.queue}": registerWorker and a @Processor would each claim the other's jobs. A bun-jobs worker claims any job on its queue`,
@@ -604,8 +726,116 @@ export class BunJobsExplorer
 
     assertNoProblems(problems);
     this.#buildWorkers(groups, files, definitions, problems);
+    this.#wireListeners(listenerEntries, problems);
     assertNoProblems(problems);
     this.#reportGlobals();
+  }
+
+  /**
+   * Calls a listener, catching what it throws or rejects with: bun-jobs swallows a
+   * synchronous throw in silence, and an `async` listener's rejection would be
+   * unhandled, so each is logged here and affects nothing.
+   */
+  #listenerCall(
+    instance: object,
+    method: string,
+    label: string,
+  ): (...args: unknown[]) => void {
+    const failed = (error: unknown) => {
+      this.#logger.error(
+        `${label}: an event listener failed: ${(error as Error)?.message ?? String(error)}`,
+        (error as Error)?.stack,
+      );
+    };
+    return (...args) => {
+      try {
+        const result = (
+          instance as Record<string, (...a: unknown[]) => unknown>
+        )[method]!(...args);
+        if (result instanceof Promise) {
+          result.catch(failed);
+        }
+      } catch (error) {
+        failed(error);
+      }
+    };
+  }
+
+  /** Attaches every listener the emitters of this process serve. */
+  #wireListeners(entries: ListenerEntry[], problems: string[]): void {
+    for (const entry of entries) {
+      const { listener, label, ownQueue, call } = entry;
+      switch (listener.source) {
+        case "worker": {
+          const worker = this.registry.workerRef(this.context, ownQueue!);
+          (worker.worker as unknown as NodeJS.EventEmitter).on(
+            listener.event,
+            call,
+          );
+          break;
+        }
+        case "queue": {
+          const queue = this.jobs.queue<unknown, unknown>(listener.queue);
+          (queue as unknown as NodeJS.EventEmitter).on(listener.event, call);
+          this.#listenedQueues.add(listener.queue);
+          break;
+        }
+        case "runner": {
+          const runner = this.jobs.runners.get(listener.id);
+          if (runner === undefined) {
+            problems.push(
+              `${label}: @OnRunnerEvent names runner "${listener.id}", which does not exist by bootstrap`,
+            );
+            break;
+          }
+          (runner as unknown as NodeJS.EventEmitter).on(listener.event, call);
+          break;
+        }
+        default:
+          this.#jobsListeners.push(entry);
+      }
+    }
+  }
+
+  /**
+   * Connects the queues with listeners, so a subscribing one hears other processes,
+   * and opens one notifier for `@OnJobsEvent`, following only what the decorators
+   * name. Before any worker starts, so nothing they do goes unheard.
+   */
+  async #openListeners(): Promise<void> {
+    await Promise.all(
+      [...this.#listenedQueues].map((queue) =>
+        this.jobs.queue<unknown, unknown>(queue).connect(),
+      ),
+    );
+    const entries = this.#jobsListeners;
+    if (entries.length === 0) {
+      return;
+    }
+    if (
+      this.options.jobs === undefined &&
+      this.options.publishEvents !== true
+    ) {
+      this.#logger.warn(
+        "@OnJobsEvent hears only what is published, and publishEvents is off in this process, so its own queues, workers and runners publish nothing unless they set `publish`. Other processes need it too",
+      );
+    }
+    const notifier = await this.jobs.notifier(notifierOptionsFor(entries));
+    this.#notifiers.push(notifier);
+    notifier.on("event", (event) => {
+      for (const { listener, call } of entries) {
+        if (listener.source === "jobs") {
+          const { kind, type, target } = listener.options;
+          if (
+            (kind === undefined || kind === event.kind) &&
+            (type === undefined || type === event.type) &&
+            (target === undefined || target === event.target)
+          ) {
+            call(event);
+          }
+        }
+      }
+    });
   }
 
   /** Records one class on a queue's group, checking its options against the others'. */
@@ -621,6 +851,10 @@ export class BunJobsExplorer
       );
     }
     const options = workerOptionsOf(metadata);
+    const bare = bareSchemaProblem(options.schema, label);
+    if (bare !== undefined) {
+      problems.push(bare);
+    }
     if (!Object.values(options).some((value) => value !== undefined)) {
       return;
     }

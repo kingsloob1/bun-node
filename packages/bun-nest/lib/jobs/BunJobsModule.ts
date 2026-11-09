@@ -36,6 +36,7 @@ import {
 import {
   getBunJobsOptionsToken,
   getBunJobsToken,
+  getJobsNotifierToken,
   getQueueToken,
   getWorkerToken,
 } from "./tokens";
@@ -303,6 +304,7 @@ function moduleOf(
   assertContextName(name);
   const optionsToken = getBunJobsOptionsToken(name);
   const contextToken = getBunJobsToken(name);
+  const notifierToken = getJobsNotifierToken(name);
   const aliases: InjectionToken[] = [
     ...(name === undefined ? [BunJobs] : []),
     ...(token === undefined ? [] : [token]),
@@ -376,8 +378,25 @@ function moduleOf(
         useFactory: (registry: BunJobsRegistry) => registry.lifecycle,
         inject: [BunJobsRegistry],
       },
+      {
+        provide: notifierToken,
+        useFactory: async (
+          explorer: BunJobsExplorer,
+          registry: BunJobsRegistry,
+        ) =>
+          registry.isRequested(notifierToken)
+            ? await explorer.openInjectedNotifier()
+            : undefined,
+        inject: [BunJobsExplorer, BunJobsRegistry],
+      },
     ],
-    exports: [contextToken, optionsToken, BunJobsLifecycle, ...aliases],
+    exports: [
+      contextToken,
+      optionsToken,
+      BunJobsLifecycle,
+      notifierToken,
+      ...aliases,
+    ],
   };
 }
 
@@ -556,7 +575,14 @@ export class BunJobsModule {
       { provide: MODULE_CALL, useValue: crypto.randomUUID() },
     ];
     const exported: InjectionToken[] = [];
-    for (const entry of queues) {
+    for (const entry of queues as unknown[] as (
+      RegisterQueueOptions<TData, TResult> | QueueTokenClass
+    )[]) {
+      if (typeof entry === "string") {
+        throw new ConfigError(
+          `BunJobsModule.registerQueue("${entry as string}"): an entry is an object or a @QueueToken() class, so write { name: "${entry as string}" }`,
+        );
+      }
       const registered = (
         typeof entry === "function" ? { name: entry } : entry
       ) as RegisterQueueOptions;

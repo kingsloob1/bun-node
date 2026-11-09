@@ -147,7 +147,13 @@
         "JobForbiddenError",
         "UnrecoverableOn",
         "BaseJobExceptionFilter",
-        "JobLoggingInterceptor"
+        "JobLoggingInterceptor",
+        "OnWorkerEvent",
+        "OnQueueEvent",
+        "OnJobsEvent",
+        "OnRunnerEvent",
+        "InjectJobsNotifier",
+        "getJobsNotifierToken"
       ],
       "types": [
         "BunJobsApiModuleOptions",
@@ -184,9 +190,18 @@
         "JobPipe",
         "JobProgressFn",
         "OnDenied",
-        "OnInvalid"
+        "OnInvalid",
+        "JobsEventKind",
+        "OnEventOptions",
+        "OnJobsEventOptions",
+        "DriverEvent",
+        "BunQueueEvents",
+        "BunQueueWorkerEvents",
+        "BunRunnerEvents",
+        "JobsNotifier",
+        "JobsNotifierOptions"
       ],
-      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunJobsApiModule.forRoot>>>;\nexport type _jobs = Expect<IsAny<t.BunJobsApiModuleOptions[\"jobs\"]>>;\nexport type _jobsModule = Expect<IsAny<ReturnType<typeof m.BunJobsModule.forRoot>>>;\nm.BunJobsModule.forRoot({ namespace: \"shop\", logger: false, name: \"billing\", isGlobal: false });\n// @ts-expect-error -- namespace is required when the module builds the context\nm.BunJobsModule.forRoot({ logger: false });\nm.BunJobsModule.registerQueue({ name: \"emails\", options: { defaultJobOptions: { attempts: 3 } } });\nconst _queueToken: string = m.getQueueToken(\"emails\", \"billing\");\nm.InjectQueue(\"emails\", \"billing\");\nm.InjectBunJobs(\"billing\");\nm.Processor(\"emails\", { concurrency: 2 });\nm.Process(\"welcome\", { concurrency: 1 });\nm.DefineJob(\"report\", { attempts: 3 });\nm.InjectWorker(\"emails\");\nm.BunJobsModule.registerWorker({ queue: \"emails\", processor: \"./p.ts\", options: { target: \"worker-thread\" } });\nexport type _ref = Expect<IsAny<m.WorkerRef[\"worker\"]>>;\nm.JobData({ property: \"to\" });\nm.Processor(\"emails\", { enhancers: false, onDenied: \"retry\", onInvalid: \"retry\" });\n// @ts-expect-error -- \"fail\" or \"retry\"\nm.Processor(\"emails\", { onDenied: \"drop\" });\nconst _handler: string = (null as unknown as m.BunJobsExecutionContext).getHandlerName();\ntype _Token = abstract new () => import(\"@kingsleyweb/bun-jobs\").BunQueue<{ to: string }, string, \"a\">;\nconst _typedData: Equal<t.QueueJobData<_Token>, { to: string }> = true;\nconst _typedResult: Equal<t.QueueJobResult<_Token>, string> = true;\nconst _typedName: Equal<t.QueueJobName<_Token>, \"a\"> = true;\nexport type _typedDecorator = Expect<IsAny<t.TypedProcessDecorator<_Token>>>;"
+      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunJobsApiModule.forRoot>>>;\nexport type _jobs = Expect<IsAny<t.BunJobsApiModuleOptions[\"jobs\"]>>;\nexport type _jobsModule = Expect<IsAny<ReturnType<typeof m.BunJobsModule.forRoot>>>;\nm.BunJobsModule.forRoot({ namespace: \"shop\", logger: false, name: \"billing\", isGlobal: false });\n// @ts-expect-error -- namespace is required when the module builds the context\nm.BunJobsModule.forRoot({ logger: false });\nm.BunJobsModule.registerQueue({ name: \"emails\", options: { defaultJobOptions: { attempts: 3 } } });\nconst _queueToken: string = m.getQueueToken(\"emails\", \"billing\");\nm.InjectQueue(\"emails\", \"billing\");\nm.InjectBunJobs(\"billing\");\nm.Processor(\"emails\", { concurrency: 2 });\nm.Process(\"welcome\", { concurrency: 1 });\nm.DefineJob(\"report\", { attempts: 3 });\nm.InjectWorker(\"emails\");\nm.BunJobsModule.registerWorker({ queue: \"emails\", processor: \"./p.ts\", options: { target: \"worker-thread\" } });\nexport type _ref = Expect<IsAny<m.WorkerRef[\"worker\"]>>;\nm.JobData({ property: \"to\" });\nm.Processor(\"emails\", { enhancers: false, onDenied: \"retry\", onInvalid: \"retry\" });\n// @ts-expect-error -- \"fail\" or \"retry\"\nm.Processor(\"emails\", { onDenied: \"drop\" });\nconst _handler: string = (null as unknown as m.BunJobsExecutionContext).getHandlerName();\ntype _Token = abstract new () => import(\"@kingsleyweb/bun-jobs\").BunQueue<{ to: string }, string, \"a\">;\nconst _typedData: Equal<t.QueueJobData<_Token>, { to: string }> = true;\nconst _typedResult: Equal<t.QueueJobResult<_Token>, string> = true;\nconst _typedName: Equal<t.QueueJobName<_Token>, \"a\"> = true;\nexport type _typedDecorator = Expect<IsAny<t.TypedProcessDecorator<_Token>>>;\nm.OnWorkerEvent(\"completed:welcome\");\n// @ts-expect-error -- not a job event, so it has no scoped form\nm.OnWorkerEvent(\"ready:welcome\");\nm.OnQueueEvent(\"emails\", \"added\", { context: \"billing\" });\nm.OnJobsEvent({ kind: \"queue\", type: \"completed\", target: \"emails\" });\nm.OnRunnerEvent(\"cleanup\", \"failed\");\nconst _completed: t.JobsEventOf<\"queue\", \"completed\">[\"kind\"] = \"queue\";"
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/jobs",
@@ -200,7 +215,8 @@
         "BUN_JOBS_API_OPTIONS",
         "getBunJobsToken",
         "getQueueToken",
-        "getWorkerToken"
+        "getWorkerToken",
+        "getJobsNotifierToken"
       ]
     },
     {

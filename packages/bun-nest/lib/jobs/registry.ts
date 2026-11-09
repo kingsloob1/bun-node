@@ -5,6 +5,10 @@ import { ConfigError } from "@kingsleyweb/bun-common";
 import { Inject, Injectable, Module } from "@nestjs/common";
 import { ModulesContainer } from "@nestjs/core";
 import { decoratorConfigProblem } from "./bootCheck";
+import {
+  NEST_PROPERTY_DEPS_METADATA,
+  NEST_SELF_DECLARED_DEPS_METADATA,
+} from "./metadata";
 import { BunJobsLifecycle, WorkerRef } from "./lifecycle";
 
 /**
@@ -92,6 +96,24 @@ export function differingOptions(
     .sort();
 }
 
+/**
+ * The problem with a `schema` that is a bare Standard Schema rather than
+ * `{ data, result }`. The types refuse one, but anything typed `any` gets past them,
+ * and bun-jobs then finds no `schema.data` and checks nothing, in silence.
+ *
+ * @returns The problem, or `undefined` when there is none.
+ */
+export function bareSchemaProblem(
+  /** The `schema` option. */
+  schema: unknown,
+  /** Who was given it, for the message. */
+  where: string,
+): string | undefined {
+  return typeof schema === "object" && schema !== null && "~standard" in schema
+    ? `${where}: schema is { data, result }, and this is a bare schema, which would validate nothing. Write schema: { data: YourSchema }`
+    : undefined;
+}
+
 /** One set of options a queue was registered with, and who by. */
 interface Registration {
   /** The options. */
@@ -151,6 +173,46 @@ export class BunJobsRegistry {
     context: string | undefined,
   ): void {
     this.#contexts.set(context, (this.#contexts.get(context) ?? 0) + 1);
+  }
+
+  /**
+   * Whether any class or factory in the application asks for a token, from what its
+   * `@Inject()`s wrote: every module is scanned by the time a provider is built.
+   */
+  isRequested(
+    /** The token. */
+    token: unknown,
+  ): boolean {
+    for (const module of this.modules.values()) {
+      for (const { metatype, inject } of [
+        ...module.providers.values(),
+        ...module.controllers.values(),
+        ...module.injectables.values(),
+      ]) {
+        const asked = (inject ?? []) as unknown[];
+        if (asked.includes(token)) {
+          return true;
+        }
+        if (typeof metatype !== "function") {
+          continue;
+        }
+        const params = (Reflect.getMetadata(
+          NEST_SELF_DECLARED_DEPS_METADATA,
+          metatype,
+        ) ?? []) as { param: unknown }[];
+        const properties = (Reflect.getMetadata(
+          NEST_PROPERTY_DEPS_METADATA,
+          metatype,
+        ) ?? []) as { type: unknown }[];
+        if (
+          params.some(({ param }) => param === token) ||
+          properties.some(({ type }) => type === token)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /** Whether a `forRoot()` or `forRootAsync()` provides this context. */
@@ -240,6 +302,15 @@ export class BunJobsRegistry {
       }
     }
     for (const state of this.#queues.values()) {
+      for (const { options } of state.registrations) {
+        const bare = bareSchemaProblem(
+          (options as { schema?: unknown }).schema,
+          `queue "${state.queue}"`,
+        );
+        if (bare !== undefined) {
+          problems.push(bare);
+        }
+      }
       const [first, ...others] = state.registrations;
       if (first === undefined) {
         continue;

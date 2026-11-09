@@ -2,7 +2,12 @@ import type { QueueTokenClass } from "../queueToken";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import { Inject } from "@nestjs/common";
 import { requireQueueToken } from "../queueToken";
-import { getBunJobsToken, getQueueToken, getWorkerToken } from "../tokens";
+import {
+  getBunJobsToken,
+  getJobsNotifierToken,
+  getQueueToken,
+  getWorkerToken,
+} from "../tokens";
 import { processorOf } from "./consumer";
 
 /**
@@ -74,4 +79,19 @@ export function InjectWorker(
     );
   }
   return Inject(getWorkerToken(metadata.queue, metadata.context));
+}
+
+/**
+ * Injects a `JobsNotifier` following the context's queues and runners, for a
+ * provider that wants the stream itself (`notifier.on("event", …)`, or `for await`).
+ * It costs a subscription per queue, so the module opens it only when a class asks
+ * for it, while Nest builds providers, and closes it on `app.close()`. To hear worker
+ * events, `notifier.hold("worker", queue)`. `@OnJobsEvent` needs none of this.
+ *
+ * @param context The context's `name`; the default context when left out.
+ */
+export function InjectJobsNotifier(
+  context?: string,
+): PropertyDecorator & ParameterDecorator {
+  return Inject(getJobsNotifierToken(context));
 }
