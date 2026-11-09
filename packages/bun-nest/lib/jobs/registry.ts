@@ -3,6 +3,9 @@ import type {
   BunQueue,
   BunQueueWorker,
   BunRunner,
+  SummonController,
+  SummonedArgs,
+  SummonPolicy,
 } from "@kingsleyweb/bun-jobs";
 import type { ModulesContainer as Modules } from "@nestjs/core";
 import type { StartableWorkers } from "./lifecycle";
@@ -154,6 +157,12 @@ function contextLabel(context: string | undefined): string {
 export class BunJobsRegistry {
   /** The workers built so far, by context and queue. */
   readonly #workers = new Map<string, BunQueueWorker<any, any, any>>();
+  /** The controllers `registerQueue()` built, by context. */
+  readonly #controllers = new Map<string | undefined, Set<SummonController>>();
+  /** The summon policies `registerQueue()` was given, by context and queue. */
+  readonly #summons = new Map<string, SummonPolicy>();
+  /** What was wrong with them. */
+  readonly #summonProblems: string[] = [];
   /** The runners `registerRunner()` built, by context. */
   readonly #runners = new Map<string | undefined, Set<BunRunner<any, any>>>();
   /** Each context's workers, for {@link lifecycle}. */
@@ -250,6 +259,104 @@ export class BunJobsRegistry {
     return [...(this.#runners.get(context) ?? [])];
   }
 
+  /**
+   * A queue's summon controller, for `registerQueue`: built from a policy given there,
+   * or the one the context's `summon` option built, and `undefined` when there is neither
+   * and nothing asked for it. One queue has one controller, so a second policy for it is
+   * a problem at boot, as bun-jobs' own "named twice" rule is for its option.
+   *
+   * @throws ConfigError when a class asks for a controller and no policy exists.
+   */
+  summonController(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+    /** The queue. */
+    queue: string,
+    /** The policy `registerQueue` was given. */
+    policy: SummonPolicy | undefined,
+    /** The context. */
+    jobs: BunJobs<any, any>,
+    /** Whether a class asks for it. */
+    requested: boolean,
+  ): SummonController | undefined {
+    if (policy === undefined) {
+      return requested ? jobs.summonController(queue) : undefined;
+    }
+    const key = `${context ?? ""}\0${queue}`;
+    const known = this.#summons.get(key);
+    if (known !== undefined) {
+      if (known !== policy) {
+        this.#summonProblems.push(
+          `queue "${queue}" is given two summon policies by registerQueue. One queue has one controller, so give one`,
+        );
+      }
+      return jobs.summonController(queue);
+    }
+    let existing: SummonController | undefined;
+    try {
+      existing = jobs.summonController(queue);
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "NO_SUMMON_POLICY") {
+        throw error;
+      }
+    }
+    if (existing !== undefined) {
+      this.#summonProblems.push(
+        `queue "${queue}" is named by the context's summon option and by registerQueue. One queue has one controller, so give one`,
+      );
+      return existing;
+    }
+    this.#summons.set(key, policy);
+    const controller = jobs.summonController(queue, policy);
+    const built = this.#controllers.get(context) ?? new Set();
+    built.add(controller);
+    this.#controllers.set(context, built);
+    return controller;
+  }
+
+  /** The summon controllers `registerQueue` built for a context. */
+  controllersOf(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+  ): readonly SummonController[] {
+    return [...(this.#controllers.get(context) ?? [])];
+  }
+
+  /**
+   * The workers a summoned process runs: one per queue its summon names, built with the
+   * summon on them.
+   *
+   * @throws ConfigError when a queue it names has no worker here, naming them.
+   */
+  summonedWorkers(
+    /** This process's summon. */
+    summon: SummonedArgs,
+  ): BunQueueWorker<any, any, any>[] {
+    const contexts = [...this.#startable]
+      .filter(
+        ({ namespace }) =>
+          summon.namespace === undefined || summon.namespace === namespace,
+      )
+      .map(({ context }) => context);
+    const queues = summon.queues ?? [];
+    const found = queues.flatMap((queue) =>
+      contexts.flatMap((context) => {
+        const worker = this.#workers.get(`${context ?? ""}\0${queue}`);
+        return worker === undefined ? [] : [{ queue, worker }];
+      }),
+    );
+    const missing = queues.filter(
+      (queue) => !found.some((entry) => entry.queue === queue),
+    );
+    if (missing.length > 0) {
+      throw new ConfigError(
+        `runSummonedApplication: the summon names ${missing.map((queue) => `queue "${queue}"`).join(", ")}${summon.namespace === undefined ? "" : ` in namespace "${summon.namespace}"`}, and no @Processor or registerWorker in this module consumes it. A BunJobsModule.forRoot on that namespace, with a processor on it, is what runs it`,
+        { missing },
+      );
+    }
+    return found.map(({ worker }) => worker);
+  }
+
   /** Records a context's workers, for {@link lifecycle}. */
   addWorkers(
     /** Starts and stops them. */
@@ -323,7 +430,7 @@ export class BunJobsRegistry {
   /** Everything wrong that the application's registrations show, one line each. */
   problems(): string[] {
     this.#scan();
-    const problems: string[] = [];
+    const problems: string[] = [...this.#summonProblems];
     const decorators = decoratorConfigProblem(this.modules);
     if (decorators !== undefined) {
       problems.push(decorators);

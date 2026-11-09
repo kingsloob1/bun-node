@@ -1,11 +1,11 @@
 # bun-jobs in NestJS: modules, decorators and the Nest pipeline for jobs
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
-§16 name accepted (§14 records the answers). PR-n1 to PR-n4 are merged (#721, #722,
-#724, #727), and PR-n5 is built. PR-n6 to PR-n10 are not started.** The sections
-below were corrected to match what was built, each correction marked; §2 still
-describes `develop` as it was before this work, and everything §3 to §12 assign to
-PR-n6 and later is still a design.
+§16 name accepted (§14 records the answers). PR-n1 to PR-n5 are merged (#721, #722,
+#724, #727, #730), and PR-n7 is built. PR-n6, PR-n8, PR-n9 and PR-n10 are not
+started.** The sections below were corrected to match what was built, each correction
+marked; §2 still describes `develop` as it was before this work, and what §3 to §12
+assign to those PRs is still a design.
 
 Implementation plan for integrating `@kingsleyweb/bun-jobs` into NestJS
 through `@kingsleyweb/bun-nest`. The user asked for this on 2026-10-10:
@@ -577,7 +577,7 @@ Each entry provides `getQueueToken(name, context)` as
 | `@InjectJobsNotifier(context?)` | a `JobsNotifier`, closed at shutdown | §6.1. **As built (PR-n4):** opened while Nest builds providers, since what is injected must exist by then, and only when a class or factory asks for the token (`getJobsNotifierToken`), read from what its `@Inject()` wrote, so an app that doesn't pays nothing. `@OnJobsEvent` has its own, narrower one, opened at bootstrap |
 | `@InjectRunner(id, context?)` | a registered `BunRunner` | §8.4 |
 | `@InjectWorker(ProcessorClass)`, or `@InjectWorker(queue, context?)` | a `WorkerRef`, whose `worker` getter returns the `BunQueueWorker` serving that queue | The worker is built at bootstrap, after DI, so what is injected is a provider-backed handle. Its getter throws a `ConfigError` before `onApplicationBootstrap`. **As built (PR-n2; the user kept it):** a provider per processor class is impossible, since a module's providers are fixed before Nest knows the classes, and registering at load is ruled out by `sideEffects: false`. So it reads the class's queue from its `@Processor` and injects `getWorkerToken(queue, context)`, which `registerQueue()` and `registerWorker()` provide: **import `registerQueue` where it is injected**, as for `@InjectQueue`. A class declared later, or across an import cycle, needs the queue's name |
-| `@InjectSummonController(queue, context?)` | `jobs.summonController(queue)` (`BunJobs.ts:810`) [S] | §9.1 |
+| `@InjectSummonController(queue, context?)` | `jobs.summonController(queue)` (`BunJobs.ts:810`) [S] | §9.1. **As built (PR-n7):** `registerQueue()` provides it, so import that where it is injected, as for `@InjectWorker` |
 
 There is **no `@InjectFlowProducer`**. bullmq needs a separate
 `FlowProducer`, while `addFlow` is a method of every bun-jobs queue (README
@@ -710,7 +710,7 @@ rather than letting it half work.
   `providers: [Class]`, and scans nothing for a custom provider, so on 11.2.7 and
   12.2.0 the job runs **without the guard**, with no error.
   `{ provide: X, useClass: X }` does the same on 11.2.7 and 12.0.0, and works on
-  12.2.0 (12.1.3's scanner lacks it too). So a
+  12.2.0 (12.1.3's scanner lacks it too, and 11.2.8 backports it). So a
   class-based enhancer (on the class, the method or a parameter) that Nest would not
   run is a `ConfigError` at boot, naming it; the `useClass` case is asserted per
   major. An enhancer given as an instance works everywhere, and an alias of a plain
@@ -1577,6 +1577,10 @@ BunJobsModule.registerRunner({
   policy)` (`BunJobs.ts:810`) [S] at bootstrap.
   - Two sources naming the same queue is a `ConfigError`, matching
     bun-jobs' "A queue named twice anywhere in the option" rule [S].
+  - **As built (PR-n7):** the controller is built while Nest builds providers, not at
+    bootstrap, since `@InjectSummonController` injects it. `registerQueueAsync`'s factory
+    may answer `summon` too. A controller the module built closes in the fallback drain,
+    on a borrowed context too. Groups and shared units stay in the `summon` option.
 - Summoners from `defineSummoner` or `defineComputeProvider` are values, and
   often need configuration. `forRootAsync`'s factory is where they are
   built, from injected config.
@@ -1612,12 +1616,24 @@ await runSummonedApplication(WorkerModule, { idleFor: 30_000 });
 5. hands it to `runSummoned()`, which runs it until idle, a deadline or a
    signal, then exits.
 
-The Nest context is closed in `runSummoned`'s close path, after the worker
-has closed and before `process.exit`. The exact hook is to be agreed with
-the bun-jobs agent [I]. `runSummoned`'s `signals` stay its own, so Nest's
-`enableShutdownHooks` must stay off in that process, or the two would race
-for `SIGTERM`. The helper refuses an app with shutdown hooks enabled, if
-that can be detected (§6.3's [U]).
+**As built (PR-n7):** the helper closes the Nest context in `runSummoned`'s `beforeExit`,
+a hook bun-jobs gained for this, which runs once the workers have closed and before the
+exit. The user decided against the first build, which passed `exit: false`
+and so lost the hard backstop for the close. So a provider that hangs in `onModuleDestroy`
+is cut by the backstop with the unit's code; the helper does not set `exit` or work out
+`"in-invocation"` itself, and both mean what they mean in `runSummoned`. The close has the
+sooner of `beforeExitTimeout` (5 s) and what the budget leaves. A `beforeExit` of the
+caller's own runs first.
+
+`autoStart: false` is not set in the user's module: the helper builds the application
+around it with a role provider (`withApplicationRole`), so a module shared with the main
+process is unchanged, and nothing starts. `createProcessorContext` does the same, so a shared
+module cannot start consuming from inside an attempt. The context is matched by namespace, and
+a queue the summon names with no worker here is a `ConfigError` naming it, before anything runs.
+
+`runSummoned`'s `signals` stay its own, so Nest's `enableShutdownHooks` must stay off in
+that process, or the two would race for `SIGTERM`. The helper cannot detect it (§6.3), so the
+docs say so.
 
 ### 9.2 Remote executors and the gateway [D]
 
@@ -1630,12 +1646,20 @@ that can be detected (§6.3's [U]).
   - The executor must receive the body **unread**, because the signature
     covers the exact bytes (README "Mount it where the body is untouched")
     [S]. The module mounts with bun-common's per-route `requestParsing`
-    opt-out (CLAUDE.md; bun-nest README "Per-route parsing") [S]. **[I]**:
-    to be proved by a test that a signed request verifies through the
-    module.
+    opt-out (CLAUDE.md; bun-nest README "Per-route parsing") [S]. **Corrected by
+    PR-n7:** that opt-out cannot help, since the adapter reads the body before any
+    route's middleware unless `deferBody` is on. The module rebuilds a `Request` from the
+    bytes bun-common retains (`req.buffer`), which is what the signature covers, and needs
+    no adapter option. Measured on the defaults, `deferBody`, `parseBody: false` and
+    `bodyParser: false` [M]. With `retainBuffer: false` no bytes are kept, so it answers 500
+    and logs the cause.
   - Handlers run through the pipeline, under the same `"bun-jobs"` context
-    type (the executor's `job` and `ctx` have the same shape [I]: to be
-    checked against `lib/remote/types.ts`).
+    type. **Corrected by PR-n7:** the shapes are close but not the same. A `RemoteJob` has
+    `log` and `updateProgress` and nothing needing a driver, so `isBunJob()` is false for it,
+    and a `RemoteContext` has no `logger`, which the module adds as Nest's, since
+    `@JobLogger()` and `JobLoggingInterceptor` read it. The other decorators read as they do
+    on a worker. `@RemoteHandler("*")` is the catch-all. `forRootAsync` was added, since a
+    secret comes from configuration.
 - **The gateway**, which hosts executors that dial in, is not built yet
   (README: "The gateway side that calls it lands in a later release") [S].
   GW's PR-g2 already plans `BunJobsGatewayModule` in bun-nest's `./jobs`
@@ -2111,7 +2135,7 @@ existing ones do [S]. For the driver-backed ones,
 | R13 | Nest's `ExternalExceptionFilter` logs every unfiltered job error with its stack, per attempt [M] | certain | Q5 |
 | R14 | **`@JobData()` as BODY puts job data in front of an app's global pipes** (D13): a global `ValidationPipe` with `whitelist`/`forbidNonWhitelisted`, or a pipe that assumes an HTTP body, now runs on jobs | medium, for apps with such pipes | it is the point of the choice, as with microservices' `@Payload()`; the README's validation paragraph says so first; Q19 lets the user choose `"custom"` instead |
 | R15 | **Two `ConfigError` classes**: bun-common's (the module's boot checks, as bun-nest's other modules) and bun-jobs' (what `createJobsApi`, `jobsUi()` and bun-jobs throw) [S, §2.3] | low | a boot failure is read, not caught; the README names both, and `instanceof` checks in tests use the right one |
-| R16 | **A `useFactory` or `useValue` processor silently runs without its enhancer classes, on Nest 11 and 12, and a `useClass` one before 12.2** (§5.2) [M; first written as 11 alone, [I]] | low: processors are classes, but the failure skips a guard | a `ConfigError` at boot naming the enhancer, asserted per major (PR-n3); an enhancer given as an instance works everywhere |
+| R16 | **A `useFactory` or `useValue` processor silently runs without its enhancer classes, on Nest 11 and 12, and a `useClass` one before 11.2.8 and 12.2** (§5.2) [M; first written as 11 alone, [I]] | low: processors are classes, but the failure skips a guard | a `ConfigError` at boot naming the enhancer, asserted per major (PR-n3); an enhancer given as an instance works everywhere |
 | R17 | **`ENTRY_PROVIDER_WATERMARK` is an internal of Nest's**, which `@Processor` and `@DefineJob` set so a request-scoped global enhancer reaches a job (§5.5) [M on 11.2.7 and 12.2.0] | low: the same class of risk as R1 | written by value, with a test that it equals Nest's constant and a test that the guard is asked, which fails without it. Were Nest to change it, that test is what would say so |
 
 **The Bun issue (R3).** The reproduction is Bun-only, with no Nest:
@@ -2318,6 +2342,12 @@ the module option `registryWorker`; `{ context, enhancers, onDenied, onInvalid }
 `QueueJobData`, `QueueJobResult`, `QueueJobName`, `TypedProcessDecorator`. bun-jobs'
 `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`,
 `NameLimits` and `ProcessorContext` are re-exported as types.
+
+**Added while building PR-n7:** `getSummonControllerToken`;
+`BunRemoteExecutorModule.forRootAsync`; the types `RunSummonedApplicationOptions`,
+`RemoteHandlerOptions`, `BunRemoteExecutorModuleOptions`,
+`BunRemoteExecutorModuleAsyncOptions`; and bun-jobs' `RunSummonedOptions`, `SummonController`,
+`SummonedExit` and `SummonPolicy` re-exported as types.
 
 **Added while building PR-n5:** the type `ScheduleOptions`, which `CronOptions` and
 `EveryOptions` alias, and bun-jobs' `BunRunner` and `BunRunnerOptions` re-exported as

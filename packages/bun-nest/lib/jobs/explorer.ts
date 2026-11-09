@@ -25,6 +25,7 @@ import type {
 import type { EventListenerMetadata } from "./decorators/events";
 import type { JobsHostBinding } from "./JobsHost";
 import type { StartableWorkers } from "./lifecycle";
+import type { BunJobsApplicationRole } from "./applicationRole";
 import type { FailurePolicy } from "./pipeline";
 import type { BunJobsRegistry } from "./registry";
 import { ConfigError } from "@kingsleyweb/bun-common";
@@ -58,7 +59,7 @@ import {
 } from "./registry";
 
 /** The parts of Nest's `InstanceWrapper` the explorer reads. */
-interface Wrapper {
+export interface Wrapper {
   /** The provider's token. */
   readonly token: unknown;
   /** The class, or a factory; `null` for a value. */
@@ -90,7 +91,7 @@ interface ContainerView {
 }
 
 /** Whether a wrapper is a plain class provider, the only kind Nest scans for enhancers. */
-function isClassProvider(wrapper: Wrapper): boolean {
+export function isClassProvider(wrapper: Wrapper): boolean {
   return (
     typeof wrapper.metatype === "function" &&
     (wrapper.inject === undefined || wrapper.inject === null)
@@ -102,7 +103,7 @@ function isClassProvider(wrapper: Wrapper): boolean {
  * a class given to `@UseGuards` and its kind by scanning `providers: [Class]`,
  * and builds it beside the provider. For a provider made by `useFactory` or
  * `useValue` it scans nothing, on Nest 11 and 12, and the job runs **without the
- * guard** (measured); a `useClass` provider likewise before 12.2. An instance given to
+ * guard** (measured); a `useClass` provider likewise before 11.2.8 and 12.2. An instance given to
  * the decorator is used as it is, so it works everywhere.
  */
 function droppedEnhancers(
@@ -240,7 +241,7 @@ interface ManagedWorker {
 }
 
 /** The class a provider stands for: bullmq's ternary, so factories and values count. */
-function classOf(wrapper: Wrapper): unknown {
+export function classOf(wrapper: Wrapper): unknown {
   const made = wrapper.metatype === undefined || wrapper.metatype === null;
   const factory = wrapper.inject !== undefined && wrapper.inject !== null;
   return made || factory
@@ -347,6 +348,108 @@ function isInProcess(target: unknown): boolean {
   );
 }
 
+/** The checks on one handler's method. */
+export function checkHandlerMethod(
+  wrapper: Wrapper,
+  target: { prototype: object },
+  method: string,
+  label: string,
+  enhancers: boolean,
+  problems: string[],
+): void {
+  const handler = (target.prototype as Record<string, object>)[method]!;
+  const cached = Reflect.getMetadata(CACHE_WRAPPED_METADATA, handler) as
+    string | undefined;
+  if (cached !== undefined && cached !== "CacheEvict") {
+    problems.push(
+      `${label}: @${cached} on a job handler would cache across jobs, so a later job would complete with an earlier one's result without running. Cache inside the method instead`,
+    );
+  }
+  if (!enhancers) {
+    if (decoratedParams(target, method).size > 0) {
+      problems.push(
+        `${label}: enhancers: false calls the method as (job, ctx), so its parameter decorators would never be read`,
+      );
+    }
+    return;
+  }
+  const dropped = droppedEnhancers(wrapper, target, method);
+  if (dropped.length > 0) {
+    problems.push(
+      `${label}: Nest would silently not run ${dropped.join(", ")}, since it finds an enhancer class only on a plain class provider. Register it as providers: [${target.prototype.constructor.name}], or give the decorator an instance`,
+    );
+  }
+  const missing = undecoratedParams(target, method);
+  if (missing.length > 0) {
+    problems.push(
+      `${label}: parameter ${missing.join(", ")} has no decorator. Once one parameter is decorated every one must be, or the rest arrive as null: use @CurrentJob(), @JobContext(), or none at all for (job, ctx)`,
+    );
+  }
+}
+
+/** What one handler runs under. */
+export interface HandlerSettings extends FailurePolicy {
+  /** The `@Process` or `@DefineJob` name, or `"*"`. */
+  readonly handlerName: string;
+  /** Whether the pipeline runs. */
+  readonly enhancers: boolean;
+}
+
+/** How one method is called: through the pipeline, unless told otherwise. */
+export function handlerInvoker(
+  /** What the pipeline and a per-job instance need. */
+  deps: {
+    readonly ecc: ExternalContextCreator;
+    readonly moduleRef: ModuleRef;
+  },
+  wrapper: Wrapper,
+  method: string,
+  perJob: boolean,
+  settings: HandlerSettings,
+  /** Told of each instance built per job. */
+  onInstance?: (instance: object) => void,
+): HandlerEntry["invoke"] {
+  type Instance = Record<string, (...args: unknown[]) => unknown>;
+  type Run = (job: Job<any, any, any>, ctx: ProcessorContext) => unknown;
+  const { enhancers, handlerName } = settings;
+  const runOf = (
+    instance: Instance,
+    contextId?: Parameters<ExternalContextCreator["create"]>[5],
+  ): Run =>
+    enhancers
+      ? buildPipeline(deps.ecc, instance, method, contextId)
+      : (job, ctx) => instance[method]!(job, ctx);
+  const settle = async (
+    run: Run,
+    job: Job<any, any, any>,
+    ctx: ProcessorContext,
+  ): Promise<unknown> => {
+    recordHandlerName(ctx, handlerName);
+    try {
+      return await run(job, ctx);
+    } catch (error) {
+      throw enhancers ? mapPipelineFailure(error, job, settings) : error;
+    }
+  };
+  if (!perJob) {
+    const run = runOf(wrapper.instance as Instance);
+    return (job, ctx) => settle(run, job, ctx);
+  }
+  return async (job, ctx) => {
+    // Consults a ContextIdStrategy, so a durable tree (a tenant per job) can
+    // attach; it writes nothing on the job. Public API only, as @nestjs/cqrs.
+    const contextId = ContextIdFactory.getByRequest(job);
+    deps.moduleRef.registerRequestByContextId(job, contextId);
+    const instance = await deps.moduleRef.resolve<unknown, Instance>(
+      wrapper.token as never,
+      contextId,
+      { strict: false },
+    );
+    onInstance?.(instance);
+    return settle(runOf(instance, contextId), job, ctx);
+  };
+}
+
 /**
  * Finds the application's processors at `onApplicationBootstrap`, builds one
  * worker per queue, starts them, and drains them on `app.close()`.
@@ -405,14 +508,21 @@ export class BunJobsExplorer
     private readonly moduleRef: ModuleRef,
     /** Builds each handler's pipeline. */
     private readonly ecc: ExternalContextCreator,
+    /** What this application is for, when a helper built it. */
+    private readonly role?: BunJobsApplicationRole,
   ) {}
+
+  /** The context's namespace. */
+  get namespace(): string {
+    return this.jobs.namespace;
+  }
 
   /** Finds, checks and builds everything, then starts unless told otherwise. */
   async onApplicationBootstrap(): Promise<void> {
     this.#build();
     this.#built = true;
     await this.#openListeners();
-    if (this.options.autoStart !== false) {
+    if (this.options.autoStart !== false && this.role === undefined) {
       await this.start();
     }
   }
@@ -493,7 +603,12 @@ export class BunJobsExplorer
           }),
       ),
     ]);
-    await Promise.all(this.#notifiers.map((notifier) => notifier.close()));
+    await Promise.all([
+      ...this.#notifiers.map((notifier) => notifier.close()),
+      ...this.registry
+        .controllersOf(this.context)
+        .map((controller) => controller.close()),
+    ]);
   }
 
   /** The notifier `@InjectJobsNotifier()` injects, opened on `jobs.notifier()`. */
@@ -680,7 +795,7 @@ export class BunJobsExplorer
               onInvalid: metadata.options.onInvalid,
             }),
           });
-          this.#checkMethod(
+          checkHandlerMethod(
             wrapper,
             target as { prototype: object },
             method,
@@ -743,7 +858,7 @@ export class BunJobsExplorer
             onInvalid: define.options?.onInvalid,
           }),
         });
-        this.#checkMethod(
+        checkHandlerMethod(
           wrapper,
           target as { prototype: object },
           method,
@@ -808,7 +923,7 @@ export class BunJobsExplorer
               onInvalid,
             }),
           });
-          this.#checkMethod(
+          checkHandlerMethod(
             wrapper,
             target as { prototype: object },
             method,
@@ -1077,96 +1192,23 @@ export class BunJobsExplorer
     return own ?? this.options.enhancers ?? true;
   }
 
-  /** The checks on one handler's method. */
-  #checkMethod(
-    wrapper: Wrapper,
-    target: { prototype: object },
-    method: string,
-    label: string,
-    enhancers: boolean,
-    problems: string[],
-  ): void {
-    const handler = (target.prototype as Record<string, object>)[method]!;
-    const cached = Reflect.getMetadata(CACHE_WRAPPED_METADATA, handler) as
-      string | undefined;
-    if (cached !== undefined && cached !== "CacheEvict") {
-      problems.push(
-        `${label}: @${cached} on a job handler would cache across jobs, so a later job would complete with an earlier one's result without running. Cache inside the method instead`,
-      );
-    }
-    if (!enhancers) {
-      if (decoratedParams(target, method).size > 0) {
-        problems.push(
-          `${label}: enhancers: false calls the method as (job, ctx), so its parameter decorators would never be read`,
-        );
-      }
-      return;
-    }
-    const dropped = droppedEnhancers(wrapper, target, method);
-    if (dropped.length > 0) {
-      problems.push(
-        `${label}: Nest would silently not run ${dropped.join(", ")}, since it finds an enhancer class only on a plain class provider. Register it as providers: [${target.prototype.constructor.name}], or give the decorator an instance`,
-      );
-    }
-    const missing = undecoratedParams(target, method);
-    if (missing.length > 0) {
-      problems.push(
-        `${label}: parameter ${missing.join(", ")} has no decorator. Once one parameter is decorated every one must be, or the rest arrive as null: use @CurrentJob(), @JobContext(), or none at all for (job, ctx)`,
-      );
-    }
-  }
-
-  /** How one method is called: through the pipeline, unless told otherwise. */
+  /** How one method is called; see {@link handlerInvoker}. */
   #invoker(
     wrapper: Wrapper,
     method: string,
     perJob: boolean,
-    settings: FailurePolicy & {
-      /** The `@Process` or `@DefineJob` name, or `"*"`. */
-      readonly handlerName: string;
-      /** Whether the pipeline runs. */
-      readonly enhancers: boolean;
-    },
+    settings: HandlerSettings,
   ): HandlerEntry["invoke"] {
-    type Instance = Record<string, (...args: unknown[]) => unknown>;
-    type Run = (job: Job<any, any, any>, ctx: ProcessorContext) => unknown;
-    const { enhancers, handlerName } = settings;
-    const runOf = (
-      instance: Instance,
-      contextId?: Parameters<ExternalContextCreator["create"]>[5],
-    ): Run =>
-      enhancers
-        ? buildPipeline(this.ecc, instance, method, contextId)
-        : (job, ctx) => instance[method]!(job, ctx);
-    const settle = async (
-      run: Run,
-      job: Job<any, any, any>,
-      ctx: ProcessorContext,
-    ): Promise<unknown> => {
-      recordHandlerName(ctx, handlerName);
-      try {
-        return await run(job, ctx);
-      } catch (error) {
-        throw enhancers ? mapPipelineFailure(error, job, settings) : error;
-      }
-    };
-    if (!perJob) {
-      const run = runOf(wrapper.instance as Instance);
-      return (job, ctx) => settle(run, job, ctx);
-    }
-    return async (job, ctx) => {
-      // Consults a ContextIdStrategy, so a durable tree (a tenant per job) can
-      // attach; it writes nothing on the job. Public API only, as @nestjs/cqrs.
-      const contextId = ContextIdFactory.getByRequest(job);
-      this.moduleRef.registerRequestByContextId(job, contextId);
-      const instance = await this.moduleRef.resolve<unknown, Instance>(
-        wrapper.token as never,
-        contextId,
-        { strict: false },
-      );
-      this.#bindHost(instance);
-      return settle(runOf(instance, contextId), job, ctx);
-    };
+    return handlerInvoker(
+      { ecc: this.ecc, moduleRef: this.moduleRef },
+      wrapper,
+      method,
+      perJob,
+      settings,
+      (instance) => {
+        this.#bindHost(instance);
+      },
+    );
   }
 
   /** Gives a {@link JobsHost} instance its worker and drain. */
@@ -1223,7 +1265,7 @@ export class BunJobsExplorer
             }
             return handler.invoke(job, ctx);
           },
-          group.options[0]?.options,
+          this.#summoned(queue, group.options[0]?.options),
         );
         this.#workers.push({ worker, ran: false });
         this.registry.bindWorker(this.context, queue, worker);
@@ -1249,7 +1291,7 @@ export class BunJobsExplorer
         const worker = this.jobs.worker(
           file.queue,
           file.processor,
-          file.options,
+          this.#summoned(file.queue, file.options),
         );
         this.#workers.push({ worker, ran: false });
         this.registry.bindWorker(this.context, file.queue, worker);
@@ -1280,6 +1322,23 @@ export class BunJobsExplorer
       }
     }
     this.#installDrains();
+  }
+
+  /**
+   * A worker's options, with this process's summon on them when it is the worker a
+   * summoned process was started for, in the namespace and on a queue it names.
+   */
+  #summoned(
+    queue: string,
+    options: BunJobsWorkerOptions | undefined,
+  ): BunJobsWorkerOptions | undefined {
+    const summon = this.role?.summon;
+    return summon !== undefined &&
+      (summon.namespace === undefined ||
+        summon.namespace === this.jobs.namespace) &&
+      summon.queues?.includes(queue) === true
+      ? { ...options, summon }
+      : options;
   }
 
   /** Adds one drain to run in an instance's `onModuleDestroy`. */

@@ -5,6 +5,8 @@ import { ConfigError } from "@kingsleyweb/bun-common";
 export interface StartableWorkers {
   /** The context's `name`; `undefined` for the default context. */
   readonly context: string | undefined;
+  /** The context's namespace. */
+  readonly namespace: string;
   /** Starts every worker not running; see {@link BunJobsLifecycle.start}. */
   start: () => Promise<void>;
   /** Parks every running worker; see {@link BunJobsLifecycle.stop}. */

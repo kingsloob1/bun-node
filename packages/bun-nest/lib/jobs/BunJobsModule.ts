@@ -3,6 +3,7 @@ import type {
   BunQueue,
   BunRunner,
   BunRunnerOptions,
+  SummonPolicy,
 } from "@kingsleyweb/bun-jobs";
 import type { LoggerLike } from "@kingsleyweb/bun-common";
 import type {
@@ -16,6 +17,7 @@ import type {
   Provider,
   Type,
 } from "@nestjs/common";
+import type { BunJobsApplicationRole } from "./applicationRole";
 import type { BunJobsWorkerOptions } from "./decorators/consumer";
 import type { BunJobsShutdownOptions } from "./explorer";
 import type { QueueTokenClass } from "./queueToken";
@@ -30,6 +32,7 @@ import {
   ModuleRef,
 } from "@nestjs/core";
 import { BunJobsExplorer, RegisteredWorker } from "./explorer";
+import { BUN_JOBS_APPLICATION_ROLE } from "./applicationRole";
 import { BunJobsLifecycle } from "./lifecycle";
 import { requireQueueToken } from "./queueToken";
 import {
@@ -44,6 +47,7 @@ import {
   getJobsNotifierToken,
   getQueueToken,
   getRunnerToken,
+  getSummonControllerToken,
   getWorkerToken,
 } from "./tokens";
 
@@ -190,6 +194,13 @@ export interface RegisterQueueOptions<TData = unknown, TResult = unknown> {
    * `ConfigError` at boot. A registration with none asks for nothing.
    */
   options?: BunJobsQueueOptions<TData, TResult>;
+  /**
+   * Summon compute for this queue: `jobs.summonController(queue, policy)`, built while
+   * Nest builds providers and injectable with `@InjectSummonController`. A queue named
+   * here and in the context's `summon` option, or given two policies, is a `ConfigError`
+   * at boot. A group or a shared unit goes in the `summon` option.
+   */
+  summon?: SummonPolicy;
 }
 
 /** One queue to register with options built while the application boots. */
@@ -210,8 +221,8 @@ export interface RegisterQueueAsyncOptions extends Pick<
   useFactory: (
     ...args: any[]
   ) =>
-    | Pick<RegisterQueueOptions, "options">
-    | Promise<Pick<RegisterQueueOptions, "options">>;
+    | Pick<RegisterQueueOptions, "options" | "summon">
+    | Promise<Pick<RegisterQueueOptions, "options" | "summon">>;
 }
 
 /** One processor file to run as a worker the module owns. */
@@ -385,6 +396,7 @@ function moduleOf(
           discovery: DiscoveryService,
           moduleRef: ModuleRef,
           ecc: ExternalContextCreator,
+          role?: BunJobsApplicationRole,
         ) => {
           const explorer = new BunJobsExplorer(
             name,
@@ -394,6 +406,7 @@ function moduleOf(
             discovery,
             moduleRef,
             ecc,
+            role,
           );
           registry.addWorkers(explorer);
           return explorer;
@@ -405,6 +418,7 @@ function moduleOf(
           DiscoveryService,
           ModuleRef,
           ExternalContextCreator,
+          { token: BUN_JOBS_APPLICATION_ROLE, optional: true },
         ],
       },
       {
@@ -493,6 +507,37 @@ function workerRefProvider(
     useFactory: (registry: BunJobsRegistry) =>
       registry.workerRef(context, queue),
     inject: [BunJobsRegistry],
+  };
+}
+
+/** A queue's summon controller; see {@link BunJobsRegistry.summonController}. */
+function summonProvider(
+  queue: string,
+  context: string | undefined,
+  policyOf: (
+    args: unknown[],
+  ) => SummonPolicy | undefined | Promise<SummonPolicy | undefined>,
+  inject: (InjectionToken | OptionalFactoryDependency)[] = [],
+): Provider {
+  const token = getSummonControllerToken(queue, context);
+  return {
+    provide: token,
+    useFactory: async (
+      jobs: BunJobs<any, any> | undefined,
+      registry: BunJobsRegistry,
+      ...args: unknown[]
+    ) => {
+      const policy = await policyOf(args);
+      const requested = registry.isRequested(token);
+      if (jobs === undefined) {
+        if (policy === undefined && !requested) {
+          return undefined;
+        }
+        throw missingContext(queue, context);
+      }
+      return registry.summonController(context, queue, policy, jobs, requested);
+    },
+    inject: [contextDependency(context), BunJobsRegistry, ...inject],
   };
 }
 
@@ -647,8 +692,13 @@ export class BunJobsModule {
           inject: [contextDependency(context), BunJobsRegistry],
         }),
         workerRefProvider(queue, context),
+        summonProvider(queue, context, () => registered.summon),
       );
-      exported.push(...tokens, getWorkerToken(queue, context));
+      exported.push(
+        ...tokens,
+        getWorkerToken(queue, context),
+        getSummonControllerToken(queue, context),
+      );
     }
     return {
       module: BunJobsModule,
@@ -679,6 +729,9 @@ export class BunJobsModule {
       );
       const declaration = { queue, context, async: true };
       imports.push(...(entry.imports ?? []));
+      // One call of the factory, for the queue's options and its summon policy.
+      let made: ReturnType<RegisterQueueAsyncOptions["useFactory"]> | undefined;
+      const make = (args: unknown[]) => (made ??= entry.useFactory(...args));
       providers.push(
         ...queueProviders(tokens, {
           useFactory: declareQueueFactory(
@@ -690,7 +743,7 @@ export class BunJobsModule {
               if (jobs === undefined) {
                 throw missingContext(queue, context);
               }
-              const { options } = await entry.useFactory(...args);
+              const { options } = await make(args);
               return registry.queue(declaration, jobs, options);
             },
             declaration,
@@ -702,8 +755,18 @@ export class BunJobsModule {
           ],
         }),
         workerRefProvider(queue, context),
+        summonProvider(
+          queue,
+          context,
+          async (args) => (await make(args)).summon,
+          entry.inject,
+        ),
       );
-      exported.push(...tokens, getWorkerToken(queue, context));
+      exported.push(
+        ...tokens,
+        getWorkerToken(queue, context),
+        getSummonControllerToken(queue, context),
+      );
     }
     return { module: BunJobsModule, imports, providers, exports: exported };
   }

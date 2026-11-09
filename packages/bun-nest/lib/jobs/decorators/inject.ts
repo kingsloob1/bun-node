@@ -7,6 +7,7 @@ import {
   getJobsNotifierToken,
   getQueueToken,
   getRunnerToken,
+  getSummonControllerToken,
   getWorkerToken,
 } from "../tokens";
 import { processorOf } from "./consumer";
@@ -95,6 +96,21 @@ export function InjectRunner(
   context?: string,
 ): PropertyDecorator & ParameterDecorator {
   return Inject(getRunnerToken(id, context));
+}
+
+/**
+ * Injects a queue's `SummonController`, for `status()`, `reset()` and `now()`: the one
+ * the context's `summon` option built, or `registerQueue({ name, summon })`'s. Import
+ * `registerQueue` for that queue where this is injected.
+ *
+ * @param queue The queue's name.
+ * @param context The context's `name`; the default context when left out.
+ */
+export function InjectSummonController(
+  queue: string,
+  context?: string,
+): PropertyDecorator & ParameterDecorator {
+  return Inject(getSummonControllerToken(queue, context));
 }
 
 /**
