@@ -425,6 +425,12 @@ export function compileJobCheck(
       `${where}: schema must be an object { data, result }`,
     );
   }
+  // A Standard Schema given directly has neither key, so it would check nothing.
+  if ("~standard" in schema) {
+    throw new ConfigError(
+      `${where}: schema must be { data, result }, not a bare schema: use { data: schema }`,
+    );
+  }
   const data = assertSchema(schema.data, `${where}: schema.data`);
   const result = assertSchema(schema.result, `${where}: schema.result`);
   if (data === undefined && result === undefined) return undefined;

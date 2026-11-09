@@ -280,10 +280,17 @@ export class BunJobsRegistry {
       return jobs.queue<unknown, unknown>(declaration.queue);
     }
     state.created = true;
-    return jobs.queue<unknown, unknown>(
-      declaration.queue,
-      state.registrations[0]?.options,
+    const options = state.registrations[0]?.options;
+    // bun-jobs refuses this too, with its own error class: say it in ours,
+    // since providers are built before the boot check collects its problems.
+    const bare = bareSchemaProblem(
+      (options as { schema?: unknown } | undefined)?.schema,
+      `queue "${declaration.queue}"`,
     );
+    if (bare !== undefined) {
+      throw new ConfigError(bare);
+    }
+    return jobs.queue<unknown, unknown>(declaration.queue, options);
   }
 
   /** Everything wrong that the application's registrations show, one line each. */
