@@ -403,15 +403,20 @@ export function bulkPromote(
   );
 }
 
-/** `PUT /queues/:queue/limits`; `null` removes them. Resolves the stored limits. */
+/** `PUT /queues/:queue/limits`. Resolves the stored limits. */
 export function setQueueLimits(
   api: ApiClient,
   queue: string,
-  body: QueueLimitsBody | null,
+  body: QueueLimitsBody,
 ) {
   return api.request<QueueLimitsDto | null>("PUT", base(queue, "/limits"), {
     body,
   });
+}
+
+/** `DELETE /queues/:queue/limits`. */
+export function removeQueueLimits(api: ApiClient, queue: string) {
+  return api.request<QueueLimitsDto | null>("DELETE", base(queue, "/limits"));
 }
 
 /** `GET /queues/:queue/workers`. */

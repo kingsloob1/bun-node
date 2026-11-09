@@ -76,7 +76,8 @@ export type JobsApiAction = (typeof JOBS_API_ACTIONS)[number];
 /**
  * Actions that change state; all are removed by `readOnly: true`.
  *
- * `queues.limits` is only ever the `PUT`: reading limits is `queues.read`.
+ * `queues.limits` is the `PUT` and `DELETE` of a queue's limits: reading them
+ * is `queues.read`.
  * Likewise `queues.defaults` is the `PUT` and `DELETE` of a queue's job
  * defaults — reading them is `queues.read` — and `queues.applyDefaults` is
  * the rewrite of jobs already pending, `dryRun` included.

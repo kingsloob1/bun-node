@@ -112,6 +112,7 @@ describe("mounting", () => {
       "POST /admin/jobs/queues/:queue/clean cleanQueue queues.clean (mutation)",
       "GET /admin/jobs/queues/:queue/limits getQueueLimits queues.read",
       "PUT /admin/jobs/queues/:queue/limits setQueueLimits queues.limits (mutation)",
+      "DELETE /admin/jobs/queues/:queue/limits removeQueueLimits queues.limits (mutation)",
       // Saving and applying job defaults are opt-in, so only the read is here.
       "GET /admin/jobs/queues/:queue/job-defaults getJobDefaults queues.read",
       "GET /admin/jobs/queues/:queue/throughput getQueueThroughput metrics.read",

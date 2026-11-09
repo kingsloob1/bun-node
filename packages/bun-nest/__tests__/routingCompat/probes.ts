@@ -21,7 +21,11 @@ import {
   MwBasicModule,
   MwExcludeMatchingModule,
   MwManyVersionsModule,
+  MwOptionalSplatAllModule,
+  MwOptionalSplatModule,
   MwScopedModule,
+  MwStarAllModule,
+  MwStarGetModule,
   MwPrefixModule,
   MwVersionModule,
   OptionalController,
@@ -84,6 +88,21 @@ function mwScopedProbes(base = ""): Probe[] {
     get(`${shape}: another case`, `${base}/${shape.toUpperCase()}/X`),
     get(`${shape}: a sibling`, `${base}/${shape}-sibling`),
   ]);
+}
+
+/** What a wildcard entry runs on, at `base`: the root, below it, and a miss. */
+function mwWildcardProbes(base = ""): Probe[] {
+  return ["", "/", "/a", "/a/", "/a/b", "/nope", "/nope/nope"].flatMap(
+    (tail) => {
+      const path = `${base}${tail}` || "/";
+      return [
+        get(`${tail || "(root)"}: GET`, path),
+        req(`${tail || "(root)"}: HEAD`, "HEAD", path),
+        req(`${tail || "(root)"}: POST`, "POST", path),
+        req(`${tail || "(root)"}: DELETE`, "DELETE", path),
+      ];
+    },
+  );
 }
 
 const routesProbes: Probe[] = [
@@ -471,6 +490,50 @@ export const GROUPS: Group[] = [
     ],
   },
   {
+    name: "mw-star-all",
+    module: MwStarAllModule,
+    probes: mwWildcardProbes(),
+  },
+  {
+    name: "mw-star-all-prefixed",
+    module: MwStarAllModule,
+    configure: (app) => app.setGlobalPrefix("api"),
+    probes: mwWildcardProbes("/api"),
+  },
+  {
+    name: "mw-star-get",
+    module: MwStarGetModule,
+    probes: mwWildcardProbes(),
+  },
+  {
+    name: "mw-star-get-prefixed",
+    module: MwStarGetModule,
+    configure: (app) => app.setGlobalPrefix("api"),
+    probes: mwWildcardProbes("/api"),
+  },
+  {
+    name: "mw-optional-splat",
+    module: MwOptionalSplatModule,
+    probes: mwWildcardProbes(),
+  },
+  {
+    name: "mw-optional-splat-prefixed",
+    module: MwOptionalSplatModule,
+    configure: (app) => app.setGlobalPrefix("api"),
+    probes: mwWildcardProbes("/api"),
+  },
+  {
+    name: "mw-optional-splat-all",
+    module: MwOptionalSplatAllModule,
+    probes: mwWildcardProbes(),
+  },
+  {
+    name: "mw-optional-splat-all-prefixed",
+    module: MwOptionalSplatAllModule,
+    configure: (app) => app.setGlobalPrefix("api"),
+    probes: mwWildcardProbes("/api"),
+  },
+  {
     name: "mw-scoped",
     module: MwScopedModule,
     probes: mwScopedProbes(),
@@ -672,5 +735,27 @@ export const KNOWN: Record<string, KnownDifference> = {
         D6_REVERSED,
         ["trail"],
         ["mw-prefix/'*' + prefix: bare /api (#17942)"],
+      )),
+  ...(EXPRESS_HONOURS_EXACT_MARKER
+    ? {}
+    : known(
+        D6_REVERSED,
+        ["body", "trail"],
+        [
+          "mw-star-all-prefixed/(root): GET",
+          "mw-star-all-prefixed/(root): POST",
+          "mw-star-get-prefixed/(root): GET",
+        ],
+      )),
+  ...(EXPRESS_HONOURS_EXACT_MARKER
+    ? {}
+    : known(
+        D6_REVERSED,
+        ["trail"],
+        [
+          "mw-star-all-prefixed/(root): HEAD",
+          "mw-star-all-prefixed/(root): DELETE",
+          "mw-star-get-prefixed/(root): HEAD",
+        ],
       )),
 };

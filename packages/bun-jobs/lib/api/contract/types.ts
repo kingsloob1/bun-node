@@ -949,7 +949,7 @@ export interface RateInput {
   duration: number | string;
 }
 
-/** `PUT /queues/:queue/limits` body (or `null` to remove them). */
+/** `PUT /queues/:queue/limits` body; `DELETE` removes them. */
 export interface QueueLimitsBody {
   /** Queue-wide rate. */
   rate?: RateInput;

@@ -610,8 +610,17 @@ export interface BodyParserOptions extends BodyDecodingOptions {
   type?: string | string[] | ((req: IncomingMessage) => unknown) | undefined;
 
   /**
-   * Catch-all for parser-specific options (`strict`, `reviver`, `extended`, …).
-   * Opaque here, so `unknown`.
+   * For a JSON parser: whether a body must be an object or an array, as
+   * body-parser's `strict`. `true` by default: `null`, `1` or `"s"` is refused
+   * with 400. An adapter's `useBodyParser("json", { strict: false })` turns it
+   * off for the adapter, since it parses a body while building the request,
+   * before any middleware runs (the `strictJson` request option).
+   */
+  strict?: boolean | undefined;
+
+  /**
+   * Catch-all for other parser-specific options. They are accepted and not
+   * read. Opaque here, so `unknown`.
    */
   [key: string]: unknown;
 }

@@ -228,9 +228,15 @@ describe("queues", () => {
     });
     expect(invalid.body).toMatchObject({ code: "VALIDATION" });
 
-    expect(
-      (await h.call("PUT", "/queues/mail/limits", "null")).body,
-    ).toBeNull();
+    // A bare `null` is not a body any more: bun-common's JSON parsing is strict.
+    const bare = await h.call("PUT", "/queues/mail/limits", "null");
+    expect(bare.status).toBe(400);
+    expect(bare.body).toMatchObject({ code: "INVALID_JSON" });
+    expect(await h.jobs.queue("mail").getLimits()).not.toBeNull();
+
+    const removed = await h.call("DELETE", "/queues/mail/limits");
+    expect(removed.status).toBe(200);
+    expect(removed.body).toBeNull();
     expect(await h.jobs.queue("mail").getLimits()).toBeNull();
   });
 
@@ -1162,5 +1168,118 @@ describe("pruning", () => {
         status: 404,
       });
     }
+  });
+});
+
+describe("DELETE /queues/:queue/limits", () => {
+  it("removes the limits, answers null, and does so again with none left", async () => {
+    const h = harness();
+    await h.jobs.queue("mail").setLimits({ concurrency: 2 });
+    for (let i = 0; i < 2; i++) {
+      const removed = await h.call("DELETE", "/queues/mail/limits");
+      expect(removed.status).toBe(200);
+      expect(removed.body).toBeNull();
+      expect(await h.jobs.queue("mail").getLimits()).toBeNull();
+    }
+  });
+
+  it("is the same action as PUT, with the queue as its target", async () => {
+    const h = harness();
+    await h.call("DELETE", "/queues/mail/limits");
+    expect(h.calls.at(-1)).toMatchObject({
+      action: "queues.limits",
+      queue: "mail",
+    });
+  });
+
+  it("is gone from a read-only API, as PUT is", async () => {
+    const h = harness({ readOnly: true });
+    for (const method of ["DELETE", "PUT"]) {
+      const answer = await h.call(method, "/queues/mail/limits", {});
+      expect(answer.status).not.toBe(200);
+    }
+  });
+});
+
+describe("a body bun-common refused never reaches a handler", () => {
+  /**
+   * `drain` has an optional body and empties the queue when asked with none: a
+   * refused body must not read as that.
+   */
+  async function drained(
+    body: string,
+    headers: Record<string, string>,
+    overrides: Parameters<typeof harness>[0] = {},
+  ) {
+    const h = harness(overrides);
+    const queue = h.jobs.queue("mail");
+    await queue.add("a", {});
+    const answer = await h.call("POST", "/queues/mail/drain", body, headers);
+    return {
+      status: answer.status,
+      code: (answer.body as { code?: string } | undefined)?.code,
+      waiting: (await queue.count()).waiting,
+    };
+  }
+
+  it("a Content-Encoding it refuses: 415, and the queue keeps its jobs", async () => {
+    expect(await drained("{}", { "content-encoding": "nope" })).toEqual({
+      status: 415,
+      code: "UNSUPPORTED_MEDIA_TYPE",
+      waiting: 1,
+    });
+  });
+
+  it("a charset it refuses: 415, naming it, and the queue keeps its jobs", async () => {
+    const h = harness();
+    await h.jobs.queue("mail").add("a", {});
+    const answer = await h.call("POST", "/queues/mail/drain", "{}", {
+      "content-type": "application/json; charset=latin1",
+    });
+    expect(answer.status).toBe(415);
+    expect(answer.body).toMatchObject({
+      code: "UNSUPPORTED_MEDIA_TYPE",
+      detail: 'unsupported charset "LATIN1"',
+    });
+    expect((await h.jobs.queue("mail").count()).waiting).toBe(1);
+  });
+
+  it("a body that is not gzip: 400, and the queue keeps its jobs", async () => {
+    expect(await drained("not gzip", { "content-encoding": "gzip" })).toEqual({
+      status: 400,
+      code: "INVALID_JSON",
+      waiting: 1,
+    });
+  });
+
+  it("a bare JSON value: 400, and the queue keeps its jobs", async () => {
+    expect(await drained("null", {})).toEqual({
+      status: 400,
+      code: "INVALID_JSON",
+      waiting: 1,
+    });
+  });
+
+  it("malformed JSON: 400, and the queue keeps its jobs", async () => {
+    expect(await drained("{bad", {})).toEqual({
+      status: 400,
+      code: "INVALID_JSON",
+      waiting: 1,
+    });
+  });
+
+  it("authorize still answers first", async () => {
+    const h = harness({ authorize: () => false });
+    const answer = await h.call("POST", "/queues/mail/drain", "null");
+    expect(answer.status).toBe(403);
+  });
+
+  it("control: no body at all still drains with the defaults", async () => {
+    const h = harness();
+    const queue = h.jobs.queue("mail");
+    await queue.add("a", {});
+    const answer = await h.call("POST", "/queues/mail/drain");
+    expect(answer.status).toBe(200);
+    expect((await queue.count()).waiting).toBe(0);
   });
 });

@@ -150,9 +150,9 @@ describe("the limits editor", () => {
     expect(nameHint).toContain("skipped, not waited behind");
   });
 
-  it("removes every limit with PUT null after a confirmation", async () => {
+  it("removes every limit with DELETE after a confirmation", async () => {
     const { calls } = renderQueue({
-      handlers: { "PUT /queues/emails/limits": { body: null } },
+      handlers: { "DELETE /queues/emails/limits": { body: null } },
     });
     const form = await limitsForm();
     fireEvent.click(
@@ -167,7 +167,8 @@ describe("the limits editor", () => {
         "Removed the limits of emails",
       ),
     );
-    expect(callsTo(calls, "PUT", "/queues/emails/limits")[0].body).toBe("null");
+    expect(callsTo(calls, "DELETE", "/queues/emails/limits")).toHaveLength(1);
+    expect(callsTo(calls, "PUT", "/queues/emails/limits")).toEqual([]);
     await waitFor(() => expectAbsent(openDialog()));
   });
 

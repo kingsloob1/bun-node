@@ -511,7 +511,7 @@ const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  83 + addedByState,
+  84 + addedByState,
 );
 checkEqual(
   "the three summon group routes are among them, the reset a mutation, and /meta's features.summonStoredStatus says they are served",
@@ -588,7 +588,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 67 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 68 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
@@ -682,7 +682,7 @@ const byDefault = mount();
 checkEqual(
   "the defaults are every action but the opt-ins",
   byDefault.api.routes.length,
-  67 + addedByState,
+  68 + addedByState,
 );
 checkEqual(
   "fail, disable and enable are on by default",

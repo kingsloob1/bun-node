@@ -734,6 +734,78 @@ export class MwScopedModule {
   }
 }
 
+/** Routes for the wildcard entries: the root, one level and two. */
+@Controller()
+export class WildcardEntryController {
+  @Get()
+  @Header("x-h", "root")
+  root(@Req() req: AnyReq) {
+    return answer("root", req);
+  }
+
+  @Post()
+  @Header("x-h", "root.create")
+  create(@Req() req: AnyReq) {
+    return answer("root.create", req);
+  }
+
+  @Get("a")
+  @Header("x-h", "a")
+  a(@Req() req: AnyReq) {
+    return answer("a", req);
+  }
+
+  @Post("a")
+  @Header("x-h", "a.create")
+  aCreate(@Req() req: AnyReq) {
+    return answer("a.create", req);
+  }
+
+  @Get("a/b")
+  @Header("x-h", "a.b")
+  ab(@Req() req: AnyReq) {
+    return answer("a.b", req);
+  }
+}
+
+/** `forRoutes({ path: "*", method: ALL })`: every method, every path. */
+@Module({ controllers: [WildcardEntryController] })
+export class MwStarAllModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(trailMiddleware("MwStarAll"))
+      .forRoutes({ path: "*", method: RequestMethod.ALL });
+  }
+}
+
+/** `forRoutes({ path: "*", method: GET })`: every path, one method. */
+@Module({ controllers: [WildcardEntryController] })
+export class MwStarGetModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(trailMiddleware("MwStarGet"))
+      .forRoutes({ path: "*", method: RequestMethod.GET });
+  }
+}
+
+/** `forRoutes("{/*splat}")`: an optional splat, as a string entry. */
+@Module({ controllers: [WildcardEntryController] })
+export class MwOptionalSplatModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(trailMiddleware("MwSplat")).forRoutes("{/*splat}");
+  }
+}
+
+/** `forRoutes({ path: "{/*splat}", method: ALL })`: the same, naming a method. */
+@Module({ controllers: [WildcardEntryController] })
+export class MwOptionalSplatAllModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(trailMiddleware("MwSplatAll"))
+      .forRoutes({ path: "{/*splat}", method: RequestMethod.ALL });
+  }
+}
+
 /**
  * The routes of the `exclude()` matching groups (Nest 12.2.0's
  * `getRouteMatchingOptions`): a static route, and a list beside its items.

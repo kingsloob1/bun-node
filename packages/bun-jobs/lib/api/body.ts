@@ -83,31 +83,42 @@ export function emptyBodyAsObject(): RouterHandler {
 }
 
 /**
- * A router handler refusing a request that declares `application/json` and
- * carries a non-blank body bun-common could not parse. A blank body passes
- * (and is left for the body schema to call missing), as does any other media
- * type (the CSRF guard answers those on mutations).
+ * A router handler refusing a request whose body bun-common refused or could
+ * not parse: a body the parser left on `req.bodyDecodingError` is answered 415
+ * `UNSUPPORTED_MEDIA_TYPE` (a charset or `Content-Encoding` it does not take),
+ * or 400 `INVALID_JSON` otherwise, whatever the media type, so no handler runs
+ * on a body that was refused: an optional body's {@link emptyBodyAsObject} would
+ * otherwise read one as "no body", and run the route on its defaults. A request
+ * declaring `application/json` with a non-blank body nothing parsed is 400
+ * `INVALID_JSON` too. A blank body passes (and is left for the body schema to
+ * call missing), as does any other media type (the CSRF guard answers those on
+ * mutations).
  */
 export function jsonBodyGuard(): RouterHandler {
   return async (req, _res, next) => {
-    if (mediaTypeOf(req.getHeader("content-type")) !== "application/json") {
-      return next();
-    }
+    const isJson =
+      mediaTypeOf(req.getHeader("content-type")) === "application/json";
     if (!req.isBodyParsed) {
       try {
         await req.parseBody();
       } catch (error) {
         // A body over the cap is still that problem; anything else the parser
-        // throws means there was no body to read, which is not ours to judge.
-        return error instanceof PayloadTooLargeError ? next(error) : next();
+        // throws without recording a refusal means there was no body to read,
+        // which is not ours to judge.
+        if (error instanceof PayloadTooLargeError) {
+          return next(error);
+        }
       }
     }
+    const refused = req.bodyDecodingError;
+    if (refused?.status === 415) {
+      return next(new ApiError("UNSUPPORTED_MEDIA_TYPE", 415, refused.message));
+    }
     const raw = req.buffer;
+    const blank = raw !== undefined && raw.toString().trim() === "";
     if (
-      req.body === undefined &&
-      raw !== undefined &&
-      raw.length > 0 &&
-      raw.toString().trim() !== ""
+      (refused !== undefined && !blank) ||
+      (isJson && req.body === undefined && raw !== undefined && !blank)
     ) {
       return next(
         new ApiError("INVALID_JSON", 400, "The request body is not valid JSON"),

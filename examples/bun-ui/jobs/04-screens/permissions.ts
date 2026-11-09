@@ -3761,6 +3761,7 @@ checkEqual(
     "killRunner",
     "removeJob",
     "removeJobs",
+    "removeQueueLimits",
     "removeRepeatable",
     "resetJobDefaults",
     "resetRunnerConfig",
@@ -3768,7 +3769,7 @@ checkEqual(
   ],
 );
 checkEqual(
-  "the DELETEs among them: two clears, three resets and two removals",
+  "the DELETEs among them: two clears, three resets and three removals",
   [...operations]
     .filter(([, item]) => item.method === "DELETE")
     .map(([id]) => id)
@@ -3777,6 +3778,7 @@ checkEqual(
     "clearJobLogs",
     "clearRunnerHistory",
     "removeJob",
+    "removeQueueLimits",
     "removeRepeatable",
     "resetJobDefaults",
     "resetRunnerConfig",
@@ -4676,6 +4678,7 @@ const denied: [string, string, unknown?][] = [
   ["POST", "/queues/audit/jobs", { name: "send-email", data: {} }],
   ["PATCH", "/queues/audit/jobs/later-1", { priority: 3 }],
   ["PUT", "/queues/audit/limits", { concurrency: 1 }],
+  ["DELETE", "/queues/audit/limits"],
   ["POST", "/queues/audit/jobs/waiting-1/fail", { reason: "no" }],
   ["POST", "/queues/audit/repeatables/digest/disable"],
   ["POST", "/queues/audit/repeatables/digest/enable"],

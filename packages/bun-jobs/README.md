@@ -6310,6 +6310,7 @@ driver support is present. Paths are relative to `basePath`.
 | POST | `/queues/:queue/clean` | `queues.clean` | yes |
 | GET | `/queues/:queue/limits` | `queues.read` | no |
 | PUT | `/queues/:queue/limits` | `queues.limits` | yes |
+| DELETE | `/queues/:queue/limits` | `queues.limits` | yes |
 | GET | `/queues/:queue/job-defaults` | `queues.read` | no |
 | PUT | `/queues/:queue/job-defaults` | `queues.defaults` | yes |
 | DELETE | `/queues/:queue/job-defaults` | `queues.defaults` | yes |
