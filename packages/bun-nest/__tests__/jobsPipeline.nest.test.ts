@@ -685,6 +685,11 @@ describe("a guard's denial", () => {
     expect(outcome.error?.message).toContain("Worker.run: a guard denied job");
     expect(outcome.error?.cause).toBeInstanceOf(ForbiddenException);
     expect(ran).toBe(false);
+    // The class is gone once stored: the code is what says it was a denial.
+    const stored = await queue.getJob(job.id);
+    expect((stored?.failedReason as { code?: unknown } | undefined)?.code).toBe(
+      "JOB_FORBIDDEN",
+    );
 
     expect((await post(adapter, "/r", {})).status).toBe(403);
   });
