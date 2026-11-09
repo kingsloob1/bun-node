@@ -87,7 +87,7 @@ bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
 bun add @kingsleyweb/bun-jobs
 ```
 
-**3.0.0-rc.1, the release candidate**, is on npm's `next` tag, all seven
+**3.0.0-rc.2, the release candidate**, is on npm's `next` tag, all seven
 packages at one version. Until 3.0.0 reaches `latest`, a plain `bun add
 @kingsleyweb/bun-common` (or `bun-nest`) installs 2.2.0, so ask for the tag:
 

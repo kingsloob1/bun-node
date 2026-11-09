@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-nest",
   "type": "module",
-  "version": "3.0.0-rc.1",
+  "version": "3.0.0-rc.2",
   "private": false,
   "description": "NestJS on Bun: an HTTP adapter matching @nestjs/platform-express, multer-style file upload interceptors, a WebSocket adapter for @WebSocketGateway, and caching modules and decorators over @kingsleyweb/bun-cache, built on @kingsleyweb/bun-common",
   "author": "okafor obinna <kingsloob1@gmail.com>",

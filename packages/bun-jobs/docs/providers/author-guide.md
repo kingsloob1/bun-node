@@ -55,7 +55,7 @@ from there is checked.
 `overrides` pointing `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-common` at
 the repo's own package directories, which works only inside the repo. A copy
 elsewhere removes `overrides` and installs `@kingsleyweb/bun-jobs` from npm
-(`3.0.0-rc.1` is on the `next` tag until 3.0.0 is `latest`); to build
+(`3.0.0-rc.2` is on the `next` tag until 3.0.0 is `latest`); to build
 against an unreleased checkout of bun-node, it packs the packages from it
 (`bun pm pack`) and points `overrides` at the tarballs, as the template's
 README describes in step 2. Not at the checkout's directories:
