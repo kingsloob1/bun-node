@@ -156,6 +156,8 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/supertest": "catalog:",
     "bun-types": "catalog:",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.15.1",
     "cookie-parser": "^1.4.7",
     "ejs": "^7.0.1",
     "eslint": "catalog:",
@@ -166,6 +168,7 @@
     "rxjs": "catalog:",
     "supertest": "catalog:",
     "typescript": "catalog:",
+    "valibot": "catalog:",
     "ws": "8.22.0",
     "yup": "catalog:",
     "zod": "catalog:"
