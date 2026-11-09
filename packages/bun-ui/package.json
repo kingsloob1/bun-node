@@ -121,6 +121,10 @@
   },
   "main": "lib/index.ts",
   "types": "dts/index.d.ts",
+  "sideEffects": [
+    "**/*.css",
+    "./app/*/main.tsx"
+  ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
