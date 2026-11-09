@@ -1,4 +1,9 @@
-import type { BunJobsOptions, BunQueue } from "@kingsleyweb/bun-jobs";
+import type {
+  BunJobsOptions,
+  BunQueue,
+  BunRunner,
+  BunRunnerOptions,
+} from "@kingsleyweb/bun-jobs";
 import type { LoggerLike } from "@kingsleyweb/bun-common";
 import type {
   DynamicModule,
@@ -38,6 +43,7 @@ import {
   getBunJobsToken,
   getJobsNotifierToken,
   getQueueToken,
+  getRunnerToken,
   getWorkerToken,
 } from "./tokens";
 
@@ -90,6 +96,20 @@ export interface BunJobsRunOptions {
    * directly as `(job, ctx)`. A class's own `enhancers` wins.
    */
   enhancers?: boolean;
+  /**
+   * The queue `@Cron` and `@Every` use unless they name one. Defaults to
+   * `"nest-schedule"`. Name it if something else in the namespace owns that one.
+   */
+  scheduleQueue?: string;
+  /**
+   * Whether to remove, at boot, the stored series on a schedule queue that no `@Cron`
+   * or `@Every` in this process declares. Defaults to `false`, which logs one `warn`
+   * naming them: during a rolling deploy the old version may still declare a series
+   * the new one dropped. Turn it on for an app that deploys one version at a time,
+   * and with no other service on the namespace using that queue. It counts only series
+   * shaped as these decorators add them, whose job name is their key.
+   */
+  pruneSchedules?: boolean;
 }
 
 /** The context's options when the module builds it. */
@@ -213,6 +233,18 @@ export interface RegisterWorkerOptions {
   options?: BunJobsWorkerOptions;
 }
 
+/**
+ * One runner to register: `jobs.runner()`'s options, and its context. A runner runs a
+ * **file**, since a DI method cannot be its handler: `@Cron` is for a method.
+ */
+export type RegisterRunnerOptions = Omit<
+  BunRunnerOptions,
+  "namespace" | "driver"
+> & {
+  /** The context's `name`; the default context when left out. */
+  context?: string;
+};
+
 /** A context this module provides. */
 interface ContextEntry {
   /** The context. */
@@ -247,6 +279,8 @@ function buildEntry(options: BunJobsContextOptions): ContextEntry {
     shutdown: _shutdown,
     registryWorker: _registryWorker,
     enhancers: _enhancers,
+    scheduleQueue: _scheduleQueue,
+    pruneSchedules: _pruneSchedules,
     ...context
   } = options;
   return {
@@ -672,6 +706,50 @@ export class BunJobsModule {
       exported.push(...tokens, getWorkerToken(queue, context));
     }
     return { module: BunJobsModule, imports, providers, exports: exported };
+  }
+
+  /**
+   * Registers runners with the context: built with `jobs.runner()`, started at
+   * bootstrap (unless `autoStart: false`), and stopped when workers drain. Each is
+   * injectable with `@InjectRunner(id, context?)` where this is imported, and
+   * `@OnRunnerEvent` hears it. An id registered twice in one context is bun-jobs'
+   * `ConfigError`.
+   *
+   * @param runners The runners.
+   */
+  static registerRunner(...runners: RegisterRunnerOptions[]): DynamicModule {
+    const providers: Provider[] = [
+      { provide: MODULE_CALL, useValue: crypto.randomUUID() },
+    ];
+    const exported: InjectionToken[] = [];
+    for (const { context, ...options } of runners) {
+      const token = getRunnerToken(options.id, context);
+      providers.push({
+        provide: token,
+        useFactory: (
+          jobs: BunJobs<any, any> | undefined,
+          registry: BunJobsRegistry,
+        ): BunRunner<any, any> => {
+          if (jobs === undefined) {
+            throw new ConfigError(
+              `BunJobsModule: runner "${options.id}" is registered, but this module cannot see ${context === undefined ? "BunJobsModule.forRoot()" : `BunJobsModule.forRoot({ name: "${context}" })`}`,
+              { runner: options.id, context },
+            );
+          }
+          const runner = jobs.runner(options);
+          registry.addRunner(context, runner);
+          return runner;
+        },
+        inject: [contextDependency(context), BunJobsRegistry],
+      });
+      exported.push(token);
+    }
+    return {
+      module: BunJobsModule,
+      imports: [BunJobsRegistryModule],
+      providers,
+      exports: exported,
+    };
   }
 
   /**

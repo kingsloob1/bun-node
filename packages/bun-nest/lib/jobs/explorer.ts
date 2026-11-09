@@ -1,5 +1,6 @@
 import type {
   BunJobs,
+  BunQueue,
   BunQueueWorker,
   Job,
   JobProcessor,
@@ -14,6 +15,7 @@ import type {
   ExternalContextCreator,
   ModuleRef,
 } from "@nestjs/core";
+import type { ScheduleMetadata } from "./decorators/schedule";
 import type {
   BunJobsWorkerOptions,
   DefineJobMetadata,
@@ -26,13 +28,15 @@ import type { StartableWorkers } from "./lifecycle";
 import type { FailurePolicy } from "./pipeline";
 import type { BunJobsRegistry } from "./registry";
 import { ConfigError } from "@kingsleyweb/bun-common";
-import { UnrecoverableJobError } from "@kingsleyweb/bun-jobs";
+import { UnrecoverableJobError, validateCron } from "@kingsleyweb/bun-jobs";
 import { normalizeLimits } from "@kingsleyweb/bun-jobs/lib/queue/limits";
+import { resolveRepeat } from "@kingsleyweb/bun-jobs/lib/queue/repeat";
 import { Logger } from "@nestjs/common";
 import { ContextIdFactory, MetadataScanner } from "@nestjs/core";
 import { CACHE_WRAPPED_METADATA } from "../cache/tokens";
 import { processorOf } from "./decorators/consumer";
 import { listenersOf } from "./decorators/events";
+import { schedulesOf } from "./decorators/schedule";
 import { recordHandlerName } from "./executionContext";
 import { JOBS_HOST_BINDING, JobsHost } from "./JobsHost";
 import {
@@ -154,7 +158,14 @@ export interface ExplorerOptions {
   readonly publishEvents?: boolean;
   /** A borrowed context, whose `publishEvents` the module cannot read. */
   readonly jobs?: unknown;
+  /** The queue `@Cron` and `@Every` use unless they name one. */
+  readonly scheduleQueue?: string;
+  /** Whether undeclared series are removed at boot rather than warned about. */
+  readonly pruneSchedules?: boolean;
 }
+
+/** The default queue for `@Cron` and `@Every`. */
+const DEFAULT_SCHEDULE_QUEUE = "nest-schedule";
 
 /** The default wait for jobs in flight on `app.close()`. */
 const DEFAULT_SHUTDOWN_TIMEOUT = 30_000;
@@ -196,6 +207,16 @@ interface QueueGroup {
   readonly limits: Record<string, NameLimits>;
   /** The singletons whose `onModuleDestroy` drains the worker. */
   readonly instances: Set<object>;
+  /** The series `@Cron` and `@Every` declare here, by key. */
+  readonly series: Map<string, SeriesEntry>;
+}
+
+/** One series a `@Cron` or `@Every` declares. */
+interface SeriesEntry {
+  /** `Class.method`, for messages. */
+  readonly label: string;
+  /** What was declared. */
+  readonly schedule: ScheduleMetadata;
 }
 
 /** One method listening to events, on a singleton. */
@@ -268,6 +289,53 @@ function notifierOptionsFor(entries: ListenerEntry[]): JobsNotifierOptions {
   };
 }
 
+/** What is wrong with a declared schedule, before anything is written. */
+function checkSchedule(
+  schedule: ScheduleMetadata,
+  label: string,
+): string | undefined {
+  const { cron, every, options } = schedule;
+  if (cron !== undefined && !validateCron(cron, { tz: options.tz })) {
+    return `${label}: @Cron cannot read "${cron}"${options.tz === undefined ? "" : ` in zone "${options.tz}"`}`;
+  }
+  try {
+    const resolved = resolveRepeat(
+      definedOnly({ cron, every, tz: options.tz }),
+      Date.now(),
+      label,
+    );
+    if (every !== undefined && !resolved.every && !resolved.cron) {
+      return `${label}: @Every cannot read ${JSON.stringify(every)}`;
+    }
+  } catch (error) {
+    return `${label}: ${(error as Error).message}`;
+  }
+  return undefined;
+}
+
+/**
+ * The start that puts an `@Every` on one grid for every replica: the epoch. Without
+ * one, bun-jobs anchors a series on when it was created, by whoever's clock, so two
+ * replicas creating it at the same moment each schedule their own first occurrence.
+ * A phrase naming its own start keeps it, as does a cron schedule, which has no grid.
+ */
+function gridStart(schedule: ScheduleMetadata): number | undefined {
+  if (schedule.every === undefined) {
+    return undefined;
+  }
+  const resolved = resolveRepeat({ every: schedule.every }, Date.now());
+  return resolved.every !== undefined && resolved.startAt === undefined
+    ? 0
+    : undefined;
+}
+
+/** The fields of an object with a value. */
+function definedOnly<T extends object>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, field]) => field !== undefined),
+  ) as T;
+}
+
 /** Whether a worker target can run a DI-built method. */
 function isInProcess(target: unknown): boolean {
   return (
@@ -311,6 +379,10 @@ export class BunJobsExplorer
   readonly #listenedQueues = new Set<string>();
   /** Per-name limits to store, by queue, before the first start. */
   #limits: { queue: string; limits: Record<string, NameLimits> }[] = [];
+  /** The series to add before the first start, by queue. */
+  readonly #seriesByQueue = new Map<string, Map<string, SeriesEntry>>();
+  /** Whether the series have been added. */
+  #seriesAdded = false;
   /** Whether bootstrap has built the workers. */
   #built = false;
   /** Whether the application has begun closing. */
@@ -356,6 +428,10 @@ export class BunJobsExplorer
       return;
     }
     await this.#storeLimits();
+    await this.#addSeries();
+    await Promise.all(
+      this.registry.runnersOf(this.context).map((runner) => runner.start()),
+    );
     if (this.#hasDefinitions) {
       if (this.#registryWorker === undefined) {
         this.#registryWorker = (await this.jobs.start(
@@ -390,6 +466,9 @@ export class BunJobsExplorer
       ...(this.#registryWorker === undefined
         ? []
         : [this.#registryWorker.stop({ timeout })]),
+      ...this.registry
+        .runnersOf(this.context)
+        .map((runner) => runner.stop({ timeout })),
     ]);
   }
 
@@ -401,6 +480,18 @@ export class BunJobsExplorer
       ...(this.#registryWorker === undefined
         ? []
         : [this.#close(this.#registryWorker)]),
+      ...this.registry.runnersOf(this.context).map((runner) =>
+        runner
+          .stop({
+            timeout: this.options.shutdown?.timeout ?? DEFAULT_SHUTDOWN_TIMEOUT,
+          })
+          .catch((error: unknown) => {
+            this.#logger.error(
+              `Could not stop runner "${runner.id}": ${(error as Error).message}`,
+              (error as Error).stack,
+            );
+          }),
+      ),
     ]);
     await Promise.all(this.#notifiers.map((notifier) => notifier.close()));
   }
@@ -456,13 +547,27 @@ export class BunJobsExplorer
         const define = Reflect.getMetadata(DEFINE_JOB_METADATA, handler) as
           DefineJobMetadata | undefined;
         const listeners = listenersOf(handler);
+        const schedules = schedulesOf(handler);
         return process === undefined &&
           define === undefined &&
-          listeners.length === 0
+          listeners.length === 0 &&
+          schedules.length === 0
           ? []
-          : [{ method, process, define, listeners }];
+          : [{ method, process, define, listeners, schedules }];
       });
     const listenerEntries: ListenerEntry[] = [];
+    const groupFor = (queue: string): QueueGroup => {
+      const group: QueueGroup = groups.get(queue) ?? {
+        queue,
+        handlers: new Map(),
+        options: [],
+        limits: {},
+        instances: new Set(),
+        series: new Map(),
+      };
+      groups.set(queue, group);
+      return group;
+    };
 
     for (const wrapper of this.discovery.getControllers() as unknown as Wrapper[]) {
       const target = classOf(wrapper);
@@ -533,14 +638,7 @@ export class BunJobsExplorer
       }
 
       if (metadata !== undefined && metadata.context === this.context) {
-        const group: QueueGroup = groups.get(metadata.queue) ?? {
-          queue: metadata.queue,
-          handlers: new Map(),
-          options: [],
-          limits: {},
-          instances: new Set(),
-        };
-        groups.set(metadata.queue, group);
+        const group = groupFor(metadata.queue);
         this.#addProcessor(group, label, metadata, problems);
         const named = methods.filter(({ process }) => process !== undefined);
         if (isHost && !named.some(({ method }) => method === "process")) {
@@ -549,6 +647,7 @@ export class BunJobsExplorer
             process: { name: undefined, options: undefined },
             define: undefined,
             listeners: [],
+            schedules: [],
           });
         }
         if (named.length === 0) {
@@ -658,6 +757,68 @@ export class BunJobsExplorer
               await this.#close(this.#registryWorker);
             }
           });
+        }
+      }
+
+      for (const { method, process, define, schedules } of methods) {
+        for (const schedule of schedules) {
+          const entryLabel = `${label}.${method}`;
+          const { context, enhancers, onDenied, onInvalid } = schedule.options;
+          if (!this.registry.hasContext(context)) {
+            problems.push(
+              `${entryLabel}: its schedule names context "${String(context)}", which no forRoot() provides`,
+            );
+            continue;
+          }
+          if (context !== this.context) {
+            continue;
+          }
+          if (process !== undefined || define !== undefined) {
+            problems.push(
+              `${entryLabel}: a schedule and @Process or @DefineJob on one method would run it from two places`,
+            );
+            continue;
+          }
+          const key = schedule.options.name ?? `${label}.${method}`;
+          const scheduleProblem = checkSchedule(schedule, entryLabel);
+          if (scheduleProblem !== undefined) {
+            problems.push(scheduleProblem);
+            continue;
+          }
+          const group = groupFor(
+            schedule.options.queue ??
+              this.options.scheduleQueue ??
+              DEFAULT_SCHEDULE_QUEUE,
+          );
+          const existing = group.series.get(key) ?? group.handlers.get(key);
+          if (existing !== undefined) {
+            problems.push(
+              `queue "${group.queue}": two handlers for series "${key}", ${existing.label} and ${entryLabel}. Give one a name`,
+            );
+            continue;
+          }
+          group.series.set(key, { label: entryLabel, schedule });
+          group.handlers.set(key, {
+            label: entryLabel,
+            invoke: this.#invoker(wrapper, method, perJob, {
+              label: entryLabel,
+              handlerName: key,
+              enhancers: this.#enhancersFor(enhancers),
+              onDenied,
+              onInvalid,
+            }),
+          });
+          this.#checkMethod(
+            wrapper,
+            target as { prototype: object },
+            method,
+            entryLabel,
+            this.#enhancersFor(enhancers),
+            problems,
+          );
+          if (!perJob) {
+            group.instances.add(instance);
+          }
         }
       }
 
@@ -1050,7 +1211,9 @@ export class BunJobsExplorer
               // Q15: a @Processor queue belongs to this service, so no retry
               // here will find a handler.
               throw new UnrecoverableJobError(
-                `No @Process handler for job "${job.name}" on queue "${queue}" in this process`,
+                group.series.size > 0
+                  ? `No @Process, @Cron or @Every handler for job or series "${job.name}" on queue "${queue}" in this process`
+                  : `No @Process handler for job "${job.name}" on queue "${queue}" in this process`,
                 {
                   queue,
                   name: job.name,
@@ -1067,6 +1230,9 @@ export class BunJobsExplorer
         if (Object.keys(group.limits).length > 0) {
           normalizeLimits({ names: group.limits });
           this.#limits.push({ queue, limits: group.limits });
+        }
+        if (group.series.size > 0) {
+          this.#seriesByQueue.set(queue, group.series);
         }
         for (const instance of group.instances) {
           this.#bindHost(instance);
@@ -1141,6 +1307,115 @@ export class BunJobsExplorer
           await own?.();
         },
       });
+    }
+  }
+
+  /**
+   * Adds every declared series, once per process, and deals with what is stored and
+   * no longer declared. Adding is idempotent across replicas: an occurrence's id comes
+   * from the series and its due time. Only a queue this process schedules on is read,
+   * or the module's own with `pruneSchedules`, so a service that schedules nothing never
+   * touches another's series.
+   */
+  async #addSeries(): Promise<void> {
+    if (this.#seriesAdded) {
+      return;
+    }
+    this.#seriesAdded = true;
+    const queues = new Map(this.#seriesByQueue);
+    if (this.options.pruneSchedules === true) {
+      const own = this.options.scheduleQueue ?? DEFAULT_SCHEDULE_QUEUE;
+      queues.set(own, queues.get(own) ?? new Map());
+    }
+    for (const [name, series] of queues) {
+      const queue = this.jobs.queue<unknown, unknown>(name);
+      const stored = await queue.listRepeatables();
+      for (const [key, { schedule, label }] of series) {
+        if (schedule.options.disabled === true) {
+          continue;
+        }
+        await this.#addOneSeries(
+          queue,
+          key,
+          schedule,
+          label,
+          stored.some((existing) => existing.key === key),
+        );
+      }
+      const undeclared = stored
+        .filter(
+          (existing) =>
+            existing.name === existing.key && !series.has(existing.key),
+        )
+        .map((existing) => existing.key);
+      if (undeclared.length === 0) {
+        continue;
+      }
+      if (this.options.pruneSchedules === true) {
+        await Promise.all(undeclared.map((key) => queue.removeRepeatable(key)));
+        this.#logger.log(
+          `Removed series no @Cron or @Every declares on queue "${name}": ${undeclared.join(", ")}`,
+        );
+      } else {
+        this.#logger.warn(
+          `No @Cron or @Every in this process declares these series on queue "${name}", and their next occurrences will fail here: ${undeclared.join(", ")}. A rolling deploy's old version may still declare them; otherwise remove them, or set pruneSchedules: true`,
+        );
+      }
+    }
+  }
+
+  /** Adds one series, with the job options it declares. */
+  async #addOneSeries(
+    queue: BunQueue<unknown, unknown>,
+    key: string,
+    schedule: ScheduleMetadata,
+    label: string,
+    exists: boolean,
+  ): Promise<void> {
+    const {
+      attempts,
+      backoff,
+      timeout,
+      deadLetter,
+      tz,
+      limit,
+      startAt,
+      endAt,
+      immediately,
+      catchUp,
+    } = schedule.options;
+    try {
+      await queue.add(
+        key,
+        {},
+        definedOnly({
+          attempts,
+          backoff,
+          timeout,
+          deadLetter,
+          repeat: definedOnly({
+            key,
+            cron: schedule.cron,
+            every: schedule.every,
+            tz,
+            limit,
+            endAt,
+            catchUp,
+            startAt: startAt ?? gridStart(schedule),
+            // "Once as soon as the series is created": a restart adds it again,
+            // and would otherwise run it again.
+            immediately: exists ? undefined : immediately,
+          }),
+        }),
+      );
+    } catch (error) {
+      // A `limit` reached, or an `endAt` passed: a finished series is not a failed boot.
+      if (!String((error as Error).message).includes("no occurrences left")) {
+        throw new ConfigError(`${label}: ${(error as Error).message}`, {
+          key,
+        });
+      }
+      this.#logger.debug(`${label}: series "${key}" has no occurrences left`);
     }
   }
 

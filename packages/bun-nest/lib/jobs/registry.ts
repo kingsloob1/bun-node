@@ -1,4 +1,9 @@
-import type { BunJobs, BunQueue, BunQueueWorker } from "@kingsleyweb/bun-jobs";
+import type {
+  BunJobs,
+  BunQueue,
+  BunQueueWorker,
+  BunRunner,
+} from "@kingsleyweb/bun-jobs";
 import type { ModulesContainer as Modules } from "@nestjs/core";
 import type { StartableWorkers } from "./lifecycle";
 import { ConfigError } from "@kingsleyweb/bun-common";
@@ -98,8 +103,8 @@ export function differingOptions(
 
 /**
  * The problem with a `schema` that is a bare Standard Schema rather than
- * `{ data, result }`. The types refuse one, but anything typed `any` gets past them,
- * and bun-jobs then finds no `schema.data` and checks nothing, in silence.
+ * `{ data, result }`. The types refuse one, but anything typed `any` gets past them.
+ * bun-jobs refuses it too, with its own error class and without the module's list.
  *
  * @returns The problem, or `undefined` when there is none.
  */
@@ -149,6 +154,8 @@ function contextLabel(context: string | undefined): string {
 export class BunJobsRegistry {
   /** The workers built so far, by context and queue. */
   readonly #workers = new Map<string, BunQueueWorker<any, any, any>>();
+  /** The runners `registerRunner()` built, by context. */
+  readonly #runners = new Map<string | undefined, Set<BunRunner<any, any>>>();
   /** Each context's workers, for {@link lifecycle}. */
   readonly #startable = new Set<StartableWorkers>();
   /** Starts and stops every context's workers by hand. */
@@ -221,6 +228,26 @@ export class BunJobsRegistry {
     context: string | undefined,
   ): boolean {
     return this.#contexts.has(context);
+  }
+
+  /** Records a runner `registerRunner()` built, for its context's explorer to start. */
+  addRunner(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+    /** The runner. */
+    runner: BunRunner<any, any>,
+  ): void {
+    const runners = this.#runners.get(context) ?? new Set();
+    runners.add(runner);
+    this.#runners.set(context, runners);
+  }
+
+  /** The runners `registerRunner()` built for a context. */
+  runnersOf(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+  ): readonly BunRunner<any, any>[] {
+    return [...(this.#runners.get(context) ?? [])];
   }
 
   /** Records a context's workers, for {@link lifecycle}. */

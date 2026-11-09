@@ -45,6 +45,7 @@ export {
   type BunJobsRunOptions,
   type RegisterQueueAsyncOptions,
   type RegisterQueueOptions,
+  type RegisterRunnerOptions,
   type RegisterWorkerOptions,
 } from "./BunJobsModule";
 export {
@@ -74,6 +75,13 @@ export {
   type JobProgressFn,
   JobSignal,
 } from "./decorators/params";
+export {
+  Cron,
+  type CronOptions,
+  Every,
+  type EveryOptions,
+  type ScheduleOptions,
+} from "./decorators/schedule";
 export { JobForbiddenError } from "./errors";
 export {
   BunJobsExecutionContext,
@@ -98,6 +106,7 @@ export {
   InjectBunJobs,
   InjectJobsNotifier,
   InjectQueue,
+  InjectRunner,
   InjectWorker,
 } from "./decorators/inject";
 export type { BunJobsShutdownOptions } from "./explorer";
@@ -112,6 +121,7 @@ export {
   getBunJobsToken,
   getJobsNotifierToken,
   getQueueToken,
+  getRunnerToken,
   getWorkerToken,
 } from "./tokens";
 
@@ -127,7 +137,9 @@ export type {
   BunQueueOptions,
   BunQueueWorker,
   BunQueueWorkerEvents,
+  BunRunner,
   BunRunnerEvents,
+  BunRunnerOptions,
   DriverEvent,
   Job,
   JobDefinitionOptions,
