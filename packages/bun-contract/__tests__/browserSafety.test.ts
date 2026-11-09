@@ -93,7 +93,9 @@ describe("the package in a browser bundle", () => {
       join(import.meta.dir, "fixtures/serverEntry.ts"),
     );
     // The core came along, so the graph check alone would not have caught it.
-    expect(modules).toContain("lib/guard.ts");
+    // (Only what `defineTransport` needs: with `"sideEffects": false` the
+    // bundler never loads the modules none of whose exports is used.)
+    expect(modules).toContain("lib/transport.ts");
     // Either the browser build refuses the server module, or the markers flag it.
     if (!result.success) {
       expect(result.logs.length).toBeGreaterThan(0);
