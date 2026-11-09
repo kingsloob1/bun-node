@@ -69,8 +69,9 @@ export interface WsTestClient {
 export async function connectWs(
   url: string,
   timeoutMs = 2000,
+  headers?: Record<string, string>,
 ): Promise<WsTestClient> {
-  const socket = new WebSocket(url);
+  const socket = new WebSocket(url, headers === undefined ? {} : { headers });
   const received: string[] = [];
   const waiters: {
     predicate: (m: any) => boolean;

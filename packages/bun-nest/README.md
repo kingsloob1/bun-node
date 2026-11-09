@@ -122,6 +122,8 @@ Underneath, routing is
   - [The checks at boot](#the-checks-at-boot)
   - [Testing jobs: `./jobs/testing`](#testing-jobs-jobstesting)
 - [The jobs API module](#the-jobs-api-module)
+  - [Nest guards as `authorize`: `guardsAuthorize`](#nest-guards-as-authorize-guardsauthorize)
+  - [The jobs UI, with no module](#the-jobs-ui-with-no-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
   - [Installing bun-jobs is what makes the subpath compile](#installing-bun-jobs-is-what-makes-the-subpath-compile)
@@ -3556,9 +3558,104 @@ export class AppModule {}
 
 `forRoot(options)` takes the same options inline. Both accept every
 `JobsApiConfig` field plus `attachWebSocket` (default `true`), and export
-`BUN_JOBS_API` and `BUN_JOBS_API_OPTIONS`. `@InjectJobsApi()` injects the
+`BUN_JOBS_API` and `BUN_JOBS_API_OPTIONS`. Given neither `jobs` nor
+`queues`/`runners`, it manages `BunJobsModule`'s context, or the one a `context` option
+names; with none it can see, `createJobsApi`'s own `ConfigError` stands. Live events need
+`publishEvents: true` on the context. `@InjectJobsApi()` injects the
 built `JobsApi`, so a service can read `api.routes`, `api.openapi()` or
 `api.websocket?.sessions`.
+
+### Nest guards as `authorize`: `guardsAuthorize`
+
+The API's routes are a router mounted on the adapter, so Nest guards do not run for them on
+their own. `guardsAuthorize(moduleRef, guards, options?)` builds an `authorize` from your guards,
+which covers each HTTP request, the socket's upgrade and each of its channels:
+
+```ts
+import { BunJobsApiModule, BunJobsModule, guardsAuthorize, jobsApiContextOf } from "@kingsleyweb/bun-nest/jobs";
+
+const Roles = Reflector.createDecorator<string[]>();
+
+// Stands in for the API's routes: `read` for what changes nothing, `mutate` for what does.
+class JobsPolicy {
+  @Roles(["reader", "admin"]) read() {}
+  @Roles(["admin"]) mutate() {}
+}
+
+@Injectable()
+class JobsRolesGuard implements CanActivate {
+  constructor(@Inject(Reflector) private readonly reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext) {
+    const req = context.switchToHttp().getRequest<BunRequest>();
+    const roles = this.reflector.get(Roles, context.getHandler()) ?? [];
+    return roles.includes(rolesOf(req)); // jobsApiContextOf(context)?.queue, .action, .transport ...
+  }
+}
+
+@Module({
+  imports: [
+    BunJobsModule.forRoot({ namespace: "shop", driver, publishEvents: true }),
+    BunJobsApiModule.forRootAsync({
+      inject: [ModuleRef],
+      useFactory: (moduleRef: ModuleRef) => ({
+        basePath: "/admin/jobs",
+        authorize: guardsAuthorize(moduleRef, [SessionGuard, JobsRolesGuard], { policy: JobsPolicy }),
+      }),
+    }),
+  ],
+  providers: [SessionGuard, JobsRolesGuard],
+})
+export class AppModule {}
+```
+
+**It fails closed.** Every guard must allow, in order; the first that does not ends it.
+
+| The guard | The caller gets |
+|---|---|
+| answers something truthy, or an Observable of it | allowed |
+| answers `false` or nothing, or an Observable that is empty or of `false` | 403 |
+| throws `UnauthorizedException` | 401, with its message |
+| throws `ForbiddenException` or another 4xx exception | 403, with its message |
+| throws or rejects with anything else, a 5xx exception included, or cannot be built | 403 with no detail, and an `error` log line (`options.logger`) |
+
+A problem's `code` is the API's own `UNAUTHORIZED` or `FORBIDDEN`. On the socket, a denied upgrade
+never connects, and a denied channel comes back in the `ack`'s `rejected`. An empty list of guards
+is a `ConfigError`, since it would allow everyone.
+
+- **Each guard gets a context of type `"http"`**, even on the socket, whose request is the upgrade's:
+  `switchToHttp().getRequest()` is the `BunRequest`, with `req.ip` following the adapter's
+  `trustProxy`. There is no response: `getResponse()` is `undefined`, and `switchToWs()` and
+  `switchToRpc()` throw, so denying.
+- **`jobsApiContextOf(context)`** says what is being decided: `action`, `mutation`, `queue`, `jobId`,
+  `transport`, `channel` and the rest. It answers `undefined` on a context `guardsAuthorize` did not
+  build, so one guard can also sit on a controller.
+- **A guard class is looked up everywhere**, and one that is not a provider is built once, with DI from
+  the module `moduleRef` belongs to. A request-scoped guard gets the request.
+- **Test it with no port:** `adapter.fetch(path, { remoteAddress })` drives a guard reading `req.ip`.
+
+### The jobs UI, with no module
+
+`jobsUi()` from `@kingsleyweb/bun-ui/jobs` is a bun-common router, so it mounts on the adapter, beside
+the API. One `guardsAuthorize(...)` value fits the UI's `authorize` as well; a guard reads the UI's
+`{ asset, path }` with `jobsApiContextOf<JobsUiAuthorizeContext>(context)`, since its bundle holds no
+data and is usually left public.
+
+```ts
+const adapter = new BunHttpAdapter();
+const app = await NestFactory.create(AppModule, adapter); // AppModule imports BunJobsModule and BunJobsApiModule
+const ui = jobsUi({
+  api: app.get(BUN_JOBS_API),
+  basePath: "/admin/jobs-ui",
+  authorize: guardsAuthorize(app.get(ModuleRef), [SessionGuard]),
+});
+adapter.use(ui.basePath, ui.router);
+await app.init();
+```
+
+The UI must not sit at or under the API's `basePath`; `jobsUi()` throws a `ConfigError`. Nest's
+pipeline and `setGlobalPrefix` do not run for its routes. Demonstrated in
+[`mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts).
 
 ### Mounting, injection and shutdown
 
