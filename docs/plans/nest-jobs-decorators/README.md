@@ -2,7 +2,7 @@
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
 §16 name accepted (§14 records the answers). PR-n1 to PR-n5 are merged (#721, #722,
-#724, #727, #730), and PR-n7 and PR-n8 are built. PR-n6, PR-n9 and PR-n10 are not
+#724, #727, #730), and PR-n6, PR-n7 and PR-n8 are built. PR-n9 and PR-n10 are not
 started.** The sections below were corrected to match what was built, each correction
 marked; §2 still describes `develop` as it was before this work, and what §3 to §12
 assign to those PRs is still a design.
@@ -1712,13 +1712,14 @@ docs say so.
   })
   ```
 
-  - Each guard is asked with an `ExecutionContext` of type `"http"`.
-    `switchToHttp().getRequest()` is the `BunRequest`, the same object a
-    bun-nest controller receives.
+  - Each guard is asked with an `ExecutionContext` of type `"http"`, even for a
+    socket's upgrade and channels. `switchToHttp().getRequest()` is the `BunRequest`,
+    the same object a bun-nest controller receives. `getResponse()` is `undefined`.
   - `getHandler()` and `getClass()` are a policy class whose methods stand
     for "read" and "mutate", carrying `@Roles(...)`-style metadata.
   - `jobsApiContextOf(context)` returns the API's
-    `JobsApiAuthorizeContext`: action, mutation, queue, jobId, transport,
+    `JobsApiAuthorizeContext`, or `undefined` on a context it did not build, so one
+    guard can sit on a controller too: action, mutation, queue, jobId, transport,
     channel (`packages/bun-jobs/lib/api/config.ts:77-156`) [S]. A guard on
     the UI reads the UI's `{ asset, path }` the same way, typed by the
     caller (`jobsApiContextOf<JobsUiAuthorizeContext>(context)`), so bun-nest
@@ -1743,6 +1744,13 @@ docs say so.
   - A guard that throws `UnauthorizedException` maps to
     `{ allow: false, status: 401 }`; `ForbiddenException` or `false` maps to
     403.
+  - **As built (PR-n6), it fails closed.** Nest's own rule decides an answer: anything
+    falsy denies, as does an empty Observable. Anything else a guard throws, a 5xx
+    exception and a guard that cannot be built included, is a 403 with no detail and a
+    log line, not the 500 a throwing `authorize` gives on HTTP. An empty list of guards
+    is a `ConfigError`. `options` is `{ policy?, logger? }`, the policy a class with
+    `read` and `mutate`. The socket asks twice as the plan did not say: `events.connect`
+    at the upgrade, so a refusal never connects, and `events.subscribe` per channel.
 - **Why not run the API's routes through Nest's real pipeline?** They are a
   bun-common router mounted on the adapter, not controllers. The bun-nest
   README says so ("Nest guards, pipes and interceptors do not run for these
@@ -2095,7 +2103,7 @@ visible.
 | PR-n3 | for each of guard, interceptor, pipe and filter: method-, class- and global-level (`APP_*` and `useGlobal*`), with `getType() === "bun-jobs"`; a user's `createParamDecorator`; all nine parameter decorators; undecorated-parameter refusal; **V6**: `StandardSchemaPipe` on `@JobData` (zod and valibot), `@JobData({ schema })`, a `SchemaDto` parameter under a global `StandardValidationPipe`, each with the issue `target` `"body"`; on 12, Nest's `StandardSchemaValidationPipe` with `@JobData({ schema })` not validating twice; `ValidationPipe` with a DTO **if class-validator is added as a devDependency** (Q16); `StandardValidationException` → dead with `attemptsMade=1` and `onInvalid: "retry"` (Q18); `JobForbiddenError` → dead with `attemptsMade=1`; `onDenied: "retry"`; filter-returns-value → completed; `UnrecoverableOn`; `enhancers: false`; bun-nest's own globals (throttler guard, cache interceptor, `ValidationExceptionFilter`) installed and a job unaffected; `@Cacheable` on a `@Process` method (§11.2); a `useFactory` or `useValue` processor's class-based enhancers refused on both majors, and a `useClass` one per major (§5.2); a request-scoped `APP_GUARD` and a transient guard around a singleton (§5.5) | each pipeline assertion is paired with the same enhancer on an HTTP route in the same app; `@JobData` recorded as a custom type → the global `StandardValidationPipe` row passes the bad payload, as measured |
 | PR-n4 | each event decorator; scoped `completed:name`; an async listener's rejection logged, not unhandled; `@OnJobsEvent` across two processes on the file driver; listeners on a request-scoped class → `ConfigError` | `publishEvents: false` in the producer → no event, and the warn is logged |
 | PR-n5 | `@Cron`/`@Every` scheduling exactly one occurrence across **two** app instances on one file-driver backend; series key stability across a restart; invalid cron and unknown tz → `ConfigError` at boot; an undeclared series warned, and pruned only with `pruneSchedules`; a disabled series stays disabled across a restart; `@DefineJob` defaults applied by `jobs.now`; `registerRunner` start and stop | two instances with the dedupe defeated (a random key) → two runs, proving the test can see duplicates |
-| PR-n6 | `BunJobsApiModule` without `jobs` + `BunJobsModule`, and with a named `context`; with neither → `createJobsApi`'s `ConfigError`; `guardsAuthorize`: 200/403/401 per role, per transport (HTTP and a socket channel), the problem's `code` from the closed `ApiErrorCode`; the same `guardsAuthorize` value as the jobs UI's `authorize` (bun-ui as a devDependency of the test only); a guard reading `req.ip` under `trustProxy`, driven by `fetch({ remoteAddress })` | a guard that always allows → the 403 test fails |
+| PR-n6 | `BunJobsApiModule` without `jobs` + `BunJobsModule`, and with a named `context`; with neither → `createJobsApi`'s `ConfigError`; `guardsAuthorize`: 200/403/401 per role, per transport (HTTP and a socket channel), the problem's `code` from the closed `ApiErrorCode`; the same `guardsAuthorize` value as the jobs UI's `authorize` (as built: run against the real `jobsUi()` by `06-jobs-ui/mount.ts`, which every Nest column runs and `scripts/typecheck.ts` checks, so bun-nest and bun-ui do not name each other); a guard reading `req.ip` under `trustProxy`, driven by `fetch({ remoteAddress })` | a guard that always allows → the 403 test fails |
 | PR-n7 | `runSummonedApplication`: exits 0 on idle, through a real `localCompute` summon on SQLite (the summon tests' pattern); `createProcessorContext` in a `child-process` target, resolving a provider; `registerWorker` with a file; `@RemoteHandler` through `BunRemoteExecutorModule`, with a signed request (body unread) | an unsigned request → 401 |
 | PR-n8 | `runJob`, `drainJobs`; `overrideProvider` on a queue token and on a typed token; `overrideGuard` reaching the job pipeline; two test files in parallel do not meet | — |
 | PR-n9 | `isHealthy` up, down on `ping` false, down on backlog, down with no workers, a timeout on a hung ping | — |
@@ -2339,7 +2347,7 @@ table says otherwise.
 | `JobForbiddenError` | error | its `name` is `UnrecoverableJobError` (§7.5) |
 | `UnrecoverableOn`, `BaseJobExceptionFilter` | filter factory, base class | |
 | `JobLoggingInterceptor` | interceptor | |
-| `guardsAuthorize`, `jobsApiContextOf` | functions | for the API's `authorize` and the jobs UI's (§9.4) |
+| `guardsAuthorize`, `jobsApiContextOf` | functions | for the API's `authorize` and the jobs UI's (§9.4), with the types `GuardsAuthorize`, `GuardsAuthorizeGuard`, `GuardsAuthorizeOptions`, `GuardsAuthorizePolicy` |
 | `JobDataOptions` (`property`, `schema`, `pipes`) | type | the object form of `@JobData()` (§7.3) |
 | `BunJobsApiModule` option `context` | option | which named context's `BunJobs` the API takes (§9.4) |
 | `createProcessorContext` | function | |

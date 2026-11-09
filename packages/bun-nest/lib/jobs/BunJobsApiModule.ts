@@ -1,4 +1,4 @@
-import type { JobsApi, JobsApiConfig } from "@kingsleyweb/bun-jobs";
+import type { BunJobs, JobsApi, JobsApiConfig } from "@kingsleyweb/bun-jobs";
 import type {
   BeforeApplicationShutdown,
   DynamicModule,
@@ -13,7 +13,7 @@ import { createJobsApi } from "@kingsleyweb/bun-jobs";
 import { Inject, Module } from "@nestjs/common";
 import { HttpAdapterHost } from "@nestjs/core";
 import { BunHttpAdapter } from "../BunHttpAdapter";
-import { BUN_JOBS_API, BUN_JOBS_API_OPTIONS } from "./tokens";
+import { BUN_JOBS_API, BUN_JOBS_API_OPTIONS, getBunJobsToken } from "./tokens";
 
 /**
  * The bun-jobs management API as a NestJS module.
@@ -51,6 +51,12 @@ export interface BunJobsApiModuleOptions extends JobsApiConfig {
    * given its own `websocket.port` serves itself and is never attached.
    */
   attachWebSocket?: boolean;
+  /**
+   * Which `BunJobsModule` context to take when the options give neither `jobs` nor
+   * `queues`/`runners`: its `name`. Defaults to the unnamed one. A context this module
+   * cannot see leaves `createJobsApi`'s own `ConfigError` to say so.
+   */
+  context?: string;
 }
 
 /** What {@link BunJobsApiModule.forRootAsync} accepts. */
@@ -63,7 +69,14 @@ export interface BunJobsApiModuleAsyncOptions extends Pick<
   /** Builds the options, with whatever {@link inject} resolved. */
   useFactory: (
     ...args: any[]
-  ) => BunJobsApiModuleOptions | Promise<BunJobsApiModuleOptions>;
+  ) =>
+    | Omit<BunJobsApiModuleOptions, "context">
+    | Promise<Omit<BunJobsApiModuleOptions, "context">>;
+  /**
+   * {@link BunJobsApiModuleOptions.context}. It is here, not in what the factory answers,
+   * because the context is injected ahead of the factory's answer.
+   */
+  context?: string;
 }
 
 /** Injects the built {@link JobsApi}. */
@@ -102,13 +115,31 @@ function requireBunAdapter(host: HttpAdapterHost | undefined): BunHttpAdapter {
   );
 }
 
-/** Builds the API from the options provided under {@link BUN_JOBS_API_OPTIONS}. */
-const apiProvider = {
-  provide: BUN_JOBS_API,
-  useFactory: (options: BunJobsApiModuleOptions): JobsApi =>
-    createJobsApi(options),
-  inject: [BUN_JOBS_API_OPTIONS],
-};
+/**
+ * Builds the API from the options provided under {@link BUN_JOBS_API_OPTIONS}. When they
+ * name nothing to manage, it manages `BunJobsModule`'s context, if there is one to see.
+ */
+function apiProvider(context: string | undefined) {
+  return {
+    provide: BUN_JOBS_API,
+    useFactory: (
+      { context: _context, ...config }: BunJobsApiModuleOptions,
+      jobs?: BunJobs<any, any>,
+    ): JobsApi =>
+      createJobsApi(
+        jobs !== undefined &&
+          config.jobs === undefined &&
+          config.queues === undefined &&
+          config.runners === undefined
+          ? { ...config, jobs }
+          : config,
+      ),
+    inject: [
+      BUN_JOBS_API_OPTIONS,
+      { token: getBunJobsToken(context), optional: true },
+    ],
+  };
+}
 
 @Module({})
 export class BunJobsApiModule
@@ -138,7 +169,7 @@ export class BunJobsApiModule
       module: BunJobsApiModule,
       providers: [
         { provide: BUN_JOBS_API_OPTIONS, useValue: options },
-        apiProvider,
+        apiProvider(options.context),
       ],
       exports: [BUN_JOBS_API, BUN_JOBS_API_OPTIONS],
     };
@@ -155,7 +186,7 @@ export class BunJobsApiModule
           useFactory: options.useFactory,
           inject: options.inject ?? [],
         },
-        apiProvider,
+        apiProvider(options.context),
       ],
       exports: [BUN_JOBS_API, BUN_JOBS_API_OPTIONS],
     };

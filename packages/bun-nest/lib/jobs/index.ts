@@ -33,6 +33,13 @@ export {
   type BunJobsApiModuleOptions,
   InjectJobsApi,
 } from "./BunJobsApiModule";
+export { guardsAuthorize, jobsApiContextOf } from "./guardsAuthorize";
+export type {
+  GuardsAuthorize,
+  GuardsAuthorizeGuard,
+  GuardsAuthorizeOptions,
+  GuardsAuthorizePolicy,
+} from "./guardsAuthorize";
 export {
   type BunJobsBorrowOptions,
   type BunJobsBuildOptions,
