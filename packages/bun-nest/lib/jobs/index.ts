@@ -82,6 +82,13 @@ export {
   type EveryOptions,
   type ScheduleOptions,
 } from "./decorators/schedule";
+export {
+  BunRemoteExecutorModule,
+  type BunRemoteExecutorModuleAsyncOptions,
+  type BunRemoteExecutorModuleOptions,
+  RemoteHandler,
+  type RemoteHandlerOptions,
+} from "./BunRemoteExecutorModule";
 export { JobForbiddenError } from "./errors";
 export {
   BunJobsExecutionContext,
@@ -90,6 +97,11 @@ export {
 } from "./executionContext";
 export { BaseJobExceptionFilter, UnrecoverableOn } from "./filters";
 export { JobLoggingInterceptor } from "./interceptors";
+export { createProcessorContext } from "./processorContext";
+export {
+  runSummonedApplication,
+  type RunSummonedApplicationOptions,
+} from "./runSummonedApplication";
 export type { OnDenied, OnInvalid } from "./pipeline";
 export {
   type JobsEventKind,
@@ -107,6 +119,7 @@ export {
   InjectJobsNotifier,
   InjectQueue,
   InjectRunner,
+  InjectSummonController,
   InjectWorker,
 } from "./decorators/inject";
 export type { BunJobsShutdownOptions } from "./explorer";
@@ -122,6 +135,7 @@ export {
   getJobsNotifierToken,
   getQueueToken,
   getRunnerToken,
+  getSummonControllerToken,
   getWorkerToken,
 } from "./tokens";
 
@@ -151,4 +165,8 @@ export type {
   JobsApiConfig,
   NameLimits,
   ProcessorContext,
+  RunSummonedOptions,
+  SummonController,
+  SummonedExit,
+  SummonPolicy,
 } from "@kingsleyweb/bun-jobs";

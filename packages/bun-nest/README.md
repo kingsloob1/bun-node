@@ -111,6 +111,9 @@ Underneath, routing is
   - [Typed handlers](#typed-handlers)
   - [Request-scoped processors](#request-scoped-processors)
   - [Files and other threads: `registerWorker`](#files-and-other-threads-registerworker)
+  - [DI inside a file: `createProcessorContext`](#di-inside-a-file-createprocessorcontext)
+  - [Summoned workers: `runSummonedApplication`](#summoned-workers-runsummonedapplication)
+  - [Remote executors: `@RemoteHandler`](#remote-executors-remotehandler)
   - [The registry: `@DefineJob`](#the-registry-definejob)
   - [Events](#events)
   - [Scheduling: `@Cron` and `@Every`](#scheduling-cron-and-every)
@@ -3127,6 +3130,102 @@ BunJobsModule.registerWorker({
 A file has no Nest pipeline and no DI of its own. A queue takes a file or
 `@Processor` classes, never both, since either would claim the other's jobs.
 
+### DI inside a file: `createProcessorContext`
+
+`createProcessorContext(Module, options?)` builds a Nest application context (no HTTP) inside a
+processor file, once per thread or process, and a file resolves providers from it:
+
+```ts
+// processors/resize.ts
+export default defineProcessor(async (job, ctx) => {
+  const app = await createProcessorContext(ImagesWorkerModule); // cached per thread or process
+  return app.get(ResizeService).resize(job.data, ctx.signal);
+});
+```
+
+- **The bootstrap is paid on every attempt.** bun-jobs starts a fresh thread or process per
+  attempt: a median 115 to 130 ms measured on a three-provider module, on top of the ~135 ms it
+  already spends loading bun-jobs, and a module that opens database connections pays for those
+  too. The cache helps only an `"in-process"` file.
+- **The Nest pipeline does not cross the boundary.** Inside the file, call services directly.
+- **A child sees what bun-jobs passes it.** A `child-process` attempt gets an environment
+  allowlist, so a module reading `process.env.DATABASE_URL` at construction needs `passEnv` to
+  name it.
+- **Nothing starts in there.** No worker, series or runner in the module starts, so a module
+  shared with the main process cannot begin consuming from inside an attempt.
+
+### Summoned workers: `runSummonedApplication`
+
+The file a platform runs, when bun-jobs summons compute for a queue:
+
+```ts
+// worker.ts
+await runSummonedApplication(WorkerModule, { idleFor: 30_000 });
+```
+
+It reads the summon from the process's arguments, builds the module as an application context
+with nothing started, runs the worker for each queue the summon names (several, for a shared
+unit), through DI and the pipeline, until idle, a deadline or a signal, closes the context so
+your `onModuleDestroy` hooks run, and exits. It takes `runSummoned`'s options, with what they
+mean there, and `nest`, Nest's own options. A queue the summon names with no `@Processor` or `registerWorker` here, in the
+summon's namespace, is a `ConfigError` before anything runs.
+
+`runSummoned` owns the process's signals, so **do not call `enableShutdownHooks`** here: the two
+would race for `SIGTERM`.
+
+The context closes in `runSummoned`'s `beforeExit`, under its hard backstop. So a provider that
+hangs in `onModuleDestroy` is cut, and the process exits with the unit's own code. The close has
+the sooner of `beforeExitTimeout` (5 s by default) and what the budget leaves: after a signal or at
+a deadline, a drain that used its whole allowance leaves about `tailReserve` (1 s), so raise
+`tailReserve` if your providers need longer. A close that throws is logged, and the code stays the
+unit's. A `beforeExit` of your own runs first, with the providers still up, and the context closes
+whether or not it succeeds. In `"in-invocation"` mode, or with `exit: false`, the context still
+closes before the promise resolves, with no backstop.
+
+**On the controller's side**, the `summon` option of `forRoot` is `BunJobsOptions.summon`, passed
+through, groups and shared units included. Or give one queue its policy where it is registered:
+
+```ts
+BunJobsModule.registerQueue({ name: "images", summon: { summoner: imagesCompute } });
+```
+
+`forRootAsync`'s and `registerQueueAsync`'s factories are where a summoner is built from
+configuration. `@InjectSummonController(queue, context?)` injects the controller, for `status()`,
+`reset()` and `now()`, where `registerQueue` is imported. One queue has one controller, so a queue
+given two policies, or named here and in the `summon` option, is a `ConfigError` at boot.
+
+### Remote executors: `@RemoteHandler`
+
+A remote executor on the Nest application, its handlers collected from any provider:
+
+```ts
+BunRemoteExecutorModule.forRootAsync({
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    path: "/jobs",
+    secret: config.getOrThrow("EXECUTOR_SECRET"),
+  }),
+});
+
+@Injectable()
+export class ImageHandlers {
+  @RemoteHandler("resize")
+  async resize(@JobData() data: Resize, @JobSignal() signal: AbortSignal) { … }
+}
+```
+
+It takes `createRemoteExecutor()`'s options and `path`, and mounts on the adapter at `path`, with
+`path/healthz` and `path/readyz` under it. **The signature covers the exact bytes sent**, and the
+adapter reads the body before any route, so the module hands the executor those bytes: this works
+on the adapter's defaults and needs no option. With the adapter's `retainBuffer: false` no bytes are
+kept, so a request is answered 500 and the cause is logged.
+
+Handlers run through the pipeline, under the same `"bun-jobs"` context type, and `@RemoteHandler("*")`
+runs any name with no handler of its own. The route is below Nest's router, so global prefixes and
+controller guards do not apply to it: the signature is its authentication, and `@UseGuards` applies
+to each handler. The job and context are the executor's own: `@CurrentJob()` gives a `RemoteJob`, with
+`log` and `updateProgress` and nothing that needs a driver.
+
 ### The registry: `@DefineJob`
 
 bun-jobs' registry gives every job of a name its defaults (attempts, backoff,
@@ -3930,7 +4029,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Group | Exports |
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
-| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `Cron`, `Every`, `InjectRunner`, `getRunnerToken`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `CronOptions`, `EveryOptions`, `ScheduleOptions`, `RegisterRunnerOptions`, `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions`, `BunRunner`, `BunRunnerOptions` |
+| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `Cron`, `Every`, `InjectRunner`, `getRunnerToken`, `runSummonedApplication`, `createProcessorContext`, `InjectSummonController`, `getSummonControllerToken`, `RemoteHandler`, `BunRemoteExecutorModule`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `RunSummonedApplicationOptions`, `RemoteHandlerOptions`, `BunRemoteExecutorModuleOptions`, `BunRemoteExecutorModuleAsyncOptions`, `CronOptions`, `EveryOptions`, `ScheduleOptions`, `RegisterRunnerOptions`, `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions`, `BunRunner`, `BunRunnerOptions`, `RunSummonedOptions`, `SummonController`, `SummonedExit`, `SummonPolicy` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |

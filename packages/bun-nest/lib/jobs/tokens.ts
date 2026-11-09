@@ -54,6 +54,22 @@ export function getWorkerToken(name: string, context?: string): string {
 }
 
 /**
+ * The token of a queue's `SummonController`, which `@InjectSummonController()` injects
+ * and `registerQueue()` provides.
+ *
+ * @param queue The queue's name.
+ * @param context The context's `name`; the default context when left out.
+ */
+export function getSummonControllerToken(
+  queue: string,
+  context?: string,
+): string {
+  return context === undefined
+    ? `bun-jobs:summon:${queue}`
+    : `bun-jobs:${context}:summon:${queue}`;
+}
+
+/**
  * The token of a runner `BunJobsModule.registerRunner()` registered, which
  * `@InjectRunner()` injects.
  *
