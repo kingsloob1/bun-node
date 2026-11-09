@@ -47,6 +47,11 @@
       "types": "./dts/jobs/testing/index.d.ts",
       "default": "./lib/jobs/testing/index.ts"
     },
+    "./jobs/terminus": {
+      "@kingsleyweb/source": "./lib/jobs/terminus/index.ts",
+      "types": "./dts/jobs/terminus/index.d.ts",
+      "default": "./lib/jobs/terminus/index.ts"
+    },
     "./lib": {
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
@@ -61,6 +66,11 @@
       "@kingsleyweb/source": "./lib/jobs/index.ts",
       "types": "./dts/jobs/index.d.ts",
       "default": "./lib/jobs/index.ts"
+    },
+    "./lib/jobs/terminus": {
+      "@kingsleyweb/source": "./lib/jobs/terminus/index.ts",
+      "types": "./dts/jobs/terminus/index.d.ts",
+      "default": "./lib/jobs/terminus/index.ts"
     },
     "./lib/jobs/testing": {
       "@kingsleyweb/source": "./lib/jobs/testing/index.ts",
@@ -120,6 +130,7 @@
     "@nestjs/common": "^11.1.20 || ^12.0.0",
     "@nestjs/core": "^11.1.20 || ^12.0.0",
     "@nestjs/microservices": "^11.1.20 || ^12.0.0",
+    "@nestjs/terminus": "^11.1.1 || ^12.0.0",
     "@nestjs/websockets": "^11.1.20 || ^12.0.0",
     "@types/bun": ">=1.4.2",
     "rxjs": "^7.1.0",
@@ -133,6 +144,9 @@
       "optional": true
     },
     "@nestjs/microservices": {
+      "optional": true
+    },
+    "@nestjs/terminus": {
       "optional": true
     },
     "@nestjs/websockets": {
@@ -159,6 +173,7 @@
     "@nestjs/platform-express": "catalog:",
     "@nestjs/platform-ws": "^12.2.0",
     "@nestjs/swagger": "12.0.4",
+    "@nestjs/terminus": "12.1.0",
     "@nestjs/testing": "12.2.0",
     "@nestjs/websockets": "catalog:",
     "@routejs/router": "^3.0.3",

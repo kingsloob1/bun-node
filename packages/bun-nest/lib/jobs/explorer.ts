@@ -8,6 +8,7 @@ import type {
   JobsNotifierOptions,
   NameLimits,
   ProcessorContext,
+  WorkerState,
 } from "@kingsleyweb/bun-jobs";
 import type { OnApplicationBootstrap, OnModuleDestroy } from "@nestjs/common";
 import type {
@@ -585,6 +586,17 @@ export class BunJobsExplorer
       started,
       missing: (queues ?? []).filter((queue) => !started.includes(queue)),
     };
+  }
+
+  /** {@link StartableWorkers.workerStates}. */
+  workerStates(): { queue: string; state: WorkerState }[] {
+    if (this.#closing) {
+      return [];
+    }
+    return [
+      ...this.#workers.map((managed) => managed.worker),
+      ...(this.#registryWorker === undefined ? [] : [this.#registryWorker]),
+    ].map((worker) => ({ queue: worker.queueName, state: worker.state }));
   }
 
   /** Starts the worker for `@DefineJob`, or resumes it. */

@@ -96,6 +96,14 @@ export const NEST_PACKAGE_OVERRIDES: Readonly<
       : version.startsWith("12.")
         ? "12.0.4"
         : version,
+  // Its line stops at 11.1.1, then 12.0.0 and 12.1.0, whose peers take either Nest. A column
+  // pins the line's own, so an 11 column runs bun-nest's floor for this peer.
+  "@nestjs/terminus": (version) =>
+    version.startsWith("11.")
+      ? "11.1.1"
+      : version.startsWith("12.")
+        ? "12.1.0"
+        : version,
 };
 
 /** Directories (relative to a copy) from which `@nestjs/core` must resolve to one copy. */
@@ -492,18 +500,23 @@ export function pinConsumerCheck(
   config: Record<string, unknown>,
   version: string,
 ): Record<string, unknown> {
-  const existing = Array.isArray(config.consumerDependencies)
-    ? (config.consumerDependencies as string[]).filter(
-        (d) => !d.startsWith("@nestjs/"),
-      )
+  const listed = Array.isArray(config.consumerDependencies)
+    ? (config.consumerDependencies as string[])
     : [];
+  // A package of its own line keeps its place, at the line's version for this column.
+  const ownLines = listed.flatMap((dependency) => {
+    const name = dependency.slice(0, dependency.lastIndexOf("@"));
+    const pin = NEST_PACKAGE_OVERRIDES[name]?.(version);
+    return pin === undefined ? [] : [`${name}@${pin}`];
+  });
   return {
     ...config,
     consumerDependencies: [
-      ...existing,
+      ...listed.filter((d) => !d.startsWith("@nestjs/")),
       ...["@nestjs/common", "@nestjs/core", "@nestjs/websockets"].map(
         (n) => `${n}@${version}`,
       ),
+      ...ownLines,
     ],
   };
 }
