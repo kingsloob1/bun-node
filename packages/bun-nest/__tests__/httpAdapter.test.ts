@@ -463,7 +463,7 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
     expect(await custom.text()).toBe("custom: source failed");
   });
 
-  it("reply() hands a failure after the first chunk to the errorHandler, which ends the response", async () => {
+  it("reply() hands a failure after the first chunk to the errorHandler, whose default the installed Nest decides", async () => {
     const adapter = new BunHttpAdapter();
     const seen: string[] = [];
     adapter.get("/file", (_req, res) => {
@@ -487,9 +487,16 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
       return adapter.reply(res, file);
     });
 
+    // Read from the installed `StreamableFile`, never a version: from 11.2.8
+    // and 12.3.0 the default destroys the response, so a truncated file cannot
+    // look complete; before them it ends it.
+    const defaultDestroys = String(
+      new StreamableFile(Readable.from([])).errorHandler,
+    ).includes("res.destroy()");
     const response = await adapter.fetch("/file");
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe("first");
+    const body = await response.text().catch(() => "reset");
+    expect(body).toBe(defaultDestroys ? "reset" : "first");
     expect(seen).toEqual(["mid-stream headersSent=true"]);
   });
 

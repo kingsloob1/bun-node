@@ -308,6 +308,10 @@ What differs by release, and what the adapter reads to tell:
 | `exclude()` matching | Nest's | Nest's | Nest's | the router's | — |
 | A middleware two of one entry's paths match runs | twice | twice, once from 11.2.8 | twice | once | the core's `registerHandler` (3) |
 | A middleware on a route of two versions, on one path, runs | per version | per version | per version | per version, once from 12.3.0 | — |
+| A returned `Error`, status 400 or more | its properties | its properties | its properties | its properties, the status alone from 12.3.0 | (1), `getHttpErrorMessage` (4) |
+| `http-errors` client errors (an over-limit body) reach `@Catch(HttpException)` | no | no | no | from 12.3.0 | (1), `getHttpErrorMessage` (4) |
+| A `StreamableFile` failing mid-body | ends the body | ends it, resets from 11.2.8 | ends the body | ends it, resets from 12.3.0 | what the file's own `errorHandler` did |
+| A returned web `Response`, `ReadableStream`, generator or `Readable` | streamed by the adapter | streamed by the adapter | streamed by the adapter | by the adapter, by the core from 12.4.0 | — |
 | WS exception frame | ours | ours | ours | ours | `emitMessage` on Nest's filter |
 | `handleDisconnect` 2nd argument | none | none | close code | close code | — |
 | Express's redirect page, filenames | 5.2.1's | 5.2.1's | 5.2.1's | 5.3.0's | — |
@@ -324,6 +328,10 @@ What differs by release, and what the adapter reads to tell:
    (and 11.2.8) the core's exact `/api$` entry skips `/api/`, leaving it to
    the wildcard entry; from then on it serves `/api/` too and the core runs
    the middleware once.
+4. `BaseExceptionFilter.prototype.getHttpErrorMessage` in `@nestjs/core`, added
+   in 12.3.0 and 11.2.8. These two behaviours live in platform-express, which
+   this adapter replaces, so the read is of what the core shipped beside them;
+   11.2.8 backported the method without either behaviour, so (1) must hold too.
 
 A dash means the adapter reads nothing: the core calls what it needs
 (`getRouteMatchingOptions()` for `exclude()`), and an older core never calls
@@ -530,9 +538,10 @@ See
 |---|---|
 | Returned value | Sent through `BunResponse.send`: text, JSON, binary, `Bun.file()`, `Blob`, `ReadableStream`, Node `Readable` and async iterables (streams are sent as they are). |
 | `@Res()` | You send the response. With `{ passthrough: true }` you may set headers or cookies and still return a value. |
-| `@HttpCode`, `@Header` | As on Express. |
+| `@HttpCode`, `@Header` | As on Express. A `Content-Type` is completed as `res.set()` completes it: `html` is `text/html`, and a type with a default charset (`text/*`, `application/json`) gets it. |
 | `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
-| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. If the client leaves before the file is read to the end, even before the handler returned it, its source is destroyed, as on platform-express 12, so an abandoned download holds no file descriptor. |
+| `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. A source that fails after that goes to the handler too: on Nest 11.2.8 and later, and 12.3.0 and later, its default destroys the response, so the client sees the connection reset rather than a truncated file that looks whole; before them it ends the response, as on Express. A `HEAD` answers with the headers, a `Content-Length` the file declares included, and destroys the source after its first chunk. If the client leaves before the file is read to the end, even before the handler returned it, its source is destroyed, as on platform-express 12, so an abandoned download holds no file descriptor. |
+| A returned `Error` | On Nest 12.3.0 and later, with a status of 400 or more, the body is `{ statusCode, message }` with the status text, as on Express: an `Error`'s enumerable properties, such as an HTTP client's `config.headers.authorization`, never reach the client. Before 12.3.0 they are serialised, on Express as here. Under a status below 400 they are serialised on every release. |
 | A status | On Nest 12, any status Nest passes is applied, `0` included, and checked as Express 5's `res.status` checks it: a non-integer or a code outside 100–999 fails, and Nest answers `500`. On Nest 11 a falsy status (`0`, `NaN`) is skipped, as its platform-express skips it. |
 | `@Render(view)` | As on Express (`res.render(view, result)`): renders `view` with the view engine (see [Views](#views-render-and-resrender)), the handler's return value being the locals. The status is the route's (`@HttpCode()`). A missing view or a throwing template answers Nest's `500`. |
 
@@ -1177,8 +1186,10 @@ version [tested](#compatibility-nest-11-and-12). Everything not listed here
 answers the same status, headers and body.
 
 - A string, number or boolean response body defaults to `text/plain` (Express:
-  `text/html`), and a type set before a string body gets no `; charset=utf-8`.
-  `Content-Type` parameters are written without the space
+  `text/html`), and a type set before a string body gets no `; charset=utf-8`
+  beyond what `@Header()` adds (`text/*`, JSON; see
+  [Responses](#responses-redirect-streamablefile-render)), where Express's
+  `res.send` adds it to any type. `Content-Type` parameters are written without the space
   (`application/json;charset=utf-8`).
 - A returned `Buffer` is sent as its bytes (`application/octet-stream`); Nest
   on Express sends it as JSON (`{"type":"Buffer","data":[…]}`).
@@ -1207,7 +1218,23 @@ answers the same status, headers and body.
   `Accept-Ranges`, and a dotfile served with `dotfiles: "allow"` is named in
   `Content-Disposition`.
 - A `StreamableFile` over a stream of known length is sent with
-  `Content-Length`, not chunked.
+  `Content-Length`, not chunked. So is any streamed body, on any release, that
+  ended before Bun's first flush: the framing depends on when the body ended,
+  and the client reads the same bytes. A `HEAD` of a streamed body of unknown
+  length carries `Transfer-Encoding: chunked`, as its `GET` would, where Express
+  sends neither.
+- Before Nest 12.4.0, a returned web `Response`, `ReadableStream`, async
+  generator or Node `Readable` is sent as that (see
+  [Responses](#responses-redirect-streamablefile-render)); on Express it is
+  serialised as JSON, `{}` for the first three. From 12.4.0 Express streams them
+  too.
+- A `BadRequestException` from unparsable JSON or a path that cannot be decoded
+  has the error as its `cause` on every Nest 12 release; on Express only from
+  12.4.1. No read tells 12.4.0 from 12.4.1, and only a filter that reads `cause`
+  can see it.
+- Before Nest 11.2.8 and 12.3.0, a `StreamableFile` with a declared `length`
+  whose source fails mid-body ends here with what was read; on Express the
+  connection stays open waiting for the rest, until the client gives up.
 - CORS adds `Vary: Origin` even for origin `*`, and a preflight `204` has no
   `Content-Length: 0`.
 - `getType()` returns `"express"`.

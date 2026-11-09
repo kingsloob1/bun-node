@@ -49,6 +49,7 @@ import type {
   WebSocketClientData,
 } from "./BunWebSocketAdapter";
 import { EventEmitter } from "node:events";
+import { STATUS_CODES } from "node:http";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import {
@@ -89,6 +90,7 @@ import {
 } from "@kingsleyweb/bun-common";
 import {
   BadRequestException,
+  HttpException,
   InternalServerErrorException,
   Logger,
   RequestMethod,
@@ -97,9 +99,11 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
+import { BaseExceptionFilter } from "@nestjs/core/exceptions/base-exception-filter.js";
 import { MiddlewareModule } from "@nestjs/core/middleware/middleware-module.js";
 import { LegacyRouteConverter } from "@nestjs/core/router/legacy-route-converter.js";
 import { BunNestWebsocketAdapter } from "./BunWebSocketAdapter";
+import { withDefaultCharset } from "./defaultCharset";
 
 export type VersionedRoute = (
   req: BunRequest,
@@ -157,6 +161,24 @@ function coreScopesNotFoundToPrefix(): boolean {
   return (
     typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
       .mapException === "function"
+  );
+}
+
+/**
+ * Whether the installed Nest is 12.3.0 or later, whose platform-express hides
+ * a replied `Error`'s properties and maps an `http-errors` error to an
+ * `HttpException`. Those two live in platform-express, which this adapter
+ * replaces, so they are told apart by what the core shipped beside them, never
+ * by a version string: `BaseExceptionFilter.prototype.getHttpErrorMessage`.
+ * It is only half the read: 11.2.8 backported that method without either
+ * behaviour, so Nest 12's own `mapException` must be there too (see
+ * {@link coreScopesNotFoundToPrefix}).
+ */
+function coreIsAtLeast12_3(): boolean {
+  return (
+    coreScopesNotFoundToPrefix() &&
+    typeof (BaseExceptionFilter.prototype as { getHttpErrorMessage?: unknown })
+      .getHttpErrorMessage === "function"
   );
 }
 
@@ -519,9 +541,17 @@ function asError(value: unknown): Error {
 /**
  * The body {@link BunHttpAdapter.reply} streams for a `StreamableFile` whose
  * first chunk (`first`) has been read: that chunk, then the rest of `chunks`.
- * A failure along the way goes to the file's `errorHandler` and ends the
- * body; a body cancelled by the client returns the iterator, which destroys
- * the source.
+ * A failure along the way goes to the file's `errorHandler`. A handler that
+ * destroyed the response (the default from Nest 11.2.8 and 12.3.0: "ending the
+ * response would make the truncated file look complete") cuts the body off, so
+ * the client sees the connection reset, as Node's `res.destroy()` does; any
+ * other handler ends the body there. A body cancelled by the client returns
+ * the iterator, which destroys the source.
+ *
+ * The cut-off waits for the next turn of the event loop: Bun answers a body
+ * that fails before it has written the chunk it just read with a connection
+ * reset that loses the headers and that chunk (see `BunResponse`'s
+ * `#pullDestroyed`, which waits for the same reason).
  */
 async function* streamFileFrom(
   first: IteratorResult<unknown>,
@@ -540,7 +570,12 @@ async function* streamFileFrom(
         next = await chunks.next();
       } catch (error) {
         finished = true;
-        file.errorHandler(asError(error), response);
+        const failure = asError(error);
+        file.errorHandler(failure, response);
+        if (response.destroyed) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 1));
+          throw failure;
+        }
         return;
       }
       if (next.done) {
@@ -554,6 +589,11 @@ async function* streamFileFrom(
       await chunks.return?.();
     }
   }
+}
+
+/** A body with nothing in it that Bun cannot tell is empty before it is read. */
+async function* noChunks(): AsyncGenerator<Uint8Array, void, undefined> {
+  // Nothing to yield: see `BunHttpAdapter#answerStreamHead`.
 }
 
 /**
@@ -605,6 +645,34 @@ function isErrorShapedBody(body: unknown): boolean {
   return (
     (typeof statusCode === "number" || typeof statusCode === "string") &&
     Number(statusCode) >= 400
+  );
+}
+
+/**
+ * Whether `error` has `http-errors`' shape, as platform-express 12.3's
+ * `isHttpError` (and `BaseExceptionFilter.isHttpError`) judge it.
+ */
+function isHttpErrorShaped(error: unknown): error is Error & {
+  /** Whether the message may reach the client. */
+  expose: boolean;
+  /** The HTTP status, the same as `status`. */
+  statusCode: number;
+} {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const { expose, statusCode, status } = error as Error & {
+    /** Whether the message may reach the client. */
+    expose?: unknown;
+    /** The HTTP status. */
+    statusCode?: unknown;
+    /** The HTTP status again; `http-errors` sets both. */
+    status?: unknown;
+  };
+  return (
+    typeof expose === "boolean" &&
+    typeof statusCode === "number" &&
+    status === statusCode
   );
 }
 
@@ -1084,6 +1152,12 @@ export class BunHttpAdapter<
    * reads). On Nest 11 a falsy status (`0`, `NaN`) is skipped, as there.
    */
   readonly #replyAppliesEveryStatus = coreScopesNotFoundToPrefix();
+
+  /**
+   * Whether this Nest's platform-express maps `http-errors` and hides a replied
+   * `Error`'s properties (see {@link coreIsAtLeast12_3}); read once.
+   */
+  readonly #atLeast12_3 = coreIsAtLeast12_3();
   /**
    * Body parsers already registered, keyed by path prefix and parser kind
    * (`"*"` for the untyped `registerParserMiddleware`), so each kind is added
@@ -2947,6 +3021,21 @@ export class BunHttpAdapter<
       return this.#replyStreamableFile(response, body);
     }
 
+    // As @nestjs/platform-express 12.3: `json()` would serialise an `Error`'s
+    // enumerable properties, such as the request config of an HTTP client's
+    // error, so one replied with a status of 400 or more only says the status.
+    // Before 12.3 Express serialises them, and so does this.
+    if (
+      this.#atLeast12_3 &&
+      body instanceof Error &&
+      response.statusCode >= 400
+    ) {
+      body = {
+        statusCode: response.statusCode,
+        message: STATUS_CODES[response.statusCode] ?? "Error",
+      };
+    }
+
     // As @nestjs/platform-express 12.2: an error body under a Content-Type
     // that is not JSON is sent as JSON, with Nest's warning. An error body
     // has a `statusCode` of 400 or more, or is any object replied with such
@@ -2984,8 +3073,10 @@ export class BunHttpAdapter<
    * handler, whose default answers `400` with the error's message; and one
    * that had already failed when the handler returned is handed to it at once,
    * without the file's headers (nestjs/nest 1933cc9ed, platform-express
-   * 12.2.0). After the first chunk, a failure is still handed to the handler,
-   * whose default ends the response, as Express's `res.end()` does.
+   * 12.2.0). After the first chunk, a failure is still handed to the handler:
+   * its default ends the response before Nest 11.2.8 and 12.3.0, and from them
+   * destroys it, which reaches the client as a connection reset (see
+   * {@link streamFileFrom}). A `HEAD` stops at the first chunk.
    */
   #replyStreamableFile(
     response: BunResponse,
@@ -3019,9 +3110,36 @@ export class BunHttpAdapter<
 
     const chunks = stream[Symbol.asyncIterator]() as AsyncIterator<unknown>;
     return chunks.next().then(
-      (first) => response.send(streamFileFrom(first, chunks, file, response)),
+      (first) =>
+        response.req.method === "HEAD"
+          ? this.#answerStreamHead(response, chunks)
+          : response.send(streamFileFrom(first, chunks, file, response)),
       (error: unknown) => file.errorHandler(asError(error), response),
     );
+  }
+
+  /**
+   * Answers a `HEAD` for a `StreamableFile` whose source yielded its first
+   * chunk: with the headers alone and its source destroyed, so nothing holds
+   * the file. As platform-express from 11.2.8 and 12.1.3, which reads no
+   * further either; earlier ones read the whole source and discard it, which
+   * no client sees.
+   *
+   * With a `Content-Length` the file declared, the response has no body, which
+   * keeps it (Bun drops it from a response with a stream for a body). Without
+   * one, it has an empty generator: no body, or a stream already closed, makes
+   * Bun answer `Content-Length: 0`, which says the file is empty. Bun answers a
+   * generator with `Transfer-Encoding: chunked`, what a `GET` would get, where
+   * Express answers neither.
+   */
+  #answerStreamHead(
+    response: BunResponse,
+    chunks: AsyncIterator<unknown>,
+  ): BunResponse {
+    void chunks.return?.()?.catch(() => undefined);
+    return response.getHeader("Content-Length")
+      ? response.send(undefined)
+      : response.send(noChunks());
   }
 
   public status(response: BunResponse, statusCode: number) {
@@ -3085,8 +3203,22 @@ export class BunHttpAdapter<
     return response.headersSent;
   }
 
+  /**
+   * Sets a header, as `@nestjs/platform-express`'s `res.set(name, value)`:
+   * what `@Header()` and a returned web `Response`'s headers go through. Like
+   * Express's, it completes a `Content-Type`: a name without a `/` (`html`) is
+   * looked up, and a type with a default charset gets it.
+   */
   public setHeader(response: BunResponse, name: string, value: string) {
-    response.setHeader(name, value);
+    if (name.toLowerCase() !== "content-type") {
+      response.setHeader(name, value);
+      return;
+    }
+    response.type(value);
+    response.setHeader(
+      name,
+      withDefaultCharset(String(response.getHeader(name))),
+    );
   }
 
   /**
@@ -3095,7 +3227,13 @@ export class BunHttpAdapter<
    * `next(err)`) before Nest's exception filters see it, as
    * `@nestjs/platform-express` does: a `SyntaxError` (unparsable JSON) or a
    * `URIError` (bad percent-encoding) becomes a `BadRequestException` with
-   * its message; anything else is returned as it is.
+   * its message and the error as its `cause` (Express from 12.4.1). From Nest
+   * 12.3.0, a client error in `http-errors`' shape (`status`, `statusCode`,
+   * `expose`: an over-limit body, an unsupported encoding, a static file's
+   * `404`) becomes an `HttpException` with its status and that `cause`, so a
+   * `@Catch(HttpException)` filter sees it (nestjs/nest #18213); its message
+   * only if it may be exposed, else the status text. Anything else is returned
+   * as it is, a 5xx `http-errors` error included.
    *
    * Nest 12 calls it from the exception layer it registers through
    * {@link setErrorHandler} (nestjs/nest #15075 moved the mapping out of the
@@ -3105,7 +3243,24 @@ export class BunHttpAdapter<
    */
   public mapException(error: unknown): unknown {
     if (error instanceof SyntaxError || error instanceof URIError) {
-      return new BadRequestException(error.message);
+      // The description, spelled out: Nest 11 loses its default to any options.
+      return new BadRequestException(error.message, {
+        cause: error,
+        description: "Bad Request",
+      });
+    }
+    if (
+      this.#atLeast12_3 &&
+      isHttpErrorShaped(error) &&
+      error.statusCode < 500
+    ) {
+      return new HttpException(
+        error.expose === false
+          ? (STATUS_CODES[error.statusCode] ?? "Internal server error")
+          : error.message,
+        error.statusCode,
+        { cause: error },
+      );
     }
     return error;
   }
