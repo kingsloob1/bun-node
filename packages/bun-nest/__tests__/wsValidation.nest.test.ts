@@ -433,6 +433,23 @@ describe("@Emits", () => {
     ]);
   });
 
+  it("an invalid emit still throws to the caller after an asynchronous emit has drained", async () => {
+    const spy = spyOn(Logger.prototype, "error").mockImplementation(() => {});
+    const fresh = await connectWs(`${base}/emits`);
+    try {
+      await framesFrom(fresh, { data: ["emit-async-mix", null] });
+      const frames = await framesFrom(fresh, { data: ["emit-invalid", null] });
+      expect(frames.some((f) => f.data?.[0] === "said")).toBe(false);
+      expect(exceptionOf(frames)?.code).toBe("VALIDATION");
+      // Refused as a throw to the caller, not logged and skipped as the queue does.
+      const messages = spy.mock.calls.map((call) => String(call[0]));
+      expect(messages.filter((m) => m.includes('emit "said"'))).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      await fresh.close();
+    }
+  });
+
   it("an undeclared event passes through unchecked", async () => {
     expect(
       await framesFrom(client, { data: ["emit-undeclared", null] }),

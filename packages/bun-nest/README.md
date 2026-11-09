@@ -1814,7 +1814,9 @@ class ChatGateway {
   client's `emit` checks a declared event's payload under `"error"` before
   the write: a synchronous vendor's mismatch throws to the caller and nothing
   is sent (an asynchronous vendor's is logged instead, the caller having
-  returned; its writes keep their order). An undeclared event passes
+  returned; its writes keep their order). While that client's asynchronous
+  write is still pending, a synchronous mismatch is logged and skipped too,
+  since it waits its turn in the queue. An undeclared event passes
   unchecked. The map is recorded as metadata (`"bun:validate:emits"`) for
   documents, and composes with the gateway's own `handleConnection`.
 - **`TypedSocket<typeof map>`** types `@ConnectedSocket()` from the same
