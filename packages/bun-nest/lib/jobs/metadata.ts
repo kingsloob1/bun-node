@@ -15,3 +15,10 @@ export const NEST_SCOPE_OPTIONS_METADATA = "scope:options";
 
 /** Where `@QueueToken()` records the queue a token class stands for. */
 export const QUEUE_TOKEN_METADATA = "bun-jobs:queue-token";
+
+/** Where `@Processor()` records its queue and options. */
+export const PROCESSOR_METADATA = "bun-jobs:processor";
+/** Where `@Process()` records its job name and options. */
+export const PROCESS_METADATA = "bun-jobs:process";
+/** Where `@DefineJob()` records its job name and options. */
+export const DEFINE_JOB_METADATA = "bun-jobs:define-job";

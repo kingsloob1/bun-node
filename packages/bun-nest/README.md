@@ -103,6 +103,11 @@ Underneath, routing is
   - [Queues: `registerQueue` and `@InjectQueue`](#queues-registerqueue-and-injectqueue)
   - [Typed queues: `@QueueToken`](#typed-queues-queuetoken)
   - [Several contexts in one application](#several-contexts-in-one-application)
+  - [Workers: `@Processor` and `@Process`](#workers-processor-and-process)
+  - [Request-scoped processors](#request-scoped-processors)
+  - [Files and other threads: `registerWorker`](#files-and-other-threads-registerworker)
+  - [The registry: `@DefineJob`](#the-registry-definejob)
+  - [Starting and draining](#starting-and-draining)
   - [The checks at boot](#the-checks-at-boot)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
@@ -2627,10 +2632,9 @@ export class SignupService {
 export class EmailsModule {}
 ```
 
-What the module does not have yet is anything that **consumes** a job under
-Nest: a worker is still `jobs.worker(...)` in a provider of your own. Every
-method on `BunJobs` and `BunQueue` (the builder, drafts, `addFlow`, `setLimits`,
-`pause`, `walk`, …) works on what is injected, with no decorator for it.
+Every method on `BunJobs` and `BunQueue` (the builder, drafts, `addFlow`,
+`setLimits`, `pause`, `walk`, …) works on what is injected, with no decorator for
+it. A decorator exists where it attaches behaviour to a method or a class.
 
 ### The context: `forRoot` and `forRootAsync`
 
@@ -2645,6 +2649,9 @@ through untouched, and these of its own:
 | `name`     | none    | The context's name; see [several contexts](#several-contexts-in-one-application). |
 | `token`    | none    | A named class extending `BunJobs<Jobs>`, provided as well, so a typed registry keeps its checks where it is injected. |
 | `logger`   | `new Logger("BunJobs")` | bun-jobs' `logger`. The default is Nest's, so its records reach `app.useLogger()`; `false` drops them; anything `resolveLogger` accepts takes them instead. |
+| `autoStart` | `true` | Whether workers start at bootstrap. See [starting and draining](#starting-and-draining). |
+| `shutdown` | `{ timeout: 30_000 }` | `{ timeout?, force? }`, given to each `worker.close()` on `app.close()`. |
+| `registryWorker` | none | What `jobs.start()` is given for `@DefineJob`: the registry worker's options. |
 
 `forRootAsync` takes the same options from a factory (`useFactory` with `inject`
 and `imports`), a class with a `createBunJobsOptions()` method (`useClass`) or a
@@ -2732,10 +2739,202 @@ Everything then takes the name last: `@InjectBunJobs("billing")`,
 "billing" })`, `getQueueToken("emails", "billing")`. Only the unnamed context is
 provided under the class `BunJobs`.
 
+### Workers: `@Processor` and `@Process`
+
+Put `@Processor` on a provider, and `@Process` on the methods that handle a job
+name. The method is called as `(job, ctx)`, with bun-jobs' `Job` and
+`ProcessorContext`. The class is an ordinary service: its other methods stay
+ordinary methods, and everything it needs is injected as usual.
+
+```ts
+import { Job, ProcessorContext } from "@kingsleyweb/bun-jobs";
+import { Process, Processor } from "@kingsleyweb/bun-nest/jobs";
+
+@Processor("emails", { concurrency: 5 })
+export class EmailService {
+  constructor(private readonly mailer: Mailer) {}
+
+  async sendNow(to: string) { … }                    // an ordinary method
+
+  @Process("welcome", { concurrency: 2 })            // limits on this job name
+  async welcome(job: Job<Email, string>, ctx: ProcessorContext) {
+    await job.updateProgress(10);
+    return this.mailer.send(job.data.to, ctx.signal);
+  }
+
+  @Process()                                         // any other name on this queue
+  async other(job: Job) {
+    throw new UnrecoverableJobError(`unknown job ${job.name}`);
+  }
+}
+```
+
+**One worker per queue, not per method.** A bun-jobs worker claims any job on its
+queue, whatever its name, so a worker per method would claim the other methods'
+jobs and fail them. Classes on one queue (in one context) share one worker, with
+their handlers merged. Two handlers for one name, two catch-alls, or two classes
+setting different worker options are a `ConfigError` at boot.
+
+**A job nobody handles goes to `dead` at once**, as `UnrecoverableJobError`,
+because a `@Processor` queue belongs to this service and no retry here would find
+a handler. (`@DefineJob`'s registry keeps bun-jobs' retryable rule, below.)
+
+`@Processor(queue, options)` takes a name or a [`@QueueToken`](#typed-queues-queuetoken)
+class, and every option a bun-jobs worker takes, passed through: `concurrency`,
+`lockDuration`, `deadLetterQueue`, `control`, `metrics`, `schema`, `id`, `key`, ….
+One worker serves the queue, so its `schema` covers every name on it. Beside them
+are `scope` (the Nest scope, which needs no `@Injectable()` beside it) and
+`context` (the [named context](#several-contexts-in-one-application)).
+
+`@Process(name?, { concurrency?, rate? })` sets limits on one job name, on top of
+the queue's. **They are stored on the queue, so they apply to every process
+consuming it**, and a name at its limit is skipped rather than waited behind. They
+are merged into what is stored at bootstrap: the queue's own limits and every other
+name stay as they were, and nothing is written when nothing would change.
+
+**Only providers.** `@Processor` on a controller is a `ConfigError`. A provider
+made by `useFactory` or `useValue` is found like any other.
+
+`@InjectWorker(ProcessorClass)`, or `@InjectWorker("emails", context?)`, injects a
+`WorkerRef`, whose `worker` getter is the `BunQueueWorker` serving the queue, for
+`pause()`, `concurrency` and the rest. The worker is built at bootstrap, after
+injection, so the getter throws a `ConfigError` before then. `registerQueue()`
+provides the handle as it does the queue, so import it where this is injected. A
+class must already be defined at that point: for one declared later, or across an
+import cycle, give the queue's name.
+
+**`JobsHost`** is the base-class form, for an app coming from `@nestjs/bullmq`'s
+`WorkerHost`: `process(job, ctx)` is the queue's catch-all, `this.worker` is the
+worker, and its `onModuleDestroy` is the drain, out in the open.
+
+```ts
+@Processor("emails")
+export class EmailProcessor extends JobsHost<Email, string> {
+  async process(job: Job<Email, string>, ctx: ProcessorContext) { … }
+}
+```
+
+A subclass overriding `onModuleDestroy` calls `super.onModuleDestroy()` first, or
+its worker drains last, after what its jobs use may have gone.
+
+### Request-scoped processors
+
+With `scope: Scope.REQUEST`, or a dependency on a request-scoped provider, each job
+gets a fresh instance through Nest's public `ModuleRef.resolve`, at a cost of tens
+of microseconds per job. **`REQUEST` is the job**:
+
+```ts
+@Processor("emails", { scope: Scope.REQUEST })
+export class TenantEmails {
+  constructor(@Inject(REQUEST) private readonly job: Job<{ tenant: string }>) {}
+  …
+}
+```
+
+- **A `ContextIdStrategy` is global, and receives the job here** where it receives
+  an HTTP request elsewhere, so one that reads `request.headers` must handle a job.
+  A durable tree per tenant is the obvious use, and `isBunJob(value)` tells the two
+  apart:
+
+  ```ts
+  attach(contextId, request) {
+    const tenant = isBunJob(request) ? request.data.tenant : request.headers["x-tenant"];
+    …
+  }
+  ```
+
+- **Nothing is written on the job.** So a provider calling
+  `ContextIdFactory.getByRequest(this.request)` itself inside a job's tree gets a
+  fresh context, not the job's.
+- **Nest runs no lifecycle hook on a scoped instance**, so its worker has no drain
+  of its own: it drains last, [below](#starting-and-draining).
+
+### Files and other threads: `registerWorker`
+
+A `@Process` method runs in-process, and any other `target` on a `@Processor` is a
+`ConfigError`, since a function cannot be sent to another thread or process.
+Off-thread work is a processor **file**, as a worker the module owns, so it starts
+and drains with the others:
+
+```ts
+BunJobsModule.registerWorker({
+  queue: "images",
+  processor: new URL("./processors/resize.ts", import.meta.url),
+  options: { target: { kind: "child-process", spawn: { passEnv: ["S3_BUCKET"] } }, concurrency: 4 },
+});
+```
+
+A file has no Nest pipeline and no DI of its own. A queue takes a file or
+`@Processor` classes, never both, since either would claim the other's jobs.
+
+### The registry: `@DefineJob`
+
+bun-jobs' registry gives every job of a name its defaults (attempts, backoff,
+timeout, per-name concurrency) wherever it is added from. Its Nest form is a method
+decorator on any provider:
+
+```ts
+@Injectable()
+export class ReportJobs {
+  @DefineJob("send-report", { attempts: 5, backoff: { type: "exponential", delay: 1000 }, concurrency: 2 })
+  async sendReport(job: Job<{ month: string }>) { … }
+}
+
+await jobs.now("send-report", { month: "may" }); // the name checked, the defaults applied
+```
+
+At bootstrap the module calls `jobs.define()` for each, and `jobs.start()` once. The
+difference from `@Process` is bun-jobs': a defined job lives on the registry queue
+(`registryQueue`, by default `"jobs"`), and a name nobody defines stays a retryable
+`ConfigError`, for a deployment that does define it. `{ context }` picks a named
+context, and `forRoot({ token: AppJobs })` keeps a typed registry's compile-time
+checks where it is injected.
+
+### Starting and draining
+
+**Workers start at `onApplicationBootstrap`**, so whatever another module opens in
+its `onModuleInit` is ready, and global enhancers added between
+`NestFactory.create()` and `init()` are in place. A job added earlier waits there;
+it is queued state, so nothing is lost. With `autoStart: false`, discovery still runs
+but nothing claims a job until `BunJobsLifecycle.start()`, for tests and summoned
+processes; `stop()` parks the workers (jobs in flight finish, and `start()` resumes
+them). Both act on every context, or the one named.
+
+**Each worker drains in its processors' own `onModuleDestroy`.** Nest destroys a
+processor before the modules it imports and before global modules, so a job in flight
+finishes before what it uses goes. The module installs that hook on each singleton
+instance, chained to the class's own, which still runs, once, afterwards. Classes on
+one queue share the worker, and the first destroyed closes it.
+
+| Where a job's service lives | Nest 11 | Nest 12 |
+|---|---|---|
+| a module the processor's module imports | finishes | finishes |
+| a `@Global` module | finishes | finishes |
+| **the processor's own module** | **destroyed under the job** | finishes |
+
+On **Nest 11**, a module's providers are destroyed at the same time, so a resource in
+a processor's own module closes while its jobs drain: give the resources their own
+module. Nest 12 orders them by dependency, so the processor goes first.
+
+What has no instance to hook drains last, in the jobs module's own
+`onModuleDestroy`: a request-scoped processor and a `registerWorker` file. A
+request-scoped processor's services may already be gone by then, so give it resources
+that outlive the close, or a job it can stop on its signal.
+
+Queues stay open until `onApplicationShutdown`, so a provider's `onModuleDestroy` can
+still enqueue, and then a context the module built closes.
+
+`shutdown.timeout` (30 s) is each worker's budget: a job still running at the timeout
+has its signal aborted and its lock left to lapse for the stalled sweep. Set it below
+your platform's grace period. Nest runs none of this on `SIGTERM` unless the app calls
+`app.enableShutdownHooks()`.
+
 ### The checks at boot
 
-The module checks the application in `onModuleInit`, before any job can run, and
-fails the boot with one bun-common `ConfigError` that lists every problem:
+The module checks the application before any job can run, in `onModuleInit` for
+registrations and in `onApplicationBootstrap` for processors (the rules are under
+[workers](#workers-processor-and-process)), and fails the boot with one bun-common
+`ConfigError` that lists every problem:
 
 - **Two registrations of one queue with different options**, naming the modules
   that imported them. A queue's options apply only when it is created, and bun-jobs
@@ -3331,7 +3530,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Group | Exports |
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
-| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `QueueToken`, `getBunJobsToken`, `getQueueToken`; types `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions` |
+| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |

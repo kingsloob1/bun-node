@@ -41,6 +41,19 @@ export function getQueueToken(name: string, context?: string): string {
 }
 
 /**
+ * The token of the handle on the worker serving a queue, which `@InjectWorker()`
+ * injects and `registerQueue()` and `registerWorker()` provide.
+ *
+ * @param name The queue's name.
+ * @param context The context's `name`; the default context when left out.
+ */
+export function getWorkerToken(name: string, context?: string): string {
+  return context === undefined
+    ? `bun-jobs:worker:${name}`
+    : `bun-jobs:${context}:worker:${name}`;
+}
+
+/**
  * The token of the options `BunJobsModule.forRoot()` was given (or
  * `forRootAsync()` built). A registered symbol, so two copies of the package
  * agree on it.

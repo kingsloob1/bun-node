@@ -123,7 +123,16 @@
         "InjectBunJobs",
         "QueueToken",
         "getBunJobsToken",
-        "getQueueToken"
+        "getQueueToken",
+        "getWorkerToken",
+        "Processor",
+        "Process",
+        "DefineJob",
+        "InjectWorker",
+        "JobsHost",
+        "WorkerRef",
+        "BunJobsLifecycle",
+        "isBunJob"
       ],
       "types": [
         "BunJobsApiModuleOptions",
@@ -142,9 +151,21 @@
         "RegisterQueueAsyncOptions",
         "QueueTokenClass",
         "BunJobsOptions",
-        "BunQueueOptions"
+        "BunQueueOptions",
+        "BunJobsRunOptions",
+        "BunJobsShutdownOptions",
+        "BunJobsWorkerOptions",
+        "ProcessorOptions",
+        "ProcessOptions",
+        "DefineJobOptions",
+        "RegisterWorkerOptions",
+        "BunQueueWorker",
+        "Job",
+        "JobDefinitionOptions",
+        "NameLimits",
+        "ProcessorContext"
       ],
-      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunJobsApiModule.forRoot>>>;\nexport type _jobs = Expect<IsAny<t.BunJobsApiModuleOptions[\"jobs\"]>>;\nexport type _jobsModule = Expect<IsAny<ReturnType<typeof m.BunJobsModule.forRoot>>>;\nm.BunJobsModule.forRoot({ namespace: \"shop\", logger: false, name: \"billing\", isGlobal: false });\n// @ts-expect-error -- namespace is required when the module builds the context\nm.BunJobsModule.forRoot({ logger: false });\nm.BunJobsModule.registerQueue({ name: \"emails\", options: { defaultJobOptions: { attempts: 3 } } });\nconst _queueToken: string = m.getQueueToken(\"emails\", \"billing\");\nm.InjectQueue(\"emails\", \"billing\");\nm.InjectBunJobs(\"billing\");"
+      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunJobsApiModule.forRoot>>>;\nexport type _jobs = Expect<IsAny<t.BunJobsApiModuleOptions[\"jobs\"]>>;\nexport type _jobsModule = Expect<IsAny<ReturnType<typeof m.BunJobsModule.forRoot>>>;\nm.BunJobsModule.forRoot({ namespace: \"shop\", logger: false, name: \"billing\", isGlobal: false });\n// @ts-expect-error -- namespace is required when the module builds the context\nm.BunJobsModule.forRoot({ logger: false });\nm.BunJobsModule.registerQueue({ name: \"emails\", options: { defaultJobOptions: { attempts: 3 } } });\nconst _queueToken: string = m.getQueueToken(\"emails\", \"billing\");\nm.InjectQueue(\"emails\", \"billing\");\nm.InjectBunJobs(\"billing\");\nm.Processor(\"emails\", { concurrency: 2 });\nm.Process(\"welcome\", { concurrency: 1 });\nm.DefineJob(\"report\", { attempts: 3 });\nm.InjectWorker(\"emails\");\nm.BunJobsModule.registerWorker({ queue: \"emails\", processor: \"./p.ts\", options: { target: \"worker-thread\" } });\nexport type _ref = Expect<IsAny<m.WorkerRef[\"worker\"]>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/jobs",
@@ -157,7 +178,8 @@
         "BUN_JOBS_API",
         "BUN_JOBS_API_OPTIONS",
         "getBunJobsToken",
-        "getQueueToken"
+        "getQueueToken",
+        "getWorkerToken"
       ]
     },
     {
