@@ -2,8 +2,7 @@
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
 §16 name accepted (§14 records the answers). PR-n1 to PR-n5 are merged (#721, #722,
-#724, #727, #730), and PR-n6, PR-n7 and PR-n8 are built. PR-n9 and PR-n10 are not
-started.** The sections below were corrected to match what was built, each correction
+#724, #727, #730), and PR-n6 to PR-n9 are built. PR-n10 is not started.** The sections below were corrected to match what was built, each correction
 marked; §2 still describes `develop` as it was before this work, and what §3 to §12
 assign to those PRs is still a design.
 
@@ -1847,12 +1846,21 @@ check() {
 |---|---|---|
 | backend reachable | `driver.ping()` (`lib/drivers/driver.ts:101`) [S] | `false`, or a throw, within `timeout` |
 | backlog | `queue.getDemand({ cap })`: `outstanding` (README "Queue methods") [S] | above `maxOutstanding` |
-| this process's workers | each explorer worker's `state` | `stopped`, or closing, while the app is not |
+| this process's workers | each explorer worker's `state` | `stopped` or `stopping`, while the app is not closing |
 | someone is consuming | `queue.getDemand()`'s `workers` (live, any process) [S] | `requireWorkers` and 0 workers with demand > 0 |
 
 `timeout` defaults to 1,000 ms, because a health probe must not hang on a
 dead backend. Terminus' deprecated `HealthIndicator` base class is not used
 [V, PA §8].
+
+As built (PR-n9): `isHealthy` never rejects. A worker the application never started,
+with `autoStart: false`, does not count; one on a queue outside `queues` does not
+either. `queues` left out reads every queue the backend knows. `timeout` bounds the
+whole check. A failure's cause goes to the log, and the caller gets a fixed `message`.
+The options also take `context`. The peer is `^11.1.1 || ^12.0.0`, and the devDependency
+12.1.0: terminus' line is not Nest's, so `scripts/nest-matrix.ts` pins it per column
+(`NEST_PACKAGE_OVERRIDES`: 11.1.1 on an 11 column, 12.1.0 on a 12), and the consumer with
+that peer gets it from `consumerDependencies`.
 
 ### 9.9 Testing utilities (`./jobs/testing`) [D]
 
@@ -2353,7 +2361,7 @@ table says otherwise.
 | `createProcessorContext` | function | |
 | `runSummonedApplication` | function | `runSummoned` for a Nest module |
 | `RemoteHandler`, `BunRemoteExecutorModule` | decorator, module | |
-| `BunJobsHealthIndicator`, `BunJobsHealthModule`, `isHealthy` options (`queues`, `maxOutstanding`, `requireWorkers`, `timeout`) | indicator, module, on **`./jobs/terminus`** | |
+| `BunJobsHealthIndicator`, `BunJobsHealthModule`, `isHealthy` options (`queues`, `maxOutstanding`, `requireWorkers`, `timeout`) | indicator, module, on **`./jobs/terminus`** | with `context` and the type `BunJobsHealthOptions` |
 | `BunJobsTestingModule`, `runJob`, `drainJobs`, `RunJobOutcome` | module, functions, type, on **`./jobs/testing`** | with the types `RunJobOptions`, `DrainJobsOptions`, `BunJobsTestingModuleOptions` |
 | `./jobs/terminus`, `./jobs/testing` (+ `./lib/...` spellings) | package entries | §3.5 |
 | metadata keys `bun-jobs:*` | internal strings | not exported; listed because they are visible to `Reflect` |

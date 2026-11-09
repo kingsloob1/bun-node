@@ -41,7 +41,10 @@ afterAll(async () => {
  * A copy of this package outside the workspace, with every dependency the
  * barrel needs linked in — except `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-cache`.
  */
-async function isolatedCopy(): Promise<string> {
+async function isolatedCopy(
+  /** Links bun-jobs in too, for what a peer past it needs. */
+  withJobs = false,
+): Promise<string> {
   const root = `${tmpdir()}/bun-nest-isolation-${crypto.randomUUID()}`;
   scratch.push(root);
   const pkg = `${root}/pkg`;
@@ -61,7 +64,15 @@ async function isolatedCopy(): Promise<string> {
     [`${INSTALLED}/@routejs/router`, `${modules}/@routejs/router`],
     [`${INSTALLED}/rxjs`, `${modules}/rxjs`],
     [`${INSTALLED}/reflect-metadata`, `${modules}/reflect-metadata`],
-  ]) {
+    ...(withJobs
+      ? [
+          [
+            `${INSTALLED}/@kingsleyweb/bun-jobs`,
+            `${modules}/@kingsleyweb/bun-jobs`,
+          ],
+        ]
+      : []),
+  ] as [string, string][]) {
     await Bun.$`ln -s ${from} ${to}`.quiet().nothrow();
   }
   return pkg;
@@ -130,5 +141,28 @@ describe("barrel isolation", () => {
       const loaded = await importInIsolation(`${pkg}/lib/cache/${leaf}.ts`);
       expect({ leaf, ...loaded }).toEqual({ leaf, ok: true, message: "" });
     }
+
+    // Without bun-jobs, the terminus subpath does not load either.
+    const terminus = await importInIsolation(
+      `${pkg}/lib/jobs/terminus/index.ts`,
+    );
+    expect(terminus.ok).toBe(false);
+  }, 30_000);
+
+  it("./jobs needs bun-jobs and not @nestjs/terminus; ./jobs/terminus names it", async () => {
+    const pkg = await isolatedCopy(true);
+
+    const jobs = await importInIsolation(`${pkg}/lib/jobs/index.ts`);
+    expect({ entry: "jobs", ...jobs }).toEqual({
+      entry: "jobs",
+      ok: true,
+      message: "",
+    });
+    // The control: with terminus still missing, its own entry fails, naming it.
+    const terminus = await importInIsolation(
+      `${pkg}/lib/jobs/terminus/index.ts`,
+    );
+    expect(terminus.ok).toBe(false);
+    expect(terminus.message).toContain("@nestjs/terminus");
   }, 30_000);
 });

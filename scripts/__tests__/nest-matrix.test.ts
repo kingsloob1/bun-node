@@ -323,6 +323,47 @@ describe("rewriteManifest", () => {
     expect(config.entries).toEqual([]);
   });
 
+  it("pins @nestjs/terminus to its own line, and widens its peer to that, not the column", () => {
+    const manifest: Manifest = {
+      name: "x",
+      devDependencies: { "@nestjs/terminus": "12.1.0" },
+      peerDependencies: { "@nestjs/terminus": "^11.1.1 || ^12.0.0" },
+    };
+    for (const [column, pin] of [
+      ["11.2.9", "11.1.1"],
+      ["11.2.7", "11.1.1"],
+      ["11.1.20", "11.1.1"],
+      ["12.0.0", "12.1.0"],
+      ["12.4.1", "12.1.0"],
+    ] as const) {
+      const { manifest: out } = rewriteManifest(manifest, column, {
+        widenPeers: true,
+      });
+      expect(out.devDependencies?.["@nestjs/terminus"]).toBe(pin);
+      // The range admits the pin, so nothing about the column's version is added to it.
+      expect(out.peerDependencies?.["@nestjs/terminus"]).toBe(
+        "^11.1.1 || ^12.0.0",
+      );
+    }
+  });
+
+  it("keeps @nestjs/terminus in a consumer, at its own line for the column", () => {
+    const config = pinConsumerCheck(
+      {
+        entries: [],
+        consumerDependencies: ["zod@4", "@nestjs/terminus@^12.1.0"],
+      },
+      "11.2.9",
+    );
+    expect(config.consumerDependencies).toEqual([
+      "zod@4",
+      "@nestjs/common@11.2.9",
+      "@nestjs/core@11.2.9",
+      "@nestjs/websockets@11.2.9",
+      "@nestjs/terminus@11.1.1",
+    ]);
+  });
+
   it("consults NEST_PACKAGE_OVERRIDES before the blanket @nestjs/* pin", () => {
     // @nestjs/swagger's line is not Nest's (api-docs-generation phase d):
     // an 11 column pins swagger 11.4.6, a 12 column 12.0.4, never the

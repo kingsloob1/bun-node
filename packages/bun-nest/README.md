@@ -121,6 +121,7 @@ Underneath, routing is
   - [Starting and draining](#starting-and-draining)
   - [The checks at boot](#the-checks-at-boot)
   - [Testing jobs: `./jobs/testing`](#testing-jobs-jobstesting)
+  - [Health: `./jobs/terminus`](#health-jobsterminus)
 - [The jobs API module](#the-jobs-api-module)
   - [Nest guards as `authorize`: `guardsAuthorize`](#nest-guards-as-authorize-guardsauthorize)
   - [The jobs UI, with no module](#the-jobs-ui-with-no-module)
@@ -3530,6 +3531,54 @@ await adapter.fetch("/signups", { method: "POST", remoteAddress: "10.0.0.4" });
 const settled = await drainJobs(app, { queues: ["emails"] });
 ```
 
+### Health: `./jobs/terminus`
+
+`@kingsleyweb/bun-nest/jobs/terminus` is a [`@nestjs/terminus`](https://docs.nestjs.com/recipes/terminus)
+health indicator, on an entry of its own because terminus is an optional peer: `^11.1.1 || ^12.0.0`, the
+first with `HealthIndicatorService`. `./jobs` does not need it.
+
+```ts
+import { BunJobsHealthIndicator, BunJobsHealthModule } from "@kingsleyweb/bun-nest/jobs/terminus";
+
+@Controller("health")
+class HealthController {
+  constructor(
+    @Inject(HealthCheckService) private readonly health: HealthCheckService,
+    @Inject(BunJobsHealthIndicator) private readonly jobs: BunJobsHealthIndicator,
+  ) {}
+
+  @Get()
+  @HealthCheck()
+  check() {
+    return this.health.check([
+      () => this.jobs.isHealthy("jobs", { queues: ["emails"], maxOutstanding: 10_000, requireWorkers: true }),
+    ]);
+  }
+}
+
+@Module({ imports: [BunJobsHealthModule], controllers: [HealthController] })
+export class HealthModule {}
+```
+
+`BunJobsHealthModule` provides the indicator and re-exports `TerminusModule`, and finds `BunJobsModule`
+wherever it is. `isHealthy(key, options?)` never rejects: anything that goes wrong is `down`.
+
+| Check | Down when |
+|---|---|
+| the backend, `driver.ping()` | it answers `false` or throws, or the whole check outlives `timeout` (1 s) |
+| this application's workers, on the listed `queues` | one it started is `stopped` or `stopping` while the application is not closing |
+| `maxOutstanding` (off by default), `getDemand().outstanding` | a queue has more than that waiting, due or active |
+| `requireWorkers` (`false` by default), `getDemand().workers`, in any process | a queue has demand and no live worker |
+
+- **`queues`** defaults to every queue the backend knows, a read each, so name them where there are many.
+- **`context`** names the context, for an application with several.
+- **A worker never started does not count**, with `autoStart: false`. One parked with `BunJobsLifecycle.stop()`
+  does, so a deliberate stop reads as down until it resumes. A paused queue has no demand.
+- **`requireWorkers` needs worker records.** On a third-party driver that keeps none, the count is always 0,
+  so leave it off there.
+- **What a health response says:** queue names and figures, and a `message` when down. A failure's cause, a
+  connection error say, goes to Nest's logger and not to the caller, since these endpoints are often public.
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -4197,6 +4246,7 @@ and [the cache module](#the-cache-module), exported **only** from
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
 | Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `Cron`, `Every`, `InjectRunner`, `getRunnerToken`, `runSummonedApplication`, `createProcessorContext`, `InjectSummonController`, `getSummonControllerToken`, `RemoteHandler`, `BunRemoteExecutorModule`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `RunSummonedApplicationOptions`, `RemoteHandlerOptions`, `BunRemoteExecutorModuleOptions`, `BunRemoteExecutorModuleAsyncOptions`, `CronOptions`, `EveryOptions`, `ScheduleOptions`, `RegisterRunnerOptions`, `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions`, `BunRunner`, `BunRunnerOptions`, `RunSummonedOptions`, `SummonController`, `SummonedExit`, `SummonPolicy` |
+| Jobs health (`./jobs/terminus` only) | `BunJobsHealthIndicator`, `BunJobsHealthModule`; type `BunJobsHealthOptions` |
 | Jobs testing (`./jobs/testing` only) | `BunJobsTestingModule`, `runJob`, `drainJobs`; types `BunJobsTestingModuleOptions`, `RunJobOptions`, `RunJobOutcome`, `DrainJobsOptions` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |

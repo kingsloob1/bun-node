@@ -240,6 +240,23 @@ describe("this package's optional peers", () => {
     expect(peersOf("@kingsleyweb/bun-nest")).toEqual([]);
   });
 
+  it("scopes @nestjs/terminus to the terminus subpath, with the consumer that has it", () => {
+    const peersOf = (spelling: string) =>
+      checkConfig.entries?.find((e) => e.spelling === spelling)?.peers ?? [];
+    for (const spelling of [
+      "@kingsleyweb/bun-nest/jobs/terminus",
+      "@kingsleyweb/bun-nest/lib/jobs/terminus",
+    ]) {
+      expect(peersOf(spelling)).toContain("@nestjs/terminus");
+    }
+    for (const entry of checkConfig.entries ?? []) {
+      if (!entry.spelling.includes("/jobs/terminus")) {
+        expect(entry.peers ?? []).not.toContain("@nestjs/terminus");
+      }
+    }
+    expect(optional.has("@nestjs/terminus")).toBe(true);
+  });
+
   it("scopes @kingsleyweb/bun-cache to the cache subpath, never the root or the tokens", () => {
     const peersOf = (spelling: string) =>
       checkConfig.entries?.find((e) => e.spelling === spelling)?.peers ?? [];

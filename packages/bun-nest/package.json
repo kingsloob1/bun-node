@@ -47,6 +47,11 @@
       "types": "./dts/jobs/testing/index.d.ts",
       "default": "./lib/jobs/testing/index.ts"
     },
+    "./jobs/terminus": {
+      "@kingsleyweb/source": "./lib/jobs/terminus/index.ts",
+      "types": "./dts/jobs/terminus/index.d.ts",
+      "default": "./lib/jobs/terminus/index.ts"
+    },
     "./lib": {
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
@@ -61,6 +66,11 @@
       "@kingsleyweb/source": "./lib/jobs/index.ts",
       "types": "./dts/jobs/index.d.ts",
       "default": "./lib/jobs/index.ts"
+    },
+    "./lib/jobs/terminus": {
+      "@kingsleyweb/source": "./lib/jobs/terminus/index.ts",
+      "types": "./dts/jobs/terminus/index.d.ts",
+      "default": "./lib/jobs/terminus/index.ts"
     },
     "./lib/jobs/testing": {
       "@kingsleyweb/source": "./lib/jobs/testing/index.ts",

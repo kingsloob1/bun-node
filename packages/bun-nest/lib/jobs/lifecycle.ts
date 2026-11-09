@@ -1,4 +1,4 @@
-import type { BunQueueWorker } from "@kingsleyweb/bun-jobs";
+import type { BunQueueWorker, WorkerState } from "@kingsleyweb/bun-jobs";
 import { ConfigError } from "@kingsleyweb/bun-common";
 
 /** What {@link BunJobsLifecycle} starts and stops: one context's workers. */
@@ -16,6 +16,12 @@ export interface StartableWorkers {
    * and runners stay as they are. What `./jobs/testing` runs a queue with.
    */
   startWorkers: (queues?: readonly string[]) => Promise<StartedWorkers>;
+  /**
+   * What each worker is doing, for `./jobs/terminus`: one never started reads `running`.
+   * Nothing, once the application is closing, when a worker on its way down is what should
+   * be happening.
+   */
+  workerStates: () => { queue: string; state: WorkerState }[];
 }
 
 /** What {@link StartableWorkers.startWorkers} found. */
