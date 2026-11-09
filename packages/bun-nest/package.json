@@ -42,6 +42,11 @@
       "types": "./dts/jobs/index.d.ts",
       "default": "./lib/jobs/index.ts"
     },
+    "./jobs/testing": {
+      "@kingsleyweb/source": "./lib/jobs/testing/index.ts",
+      "types": "./dts/jobs/testing/index.d.ts",
+      "default": "./lib/jobs/testing/index.ts"
+    },
     "./lib": {
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
@@ -56,6 +61,11 @@
       "@kingsleyweb/source": "./lib/jobs/index.ts",
       "types": "./dts/jobs/index.d.ts",
       "default": "./lib/jobs/index.ts"
+    },
+    "./lib/jobs/testing": {
+      "@kingsleyweb/source": "./lib/jobs/testing/index.ts",
+      "types": "./dts/jobs/testing/index.d.ts",
+      "default": "./lib/jobs/testing/index.ts"
     },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
@@ -149,6 +159,7 @@
     "@nestjs/platform-express": "catalog:",
     "@nestjs/platform-ws": "^12.2.0",
     "@nestjs/swagger": "12.0.4",
+    "@nestjs/testing": "12.2.0",
     "@nestjs/websockets": "catalog:",
     "@routejs/router": "^3.0.3",
     "@tanstack/query-core": "catalog:",

@@ -11,6 +11,19 @@ export interface StartableWorkers {
   start: () => Promise<void>;
   /** Parks every running worker; see {@link BunJobsLifecycle.stop}. */
   stop: () => Promise<void>;
+  /**
+   * Starts only the workers on these queues, or every worker when none are named. Series
+   * and runners stay as they are. What `./jobs/testing` runs a queue with.
+   */
+  startWorkers: (queues?: readonly string[]) => Promise<StartedWorkers>;
+}
+
+/** What {@link StartableWorkers.startWorkers} found. */
+export interface StartedWorkers {
+  /** The queues a worker here serves, of those asked for. */
+  started: string[];
+  /** The queues asked for that no worker here serves. */
+  missing: string[];
 }
 
 /**
