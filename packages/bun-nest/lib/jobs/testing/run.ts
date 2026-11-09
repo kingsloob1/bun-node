@@ -2,6 +2,7 @@ import type { BunJobs, Job, JobOptions } from "@kingsleyweb/bun-jobs";
 import type { INestApplicationContext } from "@nestjs/common";
 import type { StartableWorkers } from "../lifecycle";
 import { ConfigError } from "@kingsleyweb/bun-common";
+import { ModuleRef } from "@nestjs/core";
 import { BunJobsRegistry } from "../registry";
 import { getBunJobsToken } from "../tokens";
 
@@ -63,9 +64,14 @@ function hostOf(
   context: string | undefined,
   caller: string,
 ): { jobs: BunJobs<any, any>; workers: StartableWorkers } {
+  // Through `ModuleRef`, which every application has: on one from `NestFactory.create`,
+  // whose `abortOnError` is on by default, `app.get` of what is missing ends the process.
+  const moduleRef = app.get(ModuleRef, { strict: false });
   let workers: StartableWorkers | undefined;
   try {
-    workers = app.get(BunJobsRegistry, { strict: false }).startableOf(context);
+    workers = moduleRef
+      .get(BunJobsRegistry, { strict: false })
+      .startableOf(context);
   } catch {
     // Nest's own error here says only that a class is missing.
   }
@@ -75,7 +81,7 @@ function hostOf(
     );
   }
   return {
-    jobs: app.get<BunJobs<any, any>>(getBunJobsToken(context), {
+    jobs: moduleRef.get<BunJobs<any, any>>(getBunJobsToken(context), {
       strict: false,
     }),
     workers,
