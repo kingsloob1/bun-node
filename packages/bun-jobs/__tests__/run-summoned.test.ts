@@ -18,8 +18,8 @@ import { reachError, reportUnreachable } from "./helpers/backends";
  * which side of the platform's grace a close lands, which is seconds, not
  * milliseconds. **Duration-asserting cases:** the second SIGINT, the
  * deadline, the backstop and its control, the 5 s close rule and its
- * control, "in-invocation" leaving nothing to hold the process, and a signal
- * escalating a graceful close and its control.
+ * control, "in-invocation" leaving nothing to hold the process, a signal
+ * escalating a graceful close and its control, and `beforeExit` being cut.
  */
 
 const FIXTURE = join(
@@ -190,6 +190,9 @@ const CLOSING = "Summoned worker closing";
 const CLOSING_EARLY = "Summoned worker closing with force before it was ready";
 const STOPPED = "Summoned worker stopped";
 const BACKSTOP = "Summoned worker did not finish closing";
+const HOOK_BACKSTOP = "Summoned worker's beforeExit did not finish";
+const HOOK_FAILED = "Summoned worker's beforeExit failed";
+const HOOK_OVERRUN = "Summoned worker's beforeExit outlived its time";
 
 /** Waits for the exit, failing with the fixture's output if it never comes. */
 async function exitOf(
@@ -736,6 +739,255 @@ describe("the close rule, with a child-process target", () => {
  * The review's edge cases (#195): budgets at or below zero, stops that
  * arrive before the worker is ready, and a start that fails after a signal.
  */
+describe("beforeExit", () => {
+  /** The stop every case here starts from: idle, so quick and with no limit of its own. */
+  const IDLE = { idleFor: 200, idleCheckInterval: 50 };
+  const started = (line: Line): boolean => line.event === "before-exit";
+  const finished = (line: Line): boolean => line.event === "before-exit-done";
+  const indexOf = (fixture: Fixture, match: (line: Line) => boolean): number =>
+    fixture.lines.findIndex(match);
+
+  it("runs after the workers have closed and before the exit, told how the unit stopped", async () => {
+    const fixture = start({
+      OPTIONS: JSON.stringify(IDLE),
+      JOBS: "1",
+      BEFORE_EXIT: "slow",
+      BEFORE_EXIT_MS: "300",
+    });
+    const { code } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    const hook = fixture.lines.find(started);
+    expect(hook).toMatchObject({
+      reason: "idle",
+      code: 0,
+      completed: 1,
+      running: false,
+    });
+    expect(fixture.lines.filter(started)).toHaveLength(1);
+    // Awaited: the exit waits for it, and the workers did not.
+    expect(indexOf(fixture, logged(CLOSING))).toBeLessThan(
+      indexOf(fixture, started),
+    );
+    expect(indexOf(fixture, started)).toBeLessThan(indexOf(fixture, finished));
+    expect(indexOf(fixture, finished)).toBeLessThan(
+      indexOf(fixture, logged(STOPPED)),
+    );
+  }, 30_000);
+
+  it("a hook that hangs is ended by the backstop, with the unit's own code", async () => {
+    const fixture = start({
+      OPTIONS: JSON.stringify({ ...IDLE, beforeExitTimeout: 300 }),
+      BEFORE_EXIT: "hang",
+    });
+    const hook = await fixture.waitFor(started);
+    const { code, at } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    expect(fixture.lines.find(logged(HOOK_BACKSTOP))?.fields).toMatchObject({
+      reason: "idle",
+      code: 0,
+    });
+    expect(fixture.lines.some(logged(STOPPED))).toBe(false);
+    // Its timeout, or the 1 s floor from the start of the close if that is later.
+    expect(at - hook.at).toBeGreaterThanOrEqual(300 - EARLY);
+    expect(at - hook.at).toBeLessThan(1_000 + SLACK);
+  }, 30_000);
+
+  it("the control: with the backstop off, a hook that hangs holds the process", async () => {
+    const fixture = start({
+      OPTIONS: JSON.stringify({ ...IDLE, beforeExitTimeout: 300 }),
+      BEFORE_EXIT: "hang",
+      PROBE: "no-hook-backstop",
+    });
+    await fixture.waitFor(started);
+    const outcome = await Promise.race([
+      fixture.exited,
+      Bun.sleep(3_000).then(() => "still running" as const),
+    ]);
+
+    expect(outcome).toBe("still running");
+    expect(fixture.lines.some(logged(HOOK_BACKSTOP))).toBe(false);
+  }, 30_000);
+
+  it("is held to the deadline when that comes before its own timeout", async () => {
+    const fixture = start({
+      OPTIONS: JSON.stringify({ ...IDLE, beforeExitTimeout: 60_000 }),
+      DEADLINE_IN_MS: "3000",
+      BEFORE_EXIT: "hang",
+    });
+    const ready = await fixture.waitFor((line) => line.event === "ready");
+    const { code, at } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    expect(fixture.lines.some(logged(HOOK_BACKSTOP))).toBe(true);
+    // `deadline − 250`, counted from just before `ready`.
+    expect(at - ready.at).toBeLessThan(2_750 + SLACK);
+  }, 30_000);
+
+  for (const kind of ["reject", "throw"] as const) {
+    it(`a hook that ${kind === "reject" ? "rejects" : "throws"} is logged and the exit goes ahead`, async () => {
+      const fixture = start({
+        OPTIONS: JSON.stringify(IDLE),
+        BEFORE_EXIT: kind,
+      });
+      const { code } = await exitOf(fixture);
+
+      expect(code).toBe(0);
+      const failure = fixture.lines.find(logged(HOOK_FAILED));
+      expect(failure?.level).toBe("error");
+      expect(failure?.error).toBe(
+        kind === "reject" ? "the hook rejected" : "the hook threw",
+      );
+      expect(failure?.fields).toMatchObject({ reason: "idle", code: 0 });
+      expect(fixture.lines.find(logged(STOPPED))?.fields).toMatchObject({
+        reason: "idle",
+        code: 0,
+      });
+    }, 30_000);
+  }
+
+  it("a hook that rejects after a failed run leaves the exit code at 1", async () => {
+    const fixture = start({
+      DRIVER: "unreachable",
+      BEFORE_EXIT: "reject",
+    });
+    const { code } = await exitOf(fixture);
+
+    expect(code).toBe(1);
+    expect(fixture.lines.find(started)).toMatchObject({
+      reason: "error",
+      code: 1,
+    });
+    expect(fixture.lines.some(logged(HOOK_FAILED))).toBe(true);
+  }, 30_000);
+
+  it("a signal during it moves the backstop to grace − 250, and the closed workers take no harm", async () => {
+    const fixture = start(
+      {
+        OPTIONS: JSON.stringify({ ...IDLE, beforeExitTimeout: 60_000 }),
+        BEFORE_EXIT: "hang",
+      },
+      ["--bun-jobs-summon-id=hook", "--bun-jobs-summon-grace-ms=1500"],
+    );
+    await fixture.waitFor(started);
+    const sent = fixture.signal("SIGTERM");
+    const { code, at } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    expect(fixture.lines.some(logged("Summoned worker already stopping"))).toBe(
+      true,
+    );
+    expect(fixture.lines.find(logged(HOOK_BACKSTOP))?.fields).toMatchObject({
+      reason: "idle",
+    });
+    expect(fixture.lines.some(logged("Summoned worker could not force"))).toBe(
+      false,
+    );
+    expect(at - sent).toBeGreaterThanOrEqual(1_250 - EARLY);
+    expect(at - sent).toBeLessThan(1_250 + SLACK);
+  }, 30_000);
+
+  it("a second SIGINT during it exits at once with 130", async () => {
+    const fixture = start({
+      OPTIONS: JSON.stringify({ ...IDLE, beforeExitTimeout: 60_000 }),
+      BEFORE_EXIT: "hang",
+    });
+    await fixture.waitFor(started);
+    fixture.signal("SIGINT");
+    await fixture.waitFor(logged("Summoned worker already stopping"));
+    const sent = fixture.signal("SIGINT");
+    const { code, at } = await exitOf(fixture);
+
+    expect(code).toBe(130);
+    expect(at - sent).toBeLessThan(SLACK);
+  }, 30_000);
+
+  it("runs for an owner's close too", async () => {
+    const fixture = start({
+      OWNER_CLOSE_AT_MS: "200",
+      BEFORE_EXIT: "slow",
+      BEFORE_EXIT_MS: "100",
+    });
+    const { code } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    expect(fixture.lines.find(started)).toMatchObject({ reason: "closed" });
+    expect(fixture.lines.filter(started)).toHaveLength(1);
+    expect(fixture.lines.some(finished)).toBe(true);
+  }, 30_000);
+
+  it("a signal during an owner's close is noted too, and starts no second close", async () => {
+    const fixture = start(
+      {
+        OWNER_CLOSE_AT_MS: "200",
+        OPTIONS: JSON.stringify({ beforeExitTimeout: 60_000 }),
+        BEFORE_EXIT: "hang",
+      },
+      ["--bun-jobs-summon-id=hook-owner", "--bun-jobs-summon-grace-ms=1500"],
+    );
+    await fixture.waitFor(started);
+    const sent = fixture.signal("SIGTERM");
+    const { code, at } = await exitOf(fixture);
+
+    expect(code).toBe(0);
+    expect(fixture.lines.some(logged("Summoned worker already stopping"))).toBe(
+      true,
+    );
+    expect(fixture.lines.some(logged(CLOSING))).toBe(false);
+    // The signal escalates that close, and the workers report it closed again.
+    expect(fixture.lines.filter(started)).toHaveLength(1);
+    expect(at - sent).toBeLessThan(1_250 + SLACK);
+  }, 30_000);
+
+  for (const options of [{ mode: "in-invocation" }, { exit: false }] as const) {
+    const name = "mode" in options ? '"in-invocation"' : "exit: false";
+
+    it(`${name}: resolves after it, and only warns about one that outlives its time`, async () => {
+      const fixture = start({
+        OPTIONS: JSON.stringify({
+          ...IDLE,
+          ...options,
+          beforeExitTimeout: 100,
+        }),
+        // The close's own warning, far off, must not stand in for the hook's.
+        DEADLINE_IN_MS: "60000",
+        BEFORE_EXIT: "slow",
+        BEFORE_EXIT_MS: "500",
+      });
+      const result = await fixture.waitFor((line) => line.event === "result");
+      const { code } = await exitOf(fixture);
+
+      expect(code).toBe(0);
+      expect(indexOf(fixture, finished)).toBeGreaterThanOrEqual(0);
+      expect(indexOf(fixture, finished)).toBeLessThan(
+        fixture.lines.indexOf(result),
+      );
+      expect(fixture.lines.find(logged(HOOK_OVERRUN))?.level).toBe("warn");
+      expect(fixture.lines.some(logged(HOOK_BACKSTOP))).toBe(false);
+    }, 30_000);
+
+    it(`${name}: a hook that rejects still resolves`, async () => {
+      const fixture = start({
+        OPTIONS: JSON.stringify({ ...IDLE, ...options }),
+        BEFORE_EXIT: "reject",
+      });
+      const result = await fixture.waitFor((line) => line.event === "result");
+
+      expect(result).toMatchObject({ reason: "idle", code: 0 });
+      expect(fixture.lines.some(logged(HOOK_FAILED))).toBe(true);
+      // Leaves nothing behind, as a run without a hook does.
+      const end = await fixture.waitFor((line) => line.event === "end");
+      expect(end.listeners).toEqual({
+        SIGTERM: 0,
+        SIGINT: 0,
+        SIGTSTP: 0,
+        SIGCONT: 0,
+      });
+    }, 30_000);
+  }
+});
+
 describe("runSummoned at the budget's edges", () => {
   it("a deadline reached while run() is still connecting closes at once, not after the connect", async () => {
     // Connecting takes 8 s; the deadline is 3 s away, so the stop is due at

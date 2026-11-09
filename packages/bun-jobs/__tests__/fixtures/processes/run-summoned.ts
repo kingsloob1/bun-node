@@ -61,6 +61,9 @@ import { RUN_SUMMONED_PROBE } from "../../../lib/summon/worker";
  * - `PID_FILE`: where a file processor writes its pid.
  * - `LEAK_TIMER=1`: leaves a ref'd timer behind after the result, the
  *   negative control for "no timer left".
+ * - `BEFORE_EXIT`: passes a `beforeExit` that reports `before-exit` and then:
+ *   `slow` (sleeps `BEFORE_EXIT_MS`, then reports `before-exit-done`), `hang`
+ *   (never returns, and holds the process open), `reject`, or `throw`.
  *
  * Two signals stand in for an operator, calling the very methods remote
  * control calls: `SIGUSR1` parks the worker (`worker.stop()`), `SIGUSR2`
@@ -250,6 +253,12 @@ if (env.PROBE === "no-escalate") {
     probe;
 }
 
+if (env.PROBE === "no-hook-backstop") {
+  const probe: RunSummonedProbe = { beforeExitBackstop: false };
+  (options as { [RUN_SUMMONED_PROBE]?: RunSummonedProbe })[RUN_SUMMONED_PROBE] =
+    probe;
+}
+
 const processor =
   processorKind === "hang"
     ? async () => await new Promise<never>(() => {})
@@ -341,6 +350,25 @@ if (env.REPORT_LEASES === "1") {
       void leasesHeld().then((held) => report("leases-running", { held }));
     }, 300);
   });
+}
+
+if (env.BEFORE_EXIT !== undefined) {
+  options.beforeExit = (exit) => {
+    report("before-exit", { ...exit, running: worker.isRunning });
+    if (env.BEFORE_EXIT === "throw") {
+      throw new Error("the hook threw");
+    }
+    if (env.BEFORE_EXIT === "reject") {
+      return Promise.reject(new Error("the hook rejected"));
+    }
+    if (env.BEFORE_EXIT === "hang") {
+      setInterval(() => {}, 1_000);
+      return new Promise<void>(() => {});
+    }
+    return Bun.sleep(Number(env.BEFORE_EXIT_MS ?? 0)).then(() => {
+      report("before-exit-done");
+    });
+  };
 }
 
 // `runSummoned` installs its signal handlers synchronously, before it
