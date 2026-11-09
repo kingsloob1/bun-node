@@ -1018,13 +1018,30 @@ const EXPRESS_REPLY_KEEPS_PLUS_JSON = /isJsonContentType\(/.test(
 /**
  * Whether the installed `@nestjs/platform-express` also treats an object
  * body replied with a status of 400 or more as an error body, `statusCode`
- * of its own or not (12.2.0: `isObject(body) && !isNil(statusCode)`), as
- * bun-nest does on every version. Read from its `reply`, as above.
+ * of its own or not (11.2.8 and 12.2.0: `isObject(body) && !isNil(statusCode)`),
+ * as bun-nest does on every version. Asked of its own `reply`, with a stand-in
+ * response: does it force a JSON type on such a body? 11's is compiled to
+ * CommonJS, so its source does not read as 12's.
  */
-const EXPRESS_REPLY_CHECKS_REPLY_STATUS =
-  /isObject\(body\)\s*&&\s*!isNil\(statusCode\)/.test(
-    ExpressAdapter.prototype.reply.toString(),
+const EXPRESS_REPLY_CHECKS_REPLY_STATUS = (() => {
+  let forced = false;
+  const response = {
+    status: () => undefined,
+    getHeader: () => "text/plain",
+    setHeader: () => {
+      forced = true;
+    },
+    json: () => undefined,
+    send: () => undefined,
+  };
+  ExpressAdapter.prototype.reply.call(
+    { logger: { warn: () => undefined } },
+    response,
+    { custom: true },
+    404,
   );
+  return forced;
+})();
 
 export const TEXT_DEFAULT =
   "a string body defaults to text/plain here, text/html on Express";

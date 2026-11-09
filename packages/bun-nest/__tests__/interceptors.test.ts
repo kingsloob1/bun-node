@@ -22,6 +22,7 @@ import {
   getMultipartRequest,
   mergeUploadOptions,
   nestIsRejectedByPipes,
+  nestRouteDestReplacesStorage,
   NoFilesInterceptor,
   transformUploadException,
 } from "../lib/interceptors";
@@ -393,8 +394,11 @@ const NEST_12 =
   typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
     .mapException === "function";
 
-/** Nest 12.2.0 or later, by the capability the interceptors read (`isRejectedByPipes`). */
-const NEST_12_2 = nestIsRejectedByPipes() !== undefined;
+/** Nest 12.2.0 or later, by the capability a route's `dest` is gated on. */
+const NEST_12_2 = nestRouteDestReplacesStorage();
+
+/** Whether the core marks a request its pipes rejected (11.2.8, 12.2.0). */
+const CORE_MARKS_REJECTED = nestIsRejectedByPipes() !== undefined;
 
 /** multer 2.4.0's messages for its field-name codes (`lib/multer-error.js`). */
 const FIELD_NAME_CODES = [
@@ -608,9 +612,9 @@ describe("multer 2.4's field-name codes map as platform-express maps them (#1785
   });
 });
 
-describe("files removed when a pipe rejects the request (Nest 12.2.0+, acb98de89)", () => {
+describe("files removed when a pipe rejects the request (Nest 11.2.8+, 12.2.0+, acb98de89)", () => {
   /** Core's own marker, on a Nest that has it; what a pipe's throw calls. */
-  const markRejectedByPipes = NEST_12_2
+  const markRejectedByPipes = CORE_MARKS_REJECTED
     ? (
         createRequire(import.meta.url)(
           "@nestjs/core/router/rejected-by-pipes.js",
@@ -655,7 +659,7 @@ describe("files removed when a pipe rejects the request (Nest 12.2.0+, acb98de89
     return { error, rejection, removed: storage.removed };
   }
 
-  it.skipIf(!NEST_12_2)(
+  it.skipIf(!CORE_MARKS_REJECTED)(
     "removes the stored files with force, and rethrows the pipe's error unchanged",
     async () => {
       const { error, rejection, removed } = await runRejected(true);

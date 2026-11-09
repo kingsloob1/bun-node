@@ -99,7 +99,7 @@ const CORE_SENDS_EXCEPTIONS_TO_NATIVE =
 
 /**
  * Whether Nest's exception filter sends an exception again without its
- * `cause` when the first send throws (12.2.0, `emitErrorPayload`).
+ * `cause` when the first send throws (11.2.8, 12.2.0, `emitErrorPayload`).
  */
 const CORE_RETRIES_WITHOUT_CAUSE =
   typeof (BaseWsExceptionFilter.prototype as unknown as Record<string, unknown>)
@@ -434,10 +434,13 @@ const CASES: Case[] = [
     // Before 12.2.0's retry without the cause, the failed send errors the
     // result stream: ours answers that with an ERROR packet, platform-ws
     // logs it.
-    known:
-      CORE_SENDS_EXCEPTIONS_TO_NATIVE && !CORE_RETRIES_WITHOUT_CAUSE
+    known: !CORE_RETRIES_WITHOUT_CAUSE
+      ? CORE_SENDS_EXCEPTIONS_TO_NATIVE
         ? "before 12.2.0 the unsendable exception errors the stream: an ERROR packet on ours, a log line on platform-ws"
-        : undefined,
+        : undefined
+      : CORE_SENDS_EXCEPTIONS_TO_NATIVE
+        ? undefined
+        : "from 11.2.8 Nest 11's filter sends it again without its cause, which reaches our clients; platform-ws's only emits it locally",
     timeout: SLOW_MS * 2,
     observe: async (client) => {
       client.sendJson("deep", deepJson(200_000));

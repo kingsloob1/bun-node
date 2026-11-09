@@ -1,7 +1,7 @@
 /**
  * Which requests a Nest middleware runs for on `BunHttpAdapter`, asserted:
  * `MiddlewareConsumer.exclude()` matched as the router matches
- * (`getRouteMatchingOptions()`, read by Nest 12.2.0's core), and
+ * (`getRouteMatchingOptions()`, read by Nest 11.2.8's and 12.2.0's core), and
  * `forRoutes("*")` under a global prefix, including the bare prefix and
  * `/api/`.
  *
@@ -14,15 +14,15 @@
  * - The adapter's `getRouteMatchingOptions()` reports how its router
  *   matches: `{ caseSensitive, ignoreTrailingSlash: true }`, `caseSensitive`
  *   being the `router` option's (`false` by default, as on platform-express).
- * - Nest 12.2.0's core asks for it once per `forRoutes()` and compiles each
+ * - Nest 11.2.8's and 12.2.0's core asks for it once per `forRoutes()` and compiles each
  *   `exclude()` path with it, so an exclusion skips the middleware on exactly
  *   the paths the excluded route serves. `exclude("users/login")` skips
  *   `/users/LOGIN` and `/users/login/`, as earlier cores did too; what
- *   12.2.0 changes is that with `router: { caseSensitive: true }` it no
+ *   those releases change is that with `router: { caseSensitive: true }` it no
  *   longer skips `/users/LOGIN`, which that router does not serve, and that
  *   `exclude("invoices/{*path}")` now runs the middleware on `/invoices/`,
  *   which the `invoices` route serves. An adapter that reports nothing gets
- *   exact matching on 12.2.0; the last check of that step shows what that
+ *   exact matching there; the last check of that step shows what that
  *   would do.
  * - Earlier cores never ask. They match exclusions with path-to-regexp's
  *   defaults, on both adapters alike, which also skip `/users/LOGIN` and
@@ -30,12 +30,12 @@
  * - With a global prefix, `forRoutes("*")` runs the middleware for `/api`,
  *   `/api/` and everything under `/api`, once per request, on every Nest
  *   here. The core registers it at `/api$` (exactly `/api`) and at
- *   `/api/{*path}`. From 12.2.0 the core itself runs a middleware once per
+ *   `/api/{*path}`. From 11.2.8 and 12.2.0 the core itself runs a middleware once per
  *   request when two of its paths match, so the adapter's `/api$` entry
- *   serves `/api/` too, as platform-express 12.2.0's does; on an earlier
+ *   serves `/api/` too, as platform-express's does there; on an earlier
  *   core it skips `/api/`, which the wildcard entry serves, so the
  *   middleware never runs twice. The last step shows that entry alone.
- * - Both 12.2.0 behaviours are gated on what the installed core does, never
+ * - Both behaviours are gated on what the installed core does, never
  *   on a version string: `filterMiddleware` asking a stand-in adapter for
  *   its matching options, and `MiddlewareModule.prototype.registerHandler`
  *   running one middleware registered at two paths for one request, the
@@ -62,8 +62,11 @@ import "reflect-metadata";
 /** The installed `@nestjs/core`'s version. */
 const NEST_VERSION = await nestCoreVersion();
 
+/** The releases with both behaviours: 12.2.0, and 11.2.8, which backported them. */
+const WITH_THEM = ">=12.2.0 || >=11.2.8 <12.0.0";
+
 /**
- * Whether the core reads an adapter's `getRouteMatchingOptions()` (12.2.0):
+ * Whether the core reads an adapter's `getRouteMatchingOptions()` (11.2.8, 12.2.0):
  * its `filterMiddleware` is handed a stand-in adapter that records the call.
  */
 const CORE_READS_MATCHING_OPTIONS = (() => {
@@ -83,7 +86,7 @@ type Middleware = (req: object, res: object, next: () => void) => unknown;
 
 /**
  * Whether the core runs a middleware once per request when two of its paths
- * match (12.2.0): its own `registerHandler`, with stand-ins, registers one
+ * match (11.2.8, 12.2.0): its own `registerHandler`, with stand-ins, registers one
  * middleware at two paths, and one request goes through both.
  * @returns `true` when the middleware ran once.
  */
@@ -115,7 +118,7 @@ async function coreRunsMiddlewareOnce(): Promise<boolean> {
   return registered.length === 2 && runs === 1;
 }
 
-/** Whether the core runs a middleware once per request (12.2.0). */
+/** Whether the core runs a middleware once per request (11.2.8, 12.2.0). */
 const CORE_RUNS_ONCE = await coreRunsMiddlewareOnce();
 
 /** The paths a middleware ran for, in order, since the last request began. */
@@ -182,7 +185,7 @@ class PrefixModule implements NestModule {
 }
 
 /**
- * Reports exact matching, as Nest 12.2.0 assumes of an adapter that does not
+ * Reports exact matching, as Nest's core assumes of an adapter that does not
  * say: what `exclude()` does without `BunHttpAdapter`'s report.
  */
 class ExactMatchingAdapter extends BunHttpAdapter {
@@ -256,11 +259,11 @@ checkEqual(
   { caseSensitive: true, ignoreTrailingSlash: true },
 );
 checkEqual(
-  "the core reads it, and runs a middleware once per request, from Nest 12.2.0",
+  "the core reads it, and runs a middleware once per request, from Nest 11.2.8 and 12.2.0",
   { readsOptions: CORE_READS_MATCHING_OPTIONS, runsOnce: CORE_RUNS_ONCE },
   {
-    readsOptions: Bun.semver.satisfies(NEST_VERSION, ">=12.2.0"),
-    runsOnce: Bun.semver.satisfies(NEST_VERSION, ">=12.2.0"),
+    readsOptions: Bun.semver.satisfies(NEST_VERSION, WITH_THEM),
+    runsOnce: Bun.semver.satisfies(NEST_VERSION, WITH_THEM),
   },
 );
 
@@ -302,13 +305,13 @@ checkEqual(
 
 if (CORE_READS_MATCHING_OPTIONS) {
   checkEqual(
-    "12.2.0: /invoices/ is the invoices route's, so the middleware runs there",
+    "the core reads it: /invoices/ is the invoices route's, so the middleware runs there",
     lenient["/invoices/"],
     "200 mw×1",
   );
   show("router: { caseSensitive: true }", strict);
   checkEqual(
-    "12.2.0, router: { caseSensitive: true }: /users/LOGIN is not the route's (404), so the middleware runs",
+    "the core reads it, router: { caseSensitive: true }: /users/LOGIN is not the route's (404), so the middleware runs",
     [strict["/users/login/"], strict["/users/LOGIN"], strict["/Users/Login/"]],
     ["200 mw×0", "404 mw×1", "404 mw×1"],
   );
@@ -322,7 +325,7 @@ if (CORE_READS_MATCHING_OPTIONS) {
   ]);
   await exactApp.close();
   checkEqual(
-    "12.2.0 with an adapter reporting exact matching: only /users/login is skipped, though the route serves all three",
+    "the core reads it, an adapter reporting exact matching: only /users/login is skipped, though the route serves all three",
     exactRuns,
     {
       "/users/login": "200 mw×0",
@@ -332,17 +335,17 @@ if (CORE_READS_MATCHING_OPTIONS) {
   );
 } else {
   checkEqual(
-    "before 12.2.0, Nest's own matching also skips /invoices/",
+    "the core does not read it: Nest's own matching also skips /invoices/",
     lenient["/invoices/"],
     "200 mw×0",
   );
   checkEqual(
-    "before 12.2.0, router: { caseSensitive: true } changes no exclusion: /users/LOGIN (a 404) is skipped too",
+    "the core does not read it: router: { caseSensitive: true } changes no exclusion: /users/LOGIN (a 404) is skipped too",
     [strict["/users/login/"], strict["/users/LOGIN"], strict["/Users/Login/"]],
     ["200 mw×0", "404 mw×0", "404 mw×0"],
   );
   skippedLines.push(
-    `skipped: the core does not read getRouteMatchingOptions() before Nest 12.2.0; 3 exclude() checks skipped on Nest ${NEST_VERSION}`,
+    `skipped: the core does not read getRouteMatchingOptions() before Nest 11.2.8 and 12.2.0; 3 exclude() checks skipped on Nest ${NEST_VERSION}`,
   );
 }
 
@@ -393,18 +396,18 @@ step("The core's exact entry, /api$, on its own");
   );
   if (CORE_RUNS_ONCE) {
     check(
-      "12.2.0: the core runs a middleware once per request, so /api$ serves /api/ too",
+      "the core runs a middleware once per request, so /api$ serves /api/ too",
       answers["/api/"] === "200 mw×1",
       answers,
     );
   } else {
     check(
-      "before 12.2.0: /api$ skips /api/, which the wildcard entry beside it serves",
+      "the core can run it twice: /api$ skips /api/, which the wildcard entry beside it serves",
       answers["/api/"] === "200 mw×0",
       answers,
     );
     skippedLines.push(
-      `skipped: the core does not run a middleware once per request before Nest 12.2.0; 1 /api$ check skipped on Nest ${NEST_VERSION}`,
+      `skipped: the core does not run a middleware once per request before Nest 11.2.8 and 12.2.0; 1 /api$ check skipped on Nest ${NEST_VERSION}`,
     );
   }
 }

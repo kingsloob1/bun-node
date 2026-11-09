@@ -62,10 +62,9 @@ export function coreHasMapException(): boolean {
 
 /**
  * Whether the core has `isRejectedByPipes` in `@nestjs/core/internal` (Nest
- * 12.2.0): what the adapter reads the 12.2.0 upload behaviours from — files
- * removed when a pipe rejects the request, and a route's `dest` replacing
- * the module's storage. Nest 11 has no `@nestjs/core/internal`; 12.0 and
- * 12.1 have no such export.
+ * 12.2.0): what the adapter reads a route's `dest` replacing the module's
+ * storage from. Nest 11 has no `@nestjs/core/internal`; 12.0 and 12.1 have no
+ * such export.
  * @returns `true` on Nest 12.2.0 and later.
  */
 export async function coreHasIsRejectedByPipes(): Promise<boolean> {
@@ -74,6 +73,28 @@ export async function coreHasIsRejectedByPipes(): Promise<boolean> {
       isRejectedByPipes?: unknown;
     };
     return typeof internal.isRejectedByPipes === "function";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the core's router marks a request its pipes rejected (Nest 11.2.8 and
+ * 12.2.0): what the adapter reads the removal of an upload's files on a pipe's
+ * rejection from. Nest 11 has it in the module the internal entry re-exports
+ * on 12.
+ * @returns `true` on Nest 11.2.8 and later, and on 12.2.0 and later.
+ */
+export async function coreMarksRejectedByPipes(): Promise<boolean> {
+  if (await coreHasIsRejectedByPipes()) {
+    return true;
+  }
+  try {
+    const marker =
+      (await import("@nestjs/core/router/rejected-by-pipes.js")) as {
+        isRejectedByPipes?: unknown;
+      };
+    return typeof marker.isRejectedByPipes === "function";
   } catch {
     return false;
   }

@@ -561,7 +561,7 @@ as columns of `scripts/nest-matrix.ts` (§9.3):
 | 12-latest (12.4.1) | every PR touching bun-nest or bun-common: what `^12.0.0` installs today |
 | 11.2.7 | every PR touching bun-nest or bun-common |
 | 11.1.20 and 12.0.0 (the floors) | once per merge window |
-| 11-latest (11.2.9) | not clean yet, what `^11.1.20` installs today: 11.2.8 backported 12.x behaviours past the capability reads, a follow-up |
+| 11-latest (11.2.9) | every PR touching bun-nest or bun-common: what `^11.1.20` installs today (11.2.8 backported 12.x behaviours, so a read of what the core does matters here) |
 | a new Nest release | when it ships, before the lock moves |
 
 A bun-jobs PR that changes `createJobsApi`'s options or `JobsApi`'s shape also

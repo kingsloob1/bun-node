@@ -52,6 +52,11 @@ interface WsExceptionFilterPrototype extends AdapterEmitMarked {
    * native WebSocket, else `client.emit`. Absent on Nest 11.
    */
   emitMessage?: (client: unknown, event: string, payload: unknown) => void;
+  /**
+   * Nest 11.2.8 and later, and 12.2.0 and later: sends an `exception`, and again
+   * without its `cause` when that throws. On 11 it calls `client.emit` itself.
+   */
+  emitErrorPayload?: (client: unknown, payload: unknown) => void;
   /** Answers a thrown error; wrapped so the event's ack id is in force while it emits. */
   catch?: (exception: unknown, host: unknown) => unknown;
 }
@@ -76,14 +81,18 @@ let wsExceptionsRouted = false;
  * frame, to any client with a numeric `readyState` and a `send`, which Bun's
  * `ServerWebSocket` has, and calls `emit` only otherwise. So `emitMessage` is
  * wrapped, once per process: a client whose `emit` carries
- * {@link ADAPTER_EMIT} gets it called; every other client, an `emitMessage`
- * a filter overrides, and Nest 11 (no `emitMessage`) are left alone.
+ * {@link ADAPTER_EMIT} gets it called; every other client and an `emitMessage`
+ * a filter overrides are left alone.
  *
  * Like the `client.send(JSON.stringify(…))` it replaces, it throws when the
  * payload cannot be serialised, rather than logging and dropping it as
  * `emit` does: Nest 12.2.0's filter (`emitErrorPayload`) catches that and
  * sends the exception again without its `cause`, which echoes the client's
  * message and may be nested too deep for `JSON.stringify`.
+ *
+ * Nest 11 has no `emitMessage`, and its filter always calls `client.emit`, so
+ * it needs no routing. But from 11.2.8 it retries too, by calling `client.emit`
+ * from `emitErrorPayload`, so that method is given the strict send in its place.
  *
  * `@nestjs/websockets` is an optional peer, hence the guarded `require`
  * rather than an import; it patches the copy this package resolves.
@@ -119,6 +128,33 @@ function routeWsExceptionsThroughEmit(): void {
     };
   }
   const original = proto?.emitMessage;
+  const retrying = proto?.emitErrorPayload;
+  if (
+    proto &&
+    !isFunction(original) &&
+    isFunction(retrying) &&
+    !proto[ADAPTER_EMIT]
+  ) {
+    proto.emitErrorPayload = function emitErrorPayload(
+      this: unknown,
+      client: unknown,
+      payload: unknown,
+    ) {
+      const emit: unknown = isObject(client)
+        ? (client as { emit?: unknown }).emit
+        : undefined;
+      const strict = isFunction(emit)
+        ? (emit as AdapterEmitMarked)[ADAPTER_EMIT_STRICT]
+        : undefined;
+      retrying.call(
+        this,
+        isFunction(strict) ? { emit: strict } : client,
+        payload,
+      );
+    };
+    defineHidden(proto, ADAPTER_EMIT, true);
+    return;
+  }
   if (!proto || !isFunction(original) || proto[ADAPTER_EMIT]) {
     return;
   }

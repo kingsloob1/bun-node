@@ -16,9 +16,10 @@
  */
 import type { INestApplication } from "@nestjs/common";
 import type { WebSocketClient } from "../lib/BunWebSocketAdapter";
-import { Module } from "@nestjs/common";
+import { Module, UseFilters } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import {
+  BaseWsExceptionFilter,
   ConnectedSocket,
   MessageBody,
   SubscribeMessage,
@@ -52,6 +53,17 @@ class LateGateway {
   @SubscribeMessage("fail")
   fail(@MessageBody() body: unknown) {
     throw new WsException(`refused ${String(body)}`);
+  }
+
+  /** A cause `JSON.stringify` refuses at once: it holds a `BigInt`. */
+  @SubscribeMessage("unsendable-cause")
+  @UseFilters(
+    new BaseWsExceptionFilter({
+      causeFactory: (pattern: string) => ({ pattern, at: 1n }),
+    }),
+  )
+  unsendableCause() {
+    throw new WsException("its cause cannot be sent");
   }
 }
 
@@ -147,6 +159,35 @@ describe("NestJS gateway binding: exceptions", () => {
         },
       ],
     });
+    await client.close();
+  });
+});
+
+describe("NestJS gateway binding: a cause that cannot be serialised", () => {
+  /**
+   * Whether Nest's filter sends an exception again without its `cause` when
+   * the first send throws (11.2.8, 12.2.0).
+   */
+  const coreRetries =
+    typeof (
+      BaseWsExceptionFilter.prototype as unknown as Record<string, unknown>
+    ).emitErrorPayload === "function";
+
+  it("is sent again without it where Nest retries, and is only logged where it does not", async () => {
+    const client = await connectWs(`${base}/`);
+    client.send({ type: EVENT, namespace: "/", data: ["unsendable-cause", 0] });
+    // The next event's answer: the exception, if there is one, came first.
+    client.send({ type: EVENT, namespace: "/", data: ["late", null] });
+    await client.waitFor((m) => m?.data?.[0] === "late");
+
+    const exceptions = client.received
+      .map((frame) => JSON.parse(frame) as { data?: unknown[] })
+      .filter((packet) => packet.data?.[0] === "exception");
+    expect(exceptions.map((packet) => packet.data?.[1])).toEqual(
+      coreRetries
+        ? [{ status: "error", message: "its cause cannot be sent" }]
+        : [],
+    );
     await client.close();
   });
 });
