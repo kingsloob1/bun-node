@@ -55,7 +55,34 @@ export {
   type ProcessOptions,
   Processor,
   type ProcessorOptions,
+  type QueueJobData,
+  type QueueJobName,
+  type QueueJobResult,
+  type TypedProcessDecorator,
 } from "./decorators/consumer";
+export {
+  CurrentJob,
+  JobAttempt,
+  JobContext,
+  JobData,
+  type JobDataOptions,
+  JobId,
+  JobLogger,
+  JobName,
+  type JobPipe,
+  JobProgress,
+  type JobProgressFn,
+  JobSignal,
+} from "./decorators/params";
+export { JobForbiddenError } from "./errors";
+export {
+  BunJobsExecutionContext,
+  type BunJobsContextType,
+  isBunJobsContext,
+} from "./executionContext";
+export { BaseJobExceptionFilter, UnrecoverableOn } from "./filters";
+export { JobLoggingInterceptor } from "./interceptors";
+export type { OnDenied, OnInvalid } from "./pipeline";
 export { InjectBunJobs, InjectQueue, InjectWorker } from "./decorators/inject";
 export type { BunJobsShutdownOptions } from "./explorer";
 export { isBunJob } from "./isBunJob";

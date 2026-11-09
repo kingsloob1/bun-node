@@ -22,3 +22,28 @@ export const PROCESSOR_METADATA = "bun-jobs:processor";
 export const PROCESS_METADATA = "bun-jobs:process";
 /** Where `@DefineJob()` records its job name and options. */
 export const DEFINE_JOB_METADATA = "bun-jobs:define-job";
+
+/**
+ * Nest's `RouteParamtypes.BODY`, the type `@JobData()` is recorded as, so pipes
+ * are told `"body"` and an app's global validation applies to job data. It is
+ * microservices' `RpcParamtype.PAYLOAD` too, for the same reason.
+ */
+export const NEST_BODY_PARAMTYPE = 3;
+/** Nest's `FORBIDDEN_MESSAGE`: what a guard's `false` throws, through `ExternalContextCreator`. */
+export const NEST_FORBIDDEN_MESSAGE = "Forbidden resource";
+
+/**
+ * Nest's `ENTRY_PROVIDER_WATERMARK`: marks a provider as an entry point, as a
+ * controller is, so Nest gives it a request-scoped global enhancer's tree and
+ * finds its transient enhancers. Without it, a request-scoped `APP_GUARD` is
+ * silently not asked around a singleton (measured).
+ */
+export const NEST_ENTRY_PROVIDER_WATERMARK = "__entryProvider__";
+
+/** Where Nest's `@UseGuards`, `@UseInterceptors`, `@UsePipes` and `@UseFilters` write. */
+export const NEST_ENHANCER_METADATA = [
+  "__guards__",
+  "__interceptors__",
+  "__pipes__",
+  "__exceptionFilters__",
+] as const;

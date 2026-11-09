@@ -18,7 +18,12 @@ import type { BunJobsQueueOptions } from "./registry";
 import { BunJobs } from "@kingsleyweb/bun-jobs";
 import { ConfigError, noopLogger } from "@kingsleyweb/bun-common";
 import { Logger, Module } from "@nestjs/common";
-import { DiscoveryModule, DiscoveryService, ModuleRef } from "@nestjs/core";
+import {
+  DiscoveryModule,
+  DiscoveryService,
+  ExternalContextCreator,
+  ModuleRef,
+} from "@nestjs/core";
 import { BunJobsExplorer, RegisteredWorker } from "./explorer";
 import { BunJobsLifecycle } from "./lifecycle";
 import { requireQueueToken } from "./queueToken";
@@ -77,6 +82,13 @@ export interface BunJobsRunOptions {
   shutdown?: BunJobsShutdownOptions;
   /** What `jobs.start()` is given for `@DefineJob`: the registry worker's options. */
   registryWorker?: Parameters<BunJobs["start"]>[0];
+  /**
+   * Whether handlers run through the Nest pipeline (guards, interceptors, pipes,
+   * filters, parameter decorators). Defaults to `true`, and global enhancers apply
+   * too, as for microservices and GraphQL. With `false`, each method is called
+   * directly as `(job, ctx)`. A class's own `enhancers` wins.
+   */
+  enhancers?: boolean;
 }
 
 /** The context's options when the module builds it. */
@@ -233,6 +245,7 @@ function buildEntry(options: BunJobsContextOptions): ContextEntry {
     autoStart: _autoStart,
     shutdown: _shutdown,
     registryWorker: _registryWorker,
+    enhancers: _enhancers,
     ...context
   } = options;
   return {
@@ -335,6 +348,7 @@ function moduleOf(
           registry: BunJobsRegistry,
           discovery: DiscoveryService,
           moduleRef: ModuleRef,
+          ecc: ExternalContextCreator,
         ) => {
           const explorer = new BunJobsExplorer(
             name,
@@ -343,6 +357,7 @@ function moduleOf(
             registry,
             discovery,
             moduleRef,
+            ecc,
           );
           registry.addWorkers(explorer);
           return explorer;
@@ -353,6 +368,7 @@ function moduleOf(
           BunJobsRegistry,
           DiscoveryService,
           ModuleRef,
+          ExternalContextCreator,
         ],
       },
       {
