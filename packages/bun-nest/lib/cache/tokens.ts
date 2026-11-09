@@ -33,3 +33,10 @@ export function getCacheToken(name?: string): symbol {
     ? BUN_CACHE
     : Symbol.for(`@kingsleyweb/bun-nest/cache:named:${name}`);
 }
+
+/**
+ * Where `@Cacheable`, `@CachePut` and `@CacheEvict` record themselves on the
+ * method they wrap. Read by value here so `./jobs` can refuse caching a job
+ * handler without reaching for bun-cache.
+ */
+export const CACHE_WRAPPED_METADATA = "bun-cache:wrapped";

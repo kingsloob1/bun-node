@@ -104,6 +104,11 @@ Underneath, routing is
   - [Typed queues: `@QueueToken`](#typed-queues-queuetoken)
   - [Several contexts in one application](#several-contexts-in-one-application)
   - [Workers: `@Processor` and `@Process`](#workers-processor-and-process)
+  - [The Nest pipeline around a job](#the-nest-pipeline-around-a-job)
+  - [Parameter decorators](#parameter-decorators)
+  - [Validating job data](#validating-job-data)
+  - [How a job ends: guards, filters and pipes](#how-a-job-ends-guards-filters-and-pipes)
+  - [Typed handlers](#typed-handlers)
   - [Request-scoped processors](#request-scoped-processors)
   - [Files and other threads: `registerWorker`](#files-and-other-threads-registerworker)
   - [The registry: `@DefineJob`](#the-registry-definejob)
@@ -2652,6 +2657,7 @@ through untouched, and these of its own:
 | `autoStart` | `true` | Whether workers start at bootstrap. See [starting and draining](#starting-and-draining). |
 | `shutdown` | `{ timeout: 30_000 }` | `{ timeout?, force? }`, given to each `worker.close()` on `app.close()`. |
 | `registryWorker` | none | What `jobs.start()` is given for `@DefineJob`: the registry worker's options. |
+| `enhancers` | `true` | Whether handlers run through the Nest pipeline. A class's own `enhancers` wins. |
 
 `forRootAsync` takes the same options from a factory (`useFactory` with `inject`
 and `imports`), a class with a `createBunJobsOptions()` method (`useClass`) or a
@@ -2742,8 +2748,9 @@ provided under the class `BunJobs`.
 ### Workers: `@Processor` and `@Process`
 
 Put `@Processor` on a provider, and `@Process` on the methods that handle a job
-name. The method is called as `(job, ctx)`, with bun-jobs' `Job` and
-`ProcessorContext`. The class is an ordinary service: its other methods stay
+name. A method with no parameter decorator is called as `(job, ctx)`, with
+bun-jobs' `Job` and `ProcessorContext`; one with them gets what they say, below. The
+class is an ordinary service: its other methods stay
 ordinary methods, and everything it needs is injected as usual.
 
 ```ts
@@ -2816,6 +2823,172 @@ export class EmailProcessor extends JobsHost<Email, string> {
 
 A subclass overriding `onModuleDestroy` calls `super.onModuleDestroy()` first, or
 its worker drains last, after what its jobs use may have gone.
+
+### The Nest pipeline around a job
+
+A handler runs behind the same guards, interceptors, pipes and filters as a
+controller, in the same order: `@UseGuards` and the rest work on a `@Processor` class
+and on a `@Process` or `@DefineJob` method, a `createParamDecorator` of your own
+works, and so do `APP_GUARD` and `app.useGlobalInterceptors()`.
+
+```ts
+@Processor("reports")
+@UseGuards(FeatureFlagGuard)
+@UseInterceptors(JobLoggingInterceptor)
+@UseFilters(UnrecoverableOn(ReportRejected))
+export class ReportProcessor {
+  @Process("monthly")
+  async monthly(@JobData({ schema: Monthly }) data: Monthly, @JobSignal() signal: AbortSignal) { … }
+}
+```
+
+Around a job `getType()` answers `"bun-jobs"`, and `BunJobsExecutionContext.create(context)`
+gives the job, as `GqlExecutionContext` gives a resolver: `getJob()`,
+`getProcessorContext()`, `getQueueName()`, `getHandlerName()` (the `@Process` name, or
+`"*"`).
+
+**Global enhancers apply to jobs**, as Nest applies them to microservices and GraphQL,
+and nothing public can exclude them. So a global guard written for HTTP that reads
+`switchToHttp().getRequest().headers` would see a `Job`, and deny or throw. Have it
+pass a job through:
+
+```ts
+canActivate(context: ExecutionContext) {
+  if (context.getType<BunJobsContextType>() !== "http") return true; // jobs, ws, rpc: not this guard's business
+  …
+}
+```
+
+bun-nest's own global enhancers already do: `BunThrottlerGuard`, `BunCacheInterceptor`,
+`@Invalidates`, `@Validate`'s interceptors, and `ValidationExceptionFilter`. The module
+names the global guards a job will meet in one `debug` line at bootstrap.
+`enhancers: false`, on the module or a class, turns the whole pipeline off and calls
+each method as `(job, ctx)`.
+
+A request-scoped `APP_GUARD` is asked around a singleton processor too, as around a
+controller, which makes that processor per job, with the cost of one.
+
+**An enhancer class needs a plain class provider.** Nest finds a class given to
+`@UseGuards` and its kind by scanning `providers: [Class]`. On a provider made by
+`useFactory` or `useValue` it scans nothing, and left alone the job would run
+**without the guard**, on Nest 11 and 12 (a `useClass` provider likewise before
+12.2). So
+that is a `ConfigError` at boot. Register the class plainly, or give the decorator an
+instance, which works everywhere.
+
+**Interceptors that should not exist for a job.** An `rxjs` `retry()` retries inside one
+attempt, under one lock, invisibly to `attemptsMade`, backoff, dead letters and the UI:
+use the job's `attempts`. An `rxjs` `timeout()` abandons the work without aborting it:
+use the job's `timeout`, which aborts `ctx.signal`. `JobLoggingInterceptor` logs one line
+per attempt through the job's logger, with its name, attempt, duration and outcome, and
+passes anything but a job through. Tracing is a job for spans inside bun-jobs, not an
+interceptor.
+
+A guard suits what a job claims: a feature flag or a kill switch, or a `data.tenantId`
+the processor's tenant may not touch. It is not authentication, since a job has no
+caller: authorization at enqueue stays the producer's.
+
+### Parameter decorators
+
+| Decorator | Value | Pipes |
+|---|---|---|
+| `@JobData(property?, ...pipes)`, `@JobData(pipe)`, `@JobData({ property?, schema?, pipes? })` | `job.data`, or one field of it | yes; told `"body"` |
+| `@JobId(...pipes)` | `job.id` | yes |
+| `@JobName(...pipes)` | `job.name` | yes |
+| `@CurrentJob()` | the `Job`: `log`, `updateProgress`, `getChildrenValues()`, `extendLock`, `fail` | no |
+| `@JobContext()` | the `ProcessorContext` | no |
+| `@JobSignal()` | `ctx.signal`: aborted on a timeout, a worker's close and a lost lock | no |
+| `@JobProgress()` | a `JobProgressFn` | no |
+| `@JobLogger()` | `ctx.logger`, bound to the job's ids | no |
+| `@JobAttempt()` | `ctx.attempt`, from 1 | no |
+
+**Once one parameter is decorated, every one must be**: Nest fills only decorated
+positions, and the rest would arrive as `null`, so that is a `ConfigError` at boot. A
+progress value written after the attempt was given up is dropped, silently, as bun-jobs
+does.
+
+### Validating job data
+
+Two layers, and which to use:
+
+| Layer | Where | Checks | On failure |
+|---|---|---|---|
+| **bun-jobs' job schemas** | `registerQueue({ options: { schema } })` at enqueue, `@Processor(queue, { schema })` before the handler, `@DefineJob(name, { schema })` | every job on the queue, in every process that adds or runs it, Nest or not | enqueue: `JobDataValidationError`, nothing written. Processing: the attempt fails as `UnrecoverableJobError` |
+| **[Validation pipes](#validation)** on a parameter | `@JobData(new StandardSchemaPipe(S))`, `@JobData({ schema: S })`, or a `SchemaDto` type under a global `StandardValidationPipe` | one method's input, after the guards | `StandardValidationException`, and the job ends with no retry |
+
+Use a schema for data that crosses a deployment boundary, since the producer checks it
+too, and a pipe for a per-name check on a queue carrying several names, or for a
+transform a handler wants (`z.coerce.number()`).
+
+**`@JobData()` is recorded as Nest's BODY type**, as microservices' `@Payload()` is, so
+pipes are told `"body"` and an issue's `target` reads `"body"`. That is what lets an app's
+global `ValidationPipe` or `StandardValidationPipe` validate job data with no change:
+both skip a `"custom"` parameter. It also means **every global pipe sees job data**, so
+one with `whitelist`, or one assuming an HTTP body, runs on jobs too.
+
+`@JobData({ schema })` is `StandardSchemaPipe(schema)` on the parameter, on Nest 11 and
+12. It is not also recorded for Nest 12's `StandardSchemaValidationPipe`, which Nest 11
+lacks, so it never validates twice.
+
+A pipe cannot type its parameter, so annotate it with
+`StandardSchemaV1.InferOutput<typeof Schema>`, or make it a `SchemaDto` class.
+`ValidationExceptionFilter` answers for `http`, `ws` and `rpc` and rethrows anything else,
+so applied globally it leaves a job's failure alone.
+
+### How a job ends: guards, filters and pipes
+
+| What happens | What the job does |
+|---|---|
+| A guard returns `false` | `dead` at once, as `JobForbiddenError`, with no retry, since a retry asks the same guard the same question. `onDenied: "retry"` on the class retries it like any error |
+| A guard throws its own exception | fails with it, and is retried: it is the guard's decision |
+| A pipe throws `StandardValidationException` | `dead` at once, as `UnrecoverableJobError`, with the original as `cause` and its `issues` kept, since a retry sees the same data. `onInvalid: "retry"` on the class retries it |
+| Nest's `ValidationPipe`, or your own `BadRequestException` | fails with it, and is retried: `@UseFilters(UnrecoverableOn(BadRequestException))` ends it |
+| **A filter returns a value** | **completes with that value**. That is Nest's semantics, and what a filter recovering from an error wants. To fail the job, throw |
+| A filter rethrows | fails with what it threw |
+| `UnrecoverableJobError` or `job.fail()` | `dead`, as without Nest |
+
+`JobForbiddenError`'s `name` is `UnrecoverableJobError`'s, which is what bun-jobs keys on.
+Nest's own denial is told apart by its message, `"Forbidden resource"`, so a guard's own
+`ForbiddenException` with that same message is treated alike.
+
+`UnrecoverableOn(...types)` is a filter that rethrows those errors as
+`UnrecoverableJobError`, with the original as `cause`, and leaves a route's error alone.
+`BaseJobExceptionFilter` is a base whose `catch` rethrows: a subclass decides, and
+`super.catch` says "still a failure".
+
+**Nest logs every unfiltered job error**, at `error` with its stack, once per attempt, as
+it does for microservices. For less noise, put a catch-all `@Catch()` filter on the class
+that rethrows: a filter that matches means that logging never runs.
+
+### Typed handlers
+
+The typed form of `@Process` takes the `@QueueToken` class first, and checks the handler
+against it at compile time. The types come from the `BunQueue` the token extends, with
+nothing else to declare:
+
+```ts
+@Processor(EmailsQueue)
+export class EmailProcessor {
+  // Checked: the payload, the result and the name.
+  @Process(EmailsQueue, "welcome")
+  async welcome(job: Job<Email, string>, ctx: ProcessorContext) { return `sent:${job.data.to}`; }
+
+  // Pipes and parameter decorators: the payload type is your word.
+  @Process("digest")
+  async digest(@JobData(new StandardSchemaPipe(DigestSchema)) data: Digest) { … }
+}
+```
+
+A parameter decorator cannot see its parameter's type, so the typed form **refuses** a
+handler written with them, and the two styles are exclusive per method. The decorated form
+gets its safety at run time, from the pipe or the queue's schema, which also covers a
+producer and a consumer in different deployments. `QueueJobData`, `QueueJobResult` and
+`QueueJobName` read the same types out of a token.
+
+**Don't put `@Cacheable` or `@CachePut` on a handler.** It would cache across jobs, so a
+later job would complete with an earlier one's result without running: a `ConfigError` at
+boot. Cache inside the method. `@Throttle` does nothing for a job: use `rate` and the
+per-name limits.
 
 ### Request-scoped processors
 
@@ -3530,7 +3703,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Group | Exports |
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
-| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext` |
+| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |

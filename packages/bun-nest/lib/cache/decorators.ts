@@ -26,6 +26,7 @@ import type {
 import type { KeyTemplate } from "./keys";
 import { compileKeyTemplate, defaultKey } from "./keys";
 import { resolveCache } from "./registry";
+import { CACHE_WRAPPED_METADATA } from "./tokens";
 
 /* ------------------------------------------------------------------ *
  * Options
@@ -382,6 +383,11 @@ function wrapMethod<A extends unknown[], R>(
       configurable: true,
     });
     copyMetadata(original, wrapped);
+    (Reflect as unknown as MetadataReflect).defineMetadata?.(
+      CACHE_WRAPPED_METADATA,
+      decorator,
+      wrapped,
+    );
     descriptor.value = wrapped as unknown as typeof descriptor.value;
   };
 }

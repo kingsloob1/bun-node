@@ -1,7 +1,11 @@
 # bun-jobs in NestJS: modules, decorators and the Nest pipeline for jobs
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
-§16 name accepted (§14 records the answers). PR-n1 to PR-n3 are being built.**
+§16 name accepted (§14 records the answers). PR-n1 to PR-n3 are built: PR-n1 merged
+as #721; PR-n2 (#722) and PR-n3 land in one merge window. PR-n4 onward are not
+started.** The sections below were corrected to match what was built, each
+correction marked; §2 still describes `develop` as it was before this work, and
+everything §3 to §12 assign to PR-n4 and later is still a design.
 
 Implementation plan for integrating `@kingsleyweb/bun-jobs` into NestJS
 through `@kingsleyweb/bun-nest`. The user asked for this on 2026-10-10:
@@ -391,6 +395,10 @@ export class EmailsModule {}
   | `token` | none | A named class extending `BunJobs<Jobs>`, provided as well, for typed registries (§5.7). |
   | `scheduleQueue` | `"nest-schedule"` | The queue `@Cron` and `@Every` use (§8.1). |
   | `pruneSchedules` | `false` | Whether undeclared schedule series are removed at boot (§8.2). |
+  | `registryWorker` | none | What `jobs.start()` is given for `@DefineJob` (§5.7). Added while building. |
+
+  `isGlobal`, `name` and `token` stay on `forRootAsync`'s call, since Nest needs them
+  before any factory runs; the others may come from its factory.
 
 - **Written by hand, the way `BunThrottlerModule` is** (Q13): `forRoot`, and
   `forRootAsync` with `useFactory` (+ `inject`, `imports`), `useClass` and
@@ -535,11 +543,23 @@ Each entry provides `getQueueToken(name, context)` as
   (`packages/bun-jobs/lib/BunJobs.ts:644-676`, `:701-757`, `#warnIgnoredQueueOptions` `:762`) [S]. Two
   feature modules registering `emails` with different options therefore
   get the first module's options and a bun-jobs warning. The module
-  **adds a check at bootstrap**: when two `registerQueue` calls for one
-  queue in one context carry options that differ, it throws a
-  `ConfigError` naming both modules, before any queue is created. The
-  warning is right for bun-jobs' imperative API. A declarative Nest
-  registration can be checked up front, and should be (Q14).
+  **adds a check**: when two `registerQueue` calls for one queue in one
+  context carry options that differ, it throws a `ConfigError` naming the
+  modules that imported them. The warning is right for bun-jobs' imperative
+  API. A declarative Nest registration can be checked up front, and should
+  be (Q14).
+  - **As built (PR-n1):** the check runs in `onModuleInit`, before any job can
+    run. "Before any queue is created", as this first said, cannot hold: an async
+    entry's options are unknown until its factory has run, and a queue
+    provider's factory must return a queue. Creating a `BunQueue` opens nothing.
+  - A scan of the modules before the first queue is created finds every
+    `registerQueue` entry, so a queue gets its registered options whichever
+    module Nest builds first (tested in both orders). A registration with no
+    options asks for nothing and never conflicts. A `registerQueueAsync` that
+    finds the queue already created by such a bare one counts as a conflict,
+    rather than losing its options.
+  - Two `forRoot()`s for one context are a `ConfigError` as well, even with
+    identical options (added while building; the user kept it).
 - A queue that is never registered can still be reached through
   `jobs.queue(name)` or the builder's `toQueue(name)`. Registration exists
   to make a queue injectable, and to own its options.
@@ -552,7 +572,7 @@ Each entry provides `getQueueToken(name, context)` as
 | `@InjectBunJobs(context?)` | `getBunJobsToken(context)` | Plain `constructor(jobs: BunJobs)` also works for the default context |
 | `@InjectJobsNotifier(context?)` | a `JobsNotifier` opened at bootstrap and closed at shutdown | §6.1 |
 | `@InjectRunner(id, context?)` | a registered `BunRunner` | §8.4 |
-| `@InjectWorker(ProcessorClass)` | a `WorkerRef`, whose `worker` getter returns the `BunQueueWorker` serving that class's queue | The worker is built at bootstrap, after DI, so what is injected is a provider-backed handle. Its getter throws a `ConfigError` before `onApplicationBootstrap` |
+| `@InjectWorker(ProcessorClass)`, or `@InjectWorker(queue, context?)` | a `WorkerRef`, whose `worker` getter returns the `BunQueueWorker` serving that queue | The worker is built at bootstrap, after DI, so what is injected is a provider-backed handle. Its getter throws a `ConfigError` before `onApplicationBootstrap`. **As built (PR-n2; the user kept it):** a provider per processor class is impossible, since a module's providers are fixed before Nest knows the classes, and registering at load is ruled out by `sideEffects: false`. So it reads the class's queue from its `@Processor` and injects `getWorkerToken(queue, context)`, which `registerQueue()` and `registerWorker()` provide: **import `registerQueue` where it is injected**, as for `@InjectQueue`. A class declared later, or across an import cycle, needs the queue's name |
 | `@InjectSummonController(queue, context?)` | `jobs.summonController(queue)` (`BunJobs.ts:810`) [S] | §9.1 |
 
 There is **no `@InjectFlowProducer`**. bullmq needs a separate
@@ -679,14 +699,18 @@ rather than letting it half work.
   [S]: every misconfiguration found in one pass (a controller processor, two
   catch-alls, an off-thread `target`, an undecorated parameter, a bad cron)
   is listed in one bun-common `ConfigError`, rather than the first one alone.
-- **`useFactory` and `useValue` processors on Nest 11.** ECC finds a
-  handler's module from the instance's class, and Nest 12.2 adds a fallback
-  that finds the module whose provider holds the instance
-  (`helpers/external-context-creator.js:54-56`, `getHostModuleKey`) [S]; Nest
-  11.2.7 has no fallback. A factory-provided processor whose class is not
-  also a provider somewhere may therefore lose its **module-scoped**
-  enhancers on 11 [I]. PR-n3 tests one on both columns, and refuses it with a
-  `ConfigError` on 11 if it does.
+- **`useFactory` and `useValue` processors lose enhancer classes, on both
+  majors** [M, `packages/bun-nest/__tests__/jobsPipeline.nest.test.ts`; corrected
+  by PR-n3]. This first said the loss might happen on Nest 11 alone [I]; measured, it
+  is wider. Nest finds a class given to `@UseGuards` and its kind by scanning
+  `providers: [Class]`, and scans nothing for a custom provider, so on 11.2.7 and
+  12.2.0 the job runs **without the guard**, with no error.
+  `{ provide: X, useClass: X }` does the same on 11.2.7 and 12.0.0, and works on
+  12.2.0 (12.1.3's scanner lacks it too). So a
+  class-based enhancer (on the class, the method or a parameter) that Nest would not
+  run is a `ConfigError` at boot, naming it; the `useClass` case is asserted per
+  major. An enhancer given as an instance works everywhere, and an alias of a plain
+  class provider is that provider.
 
 The explorer is internal: it is not exported, and is not a name for
 approval. bullmq's `manualRegistration` [V, PA §1] becomes `autoStart: false`
@@ -710,6 +734,7 @@ that.
   | `context` | the default context | The named context (§3.3). |
   | `enhancers` | the module's | Turns the pipeline off for this class. |
   | `onDenied` | `"fail"` | What a guard's denial does: `"fail"` or `"retry"` (§7.5). |
+  | `onInvalid` | `"fail"` | What a failed validation pipe does: `"fail"` or `"retry"` (§7.5). |
 
   Everything bun-jobs takes passes through unchanged:
   - `concurrency`, `lockDuration`, `heartbeatInterval`, `stalledInterval`,
@@ -753,8 +778,16 @@ that.
   may know the name, so the error message says this process does not handle
   it. That is the registry's own rule (`BunJobs.ts:1478-1487`) [S], with an
   unrecoverable error instead of a retryable one, since no retry here will
-  find a handler. Q15 asks whether to keep bun-jobs' retryable
-  `ConfigError` instead.
+  find a handler (Q15, answered: dead at once).
+
+  **Also refused at boot, as built** (the plan did not list them; each would
+  otherwise half work in silence): a `@Process` or a `JobsHost` with no
+  `@Processor`; a `@Processor` with no `@Process`; a limit on a catch-all;
+  `@Process` and `@DefineJob` on one method; a job name defined twice; a context no
+  `forRoot()` provides; `registerWorker` beside a `@Processor` on one queue, or a
+  second `registerWorker`; a typed `@Process(Token)` naming another queue than the
+  class's `@Processor`; parameter decorators under `enhancers: false`. What
+  `jobs.worker()` and `jobs.define()` refuse at boot joins the same list.
 
 ### 5.4 Where the attempt runs: `target` [D]
 
@@ -877,6 +910,14 @@ that.
     ```
 
     The type guard `isBunJob(value)` is exported for this.
+- **A processor becomes per job on its own beside a request-scoped global
+  enhancer** [M, PR-n3]. Left alone, a request-scoped `APP_GUARD` is silently not
+  asked around a singleton provider, on both majors. So `@Processor` and `@DefineJob`
+  set Nest's `ENTRY_PROVIDER_WATERMARK`, which makes Nest give the provider the
+  guard's tree, as it gives a controller's (R17). A transient enhancer is found the
+  same way, and leaves the processor a singleton. `Scope.TRANSIENT` processors are
+  resolved per job, like request-scoped ones. A request-scoped global beside a
+  processor made by a factory, which the watermark cannot reach, is a `ConfigError`.
 - **Lifecycle events on request-scoped classes.** bullmq ignores them with
   a warning [V, PA §1], which is the kind of silent half-working this repo
   avoids. **A `ConfigError` at bootstrap instead**, naming the class and the
@@ -912,8 +953,9 @@ export class ReportJobs {
 ```
 
 - At bootstrap, the explorer calls `jobs.define(name, eccHandler, opts)` for
-  each such method, then `jobs.start(registryWorkerOptions)` once, if any
-  were defined. `jobs.now("send-report", …)` and the builder then check the
+  each such method, then `jobs.start(registryWorker)` once, if any were defined
+  (`registryWorker` is a module option; `@DefineJob` also takes `context`,
+  `enhancers`, `onDenied` and `onInvalid`, as built). `jobs.now("send-report", …)` and the builder then check the
   name and apply its defaults, as they do without Nest.
 - It runs through the same pipeline as `@Process`. The difference is
   bun-jobs': a defined job lives on the registry queue (`registryQueue`,
@@ -973,8 +1015,8 @@ bun-jobs has four event sources, and each gets a decorator:
 
 | Step | Nest hook | What happens |
 |---|---|---|
-| 1 | provider construction | `BunJobs` is built from options (the driver connects lazily on first use) |
-| 2 | `onModuleInit` (jobs module) | queues are registered; the options conflict check (§4.1) runs |
+| 1 | provider construction | `BunJobs` is built from options (the driver connects lazily on first use); queues are created by their providers |
+| 2 | `onModuleInit` (jobs module) | the boot checks of §4.1 and R3 run |
 | 3 | `onModuleInit` (every module) | the app's own init: database connections, caches |
 | 4 | `onApplicationBootstrap` (jobs module) | discovery; ECC handlers built; per-name limits stored; `jobs.define()` calls; repeat series added (§8); notifier opened; **workers and runners started** (unless `autoStart: false`) |
 | 5 | `onApplicationBootstrap` (`BunJobsApiModule`) | the socket attached, as today |
@@ -1059,8 +1101,11 @@ So:
      [M].
 2. **A fallback drain in the jobs module's `onModuleDestroy`** closes every
    worker not yet closed: request-scoped processors (no instance hooks,
-   §5.5), `registerWorker` workers (§5.4), runners and the registry worker.
-   It also closes the notifier.
+   §5.5), `registerWorker` workers (§5.4), runners and a request-scoped
+   `@DefineJob`'s registry worker. It also closes the notifier. **As built
+   (PR-n2):** a singleton `@DefineJob` provider gets the per-instance drain too,
+   since the fallback is measured to fail for a service in an imported module
+   (scenario C). Runners and the notifier arrive with their PRs.
 3. **Queues stay open until `onApplicationShutdown`.** A provider's own
    `onModuleDestroy` may still enqueue a job, an "account closed" email
    for example. Then the context is closed, if the module built it (§3.2).
@@ -1148,6 +1193,7 @@ The other imports, and their status:
 |---|---|
 | `ROUTE_ARGS_METADATA` and `SCOPE_OPTIONS_METADATA` | **defined by value**: `"__routeArguments__"` and `"scope:options"` (`node_modules/@nestjs/common/constants.js:15`, `:17`, the same in 11.2.7) [S]. The prototype's deep import of `@nestjs/common/constants.js` resolves on both majors (Nest 12's map has `./*.js`, `docs/plans/nestjs-12-parity/README.md:206-208`) [M], but bun-nest's throttler already reads Nest's keys by value (`lib/throttler/module.ts:33-35`) [S], and the new code does the same. A test asserts each value equals Nest's constant, so a rename fails loudly. |
 | `assignMetadata` | a deep import from `route-params.decorator`. The prototype used it. The design re-implements its five lines, to avoid the path. |
+| `ENTRY_PROVIDER_WATERMARK` (`"__entryProvider__"`), `RouteParamtypes.BODY` (3), `FORBIDDEN_MESSAGE`, the enhancer metadata keys | **defined by value**, as built, with a test that each equals Nest's (§5.5, R17) |
 | `ExecutionContextHost` and `Injector` | **not used** |
 
 ### 7.2 The context type and `BunJobsExecutionContext` [D]
@@ -1277,8 +1323,10 @@ advice, `validation.ts:300-312`) [S]; §10.4.
 **Nest's `ValidationPipe` (class-validator)** works the same way, since ECC
 passes each parameter's `design:paramtypes` metatype to pipes
 (`helpers/external-context-creator.js:70-72`) [S], and it validates a BODY
-parameter globally. **[I]**: still not run, since class-validator is not
-installed in the repo (Q16).
+parameter globally [M, PR-n3, on 12.2.0 and 11.2.7, with class-validator and
+class-transformer as bun-nest devDependencies, Q16]. Its failure is a
+`BadRequestException`, not V6's class, so it retries (§7.5);
+`UnrecoverableOn(BadRequestException)` ends it.
 
 **`ValidationExceptionFilter` stays out of the way.** V6's filter answers
 for `http`, `ws` and `rpc`, and rethrows anything else
@@ -1293,7 +1341,7 @@ validation failures as errors, which §7.5 then maps.
 | A guard throws its own exception | that exception | unchanged: it is the guard's decision |
 | A filter rethrows | the job fails with what it threw | unchanged. `UnrecoverableOn(...types)` is a shipped `@Catch(...types)` filter that rethrows as `UnrecoverableJobError` with the original as `cause` |
 | **A filter returns a value** | **the job completes with that value**, measured: `completed: "recovered"` | unchanged, because it is Nest's semantics, and a filter author may want exactly that. `BaseJobExceptionFilter`'s JSDoc and the README say it first: *to fail the job, throw* |
-| No filter matches | Nest's `ExternalExceptionFilter` logs the error at `error`, with its stack, then rethrows. Measured: `ERROR [ExceptionsHandler] Error: plain failure` | Q5 decides between keeping it, as microservices do, and replacing it |
+| No filter matches | Nest's `ExternalExceptionFilter` logs the error at `error`, with its stack, then rethrows. Measured: `ERROR [ExceptionsHandler] Error: plain failure` | kept, as microservices do (Q5). A catch-all `@Catch()` filter on the class that rethrows keeps it quiet, measured |
 | A pipe throws `StandardValidationException` (V6) | the job fails with it, and bun-jobs retries it like any error not named `UnrecoverableJobError` (`packages/bun-jobs/lib/queue/BunQueueWorker.ts:4273-4281`) [S] | **Ends the job with no retry**, rethrown as `UnrecoverableJobError` with the original as `cause` and its `issues` kept, as bun-jobs' own processing check does (`jobSchema.ts:55-60`) [S]. `onInvalid: "retry"` per processor keeps the retry (Q18). The match is on V6's class, so a user's own `BadRequestException` is left alone |
 | `UnrecoverableJobError` or `job.fail()` | passes through | unchanged: bun-jobs sends the job to `dead` |
 | `JobTimeoutError` or a lost lock | the signal aborts; the error passes through the filters | unchanged. Filters see it, and should rethrow |
@@ -1838,8 +1886,9 @@ export abstract class EmailsQueue extends BunQueue<Email, string, "welcome" | "d
 
 - **The class is never instantiated.** The provider is `{ provide: EmailsQueue,
   useFactory: (jobs) => jobs.queue("emails") }`, which hands back the real
-  `BunQueue`. `@QueueToken(name)` records the name. `registerQueue(EmailsQueue)`
-  and `@Processor(EmailsQueue)` read it.
+  `BunQueue`. `@QueueToken(name, context?)` records the name and
+  the context. `registerQueue(EmailsQueue)`, `@InjectQueue(EmailsQueue)` and
+  `@Processor(EmailsQueue)` read them.
 - **It must be a named class.** The tempting
   `const EmailsQueue = defineQueue<Email>("emails")` returns an anonymous
   class. Measured, it fails declaration emit under `declaration: true` (the
@@ -1853,11 +1902,15 @@ export abstract class EmailsQueue extends BunQueue<Email, string, "welcome" | "d
   `JobMapFromSchemas` (`packages/bun-jobs/lib/queue/jobSchema.ts:219`) [S].
   A queue registered with `schema` can be typed by a token class written
   against the same schemas, so the compile-time types and the runtime check
-  come from one object. PR-n1's type test covers one such token [I].
-- `@QueueToken` also writes a phantom `__types` field type for the
-  decorators to read the payload, result and names back. It is `declare`d,
-  so it emits nothing. This is the same trick as bun-common's `__mount`
-  (CLAUDE.md "Mounted sub-routers") [S].
+  come from one object. A type test covers one such token [M, PR-n1, PR-n3].
+- **No phantom `__types` field (corrected by PR-n3).** This first said `@QueueToken`
+  writes one; a class decorator cannot add a member to a class's type, and none is
+  needed. The types are read from the `BunQueue` the class extends, as
+  `Q extends QueueTokenClass<BunQueue<infer D, infer R, infer N, infer T>>` [M, on
+  `bun check`, on tsc 6.0.3, and through `dts/` in a consumer on TS 6.0]. **All four
+  must be inferred at once**: with `any` for the others, `BunQueue<any, infer R, any, any>`
+  gives `never` on both checkers. `QueueJobData`, `QueueJobResult` and `QueueJobName`
+  export the reading.
 
 ### 10.3 Typed handlers [D]
 
@@ -1893,8 +1946,9 @@ is V6's, from bun-nest's root.
   the parameter (§10.1). The README shows `data: StandardSchemaV1.InferOutput<typeof Schema>`.
 - **The typed registry** (`BunJobs<Jobs>`) keeps all of bun-jobs' checks on
   `now`, `schedule`, `define` and `add` through a named context class (§5.7).
-  `@DefineJob(name)` can check the name against the map (measured technique,
-  §10.1), but `@JobData()` cannot check the payload.
+  `@DefineJob(name)` could check the name against the map (measured technique,
+  §10.1), but `@JobData()` cannot check the payload. **Not built**: it is in neither
+  §15's PR-n3 row nor §16.
 
 ---
 
@@ -1921,7 +1975,7 @@ is V6's, from bun-nest's root.
 | `@nestjs/bullmq` | **names only**: `Processor`, `Process` (in `@nestjs/bull`), `InjectQueue`, `OnWorkerEvent`, `OnQueueEvent` | alias one side on import (`import { Processor as BunProcessor }`). Metadata keys are prefixed `bun-jobs:`, so there is no runtime clash. Tokens differ (`BullQueue_emails` and `bun-jobs:queue:emails`) |
 | `@nestjs/schedule` | names: `Cron` | §8.3 (Q12) |
 | `@nestjs/event-emitter` | none | `@OnJobsEvent` is distinct from `@OnEvent` |
-| bun-nest's own `BunThrottlerModule`, `BunCacheModule`, V6 validation | none | their enhancers pass a non-HTTP context through or rethrow (§7.6). Two consequences: `@Throttle` on a `@Process` method does nothing for a job (its guard skips it, and its boot check reads controllers only, `lib/throttler/module.ts:79-157`) [S]; job rate limits are bun-jobs' `rate` and per-name limits (§5.3). `@Cacheable` is different: it wraps the method itself and keys on its arguments (`lib/cache/decorators.ts:152`) [S], so on a `@Process` method it would cache across jobs **[I]**. The README says not to; PR-n3 tests it, and the boot check refuses `@Cacheable`/`@CachePut` on a `@Process` method if the test shows it caching |
+| bun-nest's own `BunThrottlerModule`, `BunCacheModule`, V6 validation | none | their enhancers pass a non-HTTP context through or rethrow (§7.6). Two consequences: `@Throttle` on a `@Process` method does nothing for a job (its guard skips it, and its boot check reads controllers only, `lib/throttler/module.ts:79-157`) [S]; job rate limits are bun-jobs' `rate` and per-name limits (§5.3). `@Cacheable` is different: it wraps the method itself and keys on its arguments (`lib/cache/decorators.ts:152`) [S], so on a handler **it caches across jobs** [M, PR-n3, with the refusal off: three jobs, the second with the first's data, ran the method twice, and the second completed with the first's result]. So the boot check refuses `@Cacheable` and `@CachePut` on a `@Process` or `@DefineJob` method, in either decorator order; `@CacheEvict` is allowed. The decorators record themselves under `CACHE_WRAPPED_METADATA` in `lib/cache/tokens.ts`, which imports nothing, so `./jobs` needs nothing from bun-cache |
 
 ### 11.3 Migrating from `@nestjs/bullmq`: the mapping [D]
 
@@ -1972,7 +2026,7 @@ visible.
 |---|---|---|
 | PR-n1 | `forRoot`/`forRootAsync` (`useFactory`, `useClass`, `useExisting`, and none → `ConfigError`); `isGlobal: false` really local; `jobs` borrowed vs built (the driver closed only when built; a borrowed context left open); `registerQueue` in two feature modules, with a queue `schema` passed through; the options-conflict `ConfigError`; named contexts and their tokens; the Nest logger receiving bun-jobs records; R3's boot check (a class with no `design:paramtypes` → `ConfigError` naming the cause); the metadata keys defined by value equal Nest's constants; a token typed from `JobMapFromSchemas`; the packaging tests for `./jobs`; the barrel still loads without bun-jobs; consumer-check's `./jobs` consumer | the conflict check removed → the test of two differing registrations fails |
 | PR-n2 | one worker per class; name dispatch; catch-all; two classes on one queue merged; duplicate name → `ConfigError`; unknown name → `dead`; per-name limits stored by merge (the queue's other limits untouched); `target` on a `@Process` class refused; request scope (a distinct instance per job, `REQUEST` is the job, durable strategy sees a `Job`, nothing written on the job); **the lifecycle matrix of `lifecycle.ts` as a test**: E and H complete on both majors, F completes on 12 and fails on 11 (asserted per major, so a Nest change in either direction is seen); a `close()`d context refusing a late queue (`JobsClosedError`); `autoStart: false` | the per-instance drain replaced by a module drain → scenario E fails, as measured |
-| PR-n3 | for each of guard, interceptor, pipe and filter: method-, class- and global-level (`APP_*` and `useGlobal*`), with `getType() === "bun-jobs"`; a user's `createParamDecorator`; all nine parameter decorators; undecorated-parameter refusal; **V6**: `StandardSchemaPipe` on `@JobData` (zod and valibot), `@JobData({ schema })`, a `SchemaDto` parameter under a global `StandardValidationPipe`, each with the issue `target` `"body"`; on 12, Nest's `StandardSchemaValidationPipe` with `@JobData({ schema })` not validating twice; `ValidationPipe` with a DTO **if class-validator is added as a devDependency** (Q16); `StandardValidationException` → dead with `attemptsMade=1` and `onInvalid: "retry"` (Q18); `JobForbiddenError` → dead with `attemptsMade=1`; `onDenied: "retry"`; filter-returns-value → completed; `UnrecoverableOn`; `enhancers: false`; bun-nest's own globals (throttler guard, cache interceptor, `ValidationExceptionFilter`) installed and a job unaffected; `@Cacheable` on a `@Process` method (§11.2); a `useFactory` processor's module-scoped enhancers on both majors (§5.2) | each pipeline assertion is paired with the same enhancer on an HTTP route in the same app; `@JobData` recorded as a custom type → the global `StandardValidationPipe` row passes the bad payload, as measured |
+| PR-n3 | for each of guard, interceptor, pipe and filter: method-, class- and global-level (`APP_*` and `useGlobal*`), with `getType() === "bun-jobs"`; a user's `createParamDecorator`; all nine parameter decorators; undecorated-parameter refusal; **V6**: `StandardSchemaPipe` on `@JobData` (zod and valibot), `@JobData({ schema })`, a `SchemaDto` parameter under a global `StandardValidationPipe`, each with the issue `target` `"body"`; on 12, Nest's `StandardSchemaValidationPipe` with `@JobData({ schema })` not validating twice; `ValidationPipe` with a DTO **if class-validator is added as a devDependency** (Q16); `StandardValidationException` → dead with `attemptsMade=1` and `onInvalid: "retry"` (Q18); `JobForbiddenError` → dead with `attemptsMade=1`; `onDenied: "retry"`; filter-returns-value → completed; `UnrecoverableOn`; `enhancers: false`; bun-nest's own globals (throttler guard, cache interceptor, `ValidationExceptionFilter`) installed and a job unaffected; `@Cacheable` on a `@Process` method (§11.2); a `useFactory` or `useValue` processor's class-based enhancers refused on both majors, and a `useClass` one per major (§5.2); a request-scoped `APP_GUARD` and a transient guard around a singleton (§5.5) | each pipeline assertion is paired with the same enhancer on an HTTP route in the same app; `@JobData` recorded as a custom type → the global `StandardValidationPipe` row passes the bad payload, as measured |
 | PR-n4 | each event decorator; scoped `completed:name`; an async listener's rejection logged, not unhandled; `@OnJobsEvent` across two processes on the file driver; listeners on a request-scoped class → `ConfigError` | `publishEvents: false` in the producer → no event, and the warn is logged |
 | PR-n5 | `@Cron`/`@Every` scheduling exactly one occurrence across **two** app instances on one file-driver backend; series key stability across a restart; invalid cron and unknown tz → `ConfigError` at boot; an undeclared series warned, and pruned only with `pruneSchedules`; a disabled series stays disabled across a restart; `@DefineJob` defaults applied by `jobs.now`; `registerRunner` start and stop | two instances with the dedupe defeated (a random key) → two runs, proving the test can see duplicates |
 | PR-n6 | `BunJobsApiModule` without `jobs` + `BunJobsModule`, and with a named `context`; with neither → `createJobsApi`'s `ConfigError`; `guardsAuthorize`: 200/403/401 per role, per transport (HTTP and a socket channel), the problem's `code` from the closed `ApiErrorCode`; the same `guardsAuthorize` value as the jobs UI's `authorize` (bun-ui as a devDependency of the test only); a guard reading `req.ip` under `trustProxy`, driven by `fetch({ remoteAddress })` | a guard that always allows → the 403 test fails |
@@ -2020,7 +2074,7 @@ existing ones do [S]. For the driver-backed ones,
 |---|---|---|---|
 | R1 | **ECC is undocumented.** A Nest major could change it | low: unchanged since v6.2, kept in the root export by Nest 12.2.0 (`helpers/index.d.ts:2`) [S], and endorsed for libraries [V, PA §9]. 12.2 did change its internals (a module-key fallback, `schema` passed to pipes) without changing the signature [S] | one internal module (`jobs/pipeline.ts`) holds every ECC call; a conformance test per enhancer type (§12.1) fails loudly on a change; `enhancers: false` is the escape hatch |
 | R2 | **Two Nest majors behave differently in places this design touches.** bun-nest supports `^11.1.20 \|\| ^12.0.0` (`packages/bun-nest/package.json:109-112`) [S]. Found so far: a module's hook order (§6.3: F completes on 12, fails on 11), `StandardSchemaValidationPipe` and `{ schema }` (12.2 only, §7.4), ECC's module-key fallback (12.2 only, §5.2) [M, S] | certain: they exist | every PR runs the 11.2.7 column (§12.1), and the floors 11.1.20 and 12.0.0 once per merge window; a per-major behaviour is asserted per major; nothing depends on a 12-only API (`{ schema }` becomes V6's pipe). The deep imports are avoided (§7.1) |
-| R3 | **Bun reads `experimentalDecorators` and `emitDecoratorMetadata` from the working directory's `tsconfig.json`, not the file's.** With them off, parameter decorators are silently not applied, and Nest injects `undefined` [M, `results-decorator-config.txt`] | real: it hit the spikes, and still reproduces on `1.4.4-canary.1+11c367163` [M, `rerun-2026-11-08/decorator-config.txt`]. Any app run from a directory whose tsconfig lacks the flags | bun-nest's own classes apply their decorators by call, as every module since `bbe1120` does (D14), so the module's wiring cannot be dropped. For the user's processors, the README states it: run from the app's root, or put the flags in the root tsconfig. The module checks at bootstrap that `design:paramtypes` exists on one of its own decorated classes, and throws a `ConfigError` naming the cause if not (cheap, and it turns `undefined` injection into a message). **Reported upstream** on oven-sh/bun#28605 (below) |
+| R3 | **Bun reads `experimentalDecorators` and `emitDecoratorMetadata` from the working directory's `tsconfig.json`, not the file's.** With them off, parameter decorators are silently not applied, and Nest injects `undefined` [M, `results-decorator-config.txt`] | real: it hit the spikes, and still reproduces on `1.4.4-canary.1+11c367163` [M, `rerun-2026-11-08/decorator-config.txt`]. Any app run from a directory whose tsconfig lacks the flags | bun-nest's own classes apply their decorators by call, as every module since `bbe1120` does (D14), so the module's wiring cannot be dropped. For the user's processors, the README states it: run from the app's root, or put the flags in the root tsconfig. The module checks at boot, and throws a `ConfigError` naming the cause, only when **two signals agree** (as built; the user kept it): a decorated probe of its own has no `design:paramtypes`, **and** some provider or controller has constructor parameters and no metadata at all, which it names. The probe alone would refuse a healthy app built ahead of time and run with no `tsconfig.json`, since bun-nest's shipped `.ts` is transpiled under the working directory's options (measured under `node_modules`) while the app's classes already carry their metadata. **Reported upstream** on oven-sh/bun#28605 (below) |
 | R4 | `reflect-metadata` must be loaded once, before decorators run | as for any Nest app | `@nestjs/core` imports it itself [S, `node_modules/@nestjs/core/index.js:7`, `index.d.ts:1`]; the README keeps Nest's usual `import "reflect-metadata"` |
 | R5 | **The per-instance drain hook** is an own property on a user's instance | low | documented; chained to the class's own `onModuleDestroy`; `JobsHost` offers the explicit form; a test asserts the user's hook still runs, once |
 | R6 | **Global enhancers written for HTTP break jobs** (D4) | high on first use | the README's first pipeline paragraph; a bootstrap `debug` line listing the global guards that will apply to jobs |
@@ -2033,7 +2087,8 @@ existing ones do [S]. For the driver-backed ones,
 | R13 | Nest's `ExternalExceptionFilter` logs every unfiltered job error with its stack, per attempt [M] | certain | Q5 |
 | R14 | **`@JobData()` as BODY puts job data in front of an app's global pipes** (D13): a global `ValidationPipe` with `whitelist`/`forbidNonWhitelisted`, or a pipe that assumes an HTTP body, now runs on jobs | medium, for apps with such pipes | it is the point of the choice, as with microservices' `@Payload()`; the README's validation paragraph says so first; Q19 lets the user choose `"custom"` instead |
 | R15 | **Two `ConfigError` classes**: bun-common's (the module's boot checks, as bun-nest's other modules) and bun-jobs' (what `createJobsApi`, `jobsUi()` and bun-jobs throw) [S, §2.3] | low | a boot failure is read, not caught; the README names both, and `instanceof` checks in tests use the right one |
-| R16 | **A `useFactory` processor may lose module-scoped enhancers on Nest 11** (§5.2) [I] | low: processors are classes | PR-n3 tests it on both columns; refused with a `ConfigError` on 11 if it does |
+| R16 | **A `useFactory` or `useValue` processor silently runs without its enhancer classes, on Nest 11 and 12, and a `useClass` one before 12.2** (§5.2) [M; first written as 11 alone, [I]] | low: processors are classes, but the failure skips a guard | a `ConfigError` at boot naming the enhancer, asserted per major (PR-n3); an enhancer given as an instance works everywhere |
+| R17 | **`ENTRY_PROVIDER_WATERMARK` is an internal of Nest's**, which `@Processor` and `@DefineJob` set so a request-scoped global enhancer reaches a job (§5.5) [M on 11.2.7 and 12.2.0] | low: the same class of risk as R1 | written by value, with a test that it equals Nest's constant and a test that the guard is asked, which fails without it. Were Nest to change it, that test is what would say so |
 
 **The Bun issue (R3).** The reproduction is Bun-only, with no Nest:
 a parameter decorator applies when run from the directory whose tsconfig
@@ -2051,9 +2106,10 @@ The session reproduced it on `1.4.3-canary.1+bbdc5a519` and, as the same
 root cause, added it to #28605 as a comment rather than a duplicate issue:
 <https://github.com/oven-sh/bun/issues/28605#issuecomment-6091707278>. A fix
 PR for #28605, #28606, mentioned decorator settings but was closed
-unmerged. The workaround above goes once a stable Bun fixes it; when PR-n1
-lands, it gets a `docs/bun-bugs/` entry naming #28605 (there is none yet:
-bun-nest's by-call comments cite the issue directly).
+unmerged. The workaround above goes once a stable Bun fixes it. Its report and
+Bun-only reproduction are
+[`docs/bun-bugs/decorator-options-read-from-cwd-tsconfig.md`](../../bun-bugs/decorator-options-read-from-cwd-tsconfig.md)
+(#723).
 
 Re-checked 2026-11-08: #28605 is still open (last updated 2026-10-10), and
 the spike gives the same four results on `1.4.4-canary.1+11c367163`
@@ -2164,14 +2220,18 @@ and what the user asked to build first. In detail:
   subpath). It ships no worker: an app can inject queues and add jobs, and
   nothing yet consumes them under Nest. Files: `packages/bun-nest/lib/jobs/`
   gains `BunJobsModule.ts`, `tokens.ts` (grown), `decorators/inject.ts`,
-  `queueToken.ts`, `bootCheck.ts`; `index.ts` re-exports them;
-  `consumer-check.json` lists the names; the barrel test is unchanged.
+  `queueToken.ts`, `bootCheck.ts`, and, as built, `registry.ts` and `metadata.ts`;
+  `index.ts` re-exports them; `consumer-check.json` lists the names; the barrel test
+  is unchanged.
 - **PR-n2** needs Q1, Q6 and Q15. After it, `@Processor`/`@Process` run
   jobs with `(job, ctx)` handlers, drain correctly on both majors, and
   request scope works; the pipeline is not yet wrapped (handlers are called
   directly, as with `enhancers: false`).
 - **PR-n3** needs Q3, Q4, Q5, Q10, Q16, Q18 and Q19. It turns the pipeline
-  on, and with it the parameter decorators and V6 validation.
+  on, and with it the parameter decorators and V6 validation. As built it also
+  adds `valibot` as a bun-nest devDependency, beside Q16's two, for §12.1's zod and
+  valibot test, and touches `lib/cache/` for §11.2's refusal, the one place outside
+  `lib/jobs/`.
 - A release between PR-n2 and PR-n3 would ship decorators whose parameter
   decorators do nothing, so **PR-n2 and PR-n3 merge in one merge window**,
   or PR-n2 keeps the parameter decorators unexported until PR-n3.
@@ -2203,7 +2263,7 @@ table says otherwise.
 | `JobsHost` | abstract class | bullmq's `WorkerHost`, named for jobs |
 | `WorkerRef` | class | what `@InjectWorker` injects |
 | `DefineJob` | method decorator | `jobs.define()` |
-| `BunJobsLifecycle` (`start()`, `stop()`) | provider | `autoStart: false`'s other half |
+| `BunJobsLifecycle` (`start(context?)`, `stop(context?)`) | provider | `autoStart: false`'s other half. As built: one per application, since two global modules cannot each provide their own under one class token, acting on every context or the one named. `stop()` parks, so `start()` resumes; `app.close()` closes for good. The user kept it |
 | `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent` | decorators | bullmq's first two |
 | `Cron`, `Every` | decorators | Q12 |
 | `CronOptions`, `EveryOptions` | types | |
@@ -2223,6 +2283,17 @@ table says otherwise.
 | `BunJobsTestingModule`, `runJob`, `drainJobs`, `RunJobOutcome` | module, functions, type, on **`./jobs/testing`** | |
 | `./jobs/terminus`, `./jobs/testing` (+ `./lib/...` spellings) | package entries | §3.5 |
 | metadata keys `bun-jobs:*` | internal strings | not exported; listed because they are visible to `Reflect` |
+
+**Added while building PR-n1 to PR-n3**, beyond the table above: `getWorkerToken`;
+the module option `registryWorker`; `{ context, enhancers, onDenied, onInvalid }` on
+`@DefineJob`; and the types `BunJobsModuleContextOptions`, `BunJobsContextOptions`,
+`BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`,
+`BunJobsShutdownOptions`, `BunJobsOptionsFactory` (`createBunJobsOptions()`),
+`BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueAsyncOptions`,
+`DefineJobOptions`, `QueueTokenClass`, `JobPipe`, `OnDenied`, `OnInvalid`,
+`QueueJobData`, `QueueJobResult`, `QueueJobName`, `TypedProcessDecorator`. bun-jobs'
+`BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`,
+`NameLimits` and `ProcessorContext` are re-exported as types.
 
 **Withdrawn since the first version:** `StandardSchemaPipe` (V6 shipped it
 at bun-nest's root, approved under bun-validate), `BunJobsUiModule` and

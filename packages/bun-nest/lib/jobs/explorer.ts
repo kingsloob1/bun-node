@@ -1,11 +1,17 @@
 import type {
   BunJobs,
   BunQueueWorker,
+  Job,
   JobProcessor,
   NameLimits,
+  ProcessorContext,
 } from "@kingsleyweb/bun-jobs";
 import type { OnApplicationBootstrap, OnModuleDestroy } from "@nestjs/common";
-import type { DiscoveryService, ModuleRef } from "@nestjs/core";
+import type {
+  DiscoveryService,
+  ExternalContextCreator,
+  ModuleRef,
+} from "@nestjs/core";
 import type {
   BunJobsWorkerOptions,
   DefineJobMetadata,
@@ -14,15 +20,29 @@ import type {
 } from "./decorators/consumer";
 import type { JobsHostBinding } from "./JobsHost";
 import type { StartableWorkers } from "./lifecycle";
+import type { FailurePolicy } from "./pipeline";
 import type { BunJobsRegistry } from "./registry";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import { UnrecoverableJobError } from "@kingsleyweb/bun-jobs";
 import { normalizeLimits } from "@kingsleyweb/bun-jobs/lib/queue/limits";
 import { Logger } from "@nestjs/common";
 import { ContextIdFactory, MetadataScanner } from "@nestjs/core";
+import { CACHE_WRAPPED_METADATA } from "../cache/tokens";
 import { processorOf } from "./decorators/consumer";
+import { recordHandlerName } from "./executionContext";
 import { JOBS_HOST_BINDING, JobsHost } from "./JobsHost";
-import { DEFINE_JOB_METADATA, PROCESS_METADATA } from "./metadata";
+import {
+  DEFINE_JOB_METADATA,
+  NEST_ENHANCER_METADATA,
+  NEST_ROUTE_ARGS_METADATA,
+  PROCESS_METADATA,
+} from "./metadata";
+import {
+  buildPipeline,
+  decoratedParams,
+  mapPipelineFailure,
+  undecoratedParams,
+} from "./pipeline";
 import { assertNoProblems, differingOptions } from "./registry";
 
 /** The parts of Nest's `InstanceWrapper` the explorer reads. */
@@ -39,6 +59,65 @@ interface Wrapper {
   readonly isTransient: boolean;
   /** Whether nothing in its tree is request-scoped. */
   isDependencyTreeStatic: () => boolean;
+  /** The module holding it. */
+  readonly host?: {
+    /** The enhancer classes Nest found on its providers while scanning. */
+    readonly injectables: { has: (token: unknown) => boolean };
+  };
+}
+
+/** The parts of Nest's (internal) `NestContainer` the module reads. */
+interface ContainerView {
+  readonly applicationConfig?: {
+    getGlobalGuards?: () => readonly object[];
+    getGlobalRequestGuards?: () => readonly object[];
+    getGlobalRequestInterceptors?: () => readonly object[];
+    getGlobalRequestPipes?: () => readonly object[];
+    getGlobalRequestFilters?: () => readonly object[];
+  };
+}
+
+/** Whether a wrapper is a plain class provider, the only kind Nest scans for enhancers. */
+function isClassProvider(wrapper: Wrapper): boolean {
+  return (
+    typeof wrapper.metatype === "function" &&
+    (wrapper.inject === undefined || wrapper.inject === null)
+  );
+}
+
+/**
+ * The enhancer classes on a handler that Nest will silently not ask. Nest finds
+ * a class given to `@UseGuards` and its kind by scanning `providers: [Class]`,
+ * and builds it beside the provider. For a provider made by `useFactory` or
+ * `useValue` it scans nothing, on Nest 11 and 12, and the job runs **without the
+ * guard** (measured); a `useClass` provider likewise before 12.2. An instance given to
+ * the decorator is used as it is, so it works everywhere.
+ */
+function droppedEnhancers(
+  wrapper: Wrapper,
+  target: { prototype: object },
+  method: string,
+): string[] {
+  const handler = (target.prototype as Record<string, object>)[method]!;
+  const paramPipes = Object.values(
+    (Reflect.getMetadata(NEST_ROUTE_ARGS_METADATA, target, method) ??
+      {}) as Record<string, { pipes?: unknown[] }>,
+  ).flatMap(({ pipes }) => pipes ?? []);
+  const classes = [
+    ...NEST_ENHANCER_METADATA.flatMap((key) => [
+      ...((Reflect.getMetadata(key, target) ?? []) as unknown[]),
+      ...((Reflect.getMetadata(key, handler) ?? []) as unknown[]),
+    ]),
+    ...paramPipes,
+  ].filter((enhancer) => typeof enhancer === "function");
+  const scanned =
+    isClassProvider(wrapper) && wrapper.token === wrapper.metatype;
+  return classes
+    .filter(
+      (enhancer) =>
+        !scanned || wrapper.host?.injectables.has(enhancer) !== true,
+    )
+    .map((enhancer) => (enhancer as { name: string }).name);
 }
 
 /** What a module's `shutdown` option gives each worker's close. */
@@ -61,6 +140,8 @@ export interface ExplorerOptions {
   readonly shutdown?: BunJobsShutdownOptions;
   /** What the registry's worker is started with, for `@DefineJob`. */
   readonly registryWorker?: Parameters<BunJobs["start"]>[0];
+  /** Whether handlers run through the Nest pipeline. Defaults to `true`. */
+  readonly enhancers?: boolean;
 }
 
 /** The default wait for jobs in flight on `app.close()`. */
@@ -124,7 +205,14 @@ function classOf(wrapper: Wrapper): unknown {
 
 /** The worker options that reach bun-jobs, without what is Nest's. */
 function workerOptionsOf(metadata: ProcessorMetadata): BunJobsWorkerOptions {
-  const { scope: _scope, context: _context, ...options } = metadata.options;
+  const {
+    scope: _scope,
+    context: _context,
+    enhancers: _enhancers,
+    onDenied: _onDenied,
+    onInvalid: _onInvalid,
+    ...options
+  } = metadata.options;
   return options;
 }
 
@@ -185,6 +273,8 @@ export class BunJobsExplorer
     private readonly discovery: DiscoveryService,
     /** Resolves a request-scoped processor per job. */
     private readonly moduleRef: ModuleRef,
+    /** Builds each handler's pipeline. */
+    private readonly ecc: ExternalContextCreator,
   ) {}
 
   /** Finds, checks and builds everything, then starts unless told otherwise. */
@@ -316,7 +406,14 @@ export class BunJobsExplorer
       }
     }
 
-    for (const wrapper of this.discovery.getProviders() as unknown as Wrapper[]) {
+    // Plain classes first, so an alias of one is seen as that one.
+    const providers = (
+      this.discovery.getProviders() as unknown as Wrapper[]
+    ).toSorted(
+      (a, b) => Number(isClassProvider(b)) - Number(isClassProvider(a)),
+    );
+    const scopedGlobals = this.#scopedGlobals();
+    for (const wrapper of providers) {
       if (wrapper.instance instanceof RegisteredWorker) {
         if (wrapper.instance.context === this.context) {
           files.push(wrapper.instance);
@@ -343,6 +440,11 @@ export class BunJobsExplorer
         seen.add(instance);
       }
       const label = target.name;
+      if (!perJob && !isClassProvider(wrapper) && scopedGlobals.length > 0) {
+        problems.push(
+          `${label}: request-scoped global enhancers (${scopedGlobals.join(", ")}) are not asked around a provider made by useFactory or useValue, since Nest does not scan one. Make it a class provider`,
+        );
+      }
 
       if (metadata === undefined) {
         const stray = methods.filter(({ process }) => process !== undefined);
@@ -399,8 +501,32 @@ export class BunJobsExplorer
           }
           group.handlers.set(key, {
             label: entryLabel,
-            invoke: this.#invoker(wrapper, method, perJob),
+            invoke: this.#invoker(wrapper, method, perJob, {
+              label: entryLabel,
+              handlerName: process?.name ?? "*",
+              enhancers: this.#enhancersFor(metadata.options.enhancers),
+              onDenied: metadata.options.onDenied,
+              onInvalid: metadata.options.onInvalid,
+            }),
           });
+          this.#checkMethod(
+            wrapper,
+            target as { prototype: object },
+            method,
+            entryLabel,
+            this.#enhancersFor(metadata.options.enhancers),
+            problems,
+          );
+          if (process?.token !== undefined) {
+            if (
+              process.token.queue !== metadata.queue ||
+              process.token.context !== metadata.context
+            ) {
+              problems.push(
+                `${entryLabel}: @Process names queue "${process.token.queue}", but the class's @Processor is on "${metadata.queue}"`,
+              );
+            }
+          }
           if (process?.options !== undefined) {
             if (process.name === undefined) {
               problems.push(
@@ -434,8 +560,22 @@ export class BunJobsExplorer
         definitions.set(define.name, {
           label: entryLabel,
           metadata: define,
-          invoke: this.#invoker(wrapper, method, perJob),
+          invoke: this.#invoker(wrapper, method, perJob, {
+            label: entryLabel,
+            handlerName: define.name,
+            enhancers: this.#enhancersFor(define.options?.enhancers),
+            onDenied: define.options?.onDenied,
+            onInvalid: define.options?.onInvalid,
+          }),
         });
+        this.#checkMethod(
+          wrapper,
+          target as { prototype: object },
+          method,
+          entryLabel,
+          this.#enhancersFor(define.options?.enhancers),
+          problems,
+        );
         if (!perJob) {
           this.#addDrain(instance, async () => {
             if (this.#registryWorker !== undefined) {
@@ -465,6 +605,7 @@ export class BunJobsExplorer
     assertNoProblems(problems);
     this.#buildWorkers(groups, files, definitions, problems);
     assertNoProblems(problems);
+    this.#reportGlobals();
   }
 
   /** Records one class on a queue's group, checking its options against the others'. */
@@ -495,16 +636,128 @@ export class BunJobsExplorer
     group.options.push({ label, options });
   }
 
-  /** How one method is called. The pipeline, once PR-n3 adds it, goes here. */
+  /** The application's request-scoped global enhancers, by name. */
+  #scopedGlobals(): string[] {
+    const config = this.#container()?.applicationConfig;
+    return [
+      ...(config?.getGlobalRequestGuards?.() ?? []),
+      ...(config?.getGlobalRequestInterceptors?.() ?? []),
+      ...(config?.getGlobalRequestPipes?.() ?? []),
+      ...(config?.getGlobalRequestFilters?.() ?? []),
+    ].map((wrapper) => {
+      const { name, metatype } = wrapper as {
+        name?: unknown;
+        metatype?: { name?: string };
+      };
+      return metatype?.name ?? String(name);
+    });
+  }
+
+  /** Nest's container, through the module's `ModuleRef`, as the throttler's boot check reads it. */
+  #container(): ContainerView | undefined {
+    return Reflect.get(this.moduleRef, "container") as
+      ContainerView | undefined;
+  }
+
+  /** One debug line naming the global guards a job will meet (risk R6). */
+  #reportGlobals(): void {
+    const config = this.#container()?.applicationConfig;
+    const guards = [
+      ...(config?.getGlobalGuards?.() ?? []).map(
+        (guard) => guard.constructor.name,
+      ),
+      ...(config?.getGlobalRequestGuards?.() ?? []).map((wrapper) =>
+        String((wrapper as { name?: unknown }).name),
+      ),
+    ];
+    if (guards.length > 0 && this.#workers.length > 0) {
+      this.#logger.debug(
+        `These global guards also apply to jobs, unless they pass a "bun-jobs" context through: ${guards.join(", ")}`,
+      );
+    }
+  }
+
+  /** Whether a handler runs through the pipeline: its own word, else the module's. */
+  #enhancersFor(own: boolean | undefined): boolean {
+    return own ?? this.options.enhancers ?? true;
+  }
+
+  /** The checks on one handler's method. */
+  #checkMethod(
+    wrapper: Wrapper,
+    target: { prototype: object },
+    method: string,
+    label: string,
+    enhancers: boolean,
+    problems: string[],
+  ): void {
+    const handler = (target.prototype as Record<string, object>)[method]!;
+    const cached = Reflect.getMetadata(CACHE_WRAPPED_METADATA, handler) as
+      string | undefined;
+    if (cached !== undefined && cached !== "CacheEvict") {
+      problems.push(
+        `${label}: @${cached} on a job handler would cache across jobs, so a later job would complete with an earlier one's result without running. Cache inside the method instead`,
+      );
+    }
+    if (!enhancers) {
+      if (decoratedParams(target, method).size > 0) {
+        problems.push(
+          `${label}: enhancers: false calls the method as (job, ctx), so its parameter decorators would never be read`,
+        );
+      }
+      return;
+    }
+    const dropped = droppedEnhancers(wrapper, target, method);
+    if (dropped.length > 0) {
+      problems.push(
+        `${label}: Nest would silently not run ${dropped.join(", ")}, since it finds an enhancer class only on a plain class provider. Register it as providers: [${target.prototype.constructor.name}], or give the decorator an instance`,
+      );
+    }
+    const missing = undecoratedParams(target, method);
+    if (missing.length > 0) {
+      problems.push(
+        `${label}: parameter ${missing.join(", ")} has no decorator. Once one parameter is decorated every one must be, or the rest arrive as null: use @CurrentJob(), @JobContext(), or none at all for (job, ctx)`,
+      );
+    }
+  }
+
+  /** How one method is called: through the pipeline, unless told otherwise. */
   #invoker(
     wrapper: Wrapper,
     method: string,
     perJob: boolean,
+    settings: FailurePolicy & {
+      /** The `@Process` or `@DefineJob` name, or `"*"`. */
+      readonly handlerName: string;
+      /** Whether the pipeline runs. */
+      readonly enhancers: boolean;
+    },
   ): HandlerEntry["invoke"] {
     type Instance = Record<string, (...args: unknown[]) => unknown>;
+    type Run = (job: Job<any, any, any>, ctx: ProcessorContext) => unknown;
+    const { enhancers, handlerName } = settings;
+    const runOf = (
+      instance: Instance,
+      contextId?: Parameters<ExternalContextCreator["create"]>[5],
+    ): Run =>
+      enhancers
+        ? buildPipeline(this.ecc, instance, method, contextId)
+        : (job, ctx) => instance[method]!(job, ctx);
+    const settle = async (
+      run: Run,
+      job: Job<any, any, any>,
+      ctx: ProcessorContext,
+    ): Promise<unknown> => {
+      recordHandlerName(ctx, handlerName);
+      try {
+        return await run(job, ctx);
+      } catch (error) {
+        throw enhancers ? mapPipelineFailure(error, job, settings) : error;
+      }
+    };
     if (!perJob) {
-      const instance = wrapper.instance as Instance;
-      return (job, ctx) => instance[method]!(job, ctx);
+      const run = runOf(wrapper.instance as Instance);
+      return (job, ctx) => settle(run, job, ctx);
     }
     return async (job, ctx) => {
       // Consults a ContextIdStrategy, so a durable tree (a tenant per job) can
@@ -517,7 +770,7 @@ export class BunJobsExplorer
         { strict: false },
       );
       this.#bindHost(instance);
-      return instance[method]!(job, ctx);
+      return settle(runOf(instance, contextId), job, ctx);
     };
   }
 
@@ -607,7 +860,13 @@ export class BunJobsExplorer
       }
     }
     for (const [name, { label, metadata, invoke }] of definitions) {
-      const { context: _context, ...options } = metadata.options ?? {};
+      const {
+        context: _context,
+        enhancers: _enhancers,
+        onDenied: _onDenied,
+        onInvalid: _onInvalid,
+        ...options
+      } = metadata.options ?? {};
       try {
         (this.jobs.define as (...args: unknown[]) => unknown).call(
           this.jobs,

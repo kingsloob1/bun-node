@@ -1,14 +1,19 @@
 import type {
   BunJobs,
+  BunQueue,
+  Job,
   JobDefinitionOptions,
   NameLimits,
+  ProcessorContext,
 } from "@kingsleyweb/bun-jobs";
 import type { Scope } from "@nestjs/common";
-import type { QueueTokenClass } from "../queueToken";
+import type { OnDenied, OnInvalid } from "../pipeline";
+import type { QueueTokenClass, QueueTokenTarget } from "../queueToken";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import { SetMetadata } from "@nestjs/common";
 import {
   DEFINE_JOB_METADATA,
+  NEST_ENTRY_PROVIDER_WATERMARK,
   NEST_SCOPE_OPTIONS_METADATA,
   PROCESS_METADATA,
   PROCESSOR_METADATA,
@@ -42,6 +47,29 @@ export interface ProcessorOptions extends BunJobsWorkerOptions {
   scope?: Scope;
   /** The context's `name`; the default context when left out, or the queue token's. */
   context?: string;
+  /**
+   * Whether this class's handlers run through the Nest pipeline: guards,
+   * interceptors, pipes, filters, parameter decorators. Defaults to the
+   * module's, which defaults to `true`. With `false`, each method is called
+   * directly as `(job, ctx)`.
+   */
+  enhancers?: boolean;
+  /**
+   * What a guard's denial does: `"fail"` (the default) ends the job with a
+   * `JobForbiddenError`, no retry, since a retry asks the same guard the same
+   * question; `"retry"` retries it like any error, with a backoff that can wait
+   * for a feature flag, say.
+   */
+  onDenied?: OnDenied;
+  /**
+   * What a failed validation pipe does (a `StandardValidationException`):
+   * `"fail"` (the default) ends the job as `UnrecoverableJobError`, its issues
+   * kept and the original as `cause`, since a retry sees the same data; `"retry"`
+   * retries it like any error. A `BadRequestException` of your own, or Nest's
+   * `ValidationPipe`'s, is left alone: `UnrecoverableOn(BadRequestException)` ends
+   * those.
+   */
+  onInvalid?: OnInvalid;
 }
 
 /**
@@ -59,7 +87,46 @@ export interface DefineJobOptions extends JobDefinitionOptions {
   context?: string;
   /** The job's schemas, `{ data, result }`, as `jobs.define()` takes them. */
   schema?: NonNullable<Parameters<BunJobs["worker"]>[2]>["schema"];
+  /** See {@link ProcessorOptions.enhancers}. */
+  enhancers?: boolean;
+  /** See {@link ProcessorOptions.onDenied}. */
+  onDenied?: OnDenied;
+  /** See {@link ProcessorOptions.onInvalid}. */
+  onInvalid?: OnInvalid;
 }
+
+/**
+ * The types a queue token class stands for, read from the `BunQueue` it extends.
+ * All four parameters are inferred at once: with `any` for the others, TypeScript
+ * infers `never` for the result, on tsc and on `bun check` alike (measured).
+ */
+type QueueTypes<Q> =
+  Q extends QueueTokenClass<BunQueue<infer D, infer R, infer N, infer _T>>
+    ? { data: D; result: R; name: N }
+    : never;
+
+/** What `add` takes on a queue token class's queue. */
+export type QueueJobData<Q> = QueueTypes<Q>["data"];
+/** What a job's `returnValue` is on a queue token class's queue. */
+export type QueueJobResult<Q> = QueueTypes<Q>["result"];
+/** The job names a queue token class declares. */
+export type QueueJobName<Q> = QueueTypes<Q>["name"];
+
+/**
+ * What the typed form of {@link Process} returns: a decorator whose method must
+ * take the queue's job and answer with its result, as `(job, ctx)`. A method
+ * written with parameter decorators does not fit, so the two styles stay apart.
+ */
+export type TypedProcessDecorator<Q> = <
+  M extends (
+    job: Job<QueueJobData<Q>, QueueJobResult<Q>>,
+    ctx: ProcessorContext,
+  ) => QueueJobResult<Q> | Promise<QueueJobResult<Q>>,
+>(
+  target: object,
+  key: string | symbol,
+  descriptor: TypedPropertyDescriptor<M>,
+) => void;
 
 /** What {@link Processor} recorded on a class. */
 export interface ProcessorMetadata {
@@ -77,6 +144,8 @@ export interface ProcessMetadata {
   readonly name: string | undefined;
   /** The options as given. */
   readonly options: ProcessOptions | undefined;
+  /** The queue a typed `@Process(Token, …)` names, to check against the class's. */
+  readonly token?: QueueTokenTarget;
 }
 
 /** What {@link DefineJob} recorded on a method. */
@@ -125,6 +194,7 @@ export function Processor(
   const recorded: ProcessorMetadata = { ...named, options };
   return (target) => {
     Reflect.defineMetadata(PROCESSOR_METADATA, recorded, target);
+    Reflect.defineMetadata(NEST_ENTRY_PROVIDER_WATERMARK, true, target);
     if (options.scope !== undefined) {
       Reflect.defineMetadata(
         NEST_SCOPE_OPTIONS_METADATA,
@@ -141,14 +211,54 @@ export function Processor(
  * this queue that no other method names. A name nobody handles ends the job
  * with no retry, since no retry in this process would find a handler.
  *
+ * The typed form takes the `@QueueToken()` class first, and checks the handler's
+ * payload, its result and the job name against it at compile time. It requires
+ * `(job, ctx)`: a parameter decorator cannot see its parameter's type, so a
+ * handler using them gets its safety at run time, from a pipe or a queue schema.
+ *
+ * ```ts
+ * @Processor(EmailsQueue)
+ * class EmailProcessor {
+ *   @Process(EmailsQueue, "welcome")
+ *   welcome(job: Job<Email, string>, ctx: ProcessorContext) { … }
+ *
+ *   @Process("digest")
+ *   digest(@JobData(new StandardSchemaPipe(Digest)) data: Digest) { … }
+ * }
+ * ```
+ *
+ * @param queue The queue's token class.
+ * @param name The job name; the catch-all when left out.
+ * @param options See {@link ProcessOptions}.
+ */
+export function Process<Q extends QueueTokenClass>(
+  queue: Q,
+  name?: QueueJobName<Q>,
+  options?: ProcessOptions,
+): TypedProcessDecorator<Q>;
+/**
+ * The plain form.
+ *
  * @param name The job name; the catch-all when left out.
  * @param options See {@link ProcessOptions}.
  */
 export function Process(
   name?: string,
   options?: ProcessOptions,
+): MethodDecorator;
+export function Process(
+  first?: string | QueueTokenClass,
+  second?: string | ProcessOptions,
+  third?: ProcessOptions,
 ): MethodDecorator {
-  const recorded: ProcessMetadata = { name, options };
+  const recorded: ProcessMetadata =
+    typeof first === "function"
+      ? {
+          name: second as string | undefined,
+          options: third,
+          token: requireQueueToken(first, "@Process()"),
+        }
+      : { name: first, options: second as ProcessOptions | undefined };
   return SetMetadata(PROCESS_METADATA, recorded);
 }
 
@@ -167,7 +277,15 @@ export function DefineJob(
   options?: DefineJobOptions,
 ): MethodDecorator {
   const recorded: DefineJobMetadata = { name, options };
-  return SetMetadata(DEFINE_JOB_METADATA, recorded);
+  const record = SetMetadata(DEFINE_JOB_METADATA, recorded);
+  return (target, key, descriptor) => {
+    Reflect.defineMetadata(
+      NEST_ENTRY_PROVIDER_WATERMARK,
+      true,
+      target.constructor,
+    );
+    return record(target, key, descriptor);
+  };
 }
 
 /** What `@Processor()` recorded on a class. */
