@@ -18,7 +18,7 @@ bun run-all.ts 04 10               # only folders 04-* and 10-*
 
 No install step: `@nestjs/core`, `@nestjs/common`, `@nestjs/websockets`,
 `reflect-metadata`, `rxjs`, `zod`, `yup`, `@nestjs/microservices` (for `07-validation`),
-`@nestjs/swagger` (for `08-openapi`) and — for the `@kingsleyweb/bun-nest/jobs`
+`@nestjs/swagger` (for `08-openapi`), `@nestjs/terminus` and `@nestjs/testing` (for `15-jobs/health.ts` and `testing.ts`) and — for the `@kingsleyweb/bun-nest/jobs`
 examples — `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-ui` (and, for `11-cache`, `@kingsleyweb/bun-cache`) resolve from the repo's root `node_modules`
 (`@nestjs/platform-express` resolves from there too; only
 `03-file-uploads/module-options.ts` imports it, to show its `MulterModule`
@@ -174,10 +174,13 @@ Asserted with [`shared/check.ts`](./shared/check.ts), like the tours.
 ### 15 — Jobs in Nest
 
 `BunJobsModule` and the decorators on `@kingsleyweb/bun-nest/jobs`: producers,
-consumers and the Nest pipeline around a job. Each file runs on the memory
-driver in an application context (no socket) and asserts with
-[`shared/check.ts`](./shared/check.ts); `helpers/outcomes.ts` is the shared
-"wait for this job to end" helper that `run-all.ts` skips. Run them from this
+consumers, the Nest pipeline around a job, events, schedules, runners, summoned
+workers, testing and health. Each file runs in an application context and asserts
+with [`shared/check.ts`](./shared/check.ts). Most use the memory driver and no
+socket; the file table says where one does not (the file driver in a temporary
+directory, SQLite, a child process, or a listening port 0). `helpers/` holds what
+the examples share or spawn (`outcomes.ts`, the other process of `events.ts`,
+`summoned.ts` and `off-thread.ts`), which `run-all.ts` skips. Run them from this
 directory: decorators on parameters need the working directory's
 `tsconfig.json` (oven-sh/bun#28605). See the package README's
 [Jobs](../../packages/bun-nest/README.md#jobs-bunjobsmodule).
@@ -188,6 +191,19 @@ directory: decorators on parameters need the working directory's
 | [`consumers.ts`](./15-jobs/consumers.ts) | `@Processor` on a service with an injected dependency, an ordinary method and three `@Process(name)` methods (`(job, ctx)` and `@JobData()` styles); a name nobody handles dead at once after one of five attempts; `app.close()` waiting for a job in flight, and that job completing |
 | [`pipeline.ts`](./15-jobs/pipeline.ts) | a guard denying a job (dead at once as `JobForbiddenError`, `getType()` `"bun-jobs"`); `StandardSchemaPipe` on `@JobData()` refusing bad data (dead at once, the pipe's exception as `cause`); an interceptor reshaping results; a filter returning a value completing the job; `UnrecoverableOn`; an unfiltered error retried to exhaustion; `onDenied: "retry"` turning a denial into three attempts |
 | [`boot-refusal.ts`](./15-jobs/boot-refusal.ts) | a class guard on a `useFactory` processor refused at boot with a `ConfigError` (it would otherwise run the job unguarded), with controls: a plain class provider and an instance guard both boot and deny |
+| [`validation.ts`](./15-jobs/validation.ts) | a schema on the queue refusing a bad payload at `add()` with nothing written; `StandardSchemaPipe`, `@JobData({ schema })` and a `SchemaDto` under the global `StandardValidationPipe` each ending a bad payload dead after one of three attempts, with the issue's `target` `"body"` and `path`; a transforming schema giving the handler a number; the processor's own `schema` killing a bad job another producer added; `onInvalid: "retry"` making two attempts |
+| [`app-guard.ts`](./15-jobs/app-guard.ts) | a global `APP_GUARD`: an HTTP-only guard breaking a job (the control, dead after three attempts), the `getType() !== "http"` idiom guarding the route and leaving jobs alone, and a guard applying to jobs by `getType() === "bun-jobs"` (a denied job dead at once, with code `JOB_FORBIDDEN`) |
+| [`request-scope.ts`](./15-jobs/request-scope.ts) | `scope: Scope.REQUEST`: a fresh processor per job with `REQUEST` the job (`isBunJob`); a singleton needing a request-scoped provider per job too; a durable `ContextIdStrategy` building two `Tenant`s for three jobs of two tenants, against three with no strategy |
+| [`registry.ts`](./15-jobs/registry.ts) | `@DefineJob`: `jobs.now()` and `jobs.run().in()` reaching the method with the definition's `attempts` and `backoff`, a per-call option winning, an undefined name refused with bun-jobs' `ConfigError`, a name defined twice failing the boot |
+| [`events.ts`](./15-jobs/events.ts) | on the file driver, two processes: `@OnWorkerEvent` (plain and `completed:welcome`), `@OnQueueEvent`, `@OnJobsEvent` and `@InjectJobsNotifier`; a listener that throws logged and harmless; a child adding a job with `publishEvents: false` not heard and one with `true` heard (`subscribe: true` on the queue hears it too); the boot's one `publishEvents is off` warning |
+| [`cron.ts`](./15-jobs/cron.ts) | `@Cron` and `@Every` on two instances of one file-driver backend: no occurrence run twice, every `@Every` `runAt` on the epoch grid, with the control that a series name per instance does run twice; an undeclared series warned about and `pruneSchedules` removing only it; a bad cron, zone and interval failing the boot |
+| [`runners.ts`](./15-jobs/runners.ts) | `registerRunner` (in-process), `@InjectRunner` the manager's runner, `@OnRunnerEvent` hearing `finished` with the result and `failed` with the error, `autoStart: false` and `BunJobsLifecycle.start()`/`stop()`, `app.close()` stopping it, a listener naming a missing runner failing the boot |
+| [`summoned.ts`](./15-jobs/summoned.ts) | on SQLite: `registerQueue` with a `localCompute` summon policy and `@InjectSummonController`; `check()` starting a child that runs `runSummonedApplication`, completes the job through DI in another process, runs `onModuleDestroy` before exiting 0 and leaves another queue's job waiting; a process that was not summoned refused |
+| [`off-thread.ts`](./15-jobs/off-thread.ts) | `registerWorker` with a `child-process` target and a processor file using `createProcessorContext`: the job runs in another process, the service is resolved with its dependency, the context is built once; a `@Processor` with another target refused at boot |
+| [`remote-executor.ts`](./15-jobs/remote-executor.ts) | `BunRemoteExecutorModule` and `@RemoteHandler` through `adapter.fetch()`: signed invokes completing through DI and parameter decorators, unsigned and wrong-key requests 401 without running the handler, a guard or pipe denial `failed-fatal`, a thrown error `failed`, an unknown name `handler-not-found`, the health routes and a controller beside it |
+| [`testing.ts`](./15-jobs/testing.ts) | `BunJobsTestingModule`, `runJob` (completed, dead after both attempts, a guard denial dead after one), `overrideGuard` reaching the job, `overrideProvider` on a queue token, and `drainJobs` beside `adapter.fetch({ remoteAddress })` returning a fan-out in settle order |
+| [`api-guards.ts`](./15-jobs/api-guards.ts) | `BunJobsApiModule` with no `jobs`, over `BunJobsModule`'s context, behind `guardsAuthorize` with a role guard: 200, 403 and 401 per role, a denied pause leaving the queue unpaused, `jobsApiContextOf` denying one queue, a throwing guard denying without its message, a guard that allows all as the control; on a listening port 0, the upgrade refused for a stranger and a channel rejected in the ack |
+| [`health.ts`](./15-jobs/health.ts) | `BunJobsHealthIndicator` behind a terminus `/health` through `adapter.fetch()`: up with the queue's figures, down on a backlog above `maxOutstanding`, on `requireWorkers` with demand and no worker, on `ping` false, on `ping` throwing (the cause not in the body) and on a hung `ping` within `timeout`; a worker parked with `BunJobsLifecycle.stop()` still up and listed in `parked`; `queues` left out not reading another service's backlog, `queues: "all"` reading it; skips visibly without `@nestjs/terminus` |
 
 ## Checking the examples
 
