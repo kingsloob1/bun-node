@@ -595,9 +595,10 @@ overflow, about 1.5 s of CPU in Bun (oven-sh/bun#45791), and used to race
 fixed deadlines (3 s, and bun:test's 5 s); since PR-3 the deep-payload test
 waits for the server's `RangeError` and the adapter test has a 30 s
 deadline. Three and four suites side by side, 25 suites at loads up to 64,
-then had no timeout, where three had one in 2 of 2 rounds before. One test
-is still load-sensitive there: `sse.nest.test.ts`'s idle-timeout control
-failed 2 of those 25 suites with `ECONNRESET`.
+then had no timeout, where three had one in 2 of 2 rounds before. Its
+idle-timeout control failed 2 of those 25 suites with `ECONNRESET` until it
+moved from `idleTimeout: 1` to `5`: a value of 1 to 4 cuts at Bun's next 4 s
+tick, which can be milliseconds after the connection opens (oven-sh/bun#46211).
 
 ### The compute-provider template
 

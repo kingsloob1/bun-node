@@ -366,13 +366,21 @@ describe("@Sse() failures and silence on BunHttpAdapter", () => {
     });
   }
 
-  // Bun cuts an idle connection at a 4 s granularity, so `idleTimeout: 1`
-  // cuts at ~4 s. The control proves the timeout is live on this server, so
-  // the `@Sse()` stream outliving it is the exemption `SseStream` asks for
-  // with `req.socket.setTimeout(0)`.
+  // Bun sweeps idle connections on a 4 s tick that runs while any socket is
+  // open, so an `idleTimeout` of 1 to 4 cuts at the next tick, which can be a
+  // millisecond after a connection opens: a busy machine then saw the control
+  // reset before its first event, `ECONNRESET` from `fetch()` itself (measured,
+  // Bun 1.4.4-canary). 5 to 8 cuts at the tick after that, 4 to 8 s after
+  // opening, so both clients get their first event whatever the tick's phase.
+  // The control proves the timeout is live on this server, so the `@Sse()`
+  // stream outliving it is the exemption `SseStream` asks for with
+  // `req.socket.setTimeout(0)`.
   it("served: a quiet @Sse() stream outlives idleTimeout; the control is cut", async () => {
-    const url = await startApp({ idleTimeout: 1 });
-    const WATCH_MS = 9000;
+    const url = await startApp({ idleTimeout: 5 });
+    // Past the latest cut, 8 s, with room for a client slow to see it. A late
+    // timer only lengthens the watch: it never hides a cut, which ends the read
+    // as soon as it happens.
+    const WATCH_MS = 13_000;
 
     const watch = async (path: string): Promise<string> => {
       const res = await fetch(`${url}${path}`);
@@ -402,5 +410,5 @@ describe("@Sse() failures and silence on BunHttpAdapter", () => {
     ]);
     expect(control).toMatch(/^cut/);
     expect(sse).toBe("open");
-  }, 20_000);
+  }, 30_000);
 });

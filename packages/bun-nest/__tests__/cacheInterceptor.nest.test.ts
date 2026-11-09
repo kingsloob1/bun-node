@@ -41,6 +41,7 @@ import { Buffer } from "node:buffer";
 import { memoryDriver } from "@kingsleyweb/bun-cache";
 import { memoryDriverDump } from "@kingsleyweb/bun-cache/lib/drivers/memory";
 import { addCacheTags } from "@kingsleyweb/bun-cache/http";
+import { fakeClock } from "@kingsleyweb/bun-cache/testing";
 import {
   Controller,
   Get,
@@ -278,12 +279,20 @@ describe("BunCacheInterceptor: hits and misses", () => {
   });
 
   it("without @CacheTTL, falls back to the cache's own TTL when the response gives no lifetime", async () => {
-    // The cache's TTL is 20 ms.
-    const { adapter } = await boot([BasicController], { cache: { ttl: 20 } });
+    // The cache's TTL is 20 ms, on a clock this test moves: on the real one,
+    // a busy machine spends the 20 ms before the second request is answered.
+    // A still clock puts the entry's end exactly a TTL after its write.
+    const clock = fakeClock();
+    const { adapter } = await boot([BasicController], {
+      driver: memoryDriver({ now: clock.now }),
+      cache: { ttl: 20, now: clock.now },
+    });
     expect((await get(adapter, "/basic/headers")).xCache).toBe("MISS");
     await settle();
     expect((await get(adapter, "/basic/headers")).xCache).toBe("HIT");
-    await Bun.sleep(40);
+    clock.advance(19);
+    expect((await get(adapter, "/basic/headers")).xCache).toBe("HIT");
+    clock.advance(1);
     expect((await get(adapter, "/basic/headers")).xCache).toBe("MISS");
     expect(calls.headers).toBe(2);
   });

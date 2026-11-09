@@ -42,7 +42,12 @@ the socket does in between.
 `idleTimeout` is documented as the seconds a connection may be **idle**. A
 connection writing every 50 ms is not idle. With a value of 4 or less every
 streamed response, server-sent events included, is capped at about 4 s, and
-an ordinary request can be cut almost at once (the issue's first case).
+an ordinary request can be cut almost at once (the issue's first case). While
+another connection keeps the tick running, a fresh quiet stream opened 1 ms
+ahead of a tick was cut 27 ms after opening with `1`, and 4044 ms after with
+`5` (measured 2026-11-09 on 1.4.4-canary.1+11c367163). So a test that wants a
+short timeout uses `5`: `sse.nest.test.ts`'s control, reset before its first
+event under load at `1`, was moved there.
 
 ## What to remove once it is fixed
 
