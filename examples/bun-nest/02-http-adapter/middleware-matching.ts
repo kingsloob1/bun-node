@@ -107,6 +107,8 @@ async function coreRunsMiddlewareOnce(): Promise<boolean> {
       runs++;
       next();
     },
+    // From 12.3.0 the core keeps the requests already handled in its caller.
+    new WeakSet(),
   );
   const req = {};
   for (const h of registered) await h(req, {}, () => {});

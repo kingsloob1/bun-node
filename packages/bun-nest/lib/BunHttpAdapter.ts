@@ -162,13 +162,15 @@ function coreScopesNotFoundToPrefix(): boolean {
 
 /**
  * Whether the installed `@nestjs/core` runs a middleware once per request
- * when several of its paths match it (12.2.0: `registerHandler` guards it
- * per request), so an adapter need not keep two of them apart. Asked of the
- * core's own `MiddlewareModule.prototype.registerHandler`, never a version
- * string: with stand-ins, it registers one middleware at two paths, and the
- * same request is sent through both. Asked when this module loads; the
- * answer arrives a few microtasks later, long before a request can, and
- * until then (or when the probe throws) it reads as `false`.
+ * when several of its paths match it (11.2.8 and 12.2.0: `registerHandler`
+ * guards it per request), so an adapter need not keep two of them apart.
+ * Asked of the core's own `MiddlewareModule.prototype.registerHandler`, never
+ * a version string: with stand-ins, it registers one middleware at two paths,
+ * and the same request is sent through both. Asked when this module loads;
+ * the answer arrives a few microtasks later, long before a request can, and
+ * until then it reads as `false`. A probe that throws reads as `true`: every
+ * core that predates the guard answers it, so one it cannot ask is newer than
+ * the guard.
  */
 let coreRunsMiddlewareOnce = false;
 
@@ -193,6 +195,9 @@ async function askCoreRunsMiddlewareOnce(): Promise<boolean> {
       runs++;
       next();
     },
+    // The requests already handled: from 12.3.0 the caller keeps them, so that
+    // routes differing only in their version share them. Ignored before that.
+    new WeakSet(),
   );
   const req = {};
   for (const h of registered) {
@@ -205,7 +210,9 @@ askCoreRunsMiddlewareOnce().then(
   (once) => {
     coreRunsMiddlewareOnce = once;
   },
-  () => {},
+  () => {
+    coreRunsMiddlewareOnce = true;
+  },
 );
 
 /**
@@ -5586,7 +5593,7 @@ export class BunHttpAdapter<
    * the `$` meaning "exactly this path". As `@nestjs/platform-express`
    * (12.1.3, nestjs/nest #17942), the `$` is stripped, and the route serves
    * its path with a trailing slash too, as every route does. Where the core
-   * runs a middleware once per request (12.2.0), that is all, as on
+   * runs a middleware once per request (11.2.8, 12.2.0), that is all, as on
    * platform-express 12.2.0. On an earlier core a request ending in `/` is
    * skipped, as platform-express 12.1.3 skips it, since the wildcard entry
    * beside it may match `/api/` too and the middleware must not run twice.

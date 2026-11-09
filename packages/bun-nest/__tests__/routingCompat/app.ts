@@ -602,6 +602,30 @@ export class MwVersionModule {
   }
 }
 
+export const MwManyVersions = trailMiddleware("MwManyVersions");
+
+/** One route of two versions: one path, as the version is not part of it under header versioning. */
+@Controller({ path: "many", version: ["1", "2"] })
+export class ManyVersionsController {
+  @Get()
+  @Header("x-h", "many")
+  get(@Req() req: AnyReq) {
+    return answer("many", req);
+  }
+}
+
+/**
+ * A middleware on a route of two versions. From 12.3.0 the core runs it once
+ * per request, through a set of handled requests the two share (which is why
+ * `registerHandler` takes it from its caller); before that, once per version.
+ */
+@Module({ controllers: [ManyVersionsController] })
+export class MwManyVersionsModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(MwManyVersions).forRoutes(ManyVersionsController);
+  }
+}
+
 /**
  * The routes of the `exclude()` matching groups (Nest 12.2.0's
  * `getRouteMatchingOptions`): a static route, and a list beside its items.

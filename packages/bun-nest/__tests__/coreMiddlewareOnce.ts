@@ -1,6 +1,6 @@
 /**
  * Whether the installed `@nestjs/core` runs a middleware once per request
- * when several of its paths match it (12.2.0), asked the way
+ * when several of its paths match it (11.2.8, 12.2.0), asked the way
  * `BunHttpAdapter` asks it: through the core's own
  * `MiddlewareModule.prototype.registerHandler`, with stand-ins, one
  * middleware registered at two paths and the same request sent through both.
@@ -34,6 +34,8 @@ export async function coreRunsMiddlewareOnce(): Promise<boolean> {
       runs++;
       next();
     },
+    // The core keeps the requests already handled in its caller from 12.3.0.
+    new WeakSet(),
   );
   const req = {};
   for (const h of registered) {
