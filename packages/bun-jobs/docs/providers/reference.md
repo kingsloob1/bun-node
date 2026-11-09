@@ -1549,6 +1549,12 @@ How a summoned worker drains and stops.
   Defaults to `false`.
 - `exit`: optional. Exit the process once closed. Defaults to `true`, except
   in `"in-invocation"` mode.
+- `beforeExit`: optional. Runs once the workers have closed, before the exit
+  or before the promise resolves, and is told the `SummonedExit`. With `exit`,
+  the hard backstop stays armed across it, so one that hangs is cut. One that
+  throws is logged, and the exit code stays the unit's.
+- `beforeExitTimeout`: optional. The most `beforeExit` may take, in ms, from
+  when it starts; the budget left may give it less. Defaults to `5_000`.
 - `logger`: optional. Where it logs. Defaults to the worker's logger.
 
 ### `SummonedExit`

@@ -210,6 +210,18 @@ describe("runSummoned refuses", () => {
     }
   });
 
+  it("refuses a beforeExit that is no function, and a bad beforeExitTimeout", async () => {
+    await expect(
+      runSummoned(worker(), {
+        exit: false,
+        beforeExit: "close" as unknown as () => void,
+      }),
+    ).rejects.toThrow(/beforeExit must be a function/);
+    await expect(
+      runSummoned(worker(), { exit: false, beforeExitTimeout: -1 }),
+    ).rejects.toThrow(/beforeExitTimeout/);
+  });
+
   it("nothing is installed when it refuses", async () => {
     const before = process.listenerCount("SIGTERM");
     await expect(runSummoned(worker(), { idleFor: -1 })).rejects.toThrow();

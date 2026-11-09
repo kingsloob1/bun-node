@@ -2678,6 +2678,8 @@ it fires on the first empty pass, before a dead worker's locks have lapsed.
 | `signals` | `NodeJS.Signals[] \| false` | `["SIGTERM", "SIGINT"]` | Signals that start a stop. SIGINT because Fly sends it by default. `false` installs none. |
 | `pauseSignals` | `boolean` | `false` | Treat SIGTSTP as "stop claiming" and SIGCONT as "resume", for Cloud Run jobs over an hour. Off by default: handling SIGTSTP means Ctrl-Z no longer suspends the process, so a platform that sends it opts in. |
 | `exit` | `boolean` | `true`; `false` in `"in-invocation"` | Call `process.exit(code)` once closed, and arm the hard backstop. |
+| `beforeExit` | `(exit: SummonedExit) => void \| Promise<void>` | none | Runs once the workers have closed and before the exit, or before the promise resolves: for what the process must close last. Under the same backstop; [below](#closing-something-else-last-beforeexit). |
+| `beforeExitTimeout` | `number` | `5000` | The most `beforeExit` may take, in ms, from when it starts. |
 | `logger` | `LoggerLike` | the worker's | Where it logs each decision. |
 
 **What it resolves with**, or would have exited with (`SummonedExit`):
@@ -2757,6 +2759,33 @@ return, so it logs a warning when the close outlives its deadline instead.
 Raise the platform's grace where it can be raised (Fly's `kill_timeout`,
 Railway's `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`): a short grace against a long
 job means the job runs twice.
+
+#### Closing something else last: `beforeExit`
+
+For what must close after the workers and before the process goes, an application
+around them, say. `exit: false` would lose the backstop for that close; this keeps it.
+
+```ts
+await runSummoned(worker, {
+  beforeExit: async () => {
+    await app.close();
+  },
+});
+```
+
+- **The time it has** is the sooner of `beforeExitTimeout` (5 s) from when it starts and
+  the limit the close was working to: `grace − 250` after a signal, `deadline − 250`. After
+  a signal, a drain that used its whole allowance leaves about `tailReserve` (1 s), so raise
+  `tailReserve` to keep more for the hook. An idle stop with no deadline has
+  `beforeExitTimeout`.
+- **One that hangs is ended by the backstop**, with the unit's own code and an error log
+  line. The 1 s floor still counts from when the close started, not from the hook.
+- **One that throws or rejects does not stop the exit.** It is logged at `error`, and the code
+  stays the unit's, `1` only when `run()` failed.
+- **A signal during it** does not interrupt it: the backstop moves to `grace − 250` if that is
+  sooner. A second SIGINT exits at once with code 130, as ever.
+- **In `"in-invocation"` mode, or with `exit: false`,** it still runs, before the promise
+  resolves. No backstop applies there, as ever, so one that hangs is only warned about.
 Every platform's grace, and what it leaves the jobs, is in
 [Shutdown budgets per platform](#shutdown-budgets-per-platform).
 

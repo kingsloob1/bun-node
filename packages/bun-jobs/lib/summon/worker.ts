@@ -110,6 +110,41 @@ export interface RunSummonedOptions {
    * `run()` itself failed: several platforms restart a non-zero exit.
    */
   exit?: boolean;
+  /**
+   * Runs once the workers have closed and before `process.exit`, or before the
+   * promise resolves in `"in-invocation"` mode or with `exit: false`: for what the
+   * worker's process must close last, an application around it, say. It is told how
+   * the unit stopped.
+   *
+   * Everything but the exit is over by then, so it holds up nothing but that.
+   *
+   * - **It has what the budget leaves.** With `exit`, the hard backstop stays armed
+   *   across it, at the sooner of {@link beforeExitTimeout} from when it starts and the
+   *   limit the close was working to (`grace − 250` after a signal, `deadline − 250`).
+   *   So after a signal or at a deadline it may have little: a drain that used its whole
+   *   allowance leaves about `tailReserve`. Raise `tailReserve` to keep more for it.
+   * - **A hook that hangs is ended by the backstop**, with the unit's own code, and an
+   *   error log line saying so.
+   * - **A hook that throws or rejects does not stop the exit.** It is logged at `error`,
+   *   and the code stays the unit's: `0` after an idle drain, parking, a deadline or a
+   *   signal, `1` only when `run()` failed, since several platforms restart a non-zero exit.
+   * - **A signal during it** does not interrupt it: the platform's clock has started, so
+   *   the backstop moves to `grace − 250` if that is sooner. A second SIGINT exits at once
+   *   with code 130, as ever.
+   * - **In `"in-invocation"` mode, or with `exit: false`,** it still runs, and the promise
+   *   resolves after it. Nothing cuts one that hangs: the backstop is not armed there, so a
+   *   warning is logged when it outlives its time.
+   */
+  beforeExit?: (
+    /** How the unit stopped, as the promise would resolve with it. */
+    exit: SummonedExit,
+  ) => void | Promise<void>;
+  /**
+   * The most {@link beforeExit} may take, in ms, from when it starts. Without it an idle
+   * stop with no deadline has no limit at all, so a hook that hangs would hold a summoned
+   * unit, and what it costs, for good. Defaults to `5_000`.
+   */
+  beforeExitTimeout?: number;
   /** Where it logs its decisions. Defaults to the worker's logger. */
   logger?: LoggerLike;
 }
@@ -214,6 +249,8 @@ export const RUN_SUMMONED_DEFAULTS = {
    * run past `deadline − 250` by up to the floor itself.
    */
   forcedCloseFloor: 1_000,
+  /** {@link RunSummonedOptions.beforeExitTimeout}. */
+  beforeExitTimeout: 5_000,
 } as const;
 
 /**
@@ -330,6 +367,11 @@ export interface RunSummonedProbe {
    * escalation. Default `true`.
    */
   escalate?: boolean;
+  /**
+   * `false` leaves the hard backstop off across `beforeExit`, so a hook that hangs
+   * holds the process: the negative control for the backstop cutting one. Default `true`.
+   */
+  beforeExitBackstop?: boolean;
 }
 
 /** The property a {@link RunSummonedProbe} is set under on the options. */
@@ -457,6 +499,10 @@ interface ResolvedSummonedOptions {
   exit: boolean;
   /** Whether the hard backstop is armed: `exit`, outside `"in-invocation"`. */
   backstop: boolean;
+  /** {@link RunSummonedOptions.beforeExit}. */
+  beforeExit: RunSummonedOptions["beforeExit"];
+  /** {@link RunSummonedOptions.beforeExitTimeout}. */
+  beforeExitTimeout: number;
   /** Where it logs. */
   logger: Logger;
   /** The test seam, when set. */
@@ -482,6 +528,14 @@ function resolveOptions(
   }
   const inInvocation = mode === "in-invocation";
   const exit = options.exit ?? !inInvocation;
+  if (
+    options.beforeExit !== undefined &&
+    typeof options.beforeExit !== "function"
+  ) {
+    throw new ConfigError("runSummoned: beforeExit must be a function", {
+      beforeExit: typeof options.beforeExit,
+    });
+  }
 
   const readDeadline = (): number | undefined => {
     const raw =
@@ -534,6 +588,12 @@ function resolveOptions(
     pauseSignals: !inInvocation && (options.pauseSignals ?? false),
     exit,
     backstop: exit && !inInvocation,
+    beforeExit: options.beforeExit,
+    beforeExitTimeout: duration(
+      "beforeExitTimeout",
+      options.beforeExitTimeout,
+      RUN_SUMMONED_DEFAULTS.beforeExitTimeout,
+    ),
     logger:
       options.logger === undefined
         ? workerLogger
@@ -667,6 +727,8 @@ class SummonedRun {
    * forced, and the ready ones close by the close rule.
    */
   #startFailed = false;
+  /** Whether the workers have closed and `beforeExit` is running. */
+  #inBeforeExit = false;
   /** The warning for a close that outlives its budget, without a backstop. */
   #overrunWarning: ReturnType<typeof setTimeout> | undefined;
 
@@ -1041,9 +1103,12 @@ class SummonedRun {
     this.#overrunWarning = setTimeout(
       () => {
         this.#overrunWarning = undefined;
-        this.#logger.warn("Summoned worker's close outlived its deadline", {
-          reason,
-        });
+        this.#logger.warn(
+          this.#inBeforeExit
+            ? "Summoned worker's beforeExit outlived its time"
+            : "Summoned worker's close outlived its deadline",
+          { reason },
+        );
       },
       Math.max(0, at - Date.now()),
     );
@@ -1108,6 +1173,13 @@ class SummonedRun {
     }
     const reason = this.#closing?.reason ?? "signal";
     const code = codeFor(reason);
+    if (this.#inBeforeExit) {
+      this.#logger.error(
+        "Summoned worker's beforeExit did not finish within its budget: exiting now",
+        { reason, code, ranForMs: Date.now() - this.#startedAt },
+      );
+      process.exit(code);
+    }
     this.#logger.error(
       "Summoned worker did not finish closing within its budget: exiting now. Jobs still held are recovered as stalled.",
       { reason, code, ranForMs: Date.now() - this.#startedAt },
@@ -1475,14 +1547,51 @@ class SummonedRun {
     clearTimeout(timer);
   }
 
+  /**
+   * The workers have closed: runs `beforeExit` if there is one, then settles. The
+   * backstop and the signal handlers stay as they are across the hook, so a hook that
+   * hangs is cut and a signal is heard; what watched the workers has gone with them.
+   */
   #finish(stop: SummonedStop): void {
-    if (this.#done) {
+    if (this.#done || this.#inBeforeExit) {
       return;
     }
-    this.#done = true;
-    this.#clearTimers();
-    this.#uninstall();
-    const result: SummonedExit = {
+    const result = this.#resultOf(stop);
+    const { beforeExit } = this.#options;
+    if (beforeExit === undefined) {
+      this.#settle(result);
+      return;
+    }
+    this.#inBeforeExit = true;
+    clearInterval(this.#tick);
+    this.#tick = undefined;
+    clearTimeout(this.#deadlineTimer);
+    this.#deadlineTimer = undefined;
+    // Without a backstop, the warning from here on is about the hook.
+    clearTimeout(this.#overrunWarning);
+    this.#overrunWarning = undefined;
+    if (this.#options.probe?.beforeExitBackstop === false) {
+      clearTimeout(this.#backstop);
+      this.#backstop = undefined;
+    } else {
+      this.#armLimit(Date.now() + this.#options.beforeExitTimeout, stop.reason);
+    }
+    void (async () => {
+      try {
+        await beforeExit(result);
+      } catch (error) {
+        this.#logger.error(
+          "Summoned worker's beforeExit failed: exiting all the same",
+          { error, reason: stop.reason, code: result.code },
+        );
+      }
+      this.#settle(result);
+    })();
+  }
+
+  /** How the unit stopped, as the promise resolves with it. */
+  #resultOf(stop: SummonedStop): SummonedExit {
+    return {
       reason: stop.reason,
       ...(stop.signal === undefined ? {} : { signal: stop.signal }),
       ranForMs: Date.now() - this.#startedAt,
@@ -1500,6 +1609,13 @@ class SummonedRun {
             ),
           }),
     };
+  }
+
+  /** Over: clears up, then exits or resolves. */
+  #settle(result: SummonedExit): void {
+    this.#done = true;
+    this.#clearTimers();
+    this.#uninstall();
     this.#logger.info("Summoned worker stopped", {
       ...result,
       mode: this.#options.mode,
@@ -1649,6 +1765,8 @@ function checkUnit(
  *   attempt is killed, not orphaned. The backstop still bounds a custom
  *   target that ignores `force`.
  * - **A second SIGINT exits at once**, with code 130, whatever `exit` says.
+ * - **`beforeExit` runs last**, once the workers have closed, under the same backstop:
+ *   see {@link RunSummonedOptions.beforeExit}.
  * - **SIGTSTP / SIGCONT**, with `pauseSignals`, pause and resume claiming;
  *   SIGCONT resumes only a pause SIGTSTP made.
  * - **A parked unit exits** (`"parked"`) after `idleFor`, unless the mode is
