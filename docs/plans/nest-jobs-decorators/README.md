@@ -1,5 +1,8 @@
 # bun-jobs in NestJS: modules, decorators and the Nest pipeline for jobs
 
+**Status (2026-11-09): approved by the user, with every §14 recommendation and
+§16 name accepted (§14 records the answers). PR-n1 to PR-n3 are being built.**
+
 Implementation plan for integrating `@kingsleyweb/bun-jobs` into NestJS
 through `@kingsleyweb/bun-nest`. The user asked for this on 2026-10-10:
 
@@ -2060,11 +2063,23 @@ the spike gives the same four results on `1.4.4-canary.1+11c367163`
 
 ## 14. Open questions for the user
 
-Each has a recommendation, refreshed on 2026-11-08. **Q1, Q4, Q5, Q18 and
-Q19 shape the API of PR-n2 and PR-n3**, and Q13 and Q14 shape PR-n1's, so
-those are the ones to answer before building starts. Two questions of the
-first version are resolved by what changed, and are listed after the table
-with the reason.
+**Answered 2026-11-09: the user accepted every recommendation below**, and
+§16's names. So the table now reads as the decisions: Q1 per class; Q2 `./jobs`
+plus `./jobs/terminus` and `./jobs/testing`; Q3 global enhancers apply, with
+`enhancers: false` remaining; Q4 a denial is dead at once, with `onDenied:
+"retry"` per processor; Q5 Nest's logging is kept for v1; Q6 `REQUEST` is the
+job; Q8 warn, and prune with `pruneSchedules: true`; Q10 `@CurrentJob()`; Q11
+the helper now, a pool later; Q12 `@Cron` and `@Every`; Q13 hand-written like
+`BunThrottlerModule`; Q14 a `ConfigError` listing both modules, covering a queue
+`schema` too; Q15 dead at once for `@Processor` queues, with the registry keeping
+bun-jobs' rule; Q16 class-validator and class-transformer as bun-nest
+devDependencies for one test; Q17 no UI module; Q18 dead at once, with `onInvalid:
+"retry"`; Q19 `@JobData()` as BODY.
+
+The recommendations as they were put, refreshed on 2026-11-08. **Q1, Q4, Q5,
+Q18 and Q19 shape the API of PR-n2 and PR-n3**, and Q13 and Q14 shape PR-n1's.
+Two questions of the first version are resolved by what changed, and are listed
+after the table with the reason.
 
 | # | Question | Recommendation |
 |---|---|---|

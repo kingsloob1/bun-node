@@ -117,15 +117,34 @@
         "BunJobsApiModule",
         "InjectJobsApi",
         "BUN_JOBS_API",
-        "BUN_JOBS_API_OPTIONS"
+        "BUN_JOBS_API_OPTIONS",
+        "BunJobsModule",
+        "InjectQueue",
+        "InjectBunJobs",
+        "QueueToken",
+        "getBunJobsToken",
+        "getQueueToken"
       ],
       "types": [
         "BunJobsApiModuleOptions",
         "BunJobsApiModuleAsyncOptions",
         "JobsApi",
-        "JobsApiConfig"
+        "JobsApiConfig",
+        "BunJobsModuleOptions",
+        "BunJobsModuleAsyncOptions",
+        "BunJobsModuleContextOptions",
+        "BunJobsContextOptions",
+        "BunJobsBuildOptions",
+        "BunJobsBorrowOptions",
+        "BunJobsOptionsFactory",
+        "BunJobsQueueOptions",
+        "RegisterQueueOptions",
+        "RegisterQueueAsyncOptions",
+        "QueueTokenClass",
+        "BunJobsOptions",
+        "BunQueueOptions"
       ],
-      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunJobsApiModule.forRoot>>>;\nexport type _jobs = Expect<IsAny<t.BunJobsApiModuleOptions[\"jobs\"]>>;"
+      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunJobsApiModule.forRoot>>>;\nexport type _jobs = Expect<IsAny<t.BunJobsApiModuleOptions[\"jobs\"]>>;\nexport type _jobsModule = Expect<IsAny<ReturnType<typeof m.BunJobsModule.forRoot>>>;\nm.BunJobsModule.forRoot({ namespace: \"shop\", logger: false, name: \"billing\", isGlobal: false });\n// @ts-expect-error -- namespace is required when the module builds the context\nm.BunJobsModule.forRoot({ logger: false });\nm.BunJobsModule.registerQueue({ name: \"emails\", options: { defaultJobOptions: { attempts: 3 } } });\nconst _queueToken: string = m.getQueueToken(\"emails\", \"billing\");\nm.InjectQueue(\"emails\", \"billing\");\nm.InjectBunJobs(\"billing\");"
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/jobs",
@@ -134,7 +153,12 @@
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/jobs/tokens",
-      "values": ["BUN_JOBS_API", "BUN_JOBS_API_OPTIONS"]
+      "values": [
+        "BUN_JOBS_API",
+        "BUN_JOBS_API_OPTIONS",
+        "getBunJobsToken",
+        "getQueueToken"
+      ]
     },
     {
       "spelling": "@kingsleyweb/bun-nest/cache",

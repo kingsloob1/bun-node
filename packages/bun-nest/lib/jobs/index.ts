@@ -1,6 +1,7 @@
 /**
- * `@kingsleyweb/bun-nest/jobs` — the bun-jobs management API as a NestJS
- * module.
+ * `@kingsleyweb/bun-nest/jobs` — bun-jobs in NestJS: the context and its
+ * queues as a module (`BunJobsModule`, `@InjectQueue`, `@QueueToken`), and the
+ * management API as another (`BunJobsApiModule`).
  *
  * This subpath, and only this subpath, depends on `@kingsleyweb/bun-jobs`
  * (an optional peer). The package barrel never reaches it, so a Nest app
@@ -31,7 +32,27 @@ export {
   type BunJobsApiModuleOptions,
   InjectJobsApi,
 } from "./BunJobsApiModule";
-export { BUN_JOBS_API, BUN_JOBS_API_OPTIONS } from "./tokens";
+export {
+  type BunJobsBorrowOptions,
+  type BunJobsBuildOptions,
+  type BunJobsContextOptions,
+  BunJobsModule,
+  type BunJobsModuleAsyncOptions,
+  type BunJobsModuleContextOptions,
+  type BunJobsModuleOptions,
+  type BunJobsOptionsFactory,
+  type RegisterQueueAsyncOptions,
+  type RegisterQueueOptions,
+} from "./BunJobsModule";
+export { InjectBunJobs, InjectQueue } from "./decorators/inject";
+export { QueueToken, type QueueTokenClass } from "./queueToken";
+export type { BunJobsQueueOptions } from "./registry";
+export {
+  BUN_JOBS_API,
+  BUN_JOBS_API_OPTIONS,
+  getBunJobsToken,
+  getQueueToken,
+} from "./tokens";
 
 /**
  * The bun-jobs types this module's surface is written in, re-exported so a
@@ -40,6 +61,8 @@ export { BUN_JOBS_API, BUN_JOBS_API_OPTIONS } from "./tokens";
  * cannot name.
  */
 export type {
+  BunJobsOptions,
+  BunQueueOptions,
   JobsApi,
   JobsApiAction,
   JobsApiAuthorize,
