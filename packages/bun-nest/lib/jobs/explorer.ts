@@ -8,7 +8,6 @@ import type {
   JobsNotifierOptions,
   NameLimits,
   ProcessorContext,
-  WorkerState,
 } from "@kingsleyweb/bun-jobs";
 import type { OnApplicationBootstrap, OnModuleDestroy } from "@nestjs/common";
 import type {
@@ -25,7 +24,11 @@ import type {
 } from "./decorators/consumer";
 import type { EventListenerMetadata } from "./decorators/events";
 import type { JobsHostBinding } from "./JobsHost";
-import type { StartableWorkers, StartedWorkers } from "./lifecycle";
+import type {
+  StartableWorkers,
+  StartedWorkers,
+  WorkerStanding,
+} from "./lifecycle";
 import type { BunJobsApplicationRole } from "./applicationRole";
 import type { FailurePolicy } from "./pipeline";
 import type { BunJobsRegistry } from "./registry";
@@ -589,14 +592,28 @@ export class BunJobsExplorer
   }
 
   /** {@link StartableWorkers.workerStates}. */
-  workerStates(): { queue: string; state: WorkerState }[] {
+  workerStates(): WorkerStanding[] {
     if (this.#closing) {
       return [];
     }
+    const standing = (
+      worker: BunQueueWorker<any, any, any>,
+      started: boolean,
+    ): WorkerStanding => ({
+      queue: worker.queueName,
+      standing:
+        started && !worker.isRunning
+          ? "ended"
+          : worker.state === "stopped" || worker.state === "stopping"
+            ? "parked"
+            : "running",
+    });
     return [
-      ...this.#workers.map((managed) => managed.worker),
-      ...(this.#registryWorker === undefined ? [] : [this.#registryWorker]),
-    ].map((worker) => ({ queue: worker.queueName, state: worker.state }));
+      ...this.#workers.map(({ worker, ran }) => standing(worker, ran)),
+      ...(this.#registryWorker === undefined
+        ? []
+        : [standing(this.#registryWorker, true)]),
+    ];
   }
 
   /** Starts the worker for `@DefineJob`, or resumes it. */

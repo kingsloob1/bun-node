@@ -1846,18 +1846,32 @@ check() {
 |---|---|---|
 | backend reachable | `driver.ping()` (`lib/drivers/driver.ts:101`) [S] | `false`, or a throw, within `timeout` |
 | backlog | `queue.getDemand({ cap })`: `outstanding` (README "Queue methods") [S] | above `maxOutstanding` |
-| this process's workers | each explorer worker's `state` | `stopped` or `stopping`, while the app is not closing |
+| this process's workers | each explorer worker's `isRunning` | its `run()` has ended while the app is not closing |
 | someone is consuming | `queue.getDemand()`'s `workers` (live, any process) [S] | `requireWorkers` and 0 workers with demand > 0 |
 
 `timeout` defaults to 1,000 ms, because a health probe must not hang on a
 dead backend. Terminus' deprecated `HealthIndicator` base class is not used
 [V, PA §8].
 
-As built (PR-n9): `isHealthy` never rejects. A worker the application never started,
-with `autoStart: false`, does not count; one on a queue outside `queues` does not
-either. `queues` left out reads every queue the backend knows. `timeout` bounds the
-whole check. A failure's cause goes to the log, and the caller gets a fixed `message`.
-The options also take `context`. The peer is `^11.1.1 || ^12.0.0`, and the devDependency
+As built (PR-n9, corrected at the user's request): `isHealthy` never rejects.
+
+- **A worker parked on purpose is not down**, from `BunJobsLifecycle.stop()` or remote
+  control, since a platform restarting the service would undo the decision. It is in
+  `parked` in the result, with no option to change that. `stopped` is what a `stop()`
+  leaves, and it says nothing of a failure: a `run()` that failed leaves `state` at
+  `running`, so what is down is `isRunning` gone false.
+- **`queues` left out is this application's queues**, registered or with a worker, so a
+  probe does not read other services' on a shared backend. `"all"` is explicit, the first
+  100 by name, with `queuesNotRead` saying what that left out.
+- **A probe costs** one `ping()` and three driver reads per queue, ten queues at a time
+  (measured on five drivers). `timeout` bounds the whole check.
+- **`requireWorkers` on a driver with no worker records reads as unknown.** Every driver
+  in this repo keeps them (measured on memory, file, SQLite, Redis, Postgres, MySQL, MariaDB
+  and MongoDB); a third-party one may not. `workers` is `"unknown"` and it is logged once. It
+  cannot be refused at boot, since `requireWorkers` is an argument of each call.
+- A failure's cause goes to the log, and the caller gets a fixed `message`. The options also
+  take `context`.
+ The peer is `^11.1.1 || ^12.0.0`, and the devDependency
 12.1.0: terminus' line is not Nest's, so `scripts/nest-matrix.ts` pins it per column
 (`NEST_PACKAGE_OVERRIDES`: 11.1.1 on an 11 column, 12.1.0 on a 12), and the consumer with
 that peer gets it from `consumerDependencies`.

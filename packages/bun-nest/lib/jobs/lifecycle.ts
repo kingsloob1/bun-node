@@ -1,4 +1,4 @@
-import type { BunQueueWorker, WorkerState } from "@kingsleyweb/bun-jobs";
+import type { BunQueueWorker } from "@kingsleyweb/bun-jobs";
 import { ConfigError } from "@kingsleyweb/bun-common";
 
 /** What {@link BunJobsLifecycle} starts and stops: one context's workers. */
@@ -17,11 +17,23 @@ export interface StartableWorkers {
    */
   startWorkers: (queues?: readonly string[]) => Promise<StartedWorkers>;
   /**
-   * What each worker is doing, for `./jobs/terminus`: one never started reads `running`.
-   * Nothing, once the application is closing, when a worker on its way down is what should
-   * be happening.
+   * How each worker stands, for `./jobs/terminus`. Nothing, once the application is closing,
+   * when a worker on its way down is what should be happening.
    */
-  workerStates: () => { queue: string; state: WorkerState }[];
+  workerStates: () => WorkerStanding[];
+}
+
+/** How one worker stands: what {@link StartableWorkers.workerStates} answers. */
+export interface WorkerStanding {
+  /** The queue it serves. */
+  queue: string;
+  /**
+   * `running` covers paused, and one never started. `parked` is `worker.stop()`, from
+   * `BunJobsLifecycle` or remote control: on purpose, and it can start again. `ended` is a
+   * `run()` that has finished while the application has not: its connection failed, say, or
+   * something closed it. Nothing brings that worker back.
+   */
+  standing: "running" | "parked" | "ended";
 }
 
 /** What {@link StartableWorkers.startWorkers} found. */
