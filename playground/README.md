@@ -16,6 +16,8 @@ PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgrou
 PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
 PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
 PLAYGROUND_LIVE_BUS=redis://127.0.0.1:6379/12 bun playground/index.ts  # live invalidation across playgrounds (also postgres://)
+bun playground/nest-jobs.ts                              # bun-jobs under Nest, on its own port (PORT_NEST_JOBS, 4002; see below)
+bun playground/nest-jobs-smoke.ts                        # its smoke check
 bun playground/nest-gateway.ts                           # the validated Nest gateway (V9), on its own port (PORT_NEST, default 4001)
 bun playground/cache-smoke.ts                            # the cache lab's smoke check (see "The cache lab")
 bun playground/typed-client-smoke.ts                     # the typed client's smoke check (see "The typed client")
@@ -69,6 +71,26 @@ checked, `typing` a `null` entry taking no payload), the
 adapter's packet format — `{"type":2,"namespace":"/","data":["say",{"text":"hi"}],"id":1}`
 is answered with a `said` event and a `{"type":3,"id":1,…}` ack; the header of
 `nest-gateway.ts` has a `bun -e` one-liner.
+
+**bun-jobs under Nest, on its own port** (`nest-jobs.ts`, nest-jobs-decorators PR-n10). `index.ts`
+never imports this either; run it directly and it boots a Nest app on `PORT_NEST_JOBS` (default
+4002), on the memory driver, adding one of everything every `PLAYGROUND_INTERVAL_MS` (5 s; `0` seeds
+once). `/` shows what ran and what was refused, refreshed each second.
+
+| What | Where | What you see |
+|---|---|---|
+| `@Processor`, `@Process`, DI | `EmailsProcessor`, `PaymentsProcessor` | `completed` in `/status`, counted by a provider the handlers inject |
+| An interceptor | `welcome`, `JobLoggingInterceptor` | the job's log, in the UI |
+| A guard | `refund`, `ApprovedRefundsGuard` | an unapproved refund is dead on its first attempt, of 3: "a guard denied job …" |
+| A pipe | `charge`, `ParseIntPipe` on `@JobData` | a `cents` that is not a number is dead, naming the pipe's message |
+| A filter | `charge`, `UnrecoverableOn(CardDeclined)` | a declined card is dead on its first attempt, of 3 |
+| `@Cron`, `@Every` | `Schedules` | `ticks` in `/status`, every second and every 1.5 s |
+| `BunJobsApiModule` with no `jobs`, `guardsAuthorize` | `/jobs-api`, `RoleGuard`, `JobsPolicy` | signed out 401; a reader reads and a pause is 403; an admin pauses. The socket's upgrade is refused the same way |
+| The jobs UI, no module | `/jobs` | the same guard: signed out 401, the bundle public |
+
+`/sign-in?role=reader`, `/sign-in?role=admin` and `/sign-out` are a pretend session, a cookie. `POST
+/orders` with `{ "to", "cents" }` enqueues over HTTP. `bun playground/nest-jobs-smoke.ts` starts it, checks
+all of this through `fetch`, and stops it with SIGINT.
 
 **Services and workers.** Two `BunJobs` contexts share one driver instance,
 so the Workers page has two services to group (`index.ts`, `mailer.ts`):
@@ -560,7 +582,7 @@ stays visible: the clear expiry and write time (`exp`, `ca`), the counter's
 value (`n`), which rows share a tag, and the sizes.
 
 There is no Nest route behind `BunCacheInterceptor` here: the playground is
-not a Nest app (`nest-gateway.ts` is a separate WebSocket-only entry), and
+not a Nest app (`nest-gateway.ts` and `nest-jobs.ts` are separate entries), and
 `examples/bun-nest` covers the interceptor.
 
 **The smoke check**, `bun playground/cache-smoke.ts` (with the server
@@ -717,6 +739,7 @@ checks, in about 13 seconds.
 - Open `/playground/cache`: GET item/1 twice (`MISS` in about 120 ms, then `HIT` in a few), invalidate tag `item:1`, GET again (`MISS`). GET swr, wait 2 s, GET twice (`STALE`, then `HIT` on build 2). Switch to `sqlite` with `br` and watch "Drivers opened this run" record the memory cache's removal.
 - Open `/playground/client`, run "A 404": the result's `code` is `NOT_FOUND`, and the code above it shows the type the playground's type check holds it to. Run "`Retry-After`" and read the sent timeline: the 503, then the retry a second later.
 - Start the `bun-client watch` command `/playground/client` prints, press "add a route" and watch its second line arrive with a new `typesHash`; press Regenerate for the diff.
+- `bun playground/nest-jobs.ts`, then open `http://localhost:4002`: `completed` and `ticks` climb, and `dead` lists a refund a guard denied, a charge a pipe refused and a card a filter declined. Open `/jobs` signed out (401), sign in as a reader (it opens; pausing a queue is refused), then as an admin (it pauses).
 - `bun playground/nest-gateway.ts` beside the playground, then send it `{"type":2,"namespace":"/","data":["say",{"text":"hi"}],"id":1}`: a `said` event and the ack come back checked; `"data":["say",{"text":42}]` earns an `exception` frame, no ack.
 
 Ctrl+C stops it cleanly (it waits up to 2 s for a running report).
