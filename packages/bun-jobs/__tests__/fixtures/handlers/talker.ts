@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Calls `ctx.log()` — the explicit run-log call — in every shape it takes:

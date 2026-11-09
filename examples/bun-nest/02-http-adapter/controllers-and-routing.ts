@@ -876,13 +876,14 @@ for (const path of ["/events/broken", "/events/throws"]) {
 step("idleTimeout: a quiet @Sse() stream stays open");
 
 // A second app whose server cuts idle connections. `idleTimeout` is in
-// seconds and 1 is the least Bun accepts. Bun sweeps idle connections on a
-// fixed 4s tick, whose phase is set by the process's earlier connections, so
-// a quiet stream is cut at the next tick: anywhere from a few milliseconds to
-// about 4s after it opens. How long it lasted therefore says nothing; how it
-// ended does: a cut connection makes the read fail (ECONNRESET), a stream
-// that ends by itself is read to a clean end.
-const quietAdapter = new BunHttpAdapter(0, { server: { idleTimeout: 1 } });
+// seconds. Bun sweeps idle connections on a fixed 4s tick, whose phase is set
+// by the process's earlier connections, and rounds up to it: 5 cuts a quiet
+// stream 4 to 8s after it opens, where 1 to 4 cut at the next tick, which can
+// be milliseconds after it opens, before its first event (oven-sh/bun#46211).
+// How long it lasted says little; how it ended says more: a cut connection
+// makes the read fail (ECONNRESET), a stream that ends by itself is read to a
+// clean end.
+const quietAdapter = new BunHttpAdapter(0, { server: { idleTimeout: 5 } });
 const quietApp = await NestFactory.create(QuietModule, quietAdapter, {
   logger: false,
 });

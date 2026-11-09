@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Reports progress every 25ms for five seconds, ignoring its abort signal —

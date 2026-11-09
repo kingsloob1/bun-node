@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Logs without waiting for the line to be stored, then returns at once.

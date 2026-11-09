@@ -1,5 +1,5 @@
 import process from "node:process";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Writes to both pipes, so run-log capture has something to split into lines.

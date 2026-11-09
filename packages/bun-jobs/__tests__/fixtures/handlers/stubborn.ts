@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import process from "node:process";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * The worst case a runner has to handle: a handler that catches `SIGTERM`

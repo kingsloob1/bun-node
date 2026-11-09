@@ -587,10 +587,11 @@ await feed.close();
 /* ------------------------------------------------------------------ */
 step("idleTimeout: which quiet streams Bun cuts, and which stay open");
 
-// `idleTimeout` is in seconds, and 1 is the least Bun accepts; Bun sweeps
-// idle connections every few seconds, so a quiet connection is cut about 4s
-// in. Each route sends one comment line and then nothing.
-const quietServer = new BunHttpAdapter(0, { server: { idleTimeout: 1 } });
+// `idleTimeout` is in seconds. Bun sweeps idle connections on a fixed 4s tick,
+// and rounds up to it: 5 cuts a quiet connection 4 to 8s in, where 1 to 4 cut
+// at the next tick, which can be milliseconds after it opens
+// (oven-sh/bun#46211). Each route sends one comment line and then nothing.
+const quietServer = new BunHttpAdapter(0, { server: { idleTimeout: 5 } });
 /** One SSE comment line, then silence: a stream that never closes. */
 const quietStream = () =>
   new ReadableStream<Uint8Array>({
@@ -660,7 +661,7 @@ show("the three quiet streams", {
 });
 check(
   "res.send(ReadableStream) going quiet is cut by idleTimeout",
-  sentQuiet.closedAfter !== undefined && sentQuiet.closedAfter >= 1000,
+  sentQuiet.closedAfter !== undefined && sentQuiet.closedAfter >= 3500,
   sentQuiet.closedAfter,
 );
 checkEqual(

@@ -370,9 +370,12 @@ describe("socket.setTimeout(0) exempts the request from idleTimeout", () => {
     expect(() => bare.socket.setTimeout(0)).not.toThrow();
   });
 
-  // Bun cuts an idle connection at a 4 s granularity, so `idleTimeout: 1`
-  // cuts at ~4 s. The control (a stream nobody exempted) proves the timeout is
-  // live in this server, so the exempt streams outliving it is the exemption.
+  // Bun sweeps idle connections on a 4 s tick that runs while any socket is
+  // open. An `idleTimeout` of 1 to 4 cuts at the next tick, which can be
+  // milliseconds after a connection opens (oven-sh/bun#46211); 5 cuts 4 to 8 s
+  // after, so every client gets its first event whatever the tick's phase. The
+  // control (a stream nobody exempted) proves the timeout is live in this
+  // server, so the exempt streams outliving it is the exemption.
   it("served: an exempt quiet stream outlives idleTimeout; the control is cut", async () => {
     const t = await target(
       "served",
@@ -399,10 +402,13 @@ describe("socket.setTimeout(0) exempts the request from idleTimeout", () => {
           res.write(": open\n\n");
         });
       },
-      { server: { idleTimeout: 1 } },
+      { server: { idleTimeout: 5 } },
     );
 
-    const WATCH_MS = 9000;
+    // Past the latest cut, 8 s, with room for a client slow to see it. A late
+    // timer only lengthens the watch: it never hides a cut, which ends the read
+    // as soon as it happens.
+    const WATCH_MS = 13_000;
     const watch = async (path: string): Promise<string> => {
       const reader = sseReader((await t.get(path)).body);
       const first = await reader.next();
@@ -422,7 +428,7 @@ describe("socket.setTimeout(0) exempts the request from idleTimeout", () => {
     expect(control).toMatch(/^cut/);
     expect(exempt).toBe("open");
     expect(written).toBe("open");
-  }, 20_000);
+  }, 30_000);
 });
 
 describe("a handler that awaits its own stream streams while it runs", () => {

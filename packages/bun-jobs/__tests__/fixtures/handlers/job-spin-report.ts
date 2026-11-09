@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import process from "node:process";
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Says who it is, then spins and ignores its signal: the processor a

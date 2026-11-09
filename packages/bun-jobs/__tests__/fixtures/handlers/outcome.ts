@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Ends the way its arguments say: `"ok"` returns at once, `"throw"` fails,

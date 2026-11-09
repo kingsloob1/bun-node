@@ -333,9 +333,12 @@ describe("res.sse()", () => {
 });
 
 describe("the idle-timeout exemption", () => {
-  // Bun cuts an idle connection at a 4 s granularity, so `idleTimeout: 1`
-  // cuts at ~4 s. The control (a quiet stream nobody exempted) proves the
-  // timeout is live in this server.
+  // Bun sweeps idle connections on a 4 s tick that runs while any socket is
+  // open. An `idleTimeout` of 1 to 4 cuts at the next tick, which can be
+  // milliseconds after a connection opens (oven-sh/bun#46211); 5 cuts 4 to 8 s
+  // after, so both clients get their first read whatever the tick's phase. The
+  // control (a quiet stream nobody exempted) proves the timeout is live in this
+  // server.
   it("served: a quiet res.sse() stream outlives idleTimeout; the control is cut", async () => {
     const get = await target(
       "served",
@@ -354,7 +357,7 @@ describe("the idle-timeout exemption", () => {
           res.sse({ heartbeatMs: 0 });
         });
       },
-      { server: { idleTimeout: 1 } },
+      { server: { idleTimeout: 5 } },
     );
     const watch = async (path: string): Promise<string> => {
       const reader = (await get(path)).body!.getReader();
@@ -364,7 +367,8 @@ describe("the idle-timeout exemption", () => {
           (r) => (r.done ? "done" : "data"),
           () => "error",
         ),
-        Bun.sleep(9000).then(() => "open"),
+        // Past the latest cut, 8 s, with room for a client slow to see it.
+        Bun.sleep(13_000).then(() => "open"),
       ]);
       await reader.cancel().catch(() => undefined);
       return after;
@@ -375,7 +379,7 @@ describe("the idle-timeout exemption", () => {
     ]);
     expect(control).not.toBe("open");
     expect(exempt).toBe("open");
-  }, 20_000);
+  }, 30_000);
 });
 
 describe("sseResponse()", () => {
@@ -443,7 +447,8 @@ describe("sseResponse()", () => {
     let exempted = 0;
     const server = Bun.serve({
       port: 0,
-      idleTimeout: 1,
+      // Not 1 to 4, which can cut the connection before its first read.
+      idleTimeout: 5,
       routes: {
         "/raw": (req, srv) =>
           sseResponse(

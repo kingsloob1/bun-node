@@ -1,5 +1,5 @@
 import process from "node:process";
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /** Reports its process id, then ignores its signal and never finishes. */
 export default defineProcessor(async (job) => {

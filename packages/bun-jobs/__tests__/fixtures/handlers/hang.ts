@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Ignores its abort signal on purpose. In-process this is the case that can

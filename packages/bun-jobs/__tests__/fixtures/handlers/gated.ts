@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Returns its `marker`, so a test can read the order runs happened in from

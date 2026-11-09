@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /** Reports progress, sends a message, logs, and echoes a message back. */
 export default defineHandler<{ steps?: number }, number>(async (ctx) => {

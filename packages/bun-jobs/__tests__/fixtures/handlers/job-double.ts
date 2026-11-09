@@ -1,5 +1,5 @@
 import process from "node:process";
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /** Doubles a number, and reports where it ran and what the channel returned. */
 export default defineProcessor<

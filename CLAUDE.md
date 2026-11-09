@@ -1499,6 +1499,12 @@ request built without `fetch()`.
   `docs/plans/nestjs-12-parity/evidence/lifecycle-spike/`.
 - Writing tests has repeatedly surfaced real bugs here — keep test coverage
   thorough, and keep every existing test green.
+- **A bun-jobs handler fixture imports `defineHandler` from `lib/runner/types`
+  and `defineProcessor` from `lib/queue/types`, not `lib/index`.** A worker or
+  child loads the fixture afresh for every run, and the package root takes 150
+  to 800 ms to import where those take about 2 ms; on a busy machine that ran out
+  bun:test's 5 s. `environment.ts` and `job-fail.ts` stay on the root, covering
+  an application's import in every mode.
 - **Inline 4-arg error handlers need a hint.** TypeScript overload
   resolution cannot dispatch by arrow arity, so an untyped
   `(err, req, res, next) => …` inside `router.use/get/all/useMethod(...)`

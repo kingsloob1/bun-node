@@ -37,8 +37,8 @@ import { BUN_JOBS_API, BUN_JOBS_API_OPTIONS } from "./tokens";
  * - **`beforeApplicationShutdown`** closes the API, because `dispose()` stops
  *   the HTTP server — and this adapter force-stops it — between the two
  *   shutdown hooks. Closing in `onApplicationShutdown` would tear the
- *   transport down first and clients would see a 1006 abnormal close instead
- *   of the protocol's 1001 "going away".
+ *   transport down first, and clients would get the adapter's own 1001
+ *   "Server closed" instead of the API's 1001 "server closing".
  * - **`onApplicationShutdown`** closes it again, harmlessly: `close()` is
  *   idempotent, and this covers a host that disposes without the earlier hook.
  */

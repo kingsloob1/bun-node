@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Logs one line and then overruns whatever `opts.timeout` the test gives it.

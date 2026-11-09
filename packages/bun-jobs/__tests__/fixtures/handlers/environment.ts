@@ -1,4 +1,7 @@
 import process from "node:process";
+// The package root on purpose, as an application's handler imports it: this
+// and `job-fail.ts` keep that path covered in every mode. Other fixtures take
+// `defineHandler` from `lib/runner/types`, since each run loads them afresh.
 import { defineHandler, isRunnerChild } from "../../../lib/index";
 
 /** Reports how the run was started, so the child's wiring can be asserted. */

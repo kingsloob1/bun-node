@@ -46,7 +46,7 @@ const RUN_ALONE: string[] = [];
  * waiting on one straggler at the end. Everything else follows in folder
  * order. Rough figures only: a stale entry costs a few seconds, never a
  * failure. `controllers-and-routing.ts` is here because it waits out
- * `Bun.serve`'s idle timeout, about 10 s.
+ * `Bun.serve`'s idle timeout, up to 13 s.
  */
 const SLOW_FIRST: string[] = ["02-http-adapter/controllers-and-routing.ts"];
 

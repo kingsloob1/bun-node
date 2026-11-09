@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import process from "node:process";
 import { isMainThread, threadId } from "node:worker_threads";
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Says who it is, then spins, ignoring its signal and `SIGTERM`, and writes a

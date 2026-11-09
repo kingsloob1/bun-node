@@ -1,5 +1,5 @@
 import type { RunProgress } from "../../../lib/index";
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Calls `job.fail()` in the ways the target tests compare across kinds,

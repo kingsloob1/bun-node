@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Writes `count` lines through `ctx.log()`, `gap` ms apart — a run whose log
