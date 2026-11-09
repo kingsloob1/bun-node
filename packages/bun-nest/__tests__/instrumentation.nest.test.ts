@@ -69,16 +69,19 @@ interface HookRes {
 }
 
 /**
- * Why the cases that need platform-express 12.1.3's hardened hooks are
- * skipped, if they are: before it, a request hook's rejection is unhandled
- * (the request hangs), `done` is not once-guarded, and a response hook's
- * error is not caught. bun-nest has 12.1.3's rules on every Nest. Read from
- * the reference's `runRequestHook`, which 12.1.3 added, never a version.
+ * Whether the reference has platform-express 12.1.3's hardened hooks, read from
+ * its `runRequestHook`, which 12.1.3 added, never a version. Before it, a
+ * request hook's rejection is unhandled (the request hangs), `done` is not
+ * once-guarded, and a response hook's error is not caught, so nothing can be
+ * compared. bun-nest has 12.1.3's rules on every Nest, so the cases that need
+ * them hold bun-nest alone to them there.
  */
-const OLD_REFERENCE_HOOKS =
-  "runRequestHook" in ExpressAdapter.prototype
-    ? undefined
-    : "platform-express before 12.1.3 does not guard its hooks";
+const REFERENCE_GUARDS_HOOKS = "runRequestHook" in ExpressAdapter.prototype;
+
+/** The sides held to 12.1.3's rules for hooks. */
+const GUARDED_SIDES: Side[] = REFERENCE_GUARDS_HOOKS
+  ? ["express", "bun"]
+  : ["bun"];
 
 /**
  * Whether Nest's core passes `app.use()` functions through
@@ -119,6 +122,21 @@ async function both(path: string) {
   return out;
 }
 
+/**
+ * `path` on {@link GUARDED_SIDES}: `{ status, body }` each. Without a guarded
+ * reference, bun-nest's answer stands in for it, so a case still states what
+ * bun-nest must answer.
+ */
+async function bothGuarded(path: string) {
+  const answer = (side: Side) => observe(booted![side].base, path);
+  const bun = await answer("bun");
+  const express = REFERENCE_GUARDS_HOOKS ? await answer("express") : bun;
+  return {
+    bun: { status: bun.status, body: bun.body },
+    express: { status: express.status, body: express.body },
+  };
+}
+
 function hooks(app: Booted["app"]): HookedAdapter {
   return app.getHttpAdapter() as unknown as HookedAdapter;
 }
@@ -154,59 +172,50 @@ describe("setOnRequestHook, against platform-express", () => {
     expect(answers.bun.status).toBe(403);
   });
 
-  it.skipIf(OLD_REFERENCE_HOOKS !== undefined)(
-    "a throw or a rejection before done() is done(error)",
-    async () => {
-      await boot((app) => {
-        hooks(app).setOnRequestHook(async () => {
-          throw new HttpException("async refusal", 429);
-        });
+  it("a throw or a rejection before done() is done(error)", async () => {
+    await boot((app) => {
+      hooks(app).setOnRequestHook(async () => {
+        throw new HttpException("async refusal", 429);
       });
-      const rejected = await both("/i/7");
-      expect(rejected.bun).toEqual(rejected.express);
-      expect(rejected.bun.status).toBe(429);
-    },
-  );
+    });
+    const rejected = await bothGuarded("/i/7");
+    expect(rejected.bun).toEqual(rejected.express);
+    expect(rejected.bun.status).toBe(429);
+  });
 
-  it.skipIf(OLD_REFERENCE_HOOKS !== undefined)(
-    "a sync throw before done() is done(error)",
-    async () => {
-      await boot((app) => {
-        hooks(app).setOnRequestHook(() => {
-          throw new HttpException("sync refusal", 418);
-        });
+  it("a sync throw before done() is done(error)", async () => {
+    await boot((app) => {
+      hooks(app).setOnRequestHook(() => {
+        throw new HttpException("sync refusal", 418);
       });
-      const thrown = await both("/i/7");
-      expect(thrown.bun).toEqual(thrown.express);
-      expect(thrown.bun.status).toBe(418);
-    },
-  );
+    });
+    const thrown = await bothGuarded("/i/7");
+    expect(thrown.bun).toEqual(thrown.express);
+    expect(thrown.bun.status).toBe(418);
+  });
 
-  it.skipIf(OLD_REFERENCE_HOOKS !== undefined)(
-    "only the first completion counts; a later error is logged",
-    async () => {
-      const logged = spyOn(Logger.prototype, "error").mockImplementation(
-        () => undefined,
-      );
-      try {
-        await boot((app) => {
-          hooks(app).setOnRequestHook(
-            (_req: unknown, _res: unknown, done: (e?: unknown) => void) => {
-              done();
-              done(new Error("too late"));
-            },
-          );
-        });
-        const answers = await both("/i/7");
-        expect(answers.bun).toEqual(answers.express);
-        expect(answers.bun.status).toBe(200);
-        // Each side logged its late error once.
-        expect(logged.mock.calls.length).toBe(2);
-      } finally {
-        logged.mockRestore();
-      }
-    },
-  );
+  it("only the first completion counts; a later error is logged", async () => {
+    const logged = spyOn(Logger.prototype, "error").mockImplementation(
+      () => undefined,
+    );
+    try {
+      await boot((app) => {
+        hooks(app).setOnRequestHook(
+          (_req: unknown, _res: unknown, done: (e?: unknown) => void) => {
+            done();
+            done(new Error("too late"));
+          },
+        );
+      });
+      const answers = await bothGuarded("/i/7");
+      expect(answers.bun).toEqual(answers.express);
+      expect(answers.bun.status).toBe(200);
+      // Each side logged its late error once.
+      expect(logged.mock.calls.length).toBe(GUARDED_SIDES.length);
+    } finally {
+      logged.mockRestore();
+    }
+  });
 
   it("a hook that answers without done() ends the request", async () => {
     await boot((app) => {
@@ -306,47 +315,43 @@ describe("setOnResponseHook, against platform-express", () => {
     expect(seen.bun).toEqual([418, 400]);
   });
 
-  it.skipIf(OLD_REFERENCE_HOOKS !== undefined)(
-    "cannot change the response, and its errors are only logged",
-    async () => {
-      const logged = spyOn(Logger.prototype, "error").mockImplementation(
-        () => undefined,
-      );
-      const ran: Side[] = [];
-      try {
-        await boot((app, side) => {
-          hooks(app).setOnResponseHook((_req: unknown, res: HookRes) => {
-            ran.push(side);
-            try {
-              res.setHeader("x-too-late", "1");
-            } catch {
-              // Express throws ERR_HTTP_HEADERS_SENT: either way nothing changes.
-            }
-            throw new Error("response hook failed");
-          });
+  it("cannot change the response, and its errors are only logged", async () => {
+    const logged = spyOn(Logger.prototype, "error").mockImplementation(
+      () => undefined,
+    );
+    const ran: Side[] = [];
+    try {
+      await boot((app, side) => {
+        hooks(app).setOnResponseHook((_req: unknown, res: HookRes) => {
+          ran.push(side);
+          try {
+            res.setHeader("x-too-late", "1");
+          } catch {
+            // Express throws ERR_HTTP_HEADERS_SENT: either way nothing changes.
+          }
+          throw new Error("response hook failed");
         });
-        const headers: Record<Side, string | null> = {
-          express: null,
-          bun: null,
-        };
-        for (const side of ["express", "bun"] as const) {
-          const res = await fetch(`${booted![side].base}/i/5`);
-          headers[side] = res.headers.get("x-too-late");
-          expect(res.status).toBe(200);
-          await res.text();
-        }
-        await settle(ran, 2);
-        expect(headers).toEqual({ express: null, bun: null });
-        expect(ran.sort()).toEqual(["bun", "express"]);
-        for (let i = 0; i < 100 && logged.mock.calls.length < 2; i++) {
-          await Bun.sleep(10);
-        }
-        expect(logged.mock.calls.length).toBe(2);
-      } finally {
-        logged.mockRestore();
+      });
+      for (const side of GUARDED_SIDES) {
+        const res = await fetch(`${booted![side].base}/i/5`);
+        expect(res.headers.get("x-too-late")).toBeNull();
+        expect(res.status).toBe(200);
+        await res.text();
       }
-    },
-  );
+      await settle(ran, GUARDED_SIDES.length);
+      expect(ran.sort()).toEqual([...GUARDED_SIDES].sort());
+      for (
+        let i = 0;
+        i < 100 && logged.mock.calls.length < GUARDED_SIDES.length;
+        i++
+      ) {
+        await Bun.sleep(10);
+      }
+      expect(logged.mock.calls.length).toBe(GUARDED_SIDES.length);
+    } finally {
+      logged.mockRestore();
+    }
+  });
 });
 
 describe("instrument.instanceDecorator over app.use(), against platform-express", () => {

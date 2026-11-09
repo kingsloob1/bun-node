@@ -540,7 +540,7 @@ See
 
 | Nest feature | Behaviour on `BunHttpAdapter` |
 |---|---|
-| Returned value | Sent through `BunResponse.send`: text, JSON, binary, `Bun.file()`, `Blob`, `ReadableStream`, Node `Readable` and async iterables (streams are sent as they are). |
+| Returned value | Sent through `BunResponse.send`: text, JSON, binary, `Bun.file()`, `Blob`, `ReadableStream`, Node `Readable` and async iterables (streams are sent as they are). What is not an object is sent as its string, as on Express, a symbol among them. A function is not: see the known differences. |
 | `@Res()` | You send the response. With `{ passthrough: true }` you may set headers or cookies and still return a value. |
 | `@HttpCode`, `@Header` | As on Express. A `Content-Type` is completed as `res.set()` completes it: `html` is `text/html`, and a type with a default charset (`text/*`, `application/json`) gets it. |
 | `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
@@ -775,7 +775,8 @@ On top of that, NestJS's body-parser hooks map to two adapter methods:
 | `maxContentCodings` | `5` | Most codings one `Content-Encoding` may stack; more is `415`. |
 | `decompressionFastPathLimit` | 32 MiB | Worst-case memory one layer may use on Bun's faster decoders before falling back to `node:zlib`. |
 | `compressionDictionaries` | none | Dictionaries (or a resolver) for `dcb`/`dcz` bodies. |
-| anything else | | Parser-specific options (`strict`, `reviver`, `extended`, …). |
+| `reviver` | none | `JSON.parse`'s reviver, for a JSON body. |
+| anything else | | Other parser-specific options are accepted and not read, `strict` and `extended` included (see [known differences](#known-differences-from-nestjsplatform-express)). |
 
 - **A request with no body is passed on at once.** No `Content-Length`, no
   `Transfer-Encoding` and no body stream (`req.hasBody` is `false`): the
@@ -1199,6 +1200,10 @@ answers the same status, headers and body.
   on Express sends it as JSON (`{"type":"Buffer","data":[…]}`).
 - Nest's default body parsing parses every body type; on Express only JSON and
   urlencoded bodies are parsed, so a `text/plain` body is `undefined` there.
+- A JSON body may be any JSON value, where body-parser's `strict` default
+  answers `400` for one that is not an object or array (`null`, `1`, `"s"`);
+  and any `charset` is read as UTF-8, where body-parser answers `415` for one
+  that is not `utf-*`. Both sit in bun-common's body parsing.
 - There is no default body size limit (body-parser's is `100kb`); set one with
   `app.useBodyParser(type, { limit })` or the adapter's `request.parseBody`
   options. The `413` message names the limit and the size received.
@@ -1207,6 +1212,8 @@ answers the same status, headers and body.
   `simple` parser does not.
 - `req.subdomains` comes from the public-suffix list, left to right
   (`a.b.example.com` → `["a", "b"]`; Express: `["b", "a"]`).
+- `res.end("text")` and `res.writeHead(…)` followed by it carry
+  `text/plain;charset=utf-8`, where Node's `res.end` sets no type.
 - `res.cookie()` adds `SameSite=Lax` unless given, and orders the attributes
   differently.
 - ETags are off unless the adapter's `etag` option turns them on (Express's
@@ -1231,7 +1238,14 @@ answers the same status, headers and body.
   generator or Node `Readable` is sent as that (see
   [Responses](#responses-redirect-streamablefile-render)); on Express it is
   serialised as JSON, `{}` for the first three. From 12.4.0 Express streams them
-  too.
+  too. On those releases a generator of objects resets the connection, where
+  12.4.0's core sends NDJSON, and a `Response` already read is the HTML `500`,
+  where 12.4.0's core throws into the exception filters. Any release: a
+  returned function sends an empty answer where Express sends its source,
+  deliberately, since source code reaching a client helps no one; a returned
+  `async function*` is streamed; and a
+  `Bun.file()` that does not exist is the HTML `500`, past the exception
+  filters.
 - A `BadRequestException` from unparsable JSON or a path that cannot be decoded
   has the error as its `cause` on every Nest 12 release; on Express only from
   12.4.1. No read tells 12.4.0 from 12.4.1, and only a filter that reads `cause`

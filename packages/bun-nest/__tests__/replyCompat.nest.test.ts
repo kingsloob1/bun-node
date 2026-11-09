@@ -437,6 +437,26 @@ class RepliesController {
     return { a: 1 };
   }
 
+  @Get("symbol")
+  symbol() {
+    return Symbol("sent as its string");
+  }
+
+  @Get("function")
+  function() {
+    return () => "sent as its source";
+  }
+
+  @Get("generator-function")
+  generatorFunction() {
+    return textChunks;
+  }
+
+  @Get("bigint")
+  bigint() {
+    return 10n;
+  }
+
   @Post("json")
   @HttpCode(200)
   json(@Req() req: { body?: unknown }) {
@@ -633,6 +653,32 @@ describe("bun-nest vs platform-express: replies", () => {
         expect(ours).toEqual(reference);
       });
     }
+  });
+
+  describe("a return value that is not an object", () => {
+    for (const name of ["symbol", "bigint"]) {
+      it(`is sent as its string, as on Express: ${name}`, async () => {
+        const [reference, ours] = await both(`/r/${name}`);
+        // A string's default type is a listed difference (`text/plain` here).
+        expect({ status: ours.status, body: ours.body }).toEqual({
+          status: reference.status,
+          body: reference.body,
+        });
+      });
+    }
+  });
+
+  it("a returned function sends nothing here, its source there (a listed difference, deliberate)", async () => {
+    const [reference, ours] = await both("/r/function");
+    expect(reference.status).toBe(ours.status);
+    expect(reference.body).toBeTruthy();
+    expect(ours.body).toBe("");
+  });
+
+  it("a returned async function* is streamed here, its source sent there (a listed difference)", async () => {
+    const [reference, ours] = await both("/r/generator-function");
+    expect(reference.body).toContain("textChunks");
+    expect(ours.body).toBe("ab");
   });
 
   describe("a stream that fails mid-body", () => {

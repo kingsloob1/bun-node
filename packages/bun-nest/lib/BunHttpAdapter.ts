@@ -3058,6 +3058,14 @@ export class BunHttpAdapter<
       response.setHeader("Content-Type", "application/json");
     }
 
+    // As @nestjs/platform-express: what is not an object is sent as its string.
+    // `send` covers the rest, but a symbol would throw. A function stays what
+    // `send` makes of it, nothing: Express sends its source, which helps no one.
+    const value: unknown = body;
+    if (typeof value === "symbol") {
+      return response.send(String(value));
+    }
+
     return response.send(body);
   }
 
