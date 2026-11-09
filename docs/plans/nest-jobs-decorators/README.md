@@ -2,7 +2,9 @@
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
 §16 name accepted (§14 records the answers). PR-n1 to PR-n5 are merged (#721, #722,
-#724, #727, #730), and PR-n6 to PR-n9 are built. PR-n10 is not started.** The sections below were corrected to match what was built, each correction
+#724, #727, #730), and PR-n6 to PR-n10 are built; PR-n10 is the last. As built, its playground is
+`playground/nest-jobs.ts`, an entry of its own beside `nest-gateway.ts`, since `index.ts` stays
+Nest-free.** The sections below were corrected to match what was built, each correction
 marked; §2 still describes `develop` as it was before this work, and what §3 to §12
 assign to those PRs is still a design.
 
