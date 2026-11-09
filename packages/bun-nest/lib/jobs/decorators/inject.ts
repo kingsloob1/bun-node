@@ -1,7 +1,9 @@
 import type { QueueTokenClass } from "../queueToken";
+import { ConfigError } from "@kingsleyweb/bun-common";
 import { Inject } from "@nestjs/common";
 import { requireQueueToken } from "../queueToken";
-import { getBunJobsToken, getQueueToken } from "../tokens";
+import { getBunJobsToken, getQueueToken, getWorkerToken } from "../tokens";
+import { processorOf } from "./consumer";
 
 /**
  * Injects a queue that `BunJobsModule.registerQueue()` registered, by name or
@@ -41,4 +43,35 @@ export function InjectBunJobs(
   context?: string,
 ): PropertyDecorator & ParameterDecorator {
   return Inject(getBunJobsToken(context));
+}
+
+/**
+ * Injects a `WorkerRef`: a handle on the worker serving a `@Processor` class's
+ * queue, or a queue by name. The worker is built at bootstrap, after injection,
+ * so its `worker` getter throws a `ConfigError` before then.
+ *
+ * `BunJobsModule.registerQueue()` provides the handle, as it does the queue, so
+ * import it where this is injected. A class must already be defined here: for a
+ * class declared later, or across an import cycle, give the queue's name.
+ *
+ * @param target A `@Processor` class, or the queue's name.
+ * @param context With a name, the context's `name`; the default context when
+ * left out.
+ * @throws ConfigError on a class with no `@Processor`.
+ */
+export function InjectWorker(
+  target: string | (abstract new (...args: never[]) => unknown),
+  context?: string,
+): PropertyDecorator & ParameterDecorator {
+  if (typeof target === "string") {
+    return Inject(getWorkerToken(target, context));
+  }
+  const metadata =
+    typeof target === "function" ? processorOf(target) : undefined;
+  if (metadata === undefined) {
+    throw new ConfigError(
+      `@InjectWorker(): ${(target as { name?: string } | undefined)?.name ?? String(target)} has no @Processor. A class declared later in the file, or across an import cycle, reads as undefined here: give the queue's name instead`,
+    );
+  }
+  return Inject(getWorkerToken(metadata.queue, metadata.context));
 }

@@ -11,11 +11,16 @@ import type {
   Provider,
   Type,
 } from "@nestjs/common";
+import type { BunJobsWorkerOptions } from "./decorators/consumer";
+import type { BunJobsShutdownOptions } from "./explorer";
 import type { QueueTokenClass } from "./queueToken";
 import type { BunJobsQueueOptions } from "./registry";
 import { BunJobs } from "@kingsleyweb/bun-jobs";
 import { ConfigError, noopLogger } from "@kingsleyweb/bun-common";
 import { Logger, Module } from "@nestjs/common";
+import { DiscoveryModule, DiscoveryService, ModuleRef } from "@nestjs/core";
+import { BunJobsExplorer, RegisteredWorker } from "./explorer";
+import { BunJobsLifecycle } from "./lifecycle";
 import { requireQueueToken } from "./queueToken";
 import {
   assertNoProblems,
@@ -27,6 +32,7 @@ import {
   getBunJobsOptionsToken,
   getBunJobsToken,
   getQueueToken,
+  getWorkerToken,
 } from "./tokens";
 
 /** What every form of the module takes beside the context's own options. */
@@ -54,8 +60,28 @@ export interface BunJobsModuleContextOptions {
   token?: abstract new (...args: never[]) => BunJobs<any, any>;
 }
 
+/** How the module runs the workers it builds. */
+export interface BunJobsRunOptions {
+  /**
+   * Whether workers start at bootstrap. Defaults to `true`. With `false`,
+   * discovery still runs and the handlers are built, but nothing claims a job
+   * until `BunJobsLifecycle.start()`: for tests, and for summoned processes.
+   */
+  autoStart?: boolean;
+  /**
+   * How workers drain on `app.close()`: `{ timeout, force }`, passed to each
+   * `worker.close()`. `timeout` defaults to `30_000` ms. A job still running at
+   * the timeout has its signal aborted and its lock left to lapse for the
+   * stalled sweep.
+   */
+  shutdown?: BunJobsShutdownOptions;
+  /** What `jobs.start()` is given for `@DefineJob`: the registry worker's options. */
+  registryWorker?: Parameters<BunJobs["start"]>[0];
+}
+
 /** The context's options when the module builds it. */
-export interface BunJobsBuildOptions extends Omit<BunJobsOptions, "logger"> {
+export interface BunJobsBuildOptions
+  extends Omit<BunJobsOptions, "logger">, BunJobsRunOptions {
   /** Not given: the module builds the context, and closes it. */
   jobs?: undefined;
   /**
@@ -66,8 +92,11 @@ export interface BunJobsBuildOptions extends Omit<BunJobsOptions, "logger"> {
   logger?: LoggerLike | false;
 }
 
-/** The context's options when the module borrows one. */
-export interface BunJobsBorrowOptions {
+/**
+ * The context's options when the module borrows one. The workers the module
+ * builds on it are the module's, and it closes them; the context stays open.
+ */
+export interface BunJobsBorrowOptions extends BunJobsRunOptions {
   /**
    * An existing context to use instead of building one. The application owns
    * it, so the module never closes it.
@@ -152,6 +181,25 @@ export interface RegisterQueueAsyncOptions extends Pick<
     | Promise<Pick<RegisterQueueOptions, "options">>;
 }
 
+/** One processor file to run as a worker the module owns. */
+export interface RegisterWorkerOptions {
+  /** The queue's name, or its `@QueueToken()` class. */
+  queue: string | QueueTokenClass;
+  /**
+   * The context's `name`; the default context when left out. A token class
+   * names its own, and this must not disagree with it.
+   */
+  context?: string;
+  /** The file: its path or URL, as `jobs.worker()` takes it. */
+  processor: string | URL;
+  /**
+   * The worker's options, `target` above all: `"worker-thread"`,
+   * `"child-process"`, `{ kind: "container", … }`. A file has no Nest pipeline
+   * and no DI of its own.
+   */
+  options?: BunJobsWorkerOptions;
+}
+
 /** A context this module provides. */
 interface ContextEntry {
   /** The context. */
@@ -171,12 +219,22 @@ const CONTEXT_ENTRY = Symbol("BUN_JOBS_CONTEXT_ENTRY");
  */
 const MODULE_CALL = Symbol("BUN_JOBS_MODULE_CALL");
 
+/** The provider of one `registerWorker()`. The explorer finds it by its class. */
+const REGISTERED_WORKER = Symbol("BUN_JOBS_REGISTERED_WORKER");
+
 /** Builds or takes the context the options describe. */
 function buildEntry(options: BunJobsContextOptions): ContextEntry {
   if (options.jobs !== undefined) {
     return { jobs: options.jobs, owned: false };
   }
-  const { jobs: _jobs, logger, ...context } = options;
+  const {
+    jobs: _jobs,
+    logger,
+    autoStart: _autoStart,
+    shutdown: _shutdown,
+    registryWorker: _registryWorker,
+    ...context
+  } = options;
   return {
     jobs: new BunJobs({
       ...context,
@@ -239,7 +297,7 @@ function moduleOf(
   return {
     module: BunJobsModule,
     global: isGlobal,
-    imports: [BunJobsRegistryModule, ...(imports ?? [])],
+    imports: [DiscoveryModule, BunJobsRegistryModule, ...(imports ?? [])],
     providers: [
       { provide: MODULE_CALL, useValue: crypto.randomUUID() },
       ...optionProviders,
@@ -269,8 +327,41 @@ function moduleOf(
           new BunJobsContextOwner(entry, registry),
         inject: [CONTEXT_ENTRY, BunJobsRegistry],
       },
+      {
+        provide: BunJobsExplorer,
+        useFactory: (
+          entry: ContextEntry,
+          contextOptions: BunJobsContextOptions,
+          registry: BunJobsRegistry,
+          discovery: DiscoveryService,
+          moduleRef: ModuleRef,
+        ) => {
+          const explorer = new BunJobsExplorer(
+            name,
+            entry.jobs,
+            contextOptions,
+            registry,
+            discovery,
+            moduleRef,
+          );
+          registry.addWorkers(explorer);
+          return explorer;
+        },
+        inject: [
+          CONTEXT_ENTRY,
+          optionsToken,
+          BunJobsRegistry,
+          DiscoveryService,
+          ModuleRef,
+        ],
+      },
+      {
+        provide: BunJobsLifecycle,
+        useFactory: (registry: BunJobsRegistry) => registry.lifecycle,
+        inject: [BunJobsRegistry],
+      },
     ],
-    exports: [contextToken, optionsToken, ...aliases],
+    exports: [contextToken, optionsToken, BunJobsLifecycle, ...aliases],
   };
 }
 
@@ -321,6 +412,19 @@ function missingContext(
 /** Where a queue provider finds its context, or `undefined` for a clear error. */
 function contextDependency(context: string | undefined) {
   return { token: getBunJobsToken(context), optional: true };
+}
+
+/** The handle `@InjectWorker()` injects for a queue. */
+function workerRefProvider(
+  queue: string,
+  context: string | undefined,
+): Provider {
+  return {
+    provide: getWorkerToken(queue, context),
+    useFactory: (registry: BunJobsRegistry) =>
+      registry.workerRef(context, queue),
+    inject: [BunJobsRegistry],
+  };
 }
 
 /** The first token an entry provides, and aliases of it for the others. */
@@ -466,8 +570,9 @@ export class BunJobsModule {
           ),
           inject: [contextDependency(context), BunJobsRegistry],
         }),
+        workerRefProvider(queue, context),
       );
-      exported.push(...tokens);
+      exported.push(...tokens, getWorkerToken(queue, context));
     }
     return {
       module: BunJobsModule,
@@ -520,10 +625,46 @@ export class BunJobsModule {
             ...(entry.inject ?? []),
           ],
         }),
+        workerRefProvider(queue, context),
       );
-      exported.push(...tokens);
+      exported.push(...tokens, getWorkerToken(queue, context));
     }
     return { module: BunJobsModule, imports, providers, exports: exported };
+  }
+
+  /**
+   * Runs a processor **file** as a worker the module owns: it starts and drains
+   * with the others, in any bun-jobs `target`. This is the off-thread path: a
+   * `@Process` method can only run in-process, because a function cannot be sent
+   * to another thread or process. A queue takes a file or `@Processor` classes,
+   * never both, since either would claim the other's jobs.
+   *
+   * @param worker The queue, the file and its options.
+   */
+  static registerWorker(worker: RegisterWorkerOptions): DynamicModule {
+    const { queue, context } = targetOf(
+      { name: worker.queue, context: worker.context },
+      "BunJobsModule.registerWorker()",
+    );
+    return {
+      module: BunJobsModule,
+      imports: [BunJobsRegistryModule],
+      providers: [
+        { provide: MODULE_CALL, useValue: crypto.randomUUID() },
+        {
+          provide: REGISTERED_WORKER,
+          useFactory: () =>
+            new RegisteredWorker(
+              queue,
+              context,
+              worker.processor,
+              worker.options,
+            ),
+        },
+        workerRefProvider(queue, context),
+      ],
+      exports: [getWorkerToken(queue, context)],
+    };
   }
 }
 

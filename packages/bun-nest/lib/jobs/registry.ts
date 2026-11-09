@@ -1,9 +1,11 @@
-import type { BunJobs, BunQueue } from "@kingsleyweb/bun-jobs";
+import type { BunJobs, BunQueue, BunQueueWorker } from "@kingsleyweb/bun-jobs";
 import type { ModulesContainer as Modules } from "@nestjs/core";
+import type { StartableWorkers } from "./lifecycle";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import { Inject, Injectable, Module } from "@nestjs/common";
 import { ModulesContainer } from "@nestjs/core";
 import { decoratorConfigProblem } from "./bootCheck";
+import { BunJobsLifecycle, WorkerRef } from "./lifecycle";
 
 /**
  * The options a queue is created with: `jobs.queue()`'s, which are the queue's
@@ -123,6 +125,12 @@ function contextLabel(context: string | undefined): string {
  * One per application, through {@link BunJobsRegistryModule}.
  */
 export class BunJobsRegistry {
+  /** The workers built so far, by context and queue. */
+  readonly #workers = new Map<string, BunQueueWorker<any, any, any>>();
+  /** Each context's workers, for {@link lifecycle}. */
+  readonly #startable = new Set<StartableWorkers>();
+  /** Starts and stops every context's workers by hand. */
+  readonly lifecycle = new BunJobsLifecycle(() => this.#startable);
   /** Every queue known, by context and name. */
   readonly #queues = new Map<string, QueueState>();
   /** How many times each context was declared. */
@@ -143,6 +151,46 @@ export class BunJobsRegistry {
     context: string | undefined,
   ): void {
     this.#contexts.set(context, (this.#contexts.get(context) ?? 0) + 1);
+  }
+
+  /** Whether a `forRoot()` or `forRootAsync()` provides this context. */
+  hasContext(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+  ): boolean {
+    return this.#contexts.has(context);
+  }
+
+  /** Records a context's workers, for {@link lifecycle}. */
+  addWorkers(
+    /** Starts and stops them. */
+    workers: StartableWorkers,
+  ): void {
+    this.#startable.add(workers);
+  }
+
+  /** Records the worker serving a queue. */
+  bindWorker(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+    /** The queue. */
+    queue: string,
+    /** The worker. */
+    worker: BunQueueWorker<any, any, any>,
+  ): void {
+    this.#workers.set(`${context ?? ""}\0${queue}`, worker);
+  }
+
+  /** The handle on the worker serving a queue, which it finds when asked. */
+  workerRef(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+    /** The queue. */
+    queue: string,
+  ): WorkerRef {
+    return new WorkerRef(queue, () =>
+      this.#workers.get(`${context ?? ""}\0${queue}`),
+    );
   }
 
   /**
