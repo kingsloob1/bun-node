@@ -244,12 +244,13 @@ What changes for an application on this adapter when it moves to Nest 12:
   [`listen()` and `close()`](#listen-and-close)) and, from 12.1,
   `app.useSecurityHeaders()` and `app.enableCsrfProtection()` (see
   [Security headers and CSRF protection](#security-headers-and-csrf-protection)).
-- **From Nest 12.2.0**, `exclude()` follows the router's trailing-slash and
-  case settings ([Nest middleware](#nest-middleware)), a route's `dest` replaces the
-  module's storage ([Module-level options](#module-level-options-multermodule)),
-  files are removed when a pipe rejects the request
-  ([Interceptors](#interceptors)), and a WebSocket exception whose `cause`
-  cannot be serialised is sent again without it ([Exceptions](#exceptions)).
+- **From Nest 12.2.0**, a route's `dest` replaces the module's storage
+  ([Module-level options](#module-level-options-multermodule)), and, **as from
+  11.2.8 on Nest 11**, `exclude()` follows the router's trailing-slash and case
+  settings ([Nest middleware](#nest-middleware)), files are removed when a pipe
+  rejects the request ([Interceptors](#interceptors)), and a WebSocket
+  exception whose `cause` cannot be serialised is sent again without it
+  ([Exceptions](#exceptions)).
 
 Two features arrived in **11.2.0**, not 12, and work on 11.2 and 12 alike:
 
@@ -279,16 +280,13 @@ type check.
 | 12.2.0 (the repo's lock) | 5.3.0 | every gate |
 | 12.4.1 (12-latest) | 5.3.0 | every PR touching bun-nest or bun-common |
 | 11.2.7 | 5.2.1 | every PR touching bun-nest or bun-common |
-| 11.2.9 (11-latest) | 5.2.1 | an extra column, not clean yet (below) |
+| 11.2.9 (11-latest) | 5.2.1 | every PR touching bun-nest or bun-common |
 | 11.1.20 (the floor) | 5.2.1 | once per merge window |
 | 12.0.0 (12's floor) | 5.2.1 | once per merge window |
 | 12.1.3 (the lock before 12.2.0), 12.3.0, 12.3.3, 12.4.0 | 5.2.1 (12.1.3), 5.3.0 | an extra column |
 
-11.2.8 backported behaviours of 12.2 and 12.3 to Nest 11, and the adapter has
-not caught up with all of them: on 11.2.8 and 11.2.9, files an upload stored
-stay on disk when a pipe rejects the request, where platform-express removes
-them. The tables below describe 11.2.7 for the 11.2 column, unless a cell says
-otherwise.
+11.2.8 backported behaviours of 12.2 and 12.3 to Nest 11: the cells of the 11.2
+column below say which.
 
 The floor is 11.1.20: older 11 releases lack `@Ack()` (11.1.7) and the CORS
 delegate types (11.1.14), and before 11.1.20 an `@Sse()` observable that
@@ -306,12 +304,13 @@ What differs by release, and what the adapter reads to tell:
 | `MEDIA_TYPE` version | 1st parameter | 1st parameter | any parameter | any, unquoted | (1), `isRejectedByPipes` (2) |
 | `MulterModule` `limits` | replaced | replaced | merged | merged | `mapException` (1) |
 | A route's `dest` | module wins | module wins | module wins | route wins | `isRejectedByPipes` (2) |
-| Files removed on a pipe's rejection | no | no | no | yes | `isRejectedByPipes` (2) |
-| `exclude()` matching | Nest's | Nest's | Nest's | the router's | — |
+| Files removed on a pipe's rejection | no | yes from 11.2.8 | no | yes | `isRejectedByPipes` (5) |
+| `exclude()` matching | Nest's | Nest's, the router's from 11.2.8 | Nest's | the router's | — |
 | A middleware two of one entry's paths match runs | twice | twice, once from 11.2.8 | twice | once | the core's `registerHandler` (3) |
 | A middleware on a route of two versions, on one path, runs | per version | per version | per version | per version, once from 12.3.0 | — |
 | A returned `Error`, status 400 or more | its properties | its properties | its properties | its properties, the status alone from 12.3.0 | (1), `getHttpErrorMessage` (4) |
 | `http-errors` client errors (an over-limit body) reach `@Catch(HttpException)` | no | no | no | from 12.3.0 | (1), `getHttpErrorMessage` (4) |
+| A WS exception whose `cause` cannot be serialised | dropped | sent without it from 11.2.8 | an `ERROR` packet | sent without it | `emitErrorPayload` on Nest's filter |
 | A `StreamableFile` failing mid-body | ends the body | ends it, resets from 11.2.8 | ends the body | ends it, resets from 12.3.0 | what the file's own `errorHandler` did |
 | A returned web `Response`, `ReadableStream`, generator or `Readable` | streamed by the adapter | streamed by the adapter | streamed by the adapter | by the adapter, by the core from 12.4.0 | — |
 | WS exception frame | ours | ours | ours | ours | `emitMessage` on Nest's filter |
@@ -334,6 +333,9 @@ What differs by release, and what the adapter reads to tell:
    in 12.3.0 and 11.2.8. These two behaviours live in platform-express, which
    this adapter replaces, so the read is of what the core shipped beside them;
    11.2.8 backported the method without either behaviour, so (1) must hold too.
+5. `isRejectedByPipes` in `@nestjs/core/internal`, or on 11, which has no such
+   file, in the module that holds it (`@nestjs/core/router/rejected-by-pipes.js`),
+   added in 12.2.0 and 11.2.8.
 
 A dash means the adapter reads nothing: the core calls what it needs
 (`getRouteMatchingOptions()` for `exclude()`), and an older core never calls
@@ -514,14 +516,14 @@ order ahead of the route handler. Its path is prefix-matched, like Express's
 `use(path)`. Middleware receives a `BunRequest` and a `BunResponse`. A global
 prefix (`app.setGlobalPrefix`) applies as usual.
 
-From Nest 12.2.0, the core asks the adapter how its router matches paths
+From Nest 11.2.8 and 12.2.0, the core asks the adapter how its router matches paths
 (`getRouteMatchingOptions()`) and matches `exclude()` routes the same way.
-The adapter answers as `@nestjs/platform-express` 12.2.0 does:
+The adapter answers as `@nestjs/platform-express` does there:
 case-insensitive unless the `router` option sets `caseSensitive: true`, and
 a trailing slash ignored. Earlier cores use path-to-regexp's defaults
 (case-insensitive, an optional trailing slash) on both adapters alike, so
 `exclude("users/login")` skips the middleware on `/users/LOGIN` and
-`/users/login/` on every release. What 12.2.0 changes, on both adapters:
+`/users/login/` on every release. What those releases change, on both adapters:
 
 - `exclude("invoices/{*path}")` runs the middleware on `/invoices/`, which
   the `invoices` route serves; earlier cores skip it.
@@ -1257,21 +1259,23 @@ answers the same status, headers and body.
 - A handler that writes and then throws in the same tick: the stream ends
   before its first flush, so it carries a `Content-Length` rather than being
   chunked.
-- On Nest 11, a `StreamableFile`'s source is destroyed when the client leaves,
-  and the request and response hooks follow platform-express 12.1.3's rules
-  (a rejection before `done()` is `done(error)`, `done` counts once, a
-  response hook's error is logged), where platform-express 11 leaves the
-  source open and those rejections and errors unhandled.
+- On Nest 11 before 11.2.8, a `StreamableFile`'s source is destroyed when the
+  client leaves, where platform-express leaves it open. On every Nest 11, the
+  request and response hooks follow platform-express 12.1.3's rules (a
+  rejection before `done()` is `done(error)`, `done` counts once, a response
+  hook's error is logged), where platform-express 11 leaves those rejections
+  and errors unhandled.
 - bun-common copies **Express 5.3.0**'s `res.redirect` body and
   `Content-Disposition`: an HTML redirect is a small `<!DOCTYPE html>`
   document, and a download's filename is bare when it is a token
   (`filename=report.csv`). On Express 5.2.1, which Nest 11 and Nest 12.0–12.1.3
   install, Express answers `<p>Found. Redirecting to …</p>` and always quotes
   the filename; Nest 12.2.0's Express 5.3.0 answers as bun-common does.
-- On Nest 11, and on 12 before 12.1.3, `forRoutes("*")` with a global
-  prefix also runs on the bare prefix (`GET /api`), where Express does not.
-  Nest marks that route exact (`/api$`), which this adapter honours on every
-  version and platform-express only from 12.1.3 (nestjs/nest #17942). On
+- On Nest 11 before 11.2.8, and on 12 before 12.1.3, `forRoutes("*")` with a
+  global prefix also runs on the bare prefix (`GET /api`), where Express does
+  not. Nest marks that route exact (`/api$`), which this adapter honours on
+  every version and platform-express only from 11.2.8 and 12.1.3 (nestjs/nest
+  #17942). On
   `GET /api/` both run it once, on every version.
 - `router: { routeSpecificity: true }` is bun-common's ranking, not Nest
   12's `routeResolutionStrategy: "specificity"`: it also ranks a route's own
@@ -1359,10 +1363,10 @@ export class AvatarsController {
   response; if it fails (a custom storage's `removeFile` rejects), the error
   is logged through a Nest `Logger` named `BunFileInterceptor` rather than
   left as an unhandled rejection, which would end a Bun process.
-- On Nest 12.2.0 and later, when a pipe rejects the request (a
+- On Nest 11.2.8 and later, and 12.2.0 and later, when a pipe rejects the request (a
   `ParseFilePipe`, any pipe on the route), the stored files are removed with
   `force` once the response has been sent, disk files included, as
-  platform-express 12.2.0 does. A handler that throws leaves them where they
+  platform-express does there. A handler that throws leaves them where they
   are, as on Express. Earlier Nest versions keep them in both cases, as
   platform-express does there.
 
@@ -1719,7 +1723,7 @@ A reply that cannot be serialised (a cycle, a `BigInt`, a payload nested too
 deep for `JSON.stringify`) is logged through Nest's `Logger` and not sent, as
 on `@nestjs/platform-ws`; the connection stays open. An exception whose
 `cause` cannot be serialised (it echoes the client's message) is sent again
-without it on Nest 12.2 and later, as on platform-ws.
+without it on Nest 11.2.8 and later and 12.2 and later, as on platform-ws.
 
 ### Validated gateways: `@ValidateMessage`, `@Emits`, `TypedSocket`
 
@@ -2919,7 +2923,7 @@ controller, which makes that processor per job, with the cost of one.
 `@UseGuards` and its kind by scanning `providers: [Class]`. On a provider made by
 `useFactory` or `useValue` it scans nothing, and left alone the job would run
 **without the guard**, on Nest 11 and 12 (a `useClass` provider likewise before
-12.2). So
+11.2.8 and 12.2). So
 that is a `ConfigError` at boot. Register the class plainly, or give the decorator an
 instance, which works everywhere.
 

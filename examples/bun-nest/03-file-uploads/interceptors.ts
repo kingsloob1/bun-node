@@ -36,12 +36,12 @@
  * - multer-style options work as they are: `{ dest }` with no `storageType`
  *   is disk storage at `dest`, and `{ limits }` alone is memory storage.
  *   `MulterModule` (module-level options) is in `module-options.ts`.
- * - From Nest 12.2.0, when a pipe such as `ParseFilePipe` rejects the
- *   request, the stored files are removed once the response is sent, disk
- *   files included, as platform-express 12.2.0 does. A handler that throws
+ * - From Nest 11.2.8 and 12.2.0, when a pipe such as `ParseFilePipe` rejects
+ *   the request, the stored files are removed once the response is sent, disk
+ *   files included, as platform-express does there. A handler that throws
  *   leaves them, on every Nest. This example reads the capability the
- *   adapter gates it on, `isRejectedByPipes` in `@nestjs/core/internal`,
- *   never a version string; before 12.2.0 it checks that the files stay, and
+ *   adapter gates it on, the core's `isRejectedByPipes`, never a version
+ *   string; before those releases it checks that the files stay, and
  *   prints a line starting `skipped:` naming the installed version.
  */
 import type {
@@ -83,7 +83,7 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
-import { coreHasIsRejectedByPipes, nestCoreVersion } from "../shared/nest";
+import { coreMarksRejectedByPipes, nestCoreVersion } from "../shared/nest";
 import "reflect-metadata";
 
 /** Where disk uploads are written for this run. */
@@ -99,9 +99,9 @@ const NEST_VERSION = await nestCoreVersion();
 
 /**
  * Whether the installed core removes files on a pipe's rejection: it has
- * `isRejectedByPipes` (12.2.0), the capability the adapter reads.
+ * `isRejectedByPipes` (11.2.8, 12.2.0), the capability the adapter reads.
  */
-const REMOVES_ON_PIPE_REJECTION = await coreHasIsRejectedByPipes();
+const REMOVES_ON_PIPE_REJECTION = await coreMarksRejectedByPipes();
 
 /** A real 1×1 PNG, so magic-byte detection has something to find. */
 const PNG = Buffer.from(
@@ -602,7 +602,7 @@ await upload(
 
 /* ------------------------------------------------------------------ */
 step(
-  "Disk files a pipe refuses are removed (Nest 12.2.0); a handler's refusal keeps them",
+  "Disk files a pipe refuses are removed (Nest 11.2.8, 12.2.0); a handler's refusal keeps them",
 );
 
 /** How many files `dir` holds now; `0` when it was never created. */
@@ -631,7 +631,7 @@ if (REMOVES_ON_PIPE_REJECTION) {
     { timeout: 5000 },
   );
   checkEqual(
-    "12.2.0: the note the pipe refused is gone from disk; the one the handler refused is still there",
+    "the note the pipe refused is gone from disk; the one the handler refused is still there",
     [await filesIn(pipeRejectedDir), await filesIn(handlerThrewDir)],
     [0, 1],
   );
@@ -640,18 +640,18 @@ if (REMOVES_ON_PIPE_REJECTION) {
   // that nothing does.
   await Bun.sleep(200);
   checkEqual(
-    "before 12.2.0: both notes stay on disk, as platform-express keeps them there",
+    "before Nest 11.2.8 and 12.2.0: both notes stay on disk, as platform-express keeps them there",
     [await filesIn(pipeRejectedDir), await filesIn(handlerThrewDir)],
     [1, 1],
   );
   show(
-    `skipped: files are removed on a pipe's rejection from Nest 12.2.0 (isRejectedByPipes); 1 check skipped on Nest ${NEST_VERSION}`,
+    `skipped: files are removed on a pipe's rejection from Nest 11.2.8 and 12.2.0 (isRejectedByPipes); 1 check skipped on Nest ${NEST_VERSION}`,
   );
 }
 checkEqual(
-  "isRejectedByPipes, the capability read, arrives with Nest 12.2.0",
+  "isRejectedByPipes, the capability read, arrives with Nest 11.2.8 and 12.2.0",
   REMOVES_ON_PIPE_REJECTION,
-  Bun.semver.satisfies(NEST_VERSION, ">=12.2.0"),
+  Bun.semver.satisfies(NEST_VERSION, ">=12.2.0 || >=11.2.8 <12.0.0"),
 );
 
 /* ------------------------------------------------------------------ */

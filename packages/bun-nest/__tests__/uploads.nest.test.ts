@@ -5,10 +5,10 @@
  * - module-level options (`MulterModule.register`/`registerAsync`, bun-nest's
  *   or platform-express's own, one token) merged under each interceptor's,
  *   `limits` key by key on Nest 12 (#17818);
- * - Nest 12.2.0's two upload changes, each gated on the capability the
- *   interceptors read (`isRejectedByPipes`): files removed when a pipe
- *   rejects the request (`acb98de89`), and a route's `dest` replacing the
- *   module's storage (`e075cda3c`).
+ * - two upload changes, each gated on the capability the interceptors read:
+ *   files removed when a pipe rejects the request (`acb98de89`, Nest 11.2.8
+ *   and 12.2.0), and a route's `dest` replacing the module's storage
+ *   (`e075cda3c`, Nest 12.2.0).
  *
  * Requests go through `adapter.fetch()`, the production path without a
  * socket. The differential against Express is `expressCompat`'s `uploads`
@@ -45,6 +45,7 @@ import {
   FileInterceptor,
   FilesInterceptor,
   nestIsRejectedByPipes,
+  nestRouteDestReplacesStorage,
 } from "../lib/interceptors";
 import { MulterModule } from "../lib/MulterModule";
 import "reflect-metadata";
@@ -54,8 +55,11 @@ const NEST_12 =
   typeof (AbstractHttpAdapter.prototype as { mapException?: unknown })
     .mapException === "function";
 
-/** Nest 12.2.0 or later, by the capability the interceptors read. */
-const NEST_12_2 = nestIsRejectedByPipes() !== undefined;
+/** Nest 12.2.0 or later, by the capability a route's `dest` is gated on. */
+const NEST_12_2 = nestRouteDestReplacesStorage();
+
+/** Whether a pipe's rejection removes the stored files (11.2.8, 12.2.0). */
+const REMOVES_ON_REJECTION = nestIsRejectedByPipes() !== undefined;
 
 /** Every temporary directory a test made, removed after the file. */
 const tempDirs: string[] = [];
@@ -404,13 +408,14 @@ describe("Nest 12.2.0's upload changes, gated on the installed Nest", () => {
     return M;
   }
 
-  it(`${NEST_12_2 ? "removes" : "keeps (before 12.2.0)"} the stored files when a pipe rejects the request`, async () => {
+  it(`${REMOVES_ON_REJECTION ? "removes" : "keeps (before 11.2.8 and 12.2.0)"} the stored files when a pipe rejects the request`, async () => {
     const dest = tempDir();
     await boot(diskModule(dest));
 
     const answer = await post("/d/pipe", form(["file", "hello", "h.txt"]));
     expect(answer.status).toBe(400);
-    expect(await settledCount(dest, NEST_12_2 ? 0 : 1)).toBe(NEST_12_2 ? 0 : 1);
+    const left = REMOVES_ON_REJECTION ? 0 : 1;
+    expect(await settledCount(dest, left)).toBe(left);
 
     // Every file of a multi-file upload, by any pipe.
     const dest2 = tempDir();
@@ -424,9 +429,8 @@ describe("Nest 12.2.0's upload changes, gated on the installed Nest", () => {
       status: 400,
       body: expect.objectContaining({ message: "rejected by the pipe" }),
     });
-    expect(await settledCount(dest2, NEST_12_2 ? 0 : 2)).toBe(
-      NEST_12_2 ? 0 : 2,
-    );
+    const leftOfTwo = REMOVES_ON_REJECTION ? 0 : 2;
+    expect(await settledCount(dest2, leftOfTwo)).toBe(leftOfTwo);
   });
 
   it("keeps the stored files when the handler fails, or succeeds, on every Nest", async () => {

@@ -57,6 +57,7 @@ import {
   APP_GUARD,
   APP_INTERCEPTOR,
   APP_PIPE,
+  ModulesContainer,
   NestFactory,
   Reflector,
 } from "@nestjs/core";
@@ -129,10 +130,29 @@ const NEST_VERSION = (
 ).version;
 
 /**
- * Whether Nest scans the class behind `{ provide, useClass }` for enhancers:
- * from 12.2.0 (its scanner; 12.1.3 does not).
+ * Whether Nest scans the class behind `{ provide, useClass }` for enhancers
+ * (11.2.8 and 12.2.0; 11.2.7 and 12.1.3 do not): what Nest registered for one,
+ * as the library's boot check reads it, never a version.
  */
-const SCANS_USE_CLASS = Bun.semver.satisfies(NEST_VERSION, ">=12.2.0");
+async function nestScansUseClass(): Promise<boolean> {
+  class ProbeGuard {
+    canActivate() {
+      return true;
+    }
+  }
+  @UseGuards(ProbeGuard)
+  class ProbeHost {}
+  @Module({ providers: [{ provide: ProbeHost, useClass: ProbeHost }] })
+  class ProbeModule {}
+  const context = await NestFactory.createApplicationContext(ProbeModule, {
+    logger: false,
+  });
+  const scanned = [...context.get(ModulesContainer).values()].some((module) =>
+    module.injectables.has(ProbeGuard),
+  );
+  await context.close();
+  return scanned;
+}
 
 /** Nest's major. */
 const NEST_MAJOR = Number(NEST_VERSION.split(".")[0]);
@@ -1518,7 +1538,7 @@ describe("enhancers Nest would silently skip", () => {
     expect(asked).toEqual(["instance guard"]);
   });
 
-  it(`a useClass provider ${SCANS_USE_CLASS ? "runs a class guard from Nest 12.2" : "is refused before Nest 12.2, which drops it"}`, async () => {
+  it("a useClass provider runs a class guard where Nest scans it, and is refused where Nest drops it", async () => {
     @Processor("q")
     @UseGuards(Asked)
     class Used {
@@ -1534,7 +1554,7 @@ describe("enhancers Nest would silently skip", () => {
     })
     class AppModule {}
 
-    if (SCANS_USE_CLASS) {
+    if (await nestScansUseClass()) {
       const { queue, settled } = await bootHttp(AppModule);
       await settled((await queue.add("x", {})).id);
       expect(asked).toEqual(["class guard"]);

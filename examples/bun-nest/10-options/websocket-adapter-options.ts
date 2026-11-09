@@ -37,11 +37,11 @@
  *   queued dropped when it is disconnected, and a frame handed over after
  *   `close()` not handled.
  * - **Exceptions** — a throwing exception filter still answers with an
- *   `ERROR` packet (Nest's own adapters send nothing); on Nest 12.2.0, an
- *   exception whose `cause` cannot be serialised is sent again without it.
+ *   `ERROR` packet (Nest's own adapters send nothing); from Nest 11.2.8 and
+ *   12.2.0, an exception whose `cause` cannot be serialised is sent again without it.
  *   That check is gated on a capability, `emitErrorPayload` on
  *   `BaseWsExceptionFilter.prototype`, and checked against the installed
- *   `@nestjs/websockets` version read from disk; below 12.2.0 it prints a
+ *   `@nestjs/websockets` version read from disk; below those it prints a
  *   `skipped:` line (the 11.2.7 column of `scripts/nest-matrix.ts`).
  */
 import type {
@@ -2082,7 +2082,7 @@ const WEBSOCKETS_VERSION = await nestWebsocketsVersion();
 
 /**
  * The gate: whether Nest's exception filter sends an exception again without
- * its `cause` when the first send throws (`emitErrorPayload`, 12.2.0). A
+ * its `cause` when the first send throws (`emitErrorPayload`, 11.2.8, 12.2.0). A
  * capability, read off the prototype; the version only names it.
  */
 const RETRIES_WITHOUT_CAUSE =
@@ -2090,13 +2090,13 @@ const RETRIES_WITHOUT_CAUSE =
     .emitErrorPayload === "function";
 
 checkEqual(
-  "the capability arrives with @nestjs/websockets 12.2.0",
+  "the capability arrives with @nestjs/websockets 11.2.8 and 12.2.0",
   RETRIES_WITHOUT_CAUSE,
-  Bun.semver.satisfies(WEBSOCKETS_VERSION, ">=12.2.0"),
+  Bun.semver.satisfies(WEBSOCKETS_VERSION, ">=12.2.0 || >=11.2.8 <12.0.0"),
 );
 if (RETRIES_WITHOUT_CAUSE) {
   checkEqual(
-    "Nest 12.2.0: an exception whose cause cannot be serialised is sent again without it",
+    "an exception whose cause cannot be serialised is sent again without it",
     await framesFrom(other, () => other.emit("unsendable-cause", null)),
     [
       {
@@ -2111,7 +2111,7 @@ if (RETRIES_WITHOUT_CAUSE) {
   );
 } else {
   show(
-    `skipped: @nestjs/websockets ${WEBSOCKETS_VERSION} has no emitErrorPayload (12.2.0); 1 check skipped`,
+    `skipped: @nestjs/websockets ${WEBSOCKETS_VERSION} has no emitErrorPayload (11.2.8, 12.2.0); 1 check skipped`,
   );
 }
 

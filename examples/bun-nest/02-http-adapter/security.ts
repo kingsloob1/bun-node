@@ -32,7 +32,7 @@
  *   middleware ran (the default, without `deferBody`), has nothing set yet.
  * - A `StreamableFile` whose source fails before its first byte goes to the
  *   file's `errorHandler`, as on Express: by default Nest's, a `400` (with
- *   the error's message before Nest 12.2.0; from 12.2.0 the text
+ *   the error's message before Nest 11.2.8 and 12.2.0; from them the text
  *   `Bad Request`, the message only logged), or whatever a
  *   `setErrorHandler()` answers. The response waits for the first chunk, so
  *   the status can still change.
@@ -478,7 +478,7 @@ step("A StreamableFile whose source fails before its first byte (every Nest)");
   const app = await boot(adapter, () => undefined);
 
   // What Nest's own default handler answers for an error: it changed in
-  // 12.2.0, which logs the message and sends "Bad Request", where earlier
+  // 11.2.8 and 12.2.0, which log the message and send "Bad Request", where earlier
   // releases send the message. The adapter calls that handler, so a check
   // compares against it rather than against either text.
   const defaultAnswer = (message: string) => {

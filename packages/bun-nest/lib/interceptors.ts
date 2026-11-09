@@ -286,34 +286,52 @@ const requireFromHere = createRequire(import.meta.url);
 let rejectedByPipes: ((request: unknown) => boolean) | null | undefined;
 
 /**
- * The installed Nest's `isRejectedByPipes(request)` (`@nestjs/core/internal`,
- * from 12.2.0, nestjs/nest `acb98de89`), or `undefined` on a Nest without it.
- *
- * It is the capability the 12.2.0 upload behaviours are gated on, as
- * `platform-express` 12.2.0 has them: files removed when a pipe rejects the
- * request, and a route's `dest` replacing the module's storage
- * (`e075cda3c`). The second has no capability of its own (it is in
- * platform-express alone), so the release's core capability stands for it.
- * Read once, synchronously: `@nestjs/core/internal` exists only on 12 (Nest
- * 11 has no such file, 12.0–12.1 no such export), so a failed lookup is the
- * answer, not an error.
+ * Loads `specifier` and answers its `isRejectedByPipes`, if it has one. A failed
+ * lookup is an answer, not an error: the module does not exist on that Nest.
+ */
+function isRejectedByPipesIn(
+  specifier: string,
+): ((request: unknown) => boolean) | undefined {
+  try {
+    const module_ = requireFromHere(specifier) as {
+      isRejectedByPipes?: unknown;
+    };
+    return typeof module_.isRejectedByPipes === "function"
+      ? (module_.isRejectedByPipes as (request: unknown) => boolean)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The installed Nest's `isRejectedByPipes(request)`, or `undefined` on a Nest
+ * whose router marks no request (11 before 11.2.8, 12 before 12.2.0). It is
+ * what the removal of an upload's files when a pipe rejects the request is
+ * gated on, as platform-express has it from 11.2.8 and 12.2.0 (nestjs/nest
+ * `acb98de89`). Read once, synchronously: from `@nestjs/core/internal` on 12,
+ * and on 11, which has no such file, from the module that holds it.
  */
 export function nestIsRejectedByPipes():
   ((request: unknown) => boolean) | undefined {
   if (rejectedByPipes === undefined) {
-    try {
-      const internal = requireFromHere("@nestjs/core/internal") as {
-        isRejectedByPipes?: unknown;
-      };
-      rejectedByPipes =
-        typeof internal.isRejectedByPipes === "function"
-          ? (internal.isRejectedByPipes as (request: unknown) => boolean)
-          : null;
-    } catch {
-      rejectedByPipes = null;
-    }
+    rejectedByPipes =
+      isRejectedByPipesIn("@nestjs/core/internal") ??
+      isRejectedByPipesIn("@nestjs/core/router/rejected-by-pipes.js") ??
+      null;
   }
   return rejectedByPipes ?? undefined;
+}
+
+/**
+ * Whether a route's `dest` replaces the module's storage, as platform-express
+ * has it from 12.2.0 (`e075cda3c`) and never on 11. That lives in
+ * platform-express alone, so the release's core capability stands for it:
+ * `isRejectedByPipes` in `@nestjs/core/internal`, which 12.0-12.1 lack and
+ * which 11.2.8 did not backport with the behaviour above.
+ */
+export function nestRouteDestReplacesStorage(): boolean {
+  return isRejectedByPipesIn("@nestjs/core/internal") !== undefined;
 }
 
 /**
@@ -361,7 +379,7 @@ export function mergeUploadOptions(
     local.dest &&
     !local.storage &&
     local.storageType === undefined &&
-    nestIsRejectedByPipes() !== undefined
+    nestRouteDestReplacesStorage()
   ) {
     delete merged.storage;
     merged.storageType = "disk";
@@ -429,8 +447,8 @@ function onResponseFinished(res: unknown, callback: () => void): void {
 
 /**
  * Removes the files an upload stored for `req` when the route's pipes reject
- * the request (`ParseFilePipe`, …), as platform-express 12.2.0's
- * `removeFilesOnPipeRejection` does (nestjs/nest `acb98de89`): the handler
+ * the request (`ParseFilePipe`, …), as platform-express's
+ * `removeFilesOnPipeRejection` does from 11.2.8 and 12.2.0 (nestjs/nest `acb98de89`): the handler
  * never sees them, and nothing else would remove them. They are removed with
  * `force` once the response has been sent, as an exception filter may still
  * use them; a failed removal is ignored (the request has failed already).
@@ -455,7 +473,7 @@ function removeFilesOnPipeRejection(
 /**
  * The handler's stream for an interceptor that stored files: they are
  * removed once the handler emits (each storage's own keep-or-remove rule),
- * and on Nest 12.2.0 and later also when a pipe rejects the request.
+ * and from Nest 11.2.8 and 12.2.0 also when a pipe rejects the request.
  */
 function handleUpload(
   context: ExecutionContext,

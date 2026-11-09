@@ -88,13 +88,15 @@ for (const group of GROUPS) {
 
 /**
  * Whether the reference destroys a `StreamableFile`'s source when the client
- * leaves: platform-express 12.1.3's `reply()` does (`finished(response, …)`,
- * nestjs/nest #17973); earlier ones leave it open, even mid-stream on 11.
- * Read from the reference's own `reply()`, never from a version.
+ * leaves: platform-express 11.2.8's and 12.1.3's `reply()` do
+ * (`finished(response, …)`, nestjs/nest #17973); earlier ones leave it open,
+ * even mid-stream on 11. Read from the reference's own `reply()`, never from a
+ * version, in either form: 11 is compiled to CommonJS,
+ * `(0, stream_1.finished)(response, …)`.
  */
-const REFERENCE_DESTROYS_SOURCE = ExpressAdapter.prototype.reply
-  .toString()
-  .includes("finished(");
+const REFERENCE_DESTROYS_SOURCE = /\bfinished\)?\(\s*response\b/.test(
+  ExpressAdapter.prototype.reply.toString(),
+);
 
 /** Waits up to `ms` for `tag`'s source to close; whether it did. */
 async function sourceClosed(tag: string, ms = 2000): Promise<boolean> {
