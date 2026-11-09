@@ -42,10 +42,13 @@ import { z } from "zod";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import {
   BunJobsModule,
+  DefineJob,
   getBunJobsToken,
   getQueueToken,
   InjectBunJobs,
   InjectQueue,
+  Process,
+  Processor,
   QueueToken,
 } from "../lib/jobs/index";
 import {
@@ -773,6 +776,98 @@ describe("registerQueue", () => {
       });
       await boot(AppModule);
     });
+  });
+});
+
+describe("what the types refuse, reached without them", () => {
+  const Email = z.object({ to: z.string() });
+
+  it("a bare string in registerQueue is a ConfigError naming the fix", () => {
+    const register = () => BunJobsModule.registerQueue("emails" as never);
+    expect(register).toThrow(ConfigError);
+    expect(register).toThrow('{ name: "emails" }');
+  });
+
+  it("a token class that reads as undefined is a ConfigError saying why", () => {
+    const missing = undefined as unknown as Parameters<typeof InjectQueue>[0];
+    expect(() => InjectQueue(missing)).toThrow(ConfigError);
+    expect(() => InjectQueue(missing)).toThrow("across an import cycle");
+    expect(() => BunJobsModule.registerQueue({} as { name: string })).toThrow(
+      ConfigError,
+    );
+    expect(() =>
+      BunJobsModule.registerWorker({
+        queue: missing as string,
+        processor: "./p.ts",
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  /** Options holding a schema as anything typed `any` could, past the types. */
+  const options = (schema: unknown) => ({ schema }) as never;
+
+  it("a bare schema on a queue fails the boot, sync or async, rather than validating nothing", async () => {
+    for (const registration of [
+      BunJobsModule.registerQueue({ name: "q", options: options(Email) }),
+      BunJobsModule.registerQueueAsync({
+        name: "q",
+        useFactory: () => ({ options: options(Email) }),
+      }),
+    ]) {
+      const AppModule = moduleNamed("AppModule", {
+        imports: [BunJobsModule.forRoot(contextOptions()), registration],
+      });
+      const message = await bootProblem(AppModule);
+      expect(message).toContain('queue "q": schema is { data, result }');
+      expect(message).toContain("schema: { data: YourSchema }");
+    }
+  });
+
+  it("the control: the same schema under `data` boots, and validates", async () => {
+    const AppModule = moduleNamed("AppModule", {
+      imports: [
+        BunJobsModule.forRoot(contextOptions()),
+        BunJobsModule.registerQueue({
+          name: "q",
+          options: options({ data: Email }),
+        }),
+      ],
+    });
+    const app = await boot(AppModule);
+    const queue = app.get<BunQueue>(getQueueToken("q"), { strict: false });
+    await expect(queue.add("x", { to: 42 })).rejects.toBeInstanceOf(
+      JobDataValidationError,
+    );
+  });
+
+  it("a bare schema on @Processor, @DefineJob and registerWorker fails the boot", async () => {
+    @Processor("q", options(Email))
+    class Bare {
+      @Process()
+      run() {}
+    }
+
+    @Injectable()
+    class BareDefined {
+      @DefineJob("x", options(Email))
+      x() {}
+    }
+
+    const AppModule = moduleNamed("AppModule", {
+      imports: [
+        BunJobsModule.forRoot(contextOptions()),
+        BunJobsModule.registerWorker({
+          queue: "files",
+          processor: "./p.ts",
+          options: options(Email),
+        }),
+      ],
+      providers: [Bare, BareDefined],
+    });
+    const message = await bootProblem(AppModule);
+    expect(message).toContain("Bare: schema is { data, result }");
+    expect(message).toContain("BareDefined.x: schema is { data, result }");
+    expect(message).toContain('registerWorker on queue "files": schema is');
   });
 });
 

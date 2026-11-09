@@ -112,6 +112,7 @@ Underneath, routing is
   - [Request-scoped processors](#request-scoped-processors)
   - [Files and other threads: `registerWorker`](#files-and-other-threads-registerworker)
   - [The registry: `@DefineJob`](#the-registry-definejob)
+  - [Events](#events)
   - [Starting and draining](#starting-and-draining)
   - [The checks at boot](#the-checks-at-boot)
 - [The jobs API module](#the-jobs-api-module)
@@ -2705,7 +2706,11 @@ BunJobsModule.registerQueueAsync({
 ```
 
 `options` are what `jobs.queue(name, options)` takes, `schema` and
-`dataValidation` included, and an entry may leave them out. A call makes the
+`dataValidation` included, and an entry may leave them out. **`schema` is
+`{ data, result }`, each optional, never a bare schema**: `options: { schema: { data:
+Email } }`. The types refuse a bare one and so does the boot, since bun-jobs would find
+no `schema.data` and check nothing. The same goes for `schema` on `@Processor`, `@DefineJob`
+and `registerWorker`. A call makes the
 queues injectable in the module that imports it: `@InjectQueue(name, context?)`,
 or `getQueueToken(name, context?)` in a provider or a test
 (`"bun-jobs:queue:emails"`, `"bun-jobs:billing:queue:emails"`). One queue
@@ -3073,6 +3078,65 @@ difference from `@Process` is bun-jobs': a defined job lives on the registry que
 `ConfigError`, for a deployment that does define it. `{ context }` picks a named
 context, and `forRoot({ token: AppJobs })` keeps a typed registry's compile-time
 checks where it is injected.
+
+### Events
+
+bun-jobs has four event sources, and a decorator for each, attached at bootstrap before
+any worker starts:
+
+| Decorator | Hears | Where it may sit |
+|---|---|---|
+| `@OnWorkerEvent(event)` | this process's worker for the class's queue, which classes on one queue share | a `@Processor` class |
+| `@OnQueueEvent(queue, event, { context? })` | that queue's emitter: local events, plus other processes' published ones if the queue was registered with `subscribe: true` | any singleton provider |
+| `@OnJobsEvent({ kind?, type?, target?, context? })` | **every process's** published events in the namespace: queues, runners, workers and summoning | any singleton provider |
+| `@OnRunnerEvent(id, event, { context? })` | a runner's emitter. The runner must exist by bootstrap | any singleton provider |
+
+```ts
+@Processor("emails")
+export class EmailProcessor {
+  @Process("welcome")
+  welcome(job: Job) { … }
+
+  @OnWorkerEvent("failed")
+  failed(job: Job, error: Error) { … }
+
+  @OnWorkerEvent("completed:welcome")   // only jobs named `welcome`
+  welcomed(job: Job, result: unknown) { … }
+
+  @OnWorkerEvent(EmailsQueue, "completed") // the payload typed from the queue's token
+  sent(job: Job<Email, string>, result: string) { … }
+}
+
+@Injectable()
+export class Audit {
+  @OnJobsEvent({ kind: "queue", type: "completed", target: "emails" })
+  completed(event: JobsEventOf<"queue", "completed">) { … }
+}
+```
+
+**The method's parameters are checked against the event at compile time**, and a scoped
+form exists only for the job events that have one. A method can carry several.
+
+- **An error in a listener is logged, never rethrown**, with the class and method, thrown
+  or rejected, and affects no job. bun-jobs swallows a synchronous throw in silence, and an
+  `async` listener's rejection would otherwise be unhandled.
+- **Listeners do not run through the Nest pipeline.** A listener observes, so a guard or a
+  pipe has nothing to decide.
+- **A listener needs a singleton.** On a request-scoped class, or a transient one, it is a
+  `ConfigError` at boot, as is `@OnWorkerEvent` on a class with no `@Processor`.
+- **Nothing is heard that was never published.** A cross-process event needs
+  `publishEvents: true` (or `publish` per object) in the process producing it. The module
+  logs one `warn` at bootstrap when an `@OnJobsEvent` exists and this process's context,
+  when the module built it, does not publish. It cannot know about other processes, so read
+  it as a reminder.
+- **The notifier is opt-in.** The module opens one only if an `@OnJobsEvent` exists,
+  following the union of what they name, or `"all"` when one leaves `target` out. Worker
+  events cost a second subscription per queue, so a decorator with no `kind` follows queues
+  and runners, and `kind: "worker"` asks for workers. It closes on `app.close()`.
+
+`@InjectJobsNotifier(context?)` injects a `JobsNotifier` of its own, for a provider that
+wants the stream (`notifier.on("event", …)`, or `for await`). It is opened only when a class
+asks for it, and to hear workers call `notifier.hold("worker", queue)`.
 
 ### Starting and draining
 
@@ -3714,7 +3778,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Group | Exports |
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
-| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext` |
+| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |

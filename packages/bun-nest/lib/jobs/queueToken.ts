@@ -65,6 +65,11 @@ export function requireQueueToken(
   /** Who is asking, for the message. */
   caller: string,
 ): QueueTokenTarget {
+  if (typeof target !== "function") {
+    throw new ConfigError(
+      `${caller}: expected a queue's name or a @QueueToken() class, got ${String(target)}. A class declared later in the file, or across an import cycle, reads as undefined here`,
+    );
+  }
   const recorded = queueTokenOf(target);
   if (recorded === undefined) {
     throw new ConfigError(

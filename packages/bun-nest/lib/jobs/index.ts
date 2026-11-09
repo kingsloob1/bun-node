@@ -83,7 +83,23 @@ export {
 export { BaseJobExceptionFilter, UnrecoverableOn } from "./filters";
 export { JobLoggingInterceptor } from "./interceptors";
 export type { OnDenied, OnInvalid } from "./pipeline";
-export { InjectBunJobs, InjectQueue, InjectWorker } from "./decorators/inject";
+export {
+  type JobsEventKind,
+  type JobsEventOf,
+  type OnEventOptions,
+  OnJobsEvent,
+  type OnJobsEventOptions,
+  OnQueueEvent,
+  OnRunnerEvent,
+  OnWorkerEvent,
+  type TypedListenerDecorator,
+} from "./decorators/events";
+export {
+  InjectBunJobs,
+  InjectJobsNotifier,
+  InjectQueue,
+  InjectWorker,
+} from "./decorators/inject";
 export type { BunJobsShutdownOptions } from "./explorer";
 export { isBunJob } from "./isBunJob";
 export { JobsHost } from "./JobsHost";
@@ -94,6 +110,7 @@ export {
   BUN_JOBS_API,
   BUN_JOBS_API_OPTIONS,
   getBunJobsToken,
+  getJobsNotifierToken,
   getQueueToken,
   getWorkerToken,
 } from "./tokens";
@@ -106,10 +123,16 @@ export {
  */
 export type {
   BunJobsOptions,
+  BunQueueEvents,
   BunQueueOptions,
   BunQueueWorker,
+  BunQueueWorkerEvents,
+  BunRunnerEvents,
+  DriverEvent,
   Job,
   JobDefinitionOptions,
+  JobsNotifier,
+  JobsNotifierOptions,
   JobsApi,
   JobsApiAction,
   JobsApiAuthorize,

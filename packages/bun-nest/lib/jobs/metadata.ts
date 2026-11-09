@@ -8,6 +8,8 @@
 export const NEST_PARAMTYPES_METADATA = "design:paramtypes";
 /** Nest's `SELF_DECLARED_DEPS_METADATA`: where `@Inject()` on a parameter writes. */
 export const NEST_SELF_DECLARED_DEPS_METADATA = "self:paramtypes";
+/** Nest's `PROPERTY_DEPS_METADATA`: where `@Inject()` on a property writes. */
+export const NEST_PROPERTY_DEPS_METADATA = "self:properties_metadata";
 /** Nest's `ROUTE_ARGS_METADATA`: where parameter decorators write. */
 export const NEST_ROUTE_ARGS_METADATA = "__routeArguments__";
 /** Nest's `SCOPE_OPTIONS_METADATA`: where `@Injectable({ scope })` writes. */
@@ -22,6 +24,8 @@ export const PROCESSOR_METADATA = "bun-jobs:processor";
 export const PROCESS_METADATA = "bun-jobs:process";
 /** Where `@DefineJob()` records its job name and options. */
 export const DEFINE_JOB_METADATA = "bun-jobs:define-job";
+/** Where the event decorators record what a method listens to. */
+export const EVENT_LISTENERS_METADATA = "bun-jobs:event-listeners";
 
 /**
  * Nest's `RouteParamtypes.BODY`, the type `@JobData()` is recorded as, so pipes

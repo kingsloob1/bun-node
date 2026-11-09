@@ -1,11 +1,11 @@
 # bun-jobs in NestJS: modules, decorators and the Nest pipeline for jobs
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
-§16 name accepted (§14 records the answers). PR-n1 to PR-n3 are built: PR-n1 merged
-as #721; PR-n2 (#722) and PR-n3 land in one merge window. PR-n4 onward are not
-started.** The sections below were corrected to match what was built, each
-correction marked; §2 still describes `develop` as it was before this work, and
-everything §3 to §12 assign to PR-n4 and later is still a design.
+§16 name accepted (§14 records the answers). PR-n1 to PR-n3 are merged (#721, #722,
+#724), and PR-n4 is built. PR-n5 onward are not started.** The sections below were
+corrected to match what was built, each correction marked; §2 still describes
+`develop` as it was before this work, and everything §3 to §12 assign to PR-n5 and
+later is still a design.
 
 Implementation plan for integrating `@kingsleyweb/bun-jobs` into NestJS
 through `@kingsleyweb/bun-nest`. The user asked for this on 2026-10-10:
@@ -560,6 +560,10 @@ Each entry provides `getQueueToken(name, context)` as
     rather than losing its options.
   - Two `forRoot()`s for one context are a `ConfigError` as well, even with
     identical options (added while building; the user kept it).
+  - A `schema` is `{ data, result }`. A bare schema is refused by the types (weak-type
+    detection, TS2559, measured with zod, valibot and yup), and at boot too, since one
+    typed `any` would otherwise validate nothing in silence (PR-n4). `registerQueue("emails")`,
+    which the types also refuse, is a `ConfigError` naming `{ name: "emails" }`.
 - A queue that is never registered can still be reached through
   `jobs.queue(name)` or the builder's `toQueue(name)`. Registration exists
   to make a queue injectable, and to own its options.
@@ -570,7 +574,7 @@ Each entry provides `getQueueToken(name, context)` as
 |---|---|---|
 | `@InjectQueue(name \| TokenClass, context?)` | `getQueueToken(name, context)` | Takes a name or a typed token class (§10.2). With the class, `@Inject(EmailsQueue)` or plain constructor typing works too, under `emitDecoratorMetadata` |
 | `@InjectBunJobs(context?)` | `getBunJobsToken(context)` | Plain `constructor(jobs: BunJobs)` also works for the default context |
-| `@InjectJobsNotifier(context?)` | a `JobsNotifier` opened at bootstrap and closed at shutdown | §6.1 |
+| `@InjectJobsNotifier(context?)` | a `JobsNotifier`, closed at shutdown | §6.1. **As built (PR-n4):** opened while Nest builds providers, since what is injected must exist by then, and only when a class or factory asks for the token (`getJobsNotifierToken`), read from what its `@Inject()` wrote, so an app that doesn't pays nothing. `@OnJobsEvent` has its own, narrower one, opened at bootstrap |
 | `@InjectRunner(id, context?)` | a registered `BunRunner` | §8.4 |
 | `@InjectWorker(ProcessorClass)`, or `@InjectWorker(queue, context?)` | a `WorkerRef`, whose `worker` getter returns the `BunQueueWorker` serving that queue | The worker is built at bootstrap, after DI, so what is injected is a provider-backed handle. Its getter throws a `ConfigError` before `onApplicationBootstrap`. **As built (PR-n2; the user kept it):** a provider per processor class is impossible, since a module's providers are fixed before Nest knows the classes, and registering at load is ruled out by `sideEffects: false`. So it reads the class's queue from its `@Processor` and injects `getWorkerToken(queue, context)`, which `registerQueue()` and `registerWorker()` provide: **import `registerQueue` where it is injected**, as for `@InjectQueue`. A class declared later, or across an import cycle, needs the queue's name |
 | `@InjectSummonController(queue, context?)` | `jobs.summonController(queue)` (`BunJobs.ts:810`) [S] | §9.1 |
@@ -975,7 +979,7 @@ bun-jobs has four event sources, and each gets a decorator:
 
 | Decorator | Source | Where it may sit | Hears |
 |---|---|---|---|
-| `@OnWorkerEvent(event)` | the class's queue's worker, which classes on one queue share (§5.3) | a `@Processor` class | this process's worker. Events: `ready`, `active`, `progress`, `completed`, `failed`, `retrying`, `dead`, `deadLettered`, `stalled`, `lockLost`, `drained`, `paused`, `resumed`, `closing`, `closed`, `error` (`packages/bun-jobs/lib/queue/types.ts:1667-1714`), and the `event:name` scoped form, such as `completed:welcome`, of the 13 job events that have one (`added` … `throttled`, `JobScopedEvent`, `:1538-1551`; not `stalled`, `lockLost`, `drained` or the worker's own) [S]. The decorator's type refuses a scoped form of any other event |
+| `@OnWorkerEvent(event)` | the class's queue's worker, which classes on one queue share (§5.3) | a `@Processor` class | this process's worker. Events: `ready`, `active`, `progress`, `completed`, `failed`, `retrying`, `dead`, `deadLettered`, `stalled`, `lockLost`, `drained`, `paused`, `resumed`, `closing`, `closed`, `error` (`packages/bun-jobs/lib/queue/types.ts:1667-1714`), and the `event:name` scoped form, such as `completed:welcome`, of the job events that have one (`JobScopedEvent`, `:1538-1551`, thirteen in all; a worker has seven of them, `active` … `deadLettered`, and a queue all thirteen; not `stalled`, `lockLost`, `drained` or the worker's own) [S]. The decorator's type refuses a scoped form of any other event |
 | `@OnQueueEvent(queue, event, { context? })` | the injected queue's emitter | any singleton provider | that queue's events. These are local, unless the queue was registered with `subscribe: true`, in which case other processes' published events are re-emitted (README "Queue options") [S]. Events: `added`, `completed`, `failed`, `dead`, `retried`, `debounced`, `throttled`, `repeatScheduled`, `summon`, `cleaned`, … (`packages/bun-jobs/lib/queue/types.ts:1579-1657`) [S] |
 | `@OnJobsEvent({ kind?, type?, target? })` | a `JobsNotifier` the module opens on first use | any singleton provider | **every process's** published events in the namespace: queue, runner and worker events (`control`, `state`, `config`) and summon events (README "Events and JobsNotifier") [S] |
 | `@OnRunnerEvent(id, event)` | a registered runner (§8.4) | any singleton provider | `started`, `finished`, `failed`, `timeout`, `killed`, `skipped`, `queued`, … (README "Handlers, messages and kills") [S] |
@@ -984,7 +988,10 @@ bun-jobs has four event sources, and each gets a decorator:
   `BunQueueWorkerEvents` and friends. The method's parameters are checked
   with the same typed-descriptor technique §10.3 measured:
   `@OnWorkerEvent("completed")` requires `(job: Job, result: unknown) => …`.
-  The payload types come from the processor's queue token when it has one.
+  **As built (PR-n4):** a method decorator cannot see its class's `@Processor`, so the
+  payload types come from a token passed to it, `@OnWorkerEvent(EmailsQueue, "completed")`
+  and `@OnQueueEvent(EmailsQueue, "completed")`, as `@Process(Token, name)` does.
+  `@OnJobsEvent` narrows its event by `kind` and `type` (`JobsEventOf<"queue", "completed">`).
 - **Errors in listeners are caught and logged, never rethrown.** bun-jobs'
   `safeEmit` swallows a **synchronous** throw in silence, so that "a
   failing metrics listener must not fail the job it observed"
@@ -999,11 +1006,12 @@ bun-jobs has four event sources, and each gets a decorator:
   would be useful for tracing, but OT's span model already covers worker
   events.
 - **Notifier cost is opt-in.** The notifier opens at bootstrap only if some
-  provider uses `@OnJobsEvent` or `@InjectJobsNotifier`. Its `queues`,
-  `runners` and `workers` lists are the union of what the decorators name,
-  or `"all"` when one leaves `target` out. The `workers` list costs a
-  second subscription per queue, which is why it defaults to none (README,
-  the `workers` option) [S].
+  provider uses `@OnJobsEvent`. Its `queues`, `runners` and `workers` lists are
+  the union of what the decorators name, or `"all"` when one leaves `target` out.
+  The `workers` list costs a second subscription per queue, which is why it defaults
+  to none (README, the `workers` option) [S]: a decorator with no `kind` follows
+  queues and runners, and `kind: "worker"` asks for workers. `@InjectJobsNotifier`
+  is a second, default notifier, opened only when asked for (§4.2).
 - **Nothing is heard that was never published.** Cross-process events need
   `publishEvents: true` (or `publish` per object) in the producing process
   (README "Events and JobsNotifier") [S]. The module logs a `warn` once at
@@ -1105,7 +1113,7 @@ So:
    `@DefineJob`'s registry worker. It also closes the notifier. **As built
    (PR-n2):** a singleton `@DefineJob` provider gets the per-instance drain too,
    since the fallback is measured to fail for a service in an imported module
-   (scenario C). Runners and the notifier arrive with their PRs.
+   (scenario C). Runners arrive with PR-n5.
 3. **Queues stay open until `onApplicationShutdown`.** A provider's own
    `onModuleDestroy` may still enqueue a job, an "account closed" email
    for example. Then the context is closed, if the module built it (§3.2).
@@ -2196,7 +2204,7 @@ or `packages/bun-ui/**`.
 | **PR-n1** core module and producers | `BunJobsModule` hand-written (`forRoot`, `forRootAsync` with `useFactory`/`useClass`/`useExisting`, `registerQueue`, `registerQueueAsync`, named contexts, `isGlobal`, Nest logger default, build-or-borrow, `onApplicationShutdown` close); `Symbol.for` options tokens, `getQueueToken`/`getBunJobsToken`; `@InjectQueue`, `@InjectBunJobs`; `@QueueToken` typed classes; the options-conflict check; R3's boot check; every class wired by call (D14); README section; `consumer-check.json` entries | — | ~3 d | examples ~1 d |
 | **PR-n2** consumers and lifecycle | `@Processor`, `@Process` (names, catch-all, per-name limits); the explorer (`DiscoveryModule`, one worker per queue, merge rules, collected boot checks); `JobsHost`; request scope (public API); `registerWorker`; `autoStart` and `BunJobsLifecycle`; per-instance and fallback drains; `@InjectWorker`; `shutdown`; `@DefineJob`; the lifecycle matrix per major | PR-n1 | ~4 d | examples ~1 d |
 | **PR-n3** the pipeline | ECC wrapping under `"bun-jobs"`; `BunJobsExecutionContext`, `isBunJobsContext`, `BunJobsContextType`; nine parameter decorators, `@JobData` as BODY with `{ schema }` mapped to V6's `StandardSchemaPipe`, and the all-or-none check; `JobForbiddenError` and `onDenied`; the validation mapping and `onInvalid` (Q18); `UnrecoverableOn`, `BaseJobExceptionFilter`; `JobLoggingInterceptor`; Q5's answer; `enhancers: false`; the type tests | PR-n2 | ~2.5 d (was ~4 d: V6 ships the pipe) | examples ~1 d |
-| **PR-n4** events | `@OnWorkerEvent` (its scoped form typed to the 13 scoped events), `@OnQueueEvent`, `@OnJobsEvent`, `@OnRunnerEvent`; `@InjectJobsNotifier`; listener error wrapping; typed listener signatures | PR-n2 | ~2 d | — |
+| **PR-n4** events | `@OnWorkerEvent` (its scoped form typed to the job events it has), `@OnQueueEvent`, `@OnJobsEvent`, `@OnRunnerEvent`; `@InjectJobsNotifier`; listener error wrapping; typed listener signatures | PR-n2 | ~2 d | — |
 | **PR-n5** scheduling and runners | `@Cron`, `@Every`; the schedule queue; validation at boot; undeclared-series warn and `pruneSchedules`; `registerRunner`, `@InjectRunner`; the two-instance test for both `@Cron` and `@Every` | PR-n2 (PR-n4 for `@OnRunnerEvent`) | ~3 d | examples ~0.5 d |
 | **PR-n6** API and guards | `BunJobsApiModule` taking `BunJobsModule`'s context (and a `context` option); `guardsAuthorize`, `jobsApiContextOf`, usable for the API and the jobs UI; the jobs UI recipe in the README and `06-jobs-ui/mount.ts` rewritten around `BunJobsModule` (Q17) | PR-n1 | ~1.5 d (was ~2 d: no UI module) | examples ~0.5 d |
 | **PR-n7** summoned, off-thread, remote | `runSummonedApplication` (groups and shared units included); `createProcessorContext`; `@InjectSummonController`, `registerQueue({ summon })`; `@RemoteHandler`, `BunRemoteExecutorModule` | PR-n2 | ~3 d | bun-jobs owner review (summon and remote) |
@@ -2294,6 +2302,11 @@ the module option `registryWorker`; `{ context, enhancers, onDenied, onInvalid }
 `QueueJobData`, `QueueJobResult`, `QueueJobName`, `TypedProcessDecorator`. bun-jobs'
 `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`,
 `NameLimits` and `ProcessorContext` are re-exported as types.
+
+**Added while building PR-n4:** `getJobsNotifierToken`; the types `JobsEventKind`,
+`JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`;
+and bun-jobs' `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`,
+`DriverEvent`, `JobsNotifier`, `JobsNotifierOptions` re-exported as types.
 
 **Withdrawn since the first version:** `StandardSchemaPipe` (V6 shipped it
 at bun-nest's root, approved under bun-validate), `BunJobsUiModule` and
