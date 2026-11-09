@@ -20,6 +20,7 @@ import {
   moduleOf,
   MwBasicModule,
   MwExcludeMatchingModule,
+  MwManyVersionsModule,
   MwPrefixModule,
   MwVersionModule,
   OptionalController,
@@ -423,6 +424,19 @@ export const GROUPS: Group[] = [
       get("'*' + prefix: /nope (outside)", "/nope"),
       get("'*' + prefix: /api/nope", "/api/nope"),
       req("'*' + prefix: POST /api/hello", "POST", "/api/hello"),
+    ],
+  },
+  {
+    name: "mw-many-versions",
+    module: MwManyVersionsModule,
+    configure: (app) =>
+      app.enableVersioning({ type: VersioningType.HEADER, header: "x-v" }),
+    probes: [
+      get("route of two versions: v1", "/many", { "x-v": "1" }),
+      get("route of two versions: v2", "/many", { "x-v": "2" }),
+      get("route of two versions: v3 (no such version)", "/many", {
+        "x-v": "3",
+      }),
     ],
   },
   {

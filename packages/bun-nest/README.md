@@ -29,7 +29,7 @@ Underneath, routing is
   `@nestjs/websockets` (the same range) is needed only for gateways. One
   build serves both majors, and both are tested: the repo runs on Nest 12
   (12.2.0), and its suites, examples and consumer type checks also run on
-  the latest 11 and on the floors, 11.1.20 and 12.0.0 (see
+  the latest 11 and 12 and on the floors, 11.1.20 and 12.0.0 (see
   [Compatibility](#compatibility-nest-11-and-12)). The floor is 11.1.20 because
   older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
   `isAckHandledManually`) arrived in 11.1.7, the CORS delegate types this
@@ -274,10 +274,18 @@ type check.
 | Nest | Express | Tested |
 |---|---|---|
 | 12.2.0 (the repo's lock) | 5.3.0 | every gate |
-| 11.2.7 (11-latest) | 5.2.1 | every PR touching bun-nest or bun-common |
+| 12.4.1 (12-latest) | 5.3.0 | every PR touching bun-nest or bun-common |
+| 11.2.7 | 5.2.1 | every PR touching bun-nest or bun-common |
+| 11.2.9 (11-latest) | 5.2.1 | an extra column, not clean yet (below) |
 | 11.1.20 (the floor) | 5.2.1 | once per merge window |
 | 12.0.0 (12's floor) | 5.2.1 | once per merge window |
-| 12.1.3 (the lock before 12.2.0) | 5.2.1 | an extra column |
+| 12.1.3 (the lock before 12.2.0), 12.3.0, 12.3.3, 12.4.0 | 5.2.1 (12.1.3), 5.3.0 | an extra column |
+
+11.2.8 backported behaviours of 12.2 and 12.3 to Nest 11, and the adapter has
+not caught up with all of them: on 11.2.8 and 11.2.9, files an upload stored
+stay on disk when a pipe rejects the request, where platform-express removes
+them. The tables below describe 11.2.7 for the 11.2 column, unless a cell says
+otherwise.
 
 The floor is 11.1.20: older 11 releases lack `@Ack()` (11.1.7) and the CORS
 delegate types (11.1.14), and before 11.1.20 an `@Sse()` observable that
@@ -285,7 +293,7 @@ errors before its first event answers `200`, not `500`.
 
 What differs by release, and what the adapter reads to tell:
 
-| Behaviour | 11.1 | 11.2 | 12.0–12.1 | 12.2 | Read from |
+| Behaviour | 11.1 | 11.2 | 12.0–12.1 | 12.2–12.4 | Read from |
 |---|---|---|---|---|---|
 | `QUERY`, `@QueryMethod()` | no | yes | yes | yes | `RequestMethod.QUERY` |
 | `@SseSignal()` | no | yes | yes | yes | — |
@@ -297,7 +305,8 @@ What differs by release, and what the adapter reads to tell:
 | A route's `dest` | module wins | module wins | module wins | route wins | `isRejectedByPipes` (2) |
 | Files removed on a pipe's rejection | no | no | no | yes | `isRejectedByPipes` (2) |
 | `exclude()` matching | Nest's | Nest's | Nest's | the router's | — |
-| A middleware two of one entry's paths match runs | twice | twice | twice | once | the core's `registerHandler` (3) |
+| A middleware two of one entry's paths match runs | twice | twice, once from 11.2.8 | twice | once | the core's `registerHandler` (3) |
+| A middleware on a route of two versions, on one path, runs | per version | per version | per version | per version, once from 12.3.0 | — |
 | WS exception frame | ours | ours | ours | ours | `emitMessage` on Nest's filter |
 | `handleDisconnect` 2nd argument | none | none | close code | close code | — |
 | Express's redirect page, filenames | 5.2.1's | 5.2.1's | 5.2.1's | 5.3.0's | — |
@@ -307,11 +316,13 @@ What differs by release, and what the adapter reads to tell:
 2. `isRejectedByPipes` in `@nestjs/core/internal`, added in 12.2.0.
 3. Asked of the core's own `MiddlewareModule.prototype.registerHandler` when
    the adapter loads, with stand-ins: one middleware at two paths, one
-   request through both. In an app, `forRoutes("*")` under a global prefix
-   runs once on `/api/` on every release measured (11.2.7, 12.1.3, 12.2.0),
-   on both adapters: before 12.2.0 the core's exact `/api$` entry skips
-   `/api/`, leaving it to the wildcard entry; on 12.2.0 it serves `/api/`
-   too and the core runs the middleware once.
+   request through both. A core it cannot ask reads as running it once, since
+   every core before that guard answers. In an app, `forRoutes("*")` under a
+   global prefix runs once on `/api/` on every release measured (11.2.7,
+   11.2.9, 12.1.3, 12.2.0, 12.3.0, 12.4.1), on both adapters: before 12.2.0
+   (and 11.2.8) the core's exact `/api$` entry skips `/api/`, leaving it to
+   the wildcard entry; from then on it serves `/api/` too and the core runs
+   the middleware once.
 
 A dash means the adapter reads nothing: the core calls what it needs
 (`getRouteMatchingOptions()` for `exclude()`), and an older core never calls
