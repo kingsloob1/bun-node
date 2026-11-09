@@ -357,6 +357,27 @@ export class BunJobsRegistry {
     return found.map(({ worker }) => worker);
   }
 
+  /** The queues a context's application registers or has a worker on. */
+  queuesOf(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+  ): string[] {
+    this.#scan();
+    const names = new Set<string>();
+    for (const state of this.#queues.values()) {
+      if (state.context === context) {
+        names.add(state.queue);
+      }
+    }
+    const prefix = `${context ?? ""}\0`;
+    for (const key of this.#workers.keys()) {
+      if (key.startsWith(prefix)) {
+        names.add(key.slice(prefix.length));
+      }
+    }
+    return [...names];
+  }
+
   /** One context's workers, for `./jobs/testing`. */
   startableOf(
     /** The context's `name`; `undefined` for the default context. */

@@ -3572,16 +3572,22 @@ wherever it is. `isHealthy(key, options?)` never rejects: anything that goes wro
 | Check | Down when |
 |---|---|
 | the backend, `driver.ping()` | it answers `false` or throws, or the whole check outlives `timeout` (1 s) |
-| this application's workers, on the listed `queues` | one it started is `stopped` or `stopping` while the application is not closing |
+| this application's workers, on the listed `queues` | one's `run()` has ended while the application has not: its connection failed, or something closed it |
 | `maxOutstanding` (off by default), `getDemand().outstanding` | a queue has more than that waiting, due or active |
 | `requireWorkers` (`false` by default), `getDemand().workers`, in any process | a queue has demand and no live worker |
 
-- **`queues`** defaults to every queue the backend knows, a read each, so name them where there are many.
+- **`queues`** defaults to the queues this application registers or has a worker on, so a probe does not read
+  other services' on a shared backend. `queues: "all"` reads what the backend knows, the first 100 by name, with
+  `queuesNotRead` saying how many that left out.
+- **What a probe costs:** one `ping()`, and three driver reads per queue (`isQueuePaused`, `listWorkers`,
+  `countDemand`), ten queues at a time, all bounded. `"all"` adds one listing. `timeout` bounds the lot.
+- **A worker parked on purpose is up**, shown in `parked`, whether by `BunJobsLifecycle.stop()` or remote control:
+  a platform restarting the service for it would undo the decision. There is no option to make it down; alert on
+  `parked` in the details if you want to know. A worker never started, with `autoStart: false`, is up too, and a
+  paused queue has no demand.
+- **`requireWorkers`** counts a parked worker as alive. Every driver in this repository keeps worker records. On
+  a third-party driver with none, nobody can tell, so it is not down: `workers` reads `"unknown"`, and it is logged once.
 - **`context`** names the context, for an application with several.
-- **A worker never started does not count**, with `autoStart: false`. One parked with `BunJobsLifecycle.stop()`
-  does, so a deliberate stop reads as down until it resumes. A paused queue has no demand.
-- **`requireWorkers` needs worker records.** On a third-party driver that keeps none, the count is always 0,
-  so leave it off there.
 - **What a health response says:** queue names and figures, and a `message` when down. A failure's cause, a
   connection error say, goes to Nest's logger and not to the caller, since these endpoints are often public.
 
