@@ -296,20 +296,26 @@ describe("the live-events socket under Nest", () => {
     await client.waitFor((message) => message?.type === "hello");
     expect(api.websocket!.sessions).toBe(1);
 
-    const codes: number[] = [];
-    client.socket.addEventListener("close", (event) => {
-      codes.push(event.code);
+    const closed = Promise.withResolvers<{ code: number; reason: string }>();
+    client.socket.addEventListener("close", ({ code, reason }) => {
+      closed.resolve({ code, reason });
     });
 
     // Shutting down runs `beforeApplicationShutdown`, which closes the API
-    // while the transport is still up: the session is told 1001 "going away"
-    // before Nest's `dispose()` stops the HTTP server. Closing in
-    // `onApplicationShutdown` — after `dispose()` — would leave the client
-    // with a 1006 abnormal close instead, which is what this pins.
+    // while the transport is still up: the session tells the client 1001
+    // "server closing" before Nest's `dispose()` stops the HTTP server.
+    // Closing in `onApplicationShutdown`, after `dispose()`, would leave the
+    // client with the adapter's own 1001 "Server closed" instead (measured),
+    // so the reason is what pins the hook.
     await app.close();
-    await Bun.sleep(80);
 
-    expect(codes).toEqual([1001]);
+    // The client's own close event, whenever a busy machine delivers it: what
+    // it carries is the assertion, and how soon it arrives is not (at load 74,
+    // up to 37 ms after `close()`, and the 80 ms this once slept lost that race).
+    expect(await closed.promise).toEqual({
+      code: 1001,
+      reason: "server closing",
+    });
     expect(api.websocket!.sessions).toBe(0);
     // The context it was given is untouched and still usable.
     await jobs.queue("still-open").add("x", {});

@@ -12,7 +12,14 @@ import type {
 import type { SummonCapabilities, SummonFacet } from "../lib/provider/index";
 import { join } from "node:path";
 import { createTestLogger, noopLogger } from "@kingsleyweb/bun-common";
-import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  describe,
+  expect,
+  it,
+  setSystemTime,
+} from "bun:test";
 import {
   BunJobs,
   BunQueue,
@@ -60,6 +67,8 @@ afterAll(dir.cleanup);
 
 const perTest: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  // Back on the real clock, for a test that stood it still.
+  setSystemTime();
   for (const cleanup of perTest.splice(0)) {
     await cleanup().catch(() => {});
   }
@@ -814,6 +823,13 @@ describe("reset", () => {
   });
 
   it("emits the group's budget-exhausted again in the same window once cleared", async () => {
+    // "The same window" is the point, and the rechecks make this test last
+    // about 2 s: on the real clock, a UTC hour ending between `a`'s charge and
+    // `b`'s check gave `b` a fresh budget, so it charged instead of telling the
+    // group exhausted (measured: one event, in half the usual time). So the
+    // clock stands still in the middle of an hour.
+    const midHour = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + HOUR_MS / 2;
+    setSystemTime(new Date(midHour));
     const { seed, controller } = await setup();
     await seed("a", "b");
     const { summoner } = recorder(async () => ({
@@ -827,7 +843,7 @@ describe("reset", () => {
     await b.controller.check();
     await b.controller.reset({ group: true, budget: true });
     // Past `a`'s 1 ms backoff from its `unavailable`.
-    await Bun.sleep(5);
+    setSystemTime(new Date(midHour + 5));
     await a.controller.check();
     await b.controller.check();
     expect(
