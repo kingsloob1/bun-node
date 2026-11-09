@@ -3730,6 +3730,9 @@ lifecycle hook where it is safe:
 | `onApplicationBootstrap` | attaches the live-events socket | runs after `useWebSocketAdapter()`, so the socket is never bound to an adapter about to be replaced |
 | `beforeApplicationShutdown` | closes the API | `dispose()` stops the HTTP server between the two shutdown hooks, so closing here is what lets clients see a `1001` "going away" instead of a `1006` abnormal close |
 
+So the routes exist only after `app.init()` (or `app.listen()`): a socket-free
+`adapter.fetch()` before it answers 404.
+
 `close()` releases what the API opened — its sessions, its event notifier and
 a dedicated socket server — and never the `BunJobs`, queues, runners or driver
 you passed in. The application must have this package's `BunHttpAdapter`; with
