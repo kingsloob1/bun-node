@@ -126,7 +126,10 @@ function isPromise(value: unknown): value is Promise<unknown> {
 /** Marks a client's `emit` as checked, with the gateway's map (once per client). */
 const CHECKED_EMIT = Symbol.for("@kingsleyweb/bun-nest.checkedEmit");
 
-/** The per-client write queue, so an asynchronous vendor never reorders a socket's emits. */
+/**
+ * The per-client write queue, so an asynchronous vendor never reorders a
+ * socket's emits. An entry lasts only while writes are pending.
+ */
 const EMIT_CHAINS = new WeakMap<object, Promise<void>>();
 
 /** Where an asynchronous vendor's refusal is logged (the write is skipped). */
@@ -176,8 +179,8 @@ function installCheckedEmit(client: unknown, schemas: EmitsSchemas): void {
       return emit.call(this, event, ...args);
     }
     // An asynchronous vendor (or one pending behind it): the write queues.
-    const chain = (EMIT_CHAINS.get(socket) ?? Promise.resolve()).then(
-      async () => {
+    const chain = (EMIT_CHAINS.get(socket) ?? Promise.resolve())
+      .then(async () => {
         const settled = await verdict;
         if (!settled.ok) {
           emitsLogger.error(
@@ -190,8 +193,14 @@ function installCheckedEmit(client: unknown, schemas: EmitsSchemas): void {
           return;
         }
         emit.call(this, event, ...args);
-      },
-    );
+      })
+      .finally(() => {
+        // Drained: the client's next emit needs no queue, and a synchronous
+        // vendor's mismatch throws to its caller again.
+        if (EMIT_CHAINS.get(socket) === chain) {
+          EMIT_CHAINS.delete(socket);
+        }
+      });
     EMIT_CHAINS.set(socket, chain);
     return true;
   };

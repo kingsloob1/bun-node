@@ -182,7 +182,10 @@ So plain `bun test` is still the one-process run, as is
 - **`--parallel` implies `--isolate`**, a fresh global per file, so it cannot
   catch one file leaking into another. `bun test --randomize --seed=N`
   (serial) is the check for that, with bun-ui's `domLeak.test.ts`; keep
-  them in any gate.
+  them in any gate. **Vary the seeds from run to run and print them** (the
+  user's decision, 2026-11-09): fixed seeds 1 and 2 let a bug in bun-nest's
+  `wsValidation` through, where 21 of 48 seeds failed and those two did not. A
+  seed that fails is the reproduction, so quote it.
 - **bun-jobs' order check per PR is `bun run test:seeded`** (the user's
   decision, 2026-10-10). `scripts/test-seeded.ts` deals the test files into 4
   shards by a shuffle seeded with `--seed`, and runs each shard as one serial
