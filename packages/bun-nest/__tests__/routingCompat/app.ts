@@ -626,6 +626,114 @@ export class MwManyVersionsModule {
   }
 }
 
+/** One route table per `forRoutes` shape of {@link MwScopedModule}. */
+function scopedController(path: string) {
+  @Controller(path)
+  class ScopedController {
+    @Get()
+    @Header("x-h", `${path}.list`)
+    list(@Req() req: AnyReq) {
+      return answer(`${path}.list`, req);
+    }
+
+    @Post()
+    @Header("x-h", `${path}.create`)
+    create(@Req() req: AnyReq) {
+      return answer(`${path}.create`, req);
+    }
+
+    @Get("x")
+    @Header("x-h", `${path}.x`)
+    x(@Req() req: AnyReq) {
+      return answer(`${path}.x`, req);
+    }
+
+    @Get("x/y")
+    @Header("x-h", `${path}.xy`)
+    xy(@Req() req: AnyReq) {
+      return answer(`${path}.xy`, req);
+    }
+  }
+  return ScopedController;
+}
+
+/** `forRoutes(Controller)`: a middleware bound to each route of the controller. */
+@Controller("scoped-class")
+export class ScopedClassController {
+  @Get()
+  @Header("x-h", "class.list")
+  list(@Req() req: AnyReq) {
+    return answer("class.list", req);
+  }
+
+  @Post()
+  @Header("x-h", "class.create")
+  create(@Req() req: AnyReq) {
+    return answer("class.create", req);
+  }
+
+  @Get("x")
+  @Header("x-h", "class.x")
+  x(@Req() req: AnyReq) {
+    return answer("class.x", req);
+  }
+
+  @Get(":id")
+  @Header("x-h", "class.byId")
+  byId(@Req() req: AnyReq) {
+    return answer("class.byId", req);
+  }
+
+  @All("any")
+  @Header("x-h", "class.any")
+  any(@Req() req: AnyReq) {
+    return answer("class.any", req);
+  }
+}
+
+/**
+ * Every `forRoutes` shape, each on a path of its own: only a string (the core's
+ * no-method entry) is `app.use`, a prefix match. An entry naming a method, and
+ * each route of `forRoutes(Controller)`, is `app.<method>`, matched as a route
+ * is. `scoped-recipe` is how the README says to get a prefix back for a method.
+ */
+@Module({
+  controllers: [
+    ScopedClassController,
+    scopedController("scoped-string"),
+    scopedController("scoped-get"),
+    scopedController("scoped-post"),
+    scopedController("scoped-all"),
+    scopedController("scoped-param"),
+    scopedController("scoped-splat"),
+    scopedController("scoped-recipe"),
+  ],
+})
+export class MwScopedModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(trailMiddleware("MwClass")).forRoutes(ScopedClassController);
+    consumer.apply(trailMiddleware("MwString")).forRoutes("scoped-string");
+    consumer
+      .apply(trailMiddleware("MwGet"))
+      .forRoutes({ path: "scoped-get", method: RequestMethod.GET });
+    consumer
+      .apply(trailMiddleware("MwPost"))
+      .forRoutes({ path: "scoped-post", method: RequestMethod.POST });
+    consumer
+      .apply(trailMiddleware("MwAll"))
+      .forRoutes({ path: "scoped-all", method: RequestMethod.ALL });
+    consumer
+      .apply(trailMiddleware("MwParam"))
+      .forRoutes({ path: "scoped-param/:id", method: RequestMethod.GET });
+    consumer
+      .apply(trailMiddleware("MwSplat"))
+      .forRoutes({ path: "scoped-splat/*rest", method: RequestMethod.GET });
+    consumer
+      .apply(trailMiddleware("MwRecipe"))
+      .forRoutes({ path: "scoped-recipe{/*rest}", method: RequestMethod.GET });
+  }
+}
+
 /**
  * The routes of the `exclude()` matching groups (Nest 12.2.0's
  * `getRouteMatchingOptions`): a static route, and a list beside its items.

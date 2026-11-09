@@ -1664,9 +1664,9 @@ step("createMiddlewareFactory(requestMethod)");
   await adapter.fetch("/scoped", { method: "POST" });
   await adapter.fetch("/scoped/child", { method: "POST" });
   checkEqual(
-    "middleware runs for its method only, prefix-matched, before the route",
+    "middleware runs for its method only, on its path alone (as app.post(path)), before the route",
     ran,
-    ["POST /scoped", "POST /scoped/child"],
+    ["POST /scoped"],
   );
 
   const everything = adapter.createMiddlewareFactory(RequestMethod.ALL);

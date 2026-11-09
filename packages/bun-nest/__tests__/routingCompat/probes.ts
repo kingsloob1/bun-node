@@ -21,6 +21,7 @@ import {
   MwBasicModule,
   MwExcludeMatchingModule,
   MwManyVersionsModule,
+  MwScopedModule,
   MwPrefixModule,
   MwVersionModule,
   OptionalController,
@@ -53,6 +54,36 @@ function req(
 /** A GET request. */
 function get(name: string, path: string, headers?: Record<string, string>) {
   return req(name, "GET", path, headers);
+}
+
+/**
+ * What each `forRoutes` shape of `MwScopedModule` runs on, at `base`: its own
+ * path, a trailing slash, another case, what is below it, a sibling that only
+ * starts the same, and the other methods.
+ */
+function mwScopedProbes(base = ""): Probe[] {
+  const shapes = [
+    "scoped-string",
+    "scoped-get",
+    "scoped-post",
+    "scoped-all",
+    "scoped-param",
+    "scoped-splat",
+    "scoped-recipe",
+    "scoped-class",
+  ];
+  return shapes.flatMap((shape) => [
+    ...["", "/", "/x", "/x/y", "/nope/nope"].flatMap((tail) => {
+      const path = `${base}/${shape}${tail}`;
+      return [
+        get(`${shape}${tail}: GET`, path),
+        req(`${shape}${tail}: HEAD`, "HEAD", path),
+        req(`${shape}${tail}: POST`, "POST", path),
+      ];
+    }),
+    get(`${shape}: another case`, `${base}/${shape.toUpperCase()}/X`),
+    get(`${shape}: a sibling`, `${base}/${shape}-sibling`),
+  ]);
 }
 
 const routesProbes: Probe[] = [
@@ -438,6 +469,24 @@ export const GROUPS: Group[] = [
         "x-v": "3",
       }),
     ],
+  },
+  {
+    name: "mw-scoped",
+    module: MwScopedModule,
+    probes: mwScopedProbes(),
+  },
+  {
+    name: "mw-scoped-prefixed",
+    module: MwScopedModule,
+    configure: (app) => app.setGlobalPrefix("api"),
+    probes: mwScopedProbes("/api"),
+  },
+  {
+    name: "mw-scoped-versioned",
+    module: MwScopedModule,
+    configure: (app) =>
+      app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" }),
+    probes: mwScopedProbes("/v1"),
   },
   {
     name: "mw-version",

@@ -1540,12 +1540,26 @@ describe("BunHttpAdapter.createMiddlewareFactory: the core's exact-match `$`", (
     expect(seen).toEqual(["GET /api"]);
   });
 
-  it("control: a path without the marker is still a prefix", async () => {
-    const { adapter, seen } = withMiddleware(RequestMethod.ALL, "/api");
+  it('control: the core\'s no-method entry (`forRoutes("path")`) is still a prefix', async () => {
+    const { adapter, seen } = withMiddleware(-1 as RequestMethod, "/api");
     await adapter.fetch("/api/x");
     await adapter.fetch("/api");
     expect(seen).toEqual(["GET /api/x", "GET /api"]);
   });
+
+  for (const [name, method] of [
+    ["GET", RequestMethod.GET],
+    ["ALL", RequestMethod.ALL],
+  ] as const) {
+    it(`an entry naming a method (${name}) matches its path as a route does, not as a prefix`, async () => {
+      const { adapter, seen } = withMiddleware(method, "/api");
+      await adapter.fetch("/api/x");
+      await adapter.fetch("/api");
+      await adapter.fetch("/api/");
+      await adapter.fetch("/API");
+      expect(seen).toEqual(["GET /api", "GET /api/", "GET /API"]);
+    });
+  }
 });
 
 describe("BunHttpAdapter.setNotFoundHandler: scoped to the global prefix on Nest 12", () => {

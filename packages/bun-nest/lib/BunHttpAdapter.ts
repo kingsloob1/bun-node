@@ -126,7 +126,7 @@ export type ListenCallback<customWebsocketDataType = unknown> = (
 
 /**
  * What {@link BunHttpAdapter.createMiddlewareFactory} returns: registers
- * `callback` as method-scoped middleware at `path` and returns the adapter.
+ * `callback` as middleware at `path` and returns the adapter.
  * `callback` stays `Function` because that is what NestJS hands it (and what
  * `AbstractHttpAdapter` declares); it is called as `(req, res, next)`.
  * `TAdapter` is the adapter returned; the factory gives it as `this`.
@@ -5709,6 +5709,13 @@ export class BunHttpAdapter<
     );
   }
 
+  /**
+   * What Nest registers each `forRoutes` entry through, as
+   * `@nestjs/platform-express`: the core's "no method" (`-1`, a string entry)
+   * is a prefix match, like `app.use(path)`, and anything else, a
+   * `RequestMethod` or a route of `forRoutes(Controller)`, matches as a route
+   * does, like `app.get(path)` or `app.all(path)`.
+   */
   public createMiddlewareFactory(
     requestMethod: RequestMethod,
   ): MiddlewareFactoryRespType<this> {
@@ -5730,18 +5737,23 @@ export class BunHttpAdapter<
         }
         throw error;
       }
-      // NestJS middleware must behave like middleware — not a route handler.
-      // `useMethod` registers it method-scoped but with `isEndpoint` false,
-      // so it keeps registration order and is excluded from route
-      // specificity ordering. `RequestMethod.ALL` maps to method-agnostic.
+      // NestJS middleware must behave like middleware — not a route handler:
+      // it keeps registration order and is excluded from route specificity
+      // ordering.
       const method = this.getRequestMethodStr(requestMethod);
       // NestJS's `Function` is its `(req, res, next)` middleware.
       const middleware = callback as RouterHandler;
-      if (exact) {
-        this.useExactMiddleware(method, converted, middleware);
+      // As `@nestjs/platform-express`, whose `RouterMethodFactory` turns a
+      // request method into `app.get(path, …)`, `app.all(path, …)` and so on,
+      // and only the core's "no method" (`-1`, `forRoutes("path")`) into
+      // `app.use(path, …)`. So a prefix match is that one shape's alone: an
+      // entry naming a method, `RequestMethod.ALL` and each route of
+      // `forRoutes(Controller)` included, matches its path as a route does.
+      if (String(requestMethod) === "-1" && !exact) {
+        this.instance.useMethod(method, converted, middleware);
         return this;
       }
-      this.instance.useMethod(method, converted, middleware);
+      this.useExactMiddleware(method, converted, middleware, exact);
       return this;
     };
   }
@@ -5749,28 +5761,32 @@ export class BunHttpAdapter<
   /**
    * Registers `middleware` for `path` exactly (not as a prefix), for one
    * method or every one (`"all"`), still as middleware rather than a route
-   * handler, so a request it alone matches remains a miss.
+   * handler, so a request it alone matches remains a miss. It serves its path
+   * with a trailing slash too, as every route does.
    *
-   * For the core's exact-match marker: for a wildcard `forRoutes('*')` under
-   * a global prefix it registers `/<prefix>$` beside `/<prefix>/{*path}`,
-   * the `$` meaning "exactly this path". As `@nestjs/platform-express`
-   * (12.1.3, nestjs/nest #17942), the `$` is stripped, and the route serves
-   * its path with a trailing slash too, as every route does. Where the core
-   * runs a middleware once per request (11.2.8, 12.2.0), that is all, as on
-   * platform-express 12.2.0. On an earlier core a request ending in `/` is
-   * skipped, as platform-express 12.1.3 skips it, since the wildcard entry
-   * beside it may match `/api/` too and the middleware must not run twice.
+   * `marked` says the path carried the core's exact-match marker (`$`): for a
+   * wildcard `forRoutes('*')` under a global prefix it registers `/<prefix>$`
+   * beside `/<prefix>/{*path}`, the `$` meaning "exactly this path" (as
+   * `@nestjs/platform-express`, 12.1.3, nestjs/nest #17942). Where the core
+   * runs a middleware once per request (11.2.8, 12.2.0), that changes nothing,
+   * as on platform-express 12.2.0. On an earlier core a marked path skips a
+   * request ending in `/`, as platform-express 12.1.3 skips it, since the
+   * wildcard entry beside it may match `/api/` too and the middleware must not
+   * run twice.
    */
   private useExactMiddleware(
     method: string,
     path: string,
     middleware: RouterHandler,
+    marked: boolean,
   ): void {
     const normalized = method.toUpperCase();
-    const handler: RouterHandler = (req, res, next) =>
-      !coreRunsMiddlewareOnce && req.path.endsWith("/")
-        ? next()
-        : middleware(req, res, next);
+    const handler: RouterHandler = marked
+      ? (req, res, next) =>
+          !coreRunsMiddlewareOnce && req.path.endsWith("/")
+            ? next()
+            : middleware(req, res, next)
+      : middleware;
     // `setRoute` with a `path` compiles an exact match; it is not an endpoint
     // (`useMethod` and `use` register through it the same way, with `group`).
     this.instance.setRoute({
