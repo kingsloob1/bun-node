@@ -50,6 +50,7 @@ function member(name: string, extra: Partial<Manifest> = {}): Manifest {
     name: `@fx/${name}`,
     version: VERSION,
     files: ["dts", "lib"],
+    sideEffects: false,
     scripts: { prepack: "bun scripts/build-declarations.ts" },
     publishConfig: {
       access: "public",
@@ -435,6 +436,9 @@ describe("discovery and order", () => {
       `${at}: a scoped package needs "publishConfig": { "access": "public" }`,
       `${at}: no "files" (what the tarball ships, e.g. ["dts", "lib"])`,
       expect.stringContaining(
+        `${at}: "sideEffects" must be false or`,
+      ) as string,
+      expect.stringContaining(
         `${at}: "scripts.prepack" must build the declarations`,
       ) as string,
       `${at}: no LICENSE file (copy the root's)`,
@@ -447,6 +451,39 @@ describe("discovery and order", () => {
     expect((await runPublish({ root: workspace(EIGHT) }, fakes().io)).ok).toBe(
       true,
     );
+  });
+});
+
+describe("sideEffects", () => {
+  const at = "packages/bun-auth (@fx/bun-auth)";
+
+  /** A workspace of the eight and a ninth member with `sideEffects` as given (`undefined`: none). */
+  function withNinth(sideEffects: Manifest["sideEffects"]): string {
+    const auth = member("bun-auth", { sideEffects });
+    if (sideEffects === undefined) delete auth.sideEffects;
+    return workspace({ ...EIGHT, "bun-auth": auth });
+  }
+
+  it("takes false or a list of the modules with an effect", async () => {
+    for (const sideEffects of [false, ["**/*.css", "./lib/x.ts"]]) {
+      const report = await runPublish(
+        { root: withNinth(sideEffects) },
+        fakes().io,
+      );
+      expect(report.ok).toBe(true);
+    }
+  });
+
+  it("refuses none, true, an empty list or an empty path", async () => {
+    for (const sideEffects of [undefined, true, [], [""]]) {
+      expect(
+        await refusal({ root: withNinth(sideEffects) }, fakes().io),
+      ).toEqual([
+        expect.stringContaining(
+          `${at}: "sideEffects" must be false or`,
+        ) as string,
+      ]);
+    }
   });
 });
 

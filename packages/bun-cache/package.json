@@ -148,6 +148,9 @@
     "lib": "lib",
     "test": "__tests__"
   },
+  "sideEffects": [
+    "./lib/testing/crossprocess-worker.ts"
+  ],
   "files": [
     "dts",
     "lib"

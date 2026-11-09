@@ -120,6 +120,14 @@
     "lib": "lib",
     "test": "__tests__"
   },
+  "sideEffects": [
+    "./lib/provider/testing/racer.ts",
+    "./lib/provider/testing/worker.ts",
+    "./lib/runner/bootstrap/container-entry.ts",
+    "./lib/runner/bootstrap/container-runtime.ts",
+    "./lib/runner/bootstrap/spawn-entry.ts",
+    "./lib/runner/bootstrap/worker-entry.ts"
+  ],
   "files": [
     "docs",
     "dts",

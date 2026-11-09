@@ -1085,27 +1085,29 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   `bun scripts/publish.ts` (`docs/releasing.md`), and `scripts/pack-guard.ts`
   fails a tarball that still names either (publish and consumer-check run it).
 - **A new package is published by `scripts/publish.ts` once it has**: the
-  lerna version, `publishConfig.access: "public"`, `files`, a `prepack` that
-  builds its declarations, a `LICENSE`, a `consumer-check.json`, and
-  `workspace:^` internal dependencies (`docs/releasing.md`, "A new package");
-  the script refuses one without and needs no list. It also needs a
-  `sideEffects` field (below), which the script does not check yet: bun-jobs,
-  bun-nest and bun-cache have no audited field, and it would refuse them.
+  lerna version, `publishConfig.access: "public"`, `files`, a `sideEffects`
+  field (below), a `prepack` that builds its declarations, a `LICENSE`, a
+  `consumer-check.json`, and `workspace:^` internal dependencies
+  (`docs/releasing.md`, "A new package"); the script refuses one without and
+  needs no list.
 - **Browser-facing code is tree-shakable** (the user's rule, 2026-11-08):
   ESM and named exports; no module-level side effects except stylesheet
   imports; subpath exports per area; no server-only module reachable from a
   browser entry. Every published `package.json` declares `sideEffects`, true
   for the whole package: `false`, or the exact modules with an effect at
   load (bun-ui `["**/*.css", "./app/*/main.tsx"]`; bun-common its four
-  `lib/contract/` modules that install the logger resolution). A module that
-  only re-exports drops its bare imports with it, so the importer of an
-  effect module is listed too. The check is each package's
-  `__tests__/treeShaking.test.ts` (bun-contract, bun-client, bun-common,
-  bun-ui): `Bun.build` a one-export browser app, assert its bytes stay under
-  a measured bound and leave out an unrelated module's text, and that each
-  listed effect survives, with negative controls on a copy of the package
-  with the field removed or narrowed. A wrong `false` silently drops real
-  effects in users' builds, so the list is proved, not assumed.
+  `lib/contract/` modules that install the logger resolution; bun-jobs and
+  bun-cache their process and thread entries; bun-nest `false`, its decorators
+  applied by call staying on classes in their own module). A module that only
+  re-exports drops its bare imports with it, so the importer of an effect
+  module is listed too. The check is each package's
+  `__tests__/treeShaking.test.ts`, in all seven: `Bun.build` a one-export app
+  (bun-jobs, bun-cache and bun-nest target Bun), assert its bytes stay under a
+  measured bound, and that each listed effect survives, with negative controls
+  on a copy of the package with the field removed or narrowed. Bun at run time
+  ignores the field, so no other suite can show it wrong, and a wrong `false`
+  silently drops real effects in users' builds: the list is proved, not
+  assumed.
 - **Build**: `bun run build:types` (`scripts/build-declarations.ts`, also run
   on `prepack`). It runs `tsc -p tsconfig.build.json` — tsc, because
   `bun check` never emits — (`emitDeclarationOnly`,

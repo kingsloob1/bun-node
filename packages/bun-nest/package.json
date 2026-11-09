@@ -84,6 +84,7 @@
     "lib": "lib",
     "test": "__tests__"
   },
+  "sideEffects": false,
   "files": [
     "dts",
     "lib"

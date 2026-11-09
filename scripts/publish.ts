@@ -17,9 +17,10 @@
  *    excludes), and publishes every member that is not `private: true`. There
  *    is no list to maintain: a ninth package is published once it meets
  *    {@link memberProblems}' requirements (its version is `lerna.json`'s, a
- *    scoped name has `publishConfig.access: "public"`, `files`, a `prepack`
- *    that builds its declarations, a LICENSE, a `consumer-check.json`, and
- *    internal dependencies on `workspace:^`).
+ *    scoped name has `publishConfig.access: "public"`, `files`, a
+ *    `sideEffects` that is `false` or a list, a `prepack` that builds its
+ *    declarations, a LICENSE, a `consumer-check.json`, and internal
+ *    dependencies on `workspace:^`).
  * 2. **Checks the preconditions**: a clean tree (`git status --porcelain`),
  *    a tag (`next` for a prerelease, `latest` otherwise; `--tag` overrides,
  *    but never `latest` for a prerelease), and `npm whoami`.
@@ -89,6 +90,12 @@ export interface Manifest {
   private?: boolean;
   /** What the tarball ships. */
   files?: string[];
+  /**
+   * The modules with an effect at load, for bundlers' tree shaking: `false`
+   * for none, or a list of paths and globs. Required, and never `true`
+   * (CLAUDE.md, "Packaging types").
+   */
+  sideEffects?: boolean | string[];
   /** Lifecycle and task scripts; `prepack` is required. */
   scripts?: Record<string, string>;
   /** npm's publish settings: `access` and `registry`. */
@@ -261,6 +268,18 @@ export function memberProblems(
   if (!Array.isArray(m.files) || m.files.length === 0)
     problems.push(
       `${at}: no "files" (what the tarball ships, e.g. ["dts", "lib"])`,
+    );
+  if (
+    m.sideEffects !== false &&
+    !(
+      Array.isArray(m.sideEffects) &&
+      m.sideEffects.length > 0 &&
+      m.sideEffects.every((p) => typeof p === "string" && p.length > 0)
+    )
+  )
+    problems.push(
+      `${at}: "sideEffects" must be false or the modules with an effect at load ` +
+        `(e.g. ["**/*.css"]), verified by a tree-shaking test (CLAUDE.md "Packaging types")`,
     );
   if (!/build-declarations|build:types/.test(m.scripts?.prepack ?? ""))
     problems.push(
