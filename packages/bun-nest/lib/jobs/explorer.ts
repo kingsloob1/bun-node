@@ -24,7 +24,7 @@ import type {
 } from "./decorators/consumer";
 import type { EventListenerMetadata } from "./decorators/events";
 import type { JobsHostBinding } from "./JobsHost";
-import type { StartableWorkers } from "./lifecycle";
+import type { StartableWorkers, StartedWorkers } from "./lifecycle";
 import type { BunJobsApplicationRole } from "./applicationRole";
 import type { FailurePolicy } from "./pipeline";
 import type { BunJobsRegistry } from "./registry";
@@ -542,28 +542,81 @@ export class BunJobsExplorer
     await Promise.all(
       this.registry.runnersOf(this.context).map((runner) => runner.start()),
     );
-    if (this.#hasDefinitions) {
-      if (this.#registryWorker === undefined) {
-        this.#registryWorker = (await this.jobs.start(
-          this.options.registryWorker,
-        )) as unknown as BunQueueWorker<any, any, any>;
-      } else {
-        this.#registryWorker.start();
-      }
-    }
+    await this.#startRegistryWorker();
     for (const managed of this.#workers) {
-      if (managed.ran) {
-        managed.worker.start();
-        continue;
-      }
-      managed.ran = true;
-      void managed.worker.run().catch((error: unknown) => {
-        this.#logger.error(
-          `Worker on queue "${managed.worker.queueName}" stopped: ${(error as Error).message}`,
-          (error as Error).stack,
-        );
-      });
+      this.#run(managed);
     }
+  }
+
+  /** {@link StartableWorkers.startWorkers}. */
+  async startWorkers(queues?: readonly string[]): Promise<StartedWorkers> {
+    if (!this.#built) {
+      throw new ConfigError(
+        "The workers are built at onApplicationBootstrap: call moduleRef.init() first",
+      );
+    }
+    if (this.#closing) {
+      throw new ConfigError("The application has closed: its workers are gone");
+    }
+    await this.#storeLimits();
+    const named =
+      queues === undefined
+        ? this.#workers
+        : this.#workers.filter((managed) =>
+            queues.includes(managed.worker.queueName),
+          );
+    const started = named.map((managed) => managed.worker.queueName);
+    // The registry queue's name is `BunJobs`' own, so only its worker knows it. A queue
+    // nothing else serves may be that one, and otherwise there is nothing to run anyway.
+    const unserved = queues?.filter((queue) => !started.includes(queue));
+    if (queues === undefined || unserved?.length) {
+      const registry = await this.#startRegistryWorker();
+      if (
+        registry !== undefined &&
+        (queues === undefined || unserved?.includes(registry.queueName))
+      ) {
+        started.push(registry.queueName);
+      }
+    }
+    for (const managed of named) {
+      this.#run(managed);
+    }
+    return {
+      started,
+      missing: (queues ?? []).filter((queue) => !started.includes(queue)),
+    };
+  }
+
+  /** Starts the worker for `@DefineJob`, or resumes it. */
+  async #startRegistryWorker(): Promise<
+    BunQueueWorker<any, any, any> | undefined
+  > {
+    if (!this.#hasDefinitions) {
+      return undefined;
+    }
+    if (this.#registryWorker === undefined) {
+      this.#registryWorker = (await this.jobs.start(
+        this.options.registryWorker,
+      )) as unknown as BunQueueWorker<any, any, any>;
+    } else {
+      this.#registryWorker.start();
+    }
+    return this.#registryWorker;
+  }
+
+  /** Starts one worker, or resumes it. */
+  #run(managed: ManagedWorker): void {
+    if (managed.ran) {
+      managed.worker.start();
+      return;
+    }
+    managed.ran = true;
+    void managed.worker.run().catch((error: unknown) => {
+      this.#logger.error(
+        `Worker on queue "${managed.worker.queueName}" stopped: ${(error as Error).message}`,
+        (error as Error).stack,
+      );
+    });
   }
 
   /** Parks every running worker; see {@link BunJobsLifecycle.stop}. */

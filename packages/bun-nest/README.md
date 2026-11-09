@@ -120,6 +120,7 @@ Underneath, routing is
   - [Runners: `registerRunner`](#runners-registerrunner)
   - [Starting and draining](#starting-and-draining)
   - [The checks at boot](#the-checks-at-boot)
+  - [Testing jobs: `./jobs/testing`](#testing-jobs-jobstesting)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
@@ -3458,6 +3459,73 @@ The two `ConfigError` classes are different ones: these checks throw bun-common'
 as bun-nest's other modules do, and what bun-jobs throws (a bad `namespace`, a
 closed context) is bun-jobs' own and passes through as it is.
 
+### Testing jobs: `./jobs/testing`
+
+`@kingsleyweb/bun-nest/jobs/testing` runs a job the way a worker would, with no server to set up.
+It is its own entry, so test helpers stay out of a production import graph. `@nestjs/testing` is
+yours to install.
+
+```ts
+import { BunJobsTestingModule, drainJobs, runJob } from "@kingsleyweb/bun-nest/jobs/testing";
+
+const moduleRef = await Test.createTestingModule({
+  imports: [BunJobsTestingModule.forRoot(), EmailsModule],
+}).compile();
+const app = await moduleRef.init();
+
+const outcome = await runJob(app, "emails", "welcome", { to: "ada@example.com" });
+// { id, state: "completed", result: "sent:ada@example.com", attempts: 1, logs: [] }
+```
+
+**`BunJobsTestingModule.forRoot(options?)`** is `BunJobsModule.forRoot()` with a `MemoryDriver` of
+its own, a namespace unique to the call (`test-<uuid>`), `autoStart: false` and
+`shutdown: { timeout: 1_000 }`. Options you give win over those. It provides the same tokens, so your
+modules resolve `@InjectQueue` as usual. So a test file cannot meet another one, in parallel or
+not. A module that imports its own `BunJobsModule.forRoot()` makes two contexts, which the boot
+check refuses: put `forRoot()` in the root module, where a test leaves it out.
+
+**`runJob(app, queue, name, data, options?)`** adds a real job, starts that queue's worker if it is
+stopped, and answers once the job settles, through the real pipeline: guards, pipes, filters, scope.
+
+- A job that fails is an outcome, not a rejection: `state: "dead"`, with `error` and `attempts`.
+- Backoff is `0` unless `options.backoff` says otherwise.
+- `options` is what `add()` takes, plus `context` for a named context and `settleWithin` (4 s), past
+  which it rejects with the job's state. `add()`'s own `timeout` is per attempt.
+- The job is kept once settled, unless `options` asks for its removal.
+- A queue nothing here serves is a `ConfigError`, with nothing added.
+
+**`drainJobs(app, { queues?, context?, settleWithin? })`** runs workers until those queues have
+nothing left to do, for flows and fan-out, and answers the jobs that settled during the call, in the
+order they finished. Left out, `queues` is every queue a worker here serves. Nothing left to do means
+nothing waiting, active or due within `settleWithin`, so a retry's backoff is waited out and a job
+delayed for an hour is left. Past `settleWithin` it rejects, naming the queues still busy.
+
+Both leave the workers they started running, until the application closes. Neither starts a schedule
+or a runner, so an `@Every` does not keep a drain busy; `BunJobsLifecycle.start()` does that.
+
+**Overrides are plain Nest:**
+
+```ts
+const moduleRef = await Test.createTestingModule({ imports: [BunJobsTestingModule.forRoot(), ShopModule] })
+  .overrideProvider(getQueueToken("emails")) // or a typed token, overrideProvider(EmailsQueue)
+  .useValue(fakeQueue)
+  .overrideGuard(FlagGuard) // reaches the job pipeline too
+  .useValue({ canActivate: () => true })
+  .compile();
+```
+
+**The HTTP side** of the same app needs no port either: `adapter.fetch()` takes a `remoteAddress`,
+so an IP-keyed guard or throttle sees the address the test gives.
+
+```ts
+const adapter = new BunHttpAdapter();
+const app = moduleRef.createNestApplication(adapter);
+await app.init();
+
+await adapter.fetch("/signups", { method: "POST", remoteAddress: "10.0.0.4" });
+const settled = await drainJobs(app, { queues: ["emails"] });
+```
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -4030,6 +4098,7 @@ and [the cache module](#the-cache-module), exported **only** from
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
 | Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `Cron`, `Every`, `InjectRunner`, `getRunnerToken`, `runSummonedApplication`, `createProcessorContext`, `InjectSummonController`, `getSummonControllerToken`, `RemoteHandler`, `BunRemoteExecutorModule`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `RunSummonedApplicationOptions`, `RemoteHandlerOptions`, `BunRemoteExecutorModuleOptions`, `BunRemoteExecutorModuleAsyncOptions`, `CronOptions`, `EveryOptions`, `ScheduleOptions`, `RegisterRunnerOptions`, `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions`, `BunRunner`, `BunRunnerOptions`, `RunSummonedOptions`, `SummonController`, `SummonedExit`, `SummonPolicy` |
+| Jobs testing (`./jobs/testing` only) | `BunJobsTestingModule`, `runJob`, `drainJobs`; types `BunJobsTestingModuleOptions`, `RunJobOptions`, `RunJobOutcome`, `DrainJobsOptions` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |

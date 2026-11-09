@@ -357,6 +357,14 @@ export class BunJobsRegistry {
     return found.map(({ worker }) => worker);
   }
 
+  /** One context's workers, for `./jobs/testing`. */
+  startableOf(
+    /** The context's `name`; `undefined` for the default context. */
+    context: string | undefined,
+  ): StartableWorkers | undefined {
+    return [...this.#startable].find((one) => one.context === context);
+  }
+
   /** Records a context's workers, for {@link lifecycle}. */
   addWorkers(
     /** Starts and stops them. */

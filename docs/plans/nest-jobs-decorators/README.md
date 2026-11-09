@@ -2,7 +2,7 @@
 
 **Status (2026-11-09): approved by the user, with every §14 recommendation and
 §16 name accepted (§14 records the answers). PR-n1 to PR-n5 are merged (#721, #722,
-#724, #727, #730), and PR-n7 is built. PR-n6, PR-n8, PR-n9 and PR-n10 are not
+#724, #727, #730), and PR-n7 and PR-n8 are built. PR-n6, PR-n9 and PR-n10 are not
 started.** The sections below were corrected to match what was built, each correction
 marked; §2 still describes `develop` as it was before this work, and what §3 to §12
 assign to those PRs is still a design.
@@ -1865,7 +1865,9 @@ const outcome = await runJob(app, "emails", "welcome", { to: "ada@example.com" }
   - `shutdown: { timeout: 1_000 }`.
 
   It exports the same tokens, so the app's own modules resolve
-  `@InjectQueue` as usual.
+  `@InjectQueue` as usual. It answers `BunJobsModule.forRoot()`'s own module, and
+  options the caller gives win over these. A module that imports its own
+  `BunJobsModule.forRoot()` is two contexts, the boot check's refusal.
 - **`runJob(app, queue, name, data, opts?)`**:
   1. adds a real job;
   2. starts that queue's worker if it is stopped;
@@ -1873,18 +1875,34 @@ const outcome = await runJob(app, "emails", "welcome", { to: "ada@example.com" }
      attempts, with backoff collapsed to `0` unless `opts.backoff`;
   4. returns the outcome, with the job's log.
 
+  As built (PR-n8): the worker starts first, so a queue nothing serves is refused
+  with nothing added. Only that queue's worker starts, never a schedule or a runner,
+  and it stays running. `opts` is `add()`'s options plus `context` and `settleWithin`
+  (default 4 s, under a test's 5 s, rejecting with the job's state): `add()`'s
+  `timeout` is the per-attempt one. The job is kept once settled unless `opts` says
+  otherwise. The outcome also carries `id`.
+
   It goes through the **real** worker and the **real** pipeline: guards,
   pipes, filters, scope. It is the counterpart of `adapter.fetch()` for
   HTTP (CLAUDE.md "Testing without a socket") [S].
 - **`drainJobs(app, { queues? })`** runs workers until every listed queue
   has no demand, for flows and fan-out. It returns the settled jobs.
+
+  As built (PR-n8): no demand means `getDemand().outstanding` is 0 and nothing is
+  due within `settleWithin`, so a retry's backoff is waited out and a job delayed for
+  an hour is left, on two clean looks in a row. It returns only what settled during
+  this call, in the order it finished. `queues` left out means every queue with a
+  worker here, `@DefineJob`'s registry queue included.
 - **Overrides are plain Nest**:
   - `.overrideProvider(getQueueToken("emails")).useValue(fakeQueue)` for a
     producer test;
   - `.overrideProvider(EmailsQueue).useValue(...)` for a typed token;
   - `.overrideGuard(FlagGuard).useValue({ canActivate: () => true })` works,
-    because guards are resolved through the container ECC uses. **[I]**: to
-    be proved in PR-n8.
+    because guards are resolved through the container ECC uses (measured, PR-n8,
+    `jobsTesting.nest.test.ts`).
+
+  They need `@nestjs/testing`, which the repo did not have: bun-nest takes it as a
+  devDependency at the lock's Nest, 12.2.0 exact.
 - **Isolation.** Each `runJob` uses the module's own namespace and memory
   driver, so tests in parallel files (`bun test --parallel`) cannot meet.
 - **The HTTP side of the same app** is tested socket-free with
@@ -2328,7 +2346,7 @@ table says otherwise.
 | `runSummonedApplication` | function | `runSummoned` for a Nest module |
 | `RemoteHandler`, `BunRemoteExecutorModule` | decorator, module | |
 | `BunJobsHealthIndicator`, `BunJobsHealthModule`, `isHealthy` options (`queues`, `maxOutstanding`, `requireWorkers`, `timeout`) | indicator, module, on **`./jobs/terminus`** | |
-| `BunJobsTestingModule`, `runJob`, `drainJobs`, `RunJobOutcome` | module, functions, type, on **`./jobs/testing`** | |
+| `BunJobsTestingModule`, `runJob`, `drainJobs`, `RunJobOutcome` | module, functions, type, on **`./jobs/testing`** | with the types `RunJobOptions`, `DrainJobsOptions`, `BunJobsTestingModuleOptions` |
 | `./jobs/terminus`, `./jobs/testing` (+ `./lib/...` spellings) | package entries | §3.5 |
 | metadata keys `bun-jobs:*` | internal strings | not exported; listed because they are visible to `Reflect` |
 

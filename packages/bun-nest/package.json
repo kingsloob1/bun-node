@@ -42,6 +42,11 @@
       "types": "./dts/jobs/index.d.ts",
       "default": "./lib/jobs/index.ts"
     },
+    "./jobs/testing": {
+      "@kingsleyweb/source": "./lib/jobs/testing/index.ts",
+      "types": "./dts/jobs/testing/index.d.ts",
+      "default": "./lib/jobs/testing/index.ts"
+    },
     "./lib": {
       "@kingsleyweb/source": "./lib/index.ts",
       "types": "./dts/index.d.ts",
@@ -56,6 +61,11 @@
       "@kingsleyweb/source": "./lib/jobs/index.ts",
       "types": "./dts/jobs/index.d.ts",
       "default": "./lib/jobs/index.ts"
+    },
+    "./lib/jobs/testing": {
+      "@kingsleyweb/source": "./lib/jobs/testing/index.ts",
+      "types": "./dts/jobs/testing/index.d.ts",
+      "default": "./lib/jobs/testing/index.ts"
     },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
