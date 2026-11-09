@@ -10,8 +10,15 @@ import { UnrecoverableJobError } from "@kingsleyweb/bun-jobs";
  * the message `"Forbidden resource"`, and that is how it is told apart from
  * what a guard throws itself: a guard's own `ForbiddenException` with that same
  * message is treated alike.
+ *
+ * Its `code`, `"JOB_FORBIDDEN"`, is what tells a denial apart once the job is
+ * stored, in `job.failedReason.code`: the class is gone by then, and the name is
+ * `UnrecoverableJobError`'s.
  */
 export class JobForbiddenError extends UnrecoverableJobError {
+  /** `"JOB_FORBIDDEN"`, which survives into the stored job's `failedReason`. */
+  override readonly code: string = "JOB_FORBIDDEN";
+
   constructor(
     /** Why, with the handler named. */
     message: string,

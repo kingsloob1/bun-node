@@ -3049,7 +3049,8 @@ so applied globally it leaves a job's failure alone.
 | A filter rethrows | fails with what it threw |
 | `UnrecoverableJobError` or `job.fail()` | `dead`, as without Nest |
 
-`JobForbiddenError`'s `name` is `UnrecoverableJobError`'s, which is what bun-jobs keys on.
+`JobForbiddenError`'s `name` is `UnrecoverableJobError`'s, which is what bun-jobs keys on. Its
+`code` is `JOB_FORBIDDEN`, so a stored job's `failedReason.code` says it was a denial.
 Nest's own denial is told apart by its message, `"Forbidden resource"`, so a guard's own
 `ForbiddenException` with that same message is treated alike.
 
