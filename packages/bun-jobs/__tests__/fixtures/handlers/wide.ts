@@ -1,5 +1,5 @@
 import process from "node:process";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Writes one very long line of multi-byte text, so capture's per-line byte cap

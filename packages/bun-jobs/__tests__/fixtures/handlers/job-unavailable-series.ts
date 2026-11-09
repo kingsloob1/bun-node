@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Tries each 2.12 operation an isolated job cannot do — `schedule()`,

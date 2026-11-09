@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import process from "node:process";
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * A well-behaved processor: runs until it is asked to stop, then cleans up and

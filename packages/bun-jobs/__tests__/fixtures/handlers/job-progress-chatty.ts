@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Reports progress for as long as it is allowed to — including after its

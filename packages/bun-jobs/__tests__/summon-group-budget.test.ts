@@ -74,6 +74,22 @@ afterEach(async () => {
   }
 });
 
+/**
+ * Stands the clock still in the middle of a UTC hour, until `afterEach` starts
+ * it again, and answers how to move it on. For a test whose counts must stay in
+ * one budget window: on the real clock, an hour or a day ending part way gives
+ * the group or the queue a fresh count (11 of this file's tests failed when one
+ * did). Far from the edge either way, so neither window can end.
+ */
+function stopClock(): (ms: number) => void {
+  let now = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + HOUR_MS / 2;
+  setSystemTime(new Date(now));
+  return (ms) => {
+    now += ms;
+    setSystemTime(new Date(now));
+  };
+}
+
 /** Triggers off, no cooldown, a 1 ms backoff: every check is one the test asked for. */
 const QUIET: Partial<SummonControllerOptions> = {
   triggers: { onAdd: false, events: false, poll: false },
@@ -265,6 +281,7 @@ describe("the group option", () => {
 
 describe("one budget for several queues", () => {
   it("summons no more than the group's limit across its queues, each event naming the group", async () => {
+    stopClock();
     const { seed, controller, entry, namespace } = await setup();
     const queues = ["q1", "q2", "q3", "q4", "q5"];
     await seed(...queues);
@@ -386,6 +403,7 @@ describe("one budget for several queues", () => {
   });
 
   it("is shared by name across BunJobs groups and records, with nothing duplicated", async () => {
+    stopClock();
     const root = join(dir.path, `root-${++unique}`);
     const driver = createDriver({ type: "file", root });
     const namespace = testNamespace("summon-group-jobs");
@@ -437,6 +455,7 @@ describe("one budget for several queues", () => {
 
 describe("the per-queue budget under a group (A5)", () => {
   it("is off unless set: a queue's own counts past the default limit still summon", async () => {
+    stopClock();
     const { seed, controller, driver, namespace } = await setup();
     await seed("work");
     const { calls, summoner } = recorder();
@@ -461,6 +480,7 @@ describe("the per-queue budget under a group (A5)", () => {
   });
 
   it("applies when set explicitly, on top of the group's, and refuses before charging the group", async () => {
+    const moveClock = stopClock();
     const { seed, controller, entry } = await setup();
     await seed("work");
     const { calls, summoner } = recorder(async () => ({
@@ -475,7 +495,7 @@ describe("the per-queue budget under a group (A5)", () => {
     expect(await one.check()).toMatchObject({ action: "summoned" });
     // Past the 1 ms backoff the `unavailable` set, so the budget is the
     // gate that answers (backoff is checked first).
-    await Bun.sleep(5);
+    moveClock(5);
     expect(await one.check()).toMatchObject({
       action: "skipped",
       reason: "budget",
@@ -486,6 +506,7 @@ describe("the per-queue budget under a group (A5)", () => {
   });
 
   it("stays on with group.budget false, whose counts are still kept", async () => {
+    stopClock();
     const { seed, controller, entry } = await setup();
     await seed("work");
     const { summoner } = recorder();
@@ -507,6 +528,7 @@ describe("the per-queue budget under a group (A5)", () => {
 
 describe("charge, then claim, then refund (§3.5)", () => {
   it("gives the charge back when the queue's claim is lost", async () => {
+    stopClock();
     const { seed, controller, driver, entry } = await setup();
     await seed("work");
     const { calls, summoner } = recorder();
@@ -538,6 +560,7 @@ describe("charge, then claim, then refund (§3.5)", () => {
   });
 
   it("fails closed: a lost claim whose refund is lost too over-counts, and never overspends", async () => {
+    stopClock();
     const { seed, controller, driver, entry } = await setup();
     await seed("work");
     const { calls, summoner } = recorder();
@@ -618,6 +641,7 @@ describe("charge, then claim, then refund (§3.5)", () => {
   });
 
   it("gives the charge back when the provider was never called", async () => {
+    stopClock();
     const { seed, controller, entry } = await setup();
     await seed("work");
     const capabilities: SummonCapabilities = {
@@ -664,6 +688,7 @@ describe("charge, then claim, then refund (§3.5)", () => {
 
 describe("refund after a reset", () => {
   it("never gives back a charge a reset already cleared", async () => {
+    stopClock();
     const { driver, namespace, entry } = await setup();
     const group = resolveSummonGroup({
       name: "g",
@@ -797,6 +822,7 @@ describe("the group's entry", () => {
 
 describe("reset", () => {
   it("clears the group's counts only with { group: true, budget: true }", async () => {
+    stopClock();
     const { seed, controller, driver, namespace } = await setup();
     await seed("a", "b");
     const { summoner } = recorder();
@@ -826,10 +852,8 @@ describe("reset", () => {
     // "The same window" is the point, and the rechecks make this test last
     // about 2 s: on the real clock, a UTC hour ending between `a`'s charge and
     // `b`'s check gave `b` a fresh budget, so it charged instead of telling the
-    // group exhausted (measured: one event, in half the usual time). So the
-    // clock stands still in the middle of an hour.
-    const midHour = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + HOUR_MS / 2;
-    setSystemTime(new Date(midHour));
+    // group exhausted (measured: one event, in half the usual time).
+    const moveClock = stopClock();
     const { seed, controller } = await setup();
     await seed("a", "b");
     const { summoner } = recorder(async () => ({
@@ -843,7 +867,7 @@ describe("reset", () => {
     await b.controller.check();
     await b.controller.reset({ group: true, budget: true });
     // Past `a`'s 1 ms backoff from its `unavailable`.
-    setSystemTime(new Date(midHour + 5));
+    moveClock(5);
     await a.controller.check();
     await b.controller.check();
     expect(

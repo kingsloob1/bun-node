@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /** Returns what it was given, plus the context fields a test can assert on. */
 export default defineHandler<{ value?: unknown }, Record<string, unknown>>(

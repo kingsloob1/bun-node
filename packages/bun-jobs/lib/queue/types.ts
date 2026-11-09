@@ -998,6 +998,24 @@ export type JobProcessor<
   ctx: ProcessorContext,
 ) => TResult | Promise<TResult>;
 
+/**
+ * Types a processor file's default export. Here, in a module with no run-time
+ * imports, as `defineHandler` is in `runner/types`: a processor file is loaded
+ * afresh for every job in a worker thread or a child.
+ *
+ * ```ts
+ * // jobs/resize.ts
+ * export default defineProcessor<{ path: string }, { width: number }>(
+ *   async (job, ctx) => resize(job.data.path, ctx.signal),
+ * );
+ * ```
+ */
+export function defineProcessor<TData = unknown, TResult = unknown>(
+  processor: JobProcessor<TData, TResult>,
+): JobProcessor<TData, TResult> {
+  return processor;
+}
+
 /** The second argument a processor receives. */
 export interface ProcessorContext {
   /**

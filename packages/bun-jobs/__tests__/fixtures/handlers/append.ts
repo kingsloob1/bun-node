@@ -1,5 +1,5 @@
 import { appendFileSync, readdirSync } from "node:fs";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /** How long a held run waits for the others before giving up, ms. */
 const HOLD_LIMIT_MS = 20_000;

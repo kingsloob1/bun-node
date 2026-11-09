@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /**
  * Renews its lock four ways — `ctx.heartbeat()`, `job.extendLock()`,

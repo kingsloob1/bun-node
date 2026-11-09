@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import process from "node:process";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Reports the environment and identity the run's process actually has: every

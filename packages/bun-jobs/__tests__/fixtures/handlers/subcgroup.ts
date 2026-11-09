@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync } from "node:fs";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Creates a cgroup inside its own, as a job running as the worker's user may:

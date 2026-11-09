@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Unwinds when asked, so the escalation never has to reach for a signal.

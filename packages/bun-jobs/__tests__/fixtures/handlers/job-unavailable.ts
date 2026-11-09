@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /** Tries an operation an isolated job cannot do, and returns what it was told. */
 export default defineProcessor<unknown, string>(async (job) => {

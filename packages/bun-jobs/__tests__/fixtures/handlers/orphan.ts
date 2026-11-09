@@ -1,5 +1,5 @@
 import process from "node:process";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Starts a `sleep` it never waits for, and returns its pid: the process a job

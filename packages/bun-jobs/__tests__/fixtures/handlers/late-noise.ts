@@ -1,5 +1,5 @@
 import process from "node:process";
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /**
  * Finishes at once, and leaves output to arrive *after* it has: a grandchild

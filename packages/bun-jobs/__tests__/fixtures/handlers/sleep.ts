@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /** Sleeps for `ms`, honouring the abort signal so it can be stopped. */
 export default defineHandler<{ ms?: number }, string>(async (ctx) => {

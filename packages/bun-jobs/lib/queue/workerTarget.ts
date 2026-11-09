@@ -322,21 +322,7 @@ export interface WorkerTargetAttempt {
   context: ProcessorContext;
 }
 
-/**
- * Types a processor file's default export.
- *
- * ```ts
- * // jobs/resize.ts
- * export default defineProcessor<{ path: string }, { width: number }>(
- *   async (job, ctx) => resize(job.data.path, ctx.signal),
- * );
- * ```
- */
-export function defineProcessor<TData = unknown, TResult = unknown>(
-  processor: JobProcessor<TData, TResult>,
-): JobProcessor<TData, TResult> {
-  return processor;
-}
+export { defineProcessor } from "./types";
 
 /**
  * One entry {@link defineProcessors} dispatches to: a name and its handler,

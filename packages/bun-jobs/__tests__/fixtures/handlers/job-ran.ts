@@ -1,4 +1,4 @@
-import { defineProcessor } from "../../../lib/index";
+import { defineProcessor } from "../../../lib/queue/types";
 
 /** Every worker that ran this processor in this process, by id, in order. */
 const store = globalThis as { __jobRanBy?: string[] };

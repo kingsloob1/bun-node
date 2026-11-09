@@ -1,4 +1,4 @@
-import { defineHandler } from "../../../lib/index";
+import { defineHandler } from "../../../lib/runner/types";
 
 /** Always fails, with a code so the serialised error can be checked. */
 export default defineHandler(() => {
