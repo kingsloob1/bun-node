@@ -171,6 +171,24 @@ Asserted with [`shared/check.ts`](./shared/check.ts), like the tours.
 | [`throttling.ts`](./14-throttle/throttling.ts) | on a served application: a default throttler per route per client with `headers: "legacy"` (`X-RateLimit-*`, the sixth request a `429` with `@nestjs/throttler`'s body and `Retry-After`, the refusal logged by `logLimited` without the address); two instances sharing one count through `cacheThrottleStore(cache)` from `@kingsleyweb/bun-nest/cache`; a service token exempt from the default throttler by its `skipIf` while a strict route (`@SkipThrottle()` plus a `@Throttle()`-declared throttler) still counts it; a sign-in route with two `@Throttle()`-declared limits, one keyed on address and account, one on the address; `@SkipThrottle()` on a health check; the adapter's `throttle` option counting 404s ahead of Nest and answering bun-common's problem document; a bare-number `ttl` failing the boot, and the boot check logging a forgotten guard. See the package README's [Throttling](../../packages/bun-nest/README.md#throttling) |
 | [`refunds.ts`](./14-throttle/refunds.ts) | what counts, through `adapter.fetch()`: `@Throttle({ default: { skipSuccessfulRequests: true, skipFailedRequests: false } })` on a sign-in counting failures only, over the module's `skipFailedRequests` (an export's `500`s and refusals given back); the module's `requestWasSuccessful` counting a `404`; a `@Throttle()`-declared throttler whose `limit` depends on the plan; a non-boolean flag failing the boot |
 
+### 15 — Jobs in Nest
+
+`BunJobsModule` and the decorators on `@kingsleyweb/bun-nest/jobs`: producers,
+consumers and the Nest pipeline around a job. Each file runs on the memory
+driver in an application context (no socket) and asserts with
+[`shared/check.ts`](./shared/check.ts); `helpers/outcomes.ts` is the shared
+"wait for this job to end" helper that `run-all.ts` skips. Run them from this
+directory: decorators on parameters need the working directory's
+`tsconfig.json` (oven-sh/bun#28605). See the package README's
+[Jobs](../../packages/bun-nest/README.md#jobs-bunjobsmodule).
+
+| File | Shows |
+|---|---|
+| [`producers.ts`](./15-jobs/producers.ts) | `BunJobsModule.forRoot` and `registerQueue`; `@InjectQueue("emails")` and `@InjectBunJobs()` (the same objects as the class and `getQueueToken`); a job stored `waiting` with the queue's `defaultJobOptions` and a job's own `attempts` winning; a typed `@QueueToken` class injected by type, with `@ts-expect-error` lines for a wrong payload and an undeclared name, and at run time only the queue's `schema` refusing the payload (an undeclared name is not refused) |
+| [`consumers.ts`](./15-jobs/consumers.ts) | `@Processor` on a service with an injected dependency, an ordinary method and three `@Process(name)` methods (`(job, ctx)` and `@JobData()` styles); a name nobody handles dead at once after one of five attempts; `app.close()` waiting for a job in flight, and that job completing |
+| [`pipeline.ts`](./15-jobs/pipeline.ts) | a guard denying a job (dead at once as `JobForbiddenError`, `getType()` `"bun-jobs"`); `StandardSchemaPipe` on `@JobData()` refusing bad data (dead at once, the pipe's exception as `cause`); an interceptor reshaping results; a filter returning a value completing the job; `UnrecoverableOn`; an unfiltered error retried to exhaustion; `onDenied: "retry"` turning a denial into three attempts |
+| [`boot-refusal.ts`](./15-jobs/boot-refusal.ts) | a class guard on a `useFactory` processor refused at boot with a `ConfigError` (it would otherwise run the job unguarded), with controls: a plain class provider and an instance guard both boot and deny |
+
 ## Checking the examples
 
 ```bash
