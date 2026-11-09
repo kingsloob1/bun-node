@@ -241,6 +241,28 @@ describe("runJob", () => {
     ).rejects.toThrow(/jobs context "other"/);
   });
 
+  it("with no context, on an application with abortOnError on, rejects and leaves the process", async () => {
+    // A child, since what this guards against is the process ending.
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        `${import.meta.dir}/fixtures/jobs-testing/no-context.fixture.ts`,
+      ],
+      { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" },
+    );
+    const [out, err] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+
+    expect(await child.exited, out + err).toBe(0);
+    expect(out.trim().split("\n")).toEqual([
+      "runJob ConfigError: runJob: this application has no default jobs context. Import BunJobsTestingModule.forRoot()",
+      "drainJobs ConfigError: drainJobs: this application has no default jobs context. Import BunJobsTestingModule.forRoot()",
+      "still running",
+    ]);
+  }, 30_000);
+
   it("starts that queue's worker alone, and no schedule", async () => {
     const seen: string[] = [];
 
