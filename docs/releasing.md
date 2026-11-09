@@ -249,4 +249,11 @@ publishable member that lacks any of these, naming each one:
 - **Internal dependencies on `workspace:^`.** A package it requires
   (a dependency or a required peer) must not be `private`.
 
+A new package also needs **`sideEffects`** in its `package.json`: `false`, or
+the list of modules with an effect at load (`["**/*.css"]` and the like), never
+`true` or absent, and proved by the package's `__tests__/treeShaking.test.ts`
+(`CLAUDE.md`, "Packaging types"). The script does not check this yet, so look
+for it yourself: bun-jobs, bun-nest and bun-cache have no audited field, and a
+check would refuse them.
+
 Mark a member `"private": true` to keep it out of the release.
