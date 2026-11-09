@@ -239,6 +239,10 @@ publishable member that lacks any of these, naming each one:
 - **`version`** equal to `lerna.json`'s.
 - **`publishConfig.access: "public"`** if the name is scoped.
 - **`files`**: what the tarball ships, usually `["dts", "lib"]`.
+- **`sideEffects`**: `false`, or the list of modules with an effect at load
+  (`["**/*.css"]` and the like), never `true` or absent, and proved by the
+  package's `__tests__/treeShaking.test.ts` (`CLAUDE.md`, "Packaging
+  types").
 - **A `prepack` that builds its declarations**:
   `bun scripts/build-declarations.ts`, with `scripts/build-declarations.ts`
   and `tsconfig.build.json` copied unchanged from another package. Those
@@ -248,12 +252,5 @@ publishable member that lacks any of these, naming each one:
   `scripts/consumer-check.ts` checks the package as a consumer sees it.
 - **Internal dependencies on `workspace:^`.** A package it requires
   (a dependency or a required peer) must not be `private`.
-
-A new package also needs **`sideEffects`** in its `package.json`: `false`, or
-the list of modules with an effect at load (`["**/*.css"]` and the like), never
-`true` or absent, and proved by the package's `__tests__/treeShaking.test.ts`
-(`CLAUDE.md`, "Packaging types"). The script does not check this yet, so look
-for it yourself: bun-jobs, bun-nest and bun-cache have no audited field, and a
-check would refuse them.
 
 Mark a member `"private": true` to keep it out of the release.
