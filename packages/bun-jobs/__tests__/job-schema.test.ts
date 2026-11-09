@@ -1178,3 +1178,27 @@ describe("the error itself", () => {
     expect(error).not.toBeInstanceOf(UnrecoverableJobError);
   });
 });
+
+describe("a bare schema", () => {
+  /** A queue given these options, as plain JavaScript or `as never` can: the types refuse them. */
+  const queueWith = (schema: unknown) =>
+    new BunQueue("q", {
+      namespace: testNamespace("bare"),
+      driver: new MemoryDriver(),
+      schema,
+    } as never);
+
+  it("is refused on a queue, naming the shape", () => {
+    expect(() => queueWith(z.object({ to: z.string() }))).toThrow(
+      /not a bare schema: use \{ data: schema \}/,
+    );
+  });
+
+  it("control: the same schema under data validates", async () => {
+    const queue = queueWith({ data: z.object({ to: z.string() }) });
+    await expect(
+      queue.add("x" as never, { to: 42 } as never),
+    ).rejects.toBeInstanceOf(JobDataValidationError);
+    await queue.close();
+  });
+});
