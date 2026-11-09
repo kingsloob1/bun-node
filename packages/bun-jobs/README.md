@@ -2086,7 +2086,7 @@ await queue.add("report", {}, { repeat: { every: "1 hour", startAt: "tomorrow at
 | `tz` | `string` | | The IANA time zone the cron expression is read in. It must be a zone `Intl` knows: `add()` throws `ConfigError` naming it otherwise (`repeat.tz does not know the time zone "…"`), before anything is written, and `repeatEvery(interval, { tz })` throws at the call. |
 | `every` | `number \| string` | | Milliseconds, a duration, a cron expression, or a phrase that may also name a start and end. Dates in the phrase fill `startAt` and `endAt` only when those are not given. |
 | `startAt` / `endAt` | `Date \| number \| string` | | The window, as a date, epoch ms, or words. |
-| `limit` | `number` | | Stop after this many occurrences. |
+| `limit` | `number` | | Stop after this many occurrences. Adding a series with none left throws `RepeatExhaustedError` (code `REPEAT_EXHAUSTED`, a `ConfigError`), as does an `endAt` already passed. |
 | `key` | `string` | derived from the options | Identifies the series. Set it when re-adding a series must update it rather than create a new one. |
 | `immediately` | `boolean` | | Run once as soon as the series is created. |
 | `catchUp` | `boolean` | `false` | If the series fell behind while nothing was consuming, replay every missed occurrence, one per completion. When off, the series skips to the next real occurrence. |
@@ -3851,7 +3851,8 @@ dropped with a warning naming them, never refusing a summon.
 
 `jobs.summonController("emails")` returns the controller (from the moment
 `jobs.close()` is called, it throws `JobsClosedError` rather than build one
-nothing would close), and one can be built directly: `new SummonController({ driver, namespace, queue,
+nothing would close; with no policy for the queue, a `ConfigError` with the code
+`NO_SUMMON_POLICY`), and one can be built directly: `new SummonController({ driver, namespace, queue,
 summoner })`. `controller.check()` runs one check now — with every trigger
 off, that is the one-shot form for a cron or a scheduled function.
 

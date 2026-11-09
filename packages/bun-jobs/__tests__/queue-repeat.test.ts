@@ -6,6 +6,7 @@ import {
   ConfigError,
   createDriver,
   MemoryDriver,
+  RepeatExhaustedError,
   nextOccurrence,
   repeatJobId,
 } from "../lib/index";
@@ -192,6 +193,24 @@ describe("repeatable jobs", () => {
         { repeat: { every: 1000, endAt: Date.now() - 1000 } },
       ),
     ).rejects.toThrow(/no occurrences left/);
+  });
+
+  it("says a finished series with its own code, still a ConfigError", async () => {
+    const queue = makeQueue(new MemoryDriver(), testNamespace());
+    const error = await queue
+      .add(
+        "expired",
+        {},
+        { repeat: { key: "s", every: 1000, endAt: Date.now() - 1000 } },
+      )
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RepeatExhaustedError);
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as RepeatExhaustedError).code).toBe("REPEAT_EXHAUSTED");
+    expect((error as RepeatExhaustedError).context.key).toBeString();
+    // Control: a ConfigError of any other kind keeps the general code.
+    expect(new ConfigError("x").code).toBe("CONFIG");
   });
 
   it("removes the series and its pending occurrence", async () => {

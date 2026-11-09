@@ -391,6 +391,18 @@ describe("summon groups: more refusals, and null", () => {
     expect(expandSummonOption(null)).toHaveLength(0);
   });
 
+  it("says no policy with a code of its own, still a ConfigError", () => {
+    const jobs = context(sqliteDriver(), null as unknown as SummonOption);
+    let error: unknown;
+    try {
+      jobs.summonController("emails");
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as ConfigError).code).toBe("NO_SUMMON_POLICY");
+  });
+
   it("refuses a record entry that is not a policy, naming the queue", () => {
     for (const option of [
       [{ emails: undefined }],

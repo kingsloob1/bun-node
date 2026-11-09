@@ -30,6 +30,7 @@
         "defineSummoner",
         "runSummoned",
         "ConfigError",
+        "RepeatExhaustedError",
         "IsolationUnavailableError",
         "ProviderError",
         "encodeJobId",
