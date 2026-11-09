@@ -98,6 +98,12 @@ Underneath, routing is
   - [`@Describe`](#describe)
   - [`DevTypesModule`: the dev type sync](#devtypesmodule-the-dev-type-sync)
   - [`@Invalidates`: live invalidation](#invalidates-live-invalidation)
+- [Jobs: `BunJobsModule`](#jobs-bunjobsmodule)
+  - [The context: `forRoot` and `forRootAsync`](#the-context-forroot-and-forrootasync)
+  - [Queues: `registerQueue` and `@InjectQueue`](#queues-registerqueue-and-injectqueue)
+  - [Typed queues: `@QueueToken`](#typed-queues-queuetoken)
+  - [Several contexts in one application](#several-contexts-in-one-application)
+  - [The checks at boot](#the-checks-at-boot)
 - [The jobs API module](#the-jobs-api-module)
   - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
   - [Sharing the server with gateways](#sharing-the-server-with-gateways)
@@ -132,7 +138,8 @@ bun add -d @types/bun        # optional peer, >= 1.4.2
 `@nestjs/platform-express` is not needed.
 
 `@kingsleyweb/bun-jobs` is an **optional** peer: only
-[the jobs API module](#the-jobs-api-module) imports it, and installing it is
+[`BunJobsModule`](#jobs-bunjobsmodule) and
+[the jobs API module](#the-jobs-api-module) import it, and installing it is
 what makes that subpath compile. See
 [the note there](#installing-bun-jobs-is-what-makes-the-subpath-compile) for
 what `tsc` reports without it.
@@ -2579,6 +2586,180 @@ export class UsersController {
   and its SSE fallback) from the adapter, and `publishTags()` from
   `@kingsleyweb/bun-common/live` publishes by hand.
 
+## Jobs: `BunJobsModule`
+
+[`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)
+as a Nest module, on the **`@kingsleyweb/bun-nest/jobs`** entry (bun-jobs is an
+optional peer, and the package's root never reaches it). One `BunJobs` context
+for the application, and injectable queues:
+
+```ts
+import { BunQueue } from "@kingsleyweb/bun-jobs";
+import { BunJobsModule, InjectQueue } from "@kingsleyweb/bun-nest/jobs";
+
+@Module({
+  imports: [
+    BunJobsModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        namespace: "shop",
+        driver: { type: "redis", url: config.getOrThrow("REDIS_URL") },
+      }),
+    }),
+    EmailsModule,
+  ],
+})
+export class AppModule {}
+
+@Injectable()
+export class SignupService {
+  constructor(@InjectQueue("emails") private readonly emails: BunQueue<Email>) {}
+
+  async signedUp(user: User) {
+    await this.emails.add("welcome", { to: user.email }, { attempts: 3 });
+  }
+}
+
+@Module({
+  imports: [BunJobsModule.registerQueue({ name: "emails" })],
+  providers: [SignupService],
+})
+export class EmailsModule {}
+```
+
+What the module does not have yet is anything that **consumes** a job under
+Nest: a worker is still `jobs.worker(...)` in a provider of your own. Every
+method on `BunJobs` and `BunQueue` (the builder, drafts, `addFlow`, `setLimits`,
+`pause`, `walk`, …) works on what is injected, with no decorator for it.
+
+### The context: `forRoot` and `forRootAsync`
+
+`forRoot(options)` takes every `BunJobs` option (`namespace`, `driver`,
+`defaultJobOptions`, `publishEvents`, `service`, `metrics`, `summon`, …), passed
+through untouched, and these of its own:
+
+| Option     | Default | What it does |
+|------------|---------|--------------|
+| `isGlobal` | `true`  | Registers the module globally, so `registerQueue` in a feature module needs nothing but itself. With `false`, import this same module where the context is injected; a queue reaches it through `registerQueueAsync({ imports: [thatModule], … })`. |
+| `jobs`     | none    | An existing `BunJobs` to borrow instead of building one (and then no `BunJobs` option beside it). |
+| `name`     | none    | The context's name; see [several contexts](#several-contexts-in-one-application). |
+| `token`    | none    | A named class extending `BunJobs<Jobs>`, provided as well, so a typed registry keeps its checks where it is injected. |
+| `logger`   | `new Logger("BunJobs")` | bun-jobs' `logger`. The default is Nest's, so its records reach `app.useLogger()`; `false` drops them; anything `resolveLogger` accepts takes them instead. |
+
+`forRootAsync` takes the same options from a factory (`useFactory` with `inject`
+and `imports`), a class with a `createBunJobsOptions()` method (`useClass`) or a
+provider of one (`useExisting`). `isGlobal`, `name` and `token` stay on the call,
+since Nest needs them before any factory runs. None of the three is a
+`ConfigError`.
+
+The context is injected as the class, `constructor(jobs: BunJobs)`, or with
+`@InjectBunJobs(context?)`; `getBunJobsToken(context?)` is its token.
+
+**Who closes what.** A context the module built closes in
+`onApplicationShutdown`, after the HTTP server has stopped, and takes its driver
+with it. A borrowed one is the application's: the module never closes it. So a
+provider's own `onModuleDestroy` can still enqueue a job, and an enqueue after
+the close fails loudly with `JobsClosedError`. As with any Nest shutdown hook,
+none of this runs on `SIGTERM` unless the app calls `app.enableShutdownHooks()`.
+
+### Queues: `registerQueue` and `@InjectQueue`
+
+```ts
+BunJobsModule.registerQueue(
+  { name: "emails", options: { defaultJobOptions: { attempts: 5 } } },
+  { name: "invoices", context: "billing" },
+  ReportsQueue, // a typed token, below
+);
+BunJobsModule.registerQueueAsync({
+  name: "images",
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    options: { defaultJobOptions: { attempts: config.get("ATTEMPTS") } },
+  }),
+});
+```
+
+`options` are what `jobs.queue(name, options)` takes, `schema` and
+`dataValidation` included, and an entry may leave them out. A call makes the
+queues injectable in the module that imports it: `@InjectQueue(name, context?)`,
+or `getQueueToken(name, context?)` in a provider or a test
+(`"bun-jobs:queue:emails"`, `"bun-jobs:billing:queue:emails"`). One queue
+registered from several feature modules is one queue, created with the options
+the application registered for it, whichever module Nest builds first.
+
+A queue nobody registered is still `jobs.queue(name)` or the builder's
+`toQueue(name)`: registering makes one injectable, and owns its options.
+
+### Typed queues: `@QueueToken`
+
+A parameter decorator cannot see its parameter's type, so
+`@InjectQueue("emails") queue: BunQueue<Wrong>` compiles. A class token closes
+that: it is the injection token and the type at once.
+
+```ts
+@QueueToken("emails") // or @QueueToken("emails", "billing") for a named context
+export abstract class EmailsQueue extends BunQueue<Email, string, "welcome" | "digest"> {}
+
+BunJobsModule.registerQueue(EmailsQueue); // or { name: EmailsQueue, options }
+
+constructor(private readonly emails: EmailsQueue) {} // or @InjectQueue(EmailsQueue)
+
+await this.emails.add("welcome", { count: 1 }); // a compile error: the wrong payload
+await this.emails.add("nope", { to });           // a compile error: an undeclared name
+```
+
+Nothing is ever an instance of the class: the provider hands back the real
+`BunQueue`, and `@InjectQueue("emails")` reaches the same object. It must be a
+**named** class: a function returning an anonymous class fails declaration emit
+under `declaration: true` (`TS4094`, once per private member of `BunQueue`). A
+token's types can come from the schemas the queue is registered with, through
+`JobMapFromSchemas`, so the compile-time check and the run-time one are one
+object.
+
+### Several contexts in one application
+
+A context is one namespace on one backend. To talk to two, import the module
+twice, and name the second:
+
+```ts
+BunJobsModule.forRoot({ namespace: "shop", driver }),
+BunJobsModule.forRoot({ name: "billing", namespace: "billing", driver: billingDriver }),
+```
+
+Everything then takes the name last: `@InjectBunJobs("billing")`,
+`@InjectQueue("emails", "billing")`, `registerQueue({ name: "emails", context:
+"billing" })`, `getQueueToken("emails", "billing")`. Only the unnamed context is
+provided under the class `BunJobs`.
+
+### The checks at boot
+
+The module checks the application in `onModuleInit`, before any job can run, and
+fails the boot with one bun-common `ConfigError` that lists every problem:
+
+- **Two registrations of one queue with different options**, naming the modules
+  that imported them. A queue's options apply only when it is created, and bun-jobs
+  would warn and ignore the later set; a declarative registration can say so up
+  front. Data compares by value and `schema`, `logger`, `dateParser` and
+  `publishGate` by identity, so register one schema object rather than two that
+  read alike. A registration with no options asks for nothing and never conflicts.
+  A `registerQueueAsync` that finds the queue already created by a bare
+  registration counts as different too, rather than losing its options.
+- **Two `forRoot()`s for one context.** Give the others a `name`.
+- **Decorator metadata that is off.** Bun reads `experimentalDecorators` and
+  `emitDecoratorMetadata` from the `tsconfig.json` of the **working directory**,
+  not the file's ([oven-sh/bun#28605](https://github.com/oven-sh/bun/issues/28605)),
+  and with them off it drops parameter decorators without a word, so Nest injects
+  `undefined`. The check names the classes that would get it, and the directory:
+  run from the application's root, or set both options in that `tsconfig.json`.
+  bun-nest's own classes apply their decorators by call, so they work either way,
+  and an application whose classes do have their metadata (built ahead of time,
+  say) boots without one.
+
+The two `ConfigError` classes are different ones: these checks throw bun-common's,
+as bun-nest's other modules do, and what bun-jobs throws (a bad `namespace`, a
+closed context) is bun-jobs' own and passes through as it is.
+
 ## The jobs API module
 
 [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
@@ -3141,7 +3322,8 @@ itself is in the package root and never reaches bun-cache.
 
 Everything below is exported from the package root; see
 [`lib/index.ts`](./lib/index.ts). The two exceptions are
-[the jobs API module](#the-jobs-api-module), which is exported **only** from
+[`BunJobsModule`](#jobs-bunjobsmodule) and
+[the jobs API module](#the-jobs-api-module), which are exported **only** from
 `@kingsleyweb/bun-nest/jobs` (equivalently `@kingsleyweb/bun-nest/lib/jobs`),
 and [the cache module](#the-cache-module), exported **only** from
 `@kingsleyweb/bun-nest/cache` (equivalently `@kingsleyweb/bun-nest/lib/cache`).
@@ -3149,6 +3331,7 @@ and [the cache module](#the-cache-module), exported **only** from
 | Group | Exports |
 |---|---|
 | Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
+| Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `QueueToken`, `getBunJobsToken`, `getQueueToken`; types `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
