@@ -29,11 +29,13 @@ the tarball with npm.
 5. **`bun scripts/publish.ts`** (or `bun run release`): asks once for the
    npm one-time code, then publishes, verifies, tags and releases.
 6. **Deprecate what the release retired**, if anything
-   ([Retiring a package](#retiring-a-package)). For 3.0.0-rc.1, that is
-   `@kingsleyweb/bun-jobs-ui` and `@kingsleyweb/bun-api-docs-ui`.
+   ([Retiring a package](#retiring-a-package)). 3.0.0-rc.1 retired
+   `@kingsleyweb/bun-jobs-ui` and `@kingsleyweb/bun-api-docs-ui`; 3.0.0-rc.2
+   retires nothing.
 7. **Move `latest` where a candidate supersedes one**
    ([Prereleases and promotion](#prereleases-and-promotion)). For
-   3.0.0-rc.1, that is bun-contract, bun-cache, bun-jobs and bun-client.
+   3.0.0-rc.2, that is bun-contract, bun-cache, bun-jobs, bun-client and
+   bun-ui.
 
 ## The version-bump PR
 
@@ -184,20 +186,22 @@ You can also point `latest` at the candidate itself
 (`npm dist-tag add @kingsleyweb/<pkg>@3.0.0-rc.1 latest`), but that leaves
 a prerelease as `latest`.
 
-**For 3.0.0-rc.1, do that** (the maintainer's decision, 2026-11-08): rc.0 is
-superseded, and with `latest` left at it a plain `bun add` of these four
-installs rc.0. After `publish.ts` has finished, with `--otp=<code>` if npm
-asks:
+**While there is no final 3.x, do that for each candidate** (the maintainer's
+decision, 2026-11-08, for 3.0.0-rc.1): the last candidate is superseded, and
+with `latest` left at it a plain `bun add` of these installs it. rc.1 holds a
+bug rc.2 fixes, so this matters. After `publish.ts` has finished, with
+`--otp=<code>` if npm asks:
 
 ```bash
-npm dist-tag add @kingsleyweb/bun-contract@3.0.0-rc.1 latest
-npm dist-tag add @kingsleyweb/bun-cache@3.0.0-rc.1 latest
-npm dist-tag add @kingsleyweb/bun-jobs@3.0.0-rc.1 latest
-npm dist-tag add @kingsleyweb/bun-client@3.0.0-rc.1 latest
+npm dist-tag add @kingsleyweb/bun-contract@3.0.0-rc.2 latest
+npm dist-tag add @kingsleyweb/bun-cache@3.0.0-rc.2 latest
+npm dist-tag add @kingsleyweb/bun-jobs@3.0.0-rc.2 latest
+npm dist-tag add @kingsleyweb/bun-client@3.0.0-rc.2 latest
+npm dist-tag add @kingsleyweb/bun-ui@3.0.0-rc.2 latest
 ```
 
 bun-common and bun-nest keep `latest` at 2.2.0 (their last final release)
-until 3.0.0; bun-ui's first publish sets its own. Check with
+until 3.0.0. Check with
 `npm view @kingsleyweb/<pkg> dist-tags`.
 
 ## Retiring a package

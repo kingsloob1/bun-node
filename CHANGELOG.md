@@ -4,6 +4,72 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
+## 3.0.0-rc.2 (2026-11-09)
+
+<!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
+
+The third release candidate of 3.0.0. It fixes a bug where a refused request could run a bun-jobs route, brings bun-jobs into NestJS with decorators and the Nest pipeline, and makes bun-nest pass on every Nest release up to 12.4.1. Install it from npm's `next` tag:
+
+```bash
+bun add @kingsleyweb/bun-common@next
+bun add @kingsleyweb/bun-nest@next @kingsleyweb/bun-jobs@next
+```
+
+### Read this first: middleware that guards a path can stop guarding it
+
+**A `forRoutes` entry that names a method no longer runs on the paths below it**, as on Express. Middleware on `{ path: "admin", method: RequestMethod.GET }` runs on `/admin`, not on `/admin/users`. **An authentication or authorisation middleware relying on the old match silently stops protecting those paths, and the routes keep answering.** An app moved from Express is safe, because that protection never existed there; check any app written against bun-nest.
+
+To keep the match, use `forRoutes("admin")` for every method, or `{ path: "admin{/*rest}", method: RequestMethod.GET }` for one. `{ path: "*", method: RequestMethod.ALL }` is unaffected.
+
+### Fixed: a refused request could run a bun-jobs route
+
+A route with an optional body read a body bun-common had refused as "no body", and ran on its defaults. A `POST` to `/queues/mail/drain` with a bad `Content-Encoding` answered `200` and emptied the queue. The caller had to be authorized for the route already, so this was not a way past `authorize`. The same gap covered `summon`, job `retry`, runner `trigger`, `resume` and `kill`, the worker actions and provider `validate`. Such a request now answers `400` or `415`, and upgrading from rc.1 is recommended for this alone.
+
+### Breaking changes since rc.1
+
+Coming from 2.2.0, read the entries below first.
+
+- **`forRoutes` naming a method** matches as a route (above). So does each route of `forRoutes(Controller)`, which could also run twice, or on a path with no route.
+- **A body declared JSON must be an object or an array**, on every bun-common and bun-nest server. A top-level `null`, number, string or boolean answers `400`, and a charset that is not `utf-*` answers `415`. `charset=utf8` is still accepted, a deliberate difference from Express. Turn strictness off with the request option `strictJson: false`, `parseBody.contentTypes.json.opts.strict`, or `useBodyParser("json", { strict: false })`. A body with no `Content-Type` is unchanged.
+- **`PUT /queues/:queue/limits` no longer takes `null`.** `DELETE /queues/:queue/limits` removes a queue's limits. The jobs UI uses it.
+
+### bun-jobs in NestJS
+
+`@kingsleyweb/bun-nest/jobs` now has the whole producer and consumer side ([plan](docs/plans/nest-jobs-decorators/README.md)):
+
+- **`BunJobsModule`**, with `@InjectQueue`, `@InjectBunJobs` and typed `@QueueToken` classes.
+- **`@Processor` and `@Process`**, one worker per queue, starting at bootstrap and draining on `app.close()`, with request scope and `@DefineJob`.
+- **The Nest pipeline around a job**: guards, interceptors, pipes, filters and global enhancers, with parameter decorators such as `@JobData()` and `@CurrentJob()`. A guard's denial or a validation failure ends the job with no retry, unless `onDenied` or `onInvalid` says otherwise.
+- **Events and scheduling**: `@OnWorkerEvent` and its siblings, and `@Cron` and `@Every` as repeat jobs, once per occurrence across replicas.
+- **`runSummonedApplication`, `createProcessorContext`, `@RemoteHandler`** and `BunRemoteExecutorModule`.
+- **`guardsAuthorize`**, so Nest guards decide `authorize` for the management API and the jobs UI. It fails closed.
+- **`./jobs/testing`** (`BunJobsTestingModule`, `runJob`, `drainJobs`) and **`./jobs/terminus`** (a health indicator, with `@nestjs/terminus` as an optional peer).
+
+### bun-nest on current Nest
+
+- **Nest 12.3 to 12.4.1 work.** A probe of Nest's internals crashed from 12.3.0, and `GET /<prefix>/` skipped middleware Express runs.
+- **Nest 11.2.8 and 11.2.9 pass.** Files an upload stored are removed when a pipe rejects the request, and a WebSocket exception whose `cause` cannot be serialised reaches the client without it.
+- **On 12.3 and later,** a returned `Error` at 400 or above answers `{ statusCode, message }`, so its enumerable properties no longer reach the client. Over-limit bodies reach `@Catch(HttpException)`. On earlier releases a returned `Error` still sends its properties, as Express does there.
+- **A `StreamableFile` failing mid-body** resets the connection from 11.2.8 and 12.3.0, rather than reading as a complete `200`.
+- **On every release,** `HEAD` of a `StreamableFile` keeps its length and closes its source, `Content-Type` is completed as `res.set()` does, and a returned symbol sends its string. A returned function stays an empty answer, a deliberate difference from Express, which sends its source.
+- **`@Emits`**: an invalid emit throws to the caller again once a client's asynchronous writes have drained. It was logged instead for the rest of that client's life.
+
+### bun-jobs
+
+- **`runSummoned` gains `beforeExit` and `beforeExitTimeout`**, for what must close last around a worker, under the hard backstop.
+- **`RepeatExhaustedError`** (code `REPEAT_EXHAUSTED`) and the code `NO_SUMMON_POLICY`, both still a `ConfigError`, so a caller need not match a message. `ConfigError` takes an optional `code`.
+- **A bare `schema`** (not `{ data: schema }`), which validated nothing, now throws.
+
+### Every package
+
+Every package declares `sideEffects`, proved by a bundle test, and `scripts/publish.ts` refuses one without it. One small export bundles to its own size: bun-jobs' error class went from 1,855,737 bytes to 226.
+
+### Known and still open
+
+- The repository's lock is still on Nest 12.2.0. Moving it to 12.4.1 comes next; 12.4.1 is tested as a matrix column.
+- bun-nest's health indicator has follow-ups in progress: a worker parked with `BunJobsLifecycle.stop()` reads as down, and `requireWorkers` is always down on a driver with no worker records when there is demand.
+- `oven-sh/bun#48380`: a `Response` or `Request` built from a string keeps a BOM. It does not affect a body received over a socket.
+
 ## 3.0.0-rc.1 (2026-11-08)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
