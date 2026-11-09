@@ -117,6 +117,12 @@
   },
   "main": "lib/index.ts",
   "types": "dts/index.d.ts",
+  "sideEffects": [
+    "./lib/contract/describe.ts",
+    "./lib/contract/guard.ts",
+    "./lib/contract/index.ts",
+    "./lib/contract/logger.ts"
+  ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
