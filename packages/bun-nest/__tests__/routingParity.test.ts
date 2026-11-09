@@ -98,7 +98,7 @@ describe("BunHttpAdapter.createMiddlewareFactory", () => {
     const register = adapter.createMiddlewareFactory(RequestMethod.GET);
     register("/api/*", passThrough);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(adapter.instance.routes().map((route) => route.group)).toEqual([
+    expect(adapter.instance.routes().map((route) => route.path)).toEqual([
       "/api/{*path}",
     ]);
   });

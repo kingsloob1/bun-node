@@ -35,6 +35,11 @@
  *   serves `/api/` too, as platform-express's does there; on an earlier
  *   core it skips `/api/`, which the wildcard entry serves, so the
  *   middleware never runs twice. The last step shows that entry alone.
+ * - Only a string entry is a prefix match. `forRoutes("cats")` is Express's
+ *   `app.use("/cats", …)`, so it runs on `/cats/1`. `forRoutes({ path: "cats",
+ *   method })` and each route of `forRoutes(CatsController)` are `app.get(…)`,
+ *   matched as a route is, so they do not, on every Nest. A path can say it:
+ *   `{ path: "cats{/*rest}", method }` runs on both.
  * - Both behaviours are gated on what the installed core does, never
  *   on a version string: `filterMiddleware` asking a stand-in adapter for
  *   its matching options, and `MiddlewareModule.prototype.registerHandler`
@@ -196,8 +201,41 @@ class ExactMatchingAdapter extends BunHttpAdapter {
 
 /* ------------------------------------------------------------------ */
 /** Starts `module` on `adapter` (with a global prefix, if given); it never listens. */
+/** A route on each path the `forRoutes` shapes are checked on. */
+@Controller()
+class ShapesController {
+  @Get([
+    "by-string",
+    "by-string/:id",
+    "by-method",
+    "by-method/:id",
+    "by-all",
+    "by-all/:id",
+    "by-recipe",
+    "by-recipe/:id",
+  ])
+  answer() {
+    return { handler: "shapes" };
+  }
+}
+
+/** The `forRoutes` shapes, each on a path of its own. */
+@Module({ controllers: [ShapesController] })
+class ShapesModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(mark)
+      .forRoutes(
+        "by-string",
+        { path: "by-method", method: RequestMethod.GET },
+        { path: "by-all", method: RequestMethod.ALL },
+        { path: "by-recipe{/*rest}", method: RequestMethod.GET },
+      );
+  }
+}
+
 async function start(
-  module: typeof ExcludeModule | typeof PrefixModule,
+  module: typeof ExcludeModule | typeof PrefixModule | typeof ShapesModule,
   adapter: BunHttpAdapter,
   prefix?: string,
 ) {
@@ -410,6 +448,39 @@ step("The core's exact entry, /api$, on its own");
       `skipped: the core does not run a middleware once per request before Nest 11.2.8 and 12.2.0; 1 /api$ check skipped on Nest ${NEST_VERSION}`,
     );
   }
+}
+
+/* ------------------------------------------------------------------ */
+step("forRoutes: a string is a prefix, a method matches as a route");
+{
+  const adapter = new BunHttpAdapter();
+  const app = await start(ShapesModule, adapter);
+  const shapes = await runs(adapter, [
+    "/by-string",
+    "/by-string/1",
+    "/by-method",
+    "/by-method/1",
+    "/by-all",
+    "/by-all/1",
+    "/by-recipe",
+    "/by-recipe/1",
+  ]);
+  await app.close();
+  show("each shape on its path and below it", shapes);
+  checkEqual(
+    'forRoutes("by-string") runs below its path; { path, method } and RequestMethod.ALL do not; a path can say it',
+    shapes,
+    {
+      "/by-string": "200 mw×1",
+      "/by-string/1": "200 mw×1",
+      "/by-method": "200 mw×1",
+      "/by-method/1": "200 mw×0",
+      "/by-all": "200 mw×1",
+      "/by-all/1": "200 mw×0",
+      "/by-recipe": "200 mw×1",
+      "/by-recipe/1": "200 mw×1",
+    },
+  );
 }
 
 for (const line of skippedLines) show(line);

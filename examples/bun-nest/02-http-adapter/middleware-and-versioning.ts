@@ -9,9 +9,9 @@
  * Worth knowing:
  *
  * - Nest hands each `consumer.apply(...).forRoutes(...)` entry to the adapter's
- *   `createMiddlewareFactory(method)`, which registers it with
- *   `BunRouter.useMethod`: method-scoped, run in registration order ahead of
- *   the route handler, and prefix-matched like Express `use(path)`.
+ *   `createMiddlewareFactory(method)`, run in registration order ahead of the
+ *   route handler. A string entry is prefix-matched, like Express `use(path)`;
+ *   an entry naming a method, like `app.get(path)` (`middleware-matching.ts`).
  * - Every versioning type except `URI` is enforced by `applyVersionFilter`,
  *   which wraps each versioned handler. A request whose version does not match
  *   calls `next()`, so the next candidate route gets it; a request no route

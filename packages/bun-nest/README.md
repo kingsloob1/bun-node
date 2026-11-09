@@ -510,11 +510,33 @@ interceptors and `setGlobalPrefix` do not apply to it. Mount before
 ### Nest middleware
 
 `consumer.apply(...).forRoutes(...)` works as usual. Nest hands each entry to
-`createMiddlewareFactory(method)`, which registers it with
-`BunRouter.useMethod`. Each entry is method-scoped and runs in registration
-order ahead of the route handler. Its path is prefix-matched, like Express's
-`use(path)`. Middleware receives a `BunRequest` and a `BunResponse`. A global
-prefix (`app.setGlobalPrefix`) applies as usual.
+`createMiddlewareFactory(method)`, and it runs in registration order ahead of
+the route handler. Middleware receives a `BunRequest` and a `BunResponse`. A
+global prefix (`app.setGlobalPrefix`) applies as usual.
+
+Which paths an entry runs on depends on its shape, as on Express, on every Nest:
+
+| Entry | On Express | Runs on | Does not run on |
+|---|---|---|---|
+| `forRoutes("users")` | `app.use("/users", …)` | `/users` and everything below it, for every method | `/usersx` |
+| `forRoutes({ path: "users", method: RequestMethod.GET })` | `app.get("/users", …)` | `GET` and `HEAD` of `/users` and `/users/` | `/users/1` |
+| `forRoutes({ path: "users", method: RequestMethod.ALL })` | `app.all("/users", …)` | every method of `/users` and `/users/` | `/users/1` |
+| `forRoutes(UsersController)` | `app.<method>(…)` per route | each route's own method and path | anything else under the controller's path |
+
+To run on a path and everything below it for one method, say so in the path:
+
+```ts
+consumer.apply(audit).forRoutes({ path: "users{/*rest}", method: RequestMethod.GET });
+```
+
+`BunRouter.useMethod(method, path, …)`, used directly, stays a prefix match.
+
+**Up to 3.0.0-rc.1, an entry naming a method was a prefix match too**, unlike
+Express: `{ path: "admin", method: RequestMethod.GET }` ran on `GET /admin/users`,
+and `forRoutes(AdminController)` on anything under the controller's path. A
+middleware that was relied on to cover a subtree, an authentication check above
+all, no longer runs there: give it `forRoutes("admin")`, or say so in the path as
+above.
 
 From Nest 11.2.8 and 12.2.0, the core asks the adapter how its router matches paths
 (`getRouteMatchingOptions()`) and matches `exclude()` routes the same way.
@@ -3956,7 +3978,7 @@ describes the conventions they share.
 | `02-http-adapter` | [`responses.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/responses.ts) | a status Express refuses (`0`, `NaN`) on Nest 12, a `StreamableFile` whose client leaves, a handler that writes and then throws |
 | `02-http-adapter` | [`hooks.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/hooks.ts) | `setOnRequestHook`, `setOnResponseHook` and `addBeforeWriteHook`: refusing or holding a response before it is written |
 | `02-http-adapter` | [`route-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/route-options.ts) | Nest 12's `routeResolutionStrategy` and `routeConflictPolicy` (`NestFactory.create()` options), with duplicate and shadowed routes |
-| `02-http-adapter` | [`middleware-matching.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-matching.ts) | which requests a middleware runs for: `exclude()` matched as the router matches (`getRouteMatchingOptions()`, Nest 12.2.0), `forRoutes("*")` under a global prefix |
+| `02-http-adapter` | [`middleware-matching.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-matching.ts) | which requests a middleware runs for: `exclude()` matched as the router matches (`getRouteMatchingOptions()`, Nest 12.2.0), `forRoutes("*")` under a global prefix, and each `forRoutes` shape |
 | `03-file-uploads` | [`interceptors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/03-file-uploads/interceptors.ts) | every upload interceptor, `@UploadedFile(s)`, memory, disk and custom storage, upload errors, interceptor-side parsing |
 | `03-file-uploads` | [`module-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/03-file-uploads/module-options.ts) | `MulterModule.register()` / `registerAsync()`, platform-express's own `MulterModule`, route options over the module's |
 | `03-file-uploads` | [`removal-errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/03-file-uploads/removal-errors.ts) | a custom storage whose `removeFile` rejects: the reply still sent, the failure logged through Nest's logger |
