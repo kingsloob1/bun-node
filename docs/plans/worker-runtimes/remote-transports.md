@@ -1373,9 +1373,11 @@ the global `EventSource`, which typechecks and throws.
 > its documentation, because it follows the WHATWG rules in full: a leading
 > BOM, CR, LF and CRLF line ends (split across chunks too), comments
 > returned, no dispatch without data, digits-only `retry`, and
-> `maxEventLength`. An AST test bans `EventSource` in `lib/`. The SSE plan
-> in `bun-native-routes/README.md` may later move the parser to
-> `@kingsleyweb/bun-common/sse` (its PR-sse5, not started). The stream
+> `maxEventLength`. An AST test bans `EventSource` in `lib/`. The parser
+> now lives in `@kingsleyweb/bun-common/sse` (lifted verbatim in PR-sse2,
+> #633); since PR-sse5, `lib/remote/protocol/sse.ts` re-exports that copy
+> and bun-common's encoder (`encodeSseEvent`) for the executor's writer,
+> and bun-jobs keeps only the protocol's own SSE tests. The stream
 > framing (a) and re-attachment (b) on the gateway are PR-2a8.
 
 **(b) Re-attachment with `Last-Event-ID` (2a, feature `stream-resume`).** When
