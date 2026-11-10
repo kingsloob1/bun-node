@@ -748,10 +748,58 @@ export class FeedController {
 As with any `@Res()` handler, Nest's interceptors do not see the response,
 and once the stream is open an exception filter can no longer answer.
 
+**One event to many clients: `channelObservable()`.** bun-common's
+[broadcast channel](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#broadcast-channels-createssechannel)
+(`createSseChannel()`: an initial state per client, `Last-Event-ID` replay,
+topics, a bus between processes) serves `@Sse()` through
+`channelObservable(channel, options)`:
+
+```ts
+import { channelObservable } from "@kingsleyweb/bun-nest";
+import { createSseChannel } from "@kingsleyweb/bun-common/sse";
+import { Controller, Headers, MessageEvent, Sse, SseSignal } from "@nestjs/common";
+import { Observable } from "rxjs";
+
+export const prices = createSseChannel({ initial: () => [{ event: "snapshot", data: book.snapshot() }], replay: 100 });
+
+@Controller("prices")
+export class PricesController {
+  @Sse()
+  stream(
+    @Headers("last-event-id") lastEventId?: string,
+    @SseSignal() signal?: AbortSignal, // Nest 11.2.0 and later
+  ): Observable<MessageEvent> {
+    return channelObservable(prices, { lastEventId, signal, topics: ["eur"] });
+  }
+}
+
+prices.send({ event: "tick", data: { p: 101.5 } }); // anywhere: a service, a job
+```
+
+The subscriber gets the initial state (or, after a `Last-Event-ID` the
+channel holds, the events since), then live events. It leaves the channel
+when Nest unsubscribes (the client left, `app.close()`) or when `signal`
+aborts, and its stream ends when the channel closes. Three things to know:
+
+- **Ids.** Nest numbers events that carry no `id`, so an initial-state
+  event reaches the client as `id: 1`; a reconnect with it is a miss and
+  gets the initial state again, which is correct. With `replay`, the
+  channel's own ids pass through.
+- **Heartbeat.** The channel's heartbeat reaches only writer subscribers, so
+  `channelObservable()` sends its own comment every `heartbeatMs` (15 s; `0`
+  turns it off) on a Nest that writes comment events (detected by
+  `@SseSignal()`, 11.2.0 and later). On 11.1 the adapter's idle-timeout
+  exemption keeps a quiet stream open.
+- **One encode per event is lost**, since Nest formats each event per
+  subscriber. To keep it, subscribe the response itself:
+  `@Get() stream(@Req() req, @Res() res) { prices.subscribe(req, res); }`
+  opens `res.sse()` and queues the channel's bytes as they are.
+
 See
-[`sse.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sse.nest.test.ts)
+[`sse.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sse.nest.test.ts),
+[`sseEdges.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sseEdges.nest.test.ts)
 and
-[`sseEdges.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sseEdges.nest.test.ts),
+[`sseChannel.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sseChannel.nest.test.ts),
 which check each point above.
 
 ### Versioning
