@@ -11,7 +11,10 @@
  * - the writer: `SseWriter` (what `res.sse()` returns), and
  *   `sseResponse()` for a standalone `Response`;
  * - the reader: `SseParser` and `readSse` (the HTML standard's parsing
- *   rules, lifted from bun-jobs).
+ *   rules, lifted from bun-jobs);
+ * - the broadcast channel: `createSseChannel()` (PR-sse2b, §16.14), one
+ *   event to many streams, with an initial state, replay, topics and a
+ *   cross-process transport.
  *
  * ```ts
  * app.get("/events", (req, res) => {
@@ -26,6 +29,17 @@
  * Browser-safe: nothing here imports a Bun or Node API
  * (`__tests__/sse/browserSafety.test.ts`).
  */
+export {
+  createSseChannel,
+  SseChannel,
+  type SseChannelOptions,
+  type SseChannelTransport,
+  type SseInitialContext,
+  type SseReplayOutcome,
+  type SseSubscribeOptions,
+  type SseSubscription,
+  type SseTransportEnvelope,
+} from "./channel";
 export {
   sse,
   type SseDataFormat,

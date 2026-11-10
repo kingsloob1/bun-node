@@ -1915,9 +1915,117 @@ Bun.serve({
 `@kingsleyweb/bun-common/sse` is the browser-safe entry for all of it. It
 has the declaration `sse({ … })` (also exported from the root), the writer,
 `sseResponse`, the wire format (`formatSseEvent`, and
-`encodeSseEvent` to encode one event once for many streams) and the
+`encodeSseEvent` to encode one event once for many streams), the
 standard parser (`SseParser`, and `readSse(body)` to iterate a response's
-events, since Bun has no `EventSource`).
+events, since Bun has no `EventSource`) and the broadcast channel below.
+
+#### Broadcast channels: `createSseChannel()`
+
+A channel sends one event to many streams: express-sse's conveniences (an
+initial state for each new client, a ready route handler, a list sent as one
+event per item) on top of the writer's guarantees, plus resumption, topics
+and a bus between processes.
+
+```ts
+import type { BunRequest } from "@kingsleyweb/bun-common";
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+import { createSseChannel } from "@kingsleyweb/bun-common/sse"; // also from the root
+
+const prices = createSseChannel({
+  initial: async (ctx) => [{ event: "snapshot", data: await book.snapshot() }], // or a list
+  replay: 100, // keep the last 100 events for Last-Event-ID; default 0 (off)
+  writer: { maxQueuedBytes: 8 * 1024 * 1024 }, // each subscriber's writer
+});
+
+const app = new BunHttpAdapter();
+app.get("/prices", prices.handler()); // express-sse's `sse.init`
+app.get("/rooms/:id", prices.handler({ topics: (req: BunRequest) => [`room:${req.params.id}`] }));
+app.get("/custom", (req, res) => {
+  prices.subscribe(req, res, { topics: ["vip"] });
+});
+Bun.serve({ routes: { "/raw": (req, server) => prices.response(req, { server }) } });
+
+prices.send({ event: "tick", data: { p: 101.5 } }); // the number of subscribers it reached
+prices.send({ data: "hi" }, { topic: "room:7" }); // that topic's subscribers only
+prices.sendList(rows, { event: "row" }); // one event per item: express-sse's `serialize`
+prices.setInitial([{ event: "snapshot", data: next }]); // express-sse's `updateInit`; `clearInitial()` its `dropInit`
+prices.size; // subscribers now
+prices.close(); // ends every stream; later requests get 204
+```
+
+- **One encode, no waiting.** `send()` encodes the event once and queues the
+  same bytes on every subscriber's writer without awaiting any, so a client
+  that stopped reading never stalls the others: its own writer disconnects
+  it past `maxQueuedBytes`, and the channel forgets it. (For one stream,
+  where waiting for the client is right, use the writer's awaitable
+  `send()`.)
+- **The initial state** goes to each new subscriber alone, before any live
+  event, even when `initial` is asynchronous (live events wait for it). A
+  rejected `initial` goes to `onError` and the waiting events still go out.
+  Unlike express-sse, a client connecting never re-sends it to the others.
+- **Replay.** With `replay: N`, events sent without an `id` get one, and the
+  last N are kept. A client reconnecting with a `Last-Event-ID` among them
+  gets the events after it instead of the initial state
+  (`subscription.replay === "hit"`; `"current"` when it is the newest). An id
+  the channel does not hold, because it is too old, from another process
+  instance, or not one of its ids, is a miss: the client gets the initial
+  state, and a function `initial` is told (`ctx.replay === "miss"`,
+  `ctx.lastEventId`), so it can send a `reset` event or a fuller snapshot.
+  Part of the buffer is never sent on a miss, which would hide the gap. Ids
+  are compared as exact strings, and the assigned ones start with a prefix
+  unique to the channel instance (`idPrefix` sets it), so after a restart an
+  old id is a miss, never a wrong match. The bound is a count, not bytes.
+- **Topics.** `send(message, { topic })` reaches that topic's subscribers; a
+  send without one reaches everyone; a subscriber with no `topics` gets
+  broadcasts only. Replay is filtered the same way.
+- **One heartbeat** timer for the channel (`heartbeatMs`, 15 s; `0` turns
+  it off), skipped after an interval with a broadcast. Subscribers' writers
+  send none of their own, and each request is still exempt from Bun's
+  `idleTimeout` (`subscribe()` opens `res.sse()`; give `response()` the
+  `server`).
+- **A closed channel answers `204`**, which tells `EventSource` to stop
+  reconnecting.
+- **Lower level.** `attach(writer, opts)` subscribes a writer you opened
+  (with `heartbeatMs: 0`); `listen(fn, opts)` subscribes a function that
+  gets each message, for code that formats events itself (bun-nest's
+  `channelObservable()` for `@Sse()`). Each returns an `SseSubscription`:
+  `replay`, `replayed`, `ready` (the initial state or replay is queued) and
+  `unsubscribe()`. A writer subscriber is removed when its writer closes,
+  which is how a client leaving is noticed, served and through `fetch()`
+  alike.
+
+**Across processes.** A channel is process-local. Give it a `transport` and
+each local `send()` is delivered at once and published; events from other
+processes are delivered, and kept for replay with their sender's id, so a
+client can reconnect to any instance that saw the event. The channel ignores
+its own echo. Ordering is the order each process receives events in, which
+the bus decides. No bus ships with the package; Redis pub/sub, Postgres
+`LISTEN` or NATS fit the interface in a few lines:
+
+```ts
+import type { SseChannelTransport, SseTransportEnvelope } from "@kingsleyweb/bun-common/sse";
+
+const transport: SseChannelTransport = {
+  publish: (envelope) => redis.publish("prices", JSON.stringify(envelope)),
+  subscribe: (listener) => {
+    const handler = (text: string) => listener(JSON.parse(text) as SseTransportEnvelope);
+    void subscriber.subscribe("prices", handler);
+    return () => void subscriber.unsubscribe("prices", handler);
+  },
+};
+const prices = createSseChannel({ replay: 100, transport });
+```
+
+The envelope (`origin`, `message`, `topic`) is JSON-serialisable. A
+publish that throws or rejects goes to `onError` (logged by default); the
+local delivery has already happened.
+
+**From express-sse.** `new SSE(initial)` is `createSseChannel({ initial })`,
+`sse.init` is `channel.handler()`, `sse.send(data, event, id)` is
+`channel.send({ data, event, id })`, `sse.serialize(list)` is
+`channel.sendList(list)`, and `updateInit`/`dropInit` are
+`setInitial`/`clearInitial`. String data is sent as it is (express-sse
+JSON-quotes it), and ids are the channel's, not per connection.
 
 ### Validation
 

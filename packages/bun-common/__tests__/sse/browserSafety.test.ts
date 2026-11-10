@@ -57,7 +57,7 @@ async function bundle(entry: string) {
 }
 
 describe("the sse subpath in a browser bundle", () => {
-  it("has the writer, the format and the parser, and nothing of the server", async () => {
+  it("has the writer, the format, the parser and the channel, and nothing of the server", async () => {
     const { result, code, modules } = await bundle(join(LIB, "sse/index.ts"));
     expect(result.success).toBe(true);
     for (const name of [
@@ -65,10 +65,11 @@ describe("the sse subpath in a browser bundle", () => {
       "encodeSseEvent",
       "readSse",
       "sseResponse",
+      "createSseChannel",
     ]) {
       expect(code).toMatch(new RegExp(`function\\*? ${name}\\b`));
     }
-    for (const name of ["SseWriter", "SseParser"]) {
+    for (const name of ["SseWriter", "SseParser", "SseChannel"]) {
       expect(code).toContain(`class ${name}`);
     }
     expect(
@@ -84,6 +85,7 @@ describe("the sse subpath in a browser bundle", () => {
       "contract/sse.ts",
       "contract/transport.ts",
       "logging.ts",
+      "sse/channel.ts",
       "sse/declaration.ts",
       "sse/format.ts",
       "sse/index.ts",

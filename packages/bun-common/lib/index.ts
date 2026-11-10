@@ -434,6 +434,7 @@ export {
  * the parser. Also the browser-safe subpath `@kingsleyweb/bun-common/sse`.
  * ------------------------------------------------------------------ */
 export {
+  createSseChannel,
   encodeSseEvent,
   formatSseEvent,
   readSse,
@@ -451,6 +452,14 @@ export {
   type SseSource,
   SseWriter,
   type SseWriterInit,
+  SseChannel,
+  type SseChannelOptions,
+  type SseChannelTransport,
+  type SseInitialContext,
+  type SseReplayOutcome,
+  type SseSubscribeOptions,
+  type SseSubscription,
+  type SseTransportEnvelope,
   type SseWriterOptions,
 } from "./sse";
 export {
