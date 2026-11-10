@@ -1,12 +1,20 @@
 # bun-jobs in NestJS: modules, decorators and the Nest pipeline for jobs
 
-**Status (2026-11-09): approved by the user, with every §14 recommendation and
-§16 name accepted (§14 records the answers). PR-n1 to PR-n5 are merged (#721, #722,
-#724, #727, #730), and PR-n6 to PR-n10 are built; PR-n10 is the last. As built, its playground is
-`playground/nest-jobs.ts`, an entry of its own beside `nest-gateway.ts`, since `index.ts` stays
-Nest-free.** The sections below were corrected to match what was built, each correction
-marked; §2 still describes `develop` as it was before this work, and what §3 to §12
-assign to those PRs is still a design.
+**Status (2026-11-10): complete.** Approved by the user on 2026-11-09, with every §14
+recommendation and §16 name accepted (§14 records the answers). Every PR is merged:
+PR-n1 #721, PR-n2 #722, PR-n3 #724, PR-n4 #727, PR-n5 #730, PR-n6 #741, PR-n7 #737 (with
+bun-jobs' `beforeExit` hook, #736), PR-n8 #738, PR-n9 #742, PR-n10 #747. Follow-ups merged
+after them: the `runJob` and `drainJobs` lookup (#745), the health indicator's parked,
+ended and default-queues fixes (#746), `JOB_FORBIDDEN` (#748), and bun-jobs' error codes
+`REPEAT_EXHAUSTED` and `NO_SUMMON_POLICY` (#732). The examples are
+`examples/bun-nest/15-jobs/` (#725, #749). PR-n1 to PR-n9 shipped in 3.0.0-rc.2; the
+follow-ups and the playground are on `develop` for the next release. The playground is
+`playground/nest-jobs.ts`, an entry of its own beside `nest-gateway.ts`, since `index.ts`
+stays Nest-free; it is checked through `fetch` (`playground/nest-jobs-smoke.ts`), and the
+review in a browser that §15 asks of the UI owner is still owed. Not in this plan, and not
+built: the warm-pool target (Q11), `BunJobsGatewayModule` (GW's PR-g2), a jobs UI module
+(Q17) and OpenTelemetry spans.** The sections below were corrected to match what was built,
+each correction marked; §2 describes `develop` as it was before this work.
 
 Implementation plan for integrating `@kingsleyweb/bun-jobs` into NestJS
 through `@kingsleyweb/bun-nest`. The user asked for this on 2026-10-10:
