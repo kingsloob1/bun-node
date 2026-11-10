@@ -12,10 +12,10 @@ changed.** `file:line` at `e80ab379`, relative to `packages/`. Markings as in
 TC. **BNR** is [`bun-native-routes/README.md`](../bun-native-routes/README.md)
 (its §16 owns the SSE writer).
 
-**Status (2026-11-03): approved by the user** (TC §14, Q22; names as in
-TC §16). **PR-S1 is built** (branch `feat/bun-client-sse`; TC's Status
-row has what it ships, its departures and the names awaiting approval).
-BNR PR-sse2 (§4) **is built** (2026-11-03, branch
+**Status (2026-11-10): approved by the user, and merged** (TC §14, Q22;
+names as in TC §16). **PR-S1 merged 2026-11-03, #628** (branch
+`feat/bun-client-sse`; TC's Status row has what it ships, its departures and the names awaiting approval).
+BNR PR-sse2 (§4) **merged 2026-11-03, #633** (branch
 `feat/bun-common-sse-writer`): all four additions, as `res.sse({ contract,
 validation, ids: "auto", resume, retry, heartbeatMs })`, with an end-to-end
 test against this client (`bun-client/__tests__/sseServer.test.ts`), and

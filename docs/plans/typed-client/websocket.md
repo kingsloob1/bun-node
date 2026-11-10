@@ -17,20 +17,20 @@ unless it says otherwise. Markings as in TC: **[S]** source, **[M]** measured
 [`nest-typed-routes.md`](nest-typed-routes.md). Evidence:
 [`evidence/transports/ws-typing/`](evidence/transports/README.md).
 
-**Status (2026-11-02): approved by the user** (TC §14, Q19–Q21; names as in
-TC §16 and §13.3 here). **Nothing is built.** The next PRs are TC's **PR-K**,
-**PR-M1** and **PR-C1**; this sub-plan's PRs follow them as TC §15 orders.
+**Status (2026-11-10): approved by the user** (TC §14, Q19–Q21; names as in
+TC §16 and §13.3 here). **Complete**: PR-W1 #627, PR-W2 #630, PR-W3 #634 and
+PR-W4 #637 merged on 2026-11-03, PR-W4's follow-ups #679 to #681 on 2026-11-08.
 **The reply-id mismatch is fixed by PR-W1**: `docs/asyncapi.ts:617`
 documents a reply that echoes the request's id, which the handler dispatch
-(`channel.ts:296-308`) never sends (§2, §10.1). **PR-W1 is built**
-(2026-11-03, branch `feat/bun-common-channel-server`; TC's Status row):
-§10.1–10.4; §10.5 is not in it. **PR-W2 is built** (2026-11-03, branch
+(`channel.ts:296-308`) never sends (§2, §10.1). **PR-W1 merged**
+(2026-11-03, #627, branch `feat/bun-common-channel-server`; TC's Status row):
+§10.1–10.4; §10.5 is not in it. **PR-W2 merged** (2026-11-03, #630, branch
 `feat/bun-client-channel`; TC's Status row): the client of §3–§8, the
-generator's `Channels`; `"bun-nest"` is PR-W3's. **PR-W3 is built**
-(2026-11-03, branch `feat/bun-client-nest-codec`; TC's Status row): §11's
+generator's `Channels`; `"bun-nest"` is PR-W3's. **PR-W3 merged**
+(2026-11-03, #634, branch `feat/bun-client-nest-codec`; TC's Status row): §11's
 codec, the generator reading `gatewayAsyncApi()`'s packets, NTR §7's
 shared maps; its names (the ack as the sent type `"<event> ack"`,
-`ChannelDescriptor.codec`) **approved by the user on 2026-11-03**. **PR-W4 is built** (2026-11-03, branch
+`ChannelDescriptor.codec`) **approved by the user on 2026-11-03**. **PR-W4 merged** (2026-11-03, #637, branch
 `feat/live-invalidation`; TC's Status row): §9, with `live()` in bun-client's
 `./query` (TC §16; the `./live` of §9 is bun-common's entry), and
 bun-cache's existing `invalidate` event as the cache source; its names and
@@ -384,7 +384,7 @@ publishTags(["user:42"]);
   client over the channel's `fallback` endpoint.
 - It is authenticated by the app's `authorize`, like bun-jobs' API
   (`bun-jobs/lib/api/config.ts:543`) [S].
-- **Follow-ups, built 2026-11-08** (README's status row "PR-W4 follow-ups"):
+- **Follow-ups, merged 2026-11-08, #679 to #681** (README's status row "PR-W4 follow-ups"):
   a pluggable bus carries invalidations between processes (`connectLiveBus`,
   `liveInvalidation({ bus })`, bun-cache's `cacheLiveBus`), each process
   numbering what arrives in its own epoch, with a `gap` whenever one may have

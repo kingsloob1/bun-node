@@ -7,11 +7,11 @@ out, with why.
 Written 2026-11-02 against `develop` at `e80ab379`. **No product code was
 changed.** Markings as in TC.
 
-**Status (2026-11-03): approved by the user** (TC §14, Q26; names as in
-TC §16). **Built**: the named-operation proxy (§2, in PR-C1) and **PR-C9**
-(§3, §4, and bun-common's `RouteDoc.request.files`; TC's Status row says
-what and which new names await approval). Upload progress over XHR stays
-later, on demand.
+**Status (2026-11-10): approved by the user** (TC §14, Q26; names as in TC
+§16). **Merged**: the named-operation proxy (§2, in PR-C1, #593) and **PR-C9**
+(#613 and #614, 2026-11-03) (§3, §4, and bun-common's
+`RouteDoc.request.files`; TC's Status row says what and which new names await
+approval). Upload progress over XHR stays later, on demand.
 
 ---
 

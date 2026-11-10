@@ -24,40 +24,43 @@ Every main plan is a folder named after it (the user's decision, 2026-10-11):
 Links between plans are relative, so a move changes them: after moving a
 file, check every link into and out of it, `#anchors` included.
 
-## Handoff (2026-10-22): where every plan stands
+<a id="handoff-2026-10-22-where-every-plan-stands"></a>
 
-On 2026-10-22 the user stopped every Claude agent so that development could
-continue with another model. **Nothing is in flight.** No agent is running,
-no worktree holds uncommitted work, and no local commit is missing from
-GitHub. The only unmerged work is two pushed PRs of bun-validate V5c. Start
-with [`docs/agentic-setup.md`](../agentic-setup.md), "Handoff (2026-10-22)":
-it covers the machine, the open branches and the maintainer's standing rules.
-Then read the plan you are about to work on.
+## Where every plan stands (2026-11-10)
 
-develop is at `bc2b1a5f` (#501). Verify any state below against
-`git log origin/develop` and `gh pr list` before acting on it: this table is
-as of that commit.
+Checked on 2026-11-10 against `origin/develop` at `ae01cfe9` (#752): the
+merged PRs, `gh pr list` and the code. **There are no open PRs.** Verify any
+state below against `git log origin/develop` and `gh pr list` before acting
+on it: this table is as of that commit. The handoff of 2026-10-22 (every agent
+stopped so that another model could continue) is in
+[`docs/agentic-setup.md`](../agentic-setup.md), "Handoff (2026-10-22)", which
+still covers the machine and the maintainer's standing rules. Then read the
+plan you are about to work on.
 
-| Plan | State on 2026-10-22 | Next | Where to resume |
+| Plan | State on 2026-11-10 | Next | Where to resume |
 |---|---|---|---|
-| [`bun-validate/`](bun-validate/README.md) | **in progress**, the user's current priority. Group 1 (V0–V3c) merged, with its follow-ups; V6, V4 and V5a merged. **V5c open**: #515, with its examples fix #517 stacked on it; gated, now conflicting with develop in the plan README only | finish V5c; then **V7a**, V7b, V13; then groups 3 and 4 | its [Handoff](bun-validate/README.md#handoff-2026-10-22-how-to-resume): the open PRs and how to land them, the decisions not yet recorded elsewhere, V7a's review conditions, two questions still to ask the user |
+| [`bun-validate/`](bun-validate/README.md) | **complete but for one V11 item**: V0–V3c (#463, #470, #477, #482, #484, #495), V4 #502, V5a #507, V5c #515, V5b #530, V6 #501, V7a #522, V7b #523, V8 #525, V9 #526, V10 (inside bun-cache's PR-C1, #544), V12 #528, V13 #524, AD (b0) #527; V11 inferred done but for one item: its bun-common half is `res.sse({ contract })` in bun-native-routes' PR-sse2 (#633), its Nest half `@Validate`'s per-event `@Sse()` checks (#523); V3c's per-event `variants()` on an SSE writer is not built (no `variant` in `lib/sse/`) | V11's per-event `variants()`, if still wanted | its Status |
 | [`nestjs-12-parity/`](nestjs-12-parity/README.md) | **complete** (PR-0 to PR-11 and three additions merged; PR-11 as #467) | none; the version matrix stays live (CLAUDE.md, "Nest versions") | its Status |
 | [`bun-lint-fmt/`](bun-lint-fmt/README.md) | **through PR E** (#462): `bun lint` and `bun fmt` are the gate | **PR F**: remove ESLint and Prettier; its precondition is met; it needs the user's go-ahead | its [Handoff](bun-lint-fmt/README.md#handoff-2026-10-22) |
-| [`worker-runtimes/`](worker-runtimes/README.md) and [`summon-compute/`](worker-runtimes/summon-compute/README.md) | Phases 0, 1 and 1r merged; Phase 1.5 merged except the cloud providers; summon groups ([`summon-multi-queue.md`](worker-runtimes/summon-compute/summon-multi-queue.md)) complete, its two open items carried into 1.5d by #393 | **held** by the user's order: 1.5c (AWS, Fly), 1.5d (Google, Azure), 1.5e (Render, SSH), 1.5g (live verification), 1.5s (the stability gate), none started; Phase 2 per its own §11 | each plan's Status (2026-10-11); nothing has changed since |
-| [`bun-native-routes/`](bun-native-routes/README.md) | the routing question is answered (`Bun.serve({ routes })` gives no speed-up on 1.4.3; oven-sh/bun#44176 and #44177 filed, #41363 commented); the **SSE helpers** (§16, PR-sse1 to sse5) and the broadcast channel with express-sse's conveniences (§16.14, planned in #412) are **not started** | **held**; PR-sse2 also carries bun-validate's V11 | §16 |
-| [`bun-cache/`](bun-cache/README.md) | **in progress**: PR-C1 merged (#544); PR-C2 (the file driver, stamp-mode tags, the kit's two-process pass and bus-gap case) merged (#546); PR-C3 (the SQLite driver, with an opt-in `maxEntries` cap) merged (#547); PR-H0 (bun-common: `addResponseTransform` `{ first }`, `cacheControl()`/`formatCacheControl()`/`parseCacheControl()`) merged (#548); `fenced` reported for a local invalidation merged (#549); PR-C4 (Postgres, MySQL, MariaDB; `tables` and `syncSchema` on every SQL-family driver) merged (#551); PR-N1 (bun-nest `./cache`: `BunCacheModule`, `@InjectCache`, `@Cacheable`/`@CachePut`/`@CacheEvict`, and bun-cache's loader `noStore()`) merged (#552); PR-H1 (`bun-cache/http`: `cacheResponse`, `coalesceRequests`, `addCacheTags`) merged (#553); PR-T1 (multi-tier: `l1`, `redisBus`, `pgBus`) merged (#554); PR-C5 (the Redis driver; `cluster` refused until Bun's client supports it) merged (#555); PR-C6 (the MongoDB driver: change-stream or tailable-cursor bus, opt-in `maxEntries`) merged (#556); PR-C7 (the S3 driver: stamp-mode tags, counters and locks on conditional writes it signs itself; SeaweedFS in `setup-databases.ts`) in this PR | the plan's order: the cloud drivers (PR-C8–C11, each after its spike), PR-H2, PR-N2, PR-K1, PR-B1, the playground page | the plan's Status |
-| [`api-docs-generation/`](api-docs-generation/README.md) | plan only | bun-validate's group 4 (AD (b0), V12, AD (e)) builds on it | the plan, and bun-validate §4.11–§4.12 |
-| [`typed-client/`](typed-client/README.md) (with [`nest-typed-routes.md`](typed-client/nest-typed-routes.md)) | plan only | **held**; reads bun-validate's runtime metadata (§4.11) | the plan |
-| [`bun-views/`](bun-views/README.md) | PR-C (#320) and PR-C2 (#328) merged; PR-0 and PR-1 to PR-8 not started | **held** | its Status |
+| [`worker-runtimes/`](worker-runtimes/README.md) and [`summon-compute/`](worker-runtimes/summon-compute/README.md) | Phases 0, 1 and 1r merged; Phase 1.5 merged except the cloud providers; summon groups ([`summon-multi-queue.md`](worker-runtimes/summon-compute/summon-multi-queue.md)) complete, its two open items carried into 1.5d by #393 | **held** by the user's order: 1.5c (AWS, Fly), 1.5d (Google, Azure), 1.5e (Render, SSH), 1.5g (live verification), 1.5s (the stability gate), none started; Phase 2 per its own §11 | each plan's Status (2026-10-11); nothing has changed since but PR-B4 (#379) and its UI and examples (#383, #386) merging |
+| [`bun-native-routes/`](bun-native-routes/README.md) | the routing question is answered (`Bun.serve({ routes })` gives no speed-up on 1.4.3; oven-sh/bun#44176 and #44177 filed, #41363 commented); the **SSE helpers**: PR-sse1 #267, PR-sse2 #633 (with the typed client's four additions) and S10 #663 merged; the broadcast channel (PR-sse2b, §16.14), PR-sse3 and PR-sse5 not started, PR-sse4 partly done | **held** | §16 |
+| [`bun-cache/`](bun-cache/README.md) | **complete**: PR-C1 to PR-C8, PR-C10, PR-C11, PR-H0 to PR-H2b, PR-N1, PR-N2, PR-T1, PR-B1, PR-K1, PR-C1b and PR-R1 (#544 to #586), the playground #572, [`encryption.md`](bun-cache/encryption.md)'s PR-Z1 to PR-E3 (#567, #571, #574, #577, #579), the speed work (#595 to #623) and the driver follow-ups (#674, #676); PR-C9 (Upstash over REST) deferred by the user (2026-10-28) | none; [`bun-jobs-s3-driver.md`](bun-cache/bun-jobs-s3-driver.md) is a separate proposal, unbuilt beyond its S3 test server (#560) | the plan's Status |
+| [`api-docs-generation/`](api-docs-generation/README.md) | **complete except (g)**: (b0) #527, (b) #529, (a) #531, (c) #532, (d) #533, (a2) #534, (b2) #535, (e) #539, (f) #541 and #542, tag groups #629, `defaultTags` #632; (b1) shipped as bun-validate's V3a (#482) | (g), the swagger bridge: optional, and §11 says it may be dropped | its Status |
+| [`typed-client/`](typed-client/README.md) (with [`nest-typed-routes.md`](typed-client/nest-typed-routes.md)) | **complete**: PR-K #592, PR-C1 #593, PR-M1 #594, PR-M2 #596, PR-C2 #597, PR-C3 #599, PR-C4 #600 (follow-ups #626), PR-C5 #608, PR-C6 #611, PR-C8 #612, PR-C9 #614, PR-W1 #627, PR-S1 #628, PR-W2 #630, PR-W3 #634, PR-W4 #637 (follow-ups #679 to #681), PR-G1 #638, PR-R1 #639, PR-R2 #640, NTR #641 to #643, the pilot #648 and #649, the examples #651, the 2026-11-08 follow-ups #685 to #689 | the on-demand items only (`./vue`, `./svelte`, `./solid`, `./preact`, upload progress, a `"bun-jobs"` codec), and SSR's `<ApiHydrate>` after bun-views' PR-5 | its Status |
+| [`bun-views/`](bun-views/README.md) | PR-C (#320), PR-C2 (#328) and PR-0 (#324) merged; PR-1 to PR-8 not started | **held** | its Status |
 | [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | **complete** (PR-n1 to PR-n10 merged, #721 to #747, with follow-ups #745, #746, #748; PR-n1 to PR-n9 shipped in 3.0.0-rc.2) | none; the playground's browser review is owed | its Status |
+| [`bun-ui/`](bun-ui/README.md) | BU-1 #666, BU-2 #708, BU-3 #709 and BU-5 #710 merged (the old names cleaned up in #713), released in 3.0.0-rc.1 (#712); BU-4 (the shared kit) not started | BU-4, which may follow rc.1; bun-security's PR-U1 builds on it | its Status |
+| [`bun-security/`](bun-security/README.md) | approved 2026-11-07; its foundations merged: trustProxy #653, the throttle T1 to T3 #654 to #656; nothing of the package built | **held**: building M1 waits for the user's go-ahead | its Status |
 | [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
 
 **Held** means the user has not scheduled it, not that it is blocked. The
-user's order (2026-10-17): Nest 12 parity (done), then BunValidate complete
-and transport-agnostic, then BunValidate in Nest, then the rest. Ask the
-user before starting any held plan.
+user's order (2026-10-17): Nest 12 parity, then BunValidate complete and
+transport-agnostic, then BunValidate in Nest (all three done), then the rest.
+Ask the user before starting any held plan.
 
-**Pushed branches that are not PRs.** Two `wip/` branches preserve the only
+**Pushed branches that are not PRs.** *Historical: neither `wip/` branch is on
+GitHub any more (`git ls-remote origin 'refs/heads/wip/*'` is empty on
+2026-11-10).* Two `wip/` branches preserved the only
 stash entries in the repository. They are old, and both were superseded by
 merged work. Each is a stash commit: the first parent is its base, the
 second the index, the third (when there is one) the untracked files. Inspect
@@ -153,7 +156,7 @@ blindly.
     stage costs, `file-type` costs, Bun `formData()` against busboy (speed and
     20 behaviour probes), urlencoded parser comparison.
 - **[`typed-client/`](typed-client/README.md)** — a type-aware client
-  library for every transport bun-node serves (revised and approved by the user 2026-11-02; nothing built): types
+  library for every transport bun-node serves (revised and approved by the user 2026-11-02; built 2026-11-02 to 2026-11-08, #592 to #689, as `@kingsleyweb/bun-client` and `@kingsleyweb/bun-contract`): types
   from the server's contracts through its OpenAPI and AsyncAPI documents (or
   inferred in a monorepo), validation of both directions, an SWR data layer,
   live sync.
@@ -188,7 +191,8 @@ blindly.
     every data layer and validator considered; and Nest controllers turned
     into the same model through `DiscoveryService` on bun-nest.
 - **[`bun-cache/`](bun-cache/README.md)** — `@kingsleyweb/bun-cache`: caching
-  over pluggable drivers, with HTTP and Nest utilities.
+  over pluggable drivers, with HTTP and Nest utilities. **Complete**
+  (2026-11-10): #544 to #623, #674, #676; PR-C9 deferred by the user.
   - [`bun-jobs-s3-driver.md`](bun-cache/bun-jobs-s3-driver.md) — bun-jobs on
     S3: a driver, a blob store, or an archive.
   - [`encryption.md`](bun-cache/encryption.md) — at-rest encryption
@@ -222,7 +226,7 @@ blindly.
     the real `createCache`; zstd, gzip, deflate and Brotli at four sizes on
     JSON, HTML and incompressible bytes, sync and async.
 - **[`bun-security/`](bun-security/README.md)** — `@kingsleyweb/bun-security`
-  and its UI as bun-ui's `/security` (approved 2026-11-07, all open questions answered as recommended; the UI's package changed by the user on 2026-11-08, [`bun-ui/`](bun-ui/README.md); nothing built yet): a
+  and its UI as bun-ui's `/security` (approved 2026-11-07, all open questions answered as recommended; the UI's package changed by the user on 2026-11-08, [`bun-ui/`](bun-ui/README.md); its foundations, trustProxy #653 and the throttle #654 to #656, merged; nothing of the package built yet): a
   request-defence engine (lists, bans, counted rules and escalation, request
   shape, safe rules, deception, challenges, sensitive-endpoint profiles, API
   keys, response controls) on the trust-proxy and throttle foundations, a
@@ -247,9 +251,9 @@ blindly.
     below the handler, a duplicate-`Host` reproduction, and the signing
     primitives (Ed25519, HMAC).
 - **[`bun-ui/`](bun-ui/README.md)** — `@kingsleyweb/bun-ui` (approved
-  2026-11-08, all open questions answered as recommended; to be built before
-  3.0.0-rc.1: BU-1 now, BU-2, BU-3 and BU-5 once the follow-up tracks have
-  landed, BU-4 may follow rc.1): one package for every UI, `/jobs` and
+  2026-11-08, all open questions answered as recommended; BU-1, BU-2, BU-3 and BU-5
+  merged, #666 and #708 to #710, and released in 3.0.0-rc.1; BU-4 may follow
+  rc.1): one package for every UI, `/jobs` and
   `/docs` first, then bun-security's `/security`; bun-jobs-ui and
   bun-api-docs-ui moved in with `git mv`, a shared kit (shell, CSP, SRI,
   assets, `unauthorized`, design system, DOM-test harness), domain packages
@@ -264,7 +268,8 @@ blindly.
     follow the files; a new file needs one `git add`).
 - **[`api-docs-generation/`](api-docs-generation/README.md)** — auto-generated
   API documentation: OpenAPI 3.1 for the HTTP adapter, AsyncAPI 3.0 for the
-  WebSocket adapter.
+  WebSocket adapter. **Complete except the optional (g)** (2026-11-10): #527
+  to #542, #629, #632.
   - Evidence: [`api-docs-generation/evidence/`](api-docs-generation/evidence/README.md) —
     TypeScript spikes for response contracts, decorators and inference.
 - **[`bun-views/`](bun-views/README.md)** — `@kingsleyweb/bun-views`:

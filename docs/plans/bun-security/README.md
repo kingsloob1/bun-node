@@ -23,7 +23,7 @@ systems; and a management UI with a live **analytics page**, the
 > the plan, and other packages in the mono repo can be used to achieve the
 > package's intended result."
 
-**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (approved, landing as three PRs). **Changed on 2026-11-08:** the management UI is no longer a package of its own, `@kingsleyweb/bun-security-ui`, but the `/security` entry (with `/security/browser`) of `@kingsleyweb/bun-ui`, because the user decided that every bun-node UI lives in one package ([`bun-ui`](../bun-ui/README.md), approved 2026-11-08; its §7 lists every edit made here). No security decision changed; PR-U1 drops to ~4 d and the optional shared-module PR (Q14) becomes bun-ui's BU-4.
+**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (merged as three PRs, T1 #654, T2 #655 and T3 #656). **Changed on 2026-11-08:** the management UI is no longer a package of its own, `@kingsleyweb/bun-security-ui`, but the `/security` entry (with `/security/browser`) of `@kingsleyweb/bun-ui`, because the user decided that every bun-node UI lives in one package ([`bun-ui`](../bun-ui/README.md), approved 2026-11-08; its §7 lists every edit made here). No security decision changed; PR-U1 drops to ~4 d and the optional shared-module PR (Q14) becomes bun-ui's BU-4.
 
 Written 2026-11-07 against `develop` at `36be4163`, on Bun 1.4.4-canary.1
 (`11c367163`). **No product code was changed.** Every `file:line` is at
@@ -31,13 +31,13 @@ Written 2026-11-07 against `develop` at `36be4163`, on Bun 1.4.4-canary.1
 are in [`evidence/`](evidence/README.md); none measures speed (the standing
 rule: no benchmarks or speed comparisons without the user's yes).
 
-### Status (2026-11-07)
+### Status (2026-11-10)
 
 | Part | State |
 |---|---|
-| This plan and its sub-plans | **draft**, not yet reviewed by the user; nothing built |
+| This plan and its sub-plans | **approved** by the user on 2026-11-07 (above); nothing of the package built |
 | ConcaveHR's write-up of its defence | **folded in** (§12, received 2026-11-07): every layer mapped, its lessons carried into the design and §14 |
-| Foundations being built beside this plan (§2.6) | the **trust-proxy client IP** (`feat/trust-proxy-client-ip`) and the **throttle plugin** (`feat/throttle`), both requested by the user; in progress, no code on their branches when this was written. bun-security builds on them (§20 lists what it needs from them) |
+| Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request |
 | Prerequisites in other packages (§15.1) | not started |
 | The UI's package | **changed 2026-11-08**: bun-ui's `/security` entry instead of `@kingsleyweb/bun-security-ui` (the user's single-UI-package decision, [`bun-ui`](../bun-ui/README.md) §7) |

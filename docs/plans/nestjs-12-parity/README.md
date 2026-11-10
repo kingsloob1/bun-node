@@ -26,8 +26,8 @@ matrix (§9.3), which outlives the plan: develop's lock is Nest 12.4.2
 `scripts/nest-matrix.ts` runs the 11.2.7 column on every PR touching bun-nest
 or bun-common, the floors 11.1.20 and 12.0.0 once per merge window, and a new
 Nest release before the lock moves (CLAUDE.md, "Nest versions"). The Nest
-work that follows this plan is bun-validate's group 2 (V7a, V7b), whose
-handoff is in [`../bun-validate/README.md`](../bun-validate/README.md#handoff-2026-10-22-how-to-resume).
+work that followed this plan was bun-validate's group 2, V7a and V7b, merged
+as #522 and #523 ([`../bun-validate/README.md`](../bun-validate/README.md)).
 The one load-sensitive test left (`sse.nest.test.ts`'s idle-timeout control,
 `ECONNRESET` in 2 of 25 suites run side by side) is recorded in CLAUDE.md.
 

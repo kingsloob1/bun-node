@@ -22,8 +22,8 @@ and approved, through the coordinator, on the same day:
 
 **Status: approved by the user on 2026-11-08, every open question (§12)
 answered with its recommendation, and every name in §13 with it.** BU-1
-starts now; BU-2, BU-3 and BU-5 start once the follow-up tracks now landing
-on develop have landed; BU-4 may follow rc.1 (§10).
+(#666), BU-2 (#708), BU-3 (#709) and BU-5 (#710) merged and were released in
+3.0.0-rc.1; BU-4 may follow rc.1 (§10).
 
 Written 2026-11-08 against `develop` at `d0d53ee1`, on Bun
 1.4.4-canary.1+11c367163. **No product code was changed.** Every `file:line`
