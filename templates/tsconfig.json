@@ -13,6 +13,6 @@
     "resolveJsonModule": true,
     "types": ["bun"]
   },
-  "include": ["./compute-provider/**/*.ts", "eslint.legacy.config.mjs"],
+  "include": ["./compute-provider/**/*.ts"],
   "exclude": ["./compute-provider/node_modules", "./compute-provider/dist"]
 }

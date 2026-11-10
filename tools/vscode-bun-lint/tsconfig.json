@@ -10,6 +10,6 @@
     // `bun` for the tests and the build script; `vscode` for the extension.
     "types": ["bun", "vscode"]
   },
-  "include": ["./**/*.ts", "eslint.legacy.config.mjs"],
+  "include": ["./**/*.ts"],
   "exclude": ["./node_modules", "./dist"]
 }

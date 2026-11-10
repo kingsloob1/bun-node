@@ -6,7 +6,8 @@ It shows `bun lint`'s findings as you type, offers its fixes and suggestions as
 quick fixes, and formats with `bun fmt`. It replaces the ESLint extension when
 the repository switches to `bun lint` (PR E of the plan), which it did: the
 repository's `.vscode/` recommends it, makes it the default formatter and turns
-the ESLint extension off.
+the ESLint extension off. Since PR F the repository has no ESLint config at
+all, so that extension has nothing to run.
 
 It is not published. It lives here, outside the workspaces, with its own
 `package.json` and `bun.lock`, and is deleted once Bun ships an editor

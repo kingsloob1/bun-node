@@ -163,7 +163,6 @@
     "@kingsleyweb/bun-common": "workspace:^"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "catalog:",
     "@kingsleyweb/bun-cache": "workspace:^",
     "@kingsleyweb/bun-client": "workspace:^",
     "@kingsleyweb/bun-jobs": "workspace:^",
@@ -186,10 +185,6 @@
     "class-validator": "0.15.1",
     "cookie-parser": "^1.4.7",
     "ejs": "^7.0.1",
-    "eslint": "catalog:",
-    "eslint-config-prettier": "catalog:",
-    "eslint-plugin-prettier": "catalog:",
-    "prettier": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:",
     "supertest": "catalog:",
