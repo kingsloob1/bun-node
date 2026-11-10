@@ -40,13 +40,13 @@ in progress on `fix/bun-common-express-parity` (not pushed at the time of
 writing), and is listed below as PR-C2. §2.4 says exactly what this plan
 takes from the contract.
 
-### Status (2026-10-10)
+### Status (2026-11-10)
 
 | PR | Scope | State |
 |---|---|---|
 | PR-C (#320) | bun-common's `BunViews` and `res.render` on Express's contract; bun-nest `@Render`, `engine`, `setViewEngine`, `setBaseViewsDir` | **merged** (`b7e20891`) |
-| PR-C2 | bun-common's adapter and router: a `views` option and `engine()` | in progress (`fix/bun-common-express-parity`), not merged |
-| PR-0 | bun-common: the `compression()` stall on streamed bodies (§4.7.3) | not started; **found by the React plan** |
+| PR-C2 | bun-common's adapter and router: a `views` option and `engine()` | **merged** (#328, 2026-10-10) |
+| PR-0 | bun-common: the `compression()` stall on streamed bodies (§4.7.3) | **merged** (#324, 2026-10-10); **found by the React plan** |
 | PR-1 to PR-8 | this plan: the core, React, bun-nest | not started |
 | PR-9v, PR-9s, PR-9p, PR-9so | Vue, Svelte, Preact, Solid adapters | **built on demand** (§15.2) |
 

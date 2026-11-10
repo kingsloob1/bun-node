@@ -31,6 +31,12 @@ there can be re-run with one command.
 
 ### Status
 
+**Complete (2026-11-10)**, checked against `develop` at `ae01cfe9`: every PR
+of §20 has merged, #544 to #623, with the driver follow-ups #674 and #676 and
+[`encryption.md`](encryption.md)'s four PRs; PR-C9 (`upstashDriver` over REST)
+is deferred by the user's decision of 2026-10-28 (below). The paragraphs below
+are the record, PR by PR.
+
 **Scheduled 2026-10-27** (the user's decision; this plan was held until then),
 with a scope extension the same day: beyond the nine built-in drivers, four
 **cloud drivers** join — **Azure Blob Storage, Upstash (the successor of the
@@ -978,12 +984,12 @@ writes the first SigV4 signer. What it does, and where it departs from §7.8:
 [`encryption.md`](encryption.md), with its evidence in
 [`evidence/encryption/`](evidence/encryption/README.md). It proposes PR-Z1,
 PR-E1, PR-E2 and PR-E3, and awaits the user's answers to its §13. Approved
-in full the same day; **PR-E1 (at-rest encryption) built 2026-10-28** — its
+in full the same day; **PR-E1 (at-rest encryption) merged 2026-10-28, #571** — its
 Status says what landed and the two decisions it left open; **PR-E2 (name
-hashing, `describeKey`, the kit's `rawDump` on every driver) built
-2026-10-28**; **PR-E3 (the README's encryption and compression sections
+hashing, `describeKey`, the kit's `rawDump` on every driver) merged
+2026-10-29, #574**; **PR-E3 (the README's encryption and compression sections
 finished, a format test read from the README, the playground's at-rest
-item) built 2026-10-29**, with the examples written alongside by the
+item) merged 2026-10-29, #577**, with the examples written alongside by the
 examples agent.
 
 **Azure spike, 2026-10-28** (evidence
@@ -1375,7 +1381,7 @@ the pieces PR-C11's D1 driver reuses.
   included): `worker.ts` answers 500 only when `BUN_CACHE_PROXY_TOKEN` is
   unset, so the secret was not yet active when it was probed.
 
-**PR-N2 built 2026-10-28** (branch `feat/bun-nest-n2-cache-interceptor`,
+**PR-N2 merged 2026-10-28, #570** (branch `feat/bun-nest-n2-cache-interceptor`,
 rebased on develop `e52f45ce`): `BunCacheInterceptor`, `@CacheKey`,
 `@CacheTTL`, `@CacheTags` and `@NoCache` in bun-nest's `./cache` (§10.3,
 §10.4), on Nest 11 and 12, with bun-common unchanged and two small additions
@@ -1496,7 +1502,7 @@ is built, and where it departs from §10.3:
   `mixin`, the metadata, the adapter hook) did not change since, so it was
   not re-run.
 
-**PR-C11 built 2026-10-28** (branch `feat/bun-cache-c11-cloudflare-d1`, on
+**PR-C11 merged 2026-10-28, #569** (branch `feat/bun-cache-c11-cloudflare-d1`, on
 develop `acb8f4fc`): `cloudflareD1Driver` (approved name), on PR-C10's client
 and Worker, which already served D1 (`d1Query`, `/query`, `/raw`).
 
@@ -1582,7 +1588,7 @@ and Worker, which already served D1 (`d1Query`, `/query`, `/raw`).
   clean); `--randomize --seed=1` 944 pass, 60 skip, 0 fail; consumer-check 76
   of 76 cells, 12 of 12 runtime imports; `bun-timings.json` regenerated.
 
-**The fence's millisecond, built 2026-10-28** (the user's decision of
+**The fence's millisecond, merged 2026-10-28, #573** (the user's decision of
 2026-10-28; branch `fix/bun-cache-fence-resolution`). A load that started in
 the same millisecond as an invalidation, after it had completed (a `GET`
 right behind the `POST` that invalidated, or a `getOrSet` right after
@@ -1636,7 +1642,7 @@ of it afterwards — has a later `createdAt` than the stamps and is stored.
   (6), a driver stamping late (9), no frozen-clock check or no cap (a hang
   each).
 
-**PR-B1 built 2026-10-29** (branch `feat/bun-cache-b1-bench`, on develop
+**PR-B1 merged 2026-10-29, #576** (branch `feat/bun-cache-b1-bench`, on develop
 `ffea0175`, PR-E2): the bench package, `packages/bun-cache/bench/` (§14.3,
 §15), and a core bug it found, fixed here (the user's choice of 2026-10-29).
 The bench is separate and unpublished like bun-jobs', its own `package.json`,
@@ -1706,7 +1712,7 @@ PR's runs only.
 - `@keyv/sqlite` is left out (native `sqlite3`, install script); `@keyv/mysql`
   fails its own 1 MB read-back.
 
-**PR-K1 built 2026-10-29** (branch `feat/bun-cache-k1-keyv`, on develop
+**PR-K1 merged 2026-10-29, #580** (branch `feat/bun-cache-k1-keyv`, on develop
 `b18d29f9`; the user accepted its four choices the same day: `disconnect()`
 closes the cache, the three type names, `cacheWithCodec` kept internal, and
 no Keyv 6 `KeyvStorageAdapter` type for now): `toKeyvStore(cache, { namespace? })` in
@@ -1748,7 +1754,7 @@ Keyv majors.
   TTL (Keyv checks its envelope's `expires` on read): the adapter's cases
   read the stored expiry.
 
-**PR-H2b built 2026-10-29** (branch `feat/bun-cache-h2b-surrogate-keys`, on
+**PR-H2b merged 2026-10-29, #581** (branch `feat/bun-cache-h2b-surrogate-keys`, on
 develop `7fd411e2`): `cacheResponse({ surrogateKeys })` (§9.3, R27) in
 `./http`, with the core and bun-common unchanged. `"Surrogate-Key"`
 (Fastly) or `"Cache-Tag"` (Cloudflare) carries each answer's tags — the
@@ -1793,7 +1799,7 @@ in front can purge by the tags `invalidateTags()` takes. How it is built:
 - **Tests**: `__tests__/http/surrogate.test.ts`; 17 negative controls,
   each failing it (1–11 fails). Gate: see the PR.
 
-**Azure SAS and Entra ID built 2026-10-29** (branch
+**Azure SAS and Entra ID merged 2026-10-29, #582** (branch
 `feat/bun-cache-azure-auth`, on develop `9f1930a6`; the names approved by
 the user 2026-10-29): `azureBlobDriver` authorizes with exactly one of
 Shared Key, a SAS, a `credential` or a `token`.
@@ -1841,7 +1847,7 @@ Shared Key, a SAS, a `credential` or a `token`.
   renewed and retried. `__tests__/azure.type-test.ts`: a copy of
   `@azure/core-auth`'s and `@azure/identity`'s declarations is assignable.
 
-**PR-C1b built 2026-10-29** (branch `feat/bun-cache-c1b-soft-purge`, on
+**PR-C1b merged 2026-10-29, #583** (branch `feat/bun-cache-c1b-soft-purge`, on
 develop `372ba931`): the soft purge, `invalidateTags(tags, { mode:
 "stale" })` (§3.6, R21). **It departs from §3.6's "rewrites `freshUntil` to
 now"** (the user's decision of 2026-10-29, design C of the design check):
@@ -1913,7 +1919,7 @@ stamps-mode paths need anyway. How it is built:
   `Fastly-Soft-Purge: 1` for a stale-mode invalidation (Cloudflare has none:
   a hard purge there). Negative controls and the gate: see the PR.
 
-**PR-R1 built 2026-10-29** (branch `feat/bun-cache-r1-redundant`, on
+**PR-R1 merged 2026-10-29, #586** (branch `feat/bun-cache-r1-redundant`, on
 develop `75532421`; scheduled by the user 2026-10-29): `redundant(members,
 options)` (§5), in `lib/drivers/redundant.ts`, exactly §5.6's list —
 `write: "all" | "primary"`, `read: "failover" | "race"`, per-member circuits
@@ -2025,7 +2031,7 @@ How it is built, and where it departs from or adds to §5:
   table prefixes) and `[redis, postgres]`. Negative controls and the gate:
   see the PR.
 
-**Native decoders where the size is provable, built 2026-10-29** (branch
+**Native decoders where the size is provable, merged 2026-10-29, #587** (branch
 `perf/bun-cache-native-decoders`; scheduled by the user 2026-10-29, with the
 speed comparison it needs). The decompression cap (#564) decoded every
 built-in through node:zlib with `maxOutputLength`, because Bun's decoders take
@@ -2067,7 +2073,7 @@ everywhere else:
   the proof (recommended: no). Whether to ask Bun for a `maxOutputLength`
   (oven-sh/bun#28162 is open).
 
-**Speed work: `setMany`, built 2026-11-02** (branch `perf/bun-cache-set-many`,
+**Speed work: `setMany`, merged 2026-11-02, #595** (branch `perf/bun-cache-set-many`,
 speed work PR 1, scheduled by the user with its speed comparisons). The
 baseline had `setMany` of 100 2.4–25× behind cache-manager's `mset`. Two
 causes, measured before anything changed (a scratch profile, exclusive):
@@ -2138,7 +2144,7 @@ What changed:
   `__tests__/core/setMany.test.ts`; `__tests__/drivers/batch.test.ts`.
   Sixteen negative controls; see the PR.
 
-**Speed work: MongoDB reads, built 2026-11-02** (speed work item 5,
+**Speed work: MongoDB reads, merged 2026-11-03, #615** (speed work item 5,
 scheduled by the user with its speed comparisons). The bench had
 `get-hit-10kb/mongodb` at 0.74× cache-manager's MongoDB store in one run (it
 reads between 0.74× and 1.24× from run to run). Measured first, in a scratch
@@ -2172,7 +2178,7 @@ a case on both MongoDB lanes pins the `_id`-only filter (and the server's
 `IDHACK` plan), the counter and expiry checks, and one handle per
 collection; four negative controls, see the PR.
 
-**Speed work: a fenced `setMany` in the driver contract, built 2026-11-02**
+**Speed work: a fenced `setMany` in the driver contract, merged 2026-11-03, #616**
 (speed work item 6, its own PR by the user's choice). The `setMany` speed
 work left tagged entries on a `tags: "index"` driver as a fenced `set` each,
 because the contract's `setMany` takes no fence. Now:
@@ -2221,7 +2227,7 @@ because the contract's `setMany` takes no fence. Now:
   controls: see the PR.
 
 **Driver follow-ups: `setManyFenced` on `redundant()` and D1, and Redis
-`setMany` staging large frames, built 2026-11-08** (approved by the user;
+`setMany` staging large frames, merged 2026-11-08, #674** (approved by the user;
 no speed comparison). `redundant()` offers `setManyFenced` when its members
 index tags and the primary has it: one call per member under `set`'s rules
 for a fenced write (every member waited for; an entry any member fences is
@@ -2247,8 +2253,8 @@ it drops anything, the staging key unlinked when the script fails. Tests:
 two Redis cases (a failed staging write; a failed script), the first failing
 before the fix.
 
-**§16's docs item: bun-jobs' "High availability" README section, built
-2026-11-03** (scheduled by the user; §19 Q10). bun-jobs' README now has a
+**§16's docs item: bun-jobs' "High availability" README section, merged
+2026-11-03, #617** (scheduled by the user; §19 Q10). bun-jobs' README now has a
 section per driver (Postgres with Patroni and synchronous commit; MySQL group
 replication, single-primary; MongoDB replica sets with `w: "majority"`;
 Redis through a managed failover endpoint, Sentinel unsupported, asynchronous
@@ -2286,7 +2292,7 @@ back in 10 ms. Two findings:
 a driver-level retry would duplicate a job without a `jobId`; the README says
 to give jobs a `jobId` and retry `add` instead.
 
-**Speed work: `get-miss`, built 2026-11-02** (speed work PR 2, scheduled by
+**Speed work: `get-miss`, merged 2026-11-03, #619** (speed work PR 2, scheduled by
 the user with its speed comparisons). The baseline had a `get` of a key never
 written 0.25–0.75× of cache-manager on every networked backend. The cause,
 measured before anything changed (a scratch profile, exclusive): **a miss is
@@ -2322,7 +2328,7 @@ no entry, asks `driver.getCounter` (a counter lives outside the entry bytes,
   (the SQL suites and MongoDB); two tests that pinned the redundant re-read
   updated. Four negative controls; see the PR.
 
-**Speed work: 1 MB writes, built 2026-11-03** (speed work PR 3, scheduled by
+**Speed work: 1 MB writes, merged 2026-11-03, #620** (speed work PR 3, scheduled by
 the user with its speed comparisons). The baseline had `set-1mb` on Redis at
 219/s against cache-manager's 1,596/s, put down to zstd on incompressible
 data. Measured before anything changed (scratch profiles, exclusive), that
@@ -2374,7 +2380,7 @@ What changed:
   (`redisSuite.ts`, 6, local lane only, plus staged writes in the key-locking
   rule case). Seven negative controls; see the PR.
 
-**Speed work: `tags-set`, built 2026-11-03** (speed work PR 4, scheduled by
+**Speed work: `tags-set`, merged 2026-11-03, #621** (speed work PR 4, scheduled by
 the user with its speed comparisons). The baseline had sets carrying two
 tags 0.50–0.67× of BentoCache. Profiled first (exclusive): the core's share
 of a tagged write is a few µs on every backend (Redis 44 µs through the
@@ -2413,7 +2419,7 @@ design stays eager (the user's rule); what changed:
   memory 261,875 → 304,577/s; the other rows moved within the bench's
   run-to-run spread.
 
-**Speed work: MySQL `invalidateTags`, built 2026-11-03** (speed work PR 5,
+**Speed work: MySQL `invalidateTags`, merged 2026-11-03, #622** (speed work PR 5,
 scheduled by the user with its speed comparisons). The baseline had
 `invalidateTags` of one tag on 1,000 keys at 250–268 ms on MySQL, 27 ms on
 MariaDB and 7 ms on Postgres. Timed statement by statement in the bench's
@@ -2441,7 +2447,7 @@ entry).
   index and on one with it (MySQL and MariaDB); the index always named
   fails MySQL's.
 
-**The bench baseline re-recorded, with a random 1 MB row, 2026-11-03** (the
+**The bench baseline re-recorded, with a random 1 MB row, merged 2026-11-03, #623** (the
 user's approval: one re-record after both speed-work chains landed, with the
 new row in the same PR). `set-1mb-random` is `set-1mb` with a body of 1 MB of
 seeded random bytes (zstd's ratio 1.000; the old value compresses to 0.750),
@@ -4367,13 +4373,13 @@ now" idea is already folded into the section named.
 | R18 | `X-Cache` status values (HIT, MISS, STALE, BYPASS, UNCACHEABLE) | nginx, `@nestjs/cache-manager` | **Adopt now**, PR-H1, N2 | §9.1, §10.3 | Debuggability |
 | R19 | Spring's decorator semantics (`condition`, `unless`, evict after success by default, `all`) | Spring Cache | **Adopt now**, PR-N1 | §10.2 | Proven ergonomics, and familiar to Nest users from Java |
 | R20 | Cache-key versioning per cache (`version`) | Django `VERSION` | **Adopt now**, PR-C1 | §3.7 | Deploying a shape change without a flush |
-| R21 | Soft purge: `invalidateTags(…, { mode: "stale" })` | Fastly, Varnish xkey, Next.js `revalidateTag` | **Later** (PR-C1b; built 2026-10-29) | §3.6 | Useful with stale-if-error, but not needed to ship |
+| R21 | Soft purge: `invalidateTags(…, { mode: "stale" })` | Fastly, Varnish xkey, Next.js `revalidateTag` | **Later** (PR-C1b; merged 2026-10-29, #583) | §3.6 | Useful with stale-if-error, but not needed to ship |
 | R22 | An auto-recovery queue for failed L2 and bus writes (last per key, newest wins) | FusionCache | **Later** | §4 | Rejoin-empty and flush-on-gap cover correctness; this only narrows the window |
 | R23 | Named lifetime profiles (`life: "minutes"`) | Next.js `cacheLife` | **Later** | §3.1 | Sugar over `ttl`, `staleWhileRevalidate` and `staleIfError`; add once real configurations show which presets people want |
 | R24 | Recyclable per-entry versions (`version` inside the entry) | Rails | **Later** | §3.7 | The per-cache version covers deploys; per-entry versions serve model-driven keys, which can wait |
 | R25 | TinyLFU admission for memory and L1 | Caffeine, ristretto, moka | **Later** | §3.9 | Worth it only if L1 hit rate becomes a measured problem; a sketch is real code to maintain |
 | R26 | `minUses` admission for L2 (store only after N requests) | nginx | **Later** | §9 | Keeps one-hit URLs out of L2; needs a counter per key |
-| R27 | Surrogate-key headers for CDNs | Fastly, Cloudflare | **Later** (PR-H2b; built 2026-10-29) | §9.3 | Small, but only useful behind a CDN that supports it |
+| R27 | Surrogate-key headers for CDNs | Fastly, Cloudflare | **Later** (PR-H2b; merged 2026-10-29, #581) | §9.3 | Small, but only useful behind a CDN that supports it |
 | R28 | `update(key, fn)`: an atomic read-modify-write | JCache `EntryProcessor` | **Later** | §3.8 | Needs compare-and-set per driver; counters cover the common case |
 | R29 | A TTL computed from the value (`ttl: (value) => ms`) | cachetools TLRU | **Adopt now**, PR-C1 | §3.1 | Short TTLs for empty results, one line of code |
 | R30 | Lossy asynchronous `set` | ristretto | **Skip** | — | Surprising semantics, for contention a JS event loop does not have |
@@ -4764,8 +4770,8 @@ and the last PR of each feature adds it to the playground.
 | **PR-C7** S3 | The S3 driver (stamp mode, `Content-Type` expiry, sweeper, lifecycle docs); SeaweedFS in `setup-databases.ts` (shared with bun-jobs' PR-S0); the conditional-`PUT`-through-`fetch` question, since answered by `bun-jobs-s3-driver.md` §3 (§7.8) | PR-C2 (stamp mode) | ~3.5 d |
 | **PR-T1** multi-tier | L1 (values, `clone`), the bus wiring and gap flush, backfill keeping expiry, `{ tier: "l2" }`, `redisBus` and `pgBus` (R13, R14) | PR-C1 and one bus driver (C4 or C5) | ~4 d |
 | **PR-B1** bench | The bench package, contenders, baselines, `--compare` | the drivers it measures | ~3 d |
-| *PR-C1b* | soft purge (`mode: "stale"`, R21) | PR-C1 | *~1 d, later* |
-| *PR-R1* | redundant drivers (§5) | PR-T1 | *~4 d, only on demand (Q4); scheduled by the user and built 2026-10-29* |
+| *PR-C1b* | soft purge (`mode: "stale"`, R21) | PR-C1 | *~1 d, later; merged 2026-10-29, #583* |
+| *PR-R1* | redundant drivers (§5) | PR-T1 | *~4 d, only on demand (Q4); scheduled by the user and merged 2026-10-29, #586* |
 | | **Total (package ~27 d, plus the bench ~3 d; without the later items)** | | **~30 d** |
 
 ### 20.2 The utilities

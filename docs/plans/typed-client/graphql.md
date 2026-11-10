@@ -8,11 +8,11 @@ Written 2026-11-02 against `develop` at `e80ab379`. **No product code was
 changed.** Markings as in TC. Evidence:
 [`evidence/transports/graphql/`](evidence/transports/README.md).
 
-**Status (2026-11-03): PR-G1 built** (branch `feat/bun-client-graphql`;
-TC's Status table has the details). Approved by the user 2026-11-02 (TC
-§14, Q25; names as in TC §16); the names the PR adds beyond §16 await the
-user. One finding corrects §3.1 below: gql.tada's operation documents
-carry no `loc`.
+**Status (2026-11-10): PR-G1 merged 2026-11-03, #638** (branch
+`feat/bun-client-graphql`; TC's Status table has the details). Approved by the
+user 2026-11-02 (TC §14, Q25; names as in TC §16); the names the PR adds
+beyond §16 await the user. One finding corrects §3.1 below: gql.tada's
+operation documents carry no `loc`.
 
 ---
 

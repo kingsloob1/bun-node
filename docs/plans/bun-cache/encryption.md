@@ -23,6 +23,9 @@ style.
 
 ### Status (2026-10-28)
 
+**Complete (2026-11-10):** PR-Z1 #567, PR-E1 #571, PR-E2 #574, PR-E3 #577 and
+the `encrypt` shapes as types #579 have merged.
+
 **Approved in full by the user on 2026-10-28.** That covers every
 recommendation in §13 and every name in §14, as written. The user also
 decided:
@@ -36,7 +39,7 @@ decided:
   because their tags are sealed in the envelope. For plain caches it is
   documented, not hardened.
 
-**PR-Z1 built (2026-10-28)**, stacked on the decompression cap (#564): `"br"`
+**PR-Z1 merged (2026-10-28, #567)**, stacked on the decompression cap (#564): `"br"`
 and raw `"deflate"`, `CacheCompressor` (sync or async) with
 `compress.previous`, the per-call `compress: false`, and entry format 2
 (written only for `br`, `deflate` or a user compressor; develop's own entries
@@ -47,7 +50,7 @@ the cap and held to it. Departures, each a question in the PR: a second
 `decompress` argument, `maxOutputLength`; a `level` beside a user compressor
 refused.
 
-**PR-E1 built (2026-10-28)**, on develop `d41aa084` (after PR-Z1 and the
+**PR-E1 merged (2026-10-28, #571)**, on develop `d41aa084` (after PR-Z1 and the
 Cloudflare drivers): the `"BE"` envelope and the built-in `"aes-256-gcm"`
 with a key per entry (`lib/core/encrypt.ts`); rings, `keys` functions with
 `keyRefresh` and the unknown-id refresh; `aad`; the sealed tags and expiry,
@@ -80,7 +83,7 @@ loopback Redis), +5.8/+4.6 µs at 4 KiB, and within the noise from 70 KB up.
 Seal and open alone take about 2.6 µs each at 100 B, against §3.2's 1.8 and
 1.9 µs for the bare cipher: the envelope's body, AAD and copies.
 
-**PR-E2 built (2026-10-28)**, on develop `17cc3ab8` (after PR-E1, #571):
+**PR-E2 merged (2026-10-29, #574)**, on develop `17cc3ab8` (after PR-E1, #571):
 `encrypt.hashNames` (`{ key }`, the HMAC of §7.1, or `{ hash }`) in the core
 (`lib/core/names.ts`), hashed once per name through a 10,000-name memo. Each
 cache view hashes its namespace once; the drivers, L1 (its tag index now
@@ -100,7 +103,7 @@ the namespace's at `createCache`; a top-level `hashNames` (JavaScript) is a
 `TypeError`; Redis's dump reads by type, not `DUMP` (LZF could hide a
 plaintext).
 
-**PR-E3 built (2026-10-29)**, on develop `a4ea7c38` (after PR-E2, #574, and PR-B1, #576): the
+**PR-E3 merged (2026-10-29, #577)**, on develop `a4ea7c38` (after PR-E2, #574, and PR-B1, #576): the
 README's compression, "Encryption at rest" and "Hiding names" sections
 checked against the code and corrected where they differed or were silent
 (each correction is listed in the PR, with the code and the probe it was
@@ -125,7 +128,7 @@ the documented format and the code fails bun-cache's own gate. No product
 code changed. The
 examples are written alongside, in the same worktree, by the examples agent.
 
-**PR built (2026-10-29): the `encrypt` shapes as types**, on develop
+**PR merged (2026-10-29, #579): the `encrypt` shapes as types**, on develop
 `33fa0874` (after PR-E3, #577), the user's decision of the same day. Two
 §10.4 refusals that were only a `TypeError` at `createCache` are compile
 errors too: `CacheEncryptOptions` is a union of a built-in shape (`keys`
@@ -154,7 +157,9 @@ Every measurement is on this machine (i9-11900H, 16 threads, Linux
 [`evidence/encryption/`](evidence/encryption/README.md). Each script there
 re-runs with one command.
 
-### Status
+### Status when written
+
+*Historical: superseded by the Status (2026-10-28) above.*
 
 **Plan only, 2026-10-28.** It awaits the user's answers to §13. Building is
 four PRs (§12): PR-Z1 (compression), then PR-E1 (encryption), PR-E2 (name

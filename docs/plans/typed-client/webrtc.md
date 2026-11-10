@@ -10,9 +10,10 @@ changed.** Markings as in TC. Evidence:
 [`evidence/transports/webrtc/`](evidence/transports/README.md) (`bun
 webrtc/spike.ts`, results in `webrtc/results.txt`).
 
-**Status (2026-11-02): approved by the user** (TC §14, Q23–Q24; names as in
-TC §16). **Nothing is built.** The next PRs are TC's **PR-K**,
-**PR-M1** and **PR-C1**; this sub-plan's PRs follow them as TC §15 orders.
+**Status (2026-11-10): approved by the user** (TC §14, Q23–Q24; names as in
+TC §16). **Complete**: PR-R1 (signalling, `signallingContract`,
+`signallingRelay`, `connectPeer`) merged 2026-11-03, #639, and PR-R2
+(`typedDataChannel`) merged 2026-11-03, #640.
 
 ---
 
