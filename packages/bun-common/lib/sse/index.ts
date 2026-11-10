@@ -5,7 +5,8 @@
  *
  * - the declaration: `sse({ … })`, a route's events (re-exported by the
  *   root as ever), so a module shared with a typed client declares them
- *   once, browser-safe;
+ *   once, browser-safe; `sseVariants({ … })`, an event declared as several
+ *   whole variants;
  * - the wire format: `formatSseEvent`, `encodeSseEvent`, `SseMessage`;
  * - the writer: `SseWriter` (what `res.sse()` returns), and
  *   `sseResponse()` for a standalone `Response`;
@@ -31,6 +32,9 @@ export {
   type SseEventMap,
   type SseEvents,
   type SseOptions,
+  type SseVariants,
+  type SseVariantSpec,
+  sseVariants,
 } from "./declaration";
 export { encodeSseEvent, formatSseEvent, type SseMessage } from "./format";
 export {

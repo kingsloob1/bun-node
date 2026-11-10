@@ -89,6 +89,7 @@ describe("the sse subpath in a browser bundle", () => {
       "sse/index.ts",
       "sse/parser.ts",
       "sse/response.ts",
+      "sse/variants.ts",
       "sse/writer.ts",
     ]);
   }, 30_000);

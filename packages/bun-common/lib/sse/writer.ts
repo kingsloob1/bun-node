@@ -34,7 +34,12 @@
  */
 import type { Logger, LoggerLike } from "../logging";
 import type { Policy, WireInput } from "../contract/model";
-import type { SseDataFormat, SseEventMap, SseEvents } from "./declaration";
+import type {
+  SseDataFormat,
+  SseEventMap,
+  SseEvents,
+  SseVariants,
+} from "./declaration";
 import type { StandardSchemaV1 } from "../types/standardSchema";
 import type { SseMessage } from "./format";
 import { ContractError, createSender } from "../contract/guard";
@@ -42,6 +47,7 @@ import { isPromiseLike } from "../contract/model";
 import { nestedOf } from "../contract/schemas";
 import { resolveLogger } from "../logging";
 import { formatSseBlock, sseDataText } from "./format";
+import { compileVariants, NOT_VARIANTS, SseVariantChecker } from "./variants";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,11 +74,43 @@ type EventDataField<S> = S extends StandardSchemaV1
       readonly data?: undefined;
     };
 
+/** The wire input of one variant's `data`. */
+type VariantWire<V> = V extends {
+  readonly data: infer S extends StandardSchemaV1;
+}
+  ? WireInput<S>
+  : never;
+
+/**
+ * The fields of an event declared with `sseVariants()` (table `T`): a
+ * variant named, `data` its schema's; or none named, `data` any variant's.
+ */
+type VariantFields<T> =
+  | {
+      [N in keyof T & string]: {
+        /** The variant this event is: only it is checked, and `data` is its. */
+        readonly variant: N;
+        /** The event's data: the variant's schema's input. */
+        readonly data: VariantWire<T[N]>;
+      };
+    }[keyof T & string]
+  | {
+      /** No variant named: every variant whose `when` holds is tried, in order. */
+      readonly variant?: undefined;
+      /** The event's data: any variant's schema's input. */
+      readonly data: { [N in keyof T]: VariantWire<T[N]> }[keyof T];
+    };
+
+/** The `data` (and, for variants, `variant`) fields of an event whose declaration is `S`. */
+type EventFields<S> =
+  S extends SseVariants<infer T> ? VariantFields<T> : EventDataField<S>;
+
 /**
  * One event a writer with the contract `sse(E)` sends: a union over the
  * declared names, so `event` selects the type of `data`. A declared
  * `message` may also leave `event` out (a client calls an event without
- * one `message`).
+ * one `message`). An event declared with `sseVariants()` also takes
+ * `variant`, which narrows `data` to that variant's.
  *
  * `event` is the name itself, not a conditional type over it, so a literal
  * in a `resume` hook's array or an `sseResponse()` source keeps its type
@@ -85,14 +123,14 @@ export type SseContractEvent<E extends SseEventMap = SseEventMap> =
       [K in keyof E & string]: {
         /** The event's name. */
         readonly event: K;
-      } & EventDataField<E[K]> &
+      } & EventFields<E[K]> &
         SseBlockFields;
     }[keyof E & string]
   | ("message" extends keyof E
       ? {
           /** No name: the event is `message`. */
           readonly event?: undefined;
-        } & EventDataField<E["message"]> &
+        } & EventFields<E["message"]> &
           SseBlockFields
       : never);
 
@@ -239,6 +277,17 @@ export interface SseWriterInit<
    * it. Default: none.
    */
   readonly signal?: AbortSignal;
+  /**
+   * The request that opened the stream, what an `sseVariants()` variant's
+   * `when` takes second: `res.sse()` fills it with its `BunRequest`,
+   * `sseResponse()` with its `request`. Default: none (`undefined`).
+   */
+  readonly request?: unknown;
+  /**
+   * The request's parsed parts, what an `sseVariants()` variant's `when`
+   * takes first: `res.sse()` fills it with `req.valid`. Default: `{}`.
+   */
+  readonly valid?: object;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +381,8 @@ export class SseWriter<C extends SseEvents | undefined = undefined> {
   readonly #guard: EventGuard | undefined;
   /** The contract's data format; `undefined` without a contract. */
   readonly #format: SseDataFormat | undefined;
+  /** The checks of the contract's `sseVariants()` events (and of a `variant` on any other); `undefined` without a contract, or under `"off"`. */
+  readonly #variants: SseVariantChecker | undefined;
   /** `ids: "auto"`. */
   readonly #autoIds: boolean;
   /** The last integer id sent (or resumed from), for `ids: "auto"`. */
@@ -385,6 +436,7 @@ export class SseWriter<C extends SseEvents | undefined = undefined> {
       this.#lastId = Number(this.lastEventId);
     }
     this.signal = this.#abort.signal;
+    const policy = init.validation ?? "error";
 
     const contract = init.contract;
     if (contract !== undefined) {
@@ -395,8 +447,16 @@ export class SseWriter<C extends SseEvents | undefined = undefined> {
         );
       }
       this.#format = contract.data;
-      const guard = createSender(nested, "outbound", {
-        policy: init.validation ?? "error",
+      const { checked, variants } = compileVariants(contract.events, nested);
+      if (policy !== "off") {
+        this.#variants = new SseVariantChecker(variants, policy, {
+          valid: init.valid,
+          request: init.request,
+          log: () => this.#log(),
+        });
+      }
+      const guard = createSender(checked, "outbound", {
+        policy,
         logger: this.#log(),
       });
       this.#guard = guard.checks ? (guard as unknown as EventGuard) : undefined;
@@ -486,6 +546,14 @@ export class SseWriter<C extends SseEvents | undefined = undefined> {
    * its `ContractError` here (a synchronous vendor) or rejects the promise
    * (an asynchronous one), and nothing is sent. Events keep their order
    * across asynchronous verdicts and the resume replay.
+   *
+   * An event declared with `sseVariants()` takes `variant` (never sent):
+   * only that variant is checked, and it must apply (its `when`). Without
+   * one, the first variant that applies and whose schema passes is taken.
+   * The stream's `when`s are asked once, on its first such event; one that
+   * throws, rejects or answers a non-boolean fails the check: its error is
+   * thrown (or rejects) under `"error"`, and logged under `"warn"`, where
+   * the event is sent.
    *
    * Throws a `TypeError` for a malformed block (see `formatSseEvent`), and
    * for bytes given to a writer with a contract.
@@ -606,6 +674,9 @@ export class SseWriter<C extends SseEvents | undefined = undefined> {
 
   /** Checks an event against the contract: `undefined` (pass), or the guard's verdict. */
   #check(message: SseMessage): unknown {
+    // An `sseVariants()` event, or a `variant` on one without (`./variants.ts`).
+    const variants = this.#variants?.check(message);
+    if (variants !== NOT_VARIANTS) return variants;
     const guard = this.#guard;
     if (guard === undefined) return undefined;
     const verdict = guard({

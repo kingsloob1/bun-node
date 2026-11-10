@@ -13,6 +13,7 @@
         "ResponseValidationError",
         "chunks",
         "sse",
+        "sseVariants",
         "opaque",
         "variants",
         "createLogger",
@@ -380,6 +381,7 @@
       "spelling": "@kingsleyweb/bun-common/sse",
       "values": [
         "sse",
+        "sseVariants",
         "SseWriter",
         "sseResponse",
         "formatSseEvent",
@@ -403,10 +405,12 @@
         "SseEvents",
         "SseEventMap",
         "SseDataFormat",
-        "SseOptions"
+        "SseOptions",
+        "SseVariants",
+        "SseVariantSpec"
       ],
       "browser": true,
-      "snippet": "declare const Tick: t.SseWriterOptions[\"contract\"];\nconst w = new m.SseWriter({ heartbeatMs: 0, ids: \"auto\", retry: 1000 });\nexport type _sendNotAny = Expect<IsAny<Parameters<typeof w.send>[0]>>;\nconst _sent: Promise<boolean> = w.send({ event: \"tick\", data: { n: 1 }, id: 1 });\nconst _text: string = m.formatSseEvent({ data: \"x\" });\nconst _bytes: Uint8Array = m.encodeSseEvent({ comment: \"\" });\nconst _res: Response = m.sseResponse([{ data: 1 }], { heartbeatMs: 0 });\nexport type _replayNotAny = Expect<IsAny<t.SseReplay<undefined>>>;\nexport type _itemNotAny = Expect<IsAny<t.SseItem>>;\nexport type _lastId = Equal<typeof w.lastEventId, string | undefined>;\nconst _Ev = m.sse({ tick: null }, { data: \"text\" });\nconst _typed = new m.SseWriter({ contract: _Ev, heartbeatMs: 0 });\nvoid _typed.send({ event: \"tick\" });\n// @ts-expect-error an undeclared event on a typed writer\nvoid _typed.send({ event: \"other\" });\nexport type _format = Equal<typeof _Ev.data, \"text\">;"
+      "snippet": "declare const Tick: t.SseWriterOptions[\"contract\"];\nconst w = new m.SseWriter({ heartbeatMs: 0, ids: \"auto\", retry: 1000 });\nexport type _sendNotAny = Expect<IsAny<Parameters<typeof w.send>[0]>>;\nconst _sent: Promise<boolean> = w.send({ event: \"tick\", data: { n: 1 }, id: 1 });\nconst _text: string = m.formatSseEvent({ data: \"x\" });\nconst _bytes: Uint8Array = m.encodeSseEvent({ comment: \"\" });\nconst _res: Response = m.sseResponse([{ data: 1 }], { heartbeatMs: 0 });\nexport type _replayNotAny = Expect<IsAny<t.SseReplay<undefined>>>;\nexport type _itemNotAny = Expect<IsAny<t.SseItem>>;\nexport type _lastId = Equal<typeof w.lastEventId, string | undefined>;\nconst _Ev = m.sse({ tick: null }, { data: \"text\" });\nconst _typed = new m.SseWriter({ contract: _Ev, heartbeatMs: 0 });\nvoid _typed.send({ event: \"tick\" });\n// @ts-expect-error an undeclared event on a typed writer\nvoid _typed.send({ event: \"other\" });\nexport type _format = Equal<typeof _Ev.data, \"text\">;\ndeclare const Num: t.SseVariantSpec[\"data\"];\nconst _Vs = m.sse({ tick: m.sseVariants({ a: { data: Num }, b: { data: Num, when: () => true, description: \"b\" } }) });\nconst _vw = new m.SseWriter({ contract: _Vs, heartbeatMs: 0 });\nvoid _vw.send({ event: \"tick\", variant: \"a\", data: 1 });\nvoid _vw.send({ event: \"tick\", data: 1 });\n// @ts-expect-error a variant the event does not declare\nvoid _vw.send({ event: \"tick\", variant: \"z\", data: 1 });\nexport type _variantKind = Equal<typeof _Vs.events.tick.kind, \"variants\">;"
     },
     {
       "spelling": "@kingsleyweb/bun-common/lib/sse",

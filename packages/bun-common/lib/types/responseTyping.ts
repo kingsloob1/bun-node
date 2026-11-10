@@ -24,7 +24,7 @@ import type {
 } from "../BunResponse";
 import type { DtoClass } from "../classDto";
 import type { WireInput } from "../contract/model";
-import type { ResponseVariants } from "../responseBodies";
+import type { ResponseVariants, SseVariants } from "../responseBodies";
 import type { Jsonify } from "../utils/native";
 import type { EmptyShape } from "./routeTyping";
 import type { StandardSchemaV1 } from "./standardSchema";
@@ -620,9 +620,17 @@ type SseOf<RS> = {
  * wire input (as a JSON body); under `"text"` the string as it arrives, its
  * schema's own type when that is a string (a `z.enum` of names), `string`
  * otherwise (a `z.coerce.number()` still arrives as text) — what the client
- * generator writes from `x-sse-data`.
+ * generator writes from `x-sse-data`. An event declared with
+ * `sseVariants()` arrives as the union of its variants' data (nothing on
+ * the wire names the variant).
  */
-type ReceivedEvent<V, D> = V extends null
+type ReceivedEvent<V, D> =
+  V extends SseVariants<infer T>
+    ? { [N in keyof T]: ReceivedEvent<T[N]["data"], D> }[keyof T]
+    : ReceivedPlainEvent<V, D>;
+
+/** One event's `data` as a client receives it, for an event with no variants: see {@link ReceivedEvent}. */
+type ReceivedPlainEvent<V, D> = V extends null
   ? undefined
   : [D] extends ["text"]
     ? WireOf<V> extends infer W
