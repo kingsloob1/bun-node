@@ -27,9 +27,8 @@ Underneath, routing is
 - **NestJS 11.1.20 or later, or NestJS 12**: the peers `@nestjs/common` and
   `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required;
   `@nestjs/websockets` (the same range) is needed only for gateways. One
-  build serves both majors, and both are tested: the repo runs on Nest 12
-  (12.4.2), and its suites, examples and consumer type checks also run on
-  the latest 11 and 12 and on the floors, 11.1.20 and 12.0.0 (see
+  build serves both majors, and both are tested, from the floors (11.1.20
+  and 12.0.0) to the latest 11 and 12 releases (see
   [Compatibility](#compatibility-nest-11-and-12)). The floor is 11.1.20 because
   older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
   `isAckHandledManually`) arrived in 11.1.7, the CORS delegate types this
@@ -52,6 +51,7 @@ Underneath, routing is
     - [Mounting a bun-common router](#mounting-a-bun-common-router)
   - [Nest middleware](#nest-middleware)
   - [Responses: `@Redirect`, `StreamableFile`, `@Render`](#responses-redirect-streamablefile-render)
+    - [Views: `@Render()` and `res.render()`](#views-render-and-resrender)
   - [Server-sent events: `@Sse()`](#server-sent-events-sse)
   - [Versioning](#versioning)
   - [CORS](#cors)
@@ -89,14 +89,21 @@ Underneath, routing is
   - [Closing](#closing)
 - [Validation](#validation)
   - [`@Validate`](#validate)
+    - [Responses](#responses)
   - [`StandardSchemaPipe`](#standardschemapipe)
   - [`SchemaDto` and `StandardValidationPipe`](#schemadto-and-standardvalidationpipe)
   - [`ValidationExceptionFilter`](#validationexceptionfilter)
   - [`StandardValidationModule`](#standardvalidationmodule)
   - [Issues carry no received value](#issues-carry-no-received-value)
+  - [Differences from Nest 12's `StandardSchemaValidationPipe`](#differences-from-nest-12s-standardschemavalidationpipe)
 - [OpenAPI with `@nestjs/swagger`](#openapi-with-nestjsswagger)
+  - [What the scanner sees, and what it does not](#what-the-scanner-sees-and-what-it-does-not)
+  - [`setGlobalPrefix`](#setglobalprefix)
+  - [`@Render`, beside the docs](#render-beside-the-docs)
+  - [Two bundles, two origins](#two-bundles-two-origins)
 - [Typed clients: documents from controllers](#typed-clients-documents-from-controllers)
   - [`@Describe`](#describe)
+  - [`gatewayAsyncApi`: an AsyncAPI document from gateways](#gatewayasyncapi-an-asyncapi-document-from-gateways)
   - [`DevTypesModule`: the dev type sync](#devtypesmodule-the-dev-type-sync)
   - [`@Invalidates`: live invalidation](#invalidates-live-invalidation)
 - [Jobs: `BunJobsModule`](#jobs-bunjobsmodule)
@@ -142,28 +149,38 @@ Underneath, routing is
   - [Migrating from `@nestjs/throttler`](#migrating-from-nestjsthrottler)
 - [Exported API](#exported-api)
 - [Examples](#examples)
+  - [bun-nest examples](#bun-nest-examples)
 - [Related packages](#related-packages)
-- [Development](#development)
 - [License](#license)
 
 ## Installation
 
 ```bash
 bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
-bun add @nestjs/websockets   # only for WebSocket gateways
-bun add @kingsleyweb/bun-jobs # only for @kingsleyweb/bun-nest/jobs
-bun add -d @types/bun        # optional peer, >= 1.4.2
+bun add @nestjs/websockets      # only for WebSocket gateways
+bun add @kingsleyweb/bun-jobs   # only for @kingsleyweb/bun-nest/jobs
+bun add @kingsleyweb/bun-cache  # only for @kingsleyweb/bun-nest/cache
+bun add -d @types/bun           # optional peer, >= 1.4.2
 ```
 
 `@kingsleyweb/bun-common` is a dependency and is installed with it.
 `@nestjs/platform-express` is not needed.
 
-`@kingsleyweb/bun-jobs` is an **optional** peer: only
-[`BunJobsModule`](#jobs-bunjobsmodule) and
-[the jobs API module](#the-jobs-api-module) import it, and installing it is
-what makes that subpath compile. See
-[the note there](#installing-bun-jobs-is-what-makes-the-subpath-compile) for
-what `tsc` reports without it.
+The other peers are **optional**, each needed only by what uses it:
+
+| Peer | Needed by |
+|---|---|
+| `@nestjs/websockets` | gateways on [`BunWebSocketAdapter`](#bunwebsocketadapter) |
+| `@kingsleyweb/bun-jobs` | `@kingsleyweb/bun-nest/jobs`, `./jobs/testing` and `./jobs/terminus`: [`BunJobsModule`](#jobs-bunjobsmodule) and [the jobs API module](#the-jobs-api-module). See [the note there](#installing-bun-jobs-is-what-makes-the-subpath-compile) for what `tsc` reports without it |
+| `@kingsleyweb/bun-cache` | `@kingsleyweb/bun-nest/cache`: [the cache module](#the-cache-module) and `cacheThrottleStore` |
+| `@nestjs/terminus` (`^11.1.1 \|\| ^12.0.0`) | `@kingsleyweb/bun-nest/jobs/terminus`: [the health indicator](#health-jobsterminus) |
+| `@nestjs/microservices` | `ValidationExceptionFilter`'s answer to an rpc call, loaded only there ([`ValidationExceptionFilter`](#validationexceptionfilter)) |
+| `@types/bun` (`>=1.4.2`) | your type checker; a lower version warns at install |
+| `typescript` (`^5.9.3 \|\| ^6.0.0`) | your type checker: the TypeScript versions the shipped declarations are checked against |
+
+`@nestjs/testing` is not a peer: [`./jobs/testing`](#testing-jobs-jobstesting)
+works on any booted application, and `Test.createTestingModule()` is yours to
+install for your tests.
 
 ## Quick start
 
@@ -277,21 +294,20 @@ the `Host` header's case.
 
 ### Compatibility: Nest 11 and 12
 
-The peers are `^11.1.20 || ^12.0.0`. `scripts/nest-matrix.ts` runs each
-column below in a copy of the repo pinned to that Nest: bun-nest's suite
-(the Express, routing and platform-ws differentials included), `bun --check`,
-the `examples/bun-nest` programs, bun-ui's jobs Nest test and the consumer
-type check.
+The peers are `^11.1.20 || ^12.0.0`. This release is tested on each Nest
+version below, with the Express its `@nestjs/platform-express` installs: the
+package's tests (comparing this adapter's answers with
+`@nestjs/platform-express`'s and `@nestjs/platform-ws`'s), its examples and a
+consumer type check.
 
-| Nest | Express | Tested |
+| Nest | Express | |
 |---|---|---|
-| 12.4.2 (the repo's lock, 12-latest) | 5.3.0 | every gate |
-| 12.2.0 | 5.3.0 | every PR touching bun-nest or bun-common |
-| 11.2.7 | 5.2.1 | every PR touching bun-nest or bun-common |
-| 11.2.9 (11-latest) | 5.2.1 | every PR touching bun-nest or bun-common |
-| 11.1.20 (the floor) | 5.2.1 | once per merge window |
-| 12.0.0 (12's floor) | 5.2.1 | once per merge window |
-| 12.1.3, 12.3.0, 12.3.3, 12.4.0, 12.4.1 | 5.2.1 (12.1.3), 5.3.0 | an extra column |
+| 12.4.2 | 5.3.0 | the latest 12 |
+| 12.0.0 | 5.2.1 | Nest 12's floor |
+| 12.1.3, 12.2.0, 12.3.0, 12.3.3, 12.4.0, 12.4.1 | 5.2.1 (12.1.3), 5.3.0 | |
+| 11.2.9 | 5.2.1 | the latest 11 |
+| 11.2.7 | 5.2.1 | |
+| 11.1.20 | 5.2.1 | the floor |
 
 11.2.8 backported behaviours of 12.2 and 12.3 to Nest 11: the cells of the 11.2
 column below say which.
@@ -335,7 +351,7 @@ What differs by release, and what the adapter reads to tell:
    the adapter loads, with stand-ins: one middleware at two paths, one
    request through both. A core it cannot ask reads as running it once, since
    every core before that guard answers. In an app, `forRoutes("*")` under a
-   global prefix runs once on `/api/` on every release measured (11.2.7,
+   global prefix runs once on `/api/` on every release tested (11.2.7,
    11.2.9, 12.1.3, 12.2.0, 12.3.0, 12.4.1), on both adapters: before 12.2.0
    (and 11.2.8) the core's exact `/api$` entry skips `/api/`, leaving it to
    the wildcard entry; from then on it serves `/api/` too and the core runs
@@ -563,11 +579,10 @@ a trailing slash ignored. Earlier cores use path-to-regexp's defaults
 - With `router: { caseSensitive: true }` (Express: `case sensitive routing`),
   `exclude("users/login")` runs it on `/users/LOGIN`; earlier cores skip it.
 
-Measured in whole apps on Nest 11.2.7, 12.1.3 and 12.2.0
-([evidence](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/nestjs-12-parity/evidence/middleware-1220/README.md)).
-
 See
-[`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts).
+[`middleware-and-versioning.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-and-versioning.ts)
+and
+[`middleware-matching.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/middleware-matching.ts).
 
 ### Responses: `@Redirect`, `StreamableFile`, `@Render`
 
@@ -776,10 +791,15 @@ export class PricesController {
 prices.send({ event: "tick", data: { p: 101.5 } }); // anywhere: a service, a job
 ```
 
-The subscriber gets the initial state (or, after a `Last-Event-ID` the
-channel holds, the events since), then live events. It leaves the channel
-when Nest unsubscribes (the client left, `app.close()`) or when `signal`
-aborts, and its stream ends when the channel closes. Three things to know:
+`options` are the channel subscriber's own (`topics`, `lastEventId`), plus
+`signal` and `heartbeatMs`. The subscriber gets the initial state (or, after
+a `Last-Event-ID` the channel holds, the events since), then live events. It
+leaves the channel when Nest unsubscribes (the client left, `app.close()`)
+or when `signal` aborts (an already aborted `signal` completes at once), and
+its stream ends when the channel closes. Each event reaches Nest as a
+`MessageEvent`: the channel's `event` as `type`, its `id` as a string, and
+its `data` as text, a string as it is and anything else `JSON.stringify`ed,
+so every Nest release writes it the same. Things to know:
 
 - **Ids.** Nest numbers events that carry no `id`, so an initial-state
   event reaches the client as `id: 1`; a reconnect with it is a miss and
@@ -789,7 +809,8 @@ aborts, and its stream ends when the channel closes. Three things to know:
   `channelObservable()` sends its own comment every `heartbeatMs` (15 s; `0`
   turns it off) on a Nest that writes comment events (detected by
   `@SseSignal()`, 11.2.0 and later). On 11.1 the adapter's idle-timeout
-  exemption keeps a quiet stream open.
+  exemption keeps a quiet stream open. A negative or non-finite
+  `heartbeatMs` throws a `TypeError` when `channelObservable()` is called.
 - **A typed channel** (`createSseChannel({ contract })`) checks each event
   before any subscriber gets it, Nest's included, and its `data` format
   holds on this path too: under `"json"` a string reaches the client
@@ -800,11 +821,10 @@ aborts, and its stream ends when the channel closes. Three things to know:
   opens `res.sse()` and queues the channel's bytes as they are.
 
 See
-[`sse.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sse.nest.test.ts),
-[`sseEdges.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sseEdges.nest.test.ts)
-and
-[`sseChannel.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sseChannel.nest.test.ts),
-which check each point above.
+[`sse-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/sse-channel.ts):
+a channel behind `@Sse()` with `channelObservable()` and through `@Res()`
+with `channel.subscribe(req, res)`, the initial state, one `send()` reaching
+both, and a reconnect with `Last-Event-ID`.
 
 ### Versioning
 
@@ -970,9 +990,7 @@ On top of that, NestJS's body-parser hooks map to two adapter methods:
 - **A request with no body is passed on at once.** No `Content-Length`, no
   `Transfer-Encoding` and no body stream (`req.hasBody` is `false`): the
   parser calls `next()` synchronously, before looking at the type, encoding or
-  size, as body-parser's `read()` does. It never sets `rawBody` for one. This
-  is most of a GET's cost in a Nest app: skipping it made bun-nest's GET
-  scenarios 8–23% faster.
+  size, as body-parser's `read()` does. It never sets `rawBody` for one.
 - **The adapter's `parseBody: false` wins.** With it, these parsers parse
   nothing, whatever Nest's `bodyParser` option says; `requestParsing({
   parseBody })` turns parsing on for the routes it is applied to (see
@@ -1248,12 +1266,9 @@ default), `true`, a hop count, addresses, CIDR ranges and the presets
 `req.hostname`. That includes matching a `@Controller({ host })` against
 `X-Forwarded-Host`, which is read only from a trusted peer. A gateway
 client's real address is `client.data.ip`, where `client.remoteAddress` is
-always the proxy. `adapter.trustProxy` reads and sets it.
-
-The `trust-proxy-*` groups of the Express differential
-(`__tests__/expressCompat.nest.test.ts`) check `ip`, `ips`, `protocol`,
-`secure`, `host` and `hostname` against `@nestjs/platform-express` over real
-sockets, for eight `trust proxy` values.
+always the proxy. `adapter.trustProxy` reads and sets it. `ip`, `ips`,
+`protocol`, `secure`, `host` and `hostname` answer as on
+`@nestjs/platform-express` for the same `trust proxy` value.
 
 bun-common's README covers the walk, the client address header, the
 Cloudflare and Railway helpers, a worked Cloudflare → Railway example and the
@@ -1373,11 +1388,9 @@ See
 
 ### Known differences from `@nestjs/platform-express`
 
-Measured by two differentials, `__tests__/expressCompat.nest.test.ts` and
-the routing one, `__tests__/routingCompat.nest.test.ts`. Each boots one Nest
-application on both adapters and compares every response, on every Nest
-version [tested](#compatibility-nest-11-and-12). Everything not listed here
-answers the same status, headers and body.
+The same Nest application, booted on both adapters, gets the same status,
+headers and body from each, on every Nest version
+[tested](#compatibility-nest-11-and-12), except for what is listed here.
 
 - A string, number or boolean response body defaults to `text/plain` (Express:
   `text/html`), and a type set before a string body gets no `; charset=utf-8`
@@ -1512,9 +1525,8 @@ answers the same status, headers and body.
   WebSocket exceptions then reach clients as platform-ws's `{ event, data }`
   frame.
 
-Against `@nestjs/platform-ws`, measured by `__tests__/wsCompat.nest.test.ts`
-(the same gateways on both adapters, compared on what happened, not on the
-frames, whose formats differ by design):
+Against `@nestjs/platform-ws` (the same gateways on both adapters, compared
+on what happens, not on the frames, whose formats differ by design):
 
 - A plain (non-`WsResponse`) return value is sent only as the ack of a packet
   that asked for one, as on `@nestjs/platform-socket.io`; platform-ws sends it
@@ -1522,8 +1534,8 @@ frames, whose formats differ by design):
 - A handler's result stream that errors (under Nest, an exception filter that
   threw) is answered with an `ERROR` packet carrying its message; platform-ws
   logs it and sends nothing.
-- Not ported yet (a follow-up): platform-ws 12.2.0 answers a plain HTTP
-  request to a gateway's dedicated port with `426 Upgrade Required`.
+- platform-ws 12.2.0 answers a plain HTTP request to a gateway's dedicated
+  port with `426 Upgrade Required`; this adapter does not.
 
 See the last section of
 [`express-parity.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/express-parity.ts),
@@ -2229,8 +2241,7 @@ BunValidate's Nest pipes and filter: any [Standard Schema](https://standardschem
 `toStandardSchema`), the same runner and issue shape as bun-common's
 `validate()`, on Nest 11 and 12 alike. They are platform-neutral: the filter
 answers through the application's adapter, and the same app answers the same
-on bun-nest and `@nestjs/platform-express` (the differential test compares
-them probe by probe).
+on bun-nest and `@nestjs/platform-express`.
 
 | You want | Use | Works on |
 |---|---|---|
@@ -2331,7 +2342,7 @@ other body kinds, and `variants()` for several whole responses of one
 status) — and is checked with the same engine (`createResponseChecker` in
 bun-common). `responseValidation` is `"off"` (the default, which only
 applies a named variant's adjust), `"warn"` or `"error"`. With
-`responseOutput: "parsed"` (V13), a passing buffered JSON body is sent as
+`responseOutput: "parsed"`, a passing buffered JSON body is sent as
 the schema's **output** (unknown keys the vendor strips, defaults and
 transforms applied) — except on a plain `@Res()` route, whose response the
 before-write hook can only pass or refuse, so it is checked as sent.
@@ -2573,7 +2584,7 @@ key, as it does on `toString` under either rule.
 ### Differences from Nest 12's `StandardSchemaValidationPipe`
 
 Compared with Nest 12.2.0's own pipe (`@Body({ schema })` and the global
-`StandardSchemaValidationPipe`), measured on the same app:
+`StandardSchemaValidationPipe`), on the same app:
 
 - **Options.** Ours take only `messages`, `redactPaths` and
   `stripProtoKeys` (Nest strips by its rule, our default, with no option).
@@ -2603,13 +2614,12 @@ Compared with Nest 12.2.0's own pipe (`@Body({ schema })` and the global
 
 ## OpenAPI with `@nestjs/swagger`
 
-`@nestjs/swagger` works on `BunHttpAdapter` as-is — verified end-to-end
-(api-docs-generation phase (d), `__tests__/swagger.nest.test.ts`): the same
-module booted on this adapter and on `@nestjs/platform-express` scans a
-**byte-identical** document and answers every probe alike, on the checkout's
-Nest 12.4.2 with `@nestjs/swagger` 12.0.4 and in the nest-matrix columns
-11.2.7 (swagger 11.4.6) and 12.0.0. Nothing in this package imports it, so it
-stays your dependency, matched to your Nest major:
+`@nestjs/swagger` works on `BunHttpAdapter` as-is: the same module booted on
+this adapter and on `@nestjs/platform-express` scans a **byte-identical**
+document and answers its docs routes alike. Tested with Nest 12.4.2 and
+`@nestjs/swagger` 12.0.4, Nest 12.0.0, and Nest 11.2.7 with `@nestjs/swagger`
+11.4.6. Nothing in this package imports it, so it stays your dependency,
+matched to your Nest major:
 
 ```bash
 bun add @nestjs/swagger    # 12.0.x for Nest 12, 11.4.x for Nest 11
@@ -2643,7 +2653,7 @@ are never touched.
 
 ### What the scanner sees, and what it does not
 
-`@nestjs/swagger` reads **Nest metadata only**. Measured:
+`@nestjs/swagger` reads **Nest metadata only**:
 
 - A route registered directly on the adapter (`adapter.get("/direct", …)`),
   a mounted bun-common router and the jobs API module's mounted routes are
@@ -2655,7 +2665,7 @@ are never touched.
 - bun-common's `listRoutes`/`generateOpenApi` look at the other side of the
   same wall: the router's whole table, controllers included, but with no DTO
   metadata (each such route warns it has no declared responses). One sharp
-  edge, measured: run `generateOpenApi` over a router that also serves
+  edge: run `generateOpenApi` over a router that also serves
   `SwaggerModule.setup`'s routes and it throws a `ConfigError` — the docs
   mount's `GET /api`, `GET /api/` and static `GET /api` share the default
   operation id `getApi`. Filter the docs mount out
@@ -2665,7 +2675,7 @@ are never touched.
 
 ### `setGlobalPrefix`
 
-With `app.setGlobalPrefix("v1")`, measured on both adapters:
+With `app.setGlobalPrefix("v1")`, on both adapters:
 
 - the **document's** paths carry the prefix (`/v1/users/{id}`) — the scanner
   applies it;
@@ -2683,15 +2693,16 @@ Unrelated to swagger but next to it in any app that serves pages: `render`
 goes through the [view-engine subsystem](#views-render-and-resrender)
 (`setBaseViewsDir`/`setViewEngine`/`engine`). With no engine registered and
 no extension on the view, `@Render("index")` answers Nest's 500
-(`{"statusCode":500,"message":"Internal server error"}`) — measured the same
-on `@nestjs/platform-express`.
+(`{"statusCode":500,"message":"Internal server error"}`), as on
+`@nestjs/platform-express`.
 
 ### Two bundles, two origins
 
 The UI above is `@nestjs/swagger`'s **own bundled** `swagger-ui-dist` copy,
 served from `node_modules` through `useStaticAssets`. bun-common's
 `docsRouter()` is a different thing: it serves its **own pinned** viewer
-assets from a CDN, for a document `generateOpenApi` built. The two never
+assets from a CDN (or, with its `"self-hosted"` viewer, from
+`@kingsleyweb/bun-ui`), for a document `generateOpenApi` built. The two never
 share a route or an origin; an app can mount both and each renders the
 document it was given.
 
@@ -2736,8 +2747,7 @@ export class UsersController {
 
 - **The same document as a router.** A controller's
   `generateOpenApi(adapter.instance)` document equals a bun-common router
-  app's with the same routes, `validate()` and `.describe()`
-  (`__tests__/describe.nest.test.ts`).
+  app's with the same routes, `validate()` and `.describe()`.
 - **On a controller**, the doc is merged under each route method the class
   declares: the method's keys win, and `tags` are the controller's followed
   by the method's. `@Describe({ hidden: true })` on a controller hides all
@@ -2752,6 +2762,57 @@ export class UsersController {
   params, as on a router.
 - It is stored as reflect metadata under `"bun:describe"`, which
   `Reflector` can read too.
+
+### `gatewayAsyncApi`: an AsyncAPI document from gateways
+
+`gatewayAsyncApi(app, options?)` returns `{ document, warnings }`: the
+AsyncAPI 3.0 document of the application's `@WebSocketGateway`s on
+`BunWebSocketAdapter`, found from their metadata. It is what
+`DevTypesModule` serves as `asyncapi`, and what `bun-client generate` types a
+gateway client from.
+
+```ts
+import { BunHttpAdapter, Emits, gatewayAsyncApi, ValidateMessage } from "@kingsleyweb/bun-nest";
+import { docsRouter } from "@kingsleyweb/bun-common/lib/docs";
+
+@WebSocketGateway({ path: "/ws", namespace: "/chat" })
+@Emits({ said: Said, typing: null })
+class ChatGateway {
+  @SubscribeMessage("say")
+  @ValidateMessage(Say, { ack: SayAck })
+  say(@MessageBody() msg: { text: string }) {
+    return { ok: msg.text.length > 0 };
+  }
+}
+
+const adapter = new BunHttpAdapter();
+const app = await NestFactory.create(AppModule, adapter);
+app.useWebSocketAdapter(adapter.webSocketAdapter);
+
+const { document, warnings } = gatewayAsyncApi(app, { title: "Chat", version: "1.0.0" });
+adapter.use("/docs", docsRouter({ asyncapi: () => gatewayAsyncApi(app).document, viewer: { asyncapi: "asyncapi" } }));
+```
+
+- **One channel per gateway**, addressed by its `path` and `namespace` as
+  the adapter routes them (`/ws/chat`); its servers are the gateways' ports.
+  Each `@SubscribeMessage` is a `receive` operation, the `@Emits` map the
+  `send` operations, and a `@ValidateMessage` `ack` the operation's reply.
+- **The payload is the whole packet**, since that is what crosses the wire
+  (see [Wire format](#wire-format)): an inbound event is
+  `{ type: 2, namespace, id?, data: [event, payload] }`, with the
+  `@ValidateMessage` schema at `data[1]` (`{}` for a handler without one),
+  and an ack is an `ACK` packet (`type: 3`). The `CONNECT`, `DISCONNECT` and
+  `ERROR` frames and the `exception` event are on every channel.
+- **Options** are bun-common's `generateAsyncApi` options without `servers`
+  and `filter`; `title` defaults to `"WebSocket gateways"` and `version` to
+  `"0.0.0"`. A wildcard gateway route (`/*`) cannot be an AsyncAPI address
+  and is a warning; `strict: "strict"` makes every warning a `ConfigError`,
+  as does a duplicate channel id in any mode.
+- The document is deterministic: two calls over one app give equal
+  documents.
+
+Example:
+[`09-asyncapi/gateway-docs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/09-asyncapi/gateway-docs.ts).
 
 ### `DevTypesModule`: the dev type sync
 
@@ -2783,7 +2844,7 @@ bunx bun-client watch --out src/api.gen.ts   # beside it: regenerates on every c
   `@Validate` schemas and `@Describe` prose, and the routes registered on the
   adapter itself; the AsyncAPI document is `gatewayAsyncApi`'s, the app's
   gateways. For the same routes, the OpenAPI document equals a bun-common
-  router app's `devTypes()` (`__tests__/devTypesModule.nest.test.ts`).
+  router app's `devTypes()`.
 - **Fail closed**, as `devTypes()`: `enabled` must be exactly `true`
   (anything else is an empty module that registers nothing); `forRoot`
   throws a `ConfigError` when enabled under `NODE_ENV=production`; every
@@ -2851,6 +2912,20 @@ export class UsersController {
 - No module is needed: `liveInvalidation()` serves the channel (`/__live`,
   and its SSE fallback) from the adapter, and `publishTags()` from
   `@kingsleyweb/bun-common/live` publishes by hand.
+- **Across instances**, give `liveInvalidation()` a bus, so an
+  `@Invalidates` in one instance reaches the live subscribers of every one:
+  `cacheLiveBus(bus)`, re-exported from `@kingsleyweb/bun-nest/cache` (it
+  needs `@kingsleyweb/bun-cache`), turns a bun-cache `redisBus()` or `pgBus()`
+  into one. Its `namespace` option (default `DEFAULT_LIVE_NAMESPACE`,
+  `"bun-common/live"`) must be the same in every instance. See bun-cache's
+  [live invalidation](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-cache/README.md#live-invalidation-across-processes).
+
+  ```ts
+  import { redisBus } from "@kingsleyweb/bun-cache";
+  import { cacheLiveBus } from "@kingsleyweb/bun-nest/cache";
+
+  app.use(liveInvalidation(adapter.getInstance(), { authorize, bus: cacheLiveBus(redisBus({ url: Bun.env.REDIS_URL })) }));
+  ```
 
 ## Jobs: `BunJobsModule`
 
@@ -2896,6 +2971,9 @@ export class EmailsModule {}
 Every method on `BunJobs` and `BunQueue` (the builder, drafts, `addFlow`,
 `setLimits`, `pause`, `walk`, …) works on what is injected, with no decorator for
 it. A decorator exists where it attaches behaviour to a method or a class.
+
+The sections below are shown working, one file per topic, in
+[`examples/bun-nest/15-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest/15-jobs).
 
 ### The context: `forRoot` and `forRootAsync`
 
@@ -3317,8 +3395,8 @@ export default defineProcessor(async (job, ctx) => {
 ```
 
 - **The bootstrap is paid on every attempt.** bun-jobs starts a fresh thread or process per
-  attempt: a median 115 to 130 ms measured on a three-provider module, on top of the ~135 ms it
-  already spends loading bun-jobs, and a module that opens database connections pays for those
+  attempt, so even a small module's bootstrap (on the order of a hundred milliseconds) comes on
+  top of loading bun-jobs there, and a module that opens database connections pays for those
   too. The cache helps only an `"in-process"` file.
 - **The Nest pipeline does not cross the boundary.** Inside the file, call services directly.
 - **A child sees what bun-jobs passes it.** A `child-process` attempt gets an environment
@@ -3664,13 +3742,20 @@ stopped, and answers once the job settles, through the real pipeline: guards, pi
 - `options` is what `add()` takes, plus `context` for a named context and `settleWithin` (4 s), past
   which it rejects with the job's state. `add()`'s own `timeout` is per attempt.
 - The job is kept once settled, unless `options` asks for its removal.
-- A queue nothing here serves is a `ConfigError`, with nothing added.
+- A queue nothing here serves (no `@Processor`, `registerWorker` or `@DefineJob`) is a
+  `ConfigError`, with nothing added. A job removed before it settles rejects.
 
 **`drainJobs(app, { queues?, context?, settleWithin? })`** runs workers until those queues have
 nothing left to do, for flows and fan-out, and answers the jobs that settled during the call, in the
 order they finished. Left out, `queues` is every queue a worker here serves. Nothing left to do means
 nothing waiting, active or due within `settleWithin`, so a retry's backoff is waited out and a job
-delayed for an hour is left. Past `settleWithin` it rejects, naming the queues still busy.
+delayed for an hour is left; a paused queue has nothing to do. Jobs a queue's retention removes at
+once are not in the answer. A listed queue nothing here serves is a `ConfigError`, and past
+`settleWithin` it rejects, naming the queues still busy.
+
+**Both reject with a `ConfigError` when the application has no jobs context**: the app has not been
+built with `BunJobsTestingModule.forRoot()` (or a `BunJobsModule.forRoot()`), or `context` names one
+it does not have. The message says which, and what to import.
 
 Both leave the workers they started running, until the application closes. Neither starts a schedule
 or a runner, so an `@Every` does not keep a drain busy; `BunJobsLifecycle.start()` does that.
@@ -3697,6 +3782,9 @@ await app.init();
 await adapter.fetch("/signups", { method: "POST", remoteAddress: "10.0.0.4" });
 const settled = await drainJobs(app, { queues: ["emails"] });
 ```
+
+Example:
+[`15-jobs/testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/15-jobs/testing.ts).
 
 ### Health: `./jobs/terminus`
 
@@ -3740,17 +3828,26 @@ wherever it is. `isHealthy(key, options?)` never rejects: anything that goes wro
 - **`queues`** defaults to the queues this application registers or has a worker on, so a probe does not read
   other services' on a shared backend. `queues: "all"` reads what the backend knows, the first 100 by name, with
   `queuesNotRead` saying how many that left out.
+- **An ended worker is down**: a worker of this application on a probed queue whose `run()` has finished
+  while the application is still up, so a platform restarts the service. With `queues` given, only the workers
+  on those queues count.
 - **What a probe costs:** one `ping()`, and three driver reads per queue (`isQueuePaused`, `listWorkers`,
-  `countDemand`), ten queues at a time, all bounded. `"all"` adds one listing. `timeout` bounds the lot.
+  `countDemand`), ten queues at a time, all bounded. `"all"` adds one listing; `requireWorkers` adds one
+  `listWorkers()` for a queue with demand and no worker, and only then. `timeout` bounds the lot.
 - **A worker parked on purpose is up**, shown in `parked`, whether by `BunJobsLifecycle.stop()` or remote control:
   a platform restarting the service for it would undo the decision. There is no option to make it down; alert on
   `parked` in the details if you want to know. A worker never started, with `autoStart: false`, is up too, and a
   paused queue has no demand.
-- **`requireWorkers`** counts a parked worker as alive. Every driver in this repository keeps worker records. On
+- **`requireWorkers`** counts a parked worker as alive. Every built-in bun-jobs driver keeps worker records. On
   a third-party driver with none, nobody can tell, so it is not down: `workers` reads `"unknown"`, and it is logged once.
+- **The result's details** are `queues` (per queue, `outstanding` and `workers`), `parked` when a worker here is
+  parked, and `queuesNotRead` when `"all"` left queues out.
 - **`context`** names the context, for an application with several.
 - **What a health response says:** queue names and figures, and a `message` when down. A failure's cause, a
   connection error say, goes to Nest's logger and not to the caller, since these endpoints are often public.
+
+Example:
+[`15-jobs/health.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/15-jobs/health.ts).
 
 ## The jobs API module
 
@@ -3927,8 +4024,7 @@ below it, the socket's included, so the two overlap:
 ### Installing bun-jobs is what makes the subpath compile
 
 `@kingsleyweb/bun-jobs` is an *optional* peer, and only the `./jobs` subpath's
-declarations import it. Measured on a consumer project with the packed package
-installed and bun-jobs absent:
+declarations import it. In a project with bun-jobs not installed:
 
 | Import | `skipLibCheck: false` | `skipLibCheck: true` |
 |---|---|---|
@@ -3941,8 +4037,9 @@ At runtime the subpath fails with "Cannot find module
 path resolves either way — `@kingsleyweb/bun-nest/jobs` and
 `@kingsleyweb/bun-nest/lib/jobs` are both exports of this package — so the
 failure is the missing peer, not a bad specifier. The barrel's 0 is the point
-of the split, and the declaration build enforces it: it fails if any entry
-other than the jobs subpath can reach a declaration that imports bun-jobs.
+of the split: no entry other than the jobs subpaths (`./jobs`,
+`./jobs/testing`, `./jobs/terminus` and their `./lib/...` spellings) reaches a
+declaration that imports bun-jobs.
 
 ## The cache module
 
@@ -4209,10 +4306,10 @@ its `CacheInterceptor` keeps them; `@CacheTTL()` is in ms in both.
 ### Installing bun-cache is what makes the subpath compile
 
 `@kingsleyweb/bun-cache` is an *optional* peer, and only the `./cache`
-subpath's declarations import it. The barrel never reaches it: the consumer
-check type-checks and imports `@kingsleyweb/bun-nest` in a project without
-bun-cache installed, and the declaration build fails if any entry other than
-`./cache` (and `./lib/cache`) can reach a declaration that imports it. At
+subpath's declarations import it. The barrel never reaches it:
+`@kingsleyweb/bun-nest` type-checks and loads in a project without bun-cache
+installed, and no entry other than `./cache` (and `./lib/cache`) reaches a
+declaration that imports it. At
 runtime the subpath fails with "Cannot find module `@kingsleyweb/bun-cache`",
 while `@kingsleyweb/bun-nest/lib/cache/tokens` and `…/lib/cache/errors`,
 which import nothing, load without it.
@@ -4411,29 +4508,34 @@ itself is in the package root and never reaches bun-cache.
 ## Exported API
 
 Everything below is exported from the package root; see
-[`lib/index.ts`](./lib/index.ts). The two exceptions are
+[`lib/index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/lib/index.ts). The exceptions are
 [`BunJobsModule`](#jobs-bunjobsmodule) and
 [the jobs API module](#the-jobs-api-module), which are exported **only** from
 `@kingsleyweb/bun-nest/jobs` (equivalently `@kingsleyweb/bun-nest/lib/jobs`),
+[the jobs health indicator](#health-jobsterminus) and
+[the jobs testing helpers](#testing-jobs-jobstesting), on
+`@kingsleyweb/bun-nest/jobs/terminus` and `@kingsleyweb/bun-nest/jobs/testing`,
 and [the cache module](#the-cache-module), exported **only** from
 `@kingsleyweb/bun-nest/cache` (equivalently `@kingsleyweb/bun-nest/lib/cache`).
+Any `lib/` module is importable by path too (`@kingsleyweb/bun-nest/lib/<module>`).
 
 | Group | Exports |
 |---|---|
-| Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling) |
+| Cache module (subpath only) | `BunCacheModule`, `InjectCache`, `getCacheToken`, `BUN_CACHE`, `BUN_CACHE_OPTIONS`, `Cacheable`, `CachePut`, `CacheEvict`, `CacheNotReadyError`, `BunCacheInterceptor`, `CacheKey`, `CacheTTL`, `CacheTags`, `NoCache`; types `BunCacheInterceptorOptions`, `BunCacheModuleOptions`, `BunCacheModuleAsyncOptions`, `CacheableOptions`, `CachePutOptions`, `CacheEvictOptions`, and bun-cache's `Cache`, `CreateCacheOptions`, `GetOrSetOptions`, `SetOptions` re-exported; `cacheThrottleStore` (types `CacheThrottleStore`, `CacheThrottleStoreOptions`), bun-cache's throttle store, for [Throttling](#throttling); `cacheLiveBus`, `DEFAULT_LIVE_NAMESPACE` (type `CacheLiveBusOptions`), bun-cache's live bus, for [`@Invalidates`](#invalidates-live-invalidation) across instances |
 | Jobs module (subpath only) | `BunJobsModule`, `InjectQueue`, `InjectBunJobs`, `InjectWorker`, `QueueToken`, `Processor`, `Process`, `DefineJob`, `Cron`, `Every`, `InjectRunner`, `getRunnerToken`, `runSummonedApplication`, `createProcessorContext`, `InjectSummonController`, `getSummonControllerToken`, `RemoteHandler`, `BunRemoteExecutorModule`, `OnWorkerEvent`, `OnQueueEvent`, `OnJobsEvent`, `OnRunnerEvent`, `InjectJobsNotifier`, `getJobsNotifierToken`, `JobsHost`, `WorkerRef`, `BunJobsLifecycle`, `isBunJob`, `BunJobsExecutionContext`, `isBunJobsContext`, `JobData`, `JobId`, `JobName`, `CurrentJob`, `JobContext`, `JobSignal`, `JobProgress`, `JobLogger`, `JobAttempt`, `JobForbiddenError`, `UnrecoverableOn`, `BaseJobExceptionFilter`, `JobLoggingInterceptor`, `getBunJobsToken`, `getQueueToken`, `getWorkerToken`; types `RunSummonedApplicationOptions`, `RemoteHandlerOptions`, `BunRemoteExecutorModuleOptions`, `BunRemoteExecutorModuleAsyncOptions`, `CronOptions`, `EveryOptions`, `ScheduleOptions`, `RegisterRunnerOptions`, `JobsEventKind`, `JobsEventOf`, `OnEventOptions`, `OnJobsEventOptions`, `TypedListenerDecorator`, `BunJobsContextType`, `JobDataOptions`, `JobPipe`, `JobProgressFn`, `OnDenied`, `OnInvalid`, `QueueJobData`, `QueueJobName`, `QueueJobResult`, `TypedProcessDecorator`, `BunJobsModuleOptions`, `BunJobsModuleAsyncOptions`, `BunJobsModuleContextOptions`, `BunJobsContextOptions`, `BunJobsBuildOptions`, `BunJobsBorrowOptions`, `BunJobsRunOptions`, `BunJobsShutdownOptions`, `BunJobsOptionsFactory`, `BunJobsQueueOptions`, `BunJobsWorkerOptions`, `RegisterQueueOptions`, `RegisterQueueAsyncOptions`, `RegisterWorkerOptions`, `ProcessorOptions`, `ProcessOptions`, `DefineJobOptions`, `QueueTokenClass`, and bun-jobs's `BunJobsOptions`, `BunQueueOptions`, `BunQueueWorker`, `Job`, `JobDefinitionOptions`, `NameLimits`, `ProcessorContext`, `BunQueueEvents`, `BunQueueWorkerEvents`, `BunRunnerEvents`, `DriverEvent`, `JobsNotifier`, `JobsNotifierOptions`, `BunRunner`, `BunRunnerOptions`, `RunSummonedOptions`, `SummonController`, `SummonedExit`, `SummonPolicy` |
 | Jobs health (`./jobs/terminus` only) | `BunJobsHealthIndicator`, `BunJobsHealthModule`; type `BunJobsHealthOptions` |
 | Jobs testing (`./jobs/testing` only) | `BunJobsTestingModule`, `runJob`, `drainJobs`; types `BunJobsTestingModuleOptions`, `RunJobOptions`, `RunJobOutcome`, `DrainJobsOptions` |
-| Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
-| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
+| Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`, `guardsAuthorize`, `jobsApiContextOf`; types `GuardsAuthorize`, `GuardsAuthorizeGuard`, `GuardsAuthorizeOptions`, `GuardsAuthorizePolicy`, `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
+| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`, `channelObservable` (type `ChannelObservableOptions`, see [Server-sent events](#server-sent-events-sse)); types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
 | Packets | types `MessageFormat`, `MessagePacket`, `MessagePacketMap`, `MessageConnectType`, `MessageDisConnectType`, `MessageEventType`, `MessageAckType`, `MessageErrorType`, `MessageBinaryEventType`, `MessageBinaryAckType` |
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
-| Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`; type `UploadExceptionBody` |
+| Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`, `mergeUploadOptions`, `MulterModule`, `MULTER_MODULE_OPTIONS`; types `UploadExceptionBody`, `MulterModuleOptions`, `MulterModuleAsyncOptions`, `MulterOptionsFactory` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
-| [Typed clients](#typed-clients-documents-from-controllers) | `Describe`, `DevTypesModule`, `Invalidates`; type `DevTypesModuleOptions` |
+| [Typed clients](#typed-clients-documents-from-controllers) | `Describe`, `DevTypesModule`, `Invalidates`, `gatewayAsyncApi`; types `DevTypesModuleOptions`, `GatewayAsyncApiOptions` |
 | [Throttling](#throttling) | `BunThrottlerModule`, `BunThrottlerGuard`, `BunThrottlerService`, `BUN_THROTTLER_OPTIONS`, `Throttle`, `SkipThrottle`, `ThrottlerException`, `throttlerMessage`, `seconds`, `minutes`, `hours`, `days`, `weeks`; types `BunThrottlerModuleOptions`, `BunThrottlerModuleConfig`, `BunThrottlerModuleAsyncOptions`, `BunThrottlerOptions`, `BunThrottlerOptionsFactory`, `BunThrottlerLimitDetail`, `BunThrottlerGetTracker`, `BunThrottlerGenerateKey`, `ThrottleDecoratorOptions`, `Resolvable` |
-| [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`; type `StandardValidationPipeOptions` |
+| [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`, `Validate`, `Validated`, `ValidBody`, `ValidQuery`, `ValidParams`, `ValidHeaders`, `ValidCookies`, `ValidSignedCookies`, `reply`, `ResponseValidationInterceptor`; types `StandardValidationPipeOptions`, `ValidateSchemas` |
+| [Validated gateways](#validated-gateways-validatemessage-emits-typedsocket) | `ValidateMessage`, `Emits`; types `TypedSocket`, `EmitsEventMap`, `EmitsSchemas` |
 
 `BunRequest`, `BunResponse`, `UploadOptions`, `StorageFile`, `DiskStorage`,
 `MemoryStorage`, `compression`, `validate` and the rest of the HTTP layer are
@@ -4441,13 +4543,16 @@ imported from `@kingsleyweb/bun-common`.
 
 ## Examples
 
-The repository has one runnable example project per package:
+The bun-node repository has runnable example projects, each a set of small
+programs that assert what they show. The ones closest to this package:
 
 | Project | What it covers |
 |---|---|
+| [`examples/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest) | NestJS on Bun: this package's HTTP adapter, upload interceptors, WebSocket adapter, validation, documents, caching, throttling and jobs, plus option tours |
 | [`examples/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common) | The HTTP layer on its own: routing, the adapter, requests and responses, validation, CORS, static files, compression, multipart, WebSockets, logging, utilities, plus option tours |
-| [`examples/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest) | NestJS on Bun: this package's HTTP adapter, upload interceptors and WebSocket adapter, plus option tours |
 | [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | Background work: queues, workers, scheduling, flow control, failures, the runner, every driver, integrations, plus option tours |
+| [`examples/bun-cache`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-cache) | bun-cache's caches and drivers |
+| [`examples/bun-ui`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-ui) | The jobs UI and the docs viewer |
 
 [`examples/README.md`](https://github.com/kingsloob1/bun-node/blob/develop/examples/README.md)
 describes the conventions they share.
@@ -4484,6 +4589,12 @@ describes the conventions they share.
 | `06-jobs-ui` | [`mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts) | the bun-jobs management UI, `jobsUi()`, mounted beside `BunJobsApiModule` with `adapter.use()` and served with and without a socket |
 | `08-openapi` | [`swagger-module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/08-openapi/swagger-module.ts) | [OpenAPI with `@nestjs/swagger`](#openapi-with-nestjsswagger): `createDocument` + `SwaggerModule.setup` on `BunHttpAdapter`, the JSON document, the UI page and its bundled assets, a mutating route beside the docs |
 | `07-validation` | [`standard-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/standard-validation.ts) | [Validation](#validation): `StandardValidationModule` with a `SchemaDto` body, `StandardSchemaPipe` on a query and a param, `ValidationExceptionFilter` over HTTP, WebSocket and a microservice, a gateway's `@UsePipes(...StandardValidationModule.gatewayPipes())` (and the double run a plain `@UsePipes` gives on Nest 12), `stripProtoKeys`, Nest 12's `@Body({ schema })` beside them, `forRoot({ messages })` |
+| `04-websockets` | [`validated-gateway.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/validated-gateway.ts) | [Validated gateways](#validated-gateways-validatemessage-emits-typedsocket): `@ValidateMessage` (payload and ack), `@Emits`, `TypedSocket`, the `VALIDATION` exception frame |
+| `07-validation` | [`validate-decorator.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/07-validation/validate-decorator.ts) | [`@Validate`](#validate): a route's whole request and its responses checked, `@Validated(part)` and its aliases, `reply()` |
+| `09-asyncapi` | [`gateway-docs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/09-asyncapi/gateway-docs.ts) | [`gatewayAsyncApi`](#gatewayasyncapi-an-asyncapi-document-from-gateways): the gateways' AsyncAPI document, served through bun-common's `docsRouter` |
+| `11-cache` | [`module-and-decorators.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/11-cache/module-and-decorators.ts), [`interceptor.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/11-cache/interceptor.ts) | [The cache module](#the-cache-module): `BunCacheModule`, `@InjectCache`, `@Cacheable`/`@CachePut`/`@CacheEvict`, and `BunCacheInterceptor` with `@CacheKey`, `@CacheTTL`, `@CacheTags` and `@NoCache` behind a guard |
+| `12-typed-client` | [`controller-client.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/12-typed-client/controller-client.ts), [`dev-types.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/12-typed-client/dev-types.ts), [`gateway-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/12-typed-client/gateway-channel.ts), [`invalidates.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/12-typed-client/invalidates.ts) | [Typed clients](#typed-clients-documents-from-controllers): a client typed from controllers (`@Describe`), `DevTypesModule`, a gateway's typed channel, `@Invalidates` with `liveInvalidation()` |
+| `15-jobs` | [the folder](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest/15-jobs) | [Jobs](#jobs-bunjobsmodule): producers, consumers, the pipeline around a job (a guard's denial as `JobForbiddenError`), validation, request scope, the registry, events, `@Cron`/`@Every`, runners, summoned and off-thread workers, a remote executor, `./jobs/testing`, the API behind `guardsAuthorize`, and `./jobs/terminus` |
 | `14-throttle` | [`throttling.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/14-throttle/throttling.ts) | [Throttling](#throttling): `BunThrottlerModule` with a global per-route limit, `@Throttle()` with two per-route trackers, a route that replaces the default, `@SkipThrottle()`, a service exemption by `skipIf`, `headers: "legacy"`, the adapter's `throttle` option counting 404s, a store shared by two applications, and the boot check |
 | `14-throttle` | [`refunds.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/14-throttle/refunds.ts) | `skipSuccessfulRequests` and `skipFailedRequests` per module and per `@Throttle()`, `requestWasSuccessful`, a per-plan `limit` |
 
@@ -4498,18 +4609,9 @@ result, so a failed check fails the script:
 | [`10-options/jobs-api-module-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/jobs-api-module-options.ts) | every `BunJobsApiModule` option, the `bunJobsApi` marker, registration order and attaching across an adapter swap |
 | [`13-trust-proxy/client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/13-trust-proxy/client-ip.ts) | `app.set("trust proxy")`, `@Ip()` and a host-scoped controller behind a trusted proxy, `behindCloudflare()`, a gateway client's `client.data.ip` |
 
-To run them from a clone of the repository:
-
-```bash
-bun install                        # at the repo root
-cd examples/bun-nest
-bun 01-quick-start/index.ts        # one example
-bun run-all.ts                     # every example; prints ok / skip / FAIL
-bun run-all.ts 04 10               # only folders 04-* and 10-*
-```
-
-The applications listen on port `0`. See the
-[bun-nest examples README](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/README.md).
+The
+[bun-nest examples README](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/README.md)
+lists every file and what each one asserts.
 
 ## Related packages
 
@@ -4518,25 +4620,16 @@ The applications listen on port `0`. See the
   `BunRequest`, `BunResponse`, validation, CORS, static files, compression,
   multipart, WebSockets, logging).
 - [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md):
-  background jobs, queues and scheduled runners for Bun.
-
-## Development
-
-This package lives in the
-[bun-node monorepo](https://github.com/kingsloob1/bun-node). From a clone:
-
-```bash
-bun install                  # at the repo root
-bun scripts/typecheck.ts     # every project in the repo
-cd packages/bun-nest
-bun run lint                 # lint
-bun run format:check         # check the formatting
-bun test                     # tests
-```
-
-A change to bun-common also needs bun-nest's checks. The typed verb overloads
-on `BunHttpAdapter` are generated; regenerate them from `packages/bun-common`
-with `bun scripts/generate-verb-overloads.ts` rather than editing them.
+  background jobs, queues and scheduled runners for Bun (the optional peer of
+  `./jobs`).
+- [`@kingsleyweb/bun-cache`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-cache/README.md):
+  caches over memory, SQLite, Redis, SQL and more (the optional peer of
+  `./cache`).
+- [`@kingsleyweb/bun-ui`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-ui/README.md):
+  the jobs management UI (`jobsUi()`) and the docs viewer.
+- [`@kingsleyweb/bun-client`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-client/README.md):
+  the typed HTTP and WebSocket client generated from this package's
+  documents.
 
 ## License
 

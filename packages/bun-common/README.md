@@ -12,16 +12,19 @@ need no port.
 
 The package ships its TypeScript source, which Bun runs directly (`main` points
 at `lib/index.ts`), together with built declarations in `dts/` (`types` points at
-`dts/index.d.ts`), so a consumer's type checker never compiles our source.
+`dts/index.d.ts`), so your type checker reads declarations and never compiles
+the package's source.
 `@kingsleyweb/bun-nest` and `@kingsleyweb/bun-jobs` build on it.
 
 ## Contents
 
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Entry points](#entry-points)
 - [Quick start](#quick-start)
 - [Feature guide](#feature-guide)
   - [BunRouter](#bunrouter)
+    - [Path syntax](#path-syntax)
     - [Pipeline semantics](#pipeline-semantics)
     - [Route ordering and specificity](#route-ordering-and-specificity)
     - [Router options](#router-options)
@@ -31,9 +34,9 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [Typed routes](#typed-routes)
   - [BunHttpAdapter](#bunhttpadapter)
     - [Adapter options](#adapter-options)
+    - [Native static routes](#native-static-routes-serverroutes)
     - [Listening and closing](#listening-and-closing)
     - [`bun --hot`](#bun---hot)
-    - [Native static routes](#native-static-routes-serverroutes)
     - [Not-found and error handlers](#not-found-and-error-handlers)
     - [Testing without a socket](#testing-without-a-socket)
     - [Adapter helpers](#adapter-helpers)
@@ -54,11 +57,20 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Redirects, views and format](#redirects-views-and-format)
     - [Streaming and server-sent events](#streaming-and-server-sent-events)
     - [Server-sent events: `res.sse()`](#server-sent-events-ressse)
+    - [Broadcast channels: `createSseChannel()`](#broadcast-channels-createssechannel)
   - [Validation](#validation)
+    - [Class DTOs](#class-dtos-useclassdtos)
+    - [Responses](#responses)
+      - [Streamed bodies](#streamed-bodies-chunks-sse-and-opaque)
+      - [Response variants](#response-variants-variants-and-resvariant)
   - [Contracts](#contracts)
+    - [Checking responses outside the router](#checking-responses-outside-the-router-createresponsechecker)
     - [Writing a transport](#writing-a-transport)
     - [The route model](#the-route-model-listroutes)
     - [Converting a schema to JSON Schema](#converting-a-schema-to-json-schema-tojsonschema)
+    - [Generating the documents](#generating-the-documents-generateopenapi-and-generateasyncapi)
+    - [The documents as a typed client's model](#the-documents-as-a-typed-clients-model-x-bun--and-typeshash)
+    - [Sections and subsections](#sections-and-subsections-tags-and-taggroups)
     - [Serving and viewing the documents](#serving-and-viewing-the-documents-docsrouter)
     - [Dev type sync](#dev-type-sync-devtypes)
   - [CORS](#cors)
@@ -66,6 +78,7 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   - [Response compression](#response-compression)
     - [Writing a response transform](#writing-a-response-transform)
   - [Cache-Control](#cache-control)
+    - [Parsing a `Cache-Control` value](#parsing-a-cache-control-value)
   - [Throttling](#throttling)
     - [Limits, keys and scopes](#limits-keys-and-scopes)
     - [Per-route overrides and opt-outs](#per-route-overrides-and-opt-outs)
@@ -77,14 +90,13 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
     - [Validated channels](#validated-channels-definechannel)
     - [Live invalidation](#live-invalidation-kingsleywebbun-commonlive)
     - [WebRTC signalling](#webrtc-signalling-signallingcontract-and-signallingrelay)
+      - [Pinning a peer's name to its session](#pinning-a-peers-name-to-its-session-identify)
   - [Structured logging](#structured-logging)
   - [Native utilities](#native-utilities)
 - [Examples](#examples)
   - [Example projects](#example-projects)
   - [bun-common examples](#bun-common-examples)
-  - [Running the examples](#running-the-examples)
 - [Related packages](#related-packages)
-- [Development](#development)
 - [License](#license)
 
 ## Requirements
@@ -94,6 +106,9 @@ at `lib/index.ts`), together with built declarations in `dts/` (`types` points a
   types you get a peer warning instead of confusing type errors.
 - **TypeScript** 5.9 or 6: an optional peer. Bun runs the `.ts` source as it
   is; only type-checking needs TypeScript.
+- **`@kingsleyweb/bun-ui`**: an optional peer, needed only for `docsRouter()`'s
+  `"self-hosted"` viewer (see
+  [Serving and viewing the documents](#serving-and-viewing-the-documents-docsrouter)).
 
 The runtime dependencies are small parsers that a native API does not replace:
 `@routejs/router`, `busboy`, `file-type`, `mime`, `parse-domain`, `accepts`,
@@ -106,6 +121,28 @@ core (see [Contracts](#contracts)), which has no dependency of its own.
 bun add @kingsleyweb/bun-common
 bun add -d @types/bun typescript
 ```
+
+## Entry points
+
+Import from the package root unless a section below names a subpath. Every
+subpath is also reachable under `lib/` (`@kingsleyweb/bun-common/lib/sse` is
+`@kingsleyweb/bun-common/sse`).
+
+| Import | What it holds | Browser-safe |
+|---|---|---|
+| `@kingsleyweb/bun-common` | Everything server-side: the router, the adapter, request and response, validation, CORS, static files, compression, throttling, uploads, WebSockets, logging and the utilities | no |
+| `@kingsleyweb/bun-common/contract` | The contract core (`defineTransport`, the guards, `describeContract`, `channelContract`), re-exported from [`@kingsleyweb/bun-contract`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-contract#readme); see [Contracts](#contracts) | yes |
+| `@kingsleyweb/bun-common/sse` | Server-sent events: `sse()`, `sseVariants()`, the writer, `sseResponse()`, the parser and `createSseChannel()`; see [Server-sent events](#server-sent-events-ressse) | yes |
+| `@kingsleyweb/bun-common/live` | Live cache-tag invalidation; see [Live invalidation](#live-invalidation-kingsleywebbun-commonlive) | no (`lib/live/contract` is) |
+| `@kingsleyweb/bun-common/webrtc` | The WebRTC signalling relay; see [WebRTC signalling](#webrtc-signalling-signallingcontract-and-signallingrelay) | no (`lib/webrtc/signalling` is) |
+| `@kingsleyweb/bun-common/lib/docs` | The OpenAPI and AsyncAPI generators, `toJsonSchema()`, `docsRouter()`, `devTypes()` and `typesHash()`; see [Generating the documents](#generating-the-documents-generateopenapi-and-generateasyncapi) | no |
+| `@kingsleyweb/bun-common/lib/docs/types` | The document types alone (`OpenApiDocument`, `AsyncApiDocument`, `JsonSchemaLike`), type-only | yes |
+| `@kingsleyweb/bun-common/lib/multipart`, `…/lib/multipart/storage` | The upload handlers and their types; `DiskStorage` and `MemoryStorage` (also on the root); see [Multipart uploads](#multipart-uploads) | no |
+
+A browser-safe entry imports no Bun or Node API, so a module that declares a
+contract or an SSE event map can be shared by a server and a browser bundle.
+The package declares `sideEffects` (only the contract entry's logger set-up
+has any), so a bundler drops the modules an app does not import.
 
 ## Quick start
 
@@ -234,7 +271,7 @@ Paths follow **Express 5's syntax**, path-to-regexp 8, the grammar it uses:
   Express 5 path each value is percent-encoded (`encodeURIComponent`), a
   wildcard's array is joined with `/`, a number, bigint or boolean is
   stringified, a missing optional group is dropped and a missing required
-  parameter throws. A routejs-form path is built raw, as before.
+  parameter throws. A routejs-form path is built raw.
 
 Matching ignores case unless `caseSensitive: true` (see
 [Router options](#router-options)).
@@ -420,14 +457,11 @@ own regex, walked character by character, so a literal, a whole-segment
 other shapes (an optional or regex-constrained param, a param inside a
 segment) run their regex only when the path reaches their literal prefix. The
 matches come back in registration order, with exactly the captures their
-regexes would give — a differential test over hundreds of random tables holds
-the tree to that. When the cache is full the oldest entry is evicted in
-constant time. Measured in process on a 1,000-route table, a miss costs
-a few µs (a cache hit, about 0.2 µs), against 93 µs before the first index;
-the tree made a fresh-path miss (param-random) 12.7% faster over `wrk` than
-the per-segment index it replaced. So a `routeCacheMax`
-below the number of distinct live paths no longer costs much, and `0` (no
-cache) is reasonable for very high-cardinality traffic. `clearRouteCache()` empties the cache.
+regexes would give. When the cache is full the oldest entry is evicted in
+constant time. On a 1,000-route table a miss costs a few microseconds, so a
+`routeCacheMax` below the number of distinct live paths costs little, and `0`
+(no cache) is reasonable for very high-cardinality traffic.
+`clearRouteCache()` empties the cache.
 
 `RouteClass`, `routeModulePath` and `toNativeRequest` are also exported, for
 advanced integration.
@@ -910,8 +944,8 @@ which a cancelled body does not abort. A signal passed in a `RequestInit`
 that is aborted already rejects at once, without routing, and is honoured at
 every step. A `Request`'s own signal is read only once the router's pipeline
 waits on a layer (a handler, middleware or `next()` that has not finished),
-or the handler reads `req.signal`, because Bun creates it on first read at
-about a sixth of the cost of the whole call. So a `Request` whose signal was
+or the handler reads `req.signal`, because Bun creates it on first read, at a
+real cost per request. So a `Request` whose signal was
 aborted before the call is answered if its handler answers synchronously, and
 an abort while only the request body is being read, or only an adapter's
 not-found handler is running, takes effect once that step ends.
@@ -962,7 +996,7 @@ unset by default, which refuses.
   answers its own cap before `authorize` for the same reason.
 - **Only the early refusal.** A body read later, inside the pipeline
   (`deferBody`, a body parser middleware, `parseBody()`), is answered through
-  the error handling as before.
+  the error handling.
 - The option is read when routes are registered, so set it in the
   constructor. The adapter consults `routesUndecodableBody(req)` only for a
   body that failed to decode, and it answers at once while nothing opted in.
@@ -1381,7 +1415,7 @@ reaches the app through both. This is what each hop does to the request:
 | Hop | What it does | What the app sees |
 |---|---|---|
 | Cloudflare edge | Connects to Railway from `172.68.10.20` (one of its published ranges). Sets `CF-Connecting-IP: 198.51.100.23`, and appends the client to `X-Forwarded-For`. | |
-| Railway edge (`34.120.0.8`, rotating) | Replaces `X-Forwarded-For` with `<its client>, <itself>`, as measured in November 2026. Sets `X-Real-IP` to its client. | `X-Forwarded-For: 172.68.10.20, 34.120.0.8`, `CF-Connecting-IP: 198.51.100.23`, `X-Real-IP: 172.68.10.20` |
+| Railway edge (`34.120.0.8`, rotating) | Replaces `X-Forwarded-For` with `<its client>, <itself>`, as observed in November 2026. Sets `X-Real-IP` to its client. | `X-Forwarded-For: 172.68.10.20, 34.120.0.8`, `CF-Connecting-IP: 198.51.100.23`, `X-Real-IP: 172.68.10.20` |
 | Railway proxy | Connects to the app. | socket peer `100.64.0.7` |
 
 What each setting gives on that request:
@@ -1427,7 +1461,7 @@ platform can change.
 | Platform | What it sends | Suggested setting |
 |---|---|---|
 | [Cloudflare](https://developers.cloudflare.com/fundamentals/reference/http-headers/) | `CF-Connecting-IP`; appends to `X-Forwarded-For`; [published ranges](https://www.cloudflare.com/ips/) | `behindCloudflare()` |
-| [Railway](https://docs.railway.com/networking/public-networking/specs-and-limits) | `X-Real-IP` (documented); `X-Forwarded-For` undocumented, measured as `<client>, <edge>`; no published range | `behindRailway()` |
+| [Railway](https://docs.railway.com/networking/public-networking/specs-and-limits) | `X-Real-IP` (documented); `X-Forwarded-For` undocumented, observed as `<client>, <edge>`; no published range | `behindRailway()` |
 | [Fly.io](https://fly.io/docs/networking/request-headers/) | `Fly-Client-IP`; the right-most `X-Forwarded-For` entry is your app's own address | `{ trustProxy: 2 }`, after checking with `req.proxyChain` |
 | [Vercel](https://vercel.com/docs/headers/request-headers) | Overwrites `X-Forwarded-For` with the client; `x-real-ip` is the same | `{ trustProxy: 1 }` |
 | [Render](https://render.com/docs) | Fronted by Cloudflare; forwarding undocumented | Check with `req.proxyChain` |
@@ -1483,14 +1517,13 @@ non-negative size such as `1024` or `"100kb"`) throws where it is configured: th
 (which then keeps its previous options), and `requestParsing()`. A request
 resolves its `parseBody` config only when it has a body, so a bodiless request
 never pays for it; `validateParseBodyOption(parseBody)` runs the same check for
-options built elsewhere. (A `maxContentLength` that did not parse used to be
-ignored silently, leaving the per-kind default cap in force.)
+options built elsewhere.
 
 **Bodies read without their bytes (`retainBuffer`).** By default every body
 keeps its exact bytes (`req.buffer`, `rawBody`, the `data` events). With
 `retainBuffer: false`, a body that can be read without them is: a JSON body
-in one native call, `request.json()`, as Elysia does — about a sixth less
-per JSON request, +9% `wrk` req/s. `retainBuffer` decides it:
+in one native call, `request.json()`, as Elysia does, which is cheaper per
+request. `retainBuffer` decides it:
 
 | Where | Applies to |
 |---|---|
@@ -1530,32 +1563,29 @@ Keep the bytes to verify a signature over the raw body; bun-nest turns
 **How the body is read.** When nothing has to be enforced while the body
 streams — no cap, or a `Content-Length` within it and no `Transfer-Encoding` —
 the request reads it in one native `arrayBuffer()` call and parses it
-synchronously: for a small JSON body, about a third less time in the request
-wrapper than before. Otherwise (no declared length under a cap, a chunked
+synchronously. Otherwise (no declared length under a cap, a chunked
 body) it streams under the cap and stops at the first byte past it. Either way
 the decoded length is checked against the cap afterwards, which also catches an
 in-process `Request` whose `Content-Length` understates its body. Multipart
 bodies, and a subclass overriding `parseBody()`, go through `parseBody()`.
 
 **A bodiless GET or HEAD reads no header.** Bun builds a request's `Headers`
-only when something reads them — a cost of up to a tenth of a small request —
-and serves a bodiless request, and an empty one, with no body stream. So a GET
+only when something reads them, which has a real cost, and serves a bodiless request, and an empty one, with no body stream. So a GET
 or HEAD without a body stream finishes as bodiless while it is built, without
 looking at `Content-Length` or `Transfer-Encoding`; the first read of the body's
 state (`req.body`, `buffer`, `isBodyParsed`, `complete`, `parseBody()`,
 `ready()`, a body parser, the body events) checks those headers, and parses a
-declared empty body exactly as before: `{}` for JSON and urlencoded, `""` for
+declared empty body as any method's: `{}` for JSON and urlencoded, `""` for
 text, an empty `Buffer` for raw. A GET whose handlers read no header, cookie or
 body never builds them. Every other method checks the two headers first, as
 body-parser does: reading `request.body` of a request that has a body builds a
-`ReadableStream`, and the body is then read through it rather than Bun's direct
-path (about a sixth of a small JSON POST, measured). One case changed, for a GET
-or HEAD only: a declared empty body (`Content-Length: 0`, or chunked with no
-data) whose `Content-Encoding` is refused is now **routed**, and the refusal is
-recorded in `bodyDecodingError` when the body is first read (a body parser or
-`parseBody()` rejects with it, so `next(err)` still answers 415 or 400); it used
-to be answered before routing. For any other method, and any body with data, it
-is refused before routing, as always.
+`ReadableStream`, and the body is then read through it rather than Bun's
+faster direct path. One consequence, for a GET or HEAD only: a declared empty
+body (`Content-Length: 0`, or chunked with no data) whose `Content-Encoding` is
+refused is **routed**, and the refusal is recorded in `bodyDecodingError` when
+the body is first read (a body parser or `parseBody()` rejects with it, so
+`next(err)` still answers 415 or 400). For any other method, and any body with
+data, it is refused before routing.
 
 How a failure is answered:
 
@@ -1610,7 +1640,7 @@ than its date. One known difference: a `GET` answered on the no-`Headers` path
 above does not look for `If-None-Match: *`, and answers it with its own status
 where Express answers `304` (a `HEAD`, or a `GET` that sets any header, gets
 the `304`). Looking would make Bun build the request's headers on every plain
-`GET`, which measured +6–13% per served request. The exported `fresh()`
+`GET`, which would slow every one of them. The exported `fresh()`
 also accepts a header given as an array (bun-common's request headers can be
 `string[]`), where `fresh` 2.0.0 throws.
 
@@ -1844,6 +1874,14 @@ The options beyond the defaults above:
 | `onError` | none | Called with an error of `resume`, or of `sseResponse()`'s source, instead of logging it and closing. Nothing is sent by default, so no message leaks. |
 | `logger` | console | Where a `"warn"` mismatch, a slow client's disconnection and an error go. Any logger `resolveLogger` adapts. |
 
+The writer's members: `send(message)` (an event, or pre-encoded bytes on an
+untyped writer; it resolves `false` once closed), `comment(text)` (a comment
+line clients ignore, never checked), `close()` (ends the stream after what is
+queued; safe to call twice), `onClose(fn)` (returns a remover), `closed`,
+`signal` (aborts when the writer closes) and `lastEventId`. `new
+SseWriter(init?)` gives a bare writer whose `readable` is the body, for a
+`Response` of your own.
+
 `stream.lastEventId` is the request's `Last-Event-ID`, or `undefined`. An
 event declared `null` (or any event with no data) is written with one empty
 `data:` line, so `EventSource` and any parser following the standard
@@ -1894,6 +1932,14 @@ variant selected. Documents list such an event as `anyOf` its variants with
 an `x-variants` table (`names`, `conditional`, `descriptions`); `anyOf`
 rather than `oneOf`, since variants may overlap and the first that applies
 is taken.
+
+Each variant takes `data` (its schema, required), `when` (optional; without
+it the variant applies on every stream) and `description` (what documents
+say about when it is sent, since a `when` cannot be described). There is no
+fallback: an event no variant accepts is a mismatch, so declare a variant
+with no `when` when a default is wanted. A declaration mistake (an empty
+table, a variant without `data`, a `when` that is not a function, an unknown
+key) throws a `TypeError` where `sseVariants()` is called.
 
 Without a `BunResponse`, `sseResponse(source, init?)` returns the same
 stream as a `Response`, for a native route, `Bun.serve`'s `fetch`,
@@ -1953,6 +1999,25 @@ prices.size; // subscribers now
 prices.close(); // ends every stream; later requests get 204
 ```
 
+`createSseChannel(options?)` returns an `SseChannel`:
+
+| Option | Default | What it does |
+|---|---|---|
+| `initial` | none | The events each new subscriber gets first: a list (encoded once), or a function of the subscriber (`SseInitialContext`: `replay`, `lastEventId`, `topics`), possibly async. |
+| `replay` | `0` (off) | How many of the last events to keep for `Last-Event-ID` resumption; events sent without an `id` then get one. A count, not bytes. |
+| `heartbeatMs` | `15_000` | The one heartbeat timer for the channel; `0` turns it off. |
+| `writer` | the writer's defaults | Each subscriber's writer options (`maxQueuedBytes`, `highWaterMark`, `open`, `retry`, `compress`, `logger`). `ids`, `resume`, `heartbeatMs`, `contract`, `validation` and `onError` are the channel's and are not taken here. |
+| `contract` | none | An `sse({ … })` declaration that types and checks every event (see **A typed channel** below). |
+| `validation` | `"error"` | What a mismatch against `contract` does: `"error"`, `"warn"` or `"off"`. |
+| `transport` | none (process-local) | A bus carrying events between processes (`SseChannelTransport`, below). |
+| `idPrefix` | unique per channel instance | The prefix of the ids the channel assigns with `replay`. |
+| `onError` | logged | Called with an error of a function `initial` (a refused event of it included), a transport's `publish`, a `listen()` listener, or a writer that refused the channel's bytes. |
+
+A negative or fractional `replay`, a negative `heartbeatMs`, or a `contract`
+that is not an `sse({ … })` declaration throws a `TypeError` at
+construction. `channel.size` is the subscriber count, `channel.closed` says
+whether `close()` was called, and `channel.contract` is the contract given.
+
 - **One encode, no waiting.** `send()` encodes the event once and queues the
   same bytes on every subscriber's writer without awaiting any, so a client
   that stopped reading never stalls the others: its own writer disconnects
@@ -1989,8 +2054,11 @@ prices.close(); // ends every stream; later requests get 204
   (with `heartbeatMs: 0`); `listen(fn, opts)` subscribes a function that
   gets each message, for code that formats events itself (bun-nest's
   `channelObservable()` for `@Sse()`). Each returns an `SseSubscription`:
-  `replay`, `replayed`, `ready` (the initial state or replay is queued) and
-  `unsubscribe()`. A writer subscriber is removed when its writer closes,
+  `writer` (absent for a `listen()` subscriber), `replay`, `replayed`, `ready`
+  (the initial state or replay is queued; it never rejects) and
+  `unsubscribe()`. `listen()` also takes `onEnd`, called if the channel
+  closes first; on a closed channel `attach()` closes the writer and
+  `listen()` calls `onEnd` at once. A writer subscriber is removed when its writer closes,
   which is how a client leaving is noticed, served and through `fetch()`
   alike.
 
@@ -2002,7 +2070,8 @@ so a bad one is never broadcast: under `validation: "error"` (the default)
 synchronous schema, and nothing is sent, kept for replay or published;
 `"warn"` logs it and sends it; `"off"` checks nothing. `sendList()` checks
 every item first and sends none if one fails. A list `initial` is checked by
-`setInitial()` (which throws), a function's events as it returns them (a
+`createSseChannel()` and `setInitial()`, which throw (`setInitial()` then
+leaves the initial state unchanged), a function's events as it returns them (a
 refused one goes to `onError` and is skipped). An event declared with
 `sseVariants()` is checked against the union of its variants: a broadcast
 has no request for a variant's `when` to ask about. The contract's `data`
@@ -2082,7 +2151,7 @@ unknown keys strips unknown cookies too.
   `req.headers` stays the raw view that `accepts`, `type-is` and the
   multipart parser read. Header schemas are keyed by **lower-case** name; a
   `"Content-Type"` key never matches. A `transform` on headers changes
-  nothing, as before.
+  nothing on the request.
 - **`cookies` cannot require a signature**: a forged unsigned `sid` lands in
   `req.cookies` and passes. `signedCookies` holds only the cookies a secret
   verified (a tampered one is `false`, an unsigned one absent), so require a
@@ -2238,10 +2307,10 @@ router.get("/search", validate({ query: SearchQuery }), (req, res) => {
 The defaults are chosen for the wire: `plainToInstance` runs with
 `{ enableImplicitConversion: true }`, which is what makes a DTO usable on
 `query` and `params`, where every value arrives as a string (`"42"` → `42`
-for an `@IsInt()` property — measured). `validate` runs with
+for an `@IsInt()` property). `validate` runs with
 `{ whitelist: true, forbidNonWhitelisted: false }`: **`whitelist` strips
-undeclared properties from the instance** (measured on class-validator
-0.15.1 — an `extra` key does not survive); pass
+undeclared properties from the instance** (an `extra` key does not survive);
+pass
 `useClassDtos(adapter, { validate: { whitelist: false } })` to keep them, or
 per class through `fromDto(cls, { validate: … })`. `ClassDtoOptions` carries
 `transform`, `validate` and `toJsonSchema`; without the last a DTO validates
@@ -2255,7 +2324,7 @@ The requirements, stated as requirements:
 
 - **`experimentalDecorators` must be on** (with `emitDecoratorMetadata` for
   the implicit conversion and `@Type()`). Under TypeScript 5+ standard
-  decorators class-validator crashes at class-definition time — measured:
+  decorators class-validator crashes at class-definition time, with
   `TypeError: undefined is not an object` from its `ValidateBy`. A consumer
   on stage-3 decorators cannot use the DTO path at all; Standard Schema is
   the primary path for a reason. Bun reads the flags from the **working
@@ -2265,8 +2334,7 @@ The requirements, stated as requirements:
   implicit conversion throws `Reflect.getMetadata is not a function`.
 - **`useClassDtos` before any validator wrapping a class is built.** A DTO
   class in a schema slot with no adapter registered throws a `ConfigError`
-  naming `useClassDtos` — deliberate, where it used to die at request time
-  with a `TypeError`.
+  naming `useClassDtos` when the validator is built, not at request time.
 
 Two limits to know. DTO validation is **always asynchronous**
 (class-validator's `validate` returns a Promise), so a DTO must not be used
@@ -2284,8 +2352,7 @@ who wants the Standard Schema explicitly (its `~standard.vendor` is
 plain validate function.
 
 In **bun-nest** none of this exists, deliberately: a DTO keeps its native
-`@nestjs/swagger` path (verified end-to-end in AD phase (d)), which produces
-a named component. Note the direction, opposite to bun-nest's `SchemaDto`:
+`@nestjs/swagger` path, which produces a named component. Note the direction, opposite to bun-nest's `SchemaDto`:
 `SchemaDto(schema)` turns a Standard Schema *into* a class for Nest's pipes;
 `useClassDtos` turns a class-validator class *into* a Standard Schema.
 
@@ -2384,7 +2451,7 @@ body that must be read (a `Blob`, a passed-through `Response`) holds the
 response until the check settles. Use `"error"` in development and tests and
 `"off"` or `"warn"` in production.
 
-**`responseOutput: "parsed"`** (V13) sends a passing buffered JSON body as
+**`responseOutput: "parsed"`** sends a passing buffered JSON body as
 the schema's **output** — unknown keys the vendor strips (zod strips by
 default; yup and arktype keep them, so they strip nothing), defaults and
 transforms applied — for every response, not only those `.variant()` names.
@@ -2702,7 +2769,7 @@ bun-common depends on and re-exports at that entry unchanged; it has no
 dependency and imports no Bun or Node API, so a contract module can be
 shared by a server and a browser client, and a client can install the core
 without bun-common. Through bun-common, a guard's `logger` option takes any
-[`LoggerLike`](#structured-logging), as before. A transport declares the **parts** its messages carry
+[`LoggerLike`](#structured-logging). A transport declares the **parts** its messages carry
 on each **side** (and, when a side carries several kinds of message, the name
 of its **key**). A **contract** maps parts to Standard Schemas, and **guards**
 check messages against it:
@@ -2737,7 +2804,7 @@ export const send = createSender(sendMail, "outbound"); // checks, and hands bac
 - **The policy** is `"off" | "warn" | "error"` (default `"error"`). A receiver
   under `"warn"` or `"off"` may hand on a message its schemas did not parse,
   so it is typed to hand on `unknown`.
-- **Variants are not checked by the guards yet.** `createSender` and
+- **Variants are not checked by the guards.** `createSender` and
   `createReceiver` throw a `TypeError` when the side declares a status with
   `variants()` (rather than pass it unchecked); `validate()`'s response gate
   checks them, and `describeContract` and `mergeContracts` read them.
@@ -2902,9 +2969,7 @@ export async function serveChat(handler: Handler) {
 An undeclared `type` is an issue with `target: "type"`; under `"warn"` a bad
 datagram is logged and handed on raw; under `"off"` no schema runs. A client
 is the same calls the other way round: a sender on the `inbound` side before
-it sends, and a receiver on the `outbound` side for the replies. The
-package's tests run this adapter on port 0
-(`packages/bun-contract/__tests__/udp.test.ts`).
+it sends, and a receiver on the `outbound` side for the replies.
 
 Example:
 [`custom-transport.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/custom-transport.ts).
@@ -2961,7 +3026,7 @@ const routes = listRoutes(router); // list the root router (or the adapter)
   channel docs direct (`router.get(channel.path, channel.checks())` before
   `router.ws(...)`).
 - **`bodyPlacement(row)`** reads a described request-body row into its
-  document placement: `{ mediaType: "application/json", required }` (m6) —
+  document placement: `{ mediaType: "application/json", required }` —
   the row's own media type when it declares one, and `required: false` when
   the schema's input accepts `undefined`. The rule, in order: a `null` row
   (a body declared absent) is not required; a schema whose
@@ -3066,6 +3131,90 @@ claim warns and disambiguates; two calls on one input deep-equal.
 `documented(json)` and `toStandardSchema(fn, { jsonSchema })` — the escape
 hatches for a part known only as JSON Schema — convert with no registration
 at all, since both publish the document as `~standard.jsonSchema`.
+
+#### Generating the documents: `generateOpenApi()` and `generateAsyncApi()`
+
+`generateOpenApi(router, options)`, from `@kingsleyweb/bun-common/lib/docs`,
+builds an OpenAPI 3.1 document from a router's (or adapter's) routes: it
+reads `listRoutes(router)`, so every validator's schemas are documented with
+no annotation, and merges what each route declares with `.describe()`.
+Register every route before calling it.
+
+```ts
+import { generateAsyncApi, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
+
+app
+  .get("/users/:id", validate({ params: IdParams }, { responses: { 200: User, 404: Problem } }), getUser)
+  .describe({ summary: "Read one user", tags: ["Users"] });
+app.get("/health", health).describe({ hidden: true });
+
+const { document, warnings } = generateOpenApi(app, {
+  title: "Shop",
+  version: "1.0.0",
+  securitySchemes: { bearer: { type: "http", scheme: "bearer" } },
+});
+const events = generateAsyncApi(app, { title: "Shop events", version: "1.0.0" }).document;
+```
+
+**`.describe(doc)`** documents the route registered by the call just before
+it (as `setName` names it), and throws a `TypeError` after `use`, `group`,
+`domain` or a mount. The doc is stored on the route's terminal callback, so
+it survives mounting; calling it twice merges, last write winning per key.
+Its fields (`RouteDoc`):
+
+| Field | Meaning |
+|---|---|
+| `summary`, `description` | The operation's title and its CommonMark description. |
+| `tags` | The sections the operation is listed under; see [Sections and subsections](#sections-and-subsections-tags-and-taggroups). |
+| `operationId` | Unique in the document. Default: derived from method and path (`GET /users/:id/posts` → `getUsersByIdPosts`). |
+| `deprecated` | Marks the operation deprecated. |
+| `hidden` | Leaves the route out of every generated document. |
+| `request` | `params`, `query`, `body`, `headers`, `cookies` schemas for a route with no validator (each replaces what was discovered for that target, documenting without enforcing), and `files` (see **Uploads** below). |
+| `requestMediaTypes`, `requestRequired` | The media types the body is accepted as (default `application/json`, `multipart/form-data` with `files`) and whether it must be sent. |
+| `responses` | Responses by status, for documentation only: a schema, `null` (no body), or `{ description, schema, mediaType, headers, examples }`. To enforce responses, declare them on the validator; when both exist, the validator's wins. |
+| `security` | The operation's security requirement, over the document's; `[]` is explicitly public. |
+| `errors`, `cache` | The `x-bun-errors` and `x-bun-cache` extensions (below). |
+| `extensions` | Any `x-…` fields, copied onto the operation. |
+
+`generateOpenApi`'s options (`OpenApiOptions`):
+
+| Option | Default | Meaning |
+|---|---|---|
+| `title`, `version` | required | `info.title` and `info.version`. |
+| `description`, `info` | none | `info.description`, and the rest of `info` (`contact`, `license`, …). |
+| `servers` | `[{ url: "/" }]` | The document's `servers`. |
+| `securitySchemes`, `security` | none | `components.securitySchemes`, and the document-wide requirement (default: any one of the schemes). A requirement naming an undeclared scheme is a `ConfigError`. |
+| `tags`, `tagGroups`, `defaultTags` | none | Tag descriptions, sections of tags and tags for undescribed routes; see [Sections and subsections](#sections-and-subsections-tags-and-taggroups). |
+| `filter` | every non-hidden route | `(route) => boolean`, over `listRoutes()` entries. |
+| `operationId` | camelCase of method and path | Names an operation that declared none. A duplicate id is a `ConfigError`, never a silent rename (the same route mounted twice is suffixed; see [`defineRoutes()`](#declaring-routes-as-data-defineroutes)). |
+| `strict` | `"lenient"` | `"strict"` throws a `ConfigError` on any warning: an undocumentable path, a route with no declared responses, a schema no converter handled. |
+| `converters`, `componentName` | none, a schema's own `$id`/`title` | Converters by vendor (see [`toJsonSchema()`](#converting-a-schema-to-json-schema-tojsonschema)), and the name a schema is emitted under in `components.schemas` (`undefined` inlines it). |
+| `optionalParams` | `"two-paths"` | An optional path parameter documents its route on each path it can take (`/page/{n}` and `/page`, the shorter one's id suffixed `WithoutN`); `"warn"` documents one path, with a warning that the parameter is optional at runtime. A wildcard path (`/files/*name`) cannot be documented and is warned about. |
+
+It returns `{ document, warnings }`: the document (fresh objects, yours to
+change) and everything `"lenient"` mode let through. `toOpenApiPath(path)`
+converts one Express path to OpenAPI's template, and `openApiSecurity()`
+builds the security fields alone.
+
+**`generateAsyncApi(source, options)`** builds an AsyncAPI 3.0 document from
+the realtime half: every `defineChannel` channel (its upgrade request, its
+messages in their envelope, the reply links and the error frame), every SSE
+route (a `GET` whose declared body is `sse()`), and each bare `ws()` route.
+`source` is a router, an adapter or a `BunWebSocket`. A bare `ws()` route is
+documented as one unconstrained message each way until you describe it with
+`app.webSocketAdapter.describeChannel(path, { title, description, receives,
+sends, subprotocol })`, each message a `{ summary, payload, contentType,
+examples, reply }`. Its options are `generateOpenApi`'s `title`, `version`,
+`description`, `info`, `securitySchemes`, `security`, `filter`, `strict`,
+`converters` and `componentName`, plus `servers` keyed by name (default: one
+`app` server, `ws`, on `localhost` and the bound port when known). It returns
+`{ document, warnings }` too.
+
+Examples:
+[`annotating-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/annotating-routes.ts),
+[`from-validators.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/from-validators.ts),
+[`asyncapi-channels.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/asyncapi-channels.ts),
+[`class-dtos.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/class-dtos.ts).
 
 #### The documents as a typed client's model: `x-bun-*` and `typesHash()`
 
@@ -3190,7 +3339,8 @@ generateOpenApi(app, {
   it, and Redoc does not show it). `strict: "strict"` escalates them, as any.
 - **Two groups with one name are a `ConfigError`**, in either mode.
 - With groups, `tags` follows the groups' order, for viewers that ignore
-  `x-tagGroups`; without them, the document is as before.
+  `x-tagGroups`; without them, no `x-tagGroups` is emitted and `tags` keeps
+  first-use order.
 
 **Tagging a whole router: `defaultTags`.** A router with no `.describe()` of
 its own (another package's, such as bun-jobs' management API) is tagged from
@@ -3207,7 +3357,7 @@ mountable router serving the documents as JSON and, only when asked, a viewer
 page for each:
 
 ```ts
-import { docsRouter, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
+import { docsRouter, generateAsyncApi, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
 
 app.use(
   "/docs",
@@ -3216,10 +3366,10 @@ app.use(
     // router as it is now:
     openapi: () =>
       generateOpenApi(app, { title: "My API", version: "1.0.0" }).document,
-    // AsyncAPI covers any realtime or event-driven mechanism OpenAPI cannot
-    // document (WebSocket, Kafka, AMQP, MQTT, SSE, …) — the document is
-    // hand-supplied until the generator lands:
-    asyncapi: eventsDocument,
+    // AsyncAPI documents what OpenAPI cannot: the app's WebSocket channels
+    // and SSE streams (generated), or any document you supply.
+    asyncapi: () =>
+      generateAsyncApi(app, { title: "My API", version: "1.0.0" }).document,
     viewer: { openapi: "scalar", asyncapi: "asyncapi" }, // the defaults, shown
     authorize: requireAuth, // runs before every docs route
   }),
@@ -3255,6 +3405,15 @@ app.use(
 
   Scalar can also render the AsyncAPI document (`viewer.asyncapi: "scalar"`),
   but its AsyncAPI support is upstream work-in-progress — opt in knowingly.
+- **`"self-hosted"`** (for either document) serves
+  [`@kingsleyweb/bun-ui`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui#readme)'s
+  own docs viewer from this origin instead of a CDN: hash-named immutable
+  assets, SRI over the local bytes, and a self-only CSP. bun-ui is an
+  optional peer: naming the viewer without it installed is a `ConfigError` at
+  construction, naming the package. Its options are `theme` (`"system"`,
+  `"light"` or `"dark"`), `extensions` (the extension prefixes it reads) and
+  `csrfHeader` (the header its try-it panel adds on mutations, or `false`).
+  The OpenAPI page is the mount root, the AsyncAPI page `/asyncapi`.
 - **`cdn`** mirrors or air-gaps the assets: `{ baseUrl }` plus per-asset
   `{ version, integrity }` overrides (exact versions only, `sha384-` hashes —
   a different version's bytes need your own hashes). Resolved at
@@ -3494,9 +3653,8 @@ never compressed. A compressed response loses `Content-Length`.
 A `text/event-stream` response is flushed after every chunk, and `res.flush()`
 flushes on demand.
 
-Dictionary transport is verified against a real Chrome (153) in
-[`compression.chrome.e2e.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/__tests__/compression.chrome.e2e.test.ts):
-Chrome stores a response sent with `Use-As-Dictionary`, offers it back with
+Dictionary transport works with Chrome (checked against Chrome 153): Chrome
+stores a response sent with `Use-As-Dictionary`, offers it back with
 `Available-Dictionary`, and decodes `dcb` and `dcz` from `compression()` and
 from static files compressed on the fly (pass `dictionaries` in the static
 handler's `compression` option). Chrome treats `http://localhost` as a secure
@@ -3598,7 +3756,7 @@ formatCacheControl({ private: ["Set-Cookie"], maxAge: 0, mustRevalidate: true })
   before the client: `cacheControl({ maxAge: 0 }, { surrogateControl: {
   maxAge: 3600 } })`.
 
-#### Parsing
+#### Parsing a `Cache-Control` value
 
 `parseCacheControl(value)` reads a `Cache-Control` value, a request's or a
 response's, into a `ParsedCacheControl`: the same keys as
@@ -3702,8 +3860,8 @@ request's body is never read.
 
 #### Limits, keys and scopes
 
-Each limit counts against its own key, so one route can hold ConcaveHR's
-sign-in rules: 10 a minute per address and account, 30 per address alone.
+Each limit counts against its own key, so one route can hold a typical
+sign-in policy: 10 a minute per address and account, 30 per address alone.
 A throttle ahead of the routes counts per client across them (`"global"`);
 `scope: "route"` gives each route a count of its own, as `@nestjs/throttler`
 does. A request no route handles counts under `"(no route)"`.
@@ -3814,9 +3972,9 @@ adds `buffer`.
 the request is built, with `parseBody.contentTypes.multipart.opts`. A handler
 whose options change the parse — `limits`, `inflate`, `detectFileType`, … —
 parses it again, so set an option that should always apply in both places.
-Sniffing is the costliest step for a small file: 7 µs for a JPEG, 35 µs for
-bytes `file-type` does not recognise, and more for some PNGs. When nothing
-reads `validatedMimeType`, turn it off where the request is parsed:
+Sniffing the file type is the costliest step for a small file, more so for
+bytes `file-type` does not recognise. When nothing reads
+`validatedMimeType`, turn it off where the request is parsed:
 
 ```ts
 const app = new BunHttpAdapter(0, {
@@ -3841,24 +3999,13 @@ Its resolved config is built once per options object and shared by every
 request, so it costs no more per request than `parseBody: true`.
 
 **The parser.** The body is always in memory by the time it is parsed, so
-bun-common parses it in place (`lib/multipart/buffered.ts`) rather than
-streaming it through busboy: a native boundary search, and the header block
-clients send read in one step. It answers exactly what busboy answers. It
-reuses busboy's own parameter and charset decoding, and a seeded
-differential fuzz against busboy holds it to that. A body with anything
-unusual (a limit reached, a malformed or truncated part, junk after a
-boundary) is handed to busboy itself, so busboy's errors and limits are
-unchanged. Against busboy on the same buffer it is about 5× faster on a
-small upload or a 50-field form and 6× on a 1 MiB file. It is also faster
-than Bun's native `Request.formData()` on every shape measured, and
-`formData()` answers differently anyway: it keeps a path in a file name,
-ignores a field's charset, and loses a `filename*` file. End to end, a small
-upload went from 14,519 to 21,375 req/s (`wrk`, same machine).
-
-A field with a plain name (letters, digits, `_` and `-`) is inflated without
-the query-string parser, and a value that cannot open a JSON text is not
-handed to `JSON.parse`. The answers are the same; a differential test in
-`__tests__/multipart.test.ts` holds them to it.
+bun-common parses it in place rather than streaming it through busboy, which
+is several times faster. It answers exactly what busboy answers, reusing
+busboy's own parameter and charset decoding. A body with anything unusual (a
+limit reached, a malformed or truncated part, junk after a boundary) is handed
+to busboy itself, so busboy's errors and limits are unchanged. Bun's native
+`Request.formData()` is not used because it answers differently: it keeps a
+path in a file name, ignores a field's charset, and loses a `filename*` file.
 
 ```ts
 import {
@@ -4158,7 +4305,7 @@ app.use("/live", (req, res, next) => {
 - **Headers are inherited either way.** `upgradeToWebsocket(data, { headers })`
   still carries the router's and the response's headers, and a header it
   passes wins per name. Pass `inherit: false` to send only the call's own
-  arguments, as before these layers existed.
+  arguments.
 - **Whose router.** A `ws()` route takes the defaults of the router `ws()` was
   called on. That route is registered on the attached `BunWebSocket`'s router,
   at the path `ws()` was given, and not under a `use()` mount — so on a
@@ -4308,8 +4455,8 @@ the channel, its types and its documents are the inline form's).
   `@kingsleyweb/bun-common/contract`, so a channel module can be shared with a
   browser client. The server binding (`defineChannel`) is on the root entry.
 - A `sends` entry declared with `variants()` throws a `TypeError` at the
-  declaration for now (a frame has one part, `data`; the variants shape for it
-  is an open design point), as do the contract guards for HTTP.
+  declaration: channels do not support response variants (a frame has one
+  part, `data`), and neither do the contract guards for HTTP.
 
 Example:
 [`validated-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/validated-channel.ts).
@@ -4399,6 +4546,7 @@ publishTags(["user:42"]); // or by hand, from anywhere in the process
   ```ts
   import { redisBus } from "@kingsleyweb/bun-cache";
   import { cacheLiveBus } from "@kingsleyweb/bun-cache/live";
+  import { connectLiveBus, liveInvalidation } from "@kingsleyweb/bun-common/live";
 
   const bus = cacheLiveBus(redisBus({ url: process.env.REDIS_URL, channel: "app:live" }));
   app.use(liveInvalidation(app, { authorize, bus }));
@@ -4422,6 +4570,10 @@ publishTags(["user:42"]); // or by hand, from anywhere in the process
   object with `publish` and `subscribe` (`LiveBus`) will do.
 - `liveContract` alone is browser-safe:
   `@kingsleyweb/bun-common/lib/live/contract`.
+
+Example:
+[`14-typed-client/live-invalidation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/live-invalidation.ts).
+
 #### WebRTC signalling: `signallingContract` and `signallingRelay`
 
 `@kingsleyweb/bun-common/webrtc` is a ready-made, typed signalling channel
@@ -4596,7 +4748,8 @@ Examples:
 tour
 [`native-utilities.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/native-utilities.ts).
 
-The full export list is in [`lib/index.ts`](lib/index.ts).
+The full export list is in
+[`lib/index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/lib/index.ts).
 
 ## Examples
 
@@ -4621,6 +4774,10 @@ Each file is a standalone script whose opening comment says what it shows.
 | `02-routing` | [`typed-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/typed-routes.ts) | `req.params`/`query`/`body` inferred from the path and a validator |
 | `02-routing` | [`fetch-testing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-testing.ts) | Every `fetch()` input form, router versus adapter `fetch`, parity with a served request |
 | `02-routing` | [`route-cache.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/route-cache.ts) | The route cache and `routeCacheMax`, named routes, `RouteClass`, `toNativeRequest` |
+| `02-routing` | [`define-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/define-routes.ts) | `defineRoutes()`: named routes as data, mounted as an ordinary sub-router |
+| `02-routing` | [`fetch-aborts.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/fetch-aborts.ts) | The caller leaving: `req.signal`, a cancelled streamed body, an aborting caller signal, served and through `router.fetch()` |
+| `02-routing` | [`serving-async.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/serving-async.ts) | An asynchronous pipeline: handlers that await, stream, respond early or never finish, and `router.serveRequest()` |
+| `02-routing` | [`synchronous-dispatch.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/02-routing/synchronous-dispatch.ts) | A request with nothing asynchronous in it served without a promise: `BunRequest.init()` and `BunRouter.dispatch()` |
 | `03-http-adapter` | [`listen-and-close.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/listen-and-close.ts) | Every `listen()` overload, address getters, events, `setListenOptions`, `close()` |
 | `03-http-adapter` | [`shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/shutdown.ts) | `close()`'s drain: an in-flight request finishing, `closeDrainTimeout` (`0`, a short cap cutting an endless stream), `drainAndStop()` on a plain `Bun.serve` |
 | `03-http-adapter` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/03-http-adapter/adapter-options.ts) | Every constructor option |
@@ -4629,14 +4786,26 @@ Each file is a standalone script whose opening comment says what it shows.
 | `04-request` | [`body-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/body-parsing.ts) | Every body-parsing option, size limits, compressed and stacked bodies, raw bodies, invalid JSON refused by the adapter and routed by `router.fetch()`, or by the adapter to a route that opted in with `acceptUndecodableBody` |
 | `04-request` | [`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/undecodable-bodies.ts) | Which route decides whether the adapter routes a body it could not decode: nested mounts, the `acceptUndecodableBody()` marker, the first matching handler |
 | `04-request` | [`cookies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/cookies.ts) | Parsing cookies, signed cookies and secrets, JSON cookies |
+| `04-request` | [`per-route-parsing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/per-route-parsing.ts) | `requestParsing()`, the `deferBody` request option, and the request methods underneath them |
 | `05-response` | [`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts) | Status, every `send` body type, `json`/`jsonp`, headers, ETags, `format()`, attachments |
 | `05-response` | [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming, server-sent events (by hand and `res.sse()`), redirects |
 | `05-response` | [`broadcast-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/broadcast-channel.ts) | `createSseChannel()`: initial state, replay, topics, a bus between processes, `close()` |
 | `05-response` | [`cookies-and-caching.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s |
+| `05-response` | [`cache-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/cache-control.ts) | `cacheControl()`, `formatCacheControl()`, `parseCacheControl()`, and `res.addResponseTransform(t, { first: true })` |
 | `05-response` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts) | `res.render()` and `BunViews`: engines, view lookup, locals, the callback form, every render failure, one `BunViews` and its cache shared by the adapter, its error handler and `router.fetch()` |
 | `06-validation` | [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts) | Every target and failure mode, hooks, chained validators, `ValidationError` |
 | `06-validation` | [`schema-libraries.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/schema-libraries.ts) | The same schema in zod, yup, valibot and arktype, and superstruct through `toStandardSchema` |
 | `06-validation` | [`typed-handlers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/typed-handlers.ts) | Handler types from the validator, `InferValidatedShape`, typed mounts |
+| `06-validation` | [`cookies-and-headers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/cookies-and-headers.ts) | Validating cookies, signed cookies and headers, and reading every parsed part from `req.valid` |
+| `06-validation` | [`synchronous-validation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/synchronous-validation.ts) | A validator that answers synchronously when every schema does, and waits for one that answers with a Promise |
+| `06-validation` | [`response-checks.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/response-checks.ts) | `responses` by status, and what `responseValidation` does with a mismatch |
+| `06-validation` | [`typed-responses.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/typed-responses.ts) | A `res` typed by `responses`, and the runtime check agreeing with the types |
+| `06-validation` | [`response-variants.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/response-variants.ts) | `variants()` in `responses`, and `res.variant()` naming the one a handler sends |
+| `06-validation` | [`streaming-responses.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/streaming-responses.ts) | `chunks()`, `sse()` and `opaque()` responses, checked as they stream |
+| `06-validation` | [`message-scrub.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/message-scrub.ts) | Issues that never carry the received value, per library |
+| `06-validation` | [`message-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/message-options.ts) | `messages: "generic"` and `redactPaths: true` on requests, responses and warnings |
+| `06-validation` | [`contract-sharing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/contract-sharing.ts) | One contract checked by a server and a browser client: `getContract()`, the guards, `describeContract`, `mergeContracts` |
+| `06-validation` | [`custom-transport.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/custom-transport.ts) | `defineTransport`: a chat protocol over UDP, validated on both sides |
 | `07-cors-and-static` | [`cors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/07-cors-and-static/cors.ts) | Every `CorsOptions` field, preflight versus simple requests, a delegate |
 | `07-cors-and-static` | [`serve-static.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/07-cors-and-static/serve-static.ts) | `createServeStaticHandler` with every option, precompressed siblings, on-the-fly compression, ranges |
 | `07-cors-and-static` | [`compression.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/07-cors-and-static/compression.ts) | `compression()` negotiation, options, SSE through the compressor, `dcb`/`dcz` dictionaries |
@@ -4666,6 +4835,20 @@ Each file is a standalone script whose opening comment says what it shows.
 | `12-options` | [`websocket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/websocket-options.ts) | Tour: every WebSocket option, event and emitter method |
 | `12-options` | [`logging-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/logging-options.ts) | Tour: every logger option, sink and adapter mapping |
 | `12-options` | [`native-utilities.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/12-options/native-utilities.ts) | Tour: every exported helper, with options and edge cases |
+| `13-api-docs` | [`from-validators.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/from-validators.ts) | A validated router documenting itself: `listRoutes()`, `toJsonSchema()`, `generateOpenApi()` |
+| `13-api-docs` | [`annotating-routes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/annotating-routes.ts) | `.describe()`: prose, hand-written requests and responses, `hidden` |
+| `13-api-docs` | [`sections.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/sections.ts) | `tags` and `tagGroups`: a sidebar two levels deep |
+| `13-api-docs` | [`asyncapi-channels.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/asyncapi-channels.ts) | `defineChannel()` and `generateAsyncApi()` end to end, with an SSE fallback and its viewer page |
+| `13-api-docs` | [`serving-and-viewing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/serving-and-viewing.ts) | `docsRouter()`: the JSON, the viewer pages and their options |
+| `13-api-docs` | [`class-dtos.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/13-api-docs/class-dtos.ts) | class-validator DTOs through `useClassDtos()` |
+| `14-typed-client` | [`http-client.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/http-client.ts) | A typed client over a `defineRoutes` registry, with `RoutesOf` and no generated file |
+| `14-typed-client` | [`generate-client.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/generate-client.ts) | `bun-client generate` from the server's OpenAPI document |
+| `14-typed-client` | [`query-layer.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/query-layer.ts) | The route map on TanStack Query: keys, cache tags, `ETag` revalidation, invalidation |
+| `14-typed-client` | [`live-invalidation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/live-invalidation.ts) | `liveInvalidation()` on the server, `live()` on the client |
+| `14-typed-client` | [`sse.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/sse.ts) | `res.sse()` typed on both ends, with a resume after a dropped connection |
+| `14-typed-client` | [`channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/channel.ts) | One `channelContract()` shared by `defineChannel()` and the client's `channel()` |
+| `14-typed-client` | [`webrtc.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/webrtc.ts) | `signallingRelay` and a typed WebRTC data channel |
+| `14-typed-client` | [`graphql.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/graphql.ts) | bun-client's typed GraphQL client against a hand-written server |
 | `15-trust-proxy` | [`client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/15-trust-proxy/client-ip.ts) | `trustProxy` and `clientIpHeader`: the walk, the Cloudflare → Railway chain and its spoofing attempts, `set("trust proxy")`, `ws.data.ip`, each asserted |
 | `16-throttle` | [`adapter-wide.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/adapter-wide.ts) | The adapter's `throttle` option over mounted routers and the not-found handler, the headers, the `429`, the default `req.ip` key over a socket |
 | `16-throttle` | [`per-route.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/per-route.ts) | `skipThrottle()`, same-name overrides, a login keyed on address+account and on address, `scope: "global"` |
@@ -4675,26 +4858,10 @@ Each file is a standalone script whose opening comment says what it shows.
 | `16-throttle` | [`refunds.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/refunds.ts) | `skipSuccessfulRequests`, `skipFailedRequests` (refusals given back), `requestWasSuccessful`, a `limit(req)` per plan, refunds under GCRA |
 
 The option tours in `12-options` do not just *show* behaviour, they
-**assert** it through
-[`shared/check.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/shared/check.ts),
-so `bun run-all.ts 12` tests every option.
-
-### Running the examples
-
-From a clone of the repository:
-
-```bash
-bun install
-cd examples/bun-common
-bun 01-quick-start/index.ts   # one example
-bun run-all.ts                # every example; prints ok / skip / FAIL
-bun run-all.ts 02 12          # only folders 02-* and 12-*
-```
-
-The examples import the workspace package by name, and servers always listen
-on port `0`. See the
+**assert** it, so each one doubles as a precise statement of what an option
+does. Every example imports the package by name and listens on port `0`; the
 [examples README](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/README.md)
-for details.
+has more.
 
 ## Related packages
 
@@ -4704,43 +4871,17 @@ for details.
 - [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md):
   background jobs, queues and scheduled runners for Bun, over memory, file,
   Redis and SQL drivers.
-
-## Development
-
-The package lives in the [`bun-node`](https://github.com/kingsloob1/bun-node)
-monorepo.
-
-```bash
-bun scripts/typecheck.ts        # from the repo root: every project
-cd packages/bun-common
-bun run lint                    # lint the whole package
-bun run format:check            # check the formatting
-bun test                        # tests
-```
-
-One suite drives a real browser and is opt-in, so the default `bun test`
-stays fast and machine-independent: it skips (visibly) unless
-`BUN_COMMON_E2E_CHROME=1` is set and Chrome is found. It speaks the Chrome
-DevTools Protocol over Bun's own WebSocket, so it needs no extra dependency.
-Set `BUN_COMMON_E2E_CHROME_BIN` when the browser is not on `PATH` as
-`google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser`.
-
-```bash
-BUN_COMMON_E2E_CHROME=1 bun test __tests__/compression.chrome.e2e.test.ts
-```
-
-The typed verb overloads in `BunRouter.ts` and both adapters sit between
-`BEGIN generated typed overloads` markers. They are generated, so don't edit
-them by hand; regenerate them with
-[`scripts/generate-verb-overloads.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/scripts/generate-verb-overloads.ts):
-
-```bash
-bun scripts/generate-verb-overloads.ts          # rewrite both packages
-bun scripts/generate-verb-overloads.ts --check  # fail when stale (CI)
-```
-
-After changing this package, also run the checks for bun-nest and bun-jobs,
-which depend on it.
+- [`@kingsleyweb/bun-contract`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-contract/README.md):
+  the contract core this package re-exports as `./contract`, on its own for a
+  browser client.
+- [`@kingsleyweb/bun-client`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-client/README.md):
+  a typed client for a bun-common API: HTTP, SSE, channels, WebRTC and a
+  query layer.
+- [`@kingsleyweb/bun-cache`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-cache/README.md):
+  a cache over many storage drivers, with a shared throttle store
+  (`./throttle`) and a live-invalidation bus (`./live`) for this package.
+- [`@kingsleyweb/bun-ui`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-ui/README.md):
+  the browser UIs, including the `"self-hosted"` docs viewer.
 
 ## License
 

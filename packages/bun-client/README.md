@@ -14,31 +14,37 @@ in browsers: a browser bundle of the entry is 4.9 KiB gzipped, and the
 checks (bun-contract's guards, its one dependency) and the code for those
 bodies load only when a call needs them.
 
-This is the core of the typed-client plan
-([`docs/plans/typed-client/`](../../docs/plans/typed-client/README.md), PR-C1)
-its generator (PR-C2), its watcher (PR-C3), validation (PR-C4), the query
-layer (PR-C5), the React binding (PR-C6), persistence (PR-C8) and bodies
-(PR-C9): `bun-client generate` writes the route map from the server's
-OpenAPI document ([below](#generating-the-map-bun-client-generate)), with its
-zod schemas beside it on request, `bun-client watch` keeps both in step with
-a running dev server ([below](#keeping-it-in-step-bun-client-watch)), and
-`./query` puts the routes on TanStack's `@tanstack/query-core`, with cache
-tags, `ETag` revalidation and optimistic updates
-([below](#the-query-layer-query)), and `./react` gives React components
-typed hooks over it ([below](#react-react)), and `./persist` keeps the
-query cache in IndexedDB across page loads, dropped when the server's
-schemas change ([below](#persistence-persist)), and `./sse` reads typed,
-validated, resumable server-sent events (PR-S1,
-[below](#server-sent-events-sse)), and `./channel` talks to a WebSocket
-channel with typed, validated messages both ways, requests, reconnection
-and backpressure (PR-W2, [below](#websocket-channels-channel)), and
-`./query`'s `live()` keeps observed queries fresh over bun-common's live
-channel (PR-W4, [below](#live-invalidation-live)), and `./graphql` makes a
-typed GraphQL call over the client, typed by the app's gql.tada or
-graphql-codegen documents (PR-G1, [below](#graphql-graphql)), and
-`./webrtc` connects WebRTC peers over a typed signalling channel and types
-their data channels (PR-R1 and PR-R2, [below](#webrtc-webrtc)). The other
-framework bindings and transports come in later PRs (the plan's §15).
+Beside the core entry, the package has:
+
+- **`bun-client generate`**, which writes the route map from the server's
+  OpenAPI document, with its zod schemas beside it on request
+  ([below](#generating-the-map-bun-client-generate)), and
+  **`bun-client watch`**, which keeps both in step with a running dev server
+  ([below](#keeping-it-in-step-bun-client-watch));
+- **`./zod`**, the glue between zod schemas and the client's validation
+  ([below](#the-generated-zod-module-zod));
+- **`./query`**, the routes on TanStack's `@tanstack/query-core`, with cache
+  tags, `ETag` revalidation and optimistic updates
+  ([below](#the-query-layer-query)), and its `live()`, which keeps observed
+  queries fresh over bun-common's live channel
+  ([below](#live-invalidation-live));
+- **`./react`**, typed React hooks over the query layer
+  ([below](#react-react));
+- **`./persist`**, which keeps the query cache in IndexedDB across page
+  loads, dropped when the server's schemas change
+  ([below](#persistence-persist));
+- **`./sse`**, typed, validated, resumable server-sent events
+  ([below](#server-sent-events-sse));
+- **`./channel`**, a WebSocket channel with typed, validated messages both
+  ways, requests, reconnection and backpressure
+  ([below](#websocket-channels-channel));
+- **`./graphql`**, a typed GraphQL call over the client, typed by the app's
+  gql.tada or graphql-codegen documents ([below](#graphql-graphql));
+- **`./webrtc`**, WebRTC peers over a typed signalling channel, with typed
+  data channels ([below](#webrtc-webrtc)).
+
+[Packaging](#packaging) lists every entry and the optional peer each one
+needs.
 
 Requires Bun ≥ 1.4.2 on a server; any browser with `fetch` and
 `AbortSignal.any`.
@@ -87,13 +93,12 @@ export interface Routes {
 There are three ways to get one:
 
 - **Generate it** from the server's OpenAPI document with `bun-client
-  generate` (the default, plan §3.4): [below](#generating-the-map-bun-client-generate).
+  generate` (the default): [below](#generating-the-map-bun-client-generate).
 - **Infer it** from a `defineRoutes` registry with bun-common's `RoutesOf`:
   `createClient<RoutesOf<typeof users>>()`. The client reads its `send` and
-  `receive` views (PR-M1), the same wire side the generator writes, and an
+  `receive` views, the same wire side the generator writes, and an
   event stream's `stream: "sse"` and `events` (from the route's `sse()`
-  declaration), which `sse()` reads; a test holds the two equal for a
-  fixture app.
+  declaration), which `sse()` reads.
 - **Write it by hand**, in the shape above. `query: Record<never, never>`
   declares no query (any key is then an error), and `body: undefined` declares
   no body. A part left out is undeclared, and loosely typed.
@@ -127,8 +132,7 @@ declared.
 
 The generator reads an OpenAPI 3.1 document (3.0's `nullable` is read too)
 and writes a TypeScript module: the `Routes` map, every component schema as a
-named type, and the `manifest`. Commit the file, and check it in CI (plan
-§3.4, Q9).
+named type, and the `manifest`. Commit the file, and check it in CI.
 
 ```bash
 # from a running server: a URL serving the document, or the dev endpoint's { hash, openapi, asyncapi }
@@ -166,8 +170,7 @@ error or a source that could not be read.
 
 ### Keeping it in step: `bun-client watch`
 
-In development, run the server with bun-common's `devTypes()` mounted (plan
-§3.3) and leave the watcher running beside it:
+In development, run the server with bun-common's `devTypes()` mounted and leave the watcher running beside it:
 
 ```ts
 // server: the documents at /__bun/types, a change channel at /__bun/types/ws, and a token file
@@ -207,13 +210,8 @@ bun-client watch: wrote src/api.gen.ts (typesHash 5fe8467b9825878f, 2 ms)
 - **Ctrl-C (SIGINT) or SIGTERM stops it**, exit `0`. `runCli` takes a
   `signal` instead when it runs in process.
 
-From saving a route's file to the generated file holding the change,
-measured with this watcher and `devTypes()` (median / p90,
-[`evidence/watch/`](../../docs/plans/typed-client/evidence/watch/README.md)):
-**170 / 178 ms under `bun --watch`**, **139 / 146 ms under `bun --hot`**; the
-watcher's own fetch and write take 1–14 ms. A `BunHttpAdapter` app runs under
-`bun --watch` until the adapter survives a `bun --hot` re-evaluation (a
-follow-up).
+Run a `BunHttpAdapter` app under `bun --watch` rather than `bun --hot`:
+the adapter does not survive a `bun --hot` re-evaluation yet.
 
 | Flag | What it does |
 | --- | --- |
@@ -296,7 +294,7 @@ export const manifest = {
   `{id}` as `:id`. An optional param that bun-common documents as two paths is
   one entry, the param optional. `params` comes from the key's own params,
   typed by the documented path parameters; a wildcard is a `string[]`.
-- **The wire side** (plan §4.1): the documents' schemas are already what
+- **The wire side**: the documents' schemas are already what
   crosses, so `query` has a defaulted key optional and a coerced one at its
   output type, and a response is what the handler sent.
 - **`x-bun-errors`** narrows the `code` of every declared error body that has
@@ -323,7 +321,7 @@ export const manifest = {
   `sseData: "text"` has `sse()` deliver it undecoded.
 - **Bodies by media type**: JSON as its schema; `multipart/form-data` as
   `FormData` and `application/x-www-form-urlencoded` as `URLSearchParams`
-  (typed fields come with PR-C9); anything else as
+  (typed fields: [below](#bodies-beyond-json)); anything else as
   `Blob | ArrayBuffer | ReadableStream<Uint8Array>`. Responses: JSON as its
   schema, `text/*` as `string`, anything else as `Blob`.
 - **Deterministic and formatted**: routes sorted by path then method,
@@ -376,7 +374,7 @@ A `default` response and a status range (`2XX`) are not typed, with a
 warning; a status the route does not declare goes to `undeclaredStatus`. A
 route that declares no response at all is `{ 200: unknown }`, with a warning.
 A `z.date()` has no JSON Schema, so bun-common documents it as `{}` and it
-arrives `unknown` (plan §5.3): declare a wire type such as `z.iso.datetime()`.
+arrives `unknown`: declare a wire type such as `z.iso.datetime()`.
 From `--module` the header says where ([below](#the-generated-zod-module-zod)).
 
 ### From code
@@ -505,7 +503,7 @@ If `refresh()` throws, every waiting call rejects with its error. An
 ## Validation
 
 The client checks what it sends before it sends it, and what it receives when
-it arrives (plan §5), through the very guards the server runs
+it arrives, through the very guards the server runs
 (`createSender` and `createReceiver` from `@kingsleyweb/bun-contract`). Issue
 paths, value-free messages and prototype-key stripping therefore agree on
 both sides.
@@ -520,8 +518,7 @@ bundler's define replaces it (in a browser with no define, development);
 `mode` overrides it. The checks live in their own module, loaded with
 `import()` only when a call has something to check: a production client that
 configures nothing loads neither them nor the schemas, and a splitting
-bundler puts them in a chunk of their own (6.3 KiB gzipped,
-`__tests__/budget.test.ts`).
+bundler puts them in a chunk of their own (6.3 KiB gzipped).
 
 ### Where the schemas come from
 
@@ -624,7 +621,7 @@ createClient<Routes>({
   A response's BYO schema checks the body only.
 - What it returns is what is sent (a request part) or delivered (a
   response): a transform applies. Headers are checked, never transformed.
-- **Set on the call, it types the result** (plan §5.4): a status whose
+- **Set on the call, it types the result**: a status whose
   `custom` the call's `validate.response` sets has its `data` (or `error`)
   typed as the schema's output; a streamed status yields the outputs. Set on
   the client or a route, it still runs, but the type stays the route map's
@@ -728,7 +725,7 @@ export const schemas = schemasFromZod<Routes>({
   status; other keywords (the check is looser than the document, never
   stricter). A keyword TypeScript cannot express either (`not`, `if`, …)
   leaves its schema `z.unknown()`, listed under "Not checked" in the header.
-- **What JSON Schema loses** (plan §5.3): a `.refine()` or `.superRefine()`
+- **What JSON Schema loses**: a `.refine()` or `.superRefine()`
   on the server is dropped from the document, so the generated check is
   weaker than the server's; a `.transform()`'s output, `z.custom()` and
   `z.date()` are `z.unknown()`. The document says nothing of either, so
@@ -876,8 +873,7 @@ answer. An ETag is kept only for the data it came with: writing the query by
 hand (`setQueryData`, an optimistic write) drops it, an optimistic rollback
 puts it back, and a `Cache-Control: no-store` answer keeps none. In a
 browser, the Fetch standard bypasses the HTTP cache for a request that
-carries its own `If-None-Match`, so the page sees the `304` (from the
-standard; the tests here run on Bun's `fetch`, in process and over a socket).
+carries its own `If-None-Match`, so the page sees the `304`.
 
 ### Optimistic updates
 
@@ -987,8 +983,8 @@ component.
 
 `@kingsleyweb/bun-client/react` gives React components the query layer's
 routes as hooks. They are thin wrappers over
-[`@tanstack/react-query`](https://tanstack.com/query/latest/docs/framework/react/overview)'s
-(the plan's §7.1), so the reactivity, dedupe, Suspense, StrictMode, focus and
+[`@tanstack/react-query`](https://tanstack.com/query/latest/docs/framework/react/overview)'s,
+so the reactivity, dedupe, Suspense, StrictMode, focus and
 interval refetches are react-query's, and everything under them (keys, tags,
 `ETag` revalidation, `invalidates`, optimistic writes and their rollback) is
 `./query`'s. `react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) are
@@ -1087,9 +1083,8 @@ so an inline function does not (giving one where there was none, or taking
 it away, does). Under StrictMode's double mount the first start stops
 before it connects, so one connection opens.
 
-**Not yet:** `<ApiHydrate state>` comes with bun-views' hydration (BVW
-PR-5, §6.6). Until then, server-rendered data reaches the client through
-react-query's own `HydrationBoundary`: the queries' keys and data are plain
+**Server-rendered data** reaches the client through react-query's own
+`HydrationBoundary`: the queries' keys and data are plain
 JSON, so `dehydrate(queryClient)` of them serialises as it is.
 
 ## Persistence (`/persist`)
@@ -1157,7 +1152,7 @@ takes the same `persister` and `buster` in its `persistOptions`.
 ## Bodies beyond JSON
 
 A route map entry says what kind of body each side carries, and the client
-builds or reads it (the plan's `other-transports.md` §3–§4):
+builds or reads it:
 
 ```ts
 interface Routes {
@@ -1236,7 +1231,7 @@ name in `events`, each its data's wire type (`undefined` for one that
 carries none). The generator writes both from the document's `x-sse-events`
 and `x-sse-data` (bun-common's `sse({ … }, { data })` declaration), and
 `--zod` the events' schemas; `RoutesOf` reads the same declaration.
-`sse()` reads it (the plan's [`sse.md`](../../docs/plans/typed-client/sse.md)):
+`sse()` reads it:
 
 ```ts
 import { sse } from "@kingsleyweb/bun-client/sse";
@@ -1299,6 +1294,12 @@ await stream.closed;                        // settles when it ends
   `sse(events, { data: "text" })`); by default it is the manifest's
   `sseData` (which the generator writes from `x-sse-data`), else parsed as
   JSON, and data that does not parse is delivered as its text.
+- **Event variants.** An event bun-common declares with `sseVariants()`
+  (several schemas for one event name) is typed as the union of its
+  variants, through `RoutesOf` or the generated map. Nothing on the wire
+  names the variant, so the client checks each event's data against every
+  variant and accepts the first that matches; one matching none is an
+  issue like any other. The client needs no option for it.
 - **Backpressure.** The iterator reads the body only as fast as it is
   consumed; listeners read eagerly and drop nothing (an iterator beside
   them buffers what it has not taken).
@@ -1309,8 +1310,7 @@ The verbs, `request` and `op` do not offer an event stream's route, and
 
 ## WebSocket channels (`/channel`)
 
-`channel()` opens a bun-common `defineChannel()` channel (the plan's
-[`websocket.md`](../../docs/plans/typed-client/websocket.md)). Its types come
+`channel()` opens a bun-common `defineChannel()` channel. Its types come
 from the channel's contract: in a monorepo, the same `channelContract()`
 module the server passes to `defineChannel(contract)`; in a separate repo,
 the descriptor `bun-client generate` writes from the server's AsyncAPI
@@ -1339,12 +1339,11 @@ import { channels } from "./api.gen";
 const room = channel(api, channels["/rooms/:room"], { params: { room: "lobby" } });
 ```
 
-- **The types** follow the direction rule (§3.3): the client sends what the
+- **The types** follow the direction rule: the client sends what the
   server `receives` (each field's wire input: a `z.coerce.number()` is sent
   as a `number`) and receives what it `sends`, after JSON (a `Date` arrives
   as a `string`). The generated `Channels` map holds each channel's entry
-  in the same shape, and it agrees with the contract inferred
-  (`__tests__/channel.type-test.ts`). Message types may not start with `$`,
+  in the same shape, and it agrees with the contract inferred. Message types may not start with `$`,
   the client's events' prefix (`channel()` throws a `TypeError`).
 - **The URL** is built as a call's is (`baseUrl`, the params encoded, the
   query serialised), with `http` → `ws`; a relative `baseUrl` needs a page
@@ -1437,8 +1436,8 @@ chat.on("said", (m) => show(m.by, m.text));            // an @Emits event
 
 The ack is a sent type of its own, named as the document names it
 (`"<event> ack"`), and `replies` maps the event to it. In a monorepo, put the
-gateway's schemas in a shared, browser-safe module (the **shared maps**,
-NTR §7), pass them to the decorators, and open the same module's contract:
+gateway's schemas in a shared, browser-safe module (the **shared maps**),
+pass them to the decorators, and open the same module's contract:
 
 ```ts
 // chat.shared.ts: zod and the contract core only, never the gateway
@@ -1480,8 +1479,7 @@ const room = channel(api, chat, { codec: "bun-nest" });
 ## GraphQL (`/graphql`)
 
 bun-node serves no GraphQL, so this is a client for someone else's GraphQL
-API (the plan's [`graphql.md`](../../docs/plans/typed-client/graphql.md)):
-one typed call over the client's own request path, typed by the document
+API: one typed call over the client's own request path, typed by the document
 your GraphQL tool already makes. Nothing of `graphql` is imported, and no
 GraphQL library is a dependency or a peer.
 
@@ -1583,7 +1581,7 @@ adds 0.2 KiB to `./query`.
 
 `connectPeer` connects two WebRTC peers over a typed signalling channel:
 bun-common's `signallingContract()`, served by its `signallingRelay`
-([bun-common's README](../bun-common/README.md#webrtc-signalling-signallingcontract-and-signallingrelay))
+([bun-common's README](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-common#webrtc-signalling-signallingcontract-and-signallingrelay))
 and opened with [`channel()`](#websocket-channels-channel). The relay needs
 no WebRTC; the peers bring their own `RTCPeerConnection`: a browser's, or in
 Bun (which has none) node-datachannel's or werift's.
@@ -1641,8 +1639,7 @@ sig.on("offer", (offer) => {
 - In Bun: `rtc: RTCPeerConnection` from `node-datachannel/polyfill`
   (libdatachannel, a prebuilt binary per platform) or from `werift` (pure
   TypeScript, about 60 times slower per message), as the app's own
-  dependency. Neither is a dependency of this package (node-datachannel is a
-  dev dependency, for the tests).
+  dependency. Neither is a dependency of this package.
 
 ### Typed data channels: `typedDataChannel`
 
@@ -1736,31 +1733,28 @@ because bun-common decodes encoded brackets before it parses.
 
 ## Packaging
 
-`lib/` ships as TypeScript source with built declarations in `dts/`, as every
-package in this repo does. The client has one runtime dependency,
-`@kingsleyweb/bun-contract` (no dependencies of its own), imported only by
-the lazily loaded checks. `./zod` is the zod glue, with `zod` an optional
-peer; `./query` is the query layer, with `@tanstack/query-core` an optional
-peer (`^5.90.0`: its query and mutation callbacks read the `QueryClient`
-from their context, which 5.90 has); `./react` is the React binding, with
-`react` (`^19`) and `@tanstack/react-query` (`^5.90.0`) optional peers
-beside query-core; `./persist` is the IndexedDB persister, with
-`@tanstack/query-persist-client-core` (`^5.90.0`) an optional peer whose
-types alone it imports; `./sse` is the event-stream client and
-`./channel` the WebSocket channel client and `./webrtc` the WebRTC
-helpers, each with no peer, and `./graphql` the GraphQL client, with none
-either (its documents are typed structurally). The generator is
-`./codegen` (Bun only) and the `bun-client` bin.
-`@kingsleyweb/bun-common` is an optional peer, needed only by `generate
---module` on a router, and a dev dependency for the tests: the query round
-trip, the shared backoff vector, the `RoutesOf` types and the generator's
-parity with them. bun-cache is a dev dependency too, for the query layer's
-`Surrogate-Key` tests. React, react-dom, react-query and happy-dom are dev
-dependencies for the React binding's DOM tests, and
-query-persist-client-core for the persister's (pinned to the lock's
-query-core, which it depends on exactly). node-datachannel (`0.33.6`, pinned) is a dev
-dependency for `./webrtc`'s tests, two real peers in Bun: it installs a
-prebuilt binary per platform through optional dependencies and runs no
-install script, so nothing is added to `trustedDependencies`. The browser
-case runs in Chrome through `Bun.WebView` and skips when no Chrome is found
-(`BUN_CHROME_PATH`).
+The package is ESM with named exports, declares `"sideEffects": false`, and
+has one subpath per area, so a bundle carries only the entries it imports. It
+ships its TypeScript source (`lib/`), which Bun runs directly and a browser
+bundler that compiles TypeScript from `node_modules` (`Bun.build`, esbuild)
+bundles, with built declarations in `dts/` for your type checker. Its one
+runtime dependency is `@kingsleyweb/bun-contract`, which has none of its
+own, and only the lazily loaded checks import it.
+
+Every peer is optional: install the ones the entries you use name.
+
+| Entry | What | Optional peers it needs |
+| --- | --- | --- |
+| `@kingsleyweb/bun-client` (also `./lib`) | `createClient`, the route map and manifest types, the errors | none |
+| `./zod` | `schemasFromZod`, for the generated (or a hand-written) zod module | `zod` (`^4`) |
+| `./query` | the query layer and `live()` | `@tanstack/query-core` (`^5.90.0`: its query and mutation callbacks read the `QueryClient` from their context, which 5.90 has) |
+| `./react` | the React hooks | `react` (`^19`) and `@tanstack/react-query` (`^5.90.0`), beside `@tanstack/query-core` |
+| `./persist` | the IndexedDB persister | `@tanstack/query-persist-client-core` (`^5.90.0`; only its types are imported) |
+| `./sse` | the event-stream client | none |
+| `./channel` | the WebSocket channel client | none |
+| `./graphql` | the GraphQL client (documents are typed structurally) | none |
+| `./webrtc` | the WebRTC helpers | none (in Bun, an `RTCPeerConnection` implementation of your own, [above](#webrtc-webrtc)) |
+| `./codegen` and the `bun-client` bin | the generator and watcher, Bun only | `@kingsleyweb/bun-common`, only for `generate --module` on a router |
+
+`typescript` (`^5.9.3 || ^6.0.0`) and `@types/bun` (`>=1.4.2`) are optional
+peers for type-checking only.

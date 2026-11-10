@@ -15,14 +15,14 @@ depends on this package and re-exports it, unchanged, as
 `@kingsleyweb/bun-common/contract`: its `validate()`, `defineChannel()`,
 documents and route listing are built on it. A server keeps importing from
 bun-common. This package is for the other end, a browser or any client that
-wants the server's own checks without bun-common's dependencies (the
-typed-client plan, `docs/plans/typed-client/` §10.1).
+wants the server's own checks without bun-common's dependencies.
 
 ## Contents
 
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Guard options](#guard-options)
 - [Logging](#logging)
 - [What it exports](#what-it-exports)
 - [Browser safety](#browser-safety)
@@ -33,8 +33,7 @@ typed-client plan, `docs/plans/typed-client/` §10.1).
 - **`@types/bun` 1.4.2 or later** and **TypeScript** 5.9 or 6: optional
   peers, for type-checking only. The declarations need no environment's
   types: they check under `lib: ["dom"]` alone.
-- **No dependency**: installing it installs nothing else
-  (`__tests__/packaging.test.ts` asserts the manifest).
+- **No dependency**: installing it installs nothing else.
 
 ## Installation
 
@@ -67,11 +66,41 @@ const send = createSender(sendMail, "outbound");
 await send({ result: { id: "m1" } }); // the very message, checked
 ```
 
+A **receiver** parses, so what it hands on carries each part's output (the
+`z.coerce.date()` above arrives as a `Date`). A **sender** checks and
+resolves to the very message it was given, which is what goes on the wire.
+Either guard resolves to a `ContractError` (with `issues` and `context`) on a
+mismatch under the default `"error"` policy; it never throws one. A guard is
+synchronous when every schema it runs is, so `await` is only needed for an
+async schema. A side with no schema, or a guard under `"off"`, is the
+identity (`guard.checks` is `false`).
+
 The full guide (policies, `onIssues`, keyed sides, `describeContract`,
 `mergeContracts`, carrying a contract on a middleware, channels) is
 bun-common's
 [Contracts](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-common#contracts)
-section: every name there is this package's, under either import path.
+section: every name there is this package's, under either import path. Its
+[Writing a transport](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-common#writing-a-transport)
+shows a complete transport (UDP request and reply) built on the four calls
+above.
+
+## Guard options
+
+`createReceiver(contract, side, options?)` and
+`createSender(contract, side, options?)` take the same `GuardOptions`:
+
+| Option | Default | What it does |
+|---|---|---|
+| `policy` | `"error"` | `"error"` resolves a mismatch to a `ContractError`; `"warn"` logs one line per failing message (no values) and hands the raw message on; `"off"` checks nothing. A receiver under `"warn"` or `"off"` is typed to hand on `unknown`. |
+| `logger` | the console | Where `"warn"`'s lines and an `onIssues` failure go: a `ContractLoggerLike` ([Logging](#logging)). |
+| `onIssues` | unset | `(issues, context) => void`, called once per failing message under `"warn"` and `"error"` (a telemetry hook). If it throws, the error is logged and the guard answers as if it had not. |
+| `undeclaredKey` | `"report"` | On a keyed side, a key the contract does not declare is an issue (`"report"`) or passed through unchecked (`"allow"`). |
+| `redactPaths` | `false` | Replace every issue's `path` with `""`, for schemas keyed by user data. |
+| `messages` | unset | `"generic"` replaces every issue message with `Invalid value` (plus the vendor's issue code when it has one). By default only messages that quote a received value are withheld. |
+| `stripProtoKeys` | `"nest"` | Which prototype-pollution keys a receiver deletes, in place, before its schemas run: `"nest"` removes every own `__proto__`, `prototype` and `constructor` key, recursively; `"minimal"` only own `__proto__` keys and own `constructor` keys whose value is an object with an own `prototype`. A sender never strips. Any other value throws a `TypeError` when the guard is built. |
+
+A side declaring a key with variants (bun-common's HTTP `variants()`) is
+not checked by these guards yet: building one throws a `TypeError`.
 
 ## Logging
 
@@ -118,16 +147,19 @@ Every module is also reachable by deep import,
 does not export; bun-common's `lib/contract/<module>` paths re-export the
 same modules.
 
-## Browser safety
+## Browser safety and tree-shaking
 
-`__tests__/browserSafety.test.ts` bundles the entry with
-`Bun.build({ target: "browser" })` and fails on any server marker (`node:`
-or `bun:` imports, `Bun.*`, `process.env`, `require(`, `Buffer.*`, an
-`@kingsleyweb/bun-common` import) and on any module outside the package's
-own `lib/`; a fixture reaching a Node API is its negative control. The
-consumer check (`bun scripts/consumer-check.ts packages/bun-contract` from
-the repo root) checks every spelling as a `browser` entry: no Node or Bun
-type is loaded by its declarations.
+- **No server API.** Nothing in the package imports a `node:` or `bun:`
+  module, reads `process.env` or touches `Bun.*`, `Buffer` or `require`, and
+  it imports no other package (the Standard Schema types are vendored). Its
+  declarations load no Node or Bun types either, so they check under
+  `lib: ["dom"]`.
+- **ESM, named exports, no side effects.** `package.json` declares
+  `"sideEffects": false`, so a bundler keeps only the exports you import.
+- **TypeScript source.** The runtime entry is the package's `.ts` source
+  (`lib/`), with built declarations in `dts/` for the type checker. Bun runs
+  it directly; for a browser, bundle it with a bundler that compiles
+  TypeScript from `node_modules`, such as `Bun.build` or esbuild.
 
 The contract symbols are `Symbol.for(…)` keys, so two copies of the package
 in one process (or this package and an older bun-common) agree on them.

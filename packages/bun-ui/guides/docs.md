@@ -105,10 +105,9 @@ page must still check `returnTo` before sending the user back to it.
 
 ## The bundle
 
-`prepack` builds `app/docs/main.tsx` into `dist/docs/` (`bun scripts/build.ts`): hashed
-file names, a `manifest.json` with every file's SRI digest, type-checked
-first. Without a `dist/docs/` (a source checkout), the first request builds the
-same bundle in memory, once per process, and logs one line saying so.
+The published package includes the viewer's prebuilt bundle in `dist/docs/`:
+hashed file names and a `manifest.json` with every file's SRI digest.
+`docsUi()` serves it as it is, so there is nothing to build.
 
 The WebSocket reference's "try it" links and permission markers of
 the jobs UI's Events console are jobs-specific and are not part
@@ -156,15 +155,3 @@ files):
   ```ts
   declare module "*.css";
   ```
-
-## Development
-
-```bash
-bun run check && bun run lint && bun run format:check && bun run test
-bun scripts/build.ts --ui docs   # app/docs/main.tsx → dist/docs/
-```
-
-The golden AsyncAPI fixtures under `__tests__/docs/app/docs/ws/fixtures/` are what
-a real `@kingsleyweb/bun-jobs` API serves (a dev-only dependency, used by the
-fixture test); `UPDATE_WS_FIXTURES=1 bun test __tests__/docs/server/docs-ws.integration.test.ts`
-rewrites them.

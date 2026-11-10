@@ -8,198 +8,108 @@ events and statistics — over a byte-level driver contract, built on
 **Requires Bun ≥ 1.4.2.** Bun runs the shipped TypeScript source (`main` is
 `lib/index.ts`); your type checker reads the built declarations in `dts/`.
 
-## Status
+## Installation
 
-The package is being assembled in PRs (the plan is
-[`docs/plans/bun-cache/`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md)).
-What has landed (PR-C1), and is documented below:
+```sh
+bun add @kingsleyweb/bun-cache
+bun add mongodb            # only if you use mongoDriver()
+```
 
-- the core: keys, namespaces and versions; TTLs (per entry, per value, with
-  jitter); the entry header; compression
-- the codecs: structured clone (the default), JSON, raw, and custom codecs
-- `getOrSet` and `wrap` with the in-process single-flight, collective
-  cancellation, and the cross-process lock
-- stale-while-revalidate, stale-if-error with its backoff, soft and hard
-  loader timeouts, eager refresh (`refreshAhead`), and probabilistic early
-  expiry (`earlyExpiry`)
-- tags: eager invalidation with the write fence on indexed drivers, lazy
-  stamps on the rest
-- counters, events, `stats()`, and the failure policy with its circuit
-- runtime-checked reads (`validate`, bun-validate's V10)
-- the **memory driver**, and the **conformance kit** for custom drivers
-  (`@kingsleyweb/bun-cache/testing`)
+- **Bun ≥ 1.4.2** (`engines.bun`). An optional `@types/bun >=1.4.2` peer
+  warns a project on older Bun types.
+- **`@kingsleyweb/bun-common`** is a dependency, installed with it: the
+  logger, the HTTP middleware and the throttle and live-invalidation
+  contracts come from there.
+- **`mongodb` (`>=6`)** is an optional peer, needed only by `mongoDriver()`.
+  Every other driver is built on Bun's own clients (`bun:sqlite`, `SQL`,
+  `RedisClient`, `S3Client`) or on `fetch`, with nothing else to install.
+- **`typescript`** (`^5.9.3 || ^6.0.0`) is an optional peer, for the
+  shipped declarations.
 
-And (PR-C2):
+## Features
 
-- the **file driver**: one directory, one file per entry, for several
-  processes on one host — with stamp-mode tags, atomic renames, `O_EXCL`
-  lock files, a sweeper with size caps, and the polled bus log
-- the kit's **two-process pass** and **bus-gap case**, enabled for every
-  driver that advertises `multiProcess` or a polled bus
+- **One typed API over every driver**: keys, namespaces and versions; TTLs
+  per entry, per value or computed, with jitter; `getOrSet` and `wrap` with
+  an in-process single-flight, collective cancellation and an opt-in
+  cross-process lock ([Stampede protection](#stampede-protection)).
+- **Staleness**: stale-while-revalidate, stale-if-error with a fail-safe
+  backoff, soft and hard loader timeouts, eager refresh and probabilistic
+  early expiry ([Staleness](#staleness)).
+- **Tags**: eager invalidation with a write fence on indexed drivers, lazy
+  stamps on the rest, and a soft purge that marks entries stale instead of
+  deleting them ([Tags](#tags)).
+- **Counters** ([Counters](#counters)), **codecs** (structured clone, JSON,
+  raw or your own, [Codecs](#codecs)) and **compression** (zstd, gzip,
+  Brotli, raw DEFLATE or your own, with a decompression cap,
+  [Compression and limits](#compression-and-limits)).
+- **Encryption at rest** with AES-256-GCM, key rings and rotation, keys from
+  a KMS, user ciphers, and keyed hashing of names
+  ([Encryption at rest](#encryption-at-rest), [Hiding names](#hiding-names)).
+- **Typed caches** and runtime-checked reads with any Standard Schema
+  ([Typed caches, and `validate`](#typed-caches-and-validate)).
+- **Events, statistics and a failure policy** with a circuit breaker: a
+  cache that is down is bypassed, never fatal
+  ([Events, statistics, logging](#events-statistics-logging),
+  [The failure policy](#the-failure-policy)).
+- **Multi-tier caching**: an L1 memory tier per process over a shared
+  driver, kept coherent by a bus ([Multi-tier](#multi-tier)).
+- **Redundant drivers**: one driver made of several, with failover
+  ([Redundant drivers](#redundant-drivers)).
+- **Twelve drivers**: memory, file, SQLite, Postgres, MySQL, MariaDB, Redis,
+  MongoDB, S3, Azure Blob Storage, Cloudflare KV and Cloudflare D1
+  ([The driver matrix](#the-driver-matrix)), plus custom drivers proved by a
+  conformance kit ([Custom drivers](#custom-drivers)).
+- **HTTP response caching** for bun-common's router and both HTTP adapters,
+  with stale serving and CDN tags ([HTTP response caching](#http-response-caching)).
+- **Integrations**: a Keyv store for cache-manager and
+  `@nestjs/cache-manager` ([Keyv](#keyv-and-nestjscache-manager)), a shared
+  store for bun-common's `throttle()` ([Throttling](#throttling)), and a bus
+  for bun-common's live invalidation
+  ([Live invalidation across processes](#live-invalidation-across-processes)).
 
-And (PR-C3):
+### Entry points
 
-- the **SQLite driver** over `bun:sqlite`: one connection per file per
-  process, WAL, a tag index with an atomic fence, lock rows, counters, and a
-  polled bus table — the fast choice for several processes on one host
-- the kit's two-process pass now starts both sides at a barrier, so it
-  overlaps even for a driver as fast as SQLite
+| Import | What it holds |
+|---|---|
+| `@kingsleyweb/bun-cache` | `createCache`, every driver, `redundant`, `fromSimpleDriver`, `redisBus` and `pgBus`, the error classes and the types |
+| `@kingsleyweb/bun-cache/http` | `cacheResponse`, `coalesceRequests`, `addCacheTags` ([HTTP response caching](#http-response-caching)) |
+| `@kingsleyweb/bun-cache/keyv` | `toKeyvStore` ([Keyv](#keyv-and-nestjscache-manager)) |
+| `@kingsleyweb/bun-cache/throttle` | `cacheThrottleStore` ([Throttling](#throttling)) |
+| `@kingsleyweb/bun-cache/live` | `cacheLiveBus` ([Live invalidation](#live-invalidation-across-processes)) |
+| `@kingsleyweb/bun-cache/testing` | the driver and cipher conformance kits, `faulty`, `fakeClock` ([Testing helpers](#testing-helpers)) |
+| `@kingsleyweb/bun-cache/cloudflare-worker` | the Worker you deploy for the Cloudflare drivers ([The Cloudflare KV driver](#the-cloudflare-kv-driver)) |
 
-And (PR-C4):
+Every entry is ESM with named exports. Runnable examples for each area are
+in [`examples/bun-cache`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-cache).
+In a NestJS app, bun-nest's
+[cache module](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/README.md#the-cache-module)
+provides these caches with decorators and a response interceptor.
 
-- the **Postgres, MySQL and MariaDB drivers** over Bun's built-in `SQL`:
-  shared by every process and host that reaches the database — a tag index
-  with an atomic fence that holds under a concurrent invalidation, counters
-  that add in the database, lock rows, the optional `maxEntries` cap, and a
-  bus (`LISTEN`/`NOTIFY` on Postgres, a polled table on MySQL and MariaDB)
+### Contents
 
-And (PR-H1):
-
-- the **HTTP response cache**, `@kingsleyweb/bun-cache/http`: `cacheResponse()`
-  for bun-common's `BunRouter` and both HTTP adapters, `coalesceRequests()`
-  and `addCacheTags()` — see [HTTP response caching](#http-response-caching)
-
-And (PR-T1):
-
-- **multi-tier caching**: an L1 memory tier per process over the shared
-  driver, holding decoded values, kept coherent by a bus — the driver's own,
-  or `redisBus` / `pgBus` on their own — with backfill that keeps the
-  driver's expiry, a flush on every bus gap, and `{ tier: "l2" }` to bypass
-  it per call ([Multi-tier](#multi-tier))
-
-And (PR-C5):
-
-- the **Redis driver** over Bun's built-in `RedisClient`: native expiry,
-  counters, locks and the tag index with its fence in Lua scripts, and its
-  bus is `redisBus` on the driver's own connection
-  ([The Redis driver](#the-redis-driver))
-- the kit's bus-gap case also runs for a pushed bus, given a way to force a
-  gap (`busGap`)
-
-And (PR-C6):
-
-- the **MongoDB driver** over the `mongodb` package (an optional peer): TTL
-  indexes with reads that filter expiry themselves, a tag index with a
-  check-then-write fence that takes itself back, `$inc`-style counters in one
-  update, lock documents, the optional `maxEntries` cap, and a bus — a change
-  stream on a replica set, a tailable cursor on a capped collection on a
-  standalone server ([The MongoDB driver](#the-mongodb-driver))
-- the kit's **bus-gap case** runs for a pushed bus too, when the test gives
-  it a way to force a loss (`busGap`)
-
-And (PR-C7):
-
-- the **S3 driver** over Bun's built-in `S3Client`: stamp-mode tags,
-  expiry in each object's `Content-Type` for the sweeper, `maxEntries` and
-  `maxBytes` caps, and counters and locks on S3's conditional writes, which
-  it signs itself ([The S3 driver](#the-s3-driver))
-
-And (PR-C8):
-
-- the **Azure Blob Storage driver**, `azureBlobDriver`, over `fetch` with its
-  own Shared Key signing (no Azure SDK): the S3 driver's layout and stamp-mode
-  tags, counters and locks on Azure's conditional writes, and a sweeper that
-  reads everything it needs from the listing
-  ([The Azure Blob Storage driver](#the-azure-blob-storage-driver))
-
-And (PR-H2):
-
-- **stale serving over HTTP**: `cacheResponse()` answers a stale entry
-  `STALE` inside its stale-while-revalidate window while one background
-  replay of the request through the router's `fetch()` refreshes it, and
-  inside its stale-if-error window when the handler fails or outlasts
-  `hardTimeout`; `streams: { buffer }` stores streamed responses
-  ([Stale serving over HTTP](#stale-serving-over-http))
-
-And (PR-C10):
-
-- the **Cloudflare KV driver**, over HTTP from a Bun process: the REST API
-  with an API token, or the bun-cache Worker
-  (`@kingsleyweb/bun-cache/cloudflare-worker`, which you deploy) with its
-  secret — KV's own expiry (its 60 s floor absorbed), stamp-mode tags, no
-  counters, locks or bus ([The Cloudflare KV driver](#the-cloudflare-kv-driver))
-
-And (PR-Z1):
-
-- **pluggable compression**: `"br"` and raw `"deflate"` beside zstd and
-  gzip, user compressors (sync or async) with `previous`, and a per-call
-  `compress: false`, every one decompressed no further than `maxEntryBytes`
-  ([Compression and limits](#compression-and-limits))
-
-And (PR-C11):
-
-- the **Cloudflare D1 driver**, over the same two transports: the SQLite
-  driver's design with every write one statement — triggers keep the tag
-  index and do the invalidations, so the fence holds without transactions —
-  counters, locks, the `maxEntries` cap, values up to 1,000,000 bytes, no bus
-  ([The Cloudflare D1 driver](#the-cloudflare-d1-driver))
-
-And (PR-E1):
-
-- **encryption at rest**: `encrypt` seals every entry — header, full key,
-  payload, tags and hard expiry — with AES-256-GCM under a key per entry,
-  bound to its namespace and key; key rings with rotation, `keys` functions
-  for a KMS, user ciphers with their conformance kit, and a failed open read
-  as a miss, never deleted ([Encryption at rest](#encryption-at-rest))
-
-And (PR-E2):
-
-- **name hashing** (`encrypt.hashNames`): keys, namespaces and tags reach
-  the store, L1 and the bus only as keyed hashes, with `describeKey()` to
-  find an entry in a dump ([Hiding names](#hiding-names))
-- the conformance kit's **encrypted pass**, and `rawDump`, a scan of what
-  the backend holds for any plaintext name or value, run on every driver
-
-And (PR-E3):
-
-- the encryption, name-hashing and compression sections checked against
-  the code, with the migration, rotation and threat-model details they
-  lacked, and the entry format for other readers; the repository
-  playground's **at-rest** item (`/playground/cache/at-rest`) shows one
-  value as the store holds it beside what the cache answers
-
-And (PR-K1):
-
-- the **Keyv store**, `@kingsleyweb/bun-cache/keyv`: `toKeyvStore(cache)`
-  for apps on `@nestjs/cache-manager` or cache-manager, one store for both
-  Keyv majors, storing Keyv's strings with the raw codec
-  ([Keyv and `@nestjs/cache-manager`](#keyv-and-nestjscache-manager))
-
-And (PR-H2b):
-
-- **CDN tags**: `cacheResponse({ surrogateKeys })` sends each answer's tags
-  as Fastly's `Surrogate-Key` or Cloudflare's `Cache-Tag`, so the CDN can be
-  purged by the tags the cache invalidates (a recipe on the `invalidate`
-  event) ([CDN tags (surrogate keys)](#cdn-tags-surrogate-keys))
-
-And (PR-C1b):
-
-- the **soft purge**, `invalidateTags(tags, { mode: "stale" })`: the
-  entries stay but stop being fresh, so they are served stale within their
-  stale windows and refreshed — on every driver, encrypted or not, for a
-  cache that opts in with `softPurge: true`
-  ([Soft purge](#soft-purge-mode-stale))
-
-And (PR-R1):
-
-- **redundant drivers**, `redundant([a, b], options)`: one driver made of
-  several, written to all (or to the first and replicated), read with
-  failover (or a race), one circuit per member, and a member that missed a
-  write rejoining empty — with what it costs, and when a backend's own
-  replication is the better answer ([Redundant drivers](#redundant-drivers))
-
-And (throttle):
-
-- a **shared throttle store**, `cacheThrottleStore(cache)` from
-  `@kingsleyweb/bun-cache/throttle`: bun-common's `throttle()` counting
-  through the cache, so one rate limit holds across every process on the
-  backend ([Throttling](#throttling))
-- a **live bus**, `cacheLiveBus(bus)` from `@kingsleyweb/bun-cache/live`:
-  bun-common's live invalidation over a Redis or Postgres bus, so an
-  invalidation published in one process reaches the live subscribers of
-  every process ([Live invalidation across processes](#live-invalidation-across-processes))
-
-What comes next is in the plan's Status.
+- Using the cache: [Quick start](#quick-start) · [The API](#the-api) ·
+  [Options](#createcache-options) · [Stampede protection](#stampede-protection) ·
+  [Staleness](#staleness) · [Tags](#tags) · [Counters](#counters) ·
+  [Codecs](#codecs) · [Compression and limits](#compression-and-limits) ·
+  [Encryption at rest](#encryption-at-rest) ·
+  [Namespaces and versions](#namespaces-and-versions) ·
+  [Typed caches](#typed-caches-and-validate) ·
+  [Events, statistics, logging](#events-statistics-logging) ·
+  [The failure policy](#the-failure-policy) · [Errors](#errors) ·
+  [Multi-tier](#multi-tier) · [Redundant drivers](#redundant-drivers)
+- Drivers: [Custom drivers](#custom-drivers) ·
+  [Testing helpers](#testing-helpers) · [The driver matrix](#the-driver-matrix) ·
+  [Memory](#the-memory-driver) · [File](#the-file-driver) ·
+  [SQLite](#the-sqlite-driver) ·
+  [Postgres, MySQL and MariaDB](#the-postgres-mysql-and-mariadb-drivers) ·
+  [Redis](#the-redis-driver) · [Upstash](#upstash-and-other-managed-redis) ·
+  [MongoDB](#the-mongodb-driver) · [S3](#the-s3-driver) ·
+  [Azure Blob Storage](#the-azure-blob-storage-driver) ·
+  [Cloudflare KV](#the-cloudflare-kv-driver) · [Cloudflare D1](#the-cloudflare-d1-driver)
+- Integrations: [HTTP response caching](#http-response-caching) ·
+  [Keyv and `@nestjs/cache-manager`](#keyv-and-nestjscache-manager) ·
+  [Live invalidation](#live-invalidation-across-processes) ·
+  [Throttling](#throttling)
 
 ## Quick start
 
@@ -268,6 +178,40 @@ and a `fenced` event per entry (as a failed `set` reports itself). A throw
 while preparing an entry (a codec's, a refused tag, or under `strict` an
 oversize entry or a failed seal) writes the entries before it, then throws.
 
+## `createCache` options
+
+Every option but `driver` is optional. Most of the per-entry ones are also
+accepted per call (`set`, `getOrSet`, `wrap`), where they override the
+cache's default.
+
+| Option | Default | What it does |
+|---|---|---|
+| `driver` | required | where entries live: a built-in driver, `redundant([...])`, or your own ([Custom drivers](#custom-drivers)) |
+| `namespace` | `"cache"` | the prefix every key is stored under ([Namespaces and versions](#namespaces-and-versions)) |
+| `version` | none | joins the namespace (`app@v3`), so a change of a value's shape needs no flush |
+| `ttl` | none (no expiry) | ms; `null` for no expiry; or `(value) => ms \| null` |
+| `jitter` | `0` | spread each TTL by up to ± this fraction |
+| `codec` | `"structured"` | `"json"`, `"raw"` or a `Codec` ([Codecs](#codecs)) |
+| `compress` | zstd above 16 KiB | `{ algorithm, threshold, level, previous }`, or `false` ([Compression and limits](#compression-and-limits)) |
+| `maxEntryBytes` | 4 MiB, or the driver's limit when smaller | the size cap per entry |
+| `maxKeyLength` | 200 | a longer key is stored as `#` + its SHA-256 |
+| `encrypt` | none | seal every entry ([Encryption at rest](#encryption-at-rest)) |
+| `staleWhileRevalidate`, `staleIfError`, `softTimeout`, `hardTimeout`, `refreshAhead`, `earlyExpiry` | off | the stale windows and loader timeouts ([Staleness](#staleness)) |
+| `failSafeBackoff` | 10 s | how far a failed refresh pushes the stale value's freshness forward |
+| `cacheUndefined`, `negativeTtl` | `false`; the entry's TTL | negative caching ([Stampede protection](#stampede-protection)) |
+| `tagStampTtl` | the cache's longest TTL, at most 24 h | how long an invalidation stamp lives ([Tags](#tags)) |
+| `tagStampCacheMs` | 1 s | how long a process keeps its copy of a stamp |
+| `softPurge` | `false` | allow `invalidateTags(tags, { mode: "stale" })` ([Soft purge](#soft-purge-mode-stale)) |
+| `validate` | none | key patterns mapped to Standard Schemas, checked on read ([Typed caches](#typed-caches-and-validate)) |
+| `l1` | none | an in-process memory tier: `true`, or `{ maxEntries, maxBytes, ttl, clone }` ([Multi-tier](#multi-tier)) |
+| `bus` | `"auto"` with an `l1`, else `false` | the invalidation bus ([The bus](#the-bus)) |
+| `sweepInterval` | 60 s | how often the core calls the driver's sweeper, in ms; `0` disables it |
+| `timeout` | off | a timeout around every driver operation, in ms |
+| `strict` | `false` | throw driver failures instead of degrading ([The failure policy](#the-failure-policy)) |
+| `circuit` | `{ failures: 5, cooldown: 30_000 }` | the circuit breaker around the driver |
+| `logger` | a no-op | any `LoggerLike` ([Events, statistics, logging](#events-statistics-logging)) |
+| `now`, `random` | `Date.now`, `Math.random` | the clock and the randomness source, for tests ([Testing helpers](#testing-helpers)) |
+
 ## Stampede protection
 
 `getOrSet` is single-flight in process, always: 1000 concurrent misses run the
@@ -287,9 +231,9 @@ the same, in place of its `refresh` event.
   read, so they miss together and one leads the load. A read that a load
   settled under reads again when it found nothing fresh, since it may have
   looked before the write. This matters on a backend whose reads queue for
-  longer than the load: before it, 1,000 concurrent misses on MongoDB ran a
-  20 ms loader twice (found by the bench, `bench/`). Concurrent callers are
-  therefore answered the same value object, a hit's as a load's.
+  longer than the load, where a burst of misses would otherwise run the
+  loader more than once. Concurrent callers are therefore answered the same
+  value object, a hit's as a load's.
 - **Cancellation is collective.** `getOrSet(key, loader, { signal })` rejects
   the caller that aborted; the loader's own `signal` aborts only when *every*
   waiter has aborted, so one impatient caller cannot cancel shared work.
@@ -340,9 +284,11 @@ await cache.set("user:42", user, { tags: ["users", "org:7"] });
 await cache.invalidateTags(["org:7"]);
 ```
 
-How invalidation works depends on the driver (§3.6 of the plan):
+How invalidation works depends on the driver ([The driver matrix](#the-driver-matrix)
+says which mode each one uses):
 
-- **`tags: "index"`** (the memory driver): entries are deleted eagerly, and a
+- **`tags: "index"`** (memory, SQLite, Postgres, MySQL, MariaDB, Redis,
+  MongoDB, Cloudflare D1): entries are deleted eagerly, and a
   write whose loader started *before* the invalidation is refused by the
   **fence** — the `fenced` event fires with `reason: "fence"`, and the
   loader's caller still gets its value. The fence is what catches an
@@ -359,8 +305,8 @@ How invalidation works depends on the driver (§3.6 of the plan):
   starts after it resolved, in this process or another on the same clock, is
   stored. Another process's invalidation landing in a load's own millisecond
   still fences it.
-- **`tags: "stamps"`** (custom drivers via `fromSimpleDriver`, the file and
-  S3 drivers later): `invalidateTags` writes only a stamp per tag, and a read
+- **`tags: "stamps"`** (file, S3, Azure Blob Storage, Cloudflare KV, and
+  custom drivers via `fromSimpleDriver`): `invalidateTags` writes only a stamp per tag, and a read
   of a tagged entry compares its age against the stamps — an entry older than
   a stamp is a miss. Stamps are cached in process for `tagStampCacheMs`
   (default 1 s), and invalidated entries are reclaimed by the sweeper.
@@ -478,13 +424,13 @@ smaller. `compress: false` disables it.
 | `"deflate"` | 6 | 0–9 | `Bun.deflateSync`: **raw** DEFLATE |
 | a `CacheCompressor` | — | — | your `compress` and `decompress` |
 
-- **Which one.** zstd stays the default: on JSON it matches Brotli 4's ratio
-  in a quarter to a third of the time, and on bytes that do not compress (an
-  image, an archive) it gives up in 27 µs at 70 KB where gzip and deflate
-  spend 1.3 ms. Brotli wins on small text, through its built-in dictionary,
-  which matters only with a threshold far under 16 KiB. Its quality defaults
-  to 4, as bun-common's response compression does: Brotli's own default, 11,
-  takes 90 ms for 70 KB. At a 4 KiB threshold, zstd saves 3.8× for 17 µs.
+- **Which one.** zstd is the default: on JSON it matches Brotli 4's ratio
+  in a fraction of the time, and it gives up quickly on bytes that do not
+  compress (an image, an archive), where gzip and deflate spend far longer.
+  Brotli wins on small text, through its built-in dictionary, which matters
+  only with a threshold far under 16 KiB. Its quality defaults to 4, as
+  bun-common's response compression does: Brotli's own default, 11, is much
+  slower.
 - **`"deflate"` is raw DEFLATE** (RFC 1951), not the zlib-wrapped form HTTP's
   `Content-Encoding: deflate` means: these bytes never reach HTTP. It is the
   same ratio, six bytes shorter.
@@ -504,9 +450,8 @@ smaller. `compress: false` disables it.
 - **A large value is probed first.** From 256 KiB, a built-in algorithm
   first compresses a sample: four slices spread over the value, 1/64 of it
   and at most 16 KiB. When the sample shrinks by less than 2%, the value is
-  stored as it is, without compressing it whole: 1 MiB of random bytes cost
-  zstd 319 µs for output the "only if smaller" rule then discarded. The
-  sample decides, so a value whose sampled parts do not shrink is stored
+  stored as it is, without compressing it whole, which would only produce
+  output the "only if smaller" rule then discards. The sample decides, so a value whose sampled parts do not shrink is stored
   uncompressed even if a part between them would have. A user compressor is
   never probed.
 
@@ -848,20 +793,9 @@ AAD fails it.
 
 ### The cost
 
-Measured on the real cache (i9-11900H, Bun 1.4.4, at a load of 3; the
-plan's `evidence/encryption/bench-e1-overhead.ts`), µs per operation, the
-median of five rounds:
-
-| Value | memory `set` | memory `get` | Redis (loopback) `set` | Redis `get` |
-|---|---|---|---|---|
-| 100 B | 3.5 → 7.3 | 2.9 → 6.8 | 41 → 49 | 27 → 33 |
-| 4 KiB | 35 → 41 | 21 → 26 | 92 → 106 | 48 → 57 |
-| 70 KB | 729 → 703 | 379 → 399 | 867 → 875 | 450 → 478 |
-| 1 MiB | 11,837 → 12,216 | 5,284 → 5,390 | 12,734 → 12,507 | 5,418 → 5,637 |
-
-About 4 µs per small operation, which a networked store's round trip
-mostly hides, and within the noise from 70 KB up, where the cipher sees the
-compressed bytes. Sealing and opening alone take about 2.6 µs each at 100 B.
+A few microseconds per small operation, which a networked store's round
+trip mostly hides, and within the noise for large values, where the cipher
+sees the compressed bytes.
 
 ### The format
 
@@ -967,9 +901,7 @@ Search a dump for those (`redis-cli --scan --pattern '*9a41*'`, `WHERE k =
 object name is the SHA-256 of that hash. To check a value, read it back
 through the cache, skipping L1 with `get(key, { tier: "l2" })`. Without
 `hashNames`, `describeKey` answers the names as stored: the namespace, the
-key (`#`-hashed when long) and the tags as they are. The repository's
-[playground](https://github.com/kingsloob1/bun-node/blob/develop/playground/README.md#the-cache-lab)
-shows one entry both ways, at `/playground/cache/at-rest`.
+key (`#`-hashed when long) and the tags as they are.
 
 The names hash, for a reader in another language (the full namespace and
 key as in [The format](#the-format); a counter's name is hashed as a key):
@@ -1009,7 +941,7 @@ Keys belong to the schema — literals and template-literal patterns both — an
 receives `fn`'s own parameters. Tags can be narrowed with a second type
 parameter: `createCache<Schema, "users" | "orgs">(...)`.
 
-**Runtime-checked reads (V10).** `validate` maps key patterns to any
+**Runtime-checked reads.** `validate` maps key patterns to any
 [Standard Schema](https://standardschema.dev) — the contract `BunValidate`
 accepts — and checks values **on read**:
 
@@ -1059,7 +991,7 @@ sink, or a pino/winston/Nest-shaped logger. The default is a no-op.
 
 ## The failure policy
 
-A cache that is down is bypassed, never fatal (plan D8):
+A cache that is down is bypassed, never fatal:
 
 | Situation | Default | `strict: true` |
 |---|---|---|
@@ -1075,6 +1007,23 @@ the cooldown probes (and closes) it. A bypassed cache can stampede the
 origin, so the in-process single-flight keeps working while the circuit is
 open. Counters are the exception: a failed `increment` throws even without
 `strict`, because there is no honest fallback value.
+
+## Errors
+
+Every error class is exported from the package root.
+
+| Error | Thrown when |
+|---|---|
+| `CacheDriverError` | a driver operation failed or timed out, under `strict` (and for a failed `increment` always); `driver` and `op` name it, `cause` holds the driver's error |
+| `CircuitOpenError` | the circuit is open and the operation was bypassed, under `strict` (and for `increment`); `retryAt` is when the next probe may run |
+| `LoaderTimeoutError` | a loader outlasted `hardTimeout` with no stale value to serve, or a cross-process lock wait outlasted `wait.timeout` with `onLockTimeout: "throw"`; carries `key` and `timeoutMs` |
+| `UnsupportedOperationError` | the driver cannot do what was asked: `increment` without atomic counters, `mode: "stale"` without `softPurge`; carries `driver` and `op` |
+| `EntryTooLargeError` | an entry over `maxEntryBytes`, under `strict` only (otherwise `set` resolves `false` with an `oversize` event); carries `key`, `bytes` and `limit` |
+| `CacheDecryptError` | never thrown: the `error` of a `phase: "decrypt"` event when an entry does not open ([When an entry does not open](#when-an-entry-does-not-open)) |
+
+Configuration mistakes (an invalid option, a bad key in a key ring, two
+authorization methods on one Azure driver) are thrown at construction, most
+as a `TypeError`.
 
 ## Multi-tier
 
@@ -1115,17 +1064,17 @@ nor the decode. `l1: true` takes the defaults below.
   not seen.
 - **Only fresh copies.** An entry is held until the first of its freshness,
   the L2 entry's expiry, and `l1.ttl`. A copy taken from L2 keeps the L2
-  entry's expiry, never a fresh TTL (plan R14), so a copy never outlives the entry
+  entry's expiry, never a fresh TTL, so a copy never outlives the entry
   it copies. A stale value is never served from L1: the stale windows
   (`staleWhileRevalidate`, `staleIfError`) are L2's.
-- **Counters never enter L1**: an `increment` is L2's alone (plan §3.8).
+- **Counters never enter L1**: an `increment` is L2's alone.
 - **`validate`**: a value written to a key a schema covers is not copied on
   write; the next read validates it on its way into L1.
 - **`{ tier: "l2" }`** on `get`, `getEntry`, `has`, `getMany`, `set` and
   `getOrSet` bypasses L1 for that call: it neither reads nor fills it. A write
   with it still drops this process's copy and publishes.
 
-**The order of operations** (plan §4.1):
+**The order of operations**:
 
 | Operation | Order |
 |---|---|
@@ -1137,7 +1086,7 @@ nor the decode. `l1: true` takes the defaults below.
 ### The bus
 
 Other processes learn of a change through the **bus**: a message carries the
-namespace and the keys or tags that changed — **never a value** (plan R13) — and a
+namespace and the keys or tags that changed — **never a value** — and a
 process that receives one drops its copies. The next read goes to L2.
 
 | `bus` | What it is |
@@ -1184,18 +1133,12 @@ writer needs `bus: "auto"` (or one of its own).
 
 - **In the writing process: read-your-writes.** A write and an invalidation
   reach L1 before they resolve.
-- **In other processes:** stale until the bus delivers. Measured between two
-  processes on this repository's machine, from the writer's `set` resolving
-  to the reader's first read of the new value (15 rounds each, at random
-  phases of the poll):
-
-  | L2 and bus | Quiet machine | Loaded (1-minute load 29 on 16 cores) |
-  |---|---|---|
-  | Postgres, `LISTEN`/`NOTIFY` | p50 0.35 ms, max 0.8 ms | p50 0.8–9 ms, max 5–18 ms |
-  | SQLite file + `redisBus` | p50 0.12 ms, max 0.6 ms | p50 0.5–1.9 ms, max 10–15 ms |
-  | SQLite file, polled bus (250 ms) | — | p50 79–137 ms, max 218–234 ms: up to one poll |
-
-  With the bus down or absent: up to `l1.ttl`.
+- **In other processes:** stale until the bus delivers. On a pushed bus
+  (Postgres `LISTEN`/`NOTIFY`, `redisBus`, a MongoDB change stream) that is
+  typically well under a millisecond on a quiet host and a few milliseconds
+  under load; on a polled bus (SQLite, MySQL, MariaDB, the file driver), up
+  to one `busPollInterval` (250 ms by default). With the bus down or absent:
+  up to `l1.ttl`.
 - **When a write and a read race**, another process can read the old value
   from its L1 between the L2 write and the message's delivery. That is the
   price of L1. A read that cannot accept it uses `{ tier: "l2" }`.
@@ -1210,7 +1153,7 @@ reads are not counted), `backfills`, `invalidations`, `evictions` and
 ## Redundant drivers
 
 `redundant(members, options)` makes one driver of several, so a cache tier
-survives losing one backend (plan §5). It is a driver like any other: alone,
+survives losing one backend. It is a driver like any other: alone,
 or as the L2 under an L1. Members can differ in type.
 
 ```ts
@@ -1297,8 +1240,7 @@ Q still sees B up, and later fails over to B, where `k` survived: Q serves a
 deleted value for up to `k`'s TTL. Nothing in one process can see what
 another missed. `secondaryTtl` caps the hard expiry written to every member
 but the first, which bounds that window (and makes a failover read a miss
-sooner). Measured in `__tests__/drivers/redundant.test.ts`: served stale
-right after the delete, gone after `secondaryTtl`.
+sooner): served stale right after the delete, gone after `secondaryTtl`.
 
 **Counters and locks** cannot be atomic across independent backends, so they
 live on the first member only (`counters: "primary"`, the default). While it
@@ -1480,8 +1422,8 @@ visibility from two processes. Both sides are released together from a start
 barrier and the increments run in interleaved waves, so the two genuinely
 overlap. A driver with a polled bus also gives `busGap`, a function that
 forces a gap in its log; a driver with a pushed bus may give one that drops
-its subscriber connection (the Redis driver's test kills it with `CLIENT
-KILL`), and the bus-gap case then runs for it too.
+its subscriber connection (on Redis, for example, with `CLIENT KILL`), and
+the bus-gap case then runs for it too.
 
 The kit also runs the core over the driver with `encrypt` and `hashNames`
 on: every operation the driver advertises, through caches whose names reach
@@ -1517,7 +1459,9 @@ before it needs no change.
 - **`faulty(inner, { failRate, failOn, hangMs, lagMs, down })`** — a
   fault-injection wrapper: fail every operation, fail named operations, hold
   them open, or slow them. `driver.setFaults({...})` changes the faults
-  mid-test. This is how the failure-policy tests drive the circuit.
+  mid-test. An injected failure is an `InjectedFaultError` (its `op` names
+  the operation). Use it to test how your app behaves when the cache's
+  backend fails: the failure policy, the circuit, `strict`.
 - **`fakeClock()`** — a controllable clock for `createCache`'s `now` option
   (and `memoryDriver`'s), so expiry, staleness and the fence are tested
   without waiting:
@@ -1534,24 +1478,44 @@ before it needs no change.
 
 ## The driver matrix
 
-| Driver | Ships | TTL | Atomic increment | Lock | Tags | Bus |
-|---|---|---|---|---|---|---|
-| memory | PR-C1 | lazy + sweep | yes | in process | index, atomic fence | in-process |
-| custom (`fromSimpleDriver`) | PR-C1 | declared | no | no | stamps | no |
-| file | PR-C2 | lazy + sweep | yes, under a lock file | `O_EXCL` file | stamps, checked on read | polled log |
-| SQLite | PR-C3 | filtered on read + sweep, indexed `exp` | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one transaction) | polled table |
-| Postgres | PR-C4 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one statement under a namespace advisory lock) | `LISTEN`/`NOTIFY` |
-| MySQL / MariaDB | PR-C4 | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table |
-| Redis | PR-C5 | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) |
-| MongoDB | PR-C6 | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection |
-| S3 | PR-C7 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) |
-| Azure Blob Storage | PR-C8 | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) |
-| Cloudflare KV | PR-C10 | native (`expiration_ttl`, at least 60 s) + filtered on read | no | no | stamps, checked on read (eventually consistent) | none (`redisBus` / `pgBus`) |
-| Cloudflare D1 | PR-C11 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index (triggers), atomic fence (one statement) | none (`redisBus` / `pgBus`) |
-| `redundant([...])` | PR-R1 | its members' (native only when all are) | the primary's, never failed over | the primary's, never failed over | index when every member indexes, else stamps | the first member's |
+| Driver | TTL | Atomic increment | Lock | Tags | Bus |
+|---|---|---|---|---|---|
+| memory | lazy + sweep | yes | in process | index, atomic fence | in-process |
+| custom (`fromSimpleDriver`) | declared | no | no | stamps | no |
+| file | lazy + sweep | yes, under a lock file | `O_EXCL` file | stamps, checked on read | polled log |
+| SQLite | filtered on read + sweep, indexed `exp` | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one transaction) | polled table |
+| Postgres | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one statement under a namespace advisory lock) | `LISTEN`/`NOTIFY` |
+| MySQL / MariaDB | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table |
+| Redis | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) |
+| MongoDB | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection |
+| S3 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) |
+| Azure Blob Storage | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) |
+| Cloudflare KV | native (`expiration_ttl`, at least 60 s) + filtered on read | no | no | stamps, checked on read (eventually consistent) | none (`redisBus` / `pgBus`) |
+| Cloudflare D1 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index (triggers), atomic fence (one statement) | none (`redisBus` / `pgBus`) |
+| `redundant([...])` | its members' (native only when all are) | the primary's, never failed over | the primary's, never failed over | index when every member indexes, else stamps | the first member's |
 
-The full per-driver design, with the measured evidence behind each choice, is
-the [plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/README.md).
+## The memory driver
+
+```ts
+import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
+
+const cache = createCache({
+  driver: memoryDriver({ maxEntries: 50_000, maxBytes: 256 << 20 }),
+});
+```
+
+A `Map` in this process: the fastest driver, and the one for tests and for a
+single process. Nothing is shared with other processes (`multiProcess:
+false`), and nothing survives a restart.
+
+- **Options**: `maxEntries` and `maxBytes` (the encoded bytes) cap it, the
+  least recently used entries going first; both are uncapped by default.
+  `now` is the clock, for tests: pass the same `fakeClock()` the cache runs
+  on ([Testing helpers](#testing-helpers)).
+- **Everything is supported**: atomic counters, an in-process lock, an
+  index of tags with an atomic fence, and an in-process bus.
+- **Values are copied** on write, so a caller that changes the bytes it
+  passed changes nothing stored. Expiry is lazy on read, plus the sweeper.
 
 ## The file driver
 
@@ -1565,7 +1529,7 @@ const cache = createCache({
 
 One directory, one file per entry, for several processes on one host (a
 durable single-machine cache that survives restarts, and the first
-`multiProcess` driver). The layout (§7.2 of the plan):
+`multiProcess` driver). The layout:
 
 ```
 <root>/<seg ns>/e/<hh>/<sha256(key)>.bce   entry: file header + encoded bytes
@@ -1583,16 +1547,15 @@ durable single-machine cache that survives restarts, and the first
 - **Locks** are `O_EXCL` lock files (created with full content via a hard
   link), stale after their TTL, and broken only when *positively read* as
   stale — a lock that merely fails to read in the churn of a herd is probed,
-  never moved (see `#judgeLock` in the source for the race this avoids).
+  never moved.
 - **Expiry and caps**: lazy on read, plus the sweeper — expired entries from
   their 14-byte file header, then `maxEntries`/`maxBytes` oldest-first by
   modification time (age order, not LRU).
 - **The bus** is a polled append-only `bus.log` (default 250 ms); a
   compaction past `maxBusLogBytes` (1 MiB) signals a gap to subscribers.
 - **Durability and limits**: POSIX local filesystems only — never NFS
-  (lock-file semantics do not survive it). Writes are slow next to SQLite
-  (about 5k/s against 20k/s, measured for the plan); prefer SQLite for small
-  values on one host. There is no cross-machine story: use a shared driver
+  (lock-file semantics do not survive it). Writes are several times slower
+  than SQLite's; prefer SQLite for small values on one host. There is no cross-machine story: use a shared driver
   (SQL, Redis) for that.
 
 ## The SQLite driver
@@ -1606,7 +1569,7 @@ const cache = createCache({
 ```
 
 One database file over `bun:sqlite`, shared by every process on the host
-that opens it (§7.3 of the plan). Five tables, under the prefix
+that opens it. Five tables, under the prefix
 (`bun_cache_` by default; `prefix` must be an SQL identifier, and two
 prefixes on one file are two separate stores):
 
@@ -1673,9 +1636,9 @@ sync's report: `await driver.syncSchema({ dryRun: true })` reads one.
   `journal_mode=WAL` yourself if several processes share the file.
   `path: ":memory:"` is a private in-process store (`multiProcess: false`).
 - **Limits**: one host (SQLite's locking does not survive a network
-  filesystem). Every call blocks the event loop while it runs — about
-  2.5 µs per small hit, about 100 µs per 10 KB one (measured for the plan) —
-  so keep values over ~100 KB in another driver.
+  filesystem). Every call blocks the event loop while it runs — a few
+  microseconds for a small hit, about a hundred for a 10 KB one — so keep
+  values over ~100 KB in another driver.
 
 ## The Postgres, MySQL and MariaDB drivers
 
@@ -1696,7 +1659,7 @@ const cache = createCache({
 ```
 
 One set of tables in a database every process and host can reach, over Bun's
-built-in `SQL` (§7.4 and §7.5 of the plan). The tables, under the prefix
+built-in `SQL`. The tables, under the prefix
 (`prefix`, `bun_cache_` by default; letters, digits and `_`, at most 48
 characters) unless `tables` names them:
 
@@ -1804,7 +1767,7 @@ const cache = createCache({
 ```
 
 One Redis every process and host can reach, over Bun's built-in
-`RedisClient` (§7.7 of the plan). Every key is under the prefix (`prefix`,
+`RedisClient`. Every key is under the prefix (`prefix`,
 `bun-cache` by default; not empty, no `{` or `}`) and the namespace, wrapped
 in a hash tag and encoded so it never holds `}` or `:` (any string is a safe
 namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
@@ -1830,8 +1793,8 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
   `keyLocking: true` runs them under a namespace's lock instead of the
   database's ([below](#upstash-and-other-managed-redis)).
 - **A large entry skips Lua.** A value passed to a script is copied into Lua
-  and out again: a 1 MiB write took 1.9 ms that way against 0.34 ms with a
-  plain `SET` (measured). So an entry whose frame is 8 KiB or more is
+  and out again, several times slower than a plain `SET` for a large value.
+  So an entry whose frame is 8 KiB or more is
   written with a plain `SET` to a staging key (`w:`, in the namespace's hash
   tag, expiring in 60 s), pipelined with the script, which checks the fence
   and renames it into place, or deletes it when fenced. `setMany` stages its
@@ -1879,20 +1842,104 @@ namespace; `SCAN` patterns are escaped, so `x*` never reaches `xy`):
   the driver; its options are its own). The first connect of a client the
   driver builds is bounded by `firstConnectTimeout` (5 s; `0` for none):
   without it, Bun retries a refused connection for about 31 s before an
-  operation fails. A TLS connect to a Redis in another region takes most of
-  a second (measured to Upstash: 549–1004 ms), which is why the bound is not
-  tighter. `connectionTimeout`, `maxRetries` and `autoReconnect` are
+  operation fails. A TLS connect to a Redis in another region can take most
+  of a second, which is why the bound is not tighter. `connectionTimeout`, `maxRetries` and `autoReconnect` are
   Bun's own, passed through. After a drop, Bun reconnects; once it gives up,
   the next operation starts again.
 - **Redis Cluster is not supported yet**: Bun's `RedisClient` does not
   follow the cluster's `MOVED` and `ASK` redirects
-  ([oven-sh/bun#22947](https://github.com/oven-sh/bun/issues/22947)) —
-  measured on a three-node cluster, every key on another node failed with
-  `MOVED`. `cluster: true` throws, and connecting to a cluster node fails
+  ([oven-sh/bun#22947](https://github.com/oven-sh/bun/issues/22947)), so
+  every key on another node fails with `MOVED`. `cluster: true` throws, and connecting to a cluster node fails
   with the same explanation. The keys are hash-tagged by namespace already,
   so the layout will not change when it is. A primary behind a stable
   address (a managed service, a proxy) works; Sentinel does not (Bun has no
   Sentinel support, oven-sh/bun#38515).
+
+### Upstash and other managed Redis
+
+`redisDriver({ url: "rediss://default:<password>@<name>.upstash.io:6379" })`
+works on [Upstash](https://upstash.com) over its Redis protocol endpoint,
+and passes the driver conformance kit there. What differs from a Redis next
+to the app:
+
+- **Every command is a round trip** to the database's region (Upstash
+  quotes under 1 ms in the same region; from another continent it is
+  hundreds of ms). Put the app in the database's region, and use an `l1`
+  for hot keys. Concurrent operations share one connection, pipelined, so a
+  burst of them costs about one round trip, not one each.
+- **It bills per command**, a Lua script as one plus every `redis.call`
+  inside it. What each operation costs:
+
+  | Operation | Commands |
+  |---|---|
+  | `get`, a hit or a miss; `getCounter`; `getStamps` (one `MGET`) | 1 |
+  | `getMany` | 1 per key |
+  | `set`, a new key, no tags | 5 |
+  | `set`, each tag | +1 |
+  | `set` replacing an entry | +1 per old tag it no longer carries |
+  | `set` with the fence | +1 (one `MGET` of the stamps) |
+  | `set` of an entry of 8 KiB or more (staged) | +2 (the staging `SET`, and the script's `EXISTS` of it), and +1 more when it has no expiry |
+  | `setMany`, each entry of 8 KiB or more (staged) | as `set`'s, and 1 per script that stages (`EXISTS`) |
+  | `touch` | 4 |
+  | `increment` (an existing counter / a new one) | 3 / 6 |
+  | `acquireLock`, `releaseLock` | 3 each |
+  | `delete` | 1, plus 3 per absent key, 3 per entry, and 1 per tag it carried |
+  | `deleteByTags` | 1, plus 3 per tag, plus 2 per member and 1 per tag it carried |
+  | `publish` (the bus) | 1 |
+
+  `clear` and `sweep` walk the whole database with `SCAN`, 1,000 keys a
+  call.
+- **Eviction is off by default** there, and writes fail at the plan's size
+  limit. Turned on, Upstash evicts keys with a TTL first, then any key —
+  tag sets and stamps included — so under memory pressure an invalidation
+  can miss entries whose tag set was evicted (as with `allkeys-*` above).
+- **Requests are at most 10 MB** on the free and pay-as-you-go plans: keep
+  `maxEntryBytes` (4 MiB by default) under it.
+- **No `CLIENT KILL`**: the driver never sends it. Replication across
+  Upstash's replicas is asynchronous, and consistency is causal per
+  connection only; the fence is unaffected (it runs in a script, on the
+  primary).
+- **Scripts take Upstash's global lock** by default (no other command runs
+  meanwhile), and a key a script names outside `KEYS` that has gone cold to
+  disk is loaded with that lock held. `keyLocking: true` lifts that (below).
+
+**`keyLocking`: Upstash's per-key script locking.**
+
+```ts
+redisDriver({ url: process.env.UPSTASH_REDIS_URL, keyLocking: true });
+```
+
+Every script the driver runs then starts with `#!lua flags=allow-key-locking`,
+so Upstash locks only the hash tag of the script's keys — the namespace's,
+`{<ns>}` — instead of the whole database: scripts on other namespaces, and
+plain commands on other keys, run alongside it, and a cold key is loaded
+holding only that namespace's lock. Writes to one namespace still run one at
+a time. Use it on Upstash when several namespaces, or other applications
+sharing the database, write at once. Upstash refuses a key outside a flagged
+script's locked hash tags ("Dynamic keys are not allowed …"); every script
+the driver runs keeps to its namespace's tag.
+
+**`allow-oom` on the scripts that only remove.** A script with a shebang and
+without `allow-oom` is refused whole while the server is out of memory,
+where an unflagged one runs until a command that would grow memory. So
+`delete`, `releaseLock` and `sweep`'s two prunes (a tag set's members, a
+lapsed stamp) — every command in them a read or a removal — declare
+`#!lua flags=allow-key-locking,allow-oom`, and a full database can still be
+freed through them. Nothing that writes carries it: not `set`, `touch`,
+`increment` or `acquireLock`, nor `deleteByTags`, which writes a stamp per
+tag before it deletes. Upstash accepts the combined flags and still locks
+by key; how it behaves when the database is actually full has not been
+verified.
+
+**Upstash only.** Plain Redis rejects the flag (Redis 8.0.5: "Unexpected flag
+in script shebang: allow-key-locking"; Redis 6 has no script flags), so the
+option is off by default. Set against such a server, the first write fails
+with `redisDriver: keyLocking is set, and <host:port> refused Upstash's
+allow-key-locking script flag (…)`; reads that need no script (`get`,
+`getMany`, a counter, the stamps) still answer.
+
+**The URL is a credential**: it holds the database's password. Keep it in
+your secret store or environment, never in the repository.
 
 ## The MongoDB driver
 
@@ -1906,8 +1953,8 @@ const cache = createCache({
 //    mongoDriver({ client: existingMongoClient, database: "app" })  // never closed by the driver
 ```
 
-One set of collections in a database every process and host can reach (§7.6
-of the plan). **`mongodb` is an optional peer** (`>=6`): install it with
+One set of collections in a database every process and host can reach.
+**`mongodb` is an optional peer** (`>=6`): install it with
 `bun add mongodb`. The driver loads it on first connect, and its types are
 structural (`MongoClientLike`), so a project that never builds a
 `mongoDriver` needs neither the package nor its types, and a real
@@ -1988,109 +2035,12 @@ it on connect, as on the SQL drivers.
 - **Limits**: an entry is at most the server's `maxBsonObjectSize` (16 MiB)
   less 64 KiB, read on connect as `capabilities.maxEntryBytes`. The server
   must be MongoDB 4.2 or later (the counter's update pipeline, unbounded
-  index keys); the suite runs on 7.0, standalone and as a replica set.
-  **Testing**: `mongodb.test.ts` runs its whole suite against
-  `BUN_CACHE_TEST_MONGODB_URL` (a standalone server: the tailable bus) and
-  again against `BUN_CACHE_TEST_MONGODB_RS_URL` (a single-node replica set:
-  the change-stream bus, both modes, resume and gap). `bun
-  scripts/setup-databases.ts` starts the replica set as a docker container
-  on 27018 and `--print-env` prints both URLs. An unset variable skips its
-  suite visibly; one set but unreachable fails.
-
-### Upstash and other managed Redis
-
-`redisDriver({ url: "rediss://default:<password>@<name>.upstash.io:6379" })`
-works on [Upstash](https://upstash.com) over its Redis protocol endpoint:
-the conformance kit and every Redis test pass against it (measured
-2026-10-28, `docs/plans/bun-cache/evidence/upstash-spike.md`). What differs
-from a Redis next to the app:
-
-- **Every command is a round trip** to the database's region (about 300 ms
-  from West Africa to `us-east-1`; Upstash quotes under 1 ms in the same
-  region). Put the app in the database's region, and use an `l1` for hot
-  keys. Concurrent operations share one connection, pipelined (50 `GET`s in
-  330 ms).
-- **It bills per command**, a Lua script as one plus every `redis.call`
-  inside it. What each operation costs, counted with `MONITOR`:
-
-  | Operation | Commands |
-  |---|---|
-  | `get`, a hit or a miss; `getCounter`; `getStamps` (one `MGET`) | 1 |
-  | `getMany` | 1 per key |
-  | `set`, a new key, no tags | 5 |
-  | `set`, each tag | +1 |
-  | `set` replacing an entry | +1 per old tag it no longer carries |
-  | `set` with the fence | +1 (one `MGET` of the stamps) |
-  | `set` of an entry of 8 KiB or more (staged) | +2 (the staging `SET`, and the script's `EXISTS` of it), and +1 more when it has no expiry |
-  | `setMany`, each entry of 8 KiB or more (staged) | as `set`'s, and 1 per script that stages (`EXISTS`) |
-  | `touch` | 4 |
-  | `increment` (an existing counter / a new one) | 3 / 6 |
-  | `acquireLock`, `releaseLock` | 3 each |
-  | `delete` | 1, plus 3 per absent key, 3 per entry, and 1 per tag it carried |
-  | `deleteByTags` | 1, plus 3 per tag, plus 2 per member and 1 per tag it carried |
-  | `publish` (the bus) | 1 |
-
-  `clear` and `sweep` walk the whole database with `SCAN`, 1,000 keys a
-  call.
-- **Eviction is off by default** there, and writes fail at the plan's size
-  limit. Turned on, Upstash evicts keys with a TTL first, then any key —
-  tag sets and stamps included — so under memory pressure an invalidation
-  can miss entries whose tag set was evicted (as with `allkeys-*` above).
-- **Requests are at most 10 MB** on the free and pay-as-you-go plans: keep
-  `maxEntryBytes` (4 MiB by default) under it.
-- **No `CLIENT KILL`**: the driver never sends it. Replication across
-  Upstash's replicas is asynchronous, and consistency is causal per
-  connection only; the fence is unaffected (it runs in a script, on the
-  primary), and a write on one connection was read back on another at once
-  30 times in 30.
-- **Scripts take Upstash's global lock** by default (no other command runs
-  meanwhile), and a key a script names outside `KEYS` that has gone cold to
-  disk is loaded with that lock held. `keyLocking: true` lifts that (below).
-
-**`keyLocking`: Upstash's per-key script locking.**
-
-```ts
-redisDriver({ url: process.env.UPSTASH_REDIS_URL, keyLocking: true });
-```
-
-Every script the driver runs then starts with `#!lua flags=allow-key-locking`,
-so Upstash locks only the hash tag of the script's keys — the namespace's,
-`{<ns>}` — instead of the whole database: scripts on other namespaces, and
-plain commands on other keys, run alongside it, and a cold key is loaded
-holding only that namespace's lock. Writes to one namespace still run one at
-a time. Use it on Upstash when several namespaces, or other applications
-sharing the database, write at once. Upstash refuses a key outside a flagged
-script's locked hash tags ("Dynamic keys are not allowed …", measured); every
-script here keeps to its namespace's tag, which the Upstash lane checks with
-the option on and every local test run enforces on a plain Redis.
-
-**`allow-oom` on the scripts that only remove.** A script with a shebang and
-without `allow-oom` is refused whole while the server is out of memory,
-where an unflagged one runs until a command that would grow memory. So
-`delete`, `releaseLock` and `sweep`'s two prunes (a tag set's members, a
-lapsed stamp) — every command in them a read or a removal — declare
-`#!lua flags=allow-key-locking,allow-oom`, and a full database can still be
-freed through them. Nothing that writes carries it: not `set`, `touch`,
-`increment` or `acquireLock`, nor `deleteByTags`, which writes a stamp per
-tag before it deletes. Upstash accepts the combined flags and still locks
-by key (measured); what it does when actually full is not measured (that
-needs a full scratch database).
-
-**Upstash only.** Plain Redis rejects the flag (Redis 8.0.5: "Unexpected flag
-in script shebang: allow-key-locking"; Redis 6 has no script flags), so the
-option is off by default. Set against such a server, the first write fails
-with `redisDriver: keyLocking is set, and <host:port> refused Upstash's
-allow-key-locking script flag (…)`; reads that need no script (`get`,
-`getMany`, a counter, the stamps) still answer.
-
-**Testing against it.** This package's Upstash lane
-(`__tests__/drivers/upstash.test.ts`) runs the kit and the Redis tests
-against the database `BUN_CACHE_TEST_UPSTASH_REDIS_URL` names, and skips,
-visibly, when it is unset; with `BUN_CACHE_TEST_UPSTASH_KEY_LOCKING=1` as
-well, every driver it builds sets `keyLocking: true`. The URL holds the
-database's password: export it for one run, never commit it. One run takes about two minutes and some
-2,400 billed commands (of the free plan's 500,000 a month), and deletes the
-keys it wrote.
+  index keys); it is tested on 7.0, standalone and as a replica set.
+- **Which bus you get depends on the server.** A replica set (a single-node
+  one is enough: `mongod --replSet rs0`, then `rs.initiate()`) or `mongos`
+  gives the change-stream bus; a standalone server gives the tailable capped
+  collection. Name the replica set in the URL
+  (`mongodb://db:27017/app?replicaSet=rs0`) to get change streams.
 
 ## The S3 driver
 
@@ -2106,8 +2056,8 @@ const cache = createCache({
 // or s3Driver({ client: existingS3Client, connection: { … } })
 ```
 
-A bucket every process and host can reach, over Bun's built-in `S3Client`
-(§7.8 of the plan). It suits large values, long TTLs and few reads per key:
+A bucket every process and host can reach, over Bun's built-in `S3Client`.
+It suits large values, long TTLs and few reads per key:
 every read is a billed request, so for hot small keys put an
 [L1](#multi-tier) in front of it, with a bus of its own (`bus:
 redisBus(url)` or `pgBus(url)`; S3 has none).
@@ -2153,13 +2103,11 @@ sweeper reads an expiry with a `HEAD`, not a `GET`.
     list: there, a holder releasing after its lock lapsed and was taken over
     deletes the new holder's lock. Tigris's global buckets are eventually
     consistent, so two processes can both take a lock there.
-    (`docs/plans/bun-cache/bun-jobs-s3-driver.md` §3.3 has the sources.)
-  - **SeaweedFS** (the repository's test server) serialises concurrent
-    conditional writes to one object: each loser answers only after waiting
-    about a second longer than the one before (measured, 4.48: five at once
-    took 3 s, fifty 10 s), while one at a time they take a millisecond. The
-    driver's batching and its per-key lock queue keep a process's own calls
-    from contending; two processes on one hot lock still pay it.
+  - **SeaweedFS** serialises concurrent conditional writes to one object:
+    each loser answers only after waiting about a second longer than the one
+    before, while one at a time they take a millisecond. The driver's
+    batching and its per-key lock queue keep a process's own calls from
+    contending; two processes on one hot lock still pay it.
   - Lock expiry compares the holders' clocks: keep them in sync (NTP).
 - **Expiry**: lazy on read (an expired entry is a miss, and its object is
   deleted in the background), plus the core's sweeper: it walks the prefix
@@ -2192,8 +2140,8 @@ sweeper reads an expiry with a `HEAD`, not a `GET`.
   Region: given, else from the environment, else as Bun's client picks it
   (`auto` for a custom endpoint, the AWS endpoint's own, else `us-east-1`).
 - **Consistency**: AWS S3 is strongly consistent for reads, writes and
-  listings; other stores differ. Tested here against SeaweedFS 4.48 only
-  (`bun scripts/setup-databases.ts`). An entry holds up to 5 GiB less a MiB
+  listings; other stores differ, so check your store's guarantees. The
+  driver is tested against SeaweedFS. An entry holds up to 5 GiB less a MiB
   (one `PUT`); the core's `maxEntryBytes` (4 MiB) applies first.
 
 ## The Azure Blob Storage driver
@@ -2286,12 +2234,13 @@ blob's expiry from the listing alone.
   the cache's [failure policy](#the-failure-policy) takes over. A conditional
   write is never retried blindly, since one that landed but whose answer was
   lost would be applied twice.
-- **Tested against Azurite 3.37.0** (`bun scripts/setup-databases.ts`), which
-  checks the signatures (Shared Key and SAS, with a SAS's permissions) and
-  honours every condition the driver uses, and against an HTTPS Azurite with
-  `--oauth basic` for bearer tokens (below); **real Azure is untested**. Azurite does not enforce Azure's 15-minute limit on a
-  request's age. An entry holds up to 5000 MiB less a MiB (one Put Blob); the
-  core's `maxEntryBytes` (4 MiB) applies first.
+- **Tested against Azurite**, the Azure Storage emulator, which checks the
+  signatures (Shared Key and SAS, with a SAS's permissions), honours every
+  condition the driver uses and, over HTTPS with `--oauth basic`, takes
+  bearer tokens (below). **It has not been run against real Azure**, so
+  check it against your account before relying on it. An entry holds up to
+  5000 MiB less a MiB (one Put Blob); the core's `maxEntryBytes` (4 MiB)
+  applies first.
 
 ### Authorization
 
@@ -2316,8 +2265,8 @@ azureBlobDriver({ connection: { connectionString: "BlobEndpoint=https://myacct.b
 
 - **Permissions**: read, write, delete and list — `sp=rwdl`; an account SAS
   also `ss=b` (the Blob service) and `srt=co` (List Blobs is a container
-  operation, the rest are object ones). Measured on Azurite, for an account
-  SAS and a container SAS (`sr=c`) alike: without `l` connecting fails (and
+  operation, the rest are object ones). For an account SAS and a container
+  SAS (`sr=c`) alike: without `l` connecting fails (and
   the sweeper and `clear()`); without `r`, `get`; without `w`, `set` — `c`
   (create) alone writes a new blob but cannot replace one, and the driver
   replaces blobs — and without `d`, `delete`. Each fails with 403
@@ -2368,14 +2317,12 @@ azureBlobDriver({
   cannot write twice. Otherwise the error stands, naming the refusal.
   Several requests refused together share one `getToken`.
 
-**Testing Entra ID locally**: Azurite takes bearer tokens only over HTTPS and
+**Trying Entra ID locally**: Azurite takes bearer tokens only over HTTPS and
 with `--oauth basic`, which checks a token's `aud`
 (`https://storage.azure.com`), `iss` (under `https://sts.windows.net/`) and
-`iat`/`nbf`/`exp` but not its signature. The suite's
-`BUN_CACHE_TEST_AZURE_OAUTH_URL` points at such an Azurite (not set up by
-`setup-databases.ts`; the bearer cases skip visibly without it), in the same
-form as `BUN_CACHE_TEST_AZURE_URL` (the key, for its own setup and clean-up)
-over `https`:
+`iat`/`nbf`/`exp` but not its signature. Run it with a certificate, create
+the blob container (Shared Key still works there), and give the driver an
+`https` endpoint; the process has to trust the certificate.
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 30 \
@@ -2383,11 +2330,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.
 docker create --name azurite-oauth -p 127.0.0.1:10100:10000 mcr.microsoft.com/azure-storage/azurite:3.37.0 \
   azurite-blob --blobHost 0.0.0.0 --oauth basic --cert /certs/cert.pem --key /certs/key.pem
 tar -c certs | docker cp - azurite-oauth:/ && docker start azurite-oauth
-# then create the blob container bun-cache-test (Shared Key still works), and
-export BUN_CACHE_TEST_AZURE_OAUTH_URL="azure://devstoreaccount1:<the development key, percent-encoded>@127.0.0.1:10100/devstoreaccount1/bun-cache-test"
 ```
-
-The suite accepts that Azurite's self-signed certificate for its origin alone.
 
 ## The Cloudflare KV driver
 
@@ -2478,28 +2421,24 @@ bytes.
   usually seen at once where it was made, and may take **a minute or more**
   elsewhere (a reader that saw the old value, or no value, recently waits
   longest); the stamp cache (`tagStampCacheMs`) adds its own second. Use it
-  where serving a value a minute stale is acceptable. Measured on
-  2026-10-28 from Lagos: through the REST API a deleted key was still served
-  for 52 s (an overwrite showed in 0.7 s); through the Worker both showed in
-  about 0.4 s — one more reason to use the Worker.
+  where serving a value a minute stale is acceptable. Through the REST API
+  a deleted key has been seen served for most of a minute, where through
+  the Worker a delete or an overwrite usually shows within a second — one
+  more reason to use the Worker.
 - **One write per second per key.** KV answers 429 to a second write to a key
   within a second; the client waits out `Retry-After` and retries, up to six
   attempts, so a hot key refreshed from many processes costs latency, not
-  errors. (In the live lane, three writes to one key in quick succession were
-  all accepted on both transports; the documented limit is handled anyway.)
+  errors.
 - **Limits and cost**: 25 MiB per value (the driver's `maxEntryBytes` is
   24 MiB, leaving room for the header; the core's own 4 MiB applies first);
   the free plan allows 100,000 reads and 1,000 writes a day.
-- **Tested** against real KV in workerd: the shipped Worker run by
-  [miniflare](https://www.npmjs.com/package/miniflare) on every test run, no
-  account needed. Local KV is one store — it is never eventually
-  consistent — and it does not limit writes per key, so the tests' own front
-  emulates the 429. The REST API and Cloudflare's own KV run in an opt-in
-  live lane (`__tests__/drivers/cloudflare-kv-live.test.ts`), where the REST
-  API skips the kit's `delete` and `clear` cases: they read a key right after
-  deleting it, which KV's REST API answers stale for up to a minute. The spike
-  behind this design is
-  [`docs/plans/bun-cache/evidence/cloudflare-spike.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/evidence/cloudflare-spike.md).
+- **Local development** needs no account: run the shipped Worker in
+  workerd, through [miniflare](https://www.npmjs.com/package/miniflare) or
+  `wrangler dev`, with a local KV binding, and point `endpoint` at it. Local
+  KV is one store — it is never eventually consistent — and it does not
+  limit writes per key, so check what your app relies on against
+  Cloudflare's KV. Through the REST API, a read right after a delete can
+  answer the old value for up to a minute.
 
 ## The Cloudflare D1 driver
 
@@ -2541,9 +2480,7 @@ filtered on read and reclaimed by the sweeper — with what HTTP changes:
   one deletes its tag's entries, in the same statement). The fence is the
   write's own `WHERE NOT EXISTS`. D1 runs one statement at a time, so a
   fenced write and an invalidation are ordered whole: a write of a load that
-  started before an invalidation never survives it (0 of 60 in the spike, 0
-  of 20 against Cloudflare's own D1 on each transport; a check, then a
-  write, lets most of them through).
+  started before an invalidation never survives it.
 - **Values travel as hex** (`unhex(?)`, `hex(v)`). D1 caps a string at
   2,000,000 bytes, so an entry holds at most **1,000,000 bytes**
   (`maxEntryBytes`, below the core's 4 MiB default); a larger one is refused
@@ -2565,12 +2502,8 @@ filtered on read and reclaimed by the sweeper — with what HTTP changes:
   each `IF NOT EXISTS`.
 - **Cost**: D1 bills rows read and written; the triggers add the tag rows'
   writes to each tagged `set` and invalidation.
-- **Tested** against real D1 in workerd (the shipped Worker under miniflare,
-  every test run) and, in the opt-in live lane
-  (`__tests__/drivers/cloudflare-d1-live.test.ts`), against Cloudflare's D1
-  through both transports. There, a failed two-statement batch rolled back
-  its first statement through the REST API as well as the Worker: a batch is
-  one transaction on both (the driver does not rely on it).
+- **Local development** works as for KV: the shipped Worker in workerd
+  (miniflare or `wrangler dev`) with a local D1 binding, no account needed.
 
 ## HTTP response caching
 
@@ -2607,8 +2540,9 @@ handler it takes the validator's typed slot and the handler's validated
 every request (authentication, rate limits, request ids): a hit runs nothing
 behind it. Put `compression()` **ahead** of it: misses are captured
 uncompressed and hits are compressed per request. In Nest, guards and
-interceptors do not run before router middleware, so use the interceptor
-(PR-N2) for anything behind a guard.
+interceptors do not run before router middleware, so use bun-nest's
+[`BunCacheInterceptor`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/README.md#the-cache-interceptor)
+for anything behind a guard.
 
 **The cache.** Pass an untyped cache (`createCache()` with no schema) with a
 codec that keeps bytes — `"structured"`, the default, or `"raw"`: a response
@@ -2709,8 +2643,7 @@ a client cannot push its load onto the origin. `honorRequest: true` honours
 `only-if-cached` (a `504` on a miss).
 
 **Limits.** An unhandled error and the adapter's bare 404 are answered on a
-fresh response, outside the transforms: they are never stored (§9.2 of the
-plan). The write never delays the response, so a request arriving right
+fresh response, outside the transforms: they are never stored. The write never delays the response, so a request arriving right
 after a miss may miss too.
 
 **`coalesceRequests({ key?, wait? })`** is the coalescing alone, with no
@@ -2840,8 +2773,7 @@ first byte, before the size is known — also under the mark, where the
 stream is still copied and replaces the mark if it fits, as any storable
 answer does. Coalesced followers wait for the stream to end. The copy is not a
 `tee()`: a tee's second branch keeps pulling, so a slow client stops
-back-pressuring the handler and a client that leaves no longer stops it
-(measured: `docs/plans/bun-cache/evidence/stream-tap.ts`).
+back-pressuring the handler and a client that leaves no longer stops it.
 
 ### CDN tags (surrogate keys)
 
@@ -2875,7 +2807,7 @@ keys](https://www.fastly.com/documentation/guides/full-site-delivery/purging/wor
 and [purging API](https://www.fastly.com/documentation/reference/api/purging/);
 Cloudflare's [purge by cache-tags](https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-tags/)
 and [purge cache](https://developers.cloudflare.com/cache/how-to/purge-cache/)
-(read 2026-10-29).
+(the limits as documented in October 2026; check them for your plan).
 
 - **Which answers.** Every `GET` and `HEAD` through the middleware: `MISS`,
   `HIT`, `STALE` (stale-while-revalidate, and the stale answer to a 5xx or a
@@ -3003,9 +2935,7 @@ same store goes to `new Keyv({ store })` or to cache-manager's
 has no Keyv dependency, and installing Keyv is the app's.
 
 **Pin `keyv@5.6.0`, exactly.** cache-manager 7.2.9 (the current one)
-depends on `keyv ^5.6.0` and breaks under Keyv 6.1.0, measured
-([`docs/plans/bun-cache/evidence/keyv-compat/`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/bun-cache/evidence/keyv-compat/results.txt),
-and pinned by the bench's compatibility tests): `wrap()` runs the loader on
+depends on `keyv ^5.6.0` and breaks under Keyv 6.1.0: `wrap()` runs the loader on
 every call where Keyv 5 runs it once (three concurrent calls, then a fourth:
 two runs), and `ttl()` answers `undefined` instead of the entry's absolute
 expiry. The store itself works under both majors; it is cache-manager that
@@ -3079,16 +3009,10 @@ cross-process locks, since cache-manager's `wrap()` is single-flight in one
 process only; and the cache's codec, because Keyv's JSON envelope wins, so a
 `Date` comes back as its ISO string. `cache.getOrSet` keeps all of them.
 
-**The compatibility tests** run the store through the real cache-manager
-7.2.9 over Keyv 5.6.0 and 6.1.0, and through `@nestjs/cache-manager` 12.0.1's
-`CacheModule`, on memory, SQLite, Postgres and Redis. They live in the
-unpublished bench package, so none of those libraries is a dependency here:
-
-```bash
-cd packages/bun-cache/bench
-bun install --frozen-lockfile
-bun run compat
-```
+**Tested with** the real cache-manager 7.2.9 over Keyv 5.6.0 and 6.1.0, and
+`@nestjs/cache-manager` 12.0.1's `CacheModule`, on the memory, SQLite,
+Postgres and Redis drivers. None of those libraries is a dependency of this
+package.
 
 ## Live invalidation across processes
 
@@ -3116,12 +3040,13 @@ app.use(liveInvalidation(app, { authorize, bus: cacheLiveBus(bus) }));
 - **Postgres's 8,000 bytes**: `pgBus` turns a larger message into a `clear`,
   which arrives as a gap: the receivers' clients invalidate everything.
 - What a gap is, the ordering and what happens while the bus is down are
-  bun-common's: see its README, "Live invalidation".
+  bun-common's: see its README,
+  [Live invalidation](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#live-invalidation-kingsleywebbun-commonlive).
 
 ## Throttling
 
 `@kingsleyweb/bun-cache/throttle` is a store for bun-common's
-[`throttle()`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md):
+[`throttle()`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#throttling):
 the counts live in the cache's backend, so one limit holds across every
 process that shares it. bun-common's default store is in memory, per
 process: behind three instances, a limit of 100 lets 300 through.
@@ -3217,11 +3142,9 @@ places a request in a window:
   clock, never the driver's `now` option). Every process sharing the store
   agrees on the window, the counters' expiry and a GCRA bucket's time
   whatever its own clock says, so **no process needs NTP**; `throttle()`'s
-  `now` is not used for counting. Measured: two processes whose clocks sat
-  either side of an hour's boundary, a fixed window of 20 per hour, allowed
-  20 of 60 on every one of the five backends, and so did the sliding window
-  and GCRA; the same two processes through the cache's own counters allowed
-  40 (the sliding window 29–32).
+  `now` is not used for counting. Two processes whose clocks sit either side
+  of a window's edge still count into one window, where with each process's
+  own clock they would each get a full window.
 - **`clock: "process"`:** `throttle()`'s `now`, as everywhere else: what a
   test that drives a fake clock wants. Still one round trip, and GCRA still
   runs across processes. Redis sets the counter's lifetime relative to the

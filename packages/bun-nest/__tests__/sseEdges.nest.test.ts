@@ -28,7 +28,11 @@ import type { BunRequest, BunResponse, SseItem } from "@kingsleyweb/bun-common";
  * is imported last per the import-sort rule. No top-level `await`: it
  * perturbs decorator metadata in other gateway test files.
  */
-import type { INestApplication, MessageEvent } from "@nestjs/common";
+import type {
+  INestApplication,
+  MessageEvent,
+  RequestMethod,
+} from "@nestjs/common";
 import { readSse } from "@kingsleyweb/bun-common/sse";
 import {
   Controller,
@@ -98,10 +102,17 @@ const dropsSlowReaders = nestSource("router-response-controller").includes(
   "maxPendingDataLength",
 );
 
-/** `@Sse()`'s options where Nest has `maxPendingDataLength`; older ones ignore it. */
+/**
+ * `@Sse()`'s options where Nest has `maxPendingDataLength`; older ones ignore it.
+ * `method` is there so the type shares a property with an older Nest's
+ * `{ method?: RequestMethod }` options, which TypeScript otherwise refuses as a
+ * weak type with nothing in common (TS2559, measured on 11.2.7).
+ */
 interface SseOptionsWithLimit {
   /** Characters of event data that may wait for a client that is not reading. */
   maxPendingDataLength?: number;
+  /** The route's method, as every Nest's `@Sse()` options allow; unset here. */
+  method?: RequestMethod;
 }
 
 /** The limit the slow-reader route sets, in characters of event data. */

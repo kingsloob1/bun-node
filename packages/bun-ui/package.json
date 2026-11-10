@@ -1,11 +1,20 @@
 {
   "name": "@kingsleyweb/bun-ui",
   "type": "module",
-  "version": "3.0.0-rc.2",
+  "version": "3.0.0",
   "private": false,
   "description": "Every bun-node browser UI in one package, one subpath each: the bun-jobs management UI (./jobs, jobsUi()) and the OpenAPI/AsyncAPI docs viewer (./docs, docsUi()), each served by a bun-common router with a prebuilt React bundle, hash-named immutable assets, SRI and a strict CSP",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsloob1/bun-node.git",
+    "directory": "packages/bun-ui"
+  },
+  "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui#readme",
+  "bugs": {
+    "url": "https://github.com/kingsloob1/bun-node/issues"
+  },
   "exports": {
     ".": {
       "@kingsleyweb/source": "./lib/index.ts",
