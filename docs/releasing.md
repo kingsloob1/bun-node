@@ -50,6 +50,10 @@ the tarball with npm.
    Its `overrides` keep their `file:` paths.
 3. Set `JOBS_VERSION` in `packages/bun-jobs/lib/shared/constants.ts` (a test
    pins it to the manifest), and any install line or version a README states.
+   Then run `bun run gen:client` in `packages/bun-ui`: the jobs API's document
+   carries the version, so `app/jobs/api/routes.gen.ts`'s recorded hash goes
+   stale with it, and `bun run check:client` fails until it is rewritten. The
+   3.0.0-rc.2 bump missed this (#744).
 4. **The `CHANGELOG.md` entry.** `bun scripts/changelog.ts <version>` writes
    one from the commit subjects since the previous tag (`--print` to see it
    first; `--from <tag>` for another start). It never commits; review it and
