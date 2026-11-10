@@ -1,7 +1,11 @@
 #!/usr/bin/env bun
 import { Buffer } from "node:buffer";
 import { availableParallelism } from "node:os";
+import { resolve } from "node:path";
 import process from "node:process";
+
+/** The repository this script lives in: `scripts/` is its top level. */
+const REPO_ROOT = resolve(import.meta.dir, "..");
 
 /**
  * Provisions the database servers the integration suites need.
@@ -221,16 +225,20 @@ export const AZURE_OAUTH_PORT = 10_100;
 export const AZURE_OAUTH_CONTAINER = "bun-cache-azurite-oauth";
 
 /**
- * Where the `azure-oauth` certificate and key live: `~/bun-node-test-certs/azure-oauth`,
+ * Where the `azure-oauth` certificate and key live:
+ * `<checkout>/../_scratch/bun-node/test-certs/azure-oauth`, beside the checkout,
  * or `$BUN_NODE_TEST_CERTS/azure-oauth`. Never inside the repository (a key
  * is never committed) and never under a dot-directory such as `~/.cache`,
  * which snap Docker cannot read.
  */
 export function azureOauthCertDir(
   env: Record<string, string | undefined> = process.env,
+  /** The checkout the default sits beside. Defaults to this repository. */
+  root: string = REPO_ROOT,
 ): string {
   const base =
-    env.BUN_NODE_TEST_CERTS || `${env.HOME ?? "/root"}/bun-node-test-certs`;
+    env.BUN_NODE_TEST_CERTS ||
+    resolve(root, "..", "_scratch", "bun-node", "test-certs");
   return `${base}/azure-oauth`;
 }
 

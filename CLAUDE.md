@@ -404,7 +404,7 @@ a second Azurite, `bun-cache-azurite-oauth`, on 10100 (always docker; HTTPS
 with `--oauth basic`, which checks a token's claims, not its signature; the
 URL has no `scheme`, so the driver speaks HTTPS). `setup-databases.ts
 --only=azure-oauth` makes its self-signed certificate once with `openssl` in
-`~/bun-node-test-certs/azure-oauth/certs` (`BUN_NODE_TEST_CERTS` moves it;
+`../_scratch/bun-node/test-certs/azure-oauth/certs`, beside the checkout (`BUN_NODE_TEST_CERTS` moves it;
 outside the repository, and not under a dot-directory, which snap Docker cannot
 read; never commit it), creates the container with `docker create`, copies the
 directory in with `tar | docker cp -` and starts it. An existing container is
@@ -580,7 +580,8 @@ HEAVY_TICKET=<session>-nest-matrix /tmp/claude-1000/bun-node-heavy-run.sh \
   nice -n 10 timeout 1800 bun scripts/nest-matrix.ts --run 11.2.7 > <log> 2>&1
 ```
 
-A copy lives at `~/bun-node-nest-matrix/<version>/` (`--dir` or
+A copy lives at `../_scratch/bun-node/nest-matrix/<version>/`, beside the
+checkout and not in `$HOME`, where a file indexer would crawl it (`--dir` or
 `NEST_MATRIX_DIR`), never under a dot segment such as `~/.cache`: Express's
 `send` refuses every file there, failing two expressCompat probes on both
 majors. `--prepare` pins every `@nestjs/*` to the column's version except the

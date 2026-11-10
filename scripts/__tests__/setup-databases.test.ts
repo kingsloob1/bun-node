@@ -1251,10 +1251,13 @@ describe("the Entra ID Azure server (Azurite with --oauth basic)", () => {
   });
 
   it("keeps its certificate outside the repository and outside dot-directories", () => {
-    const dir = azureOauthCertDir({ HOME: "/home/someone" });
-    expect(dir).toBe("/home/someone/bun-node-test-certs/azure-oauth");
+    const dir = azureOauthCertDir({}, "/src/mine/bun-node");
+    expect(dir).toBe("/src/mine/_scratch/bun-node/test-certs/azure-oauth");
     expect(
-      azureOauthCertDir({ HOME: "/h", BUN_NODE_TEST_CERTS: "/srv/c" }),
+      azureOauthCertDir(
+        { BUN_NODE_TEST_CERTS: "/srv/c" },
+        "/src/mine/bun-node",
+      ),
     ).toBe("/srv/c/azure-oauth");
     const repo = new URL("../..", import.meta.url).pathname;
     const real = azureOauthCertDir();
