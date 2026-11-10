@@ -115,16 +115,24 @@ describe("parseArgs", () => {
 });
 
 describe("the copy's path", () => {
-  it("defaults to $HOME/bun-node-nest-matrix, and --dir beats NEST_MATRIX_DIR", () => {
-    expect(baseDir(undefined, {}, "/home/u")).toBe(
-      "/home/u/bun-node-nest-matrix",
-    );
-    expect(baseDir(undefined, { NEST_MATRIX_DIR: "/srv/env" }, "/home/u")).toBe(
-      "/srv/env",
+  it("defaults to a _scratch folder beside the checkout, and --dir beats NEST_MATRIX_DIR", () => {
+    expect(baseDir(undefined, {}, "/src/mine/bun-node")).toBe(
+      "/src/mine/_scratch/bun-node/nest-matrix",
     );
     expect(
-      baseDir("/srv/flag", { NEST_MATRIX_DIR: "/srv/env" }, "/home/u"),
+      baseDir(undefined, { NEST_MATRIX_DIR: "/srv/env" }, "/src/mine/bun-node"),
+    ).toBe("/srv/env");
+    expect(
+      baseDir(
+        "/srv/flag",
+        { NEST_MATRIX_DIR: "/srv/env" },
+        "/src/mine/bun-node",
+      ),
     ).toBe("/srv/flag");
+    // The real default is outside the checkout, and has no dot segment.
+    const real = baseDir(undefined, {});
+    expect(real.startsWith(`${REPO_ROOT}/`)).toBe(false);
+    expect(dotSegments(real)).toEqual([]);
   });
 
   it("finds dot segments, and a version's dots are not one", () => {

@@ -24,8 +24,10 @@
  * Separate invocations may run at once (bun-nest's suite binds only port 0);
  * the wrapper decides how many.
  *
- * The base is `$HOME/bun-node-nest-matrix` (`--dir` or `NEST_MATRIX_DIR`
- * override it). It must have **no dot segment**: Express's `send` refuses
+ * The base is `<checkout>/../_scratch/bun-node/nest-matrix`, a sibling of the
+ * checkout (`--dir` or `NEST_MATRIX_DIR` override it), so the copies sit beside
+ * the project, where a folder-level indexer exclusion covers them, not in
+ * `$HOME`. It must have **no dot segment**: Express's `send` refuses
  * every file under one, so `~/.cache/...` fails expressCompat's
  * `res.sendFile` and `res.download` probes on both majors (measured, plan
  * `docs/plans/nestjs-12-parity` §2.2). It is not `/tmp`, which a reboot
@@ -43,7 +45,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
@@ -278,7 +279,8 @@ export const USAGE = `usage: bun scripts/nest-matrix.ts [--prepare <version…>]
                   bun-nest, examples/bun-nest \`run-all.ts\`, bun-ui's jobs
                   nest.nest.test.ts, consumer-check (--work <base>/cc-<v>)
   --dir <base>    where the copies live (or NEST_MATRIX_DIR); default
-                  $HOME/bun-node-nest-matrix. No segment may start with "."
+                  <checkout>/../_scratch/bun-node/nest-matrix. No segment
+                  may start with "."
   --only <list>   run a subset of the checks
   --fresh         delete a copy before preparing it
   --dry-run       print what would happen, change nothing
@@ -293,14 +295,21 @@ once (bun-nest's suite binds only port 0); the wrapper decides how many.
 
 Exit: 0 every check passed, 1 a check or assertion failed, 2 bad usage.`;
 
-/** The base directory: `--dir`, else `NEST_MATRIX_DIR`, else `$HOME/bun-node-nest-matrix`. */
+/**
+ * The base directory: `--dir`, else `NEST_MATRIX_DIR`, else
+ * `<checkout>/../_scratch/bun-node/nest-matrix`, beside the checkout rather than
+ * in `$HOME`.
+ */
 export function baseDir(
   dir: string | undefined,
   env: Record<string, string | undefined> = process.env,
-  home: string = homedir(),
+  /** The checkout the default sits beside. Defaults to this repository. */
+  root: string = REPO_ROOT,
 ): string {
   return resolve(
-    dir ?? env.NEST_MATRIX_DIR ?? join(home, "bun-node-nest-matrix"),
+    dir ??
+      env.NEST_MATRIX_DIR ??
+      join(root, "..", "_scratch", "bun-node", "nest-matrix"),
   );
 }
 
