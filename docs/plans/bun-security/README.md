@@ -23,7 +23,7 @@ systems; and a management UI with a live **analytics page**, the
 > the plan, and other packages in the mono repo can be used to achieve the
 > package's intended result."
 
-**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (merged as three PRs, T1 #654, T2 #655 and T3 #656). **Changed on 2026-11-08:** the management UI is no longer a package of its own, `@kingsleyweb/bun-security-ui`, but the `/security` entry (with `/security/browser`) of `@kingsleyweb/bun-ui`, because the user decided that every bun-node UI lives in one package ([`bun-ui`](../bun-ui/README.md), approved 2026-11-08; its §7 lists every edit made here). No security decision changed; PR-U1 drops to ~4 d and the optional shared-module PR (Q14) becomes bun-ui's BU-4.
+**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (merged as three PRs, T1 #654, T2 #655 and T3 #656). **Changed on 2026-11-08:** the management UI is no longer a package of its own, `@kingsleyweb/bun-security-ui`, but the `/security` entry (with `/security/browser`) of `@kingsleyweb/bun-ui`, because the user decided that every bun-node UI lives in one package ([`bun-ui`](../bun-ui/README.md), approved 2026-11-08; its §7 lists every edit made here). No security decision changed; PR-U1 drops to ~4 d and the optional shared-module PR (Q14) becomes bun-ui's BU-4. **Added on 2026-11-10, at the user's request:** a verified-crawler allowance ([`layers.md` L3.2](layers.md#l32-verified-crawlers-let-search-engines-index-the-site-d-v)), so that path scanning by search-engine crawlers is not blocked and their index of a service keeps building. It is a new PR, PR-S12 (~2.5 d), with three new questions, Q29 to Q31 (§16), answered the same day with their recommendations.
 
 Written 2026-11-07 against `develop` at `36be4163`, on Bun 1.4.4-canary.1
 (`11c367163`). **No product code was changed.** Every `file:line` is at
@@ -40,6 +40,7 @@ rule: no benchmarks or speed comparisons without the user's yes).
 | Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request |
 | Prerequisites in other packages (§15.1) | not started |
+| Verified crawlers ([`layers.md` L3.2](layers.md#l32-verified-crawlers-let-search-engines-index-the-site-d-v)) | **added 2026-11-10** at the user's request: PR-S12; Q29 to Q31 answered with their recommendations |
 | The UI's package | **changed 2026-11-08**: bun-ui's `/security` entry instead of `@kingsleyweb/bun-security-ui` (the user's single-UI-package decision, [`bun-ui`](../bun-ui/README.md) §7) |
 
 ### Contents
@@ -183,11 +184,11 @@ over a typed channel with SSE fallback, coalesced and resumable.
 | The two foundations (trust proxy, throttle) | **not counted here**: built separately, at the user's request | — |
 | Prerequisites in bun-common, bun-cache (PR-P2 to P4) | ~5.5 d | — |
 | Storage: the shared SQL module, the store interface, memory, SQLite, Postgres, field encryption (PR-D0 to D3) | ~12 d | — |
-| The engine and adapters, bun-nest `./security` (PR-S1 to S11) | ~37 d | the foundations, PR-P2, P3, D1 |
+| The engine and adapters, bun-nest `./security` (PR-S1 to S12) | ~39.5 d | the foundations, PR-P2, P3, D1 |
 | The control plane and agent (PR-CP1 to CP7) | ~25.5 d | PR-S1, S4, P4, D1 |
-| The UI (PR-U1 to U6) | ~27 d | PR-CP2, CP5 |
+| The UI (PR-U1 to U6) | ~27.5 d | PR-CP2, CP5 |
 | Topology and attack test harnesses, examples, playground (PR-T1, T2, X1, X2) | ~13 d | each |
-| **Total** | **~120 d**, plus ~1.5 d optional (the OTel bridge once OT lands) and ~11 d of later drivers; the shared UI-server module is bun-ui's BU-4 | |
+| **Total** | **~123 d**, plus ~1.5 d optional (the OTel bridge once OT lands) and ~11 d of later drivers; the shared UI-server module is bun-ui's BU-4 | |
 
 Focused days for someone who knows the code; §15 has the order.
 
@@ -195,7 +196,7 @@ Focused days for someone who knows the code; §15 has the order.
 
 v1 is three milestones, each usable on its own (§15.6):
 
-- **M1, the engine** (~56 d with the prerequisites, the SQLite store and
+- **M1, the engine** (~58.5 d with the prerequisites, the SQLite store and
   examples): topologies (a) and (b) with a policy file or a SQLite store,
   every v1 layer of [`layers.md` §15](layers.md#15-what-is-v1-and-what-is-later),
   bun-common, `Bun.serve` and bun-nest adapters, shared state on Redis and
@@ -205,7 +206,7 @@ v1 is three milestones, each usable on its own (§15.6):
 - **M2, the control plane** (~32 d): the Postgres store, services and
   groups, inheritance, signed bundles, agents, topology (c), RBAC, step-up,
   approvals, audit, analytics ingestion and rollups, live hub, alerts.
-- **M3, the UI** (~27 d, overlapping M2): every screen of ui.md, the
+- **M3, the UI** (~27.5 d, overlapping M2): every screen of ui.md, the
   analytics page, e2e.
 
 Later, on demand: an OWASP CRS-derived rule set, body-field rules, VPN
@@ -750,6 +751,11 @@ control (the defence off, the attack succeeds):
 | T-INT-1 the integration not installed, or installed but bypassed | start-up fails with the self-test error (D25) |
 | T-L9-3 a window given as a bare number, or under a second | the compiler refuses it (ConcaveHR's 60 ms window) |
 | T-ST-1 two operators edit one policy | the second write gets `409` with both versions; nothing is lost |
+| T-L3-1 a verified crawler (fixture ranges and a fake resolver) crawls 500 dead links, a published `/wp-admin` link and a honeypot | no ban, no challenge, no score; `crawler.probe` and `crawler.honeypot` logged. Negative control: with the allowance off, `not_found_per_minute` bans it |
+| T-L3-2 a Googlebot `User-Agent` from an address outside the ranges, and one whose PTR names `googlebot.com` but whose forward lookup does not return it | both unverified, `crawler.spoofed`, blocked |
+| T-L3-3 a verified crawler `POST`s to sign-in, or `GET`s an excluded path | evaluated as an ordinary client |
+| T-L3-4 a resolver that hangs, errors, or floods (1,000 claimants at once) | unverified within `verifyTimeoutMs`, nothing cached, at most `maxPendingVerifications` lookups open |
+| T-L3-5 a truncated crawler range file; a country block covering a crawler's ranges | the last good file kept; the compiler's conflict warning names the crawler and the entry |
 
 ### 11.3 Property and fuzz tests [D]
 
@@ -952,6 +958,11 @@ marked *(ConcaveHR's wish)*.
 21. **Explicit bounds on everything the defence stores or emits** (D21).
 22. **A breached-password check hook** (OWASP ASVS 2.1.7, Pwned Passwords'
     range API or a self-hosted copy) [V].
+23. **Verified search-engine crawlers** (layers.md L3.2, added 2026-11-10 at
+    the user's request). They are verified by the engines' published IP ranges
+    or forward-confirmed reverse DNS, never by `User-Agent`, and are exempt from
+    the not-found, probe, honeypot, bot-signal, challenge and geo rules that a
+    crawl would otherwise trip. A spoofed claimant is a strong signal.
 
 ---
 
@@ -977,6 +988,8 @@ marked *(ConcaveHR's wish)*.
 | R16 | **The shared SQL module churns bun-jobs and bun-cache** | certain / low | extracted with re-exports; bun-jobs and bun-cache move in their own later PRs; their suites unchanged are the gate |
 | R17 | **Two operators overwrite each other** | medium / medium | revisions on every document (storage.md §3.2), T-ST-1 |
 | R18 | **Checks only on routes** miss a creation path (ConcaveHR's team invites) | medium / high | `security.check()` (D24), documented as the primary form; T-L11-4 |
+| R19 | **The defence de-indexes the site**: a crawl trips the not-found rule, a probe rule, a honeypot, a challenge or a geo block, and the engine drops the pages | high without L3.2 / high | the verified-crawler allowance on by default (Q29); the conflict check; the alert on a crawler limited for a day; T-L3-1 |
+| R20 | **The crawler allowance becomes a bypass**: a forged `User-Agent`, a PTR record the attacker controls, or a fetcher anyone can steer | medium / high | verification by ranges or forward-confirmed rDNS only; user-triggered fetchers outside the default set; `GET`/`HEAD` and the allowance's paths only; L6, L11, L12, canaries and manual bans never lifted; T-L3-2, T-L3-3 |
 
 ---
 
@@ -1026,7 +1039,8 @@ too (CLAUDE.md).
 | **PR-S9** challenges | L10: `ChallengeProvider`, PoW, Turnstile, hCaptcha, clearance cookies, challenge pages, bot signals | PR-S5 | ~3 d |
 | **PR-S10** IP intelligence | L5: the MMDB reader, country and ASN conditions and lists, Tor and cloud ranges as classes | PR-S1 | ~3 d |
 | **PR-S11** API keys | L12 v1: per-key limits, the new-ASN and many-IPs anomalies, revoke-and-ban | PR-S4, PR-S10 | ~2 d |
-| | **Group 1 total** | | **~37 d** |
+| **PR-S12** verified crawlers | L3.2: the crawler registry (methods, not data), the range files on L5's refresh job, forward-confirmed reverse DNS with its cache and bounds, the `crawlers` policy option and its exemptions across L5, L7, L8, L9, L10 and L14, the per-crawler limit, `crawler.spoofed`, the conflict check, T-L3-1 to T-L3-5 | PR-S8, PR-S9, PR-S10 | ~2.5 d |
+| | **Group 1 total** | | **~39.5 d** |
 
 ### 15.3 Group 2: the control plane and agent
 
@@ -1048,10 +1062,10 @@ too (CLAUDE.md).
 | **PR-U1** entry and shell | `lib/security/`, `app/security/`, the two `exports` keys and their consumer-check spellings; `securityUi()` on bun-ui's kit (shell, CSP, SRI, `dist/security/`); providers, nav, permissions, scope picker; bun-client typed calls; the live client; the URL-cursor `Pager`; the test harness and its guards | PR-CP2, bun-ui BU-4 | ~4 d |
 | **PR-U2** analytics page | every component of ui.md §7, SVG charts, live | PR-U1, PR-CP5 | ~6 d |
 | **PR-U3** bans, lists, events | ui.md §4.1, §4.2, the events list | PR-U1 | ~4 d |
-| **PR-U4** policies | services and groups, the editor with origins, draft, diff, publish, versions, rollback, dry run, impact, test a request | PR-U1, PR-CP7 | ~7 d |
+| **PR-U4** policies | services and groups, the editor with origins, draft, diff, publish, versions, rollback, dry run, impact, test a request; the crawler allowance's form and conflict warnings, and the crawler series (ui.md §3, §7) | PR-U1, PR-CP7 | ~7.5 d |
 | **PR-U5** rules, audit, approvals, agents, alerts | ui.md §4.3, §8 | PR-U1, PR-CP3, PR-CP6 | ~4 d |
 | **PR-U6** e2e and accessibility | Chrome flows, responsive, contrast, the parsed permissions table and its example | PR-U2 to U5 | ~2 d |
-| | **Group 3 total** | | **~27 d** |
+| | **Group 3 total** | | **~27.5 d** |
 
 ### 15.5 Group 4: harnesses, examples, playground
 
@@ -1069,16 +1083,16 @@ too (CLAUDE.md).
 **Order.** The two foundations first (in progress); PR-P2, P3, P4, D0 and
 D3 can start beside them. Then PR-S1 → S2 → S3; D1 after D0 and S1; S4
 after P3; S5 after P2; S6 after S5; S7, S8, S9, S10 in parallel after
-their parents; S11 last. PR-CP2 can start after S1, beside the rest of group
+their parents; S11 and S12 last. PR-CP2 can start after S1, beside the rest of group
 1; CP1 after S4; CP3, CP4, CP5, CP6, CP7 after their parents. PR-U1 after
 CP2, the rest of group 3 beside group 2's tail. PR-T2 grows with group 1;
 PR-T1 after S4 and CP4; PR-X1 per milestone; PR-X2 at M3.
 
 | Milestone | PRs | Effort | What it gives |
 |---|---|---|---|
-| **M1 the engine** | P2–P4, D0, D1, S1–S11, T2, the M1 examples | ~54 d + ~2 d examples | (a) and (b) with a policy file or a SQLite store; every v1 layer; bun-common, `Bun.serve`, bun-nest; **ConcaveHR's whole request path** (§12; its admin API and insights page arrive with M2 and M3) |
+| **M1 the engine** | P2–P4, D0, D1, S1–S12, T2, the M1 examples | ~56.5 d + ~2 d examples | (a) and (b) with a policy file or a SQLite store; every v1 layer; bun-common, `Bun.serve`, bun-nest; **ConcaveHR's whole request path** (§12; its admin API and insights page arrive with M2 and M3) |
 | **M2 the control plane** | D2, D3, CP1–CP7, T1 | ~32 d | (c); the Postgres store; groups; signed bundles; audit; analytics data; alerts |
-| **M3 the UI** | U1–U6, X2, the remaining examples | ~32 d | the management UI and analytics page |
+| **M3 the UI** | U1–U6, X2, the remaining examples | ~32.5 d | the management UI and analytics page |
 
 **v1 = M1 + M2 + M3.** The "later" list is §1.4's.
 
@@ -1121,6 +1135,14 @@ Each with a recommendation. Asked once; the answers go in the plan.
 | Q27 | **The trust configuration stays deploy-time** (environment or code), not a run-time policy field | **Yes** (§12.2's last row: a run-time switch over who the client is would be a strong lever for a compromised CP) |
 | Q28 | **A contract-coverage panel** in the UI (routes with no request validator) | **Yes**, in PR-U4 (within its estimate); ConcaveHR's root cause (§13 item 19) |
 
+**Added 2026-11-10, with the verified-crawler allowance (layers.md L3.2). Answered the same day: the user approved all three recommendations as written**, so the Recommendation column is the decision.
+
+| # | Question | Recommendation |
+|---|---|---|
+| Q29 | **The crawler allowance on by default**, in `enforce`, for Google, Bing and Apple (DuckDuckGo once its verification source is confirmed), every path, `GET` and `HEAD` | **Yes**: the defaults otherwise ban a crawler on its first burst of dead links (L14), and an API-only service loses nothing |
+| Q30 | **AI and LLM crawlers** (`GPTBot`, `ClaudeBot`, `PerplexityBot`, `CCBot`…) in the default set | **No**: in the registry, opt-in per service. They build no search index, so letting them in is a content decision |
+| Q31 | **A spoofed claimant** (a crawler `User-Agent` that fails verification) | **Block, with offence weight 5**, configurable per scope; staff SEO tools get a plain allow entry |
+
 ---
 
 ## 17. Names needing approval
@@ -1152,6 +1174,7 @@ Every new public name proposed (none built):
 | `bun-security.bundle/1` | format id | bundles |
 | counted-rule events `auth.failure`, `mfa.failure`, `signup`, `password.reset`, `request`, `route.notFound`, `pattern.hit`, `throttled`; the `internal` list; list kinds `email`, `phone`, `username`, `domain`; `ServiceIdentity` | values, entity | policy format |
 | `pfAdd`, `pfCount`, capability `distinctCount` | driver operations | bun-cache (PR-P3) |
+| the `crawlers` policy option (`mode`, `allow`, `verify`, `methods`, `paths`, `exempt`, `limit`, `spoofed`, `custom`); `verify` values `ranges`, `rdns`, `ranges-then-rdns`; exemptions `notFound`, `probeRules`, `honeypots`, `botSignals`, `challenges`, `hostingClass`, `geo`, `perIpLimits`, `autoBans`; registry ids `google`, `google-special`, `bing`, `apple`, `duckduckgo`, `yandex`, `baidu`; events `crawler.probe`, `crawler.honeypot`, `crawler.spoofed`; the key prefix `crawler:`; options `maxPendingVerifications`, `verifyTimeoutMs`, `resolver` | values, options | policy format (PR-S12) |
 
 The trust-proxy and throttle names (`trustProxy`, `throttle()`,
 `ThrottleStore`, `cacheThrottleStore`, `@Throttle`, `@SkipThrottle`) are
@@ -1226,6 +1249,20 @@ Read 2026-11-07 unless noted.
   <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>
 - Express `trust proxy` / `proxy-addr` semantics [U: cited from prior
   knowledge; the trust-proxy foundation must match them exactly]
+- Google, *Verifying Googlebot and other Google crawlers* (reverse DNS with
+  forward confirmation; the range files for common crawlers, special-case
+  crawlers and user-triggered fetchers), read 2026-11-10,
+  <https://developers.google.com/search/docs/crawling-indexing/verifying-googlebot>
+- Google, *Reduce the Google crawl rate* (429, 500 and 503 slow it down; the
+  same answer for multiple days may drop the URL), read 2026-11-10,
+  <https://developers.google.com/search/docs/crawling-indexing/reduce-crawl-rate>
+- Bing, *How to verify that Bingbot is Bingbot* (reverse DNS under
+  `search.msn.com`, forward confirmation), <https://blogs.bing.com/webmaster/2012/08/31/how-to-verify-that-bingbot-is-bingbot>,
+  and the published `bingbot.json` (<https://www.bing.com/toolbox/bingbot.json>),
+  read through secondary reports on 2026-11-10 [U: the pages themselves to be read in PR-S12]
+- Apple, *About Applebot* (reverse DNS under `applebot.apple.com`; the
+  published `applebot.json`), <https://support.apple.com/en-us/119829>,
+  read through secondary reports on 2026-11-10 [U: to be read in PR-S12]
 
 ---
 

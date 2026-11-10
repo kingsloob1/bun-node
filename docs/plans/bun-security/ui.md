@@ -118,6 +118,13 @@ host's step-up URL in a popup and resumes the action when it returns.
   policy of each affected service; publishing shows the impact estimate
   (§4.4), asks for step-up and, when dangerous, opens an approval
   (control-plane.md §5.4).
+- **Crawlers** (layers.md L3.2): the allowance's tab lists the registry
+  with a switch per crawler (the AI crawlers grouped apart, off), the
+  verification method, the paths and the exemptions, each with its origin
+  like any field; the compiler's **conflict warnings** (a block, ban,
+  country or ASN entry covering an allowed crawler's ranges) sit at the
+  top of the tab and in the publish dialog; the range files' freshness
+  comes from the IP-intel sources panel (§7).
 - **Versions**: the history per scope (paginated), any two versions diffed,
   "roll back to this" (a new publish, control-plane.md §3.3).
 
@@ -178,7 +185,9 @@ through the effective policy of a chosen service **without side effects**
 assumed state, "as if this IP had sent 299 requests this minute"). The
 result: the decision, every rule that matched with the matched values, the
 identity L2 resolved and why (which hop was trusted), the keys derived,
-the IP-intel lookups, and the stage that answered. The same function backs
+the IP-intel lookups, the crawler verdict (the claimed crawler, the
+method, verified or not and why, and whether it came from the cache; L3.2),
+and the stage that answered. The same function backs
 `POST /rules/test` and the package's `security.explain(request)` for tests.
 
 ---
@@ -267,8 +276,9 @@ for ranges ending "now", and each component a lazy chunk.
 | **Credential-stuffing panel** | login failure ratio vs baseline, distinct usernames per IP, success-after-failures | rollups of the login profile | yes |
 | **Agent health** | per service: last seen, bundle version, event drops, store errors, fallback mode in use | heartbeats | yes |
 | **Events list** | every stored event and refused-request sample, **paginated (§5)**, filters (time, service, route, subject, rule, action, pattern, country, ASN, dry run), a detail drawer with the redacted request (headers, query, JSON body, the answer sent) — the view ConcaveHR found answered "is this a false positive?" quickly (§8) | the events store | "N new" chip |
+| **Crawlers** | per verified crawler: requests, 404s, 429s and what its allowance lifted (`crawler.probe`, `crawler.honeypot`); spoofed claimants per claimed crawler; the alert when one has been limited for a day (layers.md L3.2) | rollups by crawler id | 5 s |
 | **Identifier patterns** | per pattern: hits, last hit, the addresses it tripped | rollups by pattern | 5 s |
-| **IP-intel sources** | each feed's size, last refresh, last failure (the Tor list's minimum-size guard) | heartbeats of the refresh job | on change |
+| **IP-intel sources** | each feed's size, last refresh, last failure (the Tor list's minimum-size guard), the crawler range files included | heartbeats of the refresh job | on change |
 
 **Charts** are hand-rolled SVG, as in bun-jobs-ui (no chart library: the
 `Sparkline` and the throughput bars are SVG, `app/components/Sparkline.tsx`)

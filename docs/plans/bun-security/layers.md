@@ -16,7 +16,7 @@ README's (§0.3).
 0. [Actions, escalation and expiry (shared by every layer)](#0-actions-escalation-and-expiry)
 1. [L1 Connection and server limits](#l1-connection-and-server-limits)
 2. [L2 Client identity and trusted proxies](#l2-client-identity-and-trusted-proxies)
-3. [L3 Allow and deny lists](#l3-allow-and-deny-lists)
+3. [L3 Allow and deny lists](#l3-allow-and-deny-lists), with [verified crawlers (L3.2)](#l32-verified-crawlers-let-search-engines-index-the-site-d-v)
 4. [L4 Bans](#l4-bans)
 5. [L5 IP intelligence: country, ASN, hosting, Tor](#l5-ip-intelligence-country-asn-hosting-tor)
 6. [L6 Request shape: method, path, headers, size](#l6-request-shape-method-path-headers-size)
@@ -335,6 +335,198 @@ it lifted).
 **v1:** IP and CIDR lists, user and API-key lists, scopes, the `internal`
 list and the guards. ASN/country entries arrive with L5.
 
+### L3.2 Verified crawlers: let search engines index the site [D] [V]
+
+*Added 2026-11-10 at the user's request, so that the defence never stops a
+search engine from building its index of a service.*
+
+**Why the defaults would block a crawler.** A search engine's crawler
+behaves, at the edge, like the scanners these layers exist to stop. It walks
+every link it has ever seen, so it meets many dead URLs. It comes from a
+cloud provider's address space. It sends none of a browser's `Sec-Fetch-*`
+headers, and it cannot solve a challenge. Here is what that triggers, by default:
+
+| Layer | What a crawl trips | Effect on the index |
+|---|---|---|
+| L14 | `not_found_per_minute` (120 in 60 s → ban 1 day) on old links | Googlebot is banned for a day |
+| L7 | the managed probe set, on a link someone published to `/wp-admin` or `/.git/` | an offence weight, then the ladder |
+| L8 | a honeypot path that some external page links to | weight 10, a ban on the first hit |
+| L5, L10 | the hosting class, and no `Sec-Fetch-*` on a browser route | a challenge, so the challenge page is what gets indexed |
+| L9 | the per-IP global limit, if one crawler address is busy | 429s; Google drops a URL that answers 429, 500 or 503 "for multiple days" [V] |
+| L3 | a country or ASN block (geo-fencing), which covers the crawler's addresses | the site disappears from that engine |
+
+So the policy gets a **crawler allowance**: a third kind of allow, beside
+plain allow entries and the `internal` list. It differs from an allow entry in
+two ways:
+
+- **it is earned by verification, never by a header**: a `User-Agent` that
+  says Googlebot proves nothing, and anyone can send it;
+- **it lifts only the named layers**, on named paths, for `GET` and `HEAD`.
+
+**Verification** [V]. A request is a *claimant* when its `User-Agent`
+contains a token from the crawler registry (below). It is *verified* only
+when its client address (L2's, after the trust-proxy foundation) passes the
+operator's method for that crawler:
+
+- **`ranges`**: the address is inside the operator's published IP-range file.
+  Google publishes JSON files for its common crawlers, its special-case crawlers
+  and its user-triggered fetchers. Bing publishes `bingbot.json`, Apple
+  publishes `applebot.json`. The files are fetched by L5's refresh job, daily.
+  Each file must hold at least a minimum entry count, so a truncated download
+  never empties the set. The last good copy is kept on a failure, and the files
+  are distributed to agents as artefacts. They load into the L3 CIDR trie,
+  each range tagged with its crawler id. The lookup is synchronous and costs
+  what an L3 lookup costs.
+- **`rdns`**: a reverse DNS lookup of the address must give a host name under
+  the crawler's domains. Examples: `googlebot.com` and `google.com` for Google,
+  `search.msn.com` for Bing, `applebot.apple.com` for Apple. A forward lookup
+  of that name must then return the same address. Google, Bing and Apple all
+  document the forward confirmation. Without it, an attacker who controls the
+  PTR record of their own address can name it `crawl-….googlebot.com`.
+- **`ranges-then-rdns`** (the default): `ranges` first, and `rdns` only when
+  the address is not in the ranges, or the crawler publishes none.
+
+DNS is kept off the hot path, and it cannot be used for a flood:
+
+- verdicts are cached per address, positive for 24 h and negative for 1 h, in
+  an LRU of at most 50,000 entries;
+- in `hybrid` and `shared` state the verdicts are written to the shared store,
+  so a fleet resolves each address once;
+- at most `maxPendingVerifications` lookups run at once per process (default
+  64);
+- a claimant whose lookup is pending is held for at most `verifyTimeoutMs`
+  (default 500 ms). On a timeout, an error or a full queue, it is treated as
+  **unverified for this request** and is not cached, so a slow resolver costs
+  an allowance but never grants one;
+- the resolver is a hook (`resolver: { reverse, lookup }`), so tests and
+  operators can supply their own. It is trusted, like the host's own resolver.
+  Whether Bun's `node:dns` `reverse` is complete enough to be the default is
+  for PR-S12 to measure [U].
+
+**The registry** [D]. The package ships the *methods*, not the address data.
+No range file is bundled, which is consistent with L5's rule that no data
+ships through npm:
+
+| Id | `User-Agent` tokens (the full list is in the package, read from each engine's documentation in PR-S12) | Range file | Reverse-DNS domains | In the default set |
+|---|---|---|---|---|
+| `google` | `Googlebot`, `Googlebot-Image`, `Googlebot-News`, `Googlebot-Video`, `Storebot-Google`, `Google-InspectionTool`, `GoogleOther` | `developers.google.com/static/crawling/ipranges/common-crawlers.json` [V] | `googlebot.com`, `google.com` [V] | yes |
+| `google-special` | `AdsBot-Google`, `Mediapartners-Google` and the other special-case crawlers [U] | `…/special-crawlers.json` [V] | `google.com` (`rate-limited-proxy-…`) [V] | no |
+| `bing` | `bingbot`, `adidxbot` [U] | `www.bing.com/toolbox/bingbot.json` [V] | `search.msn.com` [V] | yes |
+| `apple` | `Applebot` | `search.developer.apple.com/applebot.json` [V] | `applebot.apple.com` [V] | yes |
+| `duckduckgo` | `DuckDuckBot` | DuckDuckGo's published address list [U: not found in this survey; PR-S12 reads DuckDuckGo's help pages] | none documented [U] | yes, once a source is confirmed |
+| `yandex` | `YandexBot` | none [U] | `yandex.ru`, `yandex.net`, `yandex.com` [U] | no |
+| `baidu` | `Baiduspider` | none [U] | `baidu.com`, `baidu.jp` [U] | no |
+| *(operator-defined)* | any | a URL, or a file the operator provides | any | — |
+
+A verification method that comes from prior knowledge, marked [U], is read
+from the engine's own page before it goes into the registry. An entry whose
+method cannot be confirmed ships disabled.
+
+Two groups are deliberately **not** in the default set:
+
+- **Google's user-triggered fetchers.** Anyone can make Google fetch a URL
+  through them, so they are not autonomous indexers.
+- **AI and LLM crawlers** (`GPTBot`, `ClaudeBot`, `PerplexityBot`, `CCBot`
+  and others). They do not build a search index, and letting them in is a
+  content decision for the operator, not a default (Q30, decided 2026-11-10). The registry can
+  carry them, with whatever verification their operators publish, for an
+  operator who opts in.
+
+**The policy option** [D], per scope (global, group, service, route prefix),
+inherited like the rest of the policy:
+
+```jsonc
+"crawlers": {
+  "mode": "enforce",                        // enforce | dryRun | off
+  "allow": ["google", "bing", "apple", "duckduckgo"],   // registry ids
+  "verify": "ranges-then-rdns",             // ranges | rdns | ranges-then-rdns
+  "methods": ["GET", "HEAD"],               // only these; never widened past GET/HEAD/OPTIONS
+  "paths": { "include": ["/**"], "exclude": ["/api/**", "/admin/**"] },
+  "exempt": ["notFound", "probeRules", "honeypots", "botSignals",
+             "challenges", "hostingClass", "geo", "perIpLimits", "autoBans"],
+  "limit": "3000/1m",                       // per crawler id, across its addresses
+  "spoofed": { "action": "block", "weight": 5 },
+  "custom": [ { "id": "acme-search", "tokens": ["AcmeBot"],
+                "ranges": "https://acme.example/bot-ranges.json",
+                "rdns": ["crawl.acme.example"] } ]
+}
+```
+
+What each exemption lifts, for a **verified** crawler, on a path and method
+the allowance covers:
+
+| Exemption | Effect |
+|---|---|
+| `notFound` | L14's route-not-found answers are not counted against it |
+| `probeRules` | L7's managed probe set does not act. Its hits are logged as `crawler.probe`, which shows the operator that a link to the path exists. Operator-written L7 rules still apply unless a rule sets `crawlers: "skip"` |
+| `honeypots` | L8's honeypot routes answer as usual, with no score or ban, logged as `crawler.honeypot`. A verified crawler obeys `robots.txt`, so a hit usually means an outside link to the path, or a `Disallow` the crawler has not re-read yet (they cache `robots.txt`) |
+| `botSignals`, `challenges` | L10 adds no signals and never challenges it. A challenge page served to a crawler is what gets indexed |
+| `hostingClass` | L5's `hosting` class is not counted against it |
+| `geo` | L3 country and ASN *block* entries do not apply. IP and CIDR entries an operator wrote still do (see the conflict check below) |
+| `perIpLimits` | the per-IP limits are replaced by the crawler's own `limit`, keyed `crawler:<id>`, because one engine crawls from many addresses. The limit is `evenWhenAllowed`. A crawler over it gets `429` with `Retry-After`, which Google reads as "slow down" [V]. An alert fires when a crawler has been limited on more than a day's worth of windows, because a URL that keeps answering 429 is dropped from Google's index [V] |
+| `autoBans` | the ladder never bans a verified crawler. An earlier auto-ban covering its address, written before verification, is skipped and flagged in the UI. **Manual bans still apply**: an operator who bans a crawler means it |
+
+What a crawler is **never** exempt from:
+
+- L6's shape refusals;
+- L11's sensitive endpoints, since a crawler has no business posting to a
+  sign-in form;
+- L12's API keys;
+- canary credentials and keys (L8);
+- L13's response-side controls;
+- the `evenWhenAllowed` limits;
+- every method other than `GET` and `HEAD`;
+- any path outside `paths`.
+
+A verified Googlebot that sends a `POST` is evaluated like anyone else.
+
+**Spoofed claimants** [D]. A claimant that fails verification is a strong
+L10 signal, `crawler.spoofed`. Scrapers borrow Googlebot's name precisely to
+get through allowances like this one. By default the request is blocked and
+the subject's offence score gains weight 5 (Q31, decided 2026-11-10). An SEO audit tool that the
+operator's own staff run with a Googlebot user agent should be given a plain
+allow entry for its address, not a looser crawler check. The analytics page
+counts spoofed claimants per claimed crawler.
+
+**The conflict check** [D]. The policy compiler warns when a block entry, a
+ban, or a country or ASN entry would cover an allowed crawler's published
+ranges, for example a block on Google's ASN, or a country block covering the
+addresses Googlebot crawls from. The UI shows the warning before publish, with
+the crawler and the entry that covers it. Publishing anyway is allowed and is
+recorded in the audit log.
+
+**Dry run** [D]. In `dryRun` the allowance is evaluated and recorded, as
+`wouldHaveBeen: "allow"` on the decision a verified crawler would have
+skipped, but nothing is lifted. So an operator can see which crawler requests
+the current policy would have refused before switching it on, and the
+analytics page shows the would-be-refused crawler requests, per crawler.
+
+**Events.** Every decision on a claimant records `crawler: "<id>"`,
+`verified` and `verifiedBy` (`ranges`, `rdns` or `cache`). Verified crawler
+traffic is its own series on the analytics page (requests, 404s, 429s per
+crawler), and never mixed with the refused counts.
+
+**Default** [D]: on, in `enforce`, for `google`, `bing` and `apple`, with
+`duckduckgo` added once its source is confirmed, on every path for `GET` and
+`HEAD` (Q29, the user's decision of 2026-11-10). For an API-only service this costs nothing: a verified crawler
+can already `GET` a public endpoint. A service that wants no crawling at all
+sets `"crawlers": { "mode": "off" }`, or better, says so in `robots.txt`,
+because an allowance never makes a crawler crawl.
+
+**Later:**
+
+- a `robotsTxt()` helper that writes `Disallow` lines for the honeypot paths
+  and the allowance's `paths.exclude`, so `robots.txt` and the policy never
+  disagree;
+- signed agents (HTTP message signatures carried by the crawler, the
+  web-bot-auth proposals) [U: cited from prior knowledge] as a third
+  verification method, once an engine sends them.
+
+**v1:** the registry with the default set, `ranges` and `rdns`
+verification, the cache and its bounds, the policy option with every
+exemption, the per-crawler limit, the spoofed signal, the conflict check,
+dry run, and the events.
+
 ---
 
 ## L4 Bans
@@ -525,7 +717,9 @@ services, `phpmyadmin`, `/cgi-bin/`, `/actuator`), known scanner user agents,
 `\x00` and CRLF in headers, oversized cookies. **No OWASP CRS port in v1**:
 CRS's value is in hundreds of regexes tuned for a different engine
 (ModSecurity/Coraza), with a paranoia-level false-positive budget; porting it
-safely is a project of its own (later, Q10).
+safely is a project of its own (later, Q10). A verified crawler (L3.2) on
+the paths its allowance covers is exempt from the managed sets; its hits are
+logged as `crawler.probe`.
 
 **v1:** the rule language, the matchers, the regex validator, the managed
 probe set. **Later:** body-field rules, a CRS-derived set.
@@ -543,7 +737,9 @@ touches them.
   link). A hit adds weight 10 to the subject's score (so the ladder bans on
   the first hit by default) and records the request (headers only, bounded).
   The route answers like a real one (a plausible 200 or 404, configurable),
-  not with a block page, so a scanner learns nothing.
+  not with a block page, so a scanner learns nothing. A verified crawler
+  (L3.2) gets the same answer and no weight, logged as `crawler.honeypot`;
+  a claimant that fails verification gets the full weight.
 - **Trap form fields**: a helper that renders a visually hidden field and a
   check that rejects a submission filling it (classic, for signup and
   contact forms).
@@ -633,6 +829,7 @@ elsewhere).
 | per user | `user` | 1,000 per minute |
 | per API key | `apiKey` | from the key's plan (L12) |
 | per tenant | `tenant` | from the tenant's plan |
+| verified crawler (L3.2) | `crawler:<id>`, across its addresses | 3,000 per minute per service, `evenWhenAllowed`, in place of the per-IP limits |
 
 **Units are explicit** (ConcaveHR's `THROTTLE_TTL=60` meant 60 ms under
 `@nestjs/throttler` 6, which disabled throttling, §8): the policy format takes
@@ -691,6 +888,7 @@ blocks alone by default.
 | request cadence (too regular intervals) | the subject's recent timestamps (a small ring) | later |
 | headless markers | a client-side script's report (later; needs JS on the page) | later |
 | a failed challenge, honeypot field filled | L8, L10.2 | strong |
+| a crawler `User-Agent` whose address fails verification (`crawler.spoofed`) | L3.2 | strong; blocked by default |
 
 ### L10.2 Challenges [D] [V]
 
@@ -725,6 +923,8 @@ interface ChallengeProvider {
   `HttpOnly`, `Secure`, `SameSite=Lax`, bound to the /64 or /24 and to a hash
   of the UA, TTL 30 min default), so a human is challenged once, not per
   request. API clients get a clearance token in a header instead.
+- **A verified crawler is never challenged** (L3.2): it cannot solve one, and
+  the challenge page is what would be indexed.
 - **Challenge pages** are served by the engine itself (a tiny HTML page with
   its own strict CSP and the provider's script origins only), or rendered by
   the app through a hook.
@@ -964,6 +1164,8 @@ bytes sent. bun-common resolves a response hook once the response is sent
   exception filter, write-up §2.3). Default counted rule
   `not_found_per_minute`: 120 in 60 s → ban 1 day (ConcaveHR's); bun-common
   marks the response as router-not-found so the engine can tell (PR-S5);
+  not counted for a verified crawler on its allowance's paths (L3.2), whose
+  old links are the commonest source of such answers;
 - count `5xx` per route for the analytics page, and per subject (an attacker
   finding a crashing input);
 - decrement concurrency counters (L1, L9);
@@ -979,7 +1181,7 @@ bytes sent. bun-common resolves a response hook once the response is sent
 |---|---|---|
 | L1 | `hardenServe()`, body limits, per-IP concurrency, global in-flight cap | |
 | L2 | everything, on the trust-proxy foundation; service identity; trust misconfiguration detection | |
-| L3 | IP, CIDR, user, API-key lists; scopes; expiries; the `internal` list and allow guards | fingerprint lists |
+| L3 | IP, CIDR, user, API-key lists; scopes; expiries; the `internal` list and allow guards; verified crawlers (L3.2: the registry's default set, `ranges` and `rdns` verification, exemptions, the per-crawler limit, the spoofed signal, the conflict check) | fingerprint lists; a `robotsTxt()` helper; signed agents as a verification method |
 | L4 | everything, with ConcaveHR's merge rules and a 60 s reconcile | |
 | L5 | MMDB reader; country, ASN; Tor and cloud ranges as classes | VPN/proxy feeds, city |
 | L6 | everything | |

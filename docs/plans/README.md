@@ -50,7 +50,7 @@ plan you are about to work on.
 | [`bun-views/`](bun-views/README.md) | PR-C (#320), PR-C2 (#328) and PR-0 (#324) merged; PR-1 to PR-8 not started | **held** | its Status |
 | [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | **complete** (PR-n1 to PR-n10 merged, #721 to #747, with follow-ups #745, #746, #748; PR-n1 to PR-n9 shipped in 3.0.0-rc.2) | none; the playground's browser review is owed | its Status |
 | [`bun-ui/`](bun-ui/README.md) | BU-1 #666, BU-2 #708, BU-3 #709 and BU-5 #710 merged (the old names cleaned up in #713), released in 3.0.0-rc.1 (#712); BU-4 (the shared kit) built 2026-11-10, awaiting landing | landing BU-4; bun-security's PR-U1 builds on it | its Status |
-| [`bun-security/`](bun-security/README.md) | approved 2026-11-07; its foundations merged: trustProxy #653, the throttle T1 to T3 #654 to #656; nothing of the package built | **held**: building M1 waits for the user's go-ahead | its Status |
+| [`bun-security/`](bun-security/README.md) | approved 2026-11-07; its foundations merged: trustProxy #653, the throttle T1 to T3 #654 to #656; verified crawlers (layers.md L3.2, PR-S12) added 2026-11-10, Q29 to Q31 answered; nothing of the package built | **held**: building M1 waits for the user's go-ahead | its Status |
 | [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
 
 **Held** means the user has not scheduled it, not that it is blocked. The
