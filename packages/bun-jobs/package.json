@@ -173,18 +173,13 @@
     "@kingsleyweb/bun-common": "workspace:^"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "catalog:",
     "@asyncapi/specs": "catalog:",
     "@types/bun": "catalog:",
     "ajv": "catalog:",
     "ajv-formats": "catalog:",
     "bun-types": "catalog:",
     "chrono-node": "^2.7.0",
-    "eslint": "catalog:",
-    "eslint-config-prettier": "catalog:",
-    "eslint-plugin-prettier": "catalog:",
     "mongodb": "catalog:",
-    "prettier": "catalog:",
     "typescript": "catalog:",
     "zod": "catalog:"
   }

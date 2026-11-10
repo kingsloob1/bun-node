@@ -113,14 +113,18 @@ bun run test               # type-check the tests, then run them in parallel —
 **Lint and format, since PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
 §7.** The gate is `bun run lint` (`bun lint`; in a `lint` script it is the
 linter) and `bun run format:check` (`bun fmt --check`), two steps (Q6), in each
-of the 11 directories with a `lint` script, `bun run lint:scripts` and
+of the 16 directories with a `lint` script (the seven packages, the five
+`examples/*`, `playground/`, `benchmarks/`, `templates/compute-provider/` and
+`tools/vscode-bun-lint/`), `bun run lint:scripts` and
 `bun run format:check:scripts` from the root for `scripts/`, and
 `bun run format:check` at the root for the whole repository. Both read the
 root `bunfig.toml` (the template its own), found from the working directory
 up; `[fmt]` skips Markdown (Q3), `docs/**` and the files tools write
-(`bun-timings*.json`, `baselines/*.json`, `lerna.json`). No gate runs ESLint:
-the `eslint.legacy.config.mjs` files and `eslint.legacy.directives.mjs` stay,
-unused, until PR F removes them. A disable directive names the rule's
+(`bun-timings*.json`, `baselines/*.json`, `lerna.json`). ESLint and Prettier
+are gone since PR F: no ESLint config and no Prettier anywhere. The one ESLint
+package left is `eslint` itself, a root devDependency beside
+`eslint-plugin-regexp` because it is that plugin's peer (Q1, Q14); `bun lint`
+loads the plugin as a JavaScript plugin, and nothing runs `eslint`. A disable directive names the rule's
 canonical name (`@typescript-eslint/…`, `n/…`). The editor is the in-repo
 extension (`tools/vscode-bun-lint/`, its README says how to install it), which
 `.vscode/` recommends and makes the formatter; the ESLint extension is off.
@@ -503,8 +507,7 @@ the script prints the restart command and restarts only with
 `--restart-postgres`.
 
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
-depend on bun-common). The `eslint.legacy.config.mjs` `TS2742`/`TS2883` portability
-hint is pre-existing noise — `scripts/typecheck.ts` filters it. There may be a
+depend on bun-common). There may be a
 couple of intentional `no-console` *warnings* (error logging in catch
 blocks with no logger in scope); warnings do not fail lint.
 
@@ -650,10 +653,7 @@ type check. It is a standalone package like the bench ones — its own
   emits the declarations with tsc. The template's own tests do not take
   `bun test --check` and it has no `check` script: inside the repo its
   author's config reaches bun-jobs' source, and fails there.
-- **Lint.** `templates/eslint.legacy.config.mjs` (the packages' config, plus
-  the `scripts/` exemption for the template's own `scripts/`), outside the
-  template so a copy carries none of the repo's lint dependencies; nothing
-  runs it since PR E, and PR F removes it. `bun lint` and `bun fmt` read the template's own
+- **Lint.** `bun lint` and `bun fmt` read the template's own
   `templates/compute-provider/bunfig.toml` (the root's rules without
   `eslint-plugin-regexp`, so it needs no dependency), found from the working
   directory up, so it wins when run from the template.
@@ -721,9 +721,9 @@ where TypeScript 6 loads no `@types/*` and every `Bun`, `console` and `node:*`
 was an error; the CLI never looked at them at all. Their project names
 `types: ["bun"]` explicitly rather than relying on `setup-databases.ts`'s
 `import("bun")` dragging the Bun globals in for the whole program. The root
-`package.json` declares what the scripts' checks load (`@types/bun`, `eslint`,
-`@antfu/eslint-config`, `eslint-config-prettier`, `eslint-plugin-prettier`)
-instead of borrowing copies a package happens to hoist. bun-ui's
+`package.json` declares what the scripts' checks load (`@types/bun`, and
+`eslint-plugin-regexp` with its `eslint` peer for `bun lint`) instead of
+borrowing copies a package happens to hoist. bun-ui's
 `__tests__/jobs/app/pkg` project, which only its own `typecheck.test.ts` checked, is
 in the list too.
 
@@ -736,11 +736,9 @@ against that root project type-checked it with no `skipLibCheck`, no bundler
 resolution and no Bun types, and reported a cascade of errors in files the CLI
 called clean. Every documented command passed the whole time.
 
-Two known-noise codes are filtered by the script: `TS2742`/`TS2883` on the
-ESLint flat config's inferred default export, which cannot be named without a
-path into a pnpm-style store. Neither tsc 6.0 nor `bun check` reported them
-on any project on 2026-10-10; the filter stays in case an ESLint config
-upgrade brings them back.
+The script filters no error code. It used to drop `TS2742`/`TS2883`, the
+ESLint flat configs' inferred default export; the filter went with the configs
+in PR F of bun-lint-fmt, so those codes now fail a project like any other.
 
 ### Bun's checker, not tsc
 

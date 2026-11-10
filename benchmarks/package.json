@@ -6,7 +6,9 @@
   "description": "Router throughput benchmarks: BunRouter vs Express 5 vs Bun.serve vs Elysia vs Hono",
   "scripts": {
     "bench": "bun bench.ts",
-    "lint:eslint": "CI=1 eslint -c eslint.legacy.config.mjs ."
+    "lint": "bun lint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
   },
   "dependencies": {
     "autocannon": "^8.0.0",

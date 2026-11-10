@@ -670,8 +670,8 @@ short:
   changed package or examples directory (`bun run lint:scripts` and
   `bun run format:check:scripts` from the root for `scripts/`; `bun run
   format:check` at the root covers the whole repository). The gate since PR E
-  of [`bun-lint-fmt`](plans/bun-lint-fmt/README.md); nothing runs ESLint, whose
-  `eslint.legacy.config.mjs` files stay until PR F. `bun lint --fix` never
+  of [`bun-lint-fmt`](plans/bun-lint-fmt/README.md); ESLint and Prettier left
+  the repository in its PR F. `bun lint --fix` never
   edits one of the four `scripts/build-declarations.ts` or `tsconfig.build.json`
   copies alone (the same change to all four, or none), and never autofixes
   `@typescript-eslint/no-duplicate-type-constituents` (`CLAUDE.md`, "Lint and

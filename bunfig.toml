@@ -378,8 +378,15 @@ files = ["**/*.js", "**/*.cjs"]
 rules = { "@typescript-eslint/no-require-imports" = "off" }
 
 # CLI entry points: printing is the product, and top-level await blocks no importer.
+# benchmarks/ joined in PR F, with the two rules its ESLint config turned off.
 [[lint.overrides]]
-files = ["scripts/**", "playground/**", "examples/**", "templates/*/scripts/**"]
+files = [
+  "scripts/**",
+  "playground/**",
+  "examples/**",
+  "templates/*/scripts/**",
+  "benchmarks/**",
+]
 rules = { "no-console" = "off", "n/no-top-level-await" = "off" }
 
 # Q12: in tests, the type-aware rules that flag test idiom (untyped fixtures, async callbacks with no await) are off.

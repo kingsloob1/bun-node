@@ -2,10 +2,11 @@
 
 **Status:** plan of 2026-10-16, **decided 2026-10-17**: the user answered the
 eleven questions of §9 and replaced the gating of §6 (wait for a stable Bun)
-with raising the development floor to the 1.4.4 canary now. **Implemented
-through PR E**: A (#417), every B, C and D (#421) merged; with E, `bun lint` and
-`bun fmt --check` are the gate and nothing runs ESLint; PR F (removing ESLint
-and Prettier) is next, one merge window later. Written by the features (main) agent at the user's request;
+with raising the development floor to the 1.4.4 canary now. **Complete**:
+A (#417), every B, C and D (#421) and E (#462) merged, making `bun lint` and
+`bun fmt --check` the gate; PR F, built on 2026-11-10 at the user's request,
+removed ESLint and Prettier (see [PR F, as built](#pr-f-as-built-2026-11-10)).
+Written by the features (main) agent at the user's request;
 the decisions, the re-measurement and the PR slices are the Bun-Node Examples
 & Tooling Agent's, who leads the plan:
 
@@ -25,37 +26,51 @@ on since** (to `56d6afde` when this was written, #401 among the merges): the
 2026-10-17 figures are `930dd664`'s and were not re-measured; each PR
 re-measures on its own branch.
 
-## Handoff (2026-10-22)
+## PR F, as built (2026-11-10)
 
-**Only PR F is left**, and nobody is building it: the user stopped every agent
-on 2026-10-22 so that another model could continue (see
-[`docs/agentic-setup.md`](../../agentic-setup.md), "Handoff"). PR E merged as
-#462, with the one-time reformat `879310e0` (listed in
-`.git-blame-ignore-revs`); since then `bun run lint` and `bun run format:check`
-are the gate in every directory, and nothing runs ESLint. PR E's merge window
-has passed and every owner has gated on `bun lint` since, so PR F's
-precondition ([PR F](#pr-f-remove-eslint-and-prettier)) is met; it still waits
-for the user's go-ahead, like any PR.
+Built on develop `3c0362ab`, on Bun 1.4.4-canary.1+11c367163, at the user's
+request of 2026-11-10. What left the repository:
 
-To build it, follow [PR F](#pr-f-remove-eslint-and-prettier) to the letter:
-remove every `eslint.legacy.config.mjs` (13 are tracked on develop
-`bc2b1a5f`, `templates/` and `tools/vscode-bun-lint/` included:
-`git ls-files | grep eslint.legacy`) and `eslint.legacy.directives.mjs`, the
-ESLint and Prettier packages it lists from the `package.json`s, keep
-`eslint-plugin-regexp` (with `eslint` beside it as its peer, Q1), reinstall
-every lock with `--frozen-lockfile` afterwards, and run its checks:
-`bun scripts/typecheck.ts`, every package's `bun run test`, consumer-check for
-all four packages with every cell unchanged (bun-common 92/92, bun-nest
-66/66, bun-jobs 160/160 since V5a, bun-jobs-ui 44/44: re-read today's counts
-from a run on develop first, they grow with exports), the four
-`__tests__/packaging.test.ts`, and `bun pm ls` in each package naming none of
-the removed packages. `benchmarks/` still has a `lint:eslint` script; PR F
-moves it to `bun lint` too. CLAUDE.md's "Lint and format" paragraph and
-`docs/agentic-setup.md`'s "Gates" mention the legacy files: update both in
-the same PR.
+- **The configs**: 15 `eslint.legacy.config.mjs` (the seven packages but
+  bun-client and bun-contract, the five `examples/*`, `playground/`,
+  `scripts/`, `benchmarks/`, `templates/` and `tools/vscode-bun-lint/`) and
+  `eslint.legacy.directives.mjs`, with their `tsconfig.json` `include`
+  entries and the `.eslintcache` lines of five `.gitignore`s.
+- **The packages**: `@antfu/eslint-config`, `eslint-config-prettier`,
+  `eslint-plugin-prettier`, `prettier`, `eslint-plugin-react-hooks`,
+  `eslint-plugin-react-refresh` and `@nx/eslint`, from the root (and its
+  catalog), bun-common, bun-jobs, bun-nest and bun-ui (`@eslint-react/eslint-plugin`
+  was no longer in any `package.json`). `eslint-plugin-regexp` is now a
+  declared root devDependency (it had only arrived through
+  `@antfu/eslint-config`), with `eslint` beside it as its peer (Q1, Q14):
+  installed, never run.
+- **The locks**: the root's lost 716 of its 1,622 entries, all inside the
+  removed packages' dependency closure, gained none, and re-hoisted six
+  (each to a copy the old lock already held). The template's
+  (`templates/compute-provider/bun.lock`) recorded bun-jobs' devDependencies
+  and so the ESLint tree too; a plain install cannot run there (#645), so it
+  was pruned to what is still reachable, 353 entries to 28. Both install with
+  `--frozen-lockfile`. The other five locks named none of the packages.
+- **The `TS2742`/`TS2883` filter** in `scripts/typecheck.ts`: it existed for
+  the ESLint configs' inferred default export, and could only hide a real
+  error once they were gone; its test now asserts those codes fail.
+- **Prettier's last user**: bun-ui's two `docs-ws.integration` tests formatted
+  their regenerated fixtures (`UPDATE_WS_FIXTURES=1`) with Prettier; they
+  run `bun fmt` on the file instead, which writes all six byte for byte.
+- **`benchmarks/`** lints with `bun lint` (`lint`, `format`, `format:check`
+  scripts) instead of `lint:eslint`. Its ESLint config turned `no-console` and
+  top-level await off as a directory of CLI entry points; `bunfig.toml`'s
+  CLI-entry override now lists `benchmarks/**`, which took its 8
+  `n/no-top-level-await` errors and 122 `no-console` warnings away (0 errors,
+  223 warnings).
+
+**The lint gate is unchanged**: in all 15 other directories with a `lint`
+script and `scripts/`, `bun lint` reports the same findings, line for line,
+before and after (0 errors everywhere); where a directory held a deleted
+config, it lints one file fewer.
 
 **Canary drift.** The gate runs on a Bun 1.4.4 canary (verified on
-`1.4.4-canary.1+5f5799ed1` and `6bb5dc195`). A new finding or a reformatted
+`1.4.4-canary.1+5f5799ed1`, `6bb5dc195` and, for PR F, `11c367163`). A new finding or a reformatted
 file after `bun upgrade --canary` is the canary's: record both
 `bun --revision`s and fix it in its own PR, not in passing.
 

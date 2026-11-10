@@ -79,18 +79,6 @@ export const PROJECTS = [
  */
 export const MIN_BUN = "1.4.4";
 
-/**
- * Errors that are known noise rather than a problem with the code.
- *
- * `TS2742` and `TS2883` are the same complaint under two codes: the ESLint
- * flat config's inferred default export cannot be named without a path into a
- * pnpm-style store. Pre-existing, unrelated to anything the repo controls, and
- * about a config file rather than shipped code. Neither tsc 6.0 nor
- * `bun check` reported them on any project on 2026-10-10; the filter stays
- * because an ESLint config upgrade has brought them back before.
- */
-export const IGNORED = /TS2742|TS2883/;
-
 /** What one project's check found. */
 export interface ProjectResult {
   /** The project, as given. */
@@ -108,17 +96,19 @@ export interface ProjectResult {
  *
  * A check that exits non-zero without a single `error TS` line did not get as
  * far as checking (a missing tsconfig, a crash): that fails too, with its
- * output as the problem, so a broken run never reads as a clean one. A run
- * whose only errors are `IGNORED` passes, whatever its exit code.
+ * output as the problem, so a broken run never reads as a clean one. Every
+ * error counts: the `TS2742`/`TS2883` filter went with the ESLint configs
+ * whose inferred default export it was for (bun-lint-fmt, PR F).
  */
 export function classify(
   output: string,
   exitCode: number,
 ): Pick<ProjectResult, "problems" | "failed"> {
-  const errors = output.split("\n").filter((line) => /error TS\d+/.test(line));
-  const problems = errors.filter((line) => !IGNORED.test(line));
+  const problems = output
+    .split("\n")
+    .filter((line) => /error TS\d+/.test(line));
   if (problems.length > 0) return { problems, failed: true };
-  if (exitCode !== 0 && errors.length === 0) {
+  if (exitCode !== 0) {
     const text = output.trim();
     return {
       problems: [text === "" ? `bun check exited ${exitCode}` : text],

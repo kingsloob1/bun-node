@@ -181,7 +181,6 @@
     "type-is": "^2.1.0"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "catalog:",
     "@asyncapi/specs": "catalog:",
     "@types/bun": "catalog:",
     "@types/supertest": "catalog:",
@@ -193,11 +192,7 @@
     "class-transformer": "0.5.1",
     "class-validator": "0.15.1",
     "class-validator-jsonschema": "5.2.0",
-    "eslint": "catalog:",
-    "eslint-config-prettier": "catalog:",
-    "eslint-plugin-prettier": "catalog:",
     "path-to-regexp": "8.4.2",
-    "prettier": "catalog:",
     "superstruct": "^2",
     "supertest": "catalog:",
     "typescript": "catalog:",

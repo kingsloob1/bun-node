@@ -21,8 +21,7 @@ Developing needs **Bun ≥ 1.4.4**, the canary until it is stable
    playground / app projects, `benchmarks/`, the examples and the root
    `scripts/`); must end with "no type errors". Run `bun install
    --frozen-lockfile` in the three bench directories, the template and
-   `tools/vscode-bun-lint/` first. It
-   already filters the known `TS2742`/`TS2883` `eslint.legacy.config.mjs` noise.
+   `tools/vscode-bun-lint/` first. It filters no error code.
 
 Then, for **each affected package** (`packages/bun-common`, `packages/bun-nest`,
 `packages/bun-jobs`, `packages/bun-ui`), from that package's directory:
@@ -34,8 +33,8 @@ Then, for **each affected package** (`packages/bun-common`, `packages/bun-nest`,
    --fix` edit one of the four `scripts/build-declarations.ts` or
    `tsconfig.build.json` copies alone (the same change to all four, or none),
    and never autofix `@typescript-eslint/no-duplicate-type-constituents` (its
-   fix deletes compile-time guards). ESLint is no longer run (bun-lint-fmt
-   PR E).
+   fix deletes compile-time guards). ESLint and Prettier are gone (bun-lint-fmt
+   PR F).
 
 3. **Test** — `bun test`
    Every test must pass.

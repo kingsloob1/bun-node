@@ -170,7 +170,6 @@
     "@kingsleyweb/bun-common": "workspace:^"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "catalog:",
     "@happy-dom/global-registrator": "catalog:",
     "@kingsleyweb/bun-client": "workspace:^",
     "@kingsleyweb/bun-jobs": "workspace:^",
@@ -184,13 +183,7 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "bun-types": "catalog:",
-    "eslint": "catalog:",
-    "eslint-config-prettier": "catalog:",
-    "eslint-plugin-prettier": "catalog:",
-    "eslint-plugin-react-hooks": "catalog:",
-    "eslint-plugin-react-refresh": "catalog:",
     "happy-dom": "catalog:",
-    "prettier": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "reflect-metadata": "catalog:",

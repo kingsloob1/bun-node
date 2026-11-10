@@ -170,13 +170,15 @@ describe("the WebSocket reference's fixtures", () => {
     it(`${name}.json is what a real API serves`, async () => {
       const actual = await served(realApi(`fixture-${name}`, config));
       if (process.env.UPDATE_WS_FIXTURES === "1") {
-        // Formatted as the lint's prettier rule wants JSON, so a rewrite
-        // lints clean (plain `JSON.stringify` breaks short arrays apart).
-        const { format } = await import("prettier");
-        writeFileSync(
-          fixturePath(name),
-          await format(JSON.stringify(actual), { parser: "json" }),
-        );
+        // Written in one line, then formatted by `bun fmt`, the repo's
+        // formatter, so a rewrite passes `bun fmt --check` unchanged.
+        const path = Bun.fileURLToPath(fixturePath(name));
+        writeFileSync(path, JSON.stringify(actual));
+        const formatted = Bun.spawnSync([process.execPath, "fmt", path], {
+          stdout: "ignore",
+          stderr: "inherit",
+        });
+        expect(formatted.exitCode).toBe(0);
       }
       const recorded = JSON.parse(
         readFileSync(fixturePath(name), "utf8"),

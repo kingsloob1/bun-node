@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
-import { classify, IGNORED, PROJECTS, rebase } from "../typecheck";
+import { classify, PROJECTS, rebase } from "../typecheck";
 
 const ROOT = resolve(import.meta.dir, "../..");
 const SCRIPT = join(ROOT, "scripts/typecheck.ts");
@@ -75,14 +75,16 @@ describe("classify", () => {
     });
   });
 
-  it("passes a run whose only errors are the known noise", () => {
-    const noise =
-      "eslint.legacy.config.mjs(1,1): error TS2742: The inferred type of 'default' cannot be named.";
-    expect(IGNORED.test(noise)).toBe(true);
-    expect(classify(`${noise}\nFound 1 error in 1 file`, 1)).toEqual({
-      problems: [],
-      failed: false,
-    });
+  it("fails on TS2742 and TS2883 too: no code is filtered any more", () => {
+    // These two were filtered as the ESLint configs' noise until PR F of
+    // bun-lint-fmt removed the configs; now they are errors like any other.
+    for (const code of ["TS2742", "TS2883"]) {
+      const line = `lib/a.ts(1,1): error ${code}: The inferred type of 'default' cannot be named.`;
+      expect(classify(`${line}\nFound 1 error in 1 file`, 1)).toEqual({
+        problems: [line],
+        failed: true,
+      });
+    }
   });
 
   it("fails a non-zero exit that reported no errors: the check never ran", () => {

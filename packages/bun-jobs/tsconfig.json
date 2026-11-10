@@ -8,10 +8,5 @@
       "lib/*": ["./lib/*"]
     }
   },
-  "include": [
-    "./lib/**/*",
-    "./__tests__/**/*",
-    "./scripts/**/*",
-    "eslint.legacy.config.mjs"
-  ]
+  "include": ["./lib/**/*", "./__tests__/**/*", "./scripts/**/*"]
 }
