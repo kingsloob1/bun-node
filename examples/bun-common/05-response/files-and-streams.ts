@@ -1,7 +1,8 @@
 /**
  * Files and streams — `sendFile()` and every `SendFileOptions` field,
  * downloads and attachments, byte ranges, streamed bodies, `write()`/`end()`
- * and server-sent events over a real socket, and redirects.
+ * and server-sent events over a real socket (by hand, then with `res.sse()`),
+ * and redirects.
  *
  * ```bash
  * bun 05-response/files-and-streams.ts
@@ -55,6 +56,14 @@
  * - `req.socket.setKeepAlive(true)`, which SSE helpers call up front, sends
  *   nothing: `res.headersSent` stays `false`, so an error raised before the
  *   first event is still answered with a status (a 500), not left hanging.
+ * - `res.sse()` is the event-stream helper: the headers (`no-cache,
+ *   no-transform`), a `: ok` opening so the client sees the stream at once,
+ *   the idle-timeout exemption, a heartbeat, an awaitable `send()` with a
+ *   bound on what a slow client may queue, `ids: "auto"` continuing after the
+ *   request's `Last-Event-ID`, and `onClose` when the client leaves.
+ *   `readSse()` (from `@kingsleyweb/bun-common/sse`) parses a stream, since
+ *   Bun has no `EventSource`. One event to many clients is a broadcast
+ *   channel: `broadcast-channel.ts`.
  * - `res.isStreamOpen`, `res.writableEnded` and `res.onceStreamEnded()` say
  *   where a stream is; `awaitPipelineOrStream()` is how the adapters and
  *   `fetch()` hand a stream's `Response` back while the pipeline runs on.
@@ -72,6 +81,7 @@ import {
   BunRouter,
   FETCH_STUB_SERVER,
 } from "@kingsleyweb/bun-common";
+import { readSse } from "@kingsleyweb/bun-common/sse";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
@@ -364,6 +374,73 @@ await reader.cancel().catch(() => {});
 await waitFor("the server to see the client leave", () => serverSawClose);
 show("interval cleared on res close");
 await adapter.close();
+
+/* ------------------------------------------------------------------ */
+step("res.sse(): the event stream helper, over a socket");
+
+// The same endpoint with `res.sse()`: it sets the headers, opens with a
+// `: ok` comment, exempts the request from `idleTimeout`, honours
+// backpressure (`await send()`) and closes when the client leaves.
+const sseServer = new BunHttpAdapter(0);
+let writerClosed = false;
+let sentAfterClose: boolean | undefined;
+
+sseServer.get("/ticks", (_req, res) => {
+  const stream = res.sse({ ids: "auto", retry: 2000 });
+  void (async () => {
+    for (let tick = 1; !stream.closed; tick++) {
+      if (!(await stream.send({ event: "tick", data: { tick } }))) break;
+      await Bun.sleep(20);
+    }
+  })();
+  stream.onClose(() => {
+    writerClosed = true;
+    void stream.send({ data: "too late" }).then((sent) => {
+      sentAfterClose = sent;
+    });
+  });
+});
+
+await sseServer.listen(0);
+const ticks = await fetch(`${sseServer.url}/ticks`, {
+  headers: { "Last-Event-ID": "41" },
+});
+checkEqual(
+  "res.sse(): Content-Type",
+  ticks.headers.get("Content-Type"),
+  "text/event-stream",
+);
+checkEqual(
+  "res.sse(): Cache-Control (no-transform keeps compression() off)",
+  ticks.headers.get("Cache-Control"),
+  "no-cache, no-transform",
+);
+
+// bun-common's own parser reads it: Bun has no EventSource.
+const seenItems: string[] = [];
+for await (const item of readSse(ticks.body!)) {
+  seenItems.push(
+    item.kind === "comment"
+      ? `:${item.text}`
+      : `${item.event} id=${item.id} ${item.data}`,
+  );
+  if (seenItems.length === 4) break; // leaving: the client goes away
+}
+show("the first items", seenItems);
+checkEqual(
+  "res.sse(): the opening comment, then events numbered after Last-Event-ID",
+  seenItems,
+  [
+    ": ok",
+    'tick id=42 {"tick":1}',
+    'tick id=43 {"tick":2}',
+    'tick id=44 {"tick":3}',
+  ],
+);
+await waitFor("the writer to see the client leave", () => writerClosed);
+await waitFor("the late send to settle", () => sentAfterClose !== undefined);
+checkEqual("res.sse(): send() after the client left", sentAfterClose, false);
+await sseServer.close();
 
 /* ------------------------------------------------------------------ */
 step("redirect(): Express 5.3.0's body, statuses and a ResponseInit");

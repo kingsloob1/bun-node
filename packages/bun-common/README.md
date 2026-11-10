@@ -2052,6 +2052,9 @@ local delivery has already happened.
 `setInitial`/`clearInitial`. String data is sent as it is (express-sse
 JSON-quotes it), and ids are the channel's, not per connection.
 
+Example:
+[`broadcast-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/broadcast-channel.ts).
+
 ### Validation
 
 `validate(schemas, options?)`, `new BunValidate({ schemas, ...options }).middleware()`
@@ -4627,7 +4630,8 @@ Each file is a standalone script whose opening comment says what it shows.
 | `04-request` | [`undecodable-bodies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/undecodable-bodies.ts) | Which route decides whether the adapter routes a body it could not decode: nested mounts, the `acceptUndecodableBody()` marker, the first matching handler |
 | `04-request` | [`cookies.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/04-request/cookies.ts) | Parsing cookies, signed cookies and secrets, JSON cookies |
 | `05-response` | [`sending.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/sending.ts) | Status, every `send` body type, `json`/`jsonp`, headers, ETags, `format()`, attachments |
-| `05-response` | [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming, server-sent events, redirects |
+| `05-response` | [`files-and-streams.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/files-and-streams.ts) | `sendFile` with every option and byte ranges, streaming, server-sent events (by hand and `res.sse()`), redirects |
+| `05-response` | [`broadcast-channel.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/broadcast-channel.ts) | `createSseChannel()`: initial state, replay, topics, a bus between processes, `close()` |
 | `05-response` | [`cookies-and-caching.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/cookies-and-caching.ts) | `cookie()`/`clearCookie()` with every option, signed cookies, cache headers, 304s |
 | `05-response` | [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/05-response/views.ts) | `res.render()` and `BunViews`: engines, view lookup, locals, the callback form, every render failure, one `BunViews` and its cache shared by the adapter, its error handler and `router.fetch()` |
 | `06-validation` | [`validate-requests.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/06-validation/validate-requests.ts) | Every target and failure mode, hooks, chained validators, `ValidationError` |
