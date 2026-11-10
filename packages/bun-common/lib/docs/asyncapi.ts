@@ -74,6 +74,7 @@ import { toOpenApiPath } from "./openapi";
 import { danglingRefs, pruneSchemaComponents } from "./refs";
 import { routeDocFor } from "./routeDoc";
 import { openApiSecurity, toAsyncApiSecurityScheme } from "./security";
+import { documentSseEvents } from "./sseEvents";
 
 export type { WsChannelDoc, WsMessageDoc } from "./channelDoc";
 
@@ -981,44 +982,38 @@ export function generateAsyncApi(
       },
     };
 
-    /** The events: [name, its data row, its parent SSE row (for the media type)]. */
-    const events: [string, ContractEntry, ContractEntry][] = [];
-    for (const row of rows) {
-      for (const nested of row.nested ?? []) {
-        if (nested.part !== "data") continue;
-        events.push([nested.key ?? "message", nested, row]);
-      }
-    }
     const direction: SchemaDirection =
       route.responseOutput === "parsed" ? "output" : "input";
-    const ids = registerMessages(
-      build,
-      where,
-      [],
-      events.map(
-        ([event, nested, parent]): [string, Record<string, unknown>] => [
-          event,
+    /** The events: [name, its message]. An `sseVariants()` event's payload is `anyOf` its variants, with `x-variants` (`./sseEvents.ts`). */
+    const events: [string, Record<string, unknown>][] = [];
+    for (const row of rows) {
+      const contentType =
+        (row.schema as { data?: unknown } | null)?.data === "text"
+          ? "text/plain"
+          : "application/json";
+      const documented = documentSseEvents(row, (data, event, variant) =>
+        emitSchema(
+          data,
+          direction,
+          `${where} event "${event}"${
+            variant === undefined ? "" : ` variant "${variant}"`
+          }`,
+          where,
+        ),
+      );
+      for (const event of documented) {
+        events.push([
+          event.name,
           {
-            name: event,
-            contentType:
-              (parent.schema as { data?: unknown } | null)?.data === "text"
-                ? "text/plain"
-                : "application/json",
+            name: event.name,
+            contentType,
             // A `null` data schema: the event carries no data (no `payload`).
-            ...(nested.schema === null
-              ? {}
-              : {
-                  payload: emitSchema(
-                    nested.schema,
-                    direction,
-                    `${where} event "${event}"`,
-                    where,
-                  ),
-                }),
+            ...(event.schema === null ? {} : { payload: event.schema }),
           },
-        ],
-      ),
-    );
+        ]);
+      }
+    }
+    const ids = registerMessages(build, where, [], events);
     if (events.length > 0) {
       operations[claimOperationId(`send${pascal(id)}`, where)] = {
         action: "send",

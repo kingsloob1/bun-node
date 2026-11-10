@@ -31,7 +31,7 @@ import type { BunRequest } from "./BunRequest";
 import type { ResponseSpecObject, SetCookieView } from "./responseValidation";
 import type { StandardSchemaV1 } from "./types/standardSchema";
 import { parseMediaKey } from "./contract/media";
-import type { SseEvents } from "./sse/declaration";
+import type { SseEvents, UntypedValid } from "./sse/declaration";
 import { markKind } from "./contract/schemas";
 import { isSchema } from "./contract/transport";
 import { streamProps } from "./sse/declaration";
@@ -42,6 +42,10 @@ export {
   type SseEventMap,
   type SseEvents,
   type SseOptions,
+  type SseVariants,
+  type SseVariantSpec,
+  sseVariants,
+  type UntypedValid,
 } from "./sse/declaration";
 
 // ---------------------------------------------------------------------------
@@ -199,18 +203,6 @@ export function opaque<
 // ---------------------------------------------------------------------------
 // Response variants (plan §4.4.6, V3c)
 // ---------------------------------------------------------------------------
-
-/**
- * The request view a `when` takes under `commonResponses` (a router has no
- * validator, so nothing is typed): every part optional and `unknown`. Inside
- * `validate()` a `when` takes the validator's parsed parts instead.
- */
-export type UntypedValid = Partial<
-  Record<
-    "headers" | "cookies" | "signedCookies" | "params" | "query" | "body",
-    unknown
-  >
->;
 
 /**
  * What a discriminant value maps a variant to: an exact value (a string),

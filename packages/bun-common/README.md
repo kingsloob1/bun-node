@@ -1851,6 +1851,50 @@ dispatch it. A declared response contract on the route still checks the
 stream's status and media type as it commits, and its events as they go
 (see [Streamed bodies](#streamed-bodies-chunks-sse-and-opaque)).
 
+**Event variants: `sseVariants()`.** An event may be declared as several
+whole variants, chosen per event, like an HTTP status's
+[`variants()`](#response-variants-variants-and-resvariant):
+
+```ts
+import { sse, sseVariants } from "@kingsleyweb/bun-common/sse";
+
+const Ticks = sse({
+  tick: sseVariants({
+    admin: {
+      when: (valid) => valid.headers?.["x-admin"] === "1",
+      data: AdminTick,
+      description: "Sent to administrators",
+    },
+    user: { data: UserTick },
+  }),
+});
+
+const stream = res.sse({ contract: Ticks });
+await stream.send({ event: "tick", variant: "admin", data: adminTick }); // data typed as AdminTick
+await stream.send({ event: "tick", data: tick }); // the union: the first variant that applies and passes
+```
+
+An event is sent when a variant is **selected** (the one `variant` names,
+else every one), **applies** (its `when` holds for the request that opened
+the stream) and its `data` **matches** that variant's schema. `when` takes
+`req.valid` and the request (`res.sse()`'s `BunRequest`, `sseResponse()`'s
+`request`; `{}` and `undefined` on a bare writer unless given `valid` and
+`request`), and is asked **once per stream**: a boolean is decided in
+place, a Promise awaited. A refusal under `"error"` is a `ContractError`
+naming each applicable variant's issues (tagged `variant`), and, when the
+data matches a variant whose `when` excluded it, that variant: `The event
+matches variant "admin", which does not apply to this request`, the leak
+`when` exists to catch. A `when` that throws, rejects or answers a
+non-boolean fails the check: its error is thrown under `"error"`, logged
+under `"warn"`. `variant` is never sent: a client reads the event's data as
+the union (the declaration is a Standard Schema of it, so bun-client's
+checks take any variant), and a `validate()` response, or `@Sse()` under
+`@Validate`, checks the stream's events by the same rules with every
+variant selected. Documents list such an event as `anyOf` its variants with
+an `x-variants` table (`names`, `conditional`, `descriptions`); `anyOf`
+rather than `oneOf`, since variants may overlap and the first that applies
+is taken.
+
 Without a `BunResponse`, `sseResponse(source, init?)` returns the same
 stream as a `Response`, for a native route, `Bun.serve`'s `fetch`,
 `res.send()` or a test. The source is an iterable or async iterable of
@@ -2899,6 +2943,7 @@ extensions a client needs beside the standard fields:
 | `x-bun-cache` | an operation that declares it | `{ "tags": ["user:{id}"], "invalidates": ["users"] }` | `.describe({ cache })`, the fields given |
 | `x-bun-chunks` | a `chunks()` body's schema | `"ndjson"` or `"raw"` | the declaration's `framing`: a client iterates the stream, one JSON value per line or its bytes |
 | `x-sse-data` | an `sse()` body's schema, beside its `x-sse-events` | `"json"` or `"text"` | the declaration's `data`: how a client decodes each event's `data:` lines |
+| `x-variants` | an `x-sse-events` entry declared with `sseVariants()` (beside its `anyOf`) | `{ "names": ["admin", "user"], "conditional": ["admin"], "descriptions": { … } }` | the variants in `anyOf`'s order, those with a `when`, and their `description`s |
 | `x-bun-max-bytes` | a documented file's schema | `1000000` | `.describe({ request: { files } })`'s `maxBytes` |
 | `x-bun-throttle` | an operation a throttle covers | `[{ "name": "default", "limit": 600, "window": 60000, "algorithm": "sliding-window", "scope": "global" }]` | the throttles ahead of the route and among its callbacks, less what it skips or overrides (`listRoutes()`'s `throttle`); the operation also gets a `429` (problem+json, `Retry-After`, `RateLimit-Policy`, `RateLimit`) unless it declares its own |
 

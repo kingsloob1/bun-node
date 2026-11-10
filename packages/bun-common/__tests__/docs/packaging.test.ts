@@ -120,6 +120,7 @@ describe("the lib/docs import graph (plan risk 1f)", () => {
       // AD (f) F2: the self-hosted viewer's registration (the peer package it
       // serves is required lazily, so it never joins this graph).
       "lib/docs/selfHosted.ts",
+      "lib/docs/sseEvents.ts",
       "lib/docs/viewer.ts",
     ]);
 

@@ -46,12 +46,11 @@ command.
 
 ### Status (2026-11-10)
 
-**Complete but for one V11 item**, checked against `develop` at `ae01cfe9`:
-every row of §6 has merged (the table below). V11 has no PR of its own and is
-inferred done from two others: its bun-common half is `res.sse({ contract })`
-in bun-native-routes' PR-sse2 (#633), its Nest half `@Validate`'s per-event
-`@Sse()` checks in V7b (#523). V3c's per-event `variants()` on an SSE writer
-(§6 row 11) is not built: `lib/sse/` has no `variant`. The
+**Complete**: every row of §6 has merged (the table below). V11's
+bun-common half is `res.sse({ contract })` in bun-native-routes' PR-sse2
+(#633), its Nest half `@Validate`'s per-event `@Sse()` checks in V7b (#523),
+and its last item, V3c's per-event variants on an SSE event, is
+`sseVariants()` (branch `feat/sse-variants`, below). The
 [Handoff (2026-10-22)](#handoff-2026-10-22-how-to-resume) below is historical.
 
 | Part | State |
@@ -81,7 +80,7 @@ in bun-native-routes' PR-sse2 (#633), its Nest half `@Validate`'s per-event
 | Follow-ups of group 1, merged 2026-10-21 | `messages` and `redactPaths` as `validate()` options #486 (#487); `close()` drains, `drainAndStop`, `closeDrainTimeout` #488 (#491), bun-nest on it #493; socket-free `fetch()` frames a body as a client does #489 (#490); HEAD on a GET route on the fast path #494; `getPort()` retry #497; `fresh()` an exact port of fresh 2.0.0 #498 (#499); the scrub scoped to the issue's path #505 (#506); a thenable schema result is async, scrub keys at the path #511 (#512); bun-jobs' remote and provider issue messages pinned #509; the API's old-spelling hint survives the scrub #500 |
 | OpenAPI, AsyncAPI, typed client ([`api-docs-generation/`](../api-docs-generation/README.md) "AD", [`typed-client/`](../typed-client/README.md) "TC") | **built**: AD #527 to #542 (its Status), TC #592 to #651 (its Status); §4.11 says what they read from this plan's runtime metadata; reviewed against TC by bun-node-99, and its findings are requirements of the PRs they name (§4.12) |
 | Validate-on-read for caches ([`bun-cache/`](../bun-cache/README.md), "BC" §3.13) | **merged 2026-10-27** as V10, inside BC's PR-C1 (#544); uses this plan's core |
-| **V11**, SSE on both adapters (§6 row 11) | inferred done but for one item: `res.sse({ contract })` typed and checked in bun-native-routes' PR-sse2 (#633), `@Sse()` per event under `@Validate` in V7b (#523); V3c's per-event `variants()` not built |
+| **V11**, SSE on both adapters (§6 row 11) | **done**: `res.sse({ contract })` typed and checked in bun-native-routes' PR-sse2 (#633), `@Sse()` per event under `@Validate` in V7b (#523), and per-event variants as **`sseVariants()`** (branch `feat/sse-variants`, 2026-11-10; bun-common, tests in bun-nest and bun-client): `sse({ tick: sseVariants({ admin: { when, data, description? }, user: { data } }) })`; the writer's `send({ event, variant?, data })` typed per variant and checked before encoding (selected, applicable by `when` on the opening request's `req.valid` and the request, asked once per stream, then the first match; the leak named on refusal); the response gate (`validate()`, Nest's `@Sse()`) checks the stream's events by the same rules; `describeContract` rows per variant; OpenAPI's `x-sse-events` and AsyncAPI's payloads `anyOf` the variants with `x-variants`; a client reads the union (the declaration is a Standard Schema of it). Departures from the sketch below: its own name rather than HTTP's `variants()` (an event's only part is `data`, and the declaration is browser-safe, so its `when` names no `BunRequest`); no discriminant (a frame has no header: a discriminated union in the schema does it); `anyOf`, not `oneOf`, in documents |
 
 ### Handoff (2026-10-22): how to resume
 
@@ -1708,7 +1707,7 @@ discriminant, so N−1 variants fail first.
 - **V11 (SSE)**: an `sse({ tick: variants({…}) })` event may take variants,
   `when` on the request that opened the stream (one request per stream, so it
   fits as HTTP's does), checked per event before encoding by the typed
-  `SseWriter`.
+  `SseWriter`. *Built (2026-11-10) as `sseVariants()`; see the Status.*
 - **Brokers and other transports (§4.2)**: no request, so no `when`; the
   discriminant generalises as `by: { part, name }` in the core (a message
   header such as `schema-version` selecting the payload schema), when a
@@ -2284,7 +2283,7 @@ nestjs-12-parity plan, built by bun-node-15 before and beside group 1):
 | **Group 3** | **Other transports** | | | | |
 | 9 | **V8** WebSocket channels (= TC PR-M4) | `defineChannel` on the core, §4.6.1; §4.12's M7 (the upgrade side, channel meta, the implicit error frame) and m12 (a pure contract apart from its server binding); **from V3c**: `variants()` per `sends` type with `when` on the connection, for `send()` only, refused for `publish()` (§4.4.6) | V1 (V3c for variants) | ~5 d (TC) **+1 d** | 11; 99 reviews (TC) |
 | 10 | **V9** Nest gateways (= NTR PR-N5) | `@ValidateMessage`, `@Emits`, `WsValidationFilter` (an object `WsException`, §4.6.2; V6's `ValidationExceptionFilter` already emits that frame shape, `{ status, code: "VALIDATION", issues }`, in a gateway) | V6, V8; nestjs-12-parity **PR-2** (Q4(a): the frame shape on 12) | ~4.5 d (NTR) **+0.5 d** | 11 in bun-nest; 15 reviews |
-| 11 | **V11** SSE on both adapters — **inferred done in #633 and #523, but for per-event `variants()`** | `res.sse({ contract })` typed and checked (inside bun-native-routes PR-sse2, also 11's), with declared `data` decoding (m9); Nest `@Sse` per event; **from V3c**: per-event `variants()`, `when` on the opening request (§4.4.6) | V3b, V3c, PR-sse2 | 1.5 d **inside PR-sse2** + 1 d bun-nest | 11; 15 reviews the Nest part |
+| 11 | **V11** SSE on both adapters — **done**: #633 and #523, and per-event variants as `sseVariants()` (`feat/sse-variants`, 2026-11-10) | `res.sse({ contract })` typed and checked (inside bun-native-routes PR-sse2, also 11's), with declared `data` decoding (m9); Nest `@Sse` per event; **from V3c**: per-event `variants()`, `when` on the opening request (§4.4.6) | V3b, V3c, PR-sse2 | 1.5 d **inside PR-sse2** + 1 d bun-nest | 11; 15 reviews the Nest part |
 | 12 | **V4** bun-jobs alignment | `s` `~standard.jsonSchema`, with defaulted keys optional on input and required in output (§4.12 m11); `validateResponses` modes; `defineRoute` attaching a full HTTP contract to its terminal layer through `forwardContract` (M5); the flattening copies may adopt `validateStandard` | V1 | 2.5 d | e9; 11 reviews |
 | 13 | **V5a** job data and results | §4.8.1–§4.8.4 except flows; checks in `BunQueue`; `JobMapFromSchemas`; the bench guard | V1 | 3.5 d | e9; 11 reviews |
 | 14 | **V5c** flows | the pre-write pass, per-node definitions, typed `getChildrenValues` | V5a | 1.5 d | e9; 11 reviews |

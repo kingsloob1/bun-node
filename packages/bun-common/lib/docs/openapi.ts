@@ -64,6 +64,7 @@ import { liftComponents } from "./lift";
 import { danglingRefs, pruneSchemaComponents } from "./refs";
 import { routeDocFor } from "./routeDoc";
 import { openApiSecurity } from "./security";
+import { documentSseEvents } from "./sseEvents";
 
 /**
  * An OpenAPI 3.1 document, as {@link generateOpenApi} builds it. Typed loosely
@@ -2526,13 +2527,19 @@ function bodySchemaFor(
     };
   }
   if (row.kind === "sse") {
-    const events = row.nested?.filter((nested) => nested.part === "data") ?? [];
+    const events = [
+      ...new Set(
+        (row.nested ?? [])
+          .filter((nested) => nested.part === "data")
+          .map((nested) => nested.key ?? "message"),
+      ),
+    ];
     return {
       type: "string",
       description: `Server-sent events. Events: ${
         events.length === 0
           ? "unspecified"
-          : events.map((event) => `\`${event.key ?? "message"}\``).join(", ")
+          : events.map((event) => `\`${event}\``).join(", ")
       }. Each \`data:\` line carries one event's data as ${
         (schema as { data?: unknown }).data === "text" ? "text" : "JSON"
       }.`,
@@ -2540,18 +2547,19 @@ function bodySchemaFor(
       // the stream's decoding (typed-client PR-S1's follow-up).
       "x-sse-data":
         (schema as { data?: unknown }).data === "text" ? "text" : "json",
+      // An event declared with `sseVariants()`: `anyOf` its variants and
+      // their `x-variants` table (`./sseEvents.ts`).
       "x-sse-events": Object.fromEntries(
-        events.map((event) => [
-          event.key ?? "message",
-          event.schema === null
-            ? null
-            : emitSchema(
-                event.schema,
-                direction,
-                `response body (${mediaType}) event "${event.key ?? "message"}"`,
-                route,
-              ),
-        ]),
+        documentSseEvents(row, (data, event, variant) =>
+          emitSchema(
+            data,
+            direction,
+            `response body (${mediaType}) event "${event}"${
+              variant === undefined ? "" : ` variant "${variant}"`
+            }`,
+            route,
+          ),
+        ).map((event) => [event.name, event.schema]),
       ),
     };
   }

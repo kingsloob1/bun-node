@@ -49,6 +49,7 @@ import type {
   RefineResponse,
   ResponseVariants,
   SseEvents,
+  SseVariants,
   StreamChunks,
   UntypedValid,
   VariantSpec,
@@ -73,6 +74,8 @@ import {
   SseFramer,
 } from "./responseBodies";
 import { serializeCookie } from "./utils/native";
+import { isSseVariants } from "./sse/declaration";
+import { decideSseVariant, SseWhenScope } from "./sse/variants";
 
 // ---------------------------------------------------------------------------
 // Declarations
@@ -1381,6 +1384,10 @@ class StreamChecker implements ResponseStreamCheck {
   #reported = false;
   /** The variant whose body this checks, put on its issues; `undefined` on a status with no variants. */
   #variant: string | undefined = undefined;
+  /** The request the response answers, for an `sseVariants()` event's `when`. */
+  readonly #req: BunRequest | undefined;
+  /** The stream's `when` answers, made on the first event with variants. */
+  #scope: SseWhenScope | undefined;
 
   /**
    * @param decl     The `chunks()` or `sse()` declaration.
@@ -1389,6 +1396,8 @@ class StreamChecker implements ResponseStreamCheck {
    * @param bare     The bare media type sent.
    * @param reporter Where mismatches go.
    * @param format   How the schemas' issues are worded.
+   * @param req      The request the response answers (an `sseVariants()`
+   *   event's `when` is asked with it); `undefined` when there is none.
    */
   constructor(
     decl: StreamChunks | SseEvents,
@@ -1397,6 +1406,7 @@ class StreamChecker implements ResponseStreamCheck {
     bare: string,
     reporter: StreamReporter,
     format: IssueFormat | undefined,
+    req?: BunRequest,
   ) {
     this.#decl = decl;
     this.#status = status;
@@ -1404,6 +1414,7 @@ class StreamChecker implements ResponseStreamCheck {
     this.#text = isTextMedia(bare);
     this.#reporter = reporter;
     this.#format = format;
+    this.#req = req;
   }
 
   /** Marks the stream's mismatch as reported (the commit reported its first chunk's). */
@@ -1578,10 +1589,48 @@ class StreamChecker implements ResponseStreamCheck {
         ];
       }
     }
+    if (isSseVariants(schema)) return this.#variantEvent(schema, name, value);
     return prefixed(
       run(schema, value, "body", status, media, this.#format),
       path,
     );
+  }
+
+  /**
+   * Checks one event declared with `sseVariants()` (`./sse/variants.ts`):
+   * every variant is selected (the wire does not name one), those whose
+   * `when` holds for the request are tried in order. A failed `when` is a
+   * failed check (`The response could not be checked`), as a schema's own
+   * failure is.
+   */
+  #variantEvent(variants: SseVariants, name: string, value: unknown): Found {
+    const status = this.#status;
+    const media = this.#key.declared;
+    const path = `${name}.data`;
+    const format = this.#format;
+    const req = this.#req;
+    const scope = (this.#scope ??= new SseWhenScope(req?.valid, req));
+    try {
+      return decideSseVariant<ValidationIssue<ResponsePart>>(
+        variants,
+        undefined,
+        scope,
+        {
+          check: (_variant, spec) =>
+            prefixed(
+              run(spec.data, value, "body", status, media, format),
+              path,
+            ),
+          issue: (message, variant) => ({
+            ...issue("body", status, message, media, name),
+            ...(variant === undefined ? {} : { variant }),
+          }),
+          tag: (issues, variant) => issues.map((i) => ({ ...i, variant })),
+        },
+      );
+    } catch (error) {
+      return Promise.reject(error as Error);
+    }
   }
 
   /** Turns a chunk's issues into a verdict, reporting them. */
@@ -2547,6 +2596,7 @@ export class ResponseContractGate implements ResponseGate {
       bare,
       this.#reporter(res, commit),
       this.#format,
+      res.req,
     );
     const kind = commit.kind;
     const whole = (chunk: BunResponseChunk): Found =>

@@ -19,7 +19,7 @@ import { BunRouter } from "../../lib/BunRouter";
 import { validate } from "../../lib/BunValidate";
 import { BunWebSocket } from "../../lib/BunWebSocket";
 import { defineChannel } from "../../lib/channel";
-import { sse } from "../../lib/responseBodies";
+import { sse, sseVariants } from "../../lib/responseBodies";
 import type { AsyncApiOptions } from "../../lib/docs/index";
 import { danglingRefs, generateAsyncApi } from "../../lib/docs/index";
 
@@ -204,6 +204,37 @@ function bothWaysRouter(): BunRouter {
   return router;
 }
 
+/** An SSE route whose event is declared with `sseVariants()` (bun-validate V11): its payload is `anyOf` the variants, with `x-variants`. */
+function sseVariantsRouter(): BunRouter {
+  const router = new BunRouter();
+  router.get(
+    "/ticks",
+    validate(
+      {},
+      {
+        responses: {
+          200: {
+            content: {
+              "text/event-stream": sse({
+                tick: sseVariants({
+                  admin: {
+                    when: () => true,
+                    data: z.object({ n: z.number(), secret: z.string() }),
+                    description: "Administrators",
+                  },
+                  user: { data: z.object({ n: z.number() }) },
+                }),
+              }),
+            },
+          },
+        },
+      },
+    ),
+    (_req, res) => res.send(new ReadableStream()),
+  );
+  return router;
+}
+
 /** No socket at all: the empty document. */
 function emptyRouter(): BunRouter {
   const router = new BunRouter();
@@ -215,6 +246,7 @@ const SOURCES: Record<string, () => BunRouter> = {
   "contract channel + SSE fallback": contractRouter,
   "describeChannel-enriched bare route": enrichedRouter,
   "contract channel, a type both ways": bothWaysRouter,
+  "SSE event with variants": sseVariantsRouter,
   "no channels": emptyRouter,
 };
 

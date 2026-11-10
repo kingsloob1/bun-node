@@ -3683,8 +3683,10 @@ export class BunResponse<
    *
    * A declared response contract still applies: the stream's status,
    * headers and media type are checked as it is committed, and an `sse()`
-   * body event by event as it is sent. Throws an `Error` when a response
-   * was already sent, and a `TypeError` for a bad option.
+   * body event by event as it is sent. An event declared with
+   * `sseVariants()` asks its variants' `when` with `req.valid` and `req`.
+   * Throws an `Error` when a response was already sent, and a `TypeError`
+   * for a bad option.
    *
    * @param options The writer's options ({@link SseWriterOptions}).
    */
@@ -3699,6 +3701,9 @@ export class BunResponse<
       ...options,
       lastEventId: req.get("last-event-id"),
       signal: req.signal,
+      // What an `sseVariants()` variant's `when` is asked with.
+      request: req,
+      valid: req.valid,
     });
     // Bun's own exemption from `idleTimeout`; the socket-free stub's is a
     // no-op, and a hand-built request may have no server.
