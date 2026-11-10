@@ -1,10 +1,10 @@
 import type { SummonGroupStatusDto } from "../../../api/types";
 import type { GroupCircuit, GroupShare } from "./summonGroupText";
-import { Badge } from "../../../components/Badge";
-import { cx } from "../../../components/classNames";
-import { KeyValue } from "../../../components/KeyValue";
+import { Badge } from "../../../../kit/components/Badge";
+import { cx } from "../../../../kit/components/classNames";
+import { KeyValue } from "../../../../kit/components/KeyValue";
 import { RelativeTime } from "../../../components/RelativeTime";
-import { Table } from "../../../components/Table";
+import { Table } from "../../../../kit/components/Table";
 import { displayText, formatNumber, plural } from "../../../format";
 import { useNow } from "../../../hooks/useNow";
 import { useFeature, useUntargetedCanFn } from "../../../meta/hooks";

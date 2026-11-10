@@ -6,7 +6,7 @@ import type {
   RunnerStatusDto,
   RunRecordDto,
 } from "../../api/types";
-import type { BadgeTone } from "../../components/Badge";
+import type { BadgeTone } from "../../../kit/components/Badge";
 import { isApiError } from "../../api/errors";
 import { formatNumber } from "../../format";
 import { formatMs } from "../queues/duration";

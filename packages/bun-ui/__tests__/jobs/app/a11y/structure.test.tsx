@@ -1,10 +1,10 @@
 import type { RouteDef } from "../../../../app/jobs/routing";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { EmptyState } from "../../../../app/jobs/components/EmptyState";
+import { EmptyState } from "../../../../app/kit/components/EmptyState";
 import { ErrorView } from "../../../../app/jobs/components/ErrorView";
 import { Link, RouterProvider, Routes } from "../../../../app/jobs/router";
 import { onDemand } from "../../../../app/jobs/screens/lazy";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { act, fireEvent, LOADED, page, render, setupDom, visit } from "../dom";
 import { auditDocument, formatFindings } from "./audit";
 

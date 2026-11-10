@@ -6,7 +6,7 @@ import {
   formatDemandFigure,
   qualify,
 } from "../../../../app/jobs/screens/queues/panels/demand";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { LOADED, page, setupDom, visit, waitFor, within } from "../dom";
 import {
   demandFixture,

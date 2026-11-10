@@ -1,7 +1,7 @@
 import type { WorkerDto, WorkerSummonProvenanceDto } from "../../api/types";
-import { Card } from "../../components/Card";
+import { Card } from "../../../kit/components/Card";
 import { RelativeTime } from "../../components/RelativeTime";
-import { Table } from "../../components/Table";
+import { Table } from "../../../kit/components/Table";
 import { displayText, plural } from "../../format";
 import {
   SUMMON_NOTE,

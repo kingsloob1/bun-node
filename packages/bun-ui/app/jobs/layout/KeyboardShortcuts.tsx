@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { Dialog } from "../components/Dialog";
+import { Dialog } from "../../kit/components/Dialog";
 import { findSearchBox, SHORTCUT_HELP, shortcutFor } from "./shortcuts";
 
 /**

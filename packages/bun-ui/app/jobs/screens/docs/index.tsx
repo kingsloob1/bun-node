@@ -3,8 +3,8 @@
  * and the WebSocket reference (AsyncAPI), each shown only when the API serves
  * that document (`meta.docs`). Routed from `routes.tsx` under `/docs`.
  */
-import { Card } from "../../components/Card";
-import { EmptyState } from "../../components/EmptyState";
+import { Card } from "../../../kit/components/Card";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { useMeta } from "../../meta/hooks";
 import { Link } from "../../router";
 

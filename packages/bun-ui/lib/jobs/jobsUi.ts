@@ -9,38 +9,26 @@
  * own. The mount path must equal `basePath`: the injected configuration and
  * every asset URL are built from it.
  */
-import type {
-  BunRequest,
-  BunResponse,
-  Logger,
-  RouterHandler,
-} from "@kingsleyweb/bun-common";
+import type { RouterHandler } from "@kingsleyweb/bun-common";
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
-import type { UiAsset, UiAssets } from "./assets";
-import type { UiUnauthorized } from "./browser/unauthorized";
-import type { JobsUiConfig, JobsUiSections, UiTheme } from "./browser/config";
-import type { ShellRenderer } from "./shell";
-import type {
-  JobsUi,
-  JobsUiAuthorize,
-  JobsUiAuthorizeContext,
-  JobsUiOptions,
-} from "./types";
-import { BunRouter, resolveLogger } from "@kingsleyweb/bun-common";
+import type { ConfigFail } from "../kit/options";
+import type { JobsUiConfig, JobsUiSections } from "./browser/config";
+import type { JobsUi, JobsUiOptions } from "./types";
+import { resolveLogger } from "@kingsleyweb/bun-common";
 import { ConfigError } from "@kingsleyweb/bun-jobs";
-import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
 import { ASSET_CACHE_CONTROL } from "../kit/browser/shared";
 import {
-  redirectsDenial,
-  resolveUnauthorized,
-  sendUnauthorizedRedirect,
-} from "../kit/unauthorized";
-import {
-  connectSources,
-  createNonce,
-  createShellRenderer,
-  cspHeader,
-} from "./shell";
+  freezeConfig,
+  normalizeMountPath,
+  requireOptionsObject,
+  resolveCommonOptions,
+  resolveCsrfHeader,
+  resolveTheme,
+} from "../kit/options";
+import { ASSETS_SUBPATH, createUiRouter, problemSender } from "../kit/serve";
+import { resolveUnauthorized } from "../kit/unauthorized";
+import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
+import { connectSources, createShellRenderer } from "./shell";
 
 /** The UI's default mount path. */
 export const DEFAULT_BASE_PATH = "/jobs";
@@ -48,16 +36,14 @@ export const DEFAULT_BASE_PATH = "/jobs";
 /** The default page title. */
 export const DEFAULT_TITLE = "Jobs";
 
-/** The path under `basePath` the bundle is served from. */
-export const ASSETS_SUBPATH = "/assets";
+export { ASSET_CACHE_CONTROL, ASSETS_SUBPATH };
 
-export { ASSET_CACHE_CONTROL };
+/** Every option error is bun-jobs' `ConfigError`, the class `jobsUi()` users already catch. */
+const fail: ConfigFail = (message, context) =>
+  new ConfigError(message, context);
 
-/** A path segment `basePath` may contain — the API's own rule. */
-const PATH_SEGMENT = /^[\w.~-]+$/;
-
-/** A header name (an RFC 9110 token). */
-const HEADER_NAME = /^[!#$%&'*+.^`|~\w-]+$/;
+/** Its problems' `type` is the API's: `urn:bun-jobs:error:<code>` (contract §2.1). */
+const sendProblem = problemSender("urn:bun-jobs:error:");
 
 // The option's defaults, kept here for `./lib/jobsUi` importers; the
 // option itself is the kit's (`lib/kit/unauthorized`), shared with docsUi().
@@ -80,30 +66,7 @@ export interface JobsUiInternals {
  * segments of letters, digits, `_`, `.`, `~` and `-`.
  */
 export function normalizeBasePath(value: unknown, what: string): string {
-  if (typeof value !== "string" || !value.startsWith("/")) {
-    throw new ConfigError(
-      `${what} must be an absolute path starting with "/"`,
-      {
-        value,
-      },
-    );
-  }
-  const trimmed = value.replace(/\/+$/, "");
-  if (trimmed === "") {
-    throw new ConfigError(
-      `${what} may not be "/": the UI's catch-all would answer for every GET route of the host`,
-      { value },
-    );
-  }
-  for (const segment of trimmed.slice(1).split("/")) {
-    if (!PATH_SEGMENT.test(segment) || segment === "." || segment === "..") {
-      throw new ConfigError(
-        `${what} may only contain "/"-separated segments of letters, digits, "_", ".", "~" and "-"`,
-        { value },
-      );
-    }
-  }
-  return trimmed;
+  return normalizeMountPath(value, what, "UI", fail);
 }
 
 /** Whether `path` is `base` or lies under it, segment-wise. */
@@ -279,174 +242,6 @@ function resolveSections(value: JobsUiOptions["sections"]): JobsUiSections {
   return sections;
 }
 
-/** Validates `theme`. */
-function resolveTheme(value: unknown): UiTheme {
-  if (value === undefined) {
-    return "system";
-  }
-  if (value === "system" || value === "light" || value === "dark") {
-    return value;
-  }
-  throw new ConfigError(`theme must be "system", "light" or "dark"`, {
-    value,
-  });
-}
-
-/** Validates `csrfHeader`, falling back to what the API reports. */
-function resolveCsrfHeader(
-  value: unknown,
-  api: JobsApi | undefined,
-): string | null {
-  if (value === undefined) {
-    return (api && csrfHeaderFromApi(api)) ?? null;
-  }
-  if (value === false) {
-    return null;
-  }
-  if (typeof value !== "string" || !HEADER_NAME.test(value)) {
-    throw new ConfigError("csrfHeader must be a header name or false", {
-      value,
-    });
-  }
-  return value;
-}
-
-/** A frozen copy of the config, nested objects included. */
-function freezeConfig(config: JobsUiConfig): Readonly<JobsUiConfig> {
-  for (const value of Object.values(config)) {
-    if (typeof value === "object" && value !== null) {
-      Object.freeze(value);
-    }
-  }
-  return Object.freeze(config);
-}
-
-/** Sends an RFC 9457 problem, shaped as the API's (contract §2.1). */
-function sendProblem(
-  req: BunRequest,
-  res: BunResponse,
-  status: number,
-  code: string,
-  title: string,
-  detail: string,
-): void {
-  res.status(status);
-  res.setHeader("Content-Type", "application/problem+json");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  if (req.method === "HEAD") {
-    void res.end();
-    return;
-  }
-  res.send(
-    JSON.stringify({
-      type: `urn:bun-jobs:error:${code}`,
-      title,
-      status,
-      code,
-      detail,
-      instance: req.path,
-    }),
-  );
-}
-
-/**
- * Normalises an `authorize` answer, as the API's own `decide` does: a denial
- * is 401 only for `status: 401`, 403 for any other status, and anything
- * unrecognised denies with 403.
- */
-function decide(result: unknown):
-  | { allow: true }
-  | {
-      allow: false;
-      status: 401 | 403;
-      reason?: string;
-    } {
-  if (result === true) {
-    return { allow: true };
-  }
-  if (typeof result === "object" && result !== null && "allow" in result) {
-    const answer = result as {
-      allow: unknown;
-      status?: unknown;
-      reason?: unknown;
-    };
-    if (answer.allow === true) {
-      return { allow: true };
-    }
-    if (answer.allow === false) {
-      return {
-        allow: false,
-        status: answer.status === 401 ? 401 : 403,
-        ...(typeof answer.reason === "string" && answer.reason !== ""
-          ? { reason: answer.reason }
-          : {}),
-      };
-    }
-  }
-  return { allow: false, status: 403 };
-}
-
-/**
- * The `authorize` step of every UI route. With `redirect`, a denial whose
- * status it lists answers a page navigation with a 303 to the target; a
- * bundle file and anything that is not a navigation keep the problem.
- */
-function authorizeStep(
-  authorize: JobsUiAuthorize,
-  asset: boolean,
-  logger: Logger,
-  redirect: UiUnauthorized | null,
-): RouterHandler {
-  return async (req, res, next) => {
-    const context: JobsUiAuthorizeContext = { asset, path: req.path };
-    let decision: ReturnType<typeof decide>;
-    try {
-      decision = decide(await authorize(req, context));
-    } catch (error) {
-      logger.error("jobs ui authorize threw; refusing the request", {
-        error,
-        path: req.path,
-      });
-      sendProblem(
-        req,
-        res,
-        500,
-        "INTERNAL",
-        "Internal server error",
-        "Internal server error",
-      );
-      return;
-    }
-    if (decision.allow) {
-      return next();
-    }
-    if (redirectsDenial(redirect, !asset, decision.status, req)) {
-      sendUnauthorizedRedirect(req, res, redirect);
-      return;
-    }
-    if (decision.status === 401) {
-      sendProblem(
-        req,
-        res,
-        401,
-        "UNAUTHORIZED",
-        "Authentication required",
-        decision.reason ?? "Authentication required",
-      );
-    } else {
-      sendProblem(
-        req,
-        res,
-        403,
-        "FORBIDDEN",
-        "Forbidden",
-        decision.reason ?? "Not allowed to open this page",
-      );
-    }
-  };
-}
-
 /**
  * Creates the UI with an explicit bundle source. {@link jobsUi} is this with
  * the package's own `dist/` and `app/main.tsx`; tests point it at a fixture.
@@ -455,9 +250,7 @@ export function createJobsUi(
   options: JobsUiOptions,
   internals: JobsUiInternals = {},
 ): JobsUi {
-  if (typeof options !== "object" || options === null) {
-    throw new ConfigError("jobsUi() needs an options object", {});
-  }
+  requireOptionsObject(options, "jobsUi()", fail);
   const hasApi = options.api !== undefined;
   const hasUrl = options.apiUrl !== undefined;
   if (hasApi === hasUrl) {
@@ -492,43 +285,28 @@ export function createJobsUi(
       { basePath, apiBasePath: target.apiPath },
     );
   }
-  const title = options.title ?? DEFAULT_TITLE;
-  if (typeof title !== "string" || title.trim() === "") {
-    throw new ConfigError("title must be a non-empty string", { title });
-  }
-  const middleware = options.middleware ?? [];
-  if (
-    !Array.isArray(middleware) ||
-    !middleware.every((handler) => typeof handler === "function")
-  ) {
-    throw new ConfigError("middleware must be an array of functions", {});
-  }
-  if (
-    options.authorize !== undefined &&
-    typeof options.authorize !== "function"
-  ) {
-    throw new ConfigError("authorize must be a function", {});
-  }
-  if (options.dev !== undefined && typeof options.dev !== "boolean") {
-    throw new ConfigError("dev must be a boolean", { dev: options.dev });
-  }
+  const { title, middleware } = resolveCommonOptions(
+    options,
+    DEFAULT_TITLE,
+    fail,
+  );
 
-  const config = freezeConfig({
+  const config = freezeConfig<JobsUiConfig>({
     version: 1,
     title,
     basePath,
     assetsPath: `${basePath}${ASSETS_SUBPATH}`,
     apiBase: target.apiBase,
-    csrfHeader: resolveCsrfHeader(options.csrfHeader, api),
+    csrfHeader: resolveCsrfHeader(
+      options.csrfHeader,
+      () => (api && csrfHeaderFromApi(api)) ?? null,
+      fail,
+    ),
     websocket: api ? websocketFromApi(api) : null,
     docs: api ? docsFromApi(api) : null,
     sections: resolveSections(options.sections),
-    theme: resolveTheme(options.theme),
-    unauthorized: resolveUnauthorized(
-      options.unauthorized,
-      basePath,
-      (message, context) => new ConfigError(message, context),
-    ),
+    theme: resolveTheme(options.theme, fail),
+    unauthorized: resolveUnauthorized(options.unauthorized, basePath, fail),
   });
 
   const logger = resolveLogger(options.logger).child({ component: "jobs-ui" });
@@ -537,125 +315,11 @@ export function createJobsUi(
     distDir: internals.distDir ?? DEFAULT_DIST_DIR,
     entry: internals.entry ?? DEFAULT_ENTRY,
     logger,
-    fail: (message, context) => new ConfigError(message, context),
+    fail,
   });
-
-  // The shell is rendered from the bundle, so it waits for the first load.
-  let renderer: { assets: UiAssets; render: ShellRenderer } | undefined;
-  const ready = async (): Promise<{
-    assets: UiAssets;
-    render: ShellRenderer;
-  }> => {
-    if (renderer === undefined) {
-      const assets = await loadAssets();
-      renderer ??= { assets, render: createShellRenderer(config, assets) };
-    }
-    return renderer;
-  };
-  /** Loads the bundle, or answers 500 and returns `undefined`. */
-  const readyOrFail = async (
-    req: BunRequest,
-    res: BunResponse,
-  ): Promise<{ assets: UiAssets; render: ShellRenderer } | undefined> => {
-    try {
-      return await ready();
-    } catch (error) {
-      logger.error("jobs ui could not load its bundle", { error });
-      sendProblem(
-        req,
-        res,
-        500,
-        "INTERNAL",
-        "Internal server error",
-        "Internal server error",
-      );
-      return undefined;
-    }
-  };
 
   const apiOrigin = target.apiOrigin;
   const websocketPort = config.websocket?.port ?? null;
-  const serveShell: RouterHandler = async (req, res) => {
-    const loaded = await readyOrFail(req, res);
-    if (!loaded) {
-      return;
-    }
-    const nonce = createNonce();
-    const html = loaded.render(nonce);
-    res.status(200);
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store");
-    // The Host header first: it is the origin the browser loaded the page
-    // from. `connectSources` drops it unless it is a plain `host[:port]`.
-    const connectSrc = connectSources({
-      host: req.get("host") ?? req.host,
-      secure: req.secure,
-      apiOrigin,
-      websocketPort,
-    });
-    res.setHeader("Content-Security-Policy", cspHeader({ nonce, connectSrc }));
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "no-referrer");
-    if (req.method === "HEAD") {
-      void res.end();
-      return;
-    }
-    res.send(html);
-  };
-
-  const serveAsset: RouterHandler = async (req, res) => {
-    const loaded = await readyOrFail(req, res);
-    if (!loaded) {
-      return;
-    }
-    const name = (req.params as Record<string, string | undefined>).file;
-    const file: UiAsset | undefined =
-      name === undefined ? undefined : loaded.assets.files.get(name);
-    if (file === undefined) {
-      sendProblem(
-        req,
-        res,
-        404,
-        "NOT_FOUND",
-        "Not found",
-        `No asset ${req.path}`,
-      );
-      return;
-    }
-    res.setHeader("Content-Type", file.type);
-    res.setHeader("Cache-Control", ASSET_CACHE_CONTROL);
-    res.setHeader("ETag", file.etag);
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    const match = req.get("if-none-match");
-    if (
-      match !== null &&
-      match
-        .split(",")
-        .some((tag) => tag.trim().replace(/^W\//, "") === file.etag)
-    ) {
-      res.status(304);
-      void res.end();
-      return;
-    }
-    res.status(200);
-    if (req.method === "HEAD") {
-      res.setHeader("Content-Length", String(file.size));
-      void res.end();
-      return;
-    }
-    res.send(file.body);
-  };
-
-  const notFound: RouterHandler = (req, res) => {
-    sendProblem(
-      req,
-      res,
-      404,
-      "NOT_FOUND",
-      "Not found",
-      `No asset ${req.path}`,
-    );
-  };
 
   // A request under the API's own path is the API's, even when the API is
   // mounted under this UI's basePath and after it.
@@ -665,29 +329,26 @@ export function createJobsUi(
       ? next("route")
       : next();
 
-  const guards = (asset: boolean): RouterHandler[] => [
-    leaveApiAlone,
-    ...middleware,
-    ...(options.authorize
-      ? [authorizeStep(options.authorize, asset, logger, config.unauthorized)]
-      : []),
-  ];
-
-  const router = new BunRouter();
-  for (const verb of ["get", "head"] as const) {
-    const register = router[verb].bind(router) as unknown as (
-      path: string,
-      ...callbacks: RouterHandler[]
-    ) => unknown;
-    // `:file` is one segment; anything deeper under the assets path is a 404,
-    // never the shell. (A named `*file` would lose its name when the router is
-    // mounted — bun-common flattens it to a positional wildcard.)
-    register(`${ASSETS_SUBPATH}/:file`, ...guards(true), serveAsset);
-    register(ASSETS_SUBPATH, ...guards(true), notFound);
-    register(`${ASSETS_SUBPATH}/*`, ...guards(true), notFound);
-    register("/", ...guards(false), serveShell);
-    register("/*", ...guards(false), serveShell);
-  }
+  const router = createUiRouter({
+    label: "jobs ui",
+    logger,
+    problem: sendProblem,
+    loadAssets,
+    createRenderer: (assets) => createShellRenderer(config, assets),
+    // The Host header first: it is the origin the browser loaded the page
+    // from. `connectSources` drops it unless it is a plain `host[:port]`.
+    connectSrc: (req) =>
+      connectSources({
+        host: req.get("host") ?? req.host,
+        secure: req.secure,
+        apiOrigin,
+        websocketPort,
+      }),
+    before: [leaveApiAlone],
+    middleware,
+    authorize: options.authorize,
+    unauthorized: config.unauthorized,
+  });
 
   return Object.freeze({ router, basePath, config });
 }

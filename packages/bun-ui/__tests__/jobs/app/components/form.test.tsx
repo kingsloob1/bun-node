@@ -1,13 +1,13 @@
 import { describe, expect, it, mock } from "bun:test";
 import { useState } from "react";
-import { Field } from "../../../../app/jobs/components/Field";
+import { Field } from "../../../../app/kit/components/Field";
 import {
   Checkbox,
   DateTimeInput,
   NumberInput,
   Select,
   TextInput,
-} from "../../../../app/jobs/components/inputs";
+} from "../../../../app/kit/components/inputs";
 import {
   DATE_TIME_OUT_OF_RANGE,
   DATE_TIME_UNREADABLE,
@@ -16,8 +16,8 @@ import {
   parseNumberInput,
   readDateTimeLocal,
   toDateTimeLocal,
-} from "../../../../app/jobs/components/inputValues";
-import { expectUndefined } from "../assert";
+} from "../../../../app/kit/components/inputValues";
+import { expectUndefined } from "../../../harness/assert";
 import { fireEvent, page, render, setupDom } from "../dom";
 import { stubRawValue } from "../rawInput";
 

@@ -9,7 +9,7 @@ import {
   schemaSkeleton,
   typeLabel,
 } from "../../../../../app/docs/screens/docs/schema";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 
 /** A document with components, a cycle, a ref chain and an escaped name. */
 const doc = {

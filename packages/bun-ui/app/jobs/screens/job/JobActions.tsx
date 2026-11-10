@@ -9,9 +9,9 @@ import {
   removeJob,
   retryJob,
 } from "../../api/jobs";
-import { Button } from "../../components/Button";
+import { Button } from "../../../kit/components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { Checkbox } from "../../components/inputs";
+import { Checkbox } from "../../../kit/components/inputs";
 import { useApiClient } from "../../context";
 import { useApiMutation } from "../../hooks/useApiMutation";
 import { useNavigate } from "../../routing";

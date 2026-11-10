@@ -23,11 +23,11 @@ import {
   setJobDefaults,
 } from "../../../../api/jobDefaults";
 import { mutationInvalidations } from "../../../../api/queues";
-import { Badge } from "../../../../components/Badge";
-import { Button } from "../../../../components/Button";
-import { Dialog } from "../../../../components/Dialog";
-import { Field } from "../../../../components/Field";
-import { NumberInput, Select } from "../../../../components/inputs";
+import { Badge } from "../../../../../kit/components/Badge";
+import { Button } from "../../../../../kit/components/Button";
+import { Dialog } from "../../../../../kit/components/Dialog";
+import { Field } from "../../../../../kit/components/Field";
+import { NumberInput, Select } from "../../../../../kit/components/inputs";
 import { ProblemBanner } from "../../../../components/ProblemBanner";
 import { useApiClient } from "../../../../context";
 import { useApiMutation } from "../../../../hooks/useApiMutation";

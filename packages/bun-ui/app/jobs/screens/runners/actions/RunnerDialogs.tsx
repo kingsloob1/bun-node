@@ -9,9 +9,9 @@ import {
 } from "../../../api/runnerActions";
 import { runnerInvalidations } from "../../../api/runners";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { Field } from "../../../components/Field";
-import { Checkbox, Select, TextInput } from "../../../components/inputs";
-import { useToast } from "../../../components/toast";
+import { Field } from "../../../../kit/components/Field";
+import { Checkbox, Select, TextInput } from "../../../../kit/components/inputs";
+import { useToast } from "../../../../kit/components/toast";
 import { useApiClient } from "../../../context";
 import { plural } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";

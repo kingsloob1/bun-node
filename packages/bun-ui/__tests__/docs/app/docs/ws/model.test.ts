@@ -13,7 +13,7 @@ import {
   selectItem,
   subprotocolSource,
 } from "../../../../../app/docs/screens/docs/ws/model";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import { wsFixture } from "./fixtures";
 
 const both = readWsDoc(wsFixture("both"));

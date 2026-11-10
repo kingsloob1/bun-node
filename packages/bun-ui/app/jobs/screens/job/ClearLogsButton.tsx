@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { isApiError } from "../../api/errors";
 import { clearJobLogs, jobKeys } from "../../api/jobs";
-import { Button } from "../../components/Button";
+import { Button } from "../../../kit/components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useApiClient } from "../../context";
 import { plural } from "../../format";

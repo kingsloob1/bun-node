@@ -1,0 +1,162 @@
+import { dirname, join } from "node:path";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
+import { registerDom } from "./register-dom";
+
+/**
+ * The DOM for every UI's component tests (the harness), and Testing Library
+ * loaded AFTER it. Each UI binds it in `__tests__/<ui>/app/dom.ts`: its
+ * mount as the DOM's URL, and what to preload ({@link setupDom}).
+ *
+ *
+ * Order matters: react-dom decides at module evaluation whether it runs in a
+ * DOM (`canUseDOM`), and Bun evaluates a CommonJS dependency ahead of the
+ * ESM bodies that statically import it. Imported statically, react-dom
+ * would load before happy-dom registers and fall back to its legacy change
+ * polyfill — `onChange` then never fires. So Testing Library (which loads
+ * react-dom) is imported dynamically, below the registration. Test files must
+ * take `render`/`fireEvent`/... from here, never import
+ * `@testing-library/react` or `react-dom` themselves.
+ */
+registerDom();
+
+const testingLibrary = await import("@testing-library/react");
+
+export const { act, cleanup, fireEvent, render, waitFor, within } =
+  testingLibrary;
+
+const { environmentManager, focusManager, onlineManager } =
+  await import("@tanstack/react-query");
+
+/**
+ * TanStack Query decides whether it runs on a server ONCE, when query-core
+ * evaluates: `typeof window === "undefined"`. On a "server" it schedules no
+ * timers at all, so `refetchInterval` never fires and a polling screen reads
+ * once and stops. `bun test` shares that module across files, so whichever
+ * file loads it first decides for the whole run: a DOM-less file (one testing
+ * a helper next to `app/queryClient.ts`, say) ahead of the DOM files leaves
+ * every later polling test broken — and only in whole-package runs. Asking
+ * again at each call answers for the DOM that is registered now.
+ */
+environmentManager.setIsServer(() => typeof window === "undefined");
+
+/**
+ * Fails a test that starts with TanStack Query believing it runs on a
+ * server, in a background tab or offline: in each, polling silently stops,
+ * and a test asserting a refetch would fail far from the cause.
+ */
+export function assertQueryEnvironment(): void {
+  const problems = [
+    environmentManager.isServer() && "believes it runs on a server",
+    !focusManager.isFocused() && "believes the tab is unfocused",
+    !onlineManager.isOnline() && "believes it is offline",
+  ].filter(Boolean);
+  if (problems.length > 0) {
+    throw new Error(
+      `TanStack Query ${problems.join(", ")} at the start of a DOM test: an earlier test leaked that state, and polling would not run.`,
+    );
+  }
+}
+
+/** Lets React's scheduler (and any queued microtasks) finish. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/**
+ * A once-per-process loader of every module `file` imports dynamically: a
+ * UI's lazy-screen list (`app/jobs/screens/lazy.tsx`). A test's first render
+ * of a lazy screen otherwise waits on a real module load (resolve, transpile,
+ * evaluate), which fake timers and a microtask-only `advance()` cannot drive:
+ * a fake-timer test passed only if an earlier test, in whatever order the run
+ * chose, had already loaded that chunk. With the modules cached,
+ * `React.lazy` resolves within microtasks, whatever runs first. The list is
+ * read from `file` itself, so a new screen is covered without touching the
+ * harness.
+ */
+export function preloadDynamicImports(file: string): () => Promise<void> {
+  let loaded = false;
+  return async () => {
+    if (loaded) {
+      return;
+    }
+    const specifiers = new Bun.Transpiler({ loader: "tsx" })
+      .scanImports(await Bun.file(file).text())
+      .filter((entry) => entry.kind === "dynamic-import")
+      .map((entry) => join(dirname(file), entry.path));
+    await Promise.all([...new Set(specifiers)].map((path) => import(path)));
+    loaded = true;
+  };
+}
+
+/** How a UI's tests set up the DOM. */
+export interface SetupDomOptions {
+  /** The URL each test starts at: the UI's default mount (`http://localhost/jobs`). */
+  url: string;
+  /** Run once the DOM is registered, before the file's tests (a {@link preloadDynamicImports} loader). Defaults to nothing. */
+  preload?: () => Promise<void>;
+}
+
+/**
+ * Installs the DOM for the calling test file: registered at `options.url`
+ * before its tests, cleaned between them (rendered trees, storage, URL,
+ * theme), unregistered after them, so happy-dom's `fetch`/`Request`/
+ * `Response` never leak into server tests sharing the process. A UI's
+ * `dom.ts` binds it; each DOM test file calls that once at the top level.
+ */
+export function setupDom(options: SetupDomOptions): void {
+  const { url, preload } = options;
+  beforeAll(async () => {
+    registerDom(url);
+    await preload?.();
+  });
+  beforeEach(() => assertQueryEnvironment());
+  afterEach(async () => {
+    cleanup();
+    await settle();
+    document.body.innerHTML = "";
+    try {
+      localStorage.clear();
+    } catch {
+      // Storage may be unavailable; nothing to clear.
+    }
+    delete document.documentElement.dataset.theme;
+    window.history.replaceState(null, "", url);
+  });
+  afterAll(async () => {
+    await settle();
+    if (GlobalRegistrator.isRegistered) {
+      await GlobalRegistrator.unregister();
+    }
+  });
+}
+
+/**
+ * Queries bound to the current `document.body`. Testing Library's `screen`
+ * binds to the body that existed when it was first imported, which is stale
+ * once a file re-registers the DOM, so tests use this instead.
+ */
+export function page() {
+  return within(document.body);
+}
+
+/** Moves the DOM's URL (as a server-side route would land the browser there). */
+export function visit(path: string): void {
+  window.history.replaceState(null, "", path);
+}
+
+/**
+ * The wait for something to appear on the page, as the third argument of a
+ * `page().findBy*` query or the options of a `waitFor` on a screen: five
+ * seconds, where Testing Library's default is one. Every page-level lookup
+ * takes it. A screen's first lookup waits on `/meta`, the lazy screen's
+ * Suspense boundary and the screen's first read, and a later one on a read or
+ * a portal; quiet those are milliseconds, but under a full `--parallel` run
+ * beside another heavy job they passed one second (`workers/summon` 1.2 s,
+ * `queues/summonPanel` 1.3 s, `queues/jobDefaults` 2.5 s). Lookups inside a
+ * region already found (`within(region).findBy*`) and waits for something to
+ * go away keep the default, so a negative wait stays short.
+ */
+export const LOADED = { timeout: 5_000 } as const;

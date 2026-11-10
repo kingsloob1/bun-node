@@ -8,7 +8,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * The worker screens against a REAL `createJobsApi` where the worker is not

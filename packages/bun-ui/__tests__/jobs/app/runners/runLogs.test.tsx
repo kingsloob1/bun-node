@@ -8,7 +8,7 @@ import type {
 import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { CAPTURE_GAP_NOTE } from "../../../../app/jobs/screens/runners/runLogFormat";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {

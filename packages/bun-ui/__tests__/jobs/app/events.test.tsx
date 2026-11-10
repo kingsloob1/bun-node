@@ -19,7 +19,11 @@ import {
   scopesFor,
   typesFor,
 } from "../../../app/jobs/screens/events/eventLog";
-import { expectAbsent, expectNone, expectUndefined } from "./assert";
+import {
+  expectAbsent,
+  expectNone,
+  expectUndefined,
+} from "../../harness/assert";
 import {
   act,
   fireEvent,

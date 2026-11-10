@@ -5,12 +5,16 @@ import { useId, useState } from "react";
 import { JOB_STATES } from "../../api/contract";
 import { isApiError } from "../../api/errors";
 import { mutationInvalidation, updateJob } from "../../api/jobs";
-import { Button } from "../../components/Button";
-import { Dialog } from "../../components/Dialog";
-import { Field } from "../../components/Field";
-import { Checkbox, DateTimeInput, NumberInput } from "../../components/inputs";
-import { JsonEditor } from "../../components/JsonEditor";
-import { jsonEditorState } from "../../components/jsonParse";
+import { Button } from "../../../kit/components/Button";
+import { Dialog } from "../../../kit/components/Dialog";
+import { Field } from "../../../kit/components/Field";
+import {
+  Checkbox,
+  DateTimeInput,
+  NumberInput,
+} from "../../../kit/components/inputs";
+import { JsonEditor } from "../../../kit/components/JsonEditor";
+import { jsonEditorState } from "../../../kit/components/jsonParse";
 import { ProblemBanner } from "../../components/ProblemBanner";
 import { useApiClient } from "../../context";
 import { STATE_LABELS } from "../../format";

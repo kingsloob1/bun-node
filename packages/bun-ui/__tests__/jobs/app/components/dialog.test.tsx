@@ -2,8 +2,8 @@ import { describe, expect, it, mock } from "bun:test";
 import { useState } from "react";
 import { ApiError } from "../../../../app/jobs/api/errors";
 import { ConfirmDialog } from "../../../../app/jobs/components/ConfirmDialog";
-import { Dialog } from "../../../../app/jobs/components/Dialog";
-import { expectAbsent } from "../assert";
+import { Dialog } from "../../../../app/kit/components/Dialog";
+import { expectAbsent } from "../../../harness/assert";
 import { act, fireEvent, page, render, setupDom, waitFor } from "../dom";
 
 setupDom();

@@ -1,6 +1,6 @@
 import type { RunRecordDto } from "../../api/types";
 import { hasRunLogs } from "../../api/runnerLogs";
-import { Button } from "../../components/Button";
+import { Button } from "../../../kit/components/Button";
 import { useUrlParams } from "../queues/urlState";
 import { LOGS_PARAM } from "./runLogFormat";
 import { useCanReadRunLogs } from "./runLogGates";

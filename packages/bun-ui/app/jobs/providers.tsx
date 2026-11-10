@@ -9,7 +9,7 @@ import {
   createUnauthorizedRedirect,
   watchAuthFailures,
 } from "@kingsleyweb/bun-ui/docs/embed/unauthorized";
-import { ToastProvider } from "./components/ToastProvider";
+import { ToastProvider } from "../kit/components/ToastProvider";
 import { ApiClientContext, UiConfigContext } from "./context";
 import { MetaProvider } from "./meta/MetaProvider";
 import { RouterProvider } from "./router";

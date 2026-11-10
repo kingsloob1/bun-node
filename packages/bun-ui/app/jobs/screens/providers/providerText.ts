@@ -1,5 +1,5 @@
 import type { ProviderDto, ProviderValidationDto } from "../../api/types";
-import type { BadgeTone } from "../../components/Badge";
+import type { BadgeTone } from "../../../kit/components/Badge";
 import { displayText } from "../../format";
 
 /**

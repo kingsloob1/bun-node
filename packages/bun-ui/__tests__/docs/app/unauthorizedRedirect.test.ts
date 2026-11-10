@@ -13,7 +13,7 @@ import {
   statusOf,
   watchAuthFailures,
 } from "../../../app/kit/unauthorized";
-import { expectAbsent, expectUndefined } from "./assert";
+import { expectAbsent, expectUndefined } from "../../harness/assert";
 
 /** `unauthorized: { redirectTo: "/login" }`, resolved. */
 const TO_LOGIN: UiUnauthorized = {

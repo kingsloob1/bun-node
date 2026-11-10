@@ -1,5 +1,5 @@
 import type { RunLogLevel, RunLogStream } from "../../api/types";
-import type { BadgeTone } from "../../components/Badge";
+import type { BadgeTone } from "../../../kit/components/Badge";
 import {
   DEFAULT_REDACT_REPLACEMENT,
   RUN_LOG_HINT_MS,

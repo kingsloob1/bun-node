@@ -4,8 +4,8 @@ import { boot } from "./boot";
  * CSS files) and the app. Everything else lives in `boot.tsx`, so tests can
  * start the app without this module's import-time side effect.
  */
-import "./styles/tokens.css";
-import "./styles/base.css";
-import "./components/components.css";
+import "../kit/styles/tokens.css";
+import "../kit/styles/base.css";
+import "../kit/components/components.css";
 
 boot();

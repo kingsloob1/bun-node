@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { runnerActionGates } from "../../../../../app/jobs/screens/runners/actions/gating";
-import { expectAbsent } from "../../assert";
+import { expectAbsent } from "../../../../harness/assert";
 import { fireEvent, page, setupDom, within } from "../../dom";
 import {
   actionGroup,

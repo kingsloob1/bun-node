@@ -9,9 +9,9 @@ import {
   describeAxis,
   getWorkerAnalytics,
 } from "../../api/analytics";
-import { Card } from "../../components/Card";
+import { Card } from "../../../kit/components/Card";
 import { Sparkline } from "../../components/Sparkline";
-import { Spinner } from "../../components/Spinner";
+import { Spinner } from "../../../kit/components/Spinner";
 import { useApiClient } from "../../context";
 import { formatNumber } from "../../format";
 import { usePollInterval } from "../../live";

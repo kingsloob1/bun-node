@@ -1,6 +1,6 @@
 import type { RecordedCall } from "./mockFetch";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { expectAbsent } from "./assert";
+import { expectAbsent } from "../../harness/assert";
 import { fireEvent, LOADED, page, setupDom } from "./dom";
 import { allPermissions, jobApiPath, jobFixture } from "./job/fixtures";
 import { renderJobScreen } from "./job/render";

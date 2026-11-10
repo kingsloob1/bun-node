@@ -1,6 +1,6 @@
 import type { RunnerInfoDto, TriggerOutcomeDto } from "../../../api/types";
-import type { ToastApi } from "../../../components/toast";
-import { CopyButton } from "../../../components/CopyButton";
+import type { ToastApi } from "../../../../kit/components/toast";
+import { CopyButton } from "../../../../kit/components/CopyButton";
 import { SKIP_REASONS } from "./explain";
 
 /**

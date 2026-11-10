@@ -9,7 +9,7 @@ import {
   readRange,
   writeRange,
 } from "../../../../app/jobs/analytics/range";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /** A fixed clock, so a rolling preset resolves to known instants. */
 const NOW = Date.UTC(2026, 8, 20, 12, 0, 0);

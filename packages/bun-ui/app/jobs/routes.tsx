@@ -1,6 +1,6 @@
 import type { NavItem } from "./layout/nav";
 import type { RouteDef } from "./routing";
-import { EmptyState } from "./components/EmptyState";
+import { EmptyState } from "../kit/components/EmptyState";
 import {
   QueuePermissionScope,
   RunnerPermissionScope,

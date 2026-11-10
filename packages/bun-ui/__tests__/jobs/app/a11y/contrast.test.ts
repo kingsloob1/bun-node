@@ -16,7 +16,7 @@ const TOKENS_CSS = join(
   "..",
   "..",
   "app",
-  "jobs",
+  "kit",
   "styles",
   "tokens.css",
 );

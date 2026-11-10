@@ -11,15 +11,15 @@ import {
   queueScreenPath,
 } from "../../api/jobs";
 import { workerPath } from "../../api/workers";
-import { Card } from "../../components/Card";
-import { CopyButton } from "../../components/CopyButton";
-import { EmptyState } from "../../components/EmptyState";
+import { Card } from "../../../kit/components/Card";
+import { CopyButton } from "../../../kit/components/CopyButton";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
-import { JsonView } from "../../components/JsonView";
-import { KeyValue } from "../../components/KeyValue";
+import { JsonView } from "../../../kit/components/JsonView";
+import { KeyValue } from "../../../kit/components/KeyValue";
 import { ProblemBanner } from "../../components/ProblemBanner";
 import { RelativeTime } from "../../components/RelativeTime";
-import { Spinner } from "../../components/Spinner";
+import { Spinner } from "../../../kit/components/Spinner";
 import { StateBadge } from "../../components/StateBadge";
 import { useApiClient } from "../../context";
 import { displayText, formatNumber } from "../../format";

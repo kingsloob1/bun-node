@@ -18,7 +18,7 @@ import {
 } from "../../../../app/jobs/live";
 import { MetaContext } from "../../../../app/jobs/meta/hooks";
 import { createQueryClient } from "../../../../app/jobs/queryClient";
-import { expectAbsent, expectNone } from "../assert";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 import { act, render, setupDom, waitFor } from "../dom";
 import { metaFixture, permissionsFixture, uiConfig } from "../fixtures";
 import { FakeSocket, hello, queueEvent } from "./fakes";

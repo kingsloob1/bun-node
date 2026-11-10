@@ -1,22 +1,22 @@
 import type { RawResponse } from "../../../api/client";
-import type { JsonEditorState } from "../../../components/jsonParse";
+import type { JsonEditorState } from "../../../../kit/components/jsonParse";
 import type { PermissionProbe } from "../permissions";
 import type { SchemaRoot } from "../schema/resolve";
 import type { DocOperation, DocParameter } from "./model";
 import type { FieldValue, InputKind, TryItRequest, TryItValues } from "./tryIt";
 import { useMemo, useState } from "react";
 import { isApiError } from "../../../api/errors";
-import { Badge } from "../../../components/Badge";
-import { Button } from "../../../components/Button";
+import { Badge } from "../../../../kit/components/Badge";
+import { Button } from "../../../../kit/components/Button";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { CopyButton } from "../../../components/CopyButton";
-import { Field } from "../../../components/Field";
-import { Checkbox, Select, TextInput } from "../../../components/inputs";
-import { JsonEditor } from "../../../components/JsonEditor";
-import { jsonEditorState } from "../../../components/jsonParse";
-import { JsonView } from "../../../components/JsonView";
+import { CopyButton } from "../../../../kit/components/CopyButton";
+import { Field } from "../../../../kit/components/Field";
+import { Checkbox, Select, TextInput } from "../../../../kit/components/inputs";
+import { JsonEditor } from "../../../../kit/components/JsonEditor";
+import { jsonEditorState } from "../../../../kit/components/jsonParse";
+import { JsonView } from "../../../../kit/components/JsonView";
 import { ProblemBanner } from "../../../components/ProblemBanner";
-import { Tabs } from "../../../components/Tabs";
+import { Tabs } from "../../../../kit/components/Tabs";
 import { useDocsClient, useDocsUiConfig } from "../../../context";
 import {
   bodySchema,

@@ -1,4 +1,4 @@
-import { EmptyState } from "../components/EmptyState";
+import { EmptyState } from "../../kit/components/EmptyState";
 import { Link } from "../router";
 
 /** The 404 screen: an unknown path, or a screen this caller cannot use. */

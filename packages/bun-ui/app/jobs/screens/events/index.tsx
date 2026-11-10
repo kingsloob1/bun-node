@@ -9,7 +9,7 @@ import type {
   JobsApiAckRejection,
   JobsApiGapMessage,
 } from "../../api/types";
-import type { BadgeTone } from "../../components/Badge";
+import type { BadgeTone } from "../../../kit/components/Badge";
 import type { LiveStatus } from "../../live";
 import type {
   ChannelChoice,
@@ -22,14 +22,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { queryKeys } from "../../api/queryKeys";
 import { jobPath, queuePath } from "../../api/queues";
 import { listRunners, runnerKeys, runnerPath } from "../../api/runners";
-import { Badge } from "../../components/Badge";
-import { Button } from "../../components/Button";
-import { Card } from "../../components/Card";
-import { EmptyState } from "../../components/EmptyState";
-import { Field } from "../../components/Field";
-import { Checkbox, Select, TextInput } from "../../components/inputs";
-import { JsonView } from "../../components/JsonView";
-import { Table } from "../../components/Table";
+import { Badge } from "../../../kit/components/Badge";
+import { Button } from "../../../kit/components/Button";
+import { Card } from "../../../kit/components/Card";
+import { EmptyState } from "../../../kit/components/EmptyState";
+import { Field } from "../../../kit/components/Field";
+import { Checkbox, Select, TextInput } from "../../../kit/components/inputs";
+import { JsonView } from "../../../kit/components/JsonView";
+import { Table } from "../../../kit/components/Table";
 import { useApiClient } from "../../context";
 import { formatNumber, plural } from "../../format";
 import { useLiveStatus, useLiveSubscription } from "../../live";

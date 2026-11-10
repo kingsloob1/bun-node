@@ -8,7 +8,7 @@ import {
   useParams,
   useQueryParam,
 } from "../../../app/jobs/routing";
-import { expectAbsent } from "./assert";
+import { expectAbsent } from "../../harness/assert";
 import { act, fireEvent, page, render, setupDom, visit } from "./dom";
 
 setupDom();

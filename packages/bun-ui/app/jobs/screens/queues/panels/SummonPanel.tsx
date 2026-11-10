@@ -17,17 +17,17 @@ import {
   summonKeys,
   summonNow,
 } from "../../../api/summon";
-import { Badge } from "../../../components/Badge";
-import { Button } from "../../../components/Button";
+import { Badge } from "../../../../kit/components/Badge";
+import { Button } from "../../../../kit/components/Button";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { EmptyState } from "../../../components/EmptyState";
-import { Checkbox } from "../../../components/inputs";
-import { KeyValue } from "../../../components/KeyValue";
+import { EmptyState } from "../../../../kit/components/EmptyState";
+import { Checkbox } from "../../../../kit/components/inputs";
+import { KeyValue } from "../../../../kit/components/KeyValue";
 import { ProblemBanner } from "../../../components/ProblemBanner";
 import { RelativeTime } from "../../../components/RelativeTime";
-import { Spinner } from "../../../components/Spinner";
-import { Table } from "../../../components/Table";
-import { useToast } from "../../../components/toast";
+import { Spinner } from "../../../../kit/components/Spinner";
+import { Table } from "../../../../kit/components/Table";
+import { useToast } from "../../../../kit/components/toast";
 import { useApiClient } from "../../../context";
 import { displayText, formatNumber, plural } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";

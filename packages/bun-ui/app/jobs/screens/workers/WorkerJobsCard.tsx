@@ -5,15 +5,15 @@ import { describeRange } from "../../analytics/range";
 import { RangePicker } from "../../analytics/RangePicker";
 import { JOB_STATES } from "../../api/contract";
 import { isSendableFilterValue, listJobs, queueKeys } from "../../api/queues";
-import { Card } from "../../components/Card";
-import { EmptyState } from "../../components/EmptyState";
+import { Card } from "../../../kit/components/Card";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
-import { Pager } from "../../components/Pager";
-import { Spinner } from "../../components/Spinner";
-import { UrlTabs } from "../../components/Tabs";
+import { Pager } from "../../../kit/components/Pager";
+import { Spinner } from "../../../kit/components/Spinner";
+import { UrlTabs } from "../../../kit/components/Tabs";
 import { useApiClient } from "../../context";
 import { STATE_HINTS, STATE_LABELS } from "../../format";
-import { useUrlTab } from "../../hooks/useUrlTab";
+import { useUrlTab } from "../../../kit/hooks/useUrlTab";
 import {
   useCan,
   useFeature,

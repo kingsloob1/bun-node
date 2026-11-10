@@ -1,7 +1,7 @@
 import type { WorkerDto } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
 import { sweepWarning } from "../../../../app/jobs/screens/workers/sweeps";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * The three-state rule behind the queue panel's housekeeping note. It is a

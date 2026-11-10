@@ -8,7 +8,7 @@ import { RouterProvider } from "../../../../../app/docs/router";
 import { ParamsContext } from "../../../../../app/docs/routing";
 import { HttpReference } from "../../../../../app/docs/screens/docs/http/index";
 import { viewerConfig } from "../../renderViewer";
-import { expectAbsent } from "../../assert";
+import { expectAbsent } from "../../../../harness/assert";
 import { fireEvent, page, render, setupDom, visit, within } from "../../dom";
 import { openApiFixture } from "./openapiFixture";
 

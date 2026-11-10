@@ -23,7 +23,8 @@ and approved, through the coordinator, on the same day:
 **Status: approved by the user on 2026-11-08, every open question (§12)
 answered with its recommendation, and every name in §13 with it.** BU-1
 (#666), BU-2 (#708), BU-3 (#709) and BU-5 (#710) merged and were released in
-3.0.0-rc.1; BU-4 may follow rc.1 (§10).
+3.0.0-rc.1; BU-4, the shared kit, was built on 2026-11-10 and awaits landing
+(§5.1 records what it built and where it departs from §5).
 
 Written 2026-11-08 against `develop` at `d0d53ee1`, on Bun
 1.4.4-canary.1+11c367163. **No product code was changed.** Every `file:line`
@@ -38,7 +39,7 @@ standing rule).
 | This plan | **approved** by the user on 2026-11-08: Q1–Q12 (§12) answered as recommended, the names of §13 with them |
 | The two decisions above | **made by the user** (2026-11-08) |
 | [bun-security](../bun-security/README.md) | approved 2026-11-07 with a separate `@kingsleyweb/bun-security-ui`; **§7's edits applied** with this plan's approval: its UI is now bun-ui's `/security` entry |
-| Building | **BU-1 merged** (#666); **BU-2, BU-3 and BU-5 merged** (#708, #709, #710; the old packages' leftover names cleaned up in #713); released in **3.0.0-rc.1** (#712), the old two deprecated on npm. **BU-4** (the shared kit) not started; it may follow rc.1 |
+| Building | **BU-1 merged** (#666); **BU-2, BU-3 and BU-5 merged** (#708, #709, #710; the old packages' leftover names cleaned up in #713); released in **3.0.0-rc.1** (#712), the old two deprecated on npm. **BU-4** (the shared kit) **built** 2026-11-10, awaiting landing (§5.1) |
 
 ### Contents
 
@@ -490,6 +491,56 @@ Where each shared piece lives in bun-ui, and where it comes from [D]:
 then `lib/jobs/` and `lib/docs/` keep their own copies, inside one package.
 BU-4 changes no public name and no wire format, so it may follow rc.1 if
 needed (§10).
+
+### 5.1 What BU-4 built (2026-11-10)
+
+As the table above, with these departures, each found while building it:
+
+- **The server kit is `lib/kit/{serve,shell,connect,assets,options}.ts`.**
+  `createUiRouter` (in `serve.ts`, not a `serve` handler alone) takes the
+  whole router: the shell, `/assets/:file`, a UI's extra routes (the docs
+  viewer's `/document.json`), its guards and `authorize`, and problems
+  under the UI's own URN (`urn:bun-jobs:error:`, `urn:bun-api-docs-ui:error:`).
+  `lib/<ui>/assets.ts` and `lib/<ui>/shell.ts` stay, as bindings of the kit
+  that keep every name and signature they had: the deep `./lib/*` spellings
+  reach them, and `./docs/hosted` re-exports from them.
+- **Four of the "28 identical" app files were not equivalent modules**:
+  `ErrorView`, `ProblemBanner` and (through it) `ConfirmDialog` import their
+  UI's own `isApiError` (each UI has its own `ApiError` class), and
+  `ScreenErrorBoundary` its UI's `resetScreenQueries` (the jobs UI keeps
+  `/meta`, the viewer resets every inactive query). One shared copy would
+  have changed which errors each recognises, so the kit's versions take the
+  seam as a prop and each UI binds them in `app/<ui>/components/` (a few
+  lines each). `Tabs` and `useUrlTab` import the router, which both UIs
+  already shared, so the router moved to `app/kit/routing.ts` and
+  `app/docs/routing.ts` (the `./docs/embed/routing` entry) re-exports it.
+  `inputValues` read `MAX_DATE_MS` from its UI's contract; the kit holds the
+  constant (the same value). The theme's helpers take the storage key.
+- **`Pager`, `pagerState`, `useClientPage` and the toasts moved to the kit**
+  as §3.3 has them; the jobs UI's other own components stay in
+  `app/jobs/components/`.
+- **`handleLedger.ts` stays with the jobs tests**: it is built on the jobs
+  live client's fake socket. It moves to the harness when a second UI with a
+  live client (bun-security's) needs it.
+- **The kit's tests are server tests** (`__tests__/kit/server/`, a third UI
+  driving the router, the options and the assets); the component tests stay
+  in `__tests__/jobs/app/`, which already covered the shared components.
+
+Bytes, measured on Bun 1.4.4-canary.1+11c367163 (in-memory build, minified,
+the same as `scripts/build.ts` without `check`), before and after:
+
+| | before | after |
+|---|---:|---:|
+| jobs entry | 337,896 B (109,052 gzipped) | 337,841 B (109,103) |
+| jobs largest other chunk (the docs section) | 95,920 B (31,162) | 78,200 B (25,257) |
+| jobs JavaScript, all files | 808,197 B (280,283) | 791,479 B (275,293) |
+| jobs CSS | 150,477 B | identical (same hashes) |
+| docs entry | 347,709 B (108,663) | 348,024 B (108,782) |
+| docs CSS | 32,967 B | identical content |
+
+The jobs bundle carried two copies of the shared components (its own and
+the embedded docs screens'); it now carries one. The docs entry grows 315
+bytes, the bindings above.
 
 ---
 

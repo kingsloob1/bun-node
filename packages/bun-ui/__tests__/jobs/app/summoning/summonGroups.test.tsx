@@ -6,7 +6,7 @@ import type {
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { utcResetLabel } from "../../../../app/jobs/screens/queues/panels/budgetText";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "../dom";
 import { metaFixture, problem } from "../fixtures";
 import { renderApp } from "../renderApp";

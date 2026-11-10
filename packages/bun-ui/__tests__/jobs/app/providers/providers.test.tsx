@@ -2,7 +2,7 @@ import type { ProviderValidationDto } from "../../../../app/jobs/api/types";
 import type { MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { validationSummary } from "../../../../app/jobs/screens/providers/providerText";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import {
   fireEvent,
   LOADED,

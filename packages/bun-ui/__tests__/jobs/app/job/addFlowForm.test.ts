@@ -27,7 +27,7 @@ import {
   validateFlow,
 } from "../../../../app/jobs/screens/job/addFlowForm";
 import { emptyAddForm } from "../../../../app/jobs/screens/job/addJobForm";
-import { expectUndefined } from "../assert";
+import { expectUndefined } from "../../../harness/assert";
 import { problem } from "../fixtures";
 
 /** The screen's queue in every test. */

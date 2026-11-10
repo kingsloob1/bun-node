@@ -1,7 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { validateProvider } from "../../api/providers";
-import { Badge } from "../../components/Badge";
-import { Button } from "../../components/Button";
+import { Badge } from "../../../kit/components/Badge";
+import { Button } from "../../../kit/components/Button";
 import { ProblemBanner } from "../../components/ProblemBanner";
 import { useApiClient } from "../../context";
 import { displayText } from "../../format";

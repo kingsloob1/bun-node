@@ -1,14 +1,14 @@
-import type { PageMove } from "../../../../app/jobs/components/pagerState";
+import type { PageMove } from "../../../../app/kit/components/pagerState";
 import { describe, expect, it, mock } from "bun:test";
-import { Pager } from "../../../../app/jobs/components/Pager";
+import { Pager } from "../../../../app/kit/components/Pager";
 import {
   PAGE_SELECT_MAX,
   pageNumbers,
   pageOffset,
   pagerState,
   pageSizeOptions,
-} from "../../../../app/jobs/components/pagerState";
-import { expectAbsent, expectNone } from "../assert";
+} from "../../../../app/kit/components/pagerState";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 import { fireEvent, page, render, setupDom } from "../dom";
 
 setupDom();

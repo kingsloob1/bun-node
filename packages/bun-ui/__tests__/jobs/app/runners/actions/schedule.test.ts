@@ -12,7 +12,7 @@ import {
   splitInterval,
   validateScheduleForm,
 } from "../../../../../app/jobs/screens/runners/actions/schedule";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 
 const ZONES = ["UTC", "Europe/London", "America/New_York"];
 

@@ -8,7 +8,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * The queue screen's HOUSEKEEPING NOTE against a REAL `createJobsApi` with

@@ -2,7 +2,7 @@ import type { JobsApiAction } from "../../../app/jobs/api/contract";
 import type { Permissions } from "../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
 import { canPerform, useCan, useFeature } from "../../../app/jobs/meta/hooks";
-import { expectAbsent } from "./assert";
+import { expectAbsent } from "../../harness/assert";
 import { fireEvent, LOADED, page, render, setupDom, waitFor } from "./dom";
 import { metaFixture, permissionsFixture, problem } from "./fixtures";
 import { renderApp } from "./renderApp";

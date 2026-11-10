@@ -7,7 +7,7 @@ import {
   readWorkerFilters,
   workerListQuery,
 } from "../../../../app/jobs/screens/workers/filters";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import {
   fireEvent,
   LOADED,

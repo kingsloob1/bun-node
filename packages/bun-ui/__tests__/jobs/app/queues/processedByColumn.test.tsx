@@ -1,6 +1,6 @@
 import type { JobDto, MetaDto } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { LOADED, page, setupDom, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { jobFixture, jobPageFixture, renderQueue } from "./fixtures";

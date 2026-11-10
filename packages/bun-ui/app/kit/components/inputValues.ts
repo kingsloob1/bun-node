@@ -1,10 +1,15 @@
-import { MAX_DATE_MS } from "../api/contract";
-
 /**
  * Value conversions of the kit's inputs, pure. The `datetime-local` value
  * (`YYYY-MM-DDTHH:mm[:ss]`) is wall-clock time in the browser's own time
  * zone.
  */
+
+/**
+ * The last instant a `Date` holds, in epoch ms (ECMAScript's limit,
+ * 8.64e15). The same value as bun-jobs' contract `MAX_DATE_MS`, which the
+ * jobs API enforces; written out here so the kit imports no UI's contract.
+ */
+const MAX_DATE_MS = 8_640_000_000_000_000;
 
 /** Parses an `<input type="number">` value: `""` (empty or unparsable) → `undefined`. */
 export function parseNumberInput(text: string): number | undefined {

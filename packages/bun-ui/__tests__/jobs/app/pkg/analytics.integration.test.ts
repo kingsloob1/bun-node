@@ -17,7 +17,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent, expectNone } from "../assert";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 
 /**
  * The Overview's analytics against REAL data: a real `createJobsApi` over real

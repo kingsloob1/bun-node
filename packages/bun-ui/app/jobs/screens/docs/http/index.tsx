@@ -21,9 +21,9 @@ import {
   HttpReference,
 } from "@kingsleyweb/bun-ui/docs/embed";
 import { docsKeys, getOpenApiDocument } from "../../../api/docs";
-import { EmptyState } from "../../../components/EmptyState";
+import { EmptyState } from "../../../../kit/components/EmptyState";
 import { ErrorView } from "../../../components/ErrorView";
-import { Spinner } from "../../../components/Spinner";
+import { Spinner } from "../../../../kit/components/Spinner";
 import { useApiClient, useUiConfig } from "../../../context";
 import { useCanFn, useMeta } from "../../../meta/hooks";
 

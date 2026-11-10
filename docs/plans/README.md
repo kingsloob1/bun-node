@@ -49,7 +49,7 @@ plan you are about to work on.
 | [`typed-client/`](typed-client/README.md) (with [`nest-typed-routes.md`](typed-client/nest-typed-routes.md)) | **complete**: PR-K #592, PR-C1 #593, PR-M1 #594, PR-M2 #596, PR-C2 #597, PR-C3 #599, PR-C4 #600 (follow-ups #626), PR-C5 #608, PR-C6 #611, PR-C8 #612, PR-C9 #614, PR-W1 #627, PR-S1 #628, PR-W2 #630, PR-W3 #634, PR-W4 #637 (follow-ups #679 to #681), PR-G1 #638, PR-R1 #639, PR-R2 #640, NTR #641 to #643, the pilot #648 and #649, the examples #651, the 2026-11-08 follow-ups #685 to #689 | the on-demand items only (`./vue`, `./svelte`, `./solid`, `./preact`, upload progress, a `"bun-jobs"` codec), and SSR's `<ApiHydrate>` after bun-views' PR-5 | its Status |
 | [`bun-views/`](bun-views/README.md) | PR-C (#320), PR-C2 (#328) and PR-0 (#324) merged; PR-1 to PR-8 not started | **held** | its Status |
 | [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | **complete** (PR-n1 to PR-n10 merged, #721 to #747, with follow-ups #745, #746, #748; PR-n1 to PR-n9 shipped in 3.0.0-rc.2) | none; the playground's browser review is owed | its Status |
-| [`bun-ui/`](bun-ui/README.md) | BU-1 #666, BU-2 #708, BU-3 #709 and BU-5 #710 merged (the old names cleaned up in #713), released in 3.0.0-rc.1 (#712); BU-4 (the shared kit) not started | BU-4, which may follow rc.1; bun-security's PR-U1 builds on it | its Status |
+| [`bun-ui/`](bun-ui/README.md) | BU-1 #666, BU-2 #708, BU-3 #709 and BU-5 #710 merged (the old names cleaned up in #713), released in 3.0.0-rc.1 (#712); BU-4 (the shared kit) built 2026-11-10, awaiting landing | landing BU-4; bun-security's PR-U1 builds on it | its Status |
 | [`bun-security/`](bun-security/README.md) | approved 2026-11-07; its foundations merged: trustProxy #653, the throttle T1 to T3 #654 to #656; nothing of the package built | **held**: building M1 waits for the user's go-ahead | its Status |
 | [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
 
@@ -252,8 +252,8 @@ blindly.
     primitives (Ed25519, HMAC).
 - **[`bun-ui/`](bun-ui/README.md)** — `@kingsleyweb/bun-ui` (approved
   2026-11-08, all open questions answered as recommended; BU-1, BU-2, BU-3 and BU-5
-  merged, #666 and #708 to #710, and released in 3.0.0-rc.1; BU-4 may follow
-  rc.1): one package for every UI, `/jobs` and
+  merged, #666 and #708 to #710, and released in 3.0.0-rc.1; BU-4, the
+  shared kit, built 2026-11-10 and awaiting landing): one package for every UI, `/jobs` and
   `/docs` first, then bun-security's `/security`; bun-jobs-ui and
   bun-api-docs-ui moved in with `git mv`, a shared kit (shell, CSP, SRI,
   assets, `unauthorized`, design system, DOM-test harness), domain packages

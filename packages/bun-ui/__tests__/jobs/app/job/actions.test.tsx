@@ -4,7 +4,7 @@ import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it, spyOn } from "bun:test";
 import { JOB_STATES } from "../../../../app/jobs/api/contract";
 import { failConfirmation } from "../../../../app/jobs/screens/job/failConfirm";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import {
   act,
   cleanup,

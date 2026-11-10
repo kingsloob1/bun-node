@@ -1,7 +1,7 @@
 import type { WorkerDto } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
 import { groupByServer, matchesWorker } from "../../../../app/jobs/api/workers";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import {
   fireEvent,
   LOADED,

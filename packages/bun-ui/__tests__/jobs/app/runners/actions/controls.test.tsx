@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import { fireEvent, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import {

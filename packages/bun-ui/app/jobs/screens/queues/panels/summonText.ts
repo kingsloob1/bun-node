@@ -8,7 +8,7 @@ import type {
   SummonSkipReason,
   SummonStatusDto,
 } from "../../../api/types";
-import type { BadgeTone } from "../../../components/Badge";
+import type { BadgeTone } from "../../../../kit/components/Badge";
 import { displayText, formatNumber, plural } from "../../../format";
 
 /**

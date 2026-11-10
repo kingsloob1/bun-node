@@ -1,6 +1,6 @@
 import type { JobState } from "../api/contract";
 import { STATE_HINTS, STATE_LABELS } from "../format";
-import { cx } from "./classNames";
+import { cx } from "../../kit/components/classNames";
 
 /** Props of {@link StateBadge}. */
 export interface StateBadgeProps {

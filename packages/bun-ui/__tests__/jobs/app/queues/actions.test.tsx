@@ -1,6 +1,6 @@
 import type { RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import {

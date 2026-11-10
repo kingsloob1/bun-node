@@ -14,7 +14,7 @@ import {
   readWorkerJobFilters,
   writeFinishedRange,
 } from "../../../../app/jobs/screens/workers/workerJobs";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * The job-attribution half of the jobs reader, and the worker page's URL

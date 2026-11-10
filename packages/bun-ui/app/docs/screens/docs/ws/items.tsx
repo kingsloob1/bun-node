@@ -19,14 +19,14 @@ import type {
   WsOperation,
 } from "./model";
 import { useState } from "react";
-import { Badge } from "../../../components/Badge";
-import { Card } from "../../../components/Card";
-import { CopyButton } from "../../../components/CopyButton";
-import { Field } from "../../../components/Field";
-import { TextInput } from "../../../components/inputs";
-import { JsonView } from "../../../components/JsonView";
-import { KeyValue } from "../../../components/KeyValue";
-import { Table } from "../../../components/Table";
+import { Badge } from "../../../../kit/components/Badge";
+import { Card } from "../../../../kit/components/Card";
+import { CopyButton } from "../../../../kit/components/CopyButton";
+import { Field } from "../../../../kit/components/Field";
+import { TextInput } from "../../../../kit/components/inputs";
+import { JsonView } from "../../../../kit/components/JsonView";
+import { KeyValue } from "../../../../kit/components/KeyValue";
+import { Table } from "../../../../kit/components/Table";
 import { Link } from "../../../router";
 import { Prose, SchemaTree } from "../schema";
 import { InlineText } from "./InlineText";

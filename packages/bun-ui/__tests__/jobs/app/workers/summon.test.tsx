@@ -9,7 +9,7 @@ import {
   summonUnitHint,
   summonUnitLabel,
 } from "../../../../app/jobs/screens/workers/summon";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { LOADED, page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";

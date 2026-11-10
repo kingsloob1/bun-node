@@ -8,7 +8,7 @@ import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it, mock } from "bun:test";
 import { queueKeys } from "../../../../app/jobs/api/queues";
 import { AddFlowDialog } from "../../../../app/jobs/screens/job/AddFlowDialog";
-import { expectAbsent, expectNone } from "../assert";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 import {
   act,
   fireEvent,

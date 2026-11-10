@@ -6,7 +6,7 @@ import {
   getAddedByState,
 } from "../../api/added";
 import { JOB_STATES } from "../../api/contract";
-import { Spinner } from "../../components/Spinner";
+import { Spinner } from "../../../kit/components/Spinner";
 import { useApiClient } from "../../context";
 import { formatNumber, STATE_LABELS } from "../../format";
 import { usePollInterval } from "../../live";

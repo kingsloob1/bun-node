@@ -10,38 +10,26 @@
  * own. The mount path must equal `basePath`: the injected configuration and
  * every asset URL are built from it.
  */
-import type {
-  BunRequest,
-  BunResponse,
-  Logger,
-  RouterHandler,
-} from "@kingsleyweb/bun-common";
-import type { UiAsset, UiAssets } from "./assets";
-import type { DocsUiConfig, DocsUiTheme } from "./browser/config";
-import type { UiUnauthorized } from "../kit/browser/unauthorized";
-import type { ShellRenderer } from "./shell";
-import type {
-  DocsUi,
-  DocsUiAuthorize,
-  DocsUiAuthorizeContext,
-  DocsUiOptions,
-} from "./types";
-import { BunRouter, ConfigError, resolveLogger } from "@kingsleyweb/bun-common";
+import type { RouterHandler } from "@kingsleyweb/bun-common";
+import type { ConfigFail } from "../kit/options";
+import type { DocsUiConfig } from "./browser/config";
+import type { DocsUi, DocsUiOptions } from "./types";
+import { ConfigError, resolveLogger } from "@kingsleyweb/bun-common";
 import { Buffer } from "node:buffer";
 import { ASSET_CACHE_CONTROL } from "../kit/browser/shared";
+import {
+  freezeConfig,
+  normalizeMountPath,
+  requireOptionsObject,
+  resolveCommonOptions,
+  resolveCsrfHeader,
+  resolveTheme,
+} from "../kit/options";
+import { ASSETS_SUBPATH, createUiRouter, problemSender } from "../kit/serve";
+import { resolveUnauthorized } from "../kit/unauthorized";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
 import { DEFAULT_EXTENSION_PREFIXES } from "./browser/config";
-import {
-  createNonce,
-  createShellRenderer,
-  cspHeader,
-  documentOriginSource,
-} from "./shell";
-import {
-  redirectsDenial,
-  resolveUnauthorized,
-  sendUnauthorizedRedirect,
-} from "../kit/unauthorized";
+import { createShellRenderer, documentOriginSource } from "./shell";
 
 /** The viewer's default mount path. */
 export const DEFAULT_BASE_PATH = "/docs";
@@ -49,19 +37,17 @@ export const DEFAULT_BASE_PATH = "/docs";
 /** The default page title. */
 export const DEFAULT_TITLE = "API docs";
 
-/** The path under `basePath` the bundle is served from. */
-export const ASSETS_SUBPATH = "/assets";
-
 /** The path under `basePath` a `document` thunk is served from. */
 export const DOCUMENT_SUBPATH = "/document.json";
 
-export { ASSET_CACHE_CONTROL };
+export { ASSET_CACHE_CONTROL, ASSETS_SUBPATH };
 
-/** A path segment `basePath` may contain — the bun-jobs API's own rule. */
-const PATH_SEGMENT = /^[\w.~-]+$/;
+/** Every option error is bun-common's `ConfigError`, a dependency, not a peer. */
+const fail: ConfigFail = (message, context) =>
+  new ConfigError(message, context);
 
-/** A header name (an RFC 9110 token). */
-const HEADER_NAME = /^[!#$%&'*+.^`|~\w-]+$/;
+/** Its problems' `type`: `urn:bun-api-docs-ui:error:<code>`. */
+const sendProblem = problemSender("urn:bun-api-docs-ui:error:");
 
 /** An extension prefix (`x-bun-common`): `x-`, then a dotted-lowercase name. */
 const EXTENSION_PREFIX = /^x-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -80,30 +66,7 @@ export interface DocsUiInternals {
  * `-`.
  */
 export function normalizeBasePath(value: unknown, what: string): string {
-  if (typeof value !== "string" || !value.startsWith("/")) {
-    throw new ConfigError(
-      `${what} must be an absolute path starting with "/"`,
-      {
-        value,
-      },
-    );
-  }
-  const trimmed = value.replace(/\/+$/, "");
-  if (trimmed === "") {
-    throw new ConfigError(
-      `${what} may not be "/": the viewer's catch-all would answer for every GET route of the host`,
-      { value },
-    );
-  }
-  for (const segment of trimmed.slice(1).split("/")) {
-    if (!PATH_SEGMENT.test(segment) || segment === "." || segment === "..") {
-      throw new ConfigError(
-        `${what} may only contain "/"-separated segments of letters, digits, "_", ".", "~" and "-"`,
-        { value },
-      );
-    }
-  }
-  return trimmed;
+  return normalizeMountPath(value, what, "viewer", fail);
 }
 
 /**
@@ -177,170 +140,6 @@ function resolveExtensions(value: unknown): readonly string[] {
   return Object.freeze([...value]);
 }
 
-/** Validates `theme`. */
-function resolveTheme(value: unknown): DocsUiTheme {
-  if (value === undefined) {
-    return "system";
-  }
-  if (value === "system" || value === "light" || value === "dark") {
-    return value;
-  }
-  throw new ConfigError(`theme must be "system", "light" or "dark"`, {
-    value,
-  });
-}
-
-/** Validates `csrfHeader`. */
-function resolveCsrfHeader(value: unknown): string | null {
-  if (value === undefined || value === false) {
-    return null;
-  }
-  if (typeof value !== "string" || !HEADER_NAME.test(value)) {
-    throw new ConfigError("csrfHeader must be a header name or false", {
-      value,
-    });
-  }
-  return value;
-}
-
-/** A frozen copy of the config, nested objects included. */
-function freezeConfig(config: DocsUiConfig): Readonly<DocsUiConfig> {
-  for (const value of Object.values(config)) {
-    if (typeof value === "object" && value !== null) {
-      Object.freeze(value);
-    }
-  }
-  return Object.freeze(config);
-}
-
-/** Sends an RFC 9457 problem. */
-function sendProblem(
-  req: BunRequest,
-  res: BunResponse,
-  status: number,
-  code: string,
-  title: string,
-  detail: string,
-): void {
-  res.status(status);
-  res.setHeader("Content-Type", "application/problem+json");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  if (req.method === "HEAD") {
-    void res.end();
-    return;
-  }
-  res.send(
-    JSON.stringify({
-      type: `urn:bun-api-docs-ui:error:${code}`,
-      title,
-      status,
-      code,
-      detail,
-      instance: req.path,
-    }),
-  );
-}
-
-/**
- * Normalises an `authorize` answer: a denial is 401 only for `status: 401`,
- * 403 for any other status, and anything unrecognised denies with 403.
- */
-function decide(result: unknown):
-  | { allow: true }
-  | {
-      allow: false;
-      status: 401 | 403;
-      reason?: string;
-    } {
-  if (result === true) {
-    return { allow: true };
-  }
-  if (typeof result === "object" && result !== null && "allow" in result) {
-    const answer = result as {
-      allow: unknown;
-      status?: unknown;
-      reason?: unknown;
-    };
-    if (answer.allow === true) {
-      return { allow: true };
-    }
-    if (answer.allow === false) {
-      return {
-        allow: false,
-        status: answer.status === 401 ? 401 : 403,
-        ...(typeof answer.reason === "string" && answer.reason !== ""
-          ? { reason: answer.reason }
-          : {}),
-      };
-    }
-  }
-  return { allow: false, status: 403 };
-}
-
-/**
- * The `authorize` step of every viewer route. With `unauthorized`, a denial
- * whose status it lists answers a page navigation of the shell with a 303 to
- * the target; a bundle file, the document and anything that is not a
- * navigation keep the problem.
- */
-function authorizeStep(
-  authorize: DocsUiAuthorize,
-  route: "asset" | "document" | "shell",
-  logger: Logger,
-  unauthorized: UiUnauthorized | null,
-): RouterHandler {
-  const asset = route === "asset";
-  const shell = route === "shell";
-  return async (req, res, next) => {
-    const context: DocsUiAuthorizeContext = { asset, path: req.path };
-    let decision: ReturnType<typeof decide>;
-    try {
-      decision = decide(await authorize(req, context));
-    } catch (error) {
-      logger.error("api docs ui authorize threw; refusing the request", {
-        error,
-        path: req.path,
-      });
-      sendProblem(
-        req,
-        res,
-        500,
-        "INTERNAL",
-        "Internal server error",
-        "Internal server error",
-      );
-      return;
-    }
-    if (decision.allow) {
-      return next();
-    }
-    if (redirectsDenial(unauthorized, shell, decision.status, req)) {
-      sendUnauthorizedRedirect(req, res, unauthorized);
-      return;
-    }
-    if (decision.status === 401) {
-      sendProblem(
-        req,
-        res,
-        401,
-        "UNAUTHORIZED",
-        "Authentication required",
-        decision.reason ?? "Authentication required",
-      );
-    } else {
-      sendProblem(
-        req,
-        res,
-        403,
-        "FORBIDDEN",
-        "Forbidden",
-        decision.reason ?? "Not allowed to open this page",
-      );
-    }
-  };
-}
-
 /**
  * Creates the viewer with an explicit bundle source. {@link docsUi} is this
  * with the package's own `dist/` and `app/main.tsx`; tests point it at a
@@ -350,9 +149,7 @@ export function createDocsUi(
   options: DocsUiOptions,
   internals: DocsUiInternals = {},
 ): DocsUi {
-  if (typeof options !== "object" || options === null) {
-    throw new ConfigError("docsUi() needs an options object", {});
-  }
+  requireOptionsObject(options, "docsUi()", fail);
   const { document } = options;
   const thunk = typeof document === "function" ? document : undefined;
   if (thunk === undefined && typeof document !== "string") {
@@ -366,46 +163,27 @@ export function createDocsUi(
     options.basePath ?? DEFAULT_BASE_PATH,
     "basePath",
   );
-  const title = options.title ?? DEFAULT_TITLE;
-  if (typeof title !== "string" || title.trim() === "") {
-    throw new ConfigError("title must be a non-empty string", { title });
-  }
-  const middleware = options.middleware ?? [];
-  if (
-    !Array.isArray(middleware) ||
-    !middleware.every((handler) => typeof handler === "function")
-  ) {
-    throw new ConfigError("middleware must be an array of functions", {});
-  }
-  if (
-    options.authorize !== undefined &&
-    typeof options.authorize !== "function"
-  ) {
-    throw new ConfigError("authorize must be a function", {});
-  }
-  if (options.dev !== undefined && typeof options.dev !== "boolean") {
-    throw new ConfigError("dev must be a boolean", { dev: options.dev });
-  }
+  const { title, middleware } = resolveCommonOptions(
+    options,
+    DEFAULT_TITLE,
+    fail,
+  );
 
   const documentUrl =
     thunk !== undefined
       ? `${basePath}${DOCUMENT_SUBPATH}`
       : resolveDocumentUrl(document as string);
 
-  const config = freezeConfig({
+  const config = freezeConfig<DocsUiConfig>({
     version: 1,
     title,
     basePath,
     assetsPath: `${basePath}${ASSETS_SUBPATH}`,
     documentUrl,
-    csrfHeader: resolveCsrfHeader(options.csrfHeader),
+    csrfHeader: resolveCsrfHeader(options.csrfHeader, () => null, fail),
     extensions: resolveExtensions(options.extensions),
-    theme: resolveTheme(options.theme),
-    unauthorized: resolveUnauthorized(
-      options.unauthorized,
-      basePath,
-      (message, context) => new ConfigError(message, context),
-    ),
+    theme: resolveTheme(options.theme, fail),
+    unauthorized: resolveUnauthorized(options.unauthorized, basePath, fail),
   });
 
   const logger = resolveLogger(options.logger).child({
@@ -418,104 +196,9 @@ export function createDocsUi(
     logger,
   });
 
-  // The shell is rendered from the bundle, so it waits for the first load.
-  let renderer: { assets: UiAssets; render: ShellRenderer } | undefined;
-  const ready = async (): Promise<{
-    assets: UiAssets;
-    render: ShellRenderer;
-  }> => {
-    if (renderer === undefined) {
-      const assets = await loadAssets();
-      renderer ??= { assets, render: createShellRenderer(config, assets) };
-    }
-    return renderer;
-  };
-  /** Loads the bundle, or answers 500 and returns `undefined`. */
-  const readyOrFail = async (
-    req: BunRequest,
-    res: BunResponse,
-  ): Promise<{ assets: UiAssets; render: ShellRenderer } | undefined> => {
-    try {
-      return await ready();
-    } catch (error) {
-      logger.error("api docs ui could not load its bundle", { error });
-      sendProblem(
-        req,
-        res,
-        500,
-        "INTERNAL",
-        "Internal server error",
-        "Internal server error",
-      );
-      return undefined;
-    }
-  };
-
   // A cross-origin document URL is the one connection beyond this origin.
   const origin = documentOriginSource(documentUrl);
   const connectSrc = origin === undefined ? [] : [origin];
-  const serveShell: RouterHandler = async (req, res) => {
-    const loaded = await readyOrFail(req, res);
-    if (!loaded) {
-      return;
-    }
-    const nonce = createNonce();
-    const html = loaded.render(nonce);
-    res.status(200);
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Content-Security-Policy", cspHeader({ nonce, connectSrc }));
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "no-referrer");
-    if (req.method === "HEAD") {
-      void res.end();
-      return;
-    }
-    res.send(html);
-  };
-
-  const serveAsset: RouterHandler = async (req, res) => {
-    const loaded = await readyOrFail(req, res);
-    if (!loaded) {
-      return;
-    }
-    const name = (req.params as Record<string, string | undefined>).file;
-    const file: UiAsset | undefined =
-      name === undefined ? undefined : loaded.assets.files.get(name);
-    if (file === undefined) {
-      sendProblem(
-        req,
-        res,
-        404,
-        "NOT_FOUND",
-        "Not found",
-        `No asset ${req.path}`,
-      );
-      return;
-    }
-    res.setHeader("Content-Type", file.type);
-    res.setHeader("Cache-Control", ASSET_CACHE_CONTROL);
-    res.setHeader("ETag", file.etag);
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    const match = req.get("if-none-match");
-    if (
-      match !== null &&
-      match
-        .split(",")
-        .some((tag) => tag.trim().replace(/^W\//, "") === file.etag)
-    ) {
-      res.status(304);
-      void res.end();
-      return;
-    }
-    res.status(200);
-    if (req.method === "HEAD") {
-      res.setHeader("Content-Length", String(file.size));
-      void res.end();
-      return;
-    }
-    res.send(file.body);
-  };
 
   /** Serves a `document` thunk's document. */
   const serveDocument: RouterHandler = async (req, res) => {
@@ -570,40 +253,18 @@ export function createDocsUi(
     res.send(json);
   };
 
-  const notFound: RouterHandler = (req, res) => {
-    sendProblem(
-      req,
-      res,
-      404,
-      "NOT_FOUND",
-      "Not found",
-      `No asset ${req.path}`,
-    );
-  };
-
-  const guards = (route: "asset" | "document" | "shell"): RouterHandler[] => [
-    ...middleware,
-    ...(options.authorize
-      ? [authorizeStep(options.authorize, route, logger, config.unauthorized)]
-      : []),
-  ];
-
-  const router = new BunRouter();
-  for (const verb of ["get", "head"] as const) {
-    const register = router[verb].bind(router) as unknown as (
-      path: string,
-      ...callbacks: RouterHandler[]
-    ) => unknown;
-    // `:file` is one segment; anything deeper under the assets path is a 404,
-    // never the shell. (A named `*file` would lose its name when the router is
-    // mounted — bun-common flattens it to a positional wildcard.)
-    register(`${ASSETS_SUBPATH}/:file`, ...guards("asset"), serveAsset);
-    register(ASSETS_SUBPATH, ...guards("asset"), notFound);
-    register(`${ASSETS_SUBPATH}/*`, ...guards("asset"), notFound);
-    register(DOCUMENT_SUBPATH, ...guards("document"), serveDocument);
-    register("/", ...guards("shell"), serveShell);
-    register("/*", ...guards("shell"), serveShell);
-  }
+  const router = createUiRouter({
+    label: "api docs ui",
+    logger,
+    problem: sendProblem,
+    loadAssets,
+    createRenderer: (assets) => createShellRenderer(config, assets),
+    connectSrc: () => connectSrc,
+    middleware,
+    authorize: options.authorize,
+    unauthorized: config.unauthorized,
+    routes: [{ path: DOCUMENT_SUBPATH, handler: serveDocument }],
+  });
 
   return Object.freeze({ router, basePath, config });
 }

@@ -12,13 +12,13 @@ import {
   matchesWorker,
   workerKeys,
 } from "../../api/workers";
-import { Button } from "../../components/Button";
-import { Card } from "../../components/Card";
-import { EmptyState } from "../../components/EmptyState";
+import { Button } from "../../../kit/components/Button";
+import { Card } from "../../../kit/components/Card";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
-import { Field } from "../../components/Field";
-import { Select } from "../../components/inputs";
-import { Spinner } from "../../components/Spinner";
+import { Field } from "../../../kit/components/Field";
+import { Select } from "../../../kit/components/inputs";
+import { Spinner } from "../../../kit/components/Spinner";
 import { useApiClient } from "../../context";
 import { plural } from "../../format";
 import { SEARCH_SHORTCUT } from "../../layout/shortcuts";

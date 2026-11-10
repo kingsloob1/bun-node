@@ -1,5 +1,5 @@
 import type { JobState, UpdateJobBody } from "../../api/types";
-import type { JsonEditorState } from "../../components/jsonParse";
+import type { JsonEditorState } from "../../../kit/components/jsonParse";
 
 /** What the form holds. */
 export interface UpdateJobForm {

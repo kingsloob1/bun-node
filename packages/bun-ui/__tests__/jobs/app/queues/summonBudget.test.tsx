@@ -4,7 +4,7 @@ import type {
 } from "../../../../app/jobs/api/types";
 import type { MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture } from "../fixtures";
 import { findDialog, notifications, renderQueue } from "./fixtures";

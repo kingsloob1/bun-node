@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {

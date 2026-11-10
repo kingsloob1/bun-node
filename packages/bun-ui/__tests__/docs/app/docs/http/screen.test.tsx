@@ -1,6 +1,6 @@
 import type { SpecDocument } from "../../../../../app/docs/api/docs";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../../dom";
 import type { RenderViewerOptions } from "../../renderViewer";
 import { renderViewer } from "../../renderViewer";

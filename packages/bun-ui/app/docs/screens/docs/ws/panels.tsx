@@ -5,10 +5,10 @@
  */
 import type { LimitInfo } from "./format";
 import type { WsDoc, WsLimits } from "./model";
-import { Badge } from "../../../components/Badge";
-import { Card } from "../../../components/Card";
-import { KeyValue } from "../../../components/KeyValue";
-import { Table } from "../../../components/Table";
+import { Badge } from "../../../../kit/components/Badge";
+import { Card } from "../../../../kit/components/Card";
+import { KeyValue } from "../../../../kit/components/KeyValue";
+import { Table } from "../../../../kit/components/Table";
 import { formatNumber } from "../../../format";
 import { Prose } from "../schema";
 import { formatLimit, formatMs } from "./format";

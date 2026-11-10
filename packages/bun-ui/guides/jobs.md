@@ -998,7 +998,7 @@ assets path, which the CSP's `script-src 'self'` allows. Styles are not split
 the same way: Bun's entry stylesheet carries every rule, the lazily loaded
 screens' included, so the shell links only that one and never a chunk's
 stylesheet, which would repeat its rules (`entryStylesheets` in
-`lib/jobs/assets.ts`).
+`lib/kit/assets.ts`, the bundle code every bun-ui UI shares).
 
 The API docs are one chunk for `/docs`, the HTTP reference and the WebSocket
 reference together, with the schema tree they share: 62.7 KiB (19.9 KiB
@@ -1029,7 +1029,8 @@ gzipped) when M5 was built.
 - **Reduced motion.** With `prefers-reduced-motion: reduce`, no transition or
   animation runs, except the spinner, which keeps turning slowly so it still
   reads as busy.
-- **Contrast.** Every colour pair in `app/jobs/styles/tokens.css` meets WCAG AA
+- **Contrast.** Every colour pair in `app/kit/styles/tokens.css` (the design
+  tokens every bun-ui UI shares) meets WCAG AA
   in both themes: 4.5:1 for text, 3:1 for input outlines, the focus ring and
   state colours. `__tests__/jobs/app/a11y/contrast.test.ts` reads the real file,
   so a token that stops reading fails the tests.

@@ -1,7 +1,7 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { HistoryWindow } from "../../api/runners";
 import type { RunnerHistoryDto, RunRecordDto } from "../../api/types";
-import type { PageWindow } from "../../components/pagerState";
+import type { PageWindow } from "../../../kit/components/pagerState";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getRunnerHistory, runnerKeys } from "../../api/runners";
 import { useApiClient } from "../../context";

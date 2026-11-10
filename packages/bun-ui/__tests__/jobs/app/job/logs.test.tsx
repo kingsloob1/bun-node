@@ -1,6 +1,6 @@
 import type { RecordedCall } from "../mockFetch";
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import {
   act,
   fireEvent,

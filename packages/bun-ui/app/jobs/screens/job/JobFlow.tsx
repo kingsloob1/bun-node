@@ -1,13 +1,13 @@
 import type { ChildDto, JobDto } from "../../api/types";
 import { useQuery } from "@tanstack/react-query";
 import { getJobChildren, jobKeys, jobScreenPath } from "../../api/jobs";
-import { Badge } from "../../components/Badge";
-import { Card } from "../../components/Card";
-import { JsonView } from "../../components/JsonView";
+import { Badge } from "../../../kit/components/Badge";
+import { Card } from "../../../kit/components/Card";
+import { JsonView } from "../../../kit/components/JsonView";
 import { ProblemBanner } from "../../components/ProblemBanner";
-import { Spinner } from "../../components/Spinner";
+import { Spinner } from "../../../kit/components/Spinner";
 import { StateBadge } from "../../components/StateBadge";
-import { Table } from "../../components/Table";
+import { Table } from "../../../kit/components/Table";
 import { useApiClient } from "../../context";
 import { formatNumber, plural } from "../../format";
 import { Link } from "../../router";

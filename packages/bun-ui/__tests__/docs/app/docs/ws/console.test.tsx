@@ -5,7 +5,7 @@ import { createQueryClient } from "../../../../../app/docs/queryClient";
 import { RouterProvider } from "../../../../../app/docs/router";
 import { ParamsContext } from "../../../../../app/docs/routing";
 import { WsReference } from "../../../../../app/docs/screens/docs/ws/index";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import { fireEvent, page, render, setupDom, visit, within } from "../../dom";
 import { wsFixture } from "./fixtures";
 

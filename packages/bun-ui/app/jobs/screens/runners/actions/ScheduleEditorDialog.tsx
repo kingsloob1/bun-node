@@ -11,18 +11,18 @@ import type { RunnerDialogProps } from "./TriggerDialog";
 import { useId, useMemo, useState } from "react";
 import { rescheduleRunner } from "../../../api/runnerActions";
 import { runnerInvalidations } from "../../../api/runners";
-import { Button } from "../../../components/Button";
-import { Dialog } from "../../../components/Dialog";
-import { Field } from "../../../components/Field";
+import { Button } from "../../../../kit/components/Button";
+import { Dialog } from "../../../../kit/components/Dialog";
+import { Field } from "../../../../kit/components/Field";
 import {
   DateTimeInput,
   NumberInput,
   Select,
   TextInput,
-} from "../../../components/inputs";
+} from "../../../../kit/components/inputs";
 import { ProblemBanner } from "../../../components/ProblemBanner";
 import { RelativeTime } from "../../../components/RelativeTime";
-import { useToast } from "../../../components/toast";
+import { useToast } from "../../../../kit/components/toast";
 import { useApiClient } from "../../../context";
 import { useApiMutation } from "../../../hooks/useApiMutation";
 import { useFieldProblems } from "../../../hooks/useFieldProblems";

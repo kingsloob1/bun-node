@@ -14,7 +14,7 @@ import {
   DETAIL_EVENTS,
 } from "../../../app/jobs/screens/queues/live";
 import { RUNNER_STATE_EVENTS } from "../../../app/jobs/screens/runners/live";
-import { expectAbsent } from "./assert";
+import { expectAbsent } from "../../harness/assert";
 import { act, LOADED, page, setupDom, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
 import {

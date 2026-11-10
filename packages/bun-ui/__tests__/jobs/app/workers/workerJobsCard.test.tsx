@@ -5,7 +5,7 @@ import type {
 } from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
-import { expectAbsent, expectNone } from "../assert";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 import {
   fireEvent,
   LOADED,

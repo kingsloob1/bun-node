@@ -1,11 +1,11 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useId } from "react";
 import { listQueuesPage, queueKeys } from "../../api/queues";
-import { Card } from "../../components/Card";
-import { EmptyState } from "../../components/EmptyState";
+import { Card } from "../../../kit/components/Card";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
-import { Pager } from "../../components/Pager";
-import { Spinner } from "../../components/Spinner";
+import { Pager } from "../../../kit/components/Pager";
+import { Spinner } from "../../../kit/components/Spinner";
 import { useApiClient } from "../../context";
 import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
 import { useCan, useMeta } from "../../meta/hooks";

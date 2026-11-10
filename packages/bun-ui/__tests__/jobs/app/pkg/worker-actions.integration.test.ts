@@ -8,7 +8,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectUndefined } from "../assert";
+import { expectUndefined } from "../../../harness/assert";
 
 /**
  * The worker CONTROL surface against a REAL `createJobsApi` with real

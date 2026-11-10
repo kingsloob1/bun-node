@@ -1,8 +1,8 @@
 import type { RunRecordDto } from "../../api/types";
-import { Badge } from "../../components/Badge";
-import { CopyButton } from "../../components/CopyButton";
-import { JsonView } from "../../components/JsonView";
-import { KeyValue } from "../../components/KeyValue";
+import { Badge } from "../../../kit/components/Badge";
+import { CopyButton } from "../../../kit/components/CopyButton";
+import { JsonView } from "../../../kit/components/JsonView";
+import { KeyValue } from "../../../kit/components/KeyValue";
 import { RelativeTime } from "../../components/RelativeTime";
 import { formatNumber } from "../../format";
 import { ErrorDetails } from "../job/ErrorDetails";

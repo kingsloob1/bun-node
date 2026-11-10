@@ -2,7 +2,7 @@ import type { WorkerDto } from "../../../../app/jobs/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { WORKER_CONTROL_WAIT_MS } from "../../../../app/jobs/api/workers";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import {
   fireEvent,
   LOADED,

@@ -21,7 +21,7 @@ import {
   runDuration,
   runnerBadges,
 } from "../../../../app/jobs/screens/runners/runnerFormat";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { setupDom } from "../dom";
 import {
   nonLocalRunnerFixture,

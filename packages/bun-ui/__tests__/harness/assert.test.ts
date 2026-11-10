@@ -52,8 +52,19 @@ describe("the absence helpers", () => {
   });
 });
 
+/** Every UI's app tests: `__tests__/<ui>/app`. */
+const APP_TESTS = [
+  ...new Bun.Glob("*/app").scanSync({
+    cwd: join(import.meta.dir, ".."),
+    onlyFiles: false,
+  }),
+]
+  .map((dir) => join(import.meta.dir, "..", dir))
+  .filter((dir) => statSync(dir).isDirectory())
+  .sort();
+
 describe("the app tests", () => {
-  /** Every test source under `__tests__/app`, but this file and the helpers. */
+  /** Every test source under `dir`, but this file and the helpers. */
   function sources(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const path = join(dir, name);
@@ -66,10 +77,16 @@ describe("the app tests", () => {
     });
   }
 
+  it("covers every UI's app tests", () => {
+    expect(
+      APP_TESTS.map((dir) => relative(join(import.meta.dir, ".."), dir)),
+    ).toEqual(["docs/app", "jobs/app"]);
+  });
+
   it("assert absence with the helpers, never a matcher that may not fail", () => {
-    const root = import.meta.dir;
+    const root = join(import.meta.dir, "..");
     const offenders: string[] = [];
-    for (const file of sources(root)) {
+    for (const file of [import.meta.dir, ...APP_TESTS].flatMap(sources)) {
       const lines = readFileSync(file, "utf8").split("\n");
       lines.forEach((line, index) => {
         // Prose about the matcher is not a use of it.

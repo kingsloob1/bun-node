@@ -1,0 +1,6 @@
+/* The standalone viewer has no app shell: the page padding the jobs UI's
+   `.app-main` gives its screens. Its own rule beside the kit's base styles
+   (`app/kit/styles/base.css`), imported right after them. */
+.docs-viewer {
+  padding: var(--space-5);
+}

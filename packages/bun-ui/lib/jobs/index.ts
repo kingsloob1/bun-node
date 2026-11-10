@@ -17,8 +17,9 @@ export {
  * app.use(ui.basePath, ui.router);
  * ```
  *
- * The bundle machinery (`lib/jobs/assets.ts`: building, writing and loading
- * `dist/jobs/`) is internal: `scripts/build.ts` and the tests import it directly.
+ * The bundle machinery (`lib/jobs/assets.ts`, the kit's `lib/kit/assets.ts`
+ * bound to `dist/jobs/`) is internal: `scripts/build.ts` and the tests import
+ * it directly.
  * `JobsUiBaseOptions` stays public because both option interfaces extend it,
  * so it is part of the options' declared shape.
  */
