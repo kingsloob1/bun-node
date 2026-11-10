@@ -8,7 +8,7 @@ import type {
   WorkerAnalyticsSeriesDto,
   WorkersAnalyticsDto,
 } from "../../api/types";
-import type { PageWindow } from "../../components/pagerState";
+import type { PageWindow } from "../../../kit/components/pagerState";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { AnalyticsError } from "../../analytics/AnalyticsError";
@@ -26,12 +26,12 @@ import { MAX_ANALYTICS_SERIES } from "../../api/contract";
 import { queuePath } from "../../api/queues";
 import { runnerPath } from "../../api/runners";
 import { workerPath } from "../../api/workers";
-import { Card } from "../../components/Card";
-import { EmptyState } from "../../components/EmptyState";
-import { Pager } from "../../components/Pager";
+import { Card } from "../../../kit/components/Card";
+import { EmptyState } from "../../../kit/components/EmptyState";
+import { Pager } from "../../../kit/components/Pager";
 import { Sparkline } from "../../components/Sparkline";
-import { Spinner } from "../../components/Spinner";
-import { Table } from "../../components/Table";
+import { Spinner } from "../../../kit/components/Spinner";
+import { Table } from "../../../kit/components/Table";
 import { useApiClient } from "../../context";
 import { formatNumber, plural } from "../../format";
 import { usePollInterval } from "../../live";

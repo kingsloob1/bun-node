@@ -10,10 +10,10 @@ import {
   resetWorkerConfig,
   workerInvalidations,
 } from "../../../api/workers";
-import { Button } from "../../../components/Button";
-import { Dialog } from "../../../components/Dialog";
-import { Field } from "../../../components/Field";
-import { NumberInput } from "../../../components/inputs";
+import { Button } from "../../../../kit/components/Button";
+import { Dialog } from "../../../../kit/components/Dialog";
+import { Field } from "../../../../kit/components/Field";
+import { NumberInput } from "../../../../kit/components/inputs";
 import { ProblemBanner } from "../../../components/ProblemBanner";
 import { useApiClient } from "../../../context";
 import { useApiMutation } from "../../../hooks/useApiMutation";

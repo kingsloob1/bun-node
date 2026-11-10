@@ -1,20 +1,20 @@
-import type { JsonEditorState } from "../../../../app/jobs/components/jsonParse";
+import type { JsonEditorState } from "../../../../app/kit/components/jsonParse";
 import { describe, expect, it, mock } from "bun:test";
 import { useState } from "react";
 import {
   CIRCULAR_MARKER,
   safeStringify,
   toJsonSafe,
-} from "../../../../app/jobs/components/copy";
-import { JsonEditor } from "../../../../app/jobs/components/JsonEditor";
+} from "../../../../app/kit/components/copy";
+import { JsonEditor } from "../../../../app/kit/components/JsonEditor";
 import {
   byteLength,
   jsonEditorState,
   lineColumn,
   parseJsonText,
-} from "../../../../app/jobs/components/jsonParse";
-import { JsonView } from "../../../../app/jobs/components/JsonView";
-import { expectAbsent, expectUndefined } from "../assert";
+} from "../../../../app/kit/components/jsonParse";
+import { JsonView } from "../../../../app/kit/components/JsonView";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import { act, fireEvent, page, render, setupDom } from "../dom";
 
 setupDom();

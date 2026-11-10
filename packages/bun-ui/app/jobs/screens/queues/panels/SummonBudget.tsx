@@ -1,7 +1,7 @@
 import type { SummonBudgetDto } from "../../../api/types";
 import type { BudgetWindowView } from "./budgetText";
-import { Badge } from "../../../components/Badge";
-import { cx } from "../../../components/classNames";
+import { Badge } from "../../../../kit/components/Badge";
+import { cx } from "../../../../kit/components/classNames";
 import { RelativeTime } from "../../../components/RelativeTime";
 import { useNow } from "../../../hooks/useNow";
 // Not `./summonBudget`: Bun resolves an extensionless name differing from

@@ -18,67 +18,17 @@
 import process from "node:process";
 import { parseArgs } from "node:util";
 import {
-  buildAssets as buildDocs,
-  DEFAULT_DIST_DIR as DOCS_DIST_DIR,
-  DEFAULT_ENTRY as DOCS_ENTRY,
-  writeAssets as writeDocs,
-} from "../lib/docs/assets";
-import {
-  buildAssets as buildJobs,
-  DEFAULT_DIST_DIR as JOBS_DIST_DIR,
-  DEFAULT_ENTRY as JOBS_ENTRY,
-  writeAssets as writeJobs,
-} from "../lib/jobs/assets";
+  buildAssets,
+  uiDistDir,
+  uiEntry,
+  writeAssets,
+} from "../lib/kit/assets";
 
-/** What one UI's build wrote. */
-interface Built {
-  /** Every file of the bundle, by its hashed name. */
-  files: ReadonlyMap<string, { body: Uint8Array<ArrayBuffer>; size: number }>;
-  /** The entry module's file name. */
-  entryJs: string;
-  /** The stylesheets the shell links. */
-  css: string[];
-}
-
-/** One UI's bundle: where its app starts, where it goes, and the build that makes it. */
-interface UiBuild {
-  /** The app's entry module. */
-  entry: string;
-  /** The dist directory its server reads. */
-  out: string;
-  /** Builds the entry and writes it to `out`. */
-  run: (entry: string, out: string) => Promise<Built>;
-}
-
-/** Every UI the package builds, by name. */
-const UIS: Record<string, UiBuild> = {
-  jobs: {
-    entry: JOBS_ENTRY,
-    out: JOBS_DIST_DIR,
-    run: async (entry, out) => {
-      const assets = await buildJobs({ entry, check: true });
-      const manifest = await writeJobs(assets, out);
-      return {
-        files: assets.files,
-        entryJs: manifest.entry.js,
-        css: manifest.entry.css,
-      };
-    },
-  },
-  docs: {
-    entry: DOCS_ENTRY,
-    out: DOCS_DIST_DIR,
-    run: async (entry, out) => {
-      const assets = await buildDocs({ entry, check: true });
-      const manifest = await writeDocs(assets, out);
-      return {
-        files: assets.files,
-        entryJs: manifest.entry.js,
-        css: manifest.entry.css,
-      };
-    },
-  },
-};
+/**
+ * Every UI the package builds, by name: `app/<name>/main.tsx` into
+ * `dist/<name>/` (the kit's `uiEntry`, `uiDistDir`). A new UI is a new name.
+ */
+const UIS = ["jobs", "docs"] as const;
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -89,12 +39,10 @@ const { values } = parseArgs({
   },
 });
 
-const names = values.ui ?? Object.keys(UIS);
+const names = values.ui ?? [...UIS];
 for (const name of names) {
-  if (!(name in UIS)) {
-    process.stderr.write(
-      `unknown --ui ${name}; one of ${Object.keys(UIS).join(", ")}\n`,
-    );
+  if (!(UIS as readonly string[]).includes(name)) {
+    process.stderr.write(`unknown --ui ${name}; one of ${UIS.join(", ")}\n`);
     process.exit(2);
   }
 }
@@ -112,25 +60,25 @@ function kib(bytes: number): string {
 }
 
 for (const name of names) {
-  const ui = UIS[name]!;
-  const entry = values.entry ?? ui.entry;
-  const out = values.out ?? ui.out;
+  const entry = values.entry ?? uiEntry(name);
+  const out = values.out ?? uiDistDir(name);
   const started = performance.now();
-  const built = await ui.run(entry, out);
+  const assets = await buildAssets({ entry, check: true });
+  const manifest = await writeAssets(assets, out);
 
   const rows: string[] = [];
   let total = 0;
   let totalGzip = 0;
-  for (const [file, info] of built.files) {
+  for (const [file, info] of assets.files) {
     const gzip = Bun.gzipSync(info.body).byteLength;
     if (!file.endsWith(".map")) {
       total += info.size;
       totalGzip += gzip;
     }
     const role =
-      file === built.entryJs
+      file === manifest.entry.js
         ? " (entry)"
-        : built.css.includes(file)
+        : manifest.entry.css.includes(file)
           ? " (css)"
           : "";
     rows.push(

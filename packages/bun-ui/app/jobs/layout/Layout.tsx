@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { NavItem } from "./nav";
-import { Chip } from "../components/Badge";
+import { Chip } from "../../kit/components/Badge";
 import { useUiConfig } from "../context";
 import { useMeta } from "../meta/hooks";
 import { Link } from "../router";

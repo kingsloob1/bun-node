@@ -13,12 +13,12 @@ import {
   runLogPageLimit,
   runLogsRefetchInterval,
 } from "../../api/runnerLogs";
-import { Badge } from "../../components/Badge";
-import { cx } from "../../components/classNames";
-import { EmptyState } from "../../components/EmptyState";
-import { Select } from "../../components/inputs";
+import { Badge } from "../../../kit/components/Badge";
+import { cx } from "../../../kit/components/classNames";
+import { EmptyState } from "../../../kit/components/EmptyState";
+import { Select } from "../../../kit/components/inputs";
 import { ProblemBanner } from "../../components/ProblemBanner";
-import { Spinner } from "../../components/Spinner";
+import { Spinner } from "../../../kit/components/Spinner";
 import { useApiClient } from "../../context";
 import { formatNumber, plural } from "../../format";
 import { usePollInterval } from "../../live";

@@ -1,12 +1,12 @@
 import type { SummonListItemDto } from "../../api/types";
 import { useQuery } from "@tanstack/react-query";
 import { listSummonControllers, summonKeys } from "../../api/summon";
-import { Badge } from "../../components/Badge";
-import { EmptyState } from "../../components/EmptyState";
+import { Badge } from "../../../kit/components/Badge";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
 import { RelativeTime } from "../../components/RelativeTime";
-import { Spinner } from "../../components/Spinner";
-import { Table } from "../../components/Table";
+import { Spinner } from "../../../kit/components/Spinner";
+import { Table } from "../../../kit/components/Table";
 import { useApiClient } from "../../context";
 import { displayText } from "../../format";
 import { useNow } from "../../hooks/useNow";

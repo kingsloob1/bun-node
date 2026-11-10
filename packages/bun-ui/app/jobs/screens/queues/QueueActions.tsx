@@ -10,16 +10,16 @@ import {
   resumeQueue,
   retryAllJobs,
 } from "../../api/queues";
-import { Button } from "../../components/Button";
+import { Button } from "../../../kit/components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { Field } from "../../components/Field";
+import { Field } from "../../../kit/components/Field";
 import {
   Checkbox,
   NumberInput,
   Select,
   TextInput,
-} from "../../components/inputs";
-import { useToast } from "../../components/toast";
+} from "../../../kit/components/inputs";
+import { useToast } from "../../../kit/components/toast";
 import { useApiClient } from "../../context";
 import { formatNumber, plural, STATE_LABELS } from "../../format";
 import { useApiMutation } from "../../hooks/useApiMutation";

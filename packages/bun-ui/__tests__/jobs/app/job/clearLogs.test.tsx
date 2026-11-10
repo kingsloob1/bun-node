@@ -7,7 +7,7 @@ import {
   CLEAR_LOGS_EMPTY_REASON,
   clearLogsBlocker,
 } from "../../../../app/jobs/screens/job/clearLogs";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import {
   act,
   fireEvent,

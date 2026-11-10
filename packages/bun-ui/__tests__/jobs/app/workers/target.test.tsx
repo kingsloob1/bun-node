@@ -5,7 +5,7 @@ import type {
 } from "../../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
 import { WORKER_TARGET_KINDS } from "../../../../app/jobs/api/contract";
-import { expectAbsent, expectNone } from "../assert";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 import { LOADED, page, setupDom, visit, within } from "../dom";
 import { renderApp } from "../renderApp";
 import { workerFixture } from "./fixtures";

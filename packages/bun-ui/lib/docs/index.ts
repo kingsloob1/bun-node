@@ -14,8 +14,9 @@ export {
  * app.use(ui.basePath, ui.router);
  * ```
  *
- * The bundle machinery (`lib/docs/assets.ts`: building, writing and loading
- * `dist/docs/`) is internal: `scripts/build.ts` and the tests import it directly.
+ * The bundle machinery (`lib/docs/assets.ts`, the kit's `lib/kit/assets.ts`
+ * bound to `dist/docs/`) is internal: `scripts/build.ts` and the tests import
+ * it directly.
  */
 export type { DocsUiConfig, DocsUiTheme } from "./browser/config";
 export type {

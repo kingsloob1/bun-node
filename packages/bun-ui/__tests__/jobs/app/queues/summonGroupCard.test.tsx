@@ -5,7 +5,7 @@ import type {
 import type { MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { summonGroupPath } from "../../../../app/jobs/screens/summoning/paths";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { page, setupDom, within } from "../dom";
 import { metaFixture } from "../fixtures";
 import { renderQueue } from "./fixtures";

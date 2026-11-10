@@ -27,7 +27,7 @@ import {
   levelTone,
   streamOptions,
 } from "../../../../app/jobs/screens/runners/runLogFormat";
-import { expectUndefined } from "../assert";
+import { expectUndefined } from "../../../harness/assert";
 
 /** One line, `stdout` unless told otherwise. */
 function line(seq: number, overrides: Partial<RunLogLineDto> = {}) {

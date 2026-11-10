@@ -5,7 +5,7 @@ import type {
   SchemaRoot,
 } from "./resolve";
 import { useState } from "react";
-import { cx } from "../../../components/classNames";
+import { cx } from "../../../../kit/components/classNames";
 import { Prose } from "./Prose";
 import {
   additionalFields,

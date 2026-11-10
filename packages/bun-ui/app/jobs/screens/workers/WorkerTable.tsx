@@ -1,13 +1,13 @@
 import type { WorkerState } from "../../api/contract";
 import type { WorkerDto } from "../../api/types";
-import type { BadgeTone } from "../../components/Badge";
+import type { BadgeTone } from "../../../kit/components/Badge";
 import { queuePath } from "../../api/queues";
 import { isStale, workerPath, workerState } from "../../api/workers";
-import { Badge } from "../../components/Badge";
-import { Pager } from "../../components/Pager";
+import { Badge } from "../../../kit/components/Badge";
+import { Pager } from "../../../kit/components/Pager";
 import { RelativeTime } from "../../components/RelativeTime";
-import { Table } from "../../components/Table";
-import { useClientPage } from "../../components/useClientPage";
+import { Table } from "../../../kit/components/Table";
+import { useClientPage } from "../../../kit/components/useClientPage";
 import { formatBytes, formatNumber } from "../../format";
 import { Link } from "../../router";
 import { WorkerActions } from "./actions";

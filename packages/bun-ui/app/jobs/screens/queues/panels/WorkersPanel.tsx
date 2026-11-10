@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { listQueueWorkers, queueKeys } from "../../../api/queues";
-import { EmptyState } from "../../../components/EmptyState";
+import { EmptyState } from "../../../../kit/components/EmptyState";
 import { ProblemBanner } from "../../../components/ProblemBanner";
-import { Spinner } from "../../../components/Spinner";
+import { Spinner } from "../../../../kit/components/Spinner";
 import { useApiClient } from "../../../context";
 import { useCan } from "../../../meta/hooks";
 import { useQueueWorkersLive } from "../../workers/live";

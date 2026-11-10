@@ -1,4 +1,4 @@
-import type { BadgeTone } from "../components/Badge";
+import type { BadgeTone } from "../../kit/components/Badge";
 import type { LiveStatus } from "../live";
 import { POLL_INTERVAL_MS } from "../queryClient";
 

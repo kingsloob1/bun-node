@@ -3,13 +3,13 @@ import { describe, expect, it } from "bun:test";
 import {
   DATE_TIME_OUT_OF_RANGE,
   DATE_TIME_UNREADABLE,
-} from "../../../../app/jobs/components/inputValues";
-import { jsonEditorState } from "../../../../app/jobs/components/jsonParse";
+} from "../../../../app/kit/components/inputValues";
+import { jsonEditorState } from "../../../../app/kit/components/jsonParse";
 import {
   updateBody,
   validateUpdateForm,
 } from "../../../../app/jobs/screens/job/updateJobForm";
-import { expectAbsent, expectNone } from "../assert";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 import {
   act,
   fireEvent,

@@ -12,7 +12,7 @@ import {
   summonBudgetView,
   utcResetLabel,
 } from "../../../../app/jobs/screens/queues/panels/budgetText";
-import { expectUndefined } from "../assert";
+import { expectUndefined } from "../../../harness/assert";
 
 /**
  * The summon budget in plain words (`budgetText.ts`), which the Summon panel

@@ -1,8 +1,8 @@
 import type { PermissionProbe } from "../permissions";
 import type { SchemaRoot } from "../schema/resolve";
 import type { DocOperation, DocParameter, DocResponse } from "./model";
-import { Badge } from "../../../components/Badge";
-import { CopyButton } from "../../../components/CopyButton";
+import { Badge } from "../../../../kit/components/Badge";
+import { CopyButton } from "../../../../kit/components/CopyButton";
 import { useDocsUiConfig } from "../../../context";
 import { Prose } from "../schema/Prose";
 import { SchemaTree } from "../schema/SchemaTree";

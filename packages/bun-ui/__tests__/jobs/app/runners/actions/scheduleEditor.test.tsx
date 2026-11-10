@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { DATE_TIME_OUT_OF_RANGE } from "../../../../../app/jobs/components/inputValues";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { DATE_TIME_OUT_OF_RANGE } from "../../../../../app/kit/components/inputValues";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import { fireEvent, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import { stubRawValue } from "../../rawInput";

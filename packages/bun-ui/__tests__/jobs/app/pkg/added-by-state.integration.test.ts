@@ -18,7 +18,7 @@ import {
   SqlDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * "Added in range, by state" and the job list's `sort=createdAt`, against a

@@ -6,7 +6,7 @@ import type {
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { WORKER_CONFIG_KEYS } from "../../../../app/jobs/api/contract";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import {
   fireEvent,
   LOADED,

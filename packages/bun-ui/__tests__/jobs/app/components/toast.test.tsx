@@ -1,11 +1,11 @@
-import type { ToastApi } from "../../../../app/jobs/components/toast";
+import type { ToastApi } from "../../../../app/kit/components/toast";
 import { afterEach, describe, expect, it, jest, mock } from "bun:test";
 import {
   TOAST_DURATION_MS,
   useToast,
-} from "../../../../app/jobs/components/toast";
-import { ToastProvider } from "../../../../app/jobs/components/ToastProvider";
-import { expectNone } from "../assert";
+} from "../../../../app/kit/components/toast";
+import { ToastProvider } from "../../../../app/kit/components/ToastProvider";
+import { expectNone } from "../../../harness/assert";
 import { act, fireEvent, page, render, setupDom } from "../dom";
 
 // Registered ahead of setupDom()'s hooks, which run in order and need

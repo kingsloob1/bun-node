@@ -2,7 +2,7 @@ import type { AddedByStateDto, MetaDto } from "../../../app/jobs/api/types";
 import type { RecordedCall } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
 import { formatNumber } from "../../../app/jobs/format";
-import { expectAbsent, expectNone } from "./assert";
+import { expectAbsent, expectNone } from "../../harness/assert";
 import { LOADED, page, setupDom, visit, waitFor, within } from "./dom";
 import { metaFixture, problem } from "./fixtures";
 import { renderApp } from "./renderApp";

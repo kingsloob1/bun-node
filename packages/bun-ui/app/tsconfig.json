@@ -5,7 +5,8 @@
   // The app imports the API's types and constants only from
   // `@kingsleyweb/bun-jobs/api/contract`, which imports nothing but its own
   // files, so no server source is compiled here. `types: ["bun"]` is for the
-  // tests in `__tests__/<ui>/app`, which run under `bun:test`. The browser code
+  // tests in `__tests__/<ui>/app` and the DOM harness they share
+  // (`__tests__/harness`), which run under `bun:test`. The browser code
   // never uses a Bun global; `__tests__/jobs/app/pkg/bundle-safety.test.ts` builds
   // the app and proves nothing server-side reaches it.
   "extends": "../../../tsconfig.base.json",
@@ -17,7 +18,8 @@
     "./**/*",
     "../lib/*/browser/**/*",
     "../lib/kit/browser/**/*",
-    "../__tests__/*/app/**/*"
+    "../__tests__/*/app/**/*",
+    "../__tests__/harness/**/*"
   ],
   // Tests that import the `@kingsleyweb/bun-jobs` package root (the real-API
   // and bundle-safety tests) cannot compile under the DOM lib: the package's

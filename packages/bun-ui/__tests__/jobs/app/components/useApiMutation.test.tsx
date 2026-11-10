@@ -2,7 +2,7 @@ import type { UseApiMutationResult } from "../../../../app/jobs/hooks/useApiMuta
 import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, spyOn } from "bun:test";
 import { ApiError } from "../../../../app/jobs/api/errors";
-import { ToastProvider } from "../../../../app/jobs/components/ToastProvider";
+import { ToastProvider } from "../../../../app/kit/components/ToastProvider";
 import {
   issuesToFieldErrors,
   useApiMutation,

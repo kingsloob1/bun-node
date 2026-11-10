@@ -1,6 +1,6 @@
 import type { UiTheme } from "../../../lib/jobs/browser/config.ts";
 import { useState } from "react";
-import { Button } from "../components/Button";
+import { Button } from "../../kit/components/Button";
 import { useUiConfig } from "../context";
 import { applyTheme, initialTheme, nextTheme, storeTheme } from "../theme";
 

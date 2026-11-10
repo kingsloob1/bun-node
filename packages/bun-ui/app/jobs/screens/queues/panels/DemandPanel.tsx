@@ -1,11 +1,11 @@
 import type { QueueDemandDto } from "../../../api/types";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { demandKeys, demandUrls, getQueueDemand } from "../../../api/demand";
-import { CopyButton } from "../../../components/CopyButton";
-import { KeyValue } from "../../../components/KeyValue";
+import { CopyButton } from "../../../../kit/components/CopyButton";
+import { KeyValue } from "../../../../kit/components/KeyValue";
 import { ProblemBanner } from "../../../components/ProblemBanner";
 import { RelativeTime } from "../../../components/RelativeTime";
-import { Spinner } from "../../../components/Spinner";
+import { Spinner } from "../../../../kit/components/Spinner";
 import { useApiClient } from "../../../context";
 import { formatNumber } from "../../../format";
 import { useRefreshInterval } from "../live";

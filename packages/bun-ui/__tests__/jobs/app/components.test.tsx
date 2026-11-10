@@ -1,17 +1,17 @@
 import { describe, expect, it, mock } from "bun:test";
 import { ApiError } from "../../../app/jobs/api/errors";
-import { Badge, Chip } from "../../../app/jobs/components/Badge";
-import { Button } from "../../../app/jobs/components/Button";
-import { Card } from "../../../app/jobs/components/Card";
-import { EmptyState } from "../../../app/jobs/components/EmptyState";
+import { Badge, Chip } from "../../../app/kit/components/Badge";
+import { Button } from "../../../app/kit/components/Button";
+import { Card } from "../../../app/kit/components/Card";
+import { EmptyState } from "../../../app/kit/components/EmptyState";
 import { ErrorView } from "../../../app/jobs/components/ErrorView";
 import { Sparkline } from "../../../app/jobs/components/Sparkline";
 import { sparkPoints } from "../../../app/jobs/components/sparkPoints";
-import { Spinner } from "../../../app/jobs/components/Spinner";
+import { Spinner } from "../../../app/kit/components/Spinner";
 import { StateBadge } from "../../../app/jobs/components/StateBadge";
-import { Table } from "../../../app/jobs/components/Table";
+import { Table } from "../../../app/kit/components/Table";
 import { createLimiter } from "../../../app/jobs/limiter";
-import { expectAbsent } from "./assert";
+import { expectAbsent } from "../../harness/assert";
 import { fireEvent, page, render, setupDom } from "./dom";
 
 setupDom();

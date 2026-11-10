@@ -19,7 +19,7 @@ import {
   createUnauthorizedRedirect,
 } from "@kingsleyweb/bun-ui/docs/embed/unauthorized";
 import { RouterProvider, Routes } from "../../../app/jobs/router";
-import { expectAbsent } from "./assert";
+import { expectAbsent } from "../../harness/assert";
 import { act, LOADED, page, render, setupDom, visit, waitFor } from "./dom";
 import { metaFixture, problem, uiConfig } from "./fixtures";
 import { FakeSocket, hello, settle } from "./live/fakes";

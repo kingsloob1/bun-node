@@ -1,5 +1,5 @@
 import type { ErrorDto } from "../../api/types";
-import { JsonView } from "../../components/JsonView";
+import { JsonView } from "../../../kit/components/JsonView";
 import { causeChain } from "./errorChain";
 
 /** Props of {@link ErrorDetails}. */

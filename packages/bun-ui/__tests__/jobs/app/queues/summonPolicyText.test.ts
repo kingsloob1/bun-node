@@ -14,7 +14,7 @@ import {
   summonPolicyRows,
   summonPolicyVisibility,
 } from "../../../../app/jobs/screens/queues/panels/summonPolicyText";
-import { expectUndefined } from "../assert";
+import { expectUndefined } from "../../../harness/assert";
 import { policyFixture } from "./summonPolicyFixture";
 
 /**

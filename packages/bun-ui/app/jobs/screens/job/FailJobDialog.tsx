@@ -6,8 +6,8 @@ import {
   mutationInvalidation,
 } from "../../api/jobs";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { Field } from "../../components/Field";
-import { TextInput } from "../../components/inputs";
+import { Field } from "../../../kit/components/Field";
+import { TextInput } from "../../../kit/components/inputs";
 import { useApiClient } from "../../context";
 import { formatNumber } from "../../format";
 import { useApiMutation } from "../../hooks/useApiMutation";

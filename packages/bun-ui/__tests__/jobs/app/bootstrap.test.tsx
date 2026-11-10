@@ -14,7 +14,7 @@ import {
   THEME_STORAGE_KEY,
 } from "../../../app/jobs/theme";
 import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config.ts";
-import { expectAbsent, expectUndefined } from "./assert";
+import { expectAbsent, expectUndefined } from "../../harness/assert";
 import { act, fireEvent, LOADED, page, setupDom } from "./dom";
 import { uiConfig } from "./fixtures";
 import { mockFetch } from "./mockFetch";

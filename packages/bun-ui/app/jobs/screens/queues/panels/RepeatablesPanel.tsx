@@ -10,17 +10,17 @@ import {
   queueKeys,
   removeRepeatable,
 } from "../../../api/queues";
-import { Badge } from "../../../components/Badge";
-import { Button } from "../../../components/Button";
+import { Badge } from "../../../../kit/components/Badge";
+import { Button } from "../../../../kit/components/Button";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { EmptyState } from "../../../components/EmptyState";
-import { JsonView } from "../../../components/JsonView";
-import { Pager } from "../../../components/Pager";
+import { EmptyState } from "../../../../kit/components/EmptyState";
+import { JsonView } from "../../../../kit/components/JsonView";
+import { Pager } from "../../../../kit/components/Pager";
 import { ProblemBanner } from "../../../components/ProblemBanner";
 import { RelativeTime } from "../../../components/RelativeTime";
-import { Spinner } from "../../../components/Spinner";
-import { Table } from "../../../components/Table";
-import { useClientPage } from "../../../components/useClientPage";
+import { Spinner } from "../../../../kit/components/Spinner";
+import { Table } from "../../../../kit/components/Table";
+import { useClientPage } from "../../../../kit/components/useClientPage";
 import { useApiClient } from "../../../context";
 import { formatNumber } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";

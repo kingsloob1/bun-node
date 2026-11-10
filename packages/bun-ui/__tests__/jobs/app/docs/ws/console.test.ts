@@ -12,7 +12,7 @@ import {
   isKnownAction,
 } from "../../../../../app/jobs/screens/docs/ws/links";
 import { JOBS_ADDRESS } from "../../../../../app/jobs/screens/docs/ws/address";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import { wsFixture } from "./fixtures";
 
 const both = wsModel.readWsDoc(wsFixture("both"));

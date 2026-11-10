@@ -10,7 +10,7 @@ import {
 import { describe, expect, it } from "bun:test";
 import { formatNumber } from "../../../../../app/jobs/format";
 import { RunnerSummary } from "../../../../../app/jobs/screens/runners/RunnerScreen";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import { fireEvent, page, render, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
 import {

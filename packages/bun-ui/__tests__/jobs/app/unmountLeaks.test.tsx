@@ -23,8 +23,8 @@ import { StrictMode, use, useEffect } from "react";
 import { createApiClient } from "../../../app/jobs/api/client";
 import { RUN_LOG_POLL_MS } from "../../../app/jobs/api/runnerLogs";
 import { App } from "../../../app/jobs/App";
-import { COPY_FEEDBACK_MS } from "../../../app/jobs/components/copy";
-import { TOAST_DURATION_MS } from "../../../app/jobs/components/toast";
+import { COPY_FEEDBACK_MS } from "../../../app/kit/components/copy";
+import { TOAST_DURATION_MS } from "../../../app/kit/components/toast";
 import { UiConfigContext, useApiClient } from "../../../app/jobs/context";
 import { NOW_TICK_MS, sharedClockState } from "../../../app/jobs/hooks/useNow";
 import {
@@ -328,13 +328,12 @@ function coalescing(): Handle[] {
   );
 }
 
-/** Timeouts `file` (under `app/jobs/`) opened of `ms`, open or not. */
+/** Timeouts `file` (under `app/`: `jobs/…`, `kit/…`) opened of `ms`, open or not. */
 function timeoutsOf(file: string, ms: number): Handle[] {
   return ledger.opened(
     "timeout",
     (handle) =>
-      handle.detail === `${ms}ms` &&
-      handle.origin.startsWith(`app/jobs/${file}`),
+      handle.detail === `${ms}ms` && handle.origin.startsWith(`app/${file}`),
   );
 }
 
@@ -767,7 +766,7 @@ describe("transient UI leaves nothing behind when unmounted mid-way", () => {
       expect(document.body.textContent).toContain("Paused emails"),
     );
     const timers = timeoutsOf(
-      "components/ToastProvider.tsx",
+      "kit/components/ToastProvider.tsx",
       TOAST_DURATION_MS.success,
     );
     expect(timers.some((handle) => handle.open)).toBe(true);
@@ -795,7 +794,10 @@ describe("transient UI leaves nothing behind when unmounted mid-way", () => {
     await eventually(() =>
       expect(button.getAttribute("data-status")).not.toBe("idle"),
     );
-    const timers = timeoutsOf("components/CopyButton.tsx", COPY_FEEDBACK_MS);
+    const timers = timeoutsOf(
+      "kit/components/CopyButton.tsx",
+      COPY_FEEDBACK_MS,
+    );
     expect(timers.some((handle) => handle.open)).toBe(true);
     await unmountAndAssert(queryClient);
     expect(timers.map((handle) => handle.closedBy)).not.toContain("fired");
@@ -841,7 +843,9 @@ describe("transient UI leaves nothing behind when unmounted mid-way", () => {
     );
     // A child on another queue: the dialog waits 250 ms, then asks about it.
     fireEvent.change(select(), { target: { value: "reports" } });
-    const pending = timeoutsOf("screens/job/AddFlowDialog.tsx", 250).at(-1);
+    const pending = timeoutsOf("jobs/screens/job/AddFlowDialog.tsx", 250).at(
+      -1,
+    );
     expect(pending?.open).toBe(true);
     await unmountAndAssert(queryClient);
     // Cleared by the unmount, before it could fire.

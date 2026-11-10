@@ -1,5 +1,5 @@
 import { useNow } from "../hooks/useNow";
-import { cx } from "./classNames";
+import { cx } from "../../kit/components/classNames";
 import { formatRelativeTime, toEpochMs } from "./formatRelative";
 
 /** Props of {@link RelativeTime}. */

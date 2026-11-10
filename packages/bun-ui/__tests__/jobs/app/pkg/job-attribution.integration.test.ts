@@ -18,7 +18,7 @@ import {
 import { STAMP_COLUMNS } from "@kingsleyweb/bun-jobs/lib/drivers/sql/schema.ts";
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * Job attribution end to end, against a REAL `createJobsApi` over real

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * Where a worker's attempts run (`WorkerDto.target`), against a REAL

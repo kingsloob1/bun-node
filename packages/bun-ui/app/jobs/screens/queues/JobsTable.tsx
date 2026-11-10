@@ -23,19 +23,19 @@ import {
   sortsByCreation,
 } from "../../api/queues";
 import { workerPath } from "../../api/workers";
-import { Button } from "../../components/Button";
+import { Button } from "../../../kit/components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { CopyButton } from "../../components/CopyButton";
-import { EmptyState } from "../../components/EmptyState";
+import { CopyButton } from "../../../kit/components/CopyButton";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
-import { Checkbox, Select, TextInput } from "../../components/inputs";
-import { Pager } from "../../components/Pager";
+import { Checkbox, Select, TextInput } from "../../../kit/components/inputs";
+import { Pager } from "../../../kit/components/Pager";
 import { RelativeTime } from "../../components/RelativeTime";
-import { Spinner } from "../../components/Spinner";
+import { Spinner } from "../../../kit/components/Spinner";
 import { StateBadge } from "../../components/StateBadge";
-import { Table } from "../../components/Table";
-import { UrlTabs } from "../../components/Tabs";
-import { useToast } from "../../components/toast";
+import { Table } from "../../../kit/components/Table";
+import { UrlTabs } from "../../../kit/components/Tabs";
+import { useToast } from "../../../kit/components/toast";
 import { useApiClient } from "../../context";
 import {
   displayText,
@@ -45,7 +45,7 @@ import {
   STATE_LABELS,
 } from "../../format";
 import { useApiMutation } from "../../hooks/useApiMutation";
-import { useUrlTab } from "../../hooks/useUrlTab";
+import { useUrlTab } from "../../../kit/hooks/useUrlTab";
 import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
 import { useMeta } from "../../meta/hooks";
 import { Link } from "../../router";

@@ -886,24 +886,47 @@ one subpath each, laid out **layer first** so the packaging recipe's one
 
 - **`lib/<ui>/`** — a UI's server, Bun only (`lib/jobs/`: `jobsUi(options)`
   returns a bun-common router serving the HTML shell, with the injected
-  config, CSP and SRI, and the hashed assets, `lib/jobs/assets.ts`).
+  config, CSP and SRI, and the hashed assets). It validates its own options
+  and builds on the kit; its `assets.ts` and `shell.ts` are thin bindings of
+  the kit's (its name, its config element, its error class), keeping the
+  names they had.
 - **`lib/<ui>/browser/`** — the UI's browser-safe config contract, imported
   by both sides and published as `/<ui>/browser`. It must stay free of
   runtime imports beyond constants (the bundle-safety and entry-isolation
   tests catch anything else crossing).
-- **`lib/kit/`** — what the UIs share (`lib/kit/browser/` its browser-safe
-  half). **It never imports a domain package**: a kit function that must
-  throw takes an error factory from the UI (`assets.ts`'s `fail`), so
-  `jobsUi()` throws bun-jobs' `ConfigError` and nothing else needs bun-jobs.
+- **`lib/kit/`** — what the UIs share (BU-4): `serve.ts` (`createUiRouter`:
+  the shell, `/assets/:file`, the UI's extra routes, its guards and
+  `authorize`, problems under the UI's own URN), `shell.ts` (the shell
+  renderer for any config element, `cspHeader`, the nonce), `connect.ts`
+  (`connectSources` for an API-and-socket UI, `documentOriginSource` for a
+  document), `assets.ts` (`dist/<ui>/` and `app/<ui>/main.tsx` from the UI's
+  name, SRI, the in-memory build), `options.ts` (mount path, theme, CSRF
+  header, the options every UI takes), `unauthorized.ts`; `lib/kit/browser/`
+  is its browser-safe half. **It never imports a domain package**: whatever
+  must throw takes an error factory from the UI (`fail`), so `jobsUi()`
+  throws bun-jobs' `ConfigError`, `docsUi()` bun-common's, and nothing else
+  needs bun-jobs. A new UI (`/security`) is a `lib/<ui>/` on these.
 - **`lib/index.ts`** — the root `.`: only the domain-free, browser-safe
   shared surface (`UiTheme`, the `unauthorized` types and defaults,
   `ASSET_CACHE_CONTROL`). Never a UI.
 - **`app/<ui>/`** — the browser: React 19, TanStack Query, bundled by
   `Bun.build`. One DOM project for every UI (`app/tsconfig.json`).
+- **`app/kit/`** — the design system every UI's app is built on: the tokens
+  and base styles, the components (`Button`, `Dialog`, `JsonView`, `Tabs`,
+  `Pager`, the toasts, …), the router (`routing.ts`, which
+  `app/docs/routing.ts`, the `./docs/embed/routing` entry, re-exports), the
+  theme, the `unauthorized` hook. The few components that must recognise a
+  UI's own `ApiError` or reset its queries (`ErrorView`, `ProblemBanner`,
+  `ConfirmDialog`, `ScreenErrorBoundary`) take it as a prop; each UI binds
+  them in `app/<ui>/components/` (a few lines each), and so `app/<ui>/theme.ts`
+  binds the kit's theme to its storage key. Nothing in `app/kit/` imports
+  `app/<ui>/`.
 - **`__tests__/<ui>/`** — `server/`, `app/` (with a `tsconfig.json` that
   extends `app/tsconfig.json`, for `bun test --check`'s nearest-config rule),
-  `e2e/`; the package-wide `packaging.test.ts` and `entryIsolation.test.ts`
-  sit in `__tests__/`.
+  `e2e/`; `__tests__/harness/` the DOM harness every UI's app tests share,
+  `__tests__/kit/` the kit's own tests; the package-wide `packaging.test.ts`,
+  `entryIsolation.test.ts`, `treeShaking.test.ts` and `budget.test.ts` sit in
+  `__tests__/`.
 - **`guides/<ui>.md`** — each UI's guide; `README.md` is the index.
 
 **Domain packages are optional peers scoped per entry.** bun-jobs is an
@@ -928,7 +951,10 @@ serial `--randomize` process:
 - Call `setupDom()` from the UI's `__tests__/<ui>/app/dom.ts` at the top
   level of every DOM test file, and take `render`/`fireEvent`/… from there.
   It registers happy-dom for the file and unregisters it after, so its
-  `fetch`/`Response` never reach a server test.
+  `fetch`/`Response` never reach a server test. That `dom.ts` binds the
+  harness (`__tests__/harness/dom.ts`, `setupDom({ url, preload })`) to the
+  UI's mount and its lazy screens; its `register-dom.ts` registers at that
+  mount when imported.
 - Never import `react-dom`, `@testing-library/react` or `app/<ui>/boot`
   statically in a test: react-dom decides at evaluation whether a DOM exists,
   and loaded before happy-dom its `onChange` never fires. `dom.ts` loads it
@@ -936,9 +962,11 @@ serial `--randomize` process:
 - `dom.ts` makes TanStack Query re-ask `isServer` per call. query-core
   otherwise decides once, at load, and a DOM-less file loaded first leaves
   every later polling test with no timers.
-- `__tests__/jobs/app/domLeak.test.ts` is the guard over **all of
-  `__tests__/`**: every file reaching a `register-dom` calls `setupDom()`,
-  none reaches react-dom statically.
+- `__tests__/harness/domLeak.test.ts` is the guard over **all of
+  `__tests__/`**: every file reaching a `register-dom` (or the harness's
+  `dom.ts`) calls `setupDom()`, none reaches react-dom statically.
+  `__tests__/harness/assert.test.ts` keeps every UI's app tests on the
+  absence helpers (`assert.ts`).
 - The suite must pass under `bun test --randomize`, not just in file order.
 
 **Pre-merge gate:** `bun scripts/typecheck.ts`; `bun run lint`,
@@ -971,8 +999,9 @@ fails on any server marker, with a negative control.
 `dist/jobs/`. Without one — the normal state in the repo — `jobsUi()` builds
 `app/jobs/main.tsx` in memory on the first request, once per process, and logs
 one `info` line saying so; `dev: true` always builds, `dev: false` requires
-`dist/jobs/`. `__tests__/jobs/server/budget.test.ts` caps the entry module and
-every lazy chunk (`BUNDLE_BUDGET`, raised only deliberately, per its comment).
+`dist/jobs/`. `__tests__/budget.test.ts` caps each UI's entry module and
+every other chunk (`BUNDLE_BUDGETS`, a row per UI, raised only deliberately,
+per its comment).
 
 **Its DOM tests**, beyond the rules above:
 
@@ -983,8 +1012,9 @@ every lazy chunk (`BUNDLE_BUDGET`, raised only deliberately, per its comment).
   `@eslint-react`'s dropped `web-api-no-leaked-*` rules: the real app under
   StrictMode, live on, over a `HandleLedger` (`handleLedger.ts`) recording
   every timer, frame, window/document listener, socket, observer and fetch,
-  with a negative control per kind (`cleanupPairs.test.ts` is only a static
-  tripwire). A new screen gets a case that asserts its **start** (its
+  with a negative control per kind (`cleanupPairs.test.ts`, over `app/jobs`
+  and `app/kit`, is only a static tripwire). The ledger is the jobs UI's:
+  it is built on the live client's fake socket. A new screen gets a case that asserts its **start** (its
   TanStack interval, its channels in `socket.held`, for a live screen an
   event and the 250 ms coalescing timeout open), then **Phase A** (navigate
   to `/docs`: channels released, timers closed) and **Phase B** (`cleanup()`,
@@ -1038,7 +1068,7 @@ peer (bun-common's `ConfigError`). Its other entries:
 - **`/docs/browser`** — `DocsUiConfig`, the element id, the extension
   prefixes and the `unauthorized` helpers (`lib/kit/browser/unauthorized.ts`).
 
-`__tests__/docs/server/budget.test.ts` caps its bundle;
+`__tests__/budget.test.ts` caps its bundle (its row);
 `__tests__/docs/server/bundle-safety.test.ts` proves no server marker reaches
 it; `__tests__/docs/e2e/smoke.e2e.test.ts` loads it in headless Chrome, opens
 an operation and asserts no CSP violation. The `unauthorized` option's code

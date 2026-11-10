@@ -21,7 +21,7 @@
  *
  * - **size**: `isApiError` from `./docs/embed` stays under {@link BOUND} and
  *   carries no React context (`app/docs/context.ts`) and no `Intl` formatter
- *   (`components/Tabs.tsx`). Measured 2026-11-08 (Bun
+ *   (`app/kit/components/Tabs.tsx`). Measured 2026-11-08 (Bun
  *   1.4.4-canary.1+11c367163): 645 bytes of JavaScript with the field, 2,135
  *   without it. The negative control removes the field from a copy.
  * - **stylesheets survive**: `HttpReference` and `WsReference` bring their

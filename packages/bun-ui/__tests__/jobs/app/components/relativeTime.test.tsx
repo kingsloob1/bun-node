@@ -8,7 +8,7 @@ import {
   NOW_TICK_MS,
   sharedClockState,
 } from "../../../../app/jobs/hooks/useNow";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { act, page, render, setupDom } from "../dom";
 
 // Ahead of setupDom()'s hooks, which need real timers to settle.

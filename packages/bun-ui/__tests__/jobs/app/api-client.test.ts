@@ -6,7 +6,7 @@ import {
   serializeQuery,
 } from "../../../app/jobs/api/client";
 import { ApiError, isApiError } from "../../../app/jobs/api/errors";
-import { expectUndefined } from "./assert";
+import { expectUndefined } from "../../harness/assert";
 import { problem, queueListFixture } from "./fixtures";
 import { mockFetch } from "./mockFetch";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { expectAbsent } from "../../assert";
+import { expectAbsent } from "../../../../harness/assert";
 import { fireEvent, page, setupDom, waitFor, within } from "../../dom";
 import { renderViewer } from "../../renderViewer";
 import { wsFixture } from "./fixtures";

@@ -16,7 +16,7 @@ import {
   requestUrl,
   tryItGate,
 } from "../../../../../app/docs/screens/docs/http/tryIt";
-import { expectUndefined } from "../../assert";
+import { expectUndefined } from "../../../../harness/assert";
 import { openApiFixture } from "./openapiFixture";
 
 let doc: SpecDocument;

@@ -1,7 +1,7 @@
 import type { SpecDocument } from "../../../../../app/jobs/api/docs";
 import type { RenderAppOptions } from "../../renderApp";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import {
   fireEvent,
   LOADED,

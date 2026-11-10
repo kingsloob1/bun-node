@@ -9,7 +9,7 @@ import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterEach, describe, expect, it } from "bun:test";
 import { LiveClient, liveSocketUrl } from "../../../../app/jobs/live/client";
-import { expectNone } from "../assert";
+import { expectNone } from "../../../harness/assert";
 
 /**
  * `LiveClient` against a REAL live-events socket: `createJobsApi` over the

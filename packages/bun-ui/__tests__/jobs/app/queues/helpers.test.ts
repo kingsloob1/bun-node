@@ -39,7 +39,7 @@ import {
   intParam,
   splitList,
 } from "../../../../app/jobs/screens/queues/urlState";
-import { expectUndefined } from "../assert";
+import { expectUndefined } from "../../../harness/assert";
 import { setupDom } from "../dom";
 import { repeatablesFixture } from "./fixtures";
 

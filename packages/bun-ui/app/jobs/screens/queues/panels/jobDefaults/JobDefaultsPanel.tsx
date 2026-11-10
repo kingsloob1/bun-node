@@ -5,13 +5,13 @@ import {
   JOB_DEFAULTS_APPLY_STATES,
 } from "../../../../api/contract";
 import { getJobDefaults, jobDefaultsKey } from "../../../../api/jobDefaults";
-import { Badge } from "../../../../components/Badge";
-import { Button } from "../../../../components/Button";
-import { KeyValue } from "../../../../components/KeyValue";
+import { Badge } from "../../../../../kit/components/Badge";
+import { Button } from "../../../../../kit/components/Button";
+import { KeyValue } from "../../../../../kit/components/KeyValue";
 import { ProblemBanner } from "../../../../components/ProblemBanner";
 import { RelativeTime } from "../../../../components/RelativeTime";
-import { Spinner } from "../../../../components/Spinner";
-import { Table } from "../../../../components/Table";
+import { Spinner } from "../../../../../kit/components/Spinner";
+import { Table } from "../../../../../kit/components/Table";
 import { useApiClient } from "../../../../context";
 import { formatNumber, STATE_LABELS } from "../../../../format";
 import { formatMs } from "../../duration";

@@ -17,8 +17,8 @@ import {
   workerInvalidations,
   workerState,
 } from "../../../api/workers";
-import { Button } from "../../../components/Button";
-import { useToast } from "../../../components/toast";
+import { Button } from "../../../../kit/components/Button";
+import { useToast } from "../../../../kit/components/toast";
 import { useApiClient } from "../../../context";
 import { useApiMutation } from "../../../hooks/useApiMutation";
 import { explainWorkerError } from "./explain";

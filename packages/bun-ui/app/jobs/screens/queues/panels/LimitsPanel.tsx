@@ -8,10 +8,10 @@ import {
   removeQueueLimits,
   setQueueLimits,
 } from "../../../api/queues";
-import { Button } from "../../../components/Button";
+import { Button } from "../../../../kit/components/Button";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { Field } from "../../../components/Field";
-import { NumberInput, TextInput } from "../../../components/inputs";
+import { Field } from "../../../../kit/components/Field";
+import { NumberInput, TextInput } from "../../../../kit/components/inputs";
 import { ProblemBanner } from "../../../components/ProblemBanner";
 import { useApiClient } from "../../../context";
 import { useApiMutation } from "../../../hooks/useApiMutation";

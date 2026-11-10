@@ -3,7 +3,7 @@ import type { MetaDto, Permissions } from "../../../../../app/jobs/api/types";
 import type { WsFixtureName } from "./fixtures";
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { liveChannels } from "../../../../../app/jobs/live";
-import { expectAbsent, expectUndefined } from "../../assert";
+import { expectAbsent, expectUndefined } from "../../../../harness/assert";
 import {
   act,
   fireEvent,

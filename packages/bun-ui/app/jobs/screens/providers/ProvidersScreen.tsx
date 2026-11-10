@@ -6,15 +6,15 @@ import {
   listProviders,
   providerKeys,
 } from "../../api/providers";
-import { Badge } from "../../components/Badge";
-import { Button } from "../../components/Button";
-import { Card } from "../../components/Card";
-import { EmptyState } from "../../components/EmptyState";
+import { Badge } from "../../../kit/components/Badge";
+import { Button } from "../../../kit/components/Button";
+import { Card } from "../../../kit/components/Card";
+import { EmptyState } from "../../../kit/components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
-import { JsonView } from "../../components/JsonView";
-import { KeyValue } from "../../components/KeyValue";
+import { JsonView } from "../../../kit/components/JsonView";
+import { KeyValue } from "../../../kit/components/KeyValue";
 import { ProblemBanner } from "../../components/ProblemBanner";
-import { Spinner } from "../../components/Spinner";
+import { Spinner } from "../../../kit/components/Spinner";
 import { useApiClient } from "../../context";
 import { displayText } from "../../format";
 import { usePollInterval } from "../../live";

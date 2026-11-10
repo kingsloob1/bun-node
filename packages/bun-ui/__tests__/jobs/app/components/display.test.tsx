@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, jest, mock } from "bun:test";
 import { ApiError } from "../../../../app/jobs/api/errors";
-import { COPY_FEEDBACK_MS } from "../../../../app/jobs/components/copy";
-import { CopyButton } from "../../../../app/jobs/components/CopyButton";
-import { KeyValue } from "../../../../app/jobs/components/KeyValue";
+import { COPY_FEEDBACK_MS } from "../../../../app/kit/components/copy";
+import { CopyButton } from "../../../../app/kit/components/CopyButton";
+import { KeyValue } from "../../../../app/kit/components/KeyValue";
 import { ProblemBanner } from "../../../../app/jobs/components/ProblemBanner";
 import { act, fireEvent, page, render, setupDom } from "../dom";
 

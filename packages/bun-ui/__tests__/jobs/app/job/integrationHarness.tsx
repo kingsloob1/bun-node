@@ -12,7 +12,7 @@ import { App } from "../../../../app/jobs/App";
 import { AppProviders } from "../../../../app/jobs/providers";
 import { createQueryClient } from "../../../../app/jobs/queryClient";
 import { AddJobDialog } from "../../../../app/jobs/screens/job";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import {
   act,
   cleanup,

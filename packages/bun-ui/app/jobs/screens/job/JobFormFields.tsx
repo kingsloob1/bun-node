@@ -3,14 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { MAX_JOB_ID_LENGTH } from "../../api/contract";
 import { jobKeys, listDefinitions } from "../../api/jobs";
-import { Field } from "../../components/Field";
+import { Field } from "../../../kit/components/Field";
 import {
   DateTimeInput,
   NumberInput,
   Select,
   TextInput,
-} from "../../components/inputs";
-import { JsonEditor } from "../../components/JsonEditor";
+} from "../../../kit/components/inputs";
+import { JsonEditor } from "../../../kit/components/JsonEditor";
 import { useApiClient } from "../../context";
 import { useCan } from "../../meta/hooks";
 

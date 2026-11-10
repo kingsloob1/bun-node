@@ -3,7 +3,7 @@ import type { FetchLike } from "../../../../app/jobs/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectNone } from "../assert";
+import { expectNone } from "../../../harness/assert";
 
 /**
  * The runner history's pager against a REAL `createJobsApi`, over a real

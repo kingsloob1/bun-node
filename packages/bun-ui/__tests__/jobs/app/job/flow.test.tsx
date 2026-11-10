@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { LOADED, page, setupDom, within } from "../dom";
 import { childrenFixture, jobApiPath, jobFixture, logPage } from "./fixtures";
 import { renderJobScreen } from "./render";

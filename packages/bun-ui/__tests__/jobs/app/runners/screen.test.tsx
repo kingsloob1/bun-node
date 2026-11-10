@@ -4,7 +4,7 @@ import type {
 } from "../../../../app/jobs/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { NON_LOCAL_RUNNER_NOTE } from "../../../../app/jobs/screens/runners/runnerFormat";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {

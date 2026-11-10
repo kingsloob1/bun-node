@@ -3,8 +3,8 @@ import type { WorkerDto } from "../../../api/types";
 import { useState } from "react";
 import { WORKER_STOP_PERSISTENCE } from "../../../api/contract";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
-import { Field } from "../../../components/Field";
-import { Select } from "../../../components/inputs";
+import { Field } from "../../../../kit/components/Field";
+import { Select } from "../../../../kit/components/inputs";
 
 /** What each persistence choice does, as the dialog puts it. */
 const PERSISTENCE_LABEL: Readonly<Record<WorkerStopPersistence, string>> = {

@@ -15,10 +15,10 @@ import {
   jobDefaultsKey,
 } from "../../../../api/jobDefaults";
 import { mutationInvalidations } from "../../../../api/queues";
-import { Button } from "../../../../components/Button";
-import { Dialog } from "../../../../components/Dialog";
-import { Checkbox } from "../../../../components/inputs";
-import { KeyValue } from "../../../../components/KeyValue";
+import { Button } from "../../../../../kit/components/Button";
+import { Dialog } from "../../../../../kit/components/Dialog";
+import { Checkbox } from "../../../../../kit/components/inputs";
+import { KeyValue } from "../../../../../kit/components/KeyValue";
 import { ProblemBanner } from "../../../../components/ProblemBanner";
 import { useApiClient } from "../../../../context";
 import { formatNumber, plural, STATE_LABELS } from "../../../../format";

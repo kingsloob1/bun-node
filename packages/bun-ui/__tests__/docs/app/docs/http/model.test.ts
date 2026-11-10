@@ -10,7 +10,7 @@ import {
   readInfo,
   resolveServerUrl,
 } from "../../../../../app/docs/screens/docs/http/model";
-import { expectUndefined } from "../../assert";
+import { expectUndefined } from "../../../../harness/assert";
 import { openApiFixture } from "./openapiFixture";
 
 let doc: SpecDocument;

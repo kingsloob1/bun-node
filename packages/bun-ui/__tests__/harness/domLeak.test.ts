@@ -6,7 +6,8 @@ import { describe, expect, it } from "bun:test";
  * Every test file that loads the DOM also unloads it, and none loads react-dom
  * before the DOM exists.
  *
- * `register-dom.ts` registers happy-dom as a side effect of being imported,
+ * Each UI's `app/register-dom.ts` registers happy-dom as a side effect of
+ * being imported (and the harness's `dom.ts` does when it loads first),
  * and `bun test` shares globals across files. A file that imports it —
  * directly or through a fixture — without calling `setupDom()` leaves
  * happy-dom's `fetch`/`Request`/`Response` installed for whichever file runs
@@ -16,12 +17,20 @@ import { describe, expect, it } from "bun:test";
  */
 
 /** The test tree: every UI's tests, which share one serial `--randomize` run. */
-const ROOT = join(import.meta.dir, "..", "..");
+const ROOT = join(import.meta.dir, "..");
 
-/** The modules whose import registers the DOM: each UI's `app/register-dom.ts`. */
-const REGISTER_DOM = new Set(
-  new Bun.Glob("*/app/register-dom.ts").scanSync({ cwd: ROOT, absolute: true }),
-);
+/**
+ * The modules whose import registers the DOM: each UI's
+ * `app/register-dom.ts`, and the harness's `dom.ts`, which registers before it
+ * loads Testing Library.
+ */
+const REGISTER_DOM = new Set([
+  ...new Bun.Glob("*/app/register-dom.ts").scanSync({
+    cwd: ROOT,
+    absolute: true,
+  }),
+  join(ROOT, "harness", "dom.ts"),
+]);
 
 /**
  * A top-level `setupDom()` call (or the job harness's `installDom()`, which
@@ -147,10 +156,14 @@ describe("DOM isolation between test files", () => {
   it("negative control: the scan sees a DOM import through a fixture, and only then", () => {
     expect(
       [...REGISTER_DOM].map((file) => relative(ROOT, file)).sort(),
-    ).toEqual(["docs/app/register-dom.ts", "jobs/app/register-dom.ts"]);
-    expect(loadsDom(join(import.meta.dir, "queues", "helpers.test.ts"))).toBe(
-      true,
-    );
+    ).toEqual([
+      "docs/app/register-dom.ts",
+      "harness/dom.ts",
+      "jobs/app/register-dom.ts",
+    ]);
+    expect(
+      loadsDom(join(ROOT, "jobs", "app", "queues", "helpers.test.ts")),
+    ).toBe(true);
     expect(
       loadsDom(join(ROOT, "docs", "app", "unauthorizedViewer.test.tsx")),
     ).toBe(true);
@@ -161,6 +174,12 @@ describe("DOM isolation between test files", () => {
     expect(loadsReactDom(join(ROOT, "..", "app", "jobs", "boot.tsx"))).toBe(
       true,
     );
-    expect(loadsReactDom(join(import.meta.dir, "dom.ts"))).toBe(false);
+    for (const dom of [
+      "jobs/app/dom.ts",
+      "docs/app/dom.ts",
+      "harness/dom.ts",
+    ]) {
+      expect(loadsReactDom(join(ROOT, dom))).toBe(false);
+    }
   });
 });

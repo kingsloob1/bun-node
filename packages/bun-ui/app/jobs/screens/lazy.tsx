@@ -4,7 +4,7 @@ import type { AddedByStateGroupProps } from "./overview/added";
 import type { SectionProps } from "./overview/sections";
 import type { JobDefaultsPanelProps } from "./queues/panels/jobDefaults";
 import { lazy, Suspense } from "react";
-import { Spinner } from "../components/Spinner";
+import { Spinner } from "../../kit/components/Spinner";
 
 /**
  * The screens loaded on demand. Each section's code (and its stylesheet) is a

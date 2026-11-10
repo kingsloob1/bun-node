@@ -1,7 +1,7 @@
 import type { AddJobBody, AddJobOptions } from "../../api/types";
-import type { JsonEditorState } from "../../components/jsonParse";
+import type { JsonEditorState } from "../../../kit/components/jsonParse";
 import { MAX_JOB_ID_LENGTH } from "@kingsleyweb/bun-jobs/api/contract";
-import { jsonEditorState } from "../../components/jsonParse";
+import { jsonEditorState } from "../../../kit/components/jsonParse";
 
 /** The add-job form's shape, its client-side checks, and its request body. */
 

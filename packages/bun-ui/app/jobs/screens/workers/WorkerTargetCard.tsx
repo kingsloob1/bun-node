@@ -1,8 +1,8 @@
 import type { WorkerDto, WorkerTargetInfoDto } from "../../api/types";
 import type { TargetGroup } from "./target";
-import { Card } from "../../components/Card";
-import { KeyValue } from "../../components/KeyValue";
-import { Table } from "../../components/Table";
+import { Card } from "../../../kit/components/Card";
+import { KeyValue } from "../../../kit/components/KeyValue";
+import { Table } from "../../../kit/components/Table";
 import { displayText, plural } from "../../format";
 import {
   groupTargets,

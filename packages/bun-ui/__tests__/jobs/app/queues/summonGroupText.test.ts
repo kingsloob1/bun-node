@@ -8,7 +8,7 @@ import {
   groupSharesText,
   groupUnitLabel,
 } from "../../../../app/jobs/screens/queues/panels/summonGroupText";
-import { expectNone, expectUndefined } from "../assert";
+import { expectNone, expectUndefined } from "../../../harness/assert";
 
 /**
  * A summon group in the shapes its views draw (`summonGroupText.ts`): the

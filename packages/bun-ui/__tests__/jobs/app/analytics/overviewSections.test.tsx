@@ -1,7 +1,7 @@
 import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { MAX_ANALYTICS_SERIES } from "../../../../app/jobs/api/contract";
-import { expectAbsent, expectNone } from "../assert";
+import { expectAbsent, expectNone } from "../../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import {
   ANALYTICS_NOW,

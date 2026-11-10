@@ -5,11 +5,11 @@ import type { PermissionProbe } from "../permissions";
 import type { DocInfo, DocSection, DocTagGroup } from "./model";
 import { useMemo, useState } from "react";
 import { createDocsClient } from "../../../api/client";
-import { Badge } from "../../../components/Badge";
-import { Card } from "../../../components/Card";
-import { CopyButton } from "../../../components/CopyButton";
-import { Dialog } from "../../../components/Dialog";
-import { EmptyState } from "../../../components/EmptyState";
+import { Badge } from "../../../../kit/components/Badge";
+import { Card } from "../../../../kit/components/Card";
+import { CopyButton } from "../../../../kit/components/CopyButton";
+import { Dialog } from "../../../../kit/components/Dialog";
+import { EmptyState } from "../../../../kit/components/EmptyState";
 import {
   DocsClientContext,
   useDocsFetch,

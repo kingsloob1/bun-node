@@ -10,7 +10,11 @@ import { JOBS_API_WS_SUBPROTOCOL } from "@kingsleyweb/bun-jobs/api/contract";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { LiveClient, liveSocketUrl } from "../../../../app/jobs/live/client";
 import { liveChannels } from "../../../../app/jobs/live/live";
-import { expectAbsent, expectNone, expectUndefined } from "../assert";
+import {
+  expectAbsent,
+  expectNone,
+  expectUndefined,
+} from "../../../harness/assert";
 import { FakeSocket, FakeTimers, hello, queueEvent, settle } from "./fakes";
 
 /**

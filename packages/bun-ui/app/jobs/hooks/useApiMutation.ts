@@ -7,7 +7,7 @@ import type { ProblemIssueDto } from "../api/types";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { isApiError } from "../api/errors";
-import { useToast } from "../components/toast";
+import { useToast } from "../../kit/components/toast";
 
 /** Field errors of a failed form submit: issue path (target stripped) → first message. */
 export type FieldErrors = Record<string, string>;

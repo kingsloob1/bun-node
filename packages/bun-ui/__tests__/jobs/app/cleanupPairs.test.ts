@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "bun:test";
 
 /**
@@ -23,8 +23,10 @@ import { describe, expect, it } from "bun:test";
  * own line or the line above; the reason is required.
  */
 
-/** The app's sources. */
-const APP = join(import.meta.dir, "..", "..", "..", "app", "jobs");
+/** The app sources it reads: the jobs UI's and the kit's it is built on. */
+const APPS = ["jobs", "kit"].map((ui) =>
+  join(import.meta.dir, "..", "..", "..", "app", ui),
+);
 
 /** An opener and the closer it needs. */
 interface Pair {
@@ -193,11 +195,18 @@ describe("every opener in app/** has its closer (a partial tripwire; unmountLeak
   it("finds none unpaired, and every queryFn takes the signal", () => {
     const problems: PairProblem[] = [];
     let files = 0;
-    for (const file of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd: APP })) {
-      files++;
-      problems.push(
-        ...checkSource(file, readFileSync(join(APP, file), "utf8")),
-      );
+    for (const app of APPS) {
+      for (const file of new Bun.Glob("**/*.{ts,tsx}").scanSync({
+        cwd: app,
+      })) {
+        files++;
+        problems.push(
+          ...checkSource(
+            join(basename(app), file),
+            readFileSync(join(app, file), "utf8"),
+          ),
+        );
+      }
     }
     expect(files).toBeGreaterThan(100);
     expect(problems).toEqual([]);

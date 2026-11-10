@@ -21,7 +21,7 @@ import {
   DEFAULT_ANALYTICS_RESOLUTION,
   MAX_ANALYTICS_SERIES,
 } from "../../../../app/jobs/api/contract";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import {
   jobsSeriesFixture,
   metaFixture,

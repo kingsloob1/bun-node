@@ -17,7 +17,7 @@ import {
   SqlDriver,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { expectAbsent, expectUndefined } from "../assert";
+import { expectAbsent, expectUndefined } from "../../../harness/assert";
 import { GATES } from "./fixtures/clear-actions/gated-runner";
 
 /**

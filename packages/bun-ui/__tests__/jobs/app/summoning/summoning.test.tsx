@@ -3,7 +3,7 @@ import type { MockHandler, MockReply } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import { summonInert } from "../../../../app/jobs/screens/queues/panels/summonText";
 import { summonTabPath } from "../../../../app/jobs/screens/summoning/paths";
-import { expectAbsent } from "../assert";
+import { expectAbsent } from "../../../harness/assert";
 import {
   fireEvent,
   LOADED,

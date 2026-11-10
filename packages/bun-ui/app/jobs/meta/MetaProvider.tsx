@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { isApiError } from "../api/errors";
 import { queryKeys } from "../api/queryKeys";
 import { ErrorView } from "../components/ErrorView";
-import { Spinner } from "../components/Spinner";
+import { Spinner } from "../../kit/components/Spinner";
 import { useApiClient, useUiConfig } from "../context";
 import { MetaContext } from "./hooks";
 
