@@ -961,16 +961,38 @@ fan-out baseline was recorded once, as the user asked
 (`bench/baselines/sse.json`). **S10** (`res.write()` on the byte-length
 queue, `false` past the mark) is not in it: a later, separate PR that
 comes back with an A/B plan first (the user's decision, 2026-11-03).
-PR-sse2b (channels), PR-sse3 and PR-sse5 are not started; PR-sse4 is partly
-done (the stale `@Sse()` line in
-`examples/bun-nest/02-http-adapter/controllers-and-routing.ts` is gone;
-`examples/bun-common/05-response/files-and-streams.ts` has no `res.sse()`
-yet). **S10 merged 2026-11-08, #663** (follow-ups track A, PR 2):
+**S10 merged 2026-11-08, #663** (follow-ups track A, PR 2):
 `res.write()` enqueues on a 64 KiB `ByteLengthQueuingStrategy` stream, answers `false`
 once the queue is full and emits `drain` from the stream's `pull` (no
 longer on every write); `res.writableNeedDrain` and `res.writableLength`
 are Node's. Measured A/B against `develop` with `bench/sse.ts` (the user's
 approval, 2026-11-08): see that PR's body.
+
+**The SSE track is complete (2026-11-10).** Every PR of §16.11 has landed,
+on the user's request of 2026-11-10 ("all sse implementation in bun native
+routes plan to be done"):
+
+| PR | What | Merged |
+|---|---|---|
+| PR-sse5 | bun-jobs' remote protocol re-exports `@kingsleyweb/bun-common/sse`'s parser and encoder; its own copy of the parser and its vectors are gone (the `EventSource` ban test stays) | #758 |
+| PR-sse3 | bun-nest README "Server-sent events: `@Sse()`" with its edges, `@Res() res.sse()`, and `sseEdges.nest.test.ts` | #759 |
+| PR-sse2b | `createSseChannel()`/`SseChannel` (§16.14): initial state, `Last-Event-ID` replay, topics, one heartbeat, a transport between processes; exported from the root and `./sse` | #760 |
+| PR-sse3 (delta) | bun-nest's `channelObservable()` for `@Sse()`, with `@SseSignal()` and the comment heartbeat (SC8) | #761 |
+| PR-sse2c | the channel's `contract` (§16.14.8): typed `send()`, each event checked before it is encoded, a refusal thrown as a writer's is | merged, #762 |
+| PR-sse4 | the examples: `res.sse()` in `files-and-streams.ts`, `broadcast-channel.ts`, bun-nest's `sse-channel.ts` (the stale `@Sse()` line was already gone) | merged, #763 |
+
+Where the work departed from this plan, the code and today's Nest won (each
+PR's body has the evidence): Nest's own releases moved since §16.4 and
+§16.14.4 were written: `data: ""` and `MessageEvent.comment` arrive in 11.1.29
+(not 11.2); from 11.2.8 and 12.2.0 Nest bounds a slow `@Sse()` reader itself
+(`maxPendingDataLength`) and hides an unknown error's message after the first
+event; before 12.2.0 a number as `data` makes Nest's encoder throw. The Nest
+columns tested are 12.4.2, 11.2.9 and 12.2.0 (11.1.20 for the old branches),
+not 11.1.27/11.2.7/12.1.3. A channel's `contract` checks `sseVariants()`
+events against the union of the variants (a broadcast has no request for
+`when`). Not done, by the user's decision (2026-11-10): SC11's quiet-machine
+re-measure and a stalled-subscriber cell in `bench/sse.ts`; no absolute
+fan-out figure is quoted.
 
 Every probe is
 in [`evidence/sse/`](evidence/sse/), each
