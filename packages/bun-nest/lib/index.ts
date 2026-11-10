@@ -73,6 +73,7 @@ export { Describe } from "./describe";
 export { DevTypesModule, type DevTypesModuleOptions } from "./devTypesModule";
 export { gatewayAsyncApi, type GatewayAsyncApiOptions } from "./gateway-docs";
 export { Invalidates } from "./invalidates";
+export { channelObservable, type ChannelObservableOptions } from "./sseChannel";
 export {
   AnyFilesInterceptor,
   FileFieldsInterceptor,

@@ -62,7 +62,8 @@
         "minutes",
         "hours",
         "days",
-        "weeks"
+        "weeks",
+        "channelObservable"
       ],
       "types": [
         "BunBeforeWriteBody",
@@ -107,7 +108,8 @@
         "BunThrottlerLimitDetail",
         "BunThrottlerGetTracker",
         "BunThrottlerGenerateKey",
-        "ThrottleDecoratorOptions"
+        "ThrottleDecoratorOptions",
+        "ChannelObservableOptions"
       ],
       "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;\nexport type _gwDocNotAny = Expect<IsAny<ReturnType<typeof m.gatewayAsyncApi>[\"document\"]>>;\nconst _gwOpts: t.GatewayAsyncApiOptions = { title: \"g\", strict: \"lenient\" };\nexport type _throttlerModule = Expect<IsAny<ReturnType<typeof m.BunThrottlerModule.forRoot>>>;\nconst _throttlers: t.BunThrottlerModuleOptions = { throttlers: [{ limit: 600, ttl: m.minutes(1) }, { name: \"strict\", limit: 5, ttl: \"1m\" }], headers: \"legacy\" };\n// @ts-expect-error ttl is a duration, never a bare number\nconst _bareTtl: t.BunThrottlerOptions = { limit: 1, ttl: 60 };\nm.Throttle({ default: { limit: 5 } });\nm.SkipThrottle({ default: false });"
     },
