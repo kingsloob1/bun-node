@@ -3,8 +3,8 @@
  * stream interpretation". Lifted verbatim from bun-jobs'
  * `lib/remote/protocol/sse.ts` (its `remote-transports.md` §7.3–§7.4) into
  * `@kingsleyweb/bun-common/sse` (bun-native-routes plan §16.7, S8), so the
- * writer's tests round-trip through the standard's rules; bun-jobs moves
- * onto this copy in PR-sse5.
+ * writer's tests round-trip through the standard's rules; bun-jobs'
+ * `lib/remote/protocol/sse.ts` re-exports this copy since PR-sse5.
  *
  * Bun has no working `EventSource`: the global is declared by `bun-types`
  * and absent at runtime, so code using it typechecks and then throws. A

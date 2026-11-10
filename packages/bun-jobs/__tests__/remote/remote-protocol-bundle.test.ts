@@ -1,7 +1,7 @@
 import type { BunPlugin } from "bun";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { describe, expect, it } from "bun:test";
 
 /**
@@ -11,6 +11,10 @@ import { describe, expect, it } from "bun:test";
  * not exported (Q-2.3), so `remote-bundle.test.ts`, which follows the entry,
  * never reaches them; this test bundles them directly, for the browser, and
  * runs the bundle with WebCrypto alone.
+ *
+ * `sse.ts` re-exports bun-common's browser-safe `@kingsleyweb/bun-common/sse`
+ * (PR-sse5), the one bare specifier a protocol file may name. Inside that
+ * graph Bun resolves as usual, but nothing may reach `node:*` or `bun`.
  */
 
 const LIB = new URL("../../lib/", import.meta.url).pathname;
@@ -29,22 +33,58 @@ const ALLOWED = new Set(
   ].map((file) => join(LIB, file)),
 );
 
-/** Resolves only relative imports landing on {@link ALLOWED}. */
-const confine: BunPlugin = {
-  name: "confine-to-protocol",
-  setup(build) {
-    build.onResolve({ filter: /.*/ }, (args) => {
-      if (args.kind === "entry-point-build") {
-        return undefined;
-      }
-      const target = join(args.resolveDir, `${args.path}.ts`);
-      if (!args.path.startsWith(".") || !ALLOWED.has(target)) {
-        throw new Error(`the protocol graph reaches ${args.path}`);
-      }
-      return { path: target };
-    });
-  },
-};
+/** The one package a protocol file may import: bun-common's browser-safe SSE entry. */
+const SSE_ENTRY = "@kingsleyweb/bun-common/sse";
+
+/** bun-common's package directory, and bun-contract's, which its contract modules re-export. */
+const COMMON = join(dirname(Bun.resolveSync(SSE_ENTRY, LIB)), "../../");
+const PACKAGES = [
+  COMMON,
+  join(
+    dirname(Bun.resolveSync("@kingsleyweb/bun-contract/package.json", COMMON)),
+    "/",
+  ),
+];
+
+/**
+ * Resolves a protocol file's relative imports only when they land on
+ * {@link ALLOWED}, and its bare ones only for `entry` ({@link SSE_ENTRY});
+ * inside {@link PACKAGES}, defers to Bun but refuses `node:*` and `bun`.
+ *
+ * @param entry The package specifier a protocol file may name; the control
+ *              passes bun-common's root, whose graph reaches `node:*`.
+ */
+function confineTo(entry: string): BunPlugin {
+  return {
+    name: "confine-to-protocol",
+    setup(build) {
+      build.onResolve({ filter: /.*/ }, (args) => {
+        if (args.kind === "entry-point-build") {
+          return undefined;
+        }
+        if (PACKAGES.some((root) => args.importer.startsWith(root))) {
+          if (/^(?:node:|bun(?::|$))/.test(args.path)) {
+            throw new Error(`the SSE entry's graph reaches ${args.path}`);
+          }
+          return undefined;
+        }
+        if (args.path === entry) {
+          // Resolved from bun-jobs, wherever the importer is (the control's
+          // entry sits in a temporary directory).
+          return { path: Bun.resolveSync(entry, LIB) };
+        }
+        const target = join(args.resolveDir, `${args.path}.ts`);
+        if (!args.path.startsWith(".") || !ALLOWED.has(target)) {
+          throw new Error(`the protocol graph reaches ${args.path}`);
+        }
+        return { path: target };
+      });
+    },
+  };
+}
+
+/** The plugin the bundle runs under. */
+const confine = confineTo(SSE_ENTRY);
 
 describe("lib/remote/protocol is browser-safe", () => {
   it("holds exactly the three modules this test knows", async () => {
@@ -118,6 +158,31 @@ describe("lib/remote/protocol is browser-safe", () => {
         throw: false,
       });
       expect(failed.success).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("inside bun-common's graph, node:* is refused (the control)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bun-jobs-protocol-"));
+    try {
+      // bun-common's root reaches node:* (its router, its file helpers): let
+      // through as if it were the SSE entry, the plugin must still refuse it.
+      const entry = join(dir, "entry.ts");
+      await Bun.write(
+        entry,
+        `export { BunRouter } from "@kingsleyweb/bun-common";\n`,
+      );
+      const failed = await Bun.build({
+        entrypoints: [entry],
+        target: "browser",
+        plugins: [confineTo("@kingsleyweb/bun-common")],
+        throw: false,
+      });
+      expect(failed.success).toBe(false);
+      expect(failed.logs.map(String).join("\n")).toContain(
+        "the SSE entry's graph reaches node:",
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
