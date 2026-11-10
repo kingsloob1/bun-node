@@ -33,32 +33,13 @@ the built declarations in `dts/` (`types`), so your compiler options never
 apply to this package's source. `mongodb` and `chrono-node` stay optional: no
 shipped declaration imports either.
 
-## Status
-
-The package is being assembled in phases. What has landed on this branch, and
-is documented below:
-
-- the runner, with `BunRunnerManager` and per-run captured logs
-- the queue and worker, including repeatable jobs, debounce and throttle,
-  limits, dead letters, flows, where attempts run (`target`) and job logs
-- the `BunJobs` context, the job registry and the builder with dates in words
-- `JobsNotifier`, one event stream per namespace
-- remote control from any process: pausing, stopping, starting and
-  reconfiguring workers, and overriding a runner's executor and overlap
-  settings
-- analytics: per-second and per-minute series of every queue's jobs, each
-  runner's runs and durations, and each worker's jobs and busyness, served by
-  the management API
-- the memory, file, SQL, MongoDB and Redis drivers, with schema sync for SQL
-  and MongoDB
-
-The generated API reference lands with the final phase. Until then this README,
-the JSDoc on every export, and the [option tours](#bun-jobs-examples) are the
-reference.
+Besides this README, every export carries JSDoc, and the
+[option tours](#bun-jobs-examples) run each feature end to end.
 
 ## Contents
 
 - [Installation](#installation)
+  - [Entry points](#entry-points)
 - [Quick start](#quick-start)
   - [A queue and a worker](#a-queue-and-a-worker)
   - [The job registry](#the-job-registry)
@@ -105,7 +86,9 @@ reference.
   - [A custom target](#a-custom-target)
   - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
 - [Summoning a worker](#summoning-a-worker)
+  - [Summoning from the management API](#summoning-from-the-management-api)
   - [One policy for several queues](#one-policy-for-several-queues)
+  - [One budget for several queues: `group`](#one-budget-for-several-queues-group)
   - [One unit for several queues: `group.unit: "shared"`](#one-unit-for-several-queues-groupunit-shared)
   - [Summon policy](#summon-policy)
   - [When the summoner fails: provider errors](#when-the-summoner-fails-provider-errors)
@@ -129,8 +112,22 @@ reference.
   - [Analytics per driver](#analytics-per-driver)
   - [Analytics in a driver of your own](#analytics-in-a-driver-of-your-own)
 - [Management API](#management-api)
+  - [Mounting](#mounting)
+  - [Authorization](#authorization)
+  - [Modes and pruning](#modes-and-pruning)
+  - [Routes](#routes)
+  - [Compute provider routes](#compute-provider-routes)
   - [Analytics routes](#analytics-routes)
+  - [Pagination, filtering and `include`](#pagination-filtering-and-include)
+  - [Errors](#errors)
   - [Checking responses (`validateResponses`)](#checking-responses-validateresponses)
+  - [Live events](#live-events)
+  - [Documentation endpoints](#documentation-endpoints)
+  - [Security checklist](#security-checklist)
+  - [Limits](#limits)
+  - [Writing a client](#writing-a-client)
+  - [Features that need driver support](#features-that-need-driver-support)
+  - [Live events alongside NestJS gateways](#live-events-alongside-nestjs-gateways)
 - [Recipes: summoning workers and scaling on demand](#recipes-summoning-workers-and-scaling-on-demand)
   - [Where the summoner runs](#where-the-summoner-runs)
   - [The worker file](#the-worker-file)
@@ -148,14 +145,13 @@ reference.
   - [MongoDB: a replica set with `w: "majority"`](#mongodb-a-replica-set-with-w-majority)
   - [Redis: a managed failover endpoint](#redis-a-managed-failover-endpoint)
   - [SQLite and file: one host](#sqlite-and-file-one-host)
-- [Errors](#errors)
+- [Errors](#errors-1)
 - [Logging](#logging)
 - [Benchmarks](#benchmarks)
 - [Examples](#examples)
   - [Example projects](#example-projects)
   - [bun-jobs examples](#bun-jobs-examples)
 - [Related packages](#related-packages)
-- [Development](#development)
 - [License](#license)
 
 ## Installation
@@ -172,12 +168,29 @@ if you use them:
 |---|---|---|
 | `mongodb` | `>=6` | the MongoDB driver. Imported only when that driver connects. Needs **MongoDB 4.2 or later**, with a raised [open-file limit](#open-file-limits). |
 | `chrono-node` | `>=2.7.0 <3` | reading **dates** in words (`"tomorrow at 9am"`, `"every 2 weeks starting 1st december"`). Durations (`"5 minutes"`) and cron do not need it. You can also supply your own [`dateParser`](#dates-in-words). |
-| `@types/bun` | `>=1.4.2` | types. The package ships raw `.ts`, so your project compiles it. |
+| `@types/bun` | `>=1.4.2` | types: the shipped declarations in `dts/` use Bun's own types, so a type-checked project needs Bun's. |
 
 ```bash
 bun add mongodb        # MongoDB driver
 bun add chrono-node    # dates in words
 ```
+
+### Entry points
+
+| Import | What it holds |
+|---|---|
+| `@kingsleyweb/bun-jobs` | the main surface: queues, workers, the runner, `BunJobs`, drivers, summoning, analytics, the management API (`createJobsApi`) and the errors |
+| `@kingsleyweb/bun-jobs/api/contract` | the management API's wire contract (constants, a type for every request, response and WebSocket frame), safe to import in a browser: see [Writing a client](#writing-a-client) |
+| `@kingsleyweb/bun-jobs/summon` | summoning on its own: `SummonController`, `defineSummoner`, `summonedFromArgs`, `runSummoned` and their types (all also in the root): see [Summoning a worker](#summoning-a-worker) |
+| `@kingsleyweb/bun-jobs/provider` | the compute provider plugin API (`defineComputeProvider`, `ProviderError`): see [Compute providers](#compute-providers) |
+| `@kingsleyweb/bun-jobs/provider/testing` | the provider conformance kit, for a provider's own tests: see [Testing a provider](#testing-a-provider-providertesting) |
+| `@kingsleyweb/bun-jobs/remote` | the remote-worker protocol and `createRemoteExecutor`, safe in a browser or a V8 isolate: see [Remote executors](#remote-executors-createremoteexecutor) |
+| `@kingsleyweb/bun-jobs/container-entry` | the runner a `container` target's image runs; you never import it yourself: see [A container per attempt](#a-container-per-attempt--kind-container-) |
+
+Deep imports of one subsystem's index (`@kingsleyweb/bun-jobs/lib/queue`,
+`/lib/runner`, `/lib/drivers`, `/lib/api`, …) and of single modules
+(`@kingsleyweb/bun-jobs/lib/<path>`) resolve too, for code that needs a
+single module; prefer the entries above.
 
 ## Quick start
 
@@ -357,9 +370,7 @@ await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
   a job that comes due earlier than the remembered time runs at most one
   sweep interval (a second by default) late, whoever scheduled it, and the
   same bound already applied to a delayed job added while a worker was
-  waiting. Measured across the backends, a job scheduled by another instance
-  and due immediately ran 472–512 ms late, and one scheduled through the
-  worker's own instance 7–698 ms late: the same bound either way.
+  waiting.
 
 ## Queues and adding jobs
 
@@ -582,7 +593,7 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `schedule(name, data?)` / `run(...)`, `now(name, data?, opts?)`, `create(name, data?)` | The registry's builder verbs, bound for this queue. See [Sending a job to another queue](#sending-a-job-to-another-queue). |
 | `getJob(id)` | Returns one job, or `null`. |
 | `list(state \| states, { offset, limit = 100, order = "asc", sort = "natural" })` | Returns jobs in the given state or states. Also takes `name`, `search`, and the worker and finish-time filters `workerKey`, `workerId`, `finishedFrom` and `finishedTo`. See [Who ran a job](#who-ran-a-job-worker-attribution). `sort: "createdAt"` orders by creation time on memory, SQL and MongoDB; see [sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time). |
-| `walk(state \| states, { limit, order, after? })` | A page read with a **keyset cursor** — the same filters as `list()`, plus `after`, and answering `{ jobs, offset, next }`. This is how a list is *walked*; `list()` and `page()` are how it is *sampled*. `next` is `null` exactly when the walk is complete. Measured on a draining queue, an `asc` offset walk lost 20 of the 59 jobs that never left the list and the cursor walk lost none; see [Pagination](#pagination-filtering-and-include). Refused for `active` alone, whose key every lock renewal rewrites. |
+| `walk(state \| states, { limit, order, after? })` | A page read with a **keyset cursor** — the same filters as `list()`, plus `after`, and answering `{ jobs, offset, next }`. This is how a list is *walked*; `list()` and `page()` are how it is *sampled*. `next` is `null` exactly when the walk is complete. On a queue that is draining, an offset walk skips jobs as the ones ahead of them leave the list, and a cursor walk skips none; see [Pagination](#pagination-filtering-and-include). Refused for `active` alone, whose key every lock renewal rewrites. |
 | `count()` / `count(state)` | Returns counts for every state, or for one. |
 | `getDemand({ cap = 10_000 })` | How much work is there for a worker right now: `waiting`, due `delayed`/retrying jobs, stalled jobs, `active`, live `workers`, `paused`, and `demand`/`outstanding`. Bounded reads: no job is promoted, recovered or touched, though counting the live workers removes expired worker records, as `listWorkers()` does. See [Demand](#reading-a-queue-search-totals-workers-and-throughput). |
 | `countAdded({ from, to })` | Of the jobs added in `[from, to)`, how many are in each state now. Memory, SQL and MongoDB only; see [Jobs added in a range](#jobs-added-in-a-range-and-sorting-by-creation-time). |
@@ -725,8 +736,9 @@ twice the backlog. `moved` counts jobs that left the walked states between a
 batch's read and its write. It is a lower bound, since drivers that lock or
 run a batch atomically never see one.
 
-What one rewrite costs, per driver (measured on a loaded development machine;
-the SQL figures on 20,000 waiting jobs):
+What one rewrite does, per driver. The per-job times are rough orders of
+magnitude to plan with, not guarantees (the SQL ones for a backlog of 20,000
+waiting jobs):
 
 | Driver | Unit of work | Per job | Against claims |
 |---|---|---|---|
@@ -734,8 +746,8 @@ the SQL figures on 20,000 waiting jobs):
 | Redis | one Lua script per batch of at most 200 jobs, and at most 1 MiB of stored job blobs | about 15 µs (200 small jobs ≈ 3 ms a script) | a script blocks every client while it runs, so a claim waits at most one script |
 | Postgres, MySQL, MariaDB | one transaction per 500 jobs, on the claim index (MySQL and MariaDB force it with `FORCE INDEX`, and fall back when it is missing) | 38–57 µs | row locks, which a claim skips (`SKIP LOCKED`) rather than waits on |
 | SQLite | one transaction per 200 jobs | 7–12 µs | the transaction is the database's write lock, so claims wait for each batch |
-| MongoDB | one `find` of 500 jobs on the claim index, then one unordered `bulkWrite` of compare-and-set updates | not measured | nothing locked; a job changed between the read and the write fails its filter and counts `moved` |
-| file | each job under its own hold, 16 in flight | about a millisecond or more, growing with the queue (a single job update measured 0.9–5 ms) | a claim finding a job held moves on to the next |
+| MongoDB | one `find` of 500 jobs on the claim index, then one unordered `bulkWrite` of compare-and-set updates | no figure | nothing locked; a job changed between the read and the write fails its filter and counts `moved` |
+| file | each job under its own hold, 16 in flight | about a millisecond or more, growing with the queue (a single job update takes 1–5 ms) | a claim finding a job held moves on to the next |
 
 A dry run costs 3–8 µs per job on SQL. A `priority` change also moves each
 job it writes in the claim index.
@@ -831,10 +843,8 @@ and only one of them is yours to switch off.
 retry leaves `delayed` only when some worker promotes it; a job held by a
 process that died returns to the queue only when some worker's stalled sweep
 takes it back; a flow parent whose child finished unrecorded advances only
-when some worker heals it. A queue whose only worker skipped them stranded
-all three for ever: in one observed run, a job sat `active` for forty-five
-minutes and four jobs were frozen at attempt 1 of 2. `maintenance: false`
-used to do exactly that, and no longer does — it now opts out of the
+when some worker heals it. A queue whose only worker skipped them would
+strand all three for ever, so `maintenance: false` opts out of the
 housekeeping half alone.
 
 Both halves are **leased**, so one worker per queue makes each pass rather than
@@ -856,12 +866,9 @@ it. It arms no minute timer, so a minute lease it won would be one it never
 swept under: strictly worse than standing aside. `maintenance: false` therefore
 costs one queue-state read per `stalledInterval`, and nothing per minute.
 
-That read is not a new cost. Flow healing has been leased under this same entry
-all along, and every worker already paid one read of it per `stalledInterval`;
-the lease now covers stalled recovery as well, so the read buys more. Measured
-over one second, three opt-out workers at a 100 ms `stalledInterval`: 33 lease
-reads and 33 `recoverStalled` calls before, 34 lease reads and 11
-`recoverStalled` calls after — the same reads, a third of the sweeps.
+That one read serves both stalled recovery and flow healing, which are leased
+under the same entry, so a fleet of workers pays one lease read each per
+`stalledInterval` while only the holder sweeps.
 
 **Housekeeping is safe to leave to others.** Nothing waits on it: skipping it
 costs the queue tidiness — results kept past their `ttl`, a repeat series
@@ -1194,8 +1201,7 @@ An `active` job that holds **no** lock at all is recovered the same way, on the
 first sweep, by every driver: nothing holds it, so nothing else would ever move
 it. No API leaves one — every claim takes the lock in the same write as the
 state — but a driver-level `addJob` of an `active` record without a lock (a
-restore or migration) or a write outside the driver can. Memory, SQL and
-MongoDB used to skip such a job and leave it `active` for good.
+restore or migration) or a write outside the driver can.
 
 The holder is the worker with the shortest `stalledInterval` on the queue: a
 worker sweeping more than twice as often as the holder takes the lease over on
@@ -1218,11 +1224,10 @@ and sweeps whenever it wins. That is what keeps a queue whose only worker opts
 out recovering its stalled jobs.
 
 **What that costs.** A worker dying with jobs in flight has them recovered
-within one `stalledInterval`, as before, because the holder is still sweeping.
+within one `stalledInterval`, because the holder is still sweeping.
 The exception is the holder's own death: nobody is sweeping until another
 worker takes the lease, so its jobs — and any others that stall meanwhile —
-wait up to three `stalledInterval`s instead of one. Every worker used to sweep,
-so that case cost one interval too. If that delay matters more to you than the
+wait up to three `stalledInterval`s instead of one. If that delay matters more to you than the
 duplicated work, a shorter `stalledInterval` shortens all three.
 
 A recovered job keeps the dead worker's [`processedBy`](#who-ran-a-job-worker-attribution)
@@ -2298,8 +2303,8 @@ any size is covered over successive passes.
   error says so.
 
   Recording a child rewrites its parent's whole flow document, so on SQL a
-  very wide flow costs O(n²) over its n children. Measured on Postgres, that
-  was 1.4ms per record on a 100-child parent and 3.1ms on a 2,000-child one.
+  very wide flow costs O(n²) over its n children. On Postgres that is roughly
+  1.4 ms per record on a 100-child parent and 3 ms on a 2,000-child one.
   Keep very wide fan-outs to nested flows, or use Redis or MongoDB, which
   update one entry per record.
 
@@ -2674,7 +2679,7 @@ it fires on the first empty pass, before a dead worker's locks have lapsed.
 | `deadline` | `number \| () => number` | now + the summoner's `--bun-jobs-summon-max-lifetime-ms=`, else none | The latest it may run to, epoch ms. A function is re-read at every check. |
 | `shutdownBuffer` | `number` | `7000` | Stop claiming this long before `deadline`, in ms, so jobs in flight can settle. |
 | `grace` | `number` | the summoner's `--bun-jobs-summon-grace-ms=`, else `10000` | How long the platform waits after its stop signal before `SIGKILL`, in ms. The worker cannot learn it from the platform. |
-| `tailReserve` | `number` | `1000` | What to keep for `close()`'s work after the target has closed (deregistering, flushing, the driver), in ms. Measured at 5–15 ms against local servers; the rest is headroom for a remote one. |
+| `tailReserve` | `number` | `1000` | What to keep for `close()`'s work after the target has closed (deregistering, flushing, the driver), in ms. That work takes about 5–15 ms against local servers; the rest is headroom for a remote one. |
 | `signals` | `NodeJS.Signals[] \| false` | `["SIGTERM", "SIGINT"]` | Signals that start a stop. SIGINT because Fly sends it by default. `false` installs none. |
 | `pauseSignals` | `boolean` | `false` | Treat SIGTSTP as "stop claiming" and SIGCONT as "resume", for Cloud Run jobs over an hour. Off by default: handling SIGTSTP means Ctrl-Z no longer suspends the process, so a platform that sends it opts in. |
 | `exit` | `boolean` | `true`; `false` in `"in-invocation"` | Call `process.exit(code)` once closed, and arm the hard backstop. |
@@ -2753,7 +2758,7 @@ has not returned — a custom target whose `close()` hangs, say — with an erro
 log line rather than a silent `SIGKILL`; abandoned jobs are recovered as
 stalled, as ever. It never fires sooner than 1 s after the close started, so
 even a budget at or below zero lets a forced close kill a child-process
-target's children first (forced closes measure 11–94 ms); past that, the
+target's children first (a forced close takes tens of milliseconds); past that, the
 platform's own kill is the backstop. `"in-invocation"` (and `exit: false`) arms none: it must
 return, so it logs a warning when the close outlives its deadline instead.
 Raise the platform's grace where it can be raised (Fly's `kill_timeout`,
@@ -3315,23 +3320,22 @@ it for `ctx.driverConfig`, which crosses in the run's context.
 bun-jobs starts, nothing more. The child still runs as this process's user,
 so it can read whatever that user can: a config file, `~/.ssh`, and on Linux
 the parent's own `/proc/<ppid>/environ`, which holds every variable the
-parent *started* with (measured: an allowlisted child read a secret there).
-Running the child as another user with `uid`/`gid` closes that one (measured
-too). A process the processor starts gets whatever the processor passes it.
+parent *started* with. Running the child as another user with `uid`/`gid`
+closes that one. A process the processor starts gets whatever the processor passes it.
 For a boundary around files and the network as well, run the worker itself
 in a container.
 
 **`uid` and `gid`** run the child as another user. Changing them needs
 `CAP_SETUID` and `CAP_SETGID` (root in practice), so without them a different
 id is a `ConfigError` when the worker or runner is constructed, rather than
-`EPERM` at the first attempt. `uid` needs `gid` beside it: measured on Bun
-1.4.3, a child given only a `uid` keeps its parent's group, which for a root
+`EPERM` at the first attempt. `uid` needs `gid` beside it: on Bun, a child
+given only a `uid` keeps its parent's group, which for a root
 parent is group 0. With `gid`, the child's supplementary groups are dropped.
 POSIX only.
 
 Construction cannot tell whether that user may run the `bun` binary and read
-the entry file. One that cannot fails each attempt with `EACCES` (measured
-with `bun` under a home directory of mode `750`), as a failed attempt rather
+the entry file. One that cannot fails each attempt with `EACCES` (for example,
+with `bun` installed under a home directory of mode `750`), as a failed attempt rather
 than a thrown error. The child also keeps the base set's `HOME` and `TMPDIR`,
 which another user may not be able to write, so set them in `env` beside
 `uid`/`gid`: `env: { HOME: "/tmp/jobs", TMPDIR: "/tmp/jobs" }`.
@@ -3348,8 +3352,7 @@ attempt fails and the worker carries on.
 together with `uid`/`gid` set to another user.** A job running as the
 worker's user can write the delegated tree as well as the worker can, so it
 can move itself or a process it started into a sibling cgroup, out of its
-limits and out of the cleanup (measured in review: a `sleep` and the job
-itself moved out, then 160 MB allocated under a 64 MB limit). It holds
+limits and out of the cleanup. It holds
 against a job that is buggy, not one that is hostile, unless the job runs as
 a user that cannot write the tree. It needs Linux, cgroup v2 and a `parent`
 this process can write whose `cgroup.subtree_control` enables the
@@ -3367,10 +3370,10 @@ systemd-run --user --scope -p Delegate=yes bun worker.ts
 
 Every one of these is checked at construction: off Linux, a `parent` that is
 not a cgroup v2 directory or not writable, or a controller a limit needs and
-`parent` does not enable, is a `ConfigError` saying which. Measured: a cgroup
-that cannot be joined fails the spawn with `ENOENT` or `EACCES`, and Bun
-ignores the option entirely off Linux, so a limit asked for is never silently
-dropped.
+`parent` does not enable, is a `ConfigError` saying which. Checking up front is
+what keeps a limit from being dropped silently: a cgroup that cannot be joined
+would fail the spawn with `ENOENT` or `EACCES`, and Bun ignores the option
+entirely off Linux.
 
 **`maxBuffer`** bounds the bytes a child may write to its piped `stdout` and
 `stderr` together. Past it the child is killed with `SIGKILL` and the attempt
@@ -3438,11 +3441,8 @@ gVisor, Kata, or a microVM platform for hostile multi-tenant code); and the
 `docker` group is **root-equivalent**, so a worker that drives rootful Docker
 is as privileged as root on its host (rootless Docker or Podman avoids that).
 A job can still return a wrong result for its own attempt, and read its own
-input. Which platforms can run a container inside a worker at all (EC2 and
-VMs can; Lambda, Fargate, Cloud Run and most PaaS cannot) is in the
-[platform table](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/worker-gateway-and-isolation.md#56-platform-reality),
-with its sources in
-[`platform-isolation.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/evidence/worker-gateway-and-isolation/platform-isolation.md).
+input. Not every platform can run a container inside a worker: EC2 and other
+VMs can; Lambda, Fargate, Cloud Run and most PaaS cannot.
 
 **Fixed, not options**: `--read-only`, `--cap-drop=ALL`, `--ipc=none`,
 `--security-opt=no-new-privileges`, `--init` (a small init as PID 1 —
@@ -3574,16 +3574,15 @@ none past the next start of a worker with that key. A container without a
 When its worker dies, a container's stdin closes, and the runner inside
 closes the attempt and exits by `closeTimeout` at the latest — even for a
 processor that blocks its thread for good, since the processor runs in a
-`Worker` and the runner's main thread is what watches stdin (measured: a
-spinning processor's container gone within seconds of its worker being
+`Worker` and the runner's main thread is what watches stdin (a spinning
+processor's container is gone within seconds of its worker being
 `SIGKILL`ed). The sweep is for what that misses: a container whose engine
 lost track of its stdin, or one started with an older runner.
 
-**Cost.** A container per attempt pays the engine's start, measured at
-~280 ms here with `--network=none` (a default bridge network adds ~160 ms),
-and an engine starts only so many a second. That is the price of isolating
-every job from every other; a pool of pre-started containers is the next
-step.
+**Cost.** A container per attempt pays the engine's start, roughly 280 ms
+with `--network=none` on a Linux host (a default bridge network adds about
+160 ms), and an engine starts only so many a second. That is the price of
+isolating every job from every other.
 
 ### One file, many job names: `defineProcessors`
 
@@ -3835,8 +3834,8 @@ first, then `failures` becomes the larger of `failures + 1` and the streak.
 
 The streak is what a dense crash loop needs. With several attempts in flight,
 each registration resets `failures`, so without it every late loss would
-count only 1 (measured: 15 losses to open a 3-failure circuit); with it the
-circuit opens at the threshold (measured: 3 losses for 3). The trade-off:
+count only 1, and a 3-failure circuit could take 15 losses to open; with it
+the circuit opens at the threshold, after 3. The trade-off:
 while a healthy worker's watch is still open, a crash of another attempt
 counts together with the failures from before that registration, since
 nothing is proven healthy yet; the healthy watch's clean end then resets the
@@ -4271,7 +4270,7 @@ What a unit costs, by term, for N queues each bursting at once:
 
 | Term | One unit per queue | One shared unit |
 |---|---|---|
-| Boot, connect and register | N processes: 0.58–0.85 s for N = 8 (measured) | 0.21–0.44 s for N = 8 (measured) |
+| Boot, connect and register | N processes: about 0.6–0.85 s for N = 8 | about 0.2–0.45 s for N = 8 |
 | Memory | about 67 MB per unit: about 530 MB for N = 8 | about 70 MB, flat in N |
 | Database pools | N | 1 |
 | Platform cold starts | N, in parallel | 1 |
@@ -4281,9 +4280,8 @@ What a unit costs, by term, for N queues each bursting at once:
 | Isolation between queues | yes | none: one image, one process, one OOM |
 | Scaling | each queue alone | units = the most-starved queue's need |
 
-The boot and memory figures were measured on the development host
-(`unit-boot.ts` in the summon-multi-queue plan); the rest follow from the
-design.
+The boot and memory figures are rough, from one Linux host; the rest follow
+from the design.
 
 **A worked estimate.** Eight queues each get a burst of twenty one-second
 jobs in the same minute, on Fargate at 1 vCPU / 2 GB (about $0.00082 a
@@ -4778,8 +4776,8 @@ operations (`POST`), and the platform probes `GET …/healthz` and
 an authenticated one, runs each job with the handler registered for its
 name, and answers a redelivered attempt from its store instead of running it
 again. It imports no Bun, Node or driver module, so it runs on Bun, Node,
-Deno and in a V8 isolate. The gateway side that calls it lands in a later
-release.
+Deno and in a V8 isolate. This package ships only this end: there is no
+built-in gateway that calls a remote executor yet.
 
 ```ts
 import { createRemoteExecutor } from "@kingsleyweb/bun-jobs/remote";
@@ -4811,8 +4809,6 @@ Bun.serve({ port: 8080, idleTimeout: 255, fetch: executor });
 bytes sent, so the executor reads the body itself and must be handed the
 request unread: `Bun.serve`'s `fetch` or `routes`, a platform's fetch
 handler, or a bun-common adapter with body parsing off.
-
-<!-- Update when bun-common's per-route opt-out (#271, requestParsing() and deferBody) merges. -->
 
 ```ts
 const app = new BunHttpAdapter(0, { request: { parseBody: false } });
@@ -6845,40 +6841,33 @@ page on SQL or MongoDB, where it is **absent**, because counting the jobs
 before the key is an index range scan of exactly the size the `OFFSET` would
 have walked and paying it would make the cursor cost what the offset cost.
 
-Measured on a **full** history (`total === keepHistory`, the steady state for
-any runner that has run more than `keepHistory` times) with runs starting
-between every page: an `order=asc` offset walk stepped over 20 of the 100
-records the operator meant to read, on memory, PostgreSQL and Redis alike, and
-the cursor walk over the same interleaving lost none. `order=desc` keeps one
-irreducible limit — the walk moves toward the old end while `keepHistory` trims
-that same end, so a record can be gone before the walk reaches it, and no
-paging scheme can show a record that no longer exists. `asc` has no such case:
-the trim drops the oldest, which in `asc` is behind the cursor.
+**Why walk with a cursor.** On a **full** run history (`total ===
+keepHistory`, the steady state for any runner that has run more than
+`keepHistory` times) with runs starting between pages, an `order=asc` offset
+walk steps over records the operator meant to read, and a cursor walk over the
+same history loses none. `order=desc` keeps one irreducible limit: the walk
+moves toward the old end while `keepHistory` trims that same end, so a record
+can be gone before the walk reaches it, and no paging scheme can show a record
+that no longer exists. `asc` has no such case: the trim drops the oldest,
+which in `asc` is behind the cursor.
 
-**On the jobs list the same measurement is larger, and it is why the cursor
-exists.** An offset probe of 868 trials found **1,259 unreachable jobs, every
-one of them on `order=asc`**, and 94 of those 217 trials lost jobs without a
-single repeat to announce it: jobs are claimed off the head of a queue, so the
-window slides backwards under a fixed offset and the next page steps over jobs
-in the middle that nobody touched. `order=desc` lost nothing in 434 trials —
-its failure is a repeat, which any client that remembers what it showed can
-see. Paging `waiting` in `asc` on a queue draining as fast as it fills, of the
-59 jobs in the operator's first hundred that were **still waiting when the walk
-ended**, the offset walk showed 39 and the cursor walk showed all 59, on
-memory, PostgreSQL and Redis alike.
+**On the jobs list the effect is larger.** Jobs are claimed off the head of a
+queue, so under a fixed offset the window slides backwards and an `order=asc`
+walk steps over jobs in the middle that nobody touched, with no repeated row
+to announce it. On a queue draining as fast as it fills, an offset walk of
+`waiting` can miss around a third of the jobs that were still waiting when the
+walk ended; the cursor walk shows all of them. An `order=desc` offset walk
+fails the other way, with a repeated row, which a client that remembers what
+it showed can see.
 
-**What the cursor does not fix, because it has to be said.** A job whose
-**priority is lowered while you are paging** jumps *behind* the cursor and is
-never shown — the walk has already passed that point in the order. An offset
-walk misses it too, but the shift makes it repeat a row, so the cursor trades a
-*detectable* miss for a *silent* one. Measured: one job missed per
-re-prioritisation under both, with four repeats under offset and none under the
-cursor. Raising a priority is symmetric — the job sorts past the end and
+**What the cursor does not fix.** A job whose **priority is lowered while you
+are paging** jumps *behind* the cursor and is never shown: the walk has
+already passed that point in the order. An offset walk misses it too, but the
+shift makes it repeat a row, so the cursor trades a *detectable* miss for a
+*silent* one. Raising a priority is symmetric: the job sorts past the end and
 neither scheme shows it. `delayed` and `failed` have the same shape, since a
-retry re-schedules a job in the `runAt` order. Set against the twenty jobs per
-hundred that ordinary draining costs an offset, it is a small price; it is not
-nothing, and a client that must not miss a promoted job should re-read rather
-than walk.
+retry re-schedules a job in the `runAt` order. A client that must not miss a
+re-prioritised job should re-read rather than walk.
 
 **`state=active` on its own cannot be walked**, and a `cursor` with it is 400
 `INVALID_ARGUMENT`. Its natural order is `lockExpiresAt`, which every worker
@@ -7027,8 +7016,8 @@ operation in `x-bun-errors`, sorted: the extension
 
 `createJobsApi({ validateResponses })` checks the value each route's handler
 returns against the response the route declares, the same schemas the OpenAPI
-document is built from. It is for development and tests: the routes' own tests
-run in `"error"`.
+document is built from. It is for development and tests: run your own API
+tests in `"error"`, so a response that drifts from the document fails them.
 
 | Value | What happens to a mismatching response |
 |---|---|
@@ -7462,8 +7451,7 @@ covers the socket's path "/admin/jobs/ws".
 
 Order against `app.useWebSocketAdapter()` does **not** matter. The socket
 resolves the serving `BunWebSocket` when a client upgrades, not when it is
-attached, so an adapter installed afterwards still receives its connections —
-attaching early used to leave sockets that connected and then did nothing.
+attached, so an adapter installed afterwards still receives its connections.
 
 Examples:
 
@@ -7480,20 +7468,17 @@ How the summon pieces fit a deployment: where a
 [`SummonController`](#summoning-a-worker) runs, the one file a summoned worker
 runs, how long each platform gives it to stop, and how a platform's own scaler
 reads the [depth endpoint](#reading-a-queue-search-totals-workers-and-throughput)
-instead. The design and its evidence are in the
-[summon-compute plan](https://github.com/kingsloob1/bun-node/blob/develop/docs/plans/worker-runtimes/summon-compute/README.md)
-(sections cited as §).
+instead.
 
 **How far each recipe is checked.** Code written against this package is
-**checked**: run against it for this README, or asserted by its tests.
-Platform configuration is **read**: field names, defaults and behaviour taken
-from the vendor's docs or source (on 2026-09-27; the grace table is the
-plan's, read 2026-09-25), but **not run**. Nothing here
-has been deployed on KEDA, Azure Container Apps, CREMA or GKE. What neither
-covers is marked **unverified**. No first-party summoner ships yet, so a
+**checked**: it has been run against the package. Platform configuration is
+**read**: field names, defaults and behaviour taken from the vendor's docs or
+source (in September 2026), but **not run**. None of it has been deployed on
+KEDA, Azure Container Apps, CREMA or GKE, so check it against your platform's
+current docs. What neither covers is marked **unverified**. No first-party summoner ships yet, so a
 summoner is one you write with `defineSummoner`.
 
-Three ways to start a worker (§2), which differ in who notices the work and
+Three ways to start a worker, which differ in who notices the work and
 who starts the process:
 
 | Model | Who notices | Who starts the worker | What must stay awake |
@@ -7505,8 +7490,8 @@ who starts the process:
 From an `add()` to the summon call: the 250 ms debounce for an add in the
 controller's own process, up to one 30 s poll for due, stalled or remote work;
 up to one polling interval for a platform (30 s by default on KEDA and ACA);
-up to one period for a schedule. After the call, the platform's cold start is
-unmeasured everywhere (§12).
+up to one period for a schedule. After the call comes the platform's own cold
+start, which varies by platform and image and is not included here.
 
 ### Where the summoner runs
 
@@ -7652,7 +7637,8 @@ flight get: the budget is `grace − 250` ms, of which a `"child-process"` or
 `"worker-thread"` target reserves 4,500 ms and every target `tailReserve`
 (1,000 ms). What remains goes to the jobs, as the close's `timeout` (at
 exactly zero left, a graceful close with `timeout: 0`); only when those
-reserves exceed the budget is the close forced. Grace defaults from §5.2 (vendor docs, read 2026-09-25):
+reserves exceed the budget is the close forced. The platforms' default graces,
+from their docs (September 2026):
 
 | Platform | Stop signal | Grace | Child-process target | In-process target |
 |---|---|---|---|---|
@@ -7713,7 +7699,7 @@ and bun-jobs writes no summoner. Point it at the right figure:
 
 A paused queue reads `0` on both, so its workers scale away and its backlog
 waits. KEDA counts the Jobs it started, not bun-jobs workers, so a worker
-started some other way does not lower its count (Q12). And something must
+started some other way does not lower its count. And something must
 answer the poll: the process serving the endpoint cannot scale to zero with
 the workers.
 
@@ -7884,8 +7870,8 @@ triggers:
 
 KEDA parses `valueLocation` as a PromQL series selector, equality matchers
 only (it compares every label matcher by equality, whatever its operator), and
-takes the first sample whose labels match, so name the family and the queue. That answers the
-plan's open question Q13 from source, without a cluster to confirm it.
+takes the first sample whose labels match, so name the family and the queue.
+That is read from KEDA's source, not confirmed on a cluster.
 
 Or KEDA's `prometheus` scaler, through a Prometheus server that scrapes the
 namespace:
@@ -8060,8 +8046,8 @@ spec:
 - **Scrape one pod.** Every scraped replica of the API exports the same
   figure as its own series, and an external metric's series are summed
   (unverified), so serve the scaler API from a single-replica Deployment.
-- `minReplicas: 1`: GKE's native HPA scale-to-zero (announced 2026-09-24) was
-  not checked here, and KEDA is the verified route to zero.
+- `minReplicas: 1`: GKE's native HPA scale-to-zero has not been checked with
+  this recipe, and KEDA is the verified route to zero.
 - Under Workload Identity the adapter's service account needs Monitoring
   Viewer.
 
@@ -8075,50 +8061,39 @@ one thing more, its summon marker in queue state. Every figure is read from an
 index (per-state counts on SQL and MongoDB, sorted sets on Redis, marker
 listings on file), and none reads retained history.
 
-PR-1 measured `countDemand` alone (§6.4 D4), on 2026-09-26: medians of
-interleaved rounds, `cap` 10,000, over 8 queues of 49,064 jobs each (about
-392,000 rows: per queue 5,000 waiting, 2,000 delayed, 1,000 failed, 64 active,
-1,000 dead or waiting on children, and 40,000 completed), with the backlog
-under the cap, then with ten times the completed history:
+What `countDemand` reads, and its rough cost on a queue of about 50,000 jobs
+(most of them completed history), which stays about the same with ten times
+the history:
 
-| Driver | What is read | Round trips | Base → 10× history |
+| Driver | What is read | Round trips | Rough cost |
 |---|---|---|---|
-| memory | in-heap sets, including an active-id `Set` | none | 0.089 → 0.131 ms |
-| file | marker directory listings; no record opened | 5 listings | 6.75 → 7.50 ms |
-| Postgres 16 | `ix_lock` and `ix_due`, index-only except the lockless count | 1 statement | 1.59 → 1.64 ms |
-| SQLite 3.53 | `ix_lock` and `ix_due`, covering except the lockless count | 1 statement | 0.95 → 1.17 ms |
-| MySQL 8.4 | covering reads of `ix_lock`, `ix_due`, `ix_claim` | 1 statement | 5.97 → 5.05 ms |
-| MariaDB 11.8 | covering reads, `MIN`s optimised away | 1 statement | 7.13 → 6.36 ms |
-| Redis | `ZCOUNT`/`ZCARD` in one Lua script | 1 script | 0.049 → 0.046 ms |
-| MongoDB | covered index scans, no document examined | 7, not atomic | 6.66 → 6.79 ms |
+| memory | in-heap sets, including an active-id `Set` | none | about 0.1 ms |
+| file | marker directory listings; no record opened | 5 listings | about 7 ms |
+| Postgres | `ix_lock` and `ix_due`, index-only except the lockless count | 1 statement | about 1.6 ms |
+| SQLite | `ix_lock` and `ix_due`, covering except the lockless count | 1 statement | about 1 ms |
+| MySQL | covering reads of `ix_lock`, `ix_due`, `ix_claim` | 1 statement | about 5–6 ms |
+| MariaDB | covering reads, `MIN`s optimised away | 1 statement | about 6–7 ms |
+| Redis | `ZCOUNT`/`ZCARD` in one Lua script | 1 script | about 0.05 ms |
+| MongoDB | covered index scans, no document examined | 7, not atomic | about 7 ms |
 
 The round trips are `countDemand`'s; a poll adds the pause read and the
-worker listing, and a controller its marker read. The SQL figures were
-measured before #185, which moved `active` off `ix_lock` and made the
-lockless half of `stalled` walk the queue's `active` rows on `ix_due`,
-testing the lock per row (so its cost is the running jobs, never history);
-its change was within noise.
+worker listing, and a controller its marker read. The lockless half of
+`stalled` walks the queue's `active` rows on `ix_due`, testing the lock per
+row, so its cost is the running jobs, never history.
 
 **Past the cap the SQL counts cost more**, since each figure reads up to
-`cap + 1` index entries (`LIMIT cap + 1`). The #185 measurement (2026-09-26,
-one queue of 200,065 rows with 40,000 `waiting`, beside a second queue of
-50,000 `completed`, medians of 41) put the whole statement, develop → #185,
-at: Postgres 16 "1.08–1.11 → 1.12–1.14 ms", SQLite 3.53 "0.48–0.50 →
-0.49–0.51 ms (first develop round 0.72, warm-up)", MySQL 8.4 "76–89 → 74–90
-ms (dominated by the 10,001-row capped `waiting` count)" and MariaDB 11.8
-"13.8–15.1 → 14.1–14.5 ms".
+`cap + 1` index entries (`LIMIT cap + 1`). With 40,000 `waiting` jobs on one
+queue, the whole statement stays around a millisecond on Postgres and SQLite
+and around 15 ms on MariaDB, but MySQL takes tens of milliseconds (about
+75–90 ms), dominated by the 10,001-row capped `waiting` count.
 
-On the base data `countJobs`, which `/counts` serves, grew about 5 to 11 times
-with the history on SQL, file and MongoDB, 22 times on memory, and stayed flat
-on Redis, which reads no history either; each engine's negative control (the
-index dropped or hinted away) grew 4 to 27 times, so the flat line is the index
-and not a small table. Two limits: the file driver's listings grow with the
-backlog, not with the cap; and each figure is counted up to a cap, past which
-`capped` says the figures are lower bounds. The routes count to 10,000
-(`DEFAULT_DEMAND_CAP`) and `runSummoned`'s idle check to 1; a controller
-raises it to `max(10,000, maxWorkers × jobsPerWorker)` when `jobsPerWorker` is
-finite. It needed no new database index; the memory driver gained its
-active-id `Set`, at 1.2% of claim-and-complete throughput, within noise.
+`countJobs`, which `/counts` serves, does read history: it grows with the
+completed history on SQL, file, MongoDB and memory, and stays flat only on
+Redis. Two limits: the file driver's listings grow with the backlog, not with
+the cap; and each figure is counted up to a cap, past which `capped` says the
+figures are lower bounds. The routes count to 10,000 (`DEFAULT_DEMAND_CAP`)
+and `runSummoned`'s idle check to 1; a controller raises it to
+`max(10,000, maxWorkers × jobsPerWorker)` when `jobsPerWorker` is finite.
 
 ## Drivers
 
@@ -8232,27 +8207,23 @@ Some backends need a server at least this new; the rest state no minimum.
 
 **MongoDB needs a raised open-file limit.** WiredTiger keeps each collection
 and each index in a file of its own, and a queue's collections carry several
-indexes each. At the soft limit of 1,024 that Docker gives a container by
-default, a few test runs in a row were enough: WiredTiger failed with
-"Too many open files" (errno 24), panicked, and `mongod` aborted. MongoDB
-recommends at least **64,000** open files and warns at startup below that. We
-use 65,536. Measured here: the test database holds about 1,800 WiredTiger
-files, and `mongod` held 1,286 descriptors after three back-to-back runs of
-the MongoDB suites.
+indexes each, so a database serving a few namespaces holds well over a
+thousand files. At the soft limit of 1,024 that Docker gives a container by
+default, WiredTiger can fail with "Too many open files" (errno 24), panic,
+and abort `mongod`. MongoDB recommends at least **64,000** open files and
+warns at startup below that; 65,536 is a good value.
 
-The SQL servers did not hit the limit here, and raising theirs as well does no
-harm:
+The SQL servers do not need it, and raising theirs as well does no harm:
 
 - **Postgres** limits itself. Each server process keeps at most
   `max_files_per_process` files open (default 1,000) and closes others as it
   needs to, so it stays under 1,024 on its own.
 - **MySQL** raises its own limit. It works out how many files it needs from
   `max_connections` and `table_open_cache` (8,161 with the `mysql:8.4`
-  defaults) and raised the limit from Docker's 1,024 to that. Given 65,536,
-  it kept 65,536.
-- **MariaDB** raises its own limit too. In the `mariadb:11` image it went
-  from Docker's 1,024 to 32,198, and `open_files_limit` read 32,198 again
-  with 65,536 available.
+  defaults) and raises the limit from Docker's 1,024 to that. Given 65,536,
+  it keeps 65,536.
+- **MariaDB** raises its own limit too: in the `mariadb:11` image, from
+  Docker's 1,024 to 32,198.
 
 How to set it:
 
@@ -8511,11 +8482,9 @@ await driver.syncSchema({ dryRun: true }); // see the statements first
 await driver.syncSchema({ alterColumns: true }); // rewrites each table under a lock
 ```
 
-- It costs no extra query. Connect already reads every table's columns to
-  decide what to create, and now does it in one catalog query instead of one
-  per table. Measured over existing tables, connect got faster: 7.4 ms to
-  3.7 ms on MariaDB 11.8, 20.7 to 18.9 ms on MySQL 8.4 and 37 to 24 ms on
-  Postgres. The comparison itself takes about 0.1 ms.
+- It costs no extra query. Connect already reads every table's columns, in
+  one catalog query, to decide what to create; the comparison itself takes
+  about 0.1 ms.
 - Only collations are warned about. A column whose type differs (`jsonb` for
   `json`, say) costs speed or space, not answers, so it never triggers the
   warning. `syncSchema({ dryRun: true })` still reports it.
@@ -8633,33 +8602,28 @@ What any failover costs, whatever the driver:
   runs again). Only synchronous or majority commit makes every acknowledged
   write survive.
 
-**What was measured** (2026-11-03, Bun 1.4.4-canary.1+11c367163): a queue,
-one worker (`concurrency: 4`, `lockDuration: 5000`, `stalledInterval: 2000`,
-`pollInterval: 100`) and a producer adding 50 jobs a second, each with a
-`jobId` and retried every 200 ms on failure, for 30 s, the server failing 8 s
-in. Every acknowledged job was then checked for having run, and for having
-run once. These are crashes and restarts of one server (`docker kill`, then
-`docker start`), or for Redis its connections killed, not a promotion to a
-replica: they measure what a worker and a producer see while the endpoint is
-gone and when it is back, not a replica's lag.
+**What a producer and a worker see** while one server crashes and restarts
+(or, for Redis, while its connections are killed), with a worker at
+`lockDuration: 5000` and `stalledInterval: 2000` and a producer that gives
+every job a `jobId` and retries a failed `add`. In every case no
+acknowledged job was lost; a job whose completion was lost in the crash ran
+once more, as above.
 
-| Driver | Fault | Producer | Worker | Lost | Ran twice | Back after |
-|---|---|---|---|---|---|---|
-| Postgres 16 (two runs) | container killed, restarted 1.7–2.4 s later | `add` errors for 0.4 s and for 5 s ("the database system is starting up", "… not yet accepting connections") | 20 and 181 `error` events, over the same windows | 0 | 0, and 1 (its completion lost in the crash; the stalled sweep returned it) | 3.5 s and 7.4 s |
-| MySQL 8.4 | container killed (5 s to die), restarted | no error: each `add` waited | 2 `error` events at the restart | 0 | 0 | 16.7 s (the kill took 5 s of it) |
-| MariaDB 11 | container killed, restarted 2.6 s later | no error: each `add` waited | none: claims waited | 0 | 0 | 16.4 s |
-| Redis 8.0 | the producer's and worker's three connections killed (`CLIENT KILL`) | no error | 2 `error` events, at once | 0 | 0 | 10 ms |
-| MongoDB 7, one-node replica set, `w: "majority"` | container killed, restarted | **an `add` never settled**, in 3 runs of 4 | **a claim or completion never settled, and the worker stopped**, in 2 runs of 4 | 0 | 0 | **never** without `timeoutMS`: the stuck operation was still pending 90–110 s later in every run; 10.7 s with `timeoutMS=10000` (3 `error` events, "Timed out at socket write") |
+| Driver | Producer | Worker | Back after |
+|---|---|---|---|
+| Postgres | `add` throws while the server starts up ("the database system is starting up", "… not yet accepting connections") | `error` events over the same window | a few seconds after the server accepts connections |
+| MySQL | no error: each `add` waits | an `error` event or two at the restart | once the server is back |
+| MariaDB | no error: each `add` waits | none: claims wait | once the server is back |
+| Redis | no error | an `error` event or two, at once | milliseconds |
+| MongoDB (replica set, `w: "majority"`) | **an `add` can hang for good** | **a claim or completion can hang for good, and the worker stops** | **never** without `timeoutMS`; about `timeoutMS` after the restart with it |
 
 The MongoDB row is a Bun bug, not the database's: under Bun, a socket
 write that lands just after the server closed the connection emits no
 `error`, so the `mongodb` package waits on it for good
-([oven-sh/bun#47834](https://github.com/oven-sh/bun/issues/47834),
-[`docs/bun-bugs/node-net-write-after-peer-close-no-error.md`](https://github.com/kingsloob1/bun-node/blob/develop/docs/bun-bugs/node-net-write-after-peer-close-no-error.md)).
+([oven-sh/bun#47834](https://github.com/oven-sh/bun/issues/47834)).
 The same client recovers under Node. **Until Bun fixes it, set `timeoutMS`
 on a MongoDB URL** (`?timeoutMS=10000`): the stuck operation then fails
-after that long, and the driver recovers. `socketTimeoutMS` does not help
-(measured: still stuck after 20 s).
+after that long, and the driver recovers. `socketTimeoutMS` does not help.
 
 ### Postgres: Patroni
 
@@ -8690,12 +8654,12 @@ after that long, and the driver recovers. `socketTimeoutMS` does not help
   stronger), so the new primary serves nothing until it has applied the
   backlog: otherwise a claim can read a row the old primary had already
   claimed.
-- What a worker sees, measured on a restart: statements **wait** rather than
-  fail while the server is gone, then go on. MariaDB behaved the same; for
+- What a worker sees on a restart: statements **wait** rather than fail
+  while the server is gone, then go on. MariaDB behaved the same; for
   MariaDB, Galera in single-writer use (one node written to, through
   MaxScale or a router) is the equivalent.
-- `max_connections` set with `SET GLOBAL` does not survive a restart (the
-  MariaDB restart above came back at 151): set it in the server's
+- `max_connections` set with `SET GLOBAL` does not survive a restart (a
+  restarted MariaDB comes back at its default of 151): set it in the server's
   configuration.
 
 ### MongoDB: a replica set with `w: "majority"`
@@ -8708,8 +8672,8 @@ after that long, and the driver recovers. `socketTimeoutMS` does not help
 - The `mongodb` package's retryable writes and reads (on by default) retry
   a write once across an election, so a claim (`findOneAndUpdate`) is not
   applied twice.
-- **Set `timeoutMS`** on Bun (above): measured, without it an operation in
-  flight during the primary's loss can wait for good.
+- **Set `timeoutMS`** on Bun (above): without it an operation in flight
+  during the primary's loss can wait for good.
 - Arbiters lower the majority write's guarantee: prefer three data-bearing
   members.
 
@@ -8724,12 +8688,12 @@ after that long, and the driver recovers. `socketTimeoutMS` does not help
   a completion (it runs again). `WAIT` would narrow that window, and is not
   used. Where a lost job matters, a SQL or MongoDB driver with synchronous or
   majority commit is the right backend.
-- What a worker sees: Bun reconnects on its own. Measured with every
-  connection of the producer and the worker killed: the worker logged two
-  errors and was claiming again 10 ms later; nothing failed for the
-  producer. A longer outage is retried for Bun's reconnect budget (about
-  31 s at the defaults: `maxRetries`, `connectionTimeout`), then the next
-  operation starts again ([Driver configs](#driver-configs)).
+- What a worker sees: Bun reconnects on its own. With every connection of
+  the producer and the worker killed, the worker logs an error or two and is
+  claiming again within milliseconds; nothing fails for the producer. A
+  longer outage is retried for Bun's reconnect budget (about 31 s at the
+  defaults: `maxRetries`, `connectionTimeout`), then the next operation starts
+  again ([Driver configs](#driver-configs)).
 
 ### SQLite and file: one host
 
@@ -8749,6 +8713,8 @@ so a caller can add to them but never overwrite them.
 | Class | `code` | Raised when |
 |---|---|---|
 | `ConfigError` | `CONFIG` | An option is missing, malformed or contradictory. A feature that needs an optional driver method the driver lacks raises `NotSupportedError`, which is one of these. |
+| `RepeatExhaustedError` | `REPEAT_EXHAUSTED` | A `ConfigError` subclass: a repeatable job was added whose series has no occurrences left (its `limit` reached, or its `endAt` passed). `context.key` is the series' key. See [Scheduling](#scheduling-and-repeatable-jobs). |
+| `IsolationUnavailableError` | `CONFIG` | A `ConfigError` subclass: a [`container` target](#a-container-per-attempt--kind-container-) cannot run on this host, found at `worker.run()` before any job is claimed. `context.step` is `engine`, `runtime`, `image` or `probe`, and `context.stderr` is what the engine said. |
 | `NotSupportedError` | `CONFIG` | A `ConfigError` subclass with `context.driver` and `context.method`, meaning a driver does not implement a method. It keeps the `CONFIG` code, so a branch on `CONFIG` catches both. Every built-in optional-method check raises it — `queue.cleanWindows()`, `queue.getThroughput()`, `queue.listWorkers()`, `job.log()` and the rest — with `context.needs` naming the feature that wanted the method. |
 | `DriverError` | `DRIVER_ERROR` | A driver operation failed. `driver` and `operation` are set, and the backend's error is the `cause`. |
 | `LockUnavailableError` | `LOCK_UNAVAILABLE` | A lock is held elsewhere (`context.key`). |
@@ -8770,10 +8736,19 @@ so a caller can add to them but never overwrite them.
 | `JobDefaultsChangedError` | `DEFAULTS_CHANGED` | `queue.applyJobDefaults()` was asked to apply a `seq` that is no longer the stored one (`queue`, `expectedSeq`, `seq`). Nothing was written. |
 | `SerializationError` | `SERIALIZATION` | A value (job data, a result) is not JSON-serialisable. |
 | `WorkerStateConflictError` | `WORKER_STATE_CONFLICT` | `WorkerController.pause()` or `resume()` addressed a worker that is `stopped` or `stopping` (`action`, and `workers`: each refused worker's `id` and `state`). Nothing was written. The management API answers 409 `WORKER_STATE_CONFLICT`. |
+| `RemoteMessageTooLargeError` | `TOO_LARGE` | A [remote executor](#remote-executors-createremoteexecutor) message is larger than its receiver accepts (`bytes`, `max`). Not retryable. |
+| `ProviderError` | `PROVIDER_<KIND>` | Thrown by a [compute provider](#when-the-summoner-fails-provider-errors) when its platform did not answer normally; `kind` is `transient`, `throttled`, `quota`, `auth`, `misconfigured` or `conflict`. From `@kingsleyweb/bun-jobs/provider`. |
+| `ApiError` | an `ApiErrorCode` | Thrown inside the [management API](#management-api) and answered as the problem it names (`status`, `code`); see its [error codes](#errors). |
 | `ProtocolError` | `PROTOCOL` | A message between processes did not have the shape its protocol promises, such as a malformed job-channel reply. It means the two sides disagree (a rolling upgrade, a bug), not that the operation failed. |
 
 `ErrorContext<Reserved>` types the extra detail you can pass to the
 constructors.
+
+A subclass can carry a code of its own. bun-nest's `JobForbiddenError` (a
+guard denied a job) is an `UnrecoverableJobError` whose `code` is
+`JOB_FORBIDDEN`, so once the job is stored, `job.failedReason.code` tells a
+denial from any other unrecoverable failure. It is documented in
+[bun-nest's README](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/README.md).
 
 Example:
 [`10-options/errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/errors.ts).
@@ -8814,38 +8789,9 @@ Example:
 
 ## Benchmarks
 
-[`bench/`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/README.md) compares both halves of the package against
-established alternatives, on Bun:
-
-- the **queue** against BullMQ, bee-queue, node-resque, pg-boss,
-  graphile-worker and Agenda, on Redis, Postgres, MongoDB, MySQL, MariaDB,
-  SQLite, file and memory;
-- the **runner** against Bree, Agenda, croner, node-cron, node-schedule and
-  toad-scheduler.
-
-It is a separate, unpublished package, so none of those libraries reach this
-package's dependency tree.
-
-Results are ranked only **within a backend**: a Redis figure beside a Postgres
-one measures the database, not the library. Each contender runs in its own
-process, and `--verify` checks that each one delivers every job exactly once
-before any timing.
-
-```bash
-cd bench && bun install
-bun queue.ts --verify     # every contender must deliver each job exactly once
-bun queue.ts              # enqueue, drain, round-trip, payload, contention
-bun runner.ts             # dispatch, cycle, schedule drift, exclusivity
-bun queue.ts --compare    # fail if a figure regressed or a rival overtook us
-```
-
-[`bench/baselines/queue.json`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/baselines/queue.json) and
-[`bench/baselines/runner.json`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/baselines/runner.json) record each
-scenario's figure and who led it, along with the platform and Bun version.
-`--save-baseline` re-records them after a deliberate change.
-
-The [bench README](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/README.md) explains setup, scenarios and how the
-configurations are kept comparable.
+Benchmarks against BullMQ, bee-queue, pg-boss, Agenda, Bree and others, ranked
+within each backend, are in
+[`packages/bun-jobs/bench`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs/bench).
 
 ## Examples
 
@@ -8862,37 +8808,11 @@ for the conventions they share.
 
 ### bun-jobs examples
 
-Each file is a script whose opening comment says what it shows. The examples
-use the workspace packages through the root `node_modules`, so run
-`bun install` at the repo root once.
-
-```bash
-cd examples/bun-jobs
-bun 01-quick-start/index.ts        # start here
-bun run-all.ts                     # every example; prints ok / skip / FAIL
-bun run-all.ts 05 06               # only folders 05-* and 06-*
-```
-
-Examples that are not about one backend read `EXAMPLE_DRIVER`, so the same
-script runs on any backend. An example that needs a server skips itself when
-that server's URL is unset.
-
-| `EXAMPLE_DRIVER` | Needs |
-|---|---|
-| `memory` (default) | nothing |
-| `file`, `sqlite` | nothing; uses a temporary directory, removed on exit |
-| `postgres` | `EXAMPLE_POSTGRES_URL` |
-| `mysql` | `EXAMPLE_MYSQL_URL` |
-| `mariadb` | `EXAMPLE_MARIADB_URL` |
-| `redis` | `EXAMPLE_REDIS_URL` |
-| `mongodb` | `EXAMPLE_MONGODB_URL`, and `bun add mongodb` |
-
-```bash
-EXAMPLE_DRIVER=redis EXAMPLE_REDIS_URL=redis://localhost:6379/13 bun 02-queues/job-options.ts
-EXAMPLE_DRIVER=postgres EXAMPLE_POSTGRES_URL=postgres://user:pass@localhost/jobs bun run-all.ts
-```
-
-Each run uses its own namespace and purges it on exit.
+Each file is a script whose opening comment says what it shows. Examples that
+are not about one backend read `EXAMPLE_DRIVER`, so the same script runs on
+any backend; the
+[examples README](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/README.md)
+says how to run them.
 
 | Folder | File | Shows |
 |---|---|---|
@@ -8998,60 +8918,18 @@ The full list of files is in the
 
 - [`@kingsleyweb/bun-common`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md):
   the HTTP layer and utilities this package builds on (logging, backoff, error
-  serialisation).
+  serialisation), and the router the management API mounts on.
 - [`@kingsleyweb/bun-nest`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/README.md):
-  a NestJS adapter built on bun-common.
-
-## Development
-
-From the repo root:
-
-```bash
-bun install
-bun scripts/typecheck.ts                   # every project in the repo; must be clean
-bun scripts/setup-databases.ts             # provide Redis, Postgres, MySQL, MariaDB, MongoDB
-bun scripts/setup-databases.ts --docker    # containers instead, no root needed
-bun scripts/setup-databases.ts --dry-run   # see the plan first
-bun scripts/setup-databases.ts --print-env # just the env vars for the suites
-```
-
-Then, in `packages/bun-jobs`:
-
-```bash
-bun run lint           # lint the whole package; 0 errors
-bun run format:check   # check the formatting
-bun run test           # tests, one worker per core
-bun run test:seeded    # the order-leak check: serial shards, no database URLs
-```
-
-`bun run test` runs the files in parallel, each in a fresh global, so it
-cannot see one test file leaking state into another. `bun run test:seeded`
-is the check for that: it deals the files into 4 groups by a shuffle seeded
-with `--seed` (picked and printed when not given), and runs each group as one
-serial `bun test --randomize --seed=N` process, all four at once. A different
-seed puts different files together. The database URLs below are removed for
-it unless `--with-databases` is given; its summary prints each group's
-command, to reproduce a failure serially. The groups are balanced by the
-per-file durations in `bun-timings.seeded.json`;
-`bun run test:seeded --update-timings` refreshes them. Shard logs go under
-`~/.cache/bun-node/test-seeded/` (the newest 20 runs are kept), or
-`--log-dir`.
-
-The setup script is safe to run repeatedly. It never reinstalls a server, and
-it configures one only when connecting with the expected credentials fails.
-
-The Redis, Postgres, MySQL, MariaDB and MongoDB integration suites skip
-visibly unless their URL is set:
-
-- `BUN_JOBS_TEST_REDIS_URL`
-- `BUN_JOBS_TEST_POSTGRES_URL`
-- `BUN_JOBS_TEST_MYSQL_URL`
-- `BUN_JOBS_TEST_MARIADB_URL`
-- `BUN_JOBS_TEST_MONGODB_URL`
-
-The benchmarks use their own databases (Redis database 14 and
-`bun_jobs_bench`), so they never disturb the test suite. See
-[Benchmarks](#benchmarks).
+  a NestJS adapter built on bun-common. Its `./jobs` entry (`BunJobsModule`,
+  `BunJobsApiModule`, `@DefineJob`, `./jobs/testing` and the
+  `./jobs/terminus` health indicator) runs this package inside a Nest
+  application.
+- [`@kingsleyweb/bun-ui`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-ui/README.md):
+  its `./jobs` entry (`jobsUi()`) is a browser management UI for this
+  package's [management API](#management-api).
+- [`@kingsleyweb/bun-client`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-client/README.md):
+  a typed HTTP client, which `bun-client generate` can type from the
+  management API's OpenAPI document.
 
 ## License
 

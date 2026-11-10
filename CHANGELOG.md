@@ -4,6 +4,91 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
+## 3.0.0 (2026-11-10)
+
+<!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
+
+The first final release of the 3.x line. All seven packages are released together at 3.0.0, on npm's `latest` tag, so a plain install gets them:
+
+```bash
+bun add @kingsleyweb/bun-common
+bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
+bun add @kingsleyweb/bun-jobs
+```
+
+For bun-common and bun-nest this is a **major release after 2.2.0**. bun-contract, bun-client, bun-jobs, bun-cache and bun-ui had only 3.0.0 release candidates before.
+
+| Package | What it is |
+|---|---|
+| [`@kingsleyweb/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-common) | An Express 5 style HTTP framework for `Bun.serve` |
+| [`@kingsleyweb/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-nest) | Runs a NestJS 11 or 12 app on Bun, on top of bun-common |
+| [`@kingsleyweb/bun-contract`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-contract) | The contract core shared by server and browser |
+| [`@kingsleyweb/bun-client`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-client) | A typed client for a bun-common or bun-nest API |
+| [`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs) | Background jobs: queues, workers and scheduled scripts |
+| [`@kingsleyweb/bun-cache`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-cache) | One cache API over 12 storage drivers, plus an HTTP response cache |
+| [`@kingsleyweb/bun-ui`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui) | Every browser UI in one package: `/jobs` and `/docs` |
+
+### Read this first: middleware that guards a path can stop guarding it
+
+**In bun-nest, a `forRoutes` entry that names a method no longer runs on the paths below it**, as on Express. Middleware on `{ path: "admin", method: RequestMethod.GET }` runs on `/admin`, not on `/admin/users`. **An authentication or authorisation middleware that relied on the old match silently stops protecting those paths, and the routes keep answering.** An app moved from Express is safe, because that protection never existed there. Check every app written against bun-nest 2.2.0 or an earlier 3.0.0 candidate.
+
+To keep the match, use `forRoutes("admin")` for every method, or `{ path: "admin{/*rest}", method: RequestMethod.GET }` for one. `{ path: "*", method: RequestMethod.ALL }` is unaffected. Each route of `forRoutes(Controller)` also matches as a route now: before, it could run twice, or on a path with no route.
+
+### Upgrading from 2.2.0
+
+The candidates' entries below have the details; this is the whole list, in the order to check them.
+
+- **Bun 1.4.2 or later** (`engines.bun`), with optional `@types/bun >=1.4.2` and `typescript ^5.9.3 || ^6.0.0` peers.
+- **An `exports` map** in each package, with built declarations in `dts/`. Every 2.2.0 import of a file under `lib/` still resolves; a file outside `lib/`, or a directory import with a trailing slash, does not.
+- **Express 5 route paths** (path-to-regexp 8): a named wildcard is an array under its name, `{…}` is an optional group, and a malformed path throws `PathSyntaxError` when it is registered.
+- **`X-Forwarded-*` is read only through `trustProxy`**, Express 5's `trust proxy`, off by default. With it off, `req.ips` is `[]` and `req.protocol` (and so `req.secure`) is the scheme the request arrived on. In 2.2.0 they believed `X-Forwarded-For` and `X-Forwarded-Proto` from any client. `trustProxy` (or Nest's `app.set("trust proxy", …)`) names the proxies to believe, and then `req.ip` is the forwarded client.
+- **A body declared JSON must be an object or an array**, and its charset `utf-*`: anything else answers `400` or `415`. `strictJson: false` (or `useBodyParser("json", { strict: false })`) turns it off.
+- **`Logger` is structured**: six levels, each `(message, fields?)`, plus `child()` and `isLevelEnabled()`. Options accept any `LoggerLike` (pino, winston, bunyan, consola, log4js, tslog, Nest's logger, a console).
+- **bun-nest's Nest packages are peers**: install `@nestjs/common`, `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` in your app.
+- **`close()` drains** requests in flight for up to `closeDrainTimeout` (10 s).
+- **The middleware pipeline follows Express 5**, and bun-nest matches paths case-insensitively by default, as `@nestjs/platform-express` does.
+- **bun-nest `forRoutes` with a method** (above).
+- **bun-nest WebSockets**: a message with an ack id is acknowledged automatically, a `WsException` reaches the client as an `"exception"` event, and two new limits apply (`maxConcurrentMessages`, `maxSendBufferSize`).
+
+"Upgrading from 2.2.0" under 3.0.0-rc.0 has the steps, with code.
+
+### Changed since 3.0.0-rc.2
+
+- **bun-nest `./jobs/terminus`, the jobs health indicator:**
+  - a worker parked with `BunJobsLifecycle.stop()` or remote control reads as **up** and is listed in `parked`; it read as down;
+  - a worker whose `run()` ended while the application did not reads as **down**; it read as up;
+  - `queues` left out now reads the queues this application registers or runs a worker on, not every queue the backend knows; `queues: "all"` reads the first 100 by name and says what it left out in `queuesNotRead`;
+  - `requireWorkers` on a driver with no worker records reads as up, with `workers: "unknown"`, rather than down for good.
+
+  A probe that watched `stopped` in the details now reads `parked`.
+- **`JobForbiddenError` has its own code, `JOB_FORBIDDEN`**, kept in a stored job's `failedReason.code`. Its `name` is unchanged, so bun-jobs still treats the failure as final.
+- **`runJob` and `drainJobs`** (`./jobs/testing`) reject with a `ConfigError` on an application with no jobs context. On an application from `NestFactory.create` with its default `abortOnError`, they ended the process instead.
+
+### New since 3.0.0-rc.2
+
+- **bun-common: per-event variants on server-sent events.** `sseVariants({ admin: { when, data }, user: { data } })` declares an event as several whole shapes, chosen per event, as `variants()` does for an HTTP status. `send({ event, variant, data })` is typed per variant, and `when` decides which ones a stream's request may receive. The documents describe each event as an `anyOf` with `x-variants`.
+- **bun-common: broadcast SSE channels, `createSseChannel()`** (`@kingsleyweb/bun-common/sse`). It encodes an event once for every subscriber, and adds:
+  - initial state for each new subscriber;
+  - a replay buffer for `Last-Event-ID`;
+  - topics;
+  - one heartbeat per channel;
+  - a transport between processes;
+  - `subscribe()`, `handler()`, `response()` (native routes), `attach()` and `listen()`.
+
+  With `contract`, `send()` and `sendList()` are typed by an SSE contract and checked before encoding, so a bad event is refused to the caller and never broadcast.
+- **bun-nest: `channelObservable(channel, options)`**: a broadcast channel behind `@Sse()`, with `Last-Event-ID` replay, topics, `@SseSignal()` and a heartbeat, written the same way on every Nest release.
+- **Packaging:** bun-jobs and bun-ui declare `repository`, `homepage` and `bugs`, as the other packages do. Every package's README is now its user documentation only, with links that work on npm.
+
+### Tested with
+
+- Bun 1.4.4-canary.1+11c367163, against the 1.4.2 floor's types.
+- NestJS 12.4.2 (the lock), 12.2.0, 11.2.9 and 11.2.7.
+
+### Known and still open
+
+- `oven-sh/bun#48380`: a `Response` or `Request` built from a string keeps a BOM. It does not affect a body received over a socket.
+- `oven-sh/bun#44232`: Bun accepts a request with two `Host` headers.
+
 ## 3.0.0-rc.2 (2026-11-09)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->

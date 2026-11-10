@@ -1,7 +1,7 @@
 # The jobs UI: `@kingsleyweb/bun-ui/jobs`
 
 A management UI and API documentation viewer for the
-[`@kingsleyweb/bun-jobs`](../../bun-jobs) management API. It is a React app,
+[`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs) management API. It is a React app,
 prebuilt into `dist/jobs/`, served by a `jobsUi()` router that mounts beside
 `createJobsApi` on any bun-common router: a bun-common `BunHttpAdapter`, a
 `BunRouter`, or bun-nest's `BunHttpAdapter`.
@@ -951,36 +951,12 @@ These `data-testid` hooks are stable:
 - WebSocket try-it: `ws-try-channel`, `ws-try-address`, `ws-try-link`,
   `ws-try-unavailable`, `ws-try-disabled`, `ws-try-reason`.
 
-`__tests__/jobs/e2e/m2-flow.e2e.test.ts` drives the real app in headless Chrome
-through `Bun.WebView`, against a real `createJobsApi` with CSRF on. It pauses a
-queue, opens a dead job and retries it, reads each step back from the API and
-checks that the page raised no CSP violation. It skips visibly when Chrome is
-not found. Set `BUN_CHROME_PATH` to point it at one.
-
-The runner screens' Chrome flow is in the examples:
-`examples/bun-ui/jobs/06-browser/pause-and-retry.ts` pauses a runner and
-checks "Runner hidden" in Chrome. Live events have theirs in
-`examples/bun-ui/jobs/06-browser/live-events.ts`: the `live-status` badge,
-the Events console tailing a queue while a real worker completes a job, and
-the badge staying off, with its reason, on hosts that cannot or may not
-connect. The API docs screens have theirs in
-`examples/bun-ui/jobs/06-browser/api-docs.ts`: both references in real
-Chrome, try-it on the HTTP and WebSocket sides (a disabled one with its
-reason, a destructive one that needs its id typed), the WebSocket panels and
-"Open in the Events console".
-`__tests__/jobs/app/pkg/runners.integration.test.ts` and
-`runner-actions.integration.test.ts` render them under happy-dom against a
-real `createJobsApi` in `runner` mode with a real local `BunRunner`.
-
-The Providers screen and the Summon panel's summoner have theirs in
-`examples/bun-ui/jobs/06-browser/providers.ts`: the cards with their
-readiness, facts and config schema; Test connection passing, passing with a
-warning, refused by the platform (with its code) and on a bad config; the
-read-only and opt-in gates; and a provider whose config validates
-asynchronously reading "Pending", then "Ready" on the card and on the Summon
-panel, each on its own refetch. `__tests__/jobs/app/pkg/providers.integration.test.ts`
-renders the Providers screen under happy-dom against a real `createJobsApi`
-and real configured providers.
+Runnable Chrome flows that use these hooks are in the repository's
+examples ([`examples/bun-ui/jobs/06-browser/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-ui/jobs/06-browser)):
+pausing a runner and reading "Runner hidden" (`pause-and-retry.ts`), the live
+badge and the Events console tailing a queue (`live-events.ts`), both API
+references with try-it (`api-docs.ts`), and the Providers screen and the
+Summon panel (`providers.ts`).
 
 ### Loaded on demand
 
@@ -1032,14 +1008,11 @@ gzipped) when M5 was built.
 - **Contrast.** Every colour pair in `app/kit/styles/tokens.css` (the design
   tokens every bun-ui UI shares) meets WCAG AA
   in both themes: 4.5:1 for text, 3:1 for input outlines, the focus ring and
-  state colours. `__tests__/jobs/app/a11y/contrast.test.ts` reads the real file,
-  so a token that stops reading fails the tests.
-- **Checked.** `__tests__/jobs/app/pkg/a11y.integration.test.ts` renders every
-  screen against a real API and audits its structure: one `h1`, no skipped
-  heading level, the landmarks, a name on every control, button, link and
-  table. `__tests__/jobs/e2e/responsive.e2e.test.ts` loads the screens in Chrome
-  at 360px and fails if the page scrolls sideways. Wide tables scroll inside
-  their own region instead.
+  state colours.
+- **Structure.** Every screen has one `h1`, no skipped heading level, the
+  landmarks, and a name on every control, button, link and table.
+- **Narrow screens.** At 360px no screen scrolls sideways: wide tables scroll
+  inside their own region instead.
 
 ## Testing without a socket
 
@@ -1108,14 +1081,10 @@ status, `429` or `500` included, gives a 403.
   API, or with `apiUrl`, set `csrfHeader` to the API's `csrf.header` if the API
   has one, or the UI's mutations are refused with `CSRF_REJECTED`.
 
-## Building
+## The bundle
 
-`bun scripts/build.ts` writes `dist/jobs/assets/*` (content-hashed, minified,
-with source maps) and `dist/jobs/manifest.json`. `prepack` runs it for you.
-`dist/` is gitignored. In the repo, `jobsUi()` builds in memory when
-`dist/jobs/` is absent.
-
-`bun run build:types` (`scripts/build-declarations.ts`) writes the declarations
-for `lib/` into `dts/`, and verifies them. `prepack` runs it too, after the
-bundle, so a pack publishes both. `dts/` is gitignored as well: `dist/` is the
-browser bundle, `dts/` the server's types.
+The published package includes the prebuilt, content-hashed bundle in
+`dist/jobs/` (minified, with source maps, and a `manifest.json` that carries
+each file's SRI digest). `jobsUi()` serves it as it is: there is nothing to
+build. Leave the `dev` option unset: it builds the app from source, which the
+package does not ship.

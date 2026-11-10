@@ -87,15 +87,11 @@ bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
 bun add @kingsleyweb/bun-jobs
 ```
 
-**3.0.0-rc.2, the release candidate**, is on npm's `next` tag, all seven
-packages at one version. Until 3.0.0 reaches `latest`, a plain `bun add
-@kingsleyweb/bun-common` (or `bun-nest`) installs 2.2.0, so ask for the tag:
-
-```bash
-bun add @kingsleyweb/bun-common@next
-bun add @kingsleyweb/bun-nest@next @nestjs/common @nestjs/core rxjs reflect-metadata
-bun add @kingsleyweb/bun-jobs@next
-```
+**3.0.0** is on npm's `latest` tag, all seven packages at one version, so
+the commands above install it. Coming from 2.2.0, read
+[`CHANGELOG.md`](CHANGELOG.md) first: 3.0.0 is a major release, and its
+entry starts with the change that can silently stop an authentication
+middleware from guarding a path.
 
 [`docs/releasing.md`](docs/releasing.md) is how a release is cut: the
 version bump and its `CHANGELOG.md` entry in a PR, then `npm login`,
