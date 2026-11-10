@@ -31,14 +31,19 @@
  * Browser-safe: the writer, the format and the contract core only. Nothing
  * runs at load: a channel's timer and transport start with the channel.
  */
+import type { Policy } from "../contract/model";
 import type { Logger, LoggerLike } from "../logging";
+import type { SseDataFormat, SseEvents } from "./declaration";
 import type { SseMessage } from "./format";
 import type { SseIdleTimeoutServer } from "./response";
-import type { SseWriterOptions, SseWriter } from "./writer";
+import type { SseContractEvent, SseWriter, SseWriterOptions } from "./writer";
+import { ContractError, createSender } from "../contract/guard";
 import { isPromiseLike } from "../contract/model";
+import { nestedOf } from "../contract/schemas";
 import { resolveLogger } from "../logging";
-import { encodeSseEvent } from "./format";
+import { encodeSseEvent, formatSseBlock, sseDataText } from "./format";
 import { sseResponse } from "./response";
+import { compileVariants, NOT_VARIANTS, SseVariantChecker } from "./variants";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,14 +66,42 @@ export interface SseInitialContext {
 }
 
 /**
+ * One event a channel sends: with a contract, one of its events (`event`
+ * selects `data`'s type); without one, any {@link SseMessage}.
+ *
+ * @typeParam C The channel's contract, or `undefined`.
+ */
+type SseChannelEvent<C extends SseEvents | undefined> = [C] extends [SseEvents]
+  ? SseContractEvent<C["events"]>
+  : SseMessage;
+
+/**
  * A channel's initial state: the events each new subscriber gets first, or
  * a function of the subscriber returning them (possibly asynchronously).
+ *
+ * @typeParam C The channel's contract, or `undefined`.
  */
-type SseInitial =
-  | readonly SseMessage[]
+type SseInitial<C extends SseEvents | undefined = undefined> =
+  | readonly SseChannelEvent<C>[]
   | ((
       context: SseInitialContext,
-    ) => readonly SseMessage[] | PromiseLike<readonly SseMessage[]>);
+    ) =>
+      | readonly SseChannelEvent<C>[]
+      | PromiseLike<readonly SseChannelEvent<C>[]>);
+
+/** The event names `sendList()` takes: the contract's, or any. */
+type SseListEvent<C extends SseEvents | undefined> = [C] extends [SseEvents]
+  ? keyof C["events"] & string
+  : string;
+
+/** The data of one `sendList()` item: event `E`'s, with a contract; anything without. */
+type SseListData<C extends SseEvents | undefined, E> = [C] extends [SseEvents]
+  ? Extract<SseContractEvent<C["events"]>, { readonly event: E }> extends {
+      readonly data?: infer D;
+    }
+    ? D
+    : never
+  : unknown;
 
 /** One event as a transport carries it between processes. */
 export interface SseTransportEnvelope {
@@ -93,8 +126,34 @@ export interface SseChannelTransport {
   subscribe: (listener: (envelope: SseTransportEnvelope) => void) => () => void;
 }
 
-/** {@link createSseChannel}'s options. */
-export interface SseChannelOptions {
+/**
+ * {@link createSseChannel}'s options.
+ *
+ * @typeParam C The contract (`sse({ … })`), or `undefined` for an untyped channel.
+ */
+export interface SseChannelOptions<
+  C extends SseEvents | undefined = undefined,
+> {
+  /**
+   * An `sse({ … })` declaration: `send()`, `sendList()` and `initial` are
+   * typed by it, and every event is checked against it **before** it is
+   * encoded, under {@link validation}, so a bad event is refused to the
+   * caller and never broadcast. An event declared with `sseVariants()` is
+   * checked against the union of its variants: a broadcast has no request
+   * for a variant's `when` to ask about, so `when` is not consulted. Its
+   * `data` format decides the encoding, as for a writer (`"json"`
+   * stringifies strings too). The schemas must check synchronously: a
+   * channel sends at once. Events from other processes (a `transport`) were
+   * checked by their sender and are not checked again. Default: none.
+   */
+  readonly contract?: C;
+  /**
+   * What a mismatch against {@link contract} does: `"error"` (the default)
+   * refuses the event, as a writer does with a synchronous schema: `send()`
+   * throws the `ContractError` and nothing is sent or kept; `"warn"` logs it
+   * and sends it; `"off"` checks nothing.
+   */
+  readonly validation?: Policy;
   /**
    * The events each new subscriber gets first, before any live one: a list
    * (encoded once), or a function of the subscriber ({@link SseInitialContext}),
@@ -102,7 +161,7 @@ export interface SseChannelOptions {
    * to {@link onError}, and the live events still go out. Not part of the
    * replay buffer. Default: none.
    */
-  readonly initial?: SseInitial;
+  readonly initial?: SseInitial<C>;
   /**
    * How many of the last events to keep for `Last-Event-ID` resumption.
    * With a count, events sent without an `id` get one
@@ -121,7 +180,8 @@ export interface SseChannelOptions {
    * The options of each subscriber's writer (`maxQueuedBytes`,
    * `highWaterMark`, `open`, `retry`, `compress`, `logger`). The channel
    * owns ids, replay and the heartbeat, so `ids`, `resume` and `heartbeatMs`
-   * are not taken; nor is `contract`: the channel sends encoded bytes.
+   * are not taken; nor is `contract` (the channel's own {@link contract}
+   * checks each event once, and writers get encoded bytes).
    * Default: the writer's defaults.
    */
   readonly writer?: Omit<
@@ -137,10 +197,11 @@ export interface SseChannelOptions {
    */
   readonly idPrefix?: string;
   /**
-   * Called with an error of a function `initial`, a transport's `publish`,
-   * a `listen()` listener, or a writer that refused the channel's bytes
-   * (which is then closed and dropped). Default: logged (with
-   * `writer.logger`, or a console logger).
+   * Called with an error of a function `initial` (an event of it the
+   * contract refuses included: that event is skipped), a transport's
+   * `publish`, a `listen()` listener, or a writer that refused the
+   * channel's bytes (which is then closed and dropped). Default: logged
+   * (with `writer.logger`, or a console logger).
    */
   readonly onError?: (error: unknown) => void;
 }
@@ -238,11 +299,17 @@ interface Sink {
 /** The heartbeat comment, encoded once. Built on first use, so nothing runs at load. */
 let heartbeatBytes: Uint8Array | undefined;
 
+/** One encoder for the contract-formatted events. */
+const encoder = new TextEncoder();
+
 /** A settled `ready`. */
 const READY: Promise<void> = Promise.resolve();
 
 /** The default logger, made on first use. */
 let defaultLogger: Logger | undefined;
+
+/** The contract core's sender guard, over `{ event, data, id }`. */
+type EventGuard = (message: unknown) => unknown;
 
 /**
  * A broadcast channel of event streams. Make one with
@@ -254,10 +321,15 @@ let defaultLogger: Logger | undefined;
  * app.get("/prices", prices.handler());
  * prices.send({ event: "tick", data: { p: 101.5 } });
  * ```
+ *
+ * @typeParam C The contract (`sse({ … })`), or `undefined` for an untyped channel.
  */
-export class SseChannel {
+export class SseChannel<C extends SseEvents | undefined = undefined> {
+  /** The contract the channel checks its events against, as given; `undefined` without one. */
+  readonly contract: C | undefined;
+
   /** The options. */
-  readonly #options: SseChannelOptions;
+  readonly #options: SseChannelOptions<C>;
   /** How many events to keep; `0` keeps none. */
   readonly #replay: number;
   /** The heartbeat interval, ms; `0` sends none. */
@@ -279,7 +351,7 @@ export class SseChannel {
   /** The last assigned id's number. */
   #seq = 0;
   /** The initial state as given. */
-  #initial: SseInitial | undefined;
+  #initial: SseInitial<C> | undefined;
   /** A list initial state, encoded once. */
   #initialEntries: Entry[] | undefined;
   /** Set by `close()`. */
@@ -292,13 +364,20 @@ export class SseChannel {
   readonly #stopTransport: (() => void) | undefined;
   /** The logger, resolved on first use. */
   #logger: Logger | undefined;
+  /** The contract's data format; `undefined` without one. */
+  readonly #format: SseDataFormat | undefined;
+  /** The contract's sender guard for events without variants; `undefined` when it checks nothing. */
+  readonly #guard: EventGuard | undefined;
+  /** The checks of the contract's `sseVariants()` events, over the union; `undefined` without. */
+  readonly #variants: SseVariantChecker | undefined;
 
   /**
    * @param options The channel's options ({@link SseChannelOptions}). A
-   *   negative or fractional `replay`, or a negative `heartbeatMs`, throws a
+   *   negative or fractional `replay`, a negative `heartbeatMs`, or a
+   *   `contract` that is not an `sse({ … })` declaration throws a
    *   `TypeError`.
    */
-  constructor(options: SseChannelOptions = {}) {
+  constructor(options: SseChannelOptions<C> = {}) {
     const replay = options.replay ?? 0;
     const heartbeatMs = options.heartbeatMs ?? 15_000;
     if (!Number.isSafeInteger(replay) || replay < 0) {
@@ -314,6 +393,32 @@ export class SseChannel {
     this.#options = options;
     this.#replay = replay;
     this.#heartbeatMs = heartbeatMs;
+    this.contract = options.contract;
+    const contract = options.contract;
+    if (contract !== undefined) {
+      const nested = nestedOf(contract);
+      if (nested === undefined) {
+        throw new TypeError(
+          "SseChannel: contract must be an sse({ … }) declaration",
+        );
+      }
+      this.#format = contract.data;
+      const policy = options.validation ?? "error";
+      const { checked, variants } = compileVariants(contract.events, nested);
+      if (policy !== "off") {
+        this.#variants = new SseVariantChecker(variants, policy, {
+          valid: undefined,
+          request: undefined,
+          log: () => this.#log(),
+          whenless: true,
+        });
+      }
+      const guard = createSender(checked, "outbound", {
+        policy,
+        logger: this.#log(),
+      });
+      this.#guard = guard.checks ? (guard as unknown as EventGuard) : undefined;
+    }
     this.#origin = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     this.#idPrefix = options.idPrefix ?? `${this.#origin}.`;
     this.setInitial(options.initial);
@@ -492,13 +597,18 @@ export class SseChannel {
    * without an `id` gets one, and the event is kept; with a transport, it is
    * published. Returns how many subscribers it was handed to (`0` once
    * closed). Throws a `TypeError` for a malformed event, as
-   * `formatSseEvent` does, before anything is sent.
+   * `formatSseEvent` does, and with a `contract` under `"error"` the
+   * `ContractError` of an event it refuses, before anything is sent or kept.
    *
-   * @param message The event.
+   * @param message The event (one of the contract's, with one).
    * @param options Its topic.
    */
-  send(message: SseMessage, options: { readonly topic?: string } = {}): number {
+  send(
+    message: SseChannelEvent<C>,
+    options: { readonly topic?: string } = {},
+  ): number {
     if (this.#closed) return 0;
+    this.#check(message);
     const entry = this.#prepare(message, options.topic);
     this.#keep(entry);
     this.#publish(entry);
@@ -509,15 +619,20 @@ export class SseChannel {
    * Sends one event per item (express-sse's `serialize`), in order, as one
    * chunk per subscriber: each item is an event's `data`, under one `event`
    * name and `topic`. Returns how many subscribers they were queued for.
+   * With a `contract`, each item is the declared event's data, and every
+   * item is checked before any is sent: one refused throws its
+   * `ContractError` and none goes out.
    *
    * @param items   The events' data.
    * @param options Their `event` name and topic.
+   * @typeParam E The event name (one of the contract's, with one).
    */
-  sendList(
-    items: readonly unknown[],
-    options: { readonly event?: string; readonly topic?: string } = {},
+  sendList<E extends SseListEvent<C> = SseListEvent<C>>(
+    items: readonly SseListData<C, E>[],
+    options: { readonly event?: E; readonly topic?: string } = {},
   ): number {
     if (this.#closed || items.length === 0) return 0;
+    for (const data of items) this.#check({ event: options.event, data });
     // Every item is encoded before any is kept or sent: a malformed one
     // throws with nothing sent.
     const entries = items.map((data, index) =>
@@ -532,16 +647,21 @@ export class SseChannel {
 
   /**
    * Replaces the initial state new subscribers get (express-sse's
-   * `updateInit`); subscribers already connected are not sent it.
+   * `updateInit`); subscribers already connected are not sent it. With a
+   * `contract`, a list is checked here, and an event it refuses throws (the
+   * initial state is then unchanged); a function's events are checked as
+   * it returns them, a refused one going to `onError` and being skipped.
    *
    * @param initial The events, or a function of the subscriber; `undefined` for none.
    */
-  setInitial(initial: SseInitial | undefined): void {
+  setInitial(initial: SseInitial<C> | undefined): void {
+    let entries: Entry[] | undefined;
+    if (typeof initial !== "function" && initial !== undefined) {
+      for (const message of initial) this.#check(message);
+      entries = initial.map((message) => this.#entry(message, undefined));
+    }
     this.#initial = initial;
-    this.#initialEntries =
-      typeof initial === "function" || initial === undefined
-        ? undefined
-        : initial.map((message) => this.#entry(message, undefined));
+    this.#initialEntries = entries;
   }
 
   /** Drops the initial state (express-sse's `dropInit`). */
@@ -591,9 +711,57 @@ export class SseChannel {
     }
   }
 
-  /** `message` encoded, as one entry. */
+  /**
+   * Checks an event against the contract: returns to send it, throws to
+   * refuse it (its `ContractError` under `"error"`; a `TypeError` for a
+   * schema that answered asynchronously, which a channel cannot wait for).
+   * Without a contract, or under `"off"`, checks nothing.
+   */
+  #check(message: SseMessage): void {
+    // The variant checker answers `undefined` for an event it passes, so
+    // its absence is tested, not its answer.
+    let verdict: unknown =
+      this.#variants === undefined
+        ? NOT_VARIANTS
+        : this.#variants.check(message);
+    if (verdict === NOT_VARIANTS) {
+      const guard = this.#guard;
+      if (guard === undefined) return;
+      verdict = guard({
+        event: message.event ?? "message",
+        data: message.data,
+        ...(message.id === undefined ? {} : { id: message.id }),
+      });
+    }
+    if (verdict instanceof ContractError) throw verdict;
+    if (isPromiseLike(verdict)) {
+      // Settled but never awaited: a rejection must not surface unhandled.
+      verdict.then(undefined, () => undefined);
+      throw new TypeError(
+        "SseChannel: the contract checked an event asynchronously; a channel sends at once, so its schemas must check synchronously",
+      );
+    }
+  }
+
+  /** `message` encoded (as the contract's data format says), as one entry. */
   #entry(message: SseMessage, topic: string | undefined): Entry {
-    return { message, bytes: encodeSseEvent(message), topic };
+    if (this.#format === undefined) {
+      return { message, bytes: encodeSseEvent(message), topic };
+    }
+    const { data } = message;
+    // `"json"` stringifies every value, strings included; `undefined` for
+    // one JSON cannot represent.
+    const text: string | undefined =
+      data === undefined
+        ? undefined
+        : this.#format === "json"
+          ? JSON.stringify(data)
+          : sseDataText(data);
+    return {
+      message,
+      bytes: encoder.encode(formatSseBlock(message, text)),
+      topic,
+    };
   }
 
   /**
@@ -765,12 +933,16 @@ export class SseChannel {
       const held = sink.held ?? [];
       sink.held = undefined;
       if (!this.#sinks.has(sink)) return;
-      let entries: Entry[];
-      try {
-        entries = messages.map((message) => this.#entry(message, undefined));
-      } catch (error) {
-        this.#error(error, "initial state");
-        entries = [];
+      // Each event on its own: one the contract refuses (or a malformed
+      // one) is reported and skipped, and the rest still go out.
+      const entries: Entry[] = [];
+      for (const message of messages) {
+        try {
+          this.#check(message);
+          entries.push(this.#entry(message, undefined));
+        } catch (error) {
+          this.#error(error, "initial state");
+        }
       }
       this.#push(sink, [...entries, ...held]);
     };
@@ -877,8 +1049,15 @@ function concat(parts: readonly Uint8Array[]): Uint8Array {
  * prices.send({ event: "tick", data: { p: 101.5 } }); // the number of subscribers reached
  * ```
  *
+ * With a `contract` (`sse({ … })`), `send()` is typed by it and each event
+ * is checked before it is broadcast: a refused one throws, and no
+ * subscriber gets it.
+ *
  * @param options The channel's options ({@link SseChannelOptions}).
+ * @typeParam C The contract, or `undefined`.
  */
-export function createSseChannel(options: SseChannelOptions = {}): SseChannel {
-  return new SseChannel(options);
+export function createSseChannel<C extends SseEvents | undefined = undefined>(
+  options: SseChannelOptions<C> = {},
+): SseChannel<C> {
+  return new SseChannel<C>(options);
 }

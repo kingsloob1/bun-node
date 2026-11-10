@@ -23,6 +23,7 @@
  */
 import type {
   SseChannel,
+  SseEvents,
   SseMessage,
   SseSubscribeOptions,
 } from "@kingsleyweb/bun-common";
@@ -64,15 +65,18 @@ function nestWritesComments(): boolean {
  * A channel event as Nest's `MessageEvent`: `event` as `type`, the `id` as a
  * string, and the data as text the way bun-common writes it (a string as it
  * is, anything else `JSON.stringify`ed, so every Nest release writes it the
- * same; no data is `""`). A comment-only block is a comment event where Nest
+ * same; under a contract whose `data` is `"json"`, strings stringified too;
+ * no data is `""`). A comment-only block is a comment event where Nest
  * writes those, and `undefined` (not sent) where it does not.
  *
  * @param message  The channel's event.
  * @param comments Whether this Nest writes `{ comment }` events.
+ * @param json     Whether every value is `JSON.stringify`ed, strings included.
  */
 function toMessageEvent(
   message: SseMessage,
   comments: boolean,
+  json: boolean,
 ): MessageEvent | undefined {
   const { comment, data, event, id, retry } = message;
   if (data === undefined && event === undefined && comment !== undefined) {
@@ -84,7 +88,7 @@ function toMessageEvent(
   const text: string | undefined =
     data === undefined
       ? undefined
-      : typeof data === "string"
+      : typeof data === "string" && !json
         ? data
         : JSON.stringify(data);
   return {
@@ -101,11 +105,14 @@ function toMessageEvent(
  * leaves, `signal` aborts or the channel closes. See the module's
  * documentation.
  *
- * @param channel The channel (`createSseChannel()` from bun-common).
+ * @param channel The channel (`createSseChannel()` from bun-common); with a
+ *   contract, its events reach Nest encoded as the contract's `data` format
+ *   says, as they reach a byte subscriber.
  * @param options The subscriber's topics, `Last-Event-ID`, `signal` and heartbeat.
+ * @typeParam C The channel's contract, or `undefined`.
  */
-export function channelObservable(
-  channel: SseChannel,
+export function channelObservable<C extends SseEvents | undefined>(
+  channel: SseChannel<C>,
   options: ChannelObservableOptions = {},
 ): Observable<MessageEvent> {
   const { signal, heartbeatMs = 15_000, topics, lastEventId } = options;
@@ -120,9 +127,10 @@ export function channelObservable(
       return undefined;
     }
     const comments = nestWritesComments();
+    const json = channel.contract?.data === "json";
     const subscription = channel.listen(
       (message) => {
-        const nest = toMessageEvent(message, comments);
+        const nest = toMessageEvent(message, comments, json);
         if (nest !== undefined) subscriber.next(nest);
       },
       {

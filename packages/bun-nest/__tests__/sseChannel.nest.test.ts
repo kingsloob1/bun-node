@@ -1,4 +1,4 @@
-import type { SseItem } from "@kingsleyweb/bun-common/sse";
+import type { SseChannelOptions, SseItem } from "@kingsleyweb/bun-common/sse";
 /**
  * `channelObservable()` (bun-native-routes plan §16.14.4, PR-sse3's delta):
  * a bun-common broadcast channel behind NestJS's `@Sse()`, on bun-nest's
@@ -17,7 +17,7 @@ import type { SseItem } from "@kingsleyweb/bun-common/sse";
  */
 import type { INestApplication, MessageEvent } from "@nestjs/common";
 import type { BunRequest, BunResponse } from "@kingsleyweb/bun-common";
-import { createSseChannel, readSse } from "@kingsleyweb/bun-common/sse";
+import { createSseChannel, readSse, sse } from "@kingsleyweb/bun-common/sse";
 import * as common from "@nestjs/common";
 import {
   Controller,
@@ -32,6 +32,7 @@ import { NestFactory } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { Observable } from "rxjs";
+import { z } from "zod";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { channelObservable } from "../lib/sseChannel";
 import "reflect-metadata";
@@ -51,6 +52,12 @@ const SseSignal: SseSignalFactory = NestSseSignal ?? (() => () => undefined);
 
 /** The channel every route serves; recreated per test. */
 let prices = createSseChannel({ heartbeatMs: 0 });
+
+/** A channel with a contract whose data format is `"json"` (the default). */
+const Notes = sse({ message: z.string() });
+
+/** The typed channel; recreated per test. */
+let notes = createSseChannel({ contract: Notes, heartbeatMs: 0 });
 
 /** What the routes report, per test. */
 const seen = {
@@ -76,6 +83,11 @@ class PricesController {
   @Sse("topic")
   topic(): Observable<MessageEvent> {
     return channelObservable(prices, { topics: ["vip"], heartbeatMs: 0 });
+  }
+
+  @Sse("typed")
+  typed(): Observable<MessageEvent> {
+    return channelObservable(notes, { heartbeatMs: 0 });
   }
 
   @Sse("beat")
@@ -234,7 +246,7 @@ afterAll(async () => {
 });
 
 /** A fresh channel for one test. */
-function fresh(options: Parameters<typeof createSseChannel>[0]): void {
+function fresh(options: SseChannelOptions): void {
   prices = createSseChannel({ heartbeatMs: 0, ...options });
 }
 
@@ -372,6 +384,25 @@ describe(`channelObservable() under @Sse() (Nest ${hasSseSignal ? "with" : "with
       await stream.leave();
       await Bun.sleep(50);
       expect(prices.size).toBe(1);
+    });
+  }
+
+  for (const client of CLIENTS) {
+    it(`${client}: a channel with a "json" contract reaches Nest's clients as it reaches byte subscribers (a string quoted); the untyped channel does not quote it (the control)`, async () => {
+      notes.close();
+      notes = createSseChannel({ contract: Notes, heartbeatMs: 0 });
+      fresh({});
+      const get = gets.get(client)!;
+      const typed = reader((await step("typed", get("/prices/typed"))).body!);
+      const loose = reader((await step("loose", get("/prices/live"))).body!);
+      await until("both subscribed", () => notes.size + prices.size === 2);
+      notes.send({ data: "hi" });
+      prices.send({ data: "hi" });
+      expect((await typed.events(1)).map(pair)).toEqual([["message", '"hi"']]);
+      expect((await loose.events(1)).map(pair)).toEqual([["message", "hi"]]);
+      await typed.leave();
+      await loose.leave();
+      await until("unsubscribed", () => notes.size + prices.size === 0);
     });
   }
 
