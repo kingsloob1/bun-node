@@ -21,7 +21,7 @@ with one command.
 
 **Complete.** Every PR of the plan, PR-0 to PR-11, and its three additions
 have merged (the table below); nothing is open. What stays live is the version
-matrix (§9.3), which outlives the plan: develop's lock is Nest 12.2.0
+matrix (§9.3), which outlives the plan: develop's lock is Nest 12.4.2
 (Express 5.3.0), the supported range `^11.1.20 || ^12.0.0`, and
 `scripts/nest-matrix.ts` runs the 11.2.7 column on every PR touching bun-nest
 or bun-common, the floors 11.1.20 and 12.0.0 once per merge window, and a new

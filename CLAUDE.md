@@ -560,8 +560,8 @@ as columns of `scripts/nest-matrix.ts` (§9.3):
 
 | Column | When |
 |---|---|
-| the lock (12.2.0) | every gate: it is develop's lock, the repo itself |
-| 12-latest (12.4.1) | every PR touching bun-nest or bun-common: what `^12.0.0` installs today |
+| the lock (12.4.2, 12-latest) | every gate: it is develop's lock, the repo itself, and what `^12.0.0` installs today |
+| 12.2.0 | every PR touching bun-nest or bun-common: the last release before 12.3.0's platform-express changes (a returned `Error`, `http-errors`, a stream failing mid-body) and 12.4.0's streaming path |
 | 11.2.7 | every PR touching bun-nest or bun-common |
 | 11.1.20 and 12.0.0 (the floors) | once per merge window |
 | 11-latest (11.2.9) | every PR touching bun-nest or bun-common: what `^11.1.20` installs today (11.2.8 backported 12.x behaviours, so a read of what the core does matters here) |

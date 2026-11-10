@@ -28,7 +28,7 @@ Underneath, routing is
   `@nestjs/core` (`^11.1.20 || ^12.0.0`) and `rxjs` (`^7.1.0`) are required;
   `@nestjs/websockets` (the same range) is needed only for gateways. One
   build serves both majors, and both are tested: the repo runs on Nest 12
-  (12.2.0), and its suites, examples and consumer type checks also run on
+  (12.4.2), and its suites, examples and consumer type checks also run on
   the latest 11 and 12 and on the floors, 11.1.20 and 12.0.0 (see
   [Compatibility](#compatibility-nest-11-and-12)). The floor is 11.1.20 because
   older 11 releases miss what this package is built on: `@Ack()` (`Ack`,
@@ -284,13 +284,13 @@ type check.
 
 | Nest | Express | Tested |
 |---|---|---|
-| 12.2.0 (the repo's lock) | 5.3.0 | every gate |
-| 12.4.1 (12-latest) | 5.3.0 | every PR touching bun-nest or bun-common |
+| 12.4.2 (the repo's lock, 12-latest) | 5.3.0 | every gate |
+| 12.2.0 | 5.3.0 | every PR touching bun-nest or bun-common |
 | 11.2.7 | 5.2.1 | every PR touching bun-nest or bun-common |
 | 11.2.9 (11-latest) | 5.2.1 | every PR touching bun-nest or bun-common |
 | 11.1.20 (the floor) | 5.2.1 | once per merge window |
 | 12.0.0 (12's floor) | 5.2.1 | once per merge window |
-| 12.1.3 (the lock before 12.2.0), 12.3.0, 12.3.3, 12.4.0 | 5.2.1 (12.1.3), 5.3.0 | an extra column |
+| 12.1.3, 12.3.0, 12.3.3, 12.4.0, 12.4.1 | 5.2.1 (12.1.3), 5.3.0 | an extra column |
 
 11.2.8 backported behaviours of 12.2 and 12.3 to Nest 11: the cells of the 11.2
 column below say which.
@@ -2447,7 +2447,7 @@ Compared with Nest 12.2.0's own pipe (`@Body({ schema })` and the global
 (api-docs-generation phase (d), `__tests__/swagger.nest.test.ts`): the same
 module booted on this adapter and on `@nestjs/platform-express` scans a
 **byte-identical** document and answers every probe alike, on the checkout's
-Nest 12.2.0 with `@nestjs/swagger` 12.0.4 and in the nest-matrix columns
+Nest 12.4.2 with `@nestjs/swagger` 12.0.4 and in the nest-matrix columns
 11.2.7 (swagger 11.4.6) and 12.0.0. Nothing in this package imports it, so it
 stays your dependency, matched to your Nest major:
 
