@@ -163,7 +163,7 @@ function andThen<T, R>(
 export function decideSseVariant<I>(
   variants: SseVariants,
   named: string | undefined,
-  scope: SseWhenScope,
+  scope: Pick<SseWhenScope, "applies">,
   runner: SseVariantRunner<I>,
 ): MaybePromise<I[]> {
   const table = variants.table;
@@ -334,7 +334,16 @@ interface SseVariantContext {
   readonly request: unknown;
   /** The writer's logger. */
   readonly log: () => Logger;
+  /**
+   * Every variant applies, whatever its `when`: a broadcast channel's
+   * events go to many streams and have no request to ask about, so its
+   * check is the union of the variants. Default `false`.
+   */
+  readonly whenless?: boolean;
 }
+
+/** The scope of a check with no request: every variant applies. */
+const EVERY_VARIANT: Pick<SseWhenScope, "applies"> = { applies: () => true };
 
 /**
  * A writer's checks of its contract's `sseVariants()` events, under a
@@ -418,10 +427,12 @@ export class SseVariantChecker {
       }),
       tag: (issues, variant) => issues.map((i) => ({ ...i, variant })),
     };
-    const scope = (this.#scope ??= new SseWhenScope(
-      this.#context.valid,
-      this.#context.request,
-    ));
+    const scope = this.#context.whenless
+      ? EVERY_VARIANT
+      : (this.#scope ??= new SseWhenScope(
+          this.#context.valid,
+          this.#context.request,
+        ));
     let decided: MaybePromise<ValidationIssue[]>;
     try {
       decided = decideSseVariant(

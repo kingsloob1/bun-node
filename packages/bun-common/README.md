@@ -1994,6 +1994,31 @@ prices.close(); // ends every stream; later requests get 204
   which is how a client leaving is noticed, served and through `fetch()`
   alike.
 
+**A typed channel.** Give it the route's `sse({ … })` declaration as
+`contract`, and `send()`, `sendList()` and `initial` are typed by it, as a
+typed writer's `send()` is. Every event is checked **before** it is encoded,
+so a bad one is never broadcast: under `validation: "error"` (the default)
+`send()` throws its `ContractError`, as a writer's `send()` does for a
+synchronous schema, and nothing is sent, kept for replay or published;
+`"warn"` logs it and sends it; `"off"` checks nothing. `sendList()` checks
+every item first and sends none if one fails. A list `initial` is checked by
+`setInitial()` (which throws), a function's events as it returns them (a
+refused one goes to `onError` and is skipped). An event declared with
+`sseVariants()` is checked against the union of its variants: a broadcast
+has no request for a variant's `when` to ask about. The contract's `data`
+format decides the encoding (`"json"` stringifies strings too), for writer
+subscribers and for bun-nest's `channelObservable()` alike. A channel sends
+at once, so its schemas must check synchronously: one that answers with a
+promise makes `send()` throw a `TypeError`. Events from other processes were
+checked by their sender and are not checked again.
+
+```ts
+const Prices = sse({ tick: z.object({ p: z.number() }), gap: null });
+const prices = createSseChannel({ contract: Prices, replay: 100 });
+prices.send({ event: "tick", data: { p: 101.5 } });
+prices.send({ event: "tick", data: { p: "101.5" } }); // a type error, and a ContractError if forced
+```
+
 **Across processes.** A channel is process-local. Give it a `transport` and
 each local `send()` is delivered at once and published; events from other
 processes are delivered, and kept for replay with their sender's id, so a

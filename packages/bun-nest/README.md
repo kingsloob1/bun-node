@@ -790,6 +790,10 @@ aborts, and its stream ends when the channel closes. Three things to know:
   turns it off) on a Nest that writes comment events (detected by
   `@SseSignal()`, 11.2.0 and later). On 11.1 the adapter's idle-timeout
   exemption keeps a quiet stream open.
+- **A typed channel** (`createSseChannel({ contract })`) checks each event
+  before any subscriber gets it, Nest's included, and its `data` format
+  holds on this path too: under `"json"` a string reaches the client
+  quoted, as it does through `res.sse()`.
 - **One encode per event is lost**, since Nest formats each event per
   subscriber. To keep it, subscribe the response itself:
   `@Get() stream(@Req() req, @Res() res) { prices.subscribe(req, res); }`

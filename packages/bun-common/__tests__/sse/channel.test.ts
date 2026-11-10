@@ -14,6 +14,7 @@
 import type { SseItem } from "../../lib/sse/parser";
 import type { SseMessage } from "../../lib/sse/format";
 import type {
+  SseChannelOptions,
   SseChannelTransport,
   SseTransportEnvelope,
   SseChannel,
@@ -43,9 +44,7 @@ afterEach(async () => {
 });
 
 /** A channel closed after the test. */
-function channel(
-  options?: ConstructorParameters<typeof SseChannel>[0],
-): SseChannel {
+function channel(options?: SseChannelOptions): SseChannel {
   const made = createSseChannel(options);
   open.push(made);
   return made;
