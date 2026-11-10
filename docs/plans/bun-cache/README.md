@@ -33,8 +33,10 @@ there can be re-run with one command.
 
 **Complete (2026-11-10)**, checked against `develop` at `ae01cfe9`: every PR
 of §20 has merged, #544 to #623, with the driver follow-ups #674 and #676 and
-[`encryption.md`](encryption.md)'s four PRs; PR-C9 (`upstashDriver` over REST)
-is deferred by the user's decision of 2026-10-28 (below). The paragraphs below
+[`encryption.md`](encryption.md)'s four PRs. **PR-C9 (`upstashDriver` over
+REST) is dropped**: deferred by the user's decision of 2026-10-28 (below), and
+dropped on 2026-11-10 ("bun cache is fully complete"); Upstash is
+`redisDriver` with its `rediss://` URL. Nothing is left. The paragraphs below
 are the record, PR by PR.
 
 **Scheduled 2026-10-27** (the user's decision; this plan was held until then),
