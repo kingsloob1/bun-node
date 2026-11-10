@@ -49,7 +49,7 @@ as of that commit.
 | [`api-docs-generation/`](api-docs-generation/README.md) | plan only | bun-validate's group 4 (AD (b0), V12, AD (e)) builds on it | the plan, and bun-validate §4.11–§4.12 |
 | [`typed-client/`](typed-client/README.md) (with [`nest-typed-routes.md`](typed-client/nest-typed-routes.md)) | plan only | **held**; reads bun-validate's runtime metadata (§4.11) | the plan |
 | [`bun-views/`](bun-views/README.md) | PR-C (#320) and PR-C2 (#328) merged; PR-0 and PR-1 to PR-8 not started | **held** | its Status |
-| [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | plan only; its validation pipe is replaced by bun-validate's V6 (merged). Refreshed 2026-11-08 at `b1a9f80b`, after this table | **held** until the user approves the refresh | the plan's "Refreshed 2026-11-08" note and §14 |
+| [`nest-jobs-decorators/`](nest-jobs-decorators/README.md) | **complete** (PR-n1 to PR-n10 merged, #721 to #747, with follow-ups #745, #746, #748; PR-n1 to PR-n9 shipped in 3.0.0-rc.2) | none; the playground's browser review is owed | its Status |
 | [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
 
 **Held** means the user has not scheduled it, not that it is blocked. The
@@ -286,9 +286,9 @@ blindly.
     hydration in Chrome, and props typing per framework (was
     `react-views/`).
 - **[`nest-jobs-decorators/`](nest-jobs-decorators/README.md)** — bun-jobs in
-  NestJS: modules, decorators and the Nest pipeline for jobs. Refreshed
-  2026-11-08 against `b1a9f80b` (validation is bun-validate V6's, no jobs UI
-  module, Nest 11 and 12; not yet approved).
+  NestJS: modules, decorators and the Nest pipeline for jobs. **Complete**
+  (2026-11-10): every PR merged, PR-n1 to PR-n9 in 3.0.0-rc.2, with examples in
+  `examples/bun-nest/15-jobs/`.
   - Evidence: [`nest-jobs-decorators/evidence/`](nest-jobs-decorators/evidence/README.md) —
     bun-jobs in NestJS through decorators, **measured** on Bun 1.4.3 and Nest
     11.1.27 against a throwaway prototype: the Nest pipeline (guards,
