@@ -52,6 +52,7 @@ Underneath, routing is
     - [Mounting a bun-common router](#mounting-a-bun-common-router)
   - [Nest middleware](#nest-middleware)
   - [Responses: `@Redirect`, `StreamableFile`, `@Render`](#responses-redirect-streamablefile-render)
+  - [Server-sent events: `@Sse()`](#server-sent-events-sse)
   - [Versioning](#versioning)
   - [CORS](#cors)
   - [Security headers and CSRF protection](#security-headers-and-csrf-protection)
@@ -305,6 +306,9 @@ What differs by release, and what the adapter reads to tell:
 |---|---|---|---|---|---|
 | `QUERY`, `@QueryMethod()` | no | yes | yes | yes | `RequestMethod.QUERY` |
 | `@SseSignal()` | no | yes | yes | yes | — |
+| `@Sse()` drops a client that stops reading (`maxPendingDataLength`) | no | from 11.2.8 | no | yes | — |
+| `@Sse()`'s `event: error` data, after the first event | the error's message | the error's message, generic from 11.2.8 | the error's message | generic | — |
+| `@Sse()` data that is a number or a boolean | breaks the stream (a falsy one dropped before 11.1.29) | breaks the stream | breaks the stream | stringified | — |
 | 404 outside the prefix | Nest's JSON | Nest's JSON | HTML | HTML | `mapException` (1) |
 | Errors outside a route mapped by | the core | the core | the adapter | the adapter | — |
 | A falsy status | skipped | skipped | applied | applied | `mapException` (1) |
@@ -645,6 +649,110 @@ A plain HTML file is not a view without an engine for `.html`: send it with
 
 See
 [`views.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/views.ts).
+
+### Server-sent events: `@Sse()`
+
+NestJS's own `@Sse()` is the API: return an `Observable<MessageEvent>` and
+it streams, served and through [`adapter.fetch()`](#testing-with-fetch),
+with Nest's headers (`text/event-stream`, `no-cache, no-store, …,
+no-transform`, `X-Accel-Buffering: no`). bun-nest adds no decorator.
+
+```ts
+import { Controller, Headers, MessageEvent, Sse } from "@nestjs/common";
+import { interval, map, Observable } from "rxjs";
+
+@Controller("events")
+export class EventsController {
+  @Sse("ticks")
+  ticks(@Headers("last-event-id") lastEventId?: string): Observable<MessageEvent> {
+    return interval(1000).pipe(map((n) => ({ type: "tick", data: { n, lastEventId } })));
+  }
+}
+```
+
+What holds on `BunHttpAdapter`, and where it differs by Nest release:
+
+- **Errors.** An observable that errors before its first event, or a handler
+  that throws, is answered by the exception filters (a `500` with Nest's
+  JSON, not a hang). After the first event, Nest sends an `event: error`
+  and ends the stream. Its data is an HTTP exception's message, otherwise
+  `Internal server error`, on Nest 11.2.8 and later and 12.2.0 and later;
+  earlier releases send any error's own message, so keep internal details
+  out of the messages of errors an `@Sse()` observable can raise there.
+- **The idle timeout.** Nest calls `req.socket.setTimeout(0)`, which the
+  adapter turns into Bun's per-request exemption (`server.timeout(req, 0)`),
+  so a quiet stream outlives `idleTimeout` instead of being cut at about
+  12 s.
+- **The client leaving.** Nest unsubscribes (it listens for `close` on
+  `req.socket`), and on Nest 11.2 and later
+  [`@SseSignal()`](#upgrading-from-nest-11) aborts, served and through
+  `adapter.fetch()`.
+- **`app.close()`** waits for an open stream at most the adapter's
+  `closeDrainTimeout` (10 s by default), then cuts it, and Nest unsubscribes;
+  see [`listen()` and `close()`](#listen-and-close). Express waits for it
+  indefinitely.
+- **Nest's encoder.** Before Nest 11.1.29, an event whose `data` is falsy
+  (`""`, `0`) is sent without its data, so a client never sees it; from
+  11.1.29 and 11.2.0 `""` is sent. Send a string or an object as `data`:
+  Nest stringifies anything else from 12.2.0, but before it a number or a
+  boolean makes its encoder throw, and nothing more reaches the client
+  (releases before 11.1.29 drop a falsy one instead). Nest numbers every event that has no `id` (`id: 1`, `id: 2`, …),
+  per connection, so a `Last-Event-ID` it sends back
+  is that number; read it with `@Headers("last-event-id")`. From 11.1.29 and
+  11.2.0 a `{ comment: "" }` event is sent as a comment line, which keeps a
+  proxy from timing the stream out.
+- **A client that stops reading.** On Nest 11.2.8 and later and 12.2.0 and
+  later, a client whose stream is backed up is dropped, as a disconnect,
+  once more than `@Sse()`'s `maxPendingDataLength` characters of event data
+  wait for it (4M by default; `@Sse("logs", { maxPendingDataLength })`, `0`
+  lifts it). The adapter's `res.write()` answers `false` past 64 KiB, which
+  is what backs Nest's stream up. On earlier releases there is no bound:
+  the events wait in memory as long as the client is connected, so one
+  stalled client can grow the server. Use `res.sse()` below where that
+  matters.
+- **Compression.** Nest's `no-transform` makes
+  [`compression()`](#response-compression) leave `@Sse()` streams alone.
+- **Cost.** Nest formats each event once per subscriber. For one event sent
+  to many clients, encode it once with bun-common's `encodeSseEvent` and
+  send the bytes through `res.sse()` writers.
+
+**Imperative streams: `@Res() res.sse()`.** `@Res()` is a `BunResponse`, so
+bun-common's [`res.sse()`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#server-sent-events-ressse)
+works in a Nest handler. Its writer sets the headers (`no-cache,
+no-transform`), opens with a `: ok` comment, exempts the request from the
+idle timeout, sends a heartbeat, takes an `sse({ … })` contract, and has an
+awaitable `send()` that honours backpressure and disconnects a client past
+`maxQueuedBytes` (8 MiB) on every Nest release. `onClose()` runs when the
+client leaves, and `send()` resolves `false` from then on.
+
+```ts
+import type { BunResponse } from "@kingsleyweb/bun-common";
+import { Controller, Get, Res } from "@nestjs/common";
+
+@Controller("feed")
+export class FeedController {
+  constructor(private readonly feed: Feed) {}
+
+  @Get()
+  stream(@Res() res: BunResponse): void {
+    const stream = res.sse({ heartbeatMs: 15_000 });
+    const off = this.feed.subscribe(async (item) => {
+      if (!(await stream.send({ event: "item", id: item.seq, data: item }))) off();
+    });
+    stream.onClose(off);
+    // stream.lastEventId: the request's Last-Event-ID, to resume from.
+  }
+}
+```
+
+As with any `@Res()` handler, Nest's interceptors do not see the response,
+and once the stream is open an exception filter can no longer answer.
+
+See
+[`sse.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sse.nest.test.ts)
+and
+[`sseEdges.nest.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/__tests__/sseEdges.nest.test.ts),
+which check each point above.
 
 ### Versioning
 
