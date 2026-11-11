@@ -30,10 +30,10 @@
     "format:check": "bun fmt --check"
   },
   "peerDependencies": {
-    "@kingsleyweb/bun-jobs": ">=3.0.0 <3.1.0"
+    "@kingsleyweb/bun-jobs": ">=3.1.0 <3.2.0"
   },
   "devDependencies": {
-    "@kingsleyweb/bun-jobs": "~3.0.0",
+    "@kingsleyweb/bun-jobs": "~3.1.0",
     "@types/bun": "^1.4.2",
     "typescript": "^6.0.3"
   },

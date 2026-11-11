@@ -27,7 +27,7 @@ The summon facet only: bun-jobs has no execute facet yet.
 2. **Remove `private`** from `package.json`, and **`overrides`**:
    `overrides` points the install at the bun-node repo's own packages, and
    works only inside that repo. Without it, `@kingsleyweb/bun-jobs` comes
-   from npm (3.0.1, on the `latest` tag).
+   from npm (3.1.0, on the `latest` tag).
    To build against an unreleased checkout of bun-node instead, pack the
    packages from it (with `@kingsleyweb/bun-contract`, which bun-common
    depends on) and point `overrides` at the tarballs:
@@ -42,9 +42,9 @@ The summon facet only: bun-jobs has no execute facet yet.
    ```json
    {
      "overrides": {
-       "@kingsleyweb/bun-jobs": "file:/path/to/tarballs/kingsleyweb-bun-jobs-3.0.0.tgz",
-       "@kingsleyweb/bun-common": "file:/path/to/tarballs/kingsleyweb-bun-common-3.0.0.tgz",
-       "@kingsleyweb/bun-contract": "file:/path/to/tarballs/kingsleyweb-bun-contract-3.0.0.tgz"
+       "@kingsleyweb/bun-jobs": "file:/path/to/tarballs/kingsleyweb-bun-jobs-3.1.0.tgz",
+       "@kingsleyweb/bun-common": "file:/path/to/tarballs/kingsleyweb-bun-common-3.1.0.tgz",
+       "@kingsleyweb/bun-contract": "file:/path/to/tarballs/kingsleyweb-bun-contract-3.1.0.tgz"
      }
    }
    ```

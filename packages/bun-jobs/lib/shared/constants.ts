@@ -17,7 +17,7 @@ export const DEFAULT_KEY_PREFIX = "bun-jobs";
  * would have to resolve from wherever the file landed in their tree. A test
  * pins it to the manifest, so it cannot quietly drift.
  */
-export const JOBS_VERSION = "3.0.0";
+export const JOBS_VERSION = "3.1.0";
 
 /* --- runner ------------------------------------------------------- */
 
