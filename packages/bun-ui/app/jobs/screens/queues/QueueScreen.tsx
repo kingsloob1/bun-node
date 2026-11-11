@@ -304,6 +304,7 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
           canRemove={canMutate("repeatables.remove")}
           canDisable={canMutate("repeatables.disable")}
           canEnable={canMutate("repeatables.enable")}
+          canEdit={canMutate("repeatables.update")}
         />
       ),
     });

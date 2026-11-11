@@ -4,12 +4,21 @@ import type { Logger } from "../../shared/logger";
 import type { AnyRouteDef } from "./define";
 import { toJsonSchema } from "@kingsleyweb/bun-common";
 import { findRepeat } from "../../queue/repeatControl";
-import { ApiError } from "../errors";
+import { ApiError, mapCallSiteError } from "../errors";
 import { s } from "../schema/builder";
-import { DefinitionListSchema, RepeatableSchema } from "../schemas/jobs";
+import {
+  DefinitionListSchema,
+  RepeatableSchema,
+  UpdateRepeatableBodySchema,
+} from "../schemas/jobs";
 import { toRepeatableDto } from "../serialize";
 import { defineRoute } from "./define";
-import { QueueParams, queueTarget, RepeatableParams } from "./support";
+import {
+  apiDataCheck,
+  QueueParams,
+  queueTarget,
+  RepeatableParams,
+} from "./support";
 
 /**
  * The vendors `/definitions` has already reported as unconvertible to JSON
@@ -111,6 +120,67 @@ export function repeatableRoutes(): AnyRouteDef[] {
           );
         }
         return { status: 204 };
+      },
+    }),
+    defineRoute({
+      method: "PATCH",
+      path: "/queues/:queue/repeatables/:key",
+      operationId: "updateRepeatable",
+      action: "repeatables.update",
+      mode: "jobs",
+      summary: "Replace a repeat series' payload",
+      description:
+        "Off by default: enabled only when the `actions` allow-list names `repeatables.update`. Every occurrence built from now on carries the new `data`, and so does the one already scheduled while it is still waiting or delayed (on a driver with `updateJob`); an occurrence a worker has claimed runs with the data it was claimed with. The schedule, name and options are unchanged, and a disabled series stays disabled. `data` is checked against the series' name's `schema` whatever the queue's `dataValidation` policy says, and a failure is 400 `VALIDATION` with the issues at their body paths (`data.to`). Answers with the series, its `data` included.",
+      tags: ["Jobs"],
+      params: RepeatableParams,
+      body: UpdateRepeatableBodySchema,
+      responses: { 200: RepeatableSchema },
+      errors: [
+        "INVALID_NAME",
+        "QUEUE_NOT_FOUND",
+        "REPEATABLE_NOT_FOUND",
+        "SERIALIZATION",
+      ],
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ req, params, body, services }) => {
+        const queue = await services.queues.get(params.queue);
+        const notFound = () =>
+          new ApiError(
+            "REPEATABLE_NOT_FOUND",
+            404,
+            `Repeat series "${params.key}" was not found`,
+            { context: { queue: queue.name, key: params.key } },
+          );
+        const series = await findRepeat(queue.driver, queue.ref, params.key);
+        if (!series) {
+          throw notFound();
+        }
+        let updated: Awaited<ReturnType<typeof queue.updateRepeatable>>;
+        try {
+          // HTTP data never skips the check: the series' name's schema
+          // applies whatever the queue's `dataValidation` policy says.
+          await apiDataCheck(
+            queue,
+            series.name,
+            body.data,
+            services.config.logger,
+          );
+          updated = await queue.updateRepeatable(params.key, {
+            data: body.data,
+          });
+        } catch (error) {
+          throw mapCallSiteError(error, "jobInput");
+        }
+        if (!updated) {
+          throw notFound();
+        }
+        return {
+          body: toRepeatableDto(
+            updated,
+            { queue: queue.name, include: new Set(["data"]), req },
+            services.config.serialize,
+          ),
+        };
       },
     }),
     defineRoute({

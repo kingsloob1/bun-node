@@ -51,6 +51,7 @@ export const JOBS_API_ACTIONS = [
   "jobs.promote",
   "jobs.fail",
   "repeatables.list",
+  "repeatables.update",
   "repeatables.remove",
   "repeatables.disable",
   "repeatables.enable",
@@ -111,6 +112,7 @@ export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
     "jobs.clearLogs",
     "jobs.promote",
     "jobs.fail",
+    "repeatables.update",
     "repeatables.remove",
     "repeatables.disable",
     "repeatables.enable",
@@ -129,6 +131,9 @@ export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
  * caller-supplied payloads or reconfigure a process from outside it. Passing
  * `actions` replaces the default entirely: it is an allow-list, so naming only
  * these disables every other action.
+ *
+ * `repeatables.update` is here with `jobs.update`: it writes a caller's
+ * payload, and into every future occurrence of a series at once.
  *
  * `workers.configure` and `runners.configure` are here for blast radius rather
  * than payload: one write reaches every replica carrying the key, and the
@@ -160,6 +165,7 @@ export const JOBS_API_OPT_IN_ACTIONS: ReadonlySet<JobsApiAction> =
   new Set<JobsApiAction>([
     "jobs.add",
     "jobs.update",
+    "repeatables.update",
     "queues.defaults",
     "queues.applyDefaults",
     "queues.summon",

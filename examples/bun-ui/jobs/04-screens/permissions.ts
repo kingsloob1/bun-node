@@ -140,8 +140,8 @@
  *   authorized with the provider alone, never a queue. So a host whose
  *   `authorize` grants only on one queue has no button there, and the
  *   request it would send is refused with 403.
- * - **Nine actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
- *   `jobs.update`, `queues.defaults`, `queues.applyDefaults`,
+ * - **Ten actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
+ *   `jobs.update`, `repeatables.update`, `queues.defaults`, `queues.applyDefaults`,
  *   `queues.summon`, `providers.read`, `providers.validate`,
  *   `workers.configure` and `runners.configure` are not routed, and so
  *   absent from the map, unless the host lists them in `actions`. This host
@@ -1703,6 +1703,15 @@ const GATES = [
     map: "queue",
     extends: "panel=repeatables",
     mutations: ["repeatables.remove"],
+  },
+  {
+    // Opt-in (#767): replaces a series' payload, and so every later
+    // occurrence's. Offered on every row, enabled or disabled.
+    name: "panel=repeatables, Edit data",
+    row: "Repeatables panel, Edit data…",
+    map: "queue",
+    reads: ["repeatables.list"],
+    mutations: ["repeatables.update"],
   },
   {
     // The panel's own rows, paged where the queue has more repeat series than
@@ -5942,7 +5951,7 @@ const defaultRunnerMap = (
   await onDefault("GET", "/meta/permissions?runner=nightly")
 ).body as PermissionsBody;
 checkEqual(
-  "JOBS_API_OPT_IN_ACTIONS: the nine",
+  "JOBS_API_OPT_IN_ACTIONS: the ten",
   [...JOBS_API_OPT_IN_ACTIONS].sort(),
   [
     "jobs.add",
@@ -5952,6 +5961,7 @@ checkEqual(
     "queues.applyDefaults",
     "queues.defaults",
     "queues.summon",
+    "repeatables.update",
     "runners.configure",
     "workers.configure",
   ],

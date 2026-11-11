@@ -639,6 +639,15 @@ export interface EnableRepeatableResultDto {
   enabled: true;
 }
 
+/**
+ * `PATCH /queues/:queue/repeatables/:key` body. Answered with the series as a
+ * {@link RepeatableDto}, its `data` included.
+ */
+export interface UpdateRepeatableBody {
+  /** The series' new payload, for every occurrence from now on and the one already scheduled. */
+  data: unknown;
+}
+
 /** `POST /queues/:queue/jobs/:id/promote`. */
 export interface PromoteJobResultDto {
   /** Always `true`: a refusal is a problem. */

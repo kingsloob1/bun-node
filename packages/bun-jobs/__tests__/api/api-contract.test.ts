@@ -482,6 +482,7 @@ describe("one definition of each constant", () => {
       "queues.applyDefaults",
       "queues.defaults",
       "queues.summon",
+      "repeatables.update",
       "runners.configure",
       "workers.configure",
     ]);
@@ -525,6 +526,7 @@ describe("one definition of each constant", () => {
       "queues.applyDefaults",
       "queues.defaults",
       "queues.summon",
+      "repeatables.update",
       "runners.configure",
       "workers.configure",
     ]);
@@ -575,6 +577,7 @@ describe("one definition of each constant", () => {
       "queues.applyDefaults",
       "queues.defaults",
       "queues.summon",
+      "repeatables.update",
       "runners.configure",
       "workers.configure",
     ]);
@@ -774,12 +777,13 @@ describe("one definition of each constant", () => {
     // allow-list, and the analytics series expose nothing `metrics.read`,
     // `runners.read` and `workers.read` do not. So "no action was added" is an
     // invariant with a test, not a note in a review: this list is the whole
-    // list, and a 52nd entry fails here. (The last seven added were the clear
+    // list, and a 53rd entry fails here. (The last eight added were the clear
     // actions, `jobs.clearLogs` and `runners.clearHistory`, the queue job
     // defaults, `queues.defaults` and `queues.applyDefaults`, summoning,
-    // `queues.summon`, and the compute providers, `providers.read` and
-    // `providers.validate`, each a deliberate new permission rather than an
-    // analytics series.)
+    // `queues.summon`, the compute providers, `providers.read` and
+    // `providers.validate`, and replacing a repeat series' payload,
+    // `repeatables.update` (#767), each a deliberate new permission rather
+    // than an analytics series.)
     expect([...Contract.JOBS_API_ACTIONS]).toEqual([
       "meta.read",
       "docs.read",
@@ -815,6 +819,7 @@ describe("one definition of each constant", () => {
       "jobs.promote",
       "jobs.fail",
       "repeatables.list",
+      "repeatables.update",
       "repeatables.remove",
       "repeatables.disable",
       "repeatables.enable",

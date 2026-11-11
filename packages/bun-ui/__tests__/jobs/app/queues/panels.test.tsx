@@ -1,4 +1,4 @@
-import type { RecordedCall } from "../mockFetch";
+import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
 import {
   expectAbsent,
@@ -800,5 +800,170 @@ describe("repeatables, disable and enable", () => {
     expectNone(
       within(disabledRow).queryAllByRole("button", { name: /repeatable/ }),
     );
+  });
+});
+
+describe("editing a repeat series' data (#767)", () => {
+  /** Edit is an opt-in: these permissions name it. */
+  const canEdit = () => permissionsFixture({ "repeatables.update": true });
+
+  /** Opens the series' Edit data dialog. */
+  async function openEdit(
+    handlers: Record<string, MockHandler | MockReply> = {},
+  ) {
+    const rendered = renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: { "GET /meta/permissions": { body: canEdit() }, ...handlers },
+    });
+    const row = await page().findByTestId(
+      "repeatable-row-digest:cron",
+      {},
+      LOADED,
+    );
+    fireEvent.click(
+      await within(row).findByRole(
+        "button",
+        { name: "Edit the data of repeatable digest:cron" },
+        LOADED,
+      ),
+    );
+    return { ...rendered, dialog: await findDialog() };
+  }
+
+  /** The error text under the dialog's Data editor. */
+  function dataError(dialog: HTMLElement): string {
+    return (
+      within(dialog)
+        .getByLabelText("Data")
+        .closest(".field")
+        ?.querySelector(".field-error")?.textContent ?? ""
+    );
+  }
+
+  /** The PATCHes sent for the fixture series. */
+  function patches(calls: RecordedCall[]) {
+    return callsTo(calls, "PATCH", "/queues/emails/repeatables/digest%3Acron");
+  }
+
+  it("is not offered by default: repeatables.update is an opt-in", async () => {
+    renderQueue({ path: "/queues/emails?panel=repeatables" });
+    const row = await page().findByTestId(
+      "repeatable-row-digest:cron",
+      {},
+      LOADED,
+    );
+    // The default-on actions show, so the permissions have arrived.
+    await within(row).findByRole(
+      "button",
+      { name: "Disable repeatable digest:cron" },
+      LOADED,
+    );
+    expectAbsent(
+      within(row).queryByRole("button", {
+        name: "Edit the data of repeatable digest:cron",
+      }),
+    );
+  });
+
+  it("starts from the series' data, PATCHes the new data, toasts and refetches", async () => {
+    let data: unknown = repeatablesFixture.items[0].data;
+    const { calls, dialog } = await openEdit({
+      "GET /queues/emails/repeatables": () => ({
+        body: { items: [{ ...repeatablesFixture.items[0], data }] },
+      }),
+      "PATCH /queues/emails/repeatables/digest%3Acron": (
+        call: RecordedCall,
+      ) => {
+        data = JSON.parse(call.body!).data;
+        return { body: { ...repeatablesFixture.items[0], data } };
+      },
+    });
+    const editor = within(dialog).getByLabelText("Data") as HTMLTextAreaElement;
+    expect(JSON.parse(editor.value)).toEqual({ list: "weekly" });
+    const reads = callsTo(calls, "GET", "/queues/emails/repeatables").length;
+
+    fireEvent.change(editor, { target: { value: '{"list":"daily"}' } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(notifications().textContent).toContain(
+        "Saved the data of the repeat series digest:cron",
+      ),
+    );
+    expect(patches(calls)).toHaveLength(1);
+    expect(JSON.parse(patches(calls)[0].body!)).toEqual({
+      data: { list: "daily" },
+    });
+    await waitFor(() => expectAbsent(openDialog()));
+    await waitFor(() =>
+      expect(
+        callsTo(calls, "GET", "/queues/emails/repeatables").length,
+      ).toBeGreaterThan(reads),
+    );
+  });
+
+  it("refuses invalid JSON in place, sending nothing", async () => {
+    const { calls, dialog } = await openEdit();
+    fireEvent.change(within(dialog).getByLabelText("Data"), {
+      target: { value: "{nope" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(dataError(dialog)).toBe("The data is not valid JSON."),
+    );
+    expectNone(patches(calls));
+  });
+
+  it("shows a schema's VALIDATION issues beside the editor, at their paths", async () => {
+    const { dialog } = await openEdit({
+      "PATCH /queues/emails/repeatables/digest%3Acron": {
+        status: 400,
+        body: problem(400, "VALIDATION", "Validation failed", {
+          issues: [
+            { target: "body", path: "data.list", message: "Invalid option" },
+          ],
+        }),
+      },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(dataError(dialog)).toBe("list: Invalid option"));
+    // Kept open, with no banner repeating what the field says.
+    expect(openDialog()).toBe(dialog);
+    expectAbsent(within(dialog).queryByRole("alert", { name: /Validation/ }));
+  });
+
+  it("explains a series that no longer exists", async () => {
+    const { dialog } = await openEdit({
+      "PATCH /queues/emails/repeatables/digest%3Acron": {
+        status: 404,
+        body: problem(404, "REPEATABLE_NOT_FOUND", "Repeatable not found", {
+          context: { queue: "emails", key: "digest:cron" },
+        }),
+      },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(dialog.textContent).toContain(
+        "The repeat series “digest:cron” no longer exists",
+      ),
+    );
+  });
+
+  it("is not offered when the API is read-only, even when named", async () => {
+    renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: {
+        "GET /meta": {
+          body: metaFixture({ readOnly: true, addableNames: null }),
+        },
+        "GET /meta/permissions": { body: canEdit() },
+      },
+    });
+    const row = await page().findByTestId(
+      "repeatable-row-digest:cron",
+      {},
+      LOADED,
+    );
+    expectNone(within(row).queryAllByRole("button", { name: /repeatable/ }));
   });
 });

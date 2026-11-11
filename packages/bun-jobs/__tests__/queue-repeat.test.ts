@@ -124,6 +124,51 @@ describe("repeatable jobs", () => {
     expect(await queue.listRepeatables()).toHaveLength(1);
   });
 
+  it("runs every occurrence after a re-add with the new payload (#767)", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const queue = makeQueue(driver, namespace);
+
+    const seen: number[] = [];
+    const worker = makeWorker(driver, namespace, (job) => {
+      seen.push(job.data.version);
+      return null;
+    });
+    void worker.run();
+
+    await queue.add(
+      "tick",
+      { version: 1 },
+      { repeat: { every: 40, key: "edited", immediately: true } },
+    );
+    await waitFor(() => seen.length >= 2, {
+      timeout: 10_000,
+      message: "the series never ran",
+    });
+
+    // Same key, same schedule, a new payload: the pending occurrence keeps its
+    // id, and used to keep the old payload, which every later one inherited.
+    const readded = await queue.add(
+      "tick",
+      { version: 2 },
+      { repeat: { every: 40, key: "edited" } },
+    );
+    expect(readded.wasAdded).toBe(false);
+    expect(readded.data).toEqual({ version: 2 });
+    const editedAt = seen.length;
+
+    await waitFor(() => seen.length >= editedAt + 4, {
+      timeout: 10_000,
+      message: "the series stopped after the re-add",
+    });
+
+    // An occurrence already claimed when the series was re-added runs with
+    // the data it was claimed with; at most that one, and never after it.
+    const after = seen.slice(editedAt);
+    expect(after.slice(1)).toEqual(after.slice(1).map(() => 2));
+    expect((await queue.listRepeatables())[0].data).toEqual({ version: 2 });
+  });
+
   it("schedules the next occurrence when one is claimed", async () => {
     const driver = new MemoryDriver();
     const namespace = testNamespace();
@@ -622,6 +667,250 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
         expect(after.catchUp).toBe(false);
         expect(after.count).toBe(2);
       });
+    },
+  );
+
+  describe.skipIf(!available)(
+    `a re-added series' payload: ${backendName}`,
+    () => {
+      /**
+       * Re-adding a series under its key replaces its stored definition, and
+       * so its payload (#767). Two paths kept the old one running: the re-add
+       * left the occurrence already scheduled as it was, and each occurrence
+       * after it was built from the one before rather than from the series.
+       * Each backend stores and patches a job its own way, so each is checked.
+       */
+
+      /** A queue on a fresh driver for this backend, purged when the suite ends. */
+      async function openQueue() {
+        const driver = createDriver(config);
+        const namespace = testNamespace("readd");
+        const queue = new BunQueue<{ version: number }, null>("repeats", {
+          namespace,
+          driver,
+          logger: noopLogger,
+        });
+        backendCleanups.push(async () => {
+          await queue.close();
+          await driver.purge(namespace);
+          await driver.close();
+        });
+        return { driver, namespace, queue };
+      }
+
+      it("replaces the pending occurrence's payload when the schedule is unchanged", async () => {
+        const { queue } = await openQueue();
+
+        const first = await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "same" } },
+        );
+        const again = await queue.add(
+          "tick",
+          { version: 2 },
+          { repeat: { every: 60_000, key: "same" } },
+        );
+
+        expect(again.id).toBe(first.id);
+        expect(again.wasAdded).toBe(false);
+        expect(again.data).toEqual({ version: 2 });
+        expect((await queue.getJob(first.id))?.data).toEqual({ version: 2 });
+        expect(await queue.count("delayed")).toBe(1);
+
+        // Control: the same payload again changes nothing and adds nothing.
+        const unchanged = await queue.add(
+          "tick",
+          { version: 2 },
+          { repeat: { every: 60_000, key: "same" } },
+        );
+        expect(unchanged.wasAdded).toBe(false);
+        expect(unchanged.data).toEqual({ version: 2 });
+        expect(await queue.count("delayed")).toBe(1);
+      });
+
+      it("replaces the old pending occurrence's payload when the schedule moved", async () => {
+        const { queue } = await openQueue();
+
+        const first = await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "moved" } },
+        );
+        const moved = await queue.add(
+          "tick",
+          { version: 2 },
+          { repeat: { every: 90_000, key: "moved" } },
+        );
+
+        expect(moved.id).not.toBe(first.id);
+        expect(moved.data).toEqual({ version: 2 });
+        // The occurrence scheduled before the re-add still runs, and with the
+        // series' payload as it is now.
+        expect((await queue.getJob(first.id))?.data).toEqual({ version: 2 });
+      });
+
+      it("builds the next occurrence from the stored definition, not the finished one", async () => {
+        const { driver, namespace, queue } = await openQueue();
+
+        const first = await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "chain", immediately: true } },
+        );
+        // A definition changed with its occurrence left as it was — what a
+        // re-add does on a driver without `updateJob`, or to an occurrence a
+        // worker had already claimed. Read at driver level, where a caller's
+        // key is stored namespaced.
+        const [stored] = await driver.listRepeats(queue.ref);
+        expect(stored?.nextJobId).toBe(first.id);
+        await driver.upsertRepeat(queue.ref, {
+          ...stored,
+          name: "renamed",
+          data: { version: 2 },
+        });
+
+        const ran: string[] = [];
+        const worker = new BunQueueWorker<{ version: number }, null>(
+          "repeats",
+          async (job) => {
+            ran.push(`${job.name}:${job.data.version}`);
+            return null;
+          },
+          { namespace, driver, logger: noopLogger, pollInterval: 10 },
+        );
+        backendCleanups.unshift(() => worker.close({ force: true }));
+        void worker.run();
+
+        await waitFor(
+          async () => {
+            const [series] = await queue.listRepeatables();
+            return (
+              ran.length >= 1 &&
+              series?.nextJobId != null &&
+              series.nextJobId !== first.id
+            );
+          },
+          {
+            timeout: 15_000,
+            message: "the next occurrence was never scheduled",
+          },
+        );
+        await worker.close({ force: true });
+
+        expect(ran).toEqual(["tick:1"]);
+        const [series] = await queue.listRepeatables();
+        const next = await queue.getJob(series.nextJobId!);
+        expect(next?.name).toBe("renamed");
+        expect(next?.data).toEqual({ version: 2 });
+      }, 30_000);
+
+      it("updateRepeatable replaces the payload, keeping the schedule", async () => {
+        const { queue } = await openQueue();
+
+        await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "edit" } },
+        );
+        const [before] = await queue.listRepeatables();
+
+        const updated = await queue.updateRepeatable("edit", {
+          data: { version: 2 },
+        });
+        expect(updated).toMatchObject({
+          key: "edit",
+          name: "tick",
+          every: 60_000,
+          count: before.count,
+          nextRunAt: before.nextRunAt,
+          nextJobId: before.nextJobId,
+          disabled: false,
+          data: { version: 2 },
+        });
+        expect((await queue.listRepeatables())[0].data).toEqual({
+          version: 2,
+        });
+        expect((await queue.getJob(before.nextJobId!))?.data).toEqual({
+          version: 2,
+        });
+        expect(await queue.count("delayed")).toBe(1);
+
+        expect(
+          await queue.updateRepeatable("missing", { data: { version: 3 } }),
+        ).toBeNull();
+      });
+
+      it("updateRepeatable keeps a disabled series disabled, with the new payload", async () => {
+        const { queue } = await openQueue();
+
+        await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "off" } },
+        );
+        await queue.disableRepeatable("off");
+
+        const updated = await queue.updateRepeatable("off", {
+          data: { version: 2 },
+        });
+        expect(updated).toMatchObject({
+          disabled: true,
+          nextJobId: null,
+          data: { version: 2 },
+        });
+        expect(await queue.count("delayed")).toBe(0);
+
+        await queue.enableRepeatable("off");
+        const [enabled] = await queue.listRepeatables();
+        expect((await queue.getJob(enabled.nextJobId!))?.data).toEqual({
+          version: 2,
+        });
+      });
+
+      it("leaves a claimed occurrence's payload alone", async () => {
+        const { driver, namespace, queue } = await openQueue();
+
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let running: string | null = null;
+        const worker = new BunQueueWorker<{ version: number }, null>(
+          "repeats",
+          async (job) => {
+            running ??= job.id;
+            await gate;
+            return null;
+          },
+          { namespace, driver, logger: noopLogger, pollInterval: 10 },
+        );
+        backendCleanups.unshift(() => worker.close({ force: true }));
+        void worker.run();
+
+        await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "claimed", immediately: true } },
+        );
+        await waitFor(() => running !== null, {
+          timeout: 15_000,
+          message: "the first occurrence was never claimed",
+        });
+
+        const readded = await queue.add(
+          "tick",
+          { version: 2 },
+          { repeat: { every: 60_000, key: "claimed" } },
+        );
+
+        expect((await queue.getJob(running!))?.data).toEqual({ version: 1 });
+        expect(readded.id).not.toBe(running);
+        expect((await queue.getJob(readded.id))?.data).toEqual({ version: 2 });
+
+        release();
+        await worker.close();
+      }, 30_000);
     },
   );
 }

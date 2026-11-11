@@ -424,6 +424,14 @@ export const UpdateBodySchema = s.object({
   onlyIn: s.optional(s.array(JobStateSchema, { minItems: 1 })),
 });
 
+/** `PATCH /queues/:queue/repeatables/:key` body. */
+export const UpdateRepeatableBodySchema = s.object({
+  data: s.unknown({
+    description:
+      "The series' new payload, for every occurrence from now on and the one already scheduled.",
+  }),
+});
+
 /** `POST /queues/:queue/jobs/:id/fail` body. */
 export const FailBodySchema = s.object({
   reason: s.string({

@@ -615,6 +615,7 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `cleanWindows({ limit = 1000 })` | Removes stale debounce and throttle pointers. Workers also do this once a minute. |
 | `listRepeatables()` / `removeRepeatable(key)` | Lists repeat series, each with `disabled`, or removes one along with its scheduled occurrence. Removing a series clears its disabled flag. It stays removed even when a worker was scheduling its next occurrence at that moment. At most two occurrences still run: one already claimed, and one scheduled at that instant. |
 | `disableRepeatable(key)` / `enableRepeatable(key)` | Stops a series without removing it, or restarts it. See [Disabling a series](#disabling-a-series). |
+| `updateRepeatable(key, { data })` | Replaces a series' payload, keeping its schedule, name and options, and answers with the series, or `null` for an unknown key. The occurrence already scheduled takes it too while it is still pending. The data is checked against the name's schema, as an add's is. See [Scheduling and repeatable jobs](#scheduling-and-repeatable-jobs). |
 | `close()` | Closes the subscription, and the driver if the queue built it. |
 
 ### Queue job defaults
@@ -2100,6 +2101,23 @@ Occurrence ids are derived from the series key and the due time
 (`repeatJobId`), so several producers adding the same series schedule each
 occurrence only once. A `jobId` on a repeating job is ignored. Use `key`
 instead; `unique()` in the builder maps to it.
+
+Adding a series again under the same `key` replaces its stored definition,
+and every occurrence is built from that definition, so a new payload, name
+or option set takes effect without removing the series first. The
+occurrence already scheduled when you re-add it takes the new payload too,
+while it is still waiting or delayed. That holds whether or not the schedule
+changed, and `add()` returns it with that payload. Its name and options
+apply from the occurrence after it. An occurrence a worker has already
+claimed runs with the data it was claimed with. A driver without `updateJob`
+cannot change the scheduled occurrence's payload, so on one of those the
+new payload starts with the occurrence after it.
+
+To change only the payload, without restating the schedule,
+`queue.updateRepeatable(key, { data })` does the same for the data alone. It
+leaves a disabled series disabled. The management API's `PATCH
+/queues/:queue/repeatables/:key` (`repeatables.update`, off by default) and
+the jobs UI's Repeatables panel call it.
 
 The minute housekeeping heals repeat series, on one worker per queue: whichever
 worker with [`maintenance`](#maintenance-liveness-and-housekeeping) on holds
@@ -6128,6 +6146,7 @@ asked about with no target.
 | `jobs.promote` | mutation | |
 | `jobs.fail` | mutation | |
 | `repeatables.list` | read | |
+| `repeatables.update` | mutation | off by default |
 | `repeatables.remove` | mutation | |
 | `repeatables.disable` | mutation | |
 | `repeatables.enable` | mutation | |
@@ -6147,8 +6166,8 @@ asked about with no target.
 | `events.subscribe` | read | |
 
 **`actions` is an allow-list, not a list of extras.** Left unset, it
-defaults to every action except `jobs.add` and `jobs.update`, which write
-payloads your handlers trust, `workers.configure` and `runners.configure`,
+defaults to every action except `jobs.add`, `jobs.update` and
+`repeatables.update`, which write payloads your handlers trust, `workers.configure` and `runners.configure`,
 which reconfigure a process from outside it, and `queues.defaults` and
 `queues.applyDefaults`, where one write changes the retries, timeout and
 retention of every job every producer adds to a queue, or of its whole
@@ -6345,6 +6364,7 @@ driver support is present. Paths are relative to `basePath`.
 | POST | `/queues/:queue/flows` | `jobs.add` | yes |
 | GET | `/queues/:queue/repeatables` | `repeatables.list` | no |
 | DELETE | `/queues/:queue/repeatables/:key` | `repeatables.remove` | yes |
+| PATCH | `/queues/:queue/repeatables/:key` | `repeatables.update` | yes |
 | POST | `/queues/:queue/repeatables/:key/disable` | `repeatables.disable` | yes |
 | POST | `/queues/:queue/repeatables/:key/enable` | `repeatables.enable` | yes |
 | GET | `/definitions` | `definitions.list` | no |
@@ -7207,10 +7227,10 @@ mirror re-encodes anything — or leave the pages off and use the JSON.
   here belongs on the public internet.
 - **`authorize` is mandatory** and fails closed. Use `readOnly` and `actions`
   as static limits that no hook can re-enable.
-- **Leave `jobs.add` and `jobs.update` off** unless a UI genuinely needs
-  them: they write payloads your handlers trust. Enabling them means passing
-  `actions`, which is an allow-list — name every action you want, not just
-  these two.
+- **Leave `jobs.add`, `jobs.update` and `repeatables.update` off** unless a
+  UI genuinely needs them: they write payloads your handlers trust. Enabling
+  them means passing `actions`, which is an allow-list — name every action
+  you want, not just these.
 - **CSRF, for cookie sessions.** Mutations require `Content-Type:
   application/json` by default, and cross-site `Origin`/`Sec-Fetch-Site` are
   refused; add `csrf.header` to force a preflight. CORS is off by default, and

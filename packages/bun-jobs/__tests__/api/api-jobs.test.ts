@@ -1115,6 +1115,57 @@ describe("repeatables and definitions", () => {
     }
   });
 
+  it("replaces a series' payload only when repeatables.update is enabled (#767)", async () => {
+    const byDefault = harness({ actions: undefined });
+    await byDefault.jobs
+      .queue("mail")
+      .add("digest", { v: 1 }, { repeat: { every: 60_000, key: "daily" } });
+    expect(
+      (
+        await byDefault.call("PATCH", "/queues/mail/repeatables/daily", {
+          data: { v: 2 },
+        })
+      ).body,
+    ).toMatchObject({ code: "ROUTE_NOT_FOUND" });
+
+    const h = harness();
+    const queue = h.jobs.queue("mail");
+    await queue.add(
+      "digest",
+      { v: 1 },
+      { repeat: { every: 60_000, key: "daily" } },
+    );
+    const before = (await queue.listRepeatables())[0];
+
+    const updated = await h.call("PATCH", "/queues/mail/repeatables/daily", {
+      data: { v: 2 },
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({
+      queue: "mail",
+      key: "daily",
+      name: "digest",
+      every: 60_000,
+      count: before.count,
+      nextJobId: before.nextJobId,
+      disabled: false,
+      data: { v: 2 },
+    });
+    // The series and the occurrence it had scheduled both carry it.
+    expect((await queue.listRepeatables())[0].data).toEqual({ v: 2 });
+    expect((await queue.getJob(before.nextJobId!))?.data).toEqual({ v: 2 });
+
+    // The body must carry `data`, and the series must exist.
+    expect(
+      (await h.call("PATCH", "/queues/mail/repeatables/daily", {})).status,
+    ).toBe(400);
+    const missing = await h.call("PATCH", "/queues/mail/repeatables/nope", {
+      data: {},
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body).toMatchObject({ code: "REPEATABLE_NOT_FOUND" });
+  });
+
   it("lists definitions without their handlers, and only with a jobs source", async () => {
     const h = harness();
     h.jobs.define(

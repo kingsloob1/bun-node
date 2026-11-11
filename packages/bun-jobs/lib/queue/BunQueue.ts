@@ -160,7 +160,9 @@ import {
   enableRepeatSeries,
   findRepeat,
   isRepeatDisabled,
+  replacePendingPayload,
   requireRepeatControl,
+  updateRepeatIfStored,
 } from "./repeatControl";
 import { retryJob } from "./retry";
 import {
@@ -2786,26 +2788,89 @@ export class BunQueue<
     await this.connect();
     const stored = await this.driver.listRepeats(this.ref);
 
+    return await Promise.all(
+      stored.map(async (record) => await this.#repeatableInfo(record)),
+    );
+  }
+
+  /** A stored series as {@link BunQueue.listRepeatables} reports it. */
+  async #repeatableInfo(record: RepeatRecord): Promise<RepeatableInfo> {
+    const disabled = await isRepeatDisabled(this.driver, this.ref, record.key);
     // Shown as the caller named it. `removeRepeatable` takes either spelling,
     // so a key from here can be handed straight back.
-    return await Promise.all(
-      stored.map(async (record) => {
-        const disabled = await isRepeatDisabled(
-          this.driver,
-          this.ref,
-          record.key,
-        );
-        return {
-          ...record,
-          key: displayRepeatKey(record.key),
-          // Disabling clears both in the stored record. Null here too, so an
-          // occurrence a worker raced past the flag — pointed to until
-          // maintenance removes it — is not reported as the series' next.
-          ...(disabled ? { nextRunAt: null, nextJobId: null } : {}),
-          disabled,
-        };
-      }),
-    );
+    return {
+      ...record,
+      key: displayRepeatKey(record.key),
+      // Disabling clears both in the stored record. Null here too, so an
+      // occurrence a worker raced past the flag — pointed to until
+      // maintenance removes it — is not reported as the series' next.
+      ...(disabled ? { nextRunAt: null, nextJobId: null } : {}),
+      disabled,
+    };
+  }
+
+  /**
+   * Replaces a repeat series' payload, and answers with the series as it now
+   * is — or `null` for an unknown key. What re-adding the series with new data
+   * does, without restating its schedule and options: every occurrence built
+   * from now on carries `data`, and so does the one already scheduled, while
+   * it is still waiting or delayed (on a driver with `updateJob`). One a worker
+   * has claimed runs with the data it was claimed with.
+   *
+   * The data is checked against the series' name's schema, as an add's is.
+   * A disabled series stays disabled, with the new payload for when it is
+   * enabled. Takes either spelling of the key, as `removeRepeatable` does.
+   */
+  async updateRepeatable(
+    key: string,
+    patch: {
+      /**
+       * The new payload. On a registry-bound queue, one valid for every
+       * declared name (see `UpdateDataOf`), as for {@link BunQueue.update}.
+       */
+      data: UpdateDataOf<TData, TJobs>;
+    },
+  ): Promise<RepeatableInfo | null> {
+    await this.connect();
+
+    if (patch.data === undefined) {
+      throw new ConfigError("updateRepeatable() needs data");
+    }
+
+    const definition = await findRepeat(this.driver, this.ref, key);
+    if (!definition) {
+      return null;
+    }
+
+    const checking = this.#checkData(definition.name, patch.data, undefined);
+    if (checking !== undefined) {
+      await checking;
+    }
+
+    const data = assertJsonSafe(patch.data, "job data");
+    const now = Date.now();
+    // Read again just before the write, so the pointer and count written back
+    // are the latest a worker left, not the ones `findRepeat` saw.
+    const latest =
+      (await this.driver.getRepeat(this.ref, definition.key)) ?? definition;
+    const updated: RepeatRecord = { ...latest, data, updatedAt: now };
+
+    if (!(await updateRepeatIfStored(this.driver, this.ref, updated))) {
+      return null;
+    }
+
+    if (latest.nextJobId !== null) {
+      await replacePendingPayload(
+        this.driver,
+        this.ref,
+        latest.key,
+        latest.nextJobId,
+        data,
+        now,
+      );
+    }
+
+    return await this.#repeatableInfo(updated);
   }
 
   /**
@@ -3527,8 +3592,37 @@ export class BunQueue<
       updatedAt: now,
     });
 
-    const { job, added } = await this.driver.addJob(this.ref, record);
+    const { job: stored, added } = await this.driver.addJob(this.ref, record);
+    let job = stored;
     this.#noteIfScheduled(this.ref, job);
+
+    // A re-add replaces the payload of what is already scheduled (#767). The
+    // occurrence `addJob` kept — the same id, because the schedule did not
+    // move — and the one the series pointed at before, when it did move, both
+    // run after this call, so both carry the payload just stored.
+    if (existing) {
+      if (!added) {
+        job =
+          (await replacePendingPayload(
+            this.driver,
+            this.ref,
+            merged.key,
+            jobId,
+            record.data,
+            now,
+          )) ?? job;
+      }
+      if (existing.nextJobId !== null && existing.nextJobId !== jobId) {
+        await replacePendingPayload(
+          this.driver,
+          this.ref,
+          merged.key,
+          existing.nextJobId,
+          record.data,
+          now,
+        );
+      }
+    }
 
     // The key as the caller named it, here and on the wire: the prefix is
     // storage, not contract.

@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: b96150d1b6dc4e6f
+ * typesHash: 5f759710e30a3537
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
@@ -12,7 +12,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "b96150d1b6dc4e6f";
+export const typesHash = "5f759710e30a3537";
 
 /** One job of a flow, with the jobs it waits on. A flow holds at most 100 jobs and nests at most 10 levels (the top job is level 1); more is 400 VALIDATION at the first job past the bound. */
 export interface AddFlowNode {
@@ -675,6 +675,7 @@ export interface Permissions {
     "jobs.promote"?: boolean;
     "jobs.fail"?: boolean;
     "repeatables.list"?: boolean;
+    "repeatables.update"?: boolean;
     "repeatables.remove"?: boolean;
     "repeatables.disable"?: boolean;
     "repeatables.enable"?: boolean;
@@ -5408,6 +5409,108 @@ export interface Routes {
       };
     };
   };
+  /** Replace a repeat series' payload */
+  "PATCH /queues/:queue/repeatables/:key": {
+    operationId: "updateRepeatable";
+    params: {
+      /** A queue name: letters, digits, "_", "." and "-", and not "." or "..". Anything else is 400 INVALID_NAME. */
+      queue: string;
+      key: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: {
+      /** The series' new payload, for every occurrence from now on and the one already scheduled. */
+      data: unknown;
+    };
+    responses: {
+      200: Repeatable;
+      400: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "REPEATABLE_NOT_FOUND"
+          | "SERIALIZATION"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      401: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "REPEATABLE_NOT_FOUND"
+          | "SERIALIZATION"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      403: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "REPEATABLE_NOT_FOUND"
+          | "SERIALIZATION"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      404: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "REPEATABLE_NOT_FOUND"
+          | "SERIALIZATION"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      413: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "REPEATABLE_NOT_FOUND"
+          | "SERIALIZATION"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+      415: Omit<Problem, "code"> & {
+        code:
+          | "CSRF_REJECTED"
+          | "FORBIDDEN"
+          | "INVALID_JSON"
+          | "INVALID_NAME"
+          | "PAYLOAD_TOO_LARGE"
+          | "QUEUE_NOT_FOUND"
+          | "REPEATABLE_NOT_FOUND"
+          | "SERIALIZATION"
+          | "UNAUTHORIZED"
+          | "UNSUPPORTED_MEDIA_TYPE"
+          | "VALIDATION";
+      };
+    };
+  };
   /** Remove a repeat series and the occurrence it had scheduled */
   "DELETE /queues/:queue/repeatables/:key": {
     operationId: "removeRepeatable";
@@ -8955,6 +9058,10 @@ export const manifest = {
   "GET /queues/:queue/repeatables": {
     operationId: "listRepeatables",
     statuses: [200, 400, 401, 403, 404],
+  },
+  "PATCH /queues/:queue/repeatables/:key": {
+    operationId: "updateRepeatable",
+    statuses: [200, 400, 401, 403, 404, 413, 415],
   },
   "DELETE /queues/:queue/repeatables/:key": {
     operationId: "removeRepeatable",

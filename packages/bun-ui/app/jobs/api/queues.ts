@@ -19,9 +19,11 @@ import type {
   QueueListQuery,
   QueuePausedDto,
   QueueThroughputDto,
+  RepeatableDto,
   RepeatableListDto,
   RetryAllBody,
   RetryAllResultDto,
+  UpdateRepeatableBody,
   WorkerListDto,
 } from "./types";
 import { segment } from "./client";
@@ -455,6 +457,24 @@ export function removeRepeatable(api: ApiClient, queue: string, key: string) {
   return api.request<void>(
     "DELETE",
     base(queue, `/repeatables/${segment(key)}`),
+  );
+}
+
+/**
+ * `PATCH /queues/:queue/repeatables/:key`: replaces a series' payload, and that
+ * of the occurrence it has scheduled; 404 for an unknown series, 400
+ * `VALIDATION` for data its name's schema refuses. Answers with the series.
+ */
+export function updateRepeatable(
+  api: ApiClient,
+  queue: string,
+  key: string,
+  body: UpdateRepeatableBody,
+) {
+  return api.request<RepeatableDto>(
+    "PATCH",
+    base(queue, `/repeatables/${segment(key)}`),
+    { body },
   );
 }
 
