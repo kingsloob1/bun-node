@@ -7207,6 +7207,27 @@ the socket's channels and messages — both pruned the same way the router is,
 so they never describe a route that does not exist. `api.openapi()` and
 `api.asyncapi()` return the same documents in process.
 
+**Serving them beside your own documents.** bun-common's `docsRouter()` takes
+the jobs API's documents as they are, so one docs area can show both (its
+`openapi` accepts any OpenAPI `3.1.x` document; the jobs API writes `3.1.0`):
+
+```ts
+import { docsRouter } from "@kingsleyweb/bun-common/lib/docs";
+
+const asyncapi = api.asyncapi(); // undefined when the API has no socket (websocket: false)
+app.use(
+  "/docs/jobs",
+  docsRouter({
+    openapi: () => api.openapi(),
+    ...(asyncapi === undefined ? {} : { asyncapi }),
+    viewer: { openapi: "self-hosted" },
+  }),
+);
+```
+
+`api.asyncapi()` is `undefined` when the API serves no socket, so check it
+before handing it on, as above.
+
 HTML viewers are **off by default** (`docs.ui: false`) and deliberately so:
 they load third-party script into an origin holding admin cookies, and "try it
 out" is a mutation console. With `docs.ui: true` you get Swagger UI at

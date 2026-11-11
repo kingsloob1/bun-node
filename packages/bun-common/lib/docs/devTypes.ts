@@ -76,7 +76,7 @@ import type { BunResponse } from "../BunResponse";
 import type { NextFunction, RouterHandler } from "../types/general";
 import type { AsyncApiOptions } from "./asyncapi";
 import type { OpenApiOptions } from "./openapi";
-import type { AsyncApiDocument, OpenApiDocument } from "./types";
+import type { AsyncApiDocument, OpenApi31Document } from "./types";
 import { BunRouter } from "../BunRouter";
 import { toStandardSchema } from "../BunValidate";
 import { defineChannel } from "../channel";
@@ -95,7 +95,7 @@ import { attachRouteDoc } from "./routeDoc";
 export type DevTypesOpenApiSource =
   | (Omit<OpenApiOptions, "title" | "version"> &
       Partial<Pick<OpenApiOptions, "title" | "version">>)
-  | (() => OpenApiDocument | Promise<OpenApiDocument>);
+  | (() => OpenApi31Document | Promise<OpenApi31Document>);
 
 /** The AsyncAPI source of a dev document: `generateAsyncApi(app, options)`'s options, or a function returning the document. */
 export type DevTypesAsyncApiSource =
@@ -739,7 +739,7 @@ export function devTypes(
   /* The documents' sources. */
   const openApiSourceOf = (
     option: DevTypesOpenApiSource | undefined,
-  ): (() => OpenApiDocument | Promise<OpenApiDocument>) =>
+  ): (() => OpenApi31Document | Promise<OpenApi31Document>) =>
     typeof option === "function"
       ? option
       : () =>
@@ -801,7 +801,7 @@ export function devTypes(
       return building.promise;
     }
     const buildOne = async (
-      openApi: () => OpenApiDocument | Promise<OpenApiDocument>,
+      openApi: () => OpenApi31Document | Promise<OpenApi31Document>,
       asyncApi: () => AsyncApiDocument | Promise<AsyncApiDocument>,
     ): Promise<BuiltDocument> => {
       const openapi = await openApi();

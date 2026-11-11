@@ -71,7 +71,7 @@ import { documentSseEvents } from "./sseEvents";
  * on purpose: only the version is pinned, and the document is checked against
  * the OpenAPI 3.1 meta-schema in the tests rather than modelled here.
  */
-export type { OpenApiDocument } from "./types";
+export type { OpenApi31Document, OpenApiDocument } from "./types";
 
 /**
  * A problem the generator degraded past in lenient mode (and `strict`
