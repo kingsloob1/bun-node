@@ -4,6 +4,64 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
+## 3.1.0 (2026-11-11)
+
+<!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
+
+A minor release: two features and the two fixes 3.0.1 shipped. All seven
+packages move to 3.1.0 together. Nothing is removed or changed
+incompatibly, and the new permission is off by default, so a 3.0.x app
+upgrades with no change of its own.
+
+```bash
+bun add @kingsleyweb/bun-common@3.1.0 @kingsleyweb/bun-jobs@3.1.0
+```
+
+### Features
+
+- **Edit a repeat series' data, from code, the management API and the jobs
+  UI** (bun-jobs, bun-ui; [#767](https://github.com/kingsloob1/bun-node/issues/767),
+  [#769](https://github.com/kingsloob1/bun-node/pull/769)).
+  - `queue.updateRepeatable(key, { data })` replaces a series' payload
+    without restating its schedule: every later occurrence runs with it, and
+    so does the one already scheduled while it is still waiting or delayed.
+    The data is checked against the name's schema; a disabled series stays
+    disabled.
+  - The management API serves it as `PATCH /queues/:queue/repeatables/:key`,
+    under a new action, **`repeatables.update`**, which is **opt-in** like
+    `jobs.update`: it writes a payload your handlers trust, so a host lists it
+    in `actions` to enable it. `JOBS_API_OPT_IN_ACTIONS` gains it. A
+    schema failure is a 400 `VALIDATION` at its body path.
+  - The jobs UI's Repeatables panel has **Edit data…** on each series
+    where the caller has `repeatables.update`: a JSON editor seeded with the
+    series' data, which refuses invalid JSON before sending and shows a
+    schema's issues under the editor.
+- **One typed client per frontend, from one dev server** (bun-common,
+  bun-nest, bun-client; [#768](https://github.com/kingsloob1/bun-node/issues/768),
+  [#770](https://github.com/kingsloob1/bun-node/pull/770)).
+  - `devTypes()` and `DevTypesModule.forRoot()` take `documents`: named,
+    filtered documents served at `<path>/<name>`, each with its own hash. The
+    change channel announces each document's hash by name (an additive field;
+    older watchers are unaffected), and the token file lists the names.
+  - `bun-client watch --document <name> --out <file>`, repeated, keeps one
+    client per frontend live on one connection, regenerating a file only
+    when its own document changes. Existing `watch` commands are unchanged.
+  - `--config <file>`, a JSON targets file for `generate` (write every
+    client, or `--check` them all in CI, from a `module`'s exports with no
+    server running) and for `watch`.
+
+### Fixes
+
+The two fixes 3.0.1 shipped:
+
+- **bun-jobs: a re-added repeat series runs with its new payload**
+  ([#767](https://github.com/kingsloob1/bun-node/issues/767)). See 3.0.1.
+- **bun-common: `docsRouter()` takes the jobs API's document without a
+  cast** ([#771](https://github.com/kingsloob1/bun-node/issues/771)). Any
+  OpenAPI `3.1.x` document (`OpenApi31Document`) is accepted by `docsRouter`,
+  `devTypes()` and `DevTypesModule`, including each named document. See
+  3.0.1.
+
 ## 3.0.1 (2026-11-11)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->

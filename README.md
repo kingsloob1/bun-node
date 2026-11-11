@@ -87,7 +87,7 @@ bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
 bun add @kingsleyweb/bun-jobs
 ```
 
-**3.0.1** is on npm's `latest` tag, all seven packages at one version, so
+**3.1.0** is on npm's `latest` tag, all seven packages at one version, so
 the commands above install it. Coming from 2.2.0, read
 [`CHANGELOG.md`](CHANGELOG.md) first: 3.0.0 is a major release, and its
 entry starts with the change that can silently stop an authentication
