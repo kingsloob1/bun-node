@@ -15,15 +15,28 @@
 export type JsonSchemaLike = Record<string, unknown>;
 
 /**
- * An OpenAPI 3.1 document, as `generateOpenApi` builds it. Typed loosely on
- * purpose: only the version is pinned, and the document is checked against
- * the OpenAPI 3.1 meta-schema in the tests rather than modelled here.
+ * Any OpenAPI 3.1 document, whatever its `3.1.x` patch version: what the
+ * docs entry points take as input (`docsRouter`'s `openapi`, `devTypes()`'s).
+ * A patch release of the specification only clarifies it, so a `3.1.0`
+ * document from another generator — bun-jobs' `JobsApi.openapi()`, say —
+ * is served as it is (#771). Typed loosely, as {@link OpenApiDocument} is.
  */
-export interface OpenApiDocument {
-  /** The OpenAPI version. */
-  openapi: "3.1.2";
+export interface OpenApi31Document {
+  /** The OpenAPI version: any `3.1.x`. */
+  openapi: `3.1.${number}`;
   /** Every other top-level field. */
   [key: string]: unknown;
+}
+
+/**
+ * An OpenAPI 3.1 document, as `generateOpenApi` builds it. Typed loosely on
+ * purpose: only the version is pinned, and the document is checked against
+ * the OpenAPI 3.1 meta-schema in the tests rather than modelled here. An
+ * {@link OpenApi31Document}, so it goes wherever one is taken.
+ */
+export interface OpenApiDocument extends OpenApi31Document {
+  /** The OpenAPI version this generator writes. */
+  openapi: "3.1.2";
 }
 
 /**

@@ -25,7 +25,7 @@ import type {
 import type {
   AsyncApiDocument,
   DevTypesRouter,
-  OpenApiDocument,
+  OpenApi31Document,
   OpenApiOptions,
 } from "@kingsleyweb/bun-common/lib/docs";
 import type { GatewayAsyncApiOptions } from "./gateway-docs";
@@ -76,7 +76,7 @@ export interface DevTypesModuleOptions {
   openapi?:
     | (Omit<OpenApiOptions, "title" | "version"> &
         Partial<Pick<OpenApiOptions, "title" | "version">>)
-    | (() => OpenApiDocument | Promise<OpenApiDocument>);
+    | (() => OpenApi31Document | Promise<OpenApi31Document>);
   /**
    * The AsyncAPI document: `gatewayAsyncApi(app, options)`'s options (title
    * and version optional), or a function returning the document. Default:

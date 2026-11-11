@@ -30,7 +30,7 @@ import type { BunResponse } from "../BunResponse";
 import { BunRouter } from "../BunRouter";
 import { ConfigError } from "../errors";
 import type { RouterHandler } from "../types/general";
-import type { AsyncApiDocument, OpenApiDocument } from "./types";
+import type { AsyncApiDocument, OpenApi31Document } from "./types";
 import type { DocsCdnOptions, DocsPage } from "./viewer";
 import { registerSelfHostedViewer } from "./selfHosted";
 import {
@@ -77,9 +77,11 @@ export interface ViewerConfig<Name extends string = string> {
 export interface DocsRouterOptions {
   /**
    * The OpenAPI document, or a function returning a fresh one (re-read per
-   * request). Required unless `asyncapi` is given.
+   * request). Required unless `asyncapi` is given. Any `3.1.x` document:
+   * `generateOpenApi`'s, or another generator's, such as bun-jobs'
+   * `JobsApi.openapi()` (`3.1.0`).
    */
-  openapi?: OpenApiDocument | (() => OpenApiDocument);
+  openapi?: OpenApi31Document | (() => OpenApi31Document);
   /**
    * The AsyncAPI document, or a function returning one. Default: none, and
    * the route (and its page) is absent. Any realtime/event-driven API OpenAPI

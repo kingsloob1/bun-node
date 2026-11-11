@@ -592,6 +592,7 @@ export type {
   AsyncApiWalkEntry,
   DocWarning,
   MappedAsyncApiScheme,
+  OpenApi31Document,
   OpenApiDocument,
   OpenApiOptions,
   OpenApiPathOptions,
