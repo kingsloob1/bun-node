@@ -1649,7 +1649,12 @@ await checkRejects(
         repeat: { every: 100, endAt: Date.now() - 1_000 },
       },
     ),
-  { name: "ConfigError", message: /no occurrences left/ },
+  // `RepeatExhaustedError`, a `ConfigError` with its own code since 3.0.0.
+  {
+    name: "RepeatExhaustedError",
+    code: "REPEAT_EXHAUSTED",
+    message: /no occurrences left/,
+  },
 );
 
 // immediately.

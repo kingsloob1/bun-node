@@ -136,7 +136,7 @@ subpath is also reachable under `lib/` (`@kingsleyweb/bun-common/lib/sse` is
 | `@kingsleyweb/bun-common/live` | Live cache-tag invalidation; see [Live invalidation](#live-invalidation-kingsleywebbun-commonlive) | no (`lib/live/contract` is) |
 | `@kingsleyweb/bun-common/webrtc` | The WebRTC signalling relay; see [WebRTC signalling](#webrtc-signalling-signallingcontract-and-signallingrelay) | no (`lib/webrtc/signalling` is) |
 | `@kingsleyweb/bun-common/lib/docs` | The OpenAPI and AsyncAPI generators, `toJsonSchema()`, `docsRouter()`, `devTypes()` and `typesHash()`; see [Generating the documents](#generating-the-documents-generateopenapi-and-generateasyncapi) | no |
-| `@kingsleyweb/bun-common/lib/docs/types` | The document types alone (`OpenApiDocument`, `AsyncApiDocument`, `JsonSchemaLike`), type-only | yes |
+| `@kingsleyweb/bun-common/lib/docs/types` | The document types alone (`OpenApiDocument`, `OpenApi31Document`, `AsyncApiDocument`, `JsonSchemaLike`), type-only | yes |
 | `@kingsleyweb/bun-common/lib/multipart`, `…/lib/multipart/storage` | The upload handlers and their types; `DiskStorage` and `MemoryStorage` (also on the root); see [Multipart uploads](#multipart-uploads) | no |
 
 A browser-safe entry imports no Bun or Node API, so a module that declares a
@@ -3385,6 +3385,10 @@ app.use(
 - **A document is a value or a thunk** (`() => document`), the thunk re-read
   per request, so a mounted router can serve the live document of the router
   it is mounted on.
+- **Any OpenAPI `3.1.x` document** (`OpenApi31Document`), not only the
+  `3.1.2` `generateOpenApi` writes: bun-jobs' `api.openapi()` (`3.1.0`), say,
+  goes in with no cast, so one docs area can serve an app's documents and the
+  jobs API's.
 - **`viewer.openapi` / `viewer.asyncapi`** are a viewer's name as a string
   (defaults applying), or `{ name, ...options }` — the remaining properties
   passed through to the viewer's own configuration (spread into the init

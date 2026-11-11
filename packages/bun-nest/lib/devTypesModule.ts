@@ -28,7 +28,7 @@ import type {
 import type {
   AsyncApiDocument,
   DevTypesRouter,
-  OpenApiDocument,
+  OpenApi31Document,
   OpenApiOptions,
 } from "@kingsleyweb/bun-common/lib/docs";
 import type { GatewayAsyncApiOptions } from "./gateway-docs";
@@ -51,7 +51,7 @@ export interface DevTypesModuleDocument {
   openapi?:
     | (Omit<OpenApiOptions, "title" | "version"> &
         Partial<Pick<OpenApiOptions, "title" | "version">>)
-    | (() => OpenApiDocument | Promise<OpenApiDocument>);
+    | (() => OpenApi31Document | Promise<OpenApi31Document>);
   /**
    * Its AsyncAPI document: `gatewayAsyncApi(app, options)`'s options, or a
    * function returning the document. Default: the module's
@@ -101,7 +101,7 @@ export interface DevTypesModuleOptions {
   openapi?:
     | (Omit<OpenApiOptions, "title" | "version"> &
         Partial<Pick<OpenApiOptions, "title" | "version">>)
-    | (() => OpenApiDocument | Promise<OpenApiDocument>);
+    | (() => OpenApi31Document | Promise<OpenApi31Document>);
   /**
    * The AsyncAPI document: `gatewayAsyncApi(app, options)`'s options (title
    * and version optional), or a function returning the document. Default:
@@ -202,7 +202,7 @@ class DevTypesMount implements OnApplicationBootstrap, OnApplicationShutdown {
     /** A source in Nest's terms, as `devTypes()` takes it: the controllers' routes and the gateways. */
     const openApiSource = (
       option: DevTypesModuleOptions["openapi"],
-    ): (() => OpenApiDocument | Promise<OpenApiDocument>) =>
+    ): (() => OpenApi31Document | Promise<OpenApi31Document>) =>
       typeof option === "function"
         ? option
         : () =>

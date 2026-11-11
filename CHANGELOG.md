@@ -4,6 +4,57 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
+## 3.0.1 (2026-11-11)
+
+<!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
+
+A patch release with two fixes, in bun-jobs and in bun-common's document
+types (with bun-nest's). All seven packages move to 3.0.1 together, as they
+always do. It was cut from `v3.0.0` on the maintenance branch
+`releases/3.0.x`, so it carries none of what `develop` gained after 3.0.0
+(#769's `repeatables.update`, #770's named dev documents): those come with
+3.1.0.
+
+```bash
+bun add @kingsleyweb/bun-jobs@3.0.1 @kingsleyweb/bun-common@3.0.1
+```
+
+### Fixes
+
+- **bun-jobs: a re-added repeat series now runs with its new payload**
+  ([#767](https://github.com/kingsloob1/bun-node/issues/767)). Calling
+  `queue.add(name, data, { repeat: { key, … } })` again for an existing
+  series updated its stored definition, as the README says, but every later
+  occurrence kept running with the **old** payload. That happened whenever
+  the schedule was unchanged; with a changed `every` or `cron` the occurrence
+  already pending still ran once with the old data. Now:
+  - each next occurrence takes its name and payload from the series' stored
+    definition, not from the occurrence that just finished;
+  - a re-add replaces the payload of the occurrence already scheduled, while
+    it is still waiting or delayed, whether or not the schedule changed
+    (through `updateJob`, so an occurrence a worker has claimed keeps the
+    data it was claimed with).
+
+  A payload a processor changed with `job.updateData()` on one occurrence no
+  longer carries over to the next: that was one run's data, not the
+  series'. The workaround, `removeRepeatable(key)` before the re-add, is no
+  longer needed. Tested on every backend: memory, file, SQLite, Postgres,
+  MySQL, MariaDB, Redis and MongoDB.
+
+- **bun-common: `docsRouter()` takes the jobs API's document without a
+  cast** ([#771](https://github.com/kingsloob1/bun-node/issues/771)).
+  `docsRouter({ openapi: () => api.openapi() })` was a type error:
+  `JobsApi.openapi()` writes OpenAPI `3.1.0`, and `docsRouter`'s `openapi`
+  took only bun-common's own `OpenApiDocument`, pinned to the `3.1.2` its
+  generator writes. At run time it already served the document. The inputs
+  now take any `3.1.x` document, the new `OpenApi31Document` type:
+  `docsRouter`'s `openapi`, the function form of `devTypes()`'s `openapi`, and
+  bun-nest's `DevTypesModule.forRoot({ openapi })`. `OpenApiDocument`, what
+  `generateOpenApi` returns, stays pinned to `"3.1.2"`, so nothing that reads
+  a generated document changes. bun-jobs' README shows serving its documents
+  through `docsRouter`, and `JobsApi.asyncapi()`, which is `undefined` when
+  the API has no socket, checked first.
+
 ## 3.0.0 (2026-11-10)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
