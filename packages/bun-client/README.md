@@ -164,6 +164,7 @@ const api = createClient<Routes>({ baseUrl: "/api", manifest });
 | `--check` | writes nothing; exits `1` when `--out` (or `--zod`'s file) is missing or differs from what would be written |
 | `--zod <file>` | also writes the [zod module](#the-generated-zod-module-zod) there (needs `--out`, which it imports `Routes` from) |
 | `--zod-flavour <f>` | `mini` (`zod/mini`, the default) or `classic` (`zod`) |
+| `--config <file>` | every target of a targets file instead of one source and `--out`: [Every client in one file](#every-client-in-one-file---config). With `--check`, exit `1` when any is stale |
 
 Exit status: `0` written (or fresh), `1` stale under `--check`, `2` a usage
 error or a source that could not be read.
@@ -213,16 +214,103 @@ bun-client watch: wrote src/api.gen.ts (typesHash 5fe8467b9825878f, 2 ms)
 Run a `BunHttpAdapter` app under `bun --watch` rather than `bun --hot`:
 the adapter does not survive a `bun --hot` re-evaluation yet.
 
+#### One client per frontend
+
+An app serving several frontends from one server (a customer site and a back
+office) can give each a typed client of its own, so that neither bundle
+carries the other's routes. The server serves a filtered document per
+frontend through `devTypes()`'s `documents` (bun-nest:
+`DevTypesModule.forRoot({ documents })`), and one watcher keeps every client
+live:
+
+```bash
+bunx bun-client watch --document customer --out ui/src/api/customer.gen.ts \
+                      --document backoffice --out ui/src/api/backoffice.gen.ts --zod ui/src/api/backoffice.zod.gen.ts
+```
+
+```
+bun-client watch: wrote ui/src/api/customer.gen.ts (document customer, typesHash 3b1f…, 14 ms)
+bun-client watch: wrote ui/src/api/backoffice.gen.ts (document backoffice, typesHash 9c0e…, 9 ms)
+bun-client watch: following http://127.0.0.1:3000/__bun/types (token file …/node_modules/.cache/bun-types/3000.json)
+```
+
+- **Each `--document` starts a target**, and the `--out`, `--zod` and
+  `--zod-flavour` after it, up to the next `--document`, are its. Flags
+  before the first `--document` are a target of the unnamed document, so
+  `--out src/api.gen.ts --document customer --out …` keeps the whole API's
+  client too.
+- **One connection, one file per target.** The channel announces each
+  document's hash by name, and a target is fetched only when its own hash
+  moves: editing a back-office route regenerates the back-office client and
+  leaves the customer one untouched.
+- **A document the server does not serve** (its token file lists the names)
+  waits with a notice, as for a server that is not up yet, until a server
+  serving it starts.
+- **Generating once** (a script, CI's `--check`): a targets file, below, or
+  `bun-client generate --url http://127.0.0.1:3000/__bun/types/customer --out
+  …` per document, with the token read from the same token file.
+
+#### Every client in one file: `--config`
+
+A targets file names every client once, so one command writes them, one
+`--check`s them in CI, and one watcher keeps them live:
+
+```json
+{
+  "module": "server/openapi.ts",
+  "targets": [
+    { "document": "customer", "out": "ui/src/api/customer.gen.ts" },
+    { "document": "backoffice", "out": "ui/src/api/backoffice.gen.ts", "zod": "ui/src/api/backoffice.zod.gen.ts" }
+  ]
+}
+```
+
+```bash
+bunx bun-client generate --config bun-client.json           # write every client
+bunx bun-client generate --config bun-client.json --check   # CI: exit 1 when any is stale
+bunx bun-client watch --config bun-client.json              # development: keep every one live
+```
+
+```ts
+// server/openapi.ts: one filtered document per frontend, exported by name
+export const customer = generateOpenApi(app, { title: "API", version: "1", filter: (route) => !route.path.startsWith("/api/admin") }).document;
+export const backoffice = generateOpenApi(app, { title: "API", version: "1", filter: (route) => route.path.startsWith("/api/admin") }).document;
+```
+
+- **One source**, for `generate`: `module` (with an optional `export`),
+  `url`, or `openapi` (with an optional `asyncapi`).
+- **A target's `document`** is what it is generated from. Under a `module`
+  it is the export of that name, unless the target gives its own `export`;
+  under a `url` (a `devTypes()` endpoint) it is the named document at
+  `<url>/<document>`, sent the token from the token file. Under `openapi` a
+  target cannot name one, since a document file has no named documents. A
+  target without `document` uses the source as it is.
+- **Each target**: `out` (required), and optionally `zod` and `zodFlavour`
+  (`"mini"` or `"classic"`).
+- **`watch --config`** follows the running dev server whatever the source is,
+  each target from the server's document of that name. The file's `url` and
+  `tokenFile` act as `--url` and `--token-file`, and the command line's win.
+- **Paths are relative to the file.** An unknown key, two targets writing one
+  file, or a document named twice is refused (exit `2`, saying what is
+  wrong), so a typo never passes silently. `generate` keeps going past a
+  target that fails, so one run reports every problem, and exits with the
+  worst status: `2` for a source it could not read, `1` for a stale file
+  under `--check`.
+- `--config` replaces the source and target flags, and refuses them beside it.
+
 | Flag | What it does |
 | --- | --- |
-| `--out <file>` | the file to keep generated (required) |
+| `--out <file>` | the file to keep generated (required, once per target) |
+| `--document <name>` | starts a target following the server's named document `<name>` (`devTypes()`'s `documents`); repeat it for several |
+| `--config <file>` | a targets file instead of the target flags (see [Every client in one file](#every-client-in-one-file---config)) |
 | `--url <url>` | the server to follow, when several run: its endpoint or origin |
 | `--token-file <path>` | a token file, or a directory of them, instead of the nearest `node_modules/.cache/bun-types` (a server run from another directory, or a custom `devTypes({ tokenFile })`) |
 | `--zod <file>`, `--zod-flavour <f>` | keeps the zod module in step too, as `generate` writes it |
 
 #### The token file
 
-`devTypes()` writes `{ url, ws, token, pid }`, mode `0600`, to
+`devTypes()` writes `{ url, ws, token, pid }` (and `documents`, the named
+documents' names, when it serves any), mode `0600`, to
 `node_modules/.cache/bun-types/<port>.json` under the server's working
 directory once it listens, and removes it on close and at exit. Both
 commands read the nearest such directory from their own working directory

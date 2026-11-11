@@ -26,6 +26,12 @@ export interface DevServer {
   readonly token: string;
   /** The server's process id, when the file names one; a file whose process is gone is skipped. */
   readonly pid?: number;
+  /**
+   * The named documents it serves (`devTypes()`'s `documents`), each at
+   * `<url>/<name>`; absent when it serves none. A watcher following one by
+   * name checks it here first.
+   */
+  readonly documents?: readonly string[];
   /** The token file it was read from, absolute. */
   readonly file: string;
   /** The token file's modification time (epoch milliseconds): newer first when several match. */
@@ -37,6 +43,8 @@ export const DEFAULT_TOKEN_DIRECTORY = "node_modules/.cache/bun-types";
 
 /** A token `devTypes()` accepts: 16 or more of `[A-Za-z0-9._~-]`. */
 const TOKEN_PATTERN = /^[\w.~-]{16,}$/;
+/** A document name `devTypes()` accepts. */
+export const DOCUMENT_NAME_PATTERN = /^[a-z0-9][\w-]*$/i;
 
 /** Whether `value` is a URL with one of `protocols`. */
 function isUrlWith(value: unknown, protocols: readonly string[]): boolean {
@@ -69,7 +77,7 @@ export function parseTokenFile(
     return undefined;
   }
   if (typeof value !== "object" || value === null) return undefined;
-  const { url, ws, token, pid } = value as Record<string, unknown>;
+  const { url, ws, token, pid, documents } = value as Record<string, unknown>;
   if (
     !isUrlWith(url, ["http:", "https:"]) ||
     !isUrlWith(ws, ["ws:", "wss:"]) ||
@@ -84,6 +92,13 @@ export function parseTokenFile(
     token,
     ...(typeof pid === "number" && Number.isInteger(pid) && pid > 0
       ? { pid }
+      : {}),
+    // A malformed list is read as none: the file is otherwise usable.
+    ...(Array.isArray(documents) &&
+    documents.every(
+      (name) => typeof name === "string" && DOCUMENT_NAME_PATTERN.test(name),
+    )
+      ? { documents: documents as string[] }
       : {}),
     file,
     mtimeMs,

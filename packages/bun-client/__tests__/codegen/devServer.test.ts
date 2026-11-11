@@ -74,6 +74,27 @@ describe("parseTokenFile", () => {
       expect(parseTokenFile(bad, "/f.json")).toBeUndefined();
     }
   });
+
+  it("reads the named documents a server serves (#768); a malformed list is read as none (control: the file is still a server)", () => {
+    const good = {
+      url: "http://127.0.0.1:3000/__bun/types",
+      ws: "ws://127.0.0.1:3000/__bun/types/ws",
+      token: TOKEN,
+      documents: ["customer", "back-office"],
+    };
+    expect(parseTokenFile(JSON.stringify(good), "/f.json")?.documents).toEqual([
+      "customer",
+      "back-office",
+    ]);
+    for (const documents of ["customer", [1], ["a.b"], ["ok", null], {}]) {
+      const server = parseTokenFile(
+        JSON.stringify({ ...good, documents }),
+        "/f.json",
+      );
+      expect(server?.url).toBe(good.url);
+      expect(server?.documents).toBeUndefined();
+    }
+  });
 });
 
 describe("devServerFor", () => {

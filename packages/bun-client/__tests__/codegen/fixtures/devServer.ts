@@ -4,7 +4,10 @@
  * test's own directory (`<dir>/node_modules/.cache/bun-types/<port>.json`,
  * where the CLI looks when run with `cwd: dir`).
  */
-import type { DevTypesRouter } from "@kingsleyweb/bun-common/lib/docs";
+import type {
+  DevTypesOptions,
+  DevTypesRouter,
+} from "@kingsleyweb/bun-common/lib/docs";
 import {
   BunHttpAdapter,
   createTestLogger,
@@ -46,6 +49,7 @@ const Ok = z.object({ ok: z.boolean() });
  * @param options.token The bearer token. Default: a fresh random one per server (as a restarted process has).
  * @param options.tokenFile The token file template, or `false`. Default: {@link tokenFileTemplate}.
  * @param options.routes Paths of extra `GET` routes. Default: none.
+ * @param options.documents Named documents (`devTypes()`'s `documents`). Default: none.
  */
 export async function startDevServer(options: {
   readonly dir: string;
@@ -53,6 +57,7 @@ export async function startDevServer(options: {
   readonly token?: string;
   readonly tokenFile?: string | false;
   readonly routes?: readonly string[];
+  readonly documents?: DevTypesOptions["documents"];
 }): Promise<DevServerFixture> {
   const { logger } = createTestLogger();
   const app = new BunHttpAdapter(0, { logger });
@@ -83,6 +88,9 @@ export async function startDevServer(options: {
         : options.tokenFile,
     openapi: { title: "API", version: "1" },
     asyncapi: { title: "API", version: "1" },
+    ...(options.documents === undefined
+      ? {}
+      : { documents: options.documents }),
   });
   app.use(dev);
   const server = await app.listen(0, "127.0.0.1");

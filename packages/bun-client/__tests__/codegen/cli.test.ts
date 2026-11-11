@@ -15,6 +15,7 @@ import {
   loadDocuments,
   runCli,
 } from "../../lib/codegen/index";
+import { groupWatchTargets } from "../../lib/codegen/cli";
 
 const FIXTURES = join(import.meta.dir, "fixtures");
 const BIN = join(import.meta.dir, "..", "..", "lib", "codegen", "cli.ts");
@@ -598,5 +599,131 @@ describe("usage", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toContain("bun-client generate <source>");
+  });
+});
+
+describe("watch's targets (#768)", () => {
+  /** The flags as the CLI hands them over, from `--name value` pairs. */
+  const flags = (...pairs: string[]) => {
+    const out: { name: string; value: string }[] = [];
+    for (let index = 0; index < pairs.length; index += 2) {
+      out.push({ name: pairs[index]!.slice(2), value: pairs[index + 1]! });
+    }
+    return out;
+  };
+
+  it("groups --out, --zod and --zod-flavour with the --document they follow; those before the first are the unnamed document's", () => {
+    expect(groupWatchTargets(flags("--out", "api.gen.ts"))).toEqual([
+      { document: undefined, out: "api.gen.ts" },
+    ]);
+    expect(
+      groupWatchTargets(
+        flags(
+          "--document",
+          "customer",
+          "--out",
+          "customer.gen.ts",
+          "--zod",
+          "customer.zod.gen.ts",
+          "--document",
+          "backoffice",
+          "--zod-flavour",
+          "classic",
+          "--zod",
+          "backoffice.zod.gen.ts",
+          "--out",
+          "backoffice.gen.ts",
+        ),
+      ),
+    ).toEqual([
+      {
+        document: "customer",
+        out: "customer.gen.ts",
+        zod: "customer.zod.gen.ts",
+      },
+      {
+        document: "backoffice",
+        out: "backoffice.gen.ts",
+        zod: "backoffice.zod.gen.ts",
+        zodFlavour: "classic",
+      },
+    ]);
+    // The unnamed document beside named ones.
+    expect(
+      groupWatchTargets(
+        flags("--out", "all.gen.ts", "--document", "customer", "--out", "c.ts"),
+      ),
+    ).toEqual([
+      { document: undefined, out: "all.gen.ts" },
+      { document: "customer", out: "c.ts" },
+    ]);
+  });
+
+  it.each([
+    [[], "--out is required"],
+    [
+      ["--out", "a.ts", "--out", "b.ts"],
+      "--out is given twice before the first --document",
+    ],
+    [["--document", "c"], "--document c needs an --out after it"],
+    [
+      ["--document", "c", "--out", "a.ts", "--out", "b.ts"],
+      "--out is given twice for --document c",
+    ],
+    [
+      ["--document", "c", "--out", "a.ts", "--document", "c", "--out", "b.ts"],
+      "--document c is given twice",
+    ],
+    [
+      ["--document", "c", "--out", "a.ts", "--document", "d", "--out", "a.ts"],
+      "--out a.ts is named by two targets",
+    ],
+    [
+      ["--document", "a.b", "--out", "a.ts"],
+      "--document a.b is not a document name",
+    ],
+    [
+      ["--document", "ws", "--out", "a.ts"],
+      "--document ws is not a document name",
+    ],
+    [
+      ["--zod", "z.ts", "--document", "c", "--out", "a.ts"],
+      "--out is required",
+    ],
+  ])("refuses %j: %s", (pairs, message) => {
+    expect(groupWatchTargets(flags(...pairs))).toContain(message);
+  });
+
+  it("the command exits 2 on each, naming the problem (control: a --zod-flavour with no --zod in a named target)", async () => {
+    for (const [args, message] of [
+      [["--document", "c"], "--document c needs an --out after it"],
+      [
+        ["--document", "c", "--out", "a.ts", "--zod-flavour", "mini"],
+        "--zod-flavour goes with --zod (--document c)",
+      ],
+      [
+        [
+          "--document",
+          "c",
+          "--out",
+          "a.ts",
+          "--document",
+          "d",
+          "--out",
+          "b.ts",
+          "--zod",
+          "a.ts",
+        ],
+        "a.ts is both one target's --out and another's --zod",
+      ],
+    ] as const) {
+      const stderr: string[] = [];
+      const code = await runCli(["watch", ...args], {
+        stdout: () => {},
+        stderr: (text) => void stderr.push(text),
+      });
+      expect(code).toBe(2);
+      expect(stderr.join("")).toContain(message);
+    }
   });
 });
