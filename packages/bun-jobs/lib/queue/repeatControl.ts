@@ -314,6 +314,54 @@ export async function removePendingOccurrence(
 }
 
 /**
+ * Gives a series' pending occurrence `id` the payload its series was just
+ * re-added with, answering with the occurrence as it now is — or `null` when
+ * nothing was changed: no such job, one of another series, one no longer
+ * pending, a payload already equal, or a driver without
+ * {@link JobsDriver.updateJob}.
+ *
+ * A re-add with an unchanged schedule derives the id of the occurrence already
+ * scheduled, so `addJob` keeps that one, and with it the old payload; one with
+ * a changed schedule leaves the old occurrence in place until it runs. Either
+ * way the payload of the stored definition has to reach it here (#767).
+ *
+ * Only the payload, and only while pending: `onlyIn` is checked in the same
+ * step as the write, so an occurrence a worker has claimed runs with the data
+ * it was claimed with, and the occurrence after it takes the definition's.
+ * Its name and options stay as they were — `updateJob` changes neither, and
+ * removing and re-adding it could run one that finished in between twice.
+ */
+export async function replacePendingPayload(
+  driver: JobsDriver,
+  q: QueueRef,
+  storedKey: string,
+  id: string,
+  data: unknown,
+  now: number,
+): Promise<JobRecord | null> {
+  if (typeof driver.updateJob !== "function" || data === undefined) {
+    return null;
+  }
+
+  const pending = await driver.getJob(q, id);
+  if (
+    !pending ||
+    pending.repeatKey !== storedKey ||
+    (pending.state !== "waiting" && pending.state !== "delayed") ||
+    Bun.deepEquals(pending.data, data)
+  ) {
+    return null;
+  }
+
+  return await driver.updateJob(
+    q,
+    id,
+    { data, onlyIn: ["waiting", "delayed"] },
+    now,
+  );
+}
+
+/**
  * The job record of `definition`'s occurrence due at `runAt`, as every site
  * that schedules one builds it — its id derived from the series and the time,
  * which is what lets several of them converge on one job.

@@ -2101,6 +2101,17 @@ Occurrence ids are derived from the series key and the due time
 occurrence only once. A `jobId` on a repeating job is ignored. Use `key`
 instead; `unique()` in the builder maps to it.
 
+Adding a series again under the same `key` replaces its stored definition,
+and every occurrence is built from that definition, so a new payload, name
+or option set takes effect without removing the series first. The
+occurrence already scheduled when you re-add it takes the new payload too,
+while it is still waiting or delayed. That holds whether or not the schedule
+changed, and `add()` returns it with that payload. Its name and options
+apply from the occurrence after it. An occurrence a worker has already
+claimed runs with the data it was claimed with. A driver without `updateJob`
+cannot change the scheduled occurrence's payload, so on one of those the
+new payload starts with the occurrence after it.
+
 The minute housekeeping heals repeat series, on one worker per queue: whichever
 worker with [`maintenance`](#maintenance-liveness-and-housekeeping) on holds
 the minute sweeps' lease.
