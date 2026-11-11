@@ -160,6 +160,7 @@ import {
   enableRepeatSeries,
   findRepeat,
   isRepeatDisabled,
+  replacePendingPayload,
   requireRepeatControl,
 } from "./repeatControl";
 import { retryJob } from "./retry";
@@ -3527,8 +3528,37 @@ export class BunQueue<
       updatedAt: now,
     });
 
-    const { job, added } = await this.driver.addJob(this.ref, record);
+    const { job: stored, added } = await this.driver.addJob(this.ref, record);
+    let job = stored;
     this.#noteIfScheduled(this.ref, job);
+
+    // A re-add replaces the payload of what is already scheduled (#767). The
+    // occurrence `addJob` kept — the same id, because the schedule did not
+    // move — and the one the series pointed at before, when it did move, both
+    // run after this call, so both carry the payload just stored.
+    if (existing) {
+      if (!added) {
+        job =
+          (await replacePendingPayload(
+            this.driver,
+            this.ref,
+            merged.key,
+            jobId,
+            record.data,
+            now,
+          )) ?? job;
+      }
+      if (existing.nextJobId !== null && existing.nextJobId !== jobId) {
+        await replacePendingPayload(
+          this.driver,
+          this.ref,
+          merged.key,
+          existing.nextJobId,
+          record.data,
+          now,
+        );
+      }
+    }
 
     // The key as the caller named it, here and on the wire: the prefix is
     // storage, not contract.
