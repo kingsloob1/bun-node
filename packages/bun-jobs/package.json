@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-jobs",
   "type": "module",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "private": false,
   "description": "Background work for Bun: run JS/TS files on a schedule or on demand (child process, Worker or in-process) and queue/process jobs across processes and services, over memory, file, Redis, SQL (postgres/mysql/mariadb/sqlite) and MongoDB drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
