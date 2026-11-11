@@ -1152,6 +1152,242 @@ describe("devTypes(): the token file", () => {
   });
 });
 
+describe("devTypes(): named documents (#768)", () => {
+  /** An adapter serving a customer route, an admin route and a health route. */
+  function makeTwoSurfaceAdapter(): BunHttpAdapter {
+    const { logger } = createTestLogger();
+    const adapter = new BunHttpAdapter(0, { logger });
+    for (const route of ["/api/orders", "/api/admin/users", "/health"]) {
+      adapter.get(
+        route,
+        validate({}, { responses: { 200: z.object({ ok: z.boolean() }) } }),
+        (_req, res) => {
+          res.json({ ok: true });
+        },
+      );
+    }
+    return adapter;
+  }
+
+  /** The two surfaces' filters: health in both. */
+  const documents = {
+    customer: {
+      openapi: {
+        filter: (route: { path: string }) =>
+          !route.path.startsWith("/api/admin"),
+      },
+    },
+    backoffice: {
+      openapi: {
+        filter: (route: { path: string }) =>
+          route.path.startsWith("/api/admin") || route.path === "/health",
+      },
+    },
+  };
+
+  /** The OpenAPI paths of a served `{ openapi }` body, minus the dev endpoint's own (hidden). */
+  function pathsOf(body: { openapi: { paths?: Record<string, unknown> } }) {
+    return Object.keys(body.openapi.paths ?? {}).sort();
+  }
+
+  it("serves each at <path>/<name>, filtered, with its own hash and ETag (control: the unnamed one has every route)", async () => {
+    const adapter = makeTwoSurfaceAdapter();
+    const path = uniquePath();
+    const dev = devTypes(adapter, {
+      enabled: true,
+      path,
+      tokenFile: false,
+      documents,
+    });
+    adapter.use(dev);
+    const server = await adapter.listen(0);
+    const base = `http://127.0.0.1:${server.port}${path}`;
+    try {
+      const get = (suffix: string, headers: Record<string, string> = {}) =>
+        fetch(`${base}${suffix}`, {
+          headers: { ...bearer(dev.token), ...headers },
+        });
+      const unnamed = (await (await get("")).json()) as {
+        hash: string;
+        openapi: { paths?: Record<string, unknown> };
+        asyncapi: unknown;
+      };
+      expect(pathsOf(unnamed)).toEqual([
+        "/api/admin/users",
+        "/api/orders",
+        "/health",
+      ]);
+
+      const customerResponse = await get("/customer");
+      expect(customerResponse.status).toBe(200);
+      const customer = (await customerResponse.json()) as typeof unnamed;
+      expect(pathsOf(customer)).toEqual(["/api/orders", "/health"]);
+      expect(customerResponse.headers.get("etag")).toBe(`"${customer.hash}"`);
+      expect(customer.hash).toBe(
+        typesHash({
+          openapi: customer.openapi as never,
+          asyncapi: customer.asyncapi as never,
+        }),
+      );
+
+      const backoffice = (await (
+        await get("/backoffice")
+      ).json()) as typeof unnamed;
+      expect(pathsOf(backoffice)).toEqual(["/api/admin/users", "/health"]);
+      expect(new Set([unnamed.hash, customer.hash, backoffice.hash]).size).toBe(
+        3,
+      );
+
+      // Each document alone, with the document's own ETag.
+      const alone = await get("/backoffice/openapi.json");
+      expect(alone.headers.get("etag")).toBe(`"${backoffice.hash}"`);
+      expect(
+        Object.keys(((await alone.json()) as { paths: object }).paths).sort(),
+      ).toEqual(["/api/admin/users", "/health"]);
+      // An omitted asyncapi is the unnamed document's.
+      expect(await (await get("/customer/asyncapi.json")).json()).toEqual(
+        unnamed.asyncapi,
+      );
+      // 304 on the named document's own hash; the unnamed one's is stale.
+      expect(
+        (await get("/customer", { "if-none-match": `"${customer.hash}"` }))
+          .status,
+      ).toBe(304);
+      expect(
+        (await get("/customer", { "if-none-match": `"${unnamed.hash}"` }))
+          .status,
+      ).toBe(200);
+      // A name it does not serve answers as a path nothing serves; and the
+      // token is still required on a named document.
+      const unknown = await get("/nope");
+      const nothing = await fetch(`http://127.0.0.1:${server.port}/nothing`);
+      expect(unknown.status).toBe(nothing.status);
+      expect((await fetch(`${base}/customer`)).status).toBe(nothing.status);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("refuses a malformed or reserved document name at construction (control: letters, digits, _ and -)", () => {
+    const app = makeRouter();
+    for (const name of ["ws", "a.b", "", "-x", "a/b", "a b"]) {
+      expect(() =>
+        devTypes(app, {
+          enabled: true,
+          path: uniquePath(),
+          tokenFile: false,
+          documents: { [name]: {} },
+        }),
+      ).toThrow(ConfigError);
+    }
+    expect(() =>
+      devTypes(app, {
+        enabled: true,
+        path: uniquePath(),
+        tokenFile: false,
+        documents: { customer_2: {}, "Back-Office": {}, "9": {} },
+      }),
+    ).not.toThrow();
+  });
+
+  it("greets and announces each document's hash by name; a change to one surface moves only its hash", async () => {
+    const adapter = makeTwoSurfaceAdapter();
+    const path = uniquePath();
+    const dev = devTypes(adapter, {
+      enabled: true,
+      path,
+      tokenFile: false,
+      documents,
+    });
+    adapter.use(dev);
+    const server = await adapter.listen(0);
+    const base = `http://127.0.0.1:${server.port}${path}`;
+    const hashOf = async (suffix: string) =>
+      (
+        (await (
+          await fetch(`${base}${suffix}`, { headers: bearer(dev.token) })
+        ).json()) as { hash: string }
+      ).hash;
+    try {
+      const { client, frames } = await openWatcher(
+        `ws://127.0.0.1:${server.port}${path}/ws`,
+        dev.token,
+      );
+      await until(() => frames.length >= 1);
+      const before = {
+        hash: await hashOf(""),
+        customer: await hashOf("/customer"),
+        backoffice: await hashOf("/backoffice"),
+      };
+      expect(frames[0]).toEqual({
+        type: "hello",
+        data: {
+          version: 1,
+          hash: before.hash,
+          documents: {
+            customer: before.customer,
+            backoffice: before.backoffice,
+          },
+        },
+      });
+
+      // An admin route: the unnamed and back-office documents move, the
+      // customer one does not.
+      adapter.get(
+        "/api/admin/audit",
+        validate({}, { responses: { 200: z.object({ ok: z.boolean() }) } }),
+        (_req, res) => {
+          res.json({ ok: true });
+        },
+      );
+      await until(() => frames.length >= 2);
+      const changed = frames[1] as {
+        type: string;
+        data: { hash: string; documents: Record<string, string> };
+      };
+      expect(changed.type).toBe("changed");
+      expect(changed.data.hash).toBe(await hashOf(""));
+      expect(changed.data.hash).not.toBe(before.hash);
+      expect(changed.data.documents.customer).toBe(before.customer);
+      expect(changed.data.documents.backoffice).toBe(
+        await hashOf("/backoffice"),
+      );
+      expect(changed.data.documents.backoffice).not.toBe(before.backoffice);
+      client.close();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("names them in the token file (control: without documents the file has no documents key)", async () => {
+    const adapter = makeTwoSurfaceAdapter();
+    const path = uniquePath();
+    const dev = devTypes(adapter, {
+      enabled: true,
+      path,
+      tokenFile: tokenFileIn(scratch),
+      documents,
+    });
+    adapter.use(dev);
+    const server = await adapter.listen(0);
+    try {
+      const content = (await Bun.file(dev.tokenFile!).json()) as Record<
+        string,
+        unknown
+      >;
+      expect(content).toEqual({
+        url: `http://127.0.0.1:${server.port}${path}`,
+        ws: `ws://127.0.0.1:${server.port}${path}/ws`,
+        token: dev.token,
+        pid: process.pid,
+        documents: ["customer", "backoffice"],
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+});
+
 describe("devTypes(): the token file and signals", () => {
   const FIXTURE = join(import.meta.dir, "fixtures/devTypes.signal.fixture.ts");
 

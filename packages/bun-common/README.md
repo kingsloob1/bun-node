@@ -3449,7 +3449,8 @@ await app.listen(3000); // writes node_modules/.cache/bun-types/3000.json
 |---|---|
 | `GET <path>` | `200` with `{ hash, openapi, asyncapi }`, `ETag: "<hash>"`, `Cache-Control: no-store`; `304` on a matching `If-None-Match` |
 | `GET <path>/openapi.json`, `GET <path>/asyncapi.json` | each document alone, same `ETag`, for third-party tools |
-| `<path>/ws` | a WebSocket channel (subprotocol `bun-types.v1`, which the client must offer): `hello { version, hash }` on connect and in answer to `ping`; `changed { hash, at }` whenever the hash moves. It carries hashes, never documents |
+| `GET <path>/<name>`, and `/openapi.json`, `/asyncapi.json` under it | a named document (`documents`, below), the same way, with its own hash as its `ETag` |
+| `<path>/ws` | a WebSocket channel (subprotocol `bun-types.v1`, which the client must offer): `hello { version, hash, documents? }` on connect and in answer to `ping`; `changed { hash, at, documents? }` whenever a hash moves. `hash` is the unnamed document's; `documents` holds each named document's hash, by name, and is absent when there are none. It carries hashes, never documents |
 
 The documents are exactly `generateOpenApi(app, …)`'s and
 `generateAsyncApi(app, …)`'s, and the hash is `typesHash()`'s. `openapi` and
@@ -3458,6 +3459,40 @@ The documents are exactly `generateOpenApi(app, …)`'s and
 another source plugs in (bun-nest:
 `() => gatewayAsyncApi(app)`). The endpoint's own routes and channel are
 hidden from both documents.
+
+**One client per frontend: `documents`.** An app serving two frontends (a
+customer site and a back office, say) wants a typed client for each, generated
+from a filtered document, so that neither bundle carries the other's routes:
+a generated client's manifest lists every route it knows. `documents` serves
+named documents beside the unnamed one, each with its own `openapi` and
+`asyncapi` (either omitted is the unnamed document's), and one watcher keeps
+every client live:
+
+```ts
+app.use(
+  devTypes(app, {
+    enabled: process.env.NODE_ENV !== "production",
+    documents: {
+      customer: { openapi: { filter: (route) => !route.path.startsWith("/api/admin") } },
+      backoffice: { openapi: { filter: (route) => route.path.startsWith("/api/admin") || route.path === "/health" } },
+    },
+  }),
+);
+```
+
+```bash
+bunx bun-client watch --document customer --out ui/src/api/customer.gen.ts \
+                      --document backoffice --out ui/src/api/backoffice.gen.ts
+```
+
+Each is served at `<path>/<name>`, is built with the others only when the
+routes change, and has a hash of its own: the channel announces every hash by
+name, so editing a back-office route regenerates only the back-office client.
+A name is letters, digits, `_` and `-`, starting with a letter or digit, and
+not `ws`; anything else is a `ConfigError`. The token file lists the names, so
+the watcher can tell a server that does not serve one. `bun-client generate
+--url <origin><path>/<name>` generates one of them once, with the token from
+the same token file.
 
 **The security model: fail closed.** This endpoint describes your whole API,
 so it is built to be absent unless every condition holds:
@@ -3485,7 +3520,8 @@ so it is built to be absent unless every condition holds:
 - **The token file** is how a watcher on the same machine finds the server:
   `node_modules/.cache/bun-types/<port>.json` under the working directory
   (`tokenFile` moves it; `<port>` is replaced; `false` writes none), holding
-  `{ url, ws, token, pid }`. It is written atomically (a temporary file
+  `{ url, ws, token, pid }`, plus `documents` (the named documents' names)
+  when there are any. It is written atomically (a temporary file
   renamed over it), mode `0600`, in a directory created `0700`, when the
   server listens, and removed when it closes, at process exit and on `SIGTERM`
   or `SIGINT` (the process still ends with that signal's exit code, 143 or 130,

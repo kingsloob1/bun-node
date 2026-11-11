@@ -65,6 +65,9 @@ export type { RouteDoc, RouteFileDoc, RouteResponseDoc } from "./routeDoc";
 export { typesHash } from "./hash";
 export {
   devTypes,
+  type DevTypesAsyncApiSource,
+  type DevTypesDocumentOptions,
+  type DevTypesOpenApiSource,
   type DevTypesOptions,
   type DevTypesRouter,
 } from "./devTypes";

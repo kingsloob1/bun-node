@@ -266,6 +266,167 @@ describe("bun-client watch --zod (PR-C4)", () => {
   });
 });
 
+describe("bun-client watch: several targets (#768)", () => {
+  /** A customer surface and a back office, each its own document; /users/:id is in both. */
+  const documents = {
+    customer: {
+      openapi: {
+        title: "API",
+        version: "1",
+        filter: (route: { path: string }) =>
+          !route.path.startsWith("/api/admin"),
+      },
+    },
+    backoffice: {
+      openapi: {
+        title: "API",
+        version: "1",
+        filter: (route: { path: string }) =>
+          route.path.startsWith("/api/admin") || route.path === "/users/:id",
+      },
+    },
+  };
+  const customerOut = () => join(dir, "src", "customer.gen.ts");
+  const backofficeOut = () => join(dir, "src", "backoffice.gen.ts");
+  const read = async (file: string) => {
+    try {
+      return await readFile(file, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  /** `bun-client watch` with one target per surface. */
+  function watchBoth(...extra: string[]): Watcher {
+    const controller = new AbortController();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const done = runCli(
+      [
+        "watch",
+        "--document",
+        "customer",
+        "--out",
+        "src/customer.gen.ts",
+        "--document",
+        "backoffice",
+        "--out",
+        "src/backoffice.gen.ts",
+        ...extra,
+      ],
+      {
+        cwd: dir,
+        signal: controller.signal,
+        stdout: (text) => void stdout.push(...text.split("\n").filter(Boolean)),
+        stderr: (text) => void stderr.push(text),
+      },
+    );
+    const stop = () => {
+      controller.abort();
+      return done;
+    };
+    cleanups.push(async () => {
+      await stop();
+    });
+    return { stdout, stderr, done, stop };
+  }
+
+  it("keeps one file per document, each filtered; a change to one surface rewrites only its file (control: the other keeps its inode and mtime)", async () => {
+    const server = await startDevServer({
+      dir,
+      routes: ["/api/orders", "/api/admin/users"],
+      documents,
+    });
+    cleanups.push(server.close);
+    const watcher = watchBoth();
+    await until(
+      "both files",
+      async () =>
+        (await read(customerOut())).endsWith(LAST_LINE) &&
+        (await read(backofficeOut())).endsWith(LAST_LINE),
+    );
+    const customer = await read(customerOut());
+    const backoffice = await read(backofficeOut());
+    expect(customer).toContain('"GET /api/orders"');
+    expect(customer).toContain('"GET /users/:id"');
+    expect(customer).not.toContain("/api/admin");
+    expect(backoffice).toContain('"GET /api/admin/users"');
+    expect(backoffice).toContain('"GET /users/:id"');
+    expect(backoffice).not.toContain("/api/orders");
+    // Each file records its own document's hash, as served.
+    expect(hashOf(customer)).toBe(
+      await servedHash(`${server.url}/customer`, server.dev.token!),
+    );
+    expect(hashOf(backoffice)).toBe(
+      await servedHash(`${server.url}/backoffice`, server.dev.token!),
+    );
+    expect(
+      watcher.stdout.some((line) =>
+        line.includes(
+          "wrote src/customer.gen.ts (document customer, typesHash",
+        ),
+      ),
+    ).toBe(true);
+    await until("the channel", () =>
+      watcher.stdout.some((line) => line.includes("following")),
+    );
+    const customerBefore = statSync(customerOut());
+
+    // A back-office route: only the back-office file is regenerated.
+    server.addRoute("/api/admin/audit");
+    await until("the back-office rewrite", async () =>
+      (await read(backofficeOut())).includes('"GET /api/admin/audit"'),
+    );
+    // The customer document's hash did not move, so it was not fetched.
+    await Bun.sleep(300);
+    const customerAfter = statSync(customerOut());
+    expect(customerAfter.ino).toBe(customerBefore.ino);
+    expect(customerAfter.mtimeMs).toBe(customerBefore.mtimeMs);
+    expect(
+      watcher.stdout.filter((line) => line.includes("src/customer.gen.ts")),
+    ).toHaveLength(1);
+
+    // A customer route: now the customer file is regenerated.
+    server.addRoute("/api/cart");
+    await until("the customer rewrite", async () =>
+      (await read(customerOut())).includes('"GET /api/cart"'),
+    );
+    expect(await read(backofficeOut())).not.toContain("/api/cart");
+    expect(await watcher.stop()).toBe(0);
+    expect(watcher.stderr).toEqual([]);
+  });
+
+  it("waits, with a notice, for a server that does not serve a document it names (control: a server that does is followed)", async () => {
+    const server = await startDevServer({
+      dir,
+      routes: ["/api/orders"],
+      documents: { customer: documents.customer },
+    });
+    cleanups.push(server.close);
+    const watcher = watchBoth();
+    await until("the notice", () =>
+      watcher.stderr.some((line) =>
+        line.includes("has no document named backoffice (it serves customer)"),
+      ),
+    );
+    expect(await read(customerOut())).toBe("");
+    await server.close();
+
+    // The same app restarted with both documents is followed.
+    const both = await startDevServer({
+      dir,
+      routes: ["/api/orders", "/api/admin/users"],
+      documents,
+    });
+    cleanups.push(both.close);
+    await until(
+      "both files",
+      async () =>
+        (await read(customerOut())).endsWith(LAST_LINE) &&
+        (await read(backofficeOut())).endsWith(LAST_LINE),
+    );
+  });
+});
+
 describe("bun-client watch: restarts and tokens", () => {
   it("follows a restart with a new token and port: reconnects, re-reads the token file, regenerates (control: the old token is refused by the new server)", async () => {
     const path = "/__bun/restart";

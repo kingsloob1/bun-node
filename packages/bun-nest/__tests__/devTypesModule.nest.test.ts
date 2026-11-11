@@ -500,3 +500,100 @@ describe("DevTypesModule: bun-client watch", () => {
     expect(stderr).toEqual([]);
   }, 30_000);
 });
+
+describe("DevTypesModule: named documents (#768)", () => {
+  it("serves each filtered document, and one watcher keeps a file per document (control: the unnamed one has every route)", async () => {
+    const path = uniquePath();
+    const nest = await bootNest([
+      DevTypesModule.forRoot({
+        enabled: true,
+        path,
+        token: TOKEN,
+        tokenFile: tokenFileIn(dir),
+        documents: {
+          reader: { openapi: { filter: (route) => route.method === "GET" } },
+          writer: { openapi: { filter: (route) => route.method === "POST" } },
+        },
+      }),
+    ]);
+    const paths = async (suffix: string) => {
+      const response = await fetch(`${nest.base}${path}${suffix}`, {
+        headers: bearer,
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        openapi: { paths: Record<string, Record<string, unknown>> };
+      };
+      return Object.entries(body.openapi.paths)
+        .flatMap(([at, item]) =>
+          Object.keys(item).map((method) => `${method.toUpperCase()} ${at}`),
+        )
+        .sort();
+    };
+    expect(await paths("")).toEqual(["GET /users/{id}", "POST /users"]);
+    expect(await paths("/reader")).toEqual(["GET /users/{id}"]);
+    expect(await paths("/writer")).toEqual(["POST /users"]);
+    // The token file names them, for the watcher.
+    const tokenFile = join(
+      dir,
+      "node_modules",
+      ".cache",
+      "bun-types",
+      `${nest.port}.json`,
+    );
+    expect(
+      (JSON.parse(readFileSync(tokenFile, "utf8")) as { documents: string[] })
+        .documents,
+    ).toEqual(["reader", "writer"]);
+
+    const controller = new AbortController();
+    const stderr: string[] = [];
+    const done = runCli(
+      [
+        "watch",
+        "--document",
+        "reader",
+        "--out",
+        "src/reader.gen.ts",
+        "--document",
+        "writer",
+        "--out",
+        "src/writer.gen.ts",
+      ],
+      {
+        cwd: dir,
+        signal: controller.signal,
+        stdout: () => {},
+        stderr: (text) => void stderr.push(text),
+      },
+    );
+    cleanups.push(async () => {
+      controller.abort();
+      await done;
+    });
+    const read = async (name: string) => {
+      try {
+        return await readFile(join(dir, "src", name), "utf8");
+      } catch {
+        return "";
+      }
+    };
+    const deadline = Date.now() + 20_000;
+    while (
+      !(await read("reader.gen.ts")).includes("satisfies RouteManifest") ||
+      !(await read("writer.gen.ts")).includes("satisfies RouteManifest")
+    ) {
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for both files: ${stderr.join("")}`);
+      }
+      await Bun.sleep(20);
+    }
+    expect(await read("reader.gen.ts")).toContain('"GET /users/:id"');
+    expect(await read("reader.gen.ts")).not.toContain('"POST /users"');
+    expect(await read("writer.gen.ts")).toContain('"POST /users"');
+    expect(await read("writer.gen.ts")).not.toContain('"GET /users/:id"');
+    controller.abort();
+    expect(await done).toBe(0);
+    expect(stderr).toEqual([]);
+  }, 30_000);
+});

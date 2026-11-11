@@ -2859,7 +2859,30 @@ bunx bun-client watch --out src/api.gen.ts   # beside it: regenerates on every c
   and removed by `app.close()`; `tokenFile` moves it, or `false` writes none.
 - Options: `enabled`, `path`, `token`, `allowRemote`, `tokenFile`, and
   `openapi` / `asyncapi` — the generators' options (`title`, `version`, …;
-  default `"API"` and `"dev"`), or a function returning the document.
+  default `"API"` and `"dev"`), or a function returning the document — and
+  `documents`, below.
+- **One client per frontend: `documents`.** Named documents beside the
+  unnamed one, each filtered from the same app, each at `<path>/<name>` with
+  a hash of its own (bun-common's `devTypes()` `documents`). One watcher keeps
+  a client per frontend live, and editing a controller regenerates only the
+  clients whose document it changes. Each document takes `openapi` and
+  `asyncapi` like the module (either omitted is the module's); `filter` sees
+  each route as the adapter lists it, global prefix included:
+
+  ```ts
+  DevTypesModule.forRoot({
+    enabled: process.env.NODE_ENV !== "production",
+    documents: {
+      customer: { openapi: { filter: (route) => !route.path.startsWith("/api/admin") } },
+      backoffice: { openapi: { filter: (route) => route.path.startsWith("/api/admin") || route.path === "/health" } },
+    },
+  })
+  ```
+
+  ```bash
+  bunx bun-client watch --document customer --out ui/src/api/customer.gen.ts \
+                        --document backoffice --out ui/src/api/backoffice.gen.ts
+  ```
 
 ### `@Invalidates`: live invalidation
 

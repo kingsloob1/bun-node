@@ -9,6 +9,8 @@
  */
 export { runCli } from "./cli";
 export type { CliIo } from "./cli";
+export { parseClientConfig, readClientConfig } from "./config";
+export type { ClientConfig, ClientConfigTarget } from "./config";
 export { documentsHash } from "./hash";
 export { loadDocuments } from "./load";
 export type { DocumentSource, LoadedDocuments } from "./load";

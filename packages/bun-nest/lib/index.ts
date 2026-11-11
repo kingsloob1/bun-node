@@ -70,7 +70,11 @@ export {
 } from "./throttler/options";
 export { UploadedFile, UploadedFiles } from "./decorators";
 export { Describe } from "./describe";
-export { DevTypesModule, type DevTypesModuleOptions } from "./devTypesModule";
+export {
+  DevTypesModule,
+  type DevTypesModuleDocument,
+  type DevTypesModuleOptions,
+} from "./devTypesModule";
 export { gatewayAsyncApi, type GatewayAsyncApiOptions } from "./gateway-docs";
 export { Invalidates } from "./invalidates";
 export { channelObservable, type ChannelObservableOptions } from "./sseChannel";

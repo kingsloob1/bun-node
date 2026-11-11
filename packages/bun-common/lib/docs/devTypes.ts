@@ -21,14 +21,20 @@
  *   `Cache-Control: no-store`; `304` on a matching `If-None-Match`.
  *   `GET <path>/openapi.json` and `GET <path>/asyncapi.json` serve each
  *   document alone, with the same `ETag`, for third-party tools.
+ * - **Named documents** (`documents`, issue #768): each also at
+ *   `GET <path>/<name>`, `<path>/<name>/openapi.json` and
+ *   `<path>/<name>/asyncapi.json`, the same way, with its own hash — one
+ *   typed client per frontend, each from a filtered document, kept live by
+ *   one server and one watcher.
  * - `<path>/ws`: a WebSocket channel (a `defineChannel`, subprotocol
  *   `bun-types.v1`, which the client must offer). The server sends
- *   `hello { version, hash }` on connect and in answer to a `ping`, and
- *   `changed { hash, at }` whenever the hash moves. It carries hashes, never
- *   documents.
+ *   `hello { version, hash, documents? }` on connect and in answer to a
+ *   `ping`, and `changed { hash, at, documents? }` whenever a hash moves:
+ *   `hash` is the unnamed document's, `documents` each named one's, by name
+ *   (absent with none). It carries hashes, never documents.
  * - A token file (default `node_modules/.cache/bun-types/<port>.json`, mode
- *   `0600`) holds the URL and the bearer token, so a watcher on the same
- *   machine finds a running server.
+ *   `0600`) holds the URL, the bearer token and the named documents' names,
+ *   so a watcher on the same machine finds a running server.
  *
  * **Fail closed.** It does nothing unless `enabled` is exactly `true`;
  * `NODE_ENV=production` with `enabled: true` is a {@link ConfigError}; and
@@ -85,6 +91,35 @@ import { attachRouteDoc } from "./routeDoc";
  * Options and the returned router
  * ------------------------------------------------------------------ */
 
+/** The OpenAPI source of a dev document: `generateOpenApi(app, options)`'s options, or a function returning the document. */
+export type DevTypesOpenApiSource =
+  | (Omit<OpenApiOptions, "title" | "version"> &
+      Partial<Pick<OpenApiOptions, "title" | "version">>)
+  | (() => OpenApiDocument | Promise<OpenApiDocument>);
+
+/** The AsyncAPI source of a dev document: `generateAsyncApi(app, options)`'s options, or a function returning the document. */
+export type DevTypesAsyncApiSource =
+  | (Omit<AsyncApiOptions, "title" | "version"> &
+      Partial<Pick<AsyncApiOptions, "title" | "version">>)
+  | (() => AsyncApiDocument | Promise<AsyncApiDocument>);
+
+/** One named document of {@link DevTypesOptions.documents}. */
+export interface DevTypesDocumentOptions {
+  /**
+   * Its OpenAPI document, as {@link DevTypesOptions.openapi} takes it — most
+   * often `{ filter }`, the routes one frontend calls. Default: the unnamed
+   * document's source ({@link DevTypesOptions.openapi}).
+   */
+  openapi?: DevTypesOpenApiSource;
+  /**
+   * Its AsyncAPI document, as {@link DevTypesOptions.asyncapi} takes it.
+   * Default: the unnamed document's source ({@link DevTypesOptions.asyncapi}),
+   * so a filtered client still gets the app's channels unless this says
+   * otherwise.
+   */
+  asyncapi?: DevTypesAsyncApiSource;
+}
+
 /** Options for {@link devTypes}. */
 export interface DevTypesOptions {
   /**
@@ -127,27 +162,43 @@ export interface DevTypesOptions {
    * `generateOpenApi(app, { title: "API", version: "dev" })`. Either way the
    * document is rebuilt only when the app's routes change.
    */
-  openapi?:
-    | (Omit<OpenApiOptions, "title" | "version"> &
-        Partial<Pick<OpenApiOptions, "title" | "version">>)
-    | (() => OpenApiDocument | Promise<OpenApiDocument>);
+  openapi?: DevTypesOpenApiSource;
   /**
    * The AsyncAPI document's source: `generateAsyncApi(app, options)`'s
    * options (`title` and `version` optional), or a function returning the
    * document (bun-nest: `() => gatewayAsyncApi(app)`). Default:
    * `generateAsyncApi(app, { title: "API", version: "dev" })`.
    */
-  asyncapi?:
-    | (Omit<AsyncApiOptions, "title" | "version"> &
-        Partial<Pick<AsyncApiOptions, "title" | "version">>)
-    | (() => AsyncApiDocument | Promise<AsyncApiDocument>);
+  asyncapi?: DevTypesAsyncApiSource;
+  /**
+   * Named documents served beside the unnamed one, each at `<path>/<name>`
+   * (and `<path>/<name>/openapi.json`, `<path>/<name>/asyncapi.json`) with a
+   * hash of its own, which the change channel announces by name: one typed
+   * client per frontend, each generated from a filtered document (`bun-client
+   * watch --document <name> --out <file>`, several in one watcher). A name is
+   * letters, digits, `_` and `-`, starting with a letter or digit, and not
+   * `ws`. Each is built with the others, only when the app's routes change.
+   * Default: none.
+   *
+   * ```ts
+   * devTypes(app, {
+   *   enabled: true,
+   *   documents: {
+   *     customer: { openapi: { filter: (op) => !op.path.startsWith("/api/admin") } },
+   *     backoffice: { openapi: { filter: (op) => op.path.startsWith("/api/admin") } },
+   *   },
+   * });
+   * ```
+   */
+  documents?: Record<string, DevTypesDocumentOptions>;
   /**
    * Where the token file is written once the server listens, relative to
    * the working directory; `<port>` is replaced by the server's port. `false`
    * writes none (give the watcher the URL and token yourself). Default:
    * `"node_modules/.cache/bun-types/<port>.json"`. Written atomically (a
    * temporary file renamed over it) with mode `0600` in a directory created
-   * `0700`; holds `{ url, ws, token, pid }`. Removed by {@link
+   * `0700`; holds `{ url, ws, token, pid }`, and `documents` (the named
+   * documents' names) when there are any. Removed by {@link
    * DevTypesRouter.close}, on the adapter's `close`, and at process exit,
    * and on `SIGTERM` and `SIGINT` (the process then still ends with the
    * signal's own exit code, unless the app has a listener of its own, which
@@ -211,21 +262,37 @@ const DEFAULT_TOKEN_FILE = "node_modules/.cache/bun-types/<port>.json";
 const POLL_MS = 100;
 /** A token: what a subprotocol may carry, long enough to guess at no rate. */
 const TOKEN_PATTERN = /^[\w.~-]{16,}$/;
+/** A named document's name: a path segment with no dot, so it never meets `openapi.json`. */
+const DOCUMENT_NAME_PATTERN = /^[a-z0-9][\w-]*$/i;
+/** Names a document cannot take: the channel's segment. */
+const RESERVED_DOCUMENT_NAMES = new Set(["ws"]);
 
 /** `hello`: the protocol version and the current hash. */
 interface HelloData {
   /** The protocol version ({@link PROTOCOL_VERSION}). */
   version: number;
-  /** The documents' current hash. */
+  /** The unnamed document's current hash. */
   hash: string;
+  /** Each named document's current hash, by name; absent when there are none. */
+  documents?: Record<string, string>;
 }
 
 /** `changed`: the new hash and when it was seen (epoch milliseconds). */
 interface ChangedData {
-  /** The documents' new hash. */
+  /** The unnamed document's new hash. */
   hash: string;
   /** When the change was seen, in epoch milliseconds. */
   at: number;
+  /** Each named document's hash now, by name; absent when there are none. */
+  documents?: Record<string, string>;
+}
+
+/** Whether `value` is `{ [name]: string }`. */
+function isHashMap(value: unknown): value is Record<string, string> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((hash) => typeof hash === "string")
+  );
 }
 
 /** Whether `value` is a plain object. */
@@ -237,9 +304,25 @@ const Hello = toStandardSchema<HelloData>(
   (value) =>
     isRecord(value) &&
     typeof value.version === "number" &&
-    typeof value.hash === "string"
-      ? { value: { version: value.version, hash: value.hash } }
-      : { issues: [{ message: "hello is { version: number, hash: string }" }] },
+    typeof value.hash === "string" &&
+    (value.documents === undefined || isHashMap(value.documents))
+      ? {
+          value: {
+            version: value.version,
+            hash: value.hash,
+            ...(value.documents === undefined
+              ? {}
+              : { documents: value.documents }),
+          },
+        }
+      : {
+          issues: [
+            {
+              message:
+                "hello is { version: number, hash: string, documents?: { [name]: string } }",
+            },
+          ],
+        },
   { vendor: "bun-common" },
 );
 
@@ -247,9 +330,25 @@ const Changed = toStandardSchema<ChangedData>(
   (value) =>
     isRecord(value) &&
     typeof value.hash === "string" &&
-    typeof value.at === "number"
-      ? { value: { hash: value.hash, at: value.at } }
-      : { issues: [{ message: "changed is { hash: string, at: number }" }] },
+    typeof value.at === "number" &&
+    (value.documents === undefined || isHashMap(value.documents))
+      ? {
+          value: {
+            hash: value.hash,
+            at: value.at,
+            ...(value.documents === undefined
+              ? {}
+              : { documents: value.documents }),
+          },
+        }
+      : {
+          issues: [
+            {
+              message:
+                "changed is { hash: string, at: number, documents?: { [name]: string } }",
+            },
+          ],
+        },
   { vendor: "bun-common" },
 );
 
@@ -284,7 +383,7 @@ interface Hub {
   sockets: Set<ServerWebSocket<unknown>>;
   /** The sockets greeted with `hello`, which `changed` goes to. */
   greeted: WeakSet<ServerWebSocket<unknown>>;
-  /** The hash last announced (in a `hello` or a `changed`). */
+  /** The hashes last announced (in a `hello` or a `changed`), as one key: the unnamed document's and each named one's. */
   announced: string | undefined;
   /** The `devTypes()` instance answering for the path now (the latest). */
   owner: Instance | undefined;
@@ -528,11 +627,9 @@ function writeAtomically(file: string, content: string): void {
  * devTypes()
  * ------------------------------------------------------------------ */
 
-/** One build of the documents. */
-interface Built {
-  /** The route-set version the build was taken at. */
-  version: string;
-  /** The documents' hash. */
+/** One document's build: its hash and its three views. */
+interface BuiltDocument {
+  /** The document's hash. */
   hash: string;
   /** `{ hash, openapi, asyncapi }` as JSON. */
   body: string;
@@ -540,6 +637,18 @@ interface Built {
   openapiBody: string;
   /** The AsyncAPI document as JSON. */
   asyncapiBody: string;
+}
+
+/** One build of the documents: the unnamed one's fields, plus each named one. */
+interface Built extends BuiltDocument {
+  /** The route-set version the build was taken at. */
+  version: string;
+  /** Each named document's build, by name. */
+  named: Map<string, BuiltDocument>;
+  /** Each named document's hash, by name; `undefined` when there are none. */
+  hashes: Record<string, string> | undefined;
+  /** Every hash in one string: what the hub compares to decide a change was announced. */
+  signature: string;
 }
 
 /** A random token: 32 bytes, base64url (43 characters). */
@@ -607,6 +716,18 @@ export function devTypes(
       "devTypes(): `token` must be at least 16 characters of A-Z a-z 0-9 . _ ~ -",
     );
   }
+  const namedOptions = Object.entries(options.documents ?? {});
+  for (const [name] of namedOptions) {
+    if (
+      !DOCUMENT_NAME_PATTERN.test(name) ||
+      RESERVED_DOCUMENT_NAMES.has(name)
+    ) {
+      throw new ConfigError(
+        "devTypes(): a `documents` name is letters, digits, `_` and `-`, starting with a letter or digit, and not `ws`",
+        { name },
+      );
+    }
+  }
   const wsPath = `${path}/ws`;
   const allowRemote = options.allowRemote === true;
   const tokenFileTemplate =
@@ -616,26 +737,43 @@ export function devTypes(
   const logger = app.logger;
 
   /* The documents' sources. */
-  const openApiOption = options.openapi;
-  const openApiSource =
-    typeof openApiOption === "function"
-      ? openApiOption
+  const openApiSourceOf = (
+    option: DevTypesOpenApiSource | undefined,
+  ): (() => OpenApiDocument | Promise<OpenApiDocument>) =>
+    typeof option === "function"
+      ? option
       : () =>
           generateOpenApi(app, {
             title: "API",
             version: "dev",
-            ...openApiOption,
+            ...option,
           }).document;
-  const asyncApiOption = options.asyncapi;
-  const asyncApiSource =
-    typeof asyncApiOption === "function"
-      ? asyncApiOption
+  const asyncApiSourceOf = (
+    option: DevTypesAsyncApiSource | undefined,
+  ): (() => AsyncApiDocument | Promise<AsyncApiDocument>) =>
+    typeof option === "function"
+      ? option
       : () =>
           generateAsyncApi(app, {
             title: "API",
             version: "dev",
-            ...asyncApiOption,
+            ...option,
           }).document;
+  const openApiSource = openApiSourceOf(options.openapi);
+  const asyncApiSource = asyncApiSourceOf(options.asyncapi);
+  /** The named documents' sources; an omitted one is the unnamed document's. */
+  const namedSources = namedOptions.map(([name, document]) => ({
+    name,
+    openapi:
+      document?.openapi === undefined
+        ? openApiSource
+        : openApiSourceOf(document.openapi),
+    asyncapi:
+      document?.asyncapi === undefined
+        ? asyncApiSource
+        : asyncApiSourceOf(document.asyncapi),
+  }));
+  const names = namedSources.map((source) => source.name);
 
   /** The route set's version now: `app`'s, its socket's, and the socket's router's when that is another. */
   const versionNow = (): string => {
@@ -662,16 +800,41 @@ export function devTypes(
     if (building !== undefined && building.version === version) {
       return building.promise;
     }
-    const promise = (async (): Promise<Built> => {
-      const openapi = await openApiSource();
-      const asyncapi = await asyncApiSource();
+    const buildOne = async (
+      openApi: () => OpenApiDocument | Promise<OpenApiDocument>,
+      asyncApi: () => AsyncApiDocument | Promise<AsyncApiDocument>,
+    ): Promise<BuiltDocument> => {
+      const openapi = await openApi();
+      const asyncapi = await asyncApi();
       const hash = typesHash({ openapi, asyncapi });
       return {
-        version,
         hash,
         body: JSON.stringify({ hash, openapi, asyncapi }),
         openapiBody: JSON.stringify(openapi),
         asyncapiBody: JSON.stringify(asyncapi),
+      };
+    };
+    const promise = (async (): Promise<Built> => {
+      const unnamed = await buildOne(openApiSource, asyncApiSource);
+      const named = new Map<string, BuiltDocument>();
+      for (const source of namedSources) {
+        named.set(source.name, await buildOne(source.openapi, source.asyncapi));
+      }
+      const hashes =
+        named.size === 0
+          ? undefined
+          : Object.fromEntries(
+              [...named].map(([name, document]) => [name, document.hash]),
+            );
+      return {
+        ...unnamed,
+        version,
+        named,
+        hashes,
+        signature:
+          hashes === undefined
+            ? unnamed.hash
+            : `${unnamed.hash} ${JSON.stringify(hashes)}`,
       };
     })();
     building = { version, promise };
@@ -693,21 +856,27 @@ export function devTypes(
     async refresh() {
       const result = await current();
       if (hub.owner !== instance) return result;
-      if (hub.announced !== undefined && hub.announced !== result.hash) {
+      if (hub.announced !== undefined && hub.announced !== result.signature) {
         const channel = instance.channel;
         if (channel !== undefined) {
           const at = Date.now();
           for (const ws of hub.sockets) {
             if (!hub.greeted.has(ws)) continue;
             try {
-              void channel.send(ws, "changed", { hash: result.hash, at });
+              void channel.send(ws, "changed", {
+                hash: result.hash,
+                at,
+                ...(result.hashes === undefined
+                  ? {}
+                  : { documents: result.hashes }),
+              });
             } catch (error) {
               instance.fail("devTypes(): announcing a change failed", error);
             }
           }
         }
       }
-      hub.announced = result.hash;
+      hub.announced = result.signature;
       return result;
     },
     async greet(ws, id) {
@@ -716,7 +885,11 @@ export function devTypes(
       void instance.channel?.send(
         ws,
         "hello",
-        { version: PROTOCOL_VERSION, hash: result.hash },
+        {
+          version: PROTOCOL_VERSION,
+          hash: result.hash,
+          ...(result.hashes === undefined ? {} : { documents: result.hashes }),
+        },
         id === undefined ? undefined : { id },
       );
       hub.greeted.add(ws);
@@ -760,13 +933,16 @@ export function devTypes(
     next("router");
   };
 
-  /** Serves one view of the build, with the hash as its `ETag`. */
+  /**
+   * Serves one view of one document of the build, with that document's hash
+   * as its `ETag`. `name` picks a named document; none, the unnamed one.
+   */
   const serve =
-    (pick: (build: Built) => string): RouterHandler =>
+    (pick: (build: BuiltDocument) => string, name?: string): RouterHandler =>
     async (req: BunRequest, res: BunResponse) => {
-      let result: Built;
+      let build: Built;
       try {
-        result = await instance.refresh();
+        build = await instance.refresh();
       } catch (error) {
         instance.fail("devTypes(): building the documents failed", error);
         res.status(500);
@@ -775,6 +951,8 @@ export function devTypes(
         });
         return;
       }
+      const result: BuiltDocument =
+        name === undefined ? build : (build.named.get(name) ?? build);
       const etag = `"${result.hash}"`;
       res.setHeader("ETag", etag);
       res.setHeader("Cache-Control", "no-store");
@@ -815,6 +993,29 @@ export function devTypes(
       serve((b) => b.asyncapiBody),
     )
     .describe({ hidden: true });
+  for (const name of names) {
+    router
+      .get(
+        `${path}/${name}`,
+        guard,
+        serve((b) => b.body, name),
+      )
+      .describe({ hidden: true });
+    router
+      .get(
+        `${path}/${name}/openapi.json`,
+        guard,
+        serve((b) => b.openapiBody, name),
+      )
+      .describe({ hidden: true });
+    router
+      .get(
+        `${path}/${name}/asyncapi.json`,
+        guard,
+        serve((b) => b.asyncapiBody, name),
+      )
+      .describe({ hidden: true });
+  }
 
   /* The channel, on `app` itself (a socket route is the socket's router's). */
   if (app.getBunWebsocket() === undefined) {
@@ -920,6 +1121,7 @@ export function devTypes(
         ws: `ws://${origin}${wsPath}`,
         token,
         pid: process.pid,
+        ...(names.length === 0 ? {} : { documents: names }),
       },
       null,
       2,

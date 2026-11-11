@@ -15,7 +15,10 @@
  * ```
  *
  * Then `bun-client watch --out src/api.gen.ts` beside the running app keeps
- * the client's types in step with the controllers.
+ * the client's types in step with the controllers. With `documents`, one
+ * server keeps several filtered clients live, one per frontend (issue #768):
+ * `bun-client watch --document customer --out customer.gen.ts --document
+ * backoffice --out backoffice.gen.ts`.
  */
 import type {
   DynamicModule,
@@ -36,6 +39,28 @@ import { ConfigError } from "@kingsleyweb/bun-common";
 import { devTypes, generateOpenApi } from "@kingsleyweb/bun-common/lib/docs";
 import { BunHttpAdapter } from "./BunHttpAdapter";
 import { gatewayAsyncApiOf } from "./gateway-docs";
+
+/** One named document of {@link DevTypesModuleOptions.documents}. */
+export interface DevTypesModuleDocument {
+  /**
+   * Its OpenAPI document: `generateOpenApi(adapter.instance, options)`'s
+   * options (most often `{ filter }`, the routes one frontend calls), or a
+   * function returning the document. Default: the module's
+   * {@link DevTypesModuleOptions.openapi}.
+   */
+  openapi?:
+    | (Omit<OpenApiOptions, "title" | "version"> &
+        Partial<Pick<OpenApiOptions, "title" | "version">>)
+    | (() => OpenApiDocument | Promise<OpenApiDocument>);
+  /**
+   * Its AsyncAPI document: `gatewayAsyncApi(app, options)`'s options, or a
+   * function returning the document. Default: the module's
+   * {@link DevTypesModuleOptions.asyncapi}.
+   */
+  asyncapi?:
+    | GatewayAsyncApiOptions
+    | (() => AsyncApiDocument | Promise<AsyncApiDocument>);
+}
 
 /** What {@link DevTypesModule.forRoot} accepts. */
 export interface DevTypesModuleOptions {
@@ -94,6 +119,25 @@ export interface DevTypesModuleOptions {
    * `bun-client watch` looks. Removed when the application closes.
    */
   tokenFile?: string | false;
+  /**
+   * Named documents served beside the unnamed one, each at `<path>/<name>`
+   * with a hash of its own (bun-common's `devTypes()` `documents`): one typed
+   * client per frontend, each from a filtered document, kept live by one
+   * watcher (`bun-client watch --document <name> --out <file>`, repeated).
+   * A name is letters, digits, `_` and `-`, starting with a letter or digit,
+   * and not `ws`. Default: none.
+   *
+   * ```ts
+   * DevTypesModule.forRoot({
+   *   enabled: process.env.NODE_ENV !== "production",
+   *   documents: {
+   *     customer: { openapi: { filter: (route) => !route.path.startsWith("/api/admin") } },
+   *     backoffice: { openapi: { filter: (route) => route.path.startsWith("/api/admin") } },
+   *   },
+   * })
+   * ```
+   */
+  documents?: Record<string, DevTypesModuleDocument>;
 }
 
 /** The injection token of the enabled module's options. Internal. */
@@ -154,7 +198,27 @@ class DevTypesMount implements OnApplicationBootstrap, OnApplicationShutdown {
   onApplicationBootstrap(): void {
     const adapter = requireBunAdapter(this.host);
     const app = adapter.getInstance();
-    const { openapi, asyncapi, tokenFile } = this.options;
+    const { openapi, asyncapi, tokenFile, documents } = this.options;
+    /** A source in Nest's terms, as `devTypes()` takes it: the controllers' routes and the gateways. */
+    const openApiSource = (
+      option: DevTypesModuleOptions["openapi"],
+    ): (() => OpenApiDocument | Promise<OpenApiDocument>) =>
+      typeof option === "function"
+        ? option
+        : () =>
+            generateOpenApi(app, { title: "API", version: "dev", ...option })
+              .document;
+    const asyncApiSource = (
+      option: DevTypesModuleOptions["asyncapi"],
+    ): (() => AsyncApiDocument | Promise<AsyncApiDocument>) =>
+      typeof option === "function"
+        ? option
+        : () =>
+            gatewayAsyncApiOf(this.container, {
+              title: "API",
+              version: "dev",
+              ...option,
+            }).document;
     const dev = devTypes(app, {
       enabled: true,
       ...(this.options.path === undefined ? {} : { path: this.options.path }),
@@ -165,21 +229,27 @@ class DevTypesMount implements OnApplicationBootstrap, OnApplicationShutdown {
         ? {}
         : { allowRemote: this.options.allowRemote }),
       ...(tokenFile === undefined ? {} : { tokenFile }),
-      openapi:
-        typeof openapi === "function"
-          ? openapi
-          : () =>
-              generateOpenApi(app, { title: "API", version: "dev", ...openapi })
-                .document,
-      asyncapi:
-        typeof asyncapi === "function"
-          ? asyncapi
-          : () =>
-              gatewayAsyncApiOf(this.container, {
-                title: "API",
-                version: "dev",
-                ...asyncapi,
-              }).document,
+      openapi: openApiSource(openapi),
+      asyncapi: asyncApiSource(asyncapi),
+      // An omitted side is left out, so `devTypes()` uses the unnamed
+      // document's source: the module's own, in Nest's terms, above.
+      ...(documents === undefined
+        ? {}
+        : {
+            documents: Object.fromEntries(
+              Object.entries(documents).map(([name, document]) => [
+                name,
+                {
+                  ...(document?.openapi === undefined
+                    ? {}
+                    : { openapi: openApiSource(document.openapi) }),
+                  ...(document?.asyncapi === undefined
+                    ? {}
+                    : { asyncapi: asyncApiSource(document.asyncapi) }),
+                },
+              ]),
+            ),
+          }),
     });
     adapter.use(dev);
     this.#dev = dev;

@@ -1,5 +1,5 @@
 /**
- * `bun-client watch` (typed-client plan §3.3, PR-C3): keeps a generated file
+ * `bun-client watch` (typed-client plan §3.3, PR-C3): keeps generated files
  * in step with a running dev server's documents.
  *
  * 1. It finds the server through its token file (`./devServer`), re-read on
@@ -17,6 +17,14 @@
  *    it goes back to 1 after a backoff of 50 ms doubling to 2 s; the backoff
  *    restarts once a channel opens.
  *
+ * **Several targets** (issue #768): one watcher keeps one file per target,
+ * each from the server's unnamed document or from a named one
+ * (`devTypes()`'s `documents`, served at `<url>/<name>`). They share the
+ * server, the token and the channel; each has its own hash, so a change that
+ * moves one document's hash regenerates only that target. A target whose
+ * document the server does not name (its token file's `documents`) waits,
+ * with a notice, as for a server not yet running.
+ *
  * A refused token (the endpoint answers as if it did not exist) is logged
  * once per token file and retried, so a server restarting with a new token
  * is picked up. It stops when `signal` aborts (the CLI's SIGINT or SIGTERM).
@@ -33,8 +41,13 @@ import {
 } from "./emit";
 import { documentsFromResponse } from "./load";
 
-/** What {@link watchDevServer} runs with. */
-export interface WatchOptions {
+/** One file a watcher keeps generated. */
+export interface WatchTarget {
+  /**
+   * The named document it is generated from (`devTypes()`'s `documents`,
+   * served at `<url>/<name>`). Default: the unnamed document, at `<url>`.
+   */
+  readonly document?: string | undefined;
   /** The file to keep generated, absolute. */
   readonly out: string;
   /** The file as the user named it, for messages. */
@@ -47,6 +60,12 @@ export interface WatchOptions {
     /** The zod file as the user named it, for messages. */
     readonly display: string;
   };
+}
+
+/** What {@link watchDevServer} runs with. */
+export interface WatchOptions {
+  /** The files to keep generated: at least one, no two with the same `out` or the same `document`. */
+  readonly targets: readonly WatchTarget[];
   /** The dev server to follow, by its endpoint or origin URL. Default: the only server running (see `chooseDevServer`). */
   readonly url?: string | undefined;
   /** A token file or a directory of them, absolute. Default: `tokenDirectory(cwd)`, looked up again on every attempt. */
@@ -80,6 +99,22 @@ const QUIET_MS = 1000;
 /** How one fetch of the endpoint ended. */
 type SyncOutcome = "ok" | "refused" | "down" | "failed" | "aborted";
 
+/** A target and what the watcher knows of it. */
+interface TargetState {
+  /** The target. */
+  readonly target: WatchTarget;
+  /** The hash the file records: what a `hello`/`changed` is compared with. */
+  current: string | undefined;
+  /** Whether this run has generated it once: until then a fetch is unconditional. */
+  verified: boolean;
+  /** The warnings printed last, so an unchanged set is not printed again. */
+  lastWarnings: string;
+  /** The fetch running now, when one is. */
+  syncing: Promise<void> | undefined;
+  /** Whether a hash was announced while it ran, so it fetches once more after. */
+  again: boolean;
+}
+
 /** Waits `ms`, or less when `signal` aborts. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -98,6 +133,27 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** The endpoint a target is fetched from: the server's, or its named document's under it. */
+function endpointOf(server: DevServer, target: WatchTarget): string {
+  return target.document === undefined
+    ? server.url
+    : `${server.url.replace(/\/+$/, "")}/${target.document}`;
+}
+
+/** The hash a `hello`/`changed` announces for `target`; `undefined` when it names none. */
+function announcedHash(
+  data: { hash?: unknown; documents?: unknown },
+  target: WatchTarget,
+): string | undefined {
+  if (target.document === undefined) {
+    return typeof data.hash === "string" ? data.hash : undefined;
+  }
+  const documents = data.documents;
+  if (typeof documents !== "object" || documents === null) return undefined;
+  const hash = (documents as Record<string, unknown>)[target.document];
+  return typeof hash === "string" ? hash : undefined;
+}
+
 /**
  * Runs the watcher until `options.signal` aborts.
  *
@@ -105,15 +161,22 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
  *   run at the start and nothing says which to follow.
  */
 export async function watchDevServer(options: WatchOptions): Promise<number> {
-  const { out, display, signal } = options;
+  const { signal } = options;
   const initialMs = options.backoff?.initialMs ?? 50;
   const maxMs = options.backoff?.maxMs ?? 2000;
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 10_000;
 
-  /** The hash the file records: what a `hello`/`changed` is compared with. */
-  let current = headerHash((await readExisting(out)) ?? "");
-  /** Whether this run has generated once: until then a fetch is unconditional. */
-  let verified = false;
+  const states: TargetState[] = [];
+  for (const target of options.targets) {
+    states.push({
+      target,
+      current: headerHash((await readExisting(target.out)) ?? ""),
+      verified: false,
+      lastWarnings: "",
+      syncing: undefined,
+      again: false,
+    });
+  }
   let attempt = 0;
   /** The endpoint followed last (kept across restarts on the same port). */
   let last: string | undefined;
@@ -121,8 +184,6 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
   let announced: string | undefined;
   /** Whether a channel has opened in this run. */
   let everConnected = false;
-  /** The warnings printed last, so an unchanged set is not printed again. */
-  let lastWarnings = "";
   /** The notices printed since the watcher last synced, by key. */
   const noticed = new Set<string>();
   /** When the watcher started looking without success, for {@link QUIET_MS}. */
@@ -141,17 +202,24 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
   const backoff = () =>
     pause(Math.min(maxMs, initialMs * 2 ** attempt++), signal);
 
-  /** Fetches the endpoint and regenerates; logs one line per regeneration. */
-  const sync = async (server: DevServer): Promise<SyncOutcome> => {
+  /** Fetches one target's endpoint and regenerates it; logs one line per regeneration. */
+  const sync = async (
+    server: DevServer,
+    state: TargetState,
+  ): Promise<SyncOutcome> => {
+    const { target } = state;
+    const url = endpointOf(server, target);
+    const from =
+      target.document === undefined ? "" : `document ${target.document}, `;
     const started = performance.now();
     let response: Response;
     try {
-      response = await fetch(server.url, {
+      response = await fetch(url, {
         headers: {
           accept: "application/json",
           authorization: `Bearer ${server.token}`,
-          ...(verified && current !== undefined
-            ? { "if-none-match": `"${current}"` }
+          ...(state.verified && state.current !== undefined
+            ? { "if-none-match": `"${state.current}"` }
             : {}),
         },
         signal: AbortSignal.any([signal, AbortSignal.timeout(fetchTimeoutMs)]),
@@ -175,7 +243,7 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
       void response.body?.cancel();
       const status = `${response.status} ${response.statusText}`.trimEnd();
       options.stderr(
-        `${PREFIX}: ${server.url} answered ${status}; the file is left as it is\n`,
+        `${PREFIX}: ${url} answered ${status}; ${target.display} is left as it is\n`,
       );
       return "failed";
     }
@@ -183,8 +251,8 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
     let hash: string;
     try {
       const emitted = emitModule(
-        await documentsFromResponse(response, server.url),
-        options.zod,
+        await documentsFromResponse(response, url),
+        target.zod,
       );
       hash = emitted.hash;
       const warnings = [
@@ -195,32 +263,32 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
           ? ""
           : formatWarnings(`${PREFIX} --zod`, emitted.zod.warnings),
       ].join("");
-      if (warnings !== lastWarnings) {
-        lastWarnings = warnings;
+      if (warnings !== state.lastWarnings) {
+        state.lastWarnings = warnings;
         if (warnings !== "") options.stderr(warnings);
       }
       // The zod module first: the route map's header hash is what the
       // watcher compares, so it is written last.
       const zodOutcome =
-        options.zod === undefined || emitted.zod === undefined
+        target.zod === undefined || emitted.zod === undefined
           ? "unchanged"
-          : await writeIfChanged(options.zod.path, emitted.zod.code);
-      outcome = await writeIfChanged(out, emitted.code);
+          : await writeIfChanged(target.zod.path, emitted.zod.code);
+      outcome = await writeIfChanged(target.out, emitted.code);
       if (zodOutcome === "written")
         options.stdout(
-          `${PREFIX}: wrote ${options.zod!.display} (typesHash ${emitted.hash})\n`,
+          `${PREFIX}: wrote ${target.zod!.display} (${from}typesHash ${emitted.hash})\n`,
         );
     } catch (error) {
       options.stderr(
-        `${PREFIX}: regenerating ${display} failed: ${(error as Error).message}\n`,
+        `${PREFIX}: regenerating ${target.display} failed: ${(error as Error).message}\n`,
       );
       return "failed";
     }
-    current = hash;
-    verified = true;
+    state.current = hash;
+    state.verified = true;
     const ms = Math.round(performance.now() - started);
     options.stdout(
-      `${PREFIX}: ${outcome === "written" ? "wrote" : "unchanged"} ${display} (typesHash ${hash}, ${ms} ms)\n`,
+      `${PREFIX}: ${outcome === "written" ? "wrote" : "unchanged"} ${target.display} (${from}typesHash ${hash}, ${ms} ms)\n`,
     );
     return "ok";
   };
@@ -229,31 +297,29 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
   const follow = (server: DevServer): Promise<boolean> => {
     const { promise, resolve } = Promise.withResolvers<boolean>();
     let opened = false;
-    let syncing: Promise<void> | undefined;
-    let again = false;
     /** Closes the channel, so the loop reconnects (with the token file read again). */
     let reconnect = (_reason: string): void => {};
 
-    /** Fetches again, one fetch at a time; a hash announced meanwhile fetches once more after. */
-    const trigger = () => {
-      if (syncing !== undefined) {
-        again = true;
+    /** Fetches one target again, one fetch at a time; a hash announced meanwhile fetches once more after. */
+    const trigger = (state: TargetState) => {
+      if (state.syncing !== undefined) {
+        state.again = true;
         return;
       }
-      syncing = (async () => {
+      state.syncing = (async () => {
         do {
-          again = false;
-          const outcome = await sync(server);
+          state.again = false;
+          const outcome = await sync(server, state);
           if (outcome === "refused") {
             options.stderr(
-              `${PREFIX}: ${server.url} refused the token in ${server.file} (the server's token changed?); reconnecting\n`,
+              `${PREFIX}: ${endpointOf(server, state.target)} refused the token in ${server.file} (the server's token changed, or it no longer serves that document?); reconnecting\n`,
             );
             reconnect("token refused");
             return;
           }
-        } while (again && !signal.aborted);
+        } while (state.again && !signal.aborted);
       })().finally(() => {
-        syncing = undefined;
+        state.syncing = undefined;
       });
     };
 
@@ -290,24 +356,31 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
       }
       const { type, data } = (frame ?? {}) as {
         type?: unknown;
-        data?: { hash?: unknown };
+        data?: { hash?: unknown; documents?: unknown };
       };
-      if (
-        (type === "hello" || type === "changed") &&
-        typeof data?.hash === "string" &&
-        data.hash !== current
-      ) {
-        trigger();
+      if ((type !== "hello" && type !== "changed") || data === undefined) {
+        return;
+      }
+      for (const state of states) {
+        // A frame that names no hash for the target (a server that does not
+        // announce named documents) fetches it, as a moved hash does: the
+        // `If-None-Match` makes an unchanged one a `304`.
+        const hash = announcedHash(data, state.target);
+        if (hash === undefined || hash !== state.current) trigger(state);
       }
     };
     socket.onclose = () => {
       signal.removeEventListener("abort", stop);
-      void (syncing ?? Promise.resolve()).then(() => resolve(opened));
+      void Promise.all(
+        states.flatMap((state) =>
+          state.syncing === undefined ? [] : [state.syncing],
+        ),
+      ).then(() => resolve(opened));
     };
     return promise;
   };
 
-  while (!signal.aborted) {
+  outer: while (!signal.aborted) {
     const tokenPath = options.tokenPath ?? tokenDirectory(options.cwd);
     const choice = chooseDevServer(await readDevServers(tokenPath), {
       url: options.url,
@@ -340,26 +413,48 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
       continue;
     }
     const server = choice.server;
-    const outcome = await sync(server);
-    if (outcome === "aborted") break;
-    if (outcome === "refused") {
-      // Logged at once: a wrong token does not fix itself in a second.
-      lookingSince ??= Date.now();
-      if (!noticed.has(`refused:${server.file}:${server.token}`)) {
-        noticed.add(`refused:${server.file}:${server.token}`);
-        options.stderr(
-          `${PREFIX}: ${server.url} refused the token in ${server.file} (a stale token file, or not a devTypes() endpoint); retrying\n`,
-        );
+    // A named document the server does not serve: wait for one that does
+    // (a restart with the new `documents`), rather than fetch a 404.
+    const served = new Set(server.documents ?? []);
+    const missing = states
+      .map((state) => state.target.document)
+      .filter(
+        (name): name is string => name !== undefined && !served.has(name),
+      );
+    if (missing.length > 0) {
+      const serves =
+        served.size === 0
+          ? "it serves no named documents (devTypes()'s `documents` option)"
+          : `it serves ${[...served].join(", ")}`;
+      notice(
+        `missing:${server.file}:${missing.join(",")}:${[...served].join(",")}`,
+        `${server.url} has no document named ${missing.join(", ")} (${serves}); waiting`,
+      );
+      await backoff();
+      continue;
+    }
+    for (const state of states) {
+      const outcome = await sync(server, state);
+      if (outcome === "aborted") break outer;
+      if (outcome === "refused") {
+        // Logged at once: a wrong token does not fix itself in a second.
+        lookingSince ??= Date.now();
+        if (!noticed.has(`refused:${server.file}:${server.token}`)) {
+          noticed.add(`refused:${server.file}:${server.token}`);
+          options.stderr(
+            `${PREFIX}: ${endpointOf(server, state.target)} refused the token in ${server.file} (a stale token file, or not a devTypes() endpoint); retrying\n`,
+          );
+        }
+        await backoff();
+        continue outer;
       }
-      await backoff();
-      continue;
+      if (outcome === "down") {
+        notice(`down:${server.url}`, `${server.url} does not answer; retrying`);
+        await backoff();
+        continue outer;
+      }
+      // "ok", or "failed" (logged): either way the channel says when to try again.
     }
-    if (outcome === "down") {
-      notice(`down:${server.url}`, `${server.url} does not answer; retrying`);
-      await backoff();
-      continue;
-    }
-    // "ok", or "failed" (logged): either way the channel says when to try again.
     last = server.url;
     const opened = await follow(server);
     if (!opened && !signal.aborted) {
