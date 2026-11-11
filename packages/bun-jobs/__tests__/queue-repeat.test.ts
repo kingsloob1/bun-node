@@ -805,6 +805,69 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
         expect(next?.data).toEqual({ version: 2 });
       }, 30_000);
 
+      it("updateRepeatable replaces the payload, keeping the schedule", async () => {
+        const { queue } = await openQueue();
+
+        await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "edit" } },
+        );
+        const [before] = await queue.listRepeatables();
+
+        const updated = await queue.updateRepeatable("edit", {
+          data: { version: 2 },
+        });
+        expect(updated).toMatchObject({
+          key: "edit",
+          name: "tick",
+          every: 60_000,
+          count: before.count,
+          nextRunAt: before.nextRunAt,
+          nextJobId: before.nextJobId,
+          disabled: false,
+          data: { version: 2 },
+        });
+        expect((await queue.listRepeatables())[0].data).toEqual({
+          version: 2,
+        });
+        expect((await queue.getJob(before.nextJobId!))?.data).toEqual({
+          version: 2,
+        });
+        expect(await queue.count("delayed")).toBe(1);
+
+        expect(
+          await queue.updateRepeatable("missing", { data: { version: 3 } }),
+        ).toBeNull();
+      });
+
+      it("updateRepeatable keeps a disabled series disabled, with the new payload", async () => {
+        const { queue } = await openQueue();
+
+        await queue.add(
+          "tick",
+          { version: 1 },
+          { repeat: { every: 60_000, key: "off" } },
+        );
+        await queue.disableRepeatable("off");
+
+        const updated = await queue.updateRepeatable("off", {
+          data: { version: 2 },
+        });
+        expect(updated).toMatchObject({
+          disabled: true,
+          nextJobId: null,
+          data: { version: 2 },
+        });
+        expect(await queue.count("delayed")).toBe(0);
+
+        await queue.enableRepeatable("off");
+        const [enabled] = await queue.listRepeatables();
+        expect((await queue.getJob(enabled.nextJobId!))?.data).toEqual({
+          version: 2,
+        });
+      });
+
       it("leaves a claimed occurrence's payload alone", async () => {
         const { driver, namespace, queue } = await openQueue();
 

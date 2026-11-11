@@ -1,7 +1,6 @@
 import type { RepeatableDto } from "../../../api/types";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { ApiError, isApiError } from "../../../api/errors";
 import {
   disableRepeatable,
   enableRepeatable,
@@ -26,6 +25,8 @@ import { formatNumber } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";
 import { useRefreshInterval } from "../live";
 import { describeSchedule } from "../queueFormat";
+import { EditRepeatableDataDialog } from "./EditRepeatableDataDialog";
+import { explainSeriesError } from "./repeatableErrors";
 
 /**
  * Repeat series per page.
@@ -47,42 +48,24 @@ export interface RepeatablesPanelProps {
   canDisable?: boolean;
   /** Whether the caller may enable a series (`repeatables.enable`, not read-only); offered on disabled ones. Defaults to `false`. */
   canEnable?: boolean;
+  /** Whether the caller may replace a series' data (`repeatables.update`, an opt-in, not read-only); offered on every series. Defaults to `false`. */
+  canEdit?: boolean;
 }
 
 /** A disable or enable of one series. */
 export type RepeatableToggle = "disable" | "enable";
 
-/**
- * A failed disable or enable, with a 404 `REPEATABLE_NOT_FOUND` explained in
- * plain words. Anything else is returned unchanged.
- */
-function explainToggleError(error: unknown, key: string): unknown {
-  if (!isApiError(error) || error.code !== "REPEATABLE_NOT_FOUND") {
-    return error;
-  }
-  return new ApiError({
-    kind: error.kind,
-    status: error.status,
-    code: error.code,
-    title: error.title,
-    detail: `The repeat series “${key}” no longer exists: somebody removed it, or it ended. Refresh to see the series there are now.`,
-    type: error.type,
-    issues: error.issues,
-    context: error.context,
-    instance: error.instance,
-    cause: error,
-  });
-}
-
-/** `GET /queues/:queue/repeatables?include=data`, with remove, disable and enable. */
+/** `GET /queues/:queue/repeatables?include=data`, with edit, remove, disable and enable. */
 export function RepeatablesPanel({
   queue,
   canRemove,
   canDisable = false,
   canEnable = false,
+  canEdit = false,
 }: RepeatablesPanelProps) {
   const api = useApiClient();
   const [removing, setRemoving] = useState<RepeatableDto | null>(null);
+  const [editing, setEditing] = useState<RepeatableDto | null>(null);
   const refetchInterval = useRefreshInterval("repeatables");
   const repeatables = useQuery({
     queryKey: queueKeys.repeatables(queue),
@@ -108,7 +91,7 @@ export function RepeatablesPanel({
           ? await disableRepeatable(api, queue, key)
           : await enableRepeatable(api, queue, key);
       } catch (error) {
-        throw explainToggleError(error, key);
+        throw explainSeriesError(error, key);
       }
     },
     successMessage: (_result, { key, to }) =>
@@ -144,6 +127,7 @@ export function RepeatablesPanel({
   // vanish on the next.
   const hasActions =
     canRemove ||
+    canEdit ||
     items.some((series) => (series.disabled ? canEnable : canDisable));
   if (items.length === 0) {
     return (
@@ -224,6 +208,15 @@ export function RepeatablesPanel({
               {hasActions && (
                 <td>
                   <div className="repeatable-actions">
+                    {canEdit && (
+                      <Button
+                        size="sm"
+                        aria-label={`Edit the data of repeatable ${series.key}`}
+                        onClick={() => setEditing(series)}
+                      >
+                        Edit data…
+                      </Button>
+                    )}
                     {canDisable && !series.disabled && (
                       <ToggleButton
                         series={series}
@@ -277,6 +270,11 @@ export function RepeatablesPanel({
           onChange={page.onChange}
         />
       )}
+      <EditRepeatableDataDialog
+        queue={queue}
+        series={editing}
+        onClose={() => setEditing(null)}
+      />
       <ConfirmDialog
         open={removing !== null}
         onClose={() => setRemoving(null)}

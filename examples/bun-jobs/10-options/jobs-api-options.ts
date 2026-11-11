@@ -511,7 +511,7 @@ const addedByState = bothFeatures.addedByState ? 2 : 0;
 checkEqual(
   "every action, every route",
   both.api.routes.length,
-  84 + addedByState,
+  85 + addedByState,
 );
 checkEqual(
   "the three summon group routes are among them, the reset a mutation, and /meta's features.summonStoredStatus says they are served",
@@ -588,7 +588,7 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 68 + addedByState);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 69 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
@@ -676,7 +676,7 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("actions: an allow-list, with nine opt-ins absent by default");
+step("actions: an allow-list, with ten opt-ins absent by default");
 
 const byDefault = mount();
 checkEqual(
@@ -689,8 +689,8 @@ checkEqual(
   jobMethodRoutes(byDefault.api),
   [...JOB_METHOD_ROUTES].sort(),
 );
-// Seven write something a host may well want only some callers to: a new
-// or changed job, a queue's job defaults (saving them, and separately
+// Eight write something a host may well want only some callers to: a new
+// or changed job, a repeat series' new payload, a queue's job defaults (saving them, and separately
 // rewriting the backlog with them — tuning without a rewrite is a real
 // policy), summoning a worker now, or clearing a queue's summon failures or a
 // summon group's shared circuit and budget usage — which starts compute, and
@@ -699,11 +699,12 @@ checkEqual(
 // against one's platform, write nothing, but disclose infrastructure:
 // clusters, regions, which accounts are reachable.
 checkEqual(
-  "the opt-ins: adding and updating jobs, job defaults, summoning, compute providers, and remote config",
+  "the opt-ins: adding and updating jobs, a repeat series' payload, job defaults, summoning, compute providers, and remote config",
   [...JOBS_API_OPT_IN_ACTIONS],
   [
     "jobs.add",
     "jobs.update",
+    "repeatables.update",
     "queues.defaults",
     "queues.applyDefaults",
     "queues.summon",
@@ -713,11 +714,12 @@ checkEqual(
     "runners.configure",
   ],
 );
-/** The sixteen routes those nine actions authorize. */
+/** The seventeen routes those ten actions authorize. */
 const OPT_IN_ROUTES = [
   "addFlow",
   "addJob",
   "updateJob",
+  "updateRepeatable",
   "setJobDefaults",
   "resetJobDefaults",
   "applyJobDefaults",
@@ -733,7 +735,7 @@ const OPT_IN_ROUTES = [
   "resetRunnerConfig",
 ];
 check(
-  "so none of their sixteen routes is registered",
+  "so none of their seventeen routes is registered",
   OPT_IN_ROUTES.every((id) => !idsOf(byDefault.api).includes(id)),
   idsOf(byDefault.api),
 );
@@ -774,7 +776,7 @@ checkEqual(
 );
 const everything = mount({ actions: [...JOBS_API_ACTIONS] });
 checkEqual(
-  "while [...JOBS_API_ACTIONS] is the default and all sixteen opt-in routes",
+  "while [...JOBS_API_ACTIONS] is the default and all seventeen opt-in routes",
   idsOf(everything.api)
     .filter((id) => !idsOf(byDefault.api).includes(id))
     .sort(),
@@ -802,9 +804,9 @@ checkEqual(
   ].sort(),
 );
 checkEqual(
-  "51 actions in total",
+  "52 actions in total",
   [Object.keys(permissions).length, JOBS_API_ACTIONS.length],
-  [51, 51],
+  [52, 52],
 );
 /** Actions for job defaults, the worker controls, and the clear routes. */
 const controlActions: JobsApiAction[] = [

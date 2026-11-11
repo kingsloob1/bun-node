@@ -282,6 +282,16 @@ occurrence and schedules nothing more until **Enable**
 meanwhile are not run. Both are idempotent, so neither asks for a
 confirmation. A 404 means the series no longer exists.
 
+**Edit data…** (`PATCH /queues/:queue/repeatables/:key`, the opt-in
+`repeatables.update`) opens the series' data in a JSON editor. Saving
+replaces the payload of every occurrence from then on. The occurrence
+already scheduled gets it too, unless a worker has started it, which then
+runs with the data it started with. The schedule, name and options stay as
+they are, and a disabled series stays disabled. Invalid JSON, or data over
+`limits.maxJobDataBytes`, is refused before anything is sent. When the
+series' job name has a data schema, its issues show under the editor at
+their paths (`list: Invalid option`).
+
 Progress is shown as the job reported it: a number as a percentage bar with
 its value (the bar clamped to 0–100, the number not), a record of fields as
 a JSON tree. Live, a `progress` event writes the new value into the job
@@ -468,6 +478,7 @@ authority, since the map is never asked about one particular job.
 | Throughput panel | `metrics.read` and `features.throughput` |
 | Repeatables panel | `repeatables.list` |
 | Repeatables panel, Remove | the above, and mutation `repeatables.remove` |
+| Repeatables panel, Edit data… | `repeatables.list`, and mutation `repeatables.update` (opt-in, off by default, removed by `readOnly`). Offered on every series, enabled or disabled. The dialog starts from the series' data, and Save replaces it: every later occurrence runs with the new data, and so does the one already scheduled unless a worker has started it. A schema's issues show beside the editor at their paths |
 | Repeatables panel pager | the Repeatables panel's needs, and the queue has more repeat series than one page holds (20) |
 | Job screen | `jobs.read`, as the queue's own permissions answer it: the job is not fetched until they have loaded, and never without `jobs.read` ("Job hidden"). A 401/403 on the job itself shows the same panel with the API's detail. |
 | Job logs | `jobs.logs` and `features.logs` |

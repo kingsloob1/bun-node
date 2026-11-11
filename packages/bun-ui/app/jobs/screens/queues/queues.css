@@ -265,6 +265,11 @@ tr[aria-selected="true"] {
   gap: var(--space-2);
 }
 
+.repeatable-edit-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
 .demand-panel {
   display: grid;
   gap: var(--space-3);

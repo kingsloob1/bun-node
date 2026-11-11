@@ -87,6 +87,39 @@ describe("job data schemas over the management API", () => {
     });
   });
 
+  it("answers a repeat series update whose data fails the schema with 400 VALIDATION, leaving the series", async () => {
+    const h = withSchema();
+    const queue = h.jobs.queue("jobs");
+    await queue.add(
+      "sendEmail",
+      { to: "a@example.com" },
+      { repeat: { every: 60_000, key: "weekly" } },
+    );
+    const pending = (await queue.listRepeatables())[0].nextJobId!;
+
+    const refused = await h.call("PATCH", "/queues/jobs/repeatables/weekly", {
+      data: { to: SECRET },
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ code: "VALIDATION" });
+    expect(refused.body.issues).toEqual([
+      expect.objectContaining({ target: "body", path: "data.to" }),
+    ]);
+    expect(refused.text).not.toContain(SECRET);
+    expect((await queue.listRepeatables())[0].data).toEqual({
+      to: "a@example.com",
+    });
+    expect((await queue.getJob(pending))?.data).toEqual({
+      to: "a@example.com",
+    });
+
+    const accepted = await h.call("PATCH", "/queues/jobs/repeatables/weekly", {
+      data: { to: "b@example.com" },
+    });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.data).toEqual({ to: "b@example.com" });
+  });
+
   it("serves GET /definitions with plain options: the schema lifted out, published beside them", async () => {
     const h = withSchema();
     const listed = await h.call("GET", "/definitions");
