@@ -8,11 +8,12 @@ commits since the previous tag; `docs/releasing.md` is the whole flow.
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
 
-A patch release with one fix, in bun-jobs. All seven packages move to 3.0.1
-together, as they always do; the other six are unchanged from 3.0.0.
+A patch release with two fixes, in bun-jobs and in bun-common's document
+types (with bun-nest's). All seven packages move to 3.0.1 together, as they
+always do.
 
 ```bash
-bun add @kingsleyweb/bun-jobs@3.0.1
+bun add @kingsleyweb/bun-jobs@3.0.1 @kingsleyweb/bun-common@3.0.1
 ```
 
 ### Fixes
@@ -36,6 +37,20 @@ bun add @kingsleyweb/bun-jobs@3.0.1
   series'. The workaround, `removeRepeatable(key)` before the re-add, is no
   longer needed. Tested on every backend: memory, file, SQLite, Postgres,
   MySQL, MariaDB, Redis and MongoDB.
+
+- **bun-common: `docsRouter()` takes the jobs API's document without a
+  cast** ([#771](https://github.com/kingsloob1/bun-node/issues/771)).
+  `docsRouter({ openapi: () => api.openapi() })` was a type error:
+  `JobsApi.openapi()` writes OpenAPI `3.1.0`, and `docsRouter`'s `openapi`
+  took only bun-common's own `OpenApiDocument`, pinned to the `3.1.2` its
+  generator writes. At run time it already served the document. The inputs
+  now take any `3.1.x` document, the new `OpenApi31Document` type:
+  `docsRouter`'s `openapi`, the function form of `devTypes()`'s `openapi`, and
+  bun-nest's `DevTypesModule.forRoot({ openapi })`. `OpenApiDocument`, what
+  `generateOpenApi` returns, stays pinned to `"3.1.2"`, so nothing that reads
+  a generated document changes. bun-jobs' README shows serving its documents
+  through `docsRouter`, and `JobsApi.asyncapi()`, which is `undefined` when
+  the API has no socket, checked first.
 
 ## 3.0.0 (2026-11-10)
 

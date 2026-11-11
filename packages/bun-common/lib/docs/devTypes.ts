@@ -70,7 +70,7 @@ import type { BunResponse } from "../BunResponse";
 import type { NextFunction, RouterHandler } from "../types/general";
 import type { AsyncApiOptions } from "./asyncapi";
 import type { OpenApiOptions } from "./openapi";
-import type { AsyncApiDocument, OpenApiDocument } from "./types";
+import type { AsyncApiDocument, OpenApi31Document } from "./types";
 import { BunRouter } from "../BunRouter";
 import { toStandardSchema } from "../BunValidate";
 import { defineChannel } from "../channel";
@@ -130,7 +130,7 @@ export interface DevTypesOptions {
   openapi?:
     | (Omit<OpenApiOptions, "title" | "version"> &
         Partial<Pick<OpenApiOptions, "title" | "version">>)
-    | (() => OpenApiDocument | Promise<OpenApiDocument>);
+    | (() => OpenApi31Document | Promise<OpenApi31Document>);
   /**
    * The AsyncAPI document's source: `generateAsyncApi(app, options)`'s
    * options (`title` and `version` optional), or a function returning the

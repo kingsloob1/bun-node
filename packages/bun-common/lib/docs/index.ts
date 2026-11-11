@@ -71,6 +71,7 @@ export {
 export {
   type DocWarning,
   generateOpenApi,
+  type OpenApi31Document,
   type OpenApiDocument,
   type OpenApiOptions,
   type OpenApiPathOptions,
