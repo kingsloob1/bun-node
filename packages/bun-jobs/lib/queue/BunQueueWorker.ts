@@ -4594,6 +4594,14 @@ export class BunQueueWorker<
       );
       await this.driver.addJob(this.ref, {
         ...record,
+        // The series' name and payload, as last added — never the finished
+        // occurrence's. Re-adding a series under its key replaces its
+        // definition, and an occurrence carrying its predecessor's payload
+        // forward kept the old one running for good (#767). That includes a
+        // payload the finished occurrence's processor changed with
+        // `updateData()`: that was one run's data, not the series'.
+        name: definition.name,
+        data: definition.data,
         ...(await this.#occurrenceOptions(definition, record)),
         id: jobId,
         state: next > now ? "delayed" : "waiting",
