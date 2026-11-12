@@ -30,7 +30,7 @@
  * is picked up. It stops when `signal` aborts (the CLI's SIGINT or SIGTERM).
  */
 import type { DevServer } from "./devServer";
-import type { ZodTarget } from "./emit";
+import type { DocumentKind, ZodTarget } from "./emit";
 import { chooseDevServer, readDevServers, tokenDirectory } from "./devServer";
 import {
   emitModule,
@@ -39,6 +39,7 @@ import {
   readExisting,
   writeIfChanged,
 } from "./emit";
+import { documentsHash } from "./hash";
 import { documentsFromResponse } from "./load";
 
 /** One file a watcher keeps generated. */
@@ -48,6 +49,11 @@ export interface WatchTarget {
    * served at `<url>/<name>`). Default: the unnamed document, at `<url>`.
    */
   readonly document?: string | undefined;
+  /**
+   * The documents it covers (`--include`): `"openapi"`, `"asyncapi"` or
+   * both. Default: every document the server serves.
+   */
+  readonly include?: readonly DocumentKind[] | undefined;
   /** The file to keep generated, absolute. */
   readonly out: string;
   /** The file as the user named it, for messages. */
@@ -103,7 +109,13 @@ type SyncOutcome = "ok" | "refused" | "down" | "failed" | "aborted";
 interface TargetState {
   /** The target. */
   readonly target: WatchTarget;
-  /** The hash the file records: what a `hello`/`changed` is compared with. */
+  /**
+   * The server's hash of the documents last fetched (its `typesHash`, over
+   * both documents): what a `hello`/`changed` is compared with and
+   * `If-None-Match` sends. At the start, the hash the file records: the
+   * same value unless `include` drops a document, when the first fetch
+   * (unconditional anyway) puts the server's in its place.
+   */
   current: string | undefined;
   /** Whether this run has generated it once: until then a fetch is unconditional. */
   verified: boolean;
@@ -249,11 +261,12 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
     }
     let outcome: "written" | "unchanged";
     let hash: string;
+    let served: string;
     try {
-      const emitted = emitModule(
-        await documentsFromResponse(response, url),
-        target.zod,
-      );
+      const loaded = await documentsFromResponse(response, url);
+      // The server's hash covers both documents, whatever the file keeps.
+      served = documentsHash(loaded);
+      const emitted = emitModule(loaded, target.zod, target.include);
       hash = emitted.hash;
       const warnings = [
         emitted.warnings.length === 0
@@ -284,7 +297,7 @@ export async function watchDevServer(options: WatchOptions): Promise<number> {
       );
       return "failed";
     }
-    state.current = hash;
+    state.current = served;
     state.verified = true;
     const ms = Math.round(performance.now() - started);
     options.stdout(

@@ -54,6 +54,17 @@ export interface LoadedDocuments {
   readonly warnings: readonly CodegenWarning[];
 }
 
+/**
+ * An AsyncAPI file read alone (`--asyncapi <file> --include asyncapi`, or a
+ * targets file's `"asyncapi"` without `"openapi"`): a channels-only client.
+ * Kept apart from {@link DocumentSource}, whose sources always yield an
+ * OpenAPI document.
+ */
+export interface AsyncApiFileSource {
+  /** The AsyncAPI document's path (JSON, or YAML by extension). */
+  readonly asyncapiFile: string;
+}
+
 /** The document options a module's router is documented with: the dev sync's example's (plan §8.3). */
 const MODULE_DOCUMENT_INFO = { title: "API", version: "1" } as const;
 
@@ -360,4 +371,28 @@ export async function loadDocuments(
     );
   }
   return fromExport(loaded[name], modulePath, name);
+}
+
+/**
+ * Reads an AsyncAPI document alone, from a file (see {@link AsyncApiFileSource}).
+ *
+ * @param source The file.
+ * @param cwd The directory a relative path resolves from. Default: `process.cwd()`.
+ * @throws Error when the file cannot be read or is not an AsyncAPI document.
+ */
+export async function loadAsyncApiFile(
+  source: AsyncApiFileSource,
+  cwd: string = process.cwd(),
+): Promise<{
+  /** The AsyncAPI document. */
+  readonly asyncapi: object;
+  /** Always empty: a file reports nothing. */
+  readonly warnings: readonly CodegenWarning[];
+}> {
+  const asyncapi = await readDocument(resolve(cwd, source.asyncapiFile));
+  if (!isRecord(asyncapi) || typeof asyncapi.asyncapi !== "string")
+    throw new Error(
+      `--asyncapi ${source.asyncapiFile}: not an AsyncAPI document (no "asyncapi" version field)`,
+    );
+  return { asyncapi, warnings: [] };
 }

@@ -29,7 +29,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCli } from "../../lib/codegen/index";
+import { documentsHash, runCli } from "../../lib/codegen/index";
 import { randomToken, startDevServer } from "./fixtures/devServer";
 
 const BIN = join(import.meta.dir, "..", "..", "lib", "codegen", "cli.ts");
@@ -214,6 +214,67 @@ describe("bun-client watch: regeneration", () => {
     expect(regenerations(third.stdout)[0]).toContain("wrote src/api.gen.ts");
     expect(await text()).not.toContain("// edited");
     expect(statSync(out).ino).not.toBe(edited.ino);
+  });
+});
+
+describe("bun-client watch --include", () => {
+  it("keeps only the documents listed, compares the server's hash rather than the file's (no refetch on a hash it already has), and still follows a change (control: without --include the file covers both)", async () => {
+    const server = await startDevServer({ dir });
+    cleanups.push(server.close);
+    const token = String(server.dev.token);
+    const served = (await (
+      await fetch(server.url, { headers: { authorization: `Bearer ${token}` } })
+    ).json()) as { hash: string; openapi: object; asyncapi?: object };
+    expect(served.asyncapi).toBeDefined();
+
+    const watcher = watch("--include", "openapi");
+    await until(
+      "the first write",
+      () => regenerations(watcher.stdout).length === 1,
+    );
+    await until("the channel", () =>
+      watcher.stdout.some((line) => line.includes(`following ${server.url}`)),
+    );
+    const first = await text();
+    expect(first).toContain('"GET /users/:id"');
+    // The file's hash covers the OpenAPI document alone, so it is not the
+    // server's: the watcher must not refetch because of that.
+    expect(hashOf(first)).toBe(documentsHash({ openapi: served.openapi }));
+    expect(hashOf(first)).not.toBe(served.hash);
+    await Bun.sleep(300);
+    expect(regenerations(watcher.stdout)).toHaveLength(1);
+
+    server.addRoute("/posts");
+    await until(
+      "the second write",
+      () => regenerations(watcher.stdout).length === 2,
+    );
+    expect(await text()).toContain('"GET /posts"');
+    await Bun.sleep(300);
+    expect(regenerations(watcher.stdout)).toHaveLength(2);
+    expect(await watcher.stop()).toBe(0);
+    expect(watcher.stderr).toEqual([]);
+
+    // Control: without --include the file's hash is the server's.
+    await rm(out);
+    const all = watch();
+    await until(
+      "the control's write",
+      () => regenerations(all.stdout).length === 1,
+    );
+    expect(hashOf(await text())).toBe(await servedHash(server.url, token));
+    expect(await all.stop()).toBe(0);
+  });
+
+  it("refuses an --include that names no known document, per target", async () => {
+    let stderr = "";
+    const code = await runCli(
+      ["watch", "--document", "a", "--out", "a.ts", "--include", "routes"],
+      { cwd: dir, stdout: () => {}, stderr: (text) => void (stderr += text) },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toContain('--include: "routes" is not a document kind');
+    expect(stderr).toContain("(--document a)");
   });
 });
 

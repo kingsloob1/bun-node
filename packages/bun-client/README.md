@@ -145,6 +145,8 @@ bunx bun-client generate --module ./server/app.ts [--export app] --out src/api.g
 bunx bun-client generate --module ./server/app.ts --export app --out src/api.gen.ts --check
 # the runtime zod schemas beside the map, for validation (zod/mini; --zod-flavour classic for zod)
 bunx bun-client generate --module ./server/app.ts --out src/api.gen.ts --zod src/api.zod.gen.ts
+# only some of the documents: the routes (openapi), the WebSocket channels (asyncapi); default both
+bunx bun-client generate --url http://127.0.0.1:3000/__bun/types --out src/live.gen.ts --include asyncapi
 ```
 
 ```ts
@@ -164,10 +166,38 @@ const api = createClient<Routes>({ baseUrl: "/api", manifest });
 | `--check` | writes nothing; exits `1` when `--out` (or `--zod`'s file) is missing or differs from what would be written |
 | `--zod <file>` | also writes the [zod module](#the-generated-zod-module-zod) there (needs `--out`, which it imports `Routes` from) |
 | `--zod-flavour <f>` | `mini` (`zod/mini`, the default) or `classic` (`zod`) |
+| `--include <list>` | the documents the client covers, comma-separated: `openapi` (the routes), `asyncapi` (the WebSocket channels). Default: every document the source has. See [Choosing the documents](#choosing-the-documents---include) |
 | `--config <file>` | every target of a targets file instead of one source and `--out`: [Every client in one file](#every-client-in-one-file---config). With `--check`, exit `1` when any is stale |
 
 Exit status: `0` written (or fresh), `1` stale under `--check`, `2` a usage
 error or a source that could not be read.
+
+#### Choosing the documents: `--include`
+
+By default a client covers every document its source has: the routes from
+the OpenAPI document and, when there is an AsyncAPI one, its WebSocket
+channels. `--include` keeps only the ones listed, so a frontend that only
+listens on a channel need not carry the route map, and one that only calls
+routes need not carry the channels:
+
+```bash
+bunx bun-client generate --url http://127.0.0.1:3000/__bun/types --out src/http.gen.ts --include openapi
+bunx bun-client generate --url http://127.0.0.1:3000/__bun/types --out src/live.gen.ts --include asyncapi
+bunx bun-client generate --asyncapi ./asyncapi.json --include asyncapi --out src/live.gen.ts   # an AsyncAPI file alone
+```
+
+- **`--include openapi`** writes the routes alone: no `Channels`, no
+  `channels`, and no `channelSchemas` in the zod module.
+- **`--include asyncapi`** writes the channels alone: an empty `Routes` and
+  `manifest`, so `channel(createClient<Routes>({ manifest }), channels["/rooms/:room"])`
+  works as before, and a zod module holding only `channelSchemas`. From
+  files, give `--asyncapi` without `--openapi`.
+- **The header's `typesHash` covers the documents the file holds.** A
+  document asked for that the source does not have exits `2`, naming it; so
+  does a file flag that `--include` leaves unused (`--openapi` beside
+  `--include asyncapi`).
+- It works per target everywhere: after each `--document` in `watch`, and as
+  a target's `include` (`["asyncapi"]`) in a [targets file](#every-client-in-one-file---config).
 
 ### Keeping it in step: `bun-client watch`
 
@@ -198,7 +228,8 @@ bun-client watch: wrote src/api.gen.ts (typesHash 5fe8467b9825878f, 2 ms)
   Before any server is up it waits, and says so.
 - **It regenerates through the same step as `generate`**: on start, and
   whenever the channel announces a hash (`hello` on connect, `changed` on a
-  change) other than the one in the file's header. A route added at run time
+  change) other than the one it last fetched (at the start, the one in the
+  file's header). A route added at run time
   counts, as does a `--hot` re-evaluation or a `--watch` restart. The write is
   atomic (a temporary file renamed over the old one) and happens only when
   the content changed, so an unchanged file keeps its modification time. One
@@ -234,8 +265,8 @@ bun-client watch: wrote ui/src/api/backoffice.gen.ts (document backoffice, types
 bun-client watch: following http://127.0.0.1:3000/__bun/types (token file …/node_modules/.cache/bun-types/3000.json)
 ```
 
-- **Each `--document` starts a target**, and the `--out`, `--zod` and
-  `--zod-flavour` after it, up to the next `--document`, are its. Flags
+- **Each `--document` starts a target**, and the `--out`, `--zod`,
+  `--zod-flavour` and `--include` after it, up to the next `--document`, are its. Flags
   before the first `--document` are a target of the unnamed document, so
   `--out src/api.gen.ts --document customer --out …` keeps the whole API's
   client too.
@@ -260,7 +291,8 @@ A targets file names every client once, so one command writes them, one
   "module": "server/openapi.ts",
   "targets": [
     { "document": "customer", "out": "ui/src/api/customer.gen.ts" },
-    { "document": "backoffice", "out": "ui/src/api/backoffice.gen.ts", "zod": "ui/src/api/backoffice.zod.gen.ts" }
+    { "document": "backoffice", "out": "ui/src/api/backoffice.gen.ts", "zod": "ui/src/api/backoffice.zod.gen.ts" },
+    { "document": "customer", "out": "ui/src/api/customer-live.gen.ts", "include": ["asyncapi"] }
   ]
 }
 ```
@@ -278,15 +310,17 @@ export const backoffice = generateOpenApi(app, { title: "API", version: "1", fil
 ```
 
 - **One source**, for `generate`: `module` (with an optional `export`),
-  `url`, or `openapi` (with an optional `asyncapi`).
+  `url`, `openapi` (with an optional `asyncapi`), or `asyncapi` alone, for
+  targets that all have `"include": ["asyncapi"]`.
 - **A target's `document`** is what it is generated from. Under a `module`
   it is the export of that name, unless the target gives its own `export`;
   under a `url` (a `devTypes()` endpoint) it is the named document at
   `<url>/<document>`, sent the token from the token file. Under `openapi` a
   target cannot name one, since a document file has no named documents. A
   target without `document` uses the source as it is.
-- **Each target**: `out` (required), and optionally `zod` and `zodFlavour`
-  (`"mini"` or `"classic"`).
+- **Each target**: `out` (required), and optionally `zod`, `zodFlavour`
+  (`"mini"` or `"classic"`) and `include` (`["openapi"]`, `["asyncapi"]` or
+  both; default every document the source has, as `--include`).
 - **`watch --config`** follows the running dev server whatever the source is,
   each target from the server's document of that name. The file's `url` and
   `tokenFile` act as `--url` and `--token-file`, and the command line's win.
@@ -306,6 +340,7 @@ export const backoffice = generateOpenApi(app, { title: "API", version: "1", fil
 | `--url <url>` | the server to follow, when several run: its endpoint or origin |
 | `--token-file <path>` | a token file, or a directory of them, instead of the nearest `node_modules/.cache/bun-types` (a server run from another directory, or a custom `devTypes({ tokenFile })`) |
 | `--zod <file>`, `--zod-flavour <f>` | keeps the zod module in step too, as `generate` writes it |
+| `--include <list>` | the target's documents, as [`generate`'s](#choosing-the-documents---include) |
 
 #### The token file
 
