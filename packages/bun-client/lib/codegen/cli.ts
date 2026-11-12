@@ -8,6 +8,7 @@
  * bun-client generate --module ./server/app.ts [--export app] --out src/api.gen.ts
  * bun-client generate … --check      # CI: exit 1 when the file is stale
  * bun-client generate … --out src/api.gen.ts --zod src/api.zod.gen.ts [--zod-flavour classic]
+ * bun-client generate … --include asyncapi   # only the documents listed: openapi, asyncapi
  * bun-client watch --out src/api.gen.ts [--zod src/api.zod.gen.ts] [--url <url>] [--token-file <path>]
  * bun-client watch --document customer --out src/customer.gen.ts \
  *                  --document backoffice --out src/backoffice.gen.ts [--zod …]
@@ -25,7 +26,7 @@
 import { resolve } from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
-import type { DocumentSource } from "./load";
+import type { AsyncApiFileSource, DocumentSource } from "./load";
 import { readClientConfig, targetSource } from "./config";
 import {
   devServerFor,
@@ -33,16 +34,17 @@ import {
   readDevServers,
   tokenDirectory,
 } from "./devServer";
-import type { ZodTarget } from "./emit";
+import type { DocumentKind, ZodTarget } from "./emit";
 import {
   emitModule,
   formatWarnings,
   headerHash,
+  parseInclude,
   readExisting,
   writeAtomically,
   zodTarget,
 } from "./emit";
-import { loadDocuments } from "./load";
+import { loadAsyncApiFile, loadDocuments } from "./load";
 import type { WatchTarget } from "./watch";
 import { watchDevServer } from "./watch";
 
@@ -74,7 +76,8 @@ const USAGE = `Usage:
 Sources (one):
   --url <url>          a URL serving an OpenAPI document, or { hash, openapi, asyncapi }
   --openapi <file>     an OpenAPI 3.x document (JSON, or YAML by extension)
-    --asyncapi <file>  an AsyncAPI document beside it (its WebSocket channels)
+    --asyncapi <file>  an AsyncAPI document beside it (its WebSocket channels);
+                       alone with --include asyncapi for a channels-only client
   --module <path>      a module exporting a router or a document, documented in process
     --export <name>    the export to read (default: "default")
 
@@ -83,12 +86,16 @@ Options:
   --check              write nothing; exit 1 when <file> is not what would be written
   --zod <file>         also write the runtime zod schemas there (needs --out)
   --zod-flavour <f>    "mini" (zod/mini, the default) or "classic" (zod)
+  --include <list>     the documents the client covers, comma-separated:
+                       openapi (the routes), asyncapi (the WebSocket channels).
+                       Default: every document the source has
   --token-file <path>  a dev server's token file, or a directory of them
                        (default: the nearest node_modules/.cache/bun-types)
   --config <file>      a targets file (JSON): one source and every client to
-                       write, { url | module [export] | openapi [asyncapi],
-                       tokenFile?, targets: [{ out, document?, export?, zod?,
-                       zodFlavour? }] }, paths relative to it. generate writes
+                       write, { url | module [export] | openapi [asyncapi] |
+                       asyncapi, tokenFile?, targets: [{ out, document?,
+                       export?, zod?, zodFlavour?, include? }] }, paths
+                       relative to it. generate writes
                        (or --checks) every target; watch keeps them all live
   --help               this text
 
@@ -98,8 +105,8 @@ regenerates when the server's documents change, and stops on Ctrl-C.
 
   --document <name>    follow one of the server's named documents (devTypes()'s
                        documents, served at <url>/<name>). Each --document
-                       starts a target: the --out, --zod and --zod-flavour
-                       after it, up to the next --document, are its. Options
+                       starts a target: the --out, --zod, --zod-flavour and
+                       --include after it, up to the next --document, are its. Options
                        before the first --document are a target of the
                        unnamed document. One watcher, one connection, one file
                        per target, each regenerated when its document changes.
@@ -194,6 +201,7 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
       "token-file": { type: "string" },
       zod: { type: "string" },
       "zod-flavour": { type: "string" },
+      include: { type: "string" },
       config: { type: "string" },
     },
     io,
@@ -210,6 +218,7 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
         "out",
         "zod",
         "zod-flavour",
+        "include",
       ] as const
     ).filter((name) => values[name] !== undefined);
     if (others.length > 0) {
@@ -230,18 +239,63 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
     return 2;
   }
 
+  let include: readonly DocumentKind[] | undefined;
+  if (values.include !== undefined) {
+    const read = parseInclude(values.include, "--include");
+    if (typeof read === "string") {
+      err(`bun-client generate: ${read}\n`);
+      return 2;
+    }
+    include = read;
+  }
+  // An --asyncapi file alone is a source of its own, under --include asyncapi.
+  const asyncapiAlone =
+    values.asyncapi !== undefined &&
+    values.openapi === undefined &&
+    values.url === undefined &&
+    values.module === undefined;
   const given = (["url", "openapi", "module"] as const).filter(
     (name) => values[name] !== undefined,
   );
-  if (given.length !== 1) {
+  if (given.length > 1 || (given.length === 0 && !asyncapiAlone)) {
     err(
       `bun-client generate: give exactly one of --url, --openapi or --module${given.length > 1 ? ` (got ${given.map((name) => `--${name}`).join(", ")})` : ""}\n\n${USAGE}`,
     );
     return 2;
   }
-  if (values.asyncapi !== undefined && values.openapi === undefined) {
-    err("bun-client generate: --asyncapi goes with --openapi\n");
+  if (
+    values.asyncapi !== undefined &&
+    given.length === 1 &&
+    values.openapi === undefined
+  ) {
+    err("bun-client generate: --asyncapi goes with --openapi, or alone\n");
     return 2;
+  }
+  if (asyncapiAlone && include?.join() !== "asyncapi") {
+    err(
+      "bun-client generate: --asyncapi alone needs --include asyncapi: without --openapi there are no routes\n",
+    );
+    return 2;
+  }
+  if (include !== undefined && values.openapi !== undefined) {
+    // A file source's documents are known: name what --include leaves unused.
+    const unused = !include.includes("openapi")
+      ? "--openapi"
+      : !include.includes("asyncapi") && values.asyncapi !== undefined
+        ? "--asyncapi"
+        : undefined;
+    if (unused !== undefined) {
+      err(
+        `bun-client generate: --include ${include.join(",")} leaves ${unused} unused; leave it out${unused === "--openapi" ? " (give --asyncapi alone)" : ""}\n`,
+      );
+      return 2;
+    }
+    if (include.includes("asyncapi") && values.asyncapi === undefined) {
+      err(
+        `bun-client generate: --include ${include.join(",")} needs --asyncapi beside --openapi\n`,
+      );
+      return 2;
+    }
   }
   if (values.export !== undefined && values.module === undefined) {
     err("bun-client generate: --export goes with --module\n");
@@ -256,20 +310,22 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
     return 2;
   }
 
-  const source: DocumentSource =
+  const source: DocumentSource | AsyncApiFileSource =
     values.url !== undefined
       ? { url: values.url }
-      : values.openapi !== undefined
-        ? {
-            openapi: values.openapi,
-            ...(values.asyncapi === undefined
-              ? {}
-              : { asyncapi: values.asyncapi }),
-          }
-        : {
-            module: values.module as string,
-            ...(values.export === undefined ? {} : { export: values.export }),
-          };
+      : asyncapiAlone
+        ? { asyncapiFile: values.asyncapi! }
+        : values.openapi !== undefined
+          ? {
+              openapi: values.openapi,
+              ...(values.asyncapi === undefined
+                ? {}
+                : { asyncapi: values.asyncapi }),
+            }
+          : {
+              module: values.module as string,
+              ...(values.export === undefined ? {} : { export: values.export }),
+            };
   return await generateTarget(
     {
       source,
@@ -285,6 +341,7 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
         zod === null || values.zod === undefined
           ? undefined
           : { ...zod, display: values.zod },
+      include,
       check: values.check === true,
     },
     io,
@@ -294,13 +351,15 @@ async function generate(args: readonly string[], io: Io): Promise<number> {
 /** One file `generate` writes or checks, from one source. */
 interface GenerateTarget {
   /** Where its documents come from. A `url` gets the bearer token of the token file naming it. */
-  readonly source: DocumentSource;
+  readonly source: DocumentSource | AsyncApiFileSource;
   /** A token file or a directory of them, absolute, read for a `url` source. */
   readonly tokenPath: string;
   /** The file, absolute, and as the user named it; `undefined` prints the module to stdout. */
   readonly out: { readonly display: string; readonly path: string } | undefined;
   /** The zod module beside it; `undefined` for none. */
   readonly zod: (ZodTarget & { readonly display: string }) | undefined;
+  /** The documents it covers (`--include`); `undefined` for every document the source has. */
+  readonly include: readonly DocumentKind[] | undefined;
   /** Write nothing; report whether the files are fresh. */
   readonly check: boolean;
 }
@@ -340,7 +399,13 @@ async function generateTarget(
   let hash: string;
   let zodCode: string | undefined;
   try {
-    const emitted = emitModule(await loadDocuments(source, cwd), target.zod);
+    const emitted = emitModule(
+      "asyncapiFile" in source
+        ? await loadAsyncApiFile(source, cwd)
+        : await loadDocuments(source, cwd),
+      target.zod,
+      target.include,
+    );
     code = emitted.code;
     hash = emitted.hash;
     zodCode = emitted.zod?.code;
@@ -426,7 +491,7 @@ async function generateFromConfig(
   }
   if (config.source === undefined) {
     io.err(
-      `bun-client generate: --config ${configArg} names no source: give it "url", "module" or "openapi"\n`,
+      `bun-client generate: --config ${configArg} names no source: give it "url", "module", "openapi" or "asyncapi"\n`,
     );
     return 2;
   }
@@ -450,6 +515,7 @@ async function generateFromConfig(
                 flavour: target.zodFlavour === "classic" ? "classic" : "mini",
                 display: target.zod.display,
               },
+        include: target.include,
         check: options.check,
       },
       io,
@@ -469,11 +535,13 @@ interface TargetFlags {
   zod?: string;
   /** `--zod-flavour`. */
   zodFlavour?: string;
+  /** `--include`, as given. */
+  include?: string;
 }
 
 /**
  * Groups `watch`'s target flags in the order given: each `--document` starts
- * a target, and `--out`, `--zod` and `--zod-flavour` belong to the target
+ * a target, and `--out`, `--zod`, `--zod-flavour` and `--include` belong to the target
  * they follow; those before the first `--document` are the unnamed
  * document's. Answers the targets, or a usage error. Pure.
  */
@@ -493,7 +561,10 @@ export function groupWatchTargets(
       continue;
     }
     const group = groups.at(-1)!;
-    const key = name === "zod-flavour" ? "zodFlavour" : (name as "out" | "zod");
+    const key =
+      name === "zod-flavour"
+        ? "zodFlavour"
+        : (name as "out" | "zod" | "include");
     if (group[key] !== undefined) {
       const which =
         group.document === undefined
@@ -510,6 +581,7 @@ export function groupWatchTargets(
     unnamed.out !== undefined ||
     unnamed.zod !== undefined ||
     unnamed.zodFlavour !== undefined ||
+    unnamed.include !== undefined ||
     named.length === 0
       ? [unnamed, ...named]
       : named;
@@ -540,6 +612,7 @@ function parseWatchArgs(args: readonly string[]) {
       out: { type: "string", multiple: true },
       zod: { type: "string", multiple: true },
       "zod-flavour": { type: "string", multiple: true },
+      include: { type: "string", multiple: true },
       url: { type: "string" },
       "token-file": { type: "string" },
       config: { type: "string" },
@@ -565,7 +638,7 @@ async function watch(args: readonly string[], io: Io): Promise<number> {
   }
   const targetFlags = parsed.tokens.flatMap((token) =>
     token.kind === "option" &&
-    ["document", "out", "zod", "zod-flavour"].includes(token.name) &&
+    ["document", "out", "zod", "zod-flavour", "include"].includes(token.name) &&
     typeof token.value === "string"
       ? [{ name: token.name, value: token.value }]
       : [],
@@ -612,6 +685,7 @@ async function watch(args: readonly string[], io: Io): Promise<number> {
                 display: target.zod.display,
               },
             }),
+        ...(target.include === undefined ? {} : { include: target.include }),
       });
     }
   } else {
@@ -635,8 +709,20 @@ async function watch(args: readonly string[], io: Io): Promise<number> {
         );
         return 2;
       }
+      let include: readonly DocumentKind[] | undefined;
+      if (group.include !== undefined) {
+        const read = parseInclude(group.include, "--include");
+        if (typeof read === "string") {
+          err(
+            `bun-client watch: ${read}${group.document === undefined ? "" : ` (--document ${group.document})`}\n`,
+          );
+          return 2;
+        }
+        include = read;
+      }
       targets.push({
         ...(group.document === undefined ? {} : { document: group.document }),
+        ...(include === undefined ? {} : { include }),
         out: resolve(cwd, group.out!),
         display: group.out!,
         ...(zod === null || group.zod === undefined

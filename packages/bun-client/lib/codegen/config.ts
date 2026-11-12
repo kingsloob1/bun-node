@@ -9,13 +9,17 @@
  *   "module": "server/openapi.ts",
  *   "targets": [
  *     { "document": "customer", "out": "ui/src/api/customer.gen.ts" },
- *     { "document": "backoffice", "out": "ui/src/api/backoffice.gen.ts", "zod": "ui/src/api/backoffice.zod.gen.ts" }
+ *     { "document": "backoffice", "out": "ui/src/api/backoffice.gen.ts", "zod": "ui/src/api/backoffice.zod.gen.ts" },
+ *     { "document": "customer", "out": "ui/src/api/live.gen.ts", "include": ["asyncapi"] }
  *   ]
  * }
  * ```
  *
- * One source for `generate` (at most one of `url`, `module`, `openapi`), and
- * the targets. A target's `document` is what it is generated from: under a
+ * One source for `generate` (at most one of `url`, `module`, `openapi`, or
+ * `asyncapi` alone for channels-only targets), and the targets. A target's
+ * `include` (`--include`) keeps only the documents it lists, `"openapi"`
+ * and `"asyncapi"`; without it, a target covers every document its source
+ * has. A target's `document` is what it is generated from: under a
  * `url` (a `devTypes()` endpoint) the named document at `<url>/<document>`;
  * under a `module`, the export named after it (or the target's own
  * `export`). `watch` follows the running dev server whatever the source
@@ -28,8 +32,10 @@
  */
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { DocumentSource } from "./load";
+import type { DocumentKind } from "./emit";
+import type { AsyncApiFileSource, DocumentSource } from "./load";
 import { DOCUMENT_NAME_PATTERN } from "./devServer";
+import { parseInclude } from "./emit";
 
 /** One target of a targets file, resolved. */
 export interface ClientConfigTarget {
@@ -45,6 +51,8 @@ export interface ClientConfigTarget {
   readonly zod: { readonly path: string; readonly display: string } | undefined;
   /** `"mini"` or `"classic"`; `undefined` when not given. */
   readonly zodFlavour: string | undefined;
+  /** The documents it covers (`include`); `undefined` for every document its source has. */
+  readonly include: readonly DocumentKind[] | undefined;
 }
 
 /** A targets file, resolved against its directory. */
@@ -58,6 +66,7 @@ export interface ClientConfig {
     | { readonly url: string }
     | { readonly module: string; readonly export: string | undefined }
     | { readonly openapi: string; readonly asyncapi: string | undefined }
+    | { readonly asyncapiFile: string }
     | undefined;
   /** A token file or a directory of them, absolute (`--token-file`); `undefined` when not given. */
   readonly tokenFile: string | undefined;
@@ -77,7 +86,14 @@ const FILE_KEYS = new Set([
   "targets",
 ]);
 /** The keys a target may hold. */
-const TARGET_KEYS = new Set(["document", "export", "out", "zod", "zodFlavour"]);
+const TARGET_KEYS = new Set([
+  "document",
+  "export",
+  "out",
+  "zod",
+  "zodFlavour",
+  "include",
+]);
 
 /** Whether `value` is a plain object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,8 +152,12 @@ export function parseClientConfig(
   if (sources.length > 1) {
     return `give at most one of "url", "module" and "openapi" (got ${sources.map((key) => `"${key}"`).join(", ")})`;
   }
-  if (strings.asyncapi !== undefined && strings.openapi === undefined) {
-    return `"asyncapi" goes with "openapi"`;
+  if (
+    strings.asyncapi !== undefined &&
+    strings.openapi === undefined &&
+    sources.length > 0
+  ) {
+    return `"asyncapi" goes with "openapi", or alone: not with "${sources[0]}"`;
   }
   if (strings.export !== undefined && strings.module === undefined) {
     return `"export" goes with "module"`;
@@ -145,7 +165,13 @@ export function parseClientConfig(
   if (strings.url !== undefined && !URL.canParse(strings.url)) {
     return `"url" ${strings.url} is not a URL`;
   }
-  const kind = sources[0];
+  // An AsyncAPI file alone is a source of its own: channels-only targets.
+  const kind: (typeof sources)[number] | "asyncapi" | undefined =
+    sources.length > 0
+      ? sources[0]
+      : strings.asyncapi === undefined
+        ? undefined
+        : "asyncapi";
   const source: ClientConfig["source"] =
     kind === "url"
       ? { url: strings.url! }
@@ -159,10 +185,12 @@ export function parseClientConfig(
                   ? undefined
                   : resolve(dir, strings.asyncapi),
             }
-          : undefined;
+          : kind === "asyncapi"
+            ? { asyncapiFile: resolve(dir, strings.asyncapi!) }
+            : undefined;
 
   if (!Array.isArray(value.targets) || value.targets.length === 0) {
-    return `"targets" must be a non-empty array of { out, document?, export?, zod?, zodFlavour? }`;
+    return `"targets" must be a non-empty array of { out, document?, export?, zod?, zodFlavour?, include? }`;
   }
   const targets: ClientConfigTarget[] = [];
   const documents = new Set<string>();
@@ -176,6 +204,7 @@ export function parseClientConfig(
     }
     const fields: Record<string, string | undefined> = {};
     for (const key of TARGET_KEYS) {
+      if (key === "include") continue;
       const read = optionalString(raw[key], `${at}.${key}`);
       if (typeof read === "object") return read.error;
       fields[key] = read;
@@ -196,8 +225,28 @@ export function parseClientConfig(
     if (fields.export !== undefined && kind !== "module") {
       return `${at}.export goes with a "module" source`;
     }
-    if (document !== undefined && kind === "openapi") {
+    if (document !== undefined && (kind === "openapi" || kind === "asyncapi")) {
       return `${at}.document needs a "url" or "module" source: a document file has no named documents (give each target its own file instead)`;
+    }
+    let include: readonly DocumentKind[] | undefined;
+    if (raw.include !== undefined) {
+      if (!Array.isArray(raw.include))
+        return `${at}.include must be an array: ["openapi"], ["asyncapi"] or both`;
+      const read = parseInclude(raw.include, `${at}.include`);
+      if (typeof read === "string") return read;
+      include = read;
+    }
+    // A file source's documents are known now: say what a target lacks here,
+    // not at generate time.
+    if (kind === "asyncapi" && include?.join() !== "asyncapi") {
+      return `${at} needs "include": ["asyncapi"]: the source is an AsyncAPI file alone, with no routes`;
+    }
+    if (
+      kind === "openapi" &&
+      strings.asyncapi === undefined &&
+      include?.includes("asyncapi") === true
+    ) {
+      return `${at}.include names "asyncapi", but the source has no "asyncapi" file`;
     }
     if (zodFlavour !== undefined && zod === undefined) {
       return `${at}.zodFlavour goes with "zod"`;
@@ -231,6 +280,7 @@ export function parseClientConfig(
       display: out,
       zod: zodPath === undefined ? undefined : { path: zodPath, display: zod! },
       zodFlavour,
+      include,
     });
   }
   return {
@@ -270,9 +320,10 @@ export async function readClientConfig(
 export function targetSource(
   config: ClientConfig,
   target: ClientConfigTarget,
-): DocumentSource | undefined {
+): DocumentSource | AsyncApiFileSource | undefined {
   const source = config.source;
   if (source === undefined) return undefined;
+  if ("asyncapiFile" in source) return source;
   if ("url" in source) {
     return {
       url:

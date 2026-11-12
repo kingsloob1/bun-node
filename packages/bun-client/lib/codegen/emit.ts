@@ -6,7 +6,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import process from "node:process";
-import type { LoadedDocuments } from "./load";
 import type { CodegenWarning } from "./openapi";
 import { generateRoutes } from "./openapi";
 
@@ -48,14 +47,104 @@ export function relativeSpecifier(from: string, to: string): string {
   return path.startsWith(".") ? path : `./${path}`;
 }
 
+/** A document a generated client can cover (`--include`). */
+export type DocumentKind = "openapi" | "asyncapi";
+
+/** Every {@link DocumentKind}, in the order a list of them is kept. */
+export const DOCUMENT_KINDS: readonly DocumentKind[] = ["openapi", "asyncapi"];
+
+/** What a document kind is called in messages. */
+const KIND_NAMES: Readonly<Record<DocumentKind, string>> = {
+  openapi: "OpenAPI",
+  asyncapi: "AsyncAPI",
+};
+
+/**
+ * Reads an `--include` list (`"openapi,asyncapi"`, or a targets file's
+ * array): the kinds, each once, in {@link DOCUMENT_KINDS}' order. Pure.
+ *
+ * @param value The comma list, or the array.
+ * @param at What a message names (`--include`, `targets[0].include`).
+ * @returns The kinds, or a message saying what is wrong.
+ */
+export function parseInclude(
+  value: string | readonly unknown[],
+  at: string,
+): readonly DocumentKind[] | string {
+  const items =
+    typeof value === "string"
+      ? value.split(",").map((item) => item.trim())
+      : value;
+  const expected = `${DOCUMENT_KINDS.map((kind) => `"${kind}"`).join(" or ")}${typeof value === "string" ? ", comma-separated" : ""}`;
+  if (items.length === 0 || (items.length === 1 && items[0] === ""))
+    return `${at} names no document: give ${expected}`;
+  const kinds = new Set<DocumentKind>();
+  for (const item of items) {
+    if (!DOCUMENT_KINDS.includes(item as DocumentKind))
+      return `${at}: ${JSON.stringify(item)} is not a document kind (give ${expected})`;
+    if (kinds.has(item as DocumentKind))
+      return `${at}: "${String(item)}" is given twice`;
+    kinds.add(item as DocumentKind);
+  }
+  return DOCUMENT_KINDS.filter((kind) => kinds.has(kind));
+}
+
+/**
+ * The documents a generator run starts from: the loader's
+ * `LoadedDocuments`, or an AsyncAPI document alone (an `--asyncapi` file
+ * under `--include asyncapi`).
+ */
+export interface SourceDocuments {
+  /** The OpenAPI document, when the source had one. */
+  readonly openapi?: object;
+  /** The AsyncAPI document, when the source had one. */
+  readonly asyncapi?: object;
+  /** What producing the documents reported (`generateOpenApi`'s warnings, for a module). */
+  readonly warnings: readonly CodegenWarning[];
+}
+
+/**
+ * Keeps the documents `include` names. Without `include`, every document
+ * the source has, as before `--include` existed (an OpenAPI one required).
+ * With it, exactly those: a kind the source lacks is an error, and the
+ * producer's warnings go with the OpenAPI document, since they are about
+ * it and the routes.
+ *
+ * @throws Error when a document asked for is missing.
+ */
+export function includedDocuments(
+  documents: SourceDocuments,
+  include?: readonly DocumentKind[],
+): SourceDocuments {
+  const kinds = include ?? DOCUMENT_KINDS;
+  for (const kind of include ?? ["openapi" as const]) {
+    if (documents[kind] === undefined)
+      throw new Error(
+        `the source has no ${KIND_NAMES[kind]} document${include === undefined ? "" : ` (--include ${include.join(",")})`}`,
+      );
+  }
+  const openapi = kinds.includes("openapi") ? documents.openapi : undefined;
+  const asyncapi = kinds.includes("asyncapi") ? documents.asyncapi : undefined;
+  return {
+    ...(openapi === undefined ? {} : { openapi }),
+    ...(asyncapi === undefined ? {} : { asyncapi }),
+    warnings: openapi === undefined ? [] : documents.warnings,
+  };
+}
+
 /**
  * Generates the module for loaded documents, and the zod module when
- * `zod` names one: the step `generate` and `watch` share.
+ * `zod` names one: the step `generate` and `watch` share. `include` keeps
+ * only the documents it names (see {@link includedDocuments}).
+ *
+ * @throws Error when a document `include` asks for is missing.
  */
 export function emitModule(
-  documents: LoadedDocuments,
+  loaded: SourceDocuments,
   zod?: ZodTarget,
+  include?: readonly DocumentKind[],
 ): EmittedModule {
+  const documents = includedDocuments(loaded, include);
   const result = generateRoutes(documents.openapi, {
     ...(documents.asyncapi === undefined
       ? {}

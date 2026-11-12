@@ -176,7 +176,7 @@ describe("parseClientConfig", () => {
     ],
     [
       { asyncapi: "a.json", targets: TARGETS },
-      '"asyncapi" goes with "openapi"',
+      'targets[0].document needs a "url" or "module" source',
     ],
     [{ export: "x", targets: TARGETS }, '"export" goes with "module"'],
     [{ url: "not a url", targets: TARGETS }, '"url" not a url is not a URL'],
@@ -334,7 +334,7 @@ describe("generate --config", () => {
     const result = await run("generate", "--config", config);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain(
-      'names no source: give it "url", "module" or "openapi"',
+      'names no source: give it "url", "module", "openapi" or "asyncapi"',
     );
   });
 });
