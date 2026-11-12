@@ -165,6 +165,70 @@ describe("keywords", () => {
       expect(code).toContain(expected);
   });
 
+  it("writes a '/' inside a character class as is, so the literal lints clean (#776)", () => {
+    const { code } = zodOf(
+      bodyDocument({ type: "string", pattern: "^[A-Za-z0-9/_-]+$" }),
+      "classic",
+    );
+    expect(code).toContain("z.regex(/^[A-Za-z0-9/_-]+$/)");
+    expect(code).not.toContain(String.raw`\/`);
+  });
+
+  describe("writes a literal that parses and matches what the pattern does", () => {
+    /** The literal `regexLiteral` wrote for `pattern`, as it appears in the module. */
+    function literalOf(pattern: string): string {
+      const { code } = zodOf(bodyDocument({ type: "string", pattern }));
+      const line = code.split("\n").find((entry) => entry.includes("z.regex("));
+      if (line === undefined) throw new Error(`no z.regex for ${pattern}`);
+      // The line holds one literal, so its last '/' is the literal's closing one.
+      return line.slice(
+        line.indexOf("z.regex(") + 8,
+        line.lastIndexOf("/") + 1,
+      );
+    }
+
+    it.each([
+      // [pattern, the literal, strings to match against both]
+      ["^a/b$", String.raw`/^a\/b$/`, ["a/b", "ab", "a\\/b"]],
+      ["[/]", "/[/]/", ["/", "a", "\\"]],
+      ["^[^/]+/x$", String.raw`/^[^/]+\/x$/`, ["ab/x", "a/b/x", "/x"]],
+      // Escaped brackets open no class: the '/' between them is outside one.
+      [String.raw`\[/\]`, String.raw`/\[\/\]/`, ["[/]", "/"]],
+      // An escaped ']' does not close the class; the '/' after it is still in it.
+      [String.raw`^[\]/]+$`, String.raw`/^[\]/]+$/`, ["]/", "]", "a"]],
+      // An empty class closes at once; the '/' after it is outside.
+      ["[]/|a", String.raw`/[]\/|a/`, ["/", "a", ""]],
+      ["^[a]/[b]$", String.raw`/^[a]\/[b]$/`, ["a/b", "ab"]],
+      ["^[a/][/b]$", "/^[a/][/b]$/", ["a/", "//", "ab", "a"]],
+      // The line terminators a literal cannot hold, raw or escaped.
+      ["a\nb\rc", String.raw`/a\nb\rc/`, ["a\nb\rc", "abc"]],
+      [
+        "a\u2028b\u2029c",
+        String.raw`/a\u2028b\u2029c/`,
+        ["a\u2028b\u2029c", "abc"],
+      ],
+      ["a\\\u2028b", String.raw`/a\u2028b/`, ["a\u2028b", "ab"]],
+      ["[\u2028/]", String.raw`/[\u2028/]/`, ["\u2028", "/", "a"]],
+    ] as const)("%j", (pattern, literal, samples) => {
+      const written = literalOf(pattern);
+      expect(written).toBe(literal);
+      // It parses as a literal (a raw line terminator or an unescaped '/'
+      // outside a class would not), and its body matches what the pattern does.
+      expect(() =>
+        new Bun.Transpiler({ loader: "ts" }).transformSync(
+          `export const re = ${written};`,
+        ),
+      ).not.toThrow();
+      const parsed = new RegExp(written.slice(1, -1));
+      const expected = new RegExp(pattern);
+      for (const sample of samples)
+        expect([sample, parsed.test(sample)]).toEqual([
+          sample,
+          expected.test(sample),
+        ]);
+    });
+  });
+
   it("leaves a pattern that does not compile unchecked, without a check that would throw at load", () => {
     const { code } = zodOf(bodyDocument({ type: "string", pattern: "(" }));
     expect(code).toContain("body: z.string(),");

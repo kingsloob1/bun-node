@@ -208,7 +208,26 @@ function intersectionOf(members: readonly Expr[]): Expr {
   return out.reduce((left, right) => z("intersection", left, right));
 }
 
-/** A JSON Schema `pattern` as a regular-expression literal; `undefined` when it does not compile. */
+/** The escapes for the line terminators a regular-expression literal cannot hold. */
+const LINE_TERMINATOR_ESCAPES: Readonly<Record<string, string>> = {
+  "\n": "\\n",
+  "\r": "\\r",
+  "\u2028": "\\u2028",
+  "\u2029": "\\u2029",
+};
+
+/**
+ * A JSON Schema `pattern` as a regular-expression literal; `undefined` when
+ * it does not compile.
+ *
+ * A `/` is escaped only outside a character class, where it would end the
+ * literal: inside `[...]` it is literal text, and escaping it there trips
+ * `no-useless-escape` in a project that lints its generated modules (#776).
+ * A line terminator (`\n`, `\r`, U+2028, U+2029), escaped or not, is written
+ * as its escape, since a literal cannot hold one. The pattern compiled
+ * without flags above, so a class does not nest and its first unescaped `]`
+ * closes it.
+ */
 function regexLiteral(pattern: string): Expr | undefined {
   try {
     void new RegExp(pattern);
@@ -216,15 +235,21 @@ function regexLiteral(pattern: string): Expr | undefined {
     return undefined;
   }
   let body = "";
+  let inClass = false;
   for (let index = 0; index < pattern.length; index++) {
     const char = pattern[index];
     if (char === "\\") {
-      body += char + (pattern[index + 1] ?? "");
+      const next = pattern[index + 1] ?? "";
+      body += LINE_TERMINATOR_ESCAPES[next] ?? char + next;
       index++;
-    } else if (char === "/") body += "\\/";
-    else if (char === "\n") body += "\\n";
-    else if (char === "\r") body += "\\r";
-    else body += char;
+    } else if (char === "[") {
+      inClass = true;
+      body += char;
+    } else if (char === "]") {
+      inClass = false;
+      body += char;
+    } else if (char === "/") body += inClass ? "/" : "\\/";
+    else body += LINE_TERMINATOR_ESCAPES[char] ?? char;
   }
   if (body === "") body = "(?:)";
   return atom(`/${body}/`, body.length <= 5);
