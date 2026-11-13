@@ -5,12 +5,12 @@
     "": {
       "name": "bun-jobs-provider-example",
       "devDependencies": {
-        "@kingsleyweb/bun-jobs": "~3.1.0",
+        "@kingsleyweb/bun-jobs": "~3.2.0",
         "@types/bun": "^1.4.2",
         "typescript": "^6.0.3",
       },
       "peerDependencies": {
-        "@kingsleyweb/bun-jobs": ">=3.1.0 <3.2.0",
+        "@kingsleyweb/bun-jobs": ">=3.2.0 <3.3.0",
       },
     },
   },
