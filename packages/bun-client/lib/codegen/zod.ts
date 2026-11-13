@@ -72,6 +72,7 @@ import { componentIdentifiers, RESERVED } from "./openapi";
 import { jsDoc, propertyKey, quote } from "./print";
 import {
   componentOf,
+  enumeratedKeys,
   INEXPRESSIBLE,
   isRecord,
   mediaKind,
@@ -532,23 +533,42 @@ function convertObject(
       : [],
   );
   const properties = isRecord(schema.properties) ? schema.properties : {};
-  const members = Object.entries(properties).map(
+  const members: (readonly [string, Expr])[] = Object.entries(properties).map(
     ([name, child]): readonly [string, Expr] => {
       const expr = convert(child, walk, `${at}.${name}`);
       return [name, required.has(name) ? expr : optional(expr)];
     },
   );
   const additional = schema.additionalProperties;
-  if (
-    members.length === 0 &&
-    additional !== undefined &&
-    typeof additional !== "boolean"
-  )
-    return z(
-      "record",
-      z("string"),
-      convert(additional, walk, `${at} additionalProperties`),
-    );
+  /** `additionalProperties`, converted on first use only (an unused one adds no warning). */
+  let converted: Expr | undefined;
+  const additionalExpr = (): Expr | undefined =>
+    additional === undefined || typeof additional === "boolean"
+      ? undefined
+      : (converted ??= convert(additional, walk, `${at} additionalProperties`));
+  // A key outside `properties` is checked by `additionalProperties` (as the
+  // types say; `patternProperties` is not checked, which is looser).
+  const keyExpr = (): Expr => additionalExpr() ?? UNKNOWN_SCHEMA;
+  const extra = [...required].filter(
+    (name) => !Object.hasOwn(properties, name),
+  );
+  // `propertyNames` listing the names (zod's own record over an enum, #780):
+  // those keys as members, required as `required` says. Still a loose
+  // object, as every object here.
+  const named = enumeratedKeys(schema.propertyNames, walk.context.document);
+  if (named !== undefined) {
+    for (const name of extra) members.push([name, keyExpr()]);
+    for (const name of named) {
+      if (!Object.hasOwn(properties, name) && !required.has(name))
+        members.push([name, optional(keyExpr())]);
+    }
+    return z("looseObject", { kind: "object", members });
+  }
+  if (members.length === 0 && extra.length === 0) {
+    const record = additionalExpr();
+    if (record !== undefined) return z("record", z("string"), record);
+  }
+  for (const name of extra) members.push([name, keyExpr()]);
   return z("looseObject", { kind: "object", members });
 }
 
