@@ -4,6 +4,80 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
+## 3.2.0 (2026-11-13)
+
+<!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
+
+A minor release: custom colour themes for every browser UI (bun-ui, and
+bun-common's self-hosted docs viewer), the generator's `--include`, and two
+generator fixes. All seven packages move to 3.2.0 together. Nothing is
+removed or changed incompatibly: `theme` still takes `"system"`, `"light"`
+or `"dark"`, and every existing `bun-client` command writes the same bytes
+as before unless it hit one of the two fixed bugs, so a 3.1.x app upgrades
+with no change of its own.
+
+```bash
+bun add @kingsleyweb/bun-ui@3.2.0 @kingsleyweb/bun-common@3.2.0
+bun add -d @kingsleyweb/bun-client@3.2.0
+```
+
+### Features
+
+- **Custom colour themes for the jobs UI and the docs viewers** (bun-ui,
+  bun-common; [#779](https://github.com/kingsloob1/bun-node/issues/779),
+  [#781](https://github.com/kingsloob1/bun-node/pull/781)).
+  - `jobsUi()`, `docsUi()` and `docsRouter`'s `"self-hosted"` viewer take
+    `theme: { mode?, light?, dark? }`: each scheme's colours by token
+    (`accent`, `bg`, `surface`, `focus`, the badge tones, the job-state
+    colours; the `UiColorToken` type), as `#rgb` or `#rrggbb`, checked when
+    the UI is created. A token left out keeps the built-in colour.
+  - The colours are served as `<basePath>/assets/theme-<hash>.css`, linked
+    after the bundle's stylesheet with SRI: the strict CSP is unchanged, and
+    the toggle still switches between your light and dark palettes.
+  - A pair below WCAG AA contrast is logged as a warning at startup, naming
+    the pair and where it is drawn (the self-hosted viewer logs on the docs
+    router's logger at its first page request).
+  - A theme object in `docsRouter`'s self-hosted viewer needs bun-ui 3.2.0;
+    with an older bun-ui it is a `ConfigError` naming the upgrade.
+- **Choose the documents a generated client covers: `--include`**
+  (bun-client; [#778](https://github.com/kingsloob1/bun-node/pull/778)).
+  - `--include openapi` writes the routes alone; `--include asyncapi` the
+    WebSocket channels alone, with an empty `Routes` and `manifest` so
+    `channel(createClient(...), channels[...])` works as before. Without it,
+    a client covers every document its source has, as before.
+  - Per target everywhere: `generate`, after each `--document` in `watch`,
+    and a target's `"include": ["asyncapi"]` in a `--config` file.
+  - `--asyncapi <file>` may now stand alone, under `--include asyncapi`, and
+    a targets file may name `"asyncapi"` alone for channels-only targets.
+    `generateRoutes(undefined, { asyncapi })` is the programmatic form.
+  - A file's `typesHash` covers the documents it holds. A document asked for
+    that the source lacks exits `2`, naming it.
+  - `watch` now compares the server's hash of what it last fetched, rather
+    than the file's, so a filtered client is not fetched again on every
+    announcement.
+  - Typing note: the exported `ClientConfig.source` (a parsed targets file)
+    gains an `{ asyncapiFile }` variant. Code that narrows it exhaustively
+    needs one more branch.
+
+### Fixes
+
+- **bun-client: `generate --zod` keeps a `/` inside a pattern's character
+  class unescaped** ([#776](https://github.com/kingsloob1/bun-node/issues/776),
+  [#777](https://github.com/kingsloob1/bun-node/pull/777)).
+  `^[A-Za-z0-9/_-]+$` is now written `/^[A-Za-z0-9/_-]+$/`, so a generated
+  zod module passes `no-useless-escape`. A pattern holding U+2028 or U+2029,
+  which used to produce a module that did not parse, now writes them as
+  escapes.
+- **bun-client: a record over an enum is typed by its values, not
+  `unknown`** ([#780](https://github.com/kingsloob1/bun-node/issues/780),
+  [#782](https://github.com/kingsloob1/bun-node/pull/782)). zod 4's
+  `z.record(z.enum([...]), V)` (`propertyNames` + `additionalProperties` +
+  `required`) is now typed `{ pending: V; failed: V }`, exactly the listed
+  keys, and the zod module checks those keys and values rather than
+  `z.record(z.string(), V)`. More generally, a key outside `properties`
+  takes the `patternProperties` it matches, else `additionalProperties`,
+  instead of `unknown`.
+
 ## 3.1.0 (2026-11-11)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->

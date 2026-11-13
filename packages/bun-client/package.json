@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-client",
   "type": "module",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": false,
   "description": "A typed, dependency-free HTTP client for the bun-node servers: one call per verb keyed by the server's own path literal, named operations, typed params, query and body, results discriminated by status, retries with backoff and Retry-After, timeouts, middleware and single-flight auth refresh; typed, resumable server-sent events; typed WebSocket channels with requests, reconnection and backpressure; WebRTC peers over a typed signalling channel. Browser-safe.",
   "author": "okafor obinna <kingsloob1@gmail.com>",
