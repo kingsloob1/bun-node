@@ -383,10 +383,23 @@ describe("@ValidateMessage: the ack", () => {
   });
 });
 
+/**
+ * A client of the `@Emits` gateway, once its welcome has arrived: the
+ * gateway's `handleConnection` emits `typing` on every connection, and the
+ * socket opens before that frame lands. Counted from before it, a test's
+ * `framesFrom` saw the welcome as its own (seed 150414: "a valid emit
+ * reaches the client" first in the shuffle).
+ */
+async function connectEmits(): Promise<WsTestClient> {
+  const socket = await connectWs(`${base}/emits`);
+  await socket.waitFor((m) => m?.data?.[0] === "typing");
+  return socket;
+}
+
 describe("@Emits", () => {
   let client: WsTestClient;
   beforeAll(async () => {
-    client = await connectWs(`${base}/emits`);
+    client = await connectEmits();
   });
   afterAll(async () => {
     await client?.close();
@@ -435,7 +448,7 @@ describe("@Emits", () => {
 
   it("an invalid emit still throws to the caller after an asynchronous emit has drained", async () => {
     const spy = spyOn(Logger.prototype, "error").mockImplementation(() => {});
-    const fresh = await connectWs(`${base}/emits`);
+    const fresh = await connectEmits();
     try {
       await framesFrom(fresh, { data: ["emit-async-mix", null] });
       const frames = await framesFrom(fresh, { data: ["emit-invalid", null] });
