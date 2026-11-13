@@ -17,7 +17,7 @@
  *   `unknown`, with a warning: never a type that is silently wrong.
  * - Validation keywords (lengths, ranges, `pattern`, `format`, `multipleOf`,
  *   `uniqueItems`, `contains`, `minProperties`, `dependentRequired`,
- *   `propertyNames`, …) and annotations (`title`, `default`, `examples`,
+ *   a `propertyNames` other than a list of names, …) and annotations (`title`, `default`, `examples`,
  *   `readOnly`, `writeOnly`, …) do not change the type and are ignored;
  *   `description` and `deprecated` become JSDoc.
  */
@@ -73,6 +73,38 @@ export function mediaKind(mediaType: string): MediaKind {
 /** Whether `value` is a plain JSON object. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The key names a `propertyNames` schema allows when it lists them: an
+ * `enum` or `const` of strings (zod 4 writes `z.record(z.enum([...]), V)`
+ * this way), directly or through one `$ref`. `undefined` for any other
+ * `propertyNames` (a `pattern`, a `maxLength`, none): then any name may
+ * appear.
+ *
+ * @param propertyNames The object schema's `propertyNames`.
+ * @param document The document, for a `$ref`.
+ */
+export function enumeratedKeys(
+  propertyNames: unknown,
+  document: unknown,
+): string[] | undefined {
+  let names = propertyNames;
+  if (isRecord(names) && typeof names.$ref === "string")
+    names = resolvePointer(document, names.$ref);
+  if (!isRecord(names)) return undefined;
+  const list = Array.isArray(names.enum)
+    ? names.enum
+    : "const" in names
+      ? [names.const]
+      : undefined;
+  if (
+    list === undefined ||
+    list.length === 0 ||
+    !list.every((name): name is string => typeof name === "string")
+  )
+    return undefined;
+  return [...new Set(list)];
 }
 
 /** Decodes one JSON Pointer segment (`~1` is `/`, `~0` is `~`). */
@@ -355,6 +387,15 @@ function convertBase(
   );
 }
 
+/** A `patternProperties` key as a regular expression; `undefined` when it does not compile (it then matches no name). */
+function patternOf(pattern: string): RegExp | undefined {
+  try {
+    return new RegExp(pattern);
+  } catch {
+    return undefined;
+  }
+}
+
 /** An object schema: its properties, and an index signature for `additionalProperties`/`patternProperties`. */
 function convertObject(
   schema: Record<string, unknown>,
@@ -379,21 +420,63 @@ function convertObject(
       ...(doc === undefined ? {} : { doc }),
     });
   }
-  // A required key with no schema may hold anything, but must be there.
+  const additional = schema.additionalProperties;
+  // Converted once each: every key outside `properties` is checked by them.
+  const additionalType =
+    additional === undefined || additional === true
+      ? UNKNOWN
+      : additional === false
+        ? keyword("never")
+        : convert(additional, walk, `${at} additionalProperties`);
+  const patterns: {
+    readonly pattern: RegExp | undefined;
+    readonly type: TsType;
+  }[] = isRecord(schema.patternProperties)
+    ? Object.entries(schema.patternProperties).map(([pattern, child]) => ({
+        pattern: patternOf(pattern),
+        type: convert(child, walk, `${at} patternProperties[${pattern}]`),
+      }))
+    : [];
+  /**
+   * A key outside `properties` (JSON Schema's rule): every
+   * `patternProperties` its name matches applies, and `additionalProperties`
+   * only when none does (#780: a required key took `unknown`).
+   */
+  const keyType = (name: string): TsType => {
+    const matched = patterns.filter(
+      (entry) => entry.pattern?.test(name) === true,
+    );
+    return matched.length > 0
+      ? intersection(matched.map((entry) => entry.type))
+      : additionalType;
+  };
   for (const name of required) {
     if (!Object.hasOwn(properties, name))
-      members.push({ name, optional: false, type: UNKNOWN });
+      members.push({ name, optional: false, type: keyType(name) });
+  }
+
+  // `propertyNames` listing the names (zod's record over an enum): exactly
+  // those keys, each typed as above, and no index signature.
+  const named = enumeratedKeys(schema.propertyNames, walk.context.document);
+  if (named !== undefined) {
+    for (const name of named) {
+      if (!Object.hasOwn(properties, name) && !required.has(name))
+        members.push({ name, optional: true, type: keyType(name) });
+    }
+    return members.length > 0
+      ? { kind: "object", members }
+      : {
+          kind: "ref",
+          name: "Record",
+          args: [keyword("string"), keyword("never")],
+        };
   }
 
   const extra: TsType[] = [];
-  const additional = schema.additionalProperties;
   if (additional !== undefined && additional !== false) {
-    extra.push(convert(additional, walk, `${at} additionalProperties`));
+    extra.push(additionalType);
   }
-  if (isRecord(schema.patternProperties)) {
-    for (const [pattern, child] of Object.entries(schema.patternProperties))
-      extra.push(convert(child, walk, `${at} patternProperties[${pattern}]`));
-  }
+  for (const entry of patterns) extra.push(entry.type);
 
   if (extra.length === 0) {
     if (members.length > 0) return { kind: "object", members };

@@ -113,6 +113,75 @@ describe("keywords that make a type", () => {
       "{\n  a: string;\n  [key: string]: number | string;\n}",
     ],
     [{ type: "object", required: ["a"] }, "{\n  a: unknown;\n}"],
+    // A key outside `properties` takes `additionalProperties`, or the
+    // `patternProperties` it matches (#780), and `propertyNames` listing the
+    // names makes them the keys, with no index signature.
+    [
+      {
+        type: "object",
+        propertyNames: { type: "string", enum: ["pending", "failed"] },
+        additionalProperties: { type: "integer" },
+        required: ["pending", "failed"],
+      },
+      "{\n  pending: number;\n  failed: number;\n}",
+    ],
+    [
+      {
+        type: "object",
+        propertyNames: { enum: ["a", "b"] },
+        additionalProperties: { type: "string" },
+        required: ["a"],
+      },
+      "{\n  a: string;\n  b?: string;\n}",
+    ],
+    [
+      {
+        type: "object",
+        propertyNames: { const: "only" },
+        additionalProperties: { type: "string" },
+      },
+      "{\n  only?: string;\n}",
+    ],
+    [
+      {
+        type: "object",
+        properties: { a: { type: "string" } },
+        propertyNames: { enum: ["a", "b"] },
+        additionalProperties: { type: "number" },
+        required: ["a"],
+      },
+      "{\n  a: string;\n  b?: number;\n}",
+    ],
+    [
+      {
+        type: "object",
+        required: ["a"],
+        additionalProperties: { type: "number" },
+      },
+      "{\n  a: number;\n  [key: string]: number;\n}",
+    ],
+    [
+      {
+        type: "object",
+        required: ["x1", "y"],
+        patternProperties: { "^x": { type: "boolean" } },
+        additionalProperties: { type: "number" },
+      },
+      "{\n  x1: boolean;\n  y: number;\n  [key: string]: number | boolean;\n}",
+    ],
+    // A `propertyNames` that does not list names keeps the index signature.
+    [
+      {
+        type: "object",
+        propertyNames: { pattern: "^a" },
+        additionalProperties: { type: "string" },
+      },
+      "Record<string, string>",
+    ],
+    [
+      { type: "object", required: ["a"], additionalProperties: false },
+      "{\n  a: never;\n}",
+    ],
     [
       { properties: { "a-b": { type: "string", description: "Dashed." } } },
       '{\n  /** Dashed. */\n  "a-b"?: string;\n}',
