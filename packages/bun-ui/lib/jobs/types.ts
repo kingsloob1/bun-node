@@ -5,8 +5,9 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { JobsApi, JobsApiAuthorizeResult } from "@kingsleyweb/bun-jobs";
+import type { UiThemeInput } from "../kit/browser/shared";
 import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
-import type { JobsUiConfig, JobsUiSections, UiTheme } from "./browser/config";
+import type { JobsUiConfig, JobsUiSections } from "./browser/config";
 
 /** What {@link JobsUiOptions.authorize} is told about the request being decided. */
 export interface JobsUiAuthorizeContext {
@@ -102,8 +103,16 @@ export interface JobsUiBaseOptions {
    * Defaults to none.
    */
   middleware?: readonly RouterHandler[];
-  /** Initial colour scheme. Defaults to `"system"` (follows `prefers-color-scheme`). */
-  theme?: UiTheme;
+  /**
+   * The colour theme. A scheme, `"system"` (the default, following
+   * `prefers-color-scheme`), `"light"` or `"dark"`; or
+   * `{ mode?, light?, dark? }` to also set colours: each scheme's map names
+   * colour tokens (`accent`, `bg`, `surface`, …; the `UiColorToken` type) and
+   * gives `#rgb` or `#rrggbb`. The colours are served as a stylesheet beside
+   * the bundle (`<basePath>/assets/theme-<hash>.css`), and a pair that falls
+   * below WCAG AA contrast is logged as a warning at startup.
+   */
+  theme?: UiThemeInput;
   /**
    * Where the bundle comes from. Unset (default): the prebuilt `dist/` when
    * present, else an in-memory `Bun.build` on the first request. `true`:

@@ -104,8 +104,10 @@ export {
 export {
   registerSelfHostedViewer,
   SELF_HOSTED_PACKAGE,
+  type SelfHostedColorToken,
   type SelfHostedDocument,
   type SelfHostedRegistration,
+  type SelfHostedTheme,
   type SelfHostedViewerOptions,
 } from "./selfHosted";
 export {

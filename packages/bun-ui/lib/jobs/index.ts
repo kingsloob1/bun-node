@@ -28,6 +28,12 @@ export type {
   UiUnauthorizedStatus,
 } from "./browser/unauthorized";
 export type { JobsUiConfig, JobsUiSections, UiTheme } from "./browser/config";
+export type {
+  UiColorToken,
+  UiThemeColors,
+  UiThemeInput,
+  UiThemeOptions,
+} from "../kit/browser/shared";
 export { JOBS_UI_CONFIG_ELEMENT_ID } from "./browser/config";
 export type {
   JobsUi,

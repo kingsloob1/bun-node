@@ -23,9 +23,9 @@ import {
   requireOptionsObject,
   resolveCommonOptions,
   resolveCsrfHeader,
-  resolveTheme,
 } from "../kit/options";
 import { ASSETS_SUBPATH, createUiRouter, problemSender } from "../kit/serve";
+import { resolveThemeInput, themedAssets } from "../kit/theme";
 import { resolveUnauthorized } from "../kit/unauthorized";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
 import { DEFAULT_EXTENSION_PREFIXES } from "./browser/config";
@@ -174,6 +174,8 @@ export function createDocsUi(
       ? `${basePath}${DOCUMENT_SUBPATH}`
       : resolveDocumentUrl(document as string);
 
+  // The starting scheme goes to the browser; colours become a stylesheet.
+  const theme = resolveThemeInput(options.theme, fail);
   const config = freezeConfig<DocsUiConfig>({
     version: 1,
     title,
@@ -182,19 +184,25 @@ export function createDocsUi(
     documentUrl,
     csrfHeader: resolveCsrfHeader(options.csrfHeader, () => null, fail),
     extensions: resolveExtensions(options.extensions),
-    theme: resolveTheme(options.theme, fail),
+    theme: theme.mode,
     unauthorized: resolveUnauthorized(options.unauthorized, basePath, fail),
   });
 
   const logger = resolveLogger(options.logger).child({
     component: "api-docs-ui",
   });
-  const loadAssets = resolveAssetSource({
-    dev: options.dev,
-    distDir: internals.distDir ?? DEFAULT_DIST_DIR,
-    entry: internals.entry ?? DEFAULT_ENTRY,
-    logger,
-  });
+  const loadAssets = themedAssets(
+    theme,
+    resolveAssetSource({
+      dev: options.dev,
+      distDir: internals.distDir ?? DEFAULT_DIST_DIR,
+      entry: internals.entry ?? DEFAULT_ENTRY,
+      logger,
+    }),
+    (message) => {
+      logger.warn(message);
+    },
+  );
 
   // A cross-origin document URL is the one connection beyond this origin.
   const origin = documentOriginSource(documentUrl);

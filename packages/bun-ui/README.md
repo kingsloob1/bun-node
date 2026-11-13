@@ -30,6 +30,7 @@ UI never loads another's code or bundle.
 - [Embedding the docs screens: `/docs/embed`](#embedding-the-docs-screens-docsembed)
 - [The browser entries](#the-browser-entries)
 - [Authorization and sign-in redirects](#authorization-and-sign-in-redirects)
+- [Colour themes](#colour-themes)
 - [What a UI serves](#what-a-ui-serves)
 - [Tree-shaking](#tree-shaking)
 - [Troubleshooting](#troubleshooting)
@@ -84,7 +85,7 @@ option when called and throws bun-jobs' `ConfigError` for anything unusable.
 | `authorize` | none | `(req, { asset, path }) => boolean \| { allow, status?, reason? }`, sync or async, guarding the shell and the bundle. Fails closed: 401 only for `status: 401`, otherwise 403; a throw gives 500. |
 | `unauthorized` | off | `{ redirectTo, returnParam?, statuses? }`: send the browser to a sign-in page ([below](#authorization-and-sign-in-redirects)). |
 | `middleware` | `[]` | Handlers run before `authorize` on the requests the UI answers. |
-| `theme` | `"system"` | `"system"`, `"light"` or `"dark"`. |
+| `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
 | `dev` | unset | Unset or `false`: serve the prebuilt `dist/jobs/` (`false` throws without it). `true` rebuilds from the app's source, which the published package does not ship for `/jobs`: leave it unset. |
 | `logger` | console | Any `LoggerLike` bun-common's `resolveLogger` accepts. |
 
@@ -131,7 +132,7 @@ bun-common's `ConfigError` for an unusable option. Every URL under
 | `document` | — (required) | A same-origin path or an `http(s)://` URL the viewer fetches (a URL's origin joins `connect-src`), or a `() => document` thunk (sync or async) served at `<basePath>/document.json` (`DOCUMENT_SUBPATH`). |
 | `basePath` | `"/docs"` | Absolute, not `"/"`, no trailing slash. |
 | `title` | `"API docs"` | Page title. |
-| `theme` | `"system"` | `"system"`, `"light"` or `"dark"`. |
+| `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
 | `extensions` | `["x-bun-common", "x-bun-jobs"]` | Specification-extension prefixes the viewer reads, first hit winning (`DEFAULT_EXTENSION_PREFIXES`). |
 | `csrfHeader` | none | A header the try-it panel adds on every mutation, or `false`. |
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API). Same shape and fail-closed rules as `jobsUi()`'s. |
@@ -160,7 +161,9 @@ app.use("/docs", docsRouter({
 `viewer.asyncapi: "self-hosted"` does the same for an AsyncAPI document.
 bun-common loads `@kingsleyweb/bun-ui/docs/hosted` lazily, only for that
 viewer; without the package installed, it throws a `ConfigError` saying
-`bun add @kingsleyweb/bun-ui`. The entry itself is server-side
+`bun add @kingsleyweb/bun-ui`. Each page takes the same `theme` as
+`docsUi()`, colours included (`viewer: { openapi: { name: "self-hosted",
+theme: { … } } }`; a theme object needs bun-ui 3.2.0 or later). The entry itself is server-side
 (`resolveHostedAssets`, `createShellRenderer`, `cspHeader`, `createNonce`
 and the asset types): an app rarely imports it directly.
 
@@ -233,12 +236,61 @@ sign-in page must still check `returnTo` before sending the user back to it.
 Details: [jobs](guides/jobs.md#sending-the-browser-to-sign-in),
 [docs](guides/docs.md#sending-the-browser-to-sign-in).
 
+## Colour themes
+
+Every UI here (the jobs UI, the docs viewer, and `docsRouter`'s
+`"self-hosted"` viewer) draws with one set of colour tokens, a light and a
+dark palette. `theme` takes your own colours for either, by token:
+
+```ts
+jobsUi({
+  api,
+  theme: {
+    mode: "system",                                   // where it starts, as the string form
+    light: { accent: "#0f766e", focus: "#0f766e" },
+    dark: { accent: "#2dd4bf", accentContrast: "#04201c", bg: "#0b1220" },
+  },
+});
+docsUi({ document: "/api/openapi.json", theme: { light: { accent: "#0f766e" } } });
+```
+
+- **Tokens** (the `UiColorToken` type): `bg`, `surface`, `surface2`,
+  `border`, `borderStrong`, `text`, `textMuted`, `accent`, `accentContrast`
+  (text on accent: primary buttons), `focus`, `danger`, `dangerContrast`,
+  the badge and notice pairs `infoBg`/`infoText`, `successBg`/`successText`,
+  `warningBg`/`warningText`, `dangerBg`/`dangerText`, `neutralBg`/`neutralText`,
+  and the job-state colours `stateWaiting`, `stateDelayed`, `stateActive`,
+  `stateCompleted`, `stateFailed`, `stateDead`, `stateWaitingChildren`.
+  Each is optional; one left out keeps the built-in colour, so changing the
+  accent alone is one line.
+- **Values are `#rgb` or `#rrggbb`.** Anything else (a name, `rgb()`, an
+  unknown token, an unknown key) throws the UI's `ConfigError` when the UI
+  is created, so nothing you pass reaches the CSS unchecked.
+- **The scheme still switches.** `mode` is where the page starts, and the
+  header's toggle still cycles system, light and dark: your `light` colours
+  show in the light scheme, your `dark` ones in the dark scheme (the
+  system's preference, or the toggle).
+- **The CSP is unchanged.** The colours are served as a stylesheet of their
+  own, `<basePath>/assets/theme-<hash>.css`, linked after the bundle's with
+  SRI and cached like the bundle; the pages still allow styles from their
+  own origin only.
+- **Contrast is checked.** Each text/background pair the UIs draw that your
+  colours touch is checked against WCAG AA (4.5:1 for text, 3:1 for
+  outlines, the focus ring and state dots), and one below it is logged as a
+  warning at startup, naming the pair and where it is drawn:
+  `theme.light: accentContrast #ffffff on accent #8ab4f8 is 2.11:1, below
+  4.5:1 (primary buttons, accent badges)`. It warns rather than refuses:
+  the palette is yours.
+- Not themed: the dialog backdrop and the card shadow (translucent black),
+  and the spacing, radius and type scale.
+
 ## What a UI serves
 
 Each router answers `GET` and `HEAD`, relative to its `basePath` (other
 methods fall through to the host):
 
-- `/assets/:file`: the hashed bundle files, with
+- `/assets/:file`: the hashed bundle files (and a [colour theme](#colour-themes)'s
+  `theme-<hash>.css`), with
   `Cache-Control: public, max-age=31536000, immutable`, an ETag (a matching
   `If-None-Match` gets 304) and `nosniff`. An unknown file gets a 404
   problem, never the shell.

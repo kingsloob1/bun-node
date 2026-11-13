@@ -497,7 +497,12 @@
     {
       "spelling": "@kingsleyweb/bun-common/lib/docs/selfHosted",
       "values": ["registerSelfHostedViewer", "SELF_HOSTED_PACKAGE"],
-      "types": ["SelfHostedViewerOptions", "SelfHostedRegistration"],
+      "types": [
+        "SelfHostedViewerOptions",
+        "SelfHostedRegistration",
+        "SelfHostedTheme",
+        "SelfHostedColorToken"
+      ],
       "peers": ["@kingsleyweb/bun-ui"]
     }
   ],

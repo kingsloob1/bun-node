@@ -247,6 +247,36 @@ export async function buildAssets(
   };
 }
 
+/**
+ * The bundle with one more stylesheet, linked after the built-in ones: a
+ * custom theme's (`./theme`), named `<stem>-<hash>.css` after its content so
+ * it caches like the rest, with its own SRI and ETag. The bundle is not
+ * changed; a new one is returned.
+ *
+ * @param assets The loaded bundle.
+ * @param stem The file's name before the hash (`"theme"`).
+ * @param css The stylesheet's text.
+ */
+export function withStylesheet(
+  assets: UiAssets,
+  stem: string,
+  css: string,
+): UiAssets {
+  const body = new TextEncoder().encode(css) as Uint8Array<ArrayBuffer>;
+  const hash = new Bun.CryptoHasher("sha256")
+    .update(body)
+    .digest("hex")
+    .slice(0, 12);
+  const name = `${stem}-${hash}.css`;
+  const files = new Map(assets.files);
+  files.set(name, toAsset(name, body, CONTENT_TYPES.css));
+  return {
+    ...assets,
+    entry: { js: assets.entry.js, css: [...assets.entry.css, name] },
+    files,
+  };
+}
+
 /** A hashed file name without its hash and extension: `main-3kx9.css` → `main`. */
 function stemOf(name: string): string {
   return name.replace(/-[a-z0-9]+\.[a-z]+$/, "");

@@ -23,9 +23,9 @@ import {
   requireOptionsObject,
   resolveCommonOptions,
   resolveCsrfHeader,
-  resolveTheme,
 } from "../kit/options";
 import { ASSETS_SUBPATH, createUiRouter, problemSender } from "../kit/serve";
+import { resolveThemeInput, themedAssets } from "../kit/theme";
 import { resolveUnauthorized } from "../kit/unauthorized";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
 import { connectSources, createShellRenderer } from "./shell";
@@ -291,6 +291,8 @@ export function createJobsUi(
     fail,
   );
 
+  // The starting scheme goes to the browser; colours become a stylesheet.
+  const theme = resolveThemeInput(options.theme, fail);
   const config = freezeConfig<JobsUiConfig>({
     version: 1,
     title,
@@ -305,18 +307,24 @@ export function createJobsUi(
     websocket: api ? websocketFromApi(api) : null,
     docs: api ? docsFromApi(api) : null,
     sections: resolveSections(options.sections),
-    theme: resolveTheme(options.theme, fail),
+    theme: theme.mode,
     unauthorized: resolveUnauthorized(options.unauthorized, basePath, fail),
   });
 
   const logger = resolveLogger(options.logger).child({ component: "jobs-ui" });
-  const loadAssets = resolveAssetSource({
-    dev: options.dev,
-    distDir: internals.distDir ?? DEFAULT_DIST_DIR,
-    entry: internals.entry ?? DEFAULT_ENTRY,
-    logger,
-    fail,
-  });
+  const loadAssets = themedAssets(
+    theme,
+    resolveAssetSource({
+      dev: options.dev,
+      distDir: internals.distDir ?? DEFAULT_DIST_DIR,
+      entry: internals.entry ?? DEFAULT_ENTRY,
+      logger,
+      fail,
+    }),
+    (message) => {
+      logger.warn(message);
+    },
+  );
 
   const apiOrigin = target.apiOrigin;
   const websocketPort = config.websocket?.port ?? null;

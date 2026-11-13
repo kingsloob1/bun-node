@@ -12,6 +12,9 @@ export { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
 export type { UiAsset, UiAssets, UiManifest, UiManifestFile } from "./assets";
 export { ASSET_CACHE_CONTROL } from "./docsUi";
 export { createNonce, createShellRenderer, cspHeader } from "./shell";
+// A custom colour theme (#779): checked, then applied to the bundle loader.
+export { resolveThemeInput, themedAssets } from "../kit/theme";
+export type { ResolvedUiTheme } from "../kit/theme";
 export type { CspOptions, ShellRenderer } from "./shell";
 
 /**
