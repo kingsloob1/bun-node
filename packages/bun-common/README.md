@@ -3415,7 +3415,9 @@ app.use(
   assets, SRI over the local bytes, and a self-only CSP. bun-ui is an
   optional peer: naming the viewer without it installed is a `ConfigError` at
   construction, naming the package. Its options are `theme` (`"system"`,
-  `"light"` or `"dark"`), `extensions` (the extension prefixes it reads) and
+  `"light"` or `"dark"`, or `{ mode?, light?, dark? }` with your own colours
+  by token, which needs bun-ui 3.2.0 or later; see bun-ui's
+  [Colour themes](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui#colour-themes)), `extensions` (the extension prefixes it reads) and
   `csrfHeader` (the header its try-it panel adds on mutations, or `false`).
   The OpenAPI page is the mount root, the AsyncAPI page `/asyncapi`.
 - **`cdn`** mirrors or air-gaps the assets: `{ baseUrl }` plus per-asset

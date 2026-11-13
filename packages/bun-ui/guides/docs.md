@@ -54,7 +54,7 @@ router answers with the shell.
 | `document` | — (required) | Same-origin path or `http(s)` URL the viewer fetches, or a `() => document` thunk the router serves at `<basePath>/document.json`. |
 | `basePath` | `"/docs"` | Mount path. Not `"/"`, no trailing slash, simple segments only. |
 | `title` | `"API docs"` | Page title. |
-| `theme` | `"system"` | Initial colour scheme: `"system"`, `"light"` or `"dark"`. |
+| `theme` | `"system"` | Initial colour scheme: `"system"`, `"light"` or `"dark"`; or `{ mode?, light?, dark? }` to also set colours by token (`{ light: { accent: "#0f766e" } }`). See [Colour themes](../README.md#colour-themes). |
 | `extensions` | `["x-bun-common", "x-bun-jobs"]` | Specification-extension prefixes the viewers read, first hit winning: a `<prefix>-<name>` extension is read from the first prefix carrying it; anything under another prefix is ignored. |
 | `csrfHeader` | none | Header the try-it panel adds on every mutation, or `false`. |
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API itself). |

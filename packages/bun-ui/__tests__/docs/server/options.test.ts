@@ -146,7 +146,7 @@ describe("theme", () => {
   it("must be a theme", () => {
     expectConfigError(
       () => fixtureDocsUi({ theme: "blue" as never }),
-      /"system", "light" or "dark"/,
+      /"system", "light", "dark" or \{ mode\?, light\?, dark\? \}/,
     );
   });
 });

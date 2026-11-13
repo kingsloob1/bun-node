@@ -23,6 +23,7 @@ import "reflect-metadata";
 import process from "node:process";
 import {
   BunHttpAdapter,
+  createLogger,
   defineRoutes,
   getPort,
   listRoutes,
@@ -49,6 +50,7 @@ import {
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { docsUi } from "@kingsleyweb/bun-ui/docs";
+import { playgroundTheme } from "./theme";
 import {
   isCrossProcess,
   playgroundBackend,
@@ -151,10 +153,17 @@ const api = createJobsApi({
   limits: { queueCacheMs: 0 },
   logger: noopLogger,
 });
+/** `PLAYGROUND_THEME`'s preset (theme.ts), for every UI below; unset, the built-in palette. */
+const theme = playgroundTheme();
+/** The UIs' logger: silent, except a theme's contrast warnings. */
+const uiLogger =
+  theme === undefined ? noopLogger : createLogger({ level: "warn" });
+
 const ui = jobsUi({
   api,
   title: "bun-node playground",
-  logger: noopLogger,
+  logger: uiLogger,
+  ...(theme === undefined ? {} : { theme }),
   // Always build the app from the source on disk. Unset, `jobsUi()` prefers a
   // prebuilt `dist/` whenever one exists — and packing the package (`prepack`,
   // which the consumer check runs) leaves one behind, so the playground then
@@ -327,7 +336,8 @@ app.use(
 const apiDocs = docsUi({
   document: openApiDocument,
   basePath: "/playground/api-docs",
-  logger: noopLogger,
+  logger: uiLogger,
+  ...(theme === undefined ? {} : { theme }),
   dev: true,
   authorize: playgroundAuthorize,
   unauthorized: playgroundUnauthorized,
@@ -340,7 +350,8 @@ const wsDocs = docsUi({
     }).document,
   basePath: "/playground/ws-docs",
   title: "bun-node playground (events)",
-  logger: noopLogger,
+  logger: uiLogger,
+  ...(theme === undefined ? {} : { theme }),
   dev: true,
   authorize: playgroundAuthorize,
   unauthorized: playgroundUnauthorized,
@@ -360,7 +371,13 @@ app.use(
         title: "bun-node playground (events)",
         version: "1.0.0",
       }).document,
-    viewer: { openapi: "self-hosted", asyncapi: "self-hosted" },
+    viewer:
+      theme === undefined
+        ? { openapi: "self-hosted", asyncapi: "self-hosted" }
+        : {
+            openapi: { name: "self-hosted", theme },
+            asyncapi: { name: "self-hosted", theme },
+          },
     authorize: (_req, _res, next) => next(),
   }),
 );

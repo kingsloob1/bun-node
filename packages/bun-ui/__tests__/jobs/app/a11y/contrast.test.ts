@@ -1,6 +1,12 @@
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
-import { AA, contrastRatio, parseTokens, relativeLuminance } from "./contrast";
+import {
+  AA,
+  CONTRAST_PAIRS,
+  contrastRatio,
+  parseTokens,
+  relativeLuminance,
+} from "./contrast";
 
 /**
  * WCAG AA contrast of every colour pair the app draws, in both themes, read
@@ -23,112 +29,8 @@ const TOKENS_CSS = join(
 
 const themes = parseTokens(await Bun.file(TOKENS_CSS).text());
 
-/** One pair checked. */
-interface Pair {
-  /** Foreground token. */
-  fg: string;
-  /** Background token. */
-  bg: string;
-  /** The minimum ratio. */
-  min: number;
-  /** Where the app draws it. */
-  use: string;
-}
-
-/** Every pair, with the smallest ratio each must reach. */
-const PAIRS: readonly Pair[] = [
-  // Text.
-  ...["bg", "surface", "surface-2"].map((bg) => ({
-    fg: "text",
-    bg,
-    min: AA.text,
-    use: "body text, table cells, headings",
-  })),
-  ...["bg", "surface", "surface-2", "neutral-bg"].map((bg) => ({
-    fg: "text-muted",
-    bg,
-    min: AA.text,
-    use: "muted text, hints, labels, tabs, zero counts",
-  })),
-  ...["bg", "surface", "surface-2"].map((bg) => ({
-    fg: "accent",
-    bg,
-    min: AA.text,
-    use: "links",
-  })),
-  ...["surface", "bg"].map((bg) => ({
-    fg: "danger",
-    bg,
-    min: AA.text,
-    use: "field errors, JSON editor errors",
-  })),
-  {
-    fg: "accent-contrast",
-    bg: "accent",
-    min: AA.text,
-    use: "primary buttons, accent badges",
-  },
-  {
-    fg: "danger-contrast",
-    bg: "danger",
-    min: AA.text,
-    use: "danger buttons",
-  },
-  // Badge tones, notices, banners, the current nav item.
-  {
-    fg: "neutral-text",
-    bg: "neutral-bg",
-    min: AA.text,
-    use: "neutral badge, the Events console's worker kind",
-  },
-  { fg: "info-text", bg: "info-bg", min: AA.text, use: "info badge, nav" },
-  { fg: "success-text", bg: "success-bg", min: AA.text, use: "success badge" },
-  { fg: "warning-text", bg: "warning-bg", min: AA.text, use: "warning badge" },
-  { fg: "danger-text", bg: "danger-bg", min: AA.text, use: "danger badge" },
-  // Coloured text on plain surfaces (JSON view, copy feedback, schema).
-  ...["surface", "surface-2"].flatMap((bg) =>
-    ["success-text", "info-text", "warning-text", "danger-text"].map((fg) => ({
-      fg,
-      bg,
-      min: AA.text,
-      use: "JSON strings/numbers, copy feedback, schema facts",
-    })),
-  ),
-  {
-    fg: "state-delayed",
-    bg: "surface-2",
-    min: AA.text,
-    use: "JSON booleans (--json-boolean)",
-  },
-  // UI components and graphics.
-  ...["bg", "surface", "surface-2"].map((bg) => ({
-    fg: "focus",
-    bg,
-    min: AA.ui,
-    use: "focus ring",
-  })),
-  ...["surface", "surface-2"].map((bg) => ({
-    fg: "border-strong",
-    bg,
-    min: AA.ui,
-    use: "input outlines",
-  })),
-  { fg: "danger", bg: "danger-bg", min: AA.ui, use: "error banner border" },
-  ...[
-    "waiting",
-    "delayed",
-    "active",
-    "completed",
-    "failed",
-    "dead",
-    "waiting-children",
-  ].map((state) => ({
-    fg: `state-${state}`,
-    bg: "surface",
-    min: AA.ui,
-    use: "state dots, stat borders, sparklines",
-  })),
-];
+/** Every pair, with the smallest ratio each must reach (shared with a custom theme's startup check). */
+const PAIRS = CONTRAST_PAIRS;
 
 describe("the contrast checker", () => {
   it("computes WCAG relative luminance and ratios", () => {

@@ -15,7 +15,13 @@
  * importing it needs no peer.
  */
 export { ASSET_CACHE_CONTROL } from "./kit/browser/shared";
-export type { UiTheme } from "./kit/browser/shared";
+export type {
+  UiColorToken,
+  UiTheme,
+  UiThemeColors,
+  UiThemeInput,
+  UiThemeOptions,
+} from "./kit/browser/shared";
 export {
   DEFAULT_RETURN_PARAM,
   DEFAULT_UNAUTHORIZED_STATUSES,

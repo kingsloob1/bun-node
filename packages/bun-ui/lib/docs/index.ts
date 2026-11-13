@@ -20,6 +20,12 @@ export {
  */
 export type { DocsUiConfig, DocsUiTheme } from "./browser/config";
 export type {
+  UiColorToken,
+  UiThemeColors,
+  UiThemeInput,
+  UiThemeOptions,
+} from "../kit/browser/shared";
+export type {
   UiUnauthorized,
   UiUnauthorizedStatus,
 } from "../kit/browser/unauthorized";

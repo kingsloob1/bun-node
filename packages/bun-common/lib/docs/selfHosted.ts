@@ -29,10 +29,65 @@ export const SELF_HOSTED_PACKAGE = "@kingsleyweb/bun-ui";
 /** The subpath of the peer this module loads: the docs viewer's server half for a host. */
 const HOSTED_SUBPATH = `${SELF_HOSTED_PACKAGE}/docs/hosted`;
 
+/**
+ * A colour of the self-hosted viewer, by name: bun-ui's `UiColorToken`,
+ * mirrored here because bun-ui is an optional peer (bun-ui's type tests fail
+ * when the two differ).
+ */
+export type SelfHostedColorToken =
+  | "bg"
+  | "surface"
+  | "surface2"
+  | "border"
+  | "borderStrong"
+  | "text"
+  | "textMuted"
+  | "accent"
+  | "accentContrast"
+  | "focus"
+  | "danger"
+  | "dangerContrast"
+  | "warningBg"
+  | "warningText"
+  | "infoBg"
+  | "infoText"
+  | "successBg"
+  | "successText"
+  | "dangerBg"
+  | "dangerText"
+  | "neutralBg"
+  | "neutralText"
+  | "stateWaiting"
+  | "stateDelayed"
+  | "stateActive"
+  | "stateCompleted"
+  | "stateFailed"
+  | "stateDead"
+  | "stateWaitingChildren";
+
+/**
+ * A custom colour theme for the self-hosted viewer: bun-ui's
+ * `UiThemeOptions`, mirrored. Each scheme's colours are `#rgb` or
+ * `#rrggbb`; bun-ui checks them (it needs 3.2.0 or later).
+ */
+export interface SelfHostedTheme {
+  /** The scheme the page starts in. Default: `"system"`. */
+  mode?: "system" | "light" | "dark";
+  /** Colours for the light scheme. Default: the built-in ones. */
+  light?: Partial<Record<SelfHostedColorToken, string>>;
+  /** Colours for the dark scheme. Default: the built-in ones. */
+  dark?: Partial<Record<SelfHostedColorToken, string>>;
+}
+
 /** A viewer page's own options (the `{ name, ...options }` pass-through). */
 export interface SelfHostedViewerOptions {
-  /** Initial colour scheme: `"system"` (default), `"light"` or `"dark"`. */
-  theme?: "system" | "light" | "dark";
+  /**
+   * The colour theme: a scheme, `"system"` (default), `"light"` or
+   * `"dark"`, or a {@link SelfHostedTheme} that also sets colours (served
+   * as `<mount>/assets/theme-<hash>.css`; a pair below WCAG AA contrast is
+   * a warning on the docs router's logger, at the first page request).
+   */
+  theme?: "system" | "light" | "dark" | SelfHostedTheme;
   /**
    * The specification-extension prefixes the viewer reads, first hit
    * winning. Default: `["x-bun-common", "x-bun-jobs"]`.
@@ -56,6 +111,8 @@ export interface SelfHostedDocument {
 interface ResolvedDocument extends SelfHostedDocument {
   /** The resolved pass-through. */
   resolved: Pick<HostedConfig, "csrfHeader" | "extensions" | "theme">;
+  /** The page's bundle: the shared one, with its theme's stylesheet when it has one. */
+  load: () => Promise<HostedAssets>;
 }
 
 /** What {@link registerSelfHostedViewer} registers. */
@@ -108,8 +165,28 @@ interface HostedConfig {
   theme: "system" | "light" | "dark";
 }
 
+/** A checked theme (the peer's `ResolvedUiTheme`, mirrored). */
+interface HostedTheme {
+  /** The scheme the page starts in. */
+  readonly mode: "system" | "light" | "dark";
+  /** The colour overrides, when it sets any. */
+  readonly colors: object | undefined;
+}
+
 /** The slice of the peer's `lib/hosted` this module uses. */
 interface HostedModule {
+  /** Checks a theme (bun-ui 3.2.0 and later; absent before). */
+  resolveThemeInput?: (
+    value: unknown,
+    fail: (message: string, context: Record<string, unknown>) => Error,
+    what?: string,
+  ) => HostedTheme;
+  /** A loader that adds a theme's stylesheet to the bundle (with `resolveThemeInput`). */
+  themedAssets?: (
+    theme: HostedTheme,
+    loadAssets: () => Promise<HostedAssets>,
+    warn: (message: string) => void,
+  ) => () => Promise<HostedAssets>;
   /** Resolves the bundle: the prebuilt `dist/` when present, else an in-memory build on first use. */
   resolveHostedAssets: (logger: unknown) => () => Promise<HostedAssets>;
   /** Prepares the shell for a config and a bundle; the result splices a nonce in. */
@@ -142,18 +219,43 @@ function defaultLoad(internals: SelfHostedInternals): HostedModule {
   }
 }
 
+/**
+ * The `theme` pass-through, checked: a scheme here; a theme object by the
+ * peer, which owns the token names (bun-ui 3.2.0 or later).
+ */
+function resolveViewerTheme(
+  mod: HostedModule,
+  value: unknown,
+  what: string,
+): HostedTheme {
+  const theme = value ?? "system";
+  if (theme === "system" || theme === "light" || theme === "dark") {
+    return { mode: theme, colors: undefined };
+  }
+  if (typeof theme !== "object" || theme === null) {
+    throw new ConfigError(
+      `${what}: theme must be "system", "light", "dark" or { mode?, light?, dark? }`,
+      { theme: value },
+    );
+  }
+  if (mod.resolveThemeInput === undefined || mod.themedAssets === undefined) {
+    throw new ConfigError(
+      `${what}: a theme object needs ${SELF_HOSTED_PACKAGE} 3.2.0 or later`,
+      { package: SELF_HOSTED_PACKAGE },
+    );
+  }
+  return mod.resolveThemeInput(
+    theme,
+    (message, context) => new ConfigError(`${what}: ${message}`, context),
+  );
+}
+
 /** The pass-through options, checked (a bad one is a ConfigError at construction). */
 function resolveOptions(
   options: SelfHostedViewerOptions,
   what: string,
+  theme: HostedTheme,
 ): Pick<HostedConfig, "csrfHeader" | "extensions" | "theme"> {
-  const theme = options.theme ?? "system";
-  if (theme !== "system" && theme !== "light" && theme !== "dark") {
-    throw new ConfigError(
-      `${what}: theme must be "system", "light" or "dark"`,
-      { theme: options.theme },
-    );
-  }
   const extensions = options.extensions ?? ["x-bun-common", "x-bun-jobs"];
   if (
     !Array.isArray(extensions) ||
@@ -178,7 +280,7 @@ function resolveOptions(
       },
     );
   }
-  return { theme, extensions, csrfHeader };
+  return { theme: theme.mode, extensions, csrfHeader };
 }
 
 /** The `info.title` of a document, when it is one. */
@@ -211,34 +313,43 @@ export function registerSelfHostedViewer(
     return;
   }
   const mod = defaultLoad(internals);
-  // The pass-through options are validated here, at construction, with the
-  // peer's load: a bad one never waits for a request.
-  const resolved = {
-    openapi:
-      registration.openapi === undefined
-        ? undefined
-        : {
-            ...registration.openapi,
-            resolved: resolveOptions(
-              registration.openapi.options,
-              "the openapi viewer",
-            ),
-          },
-    asyncapi:
-      registration.asyncapi === undefined
-        ? undefined
-        : {
-            ...registration.asyncapi,
-            resolved: resolveOptions(
-              registration.asyncapi.options,
-              "the asyncapi viewer",
-            ),
-          },
-  };
   const loadAssets = mod.resolveHostedAssets(noopLogger);
   /** The bundle, shared by every route; a failure answers 500, logged nowhere (the peer logs the build notice). */
   let bundle: Promise<HostedAssets> | undefined;
   const ready = (): Promise<HostedAssets> => (bundle ??= loadAssets());
+
+  // A theme's contrast warnings, logged on the router's logger at the first
+  // page request: by then a host has had the chance to `setLogger` it.
+  const warnings: string[] = [];
+  const flushWarnings = () => {
+    for (const message of warnings.splice(0)) router.logger.warn(message);
+  };
+
+  // The pass-through options are validated here, at construction, with the
+  // peer's load: a bad one never waits for a request. A theme with colours
+  // gives its page a bundle of its own: the shared one plus its stylesheet.
+  const resolve = (
+    document: SelfHostedDocument | undefined,
+    what: string,
+  ): ResolvedDocument | undefined => {
+    if (document === undefined) return undefined;
+    const theme = resolveViewerTheme(mod, document.options.theme, what);
+    const load =
+      theme.colors === undefined || mod.themedAssets === undefined
+        ? ready
+        : mod.themedAssets(theme, ready, (message) => {
+            warnings.push(`${what}: ${message}`);
+          });
+    return {
+      ...document,
+      resolved: resolveOptions(document.options, what, theme),
+      load,
+    };
+  };
+  const resolved = {
+    openapi: resolve(registration.openapi, "the openapi viewer"),
+    asyncapi: resolve(registration.asyncapi, "the asyncapi viewer"),
+  };
 
   /** A renderer per mount path and page (the config is fixed for both). */
   const renderers = new Map<string, (nonce: string) => string>();
@@ -250,9 +361,10 @@ export function registerSelfHostedViewer(
       kind: "openapi" | "asyncapi",
     ): ((req: BunRequest, res: BunResponse) => Promise<void>) =>
     async (req, res) => {
+      flushWarnings();
       let assets: HostedAssets;
       try {
-        assets = await ready();
+        assets = await page.load();
       } catch {
         res.status(500);
         res.setHeader("Content-Type", "application/problem+json");
@@ -301,16 +413,26 @@ export function registerSelfHostedViewer(
     req: BunRequest,
     res: BunResponse,
   ): Promise<void> => {
-    let assets: HostedAssets;
+    // Every page's bundle: the shared files, and each themed page's stylesheet.
+    let bundles: HostedAssets[];
     try {
-      assets = await ready();
+      bundles = await Promise.all(
+        [resolved.openapi, resolved.asyncapi].flatMap((page) =>
+          page === undefined ? [] : [page.load()],
+        ),
+      );
     } catch {
       res.status(500);
       void res.end();
       return;
     }
     const name = (req.params as Record<string, string | undefined>).file;
-    const file = name === undefined ? undefined : assets.files.get(name);
+    const file =
+      name === undefined
+        ? undefined
+        : bundles
+            .map((assets) => assets.files.get(name))
+            .find((found) => found !== undefined);
     if (file === undefined) {
       res.status(404);
       res.setHeader("Content-Type", "application/problem+json");
