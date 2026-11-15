@@ -38,6 +38,13 @@ published packages under `packages/`:
 - **`@kingsleyweb/bun-client`** — the typed-client plan's HTTP client
   (PR-C1): `createClient` over a `"VERB /path"` route map; no runtime
   dependency, browser-safe.
+- **`@kingsleyweb/bun-security`** — the request-defence engine of the
+  [bun-security plan](docs/plans/bun-security/README.md), being built in
+  milestone M1: `createSecurity` decides each request locally from a
+  compiled policy (client identity on bun-common's trust-proxy foundation,
+  service identity, the trust check, allow and deny lists over a CIDR trie,
+  dry run, `explain()`); `./serve` wraps a plain `Bun.serve`. Bun only;
+  bun-common is its one runtime dependency.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
 typecheck (`bun run check`), and `bun lint` plus `bun fmt --check` against
@@ -113,7 +120,7 @@ bun run test               # type-check the tests, then run them in parallel —
 **Lint and format, since PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
 §7.** The gate is `bun run lint` (`bun lint`; in a `lint` script it is the
 linter) and `bun run format:check` (`bun fmt --check`), two steps (Q6), in each
-of the 16 directories with a `lint` script (the seven packages, the five
+of the 17 directories with a `lint` script (the eight packages, the five
 `examples/*`, `playground/`, `benchmarks/`, `templates/compute-provider/` and
 `tools/vscode-bun-lint/`), `bun run lint:scripts` and
 `bun run format:check:scripts` from the root for `scripts/`, and
@@ -1149,12 +1156,12 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   for the whole package: `false`, or the exact modules with an effect at
   load (bun-ui `["**/*.css", "./app/*/main.tsx"]`; bun-common its four
   `lib/contract/` modules that install the logger resolution; bun-jobs and
-  bun-cache their process and thread entries; bun-nest `false`, its decorators
+  bun-cache their process and thread entries; bun-security `false`; bun-nest `false`, its decorators
   applied by call staying on classes in their own module). A module that only
   re-exports drops its bare imports with it, so the importer of an effect
   module is listed too. The check is each package's
-  `__tests__/treeShaking.test.ts`, in all seven: `Bun.build` a one-export app
-  (bun-jobs, bun-cache and bun-nest target Bun), assert its bytes stay under a
+  `__tests__/treeShaking.test.ts`, in all eight: `Bun.build` a one-export app
+  (bun-jobs, bun-cache, bun-nest and bun-security target Bun), assert its bytes stay under a
   measured bound, and that each listed effect survives, with negative controls
   on a copy of the package with the field removed or narrowed. Bun at run time
   ignores the field, so no other suite can show it wrong, and a wrong `false`

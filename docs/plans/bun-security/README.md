@@ -23,7 +23,7 @@ systems; and a management UI with a live **analytics page**, the
 > the plan, and other packages in the mono repo can be used to achieve the
 > package's intended result."
 
-**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. Not started: building M1 waits for the user's go-ahead.** The foundations it builds on are trustProxy (merged, #653) and the throttle (merged as three PRs, T1 #654, T2 #655 and T3 #656). **Changed on 2026-11-08:** the management UI is no longer a package of its own, `@kingsleyweb/bun-security-ui`, but the `/security` entry (with `/security/browser`) of `@kingsleyweb/bun-ui`, because the user decided that every bun-node UI lives in one package ([`bun-ui`](../bun-ui/README.md), approved 2026-11-08; its §7 lists every edit made here). No security decision changed; PR-U1 drops to ~4 d and the optional shared-module PR (Q14) becomes bun-ui's BU-4. **Added on 2026-11-10, at the user's request:** a verified-crawler allowance ([`layers.md` L3.2](layers.md#l32-verified-crawlers-let-search-engines-index-the-site-d-v)), so that path scanning by search-engine crawlers is not blocked and their index of a service keeps building. It is a new PR, PR-S12 (~2.5 d), with three new questions, Q29 to Q31 (§16), answered the same day with their recommendations.
+**Status: approved by the user on 2026-11-07, every open question (§16) answered with its recommendation as written. M1 started on 2026-11-15 with the user's go-ahead: PR-S1 (package and core) is built, not yet merged ([Status](#status-2026-11-16)).** The foundations it builds on are trustProxy (merged, #653) and the throttle (merged as three PRs, T1 #654, T2 #655 and T3 #656). **Changed on 2026-11-08:** the management UI is no longer a package of its own, `@kingsleyweb/bun-security-ui`, but the `/security` entry (with `/security/browser`) of `@kingsleyweb/bun-ui`, because the user decided that every bun-node UI lives in one package ([`bun-ui`](../bun-ui/README.md), approved 2026-11-08; its §7 lists every edit made here). No security decision changed; PR-U1 drops to ~4 d and the optional shared-module PR (Q14) becomes bun-ui's BU-4. **Added on 2026-11-10, at the user's request:** a verified-crawler allowance ([`layers.md` L3.2](layers.md#l32-verified-crawlers-let-search-engines-index-the-site-d-v)), so that path scanning by search-engine crawlers is not blocked and their index of a service keeps building. It is a new PR, PR-S12 (~2.5 d), with three new questions, Q29 to Q31 (§16), answered the same day with their recommendations.
 
 Written 2026-11-07 against `develop` at `36be4163`, on Bun 1.4.4-canary.1
 (`11c367163`). **No product code was changed.** Every `file:line` is at
@@ -31,11 +31,12 @@ Written 2026-11-07 against `develop` at `36be4163`, on Bun 1.4.4-canary.1
 are in [`evidence/`](evidence/README.md); none measures speed (the standing
 rule: no benchmarks or speed comparisons without the user's yes).
 
-### Status (2026-11-10)
+### Status (2026-11-16)
 
 | Part | State |
 |---|---|
-| This plan and its sub-plans | **approved** by the user on 2026-11-07 (above); nothing of the package built |
+| This plan and its sub-plans | **approved** by the user on 2026-11-07 (above) |
+| M1, the engine | **started 2026-11-15** at the user's go-ahead. **PR-S1 built** on `feat/bun-security-s1` (2026-11-16), not yet merged: `packages/bun-security` with the packaging recipe, the policy format (`compilePolicy`, `securityPolicySchema`, explicit units), the engine (`createSecurity`: `evaluate`, `explain`, `load`, `status`, `close`), L2 on the trust-proxy foundation with service identity and the L2.5 trust check, L3 lists (CIDR trie, the `internal` list, allow guards), memory state, and `./serve` (`withSecurity`, `hardenServe`). Every other PR of M1 not started |
 | ConcaveHR's write-up of its defence | **folded in** (§12, received 2026-11-07): every layer mapped, its lessons carried into the design and §14 |
 | Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request |
@@ -316,7 +317,7 @@ steered now.
 |---|---|---|
 | `.` | `createSecurity(options)` → the engine: `evaluate`, `middleware()`, `signal()`, `explain()`, `load(bundle)`, `close()`; policy types and schemas; `compilePolicy` | every EP |
 | `./http` | bun-common integration: `securityMiddleware`, `securityHeaders`, `csrf`, `uniformAuthResponse`, the early hook (PR-P2) | EPs on bun-common |
-| `./serve` | `withSecurity(fetch, security)` for a plain `Bun.serve`, `hardenServe(options)` | EPs on raw Bun |
+| `./serve` | `withSecurity(security, fetch, options?)` for a plain `Bun.serve` (the order §3.4's example uses; the user's decision, 2026-11-16), `hardenServe(options)` | EPs on raw Bun |
 | `./stores` | hot state over bun-cache (`cacheStore(cache)`: scores, counted-rule counters, HLLs, active-ban copies); the `hybrid` `ThrottleStore` wrapper | EPs |
 | `./store` | the security store (durable state): `SecurityStoreDriver`, `memoryStore`, `sqliteStore`, `postgresStore`, `policyFile` ([`storage.md`](storage.md)) | the CP; EPs that read bundles straight from the store |
 | `./challenge` | `powChallenge`, `turnstile`, `hcaptcha`, the `ChallengeProvider` type | EPs |
@@ -1175,6 +1176,28 @@ Every new public name proposed (none built):
 | counted-rule events `auth.failure`, `mfa.failure`, `signup`, `password.reset`, `request`, `route.notFound`, `pattern.hit`, `throttled`; the `internal` list; list kinds `email`, `phone`, `username`, `domain`; `ServiceIdentity` | values, entity | policy format |
 | `pfAdd`, `pfCount`, capability `distinctCount` | driver operations | bun-cache (PR-P3) |
 | the `crawlers` policy option (`mode`, `allow`, `verify`, `methods`, `paths`, `exempt`, `limit`, `spoofed`, `custom`); `verify` values `ranges`, `rdns`, `ranges-then-rdns`; exemptions `notFound`, `probeRules`, `honeypots`, `botSignals`, `challenges`, `hostingClass`, `geo`, `perIpLimits`, `autoBans`; registry ids `google`, `google-special`, `bing`, `apple`, `duckduckgo`, `yandex`, `baidu`; events `crawler.probe`, `crawler.honeypot`, `crawler.spoofed`; the key prefix `crawler:`; options `maxPendingVerifications`, `verifyTimeoutMs`, `resolver` | values, options | policy format (PR-S12) |
+
+### 17.1 Added with PR-S1 (approved by the user, 2026-11-16)
+
+PR-S1 added these public names beyond the table above, all approved as
+built:
+
+| Names | Where |
+|---|---|
+| values `securityPolicySchema`, `SecurityPolicyError`, `requestFacts`, `INTERNAL_RANGES`, `ACTION_SEVERITY`, `DEFAULT_MAX_LIST_ENTRIES`, `DEFAULT_SERVICE_HEADER`, `DEFAULT_CLIENT_IP_HEADER`, `MAX_FACT_HEADERS`, `MAX_FACT_HEADER_LENGTH` | `.` |
+| `Security` members `identify`, `status`, `closed` | `.` |
+| types `CreateSecurityOptions`, `ExplainOptions`, `SecurityStatus`, `Explanation`, `ExplainStep`, `ClientResolution`, `ClientSource`, `SecurityLayer`, `SubjectKeys`, `RequestFacts`, `RequestFactsInit`, `SecurityIdentity`, `SecurityWarning`, `TrustStatus`, `TrustMinute`, `TrustWarningKind`, `CompiledPolicy`, `CompilePolicyOptions`, `PolicyIssue`, `SecurityMode`, `SecurityAction`, `ListAction`, `ListEntry`, `PolicyScope`, `KeyPolicy`, `InternalListPolicy`, `ServiceExemption`, `ServiceIdentityPolicy`, `TrustCheckPolicy` | `.` |
+| `DEFAULT_IDLE_TIMEOUT_SECONDS`, `DEFAULT_MAX_REQUEST_BODY_SIZE`, `WithSecurityOptions`, `HardenServeOptions`, `HardenableServeOptions`, `RequestIpServer` | `./serve` |
+| options: `createSecurity`'s `onWarning`, `logger`, `now`; `withSecurity`'s `failClosedOnEngineError`, `logger`; `hardenServe`'s second argument `{ production }`; `compilePolicy`'s `{ maxListEntries }` | options |
+| policy fields: `service`, `environment`, `public`, `mode`, `keys.ipv6Prefix`, `internal` (`true`, `false` or `{ ranges }`); list entries' `id`, `ip`, `user`, `apiKey`, `action`, `override`, `locked`, `scope`, `paths`, `expiresAt`, `mode`, `reason`, `createdBy`, `code`; `serviceIdentity { header, clientIpHeader, services[{ id, verifier, forwardsClientIp, exempt }] }`; `trustCheck { threshold, window, minRequests } \| false`; scopes `global`, `group`, `service`; exemptions `lists`, `bans`, `countedRules`, `globalLimits` | policy format |
+| headers `x-service-token`, `x-service-client-ip`; verifier format `sha256:<hex>`; warning kinds `trust.internal`, `trust.unread-forwarding`; rule ids `ip:<cidr>`, `user:<id>`, `apiKey:<id>`, `internal:<cidr>`, `service:<id>`, `service-identity`; problem codes `blocked`, `unavailable`; client sources `socket`, `trusted-proxy`, `client-ip-header`, `service`, `none` | values |
+
+Two behaviours the user confirmed with them (2026-11-16): the L2.5 trust
+check warns only for a service whose policy says `public: true` (the
+default is `false`, so internal-only services do not warn about their
+internal share); and the `internal` list protects addresses only, so a
+refusing `user` or `apiKey` entry still applies to a client on an internal
+address, while no `ip` entry refuses one.
 
 The trust-proxy and throttle names (`trustProxy`, `throttle()`,
 `ThrottleStore`, `cacheThrottleStore`, `@Throttle`, `@SkipThrottle`) are

@@ -74,6 +74,7 @@ export const OWN_PACKAGES = [
   "@kingsleyweb/bun-ui",
   "@kingsleyweb/bun-cache",
   "@kingsleyweb/bun-client",
+  "@kingsleyweb/bun-security",
 ] as const;
 
 /**
