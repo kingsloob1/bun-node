@@ -10,6 +10,7 @@ import {
   JOBS_API_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { expectAbsent } from "../../../harness/assert";
 
 /**
  * The Summoning screen and the Summon panel's "Also clear budget usage"
@@ -86,6 +87,17 @@ interface SummoningModule {
   }>;
 }
 
+/** What this file uses of the app's API client and summon domain. */
+interface SummonClientModule {
+  /** `createApiClient` of `app/jobs/api/client`. */
+  createApiClient: (
+    config: { apiBase: string; csrfHeader: string | null },
+    options: { fetch: FetchLike },
+  ) => unknown;
+  /** `getSummonStatus` of `app/jobs/api/summon`. */
+  getSummonStatus: (api: unknown, queue: string) => Promise<unknown>;
+}
+
 /** Imports a module by a specifier the compiler does not resolve. */
 function load<T>(specifier: string): Promise<T> {
   return import(specifier) as Promise<T>;
@@ -113,6 +125,9 @@ const QUEUES = {
   /** The policy case's: its policy sets more than the others'. */
   policy: "policies",
 } as const;
+
+/** A queue with jobs and no summoning at all: no controller, no summon state. */
+const PLAIN = "plain";
 
 /** An env value the policy case's policy holds: it must never reach the page. */
 const ENV_SECRET = "s3cr3t-policy-value";
@@ -329,6 +344,37 @@ describe("the Summoning screen against a real summon controller", () => {
     expect(row.day).toMatch(/^300 of 300 left today/);
     screen.unmount();
   }, 60_000);
+});
+
+describe("the Summon tab's read against a real API (#786)", () => {
+  it("reads a queue with no summoning as null from configured: false, and a summoned queue as its status", async () => {
+    await jobs.queue(PLAIN).add("work", {});
+    // What the API answers: a 200 state, never the 409 it used to.
+    const raw = await fetchApi(`${BASE}/queues/${PLAIN}/summon`, {
+      method: "GET",
+    });
+    expect(raw.status).toBe(200);
+    expect(await raw.json()).toEqual({ queue: PLAIN, configured: false });
+
+    const root = ["..", "..", "..", "..", "app", "jobs", "api"].join("/");
+    const { createApiClient } = await load<SummonClientModule>(
+      `${root}/client`,
+    );
+    const { getSummonStatus } = await load<SummonClientModule>(
+      `${root}/summon`,
+    );
+    const api = createApiClient(
+      { apiBase: BASE, csrfHeader: CSRF },
+      { fetch: fetchApi },
+    );
+    expectAbsent(await getSummonStatus(api, PLAIN), "plain's summon status");
+    // The control: a queue with a controller here reads as its status.
+    expect(await getSummonStatus(api, QUEUES.listed)).toMatchObject({
+      configured: true,
+      queue: QUEUES.listed,
+      local: true,
+    });
+  });
 });
 
 describe("the Summon panel's Policy block against a real summon controller", () => {

@@ -227,7 +227,8 @@ export interface SourceOptions {
 /**
  * What {@link QueueSource} reads of the configuration. `driver` and
  * `namespace` are what summon status is read from storage with; without them
- * a queue with no local controller is 409 `SUMMON_NOT_CONFIGURED`.
+ * a queue with no local controller has no summon status (`GET
+ * /queues/:queue/summon` answers `configured: false`).
  */
 type QueueSourceConfig = Pick<
   ResolvedJobsApiConfig,
@@ -423,18 +424,24 @@ export class QueueSource {
    * The summon status of the queue a request names: its local controller's
    * (`status()`), else the one its summon state in storage holds
    * (`local: false`, with the kind the last claim persisted). Validated and
-   * checked for membership like {@link summonController}. 409
-   * `SUMMON_NOT_CONFIGURED` for a reachable queue with neither a local
-   * controller nor summon state, or with no driver to read one from.
+   * checked for membership like {@link summonController}. `undefined` for a
+   * reachable queue with neither a local controller nor summon state, or
+   * with no driver to read one from: the usual state of a queue nothing
+   * summons for, which `GET /queues/:queue/summon` answers as
+   * `configured: false`, not as an error (only the routes that act answer
+   * it 409 `SUMMON_NOT_CONFIGURED`).
    */
-  async summonStatus(value: unknown): Promise<{
-    /** The status. */
-    status: SummonStatus;
-    /** The local controller, when there is one. */
-    controller?: SummonController;
-    /** The kind storage persisted, for a status read from it. */
-    kind?: string;
-  }> {
+  async summonStatus(value: unknown): Promise<
+    | {
+        /** The status. */
+        status: SummonStatus;
+        /** The local controller, when there is one. */
+        controller?: SummonController;
+        /** The kind storage persisted, for a status read from it. */
+        kind?: string;
+      }
+    | undefined
+  > {
     const name = parseSegment(value, "queue");
     const controller = this.#config.jobs?.[FIND_SUMMON_CONTROLLER](name);
     if (controller !== undefined) {
@@ -451,11 +458,7 @@ export class QueueSource {
         { context: { queue: name } },
       );
     }
-    const stored = await this.storedSummonStatus(name);
-    if (stored === undefined) {
-      throw notConfigured(name);
-    }
-    return stored;
+    return await this.storedSummonStatus(name);
   }
 
   /**

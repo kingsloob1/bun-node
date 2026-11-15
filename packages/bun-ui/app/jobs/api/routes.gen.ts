@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 203fe2bf8f2f5326
+ * typesHash: 8e68b9e7b4675027
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
@@ -12,7 +12,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "203fe2bf8f2f5326";
+export const typesHash = "8e68b9e7b4675027";
 
 /** One job of a flow, with the jobs it waits on. A flow holds at most 100 jobs and nests at most 10 levels (the top job is level 1); more is 400 VALIDATION at the first job past the bound. */
 export interface AddFlowNode {
@@ -864,6 +864,8 @@ export interface QueueSummary {
   paused: boolean;
 }
 
+export type QueueSummon = SummonStatus | SummonNotConfigured;
+
 export interface QueueThroughput {
   interval: number;
   from: number;
@@ -1350,6 +1352,14 @@ export interface SummonList {
   }[];
 }
 
+/** A queue with no summoning: no summon controller for it runs in the API's process and it has no summon state in storage (or the API has no driver to read one from), the usual state of a queue nothing summons compute for. A state, not a failure: "summon now" and reset still answer 409 `SUMMON_NOT_CONFIGURED` for it. bun-jobs 3.2 and earlier answered this read 409 `SUMMON_NOT_CONFIGURED` too: a client that may talk to one reads that 409 as this state. */
+export interface SummonNotConfigured {
+  /** The queue asked about. */
+  queue: string;
+  /** Always `false`: the queue has no summon controller in the API's process and no summon state. What tells this answer from a `SummonStatus`. */
+  configured: false;
+}
+
 /** The policy a queue's summon controller runs with, as it resolved it: every value in effect, defaults filled in, durations in ms. Never an `env` value, a summoner, or the provider's config. Field names are the policy's option names, so a path in `explicit` is the field's path here, except `group.circuit.*` (shown as `circuit.group`) and the budget (shown by the status's `budget` and `group.budget`). The platform's shutdown signal and grace are not a policy value: read them from `summoner.capabilities.shutdown`. */
 export interface SummonPolicyStatus {
   /** What makes the controller check: one item per trigger kind, on or off, in `onAdd`, `events`, `poll` order. */
@@ -1453,6 +1463,8 @@ export interface SummonPolicyStatus {
 
 /** A queue's summon status: its shared summon state (read from the backend, so the same from every process) plus the local controller's policy (`policy`: only when `local` is `true`, since only the process running the controller knows it; advertised by `/meta.features.summonPolicy`). */
 export interface SummonStatus {
+  /** Always `true`: the queue has summoning, from a controller in the API's process or from summon state in storage. What tells this answer of `GET /queues/{queue}/summon` from `SummonNotConfigured` (`configured: false`). An API from bun-jobs 3.2 or earlier sends no `configured` (it answered 409 `SUMMON_NOT_CONFIGURED` instead of the `configured: false` state), so test `configured === false`, never `!configured`. */
+  configured: true;
   /** The queue. For a shared unit, the first of `queues`: the first of its queues the caller may read. */
   queue: string;
   /** For a shared unit (`group.unit: "shared"`): the queues it serves that the caller may read (`queues.read`, asked as this route asks it) and this API can reach (its `queues` option: reachability, not access control), in the policy's order, always including the one asked about. The status is the unit's, the same whichever of its queues was asked about, and `queue` is the first of these; a `partial:` detail on `last` names only these queues too (bare `partial` when it names none of them). Read from storage (`local: false`), of the queues its last claim persisted. Absent for a controller of one queue. */
@@ -5893,14 +5905,13 @@ export interface Routes {
     headers: Record<never, never>;
     body: undefined;
     responses: {
-      200: SummonStatus;
+      200: QueueSummon;
       400: Omit<Problem, "code"> & {
         code:
           | "DRIVER_ERROR"
           | "FORBIDDEN"
           | "INVALID_NAME"
           | "QUEUE_NOT_FOUND"
-          | "SUMMON_NOT_CONFIGURED"
           | "UNAUTHORIZED"
           | "VALIDATION";
       };
@@ -5910,7 +5921,6 @@ export interface Routes {
           | "FORBIDDEN"
           | "INVALID_NAME"
           | "QUEUE_NOT_FOUND"
-          | "SUMMON_NOT_CONFIGURED"
           | "UNAUTHORIZED"
           | "VALIDATION";
       };
@@ -5920,7 +5930,6 @@ export interface Routes {
           | "FORBIDDEN"
           | "INVALID_NAME"
           | "QUEUE_NOT_FOUND"
-          | "SUMMON_NOT_CONFIGURED"
           | "UNAUTHORIZED"
           | "VALIDATION";
       };
@@ -5930,17 +5939,6 @@ export interface Routes {
           | "FORBIDDEN"
           | "INVALID_NAME"
           | "QUEUE_NOT_FOUND"
-          | "SUMMON_NOT_CONFIGURED"
-          | "UNAUTHORIZED"
-          | "VALIDATION";
-      };
-      409: Omit<Problem, "code"> & {
-        code:
-          | "DRIVER_ERROR"
-          | "FORBIDDEN"
-          | "INVALID_NAME"
-          | "QUEUE_NOT_FOUND"
-          | "SUMMON_NOT_CONFIGURED"
           | "UNAUTHORIZED"
           | "VALIDATION";
       };
@@ -5950,7 +5948,6 @@ export interface Routes {
           | "FORBIDDEN"
           | "INVALID_NAME"
           | "QUEUE_NOT_FOUND"
-          | "SUMMON_NOT_CONFIGURED"
           | "UNAUTHORIZED"
           | "VALIDATION";
       };
@@ -9081,7 +9078,7 @@ export const manifest = {
   },
   "GET /queues/:queue/summon": {
     operationId: "getQueueSummon",
-    statuses: [200, 400, 401, 403, 404, 409, 503],
+    statuses: [200, 400, 401, 403, 404, 503],
   },
   "POST /queues/:queue/summon": {
     operationId: "summonQueue",

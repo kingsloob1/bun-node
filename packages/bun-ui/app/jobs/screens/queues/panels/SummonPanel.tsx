@@ -81,9 +81,10 @@ export interface SummonPanelProps {
  * is in (when it is in one), and the two opt-in actions — "summon now" and
  * reset (`queues.summon`).
  *
- * Shown only where the status answers 200: the queue screen reads it before
- * offering the tab, and a queue with no summoner in the API's process (409
- * `SUMMON_NOT_CONFIGURED`) has no tab at all.
+ * Shown only where the status answers a status: the queue screen reads it
+ * before offering the tab, and a queue with no summoning (`configured:
+ * false`, or 409 `SUMMON_NOT_CONFIGURED` from bun-jobs 3.2 and earlier) has
+ * no tab at all.
  *
  * A shared summon unit (a status with `queues`) is one process serving
  * several queues: the panel names them, warns when another group's units

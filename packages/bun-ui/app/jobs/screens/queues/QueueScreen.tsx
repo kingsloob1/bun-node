@@ -219,8 +219,9 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
   const jobDefaults = useJobDefaultsGate();
   const api = useApiClient();
   // `/meta` says nothing about summoning: the status read itself decides. A
-  // queue with no summoner in the API's process reads as `null` (409
-  // `SUMMON_NOT_CONFIGURED`) and gets no tab; the panel reuses this read.
+  // queue with no summoning reads as `null` (`configured: false`, or 409
+  // `SUMMON_NOT_CONFIGURED` from bun-jobs 3.2 and earlier) and gets no tab;
+  // the panel reuses this read.
   const summon = useQuery({
     queryKey: summonKeys.status(api, queue),
     queryFn: ({ signal }) => getSummonStatus(api, queue, signal),

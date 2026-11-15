@@ -318,8 +318,8 @@ context, so it then reads the unit from storage as any member of the
 namespace would: `GET /jobs-api/queues/ingest/summon` answers `local: false`,
 and the Summon panel is read-only (no "Summon now", no Reset). Until the
 unit's first attempt has written its state there, nothing is stored to read,
-so for the first second or so that route answers 409
-`SUMMON_NOT_CONFIGURED` and the queue has no Summon tab. Everything
+so for the first second or so that route answers `configured: false` and
+the queue has no Summon tab. Everything
 else (the bursts, the units, the faults) is unchanged.
 
 | File | What it is |

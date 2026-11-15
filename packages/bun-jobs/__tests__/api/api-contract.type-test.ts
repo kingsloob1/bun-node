@@ -86,11 +86,13 @@ import type {
   queueListQuerySchema,
   QueueListSchema,
   QueueSummarySchema,
+  QueueSummonSchema,
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
   SummonCheckSchema,
   SummonGroupListSchema,
   SummonListSchema,
+  SummonNotConfiguredSchema,
   SummonNowBodySchema,
   SummonPolicySchema,
   SummonStatusSchema,
@@ -589,12 +591,52 @@ export type SummonProviderOk = Expect<
   DeepEqual<Contract.SummonProviderDto, Plain<Root.ProviderIdentity>>
 >;
 // `policy` aside: its `jobsPerWorker` is `null` on the wire where the runtime
-// has `Infinity` (JSON has none), so it is compared below.
+// has `Infinity` (JSON has none), so it is compared below. `configured` is
+// the wire's alone: it tells the status from `SummonNotConfiguredDto`, and
+// a runtime status always has summoning.
 export type SummonStatusRuntimeOk = Expect<
   DeepEqual<
-    Omit<Contract.SummonStatusDto, "policy">,
+    Omit<Contract.SummonStatusDto, "policy" | "configured">,
     Plain<Omit<Root.SummonStatus, "policy">>
   >
+>;
+export type SummonStatusConfiguredOk = Expect<
+  Equal<Contract.SummonStatusDto["configured"], true>
+>;
+// The read's answer is the status or the not-configured state, each whole
+// against its schema, and the union against the route's.
+export type SummonNotConfiguredOk = Expect<
+  DeepEqual<
+    Contract.SummonNotConfiguredDto,
+    Infer<typeof SummonNotConfiguredSchema>
+  >
+>;
+export type QueueSummonOk = Expect<
+  DeepEqual<Contract.QueueSummonDto, Infer<typeof QueueSummonSchema>>
+>;
+// `configured` discriminates: narrowing on `false` leaves the state alone.
+export type QueueSummonNarrowsOk = Expect<
+  Equal<
+    Extract<Contract.QueueSummonDto, { configured: false }>,
+    Contract.SummonNotConfiguredDto
+  >
+>;
+// Negative control: a not-configured state with `configured: true` is not
+// the schema's.
+export type SummonNotConfiguredNegative = Expect<
+  // @ts-expect-error -- `configured` is `false` in the schema
+  DeepEqual<
+    Omit<Contract.SummonNotConfiguredDto, "configured"> & {
+      configured: true;
+    },
+    Infer<typeof SummonNotConfiguredSchema>
+  >
+>;
+export type RootSummonNotConfiguredDtoOk = Expect<
+  Equal<Root.SummonNotConfiguredDto, Contract.SummonNotConfiguredDto>
+>;
+export type RootQueueSummonDtoOk = Expect<
+  Equal<Root.QueueSummonDto, Contract.QueueSummonDto>
 >;
 export type SummonStatusPolicyFieldOk = Expect<
   Equal<

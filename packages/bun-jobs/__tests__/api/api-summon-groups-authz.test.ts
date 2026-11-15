@@ -503,6 +503,7 @@ describe("GET /summon rows read from storage that cannot show a budget", () => {
     const garbage = await h.call("GET", "/queues/garbage/summon");
     expect(garbage.status).toBe(200);
     expect(garbage.body).toEqual({
+      configured: true,
       queue: "garbage",
       local: false,
       inert: true,

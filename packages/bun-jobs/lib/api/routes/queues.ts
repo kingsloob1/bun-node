@@ -86,6 +86,7 @@ import {
   QueueLimitsInputSchema,
   queueListQuerySchema,
   QueueListSchema,
+  QueueSummonSchema,
   ResetJobDefaultsQuerySchema,
   StoredLimitsSchema,
   SummonCheckSchema,
@@ -637,6 +638,13 @@ const SUMMON_ERRORS = [
   "SUMMON_NOT_CONFIGURED",
   "DRIVER_ERROR",
 ] as const;
+
+/**
+ * Errors `GET /queues/:queue/summon` can answer with: the summon routes'
+ * less `SUMMON_NOT_CONFIGURED`, since a queue with no summoning is answered
+ * as a state (`configured: false`), not refused.
+ */
+const SUMMON_READ_ERRORS = [...QUEUE_ERRORS, "DRIVER_ERROR"] as const;
 
 /** What every summon route says about where its controller comes from, once. */
 const SUMMON_NOTE =
@@ -1379,14 +1387,21 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary:
         "A queue's summon status: attempts in flight, failures, circuit, budget",
-      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, the summon group's shared state when the queue is in one (redacted to the members the caller may read, as \`GET /summon/groups/{group}\` redacts it), the summoner — its provider, declared capabilities and secret-free facts — and \`policy\`, the policy the controller runs with: every value in effect, defaults filled in, with \`explicit\` naming the keys the policy set (durations in ms, \`jobsPerWorker\` \`null\` for unlimited, \`env\` by name only, never a value). The platform's shutdown signal and grace are the summoner's \`capabilities.shutdown\`, not a policy value. For a queue a shared unit serves (\`group.unit: "shared"\`), the unit's status: \`authorize\` is asked \`queues.read\` about each of its other queues, and \`queues\` names only those the caller may read and the API can reach (its \`queues\` option), with the one asked about (\`queue\` the first of them); each pending attempt's \`coverage\` (per queue: \`registered\`, \`pending\`, or \`missing\` once its \`until\` plus 5 s has passed with nothing registered or starting there, by the server's clock; worked out from the queues' claims and worker records at each read, never stored), the last outcome's \`missing\` and a \`partial:\` detail name only those, the policy's \`perQueue\` keeps only those, and the group's state is redacted to the same queues. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\nFor a queue whose controller runs in another process, the shared state alone, read from storage, as \`local: false\`: no \`summoner\`, no \`policy\` (only the process running the controller knows it; it is never persisted), and the budget's limits the ones its last claim persisted (\`off\` when its budget was off, absent when none was persisted). A queue a shared unit in another process serves is answered with the unit's status, read from its group's state (its \`queues\` the ones its last claim persisted, its budget limits the group's own), when the unit claimed at or after the queue's own summon state did; that costs one listing of the group entries and one read of each, plus the coverage's claim and worker-record reads. Summon state a newer bun-jobs wrote is \`inert\` with \`inertReason: "newer-marker"\` and no \`budget\`; state that cannot be read at all is \`inert\` with \`inertReason: "unreadable-marker"\`, nothing pending, no failures and no \`budget\` (\`GET /summon\` leaves it out). 409 \`SUMMON_NOT_CONFIGURED\` only for a queue with neither a controller here nor summon state. Advertised by \`/meta.features.summonStoredStatus\`; \`policy\` by \`/meta.features.summonPolicy\`.`,
+      description: `The queue's shared summon state and the local controller's policy: attempts on their way (with when each counts as \`lost\`), consecutive failures, the backoff and circuit, the budget used this hour and today, the last outcome, the summon group's shared state when the queue is in one (redacted to the members the caller may read, as \`GET /summon/groups/{group}\` redacts it), the summoner — its provider, declared capabilities and secret-free facts — and \`policy\`, the policy the controller runs with: every value in effect, defaults filled in, with \`explicit\` naming the keys the policy set (durations in ms, \`jobsPerWorker\` \`null\` for unlimited, \`env\` by name only, never a value). The platform's shutdown signal and grace are the summoner's \`capabilities.shutdown\`, not a policy value. For a queue a shared unit serves (\`group.unit: "shared"\`), the unit's status: \`authorize\` is asked \`queues.read\` about each of its other queues, and \`queues\` names only those the caller may read and the API can reach (its \`queues\` option), with the one asked about (\`queue\` the first of them); each pending attempt's \`coverage\` (per queue: \`registered\`, \`pending\`, or \`missing\` once its \`until\` plus 5 s has passed with nothing registered or starting there, by the server's clock; worked out from the queues' claims and worker records at each read, never stored), the last outcome's \`missing\` and a \`partial:\` detail name only those, the policy's \`perQueue\` keeps only those, and the group's state is redacted to the same queues. Reads only; spends nothing. A pending attempt's platform \`handles\` only with \`serialize.exposeSummonHandles\`.\n\nFor a queue whose controller runs in another process, the shared state alone, read from storage, as \`local: false\`: no \`summoner\`, no \`policy\` (only the process running the controller knows it; it is never persisted), and the budget's limits the ones its last claim persisted (\`off\` when its budget was off, absent when none was persisted). A queue a shared unit in another process serves is answered with the unit's status, read from its group's state (its \`queues\` the ones its last claim persisted, its budget limits the group's own), when the unit claimed at or after the queue's own summon state did; that costs one listing of the group entries and one read of each, plus the coverage's claim and worker-record reads. Summon state a newer bun-jobs wrote is \`inert\` with \`inertReason: "newer-marker"\` and no \`budget\`; state that cannot be read at all is \`inert\` with \`inertReason: "unreadable-marker"\`, nothing pending, no failures and no \`budget\` (\`GET /summon\` leaves it out). Every status carries \`configured: true\`.\n\nA queue with neither a controller here nor summon state (or an API with no driver to read one from) — the usual state of a queue nothing summons for — is answered 200 \`{ "queue": "<name>", "configured": false }\` (\`SummonNotConfigured\`): a state, not a failure, so a dashboard can ask on every queue page. "Summon now" and reset still answer it 409 \`SUMMON_NOT_CONFIGURED\`, and an unknown queue is still 404 \`QUEUE_NOT_FOUND\`. bun-jobs 3.2 and earlier answered this read 409 \`SUMMON_NOT_CONFIGURED\` too, and sent no \`configured\`: a client that may talk to one reads that 409 as \`configured: false\`, and tests \`configured === false\`, never \`!configured\`. Advertised by \`/meta.features.summonStoredStatus\`; \`policy\` by \`/meta.features.summonPolicy\`.`,
       tags: ["Queues"],
       params: QueueParams,
-      responses: { 200: SummonStatusSchema },
-      errors: SUMMON_ERRORS,
+      responses: { 200: QueueSummonSchema },
+      errors: SUMMON_READ_ERRORS,
       target: ({ params }) => queueTarget(params.queue),
       handler: async ({ req, params, services }) => {
-        const { status } = await services.queues.summonStatus(params.queue);
+        const found = await services.queues.summonStatus(params.queue);
+        if (found === undefined) {
+          // The usual state of a queue nothing summons for: a state the
+          // dashboard asks about on every queue page, not a failure, so it
+          // is never an `ApiError` (issue #786).
+          return { body: { queue: params.queue, configured: false } };
+        }
+        const { status } = found;
         return {
           body: toSummonStatusDto(
             await withVisibleUnit(services, req, status, params.queue),
