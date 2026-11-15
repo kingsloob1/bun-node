@@ -1063,6 +1063,7 @@ export function toSummonStatusDto(
   const summoner = status.summoner;
   const provider = summoner?.provider;
   return {
+    configured: true,
     queue: status.queue,
     ...(status.queues === undefined ? {} : { queues: [...status.queues] }),
     ...(status.overlaps === undefined

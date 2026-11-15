@@ -49,7 +49,8 @@
  *   so a process with no controller reads them too.
  * - **A process with no controller reads the unit from its group's state**
  *   (`local: false`), with coverage; before the unit's first claim there is
- *   nothing to read, and a member answers 409 `SUMMON_NOT_CONFIGURED`.
+ *   nothing to read, and a member answers `configured: false` (a 200
+ *   state, not an error).
  * - **A queue charged by a controller of its own after the unit's last claim
  *   answers for itself**: the unit's `queues` leaves it out while the unit
  *   stays a unit for the rest; once every queue has gone back, the group has
@@ -63,6 +64,7 @@
  */
 import type {
   JobsDriver,
+  QueueSummonDto,
   SummonCheckResult,
   SummonEventPayload,
   SummonGroupListDto,
@@ -260,12 +262,12 @@ contexts.push(remoteJobs);
 const remote = apiOver(remoteJobs);
 const local = apiOver(unitJobs);
 
-const early = await remote.get<{ code: string }>("/queues/renders/summon");
+const early = await remote.get<QueueSummonDto>("/queues/renders/summon");
 show("GET /queues/renders/summon with no controller, before any claim", early);
 checkEqual(
-  "an API with no controller answers a member 409 SUMMON_NOT_CONFIGURED: no claim has written the unit's state yet",
-  [early.status, early.body.code],
-  [409, "SUMMON_NOT_CONFIGURED"],
+  "an API with no controller answers a member configured: false: no claim has written the unit's state yet",
+  [early.status, early.body],
+  [200, { queue: "renders", configured: false }],
 );
 
 /* ------------------------------------------------------------------ */

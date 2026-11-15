@@ -334,13 +334,19 @@ for (const backend of BACKENDS) {
             solo: { day: 1, lastAt: (value.lastAttemptAt as number) - 100 },
           },
         }));
-        expect((await h.call("GET", "/queues/solo/summon")).status).toBe(409);
+        expect(await h.call("GET", "/queues/solo/summon")).toMatchObject({
+          status: 200,
+          body: { queue: "solo", configured: false },
+        });
         expect(
           (await h.call("GET", "/queues/thumbs/summon")).body.queues,
         ).toEqual(["previews", "renders", "thumbs"]);
         // A newer bun-jobs' entry is never read as a unit.
         await editEntry(jobs, (value) => ({ ...value, v: 2 }));
-        expect((await h.call("GET", "/queues/thumbs/summon")).status).toBe(409);
+        expect(await h.call("GET", "/queues/thumbs/summon")).toMatchObject({
+          status: 200,
+          body: { queue: "thumbs", configured: false },
+        });
         expect(h.mismatches()).toEqual([]);
       });
 

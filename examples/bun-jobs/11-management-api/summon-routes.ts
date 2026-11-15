@@ -42,9 +42,10 @@
  *   The budget's usage stays too, unless the body says `{ "budget": true }`.
  * - **The API never builds a controller.** It finds the one the `jobs` it was
  *   given runs, or reads the summon state another process's controller
- *   stored; a queue with neither is 409 `SUMMON_NOT_CONFIGURED` on each of
- *   the queue's three routes, while `GET /summon` with none at all is an
- *   empty list.
+ *   stored; a queue with neither reads as `{ queue, configured: false }`
+ *   (200: a state, not a failure) and is 409 `SUMMON_NOT_CONFIGURED` on the
+ *   two routes that act, while `GET /summon` with none at all is an empty
+ *   list.
  * - **The list is never looser than the status route.** `GET /summon` asks
  *   `queues.list`, then `queues.read` once per row — a queue whose controller
  *   runs here, or one whose summon state it read from storage — exactly as
@@ -589,14 +590,26 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("5. A queue with no controller here: 409 SUMMON_NOT_CONFIGURED");
+step(
+  "5. A queue with no controller here: configured: false, and 409 SUMMON_NOT_CONFIGURED on the actions",
+);
 
+const plainStatus = await panel.call("GET", "/queues/plain/summon");
 checkEqual(
-  "every summon route, for a queue with jobs but no summon policy",
+  "the status of a queue with jobs but no summon policy is a 200 state, not an error: { queue, configured: false }",
+  [plainStatus.status, plainStatus.body],
+  [200, { queue: "plain", configured: false }],
+);
+checkEqual(
+  "and a queue with a controller says configured: true, so configured tells the two apart",
+  (await panel.call("GET", "/queues/reports/summon")).body.configured,
+  true,
+);
+checkEqual(
+  "the two routes that act, for that queue",
   await Promise.all(
     (
       [
-        ["GET", "/queues/plain/summon"],
         ["POST", "/queues/plain/summon"],
         ["POST", "/queues/plain/summon/reset"],
       ] as const
@@ -606,7 +619,6 @@ checkEqual(
     }),
   ),
   [
-    "GET /queues/plain/summon: 409 SUMMON_NOT_CONFIGURED",
     "POST /queues/plain/summon: 409 SUMMON_NOT_CONFIGURED",
     "POST /queues/plain/summon/reset: 409 SUMMON_NOT_CONFIGURED",
   ],
@@ -937,8 +949,8 @@ checkEqual(
   ["403 FORBIDDEN", 1],
 );
 
-// A context with no summon policy at all: the list is simply empty, where a
-// queue's own route answers 409.
+// A context with no summon policy at all: the list is simply empty, and a
+// queue's own route answers `configured: false`.
 const unsummoned = new BunJobs({
   namespace: exampleNamespace("summon-api-none"),
   driver: crossProcessDriver(),
@@ -948,15 +960,15 @@ await unsummoned.queue("reports").add("render", { id: 2 });
 const bare = mount({ jobs: unsummoned });
 const emptyList = await bare.call("GET", "/summon");
 checkEqual(
-  "no controller in the process: GET /summon is 200 with an empty list, never 409 — while the queue's own route is",
+  "no controller in the process: GET /summon is 200 with an empty list, and the queue's own route 200 configured: false",
   [
     emptyList.status,
     emptyList.body,
-    (({ status, body }) => `${status} ${body.code}`)(
+    (({ status, body }) => `${status} configured: ${body.configured}`)(
       await bare.call("GET", "/queues/reports/summon"),
     ),
   ],
-  [200, { controllers: [] }, "409 SUMMON_NOT_CONFIGURED"],
+  [200, { controllers: [] }, "200 configured: false"],
 );
 
 // A summoned worker that shares the API's config builds the same controller,

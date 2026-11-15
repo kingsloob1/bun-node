@@ -238,6 +238,7 @@ export function summonStatusFixture(
   overrides: Partial<SummonStatusDto> = {},
 ): SummonStatusDto {
   return {
+    configured: true,
     queue: "emails",
     local: true,
     inert: false,

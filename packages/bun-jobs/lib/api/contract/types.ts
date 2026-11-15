@@ -1354,10 +1354,20 @@ export interface SummonLastOutcomeDto {
  * Answered from the summon controller for the queue running in the API's
  * process (`BunJobsOptions.summon` or `jobs.summonController()` on the
  * `jobs` the API was given), else from the queue's summon state in storage
- * (`local: false`); 409 `SUMMON_NOT_CONFIGURED` only for a queue with
- * neither.
+ * (`local: false`). A queue with neither is answered with
+ * {@link SummonNotConfiguredDto} instead (`configured: false`): see
+ * {@link QueueSummonDto}.
  */
 export interface SummonStatusDto {
+  /**
+   * Always `true`: the queue has summoning, from a controller here or from
+   * summon state in storage. What tells this answer of `GET
+   * /queues/{queue}/summon` from {@link SummonNotConfiguredDto}. An API
+   * from bun-jobs 3.2 or earlier sends no `configured` (it answered 409
+   * `SUMMON_NOT_CONFIGURED` instead of the `configured: false` state), so
+   * test `configured === false`, never `!configured`.
+   */
+  configured: true;
   /**
    * The queue. For a shared unit, the first of {@link SummonStatusDto.queues}:
    * the first of its queues the caller may read.
@@ -1501,6 +1511,35 @@ export interface SummonStatusDto {
    */
   policy?: SummonPolicyDto;
 }
+
+/**
+ * `GET /queues/{queue}/summon` for a queue with no summoning: no summon
+ * controller for it runs in the API's process and it has no summon state in
+ * storage (or the API has no driver to read one from) — the usual state of
+ * a queue nothing summons compute for. A state, not a failure: answered 200,
+ * and not logged as a failed request. "Summon now" and reset still answer
+ * 409 `SUMMON_NOT_CONFIGURED` for such a queue, and an unknown queue is
+ * still 404 `QUEUE_NOT_FOUND`.
+ *
+ * bun-jobs 3.2 and earlier answered the read 409 `SUMMON_NOT_CONFIGURED`
+ * too: a client that may talk to one reads that 409 as this state.
+ */
+export interface SummonNotConfiguredDto {
+  /** The queue asked about. */
+  queue: string;
+  /**
+   * Always `false`: the queue has no summon controller here and no summon
+   * state. What tells this answer from a {@link SummonStatusDto}.
+   */
+  configured: false;
+}
+
+/**
+ * `GET /queues/{queue}/summon` (operation `getQueueSummon`): the queue's
+ * summon status, or {@link SummonNotConfiguredDto} for a queue with no
+ * summoning. Tell them apart by `configured`.
+ */
+export type QueueSummonDto = SummonStatusDto | SummonNotConfiguredDto;
 
 /**
  * The policy a queue's summon controller runs with, as it resolved it: every
@@ -4366,7 +4405,9 @@ export interface MetaDto {
      * usage (`SummonResetBody`). It needs no driver method, so this is
      * `false` only in `runner` mode. Like every flag it ignores permissions
      * (`queues.summon` is opt-in); whether a queue has a summon controller is
-     * the route's own answer (409 `SUMMON_NOT_CONFIGURED`).
+     * the route's own answer (409 `SUMMON_NOT_CONFIGURED`), as `GET
+     * /queues/{queue}/summon` tells beforehand (`local`, or `configured:
+     * false`).
      */
     summonResetBudget: boolean;
     /**

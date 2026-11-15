@@ -44,9 +44,9 @@ setupDom();
  * A queue's summoning (`GET /queues/:queue/summon`, "summon now" and reset):
  * the queue screen's Summon panel.
  *
- * The rules it keeps: a queue with no summoner in the API's process (409
- * `SUMMON_NOT_CONFIGURED`) has no tab at all, since `/meta` has no flag for
- * it; the two actions need the opt-in `queues.summon` and a local
+ * The rules it keeps: a queue with no summoning (`configured: false`, or
+ * 409 `SUMMON_NOT_CONFIGURED` from bun-jobs 3.2 and earlier) has no tab at
+ * all, since `/meta` has no flag for it; the two actions need the opt-in `queues.summon` and a local
  * controller, and ask first; and an outcome this build does not know is
  * shown as its raw string.
  */
@@ -115,8 +115,9 @@ describe("the Summon tab", () => {
     expect(labels.indexOf("Summon")).toBe(labels.indexOf("Demand") + 1);
   });
 
-  it("is absent where the queue has no summoner here (409 SUMMON_NOT_CONFIGURED), and on a server without the routes", async () => {
+  it("is absent where the queue has no summoning (configured: false, or an older API's 409 SUMMON_NOT_CONFIGURED), and on a server without the routes", async () => {
     const replies: MockReply[] = [
+      { body: { queue: "emails", configured: false } },
       {
         status: 409,
         body: problem(409, "SUMMON_NOT_CONFIGURED", "No summon controller"),

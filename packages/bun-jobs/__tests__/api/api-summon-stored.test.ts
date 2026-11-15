@@ -414,8 +414,12 @@ describe("in one process, on the file backend", () => {
       inert: true,
       inertReason: "newer-marker",
     });
-    // A queue with no summon state at all: 409, as before.
-    expect((await h.call("GET", "/queues/plain/summon")).status).toBe(409);
+    // A queue with no summon state at all: the not-configured state, not
+    // an error.
+    expect(await h.call("GET", "/queues/plain/summon")).toMatchObject({
+      status: 200,
+      body: { queue: "plain", configured: false },
+    });
     expect(h.mismatches()).toEqual([]);
   });
 

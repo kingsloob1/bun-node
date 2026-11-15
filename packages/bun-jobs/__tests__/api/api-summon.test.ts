@@ -48,8 +48,8 @@ import { harness, openHarnesses } from "./fixtures";
  * The summon routes — `GET /queues/{queue}/summon`, "summon now" and reset —
  * over a real `BunJobs` whose `summon` option builds a controller, on SQLite
  * (a driver another process can share, which summoning needs): what they
- * answer, how the API finds a controller (and never builds one), 409
- * `SUMMON_NOT_CONFIGURED`, the `queues.summon` gating, what the status and
+ * answer, how the API finds a controller (and never builds one), the
+ * `configured: false` read and the writes' 409 `SUMMON_NOT_CONFIGURED`, the `queues.summon` gating, what the status and
  * the `summon` event keep back, and the event on the socket.
  *
  * The controller's own behaviour is `summon-controller.test.ts`'s; these are
@@ -158,6 +158,7 @@ describe("GET /queues/{queue}/summon", () => {
     const response = await h.call("GET", "/queues/work/summon");
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
+      configured: true,
       queue: "work",
       local: true,
       inert: false,
@@ -508,12 +509,16 @@ describe("POST /queues/{queue}/summon", () => {
 });
 
 describe("finding the controller", () => {
-  it("answers 409 SUMMON_NOT_CONFIGURED on every route for a queue with no controller here", async () => {
+  it("reads a queue with no controller here as configured: false, and answers the two writes 409 SUMMON_NOT_CONFIGURED", async () => {
     const { jobs } = summoning();
     await backlog(jobs, 1, "plain");
     const h = harness({ jobs });
+    const read = await h.call("GET", "/queues/plain/summon");
+    expect({ status: read.status, body: read.body }).toEqual({
+      status: 200,
+      body: { queue: "plain", configured: false },
+    });
     for (const [method, path] of [
-      ["GET", "/queues/plain/summon"],
       ["POST", "/queues/plain/summon"],
       ["POST", "/queues/plain/summon/reset"],
     ] as const) {
@@ -528,8 +533,57 @@ describe("finding the controller", () => {
         status: 409,
       });
     }
-    // Negative control: the queue with a controller answers.
-    expect((await h.call("GET", "/queues/work/summon")).status).toBe(200);
+    // Negative control: the queue with a controller answers its status,
+    // `configured: true`.
+    const work = await h.call("GET", "/queues/work/summon");
+    expect(work.status).toBe(200);
+    expect(work.body).toMatchObject({
+      configured: true,
+      queue: "work",
+      local: true,
+    });
+  });
+
+  it("logs no failure for the not-configured read, and still logs a real failure on the same route (#786)", async () => {
+    const { jobs } = summoning();
+    await backlog(jobs, 1, "plain");
+    const h = harness({ jobs });
+    /** The failures the API logged, as `logApiFailure` records them. */
+    const failures = () =>
+      h.events.filter((event) => event.message === "jobs api request failed");
+    for (let i = 0; i < 3; i++) {
+      expect((await h.call("GET", "/queues/plain/summon")).status).toBe(200);
+    }
+    expect(failures()).toEqual([]);
+    // Controls: an unknown queue on the read route is still a failure,
+    // logged with its error (and so its stack), and so is "summon now" on
+    // the queue that has no controller.
+    expect((await h.call("GET", "/queues/nowhere/summon")).status).toBe(404);
+    expect((await h.call("POST", "/queues/plain/summon")).status).toBe(409);
+    expect(
+      failures().map((event) => ({
+        level: event.level,
+        code: event.fields.code,
+        status: event.fields.status,
+        path: event.fields.path,
+        stack: typeof event.error?.stack === "string",
+      })),
+    ).toEqual([
+      {
+        level: "debug",
+        code: "QUEUE_NOT_FOUND",
+        status: 404,
+        path: "/admin/jobs/queues/nowhere/summon",
+        stack: true,
+      },
+      {
+        level: "debug",
+        code: "SUMMON_NOT_CONFIGURED",
+        status: 409,
+        path: "/admin/jobs/queues/plain/summon",
+        stack: true,
+      },
+    ]);
   });
 
   it("finds a queue with a controller before its first job, and 404s an unknown one", async () => {
@@ -557,7 +611,11 @@ describe("finding the controller", () => {
     expect((await h.call("POST", "/queues/work/summon/reset")).status).toBe(
       200,
     );
-    expect((await h.call("GET", "/queues/plain/summon")).status).toBe(409);
+    expect((await h.call("GET", "/queues/plain/summon")).body).toEqual({
+      queue: "plain",
+      configured: false,
+    });
+    expect((await h.call("POST", "/queues/plain/summon")).status).toBe(409);
     expect(build).not.toHaveBeenCalled();
     // The lookup answers only what exists: nothing for `plain` until
     // `summonController()` builds one there (the negative control), and
@@ -576,7 +634,7 @@ describe("finding the controller", () => {
     expect(() => jobs.summonController("work")).toThrow(JobsClosedError);
   });
 
-  it("documents 409 SUMMON_NOT_CONFIGURED and 503 DRIVER_ERROR, and answers the 503 once the context is closed", async () => {
+  it("documents 409 SUMMON_NOT_CONFIGURED on the two writes only, 503 DRIVER_ERROR on all three, and answers the 503 once the context is closed", async () => {
     const { jobs } = summoning();
     const h = harness({ jobs });
     const spec = (await h.call("GET", "/openapi.json")).body;
@@ -593,12 +651,16 @@ describe("finding the controller", () => {
     }
     for (const id of ["getQueueSummon", "summonQueue", "resetQueueSummon"]) {
       const responses = operations[id];
-      expect({ id, codes: responses["409"] }).toMatchObject({
-        id,
-        codes: {
-          "x-bun-jobs-codes": expect.arrayContaining(["SUMMON_NOT_CONFIGURED"]),
-        },
-      });
+      if (id !== "getQueueSummon") {
+        expect({ id, codes: responses["409"] }).toMatchObject({
+          id,
+          codes: {
+            "x-bun-jobs-codes": expect.arrayContaining([
+              "SUMMON_NOT_CONFIGURED",
+            ]),
+          },
+        });
+      }
       expect({ id, codes: responses["503"] }).toMatchObject({
         id,
         codes: { "x-bun-jobs-codes": ["DRIVER_ERROR"] },
@@ -609,6 +671,35 @@ describe("finding the controller", () => {
         "x-bun-jobs-codes"
       ],
     ).toEqual(["SUMMON_MARKER_CONTENDED", "SUMMON_NOT_CONFIGURED"]);
+    // The read answers no 409: a queue with no summoning is its 200, the
+    // status or the not-configured state, each a named schema.
+    expect(operations.getQueueSummon["409"]).toBeUndefined();
+    expect(operations.getQueueSummon["200"]).toEqual({
+      description: expect.any(String),
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/QueueSummon" },
+        },
+      },
+    });
+    expect(spec.components.schemas.QueueSummon).toEqual({
+      anyOf: [
+        { $ref: "#/components/schemas/SummonStatus" },
+        { $ref: "#/components/schemas/SummonNotConfigured" },
+      ],
+    });
+    expect(spec.components.schemas.SummonNotConfigured).toMatchObject({
+      type: "object",
+      required: ["queue", "configured"],
+      properties: {
+        queue: { type: "string" },
+        configured: { type: "boolean", const: false },
+      },
+    });
+    expect(spec.components.schemas.SummonStatus).toMatchObject({
+      required: expect.arrayContaining(["configured"]),
+      properties: { configured: { type: "boolean", const: true } },
+    });
 
     // And the 503 is real: closing the context closes its driver.
     await jobs.close();
@@ -617,12 +708,15 @@ describe("finding the controller", () => {
     expect(closed.body.code).toBe("DRIVER_ERROR");
   });
 
-  it("answers 409 on an API built without jobs", async () => {
+  it("reads configured: false, and answers the writes 409, on an API built without jobs", async () => {
     const { jobs } = summoning();
     const h = harness({ jobs: undefined, queues: [jobs.queue("work")] });
     const response = await h.call("GET", "/queues/work/summon");
-    expect(response.status).toBe(409);
-    expect(response.body.code).toBe("SUMMON_NOT_CONFIGURED");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ queue: "work", configured: false });
+    const write = await h.call("POST", "/queues/work/summon");
+    expect(write.status).toBe(409);
+    expect(write.body.code).toBe("SUMMON_NOT_CONFIGURED");
   });
 });
 

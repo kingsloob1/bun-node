@@ -872,6 +872,10 @@ export const SummonStatusSchema = s.named(
   "SummonStatus",
   s.object(
     {
+      configured: s.literal(true, {
+        description:
+          "Always `true`: the queue has summoning, from a controller in the API's process or from summon state in storage. What tells this answer of `GET /queues/{queue}/summon` from `SummonNotConfigured` (`configured: false`). An API from bun-jobs 3.2 or earlier sends no `configured` (it answered 409 `SUMMON_NOT_CONFIGURED` instead of the `configured: false` state), so test `configured === false`, never `!configured`.",
+      }),
       queue: s.string({
         description:
           "The queue. For a shared unit, the first of `queues`: the first of its queues the caller may read.",
@@ -982,6 +986,36 @@ export const SummonStatusSchema = s.named(
         "A queue's summon status: its shared summon state (read from the backend, so the same from every process) plus the local controller's policy (`policy`: only when `local` is `true`, since only the process running the controller knows it; advertised by `/meta.features.summonPolicy`).",
     },
   ),
+);
+
+/**
+ * `GET /queues/:queue/summon` for a queue with no summoning. Mirrors
+ * `SummonNotConfiguredDto`.
+ */
+export const SummonNotConfiguredSchema = s.named(
+  "SummonNotConfigured",
+  s.object(
+    {
+      queue: s.string({ description: "The queue asked about." }),
+      configured: s.literal(false, {
+        description:
+          "Always `false`: the queue has no summon controller in the API's process and no summon state. What tells this answer from a `SummonStatus`.",
+      }),
+    },
+    {
+      description:
+        'A queue with no summoning: no summon controller for it runs in the API\'s process and it has no summon state in storage (or the API has no driver to read one from), the usual state of a queue nothing summons compute for. A state, not a failure: "summon now" and reset still answer 409 `SUMMON_NOT_CONFIGURED` for it. bun-jobs 3.2 and earlier answered this read 409 `SUMMON_NOT_CONFIGURED` too: a client that may talk to one reads that 409 as this state.',
+    },
+  ),
+);
+
+/**
+ * `GET /queues/:queue/summon` response: the queue's status, or the
+ * not-configured state. Mirrors `QueueSummonDto`.
+ */
+export const QueueSummonSchema = s.named(
+  "QueueSummon",
+  s.union(SummonStatusSchema, SummonNotConfiguredSchema),
 );
 
 /** `POST /queues/:queue/summon` body. Mirrors `SummonNowBody`. */

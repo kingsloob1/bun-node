@@ -56,6 +56,7 @@ function statusFixture(
   overrides: Partial<SummonStatusDto> = {},
 ): SummonStatusDto {
   return {
+    configured: true,
     queue: "emails",
     local: true,
     inert: false,

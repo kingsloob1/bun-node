@@ -1,5 +1,6 @@
 import type { ApiClient } from "./client";
 import type { SummonResetBody } from "./types";
+import { ApiError } from "./errors";
 import { checkShape, isRecord } from "./shape";
 import { dataOf, failedError, toApiError, typedApi } from "./typed";
 
@@ -8,11 +9,13 @@ import { dataOf, failedError, toApiError, typedApi } from "./typed";
  * writes, "summon now" and reset (`queues.summon`), and `GET /summon`, every
  * controller in the API's process.
  *
- * `/meta` has no flag for one queue's summoning: the status answers only
- * where a summon controller for the queue runs in the API's process, and 409
- * `SUMMON_NOT_CONFIGURED` everywhere else. So the status read itself is what
- * decides whether a queue has anything to show, and a queue without a
- * summoner reads as `null` rather than as a failure.
+ * `/meta` has no flag for one queue's summoning: the status read itself is
+ * what decides whether a queue has anything to show. It answers the status
+ * where the queue has summoning (a controller in the API's process, or
+ * summon state in storage), and `{ queue, configured: false }` everywhere
+ * else; bun-jobs 3.2 and earlier answered that 409 `SUMMON_NOT_CONFIGURED`
+ * instead. A queue without summoning reads as `null` either way, rather than
+ * as a failure.
  *
  * `features.summonList` says `GET /summon` is served: on wherever the summon
  * routes are (jobs mode), off in runner mode and absent on an older API. Its
@@ -29,7 +32,11 @@ import { dataOf, failedError, toApiError, typedApi } from "./typed";
  * misrouted proxy, a stub) should get the screen's error view, not a crash.
  */
 
-/** The code the status answers where no controller for the queue runs in the API's process. */
+/**
+ * The code "summon now" and reset answer where no controller for the queue
+ * runs in the API's process, and the code the status read answered for a
+ * queue with no summoning on bun-jobs 3.2 and earlier.
+ */
 export const SUMMON_NOT_CONFIGURED = "SUMMON_NOT_CONFIGURED";
 
 /**
@@ -89,9 +96,24 @@ function isGroup(value: unknown): boolean {
 }
 
 /**
+ * Whether `error` is the 409 `SUMMON_NOT_CONFIGURED` an API from bun-jobs
+ * 3.2 or earlier answered the status read with for a queue with no
+ * summoning. The route no longer declares it, so the typed client throws it
+ * as an undeclared status, which {@link toApiError} turns into this.
+ */
+function isLegacyNotConfigured(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    error.code === SUMMON_NOT_CONFIGURED
+  );
+}
+
+/**
  * `GET /queues/:queue/summon`: the queue's summon status, or `null` where the
- * queue has no summoner in the API's process (409 `SUMMON_NOT_CONFIGURED`)
- * or the server has no summon routes (404). Any other failure throws.
+ * queue has no summoning (`configured: false`, or the 409
+ * `SUMMON_NOT_CONFIGURED` an older API answers for it) or the server has no
+ * summon routes (404). Any other failure throws.
  */
 export async function getSummonStatus(
   api: ApiClient,
@@ -106,9 +128,17 @@ export async function getSummonStatus(
       signal,
     });
   } catch (error) {
-    throw await toApiError(error, instance);
+    const failure = await toApiError(error, instance);
+    if (isLegacyNotConfigured(failure)) {
+      return null;
+    }
+    throw failure;
   }
   if (result.ok) {
+    // `=== false`: an older API sends no `configured` on a status.
+    if (result.data.configured === false) {
+      return null;
+    }
     return checkShape(
       result.data,
       isStatus,
@@ -116,11 +146,7 @@ export async function getSummonStatus(
       instance,
     );
   }
-  // The route's own code union: a misspelt code here does not compile.
-  if (
-    (result.status === 409 && result.error.code === SUMMON_NOT_CONFIGURED) ||
-    result.status === 404
-  ) {
+  if (result.status === 404) {
     return null;
   }
   throw failedError(result, instance);

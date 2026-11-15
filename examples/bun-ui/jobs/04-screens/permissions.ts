@@ -92,8 +92,9 @@
  *   and offers the tab on any status: a controller in the API's process
  *   (`local: true`), or, where `features.summonStoredStatus` is on, summon
  *   state another process's controller wrote (`local: false`). A queue with
- *   neither answers 409 `SUMMON_NOT_CONFIGURED` (a server without the routes,
- *   404) and has no tab. The memory driver refuses a `summon` policy, so the
+ *   neither answers `{ queue, configured: false }` (bun-jobs 3.2 and earlier,
+ *   409 `SUMMON_NOT_CONFIGURED`; a server without the routes, 404) and has no
+ *   tab. The memory driver refuses a `summon` policy, so the
  *   host above has no tab anywhere; a second host, on a backend another
  *   process can reach, has controllers on `mail`, `audit` and `payroll` and
  *   none on `plain`, and a summoner that starts nothing. Summon now… and
@@ -194,6 +195,7 @@ import type {
   ProviderSchemaDto,
   ProviderValidationDto,
   QueueDetailDto,
+  QueueSummonDto,
   RunnerInfoDto,
   RunnerListDto,
   RunnersAnalyticsDto,
@@ -567,9 +569,10 @@ interface ScreenInputs {
    * `GET /queues/<q>/summon`, which the queue screen reads with `queues.read`
    * before it offers the Summon tab: the status (`local` true for a controller
    * in the API's process, `false` for summon state another process's
-   * controller wrote), or `null` where it answered 409
-   * `SUMMON_NOT_CONFIGURED` (neither) or 404 (a server without the summon
-   * routes). Absent when not read, which closes the tab too.
+   * controller wrote), or `null` where it answered `configured: false`
+   * (neither; 409 `SUMMON_NOT_CONFIGURED` from bun-jobs 3.2 and earlier) or
+   * 404 (a server without the summon routes). Absent when not read, which
+   * closes the tab too.
    */
   summon?: SummonStatusDto | null;
   /**
@@ -1487,9 +1490,10 @@ const GATES = [
     // `GET /queues/:queue/summon` itself (with `queues.read`, on the queue's
     // own map) and offers the tab on any status, `local` or not. A queue with
     // neither a controller in the API's process nor summon state another
-    // process wrote answers 409 `SUMMON_NOT_CONFIGURED` (`isNoSummoner` in
-    // `api/summon.ts`), and a server without the routes 404: both read as
-    // `null`, and no tab.
+    // process wrote answers `configured: false` (bun-jobs 3.2 and earlier,
+    // 409 `SUMMON_NOT_CONFIGURED`; `getSummonStatus` in `api/summon.ts`),
+    // and a server without the routes 404: each reads as `null`, and no
+    // tab.
     name: "panel=summon",
     row: "Summon panel",
     map: "queue",
@@ -6989,21 +6993,24 @@ step("The Summon panel: summon state for the queue, or no tab");
 
 // `/meta` says nothing about which queue summons, so the queue screen asks
 // the status route itself. The memory host above runs no controller and holds
-// no summon state, so every queue there answers 409 and gets no tab — which
-// is why mail's gates above hold the summon gates closed.
+// no summon state, so every queue there answers `configured: false` and gets
+// no tab — which is why mail's gates above hold the summon gates closed.
 checkEqual(
-  "the memory host: GET /queues/:queue/summon is 409 SUMMON_NOT_CONFIGURED on mail and audit (no tab), 403 on payroll (not read at all)",
+  "the memory host: GET /queues/:queue/summon is 200 configured: false on mail and audit (no tab), 403 on payroll (not read at all)",
   await Promise.all(
     ["mail", "audit", "payroll"].map(async (queue) => {
-      const { status, body } = await get<{ code?: string }>(
-        `/queues/${queue}/summon`,
-      );
-      return `${queue}: ${status} ${body.code}`;
+      const { status, body } = await get<{
+        code?: string;
+        configured?: boolean;
+      }>(`/queues/${queue}/summon`);
+      return status === 200
+        ? `${queue}: ${status} configured=${body.configured}`
+        : `${queue}: ${status} ${body.code}`;
     }),
   ),
   [
-    "mail: 409 SUMMON_NOT_CONFIGURED",
-    "audit: 409 SUMMON_NOT_CONFIGURED",
+    "mail: 200 configured=false",
+    "audit: 200 configured=false",
     "payroll: 403 FORBIDDEN",
   ],
 );
@@ -7108,17 +7115,22 @@ async function summonHost(config: Partial<JobsApiConfig>) {
     hostMaps[queue] = (
       await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
     ).body;
-    const read = await call<SummonStatusDto>("GET", `/queues/${queue}/summon`);
+    const read = await call<QueueSummonDto>("GET", `/queues/${queue}/summon`);
     answers[queue] =
-      read.status === 200
-        ? `200 local=${read.body.local}`
-        : `${read.status} ${read.body.code}`;
-    // `getSummonStatus`: a 409 SUMMON_NOT_CONFIGURED or a 404 is "no
-    // summoner here"; and without `queues.read` the screen never asks.
+      read.status !== 200
+        ? `${read.status} ${read.body.code}`
+        : read.body.configured === false
+          ? "200 configured=false"
+          : `200 local=${read.body.local}`;
+    // `getSummonStatus`: `configured: false`, an older API's 409
+    // SUMMON_NOT_CONFIGURED or a 404 is "no summoning here"; and without
+    // `queues.read` the screen never asks.
     statuses[queue] = !can(hostMaps[queue], "queues.read")
       ? undefined
       : read.status === 200
-        ? read.body
+        ? read.body.configured === false
+          ? null
+          : read.body
         : (read.status === 409 && read.body.code === "SUMMON_NOT_CONFIGURED") ||
             read.status === 404
           ? null
@@ -7179,17 +7191,17 @@ async function summonHost(config: Partial<JobsApiConfig>) {
 const summonHostAll = await summonHost({ actions: [...JOBS_API_ACTIONS] });
 show("GET /summon-api/queues/:queue/summon", summonHostAll.answers);
 checkEqual(
-  "the summon host: 200 (local) where a controller runs here, 403 where authorize refuses the read, 409 SUMMON_NOT_CONFIGURED where none does",
+  "the summon host: 200 (local) where a controller runs here, 403 where authorize refuses the read, 200 configured: false where none does",
   summonHostAll.answers,
   {
     mail: "200 local=true",
     audit: "200 local=true",
     payroll: "403 FORBIDDEN",
-    plain: "409 SUMMON_NOT_CONFIGURED",
+    plain: "200 configured=false",
   },
 );
 checkEqual(
-  "the Summon tab, Summon now… and Reset…: all three on mail; the tab alone on read-only audit; nothing on payroll (no queues.read) or on plain (queues.read, but no controller: the 409 shows no tab)",
+  "the Summon tab, Summon now… and Reset…: all three on mail; the tab alone on read-only audit; nothing on payroll (no queues.read) or on plain (queues.read, but no controller: configured: false shows no tab)",
   ["mail", "audit", "payroll", "plain"].map((queue) => [
     queue,
     ...summonHostAll.summonGatesOf(queue),
@@ -7202,7 +7214,7 @@ checkEqual(
   ],
 );
 checkEqual(
-  "with mail's map (queues.read and queues.summon both granted): a 409 or 404 (null) or no read shows no tab and no button, and a status from another process's controller (local: false) the tab without them",
+  "with mail's map (queues.read and queues.summon both granted): configured: false, a 409 or a 404 (null) or no read shows no tab and no button, and a status from another process's controller (local: false) the tab without them",
   [
     summonHostAll.summonGatesOf("mail", { summon: null }),
     summonHostAll.summonGatesOf("mail", { summon: undefined }),
@@ -7661,11 +7673,11 @@ async function unitHost(
       await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
     ).body;
     if (can(maps[queue], "queues.read")) {
-      const read = await call<SummonStatusDto>(
-        "GET",
-        `/queues/${queue}/summon`,
-      );
-      statuses[queue] = read.status === 200 ? read.body : undefined;
+      const read = await call<QueueSummonDto>("GET", `/queues/${queue}/summon`);
+      statuses[queue] =
+        read.status === 200 && read.body.configured !== false
+          ? read.body
+          : undefined;
     }
   }
   /**
@@ -8645,10 +8657,10 @@ async function providerHost(
     hostMaps[queue] = (
       await call<PermissionsBody>("GET", `/meta/permissions?queue=${queue}`)
     ).body;
-    const read = await call<SummonStatusDto>("GET", `/queues/${queue}/summon`);
+    const read = await call<QueueSummonDto>("GET", `/queues/${queue}/summon`);
     statuses[queue] = !can(hostMaps[queue], "queues.read")
       ? undefined
-      : read.status === 200
+      : read.status === 200 && read.body.configured !== false
         ? read.body
         : null;
   }
