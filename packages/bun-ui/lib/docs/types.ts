@@ -4,7 +4,7 @@ import type {
   LoggerLike,
   RouterHandler,
 } from "@kingsleyweb/bun-common";
-import type { UiThemeInput } from "../kit/browser/shared";
+import type { UiLayoutOptions, UiThemeInput } from "../kit/browser/shared";
 import type { DocsUiConfig } from "./browser/config";
 import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
 
@@ -133,6 +133,17 @@ export interface DocsUiOptions {
    * below WCAG AA contrast is logged as a warning at startup.
    */
   theme?: UiThemeInput;
+  /**
+   * Where the content sits on a wide screen: `{ align?, scope?, maxWidth? }`.
+   * `align` is `"center"` (the default), `"left"` or `"right"`; `scope` is
+   * `"content"` (the default: the screen moves, the side nav stays at the
+   * window's edge) or `"page"` (the side nav and the screen move as one
+   * block); `maxWidth` is the content's width cap in CSS pixels, an integer
+   * of at least 320 (default 1400). A screen no wider than the cap looks the
+   * same whatever the alignment. `{ align: "left" }` is the layout before
+   * this option existed.
+   */
+  layout?: UiLayoutOptions;
   /**
    * Where the bundle comes from. Unset (default): the prebuilt `dist/` when
    * present, else an in-memory `Bun.build` on the first request. `true`:

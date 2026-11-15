@@ -29,7 +29,11 @@ export type {
 } from "./browser/unauthorized";
 export type { JobsUiConfig, JobsUiSections, UiTheme } from "./browser/config";
 export type {
+  UiAlign,
   UiColorToken,
+  UiLayout,
+  UiLayoutOptions,
+  UiLayoutScope,
   UiThemeColors,
   UiThemeInput,
   UiThemeOptions,

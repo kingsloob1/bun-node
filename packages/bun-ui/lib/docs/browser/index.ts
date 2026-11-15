@@ -10,6 +10,11 @@ export {
   DEFAULT_EXTENSION_PREFIXES,
   DOCS_UI_CONFIG_ELEMENT_ID,
 } from "./config";
+export type {
+  UiAlign,
+  UiLayout,
+  UiLayoutScope,
+} from "../../kit/browser/shared";
 export {
   DEFAULT_RETURN_PARAM,
   DEFAULT_UNAUTHORIZED_STATUSES,

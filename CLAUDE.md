@@ -940,6 +940,23 @@ import graph on every `bun test` against its allowed `@kingsleyweb/*` row
 (and no `node:*`/`bun` from a browser entry), with negative controls. A new
 `exports` key needs a row there.
 
+**The page frame is the kit's, in every UI (the user's rule, 2026-11-15,
+#785).** Where content sits on a wide screen is the `layout` option
+(`{ align, scope, maxWidth }`, centred content at 1400px by default), checked
+by `resolveLayout` in `lib/kit/options.ts`, carried in each UI's config as
+`layout`, applied by `app/kit/layout.ts` before the first render, and drawn
+by the kit's base styles (`.screen`, `.app-body`, `.app-header` under
+`data-align`/`data-layout-scope`, `--content-max-width`). A UI never sets its
+own page width or alignment: its screens use the `.screen` class inside the
+kit's frame (`.app`/`.app-main`, or a padded wrapper like `.docs-viewer`),
+its server function takes `layout` and puts `resolveLayout(options.layout,
+fail)` in its config, and its boot calls `applyLayout`. A new UI is added to
+the UI lists of `__tests__/jobs/server/layout.test.ts` and
+`__tests__/jobs/e2e/layout.e2e.test.ts`, which measures every UI's screen in
+Chrome at 2560px; `docsRouter`'s self-hosted viewer passes it through
+(bun-ui 3.3.0 or later). The same goes for any option every UI shares, as
+`theme` does: it lives in the kit, never in one UI.
+
 **Two build outputs, both gitignored, both built on `prepack`:** `dist/<ui>/`
 is a UI's browser bundle (`bun scripts/build.ts`), `dts/` the declarations of
 `lib/` alone (`bun run build:types`). `app/**` and the tests never reach

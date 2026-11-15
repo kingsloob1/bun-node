@@ -92,6 +92,7 @@ describe("the shell", () => {
       basePath: "/admin/api",
       title: "Shop API",
       theme: "dark",
+      layout: { scope: "page" },
     });
     const { shell } = await fetchShell(ui.router, "/");
 
@@ -104,6 +105,7 @@ describe("the shell", () => {
       csrfHeader: null,
       extensions: ["x-bun-common", "x-bun-jobs"],
       theme: "dark",
+      layout: { align: "center", scope: "page", maxWidth: 1400 },
       unauthorized: null,
     });
     expect(shell.config).toEqual(ui.config);

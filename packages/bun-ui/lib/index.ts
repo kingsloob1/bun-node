@@ -10,13 +10,22 @@
  *   `/docs/embed*` the viewer's screens, as source, for a host app to bundle.
  *
  * This root entry holds only what every UI shares and a browser may import:
- * the theme type, the `unauthorized` option's types and defaults, and the
+ * the theme and layout types, the `unauthorized` option's types and defaults, and the
  * assets' `Cache-Control`. It never imports a UI or a domain package, so
  * importing it needs no peer.
  */
-export { ASSET_CACHE_CONTROL } from "./kit/browser/shared";
+export {
+  ASSET_CACHE_CONTROL,
+  DEFAULT_UI_LAYOUT,
+  isUiLayout,
+  MIN_UI_MAX_WIDTH,
+} from "./kit/browser/shared";
 export type {
+  UiAlign,
   UiColorToken,
+  UiLayout,
+  UiLayoutOptions,
+  UiLayoutScope,
   UiTheme,
   UiThemeColors,
   UiThemeInput,

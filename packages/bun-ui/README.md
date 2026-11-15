@@ -31,6 +31,7 @@ UI never loads another's code or bundle.
 - [The browser entries](#the-browser-entries)
 - [Authorization and sign-in redirects](#authorization-and-sign-in-redirects)
 - [Colour themes](#colour-themes)
+- [Layout](#layout)
 - [What a UI serves](#what-a-ui-serves)
 - [Tree-shaking](#tree-shaking)
 - [Troubleshooting](#troubleshooting)
@@ -86,6 +87,7 @@ option when called and throws bun-jobs' `ConfigError` for anything unusable.
 | `unauthorized` | off | `{ redirectTo, returnParam?, statuses? }`: send the browser to a sign-in page ([below](#authorization-and-sign-in-redirects)). |
 | `middleware` | `[]` | Handlers run before `authorize` on the requests the UI answers. |
 | `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
+| `layout` | centred, 1400px | `{ align?, scope?, maxWidth? }`: where the content sits on a wide screen ([Layout](#layout)). |
 | `dev` | unset | Unset or `false`: serve the prebuilt `dist/jobs/` (`false` throws without it). `true` rebuilds from the app's source, which the published package does not ship for `/jobs`: leave it unset. |
 | `logger` | console | Any `LoggerLike` bun-common's `resolveLogger` accepts. |
 
@@ -133,6 +135,7 @@ bun-common's `ConfigError` for an unusable option. Every URL under
 | `basePath` | `"/docs"` | Absolute, not `"/"`, no trailing slash. |
 | `title` | `"API docs"` | Page title. |
 | `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
+| `layout` | centred, 1400px | `{ align?, scope?, maxWidth? }`: where the content sits on a wide screen ([Layout](#layout)). |
 | `extensions` | `["x-bun-common", "x-bun-jobs"]` | Specification-extension prefixes the viewer reads, first hit winning (`DEFAULT_EXTENSION_PREFIXES`). |
 | `csrfHeader` | none | A header the try-it panel adds on every mutation, or `false`. |
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API). Same shape and fail-closed rules as `jobsUi()`'s. |
@@ -163,7 +166,8 @@ bun-common loads `@kingsleyweb/bun-ui/docs/hosted` lazily, only for that
 viewer; without the package installed, it throws a `ConfigError` saying
 `bun add @kingsleyweb/bun-ui`. Each page takes the same `theme` as
 `docsUi()`, colours included (`viewer: { openapi: { name: "self-hosted",
-theme: { … } } }`; a theme object needs bun-ui 3.2.0 or later). The entry itself is server-side
+theme: { … } } }`; a theme object needs bun-ui 3.2.0 or later), and the
+same `layout` (bun-ui 3.3.0 or later). The entry itself is server-side
 (`resolveHostedAssets`, `createShellRenderer`, `cspHeader`, `createNonce`
 and the asset types): an app rarely imports it directly.
 
@@ -283,6 +287,39 @@ docsUi({ document: "/api/openapi.json", theme: { light: { accent: "#0f766e" } } 
   the palette is yours.
 - Not themed: the dialog backdrop and the card shadow (translucent black),
   and the spacing, radius and type scale.
+
+## Layout
+
+On a screen wider than the content's width cap, `layout` decides where the
+content sits. Every UI takes it (the jobs UI, the docs viewer, and
+`docsRouter`'s `"self-hosted"` viewer), and the docs screens the jobs UI
+embeds follow the jobs UI's:
+
+```ts
+jobsUi({ api, layout: { align: "center" } });                 // the default
+jobsUi({ api, layout: { align: "right", scope: "page" } });
+docsUi({ document: "/api/openapi.json", layout: { align: "left", maxWidth: 1200 } });
+```
+
+- **`align`**: `"center"` (the default), `"left"` or `"right"`.
+  `{ align: "left" }` is the layout before this option existed (3.2.0 and
+  earlier).
+- **`scope`**: what moves. `"content"` (the default) keeps the jobs UI's
+  side nav at the window's edge and places the screen in the space beside
+  it; `"page"` places the side nav and the screen as one block, and the
+  header's items line up with it (its background still spans the window).
+  The docs viewer has no side nav, so both look the same there.
+- **`maxWidth`**: the content's width cap in CSS pixels, a whole number of
+  at least 320. Default 1400. With `scope: "page"` the block is the nav's
+  200px, the cap and the main area's padding.
+- **A narrower screen looks the same** whatever the alignment: the content
+  fills it, as before.
+- **Checked when the UI is created.** An unknown key, an `align` or `scope`
+  outside those values, or a `maxWidth` that is not a whole number of at
+  least 320 throws the UI's `ConfigError`.
+- **The CSP is unchanged.** The page applies it from its config before the
+  first render (two attributes on `<html>` and one custom property); no
+  inline style is served.
 
 ## What a UI serves
 

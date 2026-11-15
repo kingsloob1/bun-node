@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { readDocsUiConfig } from "./config";
 import { createQueryClient } from "./queryClient";
+import { applyLayout } from "../kit/layout";
 import { applyTheme, initialTheme } from "./theme";
 
 /** Options of {@link boot}. */
@@ -24,7 +25,7 @@ export interface BootResult {
 }
 
 /**
- * Starts the viewer: reads the injected config, applies the theme, and renders
+ * Starts the viewer: reads the injected config, applies the theme and layout, and renders
  * into `#root`. A missing or malformed config renders a plain message
  * instead (there is no document to fetch without it) and rethrows.
  */
@@ -42,6 +43,7 @@ export function boot(options: BootOptions = {}): BootResult {
     throw error;
   }
   applyTheme(initialTheme(config.theme), doc.documentElement);
+  applyLayout(config.layout, doc.documentElement);
   doc.title = config.title;
 
   const queryClient = createQueryClient({ retry: options.retry });

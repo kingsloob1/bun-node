@@ -11,7 +11,10 @@
       "values": [
         "ASSET_CACHE_CONTROL",
         "DEFAULT_RETURN_PARAM",
-        "DEFAULT_UNAUTHORIZED_STATUSES"
+        "DEFAULT_UNAUTHORIZED_STATUSES",
+        "DEFAULT_UI_LAYOUT",
+        "MIN_UI_MAX_WIDTH",
+        "isUiLayout"
       ],
       "types": [
         "UiTheme",
@@ -21,10 +24,14 @@
         "UiColorToken",
         "UiThemeColors",
         "UiThemeInput",
-        "UiThemeOptions"
+        "UiThemeOptions",
+        "UiAlign",
+        "UiLayout",
+        "UiLayoutOptions",
+        "UiLayoutScope"
       ],
       "browser": true,
-      "snippet": "const _cache: Equal<typeof m.ASSET_CACHE_CONTROL, \"public, max-age=31536000, immutable\"> = true;\nconst _theme: t.UiTheme = \"dark\";"
+      "snippet": "const _cache: Equal<typeof m.ASSET_CACHE_CONTROL, \"public, max-age=31536000, immutable\"> = true;\nconst _theme: t.UiTheme = \"dark\";\nconst _layout: t.UiLayoutOptions = { align: \"right\", scope: \"page\", maxWidth: 1200 };\nconst _width: number = m.DEFAULT_UI_LAYOUT.maxWidth;"
     },
     {
       "spelling": "@kingsleyweb/bun-ui/lib/index",
@@ -60,7 +67,11 @@
         "UiColorToken",
         "UiThemeColors",
         "UiThemeInput",
-        "UiThemeOptions"
+        "UiThemeOptions",
+        "UiAlign",
+        "UiLayout",
+        "UiLayoutOptions",
+        "UiLayoutScope"
       ],
       "snippet": "const ui = m.jobsUi({ apiUrl: \"/jobs-api\", basePath: \"/jobs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;\nexport type _api = Expect<IsAny<t.JobsUiApiOptions[\"api\"]>>;"
     },
@@ -105,7 +116,10 @@
         "JobsUiSections",
         "UiTheme",
         "UiUnauthorized",
-        "UiUnauthorizedStatus"
+        "UiUnauthorizedStatus",
+        "UiAlign",
+        "UiLayout",
+        "UiLayoutScope"
       ],
       "browser": true
     },
@@ -146,7 +160,11 @@
         "UiColorToken",
         "UiThemeColors",
         "UiThemeInput",
-        "UiThemeOptions"
+        "UiThemeOptions",
+        "UiAlign",
+        "UiLayout",
+        "UiLayoutOptions",
+        "UiLayoutScope"
       ],
       "snippet": "const ui = m.docsUi({ document: \"/jobs-api/openapi.json\", basePath: \"/docs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;"
     },
@@ -189,7 +207,10 @@
         "UnauthorizedOptions",
         "UiUnauthorized",
         "UiUnauthorizedStatus",
-        "UiTheme"
+        "UiTheme",
+        "UiAlign",
+        "UiLayout",
+        "UiLayoutScope"
       ],
       "browser": true
     },
@@ -234,9 +255,10 @@
         "cspHeader",
         "ASSET_CACHE_CONTROL",
         "resolveThemeInput",
-        "themedAssets"
+        "themedAssets",
+        "resolveLayout"
       ],
-      "types": ["UiAssets", "UiAsset", "ResolvedUiTheme"]
+      "types": ["UiAssets", "UiAsset", "ResolvedUiTheme", "UiLayout"]
     },
     {
       "spelling": "@kingsleyweb/bun-ui/lib/docs/hosted",

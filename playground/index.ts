@@ -50,6 +50,7 @@ import {
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { docsUi } from "@kingsleyweb/bun-ui/docs";
+import { playgroundLayout } from "./layout";
 import { playgroundTheme } from "./theme";
 import {
   isCrossProcess,
@@ -155,6 +156,8 @@ const api = createJobsApi({
 });
 /** `PLAYGROUND_THEME`'s preset (theme.ts), for every UI below; unset, the built-in palette. */
 const theme = playgroundTheme();
+/** `PLAYGROUND_LAYOUT`'s layout (layout.ts), for every UI below; unset, the default. */
+const layout = playgroundLayout();
 /** The UIs' logger: silent, except a theme's contrast warnings. */
 const uiLogger =
   theme === undefined ? noopLogger : createLogger({ level: "warn" });
@@ -164,6 +167,7 @@ const ui = jobsUi({
   title: "bun-node playground",
   logger: uiLogger,
   ...(theme === undefined ? {} : { theme }),
+  ...(layout === undefined ? {} : { layout }),
   // Always build the app from the source on disk. Unset, `jobsUi()` prefers a
   // prebuilt `dist/` whenever one exists — and packing the package (`prepack`,
   // which the consumer check runs) leaves one behind, so the playground then
@@ -338,6 +342,7 @@ const apiDocs = docsUi({
   basePath: "/playground/api-docs",
   logger: uiLogger,
   ...(theme === undefined ? {} : { theme }),
+  ...(layout === undefined ? {} : { layout }),
   dev: true,
   authorize: playgroundAuthorize,
   unauthorized: playgroundUnauthorized,
@@ -352,12 +357,18 @@ const wsDocs = docsUi({
   title: "bun-node playground (events)",
   logger: uiLogger,
   ...(theme === undefined ? {} : { theme }),
+  ...(layout === undefined ? {} : { layout }),
   dev: true,
   authorize: playgroundAuthorize,
   unauthorized: playgroundUnauthorized,
 });
 app.use(apiDocs.basePath, apiDocs.router);
 app.use(wsDocs.basePath, wsDocs.router);
+/** The self-hosted pages' pass-through: the same theme and layout as the UIs above. */
+const selfHostedOptions = {
+  ...(theme === undefined ? {} : { theme }),
+  ...(layout === undefined ? {} : { layout }),
+};
 // The same two documents once more, as docsRouter's "self-hosted" viewer
 // (AD (f) F2): the package's bundle served from this origin by bun-common —
 // no separate docsUi() mount, the viewer is one `viewer` name away from the
@@ -371,13 +382,10 @@ app.use(
         title: "bun-node playground (events)",
         version: "1.0.0",
       }).document,
-    viewer:
-      theme === undefined
-        ? { openapi: "self-hosted", asyncapi: "self-hosted" }
-        : {
-            openapi: { name: "self-hosted", theme },
-            asyncapi: { name: "self-hosted", theme },
-          },
+    viewer: {
+      openapi: { name: "self-hosted", ...selfHostedOptions },
+      asyncapi: { name: "self-hosted", ...selfHostedOptions },
+    },
     authorize: (_req, _res, next) => next(),
   }),
 );

@@ -110,6 +110,7 @@ describe("the self-hosted viewer", () => {
       csrfHeader: "x-csrf",
       extensions: ["x-acme"],
       theme: "dark",
+      layout: { align: "center", scope: "content", maxWidth: 1400 },
     });
   });
 
@@ -314,6 +315,86 @@ describe("the self-hosted viewer", () => {
       `the openapi viewer: a theme object needs ${SELF_HOSTED_PACKAGE} 3.2.0 or later`,
     );
     expect(() => register("dark")).not.toThrow();
+  });
+
+  it("passes a layout through to its page, checked by bun-ui (control: the other page is centred by default)", async () => {
+    const root = mounted({
+      openapi: {
+        name: "self-hosted",
+        layout: { align: "right", maxWidth: 1100 },
+      },
+      asyncapi: "self-hosted",
+    });
+    const { response, html } = await page(root, "/docs/");
+    expect(shellConfig(html).layout).toEqual({
+      align: "right",
+      scope: "content",
+      maxWidth: 1100,
+    });
+    // Nothing served for it: no stylesheet, the same strict CSP.
+    expect(html).not.toContain("theme-");
+    expect(response.headers.get("content-security-policy")).toContain(
+      "style-src 'self';",
+    );
+    const other = await page(root, "/docs/asyncapi");
+    expect(shellConfig(other.html).layout).toEqual({
+      align: "center",
+      scope: "content",
+      maxWidth: 1400,
+    });
+  });
+
+  it("a bad layout is a ConfigError naming the viewer and the field", () => {
+    let caught: unknown;
+    try {
+      mounted({
+        openapi: { name: "self-hosted", layout: { align: "middle" } },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as Error).message).toBe(
+      'the openapi viewer: layout.align must be "left", "center" or "right"',
+    );
+  });
+
+  it("a layout with a bun-ui older than 3.3.0 names the upgrade (control: unset, the config has no layout there)", async () => {
+    const real = createRequire(import.meta.url)(
+      `${SELF_HOSTED_PACKAGE}/docs/hosted`,
+    ) as Record<string, unknown>;
+    // The peer as 3.2.x shipped it: no layout function.
+    const { resolveLayout: _l, ...older } = real;
+    const register = (router: BunRouter, layout: unknown) =>
+      registerSelfHostedViewer(
+        router,
+        {
+          openapi: {
+            document: () => OPENAPI_DOCUMENT,
+            path: "/openapi.json",
+            options: layout === undefined ? {} : { layout: layout as never },
+          },
+        },
+        undefined,
+        { require: () => older },
+      );
+    let caught: unknown;
+    try {
+      register(new BunRouter(), { align: "left" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as Error).message).toBe(
+      `the openapi viewer: layout needs ${SELF_HOSTED_PACKAGE} 3.3.0 or later`,
+    );
+
+    const viewer = new BunRouter();
+    register(viewer, undefined);
+    const root = new BunRouter();
+    root.use("/docs", viewer);
+    const { html } = await page(root, "/docs/");
+    expect(Object.hasOwn(shellConfig(html), "layout")).toBe(false);
   });
 
   it("without the package installed, names the install (the require seam)", () => {

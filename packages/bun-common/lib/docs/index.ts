@@ -106,6 +106,7 @@ export {
   SELF_HOSTED_PACKAGE,
   type SelfHostedColorToken,
   type SelfHostedDocument,
+  type SelfHostedLayout,
   type SelfHostedRegistration,
   type SelfHostedTheme,
   type SelfHostedViewerOptions,

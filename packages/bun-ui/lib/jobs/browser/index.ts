@@ -6,4 +6,9 @@
  */
 export type { JobsUiConfig, JobsUiSections, UiTheme } from "./config";
 export { JOBS_UI_CONFIG_ELEMENT_ID } from "./config";
+export type {
+  UiAlign,
+  UiLayout,
+  UiLayoutScope,
+} from "../../kit/browser/shared";
 export type { UiUnauthorized, UiUnauthorizedStatus } from "./unauthorized";

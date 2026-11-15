@@ -79,6 +79,23 @@ export interface SelfHostedTheme {
   dark?: Partial<Record<SelfHostedColorToken, string>>;
 }
 
+/**
+ * Where the self-hosted viewer's content sits on a wide screen: bun-ui's
+ * `UiLayoutOptions`, mirrored. bun-ui checks it (it needs 3.3.0 or later).
+ */
+export interface SelfHostedLayout {
+  /** Where the content sits on a screen wider than `maxWidth`. Default: `"center"`. */
+  align?: "left" | "center" | "right";
+  /**
+   * What `align` moves: `"content"` (default) or `"page"`. The viewer has no
+   * side nav, so the two look the same; it takes the option as every bun-ui
+   * page does.
+   */
+  scope?: "content" | "page";
+  /** The content's width cap in CSS pixels, an integer of at least 320. Default: 1400. */
+  maxWidth?: number;
+}
+
 /** A viewer page's own options (the `{ name, ...options }` pass-through). */
 export interface SelfHostedViewerOptions {
   /**
@@ -88,6 +105,13 @@ export interface SelfHostedViewerOptions {
    * a warning on the docs router's logger, at the first page request).
    */
   theme?: "system" | "light" | "dark" | SelfHostedTheme;
+  /**
+   * Where the content sits on a wide screen (a {@link SelfHostedLayout}).
+   * Unset: centred, at most 1400px wide. Needs bun-ui 3.3.0 or later; with
+   * an older one, setting it is a `ConfigError`, and unset the page keeps
+   * that version's layout.
+   */
+  layout?: SelfHostedLayout;
   /**
    * The specification-extension prefixes the viewer reads, first hit
    * winning. Default: `["x-bun-common", "x-bun-jobs"]`.
@@ -110,7 +134,10 @@ export interface SelfHostedDocument {
 /** A document with its pass-through options resolved. */
 interface ResolvedDocument extends SelfHostedDocument {
   /** The resolved pass-through. */
-  resolved: Pick<HostedConfig, "csrfHeader" | "extensions" | "theme">;
+  resolved: Pick<
+    HostedConfig,
+    "csrfHeader" | "extensions" | "theme" | "layout"
+  >;
   /** The page's bundle: the shared one, with its theme's stylesheet when it has one. */
   load: () => Promise<HostedAssets>;
 }
@@ -163,6 +190,18 @@ interface HostedConfig {
   csrfHeader: string | null;
   extensions: readonly string[];
   theme: "system" | "light" | "dark";
+  /** The checked layout; left out with a bun-ui older than 3.3.0, which has none. */
+  layout?: HostedLayout;
+}
+
+/** A checked layout (the peer's `UiLayout`, mirrored). */
+interface HostedLayout {
+  /** Where the content sits. */
+  readonly align: "left" | "center" | "right";
+  /** What moves. */
+  readonly scope: "content" | "page";
+  /** The width cap in CSS pixels. */
+  readonly maxWidth: number;
 }
 
 /** A checked theme (the peer's `ResolvedUiTheme`, mirrored). */
@@ -187,6 +226,12 @@ interface HostedModule {
     loadAssets: () => Promise<HostedAssets>,
     warn: (message: string) => void,
   ) => () => Promise<HostedAssets>;
+  /** Checks a layout, defaulting each field (bun-ui 3.3.0 and later; absent before). */
+  resolveLayout?: (
+    value: unknown,
+    fail: (message: string, context: Record<string, unknown>) => Error,
+    what?: string,
+  ) => HostedLayout;
   /** Resolves the bundle: the prebuilt `dist/` when present, else an in-memory build on first use. */
   resolveHostedAssets: (logger: unknown) => () => Promise<HostedAssets>;
   /** Prepares the shell for a config and a bundle; the result splices a nonce in. */
@@ -250,12 +295,36 @@ function resolveViewerTheme(
   );
 }
 
+/**
+ * The `layout` pass-through, checked by the peer, which owns the rules
+ * (bun-ui 3.3.0 or later). With an older peer, unset is left out of the
+ * config (that version has no layout to set) and set is a ConfigError.
+ */
+function resolveViewerLayout(
+  mod: HostedModule,
+  value: unknown,
+  what: string,
+): HostedLayout | undefined {
+  if (mod.resolveLayout === undefined) {
+    if (value === undefined) return undefined;
+    throw new ConfigError(
+      `${what}: layout needs ${SELF_HOSTED_PACKAGE} 3.3.0 or later`,
+      { package: SELF_HOSTED_PACKAGE },
+    );
+  }
+  return mod.resolveLayout(
+    value,
+    (message, context) => new ConfigError(`${what}: ${message}`, context),
+  );
+}
+
 /** The pass-through options, checked (a bad one is a ConfigError at construction). */
 function resolveOptions(
   options: SelfHostedViewerOptions,
   what: string,
   theme: HostedTheme,
-): Pick<HostedConfig, "csrfHeader" | "extensions" | "theme"> {
+  layout: HostedLayout | undefined,
+): Pick<HostedConfig, "csrfHeader" | "extensions" | "theme" | "layout"> {
   const extensions = options.extensions ?? ["x-bun-common", "x-bun-jobs"];
   if (
     !Array.isArray(extensions) ||
@@ -280,7 +349,12 @@ function resolveOptions(
       },
     );
   }
-  return { theme: theme.mode, extensions, csrfHeader };
+  return {
+    theme: theme.mode,
+    extensions,
+    csrfHeader,
+    ...(layout === undefined ? {} : { layout }),
+  };
 }
 
 /** The `info.title` of a document, when it is one. */
@@ -342,7 +416,12 @@ export function registerSelfHostedViewer(
           });
     return {
       ...document,
-      resolved: resolveOptions(document.options, what, theme),
+      resolved: resolveOptions(
+        document.options,
+        what,
+        theme,
+        resolveViewerLayout(mod, document.options.layout, what),
+      ),
       load,
     };
   };
