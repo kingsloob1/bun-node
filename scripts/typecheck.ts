@@ -55,6 +55,7 @@ export const PROJECTS = [
   "packages/bun-client/tsconfig.json",
   // bun-client's `lib/` with the DOM lib and no Bun types: a browser's view.
   "packages/bun-client/__tests__/browser/tsconfig.json",
+  "packages/bun-security/tsconfig.json",
   "benchmarks/tsconfig.json",
   "playground/tsconfig.json",
   "examples/bun-jobs/tsconfig.json",

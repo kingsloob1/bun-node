@@ -290,6 +290,7 @@ const PUBLISHED = [
   "bun-ui",
   "bun-cache",
   "bun-client",
+  "bun-security",
 ];
 
 describe("build-declarations copies", () => {

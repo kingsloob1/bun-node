@@ -23,7 +23,8 @@
       "packages/bun-jobs",
       "packages/bun-ui",
       "packages/bun-cache",
-      "packages/bun-client"
+      "packages/bun-client",
+      "packages/bun-security"
     ],
     "catalog": {
       "@asyncapi/specs": "^6.11.1",

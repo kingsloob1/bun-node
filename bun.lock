@@ -251,6 +251,26 @@
         "typescript",
       ],
     },
+    "packages/bun-security": {
+      "name": "@kingsleyweb/bun-security",
+      "version": "3.2.0",
+      "dependencies": {
+        "@kingsleyweb/bun-common": "workspace:^",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "bun-types": "catalog:",
+        "typescript": "catalog:",
+      },
+      "peerDependencies": {
+        "@types/bun": ">=1.4.2",
+        "typescript": "^5.9.3 || ^6.0.0",
+      },
+      "optionalPeers": [
+        "@types/bun",
+        "typescript",
+      ],
+    },
     "packages/bun-ui": {
       "name": "@kingsleyweb/bun-ui",
       "version": "3.2.0",
@@ -504,6 +524,8 @@
     "@kingsleyweb/bun-jobs": ["@kingsleyweb/bun-jobs@workspace:packages/bun-jobs"],
 
     "@kingsleyweb/bun-nest": ["@kingsleyweb/bun-nest@workspace:packages/bun-nest"],
+
+    "@kingsleyweb/bun-security": ["@kingsleyweb/bun-security@workspace:packages/bun-security"],
 
     "@kingsleyweb/bun-ui": ["@kingsleyweb/bun-ui@workspace:packages/bun-ui"],
 

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/serve/hardenServe.test.ts": 13082,
+    "__tests__/ip/trie.test.ts": 1479,
+    "__tests__/treeShaking.test.ts": 1298,
+    "__tests__/serve/withSecurity.test.ts": 910,
+    "__tests__/engine/explain.test.ts": 856,
+    "__tests__/engine/trust.test.ts": 704,
+    "__tests__/engine/lists.test.ts": 652,
+    "__tests__/engine/identity.test.ts": 640,
+    "__tests__/policy/compile.test.ts": 636,
+    "__tests__/ip/address.test.ts": 572,
+    "__tests__/engine/facts.test.ts": 549,
+    "__tests__/packaging.test.ts": 70
+  }
+}

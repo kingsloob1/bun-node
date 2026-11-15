@@ -1,0 +1,91 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-security writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-security` from the repo root. Every spelling here worked at some point; removing one hides a regression.",
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-security",
+      "values": [
+        "createSecurity",
+        "compilePolicy",
+        "securityPolicySchema",
+        "SecurityPolicyError",
+        "requestFacts",
+        "INTERNAL_RANGES",
+        "ACTION_SEVERITY",
+        "DEFAULT_MAX_LIST_ENTRIES",
+        "DEFAULT_SERVICE_HEADER",
+        "DEFAULT_CLIENT_IP_HEADER",
+        "MAX_FACT_HEADERS",
+        "MAX_FACT_HEADER_LENGTH"
+      ],
+      "types": [
+        "Security",
+        "CreateSecurityOptions",
+        "SecurityStatus",
+        "ExplainOptions",
+        "Decision",
+        "RuleHit",
+        "SubjectKeys",
+        "Explanation",
+        "ExplainStep",
+        "ClientResolution",
+        "ClientSource",
+        "SecurityLayer",
+        "RequestFacts",
+        "RequestFactsInit",
+        "SecurityIdentity",
+        "SecurityWarning",
+        "TrustStatus",
+        "TrustMinute",
+        "TrustWarningKind",
+        "CompiledPolicy",
+        "CompilePolicyOptions",
+        "PolicyIssue",
+        "SecurityPolicy",
+        "SecurityMode",
+        "SecurityAction",
+        "ListAction",
+        "ListEntry",
+        "PolicyScope",
+        "KeyPolicy",
+        "InternalListPolicy",
+        "ServiceIdentity",
+        "ServiceIdentityPolicy",
+        "ServiceExemption",
+        "TrustCheckPolicy"
+      ],
+      "snippet": "const security = m.createSecurity({ policy: { service: \"checkout\", public: true, lists: [{ ip: \"203.0.113.0/24\", action: \"block\" }] } });\nexport type _securityNotAny = Expect<IsAny<typeof security>>;\nconst decision = security.evaluate(m.requestFacts(new Request(\"http://app.test/\"), { peer: \"203.0.113.9\", trustProxy: [\"10.0.0.0/8\"] }));\nexport type _decisionNotAny = Expect<IsAny<typeof decision>>;\nexport type _evaluate = Equal<ReturnType<typeof security.evaluate>, t.Decision | Promise<t.Decision>>;\nexport type _action = Equal<t.Decision[\"action\"], \"allow\" | \"log\" | \"tag\" | \"delay\" | \"challenge\" | \"block\" | \"ban\" | \"drop\">;\nconst compiled: t.CompiledPolicy = m.compilePolicy({ lists: [{ user: \"u_1\", action: \"drop\", expiresAt: \"2026-12-01T00:00:00Z\" }] }, { maxListEntries: 10 });\nexport const _loaded: t.CompiledPolicy = security.load(compiled);\nexport const _mode: t.SecurityMode = compiled.mode;\nexport const _issues: readonly t.PolicyIssue[] = new m.SecurityPolicyError([{ message: \"x\", path: [\"lists\", 0] }]).issues;\nexport const _schemaVendor: string = m.securityPolicySchema[\"~standard\"].vendor;\nconst typed = m.createSecurity<{ headers: Record<string, string> }>({ policy: {}, identify: (req) => ({ user: req.headers[\"x-user\"] }) });\nexport type _identify = Equal<Parameters<typeof typed.identify>[0], { headers: Record<string, string> }>;\nexport const _warning: t.TrustWarningKind = \"trust.internal\";\nexport const _ranges: readonly string[] = m.INTERNAL_RANGES;\nexport const _service: t.ServiceIdentity = { id: \"pay-api\", verifier: \"sha256:00\", forwardsClientIp: true, exempt: [\"lists\"] };\nexport type _statusNotAny = Expect<IsAny<ReturnType<typeof security.status>>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib",
+      "values": ["createSecurity", "compilePolicy"],
+      "types": ["Security", "SecurityPolicy"]
+    },
+    {
+      "$comment": "A plain Bun.serve: withSecurity wraps a fetch handler with the engine, hardenServe sets the listener's limits (plan §3.4). Its declarations use Bun's types for Bun.serve only through structural types.",
+      "spelling": "@kingsleyweb/bun-security/serve",
+      "values": [
+        "withSecurity",
+        "hardenServe",
+        "DEFAULT_IDLE_TIMEOUT_SECONDS",
+        "DEFAULT_MAX_REQUEST_BODY_SIZE"
+      ],
+      "types": [
+        "WithSecurityOptions",
+        "HardenServeOptions",
+        "HardenableServeOptions",
+        "RequestIpServer"
+      ],
+      "snippet": "import { createSecurity } from \"@kingsleyweb/bun-security\";\nconst security = createSecurity({ policy: {} });\nconst handler = m.withSecurity(security, (_req: Request) => new Response(\"ok\"), { trustProxy: \"loopback\", failClosedOnEngineError: false });\nexport type _handlerNotAny = Expect<IsAny<typeof handler>>;\nexport const _answer: Response | Promise<Response> = handler(new Request(\"http://app.test/\"), { requestIP: () => ({ address: \"203.0.113.9\" }) });\nconst options = m.hardenServe({ port: 0, fetch: (_req: Request) => new Response(\"ok\") }, { production: false });\nexport type _idle = Equal<typeof options.idleTimeout, number>;\nexport const _defaults: number = m.DEFAULT_IDLE_TIMEOUT_SECONDS + m.DEFAULT_MAX_REQUEST_BODY_SIZE;\nexport const _settings: t.HardenServeOptions = { production: true };\nexport const _server: t.RequestIpServer = { requestIP: () => null };"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/serve",
+      "values": ["withSecurity", "hardenServe"],
+      "types": ["WithSecurityOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/index",
+      "values": ["createSecurity"]
+    }
+  ],
+  "workspaceDependencies": ["packages/bun-contract", "packages/bun-common"]
+}
