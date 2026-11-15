@@ -16,6 +16,8 @@ PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgrou
 PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
 PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
 PLAYGROUND_LIVE_BUS=redis://127.0.0.1:6379/12 bun playground/index.ts  # live invalidation across playgrounds (also postgres://)
+PLAYGROUND_THEME=teal bun playground/index.ts        # every UI in a custom colour theme (theme.ts: teal, violet, midnight, low-contrast)
+PLAYGROUND_LAYOUT="right page 1100" bun playground/index.ts  # every UI's layout on a wide screen (layout.ts: left/center/right, content/page, a width)
 bun playground/nest-jobs.ts                              # bun-jobs under Nest, on its own port (PORT_NEST_JOBS, 4002; see below)
 bun playground/nest-jobs-smoke.ts                        # its smoke check
 bun playground/nest-gateway.ts                           # the validated Nest gateway (V9), on its own port (PORT_NEST, default 4001)

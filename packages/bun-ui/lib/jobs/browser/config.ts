@@ -7,7 +7,7 @@
  * sides import it, and the app side is bundled for the browser.
  */
 
-import type { UiTheme } from "../../kit/browser/shared";
+import type { UiLayout, UiTheme } from "../../kit/browser/shared";
 import type { UiUnauthorized } from "./unauthorized";
 
 export type { UiTheme };
@@ -56,6 +56,8 @@ export interface JobsUiConfig {
   sections: JobsUiSections;
   /** Initial colour scheme. */
   theme: UiTheme;
+  /** Where the content sits on a wide screen (the `layout` option, checked). */
+  layout: UiLayout;
   /**
    * Where an authorization failure sends the browser (`jobsUi()`'s
    * `unauthorized`), or `null` when it is off: the app then shows each

@@ -1,13 +1,19 @@
 /**
  * The option checks every UI's server function (`jobsUi()`, `docsUi()`)
- * shares: the mount path, the theme, the CSRF header name, and the options
+ * shares: the mount path, the theme, the layout, the CSRF header name, and the options
  * every UI takes (`title`, `middleware`, `authorize`, `dev`). Each throws the
  * caller's error ({@link ConfigFail}), so `jobsUi()` keeps throwing bun-jobs'
  * `ConfigError` and `docsUi()` bun-common's; nothing here imports a domain
  * package.
  */
 import type { RouterHandler } from "@kingsleyweb/bun-common";
-import type { UiTheme } from "./browser/shared";
+import type {
+  UiAlign,
+  UiLayout,
+  UiLayoutScope,
+  UiTheme,
+} from "./browser/shared";
+import { DEFAULT_UI_LAYOUT, MIN_UI_MAX_WIDTH } from "./browser/shared";
 
 /**
  * Makes the error a refused option throws: each UI passes its domain's
@@ -71,6 +77,76 @@ export function resolveTheme(value: unknown, fail: ConfigFail): UiTheme {
     return value;
   }
   throw fail(`theme must be "system", "light" or "dark"`, { value });
+}
+
+/** The keys of the `layout` option, in the order its messages list them. */
+const LAYOUT_KEYS = ["align", "scope", "maxWidth"] as const;
+
+/** Every `layout.align`. */
+const ALIGNS: readonly UiAlign[] = ["left", "center", "right"];
+
+/** Every `layout.scope`. */
+const SCOPES: readonly UiLayoutScope[] = ["content", "page"];
+
+/**
+ * Validates the `layout` option (#785): unset, or an object of `align`,
+ * `scope` and `maxWidth`, each defaulting to {@link DEFAULT_UI_LAYOUT}'s when
+ * left out (`undefined`; an explicit `null` is refused).
+ * `what` names the option in the message (bun-common's self-hosted viewer
+ * prefixes its document's name).
+ */
+export function resolveLayout(
+  value: unknown,
+  fail: ConfigFail,
+  what = "layout",
+): UiLayout {
+  if (value === undefined) return { ...DEFAULT_UI_LAYOUT };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw fail(`${what} must be an object of { align?, scope?, maxWidth? }`, {
+      value,
+    });
+  }
+  const given = value as Record<string, unknown>;
+  const unknown = Object.keys(given).filter(
+    (key) => !(LAYOUT_KEYS as readonly string[]).includes(key),
+  );
+  if (unknown.length > 0) {
+    throw fail(
+      `${what}: unknown key${unknown.length === 1 ? "" : "s"} ${unknown.map((key) => `"${key}"`).join(", ")} (known: ${LAYOUT_KEYS.join(", ")})`,
+      { keys: unknown },
+    );
+  }
+  const align =
+    given.align === undefined ? DEFAULT_UI_LAYOUT.align : given.align;
+  if (!ALIGNS.includes(align as UiAlign)) {
+    throw fail(`${what}.align must be "left", "center" or "right"`, {
+      value: given.align,
+    });
+  }
+  const scope =
+    given.scope === undefined ? DEFAULT_UI_LAYOUT.scope : given.scope;
+  if (!SCOPES.includes(scope as UiLayoutScope)) {
+    throw fail(`${what}.scope must be "content" or "page"`, {
+      value: given.scope,
+    });
+  }
+  const maxWidth =
+    given.maxWidth === undefined ? DEFAULT_UI_LAYOUT.maxWidth : given.maxWidth;
+  if (
+    typeof maxWidth !== "number" ||
+    !Number.isSafeInteger(maxWidth) ||
+    maxWidth < MIN_UI_MAX_WIDTH
+  ) {
+    throw fail(
+      `${what}.maxWidth must be a whole number of CSS pixels, at least ${MIN_UI_MAX_WIDTH}`,
+      { value: given.maxWidth },
+    );
+  }
+  return {
+    align: align as UiAlign,
+    scope: scope as UiLayoutScope,
+    maxWidth,
+  };
 }
 
 /**

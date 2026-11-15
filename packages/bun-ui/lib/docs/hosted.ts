@@ -15,6 +15,9 @@ export { createNonce, createShellRenderer, cspHeader } from "./shell";
 // A custom colour theme (#779): checked, then applied to the bundle loader.
 export { resolveThemeInput, themedAssets } from "../kit/theme";
 export type { ResolvedUiTheme } from "../kit/theme";
+// The `layout` option (#785): checked here, so the host needs no copy of the rules.
+export { resolveLayout } from "../kit/options";
+export type { UiLayout } from "../kit/browser/shared";
 export type { CspOptions, ShellRenderer } from "./shell";
 
 /**

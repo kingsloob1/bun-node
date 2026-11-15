@@ -70,6 +70,14 @@
   --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
   --header-height: 56px;
   --nav-width: 200px;
+  /* The content's width cap: the `layout` option's maxWidth, which the app
+     sets on the root element (app/kit/layout.ts). This is its default. */
+  --content-max-width: 1400px;
+  /* The side nav and a screen at the cap, with the main area's padding: the
+     block the "page" layout scope places. */
+  --page-max-width: calc(
+    var(--nav-width) + var(--content-max-width) + 2 * var(--space-5)
+  );
 }
 
 @media (prefers-color-scheme: dark) {

@@ -80,6 +80,7 @@ describe("the shell", () => {
       basePath: "/admin/ui",
       title: "Ops",
       theme: "dark",
+      layout: { align: "right", maxWidth: 1200 },
     });
     const { shell } = await fetchShell(ui.router, "/");
 
@@ -94,6 +95,7 @@ describe("the shell", () => {
       docs: null,
       sections: { manage: true, docs: true },
       theme: "dark",
+      layout: { align: "right", scope: "content", maxWidth: 1200 },
       unauthorized: null,
     });
     expect(shell.config).toEqual(ui.config);

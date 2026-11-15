@@ -68,5 +68,74 @@ export interface UiThemeOptions {
  */
 export type UiThemeInput = UiTheme | UiThemeOptions;
 
+/**
+ * Where a UI's content sits on a screen wider than its width cap. `"left"`
+ * was the only placement before the `layout` option (#785).
+ */
+export type UiAlign = "left" | "center" | "right";
+
+/**
+ * What the `layout` option's `align` moves: `"content"` keeps the side nav at
+ * the window's edge and places the screen in the space beside it; `"page"`
+ * places the side nav and the screen as one block, the header's items
+ * following it. A UI without a side nav (the docs viewer) looks the same
+ * either way.
+ */
+export type UiLayoutScope = "content" | "page";
+
+/**
+ * The `layout` option (`jobsUi()`, `docsUi()`, bun-common's `docsRouter`
+ * `"self-hosted"` viewer): where the content sits on a wide screen. Every
+ * field is optional.
+ */
+export interface UiLayoutOptions {
+  /** Where the content sits on a screen wider than `maxWidth`. Default: `"center"`. */
+  align?: UiAlign;
+  /** What `align` moves. Default: `"content"`. */
+  scope?: UiLayoutScope;
+  /**
+   * The content's width cap in CSS pixels: an integer of at least
+   * {@link MIN_UI_MAX_WIDTH}. Default: {@link DEFAULT_UI_LAYOUT}'s, 1400.
+   */
+  maxWidth?: number;
+}
+
+/** {@link UiLayoutOptions} once checked: every field set. Part of each UI's browser config. */
+export interface UiLayout {
+  /** Where the content sits on a screen wider than `maxWidth`. */
+  align: UiAlign;
+  /** What `align` moves. */
+  scope: UiLayoutScope;
+  /** The content's width cap in CSS pixels. */
+  maxWidth: number;
+}
+
+/** The layout a UI has when the `layout` option is unset, or a field of it is. */
+export const DEFAULT_UI_LAYOUT: Readonly<UiLayout> = Object.freeze({
+  align: "center",
+  scope: "content",
+  maxWidth: 1400,
+});
+
+/** The narrowest `maxWidth` the `layout` option takes, in CSS pixels: a small phone's width. */
+export const MIN_UI_MAX_WIDTH = 320;
+
+/**
+ * Whether a value read back from a page's config is a {@link UiLayout}: what
+ * each UI's app checks before applying it (`app/kit/layout.ts`).
+ */
+export function isUiLayout(value: unknown): value is UiLayout {
+  if (typeof value !== "object" || value === null) return false;
+  const layout = value as Record<string, unknown>;
+  return (
+    (layout.align === "left" ||
+      layout.align === "center" ||
+      layout.align === "right") &&
+    (layout.scope === "content" || layout.scope === "page") &&
+    Number.isInteger(layout.maxWidth) &&
+    (layout.maxWidth as number) >= MIN_UI_MAX_WIDTH
+  );
+}
+
 /** `Cache-Control` for hashed bundle files: their name changes with their content. */
 export const ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";

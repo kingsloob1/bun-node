@@ -10,6 +10,7 @@ import { readUiConfig } from "./config";
 import { LiveOptionsContext } from "./live";
 import { AppProviders } from "./providers";
 import { createQueryClient } from "./queryClient";
+import { applyLayout } from "../kit/layout";
 import { applyTheme, initialTheme } from "./theme";
 
 /** Options of {@link boot}. */
@@ -33,7 +34,7 @@ export interface BootResult {
 }
 
 /**
- * Starts the app: reads the injected config, applies the theme, and renders
+ * Starts the app: reads the injected config, applies the theme and layout, and renders
  * into `#root`. A missing or malformed config renders a plain message
  * instead (there is no API to talk to without it) and rethrows.
  */
@@ -51,6 +52,7 @@ export function boot(options: BootOptions = {}): BootResult {
     throw error;
   }
   applyTheme(initialTheme(config.theme), doc.documentElement);
+  applyLayout(config.layout, doc.documentElement);
   doc.title = config.title;
 
   const client = createApiClient(config, options.client);

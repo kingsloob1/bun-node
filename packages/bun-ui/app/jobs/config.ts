@@ -1,4 +1,5 @@
 import type { JobsUiConfig } from "../../lib/jobs/browser/config.ts";
+import { DEFAULT_UI_LAYOUT, isUiLayout } from "../../lib/kit/browser/shared.ts";
 import { isUiUnauthorized } from "../../lib/kit/browser/unauthorized";
 import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../lib/jobs/browser/config.ts";
 
@@ -48,13 +49,21 @@ export function parseUiConfig(value: unknown): JobsUiConfig {
     throw new UiConfigError(`The UI configuration's "theme" is not valid.`);
   }
   // Missing in a shell from before the option existed: off.
+  // Missing in a shell from a host that mirrors the config without it (an
+  // older bun-common's docsRouter): the default layout.
+  const layout = value.layout === undefined ? DEFAULT_UI_LAYOUT : value.layout;
+  if (!isUiLayout(layout)) {
+    throw new UiConfigError(
+      `The UI configuration's "layout" must be { align, scope, maxWidth }.`,
+    );
+  }
   const unauthorized = value.unauthorized ?? null;
   if (unauthorized !== null && !isUiUnauthorized(unauthorized)) {
     throw new UiConfigError(
       `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
     );
   }
-  return { ...value, unauthorized } as unknown as JobsUiConfig;
+  return { ...value, layout, unauthorized } as unknown as JobsUiConfig;
 }
 
 /** Reads the {@link JobsUiConfig} the server inlined as `<script type="application/json" id="bun-jobs-ui-config">`. */

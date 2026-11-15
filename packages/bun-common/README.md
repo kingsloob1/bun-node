@@ -3417,7 +3417,11 @@ app.use(
   construction, naming the package. Its options are `theme` (`"system"`,
   `"light"` or `"dark"`, or `{ mode?, light?, dark? }` with your own colours
   by token, which needs bun-ui 3.2.0 or later; see bun-ui's
-  [Colour themes](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui#colour-themes)), `extensions` (the extension prefixes it reads) and
+  [Colour themes](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui#colour-themes)),
+  `layout` (`{ align?, scope?, maxWidth? }`: where the content sits on a wide
+  screen, centred by default; needs bun-ui 3.3.0 or later, see bun-ui's
+  [Layout](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-ui#layout)),
+  `extensions` (the extension prefixes it reads) and
   `csrfHeader` (the header its try-it panel adds on mutations, or `false`).
   The OpenAPI page is the mount root, the AsyncAPI page `/asyncapi`.
 - **`cdn`** mirrors or air-gaps the assets: `{ baseUrl }` plus per-asset

@@ -20,7 +20,11 @@ export {
  */
 export type { DocsUiConfig, DocsUiTheme } from "./browser/config";
 export type {
+  UiAlign,
   UiColorToken,
+  UiLayout,
+  UiLayoutOptions,
+  UiLayoutScope,
   UiThemeColors,
   UiThemeInput,
   UiThemeOptions,

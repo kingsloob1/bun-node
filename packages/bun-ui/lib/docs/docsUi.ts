@@ -23,6 +23,7 @@ import {
   requireOptionsObject,
   resolveCommonOptions,
   resolveCsrfHeader,
+  resolveLayout,
 } from "../kit/options";
 import { ASSETS_SUBPATH, createUiRouter, problemSender } from "../kit/serve";
 import { resolveThemeInput, themedAssets } from "../kit/theme";
@@ -185,6 +186,7 @@ export function createDocsUi(
     csrfHeader: resolveCsrfHeader(options.csrfHeader, () => null, fail),
     extensions: resolveExtensions(options.extensions),
     theme: theme.mode,
+    layout: resolveLayout(options.layout, fail),
     unauthorized: resolveUnauthorized(options.unauthorized, basePath, fail),
   });
 

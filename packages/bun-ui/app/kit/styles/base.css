@@ -172,7 +172,9 @@ code {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  max-width: 1400px;
+  max-width: var(--content-max-width);
+  /* Centred by default; "Layout" below places it for the other alignments. */
+  margin-inline: auto;
 }
 
 .screen-title {
@@ -193,6 +195,59 @@ code {
 .bootstrap-title {
   margin: 0;
   font-size: var(--text-xl);
+}
+
+/* ---- Layout: the `layout` option on a screen wider than the cap ----
+   app/kit/layout.ts sets data-align and data-layout-scope on the root
+   element; with neither (a page before boot), the default: centred content.
+   Every UI's frame is these classes, so none sets its own width or place. */
+:root[data-align="left"] .screen {
+  margin-inline: 0 auto;
+}
+
+:root[data-align="right"] .screen {
+  margin-inline: auto 0;
+}
+
+/* "page": the side nav and the screen move as one block, and the header's
+   items line up with it. Its background still spans the window. */
+:root[data-layout-scope="page"] .app-body {
+  width: 100%;
+  max-width: var(--page-max-width);
+  margin-inline: auto;
+}
+
+:root[data-layout-scope="page"][data-align="left"] .app-body {
+  margin-inline: 0 auto;
+}
+
+:root[data-layout-scope="page"][data-align="right"] .app-body {
+  margin-inline: auto 0;
+}
+
+/* The block fills its width, so the screen fills the main area beside the nav. */
+:root[data-layout-scope="page"] .app-main .screen {
+  margin-inline: 0;
+}
+
+:root[data-layout-scope="page"] .app-header {
+  padding-inline: max(
+    var(--space-4),
+    calc((100% - var(--page-max-width)) / 2 + var(--space-4))
+  );
+}
+
+:root[data-layout-scope="page"][data-align="left"] .app-header {
+  padding-inline: var(--space-4)
+    max(var(--space-4), calc(100% - var(--page-max-width) + var(--space-4)));
+}
+
+:root[data-layout-scope="page"][data-align="right"] .app-header {
+  padding-inline: max(
+      var(--space-4),
+      calc(100% - var(--page-max-width) + var(--space-4))
+    )
+    var(--space-4);
 }
 
 /* ---- Components ---- */

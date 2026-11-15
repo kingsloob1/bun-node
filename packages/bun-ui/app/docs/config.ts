@@ -1,5 +1,6 @@
 import type { DocsUiConfig } from "../../lib/docs/browser/config.ts";
 import { DOCS_UI_CONFIG_ELEMENT_ID } from "../../lib/docs/browser/config.ts";
+import { DEFAULT_UI_LAYOUT, isUiLayout } from "../../lib/kit/browser/shared.ts";
 import { isUiUnauthorized } from "../../lib/kit/browser/unauthorized.ts";
 
 /** The injected configuration was missing or malformed. */
@@ -57,6 +58,14 @@ export function parseDocsUiConfig(value: unknown): DocsUiConfig {
   if (!["system", "light", "dark"].includes(String(value.theme))) {
     throw new DocsUiConfigError(`The UI configuration's "theme" is not valid.`);
   }
+  // Missing in a shell from a host that mirrors the config without it (an
+  // older bun-common's docsRouter): the default layout.
+  const layout = value.layout === undefined ? DEFAULT_UI_LAYOUT : value.layout;
+  if (!isUiLayout(layout)) {
+    throw new DocsUiConfigError(
+      `The UI configuration's "layout" must be { align, scope, maxWidth }.`,
+    );
+  }
   // Missing in a shell from before the option existed, or from a host that
   // mirrors the config (bun-common's docsRouter): off.
   const unauthorized = value.unauthorized ?? null;
@@ -65,7 +74,7 @@ export function parseDocsUiConfig(value: unknown): DocsUiConfig {
       `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
     );
   }
-  return { ...value, unauthorized } as unknown as DocsUiConfig;
+  return { ...value, layout, unauthorized } as unknown as DocsUiConfig;
 }
 
 /** Reads the {@link DocsUiConfig} the server inlined as `<script type="application/json" id="bun-api-docs-ui-config">`. */

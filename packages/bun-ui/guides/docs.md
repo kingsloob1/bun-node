@@ -55,6 +55,7 @@ router answers with the shell.
 | `basePath` | `"/docs"` | Mount path. Not `"/"`, no trailing slash, simple segments only. |
 | `title` | `"API docs"` | Page title. |
 | `theme` | `"system"` | Initial colour scheme: `"system"`, `"light"` or `"dark"`; or `{ mode?, light?, dark? }` to also set colours by token (`{ light: { accent: "#0f766e" } }`). See [Colour themes](../README.md#colour-themes). |
+| `layout` | `{ align: "center", scope: "content", maxWidth: 1400 }` | Where the content sits on a screen wider than `maxWidth`: `align` `"center"`, `"left"` or `"right"`; `scope` `"content"` or `"page"` (the same here, the viewer has no side nav); `maxWidth` in CSS pixels, at least 320. See [Layout](../README.md#layout). |
 | `extensions` | `["x-bun-common", "x-bun-jobs"]` | Specification-extension prefixes the viewers read, first hit winning: a `<prefix>-<name>` extension is read from the first prefix carrying it; anything under another prefix is ignored. |
 | `csrfHeader` | none | Header the try-it panel adds on every mutation, or `false`. |
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API itself). |
