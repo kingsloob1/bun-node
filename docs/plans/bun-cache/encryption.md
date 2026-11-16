@@ -1152,7 +1152,7 @@ fail it, recorded in the PR.
 | Key provider | Async ring; an unknown id triggers one refresh; a rejection keeps the old ring | No early refresh: the peer's new key is never learned |
 | Sealed tags win | Strip the tags in the store, then `invalidateTags`: a miss (stamps and index drivers) | Using `raw.tags`: the entry survives (as spike C1) |
 | Sealed expiry wins | Raise the clear `expiresAt` past the sealed one: a miss after the sealed one | Using `raw.expiresAt`: served |
-| Nonces and salts do not repeat | 100,000 seals, all distinct | A fixed salt: the test fails |
+| Nonces and salts do not repeat | 10,000 seals, all distinct, and every byte of the salt and nonce varies across them (100,000 seals overran bun:test's 5 s under a 16-worker run) | A fixed salt, and a draw that fills only part of the salt and nonce: the test fails |
 | **No plaintext in any store** | The kit's new `rawDump` factory field yields every byte a driver stored (rows, keys, objects, files, the bus). Sentinel values, keys, namespaces and tags are written, then searched for in UTF-8 and UTF-16 | Encryption off: the values are found. `hashNames` off: the names are found |
 | `acceptUnencrypted: false` | A plaintext entry injected into the store is a miss | Accepted: the test fails |
 | User ciphers | `runCacheCipherConformance` on a sync and an async test cipher | An AAD-ignoring cipher fails the helper |
