@@ -7,7 +7,7 @@
  * The attacks are in `encryption-attacks.test.ts`, the keys in
  * `encryption-keys.test.ts`.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import type { CacheEventMap } from "../../lib/index";
 import { CacheDecryptError, createCache, memoryDriver } from "../../lib/index";
@@ -406,7 +406,22 @@ describe("rewrites stay sealed", () => {
 });
 
 describe("salts and nonces", () => {
-  test("100,000 seals draw 100,000 distinct salts and nonces", () => {
+  /**
+   * How many seals each case draws. Enough that a salt or a nonce drawn from
+   * a few bytes of entropy collides (a source of 2^24 values is expected to
+   * repeat within about 5,000 draws), and that a byte left undrawn stays
+   * constant across every seal, where a drawn one varies; small enough to
+   * stay well inside bun:test's 5 s under a 16-worker run (100,000 seals
+   * took 6.2 s there).
+   */
+  const SEALS = 10_000;
+
+  /**
+   * Seals {@link SEALS} entries and answers how many distinct salts and
+   * nonces they drew, and the salt and nonce byte positions (0–27) whose
+   * value never changed.
+   */
+  function draw(): { salts: number; nonces: number; constant: number[] } {
     const encryption = new EntryEncryption(
       { keys: RING },
       { now: () => T0, timeout: undefined, onProviderError: () => {} },
@@ -415,7 +430,9 @@ describe("salts and nonces", () => {
     const salts = new Set<string>();
     const nonces = new Set<string>();
     const saltAt = 5 + "2026-10".length;
-    for (let i = 0; i < 100_000; i++) {
+    let first: Uint8Array | undefined;
+    const varies = Array.from({ length: 28 }, () => false);
+    for (let i = 0; i < SEALS; i++) {
       const sealed = encryption.seal(
         "cache",
         "k",
@@ -423,15 +440,56 @@ describe("salts and nonces", () => {
         null,
         [],
       ) as Uint8Array;
-      salts.add(
-        Buffer.from(sealed.subarray(saltAt, saltAt + 16)).toString("hex"),
-      );
-      nonces.add(
-        Buffer.from(sealed.subarray(saltAt + 16, saltAt + 28)).toString("hex"),
-      );
+      const drawn = sealed.subarray(saltAt, saltAt + 28);
+      salts.add(Buffer.from(drawn.subarray(0, 16)).toString("hex"));
+      nonces.add(Buffer.from(drawn.subarray(16, 28)).toString("hex"));
+      first ??= drawn.slice();
+      for (let at = 0; at < 28; at++) {
+        if (drawn[at] !== first[at]) varies[at] = true;
+      }
     }
-    expect(salts.size).toBe(100_000);
-    expect(nonces.size).toBe(100_000);
+    return {
+      salts: salts.size,
+      nonces: nonces.size,
+      constant: varies.flatMap((yes, at) => (yes ? [] : [at])),
+    };
+  }
+
+  test(`${SEALS.toLocaleString("en-US")} seals draw distinct salts and nonces, every byte of them drawn`, () => {
+    expect(draw()).toEqual({ salts: SEALS, nonces: SEALS, constant: [] });
+  });
+
+  test("negative controls: a fixed draw, and one that fills only part of the salt and nonce, both fail it", () => {
+    const random = spyOn(crypto, "getRandomValues");
+    try {
+      // A fixed salt and nonce (the plan's control): one of each.
+      random.mockImplementation(
+        <T extends ArrayBufferView | null>(array: T) => array,
+      );
+      expect(draw()).toMatchObject({ salts: 1, nonces: 1 });
+      // Only the first 4 of the 28 bytes drawn (a length bug): the salts
+      // are still distinct at this size, so the count alone would miss it;
+      // the 24 bytes that never change do not.
+      random.mockImplementation(
+        <T extends ArrayBufferView | null>(array: T) => {
+          if (array instanceof Uint8Array) {
+            array.fill(0);
+            for (let i = 0; i < 4; i++) {
+              array[i] = Math.floor(Math.random() * 256);
+            }
+          }
+          return array;
+        },
+      );
+      const partial = draw();
+      expect(partial.constant).toEqual(
+        Array.from({ length: 24 }, (_, i) => i + 4),
+      );
+    } finally {
+      random.mockRestore();
+    }
+    // The control's control: restored, the real draw passes again.
+    expect(draw().constant).toEqual([]);
   });
 });
 
