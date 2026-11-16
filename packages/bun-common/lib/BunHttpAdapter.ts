@@ -43,6 +43,7 @@ import { isPromise } from "node:util/types";
 import {
   awaitPipelineOrStream,
   BunRouter,
+  createRequestTimeoutError,
   FETCH_STUB_SERVER,
   isRequestTimeoutError,
   openSocketFree,
@@ -226,6 +227,137 @@ function carryRequest(error: unknown, req: BunRequest): unknown {
   const carrier: object = isObject(error) ? error : new Error(String(error));
   defineHidden(carrier, "req", req);
   return carrier;
+}
+
+/**
+ * A hook registered with {@link BunHttpAdapter.addBeforeReadHook}. It sees
+ * each HTTP request first, as `Bun.serve` hands it over (a WebSocket upgrade
+ * request and a socket-free `fetch()` included), before the adapter reads
+ * anything of it: no body, cookie or query parsed, no `BunRequest` built, no
+ * route matched. What it returns decides whether the adapter reads the
+ * request at all:
+ *
+ * - **nothing** (`undefined`): the next hook runs, then the adapter reads
+ *   and routes the request as usual;
+ * - **a `Response`**: that is the answer. The body is never read, and
+ *   nothing after the hook runs (no later hook, middleware, route or
+ *   not-found handler). A response whose body errors before its first byte
+ *   makes `Bun.serve` close the connection with no answer at all;
+ * - **a promise of either**: the request waits, unread, until it settles;
+ * - **a throw or a rejection**: the error goes to the adapter's final error
+ *   handling without a request, so `finalErrorResponse` answers it (the
+ *   error's 4xx or 5xx `status`, else `500`), never a `setErrorHandler`
+ *   handler, which needs a `BunRequest`.
+ *
+ * The route stage finds the same `Request` object at `req.request`, so a
+ * `WeakMap` keyed by it carries what the hook learned to a middleware.
+ *
+ * @typeParam customWebsocketDataType The adapter's WebSocket data type, which
+ * the server is typed with.
+ */
+export type BeforeReadHook<customWebsocketDataType = unknown> = (
+  request: Request,
+  server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+) => Response | void | PromiseLike<Response | void>;
+
+/**
+ * Which answer a {@link BeforeWriteHook} is looking at:
+ *
+ * - `"early"`: the answer a {@link BeforeReadHook} gave;
+ * - `"response"`: a response the request's own handlers produced (a route,
+ *   a middleware, a not-found handler, the adapter's bare `404` when there
+ *   is none, a stream as it opens, a failed WebSocket upgrade's);
+ * - `"error"`: a response the adapter's error handling produced (the
+ *   `setErrorHandler` handlers' or `finalErrorResponse`'s), or the payload
+ *   guard's `413`.
+ */
+export type BeforeWritePhase = "early" | "response" | "error";
+
+/** What a {@link BeforeWriteHook} is given. */
+export interface BeforeWriteContext {
+  /** Which answer this is; see {@link BeforeWritePhase}. */
+  readonly phase: BeforeWritePhase;
+  /** The request being answered, as `Bun.serve` handed it over. */
+  readonly request: Request;
+  /**
+   * The request as the adapter read it; `undefined` in phase `"early"`
+   * (it was never read) and for an error raised before it was built.
+   */
+  readonly req: BunRequest | undefined;
+  /** The response the handlers wrote to, in phase `"response"`; `undefined` otherwise. */
+  readonly res: BunResponse | undefined;
+  /**
+   * The native response that will be written: as produced, or as the last
+   * hook before this one replaced it. Its status is final. Its headers can
+   * be changed in place, and a change is written (Bun allows it on every
+   * `Response`, `Response.redirect`'s included, measured on 1.4.5-canary);
+   * clone it to read its body, which a stream's must not be read for.
+   */
+  readonly response: Response;
+}
+
+/**
+ * A hook registered with {@link BunHttpAdapter.addBeforeWriteHook}. It sees
+ * every response the adapter answers an HTTP request with, before anything
+ * of it is written, and may change it:
+ *
+ * - **pass:** return nothing (headers changed in place are kept);
+ * - **replace:** return a `Response`, which later hooks see and which is
+ *   written instead. The one replaced is not cancelled: a replacement may
+ *   reuse its body (`new Response(response.body, …)`);
+ * - **refuse:** throw, or reject. In phase `"response"` the response is
+ *   discarded (its body cancelled, an open stream destroyed) and the error
+ *   goes to the adapter's error handling with the request, whose answer the
+ *   hooks then see in phase `"error"`. In phases `"early"` and `"error"` a
+ *   refusal is logged and never applied, so a check cannot loop: the
+ *   response is sent as the hooks before it left it;
+ * - **hold:** return a promise of any of these; the response waits,
+ *   unwritten, until it settles.
+ */
+export type BeforeWriteHook = (
+  context: BeforeWriteContext,
+) => Response | void | PromiseLike<Response | void>;
+
+/** Whether `value` is a promise or another thenable. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+/** The error a hook's result that is neither a `Response` nor nothing becomes. */
+function badHookResult(kind: string, value: unknown): TypeError {
+  return new TypeError(
+    `A ${kind} hook must return a Response or nothing, or a promise of either; got ${typeof value}`,
+  );
+}
+
+/** Cancels `response`'s body, if it has one, ignoring a body already locked or cancelled. */
+function discardBody(response: Response): void {
+  response.body?.cancel().catch(() => undefined);
+}
+
+/**
+ * One check of one response by the before-write hooks: the context they
+ * share, whose {@link response} follows their replacements.
+ */
+class WriteCheck implements BeforeWriteContext {
+  constructor(
+    /** Which answer this is. */
+    readonly phase: BeforeWritePhase,
+    /** The native request being answered. */
+    readonly request: Request,
+    /** The request as the adapter read it, when it was. */
+    readonly req: BunRequest | undefined,
+    /** The response the handlers wrote to, in phase `"response"`. */
+    readonly res: BunResponse | undefined,
+    /** What was produced; replaced as hooks return replacements. */
+    public response: Response,
+    /** What was produced, kept to discard it on a refusal. */
+    readonly produced: Response = response,
+  ) {}
 }
 
 export class BunHttpAdapter<
@@ -541,6 +673,407 @@ export class BunHttpAdapter<
     nativeRequest: Request,
     server: BunServer<WebSocketClientData<customWebsocketDataType>>,
   ): Response | undefined | Promise<Response | undefined> {
+    const hooks = this.#beforeReadHooks;
+    return hooks === undefined
+      ? this.#readRequest(nativeRequest, server)
+      : this.#beforeRead(hooks, 0, nativeRequest, server);
+  }
+
+  /** The hooks {@link addBeforeReadHook} registered, in order; `undefined` while there are none. */
+  #beforeReadHooks: BeforeReadHook<customWebsocketDataType>[] | undefined =
+    undefined;
+  /** The hooks {@link addBeforeWriteHook} registered, in order; `undefined` while there are none. */
+  #beforeWriteHooks: BeforeWriteHook[] | undefined = undefined;
+
+  /**
+   * Registers a hook run first for every HTTP request, **before the adapter
+   * reads anything of it** — before its body is read, its cookies and query
+   * parsed, its `BunRequest` built and any route, middleware or throttle
+   * runs — so a refused request costs no parsing: a banned client, or a
+   * 10 MB body sent to a 1 KB route. It may let the request through, answer
+   * it (a refusal), close the connection with no answer, or hold it (a
+   * delay); see {@link BeforeReadHook}. WebSocket upgrade requests and
+   * socket-free {@link fetch} calls pass it too; WebSocket messages do not.
+   *
+   * The early stage bun-common gives a defence layer, where bun-nest has
+   * `registerSecurityHook`. Hooks run in registration order; the first to
+   * answer ends the request. An answer passes the before-write hooks in
+   * phase `"early"`. While the adapter's `requestTimeout` is set, a hook
+   * holding the request past it fails it with `Request Timedout`. A
+   * subclass overriding {@link handleNativeRequest} without calling `super`
+   * bypasses the hooks. With none registered the request path is unchanged:
+   * one field read. Returns a function that removes the hook.
+   *
+   * @example
+   * ```ts
+   * adapter.addBeforeReadHook((request, server) => {
+   *   if (banned.has(server.requestIP(request)?.address ?? "")) {
+   *     return new Response(null, { status: 403 });
+   *   }
+   * });
+   * ```
+   */
+  public addBeforeReadHook(
+    hook: BeforeReadHook<customWebsocketDataType>,
+  ): () => void {
+    // Copied on write: a request in flight keeps the list it started with.
+    this.#beforeReadHooks = [...(this.#beforeReadHooks ?? []), hook];
+    let removed = false;
+    return () => {
+      if (removed) {
+        return;
+      }
+      removed = true;
+      // This registration only: the same function added twice stays once.
+      const hooks = this.#beforeReadHooks ?? [];
+      const index = hooks.indexOf(hook);
+      if (index !== -1) {
+        const rest = hooks.filter((_, i) => i !== index);
+        this.#beforeReadHooks = rest.length ? rest : undefined;
+      }
+    };
+  }
+
+  /**
+   * Registers a hook that sees **every response the adapter answers an HTTP
+   * request with, before anything of it is written** — a route's, a
+   * not-found handler's, the adapter's own `404`, a stream as it opens, the
+   * error handling's, the payload guard's `413`, and a before-read hook's
+   * answer — and may change its headers, replace it or refuse it; see
+   * {@link BeforeWriteHook} and {@link BeforeWritePhase}. Where a response
+   * transform (`res.addResponseTransform`) sees only what a `BunResponse`
+   * produced, this sees what the adapter writes.
+   *
+   * - **When:** once the native `Response` exists and before it is handed
+   *   to `Bun.serve` (or resolved by {@link fetch}); Bun writes nothing
+   *   before that. A stream opened with `write()` or `sse()` is seen as it
+   *   opens, before its first byte; its chunks are not. A successful
+   *   WebSocket upgrade writes no response, so none is seen.
+   * - **`HEAD`:** seen as the response the route produced; Bun then drops
+   *   the body.
+   * - **Async:** a promise holds the response, unwritten, until it settles.
+   *   While the adapter's `requestTimeout` is set, a hold past it is
+   *   refused with `Request Timedout` (in phase `"response"`, answered as a
+   *   timed-out handler is).
+   *
+   * Hooks run in registration order, each seeing the response the one
+   * before it left; the first to refuse wins and the rest do not run. With
+   * none registered the response path is unchanged: one field read. An
+   * error `Bun.serve` reports without its request (one raised by a request
+   * that began before the first hook was added) is answered without the
+   * hooks. Returns a function that removes the hook.
+   *
+   * @example
+   * ```ts
+   * adapter.addBeforeWriteHook(({ response }) => {
+   *   response.headers.set("x-content-type-options", "nosniff");
+   * });
+   * ```
+   */
+  public addBeforeWriteHook(hook: BeforeWriteHook): () => void {
+    // Copied on write: a check in flight keeps the list it started with.
+    this.#beforeWriteHooks = [...(this.#beforeWriteHooks ?? []), hook];
+    let removed = false;
+    return () => {
+      if (removed) {
+        return;
+      }
+      removed = true;
+      // This registration only: the same function added twice stays once.
+      const hooks = this.#beforeWriteHooks ?? [];
+      const index = hooks.indexOf(hook);
+      if (index !== -1) {
+        const rest = hooks.filter((_, i) => i !== index);
+        this.#beforeWriteHooks = rest.length ? rest : undefined;
+      }
+    };
+  }
+
+  /**
+   * Runs the before-read hooks from `index`: the first answer (through the
+   * before-write hooks), or the request read and routed once every hook let
+   * it through. Synchronous while every hook is; a throw is a rejection.
+   */
+  #beforeRead(
+    hooks: BeforeReadHook<customWebsocketDataType>[],
+    index: number,
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Response | undefined | Promise<Response | undefined> {
+    for (let i = index; i < hooks.length; i++) {
+      let verdict: Response | void | PromiseLike<Response | void>;
+      try {
+        verdict = hooks[i](nativeRequest, server);
+      } catch (error) {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever the hook threw, unchanged, as a route's throw is
+        return Promise.reject(error);
+      }
+      if (verdict === undefined) {
+        continue;
+      }
+      if (verdict instanceof Response) {
+        return this.#answerEarly(nativeRequest, verdict);
+      }
+      if (isThenable(verdict)) {
+        return this.#withinRequestTimeout(
+          this.#holdBeforeRead(hooks, i, verdict, nativeRequest, server),
+        );
+      }
+      return Promise.reject(badHookResult("before-read", verdict));
+    }
+    return this.#readRequest(nativeRequest, server);
+  }
+
+  /**
+   * The rest of {@link #beforeRead} once hook `index` returned `verdict`, a
+   * promise: each later hook awaited in turn.
+   */
+  async #holdBeforeRead(
+    hooks: BeforeReadHook<customWebsocketDataType>[],
+    index: number,
+    verdict: PromiseLike<Response | void>,
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Promise<Response | undefined> {
+    for (let i = index; ;) {
+      const settled = await verdict;
+      if (settled instanceof Response) {
+        return this.#answerEarly(nativeRequest, settled);
+      }
+      if (settled !== undefined) {
+        throw badHookResult("before-read", settled);
+      }
+      i++;
+      if (i === hooks.length) {
+        return this.#readRequest(nativeRequest, server);
+      }
+      verdict = Promise.resolve(hooks[i](nativeRequest, server));
+    }
+  }
+
+  /** A before-read hook's answer, through the before-write hooks (phase `"early"`). */
+  #answerEarly(
+    nativeRequest: Request,
+    response: Response,
+  ): Response | Promise<Response> {
+    const hooks = this.#beforeWriteHooks;
+    return hooks === undefined
+      ? response
+      : this.#checkQuietly(
+          hooks,
+          new WriteCheck(
+            "early",
+            nativeRequest,
+            undefined,
+            undefined,
+            response,
+          ),
+        );
+  }
+
+  /**
+   * `promise`, failing with `Request Timedout` once the adapter's
+   * `requestTimeout` passes (unbounded while it is `0`).
+   */
+  #withinRequestTimeout<T>(promise: Promise<T>): Promise<T> {
+    const timeout = this.requestTimeout;
+    if (!(timeout > 0)) {
+      return promise;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(createRequestTimeoutError()), timeout);
+    });
+    return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+  }
+
+  /**
+   * Runs the before-write hooks from `index` over `check`: the response to
+   * write, synchronously while every hook is. A refusal is thrown, or
+   * rejected once a hook held.
+   */
+  #runBeforeWrite(
+    hooks: BeforeWriteHook[],
+    index: number,
+    check: WriteCheck,
+  ): Response | Promise<Response> {
+    for (let i = index; i < hooks.length; i++) {
+      const verdict = hooks[i](check);
+      if (verdict === undefined) {
+        continue;
+      }
+      if (verdict instanceof Response) {
+        check.response = verdict;
+        continue;
+      }
+      if (isThenable(verdict)) {
+        return this.#withinRequestTimeout(
+          this.#holdBeforeWrite(hooks, i, verdict, check),
+        );
+      }
+      throw badHookResult("before-write", verdict);
+    }
+    return check.response;
+  }
+
+  /**
+   * The rest of {@link #runBeforeWrite} once hook `index` returned
+   * `verdict`, a promise: each later hook awaited in turn.
+   */
+  async #holdBeforeWrite(
+    hooks: BeforeWriteHook[],
+    index: number,
+    verdict: PromiseLike<Response | void>,
+    check: WriteCheck,
+  ): Promise<Response> {
+    for (let i = index; ;) {
+      const settled = await verdict;
+      if (settled instanceof Response) {
+        check.response = settled;
+      } else if (settled !== undefined) {
+        throw badHookResult("before-write", settled);
+      }
+      i++;
+      if (i === hooks.length) {
+        return check.response;
+      }
+      verdict = Promise.resolve(hooks[i](check));
+    }
+  }
+
+  /**
+   * The before-write hooks over a response the error handling or a
+   * before-read hook produced (`check`): a refusal is logged and never
+   * applied, and the response goes out as the hooks before it left it.
+   */
+  #checkQuietly(
+    hooks: BeforeWriteHook[],
+    check: WriteCheck,
+  ): Response | Promise<Response> {
+    let result: Response | Promise<Response>;
+    try {
+      result = this.#runBeforeWrite(hooks, 0, check);
+    } catch (error) {
+      return this.#refusedQuietly(check, error);
+    }
+    return result instanceof Promise
+      ? result.catch((error: unknown) => this.#refusedQuietly(check, error))
+      : result;
+  }
+
+  /** Logs a refusal {@link #checkQuietly} does not apply; answers the response as it stands. */
+  #refusedQuietly(check: WriteCheck, error: unknown): Response {
+    this.logger.error(
+      `A before-write hook refused a response in phase "${check.phase}"; it is sent as it stood`,
+      { error, status: check.response.status },
+    );
+    return check.response;
+  }
+
+  /**
+   * The before-write hooks over what the pipeline produced for `res`
+   * (phase `"response"`): a native response, a promise of one, or
+   * `undefined` (a WebSocket upgrade, which writes none).
+   */
+  #checkProduced(
+    res: BunResponse,
+    produced: Response | undefined | Promise<Response | undefined>,
+  ): Response | undefined | Promise<Response | undefined> {
+    if (produced === undefined) {
+      return undefined;
+    }
+    if (produced instanceof Response) {
+      return this.#checkResponse(res, produced);
+    }
+    return produced.then((native) =>
+      native === undefined ? undefined : this.#checkResponse(res, native),
+    );
+  }
+
+  /**
+   * Runs the before-write hooks on `native`, `res`'s response: the response
+   * to write when they pass (synchronously while every hook does), a
+   * rejection carrying the request when one refuses. Never throws, so a
+   * stream opening inside `write()` cannot be broken by it.
+   */
+  #checkResponse(
+    res: BunResponse,
+    native: Response,
+  ): Response | Promise<Response> {
+    const hooks = this.#beforeWriteHooks;
+    if (hooks === undefined) {
+      return native;
+    }
+    const req = res.req;
+    const check = new WriteCheck("response", req.request, req, res, native);
+    let result: Response | Promise<Response>;
+    try {
+      result = this.#runBeforeWrite(hooks, 0, check);
+    } catch (error) {
+      return this.#refuse(check, req, error);
+    }
+    return result instanceof Promise
+      ? result.catch((error: unknown) => this.#refuse(check, req, error))
+      : result;
+  }
+
+  /**
+   * Discards a refused response — its body (and a replacement's) cancelled,
+   * an open stream destroyed — and rejects with `error` for the error
+   * handling: with the request, unless it is a hold's timeout, which is
+   * answered as a timed-out handler is, without it.
+   */
+  #refuse(check: WriteCheck, req: BunRequest, error: unknown): Promise<never> {
+    // The stream first, so the handler writing to it finds it destroyed
+    // (cancelling its body first would end it as a client leaving does).
+    if (check.res?.isStreamOpen) {
+      check.res.destroy();
+    }
+    discardBody(check.produced);
+    if (check.response !== check.produced) {
+      discardBody(check.response);
+    }
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever the hook threw, unchanged, so the error handlers see the hook's own value
+    return Promise.reject(carryRequest(error, req));
+  }
+
+  /**
+   * The adapter's final error handling ({@link handleRequestError}), then
+   * the before-write hooks in phase `"error"`, whose refusals are logged and
+   * never applied: what `Bun.serve`'s `error` callback and {@link fetch}
+   * answer an error with. `nativeRequest` is the request it was raised for,
+   * when known; without it (and without a `BunRequest` riding on the error)
+   * the hooks do not run.
+   */
+  async #answerError(
+    error: unknown,
+    nativeRequest: Request | undefined,
+  ): Promise<Response> {
+    const response = await this.handleRequestError(error);
+    const hooks = this.#beforeWriteHooks;
+    if (hooks === undefined) {
+      return response;
+    }
+    const req = get(error, "req", undefined) as BunRequest | undefined;
+    const request = nativeRequest ?? req?.request;
+    if (request === undefined) {
+      return response;
+    }
+    return this.#checkQuietly(
+      hooks,
+      new WriteCheck("error", request, req, undefined, response),
+    );
+  }
+
+  /**
+   * Builds the request (reading what the options say to) and runs it
+   * through the payload guard and the router: the adapter's pipeline after
+   * the before-read hooks. Never throws; an error is a rejection.
+   */
+  #readRequest(
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Response | undefined | Promise<Response | undefined> {
     try {
       // `BunRequest.init` returns the instance synchronously when nothing is
       // left to read (no body, see BunRequest). Branching rather than
@@ -567,7 +1100,14 @@ export class BunHttpAdapter<
     // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
     // rejected with 413 before any route handler or middleware runs.
     if (req.isPayloadTooLarge) {
-      return BunRequest.payloadTooLargeResponse(req);
+      const refused = BunRequest.payloadTooLargeResponse(req);
+      const hooks = this.#beforeWriteHooks;
+      return hooks === undefined
+        ? refused
+        : this.#checkQuietly(
+            hooks,
+            new WriteCheck("error", nativeRequest, req, undefined, refused),
+          );
     }
 
     // A body refused for its `Content-Encoding` while the request was built
@@ -612,9 +1152,14 @@ export class BunHttpAdapter<
       throw carryRequest(error, req);
     }
     return routed.then(
-      (outcome) =>
-        outcome.stream ??
-        this.#respond(req, res, outcome.routeUsed, nativeRequest, server),
+      (outcome) => {
+        const produced =
+          outcome.stream ??
+          this.#respond(req, res, outcome.routeUsed, nativeRequest, server);
+        return this.#beforeWriteHooks === undefined
+          ? produced
+          : this.#checkProduced(res, produced);
+      },
       (error: unknown) => {
         throw carryRequest(error, req);
       },
@@ -630,15 +1175,23 @@ export class BunHttpAdapter<
   readonly #serveHooks: ServeHooks<Response | undefined> = {
     respond: (options, routeUsed) => {
       const req = options.request;
-      return this.#respond(
+      const produced = this.#respond(
         req,
         options.response as BunResponse<customWebsocketDataType>,
         routeUsed,
         req.request,
         req.server as BunServer<WebSocketClientData<customWebsocketDataType>>,
       );
+      return this.#beforeWriteHooks === undefined
+        ? produced
+        : this.#checkProduced(options.response, produced);
     },
-    stream: (_options, stream) => stream,
+    // A promise (a held or refused check) settles the request as the router
+    // resolves its result with it; never a throw, inside `write()`.
+    stream: (options, stream) =>
+      this.#beforeWriteHooks === undefined
+        ? stream
+        : this.#checkResponse(options.response, stream),
     error: (options, error) => carryRequest(error, options.request),
     lateError: (_options, error) => {
       this.logger.error("Error after a streamed response started", {
@@ -804,7 +1357,7 @@ export class BunHttpAdapter<
       }
       return exchange.deliver(
         toFetchResponse(
-          await this.handleRequestError(error),
+          await this.#answerError(error, nativeRequest),
           nativeRequest.method,
         ),
       );
@@ -1675,14 +2228,23 @@ export class BunHttpAdapter<
         // promise again.
         fetch(nativeRequest: Request, server) {
           // The synchronous path, unless a subclass replaced the handler.
-          return that.handleNativeRequest ===
+          const handled =
+            that.handleNativeRequest ===
             BunHttpAdapter.prototype.handleNativeRequest
-            ? that.serveNativeRequest(nativeRequest, server)
-            : that.handleNativeRequest(nativeRequest, server);
+              ? that.serveNativeRequest(nativeRequest, server)
+              : that.handleNativeRequest(nativeRequest, server);
+          // With before-write hooks, an error is answered here, where its
+          // request is known, so the hooks see the answer (phase "error").
+          return that.#beforeWriteHooks !== undefined &&
+            handled instanceof Promise
+            ? handled.catch((error: unknown) =>
+                that.#answerError(error, nativeRequest),
+              )
+            : handled;
         },
         websocket: this.buildServerWebSocketHandler(),
         error(err) {
-          return that.handleRequestError(err);
+          return that.#answerError(err, undefined);
         },
       });
     } catch (error) {

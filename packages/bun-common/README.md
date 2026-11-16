@@ -38,6 +38,7 @@ the package's source.
     - [Listening and closing](#listening-and-closing)
     - [`bun --hot`](#bun---hot)
     - [Not-found and error handlers](#not-found-and-error-handlers)
+    - [Before-read and before-write hooks](#before-read-and-before-write-hooks)
     - [Testing without a socket](#testing-without-a-socket)
     - [Adapter helpers](#adapter-helpers)
   - [BunRequest](#bunrequest)
@@ -679,14 +680,18 @@ Examples:
 owns a `Bun.serve` server. Each request goes through one method,
 `handleNativeRequest`, which does the following in order:
 
-1. builds the `BunRequest`;
-2. applies the payload guard (413) and the body-decoding check (415 or 400) to
+1. runs the [before-read hooks](#before-read-and-before-write-hooks), which
+   may answer the request before anything of it is read;
+2. builds the `BunRequest`;
+3. applies the payload guard (413) and the body-decoding check (415 or 400) to
    a body read while the request was built (see
    [how the body is read](#body-decoding) for an empty one);
-3. runs the router;
-4. runs the not-found handlers;
-5. performs any WebSocket upgrade;
-6. finalises the response.
+4. runs the router;
+5. runs the not-found handlers;
+6. performs any WebSocket upgrade;
+7. finalises the response, which the
+   [before-write hooks](#before-read-and-before-write-hooks) see before it is
+   written.
 
 #### Adapter options
 
@@ -878,6 +883,78 @@ builds that response:
   (On a plain object thrown in place of an `Error`, Bun's `console` still
   prints it: [docs/bun-bugs](https://github.com/kingsloob1/bun-node/blob/develop/docs/bun-bugs/inspect-shows-non-enumerable-properties.md).)
 
+#### Before-read and before-write hooks
+
+Two adapter-wide hooks bracket every HTTP request, for a defence layer
+(`@kingsleyweb/bun-security` installs itself through them) or anything else
+that must see every request and every response. Each `add…` returns a
+function that removes the hook; with none registered, the request path is
+unchanged.
+
+**`adapter.addBeforeReadHook((request, server) => …)`** runs first, as
+`Bun.serve` hands the request over, before the adapter reads anything of it:
+no body read, no cookie or query parsed, no `BunRequest` built, no route,
+middleware or throttle run. So a refused request costs no parsing.
+
+```ts
+const banned = new Set(["203.0.113.9"]);
+adapter.addBeforeReadHook((request, server) => {
+  if (banned.has(server.requestIP(request)?.address ?? "")) {
+    return new Response(null, { status: 403 });
+  }
+});
+```
+
+- Return nothing to let the request through; the next hook runs, then the
+  adapter reads and routes it.
+- Return a `Response` to answer. The body is never read, and nothing after
+  the hook runs. Bun answers before the body has even arrived, and keeps the
+  connection serving the next request.
+- Return a `Response` whose body errors before its first byte to close the
+  connection with no answer at all (a drop).
+- Return a promise of either to hold the request, unread (a delay). While
+  the adapter's `requestTimeout` is set, a hold past it fails with
+  `Request Timedout`.
+- A throw or rejection is answered by `finalErrorResponse` (its 4xx or 5xx
+  `status`, else `500`); the `setErrorHandler` handlers do not run, since
+  there is no `BunRequest` yet.
+
+WebSocket upgrade requests and socket-free `fetch()` calls pass the hook too
+(`server.requestIP()` reports `fetch()`'s `remoteAddress`). The route stage
+sees the same `Request` object at `req.request`, so a `WeakMap` keyed by it
+carries what the hook learned to a middleware.
+
+**`adapter.addBeforeWriteHook((context) => …)`** sees every response the
+adapter answers a request with, before anything of it is written: a route's,
+a not-found handler's, the adapter's own `404`, a stream as it opens (not its
+chunks), the error handling's, the payload guard's `413`, and a before-read
+hook's answer. `context.phase` says which:
+
+| `phase` | The response | `req` / `res` | A throw or rejection |
+|---|---|---|---|
+| `"early"` | a before-read hook's answer | `undefined` / `undefined` | logged; the response is sent as it stood |
+| `"response"` | the request's own handlers' (route, middleware, not-found handler, the bare `404`, a stream) | the `BunRequest` / its `BunResponse` | refuses it: the body is cancelled, an open stream destroyed, and the error goes to the `setErrorHandler` handlers with the request |
+| `"error"` | the error handling's, or the `413` | the `BunRequest` when one was built / `undefined` | logged; the response is sent as it stood |
+
+`context.request` is the `Request` as received and `context.response` the
+native `Response` about to be written. A hook may change its headers in
+place (Bun writes the change, `Response.redirect`'s included), return a new
+`Response` to replace it (later hooks see the replacement), or return a
+promise to hold it unwritten (refused with `Request Timedout` past the
+adapter's `requestTimeout`). A successful WebSocket upgrade writes no
+response, so none is seen.
+
+```ts
+adapter.addBeforeWriteHook(({ response }) => {
+  response.headers.set("x-content-type-options", "nosniff");
+});
+```
+
+Where a response transform (`res.addResponseTransform`) sees what one
+`BunResponse` produced, a before-write hook sees what the adapter writes,
+including answers no `BunResponse` built. A subclass overriding
+`handleNativeRequest` without calling `super` bypasses both hooks.
+
 #### Testing without a socket
 
 `router.fetch()` and `adapter.fetch()` run a request through the real pipeline
@@ -1023,6 +1100,7 @@ Examples:
 | `setTimeout(ms, callback)` | Sets `requestTimeout` and calls back with the server once it is listening. |
 | `setInstance(router)` | Routes requests through another `BunRouter`. Register routes on the new instance afterwards. |
 | `setLogger(logger)` | Replaces the logger. |
+| `addBeforeReadHook(hook)`, `addBeforeWriteHook(hook)` | Hooks before the request is read and before each response is written; see [Before-read and before-write hooks](#before-read-and-before-write-hooks). Each returns its remover. |
 
 Either parser passes a request with no body (`req.hasBody` false) on
 synchronously, before its type, encoding or size, as body-parser's `read()`

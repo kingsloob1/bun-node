@@ -1061,9 +1061,11 @@ export interface ServeHooks<R> {
   ) => R | Promise<R>;
   /**
    * The result the moment the response opens a stream, the pipeline still
-   * running behind it (a stream's headers must go out before it ends).
+   * running behind it (a stream's headers must go out before it ends). A
+   * promise (a check that holds the stream, or refuses it) settles the
+   * request's result with it.
    */
-  stream: (options: PipelineOptions, stream: Response) => R;
+  stream: (options: PipelineOptions, stream: Response) => R | Promise<R>;
   /** The error to throw or reject with for the pipeline's unhandled `error`. */
   error: (options: PipelineOptions, error: unknown) => unknown;
   /** An unhandled error after a stream already settled the result. */
