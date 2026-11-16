@@ -71,7 +71,7 @@ bun add mongodb            # only if you use mongoDriver()
 
 | Import | What it holds |
 |---|---|
-| `@kingsleyweb/bun-cache` | `createCache`, every driver, `redundant`, `fromSimpleDriver`, `redisBus` and `pgBus`, the error classes and the types |
+| `@kingsleyweb/bun-cache` | `createCache`, every driver, `redundant`, `fromSimpleDriver`, `redisBus` and `pgBus`, `cacheBusOf`, the error classes and the types |
 | `@kingsleyweb/bun-cache/http` | `cacheResponse`, `coalesceRequests`, `addCacheTags` ([HTTP response caching](#http-response-caching)) |
 | `@kingsleyweb/bun-cache/keyv` | `toKeyvStore` ([Keyv](#keyv-and-nestjscache-manager)) |
 | `@kingsleyweb/bun-cache/throttle` | `cacheThrottleStore` ([Throttling](#throttling)) |
@@ -1146,6 +1146,30 @@ writer needs `bus: "auto"` (or one of its own).
 
 - **A cache skips its own messages**: each message carries its publisher's
   `origin`, an id per `createCache` call.
+- **A library reaches the cache's bus with `cacheBusOf(cache)`**, to announce
+  changes of its own to other processes ("the bans changed, read the log")
+  on the bus the cache already uses, without asking the application for it a
+  second time. It answers the bus the cache linked (the `bus` option's, or
+  the driver's under `"auto"`), else the driver's own when the cache has no
+  `l1` and no `bus` option, and `undefined` under `bus: false`, for a driver
+  with no bus and for a `Cache` that `createCache` did not make. Every view
+  of a cache answers the same object; its `close()` does nothing, since the
+  bus is the cache's. Every cache on the bus acts on what a library
+  publishes, so give its messages a namespace of their own (an invalidation
+  there changes no L1) and one of the four `BusMessage` types: a cache reads
+  any other `type` as "anything changed" and flushes its whole L1.
+
+  ```ts
+  import { cacheBusOf, createCache, redisDriver } from "@kingsleyweb/bun-cache";
+
+  const cache = createCache({ driver: redisDriver({ url }), l1: true });
+  const bus = cacheBusOf(cache);
+  await bus?.publish({ type: "set", namespace: "bans", keys: ["log"], at: Date.now() });
+  const stop = await bus?.subscribe(
+    (message) => { if (message.namespace === "bans") rereadLog(); },
+    () => rereadLog(), // a gap: messages may have been missed
+  );
+  ```
 - **Gaps flush.** Whenever messages may have been lost — a reconnect (Redis,
   Postgres), rows pruned before a polled subscriber read them, a truncated
   log — the whole L1 is flushed: what was missed is unknowable, and L1 is

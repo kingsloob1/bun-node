@@ -16,7 +16,7 @@
  * });
  * ```
  */
-export { createCache } from "./core/cache";
+export { cacheBusOf, createCache } from "./core/cache";
 export {
   CacheDecryptError,
   CacheDriverError,

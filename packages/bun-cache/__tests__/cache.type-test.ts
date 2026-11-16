@@ -341,3 +341,19 @@ type _DriverPfAdd = Expect<
     ) => Promise<boolean>
   >
 >;
+
+// cacheBusOf (bun-node#804): the cache's bus, or undefined; a namespace view
+// and any schema take it.
+type _CacheBusOf = Expect<
+  Equal<
+    ReturnType<typeof import("../lib/index").cacheBusOf>,
+    import("../lib/index").CacheBus | undefined
+  >
+>;
+void (async () => {
+  const { cacheBusOf } = await import("../lib/index");
+  const bus = cacheBusOf(cache.namespace("tenant"));
+  await bus?.publish({ type: "set", namespace: "bans", keys: ["log"], at: 0 });
+  // @ts-expect-error -- a hand-made object is not a Cache
+  cacheBusOf({ name: "nope" });
+})();
