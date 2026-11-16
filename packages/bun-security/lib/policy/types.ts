@@ -172,10 +172,24 @@ export interface InternalListPolicy {
  * address key (`ip`: IPv4 as itself, IPv6 by `keys.ipv6Prefix`), an id from
  * `identify()` (`user`, `session`, `tenant`, `apiKey`), or the route
  * (`route`: the matched route, `"POST /login"`, or the method and path
- * before routing). A request missing a part is not counted under that key.
+ * before routing), or a sensitive endpoint's parts (layers.md L11): the
+ * attempted login identifier (`username`), where a code or link is sent
+ * (`destination`) and its prefix (`destinationPrefix`: a phone number's
+ * country and area code, an email's domain), all three keyed by their HMAC,
+ * never stored in clear; and the signed device cookie's id (`device`). A
+ * request missing a part is not counted under that key.
  */
 export type SubjectKeyPart =
-  "ip" | "user" | "session" | "tenant" | "apiKey" | "route";
+  | "ip"
+  | "user"
+  | "session"
+  | "tenant"
+  | "apiKey"
+  | "route"
+  | "username"
+  | "destination"
+  | "destinationPrefix"
+  | "device";
 
 /**
  * How a limit counts (the throttle foundation's algorithms):
@@ -272,6 +286,12 @@ export interface LimitRule {
    * `state.onStoreError`, else `"local"`. Ignored for a `local` limit.
    */
   readonly onStoreError?: StoreErrorMode;
+  /**
+   * Only requests of routes with this profile count (`securityProfile("login")`
+   * in `./http`, `@SecurityProfile("login")` in bun-nest): the sensitive
+   * endpoints' limits (layers.md L11). Every route when absent.
+   */
+  readonly profile?: string;
 }
 
 /** What a tripped counted rule does to its key (layers.md §0.2). */
@@ -349,6 +369,136 @@ export interface CountedRule {
    * else `"local"`.
    */
   readonly onStoreError?: "local" | "open";
+  /** Only occurrences on routes with this profile count. Every route when absent. */
+  readonly profile?: string;
+}
+
+/**
+ * The login profile's account defences (layers.md L11.2 to L11.4, L11.8),
+ * on routes marked `login`. Its request limits and counted rules are the
+ * `login.*` presets.
+ */
+export interface LoginProfilePolicy {
+  /**
+   * Failures per attempted username (per username and device for a request
+   * with a valid device cookie), in a window from the first: after
+   * `delayAfter` each attempt waits 1 s, then 2 s, 4 s… up to `maxDelay`;
+   * at `challengeAfter` a challenge (through `createSecurity`'s challenge
+   * flow; a `429` without one); at `lockAfter` a soft lock for `lockFor`,
+   * refusing (`429`) that username from any device without a valid device
+   * cookie for it, challenge or not.
+   */
+  readonly failures?: {
+    /** The window, its unit written. Default `"15m"`. */
+    readonly window?: Duration;
+    /** Failures before the delay starts. Default `5`. */
+    readonly delayAfter?: number;
+    /** Failures before the challenge. Default `10`. */
+    readonly challengeAfter?: number;
+    /** Failures before the soft lock. Default `20`. */
+    readonly lockAfter?: number;
+    /** How long a soft lock lasts. Default `"15m"`. */
+    readonly lockFor?: Duration;
+    /** The longest delay. Default `"2s"` (layers.md §0.1's bound). */
+    readonly maxDelay?: Duration;
+  };
+  /**
+   * Distinct usernames failing from one address in a window (credential
+   * stuffing: one source, many accounts): a challenge at `challengeAt`, a
+   * ban for `banFor` at `banAt`. `false` for none.
+   */
+  readonly distinctUsernames?:
+    | {
+        /** The window. Default `"1h"`. */
+        readonly window?: Duration;
+        /** Default `10`. */
+        readonly challengeAt?: number;
+        /** Default `30`. */
+        readonly banAt?: number;
+        /** Default `"1h"`. */
+        readonly banFor?: Duration;
+      }
+    | false;
+  /**
+   * Distinct addresses failing for one username in a window (a spray at
+   * one account): at `stepUpAt` the account's requests are tagged
+   * `step-up`, for the app to require a second factor. `false` for none.
+   */
+  readonly distinctAddresses?:
+    | {
+        /** The window. Default `"1h"`. */
+        readonly window?: Duration;
+        /** Default `10`. */
+        readonly stepUpAt?: number;
+      }
+    | false;
+  /**
+   * A success from an address with at least this many failures in the
+   * failures window is tagged `risky-success` and warned of (a hit in a
+   * stuffing run). `false` for none. Default `10`.
+   */
+  readonly riskySuccessAfter?: number | false;
+  /**
+   * The device cookie (layers.md L11.4): signed, issued on a success, its
+   * holder's failures kept apart from everyone else's. `false` for none.
+   */
+  readonly device?:
+    | {
+        /** The cookie's name. Default `"__Host-bun-security-device"`. */
+        readonly cookie?: string;
+        /** How long it is good for. Default `"365d"`. */
+        readonly maxAge?: Duration;
+      }
+    | false;
+  /**
+   * Infer `auth.failure` (a `401` or `403`) and `auth.success` (a `2xx`)
+   * from the answer when the app signalled neither for the request. Default `true`.
+   */
+  readonly inferOutcome?: boolean;
+  /** The profile's mode: in `dryRun` delays, challenges and locks are recorded only. Default `"enforce"`. */
+  readonly mode?: SecurityMode;
+}
+
+/** The sensitive endpoints' settings (layers.md L11). */
+export interface ProfilesPolicy {
+  /** The login profile's account defences, or `false` for none. On by default. */
+  readonly login?: LoginProfilePolicy | false;
+}
+
+/** What an identifier pattern matches (layers.md L11.7). */
+export type IdentifierKind = "email" | "phone" | "username" | "domain";
+
+/**
+ * An identifier pattern (layers.md L11.7, ConcaveHR's email patterns): `*`
+ * any run, `?` one character, matched whole and without case, with at
+ * least 4 literal characters (`*@*` is refused).
+ */
+export interface IdentifierPattern {
+  /** A stable id, for counts and `explain()`. Default `<kind>:<pattern>`. */
+  readonly id?: string;
+  /** What it matches. */
+  readonly kind: IdentifierKind;
+  /** The pattern (`*@disposable.example`). */
+  readonly pattern: string;
+  /** Why, for operators. */
+  readonly reason?: string;
+  /** In `dryRun` a match is recorded and not refused. Default `"enforce"`. */
+  readonly mode?: SecurityMode;
+}
+
+/** Identifier checks where data is created (layers.md L11.7, `security.check()`). */
+export interface IdentifierPolicy {
+  /** The operator's patterns. */
+  readonly patterns?: readonly IdentifierPattern[];
+  /**
+   * Refuse email addresses and domains under reserved names (`example.*`,
+   * `.test`, `.invalid`, `.localhost`, `.example`, `localhost`). Default `true`.
+   */
+  readonly reserved?: boolean;
+  /** The operator's own domains, refused as a self-chosen address (`["example.com"]`). */
+  readonly ownDomains?: readonly string[];
+  /** The refusal's problem code. Default `"invalid_identifier"`. */
+  readonly code?: string;
 }
 
 /**
@@ -679,4 +829,14 @@ export interface SecurityPolicy {
   readonly messages?: MessagePolicy;
   /** Bot and automation signals (layers.md L10.1): off unless set. */
   readonly botSignals?: BotSignalsPolicy;
+  /**
+   * The built-in rules by id (`per-ip`, `login.account`, …): `true` turns
+   * one on, `false` off. A limit or counted rule of the policy with a
+   * preset's id replaces it. See `PRESETS`.
+   */
+  readonly presets?: Readonly<Record<string, boolean>>;
+  /** The sensitive endpoints' account defences (layers.md L11). */
+  readonly profiles?: ProfilesPolicy;
+  /** Identifier patterns, checked by `security.check()` (layers.md L11.7). */
+  readonly identifiers?: IdentifierPolicy;
 }

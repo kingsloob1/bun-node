@@ -29,6 +29,7 @@ interface Config {
   readonly prefix: string;
   readonly policy: SecurityPolicy;
   readonly store: CacheStoreOptions;
+  readonly secret?: string;
 }
 
 /** A request from the test. */
@@ -36,6 +37,13 @@ type Request =
   | { id: number; op: "evaluate"; client: string; path?: string }
   | { id: number; op: "ban"; ip: string }
   | { id: number; op: "unban"; ban: string }
+  | {
+      id: number;
+      op: "login";
+      username: string;
+      client: string;
+      outcome: "failure" | "success" | "none";
+    }
   | { id: number; op: "bans" | "status" | "flush" | "close" };
 
 const config = JSON.parse(process.argv[2] ?? "{}") as Config;
@@ -54,6 +62,7 @@ const store = cacheStore(createCache({ driver, logger: quiet }), {
   logger: quiet,
 });
 const security = createSecurity({
+  secret: config.secret ?? "the-multi-process-secret-of-32-bytes!",
   policy: config.policy,
   store,
   logger: quiet,
@@ -73,6 +82,27 @@ process.on("message", (message: Request) => {
           rules: decision.hits.map((h) => h.rule),
         };
       }
+      case "login": {
+        const request = facts({
+          client: message.client,
+          method: "POST",
+          path: "/login",
+          rawPath: "/login",
+          routeKey: "POST /login",
+          profile: "login",
+          identity: { username: message.username },
+        });
+        const decision = await security.evaluate(request);
+        const hits =
+          message.outcome === "none"
+            ? []
+            : await security.signal(request, `auth.${message.outcome}`);
+        return {
+          action: decision.action,
+          tags: decision.tags,
+          hits: hits.map((hit) => `${hit.rule}:${hit.action}`),
+        };
+      }
       case "ban":
         security.ban({ ip: message.ip, reason: "multiprocess" });
         await security.flush();
@@ -86,6 +116,10 @@ process.on("message", (message: Request) => {
           bans: security
             .bans()
             .map((ban) => ban.id)
+            .sort(),
+          actions: security
+            .bans()
+            .map((ban) => `${ban.id}:${ban.action}`)
             .sort(),
         };
       case "status":

@@ -4,6 +4,7 @@
  * routed) and a route stage (the matched route and the caller known), each
  * limit and counted rule counted in exactly one of them.
  */
+import { PRESETS } from "../../lib/policy/presets";
 import { describe, expect, it } from "bun:test";
 import { createSecurity } from "../../lib/index";
 import type {
@@ -80,7 +81,9 @@ describe("stageOf: which stage counts a rule", () => {
     );
     expect(
       Object.fromEntries(
-        internals.limits.map((limit) => [limit.id, stageOf(limit)]),
+        internals.limits
+          .filter((limit) => !Object.hasOwn(PRESETS, limit.id))
+          .map((limit) => [limit.id, stageOf(limit)]),
       ),
     ).toEqual({
       ip: "early",
@@ -91,10 +94,11 @@ describe("stageOf: which stage counts a rule", () => {
       "per-route": "route",
       param: "route",
     });
-    expect(internals.countedRules.map((rule) => stageOf(rule))).toEqual([
-      "early",
-      "route",
-    ]);
+    expect(
+      internals.countedRules
+        .filter((rule) => !Object.hasOwn(PRESETS, rule.id))
+        .map((rule) => stageOf(rule)),
+    ).toEqual(["early", "route"]);
   });
 });
 

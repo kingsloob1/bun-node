@@ -525,6 +525,8 @@ export class SecurityService {
             }
           : {}),
         ...(identity === undefined ? {} : { identity }),
+        // The route's profile names a sensitive endpoint (layers.md L11).
+        ...(profile === undefined ? {} : { profile: profile.name }),
       };
       state.routeFacts = facts;
       decision = await this.security.evaluate(

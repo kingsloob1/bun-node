@@ -22,6 +22,8 @@ export interface RequestRoute {
   readonly routePath: string | undefined;
   /** The `route` key part: the matched route (`"POST /login"`), or the method and normalised path. */
   readonly key: string;
+  /** The matched route's profile (`login`), when it has one. */
+  readonly profile: string | undefined;
 }
 
 /** The route of a request's facts. */
@@ -39,6 +41,7 @@ export function requestRoute(facts: RequestFacts): RequestRoute {
     path,
     routePath,
     key: facts.routeKey ?? `${facts.method} ${path}`,
+    profile: facts.profile,
   };
 }
 
@@ -51,6 +54,14 @@ export function appliesTo(
     patterns === undefined ||
     routeMatches(patterns, route.method, route.path, route.routePath)
   );
+}
+
+/** Whether a rule scoped to `profile` (every request when undefined) applies to `route`. */
+export function inProfile(
+  profile: string | undefined,
+  route: RequestRoute,
+): boolean {
+  return profile === undefined || profile === route.profile;
 }
 
 /** One part escaped: `%` and `|` percent-encoded, so `|` only ever separates parts. */

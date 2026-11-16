@@ -18,6 +18,7 @@ import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import { validateRequestRules } from "../rules/schema";
 import { validateBotSignals } from "../engine/signals";
+import { validateSensitive } from "./sensitiveSchema";
 import { POLICY_NEWER } from "./errors";
 import type { PolicyIssue } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
@@ -81,6 +82,10 @@ const KEY_PARTS: ReadonlySet<SubjectKeyPart> = new Set([
   "tenant",
   "apiKey",
   "route",
+  "username",
+  "destination",
+  "destinationPrefix",
+  "device",
 ]);
 /** The limit algorithms. */
 const ALGORITHMS = new Set(["sliding-window", "fixed-window", "gcra"]);
@@ -613,7 +618,23 @@ const LIMIT_KEYS = [
   "code",
   "state",
   "onStoreError",
+  "profile",
 ];
+
+/** Checks a rule's `profile`: a profile name (`securityProfile()`'s grammar). */
+function checkProfile(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  optionalString(
+    issues,
+    path,
+    value,
+    /^[a-z][\w.-]{0,63}$/i,
+    "a profile name (a letter, then letters, digits, _, . and -, at most 64)",
+  );
+}
 
 /** Checks one limit. */
 function checkLimit(
@@ -625,6 +646,7 @@ function checkLimit(
 ): void {
   if (!checkObject(issues, path, value, LIMIT_KEYS)) return;
   checkRuleId(issues, path, value.id, ids, index, "limits");
+  checkProfile(issues, [...path, "profile"], value.profile);
   positiveInteger(issues, [...path, "limit"], value.limit);
   checkWindow(issues, path, value);
   checkKey(issues, [...path, "key"], value.key);
@@ -689,6 +711,7 @@ const COUNTED_KEYS = [
   "weight",
   "state",
   "onStoreError",
+  "profile",
 ];
 
 /** Checks one counted rule. */
@@ -701,6 +724,7 @@ function checkCountedRule(
 ): void {
   if (!checkObject(issues, path, value, COUNTED_KEYS)) return;
   checkRuleId(issues, path, value.id, ids, index, "countedRules");
+  checkProfile(issues, [...path, "profile"], value.profile);
   if (typeof value.event !== "string" || !EVENT_RE.test(value.event)) {
     issues.add(
       [...path, "event"],
@@ -1336,6 +1360,9 @@ const POLICY_KEYS = [
   "state",
   "messages",
   "botSignals",
+  "presets",
+  "profiles",
+  "identifiers",
 ];
 
 /**
@@ -1607,6 +1634,9 @@ export function validatePolicy(
     issues.add(issue.path, issue.message);
   }
   for (const issue of validateBotSignals(input.botSignals)) {
+    issues.add(issue.path, issue.message);
+  }
+  for (const issue of validateSensitive(input)) {
     issues.add(issue.path, issue.message);
   }
   return issues.list;

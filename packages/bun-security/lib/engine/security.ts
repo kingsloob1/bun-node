@@ -95,7 +95,7 @@ import type {
 import type { RequestFacts, SecurityIdentity } from "./facts";
 import { boundKey, resolveClient } from "./identity";
 import type { ResolvedClient } from "./identity";
-import { appliesTo, keyOf, requestRoute } from "./keys";
+import { appliesTo, inProfile, keyOf, requestRoute } from "./keys";
 import type { RequestRoute } from "./keys";
 import { Limiter } from "./limits";
 import type { LimitCount, LimitSet } from "./limits";
@@ -113,6 +113,17 @@ import { DEFAULT_MAX_KEYS, EvictionMonitor } from "./state";
 import { botSignalsOf, readSignals } from "./signals";
 import type { ChallengeFlow } from "../challenge/flow";
 import { TrustMonitor } from "./trust";
+import { DistinctCounts } from "./distinct";
+import { sensitiveOf } from "../sensitive/compile";
+import {
+  IDENTIFIER_MESSAGE,
+  matchIdentifier,
+  PASSWORD_MESSAGE,
+} from "../sensitive/identifiers";
+import type { CheckKind } from "../sensitive/identifiers";
+import { cookieValue, Keyring } from "../sensitive/keys";
+import { LoginDefences } from "../sensitive/login";
+import { SecurityRefusal } from "../sensitive/refusal";
 import type { SecurityWarning, TrustStatus } from "./trust";
 
 /** Options for {@link createSecurity}. */
@@ -179,6 +190,30 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * `block`.
    */
   readonly challenge?: ChallengeFlow;
+  /**
+   * The secret the sensitive endpoints key with (layers.md L2.3, L11.4): an
+   * attempted username's and a destination's HMAC, the device cookie's
+   * signature. At least 32 bytes. Required with a shared store (`store`),
+   * the same in every process sharing it: `createSecurity` throws a
+   * `ConfigError` without one. Without a store, a random one of this
+   * process's own (device cookies then last as long as the process).
+   */
+  readonly secret?: string | Uint8Array;
+  /**
+   * Whether a password is known breached (layers.md L11, OWASP's advice):
+   * `check(facts, "password", password)` refuses one it answers `true`
+   * for. Called with the password, which it must not log or keep; its
+   * errors are logged and the password accepted. Default: none.
+   */
+  readonly breachedPassword?: (password: string) => boolean | Promise<boolean>;
+}
+
+/** What `signal()` can be told beside the event (layers.md L11.1). */
+export interface SignalData {
+  /** The attempted login identifier, when the facts' identity lacks it. */
+  readonly username?: string;
+  /** Where a code or link was sent, when the facts' identity lacks it. */
+  readonly destination?: string;
 }
 
 /** Options for {@link Security.evaluate}. */
@@ -330,7 +365,31 @@ export interface Security<TRequest = Request> {
   signal: (
     facts: RequestFacts,
     event: string,
+    data?: SignalData,
   ) => readonly RuleHit[] | Promise<readonly RuleHit[]>;
+  /**
+   * Refuses an identifier or a password where data is created (layers.md
+   * L11.7, D24): an email, phone number, username or domain matching an
+   * operator's pattern or the built-in policy for self-chosen addresses, or
+   * a password the `breachedPassword` hook says is breached. Throws (or
+   * rejects with) a {@link SecurityRefusal} with one generic message
+   * whatever matched; a pattern's match also counts `pattern.hit` under
+   * `facts`' client (none for a job's call without facts). Call it in the
+   * code that creates the record, whatever route or job reached it.
+   */
+  check: (
+    facts: RequestFacts | undefined,
+    kind: CheckKind,
+    value: string,
+  ) => void | Promise<void>;
+  /**
+   * The `Set-Cookie` value of a device cookie issued for these facts'
+   * successful login (layers.md L11.4), or `undefined` (no success
+   * signalled, devices off). `./http` and `./serve` set it themselves.
+   */
+  deviceCookie: (facts: RequestFacts) => string | undefined;
+  /** Lifts a username's soft lock and clears its failures (an operator's unlock). */
+  unlock: (username: string) => Promise<void>;
   /**
    * Replaces the policy: compiled first, swapped in at once, so a request
    * is decided wholly by the old policy or wholly by the new. Throws a
@@ -574,6 +633,10 @@ class Run {
   refused = false;
   /** Risk the bot signals added (layers.md L10.1), beside the refusing hits'. */
   risk = 0;
+  /** Tags for the app (`step-up`, `risky-success`). */
+  readonly tags = new Set<string>();
+  /** The longest `delay` asked for, ms. */
+  delayMs = 0;
 
   constructor(
     /**
@@ -755,6 +818,16 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #closed = false;
   /** When a hook error was last logged. */
   #lastHookError = Number.NEGATIVE_INFINITY;
+  /** The sensitive endpoints' keys. */
+  readonly #keyring: Keyring;
+  /** The login defences. */
+  readonly #login: LoginDefences;
+  /** Facts an app signalled `auth.*` for (outcome inference stands aside). */
+  readonly #signalled = new WeakSet<RequestFacts>();
+  /** Device cookies issued for facts, until the integration sets them. */
+  readonly #devices = new WeakMap<RequestFacts, string>();
+  /** When the `login.risky-success` warning was last raised. */
+  #lastRisky = Number.NEGATIVE_INFINITY;
 
   constructor(options: CreateSecurityOptions<TRequest>) {
     this.#options = options;
@@ -829,6 +902,31 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     this.#bans = new BanTable(() => this.#internals.bans.maxActive);
     this.#scores = new Scores(maxKeys, this.#evictions);
     this.#inFlight = new InFlight(maxKeys, this.#evictions);
+    // Every process sharing a store must key usernames and sign device
+    // cookies alike, or the login defences hold in none of them.
+    if (shared !== undefined && options.secret === undefined) {
+      throw new ConfigError(
+        "createSecurity(): a shared store needs a secret: every process sharing it keys usernames and destinations and signs device cookies with it, so give each the same one (at least 32 bytes)",
+      );
+    }
+    this.#keyring = new Keyring(options.secret);
+    this.#login = new LoginDefences({
+      local: counters,
+      shared: shared?.throttle,
+      distinct: new DistinctCounts(
+        shared,
+        maxKeys,
+        this.#evictions,
+        this.#logger,
+      ),
+      ban: (write, now) => {
+        this.#writeBan(write, now);
+      },
+      risky: (now) => {
+        this.#risky(now);
+      },
+      logger: this.#logger,
+    });
     this.#prefix = prefixOf(this.#policy);
     this.#checkCounted(this.#internals);
     const prepared = this.#limiter.prepare(
@@ -1171,20 +1269,51 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const events: string[] = [];
     if (outcome.routeNotFound === true) events.push("route.notFound");
     if (outcome.status >= 500) events.push("server.error");
-    if (events.length === 0) return EMPTY;
-    return this.#occurAll(
-      events,
-      facts,
-      decision.subject,
-      context.flags,
-      this.#now(),
-      context.stage,
+    const inferred = this.#inferred(facts, context.stage, outcome.status);
+    if (events.length === 0 && inferred === undefined) return EMPTY;
+    const counted =
+      events.length === 0
+        ? EMPTY
+        : this.#occurAll(
+            events,
+            facts,
+            decision.subject,
+            context.flags,
+            this.#now(),
+            context.stage,
+          );
+    if (inferred === undefined) return counted;
+    return then(counted, (hits) =>
+      then(this.signal(facts, inferred), (more) =>
+        more.length === 0 ? hits : Object.freeze([...hits, ...more]),
+      ),
     );
+  }
+
+  /**
+   * The login outcome a route marked `login` answered, when the app
+   * signalled none (layers.md L11.1): a `401` or `403` is `auth.failure`, a
+   * `2xx` `auth.success`; for the route stage's decision only.
+   */
+  #inferred(
+    facts: RequestFacts,
+    stage: EvaluationStage | undefined,
+    status: number,
+  ): "auth.failure" | "auth.success" | undefined {
+    if (stage === "early" || facts.profile !== "login") return undefined;
+    if (this.#signalled.has(facts)) return undefined;
+    const login = sensitiveOf(this.#policy).login;
+    if (login === undefined || !login.inferOutcome) return undefined;
+    if (facts.identity?.username === undefined) return undefined;
+    if (status === 401 || status === 403) return "auth.failure";
+    if (status >= 200 && status < 300) return "auth.success";
+    return undefined;
   }
 
   signal(
     facts: RequestFacts,
     event: string,
+    data?: SignalData,
   ): readonly RuleHit[] | Promise<readonly RuleHit[]> {
     this.#assertOpen();
     if (typeof event !== "string" || !EVENT_RE.test(event)) {
@@ -1195,7 +1324,14 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     if (this.#internals.mode === "off") return EMPTY;
     const now = this.#now();
     const internals = this.#internals;
-    const resolved = resolveClient(facts, internals);
+    const resolved = this.#withAccount(
+      resolveClient(facts, internals),
+      facts,
+      data,
+    );
+    if (event === "auth.failure" || event === "auth.success") {
+      this.#signalled.add(facts);
+    }
     const lists = resolved.service?.exempt.has("lists")
       ? undefined
       : evaluateLists(
@@ -1207,13 +1343,228 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           now,
           internals.mode === "dryRun",
         );
-    return this.#occurAll(
+    const flags = flagsOf(lists, resolved.service);
+    // The device cookie is issued at once, so an integration finds it as
+    // soon as the call returns, whatever the store still has to do.
+    if (event === "auth.success")
+      this.#issueDevice(facts, resolved.subject, flags, now);
+    const counted = this.#occurAll(
       [event],
       facts,
       resolved.subject,
-      flagsOf(lists, resolved.service),
+      flags,
       now,
       undefined,
+    );
+    return then(counted, (hits) =>
+      then(
+        this.#loginSignal(facts, event, resolved.subject, flags, now),
+        (more) =>
+          more.length === 0 ? hits : Object.freeze([...hits, ...more]),
+      ),
+    );
+  }
+
+  /**
+   * The login defences' part of a signal (layers.md L11.2): `auth.failure`
+   * and `auth.success` on a request of a route marked `login`, with the
+   * attempted username known.
+   */
+  #loginSignal(
+    facts: RequestFacts,
+    event: string,
+    subject: SubjectKeys,
+    flags: Flags,
+    now: number,
+  ): MaybePromise<readonly RuleHit[]> {
+    if (event !== "auth.failure" && event !== "auth.success") return EMPTY;
+    const login = sensitiveOf(this.#policy).login;
+    const username = subject.username;
+    if (
+      login === undefined ||
+      facts.profile !== "login" ||
+      username === undefined ||
+      flags.allowAll
+    ) {
+      return EMPTY;
+    }
+    const keys = { username, device: subject.device, ip: subject.ip };
+    const prefix = this.#prefix;
+    if (event === "auth.failure") {
+      const dry = this.#internals.mode === "dryRun" || login.mode === "dryRun";
+      return this.#login.failure(login, keys, prefix, dry, now);
+    }
+    return this.#login.success(login, keys, prefix, now);
+  }
+
+  /** Issues the device cookie of a successful login on a route marked `login` (layers.md L11.4). */
+  #issueDevice(
+    facts: RequestFacts,
+    subject: SubjectKeys,
+    flags: Flags,
+    now: number,
+  ): void {
+    const login = sensitiveOf(this.#policy).login;
+    const username = subject.username;
+    if (
+      login?.device === undefined ||
+      facts.profile !== "login" ||
+      username === undefined ||
+      flags.allowAll
+    ) {
+      return;
+    }
+    const value = this.#keyring.issueDevice(username, now);
+    this.#devices.set(
+      facts,
+      `${login.device.cookie}=${value}; Max-Age=${Math.floor(login.device.maxAge / 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    );
+  }
+
+  /**
+   * `resolved` with the sensitive endpoints' keys (layers.md L2.3): the
+   * attempted username's and the destination's HMAC (from `data`, else the
+   * facts' identity), and the valid device cookie's id for that username.
+   */
+  #withAccount(
+    resolved: ResolvedClient,
+    facts: RequestFacts,
+    data: SignalData | undefined,
+  ): ResolvedClient {
+    const username = data?.username ?? facts.identity?.username;
+    const destination = data?.destination ?? facts.identity?.destination;
+    if (username === undefined && destination === undefined) return resolved;
+    const subject: { -readonly [K in keyof SubjectKeys]: SubjectKeys[K] } = {
+      ...resolved.subject,
+    };
+    if (typeof username === "string" && username.trim() !== "") {
+      subject.username = this.#keyring.username(username.slice(0, 1024));
+      const device = sensitiveOf(this.#policy).login?.device;
+      const value =
+        device === undefined
+          ? undefined
+          : cookieValue(facts.headers.cookie, device.cookie);
+      if (device !== undefined && value !== undefined) {
+        const verified = this.#keyring.verifyDevice(
+          value,
+          subject.username,
+          this.#now(),
+          device.maxAge,
+        );
+        if (verified !== undefined) subject.device = verified.id;
+      }
+    }
+    if (typeof destination === "string" && destination.trim() !== "") {
+      const bounded = destination.slice(0, 1024);
+      subject.destination = this.#keyring.destination(bounded);
+      const prefix = this.#keyring.destinationPrefix(bounded);
+      if (prefix !== undefined) subject.destinationPrefix = prefix;
+    }
+    return { ...resolved, subject };
+  }
+
+  /** Raises `login.risky-success`, at most once a minute. */
+  #risky(now: number): void {
+    if (now - this.#lastRisky < 60_000) return;
+    this.#lastRisky = now;
+    this.#warn(
+      Object.freeze({
+        kind: "login.risky-success",
+        message:
+          "bun-security: a login succeeded from an address with many failed logins: a hit in a credential-stuffing run, or a shared address; the request was tagged risky-success",
+        service: this.#policy.service,
+        minutes: 1,
+        share: 1,
+        since: now,
+      }),
+    );
+  }
+
+  check(
+    facts: RequestFacts | undefined,
+    kind: CheckKind,
+    value: string,
+  ): void | Promise<void> {
+    this.#assertOpen();
+    if (typeof value !== "string") {
+      throw new TypeError("bun-security: check(): the value must be a string");
+    }
+    if (kind === "password") {
+      const hook = this.#options.breachedPassword;
+      if (hook === undefined) return undefined;
+      const refuse = (breached: boolean): void => {
+        if (breached) {
+          throw new SecurityRefusal(
+            PASSWORD_MESSAGE,
+            400,
+            "breached_password",
+            "breached-password",
+          );
+        }
+      };
+      let answer: boolean | Promise<boolean>;
+      try {
+        answer = hook(value);
+      } catch (error) {
+        this.#hookError("breachedPassword", error);
+        return undefined;
+      }
+      return answer instanceof Promise
+        ? answer.then(refuse, (error: unknown) => {
+            this.#hookError("breachedPassword", error);
+          })
+        : refuse(answer === true);
+    }
+    if (
+      kind !== "email" &&
+      kind !== "phone" &&
+      kind !== "username" &&
+      kind !== "domain"
+    ) {
+      throw new TypeError(
+        `bun-security: check(): ${JSON.stringify(kind)} is not a kind (email, phone, username, domain, password)`,
+      );
+    }
+    const identifiers = sensitiveOf(this.#policy).identifiers;
+    const match = matchIdentifier(identifiers, kind, value);
+    if (match === undefined) return undefined;
+    const dry = match.dryRun || this.#internals.mode === "dryRun";
+    this.#logger.info(`bun-security: check() matched ${match.rule}`, {
+      rule: match.rule,
+      kind,
+      dryRun: dry,
+    });
+    const refusal = new SecurityRefusal(
+      IDENTIFIER_MESSAGE,
+      400,
+      identifiers.code,
+      match.rule,
+    );
+    const counted =
+      facts === undefined || this.#internals.mode === "off"
+        ? undefined
+        : this.signal(facts, "pattern.hit");
+    const finish = (): void => {
+      if (!dry) throw refusal;
+    };
+    return counted instanceof Promise ? counted.then(finish) : finish();
+  }
+
+  deviceCookie(facts: RequestFacts): string | undefined {
+    return this.#devices.get(facts);
+  }
+
+  async unlock(username: string): Promise<void> {
+    this.#assertOpen();
+    if (typeof username !== "string" || username.trim() === "") {
+      throw new TypeError(
+        "bun-security: unlock(): the username must be a non-empty string",
+      );
+    }
+    await this.#login.unlock(
+      this.#prefix,
+      this.#keyring.username(username),
+      this.#now(),
     );
   }
 
@@ -1298,7 +1649,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           keyOf(
             keyOfType(only),
             { [only]: boundKey(value) },
-            { method: "", path: "", routePath: undefined, key: "" },
+            {
+              method: "",
+              path: "",
+              routePath: undefined,
+              key: "",
+              profile: undefined,
+            },
           ) ?? value,
       };
     }
@@ -1480,7 +1837,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       ) {
         continue;
       }
-      if (!appliesTo(limit.routes, route)) continue;
+      if (!appliesTo(limit.routes, route) || !inProfile(limit.profile, route)) {
+        continue;
+      }
       const key = keyOf(limit.key, subject, route);
       if (key === undefined) continue;
       counting.push(
@@ -1969,7 +2328,12 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       });
       return undefined;
     }
-    if (!appliesTo(rule.routes, pass.route)) return undefined;
+    if (
+      !appliesTo(rule.routes, pass.route) ||
+      !inProfile(rule.profile, pass.route)
+    ) {
+      return undefined;
+    }
     const key = keyOf(rule.key, pass.subject, pass.route);
     if (key === undefined) {
       trace?.push({
@@ -2360,7 +2724,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const limitSet = this.#limits;
 
     // ── L2: who the client is ─────────────────────────────────────────────
-    const resolved = resolveClient(facts, internals, trace);
+    const resolved = this.#withAccount(
+      resolveClient(facts, internals, trace),
+      facts,
+      undefined,
+    );
     if (internals.mode === "off") {
       trace?.push({
         layer: "L2",
@@ -2633,26 +3001,81 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const run = pass.run;
     return then(this.#deceived(facts, pass), (deceived) => {
       if (deceived || run.refused) return finish();
-      // Without limits, counted rules or a weight on `request`, nothing
-      // below applies (plan §4.3).
-      if (
-        internals.limits.length === 0 &&
-        internals.countedRules.length === 0 &&
-        (internals.ladder?.weights.get("request") ?? 0) === 0
-      ) {
-        return finish();
-      }
-      // ── The `request` occurrence, then L9 rate limits ─────────────────
-      return then(this.#occur("request", pass, false), () => {
-        if (run.refused) return finish();
-        return then(
-          this.#limit(internals.limits, limitSet, pass),
-          (throttled) =>
-            throttled
-              ? then(this.#occur("throttled", pass, false), finish)
-              : finish(),
-        );
-      });
+      return then(this.#sensitive(pass), () =>
+        run.refused
+          ? finish()
+          : this.#limitsStage(pass, finish, internals, limitSet),
+      );
+    });
+  }
+
+  /**
+   * Layer L11 before the password is checked (layers.md L11.2 to L11.4):
+   * on a request of a route marked `login` whose attempted username is
+   * known, the soft lock, the challenge, the progressive delay and the
+   * `step-up` tag.
+   */
+  #sensitive(pass: Pass): MaybePromise<void> {
+    if (pass.stage === "early" || pass.route.profile !== "login")
+      return undefined;
+    const login = sensitiveOf(this.#policy).login;
+    const username = pass.subject.username;
+    if (login === undefined || username === undefined || pass.flags.allowAll) {
+      return undefined;
+    }
+    const dry = pass.dryPolicy || login.mode === "dryRun";
+    return then(
+      this.#login.check(
+        login,
+        { username, device: pass.subject.device, ip: pass.subject.ip },
+        this.#prefix,
+        dry,
+        pass.now,
+      ),
+      (verdict) => {
+        for (const { hit, answer } of verdict.hits) pass.run.add(hit, answer);
+        for (const tag of verdict.tags) pass.run.tags.add(tag);
+        if (verdict.delayMs > pass.run.delayMs)
+          pass.run.delayMs = verdict.delayMs;
+        pass.trace?.push({
+          layer: "L11",
+          check: "login",
+          outcome:
+            verdict.hits.length === 0
+              ? `the username's failures are under ${login.delayAfter}${pass.subject.device === undefined ? "" : " (on its device)"}${verdict.tags.length > 0 ? `; tagged ${verdict.tags.join(", ")}` : ""}`
+              : verdict.hits
+                  .map(({ hit }) => hit.reason ?? hit.rule)
+                  .join("; "),
+        });
+      },
+    );
+  }
+
+  /** The `request` occurrence and layer L9, once the earlier layers let the request through. */
+  #limitsStage(
+    pass: Pass,
+    finish: () => { decision: Decision; resolved: ResolvedClient },
+    internals: PolicyInternals,
+    limitSet: LimitSet,
+  ): MaybePromise<{ decision: Decision; resolved: ResolvedClient }> {
+    const run = pass.run;
+    // Without limits, counted rules or a weight on `request`, nothing
+    // below applies (plan §4.3).
+    if (
+      internals.limits.length === 0 &&
+      internals.countedRules.length === 0 &&
+      (internals.ladder?.weights.get("request") ?? 0) === 0
+    ) {
+      return finish();
+    }
+    // ── The `request` occurrence, then L9 rate limits ─────────────────
+    return then(this.#occur("request", pass, false), () => {
+      if (run.refused) return finish();
+      return then(this.#limit(internals.limits, limitSet, pass), (throttled) =>
+        throttled
+          ? then(this.#occur("throttled", pass, false), finish)
+          : finish(),
+      );
     });
   }
 
@@ -2692,7 +3115,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         });
         continue;
       }
-      if (!appliesTo(limit.routes, route)) continue;
+      if (!appliesTo(limit.routes, route) || !inProfile(limit.profile, route)) {
+        continue;
+      }
       const key = keyOf(limit.key, subject, route);
       if (key === undefined) {
         trace?.push({
@@ -2841,7 +3266,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    */
   #conclude(run: Run, subject: Decision["subject"]): Decision {
     const hits = run.hits;
-    if (hits.length === 0) {
+    if (hits.length === 0 && run.tags.size === 0) {
       return this.#allow(subject);
     }
     let action: SecurityAction = "allow";
@@ -2858,10 +3283,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const decision: { -readonly [K in keyof Decision]: Decision[K] } = {
       action,
       hits: Object.freeze(hits),
-      tags: EMPTY,
+      tags: run.tags.size === 0 ? EMPTY : Object.freeze([...run.tags]),
       risk,
       subject,
     };
+    if (action === "delay" && run.delayMs > 0) decision.delayMs = run.delayMs;
     if (action === "block" || action === "challenge" || action === "ban") {
       const answer = decider ? run.answers.get(decider) : undefined;
       decision.status = answer?.status ?? 403;

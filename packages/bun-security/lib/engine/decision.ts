@@ -57,6 +57,14 @@ export interface SubjectKeys {
   readonly apiKey?: string;
   /** The verified calling service, for a service-identity call. */
   readonly service?: string;
+  /** The attempted login identifier, from `identify()`, as its HMAC (layers.md L2.3). */
+  readonly username?: string;
+  /** Where a code or link is sent, from `identify()`, as its HMAC. */
+  readonly destination?: string;
+  /** The destination's prefix (a phone number's country and area code, an email's domain), as its HMAC. */
+  readonly destinationPrefix?: string;
+  /** The id of the request's valid device cookie for its username (layers.md L11.4). */
+  readonly device?: string;
 }
 
 /** The engine's answer for one request. */

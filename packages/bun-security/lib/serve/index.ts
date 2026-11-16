@@ -46,6 +46,13 @@ export interface RequestIpServer {
 /** Options for {@link withSecurity}. */
 export interface WithSecurityOptions {
   /**
+   * The request's route profile (layers.md L11): `"login"`, `"otp"`,
+   * `"mfa"`, `"reset"`, `"signup"` or a name of the app's own, for the
+   * rules scoped to it and the login defences. A plain `Bun.serve` has no
+   * routes to mark, so it is asked of the request. Default: none.
+   */
+  readonly profile?: (request: Request) => string | undefined;
+  /**
    * Which proxies in front of this listener to trust, with bun-common's
    * `trustProxy` values (Express's `trust proxy`). Off by default: the
    * client is the socket peer and no forwarding header is read. Spread
@@ -114,6 +121,12 @@ export function withSecurity<
     createLogger({ name: "bun-security" }),
   );
 
+  /** The request's profile, from the option. */
+  const profileOf = (request: Request): string | undefined => {
+    const profile = options.profile?.(request);
+    return typeof profile === "string" && profile !== "" ? profile : undefined;
+  };
+
   /** The facts of `request`, with `identity`. */
   const factsOf = (
     request: Request,
@@ -129,6 +142,9 @@ export function withSecurity<
         ? {}
         : { clientIpHeader: options.clientIpHeader }),
       ...(identity === undefined ? {} : { identity }),
+      ...(profileOf(request) === undefined
+        ? {}
+        : { profile: profileOf(request) }),
     });
 
   /** The engine failed: let the request through, or refuse it with `503`. */
@@ -208,11 +224,25 @@ export function withSecurity<
       done(500);
       throw error;
     }
+    // A login's success (signalled, or inferred by done()) issues a device cookie.
+    const withDevice = (answer: TResult): TResult => {
+      const cookie = security.deviceCookie(facts);
+      if (cookie === undefined || !(answer instanceof Response)) return answer;
+      try {
+        answer.headers.append("set-cookie", cookie);
+        return answer;
+      } catch {
+        // Immutable headers (a fetched response): a copy carries the cookie.
+        const copy = new Response(answer.body, answer);
+        copy.headers.append("set-cookie", cookie);
+        return copy as TResult;
+      }
+    };
     if (isThenable(result)) {
       return Promise.resolve(result).then(
         (answer) => {
           done(statusOf(answer));
-          return answer;
+          return withDevice(answer);
         },
         (error: unknown) => {
           done(500);
@@ -221,7 +251,7 @@ export function withSecurity<
       );
     }
     done(statusOf(result));
-    return result;
+    return withDevice(result);
   };
 
   /** Acts on a decision. */

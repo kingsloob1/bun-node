@@ -114,6 +114,30 @@ describe("cacheStore", () => {
     for (const store of [a, b, other]) await store.close();
   });
 
+  it("takes the cache's own bus by default (cacheBusOf), and none with bus: false", async () => {
+    const driver = memoryDriver();
+    const a = cacheStore(createCache({ driver }), { logger: quiet });
+    const b = cacheStore(createCache({ driver }), { logger: quiet });
+    const off = cacheStore(createCache({ driver }), {
+      bus: false,
+      logger: quiet,
+    });
+    expect(off.listen).toBeUndefined();
+    expect(off.notify).toBeUndefined();
+    let nudges = 0;
+    const stop = await b.listen?.(
+      () => {
+        nudges++;
+      },
+      () => {},
+    );
+    await a.notify?.();
+    await Bun.sleep(10);
+    expect(nudges).toBe(1);
+    await stop?.();
+    for (const store of [a, b, off]) await store.close();
+  });
+
   it("refuses bad options", () => {
     const cache = createCache({ driver: memoryDriver() });
     expect(() => cacheStore({} as never)).toThrow(TypeError);

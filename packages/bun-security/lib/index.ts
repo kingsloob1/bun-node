@@ -53,6 +53,7 @@ export {
   type Security,
   type SecurityStatus,
   type SharedStoreStatus,
+  type SignalData,
   type SocketLimiter,
   type StateStatus,
   type UnbanOptions,
@@ -68,6 +69,10 @@ export {
   type BotSignalName,
   type BotSignalsPolicy,
 } from "./engine/signals";
+export { PRESETS, PROFILE_NAMES, type Preset } from "./policy/presets";
+export type { CheckKind } from "./sensitive/identifiers";
+export { DEFAULT_DEVICE_COOKIE } from "./sensitive/keys";
+export { SecurityRefusal } from "./sensitive/refusal";
 export { DEFAULT_MAX_KEYS } from "./engine/state";
 export { DEFAULT_MAX_REGEX_INPUT } from "./rules/compile";
 export { MANAGED_RULE_IDS } from "./rules/managed";
@@ -124,9 +129,14 @@ export type {
   LadderPolicy,
   LadderStep,
   LimitAlgorithm,
+  IdentifierKind,
+  IdentifierPattern,
+  IdentifierPolicy,
   LimitRule,
   ListAction,
+  LoginProfilePolicy,
   MessagePolicy,
+  ProfilesPolicy,
   ListEntry,
   PolicyScope,
   SecurityAction,

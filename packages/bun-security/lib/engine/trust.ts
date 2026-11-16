@@ -54,14 +54,16 @@ export type TrustWarningKind = "trust.internal" | "trust.unread-forwarding";
  * `bans.aggregated`, the ban table full and widening new address bans
  * (layers.md L4); `canary.used`, a canary credential used (layers.md L8);
  * `store.unavailable`, the shared store failing for 30 s (topologies.md
- * §6.2).
+ * §6.2); `login.risky-success`, a login succeeding from an address with many
+ * failed ones (layers.md L11.2).
  */
 export type SecurityWarningKind =
   | TrustWarningKind
   | "state.evictions"
   | "bans.aggregated"
   | "canary.used"
-  | "store.unavailable";
+  | "store.unavailable"
+  | "login.risky-success";
 
 /**
  * A warning (layers.md L2.5, L9.6): the trust configuration looks wrong, or

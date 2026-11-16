@@ -52,6 +52,7 @@ import type { SecurityMiddlewareOptions } from "./middleware";
 import { stackScrubber } from "./scrub";
 import type { ScrubMode } from "./scrub";
 import { createState, stateOf } from "./state";
+import { uniformAnswer } from "./uniform";
 import type { SelfTestTrace } from "./state";
 
 /** Options for {@link installSecurity}. */
@@ -325,14 +326,57 @@ export async function installSecurity<
     return replacement;
   };
 
+  /**
+   * A login's device cookie (layers.md L11.4), and a uniform route's answer
+   * (L11.5): its failures made one, its answer held to the minimum time.
+   */
+  const account = (
+    context: BeforeWriteContext,
+    replacement: Response | undefined,
+  ): Response | undefined | Promise<Response | undefined> => {
+    const state = stateOf(context.request);
+    if (state === undefined || state.selfTest !== undefined) return replacement;
+    let response = replacement ?? context.response;
+    let replaced = replacement;
+    const uniform = state.uniform;
+    let waitMs = 0;
+    if (uniform !== undefined) {
+      const answer = uniformAnswer(uniform, response, state.startedAt);
+      waitMs = answer.waitMs;
+      if (answer.response !== undefined) {
+        response = answer.response;
+        replaced = answer.response;
+      }
+    }
+    // The outcome first, so an inferred success issues the cookie now.
+    if (!state.completed) {
+      completeWhenSent(state, context.res, response.status, logger);
+    }
+    const facts = state.routeFacts;
+    const cookie =
+      facts === undefined ? undefined : security.deviceCookie(facts);
+    if (cookie !== undefined && response.status < 400) {
+      try {
+        response.headers.append("set-cookie", cookie);
+      } catch {
+        replaced = new Response(response.body, response);
+        replaced.headers.append("set-cookie", cookie);
+      }
+    }
+    return waitMs > 0 ? Bun.sleep(waitMs).then(() => replaced) : replaced;
+  };
+
   const removeWrite = adapter.addBeforeWriteHook((context) => {
     if (!active) return undefined;
     const trace = stateOf(context.request)?.selfTest;
     if (trace !== undefined) trace.write = true;
-    const replaced = scrub?.(context);
-    return isThenable(replaced)
-      ? Promise.resolve(replaced).then((value) => finish(context, value))
-      : finish(context, replaced);
+    const scrubbed = scrub?.(context);
+    const accounted = isThenable(scrubbed)
+      ? Promise.resolve(scrubbed).then((value) => account(context, value))
+      : account(context, scrubbed);
+    return isThenable(accounted)
+      ? Promise.resolve(accounted).then((value) => finish(context, value))
+      : finish(context, accounted);
   });
 
   const remove = (): void => {

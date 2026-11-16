@@ -9,6 +9,7 @@ import type { Decision } from "../engine/decision";
 import type { RequestFacts } from "../engine/facts";
 import type { Security } from "../engine/security";
 import type { SecurityProfileMark } from "./profile";
+import type { UniformMark } from "./uniform";
 
 /** What the boot self-test's request went through. */
 export interface SelfTestTrace {
@@ -40,6 +41,10 @@ export interface RequestState {
   routeMatched: boolean | undefined;
   /** The matched route's profile, if it has one. */
   profile: SecurityProfileMark | undefined;
+  /** The matched route's uniform answers, if it has them. */
+  uniform: UniformMark | undefined;
+  /** When the request arrived, `performance.now()`. */
+  readonly startedAt: number;
   /** Whether `complete()` has been called for it. */
   completed: boolean;
   /** Set for the boot self-test's own request. */
@@ -67,6 +72,8 @@ export function createState(
     route: undefined,
     routeMatched: undefined,
     profile: undefined,
+    uniform: undefined,
+    startedAt: performance.now(),
     completed: false,
     selfTest: undefined,
   };

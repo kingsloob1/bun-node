@@ -12,6 +12,7 @@ import { parseCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import { SecurityPolicyError } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
+import { withPresets } from "./presets";
 import { parseRoutePattern } from "./routes";
 import type { RoutePattern } from "./routes";
 import {
@@ -76,6 +77,8 @@ export interface CompiledLimit {
   readonly state: StateMode | undefined;
   /** What it does when the shared store fails. */
   readonly onStoreError: StoreErrorMode;
+  /** Only requests of routes with this profile count; every route when undefined. */
+  readonly profile: string | undefined;
 }
 
 /** A counted rule as the engine reads it. */
@@ -108,6 +111,8 @@ export interface CompiledCountedRule {
   readonly state: "local" | "shared" | undefined;
   /** What it does when the shared store fails. */
   readonly onStoreError: "local" | "open";
+  /** Only occurrences on routes with this profile count; every route when undefined. */
+  readonly profile: string | undefined;
 }
 
 /** WebSocket message limits (layers.md L9.5), compiled. */
@@ -718,11 +723,17 @@ export function compilePolicy(
           minRequests: check?.minRequests ?? 20,
         };
 
-  const limits = compileLimits(source, source.limits, "limits");
+  // The presets in force ahead of the policy's own rules (presets.ts).
+  const effective = withPresets(
+    source.presets,
+    source.limits,
+    source.countedRules,
+  );
+  const limits = compileLimits(source, effective.limits, "limits");
 
   const countedRules: CompiledCountedRule[] = [];
   const countedByEvent = new Map<string, CompiledCountedRule[]>();
-  for (const rule of source.countedRules ?? []) {
+  for (const rule of effective.countedRules) {
     const ruleMode = rule.mode ?? "enforce";
     if (ruleMode === "off") continue;
     const compiledRule: CompiledCountedRule = Object.freeze({
@@ -751,6 +762,7 @@ export function compilePolicy(
       onStoreError:
         rule.onStoreError ??
         (source.state?.onStoreError === "open" ? "open" : "local"),
+      profile: rule.profile,
     });
     countedRules.push(compiledRule);
     const byEvent = countedByEvent.get(rule.event);
@@ -859,6 +871,7 @@ function compileLimits(
         state: limit.state ?? source.state?.mode,
         onStoreError:
           limit.onStoreError ?? source.state?.onStoreError ?? "local",
+        profile: limit.profile,
       } satisfies CompiledLimit),
     );
   }

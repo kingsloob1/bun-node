@@ -4,6 +4,7 @@
  * number, or under a second, is refused, as ConcaveHR's `THROTTLE_TTL=60`
  * meaning 60 ms should have been).
  */
+import { PRESETS } from "../../lib/policy/presets";
 import { describe, expect, it } from "bun:test";
 import {
   compilePolicy,
@@ -37,6 +38,10 @@ const RULE = {
   window: "15m",
   duration: "1h",
 } as const;
+
+/** The rules of the policy itself, the presets left out. */
+const own = <T extends { readonly id: string }>(rules: readonly T[]): T[] =>
+  rules.filter((rule) => !Object.hasOwn(PRESETS, rule.id));
 
 describe("limits", () => {
   it("accepts ConcaveHR's sign-in pair, and every field", () => {
@@ -176,17 +181,19 @@ describe("limits", () => {
         ],
       }),
     );
-    expect(internals.limits.map((limit) => [limit.id, limit.window])).toEqual([
+    expect(
+      own(internals.limits).map((limit) => [limit.id, limit.window]),
+    ).toEqual([
       ["global", 60_000],
       ["sub", 250],
     ]);
-    expect(internals.limits[0]?.key).toEqual({
+    expect(own(internals.limits)[0]?.key).toEqual({
       parts: ["user", "route"],
       addressOnly: false,
     });
-    expect(internals.limits[0]?.algorithm).toBe("sliding-window");
-    expect(internals.limits[0]?.code).toBe("rate_limited");
-    expect(internals.limits[1]?.key.addressOnly).toBe(true);
+    expect(own(internals.limits)[0]?.algorithm).toBe("sliding-window");
+    expect(own(internals.limits)[0]?.code).toBe("rate_limited");
+    expect(own(internals.limits)[1]?.key.addressOnly).toBe(true);
   });
 });
 
@@ -285,20 +292,20 @@ describe("counted rules", () => {
         ],
       }),
     );
-    expect(internals.countedRules.map((rule) => rule.id)).toEqual([
+    expect(own(internals.countedRules).map((rule) => rule.id)).toEqual([
       "failed-password",
       "forever",
       "req",
     ]);
     expect(
-      internals.countedByEvent
-        .get("auth.failure")
-        ?.map((rule) => rule.duration),
+      own(internals.countedByEvent.get("auth.failure") ?? []).map(
+        (rule) => rule.duration,
+      ),
     ).toEqual([3_600_000, Number.POSITIVE_INFINITY]);
     expect(
       internals.countedByEvent.get("request")?.map((rule) => rule.id),
     ).toEqual(["req"]);
-    expect(internals.countedRules[0]?.action).toBe("ban");
+    expect(own(internals.countedRules)[0]?.action).toBe("ban");
   });
 });
 

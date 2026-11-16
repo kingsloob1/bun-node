@@ -30,6 +30,14 @@ export interface SecurityIdentity {
   readonly apiKey?: string;
   /** The scopes the credential carries. */
   readonly scopes?: readonly string[];
+  /**
+   * The login identifier the request attempts (on a sign-in, an MFA or a
+   * reset route): an email or username as the client typed it. Keyed by
+   * its HMAC (trimmed, lower case), never stored (layers.md L2.3).
+   */
+  readonly username?: string;
+  /** Where the request sends a code or a link (an email address, a phone number). Keyed by its HMAC. */
+  readonly destination?: string;
 }
 
 /** The facts of one request, as the engine reads them. */
@@ -83,6 +91,12 @@ export interface RequestFacts {
   readonly environment?: string;
   /** Who the app says is calling, from `identify()`. */
   readonly identity?: SecurityIdentity;
+  /**
+   * The matched route's profile (`securityProfile("login")`), naming a
+   * sensitive endpoint (layers.md L11): its rules (`profile` on a limit or
+   * counted rule) and the login defences apply.
+   */
+  readonly profile?: string;
 }
 
 /** The most headers kept in {@link RequestFacts.headers}. */
@@ -115,6 +129,8 @@ export interface RequestFactsInit {
   readonly clientIpHeader?: string;
   /** The matched route, when known. */
   readonly routeKey?: string;
+  /** The matched route's profile, when it has one (layers.md L11). */
+  readonly profile?: string;
   /** Who the app says is calling. */
   readonly identity?: SecurityIdentity;
   /** The service's id. */
@@ -252,6 +268,7 @@ export function requestFacts(
   const contentLength = contentLengthOf(headers["content-length"]);
   if (contentLength !== undefined) facts.contentLength = contentLength;
   if (init.routeKey !== undefined) facts.routeKey = init.routeKey;
+  if (init.profile !== undefined) facts.profile = init.profile;
   if (init.identity !== undefined) facts.identity = init.identity;
   if (init.service !== undefined) facts.service = init.service;
   if (init.environment !== undefined) facts.environment = init.environment;
