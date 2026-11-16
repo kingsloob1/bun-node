@@ -37,6 +37,11 @@
       "types": "./dts/cache/index.d.ts",
       "default": "./lib/cache/index.ts"
     },
+    "./security": {
+      "@kingsleyweb/source": "./lib/security/index.ts",
+      "types": "./dts/security/index.d.ts",
+      "default": "./lib/security/index.ts"
+    },
     "./jobs": {
       "@kingsleyweb/source": "./lib/jobs/index.ts",
       "types": "./dts/jobs/index.d.ts",
@@ -61,6 +66,11 @@
       "@kingsleyweb/source": "./lib/cache/index.ts",
       "types": "./dts/cache/index.d.ts",
       "default": "./lib/cache/index.ts"
+    },
+    "./lib/security": {
+      "@kingsleyweb/source": "./lib/security/index.ts",
+      "types": "./dts/security/index.d.ts",
+      "default": "./lib/security/index.ts"
     },
     "./lib/jobs": {
       "@kingsleyweb/source": "./lib/jobs/index.ts",
@@ -127,6 +137,7 @@
   "peerDependencies": {
     "@kingsleyweb/bun-cache": "workspace:^",
     "@kingsleyweb/bun-jobs": "workspace:^",
+    "@kingsleyweb/bun-security": "workspace:^",
     "@nestjs/common": "^11.1.20 || ^12.0.0",
     "@nestjs/core": "^11.1.20 || ^12.0.0",
     "@nestjs/microservices": "^11.1.20 || ^12.0.0",
@@ -141,6 +152,9 @@
       "optional": true
     },
     "@kingsleyweb/bun-jobs": {
+      "optional": true
+    },
+    "@kingsleyweb/bun-security": {
       "optional": true
     },
     "@nestjs/microservices": {
@@ -166,6 +180,7 @@
     "@kingsleyweb/bun-cache": "workspace:^",
     "@kingsleyweb/bun-client": "workspace:^",
     "@kingsleyweb/bun-jobs": "workspace:^",
+    "@kingsleyweb/bun-security": "workspace:^",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/microservices": "^12.4.2",
