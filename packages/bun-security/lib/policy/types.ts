@@ -43,8 +43,10 @@ export type PolicyScope = "global" | "group" | "service";
 
 /**
  * One allow or deny entry (layers.md L3): exactly one subject — an address
- * or CIDR range (`ip`), a user id (`user`) or an API key id (`apiKey`) — and
- * the action taken when it matches.
+ * or CIDR range (`ip`), a user id (`user`), an API key id (`apiKey`), a
+ * country (`country`) or an autonomous system (`asn`) — and the action
+ * taken when it matches. `country` and `asn` need `createSecurity`'s
+ * `intel` (`./intel`).
  */
 export interface ListEntry {
   /**
@@ -58,6 +60,14 @@ export interface ListEntry {
   readonly user?: string;
   /** An API key **id**, as `identify()` returns it; never the key itself. */
   readonly apiKey?: string;
+  /**
+   * The client address's country, ISO 3166-1 alpha-2, upper case (`"KP"`),
+   * as the intel's databases give it. Any action but `allow`: a whole
+   * country is never allowed past every defence.
+   */
+  readonly country?: string;
+  /** The client address's autonomous system number (`13335`), as the intel's databases give it. */
+  readonly asn?: number;
   /**
    * What a match does. `challenge` needs a challenge provider; until one is
    * configured it falls back to `block`. `drop` closes the connection with

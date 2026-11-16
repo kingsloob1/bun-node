@@ -50,6 +50,8 @@ const STRING_TARGETS = new Set([
   "session",
   "tenant",
   "apiKey",
+  "country",
+  "class",
 ]);
 /** Targets named beside their matcher (`{ header: "user-agent", contains: … }`). */
 const NAMED_TARGETS = new Set(["header", "queryParam", "cookie"]);
@@ -223,6 +225,65 @@ function checkStringMatcher(
   }
 }
 
+/** Whether `value` is an autonomous system number. */
+function isAsn(value: unknown): boolean {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 4294967295
+  );
+}
+
+/** Checks an `asn` matcher: `equals`, `in` or `exists`. */
+function checkAsnMatcher(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  if (!isRecord(value) || Object.keys(value).length !== 1) {
+    issues.add(
+      path,
+      "must be { equals: n }, { in: [n, …] } or { exists: true | false }",
+    );
+    return;
+  }
+  if ("equals" in value) {
+    if (!isAsn(value.equals)) {
+      issues.add(
+        [...path, "equals"],
+        `must be an autonomous system number; got ${describe(value.equals)}`,
+      );
+    }
+  } else if ("in" in value) {
+    const list = value.in;
+    if (!Array.isArray(list) || list.length === 0 || list.length > MAX_IN) {
+      issues.add(
+        [...path, "in"],
+        `must hold 1 to ${MAX_IN} autonomous system numbers`,
+      );
+    } else {
+      list.forEach((item: unknown, i: number) => {
+        if (!isAsn(item)) {
+          issues.add(
+            [...path, "in", i],
+            `must be an autonomous system number; got ${describe(item)}`,
+          );
+        }
+      });
+    }
+  } else if ("exists" in value) {
+    if (typeof value.exists !== "boolean") {
+      issues.add([...path, "exists"], "must be true or false");
+    }
+  } else {
+    issues.add(
+      path,
+      "must be { equals: n }, { in: [n, …] } or { exists: true | false }",
+    );
+  }
+}
+
 /** Checks one test. */
 function checkMatch(
   issues: Issues,
@@ -236,12 +297,13 @@ function checkMatch(
       STRING_TARGETS.has(key) ||
       NAMED_TARGETS.has(key) ||
       NUMBER_TARGETS.has(key) ||
-      key === "client",
+      key === "client" ||
+      key === "asn",
   );
   if (targets.length !== 1) {
     issues.add(
       path,
-      `must name exactly one target (method, path, rawPath, query, queryParam, header, anyHeader, cookie, client, contentLength, headerCount, routeKey, user, session, tenant, apiKey) or be all/any/not; got ${keys.join(", ") || "nothing"}`,
+      `must name exactly one target (method, path, rawPath, query, queryParam, header, anyHeader, cookie, client, contentLength, headerCount, country, asn, class, routeKey, user, session, tenant, apiKey) or be all/any/not; got ${keys.join(", ") || "nothing"}`,
     );
     return;
   }
@@ -290,6 +352,10 @@ function checkMatch(
   const matcher = value[target];
   if (NUMBER_TARGETS.has(target)) {
     checkNumberMatcher(issues, at, matcher);
+    return;
+  }
+  if (target === "asn") {
+    checkAsnMatcher(issues, at, matcher);
     return;
   }
   if (target === "client") {

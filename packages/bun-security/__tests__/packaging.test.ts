@@ -154,6 +154,16 @@ describe("package.json exports", () => {
     }
   });
 
+  it("gives IP intelligence its own subpath, ./intel (PR-S10)", () => {
+    for (const key of ["./intel", "./lib/intel"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/intel/index.ts",
+        types: "./dts/intel/index.d.ts",
+        default: "./lib/intel/index.ts",
+      });
+    }
+  });
+
   it("checks every literal subpath in the consumer check", () => {
     const spellings = new Set(
       checkConfig.entries?.map((entry) => entry.spelling),

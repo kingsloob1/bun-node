@@ -106,6 +106,7 @@
         "AddressMatcher",
         "ManagedRuleId",
         "ManagedRulesPolicy",
+        "AsnMatcher",
         "MessageDecision",
         "SocketLimiter",
         "SharedStoreStatus",
@@ -233,6 +234,44 @@
       "spelling": "@kingsleyweb/bun-security/lib/challenge",
       "values": ["challenges", "powChallenge"],
       "types": ["ChallengeProvider"]
+    },
+    {
+      "$comment": "IP intelligence (layers.md L5, PR-S10): the MaxMind DB reader, range feeds and ipIntel, which createSecurity's intel option takes.",
+      "spelling": "@kingsleyweb/bun-security/intel",
+      "values": [
+        "ipIntel",
+        "openMmdb",
+        "MmdbReader",
+        "MmdbError",
+        "extractIntel",
+        "rangeFeed",
+        "torExitFeed",
+        "TOR_BULK_EXIT_LIST_URL"
+      ],
+      "types": [
+        "IpIntel",
+        "IpIntelOptions",
+        "IntelStatus",
+        "ExtractedIntel",
+        "MmdbMetadata",
+        "MmdbResult",
+        "MmdbValue",
+        "RangeFeed",
+        "RangeFeedOptions",
+        "RangeFormat",
+        "FeedFetch",
+        "FeedRefresh",
+        "FeedStatus",
+        "IntelLookup",
+        "IntelProvides",
+        "IntelRecord"
+      ],
+      "snippet": "import { createSecurity } from \"@kingsleyweb/bun-security\";\nconst pending = m.ipIntel({ databases: [], feeds: [m.torExitFeed({ url: m.TOR_BULK_EXIT_LIST_URL }), m.rangeFeed({ id: \"aws\", class: \"hosting\", url: \"https://example.com/ip-ranges.json\", format: \"json\", interval: \"1d\", minEntries: 100 })], ranges: { office: [\"198.51.100.0/24\"] }, cacheSize: 1000 });\nexport type _intel = Equal<Awaited<typeof pending>, t.IpIntel>;\ndeclare const intel: t.IpIntel;\nconst record: t.IntelRecord = intel.lookup(\"203.0.113.9\");\nexport const _classes: readonly string[] = record.classes;\nexport const _country: string | undefined = record.country;\nexport const _asn: number | undefined = record.asn;\nexport const _refreshed: Promise<readonly t.FeedRefresh[]> = intel.refresh({ force: true });\nexport const _status: t.IntelStatus = intel.status();\nexport const _feeds: readonly t.FeedStatus[] = _status.feeds;\nconst security = createSecurity({ policy: { lists: [{ country: \"KP\", action: \"block\" }] }, intel });\nexport type _securityNotAny = Expect<IsAny<typeof security>>;\nexport type _opened = Equal<Awaited<ReturnType<typeof m.openMmdb>>, t.MmdbReader>;\ndeclare const reader: t.MmdbReader;\nexport const _meta: t.MmdbMetadata = reader.metadata;\nexport const _value: t.MmdbValue | undefined = reader.lookup(\"203.0.113.9\");\nexport const _result: t.MmdbResult | undefined = reader.lookupWithPrefix(\"2001:db8::1\");\nexport const _error: Error = new m.MmdbError(\"x\");\nexport const _extracted: t.ExtractedIntel = m.extractIntel({ country: { iso_code: \"DE\" } });\nexport const _format: t.RangeFormat = (body: string) => body.split(\"\\n\");\nexport const _lookup: t.IntelLookup = intel;\nexport const _provides: t.IntelProvides = intel.provides();"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/intel",
+      "values": ["ipIntel", "openMmdb"],
+      "types": ["IpIntel"]
     },
     {
       "spelling": "@kingsleyweb/bun-security/lib/index",

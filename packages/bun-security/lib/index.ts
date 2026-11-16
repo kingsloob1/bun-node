@@ -79,6 +79,7 @@ export { MANAGED_RULE_IDS } from "./rules/managed";
 export { regexRefusal } from "./rules/regex";
 export type {
   AddressMatcher,
+  AsnMatcher,
   ManagedRuleId,
   ManagedRulesPolicy,
   NumberMatcher,

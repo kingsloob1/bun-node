@@ -332,7 +332,9 @@ also hides a broken trust configuration (L2.5), the engine alerts when
 public traffic resolves into it.
 
 Two guards from ConcaveHR, kept: **an allow entry wider than /8 (IPv4) or
-/32 (IPv6) is refused** (a typo must not allow the internet), and **adding
+/32 (IPv6) is refused** (a typo must not allow the internet; likewise **an
+`allow` on a whole country is refused**, the user's ruling of 2026-11-16,
+PR-S10, while an `allow` on an ASN is accepted), and **adding
 an allow entry lifts every active ban it covers** (and the UI says how many
 it lifted).
 
@@ -613,13 +615,19 @@ compiled policy needs a country, an ASN or a class.
 - **The UI shows the attribution** each licence requires on any page that
   displays country or ASN (README §7, "Attribution").
 
-**Rules on it:** country and ASN in L3 lists and in L7 conditions; the
+**Rules on it:** country and ASN in L3 lists and in L7 conditions (a
+country entry takes any action but `allow`, L3.1); the
 `hosting`, `tor`, `vpn` (only where a source provides it) classes as signals
 for L10 and as challenge triggers ("challenge logins from hosting ASNs",
 OWASP's example [V]).
 
 **v1:** the MMDB reader, country and ASN lists and conditions, the Tor and
-cloud-range feeds as classes. **Later:** VPN/proxy feeds (commercial), the
+cloud-range feeds as classes. **As built (PR-S10):** the reader reads the whole file
+into memory (Bun has no `mmap`); the refresh job is the intel's own timer,
+or `refresh()` called from bun-jobs or any scheduler, so bun-security takes
+no bun-jobs dependency; classes come from range feeds and static ranges,
+and the `hosting` class is a feed of cloud ranges, not an ASN list
+(plan §17.12). **Later:** VPN/proxy feeds (commercial), the
 city level (privacy cost, little defensive value).
 
 ---

@@ -11,6 +11,7 @@
  * Kept beside the compiled policy (a `WeakMap`), as the request rules are,
  * so `compilePolicy` needs no change: `validateBotSignals` runs first.
  */
+import type { IntelLookup } from "../intel/types";
 import type { RequestFacts } from "./facts";
 import type { CompiledPolicy } from "../policy/compile";
 import { compileGlob, globRefusal } from "../rules/glob";
@@ -61,6 +62,13 @@ export interface BotSignalsPolicy {
    * page request (`text/html` first in `Accept`) only.
    */
   readonly browserPaths?: readonly string[];
+  /**
+   * Risk points per class of the client address (layers.md L5, "classes as
+   * signals for L10"): `{ tor: 2, hosting: 1 }`. Each class the address is
+   * in adds its points, as the signal `class:<name>`. Needs
+   * `createSecurity`'s `intel`. Default none.
+   */
+  readonly classes?: Readonly<Record<string, number>>;
 }
 
 /** One problem in the section: where, and what. */
@@ -90,10 +98,14 @@ export function validateBotSignals(input: unknown): SignalIssue[] {
     return issues;
   }
   for (const key of Object.keys(input)) {
-    if (!["mode", "weights", "challengeAt", "browserPaths"].includes(key)) {
+    if (
+      !["mode", "weights", "challengeAt", "browserPaths", "classes"].includes(
+        key,
+      )
+    ) {
       at(
         [key],
-        "is not a botSignals setting (mode, weights, challengeAt, browserPaths)",
+        "is not a botSignals setting (mode, weights, challengeAt, browserPaths, classes)",
       );
     }
   }
@@ -131,6 +143,24 @@ export function validateBotSignals(input: unknown): SignalIssue[] {
   ) {
     at(["challengeAt"], "must be a positive number");
   }
+  if (input.classes !== undefined) {
+    if (isRecord(input.classes)) {
+      for (const [name, weight] of Object.entries(input.classes)) {
+        if (!/^[a-z0-9][\w.:-]{0,63}$/i.test(name)) {
+          at(["classes", name], "is not a class name");
+        } else if (
+          typeof weight !== "number" ||
+          !Number.isFinite(weight) ||
+          weight < 0 ||
+          weight > 100
+        ) {
+          at(["classes", name], "must be a number from 0 to 100");
+        }
+      }
+    } else {
+      at(["classes"], "must be an object of class weights");
+    }
+  }
   if (input.browserPaths !== undefined) {
     if (
       !Array.isArray(input.browserPaths) ||
@@ -165,6 +195,8 @@ export interface CompiledBotSignals {
   readonly challengeAt: number;
   /** The browser-only routes. */
   readonly browserPaths: readonly GlobMatcher[];
+  /** Points per class of the client address, only those above 0. */
+  readonly classes: ReadonlyMap<string, number>;
 }
 
 /** The section compiled per policy. */
@@ -186,6 +218,11 @@ export function botSignalsOf(policy: CompiledPolicy): CompiledBotSignals {
       challengeAt: section?.challengeAt ?? Number.POSITIVE_INFINITY,
       browserPaths: (section?.browserPaths ?? []).map((glob) =>
         compileGlob(glob),
+      ),
+      classes: new Map(
+        Object.entries(section?.classes ?? {}).filter(
+          ([, points]) => points > 0,
+        ),
       ),
     };
     COMPILED.set(policy, compiled);
@@ -219,9 +256,14 @@ function pageRequest(accept: string | undefined): boolean {
 export function readSignals(
   compiled: CompiledBotSignals,
   facts: RequestFacts,
-): { readonly name: BotSignalName; readonly points: number }[] {
+  intel?: IntelLookup,
+): {
+  readonly name: BotSignalName | `class:${string}`;
+  readonly points: number;
+}[] {
   const { weights } = compiled;
-  const found: { name: BotSignalName; points: number }[] = [];
+  const found: { name: BotSignalName | `class:${string}`; points: number }[] =
+    [];
   const add = (name: BotSignalName) => {
     if (weights[name] > 0) found.push({ name, points: weights[name] });
   };
@@ -244,6 +286,12 @@ export function readSignals(
     !CHROMIUM_UA.test(ua)
   ) {
     add("clientHintsMismatch");
+  }
+  if (compiled.classes.size > 0 && intel !== undefined) {
+    for (const name of intel.lookup(facts.client).classes) {
+      const points = compiled.classes.get(name);
+      if (points !== undefined) found.push({ name: `class:${name}`, points });
+    }
   }
   return found;
 }

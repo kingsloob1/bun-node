@@ -112,6 +112,8 @@ import type { EvaluationStage } from "./stages";
 import { DEFAULT_MAX_KEYS, EvictionMonitor } from "./state";
 import { botSignalsOf, readSignals } from "./signals";
 import type { ChallengeFlow } from "../challenge/flow";
+import type { IntelLookup } from "../intel/types";
+import { checkIntel } from "./intelNeeds";
 import { TrustMonitor } from "./trust";
 import { DistinctCounts } from "./distinct";
 import { sensitiveOf } from "../sensitive/compile";
@@ -206,6 +208,14 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * errors are logged and the password accepted. Default: none.
    */
   readonly breachedPassword?: (password: string) => boolean | Promise<boolean>;
+  /**
+   * IP intelligence (layers.md L5), from `ipIntel()` in
+   * `@kingsleyweb/bun-security/intel`: the countries, ASNs and classes the
+   * policy's `country`/`asn` list entries, its `country`, `asn` and `class`
+   * conditions and `botSignals.classes` read. A policy using them without
+   * one (or naming what it cannot tell) is refused.
+   */
+  readonly intel?: IntelLookup;
 }
 
 /** What `signal()` can be told beside the event (layers.md L11.1). */
@@ -872,6 +882,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       );
     }
     this.#policy = compilePolicy(options.policy);
+    checkIntel(this.#policy, options.intel, "createSecurity()");
     // Compiled now, so the first request pays nothing for them.
     requestRulesOf(this.#policy);
     this.#internals = policyInternals(this.#policy);
@@ -1342,6 +1353,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           listPath(facts.path, internals),
           now,
           internals.mode === "dryRun",
+          undefined,
+          this.#options.intel,
         );
     const flags = flagsOf(lists, resolved.service);
     // The device cookie is issued at once, so an integration finds it as
@@ -1571,6 +1584,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   load(policy: SecurityPolicy | CompiledPolicy): CompiledPolicy {
     this.#assertOpen();
     const compiled = compilePolicy(policy);
+    checkIntel(compiled, this.#options.intel, "load()");
     requestRulesOf(compiled);
     const internals = policyInternals(compiled);
     const prefix = prefixOf(compiled);
@@ -1743,6 +1757,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           listPath(facts.path, internals),
           now,
           internals.mode === "dryRun",
+          undefined,
+          this.#options.intel,
         );
     const connection: Connection = {
       subject: resolved.subject,
@@ -2505,7 +2521,12 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   ): MaybePromise<boolean> {
     const compiled = requestRulesOf(policy);
     if (compiled.rules.length === 0 || pass.flags.allowAll) return false;
-    const matched = matchRequestRules(compiled, facts, pass.stage);
+    const matched = matchRequestRules(
+      compiled,
+      facts,
+      pass.stage,
+      this.#options.intel,
+    );
     if (matched.length === 0) return false;
     const { run, trace, now, writes, flags } = pass;
     const crawler = this.#verifiedCrawler(facts, pass);
@@ -2811,6 +2832,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         now,
         dryPolicy,
         trace,
+        this.#options.intel,
       );
       if (lists.decided && ownEntry(lists.decided, stage)) {
         if (lists.decided.action === "challenge") {
@@ -2956,7 +2978,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     }
     const compiled = botSignalsOf(policy);
     if (!compiled.enabled) return false;
-    const found = readSignals(compiled, facts);
+    const found = readSignals(compiled, facts, this.#options.intel);
     if (found.length === 0) return false;
     const { run, trace } = pass;
     const points = found.reduce((sum, signal) => sum + signal.points, 0);

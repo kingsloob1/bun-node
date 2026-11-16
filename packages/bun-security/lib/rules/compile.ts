@@ -12,6 +12,7 @@
 import { toDurationMs } from "@kingsleyweb/bun-common";
 import type { Duration } from "@kingsleyweb/bun-common";
 import type { RequestFacts } from "../engine/facts";
+import type { IntelLookup, IntelRecord } from "../intel/types";
 import type { EvaluationStage } from "../engine/stages";
 import { cidrContains, parseAddress, parseCidr } from "../ip/address";
 import type { ParsedAddress, ParsedCidr } from "../ip/address";
@@ -20,6 +21,7 @@ import { compileGlob } from "./glob";
 import { MANAGED_RULES } from "./managed";
 import { compileSafeRegex } from "./regex";
 import type {
+  AsnMatcher,
   ManagedRulesPolicy,
   NumberMatcher,
   RequestRule,
@@ -43,17 +45,36 @@ const ROUTE_TARGETS = new Set([
   "apiKey",
 ]);
 
+/** Nothing known of an address. */
+const NO_INTEL: IntelRecord = Object.freeze({ classes: Object.freeze([]) });
+
 /** A request as the rules read it: its facts, and what is parsed from them on first need. */
 export class RuleInput {
   /** The query, parsed on first need. */
   #query: URLSearchParams | undefined;
   /** The client's address, parsed on first need (`null`: none). */
   #client: ParsedAddress | null | undefined;
+  /** What IP intelligence knows of the client, looked up on first need. */
+  #intel: IntelRecord | undefined;
 
   constructor(
     /** The request's facts. */
     readonly facts: RequestFacts,
+    /** IP intelligence for the `country`, `asn` and `class` targets; none: they never match. */
+    readonly lookup?: IntelLookup,
   ) {}
+
+  /** What IP intelligence knows of the client (an empty record without one). */
+  get intel(): IntelRecord {
+    if (this.#intel === undefined) {
+      const client = this.client;
+      this.#intel =
+        client === null || this.lookup === undefined
+          ? NO_INTEL
+          : this.lookup.lookup(client);
+    }
+    return this.#intel;
+  }
 
   /** The query's parameters. */
   get query(): URLSearchParams {
@@ -266,6 +287,20 @@ function matchTest(
       );
     };
   }
+  if ("asn" in match) {
+    const spec = match.asn as AsnMatcher;
+    if (spec.exists !== undefined) {
+      const exists = spec.exists;
+      return (input) => (input.intel.asn !== undefined) === exists;
+    }
+    const set = new Set(
+      spec.in ?? (spec.equals === undefined ? [] : [spec.equals]),
+    );
+    return (input) => {
+      const asn = input.intel.asn;
+      return asn !== undefined && set.has(asn);
+    };
+  }
   if ("contentLength" in match) {
     const compare = numberTest(match.contentLength as NumberMatcher);
     return (input) =>
@@ -317,6 +352,20 @@ function matchTest(
         string,
         (input) => Object.values(input.facts.headers),
         false,
+        maxRegexInput,
+      );
+    case "country":
+      return stringTest(
+        string,
+        (input) => one(input.intel.country),
+        true,
+        maxRegexInput,
+      );
+    case "class":
+      return stringTest(
+        string,
+        (input) => input.intel.classes,
+        true,
         maxRegexInput,
       );
     case "routeKey":
@@ -460,12 +509,13 @@ export function matchRequestRules(
   compiled: CompiledRequestRules,
   facts: RequestFacts,
   stage: EvaluationStage | undefined,
+  intel?: IntelLookup,
 ): CompiledRequestRule[] {
   const matched: CompiledRequestRule[] = [];
   let input: RuleInput | undefined;
   for (const rule of compiled.rules) {
     if (stage !== undefined && rule.stage !== stage) continue;
-    input ??= new RuleInput(facts);
+    input ??= new RuleInput(facts, intel);
     if (rule.test(input)) matched.push(rule);
   }
   return matched;
