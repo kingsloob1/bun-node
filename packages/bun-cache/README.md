@@ -90,6 +90,7 @@ provides these caches with decorators and a response interceptor.
 - Using the cache: [Quick start](#quick-start) · [The API](#the-api) ·
   [Options](#createcache-options) · [Stampede protection](#stampede-protection) ·
   [Staleness](#staleness) · [Tags](#tags) · [Counters](#counters) ·
+  [Distinct counts](#distinct-counts) ·
   [Codecs](#codecs) · [Compression and limits](#compression-and-limits) ·
   [Encryption at rest](#encryption-at-rest) ·
   [Namespaces and versions](#namespaces-and-versions) ·
@@ -148,6 +149,7 @@ exclusive. `ttl: null` means no expiry.
 | Delete | `delete(key)`, `deleteMany(keys)`, `clear()` (this namespace only), `invalidateTags(tags)` |
 | Load | `getOrSet(key, loader, opts?)`, `wrap(fn, { key, ...opts })` |
 | Counters | `increment(key, by?, opts?)`, `decrement(key, by?, opts?)` |
+| Distinct counts | `pfAdd(key, elements, opts?)`, `pfCount(key \| keys)` |
 | Scope | `namespace(name)` — a view of the same cache with a longer prefix |
 | Observe | `on(event, listener)`, `stats()`, `describeKey(key, tags?)` (the names the store holds, [Hiding names](#hiding-names)) |
 | Lifecycle | `close()`, `syncSchema(opts?)` |
@@ -390,6 +392,45 @@ slide. `get` on a counter key returns its number. A counter carries no tags.
 On a driver without `capabilities.atomicIncrement`, `increment` throws
 `UnsupportedOperationError`. For request rate limits, use the counters
 through bun-common's `throttle()` ([Throttling](#throttling)).
+
+## Distinct counts
+
+```ts
+await cache.pfAdd(`usernames:${ip}`, username, { ttl: 3_600_000 });
+const tried = await cache.pfCount(`usernames:${ip}`); // distinct usernames from this address
+const either = await cache.pfCount(["ips:alice", "ips:bob"]); // the union, overlaps once
+```
+
+A distinct count is a HyperLogLog sketch per key: it answers how many
+**different** elements were added (distinct usernames per address, distinct
+addresses per account), in at most 12 KB whatever their number, about 1% off
+at most sizes (a standard error of 0.81%) and close to exact for small sets.
+It stores registers, never the elements, so it cannot say which ones went in.
+
+- `pfAdd(key, elements, { ttl })` adds one element or a list (sent to the
+  driver 1,000 at a time) and answers whether the sketch changed: a register
+  rose, or it was created. `pfCount(key | keys)` counts one sketch, or the
+  union of several; `0` for none.
+- The TTL is set only when the sketch is created, as a counter's, so its
+  window does not slide; it is measured by the backend's own clock where it
+  has one (Redis, Postgres, MySQL, MariaDB, SQLite, MongoDB), so the processes
+  sharing it need no synchronised clocks.
+- A sketch sits beside any entry or counter of the same key (`get` never
+  answers it) and is removed by `delete(key)`, `clear()` and its expiry. It
+  never enters L1. Under `encrypt.hashNames`, its key and its elements are
+  hashed as names are, so the backend sees neither.
+- Additions are atomic across processes: Redis's own `PFADD`; a transaction
+  that locks the sketch's row on SQLite, Postgres, MySQL and MariaDB; a
+  compare-and-set on MongoDB; the per-key lock file on the file driver.
+- On a driver without `capabilities.distinctCount` (S3, Azure, the Cloudflare
+  drivers, `fromSimpleDriver`) both throw `UnsupportedOperationError`; on
+  `redundant()` they are the primary's, as counters are. A failure throws
+  even under the default policy, as `increment`'s does.
+
+A custom driver adds `pfAdd(ns, key, elements, ttl)` and `pfCount(ns, keys)`
+and advertises `distinctCount: true`; the conformance kit then checks it
+(estimates, unions, the TTL at creation, concurrent and two-process
+additions).
 
 ## Codecs
 
@@ -1478,21 +1519,21 @@ before it needs no change.
 
 ## The driver matrix
 
-| Driver | TTL | Atomic increment | Lock | Tags | Bus |
-|---|---|---|---|---|---|
-| memory | lazy + sweep | yes | in process | index, atomic fence | in-process |
-| custom (`fromSimpleDriver`) | declared | no | no | stamps | no |
-| file | lazy + sweep | yes, under a lock file | `O_EXCL` file | stamps, checked on read | polled log |
-| SQLite | filtered on read + sweep, indexed `exp` | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one transaction) | polled table |
-| Postgres | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one statement under a namespace advisory lock) | `LISTEN`/`NOTIFY` |
-| MySQL / MariaDB | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table |
-| Redis | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) |
-| MongoDB | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection |
-| S3 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) |
-| Azure Blob Storage | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) |
-| Cloudflare KV | native (`expiration_ttl`, at least 60 s) + filtered on read | no | no | stamps, checked on read (eventually consistent) | none (`redisBus` / `pgBus`) |
-| Cloudflare D1 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index (triggers), atomic fence (one statement) | none (`redisBus` / `pgBus`) |
-| `redundant([...])` | its members' (native only when all are) | the primary's, never failed over | the primary's, never failed over | index when every member indexes, else stamps | the first member's |
+| Driver | TTL | Atomic increment | Lock | Tags | Bus | Distinct counts |
+|---|---|---|---|---|---|---|
+| memory | lazy + sweep | yes | in process | index, atomic fence | in-process | yes |
+| custom (`fromSimpleDriver`) | declared | no | no | stamps | no | no |
+| file | lazy + sweep | yes, under a lock file | `O_EXCL` file | stamps, checked on read | polled log | yes, under the lock file |
+| SQLite | filtered on read + sweep, indexed `exp` | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one transaction) | polled table | yes, one `BEGIN IMMEDIATE` transaction |
+| Postgres | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index, atomic fence (one statement under a namespace advisory lock) | `LISTEN`/`NOTIFY` | yes, a transaction locking the row |
+| MySQL / MariaDB | filtered on read + sweep, indexed `exp` | yes, `LAST_INSERT_ID` upsert | lock row, one conditional upsert | index, atomic fence (a `REPEATABLE READ` transaction) | polled table | yes, a transaction locking the row |
+| Redis | native (`PEXPIREAT`), filtered on read | yes, Lua (`HINCRBY`) | `SET … PX`, Lua take and compare-and-delete | index, atomic fence (one Lua script) | pub/sub (`redisBus`) | yes, native (`PFADD`, `PFCOUNT`) |
+| MongoDB | TTL index (a 60 s monitor) + filtered on read + sweep | yes, one update pipeline | lock document, a conditional upsert | index, check-then-write fence with a take-back | change stream (replica set) or tailable capped collection | yes, compare-and-set |
+| S3 | filtered on read + sweep (+ a bucket lifecycle rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional `PUT`s, compare-and-delete | stamps, checked on read | none (`redisBus` / `pgBus`) | no |
+| Azure Blob Storage | filtered on read + sweep (+ a lifecycle management rule) | yes, compare-and-swap (`If-Match`), batched per key | conditional Put Blob, compare-and-delete (not leases) | stamps, checked on read | none (`redisBus` / `pgBus`) | no |
+| Cloudflare KV | native (`expiration_ttl`, at least 60 s) + filtered on read | no | no | stamps, checked on read (eventually consistent) | none (`redisBus` / `pgBus`) | no |
+| Cloudflare D1 | filtered on read + sweep, partial `exp` index | yes, `RETURNING` upsert | lock row, one conditional upsert | index (triggers), atomic fence (one statement) | none (`redisBus` / `pgBus`) | no |
+| `redundant([...])` | its members' (native only when all are) | the primary's, never failed over | the primary's, never failed over | index when every member indexes, else stamps | the first member's | the primary's, never failed over |
 
 ## The memory driver
 

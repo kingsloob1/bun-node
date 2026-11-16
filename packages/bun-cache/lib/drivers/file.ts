@@ -8,6 +8,7 @@
  * <root>/<seg ns>/e/<hh>/<sha256(key)>.bce   entry: file header + core bytes
  * <root>/<seg ns>/s/<sha256(tag)>            tag stamp (JSON { at, until })
  * <root>/<seg ns>/n/<sha256(key)>.cnt        counter (JSON { value, expiresAt, createdAt })
+ * <root>/<seg ns>/d/<sha256(key)>.hll        distinct-count sketch: expiresAt (f64 LE, -1 none), then the sketch
  * <root>/<seg ns>/l/<sha256(key)>.lock       per-key lock file (JSON { owner, expiresAt })
  * <root>/bus.log                             append-only bus log
  * ```
@@ -22,7 +23,8 @@
  * torn entry. **Locks** are `O_EXCL` lock files, stale after their TTL and
  * broken by renaming them aside (bun-jobs' `#lockFile` pattern), so a dead
  * holder's lock lapses and a live one is never stolen. **Counters and lock
- * operations run under the per-key lock file.**
+ * operations run under the per-key lock file**, and so do distinct-count
+ * sketches (`pfAdd`): read, merged and renamed into place under it.
  *
  * **Tags** are `stamps` mode (§3.6): `invalidateTags` writes one stamp file
  * per tag, the core's read-side check invalidates, and the sweeper reclaims
@@ -59,6 +61,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { sketchAdd, sketchCount } from "../core/hll";
 import { lastWritePerKey } from "./batch";
 import { encodeSegment } from "./file-names";
 
@@ -195,6 +198,7 @@ class FileDriver implements CacheDriver {
     tags: "stamps",
     fence: "atomic",
     bus: "poll",
+    distinctCount: true,
   };
 
   readonly #options: Required<
@@ -274,6 +278,37 @@ class FileDriver implements CacheDriver {
   /** The counter file for a key. */
   #counterPath(ns: string, key: string): string {
     return join(this.#nsDir(ns), "n", `${hash(key)}.cnt`);
+  }
+
+  /** The distinct-count sketch file for a key. */
+  #sketchPath(ns: string, key: string): string {
+    return join(this.#nsDir(ns), "d", `${hash(key)}.hll`);
+  }
+
+  /**
+   * The live sketch at `path` (its bytes after the 8-byte expiry), and its
+   * expiry; `undefined` when there is none, or it ended (then unlinked).
+   */
+  async #readSketch(
+    path: string,
+  ): Promise<{ bytes: Uint8Array; expiresAt: number | null } | undefined> {
+    let file: Uint8Array;
+    try {
+      file = await readFile(path);
+    } catch {
+      return undefined;
+    }
+    if (file.length < 8) return undefined;
+    const expiry = new DataView(file.buffer, file.byteOffset, 8).getFloat64(
+      0,
+      true,
+    );
+    const expiresAt = expiry === NO_EXPIRY ? null : expiry;
+    if (expiresAt !== null && expiresAt <= this.#now()) {
+      await unlink(path).catch(() => undefined);
+      return undefined;
+    }
+    return { bytes: file.subarray(8), expiresAt };
   }
 
   /** The lock file for a key (or another named lock). */
@@ -484,6 +519,13 @@ class FileDriver implements CacheDriver {
       ) {
         count++;
       }
+      if (
+        await unlink(this.#sketchPath(ns, key))
+          .then(() => true)
+          .catch(() => false)
+      ) {
+        count++;
+      }
     }
     return count;
   }
@@ -593,6 +635,45 @@ class FileDriver implements CacheDriver {
     } finally {
       await release();
     }
+  }
+
+  /** Under the per-key lock, as `increment`: read, merged, renamed into place. */
+  async pfAdd(
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ): Promise<boolean> {
+    const release = await this.#holdKeyLock(ns, key);
+    try {
+      const path = this.#sketchPath(ns, key);
+      const live = await this.#readSketch(path);
+      const { sketch, changed } = sketchAdd(live?.bytes, elements);
+      if (!changed) return false;
+      const expiresAt =
+        live === undefined
+          ? ttl === null
+            ? null
+            : this.#now() + ttl
+          : live.expiresAt;
+      const file = new Uint8Array(8 + sketch.length);
+      new DataView(file.buffer).setFloat64(0, expiresAt ?? NO_EXPIRY, true);
+      file.set(sketch, 8);
+      await this.#writeAtomic(path, file);
+      return true;
+    } finally {
+      await release();
+    }
+  }
+
+  async pfCount(ns: string, keys: readonly string[]): Promise<number> {
+    const sketches = await Promise.all(
+      keys.map(
+        async (key) =>
+          (await this.#readSketch(this.#sketchPath(ns, key)))?.bytes,
+      ),
+    );
+    return sketchCount(sketches);
   }
 
   async getCounter(
@@ -916,6 +997,11 @@ class FileDriver implements CacheDriver {
           if (expiresAt !== undefined && expiresAt <= now) {
             await unlink(file.path).catch(() => undefined);
           }
+        }
+      }
+      for (const file of await this.#walk(join(nsDir, "d"))) {
+        if (file.path.endsWith(".hll")) {
+          await this.#readSketch(file.path); // unlinks an ended one
         }
       }
       for (const file of await this.#walk(join(nsDir, "n"))) {

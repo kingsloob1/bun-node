@@ -391,6 +391,17 @@ export class RedundantDriver implements CacheDriver {
     { value: number; expiresAt: number | null; createdAt: number } | undefined
   >;
 
+  /** Adds to a distinct-count sketch on the primary only (`counters: "primary"`, a primary with `distinctCount`). */
+  readonly pfAdd?: (
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ) => Promise<boolean>;
+
+  /** Counts distinct elements on the primary only. */
+  readonly pfCount?: (ns: string, keys: readonly string[]) => Promise<number>;
+
   /** Takes a lock on the primary only (`counters: "primary"`, a primary with locks). */
   readonly acquireLock?: (
     ns: string,
@@ -565,6 +576,23 @@ export class RedundantDriver implements CacheDriver {
         this.getCounter = async (ns, key) => await this.#getCounter(ns, key);
       }
       if (
+        primary.capabilities.distinctCount === true &&
+        primary.pfAdd !== undefined &&
+        primary.pfCount !== undefined
+      ) {
+        // Sketches are the primary's, as counters are (§5.3).
+        this.pfAdd = async (ns, key, elements, ttl) =>
+          await this.#onPrimary(
+            "pfAdd",
+            async (driver) => await driver.pfAdd!(ns, key, elements, ttl),
+          );
+        this.pfCount = async (ns, keys) =>
+          await this.#onPrimary(
+            "pfCount",
+            async (driver) => await driver.pfCount!(ns, keys),
+          );
+      }
+      if (
         primary.capabilities.lock &&
         primary.acquireLock !== undefined &&
         primary.releaseLock !== undefined
@@ -604,6 +632,7 @@ export class RedundantDriver implements CacheDriver {
       ...this.#fixed,
       atomicIncrement: onPrimary && this.increment !== undefined,
       lock: onPrimary && this.acquireLock !== undefined,
+      distinctCount: onPrimary && this.pfAdd !== undefined,
     };
   }
 

@@ -21,6 +21,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { sketchAdd, sketchCount } from "../core/hll";
 
 /** `memoryDriver()`'s options. */
 export interface MemoryDriverOptions {
@@ -56,6 +57,14 @@ interface Counter {
   createdAt: number;
 }
 
+/** One distinct-count sketch (`lib/core/hll.ts`). */
+interface Sketch {
+  /** The encoded sketch. */
+  bytes: Uint8Array;
+  /** The hard expiry, epoch ms, set at creation only; `null` never expires. */
+  expiresAt: number | null;
+}
+
 /** One held lock. */
 interface Lock {
   /** Who holds it. */
@@ -82,6 +91,8 @@ interface NamespaceStore {
   stamps: Map<string, Stamp>;
   /** The counters. */
   counters: Map<string, Counter>;
+  /** The distinct-count sketches, beside the entries and counters of the same keys. */
+  sketches: Map<string, Sketch>;
   /** The locks. */
   locks: Map<string, Lock>;
 }
@@ -103,6 +114,7 @@ export class MemoryDriver implements CacheDriver {
     tags: "index",
     fence: "atomic",
     bus: "push",
+    distinctCount: true,
   };
 
   readonly #options: MemoryDriverOptions;
@@ -140,6 +152,7 @@ export class MemoryDriver implements CacheDriver {
           key,
           String(counter.value),
         ]),
+        ...[...store.sketches].flatMap(([key, sketch]) => [key, sketch.bytes]),
         ...store.locks.keys(),
       ]);
   }
@@ -172,6 +185,7 @@ export class MemoryDriver implements CacheDriver {
         tagIndex: new Map(),
         stamps: new Map(),
         counters: new Map(),
+        sketches: new Map(),
         locks: new Map(),
       };
       this.#stores.set(ns, store);
@@ -365,6 +379,9 @@ export class MemoryDriver implements CacheDriver {
       if (store.counters.delete(key)) {
         count++;
       }
+      if (store.sketches.delete(key)) {
+        count++;
+      }
     }
     return Promise.resolve(count);
   }
@@ -506,6 +523,48 @@ export class MemoryDriver implements CacheDriver {
     });
   }
 
+  /** The live sketch at `key`, dropping an ended one. */
+  #liveSketch(
+    store: NamespaceStore | undefined,
+    key: string,
+  ): Sketch | undefined {
+    const sketch = store?.sketches.get(key);
+    if (sketch === undefined) return undefined;
+    if (sketch.expiresAt !== null && sketch.expiresAt <= this.#now()) {
+      store?.sketches.delete(key);
+      return undefined;
+    }
+    return sketch;
+  }
+
+  /** Synchronous, so atomic within the process: read, merge and write in one turn. */
+  pfAdd(
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ): Promise<boolean> {
+    const store = this.#store(ns);
+    const live = this.#liveSketch(store, key);
+    const { sketch, changed } = sketchAdd(live?.bytes, elements);
+    if (live === undefined) {
+      store.sketches.set(key, {
+        bytes: sketch,
+        expiresAt: ttl === null ? null : this.#now() + ttl,
+      });
+    } else {
+      live.bytes = sketch;
+    }
+    return Promise.resolve(changed);
+  }
+
+  pfCount(ns: string, keys: readonly string[]): Promise<number> {
+    const store = this.#stores.get(ns);
+    return Promise.resolve(
+      sketchCount(keys.map((key) => this.#liveSketch(store, key)?.bytes)),
+    );
+  }
+
   acquireLock(
     ns: string,
     key: string,
@@ -550,6 +609,15 @@ export class MemoryDriver implements CacheDriver {
         }
         if (counter.expiresAt !== null && counter.expiresAt <= now) {
           store.counters.delete(key);
+          removed++;
+        }
+      }
+      for (const [key, sketch] of [...store.sketches]) {
+        if (removed >= limit) {
+          return Promise.resolve(removed);
+        }
+        if (sketch.expiresAt !== null && sketch.expiresAt <= now) {
+          store.sketches.delete(key);
           removed++;
         }
       }

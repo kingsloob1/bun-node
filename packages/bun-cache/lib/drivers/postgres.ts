@@ -39,6 +39,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { sketchAdd, sketchCount, sketchNamespace } from "../core/hll";
 import type {
   CounterRow,
   EntryRow,
@@ -92,6 +93,7 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
     tags: "index",
     fence: "atomic",
     bus: "push",
+    distinctCount: true,
   };
 
   /** Whether the tables are created `UNLOGGED`. */
@@ -485,9 +487,15 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
           DELETE FROM ${t.entries} WHERE ns = $1 AND k = ANY($2::text[]) RETURNING k
         ), untagged AS (
           DELETE FROM ${t.tags} WHERE ns = $1 AND k = ANY($2::text[])
+        ), sketches AS (
+          DELETE FROM ${t.entries} WHERE ns = $3 AND k = ANY($2::text[]) RETURNING k
         )
-        SELECT count(*)::int AS n FROM gone`,
-      [this.fit(ns), keys.map((key) => this.fit(key))],
+        SELECT ((SELECT count(*) FROM gone) + (SELECT count(*) FROM sketches))::int AS n`,
+      [
+        this.fit(ns),
+        keys.map((key) => this.fit(key)),
+        this.fit(sketchNamespace(ns)),
+      ],
     );
     return rows[0]?.n ?? 0;
   }
@@ -496,9 +504,82 @@ export class PostgresCacheDriver extends SqlCacheDriverBase {
     await this.ready();
     const t = this.tables;
     await this.sql.unsafe(
-      `WITH e AS (DELETE FROM ${t.entries} WHERE ns = $1), x AS (DELETE FROM ${t.tags} WHERE ns = $1) SELECT 1`,
-      [this.fit(ns)],
+      `WITH e AS (DELETE FROM ${t.entries} WHERE ns = $1 OR ns = $2), x AS (DELETE FROM ${t.tags} WHERE ns = $1) SELECT 1`,
+      [this.fit(ns), this.fit(sketchNamespace(ns))],
     );
+  }
+
+  /**
+   * In one transaction: the sketch row (in the sketch namespace `<ns>#d`,
+   * `n` `0` so the `maxEntries` cap never counts it) is created if absent,
+   * locked (`FOR UPDATE`), merged and written back, so concurrent additions
+   * from any process queue on the row. Timed by `clock_timestamp()`.
+   */
+  async pfAdd(
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ): Promise<boolean> {
+    await this.ready();
+    const e = this.tables.entries;
+    const twin = this.fit(sketchNamespace(ns));
+    const k = this.fit(key);
+    return await withLockRetry(
+      async () =>
+        await this.sql.begin(async (tx) => {
+          const [clock] = await tx.unsafe<{ now: string | number }[]>(
+            `SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now`,
+          );
+          const now = Number(clock?.now ?? Date.now());
+          const fresh = ttl === null ? null : now + ttl;
+          await tx.unsafe(
+            `INSERT INTO ${e} (ns, k, v, n, exp, tg, ca) VALUES ($1, $2, NULL, 0, $3, NULL, $4) ON CONFLICT (ns, k) DO NOTHING`,
+            [twin, k, fresh, now],
+          );
+          const [row] = await tx.unsafe<
+            {
+              v: Uint8Array | null;
+              exp: string | number | null;
+              ca: string | number | null;
+            }[]
+          >(`SELECT v, exp, ca FROM ${e} WHERE ns = $1 AND k = $2 FOR UPDATE`, [
+            twin,
+            k,
+          ]);
+          const exp =
+            row?.exp === null || row?.exp === undefined
+              ? null
+              : Number(row.exp);
+          const live = row !== undefined && (exp === null || exp > now);
+          const { sketch, changed } = sketchAdd(
+            live ? (row.v ?? undefined) : undefined,
+            elements,
+          );
+          if (changed) {
+            await tx.unsafe(
+              `UPDATE ${e} SET v = $3, n = 0, exp = $4, ca = $5, tg = NULL WHERE ns = $1 AND k = $2`,
+              [
+                twin,
+                k,
+                sketch,
+                live ? exp : fresh,
+                live ? Number(row.ca ?? now) : now,
+              ],
+            );
+          }
+          return changed;
+        }),
+    );
+  }
+
+  async pfCount(ns: string, keys: readonly string[]): Promise<number> {
+    await this.ready();
+    const rows = await this.sql.unsafe<{ v: Uint8Array | null }[]>(
+      `SELECT v FROM ${this.tables.entries} WHERE ns = $1 AND k = ANY($2::text[]) AND (exp IS NULL OR exp > floor(extract(epoch FROM clock_timestamp()) * 1000))`,
+      [this.fit(sketchNamespace(ns)), keys.map((key) => this.fit(key))],
+    );
+    return sketchCount(rows.map((row) => row.v ?? undefined));
   }
 
   async touch(
