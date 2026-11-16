@@ -888,3 +888,34 @@ export const typeIs: TypeIsFunction = typeIsFn as TypeIsFunction;
 export { default as mime } from "mime";
 /** The graceful stop both adapters' `close()` share (`closeDrainTimeout`). */
 export { drainAndStop, validateCloseDrainTimeout } from "./serverDrain";
+
+/**
+ * The signed envelope (`lib/envelope/`, bun-security plan §15.1, PR-P4):
+ * HMAC-SHA256 over a message's bytes, direction and timestamp, with a replay
+ * window and a nonce store; moved from bun-jobs' remote protocol. Also the
+ * browser-safe subpath `@kingsleyweb/bun-common/envelope`.
+ */
+export {
+  createRemoteNonceCache,
+  type EnvelopeCodec,
+  envelopeCodec,
+  type EnvelopeCodecOptions,
+  type EnvelopeConfigError,
+  type EnvelopeHeaderNames,
+  type HmacSha256,
+  REMOTE_ID_PATTERN,
+  REMOTE_SIGNATURE_WINDOW_MS,
+  type RemoteBody,
+  type RemoteNonceCacheOptions,
+  type RemoteNonceStore,
+  type RemoteSecret,
+  type RemoteSignatureDirection,
+  signEnvelope,
+  type SignEnvelopeOptions,
+  signEnvelopeWith,
+  subtleHmacSha256,
+  verifyEnvelope,
+  type VerifyEnvelopeOptions,
+  type VerifyEnvelopeResult,
+  verifyEnvelopeWith,
+} from "./envelope";

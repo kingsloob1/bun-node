@@ -94,6 +94,7 @@ the package's source.
       - [Pinning a peer's name to its session](#pinning-a-peers-name-to-its-session-identify)
   - [Structured logging](#structured-logging)
   - [Native utilities](#native-utilities)
+  - [Signed envelope](#signed-envelope-kingsleywebbun-commonenvelope)
 - [Examples](#examples)
   - [Example projects](#example-projects)
   - [bun-common examples](#bun-common-examples)
@@ -134,6 +135,7 @@ subpath is also reachable under `lib/` (`@kingsleyweb/bun-common/lib/sse` is
 | `@kingsleyweb/bun-common` | Everything server-side: the router, the adapter, request and response, validation, CORS, static files, compression, throttling, uploads, WebSockets, logging and the utilities | no |
 | `@kingsleyweb/bun-common/contract` | The contract core (`defineTransport`, the guards, `describeContract`, `channelContract`), re-exported from [`@kingsleyweb/bun-contract`](https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-contract#readme); see [Contracts](#contracts) | yes |
 | `@kingsleyweb/bun-common/sse` | Server-sent events: `sse()`, `sseVariants()`, the writer, `sseResponse()`, the parser and `createSseChannel()`; see [Server-sent events](#server-sent-events-ressse) | yes |
+| `@kingsleyweb/bun-common/envelope` | The signed envelope: `signEnvelope()`, `verifyEnvelope()`, the nonce cache and `envelopeCodec()`; see [Signed envelope](#signed-envelope-kingsleywebbun-commonenvelope) | yes |
 | `@kingsleyweb/bun-common/live` | Live cache-tag invalidation; see [Live invalidation](#live-invalidation-kingsleywebbun-commonlive) | no (`lib/live/contract` is) |
 | `@kingsleyweb/bun-common/webrtc` | The WebRTC signalling relay; see [WebRTC signalling](#webrtc-signalling-signallingcontract-and-signallingrelay) | no (`lib/webrtc/signalling` is) |
 | `@kingsleyweb/bun-common/lib/docs` | The OpenAPI and AsyncAPI generators, `toJsonSchema()`, `docsRouter()`, `devTypes()` and `typesHash()`; see [Generating the documents](#generating-the-documents-generateopenapi-and-generateasyncapi) | no |
@@ -4965,6 +4967,51 @@ tour
 
 The full export list is in
 [`lib/index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/lib/index.ts).
+
+### Signed envelope (`@kingsleyweb/bun-common/envelope`)
+
+An HMAC-SHA256 signature over a message's exact bytes, its direction
+(request or response) and a timestamp, carried in one header
+(`t=<seconds>,v1=<hex>`) and checked in constant time within a replay window
+(300 s either way, `REMOTE_SIGNATURE_WINDOW_MS`, which a verifier may narrow
+with `windowMs`). It moved here from bun-jobs' remote protocol, which
+re-exports it unchanged from `@kingsleyweb/bun-jobs/remote` with the same
+wire format; bun-security's signed requests use the same copy. Browser-safe,
+on WebCrypto, and also exported from the package root.
+
+```ts
+import {
+  createRemoteNonceCache,
+  signEnvelope,
+  verifyEnvelope,
+} from "@kingsleyweb/bun-common/envelope";
+
+const nonces = createRemoteNonceCache(); // replay protection, bounded
+const header = await signEnvelope(body, { direction: "request", secret });
+const result = await verifyEnvelope(body, header, {
+  direction: "request",
+  secret: [current, previous], // a rotation list: signs with the first, accepts any
+  nonces,
+});
+if (!result.ok) return new Response(result.detail, { status: result.status });
+```
+
+- **A bodyless request** (`body` `null`) is signed over an id instead
+  (`REMOTE_ID_PATTERN`), passed as `id` on both sides.
+- **A refusal** is a value, never a throw: `{ ok: false, code, status: 401,
+  detail }` with `code` one of `SIGNATURE_MISSING`, `SIGNATURE_INVALID`,
+  `SIGNATURE_TIMESTAMP` (with `skewMs`), `REPLAYED`. An unusable option (an empty
+  secret, a bad clock) throws `ConfigError`.
+- **`signEnvelopeWith` / `verifyEnvelopeWith`** take an `HmacSha256` of your
+  own, such as `node:crypto`'s `createHmac`, in place of the WebCrypto
+  default (`subtleHmacSha256`); both give the same bytes.
+- **`envelopeCodec({ configError, headers })`** returns the same functions
+  throwing your own error class and naming your own headers in a refusal's
+  `detail` (bun-jobs binds its `ConfigError` and `bun-jobs-signature` this
+  way). The wire format does not change.
+- **`RemoteNonceStore`** is the interface a shared nonce store implements
+  (`remember(nonce, expiresAt, now)`: `true` the first time); the cache is
+  one process's.
 
 ## Examples
 

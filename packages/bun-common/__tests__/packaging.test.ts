@@ -117,6 +117,16 @@ describe("package.json exports", () => {
     expect(manifest.exports["./lib/sse"]).toEqual(conditions);
   });
 
+  it("publishes the signed envelope at the browser-safe ./envelope subpath (PR-P4)", () => {
+    const conditions = {
+      "@kingsleyweb/source": "./lib/envelope/index.ts",
+      types: "./dts/envelope/index.d.ts",
+      default: "./lib/envelope/index.ts",
+    };
+    expect(manifest.exports["./envelope"]).toEqual(conditions);
+    expect(manifest.exports["./lib/envelope"]).toEqual(conditions);
+  });
+
   it("publishes WebRTC signalling at ./webrtc (typed-client webrtc.md §3)", () => {
     const conditions = {
       "@kingsleyweb/source": "./lib/webrtc/index.ts",
