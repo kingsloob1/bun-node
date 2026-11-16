@@ -616,8 +616,8 @@ const security = createSecurity({
   and bun-nest's `SecurityModule` (before the body is read by anything
   else), by `withSecurity`, and by `securityMiddleware` alone. A blocked or
   banned client's answers are refused, not verified. Under bun-nest, a
-  route-stage challenge (`SecurityGuard`) is still answered with the
-  refusal exception's `challenge_required` and no challenge.
+  route-stage challenge (`SecurityGuard`) answers the same page or
+  descriptor, as a `SecurityChallengeException`.
 
 **Providers.** `powChallenge({ secret })` is the built-in proof of work, no
 third party: ALTCHA's v1 wire format (its MIT widget can solve it), bound to
