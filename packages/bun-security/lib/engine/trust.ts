@@ -63,7 +63,8 @@ export type SecurityWarningKind =
   | "bans.aggregated"
   | "canary.used"
   | "store.unavailable"
-  | "login.risky-success";
+  | "login.risky-success"
+  | "crawler.conflict";
 
 /**
  * A warning (layers.md L2.5, L9.6): the trust configuration looks wrong, or

@@ -14,6 +14,7 @@
 import type { Duration } from "@kingsleyweb/bun-common";
 import type { RequestRulesPolicy } from "../rules/types";
 import type { BotSignalsPolicy } from "../engine/signals";
+import type { CrawlersPolicy } from "../crawlers/policy";
 
 /**
  * How a rule, a list entry or a whole policy runs (layers.md §0.4):
@@ -110,6 +111,13 @@ export interface ListEntry {
   readonly code?: string;
 }
 
+/**
+ * A preset's switch: `true` (on, as it ships: enforced, or in dry run for
+ * the presets that ship in dry run), `"enforce"` (on, enforced) or `false`
+ * (off).
+ */
+export type PresetSetting = boolean | "enforce";
+
 /** What a verified service call is exempt from (layers.md L2.4). */
 export type ServiceExemption =
   "lists" | "bans" | "countedRules" | "globalLimits";
@@ -199,7 +207,8 @@ export type SubjectKeyPart =
   | "username"
   | "destination"
   | "destinationPrefix"
-  | "device";
+  | "device"
+  | "crawler";
 
 /**
  * How a limit counts (the throttle foundation's algorithms):
@@ -840,11 +849,17 @@ export interface SecurityPolicy {
   /** Bot and automation signals (layers.md L10.1): off unless set. */
   readonly botSignals?: BotSignalsPolicy;
   /**
-   * The built-in rules by id (`per-ip`, `login.account`, …): `true` turns
-   * one on, `false` off. A limit or counted rule of the policy with a
-   * preset's id replaces it. See `PRESETS`.
+   * The verified-crawler allowance (layers.md L3.2): on by default for
+   * Google, Bing, Apple and DuckDuckGo; `{ mode: "off" }` turns it off.
    */
-  readonly presets?: Readonly<Record<string, boolean>>;
+  readonly crawlers?: CrawlersPolicy;
+  /**
+   * The built-in rules by id (`per-ip`, `login.account`, …): `true` turns
+   * one on as it ships (enforced, or in dry run for `not_found_per_minute`),
+   * `"enforce"` turns it on enforced, `false` turns it off. A limit or
+   * counted rule of the policy with a preset's id replaces it. See `PRESETS`.
+   */
+  readonly presets?: Readonly<Record<string, PresetSetting>>;
   /** The sensitive endpoints' account defences (layers.md L11). */
   readonly profiles?: ProfilesPolicy;
   /** Identifier patterns, checked by `security.check()` (layers.md L11.7). */

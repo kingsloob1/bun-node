@@ -359,6 +359,7 @@ function fixedEngine(decision: Decision): Security<Request> {
     policy: real.policy,
     closed: false,
     challenge: undefined,
+    crawlerConflicts: () => [],
     evaluate: async () => {
       await Bun.sleep(1);
       return decision;

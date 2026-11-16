@@ -39,9 +39,11 @@ const RULE = {
   duration: "1h",
 } as const;
 
-/** The rules of the policy itself, the presets left out. */
+/** The rules of the policy itself, the presets (and the crawlers' own limit, PR-S12) left out. */
 const own = <T extends { readonly id: string }>(rules: readonly T[]): T[] =>
-  rules.filter((rule) => !Object.hasOwn(PRESETS, rule.id));
+  rules.filter(
+    (rule) => !Object.hasOwn(PRESETS, rule.id) && rule.id !== "crawler",
+  );
 
 describe("limits", () => {
   it("accepts ConcaveHR's sign-in pair, and every field", () => {

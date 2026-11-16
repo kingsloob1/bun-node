@@ -57,7 +57,7 @@ export function stageOf(rule: StagedRule): EvaluationStage {
  */
 export function keyStage(key: CompiledKey): EvaluationStage {
   for (const part of key.parts) {
-    if (part !== "ip") return "route";
+    if (part !== "ip" && part !== "crawler") return "route";
   }
   return "early";
 }

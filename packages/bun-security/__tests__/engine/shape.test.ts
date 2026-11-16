@@ -12,7 +12,13 @@ import { facts, fakeClock } from "../helpers";
 /** An engine, quiet. */
 function engine(policy: SecurityPolicy = {}) {
   // A clock that does not move: scores do not decay between requests.
-  return createSecurity({ policy, now: fakeClock().now, logger: () => {} });
+  return createSecurity({
+    // The managed probe set (on in dry run by default since PR-S12) is
+    // left out: these cases are about other layers.
+    policy: { requestRules: { managed: false }, ...policy },
+    now: fakeClock().now,
+    logger: () => {},
+  });
 }
 type Engine = ReturnType<typeof engine>;
 

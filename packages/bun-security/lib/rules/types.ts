@@ -192,8 +192,9 @@ export interface RequestRulesPolicy {
   /** The policy's own rules, in order (at most 500). */
   readonly rules?: readonly RequestRule[];
   /**
-   * The managed probe set: `true` (on, in dry run), its settings, or
-   * `false`. Off by default.
+   * The managed probe set: `true` (on, in dry run), its settings
+   * (`{ mode: "enforce" }` to act), or `false`. Default on, in dry run
+   * (since PR-S12, a verified crawler being exempt from it).
    */
   readonly managed?: boolean | ManagedRulesPolicy;
   /** The most characters a `regex` reads of a target, from 16 to 8,192. Default 1,024. */

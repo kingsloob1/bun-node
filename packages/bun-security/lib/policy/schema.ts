@@ -16,6 +16,7 @@ import type { Duration, StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import { parseCidr } from "../ip/address";
 import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
+import { validateCrawlers } from "../crawlers/policy";
 import { validateRequestRules } from "../rules/schema";
 import { validateBotSignals } from "../engine/signals";
 import { validateSensitive } from "./sensitiveSchema";
@@ -86,6 +87,7 @@ const KEY_PARTS: ReadonlySet<SubjectKeyPart> = new Set([
   "destination",
   "destinationPrefix",
   "device",
+  "crawler",
 ]);
 /** The limit algorithms. */
 const ALGORITHMS = new Set(["sliding-window", "fixed-window", "gcra"]);
@@ -1396,6 +1398,7 @@ const POLICY_KEYS = [
   "presets",
   "profiles",
   "identifiers",
+  "crawlers",
 ];
 
 /**
@@ -1667,6 +1670,9 @@ export function validatePolicy(
     issues.add(issue.path, issue.message);
   }
   for (const issue of validateBotSignals(input.botSignals)) {
+    issues.add(issue.path, issue.message);
+  }
+  for (const issue of validateCrawlers(input.crawlers)) {
     issues.add(issue.path, issue.message);
   }
   for (const issue of validateSensitive(input)) {

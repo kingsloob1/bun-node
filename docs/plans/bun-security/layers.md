@@ -531,7 +531,15 @@ because an allowance never makes a crawler crawl.
 **v1:** the registry with the default set, `ranges` and `rdns`
 verification, the cache and its bounds, the policy option with every
 exemption, the per-crawler limit, the spoofed signal, the conflict check,
-dry run, and the events.
+dry run, and the events. **As built (PR-S12):** DuckDuckGo's range file is confirmed, so it
+is in the default set (ranges only: it publishes no reverse DNS); Bun's
+`node:dns` `reverse` answers IPv4 and IPv6 crawler PTRs and is the default
+resolver; a claimant that cannot be verified (a timeout, an error, a full
+queue, no data) is an ordinary client, and only a definite failure is
+`crawler.spoofed`; the conflict check runs at start, on `load()` and on
+`crawlerConflicts()`, since the compiler has no ranges; the alert on a
+crawler limited for a day and the analytics series are not built yet (plan
+§17.14).
 
 ---
 

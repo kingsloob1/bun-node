@@ -34,8 +34,9 @@ async function actions(security: Security, request: RequestFacts, n: number) {
 }
 
 describe("the presets", () => {
-  it("are on by default except not_found_per_minute, and every one is named and known", () => {
-    expect(ids({})).toEqual(
+  it("are all on by default (not_found_per_minute in dry run), and every one is named and known", () => {
+    // The verified crawlers' own limit (PR-S12) comes first, beside them.
+    expect(ids({}).filter((id) => id !== "crawler")).toEqual(
       Object.entries(PRESETS)
         .filter(([, preset]) => preset.on)
         .map(([id]) => id)
@@ -44,7 +45,10 @@ describe("the presets", () => {
           return order(a) - order(b);
         }),
     );
-    expect(PRESETS.not_found_per_minute?.on).toBe(false);
+    expect(PRESETS.not_found_per_minute?.on).toBe(true);
+    expect(PRESETS.not_found_per_minute?.rule.mode).toBe("dryRun");
+    expect(ids({})[0]).toBe("crawler");
+    expect(ids({ crawlers: { limit: false } })).not.toContain("crawler");
     expect(PROFILE_NAMES).toEqual(["login", "mfa", "otp", "reset", "signup"]);
     for (const [id, preset] of Object.entries(PRESETS)) {
       expect(preset.rule.id).toBe(id);
@@ -165,5 +169,83 @@ describe("the presets", () => {
     expect(
       (await security.evaluate(send("+2348012345679", "198.51.100.50"))).action,
     ).toBe("allow");
+  });
+});
+
+describe('a preset\'s switch: true, "enforce" or false', () => {
+  /** A preset's compiled mode, or `undefined` when it is not in force. */
+  function modeOf(
+    presets: Record<string, unknown>,
+    id: string,
+  ): string | undefined {
+    const internals = policyInternals(
+      compilePolicy({ presets: presets as never }),
+    );
+    return [...internals.limits, ...internals.countedRules].find(
+      (rule) => rule.id === id,
+    )?.mode;
+  }
+
+  it("true keeps the mode a preset ships with: enforced for per-ip, dry run for not_found_per_minute", () => {
+    expect(modeOf({ "per-ip": true }, "per-ip")).toBe("enforce");
+    expect(modeOf({ "login.ip": true }, "login.ip")).toBe("enforce");
+    expect(modeOf({ not_found_per_minute: true }, "not_found_per_minute")).toBe(
+      "dryRun",
+    );
+    // The default is the same as true.
+    expect(modeOf({}, "not_found_per_minute")).toBe("dryRun");
+    expect(modeOf({}, "per-ip")).toBe("enforce");
+  });
+
+  it('"enforce" turns any preset on, enforced', () => {
+    expect(
+      modeOf({ not_found_per_minute: "enforce" }, "not_found_per_minute"),
+    ).toBe("enforce");
+    expect(modeOf({ "per-user": "enforce" }, "per-user")).toBe("enforce");
+  });
+
+  it("false turns it off", () => {
+    expect(
+      modeOf({ not_found_per_minute: false }, "not_found_per_minute"),
+    ).toBeUndefined();
+    expect(modeOf({ "per-ip": false }, "per-ip")).toBeUndefined();
+  });
+
+  it("enforced, not_found_per_minute bans on its 121st not-found answer; on true it only logs (the control)", async () => {
+    const run = async (setting: true | "enforce") => {
+      const security = engine(
+        { presets: { not_found_per_minute: setting } },
+        fakeClock(),
+      );
+      for (let i = 0; i < 121; i++) {
+        const request = facts({ path: `/gone/${i}`, rawPath: `/gone/${i}` });
+        const decision = await security.evaluate(request, { track: true });
+        await security.complete(request, decision, {
+          status: 404,
+          routeNotFound: true,
+        });
+      }
+      return security.bans().length;
+    };
+    expect(await run("enforce")).toBe(1);
+    expect(await run(true)).toBe(0);
+  });
+
+  it("refuses any other value, with its path", () => {
+    for (const value of ["on", "dryRun", 1, null]) {
+      let issues: { path: readonly (string | number)[]; message: string }[] =
+        [];
+      try {
+        compilePolicy({ presets: { not_found_per_minute: value as never } });
+      } catch (error) {
+        issues = (error as { issues: typeof issues }).issues;
+      }
+      expect(issues.map((issue) => issue.path.join("."))).toEqual([
+        "presets.not_found_per_minute",
+      ]);
+      expect(issues[0]?.message).toStartWith(
+        'must be true (on, as it ships), "enforce" (on, enforced) or false (off)',
+      );
+    }
   });
 });

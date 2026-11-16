@@ -14,11 +14,28 @@
  * shared store over bun-cache (`cacheStore`, `hybridThrottleStore`).
  */
 export { ACTION_SEVERITY } from "./engine/actions";
+export type { CrawlerConflict } from "./crawlers/conflicts";
+export {
+  CRAWLER_EXEMPTIONS,
+  type CrawlerExemption,
+  type CrawlersPolicy,
+  type CrawlerVerifyMethod,
+  type CustomCrawler,
+} from "./crawlers/policy";
+export {
+  CRAWLER_IDS,
+  CRAWLERS,
+  type CrawlerDefinition,
+  type CrawlerId,
+  DEFAULT_CRAWLERS,
+} from "./crawlers/registry";
+export type { CrawlerResolver } from "./crawlers/verify";
 export type { Ban, BanSubject } from "./engine/bans";
 export type {
   ClientResolution,
   ClientSource,
   Decision,
+  DecisionCrawler,
   Explanation,
   ExplainStep,
   RuleHit,
@@ -140,6 +157,7 @@ export type {
   ProfilesPolicy,
   ListEntry,
   PolicyScope,
+  PresetSetting,
   SecurityAction,
   SecurityMode,
   SecurityPolicy,

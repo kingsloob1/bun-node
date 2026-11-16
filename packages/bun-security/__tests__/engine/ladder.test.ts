@@ -19,7 +19,13 @@ import type { FakeClock } from "../helpers";
 
 /** An engine on a fake clock, quiet. */
 function engine(policy: SecurityPolicy, clock: FakeClock = fakeClock()) {
-  return createSecurity({ policy, now: clock.now, logger: () => {} });
+  return createSecurity({
+    // The managed probe set (on in dry run by default since PR-S12) is
+    // left out: these cases are about other layers.
+    policy: { requestRules: { managed: false }, ...policy },
+    now: clock.now,
+    logger: () => {},
+  });
 }
 type Engine = ReturnType<typeof engine>;
 

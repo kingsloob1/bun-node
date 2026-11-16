@@ -19,7 +19,13 @@ import { facts, fakeClock } from "../helpers";
 
 /** An engine on a fake clock, quiet. */
 function engine(policy: SecurityPolicy) {
-  return createSecurity({ policy, now: fakeClock().now, logger: () => {} });
+  return createSecurity({
+    // The managed probe set (on in dry run by default since PR-S12) is
+    // left out: these cases are about other layers.
+    policy: { requestRules: { managed: false }, ...policy },
+    now: fakeClock().now,
+    logger: () => {},
+  });
 }
 
 /** `evaluate()`, required to be synchronous (the memory store). */
@@ -82,7 +88,10 @@ describe("stageOf: which stage counts a rule", () => {
     expect(
       Object.fromEntries(
         internals.limits
-          .filter((limit) => !Object.hasOwn(PRESETS, limit.id))
+          .filter(
+            (limit) =>
+              !Object.hasOwn(PRESETS, limit.id) && limit.id !== "crawler",
+          )
           .map((limit) => [limit.id, stageOf(limit)]),
       ),
     ).toEqual({
