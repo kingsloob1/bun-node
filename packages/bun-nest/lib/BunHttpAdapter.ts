@@ -753,18 +753,31 @@ interface BunBeforeWriteContextBase {
   /** The request being answered. */
   readonly request: BunRequest;
   /**
-   * The status that will be written: the native `Response`'s, so final (a
+   * The native `Response` that will be written: as produced, or as the
+   * last hook before this one replaced it. Return a new `Response` to
+   * replace it; a replacement may reuse its body (`new Response(native.body,
+   * …)`), which is why the one replaced is not cancelled. Clone it to read
+   * its body; a stream's must not be read.
+   */
+  readonly native: Response;
+  /**
+   * The status that will be written: {@link native}'s, so final (a
    * redirect's 3xx, a freshness 304, a `StreamableFile`'s 200).
    */
   readonly status: number;
   /**
-   * The headers exactly as they will be written: the native `Response`'s
-   * own `Headers`, live. Changing them is unsupported (a redirect's are
-   * immutable, and what a change reaches is not defined): this is a check,
-   * and a frozen copy for every response would cost more than the check.
+   * The headers exactly as they will be written: {@link native}'s own
+   * `Headers`, live. A hook may change them in place (`set`, `append`,
+   * `delete`), and the change is written; Bun allows it on every
+   * `Response`, a redirect's included. In phase `"response"` the change
+   * stays on a response a later hook refuses, which is discarded.
    */
   readonly headers: Headers;
-  /** The body, by kind; worked out on first read, so a hook that ignores it pays nothing. */
+  /**
+   * The body, by kind; worked out on first read, so a hook that ignores it
+   * pays nothing. After a replacement, `{ kind: "response" }` with the
+   * replacement as its value.
+   */
   readonly body: BunBeforeWriteBody;
 }
 
@@ -776,9 +789,17 @@ export interface BunBeforeWriteResponseContext extends BunBeforeWriteContextBase
   readonly response: BunResponse;
 }
 
-/** A response the adapter's error handling produced. */
+/**
+ * A response the adapter's error handling produced: the answer to an error
+ * raised outside Nest's own handling (in middleware registered on the
+ * adapter itself, while the body was read or decoded, or a
+ * phase-`"response"` refusal's, answered on a fresh response), or the
+ * payload guard's `413`. An error in Nest middleware, a guard or a route is
+ * answered by Nest's exception layer on the request's own response, in
+ * phase `"response"`.
+ */
 export interface BunBeforeWriteErrorContext extends BunBeforeWriteContextBase {
-  /** A response the error handling produced: a throw is logged, never applied. */
+  /** A response the error handling produced: changes and replacements apply; a throw is logged, never applied. */
   readonly phase: "error";
   /** None: the error handling answers on a response of its own. */
   readonly response: undefined;
@@ -790,13 +811,26 @@ export type BunBeforeWriteContext =
 
 /**
  * A hook registered with {@link BunHttpAdapter.addBeforeWriteHook}: it sees a
- * response before anything of it is written. Returning passes it; throwing,
- * or returning a promise that rejects, refuses it with that error. A
- * promise holds the response, unwritten, until it settles.
+ * response before anything of it is written, and may change it, as
+ * bun-common's `BeforeWriteHook` does:
+ *
+ * - **pass:** return nothing (headers changed in place are kept). Any other
+ *   value that is neither a `Response` nor a promise is a refusal with a
+ *   `TypeError`, as in bun-common (#801; it used to pass);
+ * - **replace:** return a `Response`, which later hooks see (as
+ *   {@link BunBeforeWriteContextBase.native}) and which is written instead.
+ *   The one replaced is not cancelled, so a replacement may reuse its body;
+ * - **refuse:** throw, or reject. In phase `"response"` the response is
+ *   discarded (its body and a replacement's cancelled) and the error goes to
+ *   the error handling, whose answer the hooks see in phase `"error"`; in
+ *   phase `"error"` a refusal is logged, never applied, so a check cannot
+ *   loop, and the response goes out as the hooks before it left it;
+ * - **hold:** return a promise of any of these; the response waits,
+ *   unwritten, until it settles.
  */
 export type BunBeforeWriteHook = (
   context: BunBeforeWriteContext,
-) => void | PromiseLike<void>;
+) => Response | void | PromiseLike<Response | void>;
 
 /**
  * A hook registered with {@link BunHttpAdapter.addBeforeReadHook}, as
@@ -812,6 +846,16 @@ export type BunBeforeReadHook<customWebsocketDataType = unknown> = (
   request: Request,
   server: BunWebSocketServerType<customWebsocketDataType>,
 ) => Response | void | PromiseLike<Response | void>;
+
+/**
+ * The error a before-write hook's result that is neither a `Response` nor
+ * nothing (nor a promise of either) becomes: bun-common's message (#801).
+ */
+function badBeforeWriteResult(value: unknown): TypeError {
+  return new TypeError(
+    `A before-write hook must return a Response or nothing, or a promise of either; got ${typeof value}`,
+  );
+}
 
 /** The before-write state, created with the first hook (see `addBeforeWriteHook`). */
 interface BeforeWriteState {
@@ -864,8 +908,10 @@ function bodyOfSent(sent: unknown, native: Response): BunBeforeWriteBody {
 
 /** One check of one native response; see `addBeforeWriteHook`. */
 class BeforeWriteContext {
-  /** The body kind, once read. */
+  /** The body kind, once read; dropped when a hook replaces the response. */
   #body: BunBeforeWriteBody | undefined = undefined;
+  /** The response to write: {@link produced}, or the last replacement. */
+  #native: Response;
 
   constructor(
     /** The request being answered. */
@@ -874,13 +920,26 @@ class BeforeWriteContext {
     readonly response: BunResponse | undefined,
     /** Whose response it is; see {@link BunBeforeWriteContext}. */
     readonly phase: "response" | "error",
-    /** The native response that will be written. */
-    readonly native: Response,
+    /** The native response that was produced, kept to discard it on a refusal. */
+    readonly produced: Response,
     /** Whether it is a stream opened with `write()`/`flushHeaders()`. */
     readonly streamed: boolean,
     /** Where `reply()` and the capture transform recorded bodies. */
     readonly state: BeforeWriteState,
-  ) {}
+  ) {
+    this.#native = produced;
+  }
+
+  /** The native response that will be written. */
+  get native(): Response {
+    return this.#native;
+  }
+
+  /** Takes a hook's replacement: later hooks, and the write, see it. */
+  replace(replacement: Response): void {
+    this.#native = replacement;
+    this.#body = undefined;
+  }
 
   /** The native response's status. */
   get status(): number {
@@ -1647,7 +1706,10 @@ export class BunHttpAdapter<
     // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
     // rejected with 413 before any route handler or middleware runs.
     if (req.isPayloadTooLarge) {
-      return BunRequest.payloadTooLargeResponse(req);
+      const tooLarge = BunRequest.payloadTooLargeResponse(req);
+      return this.#beforeWriteHooks === undefined
+        ? tooLarge
+        : this.#checkErrorAnswer(req, tooLarge);
     }
 
     // A body refused for its `Content-Encoding` while the request was built
@@ -1987,17 +2049,29 @@ export class BunHttpAdapter<
    * is written** — its final status, its headers exactly as they will be
    * written, and its body (the value of a buffered one, the kind of a
    * stream, `StreamableFile` or `Blob`; see {@link BunBeforeWriteBody}) —
-   * and may refuse it. Not Nest's `setOnResponseHook`, which runs after the
-   * send. Made for response validation (bun-validate): it covers what an
-   * interceptor's `map()` cannot see — redirects, `StreamableFile`, plain
-   * `@Res()`, `@Render`, not-found answers and headers the adapter adds.
+   * and may change its headers in place, replace it, hold it or refuse it,
+   * with bun-common's `addBeforeWriteHook` contract (see
+   * {@link BunBeforeWriteHook}). Not Nest's `setOnResponseHook`, which runs
+   * after the send. It covers what an interceptor's `map()` and a
+   * response's transforms cannot see — redirects, `StreamableFile`, plain
+   * `@Res()`, `@Render`, not-found answers, headers the adapter adds, and
+   * the answers the error handling writes on a response of its own (an
+   * error in middleware on the adapter itself or while the body is read, a
+   * refusal's): response validation (bun-validate), and headers every
+   * answer must carry.
    *
    * - **When:** once the native `Response` exists and before it is handed to
    *   `Bun.serve` (or resolved by {@link fetch}): Bun writes nothing before
    *   that. A stream opened with `write()`/`flushHeaders()` is checked as it
    *   opens, before its first byte; its chunks are not seen. Not for a
-   *   WebSocket upgrade, or the payload guard's 413.
-   * - **Pass:** return (a warning mode logs first).
+   *   WebSocket upgrade (a successful one writes no response), an answer a
+   *   before-read hook gave, or an error raised before the request was
+   *   built (it carries no request to give the hook).
+   * - **Pass:** return nothing (a warning mode logs first). Headers changed
+   *   in place on `headers` are written.
+   * - **Replace:** return a `Response`; later hooks see it, and it is
+   *   written instead. The one replaced is not cancelled, so the
+   *   replacement may reuse its body.
    * - **Refuse:** throw, or return a promise that rejects. The response is
    *   discarded — its body cancelled, so a `StreamableFile`'s source is
    *   destroyed — and the error goes to the error handling as a route's own
@@ -2010,14 +2084,16 @@ export class BunHttpAdapter<
    *   `requestTimeout` is set, a hold that outlasts it is refused with
    *   `Request Timedout`, answered as a timed-out handler is.
    * - **Phase `"error"`:** a response the error handling produced (a
-   *   refusal's own 500 among them) is seen too, and a throw there is
-   *   logged, never applied, so a check cannot loop.
+   *   refusal's own 500, an adapter middleware's or the body parser's
+   *   error, the payload guard's 413) is seen too. Changes and replacements apply; a
+   *   throw there is logged, never applied, so a check cannot loop.
    * - **`HEAD`:** checked as the GET it reuses — the GET's status, headers
    *   and body kind; Bun then drops the body.
    *
-   * Hooks run in registration order; the first to refuse wins and the rest
-   * do not run. Returns a function that removes this hook. With no hook
-   * registered the response path is unchanged: one field read.
+   * Hooks run in registration order, each seeing the response the one
+   * before it left; the first to refuse wins and the rest do not run.
+   * Returns a function that removes this hook. With no hook registered the
+   * response path is unchanged: one field read.
    *
    * @example
    * ```ts
@@ -2025,6 +2101,10 @@ export class BunHttpAdapter<
    *   if (phase === "response" && status === 200 && !headers.has("x-trace")) {
    *     throw new Error("missing x-trace");
    *   }
+   * });
+   * // Every answer, an error's included, carries the header.
+   * adapter.addBeforeWriteHook(({ headers }) => {
+   *   headers.set("x-content-type-options", "nosniff");
    * });
    * ```
    */
@@ -2103,22 +2183,45 @@ export class BunHttpAdapter<
       native,
       streamed,
       state,
-    ) as unknown as BunBeforeWriteContext;
-    for (let i = 0; i < hooks.length; i++) {
-      let verdict: void | PromiseLike<void>;
-      try {
-        verdict = hooks[i](context);
-      } catch (error) {
-        return this.#refuseBeforeWrite(res, native, error);
-      }
-      if (isThenable(verdict)) {
-        return this.#holdBeforeWrite(hooks, i, verdict, context).then(
-          () => native,
-          (error: unknown) => this.#refuseBeforeWrite(res, native, error),
+    );
+    let held: Promise<Response> | undefined;
+    try {
+      held = this.#runBeforeWrite(hooks, context);
+    } catch (error) {
+      return this.#refuseBeforeWrite(res, context, error);
+    }
+    return held === undefined
+      ? context.native
+      : held.catch((error: unknown) =>
+          this.#refuseBeforeWrite(res, context, error),
         );
+  }
+
+  /**
+   * Runs `hooks` over `context`, taking each replacement: `undefined` when
+   * every hook settled synchronously (the response to write is then
+   * `context.native`), or a promise of the response once one held. A
+   * refusal is thrown, or rejected once a hook held.
+   */
+  #runBeforeWrite(
+    hooks: BunBeforeWriteHook[],
+    context: BeforeWriteContext,
+  ): Promise<Response> | undefined {
+    const view = context as unknown as BunBeforeWriteContext;
+    for (let i = 0; i < hooks.length; i++) {
+      const verdict = hooks[i](view);
+      if (verdict instanceof Response) {
+        context.replace(verdict);
+      } else if (isThenable(verdict)) {
+        return this.#holdBeforeWrite(hooks, i, verdict, context).then(
+          () => context.native,
+        );
+      } else if (verdict !== undefined) {
+        // Neither a Response nor nothing: a refusal, as bun-common's hooks.
+        throw badBeforeWriteResult(verdict);
       }
     }
-    return native;
+    return undefined;
   }
 
   /**
@@ -2129,15 +2232,23 @@ export class BunHttpAdapter<
   #holdBeforeWrite(
     hooks: BunBeforeWriteHook[],
     index: number,
-    verdict: PromiseLike<void>,
-    context: BunBeforeWriteContext,
+    verdict: PromiseLike<Response | void>,
+    context: BeforeWriteContext,
   ): Promise<void> {
+    const view = context as unknown as BunBeforeWriteContext;
     const rest = async () => {
-      await verdict;
+      const settled = await verdict;
+      if (settled instanceof Response) {
+        context.replace(settled);
+      } else if (settled !== undefined) {
+        throw badBeforeWriteResult(settled);
+      }
       for (let i = index + 1; i < hooks.length; i++) {
-        const next = hooks[i](context);
-        if (isThenable(next)) {
-          await next;
+        const next = await hooks[i](view);
+        if (next instanceof Response) {
+          context.replace(next);
+        } else if (next !== undefined) {
+          throw badBeforeWriteResult(next);
         }
       }
     };
@@ -2161,10 +2272,13 @@ export class BunHttpAdapter<
    */
   #refuseBeforeWrite(
     res: BunResponse,
-    native: Response,
+    context: BeforeWriteContext,
     error: unknown,
   ): Promise<never> {
-    native.body?.cancel().catch(() => undefined);
+    context.produced.body?.cancel().catch(() => undefined);
+    if (context.native !== context.produced) {
+      context.native.body?.cancel().catch(() => undefined);
+    }
     this.#beforeWriteState?.files.get(res)?.getStream().destroy();
     if (res.isStreamOpen) {
       res.destroy();
@@ -2202,10 +2316,23 @@ export class BunHttpAdapter<
       this.#watchErrorResponse(this.#onResponseHook, error);
     }
     const response = await this.handleRequestError(error);
+    const req = get(error, "req", undefined) as BunRequest | undefined;
+    return req === undefined ? response : this.#checkErrorAnswer(req, response);
+  }
+
+  /**
+   * The before-write hooks over an answer the error handling produced for
+   * `req` (phase `"error"`): changes and replacements apply; a refusal is
+   * logged, never applied, and the answer goes out as the hooks before it
+   * left it. `response` itself without hooks.
+   */
+  #checkErrorAnswer(
+    req: BunRequest,
+    response: Response,
+  ): Response | Promise<Response> {
     const hooks = this.#beforeWriteHooks;
     const state = this.#beforeWriteState;
-    const req = get(error, "req", undefined) as BunRequest | undefined;
-    if (hooks === undefined || state === undefined || req === undefined) {
+    if (hooks === undefined || state === undefined) {
       return response;
     }
     const context = new BeforeWriteContext(
@@ -2215,22 +2342,21 @@ export class BunHttpAdapter<
       response,
       false,
       state,
-    ) as unknown as BunBeforeWriteContext;
-    try {
-      for (let i = 0; i < hooks.length; i++) {
-        const verdict = hooks[i](context);
-        if (isThenable(verdict)) {
-          await this.#holdBeforeWrite(hooks, i, verdict, context);
-          break;
-        }
-      }
-    } catch (refusal) {
+    );
+    const refused = (refusal: unknown): Response => {
       this.logger.error(
-        "A before-write hook refused an error response; it is sent unchanged",
+        "A before-write hook refused an error response; it is sent as the hooks before it left it",
         refusal instanceof Error ? refusal.stack : String(refusal),
       );
+      return context.native;
+    };
+    let held: Promise<Response> | undefined;
+    try {
+      held = this.#runBeforeWrite(hooks, context);
+    } catch (refusal) {
+      return refused(refusal);
     }
-    return response;
+    return held === undefined ? context.native : held.catch(refused);
   }
 
   /**
