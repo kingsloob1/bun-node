@@ -277,6 +277,29 @@
         "typescript",
       ],
     },
+    "packages/bun-sql": {
+      "name": "@kingsleyweb/bun-sql",
+      "version": "3.2.0",
+      "dependencies": {
+        "@kingsleyweb/bun-common": "workspace:^",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "bun-types": "catalog:",
+        "mongodb": "catalog:",
+        "typescript": "catalog:",
+      },
+      "peerDependencies": {
+        "@types/bun": ">=1.4.2",
+        "mongodb": ">=6",
+        "typescript": "^5.9.3 || ^6.0.0",
+      },
+      "optionalPeers": [
+        "@types/bun",
+        "mongodb",
+        "typescript",
+      ],
+    },
     "packages/bun-ui": {
       "name": "@kingsleyweb/bun-ui",
       "version": "3.2.0",
@@ -532,6 +555,8 @@
     "@kingsleyweb/bun-nest": ["@kingsleyweb/bun-nest@workspace:packages/bun-nest"],
 
     "@kingsleyweb/bun-security": ["@kingsleyweb/bun-security@workspace:packages/bun-security"],
+
+    "@kingsleyweb/bun-sql": ["@kingsleyweb/bun-sql@workspace:packages/bun-sql"],
 
     "@kingsleyweb/bun-ui": ["@kingsleyweb/bun-ui@workspace:packages/bun-ui"],
 

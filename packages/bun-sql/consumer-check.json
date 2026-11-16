@@ -1,0 +1,206 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-sql writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-sql` from the repo root. Every spelling here worked at some point; removing one hides a regression.",
+  "workspaceDependencies": ["packages/bun-contract", "packages/bun-common"],
+  "entries": [
+    {
+      "$comment": "The barrel: every area's names, and the error seam.",
+      "spelling": "@kingsleyweb/bun-sql",
+      "values": [
+        "dialectFor",
+        "detectAdapter",
+        "declaredCollation",
+        "createSchema",
+        "renderColumn",
+        "renderIndex",
+        "renderIndexColumn",
+        "syncSqlSchema",
+        "resolveSyncOptions",
+        "readColumns",
+        "compareColumn",
+        "collationDrift",
+        "collationDriftWarning",
+        "createCollationGuard",
+        "encodePageCursor",
+        "decodePageCursor",
+        "keysetAfter",
+        "openSqlClient",
+        "sqlClientOptions",
+        "resolveConnectionUrl",
+        "toConnectionUrl",
+        "takeBooleanParam",
+        "databaseFromUrl",
+        "isTransientLockError",
+        "isPublicKeyRetrievalRefusal",
+        "withLockRetry",
+        "syncMongoIndexes",
+        "loadMongoClient",
+        "defaultConfigError"
+      ],
+      "types": [
+        "SqlDialect",
+        "SqlAdapter",
+        "AlterColumn",
+        "KeysetCursor",
+        "SchemaDefinition",
+        "TableDefinition",
+        "ColumnDefinition",
+        "IndexDefinition",
+        "CollatedIndexColumn",
+        "CreateSchemaOptions",
+        "SchemaChange",
+        "SchemaSyncOptions",
+        "ResolvedSyncOptions",
+        "SyncBackend",
+        "ColumnRow",
+        "IndexRow",
+        "SqlColumnRow",
+        "CollationDrift",
+        "ColumnDifference",
+        "CollationGuard",
+        "CursorPart",
+        "CursorPartType",
+        "ConnectionInput",
+        "SqlConnectionOptions",
+        "SqlClientLimits",
+        "UrlDefaults",
+        "MongoIndexSchema",
+        "MongoIndexDefinition",
+        "RetiredMongoIndex",
+        "MongoIndexDb",
+        "MongoIndexCollection",
+        "MongoIndexSyncOptions",
+        "MongoClientLike",
+        "MongoClientConstructor",
+        "SqlConfigError",
+        "SqlErrorOptions"
+      ],
+      "snippet": "const fail: t.SqlConfigError = (message, details) => new Error(`${message} ${JSON.stringify(details)}`);\nconst options: t.SqlErrorOptions = { configError: fail };\nconst dialect = m.dialectFor(\"sqlite\", options);\nexport type _dialectNotAny = Expect<IsAny<typeof dialect>>;\nconst _err: Error = m.defaultConfigError(\"x\", { a: 1 });\nexport const _t = [_err];"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/lib",
+      "values": ["dialectFor", "createSchema"],
+      "types": ["SqlDialect", "SchemaChange"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/dialect",
+      "values": ["dialectFor", "detectAdapter", "declaredCollation"],
+      "types": ["SqlDialect", "SqlAdapter", "AlterColumn", "KeysetCursor"],
+      "snippet": "const d: t.SqlDialect = m.dialectFor(m.detectAdapter(\"postgres://h/db\"));\nexport type _dialectNotAny = Expect<IsAny<typeof d>>;\nconst _doc: string = d.documentType;\nconst _inet: string | null = d.inetType;\nconst _up: string = d.upsert(\"t\", [\"a\"], [\"a\"], []);\nconst _own = m.dialectFor(\"mysql\", { configError: (message) => new RangeError(message) });\nexport const _x = [_doc, _inet, _up, _own];"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/lib/dialect",
+      "values": ["dialectFor"],
+      "types": ["SqlDialect"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/schema",
+      "values": [
+        "createSchema",
+        "renderColumn",
+        "renderIndex",
+        "renderIndexColumn"
+      ],
+      "types": [
+        "SchemaDefinition",
+        "TableDefinition",
+        "ColumnDefinition",
+        "IndexDefinition",
+        "CollatedIndexColumn",
+        "CreateSchemaOptions"
+      ],
+      "snippet": "declare const dialect: Parameters<typeof m.createSchema>[1];\nconst definition: t.SchemaDefinition = { tables: [{ name: \"t\", primaryKey: [\"id\"], columns: [{ name: \"id\", type: \"TEXT\", retype: false }] }], indexes: [{ name: \"ix_t\", table: \"t\", columns: [{ name: \"id\", collation: '\"C\"' }], predicate: \"id IS NOT NULL\" }] };\nconst _ddl: string[] = m.createSchema(definition, dialect, { existing: new Set([\"t\"]) });\nexport type _defNotAny = Expect<IsAny<t.TableDefinition>>;\nexport const _y = _ddl;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/lib/schema",
+      "values": ["createSchema"],
+      "types": ["SchemaDefinition"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/sync",
+      "values": [
+        "syncSqlSchema",
+        "resolveSyncOptions",
+        "readColumns",
+        "compareColumn",
+        "collationDrift",
+        "collationDriftWarning",
+        "createCollationGuard"
+      ],
+      "types": [
+        "SchemaChange",
+        "SchemaSyncOptions",
+        "ResolvedSyncOptions",
+        "SyncBackend",
+        "ColumnRow",
+        "IndexRow",
+        "SqlColumnRow",
+        "CollationDrift",
+        "ColumnDifference",
+        "CollationGuard"
+      ],
+      "snippet": "declare const backend: t.SyncBackend;\ndeclare const dialect: Parameters<typeof m.syncSqlSchema>[1];\nconst changes: Promise<t.SchemaChange[]> = m.syncSqlSchema(backend, dialect, { tables: [], indexes: [] }, m.resolveSyncOptions({ dryRun: true }));\nconst _kind: Equal<t.SchemaChange[\"kind\"], \"add-column\" | \"alter-column\" | \"create-index\" | \"drop-index\"> = true;\nconst guard: t.CollationGuard = m.createCollationGuard(\"@app/collation\");\nexport const _z = [changes, guard.claim(\"k\")];"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/lib/sync",
+      "values": ["syncSqlSchema"],
+      "types": ["SchemaChange"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/cursor",
+      "values": ["encodePageCursor", "decodePageCursor", "keysetAfter"],
+      "types": ["CursorPart", "CursorPartType", "KeysetCursor"],
+      "snippet": "const c: string = m.encodePageCursor(\"p1.\", \"k\", [\"w\"], [1, \"id\"]);\nconst parts: t.CursorPart[] = m.decodePageCursor(c, \"p1.\", \"k\", [\"w\"], [\"number\", \"string\"], { configError: (message) => new TypeError(message) });\nexport type _partNotAny = Expect<IsAny<t.CursorPart>>;\nexport const _w = parts;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/lib/cursor",
+      "values": ["encodePageCursor"],
+      "types": ["CursorPart"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/connection",
+      "values": [
+        "openSqlClient",
+        "sqlClientOptions",
+        "resolveConnectionUrl",
+        "toConnectionUrl",
+        "takeBooleanParam",
+        "databaseFromUrl",
+        "isTransientLockError",
+        "isPublicKeyRetrievalRefusal",
+        "withLockRetry"
+      ],
+      "types": [
+        "ConnectionInput",
+        "SqlConnectionOptions",
+        "SqlClientLimits",
+        "UrlDefaults"
+      ],
+      "snippet": "const options = m.sqlClientOptions(\"mysql\", { connection: { host: \"h\", allowPublicKeyRetrieval: true } }, \"It\");\nconst _url: string = options.url;\nconst _apk: boolean | undefined = options.allowPublicKeyRetrieval;\nconst retried: Promise<number> = m.withLockRetry(async () => 1);\nexport type _inputNotAny = Expect<IsAny<t.ConnectionInput>>;\nexport const _v = [_url, _apk, retried];"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/lib/connection",
+      "values": ["openSqlClient"],
+      "types": ["ConnectionInput"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/mongo",
+      "values": ["syncMongoIndexes", "loadMongoClient"],
+      "types": [
+        "MongoIndexSchema",
+        "MongoIndexDefinition",
+        "RetiredMongoIndex",
+        "MongoIndexDb",
+        "MongoIndexCollection",
+        "MongoIndexSyncOptions",
+        "MongoClientLike",
+        "MongoClientConstructor"
+      ],
+      "snippet": "declare const db: t.MongoIndexDb;\nconst schema: t.MongoIndexSchema = { indexes: [{ collection: \"c\", key: { a: 1, b: -1 }, expireAfterSeconds: 60 }], retired: [{ collection: \"c\", name: \"old_1\" }] };\nconst changes = m.syncMongoIndexes(db, schema, { dryRun: true, collectionOptions: { readPreference: \"primary\" } });\nexport type _changesNotAny = Expect<IsAny<Awaited<typeof changes>>>;\nconst Client: Promise<t.MongoClientConstructor> = m.loadMongoClient(\"It\");\nexport const _u = Client;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-sql/lib/mongo",
+      "values": ["syncMongoIndexes"],
+      "types": ["MongoIndexSchema"]
+    }
+  ]
+}
