@@ -12,9 +12,10 @@ from a policy compiled once, before your handler sees it.
 > limits, outcome signals, the plain `Bun.serve` integration, and the
 > bun-common adapter integration with security headers and CSRF, shared
 > state across processes (`./stores`), WebSocket message limits, request
-> rules, challenges with bot signals, and the sensitive endpoints (sign-in,
+> rules, challenges with bot signals, the sensitive endpoints (sign-in,
 > codes, resets: presets, the login defences, device cookies, identifier
-> checks). The control plane follows in later PRs.
+> checks), and IP intelligence (`./intel`). The control plane follows in
+> later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -102,7 +103,8 @@ per-minute gauges.
 ## Lists
 
 Each entry names one subject (`ip`: an address or CIDR range; `user`; `apiKey`
-id) and an action: `allow`, `block`, `challenge` (see
+id; `country` or `asn`, which need [IP intelligence](#ip-intelligence)) and an
+action: `allow`, `block`, `challenge` (see
 [Challenges](#challenges); a `block` without a challenge flow) or `drop`.
 `allow`, `block` and `drop` answer before [bans](#bans) are looked at; a
 `challenge` entry lets the bans decide first, so a banned client gets its
@@ -420,7 +422,9 @@ requestRules: {
 
 - **Targets:** `method`, `path` (the canonical path), `rawPath`, `query`,
   `queryParam`, `header`, `anyHeader`, `cookie` (whether one is sent),
-  `client` (`{ cidr }`), `contentLength`, `headerCount`; and, read in the
+  `client` (`{ cidr }`), `contentLength`, `headerCount`, the client's
+  `country`, `asn` (`{ equals }`, `{ in: [...] }`, `{ exists }`) and `class`
+  (see [IP intelligence](#ip-intelligence)); and, read in the
   route stage once routing and `identify()` have run, `routeKey`, `user`,
   `session`, `tenant`, `apiKey`. A rule that reads any of the last five runs
   in the route stage; every other runs in the early stage, before the body
@@ -643,6 +647,70 @@ run in the early stage.
 botSignals: { challengeAt: 2, browserPaths: ["/app/**"], weights: { headlessUserAgent: 2 } },
 ```
 
+## IP intelligence
+
+Country, ASN and classes such as `tor` and `hosting` for the policy's
+`country` and `asn` list entries, its `country`, `asn` and `class`
+conditions, and `botSignals.classes` (layers.md L5):
+
+```ts
+import {
+  ipIntel,
+  rangeFeed,
+  TOR_BULK_EXIT_LIST_URL,
+  torExitFeed,
+} from "@kingsleyweb/bun-security/intel";
+
+const intel = await ipIntel({
+  databases: ["/var/lib/geo/GeoLite2-Country.mmdb", "/var/lib/geo/GeoLite2-ASN.mmdb"],
+  feeds: [
+    torExitFeed({ url: TOR_BULK_EXIT_LIST_URL }),
+    rangeFeed({ id: "aws", class: "hosting", url: "https://ip-ranges.amazonaws.com/ip-ranges.json", format: "json", interval: "1d", minEntries: 1000 }),
+  ],
+  dir: "/var/lib/bun-security/ranges", // the last good copy of each feed, read back at start
+});
+intel.start(); // or call intel.refresh() from bun-jobs or your own scheduler
+
+const security = createSecurity({
+  policy: {
+    lists: [{ country: "KP", action: "block" }, { asn: 64500, action: "challenge" }],
+    requestRules: { rules: [{ id: "no-tor-logins", when: { all: [{ class: { equals: "tor" } }, { path: { prefix: "/login" } }] }, action: "block" }] },
+    botSignals: { classes: { hosting: 1 } },
+  },
+  intel,
+});
+```
+
+- **No data ships with the package.** Download the databases yourself and
+  give their paths: MaxMind GeoLite2 Country and ASN (a free account and
+  licence key, from maxmind.com; the GeoLite2 EULA asks for attribution and
+  that old copies be deleted within 30 days of a new release), DB-IP Lite
+  (CC BY 4.0, attribution and a link to db-ip.com), IPinfo Lite (CC BY-SA
+  4.0, a free token), or a commercial database. Any MaxMind DB (`.mmdb`)
+  file is read by the package's own reader; MaxMind's, DB-IP's and IPinfo's
+  record shapes are understood, and `extract` reads any other. Replace the
+  files on their release cadence (`geoipupdate` does it for MaxMind's) and
+  call `intel.reload()`.
+- **Classes come from range feeds** you configure (the URL is yours to
+  choose; nothing is fetched until `start()` or `refresh()`) and from static
+  `ranges` (`{ office: ["198.51.100.0/24"] }`). `format: "lines"` (one
+  address or range per line, the Tor list's and Cloudflare's), `"json"`
+  (every address or range anywhere in the document: AWS, Google Cloud,
+  Azure, Oracle) or your own parser.
+- **A bad copy never empties a class.** A feed's download is refused when it
+  is not `200`, is larger than `maxBytes` (16 MiB), cannot be read, or holds
+  fewer than `minEntries` ranges (100 for `torExitFeed`); the last good copy
+  stays, a warning is logged, and the feed is tried again after `retry`
+  (5 minutes). `intel.status()` shows each feed's state.
+- **A whole country is never allowed**: a `country` entry takes any action
+  but `allow` (the policy is refused, as an address allow wider than /8 is);
+  allow its addresses or its ASNs instead.
+- **A policy that needs what the engine cannot know is refused**:
+  `createSecurity()` and `load()` throw when a policy uses `country`, `asn`
+  or `class` without `intel`, when no database gives it, or when it names a
+  class no feed or range provides.
+- Lookups run only when the policy needs them, in the early stage, and are
+  cached per process (`cacheSize`, 50,000 addresses).
 ## Presets
 
 A policy gets built-in rules without writing them, each with an id

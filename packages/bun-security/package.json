@@ -81,6 +81,16 @@
       "types": "./dts/challenge/index.d.ts",
       "default": "./lib/challenge/index.ts"
     },
+    "./intel": {
+      "@kingsleyweb/source": "./lib/intel/index.ts",
+      "types": "./dts/intel/index.d.ts",
+      "default": "./lib/intel/index.ts"
+    },
+    "./lib/intel": {
+      "@kingsleyweb/source": "./lib/intel/index.ts",
+      "types": "./dts/intel/index.d.ts",
+      "default": "./lib/intel/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",

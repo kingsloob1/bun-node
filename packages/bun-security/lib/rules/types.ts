@@ -67,6 +67,16 @@ export interface StringMatcher {
   readonly ignoreCase?: boolean;
 }
 
+/** A test on the client's autonomous system number: exactly one of its keys. */
+export interface AsnMatcher {
+  /** Equal to. */
+  readonly equals?: number;
+  /** One of these. */
+  readonly in?: readonly number[];
+  /** Whether the databases know the address's ASN at all. */
+  readonly exists?: boolean;
+}
+
 /** A test on the client's address: exactly one of its keys. */
 export interface AddressMatcher {
   /** The address is in one of these ranges (`"203.0.113.0/24"`). */
@@ -78,7 +88,10 @@ export interface AddressMatcher {
  * `path` (the canonical path), `rawPath`, `query` (the whole query string),
  * `queryParam` (any value of one parameter), `header` (one header),
  * `anyHeader` (any header's value), `cookie` (whether a cookie is sent:
- * `exists` only), `client` (the address), `contentLength`, `headerCount`.
+ * `exists` only), `client` (the address), `contentLength`, `headerCount`,
+ * and from IP intelligence (layers.md L5; `createSecurity`'s `intel`):
+ * `country` (ISO 3166-1 alpha-2, case folded), `asn` and `class` (any of
+ * the address's classes: `tor`, `hosting`, …).
  * Route-stage targets: `routeKey` (the matched route) and the caller's
  * `user`, `session`, `tenant` and `apiKey`, so a rule using them runs once
  * the route and `identify()` are known.
@@ -95,6 +108,9 @@ export type RuleMatch =
   | { readonly client: AddressMatcher }
   | { readonly contentLength: NumberMatcher }
   | { readonly headerCount: NumberMatcher }
+  | { readonly country: StringMatcher }
+  | { readonly asn: AsnMatcher }
+  | { readonly class: StringMatcher }
   | { readonly routeKey: StringMatcher }
   | { readonly user: StringMatcher }
   | { readonly session: StringMatcher }

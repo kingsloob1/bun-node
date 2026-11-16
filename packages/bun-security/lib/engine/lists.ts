@@ -19,6 +19,7 @@
  * and without them, and when the outcome would differ it records the dry
  * entry's would-be action (layers.md §0.4).
  */
+import type { IntelLookup } from "../intel/types";
 import type { ParsedAddress } from "../ip/address";
 import type { CompiledEntry, PolicyInternals } from "../policy/compile";
 import type { ListAction } from "../policy/types";
@@ -138,11 +139,32 @@ export function evaluateLists(
   now: number,
   dryPolicy: boolean,
   trace?: ExplainStep[],
+  intel?: IntelLookup,
 ): ListOutcome {
   const byAddress = address ? policy.ips.match(address) : NONE;
   const byUser = user === undefined ? undefined : policy.users.get(user);
   const byKey = apiKey === undefined ? undefined : policy.apiKeys.get(apiKey);
-  if (byAddress.length === 0 && byUser === undefined && byKey === undefined) {
+  // Country and ASN entries (layers.md L5): the address is looked up only
+  // when the policy has some.
+  let byCountry: readonly CompiledEntry[] | undefined;
+  let byAsn: readonly CompiledEntry[] | undefined;
+  if (
+    address &&
+    intel !== undefined &&
+    (policy.countries.size > 0 || policy.asns.size > 0)
+  ) {
+    const record = intel.lookup(address);
+    if (record.country !== undefined)
+      byCountry = policy.countries.get(record.country);
+    if (record.asn !== undefined) byAsn = policy.asns.get(record.asn);
+  }
+  if (
+    byAddress.length === 0 &&
+    byUser === undefined &&
+    byKey === undefined &&
+    byCountry === undefined &&
+    byAsn === undefined
+  ) {
     trace?.push({
       layer: "L3",
       check: "list",
@@ -153,7 +175,13 @@ export function evaluateLists(
   const enforced: CompiledEntry[] = [];
   const all: CompiledEntry[] = [];
   let internal = false;
-  for (const group of [byAddress, byUser ?? NONE, byKey ?? NONE]) {
+  for (const group of [
+    byAddress,
+    byUser ?? NONE,
+    byKey ?? NONE,
+    byCountry ?? NONE,
+    byAsn ?? NONE,
+  ]) {
     for (const entry of group) {
       if (!applies(entry, path, now)) {
         trace?.push({

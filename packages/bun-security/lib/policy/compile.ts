@@ -270,7 +270,7 @@ export interface CompiledEntry {
   /** The entry's id. */
   readonly id: string;
   /** What kind of subject it matches; `internal` for the built-in list. */
-  readonly kind: "ip" | "user" | "apiKey" | "internal";
+  readonly kind: "ip" | "user" | "apiKey" | "country" | "asn" | "internal";
   /** The subject, canonical (a range as `base/bits`). */
   readonly value: string;
   /** Its action. */
@@ -325,6 +325,10 @@ export interface PolicyInternals {
   readonly users: ReadonlyMap<string, readonly CompiledEntry[]>;
   /** API key entries, by key id. */
   readonly apiKeys: ReadonlyMap<string, readonly CompiledEntry[]>;
+  /** Country entries, by ISO code (layers.md L5; need the engine's `intel`). */
+  readonly countries: ReadonlyMap<string, readonly CompiledEntry[]>;
+  /** ASN entries, by number (layers.md L5; need the engine's `intel`). */
+  readonly asns: ReadonlyMap<number, readonly CompiledEntry[]>;
   /** The service-token header. */
   readonly serviceHeader: string;
   /** The forwarded end-user address header. */
@@ -478,9 +482,9 @@ function ms(value: Duration, where: string): number {
 }
 
 /** Adds `entry` under `key` in `map`. */
-function addTo(
-  map: Map<string, CompiledEntry[]>,
-  key: string,
+function addTo<K>(
+  map: Map<K, CompiledEntry[]>,
+  key: K,
   entry: CompiledEntry,
 ): void {
   const list = map.get(key);
@@ -628,6 +632,8 @@ export function compilePolicy(
   const ips = new CidrTrie<CompiledEntry>();
   const users = new Map<string, CompiledEntry[]>();
   const apiKeys = new Map<string, CompiledEntry[]>();
+  const countries = new Map<string, CompiledEntry[]>();
+  const asns = new Map<number, CompiledEntry[]>();
 
   const internalRanges =
     source.internal === false
@@ -670,8 +676,18 @@ export function compilePolicy(
           ? "ip"
           : entry.user !== undefined
             ? "user"
-            : "apiKey",
-      value: cidr?.text ?? entry.user ?? entry.apiKey ?? "",
+            : entry.country !== undefined
+              ? "country"
+              : entry.asn !== undefined
+                ? "asn"
+                : "apiKey",
+      value:
+        cidr?.text ??
+        entry.user ??
+        entry.country ??
+        (entry.asn === undefined ? undefined : String(entry.asn)) ??
+        entry.apiKey ??
+        "",
       action: entry.action,
       override: entry.override === true,
       locked: entry.locked === true,
@@ -693,6 +709,9 @@ export function compilePolicy(
     if (cidr) ips.insert(cidr, compiled);
     else if (entry.user !== undefined) addTo(users, entry.user, compiled);
     else if (entry.apiKey !== undefined) addTo(apiKeys, entry.apiKey, compiled);
+    else if (entry.country !== undefined)
+      addTo(countries, entry.country, compiled);
+    else if (entry.asn !== undefined) addTo(asns, entry.asn, compiled);
     listEntries++;
   }
 
@@ -823,6 +842,8 @@ export function compilePolicy(
       ips,
       users,
       apiKeys,
+      countries,
+      asns,
       serviceHeader: source.serviceIdentity?.header ?? DEFAULT_SERVICE_HEADER,
       clientIpHeader:
         source.serviceIdentity?.clientIpHeader ?? DEFAULT_CLIENT_IP_HEADER,

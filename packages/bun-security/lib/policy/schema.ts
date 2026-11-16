@@ -329,6 +329,8 @@ const ENTRY_KEYS = [
   "ip",
   "user",
   "apiKey",
+  "country",
+  "asn",
   "action",
   "override",
   "locked",
@@ -345,6 +347,8 @@ const ENTRY_KEYS = [
 export function defaultEntryId(entry: ListEntry, cidr?: ParsedCidr): string {
   if (entry.ip !== undefined) return `ip:${cidr?.text ?? entry.ip}`;
   if (entry.user !== undefined) return `user:${entry.user}`;
+  if (entry.country !== undefined) return `country:${entry.country}`;
+  if (entry.asn !== undefined) return `asn:${entry.asn}`;
   return `apiKey:${entry.apiKey ?? ""}`;
 }
 
@@ -357,13 +361,36 @@ function checkEntry(
   index: number,
 ): void {
   if (!checkObject(issues, path, value, ENTRY_KEYS)) return;
-  const subjects = (["ip", "user", "apiKey"] as const).filter(
+  const subjects = (["ip", "user", "apiKey", "country", "asn"] as const).filter(
     (key) => value[key] !== undefined,
   );
   if (subjects.length !== 1) {
     issues.add(
       path,
-      `must have exactly one of ip, user, apiKey; got ${subjects.length === 0 ? "none" : subjects.join(", ")}`,
+      `must have exactly one of ip, user, apiKey, country, asn; got ${subjects.length === 0 ? "none" : subjects.join(", ")}`,
+    );
+  }
+  if (
+    value.country !== undefined &&
+    !(typeof value.country === "string" && /^[A-Z]{2}$/.test(value.country))
+  ) {
+    issues.add(
+      [...path, "country"],
+      `must be an ISO 3166-1 alpha-2 code in upper case ("KP"); got ${describe(value.country)}`,
+    );
+  }
+  if (
+    value.asn !== undefined &&
+    !(
+      typeof value.asn === "number" &&
+      Number.isSafeInteger(value.asn) &&
+      value.asn >= 0 &&
+      value.asn <= 4294967295
+    )
+  ) {
+    issues.add(
+      [...path, "asn"],
+      `must be an autonomous system number (0 to 4294967295); got ${describe(value.asn)}`,
     );
   }
   let cidr: ParsedCidr | null = null;
@@ -467,6 +494,12 @@ function checkEntry(
     issues.add(
       [...path, "ip"],
       `an allow entry wider than /${WIDEST_ALLOW[cidr.family]} is refused (a typo must not allow the internet); got ${cidr.text}`,
+    );
+  }
+  if (value.country !== undefined && value.action === "allow") {
+    issues.add(
+      [...path, "action"],
+      `an allow entry for a whole country is refused (it would let a country past every defence); allow its addresses or ASNs instead; got country ${describe(value.country)}`,
     );
   }
   if (subjects.length === 1) {
