@@ -401,6 +401,7 @@ router.get("/users/me", (_req, res) => res.send("me")); // wins for /users/me
 | `bunWebsocket` | `BunWebSocket` | none | The WebSocket instance `ws()` registers on. `setBunWebSocket()` takes precedence. |
 | `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, for the requests the router builds itself: `fetch()`, and a dedicated WebSocket server whose `bunRequestOpts` set none. Also `router.trustProxy`. See [Client address behind proxies](#client-address-behind-proxies-trustproxy). |
 | `clientIpHeader` | `string` | none | A single-value client address header, believed only when `trustProxy` trusts the whole chain. |
+| `maxForwardedHops` | `number` | none (read every entry) | The most `X-Forwarded-For` entries read, closest first, for the requests the router builds itself. Fixed at construction (`router.maxForwardedHops` reads it). See [The security view](#the-security-view-reqclientaddress). |
 | `acceptUndecodableBody` | `boolean` | unset (the default), which refuses | On an adapter, route a request whose body could not be decoded (bad JSON, a corrupt stream, an unsupported `Content-Encoding`) to this router's routes, with `req.bodyDecodingError` set, instead of refusing it before routing. Unset, the router takes its mount's setting; unset all the way up, the adapter refuses. `false` refuses inside an opted-in router. Set it before adding routes. See [Testing without a socket](#testing-without-a-socket). |
 | `responseValidation` | `"off" \| "warn" \| "error"` | unset (`"off"`) | Runtime response checks for the validators on its routes that declare `responses` and no `responseValidation` of their own. A mounted router's setting wins over its parent's. Set it before adding routes. See [Responses](#responses). |
 | `responseOutput` | `"as-sent" \| "parsed"` | unset (`"as-sent"`) | What a passing buffered JSON body is sent as: the schema's output under `"parsed"`, for validators on its routes with no `responseOutput` of their own. A mounted router's wins over its parent's. Set it before adding routes. See [Responses](#responses). |
@@ -709,6 +710,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
 | `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, as Express's `trust proxy` (also `set("trust proxy", value)` and `app.trustProxy`). Decides `req.ip`, `req.ips`, `req.protocol`, `req.host`/`hostname` and `ws.data.ip`. Wins over `request.trustProxy`; a bad value throws a `TypeError` here. See [Client address behind proxies](#client-address-behind-proxies-trustproxy). |
 | `clientIpHeader` | `string` | none | A header carrying the client address as one value (`"cf-connecting-ip"`), believed only when `trustProxy` trusts the whole chain. `behindCloudflare()` sets both. |
+| `maxForwardedHops` | `number` | none (read every entry) | The most `X-Forwarded-For` entries a request reads, closest first. Wins over `router.maxForwardedHops` and `request.maxForwardedHops`; fixed at construction. See [The security view](#the-security-view-reqclientaddress). |
 | `views` | `BunViews` | a `BunViews` of its own | The views every response renders through, its error handlers' included; see the router's `views` option. Configure them with the [view helpers](#adapter-helpers). After `setInstance()` the adapter's views still apply. |
 | `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
 | `closeDrainTimeout` | `number` | `10_000` | The longest `close()` waits for in-flight requests to finish before cutting them, in milliseconds. `0` waits for nothing: in-flight requests are cut at once. A streamed response is in flight until it ends, so an endless server-sent events stream holds `close()` for the whole cap. WebSockets are not waited for. A negative or non-finite value throws a `RangeError` here. See [Listening and closing](#listening-and-closing). |
@@ -1132,7 +1134,7 @@ lazily, so a request that only routes pays for nothing else.
 |---|---|
 | URL | `url`, `originalUrl`, `path`, `search` / `querystring`, `hash`, `baseUrl`, `parsedUrl` |
 | Routing | `method`, `params`, `query`, `route` (the matched route while a route handler runs) |
-| Connection | `host`, `hostname`, `protocol`, `secure`, `ip`, `ips`, `proxyChain`, `forwardedHost`, `subdomains`, `xhr`, `httpVersion`, `socket`, `server` (`ip`, `ips`, `protocol` and the host read forwarded headers only through [`trustProxy`](#client-address-behind-proxies-trustproxy)) |
+| Connection | `host`, `hostname`, `protocol`, `secure`, `ip`, `ips`, `proxyChain`, `clientAddress`, `forwardedHost`, `subdomains`, `xhr`, `httpVersion`, `socket`, `server` (`ip`, `ips`, `protocol` and the host read forwarded headers only through [`trustProxy`](#client-address-behind-proxies-trustproxy)) |
 | Headers | `headers`, `headersDistinct`, `rawHeaders`, `get(name, default?)`, `getHeader`, `getHeaders`, `getHeaderNames`, `hasHeader` |
 | Body | `body`, `buffer` (the exact bytes received), `rawBody` (set by a parser registered with `rawBody: true`), `files` / `file` (uploads), `hasBody` (a `Content-Length`, `Transfer-Encoding` or body stream — type-is's test, plus in-process bodies), `isBodyParsed`, `isPayloadTooLarge`, `bodyDecodingError` |
 | Caching | `fresh`, `stale`, `range(size, { combine })` (`-1` unsatisfiable, `-2` malformed) |
@@ -1167,6 +1169,7 @@ a boolean on either side replaces the other.
 | `retainBuffer` | `boolean` | `true` | Keep (`true`) or drop (`false`) the exact bytes of every body; `parseBody.contentTypes.<kind>.retainBuffer` overrides it per kind. See [Bodies read without their bytes](#body-decoding). bun-nest's `rawBody: true` turns it on. |
 | `trustProxy` | `TrustProxyOption` | `false` | Which proxies to believe about the client. The adapter's top-level `trustProxy` sets it, and wins over it. See [Client address behind proxies](#client-address-behind-proxies-trustproxy). |
 | `clientIpHeader` | `string` | none | A single-value client address header, believed only when `trustProxy` trusts the whole chain. |
+| `maxForwardedHops` | `number` | none (read every entry) | The most `X-Forwarded-For` entries read, closest first. An adapter's or router's option sets it. |
 | `parseMultiPartFormDataOpts`, `parseXmlOpts`, `allowedContentTypes` | | | Deprecated: use `parseBody.contentTypes` instead. |
 
 #### Query parsing
@@ -1483,9 +1486,55 @@ new BunHttpAdapter(0, { ...behindCloudflare({ ranges }) });
   `trustChain(["loopback", CLOUDFLARE_IP_RANGES])`.
 
 The IP helpers underneath are exported too: `isIpAddress`,
-`parseIpAddress`, `parseIpRange`, `compileIpMatcher`, `IP_RANGE_PRESETS` and
-`toIpv4IfMapped`. So are the steps of the walk: `compileTrustProxy`,
-`parseForwardedFor`, `proxyAddressChain` and `resolveClientAddress`.
+`parseIpAddress`, `parseIpRange`, `compileIpMatcher`, `IP_RANGE_PRESETS`,
+`toIpv4IfMapped`, `formatIpAddress` and `normalizeIpAddress`. So are the
+steps of the walk: `compileTrustProxy`, `parseForwardedFor`,
+`proxyAddressChain` and `resolveClientAddress`.
+
+##### The security view (`req.clientAddress`)
+
+`req.ip` and `req.ips` are Express's, value for value, and three of
+Express's behaviours make them a poor key for a rate limit, a ban or an
+allow or deny list. `req.clientAddress` is the same client, resolved
+through the same settings, as such a consumer should key it:
+
+| | `req.ip` (Express) | `req.clientAddress` |
+|---|---|---|
+| An IPv4-mapped peer (`::ffff:203.0.113.9`, a dual-stack listener's IPv4 client) | as written | `203.0.113.9` |
+| Spellings of one address (`2001:DB8:0::1`, `0xcb.0.113.9`, a `%zone`) | as written | one form: dotted IPv4, IPv6 per RFC 5952 without a zone |
+| The walk ends on a malformed `X-Forwarded-For` entry (`not-an-ip`) | that entry | the nearest entry before it, back toward the peer, that is an address: the last trusted proxy's word on the client |
+| No entry is an address (a socket-free `fetch()` with nothing forwarded) | `""` | `""` |
+
+So a client cannot make itself unmatchable by sending garbage, and every
+IPv4 client has one key whichever listener it came through.
+`resolveClientAddress()` answers the same as `clientAddress`, with
+`clientEntry`, the `req.proxyChain` entry it came from (its `source` says
+socket, `x-forwarded-for` or the header). `normalizeIpAddress(value)` is the
+normalisation alone (`null` for a non-address).
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+
+const app = new BunHttpAdapter(0, {
+  trustProxy: "loopback, 10.0.0.0/8",
+  maxForwardedHops: 8,
+});
+app.get("/", (req, res) => {
+  // X-Forwarded-For: not-an-ip, 10.0.0.4 from nginx on 127.0.0.1
+  res.json({ ip: req.ip, clientAddress: req.clientAddress });
+  // → { ip: "not-an-ip", clientAddress: "10.0.0.4" }
+});
+```
+
+**Bounding the walk.** Express reads every `X-Forwarded-For` entry it can
+trust: with `trustProxy: true`, every entry a client sends, all of them in
+`req.ips`. `maxForwardedHops` (on the adapter, the router or the request
+options) reads at most that many, the closest ones, and ignores the rest,
+for `ip`, `ips`, `proxyChain` and `clientAddress` alike; `0` reads none.
+Unset, the walk is Express's. A trust setting that stops at an untrusted
+hop stops there whatever the bound, so set it to a little more than the
+proxies in front of the app. `resolveClientAddress()` takes it as
+`maxForwardedHops` and says whether it left entries unread (`truncated`).
 
 **Worked example: Cloudflare → Railway → app.** A client at 198.51.100.23
 reaches the app through both. This is what each hop does to the request:

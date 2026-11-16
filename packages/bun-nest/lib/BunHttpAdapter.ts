@@ -1306,6 +1306,16 @@ export class BunHttpAdapter<
        */
       clientIpHeader?: string;
       /**
+       * The most `X-Forwarded-For` entries a request reads, closest first:
+       * the entries to their left are ignored by `ip`, `ips`, `proxyChain`
+       * and `clientAddress` alike. `undefined` (the default) reads them all,
+       * as Express does — with `trustProxy: true`, every entry a client
+       * sends. Fixed at construction. Wins over `router.maxForwardedHops`
+       * and `request.maxForwardedHops`. A value that is not a whole number
+       * from `0` up throws a `TypeError` here.
+       */
+      maxForwardedHops?: number;
+      /**
        * Throttles every request: a bun-common `throttle()` built from these
        * options (or the `throttle()` middleware given) runs first, ahead of
        * every route, every Nest middleware, every guard and the not-found
@@ -1324,6 +1334,10 @@ export class BunHttpAdapter<
     const trustProxy = options?.trustProxy ?? options?.request?.trustProxy;
     const clientIpHeader =
       options?.clientIpHeader ?? options?.request?.clientIpHeader;
+    const maxForwardedHops =
+      options?.maxForwardedHops ??
+      options?.router?.maxForwardedHops ??
+      options?.request?.maxForwardedHops;
     const routerOptions: BunRouterOptions = {
       caseSensitive: false,
       debug: false,
@@ -1333,6 +1347,7 @@ export class BunHttpAdapter<
         : {}),
       ...(trustProxy !== undefined ? { trustProxy } : {}),
       ...(clientIpHeader !== undefined ? { clientIpHeader } : {}),
+      ...(maxForwardedHops !== undefined ? { maxForwardedHops } : {}),
       ...(options?.throttle !== undefined
         ? { throttle: options.throttle }
         : {}),
@@ -2334,6 +2349,11 @@ export class BunHttpAdapter<
     if (router.clientIpHeader !== undefined) {
       result.clientIpHeader = router.clientIpHeader;
     }
+    // Fixed at the router's construction (`router.maxForwardedHops`); it
+    // wins over `request.maxForwardedHops`, as on bun-common's adapter.
+    if (router.maxForwardedHops !== undefined) {
+      result.maxForwardedHops = router.maxForwardedHops;
+    }
     return result;
   }
 
@@ -2353,6 +2373,15 @@ export class BunHttpAdapter<
   set trustProxy(value: TrustProxyOption | undefined) {
     this.instance.trustProxy = value;
     this.#requestOpts = this.#withProxyTrust(this.#requestOpts, undefined);
+  }
+
+  /**
+   * The most `X-Forwarded-For` entries a request reads (the
+   * `maxForwardedHops` option); `undefined` for no bound, as Express. Held by
+   * the adapter's router and fixed at construction.
+   */
+  get maxForwardedHops(): number | undefined {
+    return this.instance.maxForwardedHops;
   }
 
   /**

@@ -4217,6 +4217,59 @@ export function toIpv4IfMapped(ip: ParsedIp): ParsedIp {
   };
 }
 
+/**
+ * The text of a parsed address in its canonical form: an IPv4 address as a
+ * dotted quad of decimal octets (a legacy spelling such as `0x7f.0.0.1`
+ * comes out `127.0.0.1`), an IPv6 address as RFC 5952 §4 writes it — lower
+ * case, no leading zeros, the longest run of two or more zero groups (the
+ * first, on a tie) written `::` — in plain hexadecimal, without any `%zone`.
+ * An IPv4-mapped address stays IPv6 here (`::ffff:cb00:7109`); pass it
+ * through {@link toIpv4IfMapped} first, as {@link normalizeIpAddress} does.
+ */
+export function formatIpAddress(ip: ParsedIp): string {
+  if (ip.kind === "ipv4") {
+    return ip.octets.join(".");
+  }
+  const groups = ip.parts;
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let index = 0; index < 8;) {
+    if (groups[index] !== 0) {
+      index++;
+      continue;
+    }
+    let end = index;
+    while (end < 8 && groups[end] === 0) {
+      end++;
+    }
+    if (end - index > bestLength) {
+      bestStart = index;
+      bestLength = end - index;
+    }
+    index = end;
+  }
+  const hex = groups.map((group) => group.toString(16));
+  if (bestLength < 2) {
+    return hex.join(":");
+  }
+  return `${hex.slice(0, bestStart).join(":")}::${hex.slice(bestStart + bestLength).join(":")}`;
+}
+
+/**
+ * An address as a security consumer should key and compare it, or `null`
+ * when `value` is not an address ({@link parseIpAddress}: a non-string,
+ * `""`, a host name, a malformed entry). An IPv4-mapped IPv6 address
+ * (`::ffff:203.0.113.9`, how a dual-stack `Bun.serve` listener reports an
+ * IPv4 peer) becomes its IPv4 address; then {@link formatIpAddress}: one
+ * spelling per address, a zone dropped. So `::FFFF:203.0.113.9`,
+ * `203.0.113.9` and `0xcb.0.113.9` all give `203.0.113.9`, and
+ * `2001:DB8:0:0::1%eth0` gives `2001:db8::1`. What `req.clientAddress` is.
+ */
+export function normalizeIpAddress(value: unknown): string | null {
+  const parsed = parseIpAddress(value);
+  return parsed === null ? null : formatIpAddress(toIpv4IfMapped(parsed));
+}
+
 /** An IPv4 address as its IPv4-mapped IPv6 form (`::ffff:a.b.c.d`). */
 function toIpv4Mapped(ip: ParsedIpv4): ParsedIpv6 {
   const [a = 0, b = 0, c = 0, d = 0] = ip.octets;

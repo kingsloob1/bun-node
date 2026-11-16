@@ -8,7 +8,11 @@
  * it; the adapters and `BunRouter` take a `trustProxy` option, and
  * `set("trust proxy", value)` as Express does.
  */
-import { compileIpMatcher, isIpAddress } from "./utils/native";
+import {
+  compileIpMatcher,
+  isIpAddress,
+  normalizeIpAddress,
+} from "./utils/native";
 
 /**
  * A custom trust test, as Express's `trust proxy` function form: called with
@@ -52,6 +56,35 @@ export interface ProxyTrustSettings {
    * farthest address included; see `clientIpHeader` on the request options.
    */
   clientIpHeader?: string;
+  /**
+   * The most `X-Forwarded-For` entries read, closest first; see
+   * {@link ClientAddressInput.maxForwardedHops}. Unbounded by default, as
+   * Express.
+   */
+  maxForwardedHops?: number;
+}
+
+/**
+ * Throws a `TypeError` unless `value` is a valid `maxForwardedHops`:
+ * `undefined` (unbounded), or a whole number from `0` up, `Infinity`
+ * included. Returns it.
+ */
+export function checkMaxForwardedHops(
+  value: number | undefined,
+): number | undefined {
+  if (
+    value !== undefined &&
+    !(
+      typeof value === "number" &&
+      value >= 0 &&
+      (Number.isInteger(value) || value === Number.POSITIVE_INFINITY)
+    )
+  ) {
+    throw new TypeError(
+      `maxForwardedHops must be a whole number from 0 up, or undefined for no bound; got ${String(value)}`,
+    );
+  }
+  return value;
 }
 
 /** Trusts nothing. */
@@ -152,15 +185,41 @@ export function isTrustProxyOff(
  * right-most entry first), as the `forwarded` package parses them: split on
  * commas, spaces around each entry dropped, empty entries skipped. An entry
  * is kept as written; nothing checks it is an address.
+ *
+ * With `limit`, at most that many entries, the closest ones: the rest of the
+ * header, to their left, is not read.
  */
-export function parseForwardedFor(header: string | null | undefined): string[] {
+export function parseForwardedFor(
+  header: string | null | undefined,
+  limit?: number,
+): string[] {
+  return readForwardedFor(header, limit).list;
+}
+
+/**
+ * {@link parseForwardedFor}, and whether `limit` left an entry unread.
+ */
+function readForwardedFor(
+  header: string | null | undefined,
+  limit = Number.POSITIVE_INFINITY,
+): { list: string[]; truncated: boolean } {
   const list: string[] = [];
   if (!header) {
-    return list;
+    return { list, truncated: false };
   }
   let end = header.length;
   let start = header.length;
   for (let i = header.length - 1; i >= 0; i--) {
+    if (list.length >= limit) {
+      // An entry is still to the left: anything but spaces and commas.
+      for (let j = i; j >= 0; j--) {
+        const code = header.charCodeAt(j);
+        if (code !== 0x20 && code !== 0x2c) {
+          return { list, truncated: true };
+        }
+      }
+      return { list, truncated: false };
+    }
     switch (header.charCodeAt(i)) {
       case 0x20 /* space */:
         if (start === end) {
@@ -179,9 +238,12 @@ export function parseForwardedFor(header: string | null | undefined): string[] {
     }
   }
   if (start !== end) {
+    if (list.length >= limit) {
+      return { list, truncated: true };
+    }
     list.push(header.substring(start, end));
   }
-  return list;
+  return { list, truncated: false };
 }
 
 /**
@@ -190,20 +252,40 @@ export function parseForwardedFor(header: string | null | undefined): string[] {
  * address, then the `X-Forwarded-For` entries from right to left. The last
  * address is the client's as far as the trusted proxies say (`req.ip`); the
  * function is never asked about it.
+ *
+ * With `maxForwardedHops`, at most that many `X-Forwarded-For` entries are
+ * read, the closest ones; see {@link ClientAddressInput.maxForwardedHops}.
  */
 export function proxyAddressChain(
   peer: string,
   forwardedFor: string | null | undefined,
   trust: TrustProxyFn,
+  maxForwardedHops?: number,
 ): string[] {
-  const addrs = [peer, ...parseForwardedFor(forwardedFor)];
+  return walkChain(peer, forwardedFor, trust, maxForwardedHops).addrs;
+}
+
+/** {@link proxyAddressChain}, and whether the bound left an entry unread. */
+function walkChain(
+  peer: string,
+  forwardedFor: string | null | undefined,
+  trust: TrustProxyFn,
+  maxForwardedHops: number | undefined,
+): { addrs: string[]; truncated: boolean } {
+  const read = readForwardedFor(
+    forwardedFor,
+    checkMaxForwardedHops(maxForwardedHops),
+  );
+  const addrs = [peer, ...read.list];
   for (let i = 0; i < addrs.length - 1; i++) {
     if (!trust(addrs[i] ?? "", i)) {
       addrs.length = i + 1;
-      break;
+      // The walk stopped short of the bound: nothing it left unread
+      // would have been reached.
+      return { addrs, truncated: false };
     }
   }
-  return addrs;
+  return { addrs, truncated: read.truncated };
 }
 
 /** What {@link resolveClientAddress} works from. */
@@ -219,6 +301,17 @@ export interface ClientAddressInput {
    * present; see {@link ProxyTrustSettings.clientIpHeader}.
    */
   clientIpHeaderValue?: string | null;
+  /**
+   * The most `X-Forwarded-For` entries read, closest first; the entries to
+   * their left are ignored, as if the header held only the closest ones.
+   * `undefined` (the default) reads them all, as Express does: with
+   * `trustProxy: true` a client can send thousands, and `req.ips` holds
+   * every one. Set it to bound the walk, e.g. to a little more than the
+   * proxies in front of the app; `0` reads none. A trust setting that stops
+   * at an untrusted hop already stops there, whatever the bound. A value
+   * that is not a whole number from `0` up throws a `TypeError`.
+   */
+  maxForwardedHops?: number;
 }
 
 /** One address of a request's resolution chain; see {@link ClientAddress.chain}. */
@@ -256,6 +349,50 @@ export interface ClientAddress {
   ips: string[];
   /** Whether the `clientIpHeader` value was believed. */
   fromHeader: boolean;
+  /**
+   * The client's address as a security consumer (a rate limit, a ban, an
+   * allow or deny list) should key it: {@link ip} normalised by
+   * `normalizeIpAddress` — an IPv4-mapped address as IPv4, IPv6 in its
+   * RFC 5952 form without a zone, one spelling per address — and never an
+   * entry that is not an address. When the entry the walk ended on is not
+   * one (a malformed `X-Forwarded-For` entry), the nearest entry before it,
+   * back toward the peer, that is: the last trusted proxy's word on the
+   * client. `""` when no entry is an address (a socket-free `fetch()` with
+   * nothing forwarded). `req.clientAddress`. Unlike {@link ip}, not
+   * Express's.
+   */
+  clientAddress: string;
+  /**
+   * The {@link chain} entry {@link clientAddress} came from: its last entry
+   * when that is an address, else the one the fallback took; `undefined`
+   * when `clientAddress` is `""`. Its `source` says whether the address
+   * came from the socket, `X-Forwarded-For` or the `clientIpHeader` header.
+   */
+  clientEntry: ProxyChainEntry | undefined;
+  /**
+   * Whether `maxForwardedHops` left `X-Forwarded-For` entries unread: the
+   * walk reached the bound with entries still to its left. Always `false`
+   * without a bound.
+   */
+  truncated: boolean;
+}
+
+/**
+ * The entry nearest the client, from the end of `entries`, whose address
+ * is one, and that address normalised.
+ */
+function securityClient(entries: readonly ProxyChainEntry[]): {
+  clientAddress: string;
+  clientEntry: ProxyChainEntry | undefined;
+} {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    const normalized = normalizeIpAddress(entry?.address);
+    if (normalized !== null) {
+      return { clientAddress: normalized, clientEntry: entry };
+    }
+  }
+  return { clientAddress: "", clientEntry: undefined };
 }
 
 /**
@@ -263,10 +400,17 @@ export interface ClientAddress {
  * the trust function, as Express 5's `req.ip` and `req.ips` do; then, when a
  * client address header is configured, believes it only when every address
  * of the chain is trusted, the farthest included (so the proxy that set it
- * is one the app trusts) and its value is an IP address.
+ * is one the app trusts) and its value is an IP address. Beside that
+ * Express-exact answer, {@link ClientAddress.clientAddress}: the same
+ * client, normalised and never a malformed entry.
  */
 export function resolveClientAddress(input: ClientAddressInput): ClientAddress {
-  const chain = proxyAddressChain(input.peer, input.forwardedFor, input.trust);
+  const { addrs: chain, truncated } = walkChain(
+    input.peer,
+    input.forwardedFor,
+    input.trust,
+    input.maxForwardedHops,
+  );
   const last = chain.length - 1;
   const ip = chain[last] ?? "";
   const ips = chain.slice(1).reverse();
@@ -292,9 +436,18 @@ export function resolveClientAddress(input: ClientAddressInput): ClientAddress {
       ip: header,
       ips: [header, ...ips],
       fromHeader: true,
+      ...securityClient(entries),
+      truncated,
     };
   }
-  return { chain: Object.freeze(entries), ip, ips, fromHeader: false };
+  return {
+    chain: Object.freeze(entries),
+    ip,
+    ips,
+    fromHeader: false,
+    ...securityClient(entries),
+    truncated,
+  };
 }
 
 /**

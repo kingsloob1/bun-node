@@ -46,7 +46,7 @@ import {
 } from "./BunResponse";
 import { attachRouteDoc } from "./docs/routeDoc";
 import { resolveLogger } from "./logging";
-import { compileTrustProxy } from "./trustProxy";
+import { checkMaxForwardedHops, compileTrustProxy } from "./trustProxy";
 import { responseBindingOf, toOutboundDef } from "./responseValidation";
 import {
   bindThrottleLogger,
@@ -1563,6 +1563,16 @@ export class BunRouter<
        */
       clientIpHeader?: string;
       /**
+       * The most `X-Forwarded-For` entries a request reads, closest first;
+       * the entries to their left are ignored by `ip`, `ips`, `proxyChain`
+       * and `clientAddress` alike. `undefined` (the default) reads them all,
+       * as Express does. See the request option of the same name; applies
+       * where {@link trustProxy} does, and on an adapter wins over
+       * `request.maxForwardedHops`. A value that is not a whole number from
+       * `0` up throws a `TypeError` here.
+       */
+      maxForwardedHops?: number;
+      /**
        * Throttles every request this router runs: a `throttle()` built from
        * these options (or the `throttle()` middleware given) is registered
        * as the router's first middleware, ahead of every route, every other
@@ -1582,6 +1592,9 @@ export class BunRouter<
     compileTrustProxy(localOptions?.trustProxy);
     this.#trustProxy = localOptions?.trustProxy;
     this.#clientIpHeader = localOptions?.clientIpHeader;
+    this.#maxForwardedHops = checkMaxForwardedHops(
+      localOptions?.maxForwardedHops,
+    );
 
     // `0` disables the cache; a positive value caps it; anything else
     // (negative, non-numeric, absent) falls back to the default.
@@ -1639,6 +1652,18 @@ export class BunRouter<
   #trustProxy: TrustProxyOption | undefined;
   /** {@link clientIpHeader}'s value. */
   #clientIpHeader: string | undefined;
+  /** {@link maxForwardedHops}'s value. */
+  readonly #maxForwardedHops: number | undefined;
+
+  /**
+   * The most `X-Forwarded-For` entries a request reads (the
+   * `maxForwardedHops` option); `undefined` for no bound, as Express. Fixed
+   * at construction: a trust setting is configuration, not something a
+   * request can change.
+   */
+  get maxForwardedHops(): number | undefined {
+    return this.#maxForwardedHops;
+  }
 
   /**
    * Which proxies to believe about the client (the `trustProxy` option), as
@@ -1672,13 +1697,14 @@ export class BunRouter<
   }
 
   /**
-   * The request options carrying this router's {@link trustProxy} and
-   * {@link clientIpHeader}, only those set: spread into the options of a
+   * The request options carrying this router's {@link trustProxy},
+   * {@link clientIpHeader} and {@link maxForwardedHops}, only those set: spread into the options of a
    * request the router builds.
    */
   protected proxyTrustRequestOptions(): {
     trustProxy?: TrustProxyOption;
     clientIpHeader?: string;
+    maxForwardedHops?: number;
   } {
     return {
       ...(this.#trustProxy !== undefined
@@ -1686,6 +1712,9 @@ export class BunRouter<
         : {}),
       ...(this.#clientIpHeader !== undefined
         ? { clientIpHeader: this.#clientIpHeader }
+        : {}),
+      ...(this.#maxForwardedHops !== undefined
+        ? { maxForwardedHops: this.#maxForwardedHops }
         : {}),
     };
   }

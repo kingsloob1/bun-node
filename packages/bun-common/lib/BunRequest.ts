@@ -74,6 +74,7 @@ import {
   jsonCookies,
   keys,
   merge,
+  normalizeIpAddress,
   parseByteSize,
   parseContentCodings,
   parseCookie,
@@ -1652,6 +1653,8 @@ interface ResolvedClient {
   forwardedFor: string | null;
   /** The `clientIpHeader` value as it was read; `undefined` with no header configured. */
   headerValue: string | null | undefined;
+  /** The `maxForwardedHops` option it was resolved with. */
+  maxForwardedHops: number | undefined;
   /** The answer. */
   result: ClientAddress;
 }
@@ -2402,6 +2405,17 @@ export class BunRequest<
        * `ip` by sending it. Ignored with `trustProxy` off.
        */
       clientIpHeader?: string;
+      /**
+       * The most `X-Forwarded-For` entries read, closest first: the entries
+       * to their left are ignored, in `ip`, `ips`, `proxyChain` and
+       * `clientAddress` alike. `undefined` (the default) reads them all, as
+       * Express does, which with `trustProxy: true` is every entry a client
+       * sends. `0` reads none. A value that is not a whole number from `0`
+       * up throws a `TypeError` when the address is first read. Ignored with
+       * `trustProxy` off. An adapter's or router's `maxForwardedHops`
+       * option sets this for every request it builds.
+       */
+      maxForwardedHops?: number;
     } = {
       parseBody: true,
       parseCookies: true,
@@ -5830,11 +5844,37 @@ export class BunRequest<
   }
 
   /**
+   * The client's address as a security consumer — a rate limit, a ban, an
+   * allow or deny list — should key it, beside the Express-exact {@link ip}:
+   * the same client, resolved through the same trust settings, but
+   * normalised (`normalizeIpAddress`: an IPv4-mapped address such as
+   * `::ffff:203.0.113.9` as `203.0.113.9`, IPv6 in its RFC 5952 form
+   * without a zone, one spelling per address) and never an entry that is
+   * not an address. When the walk ends on a malformed `X-Forwarded-For`
+   * entry, which `ip` returns as written, this is the nearest entry before
+   * it, back toward the peer, that is an address: the last trusted proxy's
+   * word on the client, so a client cannot make itself unmatchable by
+   * sending garbage. With `trustProxy` off, the socket peer, normalised.
+   * `""` when no entry is an address (a socket-free `fetch()` with no peer
+   * and nothing trusted forwarded). Bounded by `maxForwardedHops` as `ip`
+   * is. The entry it came from is {@link ClientAddress.clientEntry} of
+   * `resolveClientAddress`'s answer.
+   */
+  get clientAddress(): string {
+    const trust = this.#trustFn();
+    if (trust === undefined) {
+      return normalizeIpAddress(this.#peerAddress()) ?? "";
+    }
+    return this.#resolveClient(trust).clientAddress;
+  }
+
+  /**
    * {@link ip} and {@link ips}, resolved through `trust`: the walk runs once,
    * and again only when one of its inputs has changed (see {@link #client}).
    */
   #resolveClient(trust: TrustProxyFn): ClientAddress {
     const header = this.options.clientIpHeader;
+    const maxForwardedHops = this.options.maxForwardedHops;
     const peer = this.#peerAddress();
     const forwardedFor = this.headersObj.get("X-Forwarded-For");
     const headerValue = header ? this.headersObj.get(header) : undefined;
@@ -5844,7 +5884,8 @@ export class BunRequest<
       cached.trust === trust &&
       cached.peer === peer &&
       cached.forwardedFor === forwardedFor &&
-      cached.headerValue === headerValue
+      cached.headerValue === headerValue &&
+      cached.maxForwardedHops === maxForwardedHops
     ) {
       return cached.result;
     }
@@ -5853,8 +5894,16 @@ export class BunRequest<
       forwardedFor,
       trust,
       clientIpHeaderValue: headerValue,
+      maxForwardedHops,
     });
-    this.#client = { trust, peer, forwardedFor, headerValue, result };
+    this.#client = {
+      trust,
+      peer,
+      forwardedFor,
+      headerValue,
+      maxForwardedHops,
+      result,
+    };
     return result;
   }
 

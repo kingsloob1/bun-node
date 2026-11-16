@@ -6,6 +6,7 @@
  * value-for-value comparison with Express is `trustProxy.express.test.ts`
  * and the `trust-proxy-*` groups of `expressCompat.nest.test.ts`.
  */
+import type { BunRequest } from "@kingsleyweb/bun-common";
 import type { INestApplication } from "@nestjs/common";
 import { behindCloudflare } from "@kingsleyweb/bun-common";
 import { Controller, Get, Ip, Module, Req } from "@nestjs/common";
@@ -24,6 +25,15 @@ class WhoController {
   }
 }
 
+@Controller()
+class ClientController {
+  /** `req.ip` beside the security-oriented `req.clientAddress` (bun-node#787). */
+  @Get("client")
+  client(@Ip() ip: string, @Req() request: BunRequest) {
+    return { ip, ips: request.ips, clientAddress: request.clientAddress };
+  }
+}
+
 @Controller({ host: "tenant.example" })
 class TenantController {
   @Get("tenant")
@@ -32,7 +42,7 @@ class TenantController {
   }
 }
 
-@Module({ controllers: [WhoController, TenantController] })
+@Module({ controllers: [WhoController, ClientController, TenantController] })
 class WhoModule {}
 
 const FORWARDED = {
@@ -151,6 +161,42 @@ describe("trust proxy on a Nest app", () => {
     expect(await ask("198.51.100.7")).toMatchObject({
       ip: "198.51.100.7",
       protocol: "http",
+    });
+  });
+
+  it("req.clientAddress sits beside the Express-exact @Ip(): normalised, never a malformed entry, under the adapter's maxForwardedHops (bun-node#787)", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      trustProxy: "loopback, 10.0.0.0/8",
+      maxForwardedHops: 2,
+    });
+    expect(adapter.maxForwardedHops).toBe(2);
+    expect(adapter.requestOpts.maxForwardedHops).toBe(2);
+    await boot(adapter);
+    await app!.listen(0, "127.0.0.1");
+    const ask = async (forwardedFor: string) =>
+      await (
+        await fetch(`http://127.0.0.1:${adapter.listeningPort}/client`, {
+          headers: { "x-forwarded-for": forwardedFor },
+        })
+      ).json();
+    // A malformed entry is @Ip(), as on Express; the client address is the
+    // nearest trusted hop before it.
+    expect(await ask("not-an-ip, 10.0.0.4")).toEqual({
+      ip: "not-an-ip",
+      ips: ["not-an-ip", "10.0.0.4"],
+      clientAddress: "10.0.0.4",
+    });
+    // An IPv4-mapped client is IPv4 in clientAddress only.
+    expect(await ask("::ffff:203.0.113.9, 10.0.0.4")).toEqual({
+      ip: "::ffff:203.0.113.9",
+      ips: ["::ffff:203.0.113.9", "10.0.0.4"],
+      clientAddress: "203.0.113.9",
+    });
+    // Two entries read: the third, farthest, is never reached.
+    expect(await ask("198.51.100.1, 10.0.0.9, 10.0.0.4")).toEqual({
+      ip: "10.0.0.9",
+      ips: ["10.0.0.9", "10.0.0.4"],
+      clientAddress: "10.0.0.9",
     });
   });
 });
