@@ -97,6 +97,8 @@ import { all, then } from "./maybe";
 import type { MaybePromise } from "./maybe";
 import { Scores } from "./scores";
 import { checkShape } from "./shape";
+import { inStage, keyStage } from "./stages";
+import type { EvaluationStage } from "./stages";
 import { DEFAULT_MAX_KEYS, EvictionMonitor } from "./state";
 import { TrustMonitor } from "./trust";
 import type { SecurityWarning, TrustStatus } from "./trust";
@@ -157,6 +159,19 @@ export interface EvaluateOptions {
    * out. `withSecurity` tracks every request.
    */
   readonly track?: boolean;
+  /**
+   * Evaluates one stage of a two-stage integration (plan §3.3): `"early"`,
+   * before the request is read or routed, or `"route"`, once the route and
+   * the caller are known. Each limit and counted rule is counted in exactly
+   * one stage (see {@link EvaluationStage}), so a request evaluated in both
+   * is counted once; `complete()` then counts the outcome events of each
+   * decision's own stage. The in-flight limits, the trust check, the lists'
+   * address entries, address and range bans, L6's shape checks and L8's
+   * honeypots run in the early stage; the lists' user and API-key entries,
+   * bans naming the caller or the route, and L8's canary credentials in the
+   * route stage. Default: both stages at once, as `withSecurity` does.
+   */
+  readonly stage?: EvaluationStage;
 }
 
 /** Options for {@link Security.explain}. */
@@ -359,6 +374,8 @@ interface Context {
   readonly slot: Slot | undefined;
   /** The flags. */
   readonly flags: Flags;
+  /** The stage it was evaluated in; both when undefined. */
+  readonly stage: EvaluationStage | undefined;
 }
 
 /** One evaluation pass: what every stage after the lists reads, and the hits so far. */
@@ -381,9 +398,21 @@ interface Pass {
   readonly trace: ExplainStep[] | undefined;
   /** The hits. */
   readonly run: Run;
+  /** The stage being evaluated; both when undefined. */
+  readonly stage: EvaluationStage | undefined;
   /** With writes off, the address's score as this request's offences leave it. */
   score?: number;
 }
+
+/**
+ * Events both stages of a two-stage integration see: each adds its offence
+ * weight once, in the early stage (or when no stage is given).
+ */
+const SHARED_EVENTS: ReadonlySet<string> = new Set([
+  "request",
+  "route.notFound",
+  "server.error",
+]);
 
 /** A ban type (`ip`, `ip|user`) as a key to look the request up with. */
 const TYPE_KEYS = new Map<string, CompiledKey>();
@@ -436,6 +465,20 @@ function entryHit(entry: CompiledEntry): RuleHit {
     reason:
       entry.kind === "internal" ? "internal list" : `${entry.action} list`,
   };
+}
+
+/**
+ * Whether a list entry's hit is recorded in `stage`: entries naming the
+ * caller (a user, an API key) in the route stage, address entries in the
+ * early stage, every entry when no stage is given.
+ */
+function ownEntry(
+  entry: CompiledEntry,
+  stage: EvaluationStage | undefined,
+): boolean {
+  if (stage === undefined) return true;
+  const caller = entry.kind === "user" || entry.kind === "apiKey";
+  return caller === (stage === "route");
 }
 
 /** The action an entry takes once applied: `challenge` falls back to `block` until providers exist. */
@@ -603,7 +646,14 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   ): Decision | Promise<Decision> {
     this.#assertOpen();
     return then(
-      this.#decide(facts, this.#now(), true, undefined, options.track === true),
+      this.#decide(
+        facts,
+        this.#now(),
+        true,
+        undefined,
+        options.track === true,
+        options.stage,
+      ),
       ({ decision }) => {
         if (this.#options.onDecision) {
           try {
@@ -624,7 +674,14 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     this.#assertOpen();
     const steps: ExplainStep[] = [];
     return then(
-      this.#decide(facts, options.now ?? this.#now(), false, steps, true),
+      this.#decide(
+        facts,
+        options.now ?? this.#now(),
+        false,
+        steps,
+        true,
+        undefined,
+      ),
       ({ decision, resolved }) => {
         const client: ClientResolution = {
           ...(resolved.address
@@ -669,6 +726,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       decision.subject,
       context.flags,
       this.#now(),
+      context.stage,
     );
   }
 
@@ -703,6 +761,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       resolved.subject,
       flagsOf(lists, resolved.service),
       now,
+      undefined,
     );
   }
 
@@ -870,6 +929,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     subject: SubjectKeys,
     flags: Flags,
     now: number,
+    stage: EvaluationStage | undefined,
   ): MaybePromise<readonly RuleHit[]> {
     const pass: Pass = {
       subject,
@@ -881,6 +941,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       dryPolicy: this.#internals.mode === "dryRun",
       trace: undefined,
       run: new Run(),
+      stage,
     };
     // One event after another, so the hits keep the events' order.
     const from = (index: number): MaybePromise<void> => {
@@ -900,7 +961,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    */
   #occur(event: string, pass: Pass, deferred: boolean): MaybePromise<void> {
     const rules = this.#internals.countedByEvent.get(event);
-    const weight = this.#internals.ladder?.weights.get(event) ?? 0;
+    // An event both stages see weighs once, in the early stage.
+    const weight =
+      pass.stage === "route" && SHARED_EVENTS.has(event)
+        ? 0
+        : (this.#internals.ladder?.weights.get(event) ?? 0);
     if (rules === undefined) {
       if (weight > 0) this.#offend(event, weight, pass, deferred);
       return undefined;
@@ -1149,6 +1214,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     pass: Pass,
   ): string | undefined {
     const { flags, trace } = pass;
+    if (!inStage(rule, pass.stage)) return undefined;
     if (flags.service?.exempt.has("countedRules") && !rule.appliesToServices) {
       trace?.push({
         layer: "L4",
@@ -1195,13 +1261,15 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const found: Ban[] = [];
     for (const type of this.#bans.types()) {
       const key = keyOfType(type);
+      // A ban is enforced in the stage its key can be read in.
+      if (pass.stage !== undefined && keyStage(key) !== pass.stage) continue;
       if (flags.internal && key.addressOnly) continue;
       const value = keyOf(key, subject, pass.route);
       if (value === undefined) continue;
       const ban = this.#bans.find(`${type}:${value}`, now, writes);
       if (ban) found.push(ban);
     }
-    if (pass.address && !flags.internal) {
+    if (pass.address && !flags.internal && pass.stage !== "route") {
       found.push(...this.#bans.ranges(pass.address, now));
     }
     const applying = exempt
@@ -1252,7 +1320,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    */
   #shaped(facts: RequestFacts, pass: Pass): MaybePromise<boolean> {
     const shape = this.#internals.shape;
-    if (shape === undefined || pass.flags.allowAll) return false;
+    // The request's shape is known before it is read: the early stage's.
+    if (shape === undefined || pass.flags.allowAll || pass.stage === "route") {
+      return false;
+    }
     const refusal = checkShape(shape, facts, pass.route);
     if (refusal === undefined) return false;
     const dry = pass.dryPolicy || shape.mode === "dryRun";
@@ -1292,7 +1363,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #deceived(facts: RequestFacts, pass: Pass): MaybePromise<boolean> {
     const deception = this.#internals.deception;
     if (pass.flags.allowAll) return false;
-    const identity = facts.identity;
+    // Canaries need the caller (the route stage); honeypots only the path
+    // (the early stage, before the body is read).
+    const identity = pass.stage === "early" ? undefined : facts.identity;
     const canary =
       (identity?.user === undefined
         ? undefined
@@ -1341,7 +1414,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         : then(this.#occur("canary.used", pass, false), () => true);
     }
     const honeypots = deception.honeypots;
-    if (honeypots === undefined || !appliesTo(honeypots.patterns, pass.route)) {
+    if (
+      honeypots === undefined ||
+      pass.stage === "route" ||
+      !appliesTo(honeypots.patterns, pass.route)
+    ) {
       return false;
     }
     const dry = pass.dryPolicy || honeypots.mode === "dryRun";
@@ -1376,8 +1453,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
 
   /**
    * The one decision function: `writes` updates state (evaluate), `trace`
-   * collects steps (explain), `track` applies layer L1. Every stage reads
-   * the same policy snapshot.
+   * collects steps (explain), `track` applies layer L1, `stage` limits it to
+   * one stage of a two-stage integration (both when undefined). Every stage
+   * reads the same policy snapshot.
    */
   #decide(
     facts: RequestFacts,
@@ -1385,6 +1463,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     writes: boolean,
     trace: ExplainStep[] | undefined,
     track: boolean,
+    stage: EvaluationStage | undefined,
   ): MaybePromise<{ decision: Decision; resolved: ResolvedClient }> {
     const policy = this.#policy;
     const internals = this.#internals;
@@ -1402,16 +1481,20 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     }
     const dryPolicy = internals.mode === "dryRun";
     const run = new Run();
-    if (resolved.hit) run.add(resolved.hit);
+    // The route stage repeats L2 and the lists for their flags and the
+    // caller's own entries; the early stage recorded the address's hits.
+    const routeStage = stage === "route";
+    if (resolved.hit && !routeStage) run.add(resolved.hit);
     const subject = resolved.subject;
-    const concurrency = track ? internals.concurrency : undefined;
+    const concurrency =
+      track && !routeStage ? internals.concurrency : undefined;
     let flags: Flags = {
       allowAll: false,
       internal: false,
       service: resolved.service,
     };
     const finish = (): { decision: Decision; resolved: ResolvedClient } =>
-      this.#finish(run, subject, resolved, writes, track, flags, now);
+      this.#finish(run, subject, resolved, writes, track, flags, now, stage);
 
     // ── L1: the in-flight cap (load shedding) ─────────────────────────────
     if (concurrency?.total !== undefined) {
@@ -1466,13 +1549,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         dryPolicy,
         trace,
       );
-      if (lists.decided) {
+      if (lists.decided && ownEntry(lists.decided, stage)) {
         run.add(entryHit(lists.decided), {
           status: 403,
           code: lists.decided.code,
         });
       }
-      if (lists.wouldBe) {
+      if (lists.wouldBe && ownEntry(lists.wouldBe, stage)) {
         run.add({
           layer: "L3",
           rule: lists.wouldBe.id,
@@ -1485,7 +1568,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     flags = flagsOf(lists, resolved.service);
 
     // ── L2.5: the trust check's gauges (state: evaluate only) ────────────
-    if (writes && internals.trustCheck && !resolved.service) {
+    if (writes && !routeStage && internals.trustCheck && !resolved.service) {
       let forwarded = false;
       for (const name of FORWARDING_HEADERS) {
         if (facts.headers[name] !== undefined) {
@@ -1575,6 +1658,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       dryPolicy,
       trace,
       run,
+      stage,
     };
     if (this.#banned(pass)) return finish();
     return then(this.#shaped(facts, pass), (shapeRefused) => {
@@ -1620,6 +1704,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       [CompiledLimit, ThrottleResult | undefined]
     >[] = [];
     for (const limit of limits) {
+      if (!inStage(limit, pass.stage)) continue;
       const handler: ThrottleHandler | undefined = limitSet.get(limit.id);
       if (handler === undefined) continue;
       const skipped =
@@ -1740,12 +1825,18 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     track: boolean,
     flags: Flags,
     now: number,
+    stage: EvaluationStage | undefined,
   ): { decision: Decision; resolved: ResolvedClient } {
     const decision = this.#conclude(run, subject);
     if (writes) {
       const concurrency = this.#internals.concurrency;
       let slot: Slot | undefined;
-      if (track && concurrency !== undefined && !refuses(decision.action)) {
+      if (
+        track &&
+        stage !== "route" &&
+        concurrency !== undefined &&
+        !refuses(decision.action)
+      ) {
         const perIp =
           concurrency.perIp !== undefined &&
           !flags.allowAll &&
@@ -1755,7 +1846,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
             : undefined;
         slot = this.#inFlight.take(perIp, now, concurrency.releaseAfter);
       }
-      this.#contexts.set(decision, { slot, flags });
+      this.#contexts.set(decision, { slot, flags, stage });
     }
     return { decision, resolved };
   }

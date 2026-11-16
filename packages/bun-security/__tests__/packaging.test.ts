@@ -124,6 +124,16 @@ describe("package.json exports", () => {
     ).toBe(true);
   });
 
+  it("checks the ./http subpath, the bun-common adapter integration", () => {
+    for (const key of ["./http", "./lib/http"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/http/index.ts",
+        types: "./dts/http/index.d.ts",
+        default: "./lib/http/index.ts",
+      });
+    }
+  });
+
   it("checks every literal subpath in the consumer check", () => {
     const spellings = new Set(
       checkConfig.entries?.map((entry) => entry.spelling),

@@ -133,7 +133,11 @@ assertType<
 assertType<
   Equal<
     Parameters<typeof engine.evaluate>[1],
-    { readonly track?: boolean } | undefined
+    | {
+        readonly track?: boolean;
+        readonly stage?: "early" | "route";
+      }
+    | undefined
   >
 >();
 assertType<

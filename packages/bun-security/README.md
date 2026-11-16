@@ -3,15 +3,16 @@
 A request-defence engine for Bun services. It decides every request locally,
 from a policy compiled once, before your handler sees it.
 
-> **Being built.** This is milestone M1's first three parts (PR-S1 to PR-S3)
-> of the [bun-security plan](../../docs/plans/bun-security/README.md): the
-> engine, client identity, service identity, the trust check, allow and deny
-> lists, rate limits on bun-common's throttle foundation, counted rules,
+> **Being built.** This is milestone M1's first parts (PR-S1 to PR-S3, and
+> PR-S5) of the [bun-security plan](../../docs/plans/bun-security/README.md):
+> the engine, client identity, service identity, the trust check, allow and
+> deny lists, rate limits on bun-common's throttle foundation, counted rules,
 > bans with an offence score and an escalation ladder, request shape and a
 > canonical path, honeypots, canary credentials and trap fields, connection
-> limits, outcome signals, and the plain `Bun.serve` integration. Request
-> rules, challenges, the bun-common and bun-nest integrations, shared state
-> and the control plane follow in later PRs.
+> limits, outcome signals, the plain `Bun.serve` integration, and the
+> bun-common adapter integration with security headers and CSRF. Request
+> rules, challenges, the bun-nest integration, shared state and the control
+> plane follow in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -195,6 +196,101 @@ countedRules: [
 - A verified sibling service is exempt by default; `appliesToServices: true`
   counts and refuses the end user it forwards instead (ConcaveHR's sign-in
   proxy), never the service itself.
+
+## A bun-common adapter
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+import { createSecurity } from "@kingsleyweb/bun-security";
+import type { BunRequest } from "@kingsleyweb/bun-common";
+import { installSecurity, requestSecurity, securityProfile } from "@kingsleyweb/bun-security/http";
+
+const security = createSecurity<BunRequest>({
+  policy,
+  identify: (req) => ({ user: sessionUser(req.cookies.sid) }),
+});
+const app = new BunHttpAdapter(0, { trustProxy: ["10.0.0.0/8"] });
+await installSecurity(app, security);            // first, before any route or middleware
+
+app.post("/login", securityProfile("login"), login);
+app.post("/hooks/stripe", securityProfile("webhook", { crossSite: true }), stripeHook);
+app.get("/me", (req, res) => res.json({ tags: requestSecurity(req)?.decision?.tags }));
+```
+
+`installSecurity(app, security, options)` puts the engine on the adapter in
+three places (plan §3.3):
+
+- **The early stage**, on the adapter's before-read hook, runs before the
+  request is read: the in-flight limits, client identity, the lists'
+  address entries, bans of an address or a range, the request's shape (L6),
+  honeypot routes (L8), and the limits and counted rules keyed on the
+  address alone. A refused request is answered before its body, cookies or query
+  are parsed, as `withSecurity` answers one (`renderBlock`, `drop`,
+  `failClosedOnEngineError` work the same).
+- **The route stage**, a middleware the install registers, runs once the
+  request is read: it finds the route the request will reach (its pattern,
+  `"GET /users/:id"`, and its `securityProfile()`), asks `identify(req)`
+  who is calling, and evaluates the rules keyed on the caller (`user`,
+  `session`, `tenant`, `apiKey`) or the route (`route`), the rules on a
+  route pattern with a parameter, the lists' user and API-key entries, bans
+  naming the caller, and canary credentials (L8); then the CSRF check. Each rule counts in exactly one stage
+  (`evaluate(facts, { stage: "early" | "route" })`), so a request is
+  counted once, and an event both stages see (`request`,
+  `route.notFound`, `server.error`) adds its offence weight to the ladder
+  once.
+- **The response stage**, on the adapter's before-write hook, sees every
+  answer (a route's, a not-found page, an error, a refusal): it sets the
+  security headers, scrubs a stack trace from a `5xx`, and reports the
+  outcome to `complete()` once the answer is final (a stream when it ends),
+  with **route-not-found** marked: no route handler matched and the answer
+  is a `404`, which an app's own `404` for a missing record, answered by a
+  route, never is.
+
+The route stage runs in registration order, so install first; only a
+throttle the adapter was constructed with runs ahead of it. The install
+then sends one marked request through the adapter's socket-free `fetch()`
+(the **boot self-test**) and rejects with a `ConfigError` unless all three
+stages saw it, so an install that is not in the pipeline fails at start-up
+rather than in production. `expectThrottle: true` also fails it unless a
+bun-common throttle ran. The self-test's request is explained, never
+counted. `installation.remove()` takes the engine back off.
+
+`securityProfile(name, options)` marks a route: the name, for the app
+(`requestSecurity(req).profile`) and for later profiles' counters (PR-S7),
+and its per-route options (`crossSite: true`, a webhook or OAuth callback
+the CSRF check does not refuse). `securityMiddleware(security, { router })`
+is the route stage alone, for a router the install does not cover: it
+evaluates every stage at once, takes no in-flight slot, and counts as
+route-not-found only a not-found answer sent on the response.
+
+### Security headers, CSRF and scrubbing
+
+`securityHeaders(options)` (on by default under `installSecurity`, `headers:
+false` turns it off) sets, unless the answer already has them:
+`Content-Security-Policy: frame-ancestors 'none'`, `X-Content-Type-Options:
+nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+`Cross-Origin-Opener-Policy` and `-Resource-Policy: same-origin`, a
+`Permissions-Policy` turning camera, microphone, geolocation and payment
+off, `X-Frame-Options: DENY`, and over HTTPS
+`Strict-Transport-Security: max-age=31536000; includeSubDomains`. It removes
+`X-Powered-By` and `Server`, and marks an answer that sets a cookie and says
+nothing about caching `Cache-Control: no-store`. Each header takes its own
+value or `false`; `override: true` replaces the app's.
+
+`csrf(options)` (on by default, `csrf: false` turns it off) refuses a
+state-changing request (`POST`, `PUT`, `PATCH`, `DELETE`) that carries
+cookies and that the browser marks `Sec-Fetch-Site: cross-site`, with a
+`403` problem (code `csrf`), unless its `Origin` is in `origins` or its route
+is `crossSite`. Without that header it checks `Origin` against the request's
+own origin and `origins`; a request with neither is not a browser's. With
+`token: { secret, session }` it also issues a signed double-submit token
+(`guard.token(req, res)`, set in a cookie) and requires it echoed in
+`x-csrf-token` or a `_csrf` field.
+
+`scrub: "production"` (the default) replaces a `5xx` answer whose body
+carries a stack trace (a `"stack"` member, a stack frame line) with a bare
+problem+json of the same status while `NODE_ENV` is `production`, and logs
+it (status and path, never the body); `"always"` scrubs everywhere.
 
 ## Connection limits and outcomes
 
