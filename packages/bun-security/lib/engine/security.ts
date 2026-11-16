@@ -110,6 +110,8 @@ import { checkShape } from "./shape";
 import { inStage, keyStage } from "./stages";
 import type { EvaluationStage } from "./stages";
 import { DEFAULT_MAX_KEYS, EvictionMonitor } from "./state";
+import { botSignalsOf, readSignals } from "./signals";
+import type { ChallengeFlow } from "../challenge/flow";
 import { TrustMonitor } from "./trust";
 import type { SecurityWarning, TrustStatus } from "./trust";
 
@@ -168,6 +170,15 @@ export interface CreateSecurityOptions<TRequest = Request> {
   readonly store?: SharedStateStore;
   /** The most ban writes queued while the shared store is failing; past it the oldest are dropped. Default `10_000`. */
   readonly maxPendingBans?: number;
+  /**
+   * The challenge flow (layers.md L10.2), from `challenges()` in
+   * `@kingsleyweb/bun-security/challenge`: with one, a `challenge` action
+   * (a list entry's, a counted rule's, the ladder's step, a request rule's,
+   * the bot signals') challenges the client, and a client holding a valid
+   * clearance passes. Without one, every `challenge` falls back to a
+   * `block`.
+   */
+  readonly challenge?: ChallengeFlow;
 }
 
 /** Options for {@link Security.evaluate}. */
@@ -268,6 +279,8 @@ export interface SecurityStatus {
 export interface Security<TRequest = Request> {
   /** The policy in force. */
   readonly policy: CompiledPolicy;
+  /** The challenge flow, when the engine was given one (`createSecurity`'s `challenge`). */
+  readonly challenge: ChallengeFlow | undefined;
   /** Whether {@link close} was called. */
   readonly closed: boolean;
   /**
@@ -398,7 +411,7 @@ export interface BanInput {
   readonly user?: string;
   /** An API key id, as `identify()` returns it. */
   readonly apiKey?: string;
-  /** `ban` (the default) or `challenge` (a `block` until challenge providers exist). */
+  /** `ban` (the default) or `challenge` (a `block` without a challenge flow). */
   readonly action?: "ban" | "challenge";
   /** How long, its unit written. Default `"24h"`; `null` until lifted. */
   readonly duration?: Duration | null;
@@ -540,6 +553,17 @@ const ALLOW_MESSAGE: MessageDecision = Object.freeze({
   hits: EMPTY,
 });
 
+/**
+ * What a `challenge` hit does for one request: `challenge` the client,
+ * let it pass as `cleared` (a valid clearance) or as a verified `crawler`
+ * (never challenged), or `block` it (no challenge flow).
+ */
+type ChallengeOutcome = "challenge" | "cleared" | "crawler" | "block";
+
+/** The text a challenge that fell back to a block carries. */
+const CHALLENGE_FALLBACK =
+  "challenge: no challenge provider configured, fell back to block";
+
 /** The hits of one decision, as they accumulate. */
 class Run {
   /** Every hit, in order. */
@@ -548,24 +572,81 @@ class Run {
   readonly answers = new Map<RuleHit, Answer>();
   /** Whether an enforced hit refused the request. */
   refused = false;
+  /** Risk the bot signals added (layers.md L10.1), beside the refusing hits'. */
+  risk = 0;
 
-  /** Records a hit, and how it answers when it refuses. */
+  constructor(
+    /**
+     * What a challenge does for this request (layers.md L10.2), worked out
+     * on the first challenge; `undefined` without a challenge flow, where a
+     * challenge falls back to a block.
+     */
+    readonly challenge: (() => ChallengeOutcome) | undefined,
+  ) {}
+
+  /** The challenge outcome, worked out once. */
+  #outcome: ChallengeOutcome | undefined;
+
+  /**
+   * Records a hit, and how it answers when it refuses. A `challenge` hit is
+   * resolved here, in one place for every layer: a challenge when the
+   * engine has a flow and the client holds no clearance, `log` when it does
+   * (or is a verified crawler, never challenged), and a `block` with the
+   * hit's own answer when there is no flow.
+   */
   add(hit: RuleHit, answer?: Answer): void {
-    this.hits.push(hit);
-    if (answer !== undefined) this.answers.set(hit, answer);
-    if (refuses(hit.action)) this.refused = true;
+    let recorded = hit;
+    let answered = answer;
+    if (hit.action === "challenge") {
+      this.#outcome ??= this.challenge?.() ?? "block";
+      const outcome = this.#outcome;
+      const suffix =
+        outcome === "block"
+          ? CHALLENGE_FALLBACK
+          : outcome === "cleared"
+            ? "challenge passed: the client holds a valid clearance"
+            : outcome === "crawler"
+              ? "a verified crawler is never challenged"
+              : undefined;
+      const reason =
+        suffix === undefined
+          ? hit.reason
+          : hit.reason
+            ? `${hit.reason}; ${suffix}`
+            : suffix;
+      recorded = {
+        ...hit,
+        action:
+          outcome === "challenge"
+            ? "challenge"
+            : outcome === "block"
+              ? "block"
+              : "log",
+        ...(reason === undefined ? {} : { reason }),
+      };
+      answered =
+        outcome === "challenge"
+          ? { status: 403, code: "challenge_required" }
+          : outcome === "block"
+            ? answer
+            : undefined;
+    } else if (
+      hit.wouldHaveBeen === "challenge" &&
+      this.challenge === undefined
+    ) {
+      recorded = { ...hit, wouldHaveBeen: "block" };
+    }
+    this.hits.push(recorded);
+    if (answered !== undefined) this.answers.set(recorded, answered);
+    if (refuses(recorded.action)) this.refused = true;
   }
 }
 
 /** The L3 hit for a decided entry. */
 function entryHit(entry: CompiledEntry): RuleHit {
   if (entry.action === "challenge") {
-    return {
-      layer: "L3",
-      rule: entry.id,
-      action: "block",
-      reason: "challenge: no challenge provider configured, fell back to block",
-    };
+    // Resolved by `Run.add`: a challenge, a pass, or a fallback block.
+    return { layer: "L3", rule: entry.id, action: "challenge" };
   }
   return {
     layer: "L3",
@@ -590,14 +671,14 @@ function ownEntry(
   return caller === (stage === "route");
 }
 
-/** The action an entry takes once applied: `challenge` falls back to `block` until providers exist. */
+/** The action an entry takes once applied (a `challenge` is resolved by `Run.add`). */
 function appliedAction(entry: CompiledEntry): SecurityAction {
-  return entry.action === "challenge" ? "block" : entry.action;
+  return entry.action;
 }
 
-/** The action a tripped counted rule takes: `challenge` falls back to `block` until providers exist. */
+/** The action a tripped counted rule takes (a `challenge` is resolved by `Run.add`). */
 function tripAction(rule: CompiledCountedRule): SecurityAction {
-  return rule.action === "challenge" ? "block" : "ban";
+  return rule.action === "challenge" ? "challenge" : "ban";
 }
 
 /** Whole seconds, rounded up, at least 1. */
@@ -961,6 +1042,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     return this.#internals.scope === "service"
       ? `svc:${this.#policy.service ?? ""}:`
       : "";
+  }
+
+  get challenge(): ChallengeFlow | undefined {
+    return this.#options.challenge;
   }
 
   get policy(): CompiledPolicy {
@@ -1564,7 +1649,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       writes: true,
       dryPolicy: this.#internals.mode === "dryRun",
       trace: undefined,
-      run: new Run(),
+      run: new Run(this.#challengeOutcome(facts)),
       stage,
     };
     // One event after another, so the hits keep the events' order.
@@ -1723,7 +1808,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         ? this.#escalate(banId(subject), now, ladder, writes && !dry)
         : rule.duration;
     const until = Number.isFinite(length) ? now + length : null;
-    const reason = `counted rule: ${rule.threshold} "${event}" in ${windowText(rule.window)}${rule.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
+    const reason = `counted rule: ${rule.threshold} "${event}" in ${windowText(rule.window)}`;
     const hit: RuleHit = dry
       ? {
           layer: "L4",
@@ -1807,8 +1892,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const length =
       step.duration ??
       this.#escalate(banId(subject), now, ladder, writes && !dry);
-    const action: SecurityAction = step.action === "ban" ? "ban" : "block";
-    const reason = `ladder: score ${score.toFixed(2)} reached ${step.score} (${source})${step.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
+    const action: SecurityAction = step.action === "ban" ? "ban" : "challenge";
+    const reason = `ladder: score ${score.toFixed(2)} reached ${step.score} (${source})`;
     if (!dry && writes) {
       this.#writeBan(
         {
@@ -1942,7 +2027,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       applying.find((candidate) => candidate.action === "ban") ?? applying[0];
     if (ban === undefined) return false;
     const dry = pass.dryPolicy || internals.bans.mode === "dryRun";
-    const action: SecurityAction = ban.action === "ban" ? "ban" : "block";
+    const action: SecurityAction = ban.action === "ban" ? "ban" : "challenge";
     const reason = `banned: ${ban.reason}${ban.expiresAt === null ? " (until lifted)" : `, ${seconds(ban.expiresAt - now)} s left`}`;
     run.add(
       dry
@@ -2012,8 +2097,31 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    * marked `crawlers: "skip"`), whose hits are logged as `crawler.probe`
    * instead. PR-S12 answers it; until then no crawler is verified.
    */
-  #verifiedCrawler(_facts: RequestFacts, _pass: Pass): boolean {
+  #verifiedCrawler(_facts: RequestFacts, _pass?: Pass): boolean {
     return false;
+  }
+
+  /**
+   * What a `challenge` does for this request (layers.md L10.2), asked only
+   * when one is hit: `undefined` without a challenge flow (a `block`), a
+   * pass for a verified crawler or a client with a valid clearance, else a
+   * challenge.
+   */
+  #challengeOutcome(facts: RequestFacts): (() => ChallengeOutcome) | undefined {
+    const flow = this.#options.challenge;
+    if (flow === undefined) return undefined;
+    return () => {
+      if (this.#verifiedCrawler(facts)) return "crawler";
+      try {
+        return flow.cleared(facts) ? "cleared" : "challenge";
+      } catch (error) {
+        this.#logger.error(
+          "bun-security: the challenge flow's cleared() threw",
+          { error },
+        );
+        return "challenge";
+      }
+    };
   }
 
   /**
@@ -2056,9 +2164,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         continue;
       }
       const dry = pass.dryPolicy || rule.mode === "dryRun";
-      const action: SecurityAction =
-        rule.action === "challenge" ? "block" : rule.action;
-      const reason = `${what} matched${rule.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
+      const action: SecurityAction = rule.action;
+      const reason = `${what} matched`;
       if (dry) {
         run.add({
           layer: "L7",
@@ -2263,7 +2370,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       return { decision: this.#allow(resolved.subject), resolved };
     }
     const dryPolicy = internals.mode === "dryRun";
-    const run = new Run();
+    const run = new Run(this.#challengeOutcome(facts));
     // The route stage repeats L2 and the lists for their flags and the
     // caller's own entries; the early stage recorded the address's hits.
     const routeStage = stage === "route";
@@ -2315,6 +2422,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
 
     // ── L3: lists, unless a verified service is exempt from them ─────────
     let lists: ListOutcome | undefined;
+    // A `challenge` entry lets L4 decide first: a banned client is refused
+    // by its ban at once, not challenged (the user's ruling, 2026-11-16).
+    // Its hit is recorded after the bans; `allow` and `block` keep L3's
+    // precedence.
+    let challengeEntry: CompiledEntry | undefined;
     if (resolved.service?.exempt.has("lists")) {
       trace?.push({
         layer: "L3",
@@ -2333,10 +2445,14 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         trace,
       );
       if (lists.decided && ownEntry(lists.decided, stage)) {
-        run.add(entryHit(lists.decided), {
-          status: 403,
-          code: lists.decided.code,
-        });
+        if (lists.decided.action === "challenge") {
+          challengeEntry = lists.decided;
+        } else {
+          run.add(entryHit(lists.decided), {
+            status: 403,
+            code: lists.decided.code,
+          });
+        }
       }
       if (lists.wouldBe && ownEntry(lists.wouldBe, stage)) {
         run.add({
@@ -2444,13 +2560,62 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       stage,
     };
     if (this.#banned(pass)) return finish();
+    if (challengeEntry !== undefined) {
+      run.add(entryHit(challengeEntry), {
+        status: 403,
+        code: challengeEntry.code,
+      });
+      if (run.refused) return finish();
+    }
     return then(this.#shaped(facts, pass), (shapeRefused) => {
       if (shapeRefused) return finish();
       return then(this.#ruled(facts, pass, policy), (ruled) => {
-        if (ruled) return finish();
+        if (ruled || this.#signaled(facts, pass, policy)) return finish();
         return this.#afterRules(facts, pass, finish, internals, limitSet);
       });
     });
+  }
+
+  /**
+   * Layer L10.1: the bot signals the request shows add to its risk, logged
+   * as one hit; at the policy's `challengeAt` the hit is a challenge
+   * (resolved by `Run.add`). Early stage only: headers are all they read.
+   * Answers whether the request was refused.
+   */
+  #signaled(facts: RequestFacts, pass: Pass, policy: CompiledPolicy): boolean {
+    if (pass.stage === "route" || pass.flags.allowAll || pass.flags.internal) {
+      return false;
+    }
+    const compiled = botSignalsOf(policy);
+    if (!compiled.enabled) return false;
+    const found = readSignals(compiled, facts);
+    if (found.length === 0) return false;
+    const { run, trace } = pass;
+    const points = found.reduce((sum, signal) => sum + signal.points, 0);
+    run.risk += points;
+    const reason = `bot signals: ${found.map((signal) => signal.name).join(", ")} (risk ${points})`;
+    const challenge = points >= compiled.challengeAt;
+    const dry = challenge && (pass.dryPolicy || compiled.dryRun);
+    run.add(
+      challenge && !dry
+        ? { layer: "L10", rule: "botSignals", action: "challenge", reason }
+        : {
+            layer: "L10",
+            rule: "botSignals",
+            action: "log",
+            ...(dry ? { wouldHaveBeen: "challenge" as const } : {}),
+            reason: dry ? `dry run: ${reason}` : reason,
+          },
+    );
+    trace?.push({
+      layer: "L10",
+      check: "signals",
+      rule: "botSignals",
+      outcome: challenge
+        ? `${reason}: ${dry ? "would have challenged (dry run)" : "challenged"}`
+        : `${reason}: added to the risk`,
+    });
+    return run.refused;
   }
 
   /**
@@ -2689,6 +2854,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       }
       if (refuses(hit.action)) risk++;
     }
+    risk += run.risk;
     const decision: { -readonly [K in keyof Decision]: Decision[K] } = {
       action,
       hits: Object.freeze(hits),

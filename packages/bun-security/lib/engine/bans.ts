@@ -48,7 +48,7 @@ export interface Ban {
   readonly id: string;
   /** What it refuses. */
   readonly subject: BanSubject;
-  /** `ban` refuses; `challenge` is a `block` until challenge providers exist. */
+  /** `ban` refuses; `challenge` challenges (a `block` without a challenge flow). */
   readonly action: "ban" | "challenge";
   /** Why, for operators; never sent to the client. */
   readonly reason: string;

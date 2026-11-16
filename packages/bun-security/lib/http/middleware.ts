@@ -24,6 +24,12 @@ import { requestFacts } from "../engine/facts";
 import type { RequestFacts, SecurityIdentity } from "../engine/facts";
 import { isThenable, then } from "../engine/maybe";
 import type { Security } from "../engine/security";
+import type { ChallengeFlow } from "../challenge/flow";
+import {
+  answerChallenge,
+  challengeResponse,
+  isChallengeAnswer,
+} from "../serve/challenge";
 import { dropResponse, refusalResponse } from "../serve/respond";
 import { csrf, csrfDecision } from "./csrf";
 import type { CsrfGuard, CsrfOptions } from "./csrf";
@@ -179,8 +185,24 @@ export function refusalFor(
   logger: Logger,
   decision: Decision,
   request: Request,
+  challenge?: {
+    readonly flow: ChallengeFlow | undefined;
+    readonly facts: RequestFacts | undefined;
+  },
 ): Response | Promise<Response> {
   if (decision.action === "drop") return dropResponse();
+  // A challenge, when the engine has a challenge flow (layers.md L10.2).
+  const challenged =
+    challenge?.facts === undefined
+      ? undefined
+      : challengeResponse(
+          challenge.flow,
+          decision,
+          request,
+          challenge.facts,
+          logger,
+        );
+  if (challenged !== undefined) return challenged;
   const render = options.renderBlock;
   if (render === undefined) return refusalResponse(decision, request);
   const fallback = (error: unknown): Response => {
@@ -246,14 +268,19 @@ export function createRouteStage(
   const { options, logger } = setup;
   const guard = guardOf(options.csrf);
 
-  /** Answers a refusal on `res`. */
+  /** Answers a refusal on `res` (a challenge with the facts the route stage decided from). */
   const refuse = (
     res: BunResponse,
     decision: Decision,
     request: Request,
+    facts?: RequestFacts,
   ): unknown =>
-    then(refusalFor(options, logger, decision, request), (answer) =>
-      res.send(answer),
+    then(
+      refusalFor(options, logger, decision, request, {
+        flow: security.challenge,
+        facts,
+      }),
+      (answer) => res.send(answer),
     );
 
   /** The admitted request's CSRF check, then the route. */
@@ -278,7 +305,34 @@ export function createRouteStage(
     state: RequestState,
     decision: Decision,
   ): unknown => {
-    if (refuses(decision.action)) return refuse(res, decision, req.request);
+    const facts = state.routeFacts;
+    // Without the early hook (securityMiddleware alone), the answer to a
+    // challenge is taken here; under installSecurity the early hook took it.
+    if (
+      !setup.staged &&
+      facts !== undefined &&
+      isChallengeAnswer(security.challenge, decision, req.request)
+    ) {
+      // The router read the body already (its body parser): the answer is
+      // given the bytes it kept.
+      const request = req.request.bodyUsed
+        ? new Request(req.request.url, {
+            method: req.request.method,
+            headers: req.request.headers,
+            body: req.buffer ?? null,
+          })
+        : req.request;
+      return answerChallenge(
+        security,
+        security.challenge,
+        request,
+        facts,
+        logger,
+      ).then((answer) => res.send(answer));
+    }
+    if (refuses(decision.action)) {
+      return refuse(res, decision, req.request, facts);
+    }
     if (decision.action === "delay" && (decision.delayMs ?? 0) > 0) {
       return Bun.sleep(Math.min(decision.delayMs ?? 0, MAX_DELAY_MS)).then(() =>
         pass(req, res, next, state),

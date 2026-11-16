@@ -144,6 +144,16 @@ describe("package.json exports", () => {
     }
   });
 
+  it("gives the challenges their own subpath, ./challenge (PR-S9)", () => {
+    for (const key of ["./challenge", "./lib/challenge"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/challenge/index.ts",
+        types: "./dts/challenge/index.d.ts",
+        default: "./lib/challenge/index.ts",
+      });
+    }
+  });
+
   it("checks every literal subpath in the consumer check", () => {
     const spellings = new Set(
       checkConfig.entries?.map((entry) => entry.spelling),

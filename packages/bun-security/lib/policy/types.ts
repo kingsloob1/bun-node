@@ -13,6 +13,7 @@
  */
 import type { Duration } from "@kingsleyweb/bun-common";
 import type { RequestRulesPolicy } from "../rules/types";
+import type { BotSignalsPolicy } from "../engine/signals";
 
 /**
  * How a rule, a list entry or a whole policy runs (layers.md §0.4):
@@ -305,7 +306,7 @@ export interface CountedRule {
   /**
    * What the tripped key gets: a ban (layers.md L4) with this action until
    * `duration` ends. `ban` refuses every later request under the key;
-   * `challenge` is a `block` until challenge providers exist; `ladder` bans
+   * `challenge` challenges (a `block` without a challenge flow); `ladder` bans
    * for the escalating duration of the policy's `ladder` (`base ×
    * factor^(n-1)`, n the key's bans within the ladder's `memory`), and takes
    * no `duration`. Default `"ban"`.
@@ -465,7 +466,7 @@ export interface BanPolicy {
 export interface LadderStep {
   /** The score that reaches it: a positive number. */
   readonly score: number;
-  /** What the client address gets: `challenge` (a `block` until challenge providers exist) or `ban`. */
+  /** What the client address gets: `challenge` (a `block` without a challenge flow) or `ban`. */
   readonly action: "challenge" | "ban";
   /**
    * How long, its unit written. Default: for `ban`, the escalating duration
@@ -676,4 +677,6 @@ export interface SecurityPolicy {
   readonly state?: StatePolicy;
   /** WebSocket message limits (layers.md L9.5). */
   readonly messages?: MessagePolicy;
+  /** Bot and automation signals (layers.md L10.1): off unless set. */
+  readonly botSignals?: BotSignalsPolicy;
 }

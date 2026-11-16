@@ -119,7 +119,7 @@ export interface RequestRule {
   readonly when: RuleCondition;
   /**
    * What a hit does: `log` (recorded only), `block` (refused), `challenge`
-   * (refused with `block` until challenge providers exist), `ban` (refused,
+   * (a challenge; `block` without a challenge flow), `ban` (refused,
    * and the client address banned for {@link duration}), `drop` (the
    * connection closed with no answer). Default `block`.
    */

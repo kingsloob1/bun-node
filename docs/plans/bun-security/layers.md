@@ -314,6 +314,10 @@ prefix).
   global); within a scope, `allow` beats `block` only if marked `override`,
   otherwise the most severe wins. The UI's "test a request" tool shows which
   entry decided (ui.md §4.5).
+- Against L4: an `allow`, `block` or `drop` entry answers before the bans
+  are looked at. A **`challenge` entry lets L4 decide first** (the user's
+  ruling, 2026-11-16, PR-S9): a banned client on it is refused by its ban at
+  once, clearance or not, and only a client with no ban is challenged.
 
 ### L3.1 Built-in never-block ranges, and allow-list guards [D]
 
@@ -531,8 +535,10 @@ dry run, and the events.
 
 ## L4 Bans
 
-**Stage:** pre-routing, right after L3. A ban is a list entry with an expiry
-and a history; it is separate from L3 because it is written at run time by
+**Stage:** pre-routing, right after L3: after an L3 `allow`, `block` or
+`drop` entry has answered, and before an L3 `challenge` entry is applied
+(L3, "Against L4"), so a ban outranks a challenge entry. A ban is a list
+entry with an expiry and a history; it is separate from L3 because it is written at run time by
 the engine and by operators, at high rate during an attack, and must reach
 every enforcement point fast.
 
@@ -918,7 +924,12 @@ interface ChallengeProvider {
   score. Compatible in spirit with ALTCHA (MIT, self-hosted, PBKDF2/SHA-256
   [V]); whether to speak ALTCHA's wire format so its MIT widget can be used
   unchanged is Q9. PoW slows a bot farm per request; it does not stop a
-  determined one, so it is a rate shaper, not an identity check.
+  determined one, so it is a rate shaper, not an identity check. **As
+  built (PR-S9):** ALTCHA's v1 wire format, so Q9 holds: the client finds
+  a secret `number` up to `maxnumber` with `SHA-256(salt + number)` equal
+  to the signed `challenge`; difficulty is `maxnumber`, scaled by risk,
+  rather than leading zero bits; the salt also binds the client's /24 or
+  /64 (plan §17.10).
 - **Adapters for hosted CAPTCHAs**, each a few lines over `fetch`, with no
   SDK: Cloudflare Turnstile, hCaptcha, Google reCAPTCHA (v2/v3/Enterprise).
   They share one shape: the client widget yields a token; the server POSTs

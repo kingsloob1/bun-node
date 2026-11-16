@@ -17,6 +17,7 @@ import { parseCidr } from "../ip/address";
 import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import { validateRequestRules } from "../rules/schema";
+import { validateBotSignals } from "../engine/signals";
 import { POLICY_NEWER } from "./errors";
 import type { PolicyIssue } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
@@ -1334,6 +1335,7 @@ const POLICY_KEYS = [
   "requestRules",
   "state",
   "messages",
+  "botSignals",
 ];
 
 /**
@@ -1602,6 +1604,9 @@ export function validatePolicy(
   checkShape(issues, input.shape);
   checkDeception(issues, input.deception);
   for (const issue of validateRequestRules(input.requestRules)) {
+    issues.add(issue.path, issue.message);
+  }
+  for (const issue of validateBotSignals(input.botSignals)) {
     issues.add(issue.path, issue.message);
   }
   return issues.list;

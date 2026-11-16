@@ -71,6 +71,16 @@
       "types": "./dts/stores/index.d.ts",
       "default": "./lib/stores/index.ts"
     },
+    "./challenge": {
+      "@kingsleyweb/source": "./lib/challenge/index.ts",
+      "types": "./dts/challenge/index.d.ts",
+      "default": "./lib/challenge/index.ts"
+    },
+    "./lib/challenge": {
+      "@kingsleyweb/source": "./lib/challenge/index.ts",
+      "types": "./dts/challenge/index.d.ts",
+      "default": "./lib/challenge/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",
