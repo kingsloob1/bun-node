@@ -360,6 +360,17 @@ interface SharedState {
   names: NameHasher | undefined;
 }
 
+/** Whether `value` is a list of strings. */
+function isStringList(value: unknown): value is readonly string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((element) => typeof element === "string")
+  );
+}
+
+/** The most elements one driver `pfAdd` call carries; the core splits a longer list. */
+const PF_ADD_CHUNK = 1_000;
+
 /** The cache implementation; one instance per namespace view, over shared state. */
 class CacheImpl<
   Schema extends CacheSchema = Record<string, unknown>,
@@ -3057,6 +3068,75 @@ class CacheImpl<
 
   decrement: Cache<Schema, Tag>["decrement"] = async (key, by = 1, options) =>
     await this.increment(key, -by, options);
+
+  /** The driver, when it counts distinct elements; throws `UnsupportedOperationError` otherwise. */
+  #distinctDriver(op: string): CacheDriver {
+    const driver = this.#state.driver;
+    if (
+      driver.capabilities.distinctCount !== true ||
+      driver.pfAdd === undefined ||
+      driver.pfCount === undefined
+    ) {
+      throw new UnsupportedOperationError(
+        driver.name,
+        op,
+        "the driver does not advertise distinctCount",
+      );
+    }
+    return driver;
+  }
+
+  pfAdd: Cache<Schema, Tag>["pfAdd"] = async (key, elements, options) => {
+    const driver = this.#distinctDriver("pfAdd");
+    const given: unknown = typeof elements === "string" ? [elements] : elements;
+    if (!isStringList(given)) {
+      throw new TypeError(
+        "pfAdd: elements must be a string or a list of strings",
+      );
+    }
+    const ttl = options?.ttl ?? null;
+    if (ttl !== null && !(Number.isFinite(ttl) && ttl > 0)) {
+      throw new TypeError(
+        `pfAdd: ttl must be a positive number of ms, or null; got ${String(ttl)}`,
+      );
+    }
+    const names = this.#state.names;
+    const stored = this.#storedKey(key);
+    const hashed =
+      names === undefined
+        ? given
+        : given.map((element) => names.key(this.#ns, element));
+    return await this.#opStrict("pfAdd", async () => {
+      // Bounded calls: a long list goes in chunks (a Lua script's argument
+      // count, a statement's size). The sketch is created by the first, so
+      // its lifetime is the first chunk's.
+      let changed = false;
+      for (let at = 0; at === 0 || at < hashed.length; at += PF_ADD_CHUNK) {
+        if (
+          await driver.pfAdd!(
+            this.#storedNs,
+            stored,
+            hashed.slice(at, at + PF_ADD_CHUNK),
+            ttl,
+          )
+        ) {
+          changed = true;
+        }
+      }
+      return changed;
+    });
+  };
+
+  pfCount: Cache<Schema, Tag>["pfCount"] = async (keys) => {
+    const driver = this.#distinctDriver("pfCount");
+    const given = typeof keys === "string" ? [keys] : keys;
+    if (given.length === 0) return 0;
+    const stored = given.map((key) => this.#storedKey(key));
+    return await this.#opStrict(
+      "pfCount",
+      async () => await driver.pfCount!(this.#storedNs, stored),
+    );
+  };
 
   /**
    * {@link #op} for operations with no honest fallback (counters): the

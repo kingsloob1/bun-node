@@ -44,6 +44,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { sketchAdd, sketchCount, sketchNamespace } from "../core/hll";
 import type {
   CounterRow,
   EntryRow,
@@ -111,6 +112,7 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
     tags: "index",
     fence: "atomic",
     bus: "poll",
+    distinctCount: true,
   };
 
   /** The bus poll interval, ms. */
@@ -516,12 +518,19 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
         `DELETE FROM ${this.tables.tags} WHERE ns = ? AND k IN (${marks(fitted.length)})`,
         [fns, ...fitted],
       );
-      return MysqlCacheDriver.#affected(
+      const entries = MysqlCacheDriver.#affected(
         await tx.unsafe(
           `DELETE FROM ${this.tables.entries} WHERE ns = ? AND k IN (${marks(fitted.length)})`,
           [fns, ...fitted],
         ),
       );
+      const sketches = MysqlCacheDriver.#affected(
+        await tx.unsafe(
+          `DELETE FROM ${this.tables.entries} WHERE ns = ? AND k IN (${marks(fitted.length)})`,
+          [this.fit(sketchNamespace(ns)), ...fitted],
+        ),
+      );
+      return entries + sketches;
     });
   }
 
@@ -531,7 +540,90 @@ export class MysqlCacheDriver extends SqlCacheDriverBase {
     await this.#transaction(async (tx) => {
       await tx.unsafe(`DELETE FROM ${this.tables.tags} WHERE ns = ?`, [fns]);
       await tx.unsafe(`DELETE FROM ${this.tables.entries} WHERE ns = ?`, [fns]);
+      await tx.unsafe(`DELETE FROM ${this.tables.entries} WHERE ns = ?`, [
+        this.fit(sketchNamespace(ns)),
+      ]);
     });
+  }
+
+  /**
+   * In one `REPEATABLE READ` transaction, retried on a deadlock: the sketch
+   * row (in the sketch namespace `<ns>#d`, `n` `0` so the `maxEntries` cap
+   * never counts it) is created if absent, locked by a locking read (`FOR
+   * UPDATE`, which reads the latest committed row), merged and written back.
+   * Timed by `UTC_TIMESTAMP(6)`, so the session's time zone plays no part.
+   */
+  async pfAdd(
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ): Promise<boolean> {
+    await this.ready();
+    const e = this.tables.entries;
+    const twin = this.fit(sketchNamespace(ns));
+    const k = this.fit(key);
+    return await this.#transaction(async (tx) => {
+      const [clock] = await tx.unsafe<{ now: string | number | bigint }[]>(
+        "SELECT CAST(TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', UTC_TIMESTAMP(6)) DIV 1000 AS SIGNED) AS now",
+      );
+      const now = Number(clock?.now ?? Date.now());
+      const fresh = ttl === null ? null : now + ttl;
+      // `n = n` takes the row's exclusive lock when it exists, so two
+      // creators never both read it absent.
+      await tx.unsafe(
+        `INSERT INTO ${e} (ns, k, v, n, exp, ca, tg) VALUES (?, ?, NULL, 0, ?, ?, NULL) ON DUPLICATE KEY UPDATE n = n`,
+        [twin, k, fresh, now],
+      );
+      const [row] = await tx.unsafe<
+        {
+          v: Uint8Array | null;
+          exp: string | number | bigint | null;
+          ca: string | number | bigint | null;
+        }[]
+      >(`SELECT v, exp, ca FROM ${e} WHERE ns = ? AND k = ? FOR UPDATE`, [
+        twin,
+        k,
+      ]);
+      const exp =
+        row?.exp === null || row?.exp === undefined ? null : Number(row.exp);
+      const live = row !== undefined && (exp === null || exp > now);
+      const { sketch, changed } = sketchAdd(
+        live && row.v !== null && row.v.length > 0
+          ? new Uint8Array(row.v)
+          : undefined,
+        elements,
+      );
+      if (changed) {
+        await tx.unsafe(
+          `UPDATE ${e} SET v = ?, n = 0, exp = ?, ca = ?, tg = NULL WHERE ns = ? AND k = ?`,
+          [
+            sketch,
+            live ? exp : fresh,
+            live ? Number(row.ca ?? now) : now,
+            twin,
+            k,
+          ],
+        );
+      }
+      return changed;
+    });
+  }
+
+  async pfCount(ns: string, keys: readonly string[]): Promise<number> {
+    await this.ready();
+    const fitted = keys.map((key) => this.fit(key));
+    const rows = await this.sql.unsafe<{ v: Uint8Array | null }[]>(
+      `SELECT v FROM ${this.tables.entries} WHERE ns = ? AND k IN (${marks(fitted.length)}) AND (exp IS NULL OR exp > CAST(TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', UTC_TIMESTAMP(6)) DIV 1000 AS SIGNED))`,
+      [this.fit(sketchNamespace(ns)), ...fitted],
+    );
+    return sketchCount(
+      rows.map((row) =>
+        row.v === null || row.v.length === 0
+          ? undefined
+          : new Uint8Array(row.v),
+      ),
+    );
   }
 
   async touch(

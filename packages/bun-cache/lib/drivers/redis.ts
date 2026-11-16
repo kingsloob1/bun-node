@@ -10,6 +10,7 @@
  * ```
  * <p>:{<ns>}:e:<key>   STRING  the entry frame (below), PEXPIREAT expiresAt
  * <p>:{<ns>}:n:<key>   HASH    a counter: n (value), x (expiresAt or -), c (createdAt); PEXPIREAT expiresAt
+ * <p>:{<ns>}:d:<key>   STRING  a distinct-count sketch: Redis's own HyperLogLog (PFADD); PEXPIRE ttl at creation
  * <p>:{<ns>}:t:<tag>   SET     the keys carrying the tag; no TTL (pruned by sweep)
  * <p>:{<ns>}:s:<tag>   STRING  the tag's stamp, "<at> <until>"; no TTL (pruned by sweep)
  * <p>:{<ns>}:l:<key>   STRING  a lock's owner, PX ttl
@@ -486,6 +487,7 @@ local n = 0
 for i = 2, #ARGV do
   n = n + dropEntry(base, ARGV[i], true)
   n = n + redis.call('UNLINK', base .. 'n:' .. ARGV[i])
+  n = n + redis.call('UNLINK', base .. 'd:' .. ARGV[i])
 end
 return n
 `,
@@ -566,6 +568,27 @@ if exp == '' then shown = '-' end
 redis.call('HSET', nk, 'n', by, 'x', shown, 'c', now)
 if exp ~= '' then redis.call('PEXPIREAT', nk, exp) end
 return tonumber(by)
+`);
+
+/**
+ * `pfAdd`: KEYS[1] the sketch; ARGV ttl ms ('' none), then the elements.
+ * Redis's own HyperLogLog: `PFADD` answers whether a register changed or
+ * the key was created, and the lifetime is set only when this call created
+ * it (`PEXPIRE`, relative, so the server's clock places its end). Not
+ * `allow-oom`: it writes the sketch.
+ */
+const PF_ADD = script(`
+local existed = redis.call('EXISTS', KEYS[1])
+local changed
+if #ARGV > 1 then
+  changed = redis.call('PFADD', KEYS[1], unpack(ARGV, 2))
+else
+  changed = redis.call('PFADD', KEYS[1])
+end
+if existed == 0 and ARGV[1] ~= '' then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return changed
 `);
 
 /** `acquireLock`: KEYS[1] the lock; ARGV owner, ttl ms. Taken when absent or already ours (a re-acquire refreshes it). Not `allow-oom`: it writes the lock (`SET`). */
@@ -807,6 +830,7 @@ export class RedisCacheDriver implements CacheDriver {
     bus: "push",
     // A Redis string holds 512 MB; a MiB is left for the frame's header.
     maxEntryBytes: 511 * 1024 * 1024,
+    distinctCount: true,
   };
 
   /**
@@ -1463,7 +1487,7 @@ export class RedisCacheDriver implements CacheDriver {
       cursor = String(next);
       const doomed = found.filter((key) => {
         const kind = key.slice(base.length, base.length + 2);
-        return kind === "e:" || kind === "n:" || kind === "t:";
+        return kind === "e:" || kind === "n:" || kind === "t:" || kind === "d:";
       });
       if (doomed.length > 0) {
         await this.#client.unlink(...doomed);
@@ -1577,6 +1601,36 @@ export class RedisCacheDriver implements CacheDriver {
         INCREMENT,
         [`${base}n:${key}`],
         [base, key, String(by), expiryArg(expiresAt), String(this.#now())],
+      ),
+    );
+  }
+
+  async pfAdd(
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ): Promise<boolean> {
+    await this.#ready();
+    const sk = `${this.#base(ns)}d:${key}`;
+    return (
+      Number(
+        await this.#run(
+          PF_ADD,
+          [sk],
+          [ttl === null ? "" : String(Math.ceil(ttl)), ...elements],
+        ),
+      ) === 1
+    );
+  }
+
+  async pfCount(ns: string, keys: readonly string[]): Promise<number> {
+    await this.#ready();
+    const base = this.#base(ns);
+    return Number(
+      await this.#client.send(
+        "PFCOUNT",
+        keys.map((key) => `${base}d:${key}`),
       ),
     );
   }

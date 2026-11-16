@@ -218,6 +218,8 @@ describe("redundant(): options", () => {
       fence: "atomic",
       bus: "push",
       maxEntryBytes: both.capabilities.maxEntryBytes!,
+      // Sketches are the primary's, as counters are.
+      distinctCount: true,
     });
     expect(typeof both.deleteByTags).toBe("function");
     const mixed = redundant([
@@ -236,7 +238,7 @@ describe("redundant(): options", () => {
     expect(fileFirst.capabilities.multiProcess).toBe(false);
   });
 
-  test('counters: "refuse" advertises no counters and no locks', () => {
+  test('counters: "refuse" advertises no counters, no locks and no sketches', () => {
     const driver = redundant([memoryDriver(), memoryDriver()], {
       counters: "refuse",
     });
@@ -245,6 +247,9 @@ describe("redundant(): options", () => {
     expect(driver.increment).toBeUndefined();
     expect(driver.acquireLock).toBeUndefined();
     expect(driver.getCounter).toBeUndefined();
+    expect(driver.capabilities.distinctCount).toBe(false);
+    expect(driver.pfAdd).toBeUndefined();
+    expect(driver.pfCount).toBeUndefined();
   });
 });
 

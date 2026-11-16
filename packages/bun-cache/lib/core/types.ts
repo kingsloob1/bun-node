@@ -68,6 +68,12 @@ export interface CacheDriverCapabilities {
   bus: "push" | "poll" | "none";
   /** The backend's own per-entry byte limit, when it has one; the core's `maxEntryBytes` is capped by it. */
   maxEntryBytes?: number;
+  /**
+   * Whether {@link CacheDriver.pfAdd}/{@link CacheDriver.pfCount} work:
+   * distinct counts, a HyperLogLog sketch per key, added to atomically.
+   * Absent means `false`.
+   */
+  distinctCount?: boolean;
 }
 
 /**
@@ -247,6 +253,28 @@ export interface CacheDriver {
   ) => Promise<
     { value: number; expiresAt: number | null; createdAt: number } | undefined
   >;
+  /**
+   * Adds `elements` to the distinct-count sketch at `key` (a HyperLogLog,
+   * beside any entry or counter of the same key), atomically across every
+   * process on the backend, and answers whether it changed: a register rose,
+   * or the sketch was created (Redis's `PFADD`). A missing or ended sketch is
+   * created, with a lifetime of `ttl` ms (`null`: none) set then and never
+   * again, so a distinct count's window does not slide; the lifetime is
+   * measured by the backend's own clock where it has one. `delete` and
+   * `clear` remove sketches too. Required when `distinctCount` is advertised.
+   */
+  pfAdd?: (
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ) => Promise<boolean>;
+  /**
+   * The estimated number of distinct elements in the union of the sketches
+   * at `keys` (Redis's `PFCOUNT`): `0` for none. Accurate to about 1% (a
+   * standard error of 0.81%), and close to exact for small sets.
+   */
+  pfCount?: (ns: string, keys: readonly string[]) => Promise<number>;
   /** Takes a lock on `key` for `owner`, expiring in `ttlMs`; `false` when someone else holds it. */
   acquireLock?: (
     ns: string,
@@ -952,6 +980,12 @@ export type JsonifySchema<
 /** The schema constraint of {@link Cache}: key pattern → value type. */
 export type CacheSchema = Record<string, unknown>;
 
+/** {@link Cache.pfAdd}'s options. */
+export interface PfAddOptions {
+  /** The sketch's lifetime in ms, set when it is created; `null` or absent: none. */
+  ttl?: number | null;
+}
+
 /** The keys of `Schema` whose value is a number (the only keys `increment` accepts). Untyped schemas allow every key. */
 export type CacheCounterKeys<Schema extends CacheSchema = CacheSchema> =
   string extends keyof Schema
@@ -1087,6 +1121,30 @@ export interface Cache<
     by?: number,
     options?: { ttl?: number | null },
   ) => Promise<number>;
+
+  /**
+   * Adds elements to the distinct-count sketch at `key` (a HyperLogLog:
+   * distinct usernames per address, distinct addresses per account), and
+   * answers whether it changed. The sketch lives beside any entry or counter
+   * of the key, in the driver alone (never in L1), and is removed by
+   * `delete(key)`, `clear()` and its expiry. The TTL is set only when the
+   * sketch is created (as a counter's, §3.8), measured by the backend's
+   * clock where it has one. Under `encrypt.hashNames`, the elements are
+   * hashed as names are. Throws `UnsupportedOperationError` on a driver
+   * without the `distinctCount` capability, and, as `increment`, throws on a
+   * failure even under the default policy.
+   */
+  pfAdd: (
+    key: string,
+    elements: string | readonly string[],
+    options?: PfAddOptions,
+  ) => Promise<boolean>;
+  /**
+   * The estimated number of distinct elements added at `key`, or in the
+   * union of several keys': about 1% off at most sizes, close to exact for
+   * small ones. `0` for a key with no sketch.
+   */
+  pfCount: (keys: string | readonly string[]) => Promise<number>;
 
   /** A view of the same cache under a longer namespace: `cache.namespace("users")` on `"app"` stores `app:users:*` (§3.7). */
   namespace: (name: string) => Cache<Schema, Tag>;

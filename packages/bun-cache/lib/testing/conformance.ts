@@ -198,16 +198,16 @@ async function startWorker(job: {
   /** The harness the caller gave the kit. */
   harness: ConformanceCrossProcess;
   /** What to do. */
-  op: "increment" | "lock" | "stamps";
+  op: "increment" | "lock" | "stamps" | "pfAdd";
   /** The namespace to work in. */
   ns: string;
-  /** The key (increment, lock). */
+  /** The key (increment, lock, pfAdd). */
   key?: string;
   /** The tag (stamps). */
   tag?: string;
-  /** How many increments or lock attempts. */
+  /** How many increments or lock attempts, or elements to add (pfAdd). */
   count?: number;
-  /** The owner prefix (lock). */
+  /** The owner prefix (lock), or the element prefix (pfAdd). */
   ownerPrefix?: string;
 }): Promise<WorkerHandle> {
   const workerPath = new URL("./crossprocess-worker.ts", import.meta.url)
@@ -921,6 +921,118 @@ export async function runCacheDriverConformance(
       },
     );
 
+    const distinct = driver.capabilities.distinctCount === true;
+
+    kase(
+      "distinctCount",
+      "distinct counts: estimates, unions, answers whether a sketch changed, and go with delete and clear",
+      distinct,
+      async () => {
+        expect(typeof driver.pfAdd).toBe("function");
+        expect(typeof driver.pfCount).toBe("function");
+        const namespace = ns();
+        expect(await driver.pfCount!(namespace, ["none"])).toBe(0);
+        expect(await driver.pfAdd!(namespace, "s", ["a", "b", "c"], null)).toBe(
+          true,
+        );
+        expect(await driver.pfAdd!(namespace, "s", ["a", "b"], null)).toBe(
+          false,
+        );
+        expect(await driver.pfCount!(namespace, ["s"])).toBe(3);
+        // Creating an empty sketch is a change, as Redis's PFADD says.
+        expect(await driver.pfAdd!(namespace, "empty", [], null)).toBe(true);
+        expect(await driver.pfAdd!(namespace, "empty", [], null)).toBe(false);
+        expect(await driver.pfCount!(namespace, ["empty"])).toBe(0);
+        // Large sets, in the chunks the core sends, within 3%.
+        const big = Array.from({ length: 10_000 }, (_, i) => `big-${i}`);
+        for (let at = 0; at < big.length; at += 1_000) {
+          await driver.pfAdd!(
+            namespace,
+            "big",
+            big.slice(at, at + 1_000),
+            null,
+          );
+        }
+        const count = await driver.pfCount!(namespace, ["big"]);
+        expect(Math.abs(count - 10_000) / 10_000).toBeLessThanOrEqual(0.03);
+        // A union counts overlaps once.
+        await driver.pfAdd!(namespace, "u1", ["a", "b", "c", "d"], null);
+        await driver.pfAdd!(namespace, "u2", ["c", "d", "e"], null);
+        expect(await driver.pfCount!(namespace, ["u1", "u2", "none"])).toBe(5);
+        // Namespaces never mix.
+        const other = ns();
+        expect(await driver.pfCount!(other, ["s"])).toBe(0);
+        // A sketch sits beside an entry and a counter of the same key.
+        expect(await driver.set(namespace, entry("s", 8))).toBe("stored");
+        if (driver.capabilities.atomicIncrement && driver.increment) {
+          await driver.increment(namespace, "s", 5, null);
+        }
+        expect(await driver.pfCount!(namespace, ["s"])).toBe(3);
+        expect(await driver.pfAdd!(namespace, "s", ["d"], null)).toBe(true);
+        expect(await driver.pfCount!(namespace, ["s"])).toBe(4);
+        // delete and clear take sketches with them.
+        expect(await driver.delete(namespace, ["s"])).toBeGreaterThanOrEqual(1);
+        expect(await driver.pfCount!(namespace, ["s"])).toBe(0);
+        await driver.clear(namespace);
+        expect(
+          await driver.pfCount!(namespace, ["u1", "u2", "big", "empty"]),
+        ).toBe(0);
+      },
+      WAITING_CASE_TIMEOUT_MS,
+    );
+
+    kase(
+      "distinctCount.ttl",
+      "a sketch's lifetime is set at its creation only, and it ends then",
+      distinct,
+      async () => {
+        expect(typeof driver.pfAdd).toBe("function");
+        // A short lifetime, then a long one asked for right after: the first
+        // stands. Retried when the machine is so slow that the second call
+        // came after the first lifetime had nearly run out.
+        for (let attempt = 1; ; attempt++) {
+          const namespace = ns();
+          const started = Date.now();
+          await driver.pfAdd!(namespace, "t", ["a"], 2_000);
+          await driver.pfAdd!(namespace, "t", ["b"], 3_600_000);
+          if (Date.now() - started > 1_000 && attempt < 3) continue;
+          expect(await driver.pfCount!(namespace, ["t"])).toBe(2);
+          await wait(2_000 - (Date.now() - started) + 600);
+          expect(await driver.pfCount!(namespace, ["t"])).toBe(0);
+          // Re-created after its end, with a lifetime of its own.
+          expect(await driver.pfAdd!(namespace, "t", ["c"], null)).toBe(true);
+          expect(await driver.pfCount!(namespace, ["t"])).toBe(1);
+          return;
+        }
+      },
+      WAITING_CASE_TIMEOUT_MS,
+    );
+
+    kase(
+      "distinctCount.concurrent",
+      "50 concurrent additions to one sketch lose nothing",
+      distinct,
+      async () => {
+        expect(typeof driver.pfAdd).toBe("function");
+        const namespace = ns();
+        await Promise.all(
+          Array.from(
+            { length: 50 },
+            async (_, part) =>
+              await driver.pfAdd!(
+                namespace,
+                "c",
+                Array.from({ length: 40 }, (_, i) => `p${part}-${i}`),
+                null,
+              ),
+          ),
+        );
+        const count = await driver.pfCount!(namespace, ["c"]);
+        expect(Math.abs(count - 2_000) / 2_000).toBeLessThanOrEqual(0.03);
+      },
+      WAITING_CASE_TIMEOUT_MS,
+    );
+
     kase(
       "lock",
       "a lock contended by 50 callers is taken exactly once, and lapses",
@@ -991,6 +1103,52 @@ export async function runCacheDriverConformance(
         expect(received.length).toBe(1);
       },
       WAITING_CASE_TIMEOUT_MS,
+    );
+
+    kase(
+      "multiprocess.distinctCount",
+      "two processes add to the same sketch and lose nothing",
+      driver.capabilities.multiProcess && distinct,
+      async () => {
+        const harness = options.crossProcess;
+        expect(
+          harness,
+          "the driver advertises multiProcess: give the kit `crossProcess` ({ module, export, options }) so the pass can spawn a second process",
+        ).toBeDefined();
+        const namespace = ns();
+        const child = await startWorker({
+          harness: harness!,
+          op: "pfAdd",
+          ns: namespace,
+          key: "d",
+          count: 1_000,
+          ownerPrefix: "child-",
+        });
+        child.go();
+        // The same shape as the worker's: ten waves of ten concurrent calls.
+        for (let wave = 0; wave < 10; wave++) {
+          await Promise.all(
+            Array.from(
+              { length: 10 },
+              async (_, part) =>
+                await driver.pfAdd!(
+                  namespace,
+                  "d",
+                  Array.from(
+                    { length: 10 },
+                    (_, i) => `parent-${wave}-${part}-${i}`,
+                  ),
+                  null,
+                ),
+            ),
+          );
+          await wait(0);
+        }
+        await child.result;
+        const count = await driver.pfCount!(namespace, ["d"]);
+        expect(Math.abs(count - 2_000) / 2_000).toBeLessThanOrEqual(0.03);
+      },
+      CROSS_PROCESS_TIMEOUT_MS,
     );
 
     kase(

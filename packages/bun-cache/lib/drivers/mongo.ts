@@ -18,7 +18,10 @@
  *
  * An entry carries its value in `v`; a counter (§3.8) carries its value in
  * `n` and has no `v`, so `$inc` adds atomically and `get` never mistakes one
- * for the other. `ca` is the write time (an entry's last `set`, a counter's
+ * for the other. A distinct-count sketch is a document of the sketch
+ * namespace `<ns>#d` carrying its bytes in `sk` (neither `v` nor `n`, so the
+ * `maxEntries` cap never counts it) and a version `sv` for its
+ * compare-and-set. `ca` is the write time (an entry's last `set`, a counter's
  * creation), `w` a per-write id the fence's compensation deletes by.
  *
  * - **Expiry.** A TTL index on `exp` reclaims what expired, but MongoDB's TTL
@@ -69,6 +72,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { sketchAdd, sketchCount, sketchNamespace } from "../core/hll";
 import type { ConnectionInput } from "./sql-connection";
 import { entryCapExcess } from "./entry-cap";
 import { resolveConnectionUrl } from "./sql-connection";
@@ -424,6 +428,10 @@ interface EntryDoc {
   ca: number;
   /** This write's id: the fence's compensation and the cap delete only the version they saw. */
   w?: string;
+  /** A distinct-count sketch's bytes (`pfAdd`); absent on entries and counters. */
+  sk?: Uint8Array | null;
+  /** A distinct-count sketch's version, for its compare-and-set. */
+  sv?: number;
 }
 
 /** A stored tag stamp. */
@@ -481,6 +489,7 @@ export class MongoCacheDriver implements CacheDriver {
     // 16 MiB documents, less room for the key, tags and fields; replaced on
     // connect by the server's own `maxBsonObjectSize` less the same margin.
     maxEntryBytes: 16 * 1024 * 1024 - 64 * 1024,
+    distinctCount: true,
   };
 
   /** The database the collections live in. */
@@ -1105,15 +1114,115 @@ export class MongoCacheDriver implements CacheDriver {
       return 0;
     }
     const entries = await this.#collection<EntryDoc>("entries");
+    const twin = sketchNamespace(ns);
     const result = await entries.deleteMany({
-      _id: { $in: keys.map((k) => ({ ns, k })) },
+      _id: {
+        $in: [
+          ...keys.map((k) => ({ ns, k })),
+          ...keys.map((k) => ({ ns: twin, k })),
+        ],
+      },
     });
     return result.deletedCount;
   }
 
   async clear(ns: string): Promise<void> {
     const entries = await this.#collection<EntryDoc>("entries");
-    await entries.deleteMany({ "_id.ns": ns });
+    await entries.deleteMany({ "_id.ns": { $in: [ns, sketchNamespace(ns)] } });
+  }
+
+  /**
+   * A compare-and-set loop on the sketch document: first make sure a live
+   * one exists (an update pipeline that keeps a live document, or replaces
+   * an absent or ended one with an empty sketch whose `exp` is `$$NOW` plus
+   * the TTL, so the server's clock times it), then write the merged sketch
+   * only if its version `sv` is still the one read. A writer that lost the
+   * race reads again.
+   */
+  async pfAdd(
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ): Promise<boolean> {
+    const entries = await this.#collection<EntryDoc>("entries");
+    const id = { ns: sketchNamespace(ns), k: key };
+    const live = {
+      $and: [
+        { $ne: [{ $type: "$sv" }, "missing"] },
+        {
+          $or: [
+            { $eq: [{ $ifNull: ["$exp", null] }, null] },
+            { $gt: ["$exp", "$$NOW"] },
+          ],
+        },
+      ],
+    };
+    const fresh = {
+      _id: "$_id",
+      sk: { $literal: null },
+      sv: { $literal: 0 },
+      exp: ttl === null ? { $literal: null } : { $add: ["$$NOW", ttl] },
+      tags: { $literal: [] },
+      ca: { $toLong: "$$NOW" },
+    };
+    const deadline = Date.now() + 30_000;
+    for (let attempt = 1; ; attempt++) {
+      const doc = await upsertRetrying(
+        async () =>
+          await entries.findOneAndUpdate(
+            { _id: id },
+            [{ $replaceWith: { $cond: [live, "$$ROOT", fresh] } }],
+            { upsert: true, returnDocument: "after", promoteBuffers: true },
+          ),
+      );
+      const version = Number(doc?.sv ?? 0);
+      const sk = doc?.sk;
+      const stored =
+        sk === null || sk === undefined
+          ? undefined
+          : new Uint8Array(sk.buffer, sk.byteOffset, sk.byteLength);
+      const { sketch, changed } = sketchAdd(stored, elements);
+      if (!changed) return false;
+      const written = await entries.updateOne(
+        { _id: id, sv: version },
+        { $set: { sk: sketch, sv: version + 1 } },
+      );
+      if (written.matchedCount === 1) return true;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `pfAdd: the sketch at ${JSON.stringify(key)} kept changing under ${attempt} attempts`,
+        );
+      }
+      // Another writer won: back off a little, then read again.
+      await Bun.sleep(Math.random() * Math.min(attempt, 20));
+    }
+  }
+
+  async pfCount(ns: string, keys: readonly string[]): Promise<number> {
+    const entries = await this.#collection<EntryDoc>("entries");
+    const twin = sketchNamespace(ns);
+    const docs = await entries
+      .find(
+        {
+          _id: { $in: keys.map((k) => ({ ns: twin, k })) },
+          $expr: {
+            $or: [
+              { $eq: [{ $ifNull: ["$exp", null] }, null] },
+              { $gt: ["$exp", "$$NOW"] },
+            ],
+          },
+        },
+        { projection: { sk: 1 }, promoteBuffers: true },
+      )
+      .toArray();
+    return sketchCount(
+      docs.map((doc) =>
+        doc.sk === null || doc.sk === undefined
+          ? undefined
+          : new Uint8Array(doc.sk.buffer, doc.sk.byteOffset, doc.sk.byteLength),
+      ),
+    );
   }
 
   async touch(

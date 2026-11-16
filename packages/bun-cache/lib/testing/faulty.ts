@@ -137,6 +137,18 @@ export function faulty(
     driver.getCounter = (ns: string, key: string) =>
       run("getCounter", async () => await inner.getCounter!(ns, key));
   }
+  if (inner.pfAdd !== undefined) {
+    driver.pfAdd = (
+      ns: string,
+      key: string,
+      elements: readonly string[],
+      ttl: number | null,
+    ) => run("pfAdd", async () => await inner.pfAdd!(ns, key, elements, ttl));
+  }
+  if (inner.pfCount !== undefined) {
+    driver.pfCount = (ns: string, keys: readonly string[]) =>
+      run("pfCount", async () => await inner.pfCount!(ns, keys));
+  }
   if (inner.acquireLock !== undefined) {
     driver.acquireLock = (
       ns: string,

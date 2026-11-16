@@ -40,7 +40,7 @@ rule: no benchmarks or speed comparisons without the user's yes).
 | ConcaveHR's write-up of its defence | **folded in** (§12, received 2026-11-07): every layer mapped, its lessons carried into the design and §14 |
 | Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request |
-| Prerequisites in other packages (§15.1) | **PR-P2 merged** (#794, 2026-11-16): bun-common's adapter gains `addBeforeReadHook` (before `BunRequest.init`: no body, cookie or query read; answer, drop or hold) and `addBeforeWriteHook` (every response before it is written, phases `early`, `response`, `error`). PR-P3 and PR-P4 not started |
+| Prerequisites in other packages (§15.1) | **PR-P2 merged** (#794, 2026-11-16): bun-common's adapter gains `addBeforeReadHook` (before `BunRequest.init`: no body, cookie or query read; answer, drop or hold) and `addBeforeWriteHook` (every response before it is written, phases `early`, `response`, `error`). **PR-P3 built** on `feat/bun-security-p3` (2026-11-16), not yet merged: bun-cache distinct counts (`pfAdd`/`pfCount`, capability `distinctCount`) on memory, file, SQLite, Postgres, MySQL, MariaDB, Redis (native) and MongoDB, timed by the store's clock, with conformance cases; no `gcra` op (the throttle foundation already ships GCRA). PR-P4 not started |
 | Verified crawlers ([`layers.md` L3.2](layers.md#l32-verified-crawlers-let-search-engines-index-the-site-d-v)) | **added 2026-11-10** at the user's request: PR-S12; Q29 to Q31 answered with their recommendations |
 | The UI's package | **changed 2026-11-08**: bun-ui's `/security` entry instead of `@kingsleyweb/bun-security-ui` (the user's single-UI-package decision, [`bun-ui`](../bun-ui/README.md) §7) |
 
@@ -1243,6 +1243,16 @@ Decided with them (2026-11-16): PR-S3's seven changes to PR-S2's behaviour are a
 | problem codes `csrf`, `internal_error`; CSRF refusals `cross-site`, `untrusted-origin`, `opaque-origin`, `missing-token`, `invalid-token`; rule id `csrf`; header `x-bun-security-self-test`; path `/__bun-security/self-test`; cookie `__Host-csrf` (`csrf` over HTTP), header `x-csrf-token`, field `_csrf` | values |
 
 Decided with them (2026-11-16): §3.3's `security.install(app)`, `security.middleware()` and `security.profile(name)` are built as free functions of `./http` (`installSecurity(app, security, options)`, `securityMiddleware(security, options)`, `securityProfile(name, options)`), the shape of `withSecurity`; the engine gains `evaluate`'s `stage` option, each limit and counted rule counted in exactly one stage (the route stage for keys naming the caller or the route and for route patterns with a parameter; the early stage otherwise). Route-not-found is marked in bun-security (no route handler matched and the answer is a `404`), not by a bun-common flag. The built-in defaults are §17.4's **presets, staged**; S5 builds none of them (PR-S7 does).
+
+### 17.6 Added with PR-P3 (approved by the user, 2026-11-16)
+
+| Names | Where |
+|---|---|
+| `Cache.pfAdd(key, elements, options)`, `Cache.pfCount(keys)`; `CacheDriver.pfAdd?`, `pfCount?`; capability `distinctCount?` (approved in §17 as `pfAdd`, `pfCount`, `distinctCount`) | bun-cache |
+| type `PfAddOptions` (`{ ttl }`) | bun-cache root |
+| conformance case ids `distinctCount`, `distinctCount.ttl`, `distinctCount.concurrent`, `multiprocess.distinctCount` (named in `options.skip`) | bun-cache `./testing` |
+
+No `gcra` op: §15.1's condition does not hold (the throttle foundation ships GCRA, and `cacheThrottleStore` already has `consumeGcra`).
 
 The trust-proxy and throttle names (`trustProxy`, `throttle()`,
 `ThrottleStore`, `cacheThrottleStore`, `@Throttle`, `@SkipThrottle`) are

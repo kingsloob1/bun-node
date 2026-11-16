@@ -64,6 +64,7 @@ export type {
   FencedWrite,
   GetOrSetOptions,
   JsonifySchema,
+  PfAddOptions,
   SchemaChange,
   SchemaSyncOptions,
   SetOptions,

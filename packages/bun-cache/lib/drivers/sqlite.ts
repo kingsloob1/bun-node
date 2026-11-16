@@ -55,6 +55,7 @@ import type {
   StoredEntry,
   TagFence,
 } from "../core/types";
+import { sketchAdd, sketchCount, sketchNamespace } from "../core/hll";
 import type { ThrottleCounters } from "../core/throttle-counters";
 import { THROTTLE_COUNTERS } from "../core/throttle-counters";
 import { entryCapExcess, entryCapStatements } from "./entry-cap";
@@ -331,6 +332,13 @@ function buildStatements(names: Record<SqlCacheTable, string>): Statements {
   };
 }
 
+/** SQLite's clock in epoch ms (`julianday`), the host's: what sketches are timed by. */
+const SQLITE_NOW_EXPR =
+  "CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)";
+
+/** {@link SQLITE_NOW_EXPR} as a query. */
+const SQLITE_NOW = `SELECT ${SQLITE_NOW_EXPR} AS now`;
+
 /** The SQLite driver. See the module header. */
 class SqliteDriver implements CacheDriver {
   /** `"sqlite"`. */
@@ -443,6 +451,7 @@ class SqliteDriver implements CacheDriver {
       fence: "atomic",
       bus: "poll",
       maxEntryBytes: SQLITE_MAX_LENGTH,
+      distinctCount: true,
     };
   }
 
@@ -686,6 +695,12 @@ class SqliteDriver implements CacheDriver {
             db.query(this.#sql.deleteTagRows).run(ns, key);
           }
         }
+        // The key's distinct-count sketch, in the sketch namespace.
+        if (
+          db.query(this.#sql.deleteEntry).get(sketchNamespace(ns), key) !== null
+        ) {
+          count++;
+        }
       }
       return count;
     });
@@ -696,6 +711,7 @@ class SqliteDriver implements CacheDriver {
       for (const statement of this.#sql.clear) {
         db.query(statement).run(ns);
       }
+      db.query(this.#sql.clear[0]!).run(sketchNamespace(ns));
     });
   }
 
@@ -793,6 +809,59 @@ class SqliteDriver implements CacheDriver {
         .get(ns, key, by, expiresAt, now);
       return row!.n;
     });
+  }
+
+  /**
+   * In one `BEGIN IMMEDIATE` transaction (one writer at a time across
+   * processes): the sketch row is read, merged and written back. Its row is
+   * in the sketch namespace (`<ns>#d`), `v` the sketch and `n` `0`, so the
+   * `maxEntries` cap (which counts `n IS NULL`) never evicts it, and the
+   * sweeper reclaims it at its `exp`. The time is SQLite's (`julianday`).
+   */
+  async pfAdd(
+    ns: string,
+    key: string,
+    elements: readonly string[],
+    ttl: number | null,
+  ): Promise<boolean> {
+    const twin = sketchNamespace(ns);
+    return await this.#write((db) => {
+      const now = db.query<{ now: number }, []>(SQLITE_NOW).get()!.now;
+      const row = db
+        .query<
+          { v: Uint8Array | null; exp: number | null; ca: number | null },
+          [string, string]
+        >(
+          `SELECT v, exp, ca FROM ${this.#tables.entries} WHERE ns = ?1 AND k = ?2`,
+        )
+        .get(twin, key);
+      const live =
+        row !== null && (row.exp === null || row.exp > now) ? row : undefined;
+      const { sketch, changed } = sketchAdd(live?.v ?? undefined, elements);
+      if (!changed) return false;
+      db.query(
+        `INSERT INTO ${this.#tables.entries} (ns, k, v, n, exp, tg, ca) VALUES (?1, ?2, ?3, 0, ?4, NULL, ?5)
+         ON CONFLICT (ns, k) DO UPDATE SET v = excluded.v, n = 0, exp = excluded.exp, tg = NULL, ca = excluded.ca`,
+      ).run(
+        twin,
+        key,
+        sketch,
+        live === undefined ? (ttl === null ? null : now + ttl) : live.exp,
+        live?.ca ?? now,
+      );
+      return true;
+    });
+  }
+
+  async pfCount(ns: string, keys: readonly string[]): Promise<number> {
+    const rows = await this.#run((db) =>
+      db
+        .query<{ v: Uint8Array | null }, [string, string]>(
+          `SELECT v FROM ${this.#tables.entries} WHERE ns = ?1 AND k IN (SELECT value FROM json_each(?2)) AND (exp IS NULL OR exp > (${SQLITE_NOW_EXPR}))`,
+        )
+        .all(sketchNamespace(ns), JSON.stringify(keys)),
+    );
+    return sketchCount(rows.map((row) => row.v ?? undefined));
   }
 
   async getCounter(

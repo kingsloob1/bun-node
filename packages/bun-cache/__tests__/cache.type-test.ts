@@ -311,3 +311,33 @@ const wrongBatch: Pick<import("../lib/index").CacheDriver, "setManyFenced"> = {
   setManyFenced: async () => {},
 };
 void wrongBatch;
+
+// Distinct counts: one element or a list, a TTL, one key or a union.
+type _PfAdd = Expect<Equal<ReturnType<typeof cache.pfAdd>, Promise<boolean>>>;
+type _PfCount = Expect<
+  Equal<ReturnType<typeof cache.pfCount>, Promise<number>>
+>;
+void cache.pfAdd("ips:alice", "203.0.113.1", { ttl: 3_600_000 });
+void cache.pfAdd("ips:alice", ["203.0.113.1", "203.0.113.2"], { ttl: null });
+void cache.pfCount(["ips:alice", "ips:bob"]);
+// @ts-expect-error -- elements are strings
+void cache.pfAdd("ips:alice", [1, 2]);
+const pfOptions: import("../lib/index").PfAddOptions = { ttl: 60_000 };
+void pfOptions;
+type _DistinctCapability = Expect<
+  Equal<
+    import("../lib/index").CacheDriverCapabilities["distinctCount"],
+    boolean | undefined
+  >
+>;
+type _DriverPfAdd = Expect<
+  Equal<
+    NonNullable<import("../lib/index").CacheDriver["pfAdd"]>,
+    (
+      ns: string,
+      key: string,
+      elements: readonly string[],
+      ttl: number | null,
+    ) => Promise<boolean>
+  >
+>;

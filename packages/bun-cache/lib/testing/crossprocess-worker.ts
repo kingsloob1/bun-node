@@ -22,16 +22,16 @@ export interface CrossProcessJob {
   /** The options passed to the factory. */
   options?: unknown;
   /** What to do. */
-  op: "increment" | "lock" | "stamps";
+  op: "increment" | "lock" | "stamps" | "pfAdd";
   /** The namespace to work in. */
   ns: string;
-  /** The key (for `increment` and `lock`). */
+  /** The key (for `increment`, `lock` and `pfAdd`). */
   key?: string;
   /** The tag (for `stamps`). */
   tag?: string;
-  /** How many increments or lock attempts to make. */
+  /** How many increments or lock attempts to make, or elements to add (`pfAdd`). */
   count?: number;
-  /** The owner prefix for lock attempts (the parent uses another). */
+  /** The owner prefix for lock attempts, or the element prefix for `pfAdd` (the parent uses another). */
   ownerPrefix?: string;
 }
 
@@ -99,6 +99,34 @@ async function main(): Promise<void> {
           (owner): owner is string => owner !== undefined,
         );
         await emit({ acquired: winners.length, winners });
+        return;
+      }
+      case "pfAdd": {
+        if (driver.pfAdd === undefined || job.key === undefined) {
+          throw new Error("the driver has no pfAdd, or the job has no key");
+        }
+        // Ten waves of ten concurrent calls, ten elements each (for 1,000):
+        // the kit's own side has the same shape.
+        const count = job.count ?? 1_000;
+        const prefix = job.ownerPrefix ?? "c-";
+        const perCall = Math.max(1, Math.floor(count / 100));
+        for (let wave = 0; wave < 10; wave++) {
+          await Promise.all(
+            Array.from({ length: 10 }, async (_, part) =>
+              driver.pfAdd!(
+                job.ns,
+                job.key!,
+                Array.from(
+                  { length: perCall },
+                  (_, i) => `${prefix}${wave}-${part}-${i}`,
+                ),
+                null,
+              ),
+            ),
+          );
+          await Bun.sleep(0);
+        }
+        await emit({ added: count });
         return;
       }
       case "stamps": {
