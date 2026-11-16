@@ -106,8 +106,13 @@ export interface CompiledRequestRule {
   readonly hitRule: string;
   /** Whether it is the managed probe set's. */
   readonly managed: boolean;
-  /** The event a hit counts: `pattern.hit`, or `probe.hit` for the managed set. */
-  readonly event: "pattern.hit" | "probe.hit";
+  /**
+   * The event a hit counts: `rule.hit`, or `probe.hit` for the managed set.
+   * Never `pattern.hit`, which is the identifier checks' (L11.7), so a
+   * counted rule on it (ConcaveHR's `disposable_signup`) is not tripped by
+   * a request rule (plan §17.19).
+   */
+  readonly event: "rule.hit" | "probe.hit";
   /** What a hit does. */
   readonly action: "log" | "block" | "challenge" | "ban" | "drop";
   /** The offence weight a hit adds to the address's score. */
@@ -437,7 +442,7 @@ function compileRule(
     id: rule.id,
     hitRule: managed ? `probe:${rule.id}` : `rule:${rule.id}`,
     managed,
-    event: managed ? "probe.hit" : "pattern.hit",
+    event: managed ? "probe.hit" : "rule.hit",
     action,
     weight: overrides.weight ?? rule.weight ?? (action === "log" ? 0 : 1),
     mode,
