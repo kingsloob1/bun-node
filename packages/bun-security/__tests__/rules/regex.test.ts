@@ -5,7 +5,7 @@
  * over the same parse tree (no timing assertion). The negative controls
  * run the refused shapes through the same matcher and watch them blow up.
  */
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import {
   compileSafeRegex,
   parseRegex,
@@ -15,6 +15,13 @@ import {
 import type { CharSpec, RegexNode } from "../../lib/rules/regex";
 import { seededRandom } from "../helpers";
 import { countSteps } from "./backtracker";
+
+// The budget checks below count up to 16.7 million matcher steps a case:
+// 0.1–1.1 s of CPU each on an idle machine (the grammar property about 2 s),
+// 2–5 s each at a load of 12, and past bun:test's 5 s default on a busier one
+// (a negative control took 6.4 s under a loaded `--randomize` run). The
+// work is the assertion, so it is given room rather than cut.
+setDefaultTimeout(30_000);
 
 /** The input lengths the budget is checked at; 1,024 is `maxRegexInput`'s default. */
 const SIZES = [256, 512, 1024] as const;
@@ -135,7 +142,6 @@ describe("T-L7-1: accepted patterns stay within budget; refused ones blow up", (
     ["(a+)+$", `${"a".repeat(30)}\u0001`],
     ["(a|aa)*$", `${"a".repeat(40)}\u0001`],
     ["^(a|a?)+$", `${"a".repeat(30)}\u0001`],
-    ["\\d*\\d*\\d*\\d*x", `${"1".repeat(200)}\u0001`],
     [`${"a?".repeat(25)}${"a".repeat(25)}`, "a".repeat(24)],
   ])(
     "negative control: refused %p exceeds the budget on a short input in the same matcher",
@@ -145,6 +151,34 @@ describe("T-L7-1: accepted patterns stay within budget; refused ones blow up", (
       expect(run.exceeded).toBe(true);
     },
   );
+
+  it("negative control: refused `\\d*\\d*\\d*\\d*x` grows faster than n² (quartic), so it passes the budget on a short input", () => {
+    // Polynomial, not exponential: counting it to the budget on a
+    // 200-character input took 1.1 s idle and 6.4 s loaded. Its growth is
+    // measured on two small inputs instead, where an accepted pattern's is
+    // held to at most 4.5 per doubling (the n² bound below).
+    const source = "\\d*\\d*\\d*\\d*x";
+    expect(regexRefusal(source)).toBeDefined();
+    const parsed = parseRegex(source);
+    const steps = (n: number): number => {
+      const run = countSteps(parsed, `${"1".repeat(n)}\u0001`, {
+        limit: BUDGET,
+      });
+      expect(run.exceeded).toBe(false);
+      return run.steps;
+    };
+    const small = steps(20);
+    const double = steps(40);
+    // Doubling the input multiplies the work by about 16 (measured 20.8):
+    // far past the 4.5 an accepted pattern may take.
+    const growth = double / small;
+    expect(growth).toBeGreaterThan(12);
+    // At that rate, the original 200-character input passes the budget many
+    // times over: the quartic from 40 characters, five doublings' worth.
+    expect(double * (200 / 40) ** Math.log2(growth)).toBeGreaterThan(
+      BUDGET * 10,
+    );
+  });
 
   it.each([
     "^[a-z]+\\d+$",
