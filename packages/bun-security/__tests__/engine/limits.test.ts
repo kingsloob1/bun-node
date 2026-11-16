@@ -677,9 +677,9 @@ describe("explain", () => {
     if (explained instanceof Promise) throw new Error("expected synchronous");
     const decided = decide(security, facts());
     expect(explained.decision).toEqual(decided);
-    expect(explained.steps.find((step) => step.layer === "L9")?.outcome).toBe(
-      "2 of 2 in 1m",
-    );
+    expect(
+      explained.steps.find((step) => step.rule === "limit:x")?.outcome,
+    ).toBe("2 of 2 in 1m");
     const refused = security.explain(facts());
     if (refused instanceof Promise) throw new Error("expected synchronous");
     expect(refused.decision).toEqual(decide(security, facts()));

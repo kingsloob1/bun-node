@@ -115,7 +115,10 @@ class AppController {
   @Get("profiled")
   @SecurityProfile("login")
   profiled(@Req() req: BunRequest) {
-    return { profile: requestSecurity(req)?.profile ?? null };
+    return {
+      profile: requestSecurity(req)?.profile ?? null,
+      factsProfile: requestSecurity(req)?.facts?.profile ?? null,
+    };
   }
 
   @Post("transfer")
@@ -343,8 +346,30 @@ describe("SecurityModule: the route stage (SecurityGuard)", () => {
     );
     expect(await (await adapter.fetch("/profiled")).json()).toEqual({
       profile: "login",
+      factsProfile: "login",
     });
     expect(() => SecurityProfile("not a name")).toThrow(TypeError);
+  });
+
+  it("puts @SecurityProfile in the facts, so the profile's presets apply (login.ip: 30 a minute)", async () => {
+    const { adapter } = await boot(
+      [secured({ policy: { profiles: { login: false } } })],
+      [AppController],
+    );
+    const statuses: number[] = [];
+    for (let i = 0; i < 31; i++) {
+      statuses.push(
+        (await adapter.fetch("/profiled", from("198.51.100.6"))).status,
+      );
+    }
+    expect(statuses.slice(0, 30).every((status) => status === 200)).toBe(true);
+    expect(statuses[30]).toBe(429);
+    // Negative control: an unmarked route takes 31 from the address.
+    for (let i = 0; i < 31; i++) {
+      expect(
+        (await adapter.fetch("/users/9", from("198.51.100.7"))).status,
+      ).toBe(200);
+    }
   });
 
   it("skips the route stage with @SkipSecurity(), and one rule's refusal with @SkipSecurity(id)", async () => {

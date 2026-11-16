@@ -219,6 +219,7 @@ for (const backend of backends) {
       const security = createSecurity({
         policy,
         store: store(namespace),
+        secret: "the-backends-secret-of-at-least-32-bytes",
         logger: quiet,
       });
       engines.push(security);

@@ -211,6 +211,9 @@ describe("explain()", () => {
       'verified as service "sib"',
       'service "sib" forwarded no usable address in x-service-client-ip: the request counts against nobody',
       "no list entry matched",
+      // The preset limits (per-ip, per-user): this sibling is exempt only from bans.
+      "not counted: the request has no ip|route key",
+      "not counted: the request has no user key",
     ]);
   });
 });

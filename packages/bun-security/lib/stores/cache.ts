@@ -13,9 +13,9 @@
  *   fallback, never a wait (topologies.md §6.1). A read the cache answered
  *   with a miss because its driver failed (bun-cache's default policy, its
  *   `error` event, its open circuit) is a failure here, never "no bans".
- * - **The ban stream** is the cache's bus when given one (`bus`: `redisBus`,
- *   `pgBus`, or the cache's driver itself, which has `publish` and
- *   `subscribe`), and a poll of the ban log every `pollInterval` besides.
+ * - **The ban stream** is the cache's own bus by default (`cacheBusOf`: its
+ *   `bus` option, else its driver's), or the one `bus` names, and a poll of
+ *   the ban log every `pollInterval` besides.
  *
  * The cache is the caller's: `close()` stops what this store started and
  * never closes the cache or the bus.
@@ -30,6 +30,7 @@ import type {
   LoggerLike,
   ThrottleStore,
 } from "@kingsleyweb/bun-common";
+import { cacheBusOf } from "@kingsleyweb/bun-cache";
 import type { BusMessage, Cache, CacheBus } from "@kingsleyweb/bun-cache";
 import { cacheThrottleStore } from "@kingsleyweb/bun-cache/throttle";
 import { SharedStoreError, StoreGuard } from "../engine/shared";
@@ -51,15 +52,18 @@ export interface CacheStoreOptions {
    */
   readonly namespace?: string;
   /**
-   * The bus that announces new bans to the other processes at once: a
-   * bun-cache `CacheBus` (`redisBus(url)`, `pgBus(url)`), or the cache's
-   * driver, whose `publish` and `subscribe` are the same. Without one, bans
-   * reach the other processes within `pollInterval`. Never closed here.
-   * (It is asked for again because a `Cache` does not expose its bus:
-   * kingsloob1/bun-node#804 would let it default to the cache's own.)
+   * The bus that announces new bans to the other processes at once.
+   * Default: the cache's own (bun-cache's `cacheBusOf(cache)`: the cache's
+   * `bus` option, else its driver's, such as Redis's pub/sub or Postgres's
+   * `LISTEN`). Give a `CacheBus` (`redisBus(url)`, `pgBus(url)`) or a
+   * driver with `publish` and `subscribe` to use another, or `false` for
+   * none: bans then reach the other processes within `pollInterval`. Never
+   * closed here.
    */
-  readonly bus?: Pick<CacheBus, "name"> &
-    Partial<Pick<CacheBus, "publish" | "subscribe">>;
+  readonly bus?:
+    | (Pick<CacheBus, "name"> &
+        Partial<Pick<CacheBus, "publish" | "subscribe">>)
+    | false;
   /** A store call slower than this fails (the rule falls back). Default `"50ms"`. */
   readonly timeout?: Duration;
   /** The circuit breaker: `failures` in a row (default 5) open it for `cooldown` (default `"30s"`). */
@@ -159,7 +163,8 @@ export function cacheStore(
       "cacheStore(): namespace must be 1 to 64 letters, digits, '_', '.' or '-'",
     );
   }
-  const given = options.bus;
+  const given =
+    options.bus === undefined ? cacheBusOf(cache) : options.bus || undefined;
   if (
     given !== undefined &&
     (typeof given !== "object" ||

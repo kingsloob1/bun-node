@@ -376,6 +376,9 @@ function fixedEngine(decision: Decision): Security<Request> {
     ready: () => real.ready(),
     flush: () => real.flush(),
     socket: (facts) => real.socket(facts),
+    check: (facts, kind, value) => real.check(facts, kind, value),
+    deviceCookie: (facts) => real.deviceCookie(facts),
+    unlock: (username) => real.unlock(username),
     close: () => real.close(),
   };
 }

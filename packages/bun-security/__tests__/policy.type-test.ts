@@ -149,6 +149,7 @@ assertType<
     | "bans.aggregated"
     | "canary.used"
     | "store.unavailable"
+    | "login.risky-success"
   >
 >();
 

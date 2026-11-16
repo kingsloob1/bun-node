@@ -3,6 +3,7 @@
  * (`mode`, `onStoreError`, `nodes`), a limit's `state` and `onStoreError`,
  * a counted rule's; checked, and compiled with their defaults.
  */
+import { PRESETS } from "../../lib/policy/presets";
 import { describe, expect, it } from "bun:test";
 import { compilePolicy, SecurityPolicyError } from "../../lib/index";
 import { policyInternals } from "../../lib/policy/compile";
@@ -17,6 +18,10 @@ function issues(policy: unknown): string[] {
     return error.issues.map((issue) => issue.path.join("."));
   }
 }
+
+/** The rules of the policy itself, the presets left out. */
+const own = <T extends { readonly id: string }>(rules: readonly T[]): T[] =>
+  rules.filter((rule) => !Object.hasOwn(PRESETS, rule.id));
 
 describe("the state fields", () => {
   it("refuses bad values, naming each", () => {
@@ -79,19 +84,21 @@ describe("the state fields", () => {
       }),
     );
     expect(internals.nodes).toBe(4);
-    expect(internals.limits.map((l) => [l.state, l.onStoreError])).toEqual([
-      ["hybrid", "closed"],
-      ["local", "open"],
-    ]);
+    expect(own(internals.limits).map((l) => [l.state, l.onStoreError])).toEqual(
+      [
+        ["hybrid", "closed"],
+        ["local", "open"],
+      ],
+    );
     // A counted rule takes neither "hybrid" nor "closed" from the defaults.
     expect(
-      internals.countedRules.map((r) => [r.state, r.onStoreError]),
+      own(internals.countedRules).map((r) => [r.state, r.onStoreError]),
     ).toEqual([[undefined, "local"]]);
     const plain = policyInternals(
       compilePolicy({ limits: [{ id: "a", limit: 1, window: "1m" }] }),
     );
     expect(plain.nodes).toBe(1);
-    expect(plain.limits[0]?.state).toBeUndefined();
-    expect(plain.limits[0]?.onStoreError).toBe("local");
+    expect(own(plain.limits)[0]?.state).toBeUndefined();
+    expect(own(plain.limits)[0]?.onStoreError).toBe("local");
   });
 });

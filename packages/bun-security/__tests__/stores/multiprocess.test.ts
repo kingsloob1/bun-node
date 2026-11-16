@@ -258,6 +258,91 @@ async function scopeCase(
   }
 }
 
+/** The secret every process of the login cases shares. */
+const SECRET = "multi-process-secret-of-at-least-32-bytes";
+
+/** The login cases' policy: the address limits off, so only the account defences act. */
+const LOGIN_POLICY: SecurityPolicy = {
+  service: "auth",
+  presets: {
+    "login.account": false,
+    "login.ip": false,
+    "login.ip-failures": false,
+    "login.ip-failures-ban": false,
+  },
+};
+
+/**
+ * T-L11-1 across processes on one store: credential stuffing (one address
+ * failing 30 usernames, spread over three processes) bans the address in
+ * every process; password spraying (twelve addresses failing one username)
+ * challenges and tags `step-up` on any process. The control: three
+ * processes each on a store of their own see a third each, and act on
+ * nothing.
+ */
+async function loginCases(
+  config: (policy: SecurityPolicy, prefix: string) => Record<string, unknown>,
+  prefix: string,
+): Promise<void> {
+  const run = async (prefixes: readonly string[]) => {
+    const list = await Promise.all(
+      prefixes.map((own) =>
+        point({ ...config(LOGIN_POLICY, own), secret: SECRET }),
+      ),
+    );
+    try {
+      for (let i = 0; i < 30; i++) {
+        await list[i % 3]?.ask({
+          op: "login",
+          username: `user${i}@example.org`,
+          client: "203.0.113.90",
+          outcome: "failure",
+        });
+      }
+      for (const p of list) await p.ask({ op: "flush" });
+      for (let i = 0; i < 12; i++) {
+        await list[i % 3]?.ask({
+          op: "login",
+          username: "victim@example.org",
+          client: `198.51.100.${i + 1}`,
+          outcome: "failure",
+        });
+      }
+      const deadline = performance.now() + 5_000;
+      let banned: boolean[] = [];
+      while (performance.now() < deadline) {
+        for (const p of list) await p.ask({ op: "flush" });
+        banned = await Promise.all(
+          list.map(async (p) =>
+            ((await p.ask({ op: "bans" })).actions as string[]).includes(
+              "ip:203.0.113.90:ban",
+            ),
+          ),
+        );
+        if (banned.every(Boolean)) break;
+        await Bun.sleep(50);
+      }
+      const spray = await list[2]?.ask({
+        op: "login",
+        username: "victim@example.org",
+        client: "198.51.100.200",
+        outcome: "none",
+      });
+      return { banned, spray };
+    } finally {
+      for (const p of list) await p.close();
+    }
+  };
+  const shared = await run([prefix, prefix, prefix]);
+  expect(shared.banned).toEqual([true, true, true]);
+  expect(shared.spray?.tags).toEqual(["step-up"]);
+  expect(shared.spray?.action).toBe("block");
+  const apart = await run([`${prefix}1`, `${prefix}2`, `${prefix}3`]);
+  expect(apart.banned).toEqual([false, false, false]);
+  expect(apart.spray?.tags).toEqual([]);
+  expect(apart.spray?.action).toBe("allow");
+}
+
 const sqliteDir = mkdtempSync(join(tmpdir(), "bun-security-mp-"));
 afterAll(() => {
   rmSync(sqliteDir, { recursive: true, force: true });
@@ -271,6 +356,13 @@ describe("multi-process, one SQLite file (polled)", () => {
     policy,
     store: storeOptions,
   });
+
+  it("T-L11-1: credential stuffing and password spraying across processes on one store", async () => {
+    await loginCases(
+      (policy, prefix) => ({ ...config(policy), prefix }),
+      `${PREFIX}_login_`,
+    );
+  }, 60_000);
 
   it("a ban written by one process is enforced by the others within the poll", async () => {
     const list = await points(3, config({}));
@@ -390,6 +482,13 @@ if (REDIS_URL === undefined) {
       await scopeCase(
         (policy) => config(policy, redisUrl, `${PREFIX}s`),
         1_000,
+      );
+    }, 60_000);
+
+    it("T-L11-1: credential stuffing and password spraying across processes on one store", async () => {
+      await loginCases(
+        (policy, prefix) => config(policy, redisUrl, prefix),
+        `${PREFIX}g`,
       );
     }, 60_000);
 

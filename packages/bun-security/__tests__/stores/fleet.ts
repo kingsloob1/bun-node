@@ -37,6 +37,9 @@ export interface Fleet {
   readonly close: () => Promise<void>;
 }
 
+/** The secret every engine of a fleet shares (a shared store needs one). */
+export const FLEET_SECRET = "the-fleet-secret-of-at-least-32-bytes";
+
 /** A quiet logger. */
 export const quiet = (): void => {};
 
@@ -62,7 +65,7 @@ export function fleet(
   const add = (memberPolicy: SecurityPolicy = policy): Member => {
     const cache = createCache({ driver });
     const store = cacheStore(cache, {
-      ...(options.bus === false ? {} : { bus: driver }),
+      bus: options.bus === false ? false : driver,
       timeout: "2s",
       pollInterval: "1h",
       reconcileInterval: "1h",
@@ -73,6 +76,7 @@ export function fleet(
     const security = createSecurity({
       policy: memberPolicy,
       store,
+      secret: FLEET_SECRET,
       logger: quiet,
       ...options.security,
     });

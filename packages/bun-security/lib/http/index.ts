@@ -13,7 +13,9 @@
  * - {@link securityProfile}: a route's profile and per-route options;
  * - {@link securityHeaders}, {@link csrf}: layer L13, also usable alone;
  * - {@link requestSecurity}: what was decided about a request, for handlers;
- * - {@link securityWebSocket}: WebSocket message limits on a `ws()` route.
+ * - {@link securityWebSocket}: WebSocket message limits on a `ws()` route;
+ * - {@link uniformAuthResponse}: a sign-in route's failures made one, its
+ *   answers held to a minimum time (layers.md L11.5).
  */
 export { csrf } from "./csrf";
 export type {
@@ -39,3 +41,5 @@ export { requestSecurity } from "./state";
 export type { RequestSecurity } from "./state";
 export { securityWebSocket } from "./websocket";
 export type { SecurityWebSocketOptions } from "./websocket";
+export { uniformAuthResponse } from "./uniform";
+export type { UniformAuthResponseOptions } from "./uniform";

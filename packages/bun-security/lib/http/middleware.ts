@@ -34,6 +34,8 @@ import { dropResponse, refusalResponse } from "../serve/respond";
 import { csrf, csrfDecision } from "./csrf";
 import type { CsrfGuard, CsrfOptions } from "./csrf";
 import { profileOf } from "./profile";
+import { uniformOf } from "./uniform";
+import type { UniformMark } from "./uniform";
 import type { SecurityProfileMark } from "./profile";
 import { createState, stateOf } from "./state";
 import type { RequestState } from "./state";
@@ -95,6 +97,8 @@ interface FoundRoute {
   readonly key: string;
   /** Its profile, if one of its callbacks is a `securityProfile()`. */
   readonly profile: SecurityProfileMark | undefined;
+  /** Its uniform answers, if one of its callbacks is a `uniformAuthResponse()`. */
+  readonly uniform: UniformMark | undefined;
 }
 
 /** The first route handler `router` will run for `req`, if any. */
@@ -119,6 +123,7 @@ export function routeOf(
     return {
       key: `${method} ${path}`,
       profile: profileOf(matched.callbacks as unknown[]),
+      uniform: uniformOf(matched.callbacks as unknown[]),
     };
   }
   return undefined;
@@ -376,6 +381,7 @@ export function createRouteStage(
     if (router !== undefined) {
       state.routeMatched = found !== undefined;
       state.profile = found?.profile;
+      state.uniform = found?.uniform;
     }
     if (!setup.staged) {
       // On its own, the answer is reported to complete() once it is final.
@@ -403,6 +409,9 @@ export function createRouteStage(
         const facts: RequestFacts = {
           ...base,
           ...(found === undefined ? {} : { routeKey: found.key }),
+          ...(found?.profile === undefined
+            ? {}
+            : { profile: found.profile.name }),
           ...(who === undefined ? {} : { identity: who }),
         };
         current.routeFacts = facts;

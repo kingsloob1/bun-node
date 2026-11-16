@@ -204,7 +204,7 @@ describe("onStoreError", () => {
     f.driver.setFaults({ down: true });
     const explained = await a?.explain(facts({ client: "198.51.100.24" }));
     expect(
-      explained?.steps.find((step) => step.layer === "L9")?.outcome,
+      explained?.steps.find((step) => step.rule === "limit:per-ip")?.outcome,
     ).toContain("1 of 1 in 1m (the local share");
   });
 });

@@ -12,8 +12,9 @@ from a policy compiled once, before your handler sees it.
 > limits, outcome signals, the plain `Bun.serve` integration, and the
 > bun-common adapter integration with security headers and CSRF, shared
 > state across processes (`./stores`), WebSocket message limits, request
-> rules, and challenges with bot signals. The sensitive-endpoint profiles
-> and the control plane follow in later PRs.
+> rules, challenges with bot signals, and the sensitive endpoints (sign-in,
+> codes, resets: presets, the login defences, device cookies, identifier
+> checks). The control plane follows in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -486,9 +487,8 @@ import { createCache, redisDriver } from "@kingsleyweb/bun-cache";
 import { createSecurity } from "@kingsleyweb/bun-security";
 import { cacheStore } from "@kingsleyweb/bun-security/stores";
 
-const driver = redisDriver({ url: process.env.REDIS_URL });
-const store = cacheStore(createCache({ driver }), { bus: driver });
-const security = createSecurity({ policy, store });
+const store = cacheStore(createCache({ driver: redisDriver({ url: process.env.REDIS_URL }) }));
+const security = createSecurity({ policy, store, secret: process.env.SECURITY_SECRET });
 await security.ready(); // the fleet's bans loaded before the first request
 ```
 
@@ -508,8 +508,9 @@ await security.ready(); // the fleet's bans loaded before the first request
   dead store costs a request its fallback, not a wait. After 30 s of failure
   the engine raises a `store.unavailable` warning.
 - **Bans** are always looked up in memory. A ban (and a lift) is written to
-  the store's ban log and announced on the `bus` (`redisBus`, `pgBus`, or the
-  cache's driver); every process reads the log on the announcement and every
+  the store's ban log and announced on the cache's own bus (`cacheBusOf`:
+  Redis's pub/sub, Postgres's `LISTEN`; another with `bus`, none with
+  `bus: false`); every process reads the log on the announcement and every
   `pollInterval` (5 s) besides, and reloads the whole set every
   `reconcileInterval` (60 s), which corrects a lost message or a lift. A
   failed read removes nothing. Writes made while the store fails are queued
@@ -641,6 +642,98 @@ run in the early stage.
 ```ts
 botSignals: { challengeAt: 2, browserPaths: ["/app/**"], weights: { headlessUserAgent: 2 } },
 ```
+
+## Presets
+
+A policy gets built-in rules without writing them, each with an id
+(`PRESETS` lists them): it turns one off or on with `presets`, and replaces
+one by giving a rule of its own the same id.
+
+```ts
+presets: { "per-ip": false, not_found_per_minute: true },
+limits: [{ id: "per-user", limit: 300, window: "1m", key: "user" }], // replaces the preset
+```
+
+- **On**: `per-ip` (600 a minute per address and route) and `per-user`
+  (1,000 a minute per user), enforced; and the sensitive endpoints' rules,
+  which count only on routes marked with their profile: `login.account`
+  (10 a minute per address and attempted username), `login.ip` (30),
+  `login.ip-failures` (20 failures in 15 minutes: a challenge) and
+  `login.ip-failures-ban` (50: a one-hour ban); `mfa.account`, `mfa.ip`,
+  `mfa.failures`; `otp.ip`, `otp.ip-hour`, `otp.destination` (3 in ten
+  minutes), `otp.destination-day`, `otp.prefix` (100 an hour per country
+  and area code, against SMS pumping); `reset.ip`, `reset.ip-hour`,
+  `reset.destination`; `signup.ip`.
+- **Off**: `not_found_per_minute` (120 route-not-found answers a minute: a
+  day's ban), until the verified-crawler exemption lands.
+
+## Sensitive endpoints
+
+A route's profile names it a sign-in (`login`), a second factor (`mfa`), a
+code sent (`otp`), a password reset (`reset`) or a sign-up (`signup`):
+`securityProfile("login")` in `./http`, `@SecurityProfile("login")` in
+bun-nest, `withSecurity`'s `profile` option. A limit or counted rule with
+`profile` counts only there; `identify()` adds the attempted `username` or
+the code's `destination`, which are keyed by their HMAC under
+`createSecurity`'s `secret` (at least 32 bytes; required with a shared
+store, the same in every process sharing it), never kept in clear.
+
+```ts
+const security = createSecurity({
+  policy,
+  secret: process.env.SECURITY_SECRET,
+  identify: (req) => ({ username: req.body?.email }),
+});
+app.post("/login", securityProfile("login"), uniformAuthResponse(), login);
+// in the handler, or let the answer's status say it (401/403 failure, 2xx success):
+security.signal(requestSecurity(req).facts, "auth.failure");
+```
+
+The login defences (`profiles.login`, on by default on routes marked
+`login`; `false` turns them off):
+
+- **Per attempted username**: after 5 failures in 15 minutes each attempt
+  waits 1 s, then 2 s (`maxDelay`, §0.1's 2 s bound), whatever its outcome;
+  at 10 a challenge (the challenge flow's, a pass with a clearance; `429`
+  without a flow); at 20 a soft lock for 15 minutes (`429`, clearance or
+  not), which refuses the username from every device without a valid
+  **device cookie** for it, so the owner's known device keeps signing in.
+  `security.unlock(username)` lifts it.
+- **Device cookies**: a success issues a signed `__Host-bun-security-device`
+  cookie (a year); requests carrying one for the username count their
+  failures apart. `installSecurity` and `withSecurity` set it;
+  `security.deviceCookie(facts)` gives it to an app that answers itself.
+- **Credential stuffing**: 10 distinct usernames failing from one address in
+  an hour challenge it (a challenge ban), 30 ban it for an hour (distinct counts, through the
+  shared store's `pfAdd` when there is one).
+- **Password spraying**: 10 distinct addresses failing one username in an
+  hour tag its requests `step-up` (`decision.tags`), for the app to require
+  a second factor.
+- **A success from an address with 10 failures** is tagged `risky-success`
+  and raises the `login.risky-success` warning.
+- **Outcome inference**: when the app signals neither `auth.failure` nor
+  `auth.success` for a request, a `401` or `403` counts as a failure and a
+  `2xx` as a success (`inferOutcome: false` turns it off).
+
+`uniformAuthResponse({ minResponseMs })` (in `./http`) makes a marked route's
+failures (`400`, `401`, `403`, `404`, `409`, `422`) one `401` problem
+("Login failed") and holds every answer to at least 300 ms, so neither the
+status, the body nor the time tells a missing account from a wrong password.
+
+**Identifier checks**, where data is created (`security.check()`, D24):
+
+```ts
+await security.check(facts, "email", email); // in the code that creates the account or invite
+```
+
+throws a `SecurityRefusal` (`400`, `invalid_identifier`, one generic
+message) for an email, phone number, username or domain matching an
+`identifiers.patterns` entry (`*` and `?`, at least 4 literal characters),
+a reserved domain (`example.*`, `.test`, `.invalid`, `.localhost`,
+`.example`) or the operator's `ownDomains`; a match counts `pattern.hit`
+under the request's client, so a counted rule can ban it. A job with no
+request passes `undefined`. `check(facts, "password", password)` asks
+`createSecurity`'s `breachedPassword` hook and refuses a breached password.
 
 ## The policy
 
