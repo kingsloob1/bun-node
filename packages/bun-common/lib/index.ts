@@ -770,6 +770,10 @@ export {
   type UnmountedRouter,
 } from "./BunRouter";
 export {
+  type BeforeReadHook,
+  type BeforeWriteContext,
+  type BeforeWriteHook,
+  type BeforeWritePhase,
   BunHttpAdapter,
   type BunHttpAdapterEvents,
   type BunRequestOptions,

@@ -40,7 +40,7 @@ rule: no benchmarks or speed comparisons without the user's yes).
 | ConcaveHR's write-up of its defence | **folded in** (§12, received 2026-11-07): every layer mapped, its lessons carried into the design and §14 |
 | Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request |
-| Prerequisites in other packages (§15.1) | not started |
+| Prerequisites in other packages (§15.1) | **PR-P2 built** on `feat/bun-security-p2` (2026-11-16), not yet merged: bun-common's adapter gains `addBeforeReadHook` (before `BunRequest.init`: no body, cookie or query read; answer, drop or hold) and `addBeforeWriteHook` (every response before it is written, phases `early`, `response`, `error`). PR-P3 and PR-P4 not started |
 | Verified crawlers ([`layers.md` L3.2](layers.md#l32-verified-crawlers-let-search-engines-index-the-site-d-v)) | **added 2026-11-10** at the user's request: PR-S12; Q29 to Q31 answered with their recommendations |
 | The UI's package | **changed 2026-11-08**: bun-ui's `/security` entry instead of `@kingsleyweb/bun-security-ui` (the user's single-UI-package decision, [`bun-ui`](../bun-ui/README.md) §7) |
 
@@ -1210,6 +1210,14 @@ address, while no `ip` entry refuses one.
 | key parts `ip`, `user`, `session`, `tenant`, `apiKey`, `route`; counted actions `ban`, `challenge`; event `server.error`; rule ids `limit:<id>`, `counted:<id>`, `concurrency:per-ip`, `concurrency:total`; problem code `rate_limited`; warning kind `state.evictions` | values |
 
 Decided with them (2026-11-16): the policy format's `version` (a missing one reads as 1; a newer one is refused, naming the upgrade); whether L9.3's default limits and the `not_found_per_minute` rule are built in and on by default is decided alongside PR-S5 and PR-S7; and PR-S3 adds a machine-readable "newer version" issue code to `SecurityPolicyError`, for the control plane (CP2, CP4).
+
+### 17.3 Added with PR-P2 (approved by the user, 2026-11-16)
+
+| Names | Where |
+|---|---|
+| `addBeforeReadHook`, `addBeforeWriteHook` (methods); `BeforeReadHook`, `BeforeWriteHook`, `BeforeWriteContext`, `BeforeWritePhase` (types); phases `"early"`, `"response"`, `"error"` | bun-common's `BunHttpAdapter` and root |
+
+The "early hook" of §3.3 is `addBeforeReadHook`; with it, §3.3's `createSecureAdapter()` fallback is no longer needed.
 
 The trust-proxy and throttle names (`trustProxy`, `throttle()`,
 `ThrottleStore`, `cacheThrottleStore`, `@Throttle`, `@SkipThrottle`) are
