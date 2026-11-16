@@ -53,6 +53,7 @@ export {
   type StateStatus,
   type UnbanOptions,
 } from "./engine/security";
+export type { EvaluationStage } from "./engine/stages";
 export { DEFAULT_MAX_KEYS } from "./engine/state";
 export type {
   SecurityWarning,

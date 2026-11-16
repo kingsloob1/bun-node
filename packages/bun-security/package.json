@@ -51,6 +51,16 @@
       "types": "./dts/serve/index.d.ts",
       "default": "./lib/serve/index.ts"
     },
+    "./http": {
+      "@kingsleyweb/source": "./lib/http/index.ts",
+      "types": "./dts/http/index.d.ts",
+      "default": "./lib/http/index.ts"
+    },
+    "./lib/http": {
+      "@kingsleyweb/source": "./lib/http/index.ts",
+      "types": "./dts/http/index.d.ts",
+      "default": "./lib/http/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",
