@@ -14,6 +14,11 @@
  * shared store over bun-cache (`cacheStore`, `hybridThrottleStore`).
  */
 export { ACTION_SEVERITY } from "./engine/actions";
+export type {
+  ApiKeyAnomalyAction,
+  ApiKeyAnomalyPolicy,
+  ApiKeysPolicy,
+} from "./apikeys/policy";
 export type { CrawlerConflict } from "./crawlers/conflicts";
 export {
   CRAWLER_EXEMPTIONS,
@@ -64,6 +69,8 @@ export {
   createSecurity,
   type CreateSecurityOptions,
   type EvaluateOptions,
+  type KeyCompromise,
+  type RevokeApiKeyOptions,
   type ExplainOptions,
   type MessageDecision,
   type RequestOutcome,

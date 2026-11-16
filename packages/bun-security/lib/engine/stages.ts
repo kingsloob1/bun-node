@@ -35,6 +35,8 @@ interface StagedRule {
   readonly routes: readonly RoutePattern[] | undefined;
   /** The route profile it applies to, which only routing knows. */
   readonly profile?: string | undefined;
+  /** The API key plan it applies to, which only `identify()` knows. */
+  readonly apiKeyPlan?: string | undefined;
 }
 
 /** Each rule's stage, worked out once. */
@@ -64,7 +66,11 @@ export function keyStage(key: CompiledKey): EvaluationStage {
 
 /** {@link stageOf}, uncached. */
 function classify(rule: StagedRule): EvaluationStage {
-  if (keyStage(rule.key) === "route" || rule.profile !== undefined) {
+  if (
+    keyStage(rule.key) === "route" ||
+    rule.profile !== undefined ||
+    rule.apiKeyPlan !== undefined
+  ) {
     return "route";
   }
   if (rule.routes !== undefined) {

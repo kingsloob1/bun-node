@@ -72,6 +72,14 @@ export function intelNeeds(policy: CompiledPolicy): IntelNeeds {
   for (const rule of source.requestRules?.rules ?? []) {
     if ((rule.mode ?? "enforce") !== "off") walk(rule.when, found);
   }
+  // The new-ASN anomaly reads the client's ASN (layers.md L12).
+  const newAsn = source.apiKeys?.newAsn;
+  if (
+    newAsn === true ||
+    (typeof newAsn === "object" && newAsn.mode !== "off")
+  ) {
+    found.asn = true;
+  }
   for (const [name, points] of Object.entries(
     source.botSignals?.classes ?? {},
   )) {

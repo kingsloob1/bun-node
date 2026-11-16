@@ -152,8 +152,10 @@ describe("the client address", () => {
       user: "u_1",
       session: "s",
       tenant: "t",
-      apiKey: "k",
     });
+    // The API key's id is keyed by its HMAC, never kept in clear (PR-S11).
+    expect(decision.subject.apiKey).toMatch(/^[0-9a-f]{32}$/);
+    expect(decision.subject.apiKey).not.toBe("k");
     expect(decide({}, facts({ identity: { user: long } })).subject.user).toBe(
       `sha256:${createHash("sha256").update(long).digest("hex")}`,
     );

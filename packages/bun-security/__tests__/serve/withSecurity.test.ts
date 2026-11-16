@@ -360,6 +360,7 @@ function fixedEngine(decision: Decision): Security<Request> {
     closed: false,
     challenge: undefined,
     crawlerConflicts: () => [],
+    revokeApiKey: () => real.revokeApiKey("x"),
     evaluate: async () => {
       await Bun.sleep(1);
       return decision;

@@ -16,6 +16,7 @@ import type { Duration, StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import { parseCidr } from "../ip/address";
 import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
+import { validateApiKeys } from "../apikeys/policy";
 import { validateCrawlers } from "../crawlers/policy";
 import { validateRequestRules } from "../rules/schema";
 import { validateBotSignals } from "../engine/signals";
@@ -654,6 +655,7 @@ const LIMIT_KEYS = [
   "state",
   "onStoreError",
   "profile",
+  "apiKeyPlan",
 ];
 
 /** Checks a rule's `profile`: a profile name (`securityProfile()`'s grammar). */
@@ -682,6 +684,13 @@ function checkLimit(
   if (!checkObject(issues, path, value, LIMIT_KEYS)) return;
   checkRuleId(issues, path, value.id, ids, index, "limits");
   checkProfile(issues, [...path, "profile"], value.profile);
+  optionalString(
+    issues,
+    [...path, "apiKeyPlan"],
+    value.apiKeyPlan,
+    /^[\w.:-]{1,64}$/,
+    "a plan name (1-64 letters, digits, _, ., : and -)",
+  );
   positiveInteger(issues, [...path, "limit"], value.limit);
   checkWindow(issues, path, value);
   checkKey(issues, [...path, "key"], value.key);
@@ -1399,6 +1408,7 @@ const POLICY_KEYS = [
   "profiles",
   "identifiers",
   "crawlers",
+  "apiKeys",
 ];
 
 /**
@@ -1673,6 +1683,9 @@ export function validatePolicy(
     issues.add(issue.path, issue.message);
   }
   for (const issue of validateCrawlers(input.crawlers)) {
+    issues.add(issue.path, issue.message);
+  }
+  for (const issue of validateApiKeys(input.apiKeys)) {
     issues.add(issue.path, issue.message);
   }
   for (const issue of validateSensitive(input)) {

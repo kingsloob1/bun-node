@@ -214,7 +214,9 @@ describe("challenges()", () => {
     // Negative control: the same token with a byte changed is not.
     const forged = exchange("http://app.test/api", {
       headers: {
-        "x-security-clearance": `${body.clearance.slice(0, -2)}AA`,
+        // One character changed, never to itself (a fixed "AA" was the
+        // token's own ending one run in 4,096: seed 33190, PR-S11's gate).
+        "x-security-clearance": `${body.clearance.slice(0, -1)}${body.clearance.endsWith("A") ? "B" : "A"}`,
         "user-agent": "client/1",
       },
     });
