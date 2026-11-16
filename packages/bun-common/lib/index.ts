@@ -692,6 +692,8 @@ export {
   throttleAddressKey,
   type ThrottleAlgorithm,
   type ThrottleCost,
+  type ThrottleCountKeys,
+  type ThrottleCountOptions,
   type ThrottleHandler,
   type ThrottleHeaders,
   type ThrottleKey,

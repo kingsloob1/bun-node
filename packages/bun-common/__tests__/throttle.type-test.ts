@@ -14,6 +14,9 @@
  */
 import type {
   Duration,
+  MaybePromise,
+  ThrottleCountKeys,
+  ThrottleCountOptions,
   ThrottleHandler,
   ThrottleLimitedInfo,
   ThrottleOptions,
@@ -97,3 +100,24 @@ router.post("/login", throttle({ limit: 5 }), (req, res) => {
   assert<Equal<typeof results, readonly ThrottleResult[] | undefined>>();
   res.send(String(results?.length));
 });
+
+// Counting without a request (bun-node#791): one key or a key per limit
+// name, an optional cost and scope, results as the middleware's.
+const direct = throttle({ limits: { login: { limit: 5, window: "1m" } } });
+const counted = direct.count({ login: "203.0.113.9|alice" });
+assert<Equal<typeof counted, MaybePromise<ThrottleResult[]>>>();
+void counted;
+const peeked = direct.peekCount("k", { cost: 2, scope: "POST /login" });
+assert<Equal<typeof peeked, MaybePromise<ThrottleResult[]>>>();
+void peeked;
+assert<Equal<Parameters<ThrottleHandler["count"]>[0], ThrottleCountKeys>>();
+assert<
+  Equal<
+    Parameters<ThrottleHandler["count"]>[1],
+    ThrottleCountOptions | undefined
+  >
+>();
+// @ts-expect-error -- a key is a string
+void direct.count({ login: 7 });
+// @ts-expect-error -- the cost is a number, not a function of a request
+void direct.count("k", { cost: () => 1 });
