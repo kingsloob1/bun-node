@@ -52,10 +52,16 @@ export type TrustWarningKind = "trust.internal" | "trust.unread-forwarding";
  * Every warning the engine raises: the trust check's two (layers.md L2.5);
  * `state.evictions`, local state full and evicting keys (layers.md L9.6);
  * `bans.aggregated`, the ban table full and widening new address bans
- * (layers.md L4); `canary.used`, a canary credential used (layers.md L8).
+ * (layers.md L4); `canary.used`, a canary credential used (layers.md L8);
+ * `store.unavailable`, the shared store failing for 30 s (topologies.md
+ * §6.2).
  */
 export type SecurityWarningKind =
-  TrustWarningKind | "state.evictions" | "bans.aggregated" | "canary.used";
+  | TrustWarningKind
+  | "state.evictions"
+  | "bans.aggregated"
+  | "canary.used"
+  | "store.unavailable";
 
 /**
  * A warning (layers.md L2.5, L9.6): the trust configuration looks wrong, or

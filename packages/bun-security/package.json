@@ -3,7 +3,7 @@
   "type": "module",
   "version": "3.2.0",
   "private": false,
-  "description": "A request-defence engine for Bun services: a policy compiled once and decided locally per request, client identity on bun-common's trusted-proxy foundation (IPv6 keyed by /64, service identities, trust misconfiguration detection), allow and deny lists over a CIDR trie with a built-in internal never-block list, rate limits on bun-common's throttle foundation (policy-driven, composite keys, several per route), counted rules, bans with an offence score and escalation ladder, request shape on a canonical path, honeypots, canary credentials and trap fields, connection limits, dry run for every rule, explain(), and a wrapper and hardening helper for a plain Bun.serve (./serve)",
+  "description": "A request-defence engine for Bun services: a policy compiled once and decided locally per request, client identity on bun-common's trusted-proxy foundation (IPv6 keyed by /64, service identities, trust misconfiguration detection), allow and deny lists over a CIDR trie with a built-in internal never-block list, rate limits on bun-common's throttle foundation (policy-driven, composite keys, several per route), counted rules, bans with an offence score and escalation ladder, request shape on a canonical path, honeypots, canary credentials and trap fields, connection limits, dry run for every rule, explain(), shared state across processes over bun-cache (./stores: shared and hybrid limits, the ban stream, offence scores, onStoreError), WebSocket message limits, and a wrapper and hardening helper for a plain Bun.serve (./serve)",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-security#readme",
@@ -61,6 +61,16 @@
       "types": "./dts/http/index.d.ts",
       "default": "./lib/http/index.ts"
     },
+    "./stores": {
+      "@kingsleyweb/source": "./lib/stores/index.ts",
+      "types": "./dts/stores/index.d.ts",
+      "default": "./lib/stores/index.ts"
+    },
+    "./lib/stores": {
+      "@kingsleyweb/source": "./lib/stores/index.ts",
+      "types": "./dts/stores/index.d.ts",
+      "default": "./lib/stores/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",
@@ -111,10 +121,14 @@
     "@kingsleyweb/bun-common": "workspace:^"
   },
   "peerDependencies": {
+    "@kingsleyweb/bun-cache": "workspace:^",
     "@types/bun": ">=1.4.2",
     "typescript": "^5.9.3 || ^6.0.0"
   },
   "peerDependenciesMeta": {
+    "@kingsleyweb/bun-cache": {
+      "optional": true
+    },
     "@types/bun": {
       "optional": true
     },
@@ -123,6 +137,7 @@
     }
   },
   "devDependencies": {
+    "@kingsleyweb/bun-cache": "workspace:^",
     "@types/bun": "catalog:",
     "bun-types": "catalog:",
     "typescript": "catalog:"

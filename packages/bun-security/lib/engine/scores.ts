@@ -57,6 +57,37 @@ export class Scores {
     return value;
   }
 
+  /**
+   * Sets `key`'s score to `value` as of `at` (the shared store's merged
+   * score, `scoreSync.ts`), keeping the table's bound.
+   */
+  set(key: string, value: number, at: number): void {
+    this.#scores.set(key, { value, at }, at);
+  }
+
+  /** The ban times remembered for `id`, oldest first. */
+  history(id: string): readonly number[] {
+    return this.#history.get(id) ?? [];
+  }
+
+  /**
+   * Adds other processes' ban times for `id` (the shared store's history),
+   * keeping those within `ladder.memory` of `now`, at most 16.
+   */
+  mergeHistory(
+    id: string,
+    times: readonly number[],
+    now: number,
+    ladder: CompiledLadder,
+  ): readonly number[] {
+    const merged = [...new Set([...(this.#history.get(id) ?? []), ...times])]
+      .filter((at) => now - at < ladder.memory)
+      .sort((a, b) => a - b)
+      .slice(-MAX_HISTORY);
+    this.#history.set(id, merged, now);
+    return merged;
+  }
+
   /** Clears `key`'s score (after a ban, or an unban of an automatic one). */
   reset(key: string): void {
     this.#scores.delete(key);

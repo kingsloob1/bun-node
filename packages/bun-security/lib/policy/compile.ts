@@ -29,8 +29,11 @@ import type {
   ListAction,
   ListEntry,
   SecurityMode,
+  LimitRule,
   SecurityPolicy,
   ServiceExemption,
+  StateMode,
+  StoreErrorMode,
   SubjectKeyPart,
 } from "./types";
 
@@ -69,6 +72,10 @@ export interface CompiledLimit {
   readonly evenWhenAllowed: boolean;
   /** The `429`'s problem code. */
   readonly code: string;
+  /** Where it counts; `undefined`: `shared` with a shared store, `local` without. */
+  readonly state: StateMode | undefined;
+  /** What it does when the shared store fails. */
+  readonly onStoreError: StoreErrorMode;
 }
 
 /** A counted rule as the engine reads it. */
@@ -97,6 +104,33 @@ export interface CompiledCountedRule {
   readonly weight: number;
   /** Its bans' problem code; the policy's `bans.code` when undefined. */
   readonly code: string | undefined;
+  /** Where its counters live; `undefined`: `shared` with a shared store, `local` without. */
+  readonly state: "local" | "shared" | undefined;
+  /** What it does when the shared store fails. */
+  readonly onStoreError: "local" | "open";
+}
+
+/** WebSocket message limits (layers.md L9.5), compiled. */
+export interface CompiledMessages {
+  /** The per-connection bucket: its refill (`limit` per `window` ms) and its size; `undefined` when off. */
+  readonly perConnection:
+    | {
+        /** Messages per window. */
+        readonly limit: number;
+        /** The window, in milliseconds. */
+        readonly window: number;
+        /** The bucket's size, in messages. */
+        readonly capacity: number;
+      }
+    | undefined;
+  /** A second breach within this many milliseconds closes. */
+  readonly breach: number;
+  /** The close code. */
+  readonly closeCode: number;
+  /** The limits across connections. */
+  readonly limits: readonly CompiledLimit[];
+  /** `enforce` or `dryRun`. */
+  readonly mode: "enforce" | "dryRun";
 }
 
 /** The bans' settings, compiled. */
@@ -312,6 +346,12 @@ export interface PolicyInternals {
   readonly caseSensitive: boolean;
   /** Deception. */
   readonly deception: CompiledDeception;
+  /** Processes sharing the store: a rule's local share is its limit ÷ this. */
+  readonly nodes: number;
+  /** Who shares bans and scores: every `shared` service, or this service alone. */
+  readonly scope: "shared" | "service";
+  /** WebSocket message limits, or undefined when the section is absent or off. */
+  readonly messages: CompiledMessages | undefined;
 }
 
 /**
@@ -678,26 +718,7 @@ export function compilePolicy(
           minRequests: check?.minRequests ?? 20,
         };
 
-  const limits: CompiledLimit[] = [];
-  for (const limit of source.limits ?? []) {
-    const limitMode = limit.mode ?? "enforce";
-    if (limitMode === "off") continue;
-    limits.push(
-      Object.freeze({
-        id: limit.id,
-        limit: limit.limit,
-        window: ms(limit.window, `limits.${limit.id}.window`),
-        key: compileKey(limit.key),
-        routes: compileRoutes(limit.routes),
-        algorithm: limit.algorithm ?? "sliding-window",
-        cost: limit.cost ?? 1,
-        mode: limitMode,
-        appliesToServices: limit.appliesToServices === true,
-        evenWhenAllowed: limit.evenWhenAllowed === true,
-        code: limit.code ?? "rate_limited",
-      } satisfies CompiledLimit),
-    );
-  }
+  const limits = compileLimits(source, source.limits, "limits");
 
   const countedRules: CompiledCountedRule[] = [];
   const countedByEvent = new Map<string, CompiledCountedRule[]>();
@@ -722,6 +743,14 @@ export function compilePolicy(
       appliesToServices: rule.appliesToServices === true,
       weight: rule.weight ?? 1,
       code: rule.code,
+      state:
+        rule.state ??
+        (source.state?.mode === "local" || source.state?.mode === "shared"
+          ? source.state.mode
+          : undefined),
+      onStoreError:
+        rule.onStoreError ??
+        (source.state?.onStoreError === "open" ? "open" : "local"),
     });
     countedRules.push(compiledRule);
     const byEvent = countedByEvent.get(rule.event);
@@ -788,7 +817,7 @@ export function compilePolicy(
       services: Object.freeze(services),
       trustCheck,
       concurrency,
-      limits: Object.freeze(limits),
+      limits,
       countedRules: Object.freeze(countedRules),
       countedByEvent,
       bans,
@@ -796,7 +825,72 @@ export function compilePolicy(
       shape,
       caseSensitive,
       deception,
+      nodes: source.state?.nodes ?? 1,
+      scope: source.state?.scope ?? "shared",
+      messages: compileMessages(source),
     }),
   );
   return compiled;
+}
+
+/** The limits of `rules`, `off` ones skipped, with the policy's `state` defaults applied. */
+function compileLimits(
+  source: SecurityPolicy,
+  rules: readonly LimitRule[] | undefined,
+  where: string,
+): readonly CompiledLimit[] {
+  const limits: CompiledLimit[] = [];
+  for (const limit of rules ?? []) {
+    const limitMode = limit.mode ?? "enforce";
+    if (limitMode === "off") continue;
+    limits.push(
+      Object.freeze({
+        id: limit.id,
+        limit: limit.limit,
+        window: ms(limit.window, `${where}.${limit.id}.window`),
+        key: compileKey(limit.key),
+        routes: compileRoutes(limit.routes),
+        algorithm: limit.algorithm ?? "sliding-window",
+        cost: limit.cost ?? 1,
+        mode: limitMode,
+        appliesToServices: limit.appliesToServices === true,
+        evenWhenAllowed: limit.evenWhenAllowed === true,
+        code: limit.code ?? "rate_limited",
+        state: limit.state ?? source.state?.mode,
+        onStoreError:
+          limit.onStoreError ?? source.state?.onStoreError ?? "local",
+      } satisfies CompiledLimit),
+    );
+  }
+  return Object.freeze(limits);
+}
+
+/** The `messages` section, or undefined when absent or off. */
+function compileMessages(source: SecurityPolicy): CompiledMessages | undefined {
+  const messages = source.messages;
+  if (messages === undefined) return undefined;
+  const mode = messages.mode ?? "enforce";
+  if (mode === "off") return undefined;
+  const per = messages.perConnection;
+  const limits = compileLimits(source, messages.limits, "messages.limits");
+  if ((per === undefined || per === false) && limits.length === 0) {
+    return undefined;
+  }
+  return Object.freeze({
+    perConnection:
+      per === undefined || per === false
+        ? undefined
+        : Object.freeze({
+            limit: per.limit,
+            window: ms(per.window, "messages.perConnection.window"),
+            capacity: per.limit * (messages.burst ?? 2),
+          }),
+    breach:
+      messages.breach === undefined
+        ? 10_000
+        : ms(messages.breach, "messages.breach"),
+    closeCode: messages.closeCode ?? 1008,
+    limits,
+    mode,
+  });
 }

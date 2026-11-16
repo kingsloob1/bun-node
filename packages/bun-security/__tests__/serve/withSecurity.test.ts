@@ -372,6 +372,9 @@ function fixedEngine(decision: Decision): Security<Request> {
     identify: () => undefined,
     load: (policy) => real.load(policy),
     status: () => real.status(),
+    ready: () => real.ready(),
+    flush: () => real.flush(),
+    socket: (facts) => real.socket(facts),
     close: () => real.close(),
   };
 }

@@ -3,22 +3,24 @@
 A request-defence engine for Bun services. It decides every request locally,
 from a policy compiled once, before your handler sees it.
 
-> **Being built.** This is milestone M1's first parts (PR-S1 to PR-S3, and
-> PR-S5) of the [bun-security plan](../../docs/plans/bun-security/README.md):
+> **Being built.** This is milestone M1's first parts (PR-S1 to PR-S5) of
+> the [bun-security plan](../../docs/plans/bun-security/README.md):
 > the engine, client identity, service identity, the trust check, allow and
 > deny lists, rate limits on bun-common's throttle foundation, counted rules,
 > bans with an offence score and an escalation ladder, request shape and a
 > canonical path, honeypots, canary credentials and trap fields, connection
 > limits, outcome signals, the plain `Bun.serve` integration, and the
-> bun-common adapter integration with security headers and CSRF. Request
-> rules, challenges, the bun-nest integration, shared state and the control
-> plane follow in later PRs.
+> bun-common adapter integration with security headers and CSRF, shared
+> state across processes (`./stores`) and WebSocket message limits. Request
+> rules, challenges, the sensitive-endpoint profiles and the control plane
+> follow in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
 ```
 
-Bun 1.4.2 or later. Its one runtime dependency is `@kingsleyweb/bun-common`.
+Bun 1.4.2 or later. Its one runtime dependency is `@kingsleyweb/bun-common`;
+`./stores` needs `@kingsleyweb/bun-cache` (an optional peer).
 
 ## A plain `Bun.serve`
 
@@ -157,15 +159,11 @@ limits: [
 - `security.load()` keeps the counts of every limit whose id, window and
   algorithm stay the same.
 
-Counts live in the engine's `throttleStore`: by default a memory store of its
-own, bounded by `maxKeys` (100,000). Pass a shared one, such as
-`cacheThrottleStore(cache)` from `@kingsleyweb/bun-cache/throttle`, to count
-across processes; with an asynchronous store, `evaluate()` returns a promise.
-
-The throttle is a bun-common middleware, so the engine calls it with a
-stand-in request (an empty object, its key looked up in a `WeakMap`); a
-request-free entry into the foundation's counting is proposed upstream
-(kingsloob1/bun-node#791).
+Local counts live in the engine's `throttleStore`: by default a memory store
+of its own, bounded by `maxKeys` (100,000). With a shared store (`store`,
+[below](#shared-state-across-processes)) limits count there by default; with
+an asynchronous store, `evaluate()` returns a promise. The engine counts
+through the throttle's `count()` and `peekCount()` (by key, no request).
 
 ## Counted rules
 
@@ -474,6 +472,99 @@ deception: {
   bot filled it; then call `security.signal(facts, "trap.filled")` (weight
   10) and refuse the submission.
 
+## Shared state across processes
+
+Several processes (enforcement points) share limits, counted rules, bans and
+offence scores through one bun-cache backend: Redis, Postgres, MySQL,
+MariaDB, MongoDB or one SQLite file.
+
+```ts
+import { createCache, redisDriver } from "@kingsleyweb/bun-cache";
+import { createSecurity } from "@kingsleyweb/bun-security";
+import { cacheStore } from "@kingsleyweb/bun-security/stores";
+
+const driver = redisDriver({ url: process.env.REDIS_URL });
+const store = cacheStore(createCache({ driver }), { bus: driver });
+const security = createSecurity({ policy, store });
+await security.ready(); // the fleet's bans loaded before the first request
+```
+
+- **Where a limit counts** is its `state`: `shared` (the default with a
+  store: one round trip, exact across processes), `local` (this process
+  only), or `hybrid` (counted here at once and synced every `syncInterval`,
+  250 ms: no round trip, approximate by about `rate × syncInterval ×
+  processes`; not with `gcra`). Counted rules take `local` or `shared`. The
+  policy's `state.mode` is the default. A policy naming `shared` or `hybrid`
+  on an engine without a store is refused.
+- **When the store fails** a rule does what its `onStoreError` says (default
+  the policy's `state.onStoreError`, else `local`): `local` counts in this
+  process at its local share (the limit or threshold ÷ `state.nodes`, at
+  least 1); `open` lets it through, recording the failure; `closed` (limits
+  only) answers `503` with `Retry-After: 5`. Every store call has a timeout
+  (`timeout`, 50 ms) and a circuit breaker (`circuit`, 5 failures, 30 s), so a
+  dead store costs a request its fallback, not a wait. After 30 s of failure
+  the engine raises a `store.unavailable` warning.
+- **Bans** are always looked up in memory. A ban (and a lift) is written to
+  the store's ban log and announced on the `bus` (`redisBus`, `pgBus`, or the
+  cache's driver); every process reads the log on the announcement and every
+  `pollInterval` (5 s) besides, and reloads the whole set every
+  `reconcileInterval` (60 s), which corrects a lost message or a lift. A
+  failed read removes nothing. Writes made while the store fails are queued
+  (`maxPendingBans`, 10,000) and sent when it answers; a store found emptied
+  is refilled from the processes' memory. A counted rule removed from a
+  service's policy stops its bans in that service.
+- **Who shares bans and scores** is the policy's `state.scope`:
+  `"shared"` (the default) shares them with every other `"shared"` service
+  on the same `namespace`, so an address banned by one is refused by all;
+  `"service"` keeps them to the service's own processes (it needs the
+  policy's `service`): another service never enforces its bans or reads its
+  scores, nor it another's. On one namespace the two mix predictably: the
+  shared services share among themselves, each per-service service keeps to
+  itself, and a subject banned in both is two bans, each lifted in its own
+  scope. A ban takes its writer's scope (`Ban.scope` is `"service"` for a
+  per-service one), manual bans included. Changing a service's scope with
+  `load()` changes which of the store's bans apply, and starts its scores
+  afresh. Limits and counted rules are per service in either scope.
+- **Offence scores** and the ladder's ban history sync every `syncInterval`:
+  offences on two processes add up, and a reset after a ban reaches the
+  others.
+- `security.flush()` sends what waits for the store now; `close()` stops the
+  timers and starts a last write (`flush()` waits for it); the store's own
+  `close()` stops its hybrid sync and never closes the cache.
+  `status().state.store` reports its health and queues.
+
+`hybridThrottleStore(shared, { syncInterval })` is the `hybrid` mode as a
+plain `ThrottleStore`, for any `throttle()`.
+
+## WebSocket message limits
+
+An HTTP limit sees the upgrade; the policy's `messages` section limits what
+an open socket sends.
+
+```ts
+messages: {
+  perConnection: { limit: 20, window: "1s" }, // a bucket of 2 × 20 (burst)
+  limits: [{ id: "per-user", limit: 600, window: "1m", key: "user" }],
+},
+```
+
+A message over a limit is dropped; a second breach within `breach` (10 s)
+closes the connection with `closeCode` (1008; 1013 or 4000 to 4999 allowed).
+`limits` take a limit's grammar and `state`, counted across every connection
+of the subject (and across processes with a shared store; a `closed` store
+failure closes 1013). On a bun-common route:
+
+```ts
+import { securityWebSocket } from "@kingsleyweb/bun-security/http";
+
+app.ws("/live", securityWebSocket(security, handlers, {
+  identify: (ws) => ({ user: ws.data.user?.id as string }),
+}));
+```
+
+Messages are handed on in their order. Elsewhere, call
+`security.socket(facts).message()` per message.
+
 ## The policy
 
 A policy is plain data. `compilePolicy(policy)` validates it and compiles it
@@ -504,7 +595,7 @@ const { decision: same, client, steps } = await security.explain(facts);
 
 `evaluate()` is synchronous while every store in play is (the default
 memory store is); a promise otherwise. `explain()` is the same decision with
-no state written (limits are read with the throttle's `peek()`, and layer L1
+no state written (limits are read with the throttle's `peekCount()`, and layer L1
 as for a tracked request), plus how the client was resolved and every check
 made. `onDecision(decision, facts)` sees every
 `evaluate()` decision.

@@ -3,8 +3,10 @@
  * rules, by the ladder and by operators, and looked up locally on every
  * request: an exact-key map for addresses, users, API keys and composite
  * keys, and a CIDR trie for ranges. A request never waits on a store to
- * learn whether it is banned (plan D2). Sharing bans across processes (the
- * ban stream and its reconcile) is PR-S4's.
+ * learn whether it is banned (plan D2). With a shared store, the engine's
+ * ban log (`banSync.ts`) feeds every process's table: {@link BanTable.merge}
+ * takes another process's record, idempotently, and
+ * {@link BanTable.reconcile} replaces the table with the store's set.
  *
  * - **Merging** (ConcaveHR's rules): a new ban on a subject with an active
  *   ban extends it, the later expiry winning and "until lifted" beating any
@@ -68,6 +70,13 @@ export interface Ban {
   readonly liftedAt?: number;
   /** Who lifted it. */
   readonly liftedBy?: string;
+  /** The service whose engine wrote it (its policy's `service`), when it names one. */
+  readonly service?: string;
+  /**
+   * `"service"` when only its service's processes enforce it (the policy's
+   * `state.scope`); absent when every `shared` service on the store does.
+   */
+  readonly scope?: "service";
 }
 
 /** What {@link BanTable.add} writes. */
@@ -88,6 +97,10 @@ export interface BanWrite {
   readonly createdBy?: string;
   /** Its problem code. */
   readonly code?: string;
+  /** The service writing it. */
+  readonly service?: string;
+  /** `"service"` for a ban only its service enforces. */
+  readonly scope?: "service";
 }
 
 /** What {@link BanTable.add} did. */
@@ -101,6 +114,64 @@ export interface BanOutcome {
 /** Whether `ban` is in force at `now`. */
 function active(ban: Ban, now: number): boolean {
   return ban.expiresAt === null || ban.expiresAt > now;
+}
+
+/** What a record says beside its times and count, as one comparable text. */
+function describing(ban: Ban): string {
+  return JSON.stringify([
+    ban.reason,
+    ban.rule ?? "",
+    ban.code ?? "",
+    ban.createdBy ?? "",
+    ban.service ?? "",
+  ]);
+}
+
+/**
+ * Whether `b`'s reason, rule, code, author and service win over `a`'s when
+ * two records of one ban merge: a manual record over an automatic one, then
+ * the greater by their text. A total order on what does not change in a
+ * merge, so merging is the same in any order and any grouping, and every
+ * process holding the same records holds the same ban.
+ */
+function precedes(a: Ban, b: Ban): boolean {
+  if (a.source !== b.source) return b.source === "manual";
+  return describing(b) > describing(a);
+}
+
+/**
+ * Two records of one ban merged, the same whichever comes first (see
+ * {@link BanTable.merge}).
+ */
+export function mergeBans(a: Ban, b: Ban): Ban {
+  const winner = precedes(a, b) ? b : a;
+  return Object.freeze({
+    ...winner,
+    action: a.action === "ban" || b.action === "ban" ? "ban" : "challenge",
+    expiresAt:
+      a.expiresAt === null || b.expiresAt === null
+        ? null
+        : Math.max(a.expiresAt, b.expiresAt),
+    count: Math.max(a.count, b.count),
+    createdAt: Math.min(a.createdAt, b.createdAt),
+  });
+}
+
+/** Whether two records of one ban say the same. */
+function sameBan(a: Ban, b: Ban): boolean {
+  return (
+    a.action === b.action &&
+    a.expiresAt === b.expiresAt &&
+    a.count === b.count &&
+    a.createdAt === b.createdAt &&
+    a.reason === b.reason &&
+    a.source === b.source &&
+    a.rule === b.rule &&
+    a.code === b.code &&
+    a.createdBy === b.createdBy &&
+    a.service === b.service &&
+    a.scope === b.scope
+  );
 }
 
 /** The id of a subject's ban. */
@@ -272,7 +343,9 @@ export class BanTable {
               ? {}
               : { createdBy: write.createdBy }),
             ...(write.code === undefined ? {} : { code: write.code }),
+            ...(write.service === undefined ? {} : { service: write.service }),
           }),
+      ...(write.scope === undefined ? {} : { scope: write.scope }),
     });
     this.#put(merged);
     return merged;
@@ -292,6 +365,8 @@ export class BanTable {
       ...(write.createdBy === undefined ? {} : { createdBy: write.createdBy }),
       count: 1,
       ...(write.code === undefined ? {} : { code: write.code }),
+      ...(write.service === undefined ? {} : { service: write.service }),
+      ...(write.scope === undefined ? {} : { scope: write.scope }),
     });
   }
 
@@ -368,19 +443,73 @@ export class BanTable {
     return out;
   }
 
-  /** Lifts every automatic ban whose rule `keep` refuses (a new policy removed or turned it off). */
-  prune(keep: (rule: string) => boolean): void {
+  /** Lifts every ban `keep` refuses (a new policy removed or turned off the rule that wrote it). */
+  prune(keep: (ban: Ban) => boolean): void {
     for (const table of [this.#exact, this.#ranges]) {
       for (const [id, ban] of table) {
-        if (
-          ban.source === "auto" &&
-          ban.rule !== undefined &&
-          !keep(ban.rule)
-        ) {
+        if (!keep(ban)) this.#remove(id);
+      }
+    }
+  }
+
+  /**
+   * Takes another process's record of a ban (the ban log, a reload): merged
+   * with the one held so that taking the same record twice, or two records
+   * in either order, ends the same — the later expiry wins, "until lifted"
+   * beats a date, `ban` beats `challenge`, a manual record's reason beats an
+   * automatic one's (else the later write's), the larger count, the earlier
+   * creation. An ended record is ignored. A new ban past the bound's slack
+   * is dropped and counted. Answers the ban held.
+   */
+  merge(ban: Ban, now: number): Ban | undefined {
+    if (!active(ban, now)) return this.get(ban.id);
+    const existing = this.get(ban.id);
+    if (existing === undefined || !active(existing, now)) {
+      if (existing !== undefined) this.#remove(ban.id);
+      if (this.size >= this.maxActive() + 1024 && ban.source === "auto") {
+        this.dropped++;
+        return undefined;
+      }
+      const taken = Object.freeze({ ...ban });
+      this.#put(taken);
+      return taken;
+    }
+    if (sameBan(existing, ban)) return existing;
+    const merged = mergeBans(existing, ban);
+    if (sameBan(existing, merged)) return existing;
+    this.#put(merged);
+    return merged;
+  }
+
+  /** Forgets `id`, as another process's lift does; answers whether it was held. */
+  remove(id: string): boolean {
+    return this.#remove(id) !== undefined;
+  }
+
+  /**
+   * Makes the table the store's `set` (a reload): each of its bans merged
+   * in; and, when the set is `complete` (read whole), every held ban it
+   * lacks removed unless `keep` says it is this process's own, not yet in
+   * the store. Answers how many were removed.
+   */
+  reconcile(
+    set: ReadonlyMap<string, Ban>,
+    complete: boolean,
+    keep: (id: string) => boolean,
+    now: number,
+  ): number {
+    for (const ban of set.values()) this.merge(ban, now);
+    if (!complete) return 0;
+    let removed = 0;
+    for (const table of [this.#exact, this.#ranges]) {
+      for (const id of [...table.keys()]) {
+        if (!set.has(id) && !keep(id)) {
           this.#remove(id);
+          removed++;
         }
       }
     }
+    return removed;
   }
 
   /** Forgets every ban. */

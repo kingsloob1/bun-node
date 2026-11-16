@@ -134,6 +134,16 @@ describe("package.json exports", () => {
     }
   });
 
+  it("checks the ./stores subpath, the shared store over bun-cache", () => {
+    for (const key of ["./stores", "./lib/stores"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/stores/index.ts",
+        types: "./dts/stores/index.d.ts",
+        default: "./lib/stores/index.ts",
+      });
+    }
+  });
+
   it("checks every literal subpath in the consumer check", () => {
     const spellings = new Set(
       checkConfig.entries?.map((entry) => entry.spelling),
@@ -177,14 +187,22 @@ describe("this package's dependencies", () => {
     });
   });
 
-  it("needs no optional peer for any entry", () => {
+  it("needs one optional peer, bun-cache, for ./stores alone", () => {
     const optional = new Set(
       Object.entries(manifest.peerDependenciesMeta)
         .filter(([, meta]) => meta.optional)
         .map(([name]) => name),
     );
-    expect(optional).toEqual(new Set(["@types/bun", "typescript"]));
-    for (const entry of checkConfig.entries ?? [])
-      expect(entry.peers ?? []).toEqual([]);
+    expect(optional).toEqual(
+      new Set(["@kingsleyweb/bun-cache", "@types/bun", "typescript"]),
+    );
+    expect(manifest.peerDependencies["@kingsleyweb/bun-cache"]).toBe(
+      "workspace:^",
+    );
+    for (const entry of checkConfig.entries ?? []) {
+      expect(entry.peers ?? []).toEqual(
+        entry.spelling.includes("/stores") ? ["@kingsleyweb/bun-cache"] : [],
+      );
+    }
   });
 });

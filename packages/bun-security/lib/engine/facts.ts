@@ -159,7 +159,7 @@ export function cookieNamesOf(header: string | undefined): readonly string[] {
 }
 
 /** The request's headers, lower case and bounded, with their count and the kept ones' full lengths. */
-function boundedHeaders(headers: Headers): {
+export function boundedHeaders(headers: Headers): {
   values: Record<string, string>;
   lengths: Record<string, number>;
   count: number;

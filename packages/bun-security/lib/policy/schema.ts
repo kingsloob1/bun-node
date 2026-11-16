@@ -86,6 +86,21 @@ const ALGORITHMS = new Set(["sliding-window", "fixed-window", "gcra"]);
 /** The counted-rule actions. */
 const COUNTED_ACTIONS = new Set(["ban", "challenge", "ladder"]);
 
+/** Where a limit counts (`StateMode`). */
+const STATE_MODES = new Set(["local", "shared", "hybrid"]);
+
+/** Where a counted rule counts. */
+const COUNTED_STATE_MODES = new Set(["local", "shared"]);
+
+/** What a limit does when the shared store fails (`StoreErrorMode`). */
+const STORE_ERRORS = new Set(["local", "open", "closed"]);
+
+/** Who shares bans and scores (`state.scope`). */
+const STATE_SCOPES = new Set(["shared", "service"]);
+
+/** What a counted rule does when the shared store fails. */
+const COUNTED_STORE_ERRORS = new Set(["local", "open"]);
+
 /** An id: what an operator would type, bounded. */
 const ID_RE = /^[\w.:/@+-]{1,256}$/;
 /** A limit's or counted rule's id: the throttle foundation's limit-name grammar, bounded. */
@@ -595,6 +610,8 @@ const LIMIT_KEYS = [
   "appliesToServices",
   "evenWhenAllowed",
   "code",
+  "state",
+  "onStoreError",
 ];
 
 /** Checks one limit. */
@@ -639,6 +656,19 @@ function checkLimit(
     CODE_RE,
     "a code (lower case, at most 64 characters)",
   );
+  optionalOneOf(issues, [...path, "state"], value.state, STATE_MODES);
+  optionalOneOf(
+    issues,
+    [...path, "onStoreError"],
+    value.onStoreError,
+    STORE_ERRORS,
+  );
+  if (value.state === "hybrid" && value.algorithm === "gcra") {
+    issues.add(
+      [...path, "algorithm"],
+      'is "gcra", which needs a compare-and-set on the store, but state "hybrid" counts in this process first; use state "shared" or another algorithm',
+    );
+  }
 }
 
 /** The keys a counted rule may have. */
@@ -656,6 +686,8 @@ const COUNTED_KEYS = [
   "appliesToServices",
   "code",
   "weight",
+  "state",
+  "onStoreError",
 ];
 
 /** Checks one counted rule. */
@@ -708,6 +740,13 @@ function checkCountedRule(
     CODE_RE,
     "a code (lower case, at most 64 characters)",
   );
+  optionalOneOf(issues, [...path, "state"], value.state, COUNTED_STATE_MODES);
+  optionalOneOf(
+    issues,
+    [...path, "onStoreError"],
+    value.onStoreError,
+    COUNTED_STORE_ERRORS,
+  );
 }
 
 /** Checks `perIp` or `total`: a positive whole number or `false`. */
@@ -723,21 +762,120 @@ function optionalCap(
 /** Checks a list of rules with `check`, within {@link MAX_RULES}. */
 function checkRules(
   issues: Issues,
-  name: "limits" | "countedRules",
+  path: readonly (string | number)[],
   value: unknown,
   check: typeof checkLimit,
 ): void {
   if (value === undefined) return;
   if (!Array.isArray(value)) {
-    issues.add([name], "must be a list");
+    issues.add(path, "must be a list");
   } else if (value.length > MAX_RULES) {
-    issues.add([name], `holds ${value.length}; the bound is ${MAX_RULES}`);
+    issues.add(path, `holds ${value.length}; the bound is ${MAX_RULES}`);
   } else {
     const ids = new Map<string, number>();
     value.forEach((rule: unknown, i: number) => {
-      check(issues, [name, i], rule, ids, i);
+      check(issues, [...path, i], rule, ids, i);
     });
   }
+}
+
+/** Checks the `state` section; `service` is the policy's. */
+function checkState(issues: Issues, value: unknown, service: unknown): void {
+  if (
+    value === undefined ||
+    !checkObject(issues, ["state"], value, [
+      "mode",
+      "onStoreError",
+      "nodes",
+      "scope",
+    ])
+  ) {
+    return;
+  }
+  optionalOneOf(issues, ["state", "mode"], value.mode, STATE_MODES);
+  optionalOneOf(issues, ["state", "scope"], value.scope, STATE_SCOPES);
+  if (value.scope === "service" && service === undefined) {
+    issues.add(
+      ["state", "scope"],
+      'is "service", but the policy names no service: set the policy\'s service, whose processes then share bans and scores among themselves alone',
+    );
+  }
+  optionalOneOf(
+    issues,
+    ["state", "onStoreError"],
+    value.onStoreError,
+    STORE_ERRORS,
+  );
+  if (value.nodes !== undefined) {
+    positiveInteger(issues, ["state", "nodes"], value.nodes);
+    if (typeof value.nodes === "number" && value.nodes > 100_000) {
+      issues.add(["state", "nodes"], "must be at most 100000");
+    }
+  }
+}
+
+/** The close codes a message limit may close with. */
+function closeCodeOk(code: unknown): boolean {
+  return (
+    typeof code === "number" &&
+    Number.isSafeInteger(code) &&
+    (code === 1008 || code === 1013 || (code >= 4000 && code <= 4999))
+  );
+}
+
+/** Checks the `messages` section (layers.md L9.5). */
+function checkMessages(issues: Issues, value: unknown): void {
+  if (
+    value === undefined ||
+    !checkObject(issues, ["messages"], value, [
+      "perConnection",
+      "burst",
+      "breach",
+      "closeCode",
+      "limits",
+      "mode",
+    ])
+  ) {
+    return;
+  }
+  const per = value.perConnection;
+  if (
+    per !== undefined &&
+    per !== false &&
+    checkObject(issues, ["messages", "perConnection"], per, [
+      "limit",
+      "window",
+      "subSecond",
+    ])
+  ) {
+    positiveInteger(issues, ["messages", "perConnection", "limit"], per.limit);
+    checkWindow(issues, ["messages", "perConnection"], per);
+  }
+  if (
+    value.burst !== undefined &&
+    !(
+      typeof value.burst === "number" &&
+      Number.isFinite(value.burst) &&
+      value.burst >= 1 &&
+      value.burst <= 1000
+    )
+  ) {
+    issues.add(
+      ["messages", "burst"],
+      `must be a number from 1 to 1000; got ${describe(value.burst)}`,
+    );
+  }
+  if (value.breach !== undefined) {
+    policyDuration(issues, ["messages", "breach"], value.breach, 1000);
+  }
+  if (value.closeCode !== undefined && !closeCodeOk(value.closeCode)) {
+    issues.add(
+      ["messages", "closeCode"],
+      `must be 1008, 1013 or a code from 4000 to 4999; got ${describe(value.closeCode)}`,
+    );
+  }
+  checkRules(issues, ["messages", "limits"], value.limits, checkLimit);
+  optionalOneOf(issues, ["messages", "mode"], value.mode, MODES);
 }
 
 /** Checks an optional non-negative finite number. */
@@ -1194,6 +1332,8 @@ const POLICY_KEYS = [
   "shape",
   "deception",
   "requestRules",
+  "state",
+  "messages",
 ];
 
 /**
@@ -1443,8 +1583,10 @@ export function validatePolicy(
     optionalOneOf(issues, ["concurrency", "mode"], concurrency.mode, MODES);
   }
 
-  checkRules(issues, "limits", input.limits, checkLimit);
-  checkRules(issues, "countedRules", input.countedRules, checkCountedRule);
+  checkRules(issues, ["limits"], input.limits, checkLimit);
+  checkRules(issues, ["countedRules"], input.countedRules, checkCountedRule);
+  checkState(issues, input.state, input.service);
+  checkMessages(issues, input.messages);
   if (input.ladder === false && Array.isArray(input.countedRules)) {
     input.countedRules.forEach((rule: unknown, i: number) => {
       if (isRecord(rule) && rule.action === "ladder") {

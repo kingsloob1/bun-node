@@ -12,7 +12,8 @@
  *   install does not cover;
  * - {@link securityProfile}: a route's profile and per-route options;
  * - {@link securityHeaders}, {@link csrf}: layer L13, also usable alone;
- * - {@link requestSecurity}: what was decided about a request, for handlers.
+ * - {@link requestSecurity}: what was decided about a request, for handlers;
+ * - {@link securityWebSocket}: WebSocket message limits on a `ws()` route.
  */
 export { csrf } from "./csrf";
 export type {
@@ -36,3 +37,5 @@ export type { SecurityProfileOptions } from "./profile";
 export type { ScrubMode } from "./scrub";
 export { requestSecurity } from "./state";
 export type { RequestSecurity } from "./state";
+export { securityWebSocket } from "./websocket";
+export type { SecurityWebSocketOptions } from "./websocket";
