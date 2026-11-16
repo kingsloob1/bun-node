@@ -711,6 +711,13 @@ has no linear-time engine (RE2) built in. So:
 - the property test (README §11.3) generates adversarial inputs for every
   accepted pattern shape.
 
+The guarantee is **bounded, not linear** (the user's decision, 2026-11-16):
+star height alone misses polynomial blow-ups such as `\d+\d*` or
+`(a|ab)(a|ab)`, so PR-S8's validator also refuses adjacent repeats and
+alternations that can trade characters; and since `RegExp` tries each start
+position, an accepted pattern's worst case is about n² steps over at most
+`maxRegexInput` characters, never exponential.
+
 **Managed rule sets** [D]: bun-security ships a small, conservative set, in
 `dryRun` by default: path probes (`.env`, `.git`, `wp-admin` on non-WordPress
 services, `phpmyadmin`, `/cgi-bin/`, `/actuator`), known scanner user agents,

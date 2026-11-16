@@ -393,6 +393,65 @@ shape: {
 A refusal is the `shape.refused` event (weight 1). `shape: false` turns the
 checks off, `mode: "dryRun"` logs them.
 
+## Request rules
+
+Rules are data: a condition over the request and what to do when it holds
+(layers.md L7).
+
+```ts
+requestRules: {
+  rules: [
+    {
+      id: "no-scanners",
+      when: { any: [
+        { path: { glob: "/**/.env*" } },
+        { header: "user-agent", contains: "sqlmap", ignoreCase: true },
+        { queryParam: "id", regex: "'\\s*or\\s+\\d", ignoreCase: true },
+      ] },
+      action: "ban", duration: "1d", weight: 5,
+    },
+    { id: "staff-only", when: { all: [{ path: { prefix: "/admin" } }, { not: { user: { prefix: "staff_" } } }] } },
+  ],
+  managed: true, // the probe set below, in dry run; { mode: "enforce", exclude: ["wordpress"] } to act
+},
+```
+
+- **Targets:** `method`, `path` (the canonical path), `rawPath`, `query`,
+  `queryParam`, `header`, `anyHeader`, `cookie` (whether one is sent),
+  `client` (`{ cidr }`), `contentLength`, `headerCount`; and, read in the
+  route stage once routing and `identify()` have run, `routeKey`, `user`,
+  `session`, `tenant`, `apiKey`. A rule that reads any of the last five runs
+  in the route stage; every other runs in the early stage, before the body
+  is read.
+- **Matchers**, one per test: `equals`, `in`, `prefix`, `suffix`,
+  `contains`, `glob` (`*`, `**`, `?`, matched without regular expressions),
+  `regex`, `exists`, `length`, and on numbers `equals`, `gt`, `gte`, `lt`,
+  `lte`; `ignoreCase` beside them (on by default for paths). Combine tests
+  with `all`, `any` and `not`.
+- **Actions:** `block` (the default; `status` and `code` choose the answer),
+  `ban` (the client address, for `duration`, or the ladder's escalating
+  length), `drop` (no answer), `challenge` (a `block` until challenge
+  providers exist), `log`. `mode: "dryRun"` records what a rule would have
+  done; `off` skips it.
+- **Scoring:** each enforced hit counts the `pattern.hit` event (the managed
+  set's `probe.hit`) for counted rules, and adds the rule's `weight` (default
+  1, 0 for `log`) to the client address's score, so a run of probes reaches
+  the ladder's ban.
+- **Regular expressions are restricted** (JavaScriptCore backtracks and has
+  no timeout): no backreferences, lookarounds, Unicode property escapes or
+  inline modifiers; no quantifier inside a quantified group (`(a+)+`); no
+  repeated group whose alternatives start alike (`(a|aa)*`) or that can match
+  nothing; and no two choices that can trade characters (`\\d+\\d*`,
+  `.*a.*`, `a?a?aa`). A refused pattern refuses the policy, with the reason
+  (`regexRefusal(source)` gives it beforehand). A regex reads at most
+  `maxRegexInput` characters (1,024).
+- **The managed probe set** (off by default; `managed: true` turns it on in
+  dry run): `dotenv`, `vcs` (`.git`, `.svn`, `.hg`), `wordpress`,
+  `phpmyadmin`, `cgi-bin`, `actuator` (answered `404`), `scanner-agents`
+  (`403`), `header-control-chars` (`400`), `oversized-cookie` (`431`). A
+  verified crawler (a later release) is never refused by it, and a rule of
+  your own can say `crawlers: "skip"` to exempt one too.
+
 ## Deception
 
 ```ts
